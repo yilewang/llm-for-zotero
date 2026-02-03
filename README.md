@@ -7,13 +7,15 @@
 
 **Zotero-LLM** is a powerful plugin for [Zotero](https://www.zotero.org/) that integrates Large Language Models (LLMs) directly into the Zotero PDF reader. Unlike other tools that require you to upload your pdfs to a portal, this plugin is designed to conveniently access LLMs without the need to leave Zotero. It quietly sits in the panel of the Zotero reader, like your standby research assistant, ready to help you with any questions you have when reading a paper.
 
-![image](./assets/demo.png)
+![image](./assets/demo.gif)
 
 Key Features
 
 - 🎨 Simple and elegant interface: Keep your attention on the paper rather than the tool.
 
-- 🔑 Bring Your Own Key (BYOK): Connect directly to your preferred LLM provider. You pay only for what you use, with no middleman subscription fees.
+- 🔑 Bring Your Own Key (BYOK): Connect directly to your preferred LLM provider. You pay only for what you use, with no middleman subscription fees. You can set up up to 2 LLM models to help me handle different types of tasks: for instance, the multimodal model for helping you to interpret the Figure; text-based model for helping you understand text. 
+
+- Image input supported: You can do screenshot on the Figure and ask model for details. 
 
 - 💬 Context-Aware Chat: Have a natural conversation with your PDF. The model has context of the paper currently open in your reader.
 
@@ -54,7 +56,7 @@ Open `Preferences` and navigate to the `Zotero-LLM` tab.
 
 ![image](./assets/api_setting.png)
 
-Select your Provider (e.g., OpenAI, Gemini, Local/Ollama).
+Select your Provider (e.g., OpenAI, Gemini, Deepseek).
 
 Paste your API Base URL, secret key and model name.
 
