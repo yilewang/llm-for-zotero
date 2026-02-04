@@ -535,10 +535,15 @@ function renderInline(text: string): string {
     '<a href="$2" target="_blank" rel="noopener">$1</a>',
   );
 
-  // 11. Restore protected blocks
-  result = result.replace(/@@PROTECTED(\d+)@@/g, (_match, idx) => {
-    return protectedBlocks[Number(idx)] || "";
-  });
+  // 11. Restore protected blocks.
+  // Reverse order is important for nested placeholders such as **$x$**:
+  // bold wrapping can protect a token that itself points to rendered math.
+  for (let i = protectedBlocks.length - 1; i >= 0; i--) {
+    const token = `@@PROTECTED${i}@@`;
+    if (result.includes(token)) {
+      result = result.split(token).join(protectedBlocks[i]);
+    }
+  }
 
   return result;
 }
