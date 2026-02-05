@@ -533,10 +533,12 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  min-height: 40px;
 }
 
 .llm-actions button {
-  height: 36px;
+  height: auto;
+  min-height: 40px;
   line-height: normal;
 }
 
@@ -545,7 +547,10 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 0 20px;
+  min-height: 40px;
+  padding: 10px 20px;
+  white-space: normal;
+  line-height: 1.2;
   border-radius: 8px;
   border: 2px solid #2563eb;
   background: #2563eb;
@@ -638,7 +643,10 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 0 14px;
+  min-height: 40px;
+  padding: 10px 14px;
+  white-space: normal;
+  line-height: 1.2;
   font-size: 12px;
   border-radius: 8px;
   border: 1px solid var(--stroke-secondary);
@@ -667,7 +675,10 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 0 14px;
+  min-height: 40px;
+  padding: 10px 14px;
+  white-space: normal;
+  line-height: 1.2;
   border-radius: 8px;
   border: 1px solid var(--stroke-secondary);
   background: var(--fill-quinary);
