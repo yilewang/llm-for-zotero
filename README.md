@@ -5,6 +5,11 @@
 
 ![image](./assets/_neuron.png)
 
+
+
+02.06.2026 Update: Zotero-LLM is now support mainstream reasoning models, including `gpt-5.x` series from OpenAI, `gemini-3-pro-preview`, `gemini-2.5-flash` from Google, `deepseek-chat` and `deepseek-reasoner` from Deepseek, and `kimi-k2.5` series from Moonshot. You can easily connect to these models with your own API key and enjoy the power of LLMs while reading papers in Zotero.
+
+
 **Zotero-LLM** is a powerful plugin for [Zotero](https://www.zotero.org/) that integrates Large Language Models (LLMs) directly into the Zotero PDF reader. Unlike other tools that require you to upload your pdfs to a portal, this plugin is designed to conveniently access LLMs without the need to leave Zotero. It quietly sits in the panel of the Zotero reader, like your standby research assistant, ready to help you with any questions you have when reading a paper.
 
 ![image](./assets/demo.gif)

@@ -842,6 +842,23 @@
   background: rgba(255, 255, 255, 0.12);
 }
 
+.llm-reasoning-option-disabled,
+.llm-reasoning-option:disabled {
+  color: rgba(255, 77, 79, 0.45) !important;
+  opacity: 0.45;
+  background: rgba(255, 77, 79, 0.08) !important;
+  text-decoration: line-through;
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+.llm-reasoning-option-disabled:hover,
+.llm-reasoning-option:disabled:hover,
+.llm-reasoning-option-disabled:focus,
+.llm-reasoning-option:disabled:focus {
+  background: rgba(255, 77, 79, 0.08) !important;
+}
+
 /* Image Preview */
 .llm-image-preview {
   display: flex;

@@ -34,7 +34,12 @@ export type ChatMessage = {
 };
 
 export type ReasoningProvider = "openai" | "gemini" | "deepseek" | "kimi";
-export type ReasoningLevel = "default" | "medium" | "high" | "xhigh";
+export type ReasoningLevel =
+  | "default"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh";
 export type ReasoningConfig = {
   provider: ReasoningProvider;
   level: ReasoningLevel;
@@ -64,14 +69,18 @@ export type ReasoningEvent = {
 
 interface StreamChoice {
   delta?: {
-    content?: string;
-    reasoning_content?: string;
-    reasoning?: string;
+    content?: unknown;
+    reasoning_content?: unknown;
+    reasoning?: unknown;
+    thinking?: unknown;
+    thought?: unknown;
   };
   message?: {
-    content?: string;
-    reasoning_content?: string;
-    reasoning?: string;
+    content?: unknown;
+    reasoning_content?: unknown;
+    reasoning?: unknown;
+    thinking?: unknown;
+    thought?: unknown;
   };
 }
 
@@ -259,6 +268,104 @@ function isResponsesBase(baseOrUrl: string): boolean {
   return cleaned.endsWith("/v1/responses") || cleaned.endsWith("/responses");
 }
 
+function normalizeStreamText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => normalizeStreamText(entry))
+      .filter(Boolean)
+      .join("");
+  }
+  if (value && typeof value === "object") {
+    const row = value as {
+      text?: unknown;
+      content?: unknown;
+      reasoning?: unknown;
+      summary?: unknown;
+      delta?: unknown;
+      thinking?: unknown;
+      thought?: unknown;
+    };
+    return (
+      normalizeStreamText(row.text) ||
+      normalizeStreamText(row.content) ||
+      normalizeStreamText(row.reasoning) ||
+      normalizeStreamText(row.summary) ||
+      normalizeStreamText(row.delta) ||
+      normalizeStreamText(row.thinking) ||
+      normalizeStreamText(row.thought)
+    );
+  }
+  return "";
+}
+
+type ThoughtTagState = {
+  inThought: boolean;
+  buffer: string;
+};
+
+function getPartialTagTailLength(text: string, tag: string): number {
+  const textLower = text.toLowerCase();
+  const tagLower = tag.toLowerCase();
+  const max = Math.min(textLower.length, tagLower.length - 1);
+  for (let len = max; len > 0; len--) {
+    if (tagLower.startsWith(textLower.slice(-len))) {
+      return len;
+    }
+  }
+  return 0;
+}
+
+function splitThoughtTaggedText(
+  chunk: string,
+  state: ThoughtTagState,
+): { answer: string; thought: string } {
+  const OPEN_TAG = "<thought>";
+  const CLOSE_TAG = "</thought>";
+  const input = `${state.buffer}${chunk}`;
+  state.buffer = "";
+  if (!input) return { answer: "", thought: "" };
+
+  const inputLower = input.toLowerCase();
+  let answer = "";
+  let thought = "";
+  let cursor = 0;
+
+  while (cursor < input.length) {
+    if (state.inThought) {
+      const closeIdx = inputLower.indexOf(CLOSE_TAG, cursor);
+      if (closeIdx === -1) {
+        const segment = input.slice(cursor);
+        const tailLen = getPartialTagTailLength(segment, CLOSE_TAG);
+        thought += segment.slice(0, segment.length - tailLen);
+        state.buffer = segment.slice(segment.length - tailLen);
+        break;
+      }
+      thought += input.slice(cursor, closeIdx);
+      cursor = closeIdx + CLOSE_TAG.length;
+      state.inThought = false;
+      continue;
+    }
+
+    const openIdx = inputLower.indexOf(OPEN_TAG, cursor);
+    if (openIdx === -1) {
+      const segment = input.slice(cursor);
+      const tailLen = getPartialTagTailLength(segment, OPEN_TAG);
+      answer += segment.slice(0, segment.length - tailLen);
+      state.buffer = segment.slice(segment.length - tailLen);
+      break;
+    }
+    answer += input.slice(cursor, openIdx);
+    cursor = openIdx + OPEN_TAG.length;
+    state.inThought = true;
+  }
+
+  return { answer, thought };
+}
+
 function usesMaxCompletionTokens(model: string): boolean {
   const name = model.toLowerCase();
   return (
@@ -344,6 +451,7 @@ function buildResponsesInput(messages: ChatMessage[]) {
 function buildReasoningPayload(
   reasoning: ReasoningConfig | undefined,
   useResponses: boolean,
+  modelName?: string,
 ): { extra: Record<string, unknown>; omitTemperature: boolean } {
   if (!reasoning) {
     return { extra: {}, omitTemperature: false };
@@ -372,20 +480,47 @@ function buildReasoningPayload(
   }
 
   if (reasoning.provider === "gemini") {
-    const effort =
+    let effort: "low" | "medium" | "high" =
       reasoning.level === "default"
         ? "medium"
         : reasoning.level === "xhigh"
           ? "high"
-          : reasoning.level;
+          : reasoning.level === "low" ||
+              reasoning.level === "medium" ||
+              reasoning.level === "high"
+            ? reasoning.level
+            : "medium";
+    const normalizedModel = (modelName || "").trim().toLowerCase();
+    const isGemini3ProFamily =
+      normalizedModel === "gemini-3-pro" ||
+      normalizedModel === "gemini-3-pro-preview" ||
+      normalizedModel.startsWith("gemini-3-pro-preview-") ||
+      normalizedModel.startsWith("gemini-3-pro-");
+    const isGemini25 = normalizedModel.startsWith("gemini-2.5");
+
+    // Keep request valid if a stale/unsupported level is selected.
+    if (isGemini3ProFamily && effort === "medium") {
+      effort = "high";
+    }
+    if (!isGemini3ProFamily && (effort === "low" || effort === "high")) {
+      effort = "medium";
+    }
+
+    const thinkingConfig: Record<string, unknown> = {
+      include_thoughts: true,
+    };
+    if (isGemini25) {
+      thinkingConfig.thinking_budget =
+        effort === "low" ? 1024 : effort === "high" ? 24576 : 8192;
+    } else {
+      thinkingConfig.thinking_level = effort;
+    }
+
     return {
       extra: {
-        reasoning_effort: effort,
         extra_body: {
           google: {
-            thinking_config: {
-              include_thoughts: true,
-            },
+            thinking_config: thinkingConfig,
           },
         },
       },
@@ -574,7 +709,11 @@ export async function callLLM(params: ChatParams): Promise<string> {
   });
   const messages = buildMessages(params, systemPrompt);
   const useResponses = isResponsesBase(apiBase);
-  const reasoningPayload = buildReasoningPayload(params.reasoning, useResponses);
+  const reasoningPayload = buildReasoningPayload(
+    params.reasoning,
+    useResponses,
+    model,
+  );
   const temperatureParam = reasoningPayload.omitTemperature
     ? {}
     : { temperature: DEFAULT_TEMPERATURE };
@@ -635,7 +774,11 @@ export async function callLLMStream(
   });
   const messages = buildMessages(params, systemPrompt);
   const useResponses = isResponsesBase(apiBase);
-  const reasoningPayload = buildReasoningPayload(params.reasoning, useResponses);
+  const reasoningPayload = buildReasoningPayload(
+    params.reasoning,
+    useResponses,
+    model,
+  );
   const temperatureParam = reasoningPayload.omitTemperature
     ? {}
     : { temperature: DEFAULT_TEMPERATURE };
@@ -724,6 +867,7 @@ async function parseStreamResponse(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let fullText = "";
+  const thoughtState: ThoughtTagState = { inThought: false, buffer: "" };
 
   try {
     while (true) {
@@ -743,24 +887,36 @@ async function parseStreamResponse(
 
         try {
           const parsed = JSON.parse(data) as { choices?: StreamChoice[] };
-          const reasoningDelta =
-            parsed?.choices?.[0]?.delta?.reasoning_content ??
-            parsed?.choices?.[0]?.delta?.reasoning ??
-            parsed?.choices?.[0]?.message?.reasoning_content ??
-            parsed?.choices?.[0]?.message?.reasoning ??
-            "";
+          const choice = parsed?.choices?.[0];
+          const reasoningDelta = normalizeStreamText(
+            choice?.delta?.reasoning_content ??
+              choice?.delta?.reasoning ??
+              choice?.delta?.thinking ??
+              choice?.delta?.thought ??
+              choice?.message?.reasoning_content ??
+              choice?.message?.reasoning ??
+              choice?.message?.thinking ??
+              choice?.message?.thought ??
+              "",
+          );
           if (reasoningDelta && onReasoning) {
             onReasoning({ details: reasoningDelta });
           }
 
-          const delta =
-            parsed?.choices?.[0]?.delta?.content ??
-            parsed?.choices?.[0]?.message?.content ??
-            "";
+          const deltaRaw = normalizeStreamText(
+            choice?.delta?.content ?? choice?.message?.content ?? "",
+          );
+          const { answer, thought } = splitThoughtTaggedText(
+            deltaRaw,
+            thoughtState,
+          );
+          if (thought && onReasoning) {
+            onReasoning({ details: thought });
+          }
 
-          if (delta) {
-            fullText += delta;
-            onDelta(delta);
+          if (answer) {
+            fullText += answer;
+            onDelta(answer);
           }
         } catch (err) {
           ztoolkit.log("LLM stream parse error:", err);
@@ -768,6 +924,14 @@ async function parseStreamResponse(
       }
     }
   } finally {
+    if (thoughtState.buffer) {
+      if (thoughtState.inThought && onReasoning) {
+        onReasoning({ details: thoughtState.buffer });
+      } else {
+        fullText += thoughtState.buffer;
+        onDelta(thoughtState.buffer);
+      }
+    }
     reader.releaseLock();
   }
 
@@ -783,6 +947,11 @@ async function parseResponsesStream(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let fullText = "";
+  const thoughtState: ThoughtTagState = { inThought: false, buffer: "" };
+  let sawSummaryDelta = false;
+  let sawDetailsDelta = false;
+  let sawSummaryFinal = false;
+  let sawDetailsFinal = false;
 
   try {
     while (true) {
@@ -857,28 +1026,61 @@ async function parseResponsesStream(
 
           const emitReasoning = (event: ReasoningEvent) => {
             if (!onReasoning) return;
-            const summary = event.summary?.trim();
-            const details = event.details?.trim();
+            const summary =
+              typeof event.summary === "string" && event.summary.length > 0
+                ? event.summary
+                : undefined;
+            const details =
+              typeof event.details === "string" && event.details.length > 0
+                ? event.details
+                : undefined;
             if (!summary && !details) return;
             onReasoning({ summary, details });
           };
 
           if (parsed.type === "response.output_text.delta" && parsed.delta) {
-            fullText += parsed.delta;
-            onDelta(parsed.delta);
+            const { answer, thought } = splitThoughtTaggedText(
+              parsed.delta,
+              thoughtState,
+            );
+            if (thought && onReasoning) {
+              onReasoning({ details: thought });
+            }
+            if (answer) {
+              fullText += answer;
+              onDelta(answer);
+            }
             continue;
           }
 
           if (parsed.type === "response.output_text.done" && parsed.text) {
-            fullText += parsed.text;
-            onDelta(parsed.text);
+            const { answer, thought } = splitThoughtTaggedText(
+              parsed.text,
+              thoughtState,
+            );
+            if (thought && onReasoning) {
+              onReasoning({ details: thought });
+            }
+            if (answer) {
+              fullText += answer;
+              onDelta(answer);
+            }
             continue;
           }
 
           if (parsed.type === "response.completed" && parsed.response?.output_text) {
             if (!fullText) {
-              fullText = parsed.response.output_text;
-              onDelta(parsed.response.output_text);
+              const { answer, thought } = splitThoughtTaggedText(
+                parsed.response.output_text,
+                thoughtState,
+              );
+              if (thought && onReasoning) {
+                onReasoning({ details: thought });
+              }
+              if (answer) {
+                fullText = answer;
+                onDelta(answer);
+              }
             }
           }
 
@@ -887,6 +1089,7 @@ async function parseResponsesStream(
               parsed.type === "response.reasoning_summary_text.delta") &&
             parsed.delta
           ) {
+            sawSummaryDelta = true;
             emitReasoning({ summary: parsed.delta });
             continue;
           }
@@ -896,7 +1099,10 @@ async function parseResponsesStream(
               parsed.type === "response.reasoning_summary_text.done") &&
             (parsed.text || parsed.delta)
           ) {
-            emitReasoning({ summary: parsed.text || parsed.delta });
+            sawSummaryFinal = true;
+            if (!sawSummaryDelta) {
+              emitReasoning({ summary: parsed.text || parsed.delta });
+            }
             continue;
           }
 
@@ -905,6 +1111,7 @@ async function parseResponsesStream(
               parsed.type === "response.reasoning_text.delta") &&
             parsed.delta
           ) {
+            sawDetailsDelta = true;
             emitReasoning({ details: parsed.delta });
             continue;
           }
@@ -914,12 +1121,18 @@ async function parseResponsesStream(
               parsed.type === "response.reasoning_text.done") &&
             (parsed.text || parsed.delta)
           ) {
-            emitReasoning({ details: parsed.text || parsed.delta });
+            sawDetailsFinal = true;
+            if (!sawDetailsDelta) {
+              emitReasoning({ details: parsed.text || parsed.delta });
+            }
             continue;
           }
 
           if (parsed.type === "response.reasoning" && parsed.reasoning) {
-            emitReasoning({ details: normalizeReasoningText(parsed.reasoning) });
+            sawDetailsFinal = true;
+            if (!sawDetailsDelta) {
+              emitReasoning({ details: normalizeReasoningText(parsed.reasoning) });
+            }
             continue;
           }
 
@@ -931,10 +1144,16 @@ async function parseResponsesStream(
             const outputs = parsed.response?.output || [];
             for (const out of outputs) {
               if (out.type !== "reasoning") continue;
-              emitReasoning({
-                summary: extractSummary(out.summary),
-                details: normalizeReasoningText(out.content),
-              });
+              if (!sawSummaryDelta && !sawSummaryFinal) {
+                emitReasoning({
+                  summary: extractSummary(out.summary),
+                });
+              }
+              if (!sawDetailsDelta && !sawDetailsFinal) {
+                emitReasoning({
+                  details: normalizeReasoningText(out.content),
+                });
+              }
             }
           }
         } catch (err) {
@@ -943,6 +1162,14 @@ async function parseResponsesStream(
       }
     }
   } finally {
+    if (thoughtState.buffer) {
+      if (thoughtState.inThought && onReasoning) {
+        onReasoning({ details: thoughtState.buffer });
+      } else {
+        fullText += thoughtState.buffer;
+        onDelta(thoughtState.buffer);
+      }
+    }
     reader.releaseLock();
   }
 

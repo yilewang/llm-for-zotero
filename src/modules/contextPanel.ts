@@ -27,6 +27,7 @@ const HYBRID_WEIGHT_BM25 = 0.5;
 const HYBRID_WEIGHT_EMBEDDING = 0.5;
 const MAX_HISTORY_MESSAGES = 12;
 const HTML_NS = "http://www.w3.org/1999/xhtml";
+const AUTO_SCROLL_BOTTOM_THRESHOLD = 64;
 
 const SHORTCUT_FILES = [
   { id: "summarize", label: "Summarize", file: "summarize.txt" },
@@ -57,6 +58,10 @@ type ReasoningProviderKind =
   | "kimi"
   | "unsupported";
 type ReasoningLevelSelection = "none" | LLMReasoningLevel;
+type ReasoningOption = {
+  level: LLMReasoningLevel;
+  enabled: boolean;
+};
 
 // =============================================================================
 // State
@@ -200,18 +205,34 @@ function detectReasoningProvider(modelName: string): ReasoningProviderKind {
 
 function getReasoningOptions(
   provider: ReasoningProviderKind,
-): LLMReasoningLevel[] {
+  modelName: string,
+): ReasoningOption[] {
   if (provider === "openai") {
-    return ["default", "medium", "high", "xhigh"];
+    return [
+      { level: "default", enabled: true },
+      { level: "medium", enabled: true },
+      { level: "high", enabled: true },
+      { level: "xhigh", enabled: true },
+    ];
   }
   if (provider === "gemini") {
-    return ["default", "medium", "high"];
+    const name = modelName.trim().toLowerCase();
+    const isGemini3ProFamily =
+      name === "gemini-3-pro" ||
+      name === "gemini-3-pro-preview" ||
+      name.startsWith("gemini-3-pro-preview-") ||
+      name.startsWith("gemini-3-pro-");
+    return [
+      { level: "low", enabled: isGemini3ProFamily },
+      { level: "medium", enabled: !isGemini3ProFamily },
+      { level: "high", enabled: isGemini3ProFamily },
+    ];
   }
   if (provider === "deepseek") {
-    return ["default"];
+    return [{ level: "default", enabled: true }];
   }
   if (provider === "kimi") {
-    return ["default"];
+    return [{ level: "default", enabled: true }];
   }
   return [];
 }
@@ -1675,32 +1696,36 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
     if (!item) {
       return {
         provider: "unsupported" as const,
-        options: [] as LLMReasoningLevel[],
+        options: [] as ReasoningOption[],
+        enabledLevels: [] as LLMReasoningLevel[],
         selectedLevel: "none" as ReasoningLevelSelection,
       };
     }
     const { currentModel } = getSelectedModelInfo();
     const provider = detectReasoningProvider(currentModel);
-    const options = getReasoningOptions(provider);
+    const options = getReasoningOptions(provider, currentModel);
+    const enabledLevels = options
+      .filter((option) => option.enabled)
+      .map((option) => option.level);
     let selectedLevel = selectedReasoningCache.get(item.id) || "none";
-    if (options.length > 0) {
+    if (enabledLevels.length > 0) {
       if (
         selectedLevel === "none" ||
-        !options.includes(selectedLevel as LLMReasoningLevel)
+        !enabledLevels.includes(selectedLevel as LLMReasoningLevel)
       ) {
-        selectedLevel = "default";
+        selectedLevel = enabledLevels[0];
       }
     } else {
       selectedLevel = "none";
     }
     selectedReasoningCache.set(item.id, selectedLevel);
-    return { provider, options, selectedLevel };
+    return { provider, options, enabledLevels, selectedLevel };
   };
 
   const updateReasoningButton = () => {
     if (!item || !reasoningBtn) return;
-    const { options, selectedLevel } = getReasoningState();
-    const available = options.length > 0;
+    const { enabledLevels, selectedLevel } = getReasoningState();
+    const available = enabledLevels.length > 0;
     const active = available && selectedLevel !== "none";
     reasoningBtn.textContent = active
       ? `Level: ${selectedLevel}`
@@ -1737,7 +1762,8 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
     if (!item || !reasoningMenu) return;
     const { options, selectedLevel } = getReasoningState();
     reasoningMenu.innerHTML = "";
-    for (const level of options) {
+    for (const optionState of options) {
+      const level = optionState.level;
       const option = createElement(
         body.ownerDocument as Document,
         "button",
@@ -1748,15 +1774,20 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
             selectedLevel === level ? `\u2713 ${level}` : level,
         },
       );
-      option.addEventListener("click", (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!item) return;
-        selectedReasoningCache.set(item.id, level);
-        reasoningMenu.classList.remove("llm-reasoning-menu-open");
-        reasoningMenu.style.display = "none";
-        updateReasoningButton();
-      });
+      if (optionState.enabled) {
+        option.addEventListener("click", (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!item) return;
+          selectedReasoningCache.set(item.id, level);
+          reasoningMenu.classList.remove("llm-reasoning-menu-open");
+          reasoningMenu.style.display = "none";
+          updateReasoningButton();
+        });
+      } else {
+        option.disabled = true;
+        option.classList.add("llm-reasoning-option-disabled");
+      }
       reasoningMenu.appendChild(option);
     }
   };
@@ -1793,9 +1824,11 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   const getSelectedReasoning = (): LLMReasoningConfig | undefined => {
     if (!item) return undefined;
-    const { provider, options, selectedLevel } = getReasoningState();
+    const { provider, enabledLevels, selectedLevel } = getReasoningState();
     if (provider === "unsupported" || selectedLevel === "none") return undefined;
-    if (!options.includes(selectedLevel as LLMReasoningLevel)) return undefined;
+    if (!enabledLevels.includes(selectedLevel as LLMReasoningLevel)) {
+      return undefined;
+    }
     return { provider, level: selectedLevel as LLMReasoningLevel };
   };
 
@@ -2254,6 +2287,10 @@ function refreshChat(body: Element, item?: Zotero.Item | null) {
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
   const doc = body.ownerDocument!;
+  const prevScrollTop = chatBox.scrollTop;
+  const distanceFromBottom =
+    chatBox.scrollHeight - chatBox.clientHeight - chatBox.scrollTop;
+  const shouldStickToBottom = distanceFromBottom <= AUTO_SCROLL_BOTTOM_THRESHOLD;
 
   if (!item) {
     chatBox.innerHTML = `
@@ -2399,8 +2436,11 @@ function refreshChat(body: Element, item?: Zotero.Item | null) {
     chatBox.appendChild(wrapper);
   }
 
-  // Scroll to bottom
-  chatBox.scrollTop = chatBox.scrollHeight;
+  if (shouldStickToBottom) {
+    chatBox.scrollTop = chatBox.scrollHeight;
+  } else {
+    chatBox.scrollTop = prevScrollTop;
+  }
 }
 
 export function clearConversation(itemId: number) {
