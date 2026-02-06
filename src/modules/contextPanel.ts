@@ -759,20 +759,32 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const actionsRow = createElement(doc, "div", "llm-actions");
 
   // Screenshot button
-  const screenshotBtn = createElement(doc, "button", "llm-screenshot-btn", {
-    id: "llm-screenshot",
-    textContent: "📷 Select Screenshot",
-    disabled: !hasItem,
-  });
+  const screenshotBtn = createElement(
+    doc,
+    "button",
+    "llm-action-btn llm-action-btn-secondary llm-screenshot-btn",
+    {
+      id: "llm-screenshot",
+      textContent: "📷 Select Screenshot",
+      disabled: !hasItem,
+    },
+  );
+  const screenshotSlot = createElement(doc, "div", "llm-action-slot");
+  screenshotSlot.appendChild(screenshotBtn);
 
   const modelDropdown = createElement(doc, "div", "llm-model-dropdown", {
     id: "llm-model-dropdown",
   });
-  const modelBtn = createElement(doc, "button", "llm-model-btn", {
-    id: "llm-model-toggle",
-    textContent: "Model: ...",
-    disabled: !hasItem,
-  });
+  const modelBtn = createElement(
+    doc,
+    "button",
+    "llm-action-btn llm-action-btn-secondary llm-model-btn",
+    {
+      id: "llm-model-toggle",
+      textContent: "Model: ...",
+      disabled: !hasItem,
+    },
+  );
   const modelMenu = createElement(doc, "div", "llm-model-menu", {
     id: "llm-model-menu",
   });
@@ -782,32 +794,44 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const reasoningDropdown = createElement(doc, "div", "llm-reasoning-dropdown", {
     id: "llm-reasoning-dropdown",
   });
-  const reasoningBtn = createElement(doc, "button", "llm-reasoning-btn", {
-    id: "llm-reasoning-toggle",
-    textContent: "Reasoning",
-    disabled: !hasItem,
-  });
+  const reasoningBtn = createElement(
+    doc,
+    "button",
+    "llm-action-btn llm-action-btn-secondary llm-reasoning-btn",
+    {
+      id: "llm-reasoning-toggle",
+      textContent: "Reasoning",
+      disabled: !hasItem,
+    },
+  );
   const reasoningMenu = createElement(doc, "div", "llm-reasoning-menu", {
     id: "llm-reasoning-menu",
   });
   reasoningMenu.style.display = "none";
   reasoningDropdown.append(reasoningBtn, reasoningMenu);
 
-  const sendBtn = createElement(doc, "button", "llm-send-btn", {
-    id: "llm-send",
-    textContent: "Send",
-    disabled: !hasItem,
-  });
+  const sendBtn = createElement(
+    doc,
+    "button",
+    "llm-action-btn llm-action-btn-primary llm-send-btn",
+    {
+      id: "llm-send",
+      textContent: "Send",
+      disabled: !hasItem,
+    },
+  );
   const cancelBtn = createElement(
     doc,
     "button",
-    "llm-send-btn llm-cancel-btn",
+    "llm-action-btn llm-action-btn-danger llm-send-btn llm-cancel-btn",
     {
       id: "llm-cancel",
       textContent: "Cancel",
     },
   );
   cancelBtn.style.display = "none";
+  const sendSlot = createElement(doc, "div", "llm-action-slot");
+  sendSlot.append(sendBtn, cancelBtn);
 
   const statusLine = createElement(doc, "div", "llm-status", {
     id: "llm-status",
@@ -815,11 +839,10 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
 
   actionsRow.append(
-    screenshotBtn,
     modelDropdown,
+    screenshotSlot,
     reasoningDropdown,
-    sendBtn,
-    cancelBtn,
+    sendSlot,
     statusLine,
   );
   inputSection.appendChild(actionsRow);

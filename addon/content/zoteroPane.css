@@ -139,12 +139,13 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 0;
   background: var(--fill-quinary);
   border: 1px solid var(--stroke-secondary);
   color: var(--fill-primary);
   font-size: 11px;
   min-height: 30px;
-  max-width: 180px;
+  max-width: 100%;
   padding: 6px 12px;
   border-radius: 999px;
   cursor: pointer;
@@ -599,63 +600,104 @@
 
 /* Actions Bar */
 .llm-actions {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  justify-items: stretch;
   gap: 10px;
   min-height: 40px;
 }
 
 .llm-actions button {
+  width: 100%;
   height: auto;
   min-height: 40px;
   line-height: normal;
+  box-sizing: border-box;
 }
 
-.llm-send-btn {
+.llm-actions > * {
+  min-width: 0;
+  width: 100%;
+  justify-self: stretch;
+  box-sizing: border-box;
+}
+
+.llm-action-btn {
+  --llm-action-bg: var(--fill-quinary);
+  --llm-action-border: var(--stroke-secondary);
+  --llm-action-fg: var(--fill-primary);
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
   min-height: 40px;
-  padding: 10px 20px;
-  white-space: normal;
+  padding: 10px 14px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
   line-height: 1.2;
   border-radius: 8px;
-  border: 2px solid #2563eb;
-  background: #2563eb;
-  color: white !important;
+  border: 1px solid var(--llm-action-border);
+  background: var(--llm-action-bg);
+  color: var(--llm-action-fg);
   cursor: pointer;
-  font-size: 13px;
-  font-weight: 600;
-  min-width: 80px;
+  font-size: 12px;
   font-weight: 500;
   transition:
     background 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    opacity 0.15s,
     transform 0.1s;
 }
 
-.llm-cancel-btn {
-  border-color: #dc2626;
-  background: #dc2626;
+.llm-action-btn:hover:not(:disabled) {
+  background: var(--color-accent10);
+  border-color: var(--color-accent);
 }
 
-.llm-cancel-btn:hover:not(:disabled) {
-  background: #b91c1c;
-  border-color: #b91c1c;
+.llm-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.llm-send-btn:hover:not(:disabled) {
+.llm-action-btn-primary {
+  --llm-action-bg: #2563eb;
+  --llm-action-border: #2563eb;
+  --llm-action-fg: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.llm-action-btn-primary:hover:not(:disabled) {
   background: #1d4ed8;
   border-color: #1d4ed8;
 }
 
-.llm-send-btn:active:not(:disabled) {
+.llm-action-btn-primary:active:not(:disabled) {
   transform: scale(0.98);
 }
 
-.llm-send-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.llm-action-btn-danger {
+  --llm-action-bg: #dc2626;
+  --llm-action-border: #dc2626;
+  --llm-action-fg: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.llm-action-btn-danger:hover:not(:disabled) {
+  background: #b91c1c;
+  border-color: #b91c1c;
+}
+
+.llm-action-btn-secondary {
+  --llm-action-bg: var(--fill-quinary);
+  --llm-action-border: var(--stroke-secondary);
+  --llm-action-fg: var(--fill-primary);
 }
 
 .llm-send-icon {
@@ -666,6 +708,9 @@
 .llm-status {
   font-size: 11px;
   color: var(--fill-tertiary);
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .llm-status-ready {
@@ -706,71 +751,11 @@
   background: var(--fill-tertiary);
 }
 
-/* Screenshot Button */
-.llm-screenshot-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 40px;
-  padding: 10px 14px;
-  white-space: normal;
-  line-height: 1.2;
-  font-size: 12px;
-  border-radius: 8px;
-  border: 1px solid var(--stroke-secondary);
-  background: var(--fill-quinary);
-  color: var(--fill-primary);
-  cursor: pointer;
-  font-weight: 500;
-  transition:
-    background 0.15s,
-    border-color 0.15s;
-}
-
-.llm-screenshot-btn:hover:not(:disabled) {
-  background: var(--color-accent10);
-  border-color: var(--color-accent);
-}
-
-.llm-screenshot-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Model Toggle Button */
+/* Model / Reasoning toggles */
 .llm-model-btn,
 .llm-reasoning-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  min-height: 40px;
-  padding: 10px 14px;
-  white-space: normal;
-  line-height: 1.2;
-  border-radius: 8px;
-  border: 1px solid var(--stroke-secondary);
-  background: var(--fill-quinary);
-  color: var(--fill-primary);
-  cursor: pointer;
   font-size: 12px;
   font-weight: 500;
-  transition:
-    background 0.15s,
-    border-color 0.15s;
-}
-
-.llm-model-btn:hover:not(:disabled),
-.llm-reasoning-btn:hover:not(:disabled) {
-  background: var(--color-accent10);
-  border-color: var(--color-accent);
-}
-
-.llm-model-btn:disabled,
-.llm-reasoning-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .llm-reasoning-btn-unavailable {
@@ -790,10 +775,23 @@
 }
 
 .llm-model-dropdown,
-.llm-reasoning-dropdown {
+.llm-reasoning-dropdown,
+.llm-action-slot {
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: stretch;
+  min-width: 0;
+  width: 100%;
+}
+
+.llm-action-slot > button {
+  flex: 1 1 auto;
+}
+
+@media (max-width: 360px) {
+  .llm-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .llm-model-menu,
