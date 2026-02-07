@@ -1393,19 +1393,25 @@ async function renderShortcuts(body: Element, item?: Zotero.Item | null) {
   container.innerHTML = "";
   const overrides = getShortcutOverrides();
   const labelOverrides = getShortcutLabelOverrides();
-  const positionShortcutMenu = (evt: MouseEvent) => {
+  const positionShortcutMenu = (anchor: HTMLButtonElement) => {
     if (!menu) return;
     const win = body.ownerDocument?.defaultView;
     if (!win) return;
 
     const viewportMargin = 8;
+    const gap = 6;
     menu.style.position = "fixed";
     menu.style.display = "grid";
     menu.style.visibility = "hidden";
+    menu.style.maxHeight = `${Math.max(120, win.innerHeight - viewportMargin * 2)}px`;
+    menu.style.overflowY = "auto";
 
     const menuRect = menu.getBoundingClientRect();
-    let left = evt.clientX;
-    let top = evt.clientY;
+    const anchorRect = anchor.getBoundingClientRect();
+    let left = anchorRect.left + (anchorRect.width - menuRect.width) / 2;
+    const belowTop = anchorRect.bottom + gap;
+    const aboveTop = anchorRect.top - gap - menuRect.height;
+    let top = belowTop;
 
     const maxLeft = Math.max(
       viewportMargin,
@@ -1417,6 +1423,13 @@ async function renderShortcuts(body: Element, item?: Zotero.Item | null) {
     );
 
     left = Math.min(Math.max(viewportMargin, left), maxLeft);
+    if (belowTop + menuRect.height > win.innerHeight - viewportMargin) {
+      if (aboveTop >= viewportMargin) {
+        top = aboveTop;
+      } else {
+        top = maxTop;
+      }
+    }
     top = Math.min(Math.max(viewportMargin, top), maxTop);
 
     menu.style.left = `${Math.round(left)}px`;
@@ -1461,8 +1474,7 @@ async function renderShortcuts(body: Element, item?: Zotero.Item | null) {
       e.preventDefault();
       e.stopPropagation();
       if (!menu) return;
-      const evt = e as MouseEvent;
-      positionShortcutMenu(evt);
+      positionShortcutMenu(btn);
       menu.dataset.shortcutId = shortcut.id;
       (menu as any)._target = btn;
       menu.style.display = "grid";

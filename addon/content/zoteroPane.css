@@ -180,19 +180,33 @@
   z-index: 10;
   background: var(--material-background);
   border: 1px solid var(--stroke-secondary);
-  border-radius: 6px;
-  padding: 4px;
+  border-radius: calc(6px * var(--llm-font-scale, 1));
+  padding: calc(4px * var(--llm-font-scale, 1));
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.2);
 }
 
 .llm-shortcut-menu-item {
+  appearance: none;
+  -moz-appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: auto;
+  min-width: calc(32px * var(--llm-font-scale, 1));
+  min-height: calc(24px * var(--llm-font-scale, 1));
+  margin: 0;
   background: none;
   border: none;
   color: var(--fill-primary);
-  padding: 6px 10px;
+  padding: calc(4px * var(--llm-font-scale, 1))
+    calc(6px * var(--llm-font-scale, 1));
   font-size: var(--llm-fs-11);
+  line-height: 1.0;
+  font-family: inherit;
+  text-align: center;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: calc(4px * var(--llm-font-scale, 1));
 }
 
 .llm-shortcut-menu-item:hover {
