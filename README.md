@@ -10,10 +10,13 @@
 ## 🗓️ 02.06.2026 Update
 Zotero-LLM v3.0 [release](https://github.com/yilewang/zotero-llm/releases) is now support mainstream reasoning models, including `gpt-5.x` series from OpenAI, `gemini-3-pro-preview`, `gemini-2.5-flash` from Google, `deepseek-chat` and `deepseek-reasoner` from Deepseek, and `kimi-k2.5` series from Moonshot. You can easily connect to these models with your own API key and enjoy the power of LLMs while reading papers in Zotero.
 
+UI has been redesigned to be more intuitive and elegant. You can also customize the quick-action presets to fit your specific research needs.
+
 ## Introduction
 **Zotero-LLM** is a powerful plugin for [Zotero](https://www.zotero.org/) that integrates Large Language Models (LLMs) directly into the Zotero PDF reader. Unlike other tools that require you to upload your pdfs to a portal, this plugin is designed to conveniently access LLMs without the need to leave Zotero. It quietly sits in the panel of the Zotero reader, like your standby research assistant, ready to help you with any questions you have when reading a paper.
 
-![image](./assets/demo_video1.gif)
+<!-- ![image](./assets/demo_video1.gif) -->
+![image](./assets/demo.png)
 
 Key Features
 
@@ -67,6 +70,20 @@ Select your Provider (e.g., OpenAI, Gemini, Deepseek).
 
 Paste your API Base URL, secret key and model name.
 
+I will give some popular model as example:
+
+| API url | Model Name | Reasoning Level |
+| --- | --- | --- |
+| https://api.openai.com/v1/chat/completions | gpt-5.2 | default, medium, high, xhigh |
+| https://api.openai.com/v1/responses | gpt-5.2 | default, medium, high, xhigh |
+| https://api.deepseek.com/v1/chat/completions | deepseek-chat | default |
+| https://api.deepseek.com/v1/chat/completions | deepseek-reasoner | default |
+|  https://generativelanguage.googleapis.com/v1beta/openai/chat/completions | gemini-3-pro-preview | low, high |
+|  https://generativelanguage.googleapis.com/v1beta/openai/chat/completions | gemini-2.5-flash | medium |
+| https://api.moonshot.ai/v1/chat/completions | kimi-k2.5 | default |
+
+You can always check the connections by clicking the "Test Connection" button.
+
 ### Usage Guide
 
 To chat with a paper, open any PDF in the Zotero reader.
@@ -75,7 +92,6 @@ Open the LLM Assistant sidebar (click the distinct icon in the right-hand toolba
 
 Type a question in the chat box, such as "What is the main conclusion of this paper?"
 
-![image](./assets/demo3.png)
 
 ### FAQ
 
@@ -85,7 +101,7 @@ A: Yes, absolutely free. You only pay for API calls, if you choose to use a paid
 
 > Q: Does this work with local models?
 
-A: Unfortunately, no. This plugin is designed to work with LLMs that are accessible via API. If you have a local model that provides an API interface, you can try connecting it by entering the appropriate API details in the settings.
+A: Actually, yes. As long as the local model provides an OpenAI compatible HTTP API that is compatible with the plugin, you can connect it by entering the appropriate API Base URL and secret key in the settings.
 
 > Q: Is my data used to train models?
 
