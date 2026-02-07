@@ -28,6 +28,10 @@ const HYBRID_WEIGHT_EMBEDDING = 0.5;
 const MAX_HISTORY_MESSAGES = 12;
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const AUTO_SCROLL_BOTTOM_THRESHOLD = 64;
+const FONT_SCALE_DEFAULT_PERCENT = 100;
+const FONT_SCALE_MIN_PERCENT = 80;
+const FONT_SCALE_MAX_PERCENT = 180;
+const FONT_SCALE_STEP_PERCENT = 10;
 
 const SHORTCUT_FILES = [
   { id: "summarize", label: "Summarize", file: "summarize.txt" },
@@ -88,6 +92,7 @@ const shortcutTextCache = new Map<string, string>();
 let currentRequestId = 0;
 let cancelledRequestId = -1;
 let currentAbortController: AbortController | null = null;
+let panelFontScalePercent = FONT_SCALE_DEFAULT_PERCENT;
 
 // Screenshot selection state (per item)
 const selectedImageCache = new Map<number, string>();
@@ -840,8 +845,8 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
 
   actionsRow.append(
     modelDropdown,
-    screenshotSlot,
     reasoningDropdown,
+    screenshotSlot,
     sendSlot,
     statusLine,
   );
@@ -1289,6 +1294,15 @@ function sanitizeText(text: string) {
   return out;
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function applyPanelFontScale(panel: HTMLElement | null): void {
+  if (!panel) return;
+  panel.style.setProperty("--llm-font-scale", `${panelFontScalePercent / 100}`);
+}
+
 function getStringPref(key: string): string {
   const value = Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true);
   return typeof value === "string" ? value : "";
@@ -1636,6 +1650,30 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
     return;
   }
 
+  const panelRoot = body.querySelector("#llm-main") as HTMLDivElement | null;
+  if (!panelRoot) {
+    ztoolkit.log("LLM: Could not find panel root");
+    return;
+  }
+  panelRoot.tabIndex = 0;
+  applyPanelFontScale(panelRoot);
+
+  // Clicking non-interactive panel area gives keyboard focus to the panel.
+  panelRoot.addEventListener("mousedown", (e: Event) => {
+    const me = e as MouseEvent;
+    if (me.button !== 0) return;
+    const target = me.target as Element | null;
+    if (!target) return;
+    const isInteractive = Boolean(
+      target.closest(
+        "input, textarea, button, select, option, a[href], [contenteditable='true']",
+      ),
+    );
+    if (!isInteractive) {
+      panelRoot.focus();
+    }
+  });
+
   // Helper to update image preview UI
   const updateImagePreview = () => {
     if (!item || !imagePreview || !previewImg || !screenshotBtn) return;
@@ -1920,6 +1958,106 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
       doSend();
     }
   });
+
+  const panelDoc = body.ownerDocument;
+  if (
+    panelDoc &&
+    !(panelDoc as unknown as { __llmFontScaleShortcut?: boolean })
+      .__llmFontScaleShortcut
+  ) {
+    const isEventWithinActivePanel = (event: Event) => {
+      const panel = panelDoc.querySelector("#llm-main") as HTMLElement | null;
+      if (!panel) return null;
+      const target = event.target as Node | null;
+      const activeEl = panelDoc.activeElement;
+      const inPanel = Boolean(
+        (target && panel.contains(target)) ||
+          (activeEl && panel.contains(activeEl)),
+      );
+      if (!inPanel) return null;
+      return panel;
+    };
+
+    const applyDelta = (
+      event: Event,
+      delta: number | null,
+      reset: boolean = false,
+    ) => {
+      if (!reset && delta === null) return;
+      const panel = isEventWithinActivePanel(event);
+      if (!panel) return;
+      panelFontScalePercent = reset
+        ? FONT_SCALE_DEFAULT_PERCENT
+        : clampNumber(
+            panelFontScalePercent + (delta || 0),
+            FONT_SCALE_MIN_PERCENT,
+            FONT_SCALE_MAX_PERCENT,
+          );
+      event.preventDefault();
+      event.stopPropagation();
+      applyPanelFontScale(panel);
+    };
+
+    panelDoc.addEventListener(
+      "keydown",
+      (e: Event) => {
+        const ke = e as KeyboardEvent;
+        if (!(ke.metaKey || ke.ctrlKey) || ke.altKey) return;
+
+        if (
+          ke.key === "+" ||
+          ke.key === "=" ||
+          ke.code === "Equal" ||
+          ke.code === "NumpadAdd"
+        ) {
+          applyDelta(ke, FONT_SCALE_STEP_PERCENT);
+        } else if (
+          ke.key === "-" ||
+          ke.key === "_" ||
+          ke.code === "Minus" ||
+          ke.code === "NumpadSubtract"
+        ) {
+          applyDelta(ke, -FONT_SCALE_STEP_PERCENT);
+        } else if (
+          ke.key === "0" ||
+          ke.code === "Digit0" ||
+          ke.code === "Numpad0"
+        ) {
+          applyDelta(ke, null, true);
+        }
+      },
+      true,
+    );
+
+    // Some platforms route Cmd/Ctrl +/- through zoom commands instead of keydown.
+    panelDoc.addEventListener(
+      "command",
+      (e: Event) => {
+        const target = e.target as Element | null;
+        const commandId = target?.id || "";
+        if (
+          commandId === "cmd_fullZoomEnlarge" ||
+          commandId === "cmd_textZoomEnlarge"
+        ) {
+          applyDelta(e, FONT_SCALE_STEP_PERCENT);
+        } else if (
+          commandId === "cmd_fullZoomReduce" ||
+          commandId === "cmd_textZoomReduce"
+        ) {
+          applyDelta(e, -FONT_SCALE_STEP_PERCENT);
+        } else if (
+          commandId === "cmd_fullZoomReset" ||
+          commandId === "cmd_textZoomReset"
+        ) {
+          applyDelta(e, null, true);
+        }
+      },
+      true,
+    );
+
+    (panelDoc as unknown as { __llmFontScaleShortcut?: boolean }).__llmFontScaleShortcut =
+      true;
+  }
 
   // Screenshot button
   if (screenshotBtn) {

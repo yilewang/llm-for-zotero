@@ -1,10 +1,18 @@
 /* LLM Panel Styles */
 
 .llm-panel {
+  --llm-font-scale: 1;
+  --llm-fs-10: calc(10px * var(--llm-font-scale));
+  --llm-fs-11: calc(11px * var(--llm-font-scale));
+  --llm-fs-12: calc(12px * var(--llm-font-scale));
+  --llm-fs-13: calc(13px * var(--llm-font-scale));
+  --llm-fs-14: calc(14px * var(--llm-font-scale));
+  --llm-fs-16: calc(16px * var(--llm-font-scale));
+  --llm-fs-32: calc(32px * var(--llm-font-scale));
   display: flex;
   flex-direction: column;
   gap: 10px;
-  font-size: 12px;
+  font-size: var(--llm-fs-12);
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -43,13 +51,13 @@
 }
 
 .llm-title {
-  font-size: 14px;
+  font-size: var(--llm-fs-14);
   font-weight: 600;
   color: var(--fill-primary);
 }
 
 .llm-subtitle {
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
   color: var(--fill-secondary);
   margin-top: 2px;
 }
@@ -85,7 +93,7 @@
 }
 
 .llm-context-label {
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
   font-weight: 500;
   color: var(--fill-secondary);
   text-transform: uppercase;
@@ -93,7 +101,7 @@
 }
 
 .llm-context-status {
-  font-size: 10px;
+  font-size: var(--llm-fs-10);
   color: var(--fill-tertiary);
 }
 
@@ -105,7 +113,7 @@
   max-height: 120px;
   overflow: auto;
   border: 1px solid var(--stroke-secondary);
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
   white-space: pre-wrap;
 }
 
@@ -143,7 +151,7 @@
   background: var(--fill-quinary);
   border: 1px solid var(--stroke-secondary);
   color: var(--fill-primary);
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
   min-height: 30px;
   max-width: 100%;
   padding: 6px 12px;
@@ -182,7 +190,7 @@
   border: none;
   color: var(--fill-primary);
   padding: 6px 10px;
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
   cursor: pointer;
   border-radius: 4px;
 }
@@ -204,13 +212,13 @@
 }
 
 .llm-welcome-icon {
-  font-size: 32px;
+  font-size: var(--llm-fs-32);
   margin-bottom: 10px;
   opacity: 0.5;
 }
 
 .llm-welcome-text {
-  font-size: 12px;
+  font-size: var(--llm-fs-12);
   line-height: 1.5;
   max-width: 200px;
 }
@@ -238,7 +246,7 @@
   max-width: 95%;
   word-break: break-word;
   line-height: 1.5;
-  font-size: 12px;
+  font-size: var(--llm-fs-12);
   user-select: text;
 }
 
@@ -267,7 +275,7 @@
 .llm-reasoning-summary {
   cursor: pointer;
   user-select: none;
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
   color: var(--fill-secondary);
   font-weight: 600;
   list-style: none;
@@ -304,7 +312,7 @@
 }
 
 .llm-reasoning-label {
-  font-size: 10px;
+  font-size: var(--llm-fs-10);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -313,7 +321,7 @@
 }
 
 .llm-reasoning-text {
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
   line-height: 1.5;
   color: var(--fill-secondary);
   white-space: pre-wrap;
@@ -328,7 +336,7 @@
 }
 
 .llm-message-time {
-  font-size: 10px;
+  font-size: var(--llm-fs-10);
   color: var(--fill-tertiary);
 }
 
@@ -337,7 +345,7 @@
   border: none;
   cursor: pointer;
   padding: 2px 4px;
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
   opacity: 0.6;
   transition: opacity 0.15s;
 }
@@ -399,15 +407,15 @@
 }
 
 .llm-bubble.assistant h2 {
-  font-size: 14px;
+  font-size: var(--llm-fs-14);
 }
 
 .llm-bubble.assistant h3 {
-  font-size: 13px;
+  font-size: var(--llm-fs-13);
 }
 
 .llm-bubble.assistant h4 {
-  font-size: 12px;
+  font-size: var(--llm-fs-12);
 }
 
 .llm-bubble.assistant p {
@@ -433,7 +441,7 @@
   padding: 2px 5px;
   border-radius: 4px;
   font-family: monospace;
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
 }
 
 .llm-bubble.assistant pre {
@@ -447,7 +455,7 @@
 .llm-bubble.assistant pre code {
   background: none;
   padding: 0;
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
   line-height: 1.4;
 }
 
@@ -545,7 +553,7 @@
   width: 100%;
   border-collapse: collapse;
   margin: 8px 0;
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
 }
 
 .llm-bubble.assistant th,
@@ -575,7 +583,7 @@
   min-height: 90px;
   max-height: 220px;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--llm-fs-12);
   padding: 10px 12px;
   box-sizing: border-box;
   border-radius: 10px;
@@ -634,17 +642,19 @@
   width: 100%;
   min-width: 0;
   min-height: 40px;
-  padding: 10px 14px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  overflow: hidden;
+  padding: 10px 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-overflow: clip;
+  overflow: visible;
   line-height: 1.2;
   border-radius: 8px;
   border: 1px solid var(--llm-action-border);
   background: var(--llm-action-bg);
   color: var(--llm-action-fg);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--llm-fs-12);
   font-weight: 500;
   transition:
     background 0.15s,
@@ -668,7 +678,7 @@
   --llm-action-bg: #2563eb;
   --llm-action-border: #2563eb;
   --llm-action-fg: #fff;
-  font-size: 13px;
+  font-size: var(--llm-fs-13);
   font-weight: 600;
 }
 
@@ -685,7 +695,7 @@
   --llm-action-bg: #dc2626;
   --llm-action-border: #dc2626;
   --llm-action-fg: #fff;
-  font-size: 13px;
+  font-size: var(--llm-fs-13);
   font-weight: 600;
 }
 
@@ -701,12 +711,12 @@
 }
 
 .llm-send-icon {
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
 }
 
 /* Status */
 .llm-status {
-  font-size: 11px;
+  font-size: var(--llm-fs-11);
   color: var(--fill-tertiary);
   grid-column: 1 / -1;
   min-width: 0;
@@ -754,7 +764,7 @@
 /* Model / Reasoning toggles */
 .llm-model-btn,
 .llm-reasoning-btn {
-  font-size: 12px;
+  font-size: var(--llm-fs-12);
   font-weight: 500;
 }
 
@@ -788,7 +798,7 @@
   flex: 1 1 auto;
 }
 
-@media (max-width: 360px) {
+@media (max-width: 300px) {
   .llm-actions {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -836,7 +846,7 @@
   background: transparent;
   color: #f5f5f5;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--llm-fs-12);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -896,7 +906,7 @@
   background: var(--fill-quaternary);
   color: var(--fill-primary);
   cursor: pointer;
-  font-size: 16px;
+  font-size: var(--llm-fs-16);
   font-weight: bold;
   line-height: 1;
   transition: background 0.15s;
