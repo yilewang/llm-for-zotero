@@ -280,6 +280,15 @@
   border-bottom-left-radius: 4px;
 }
 
+.llm-model-name {
+  font-size: var(--llm-fs-10);
+  line-height: 1.2;
+  color: var(--fill-tertiary);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  margin-bottom: 6px;
+}
+
 .llm-reasoning {
   margin-top: 8px;
   border-top: 1px solid var(--stroke-secondary);

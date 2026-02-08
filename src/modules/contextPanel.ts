@@ -52,6 +52,7 @@ interface Message {
   role: "user" | "assistant";
   text: string;
   timestamp: number;
+  modelName?: string;
   streaming?: boolean;
   reasoningSummary?: string;
   reasoningDetails?: string;
@@ -1393,6 +1394,55 @@ function getApiProfiles(): {
   };
 }
 
+function getSelectedProfileForItem(itemId: number): {
+  key: ModelProfileKey;
+  apiBase: string;
+  apiKey: string;
+  model: string;
+} {
+  const { primary, secondary } = getApiProfiles();
+  const selected = selectedModelCache.get(itemId) || "primary";
+  if (selected === "secondary" && secondary.model) {
+    return { key: "secondary", ...secondary };
+  }
+  return { key: "primary", ...primary };
+}
+
+function getAdvancedModelParamsForProfile(
+  profileKey: ModelProfileKey,
+): AdvancedModelParams {
+  const suffix = profileKey === "secondary" ? "Secondary" : "Primary";
+  return {
+    temperature: normalizeTemperaturePref(
+      getStringPref(`temperature${suffix}`),
+    ),
+    maxTokens: normalizeMaxTokensPref(getStringPref(`maxTokens${suffix}`)),
+  };
+}
+
+function getSelectedReasoningForItem(
+  itemId: number,
+  modelName: string,
+): LLMReasoningConfig | undefined {
+  const provider = detectReasoningProvider(modelName);
+  if (provider === "unsupported") return undefined;
+  const enabledLevels = getReasoningOptions(provider, modelName)
+    .filter((option) => option.enabled)
+    .map((option) => option.level);
+  if (!enabledLevels.length) return undefined;
+
+  let selectedLevel = selectedReasoningCache.get(itemId) || "none";
+  if (
+    selectedLevel === "none" ||
+    !enabledLevels.includes(selectedLevel as LLMReasoningLevel)
+  ) {
+    selectedLevel = enabledLevels[0];
+    selectedReasoningCache.set(itemId, selectedLevel);
+  }
+
+  return { provider, level: selectedLevel as LLMReasoningLevel };
+}
+
 /** Get/set JSON preferences with error handling */
 function getJsonPref(key: string): Record<string, string> {
   const raw =
@@ -1982,13 +2032,7 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
     profileKey: ModelProfileKey | undefined,
   ): AdvancedModelParams | undefined => {
     if (!profileKey) return undefined;
-    const suffix = profileKey === "secondary" ? "Secondary" : "Primary";
-    return {
-      temperature: normalizeTemperaturePref(
-        getStringPref(`temperature${suffix}`),
-      ),
-      maxTokens: normalizeMaxTokensPref(getStringPref(`maxTokens${suffix}`)),
-    };
+    return getAdvancedModelParamsForProfile(profileKey);
   };
 
   const getSelectedReasoning = (): LLMReasoningConfig | undefined => {
@@ -2445,12 +2489,27 @@ async function sendQuestion(
   }
   const history = chatHistory.get(item.id)!;
   const historyForLLM = history.slice(-MAX_HISTORY_MESSAGES);
+  const fallbackProfile = getSelectedProfileForItem(item.id);
+  const effectiveModel = (
+    model ||
+    fallbackProfile.model ||
+    getStringPref("modelPrimary") ||
+    getStringPref("model") ||
+    "gpt-4o-mini"
+  ).trim();
+  const effectiveApiBase = (apiBase || fallbackProfile.apiBase).trim();
+  const effectiveApiKey = (apiKey || fallbackProfile.apiKey).trim();
+  const effectiveReasoning =
+    reasoning || getSelectedReasoningForItem(item.id, effectiveModel);
+  const effectiveAdvanced =
+    advanced || getAdvancedModelParamsForProfile(fallbackProfile.key);
   const userMessageText = image ? `${question}\n[📷 Image attached]` : question;
   history.push({ role: "user", text: userMessageText, timestamp: Date.now() });
   const assistantMessage: Message = {
     role: "assistant",
     text: "",
     timestamp: Date.now(),
+    modelName: effectiveModel,
     streaming: true,
   };
   history.push(assistantMessage);
@@ -2464,7 +2523,7 @@ async function sendQuestion(
       pdfTextCache.get(item.id),
       question,
       Boolean(image),
-      { apiBase, apiKey },
+      { apiBase: effectiveApiBase, apiKey: effectiveApiKey },
     );
     const llmHistory: ChatMessage[] = historyForLLM.map((msg) => ({
       role: msg.role,
@@ -2492,12 +2551,12 @@ async function sendQuestion(
         history: llmHistory,
         signal: currentAbortController?.signal,
         image: image,
-        model: model,
-        apiBase: apiBase,
-        apiKey: apiKey,
-        reasoning,
-        temperature: advanced?.temperature,
-        maxTokens: advanced?.maxTokens,
+        model: effectiveModel,
+        apiBase: effectiveApiBase,
+        apiKey: effectiveApiKey,
+        reasoning: effectiveReasoning,
+        temperature: effectiveAdvanced?.temperature,
+        maxTokens: effectiveAdvanced?.maxTokens,
       },
       (delta) => {
         assistantMessage.text += sanitizeText(delta);
@@ -2608,6 +2667,7 @@ function refreshChat(body: Element, item?: Zotero.Item | null) {
     if (isUser) {
       bubble.textContent = sanitizeText(msg.text || "");
     } else {
+      const hasModelName = Boolean(msg.modelName?.trim());
       const hasAnswerText = Boolean(msg.text);
       if (hasAnswerText) {
         const safeText = sanitizeText(msg.text);
@@ -2701,6 +2761,13 @@ function refreshChat(body: Element, item?: Zotero.Item | null) {
         typing.innerHTML =
           '<span class="llm-typing-dot"></span><span class="llm-typing-dot"></span><span class="llm-typing-dot"></span>';
         bubble.appendChild(typing);
+      }
+
+      if (hasModelName) {
+        const modelName = doc.createElement("div") as HTMLDivElement;
+        modelName.className = "llm-model-name";
+        modelName.textContent = msg.modelName?.trim() || "";
+        bubble.insertBefore(modelName, bubble.firstChild);
       }
     }
 
