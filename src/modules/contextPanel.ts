@@ -287,6 +287,7 @@ function toPanelMessage(message: StoredChatMessage): Message {
     role: message.role,
     text: message.text,
     timestamp: message.timestamp,
+    modelName: message.modelName,
     reasoningSummary: message.reasoningSummary,
     reasoningDetails: message.reasoningDetails,
     reasoningOpen: false,
@@ -2419,7 +2420,9 @@ async function renderShortcuts(body: Element, item?: Zotero.Item | null) {
       element = (node as any).parentElement || null;
     }
     if (!element || typeof (element as any).closest !== "function") return null;
-    const btn = element.closest(".llm-shortcut-btn") as HTMLButtonElement | null;
+    const btn = element.closest(
+      ".llm-shortcut-btn",
+    ) as HTMLButtonElement | null;
     if (!btn || !container.contains(btn)) return null;
     return btn;
   };
@@ -3811,6 +3814,7 @@ async function sendQuestion(
       role: "assistant",
       text: assistantMessage.text,
       timestamp: assistantMessage.timestamp,
+      modelName: assistantMessage.modelName,
       reasoningSummary: assistantMessage.reasoningSummary,
       reasoningDetails: assistantMessage.reasoningDetails,
     });

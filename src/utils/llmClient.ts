@@ -974,6 +974,7 @@ async function parseResponsesStream(
   let buffer = "";
   let fullText = "";
   const thoughtState: ThoughtTagState = { inThought: false, buffer: "" };
+  let sawOutputTextDelta = false;
   let sawSummaryDelta = false;
   let sawDetailsDelta = false;
   let sawSummaryFinal = false;
@@ -1065,6 +1066,7 @@ async function parseResponsesStream(
           };
 
           if (parsed.type === "response.output_text.delta" && parsed.delta) {
+            sawOutputTextDelta = true;
             const { answer, thought } = splitThoughtTaggedText(
               parsed.delta,
               thoughtState,
@@ -1080,6 +1082,11 @@ async function parseResponsesStream(
           }
 
           if (parsed.type === "response.output_text.done" && parsed.text) {
+            // Some providers emit full text in `done` after streaming deltas.
+            // Ignore it when delta events have already been consumed.
+            if (sawOutputTextDelta) {
+              continue;
+            }
             const { answer, thought } = splitThoughtTaggedText(
               parsed.text,
               thoughtState,
