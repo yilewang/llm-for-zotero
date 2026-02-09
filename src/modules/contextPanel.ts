@@ -45,18 +45,15 @@ const DEFAULT_MAX_TOKENS = 2048;
 const MAX_ALLOWED_TOKENS = 65536;
 const SELECTED_TEXT_MAX_LENGTH = 4000;
 const SELECTED_TEXT_PREVIEW_LENGTH = 240;
+const MAX_EDITABLE_SHORTCUTS = 5;
 const INCLUDE_SELECTED_TEXT_SHORTCUT_ID = "include-selected-text";
+const CUSTOM_SHORTCUT_ID_PREFIX = "custom-shortcut";
 
-const SHORTCUT_FILES = [
+const BUILTIN_SHORTCUT_FILES = [
   { id: "summarize", label: "Summarize", file: "summarize.txt" },
   { id: "key-points", label: "Key Points", file: "key-points.txt" },
   { id: "methodology", label: "Methodology", file: "methodology.txt" },
   { id: "limitations", label: "Limitations", file: "limitations.txt" },
-  {
-    id: INCLUDE_SELECTED_TEXT_SHORTCUT_ID,
-    label: "Add Text Selection",
-    file: "",
-  },
 ] as const;
 
 // =============================================================================
@@ -100,6 +97,11 @@ type AdvancedModelParams = {
   temperature: number;
   maxTokens: number;
 };
+type CustomShortcut = {
+  id: string;
+  label: string;
+  prompt: string;
+};
 
 // =============================================================================
 // State
@@ -124,6 +126,7 @@ type PdfContext = {
 
 const pdfTextCache = new Map<number, PdfContext>();
 const shortcutTextCache = new Map<string, string>();
+const shortcutMoveModeState = new WeakMap<Element, boolean>();
 
 let currentRequestId = 0;
 let cancelledRequestId = -1;
@@ -907,7 +910,33 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     type: "button",
     textContent: "Edit",
   });
-  shortcutMenu.appendChild(menuEditBtn);
+  const menuDeleteBtn = createElement(doc, "button", "llm-shortcut-menu-item", {
+    id: "llm-shortcut-menu-delete",
+    type: "button",
+    textContent: "Delete",
+  });
+  const menuAddBtn = createElement(doc, "button", "llm-shortcut-menu-item", {
+    id: "llm-shortcut-menu-add",
+    type: "button",
+    textContent: "Add",
+  });
+  const menuMoveBtn = createElement(doc, "button", "llm-shortcut-menu-item", {
+    id: "llm-shortcut-menu-move",
+    type: "button",
+    textContent: "Move",
+  });
+  const menuResetBtn = createElement(doc, "button", "llm-shortcut-menu-item", {
+    id: "llm-shortcut-menu-reset",
+    type: "button",
+    textContent: "Reset",
+  });
+  shortcutMenu.append(
+    menuEditBtn,
+    menuDeleteBtn,
+    menuAddBtn,
+    menuMoveBtn,
+    menuResetBtn,
+  );
   container.appendChild(shortcutMenu);
 
   // Response context menu
@@ -1918,6 +1947,85 @@ const setShortcutOverrides = (v: Record<string, string>) =>
 const getShortcutLabelOverrides = () => getJsonPref("shortcutLabels");
 const setShortcutLabelOverrides = (v: Record<string, string>) =>
   setJsonPref("shortcutLabels", v);
+const getDeletedShortcutIds = () => getStringArrayPref("shortcutDeleted");
+const setDeletedShortcutIds = (v: string[]) =>
+  setStringArrayPref("shortcutDeleted", v);
+const getCustomShortcuts = () => getCustomShortcutsPref("customShortcuts");
+const setCustomShortcuts = (v: CustomShortcut[]) =>
+  setCustomShortcutsPref("customShortcuts", v);
+const getShortcutOrder = () => getStringArrayPref("shortcutOrder");
+const setShortcutOrder = (v: string[]) =>
+  setStringArrayPref("shortcutOrder", v);
+
+function getStringArrayPref(key: string): string[] {
+  const raw =
+    (Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true) as string) || "";
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((v): v is string => typeof v === "string")
+      .map((v) => v.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function setStringArrayPref(key: string, value: string[]): void {
+  Zotero.Prefs.set(`${config.prefsPrefix}.${key}`, JSON.stringify(value), true);
+}
+
+function getCustomShortcutsPref(key: string): CustomShortcut[] {
+  const raw =
+    (Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true) as string) || "";
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const shortcuts: CustomShortcut[] = [];
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== "object") continue;
+      const id =
+        typeof (entry as any).id === "string" ? (entry as any).id.trim() : "";
+      const label =
+        typeof (entry as any).label === "string"
+          ? (entry as any).label.trim()
+          : "";
+      const prompt =
+        typeof (entry as any).prompt === "string"
+          ? (entry as any).prompt.trim()
+          : "";
+      if (!id || !prompt) continue;
+      shortcuts.push({
+        id,
+        label: label || "Custom Shortcut",
+        prompt,
+      });
+    }
+    return shortcuts;
+  } catch {
+    return [];
+  }
+}
+
+function setCustomShortcutsPref(key: string, value: CustomShortcut[]): void {
+  Zotero.Prefs.set(`${config.prefsPrefix}.${key}`, JSON.stringify(value), true);
+}
+
+function createCustomShortcutId(): string {
+  const token = Math.random().toString(36).slice(2, 8);
+  return `${CUSTOM_SHORTCUT_ID_PREFIX}-${Date.now()}-${token}`;
+}
+
+function resetShortcutsToDefault(): void {
+  setShortcutOverrides({});
+  setShortcutLabelOverrides({});
+  setDeletedShortcutIds([]);
+  setCustomShortcuts([]);
+  setShortcutOrder([]);
+}
 
 async function loadShortcutText(file: string): Promise<string> {
   if (shortcutTextCache.has(file)) {
@@ -1944,18 +2052,190 @@ async function renderShortcuts(body: Element, item?: Zotero.Item | null) {
   const menuEdit = body.querySelector(
     "#llm-shortcut-menu-edit",
   ) as HTMLButtonElement | null;
+  const menuDelete = body.querySelector(
+    "#llm-shortcut-menu-delete",
+  ) as HTMLButtonElement | null;
+  const menuAdd = body.querySelector(
+    "#llm-shortcut-menu-add",
+  ) as HTMLButtonElement | null;
+  const menuMove = body.querySelector(
+    "#llm-shortcut-menu-move",
+  ) as HTMLButtonElement | null;
+  const menuReset = body.querySelector(
+    "#llm-shortcut-menu-reset",
+  ) as HTMLButtonElement | null;
   if (!container) return;
 
+  const moveMode = shortcutMoveModeState.get(body) === true;
   container.innerHTML = "";
   const overrides = getShortcutOverrides();
   const labelOverrides = getShortcutLabelOverrides();
-  const positionShortcutMenu = (anchor: HTMLButtonElement) => {
+  let deletedIds = new Set(getDeletedShortcutIds());
+  let builtins = BUILTIN_SHORTCUT_FILES.filter(
+    (shortcut) => !deletedIds.has(shortcut.id),
+  );
+  let customShortcuts = getCustomShortcuts();
+
+  // Safety fallback: if editable shortcuts were fully removed, restore defaults.
+  if (!builtins.length && !customShortcuts.length) {
+    deletedIds = new Set();
+    builtins = [...BUILTIN_SHORTCUT_FILES];
+    setDeletedShortcutIds([]);
+    setShortcutOrder([]);
+  }
+
+  const availableCustomSlots = Math.max(
+    0,
+    MAX_EDITABLE_SHORTCUTS - builtins.length,
+  );
+  const visibleCustomShortcuts = customShortcuts.slice(0, availableCustomSlots);
+  const editableShortcutsRaw: Array<{
+    id: string;
+    kind: "builtin" | "custom";
+    prompt: string;
+    label: string;
+    defaultLabel: string;
+  }> = [];
+
+  for (const shortcut of builtins) {
+    let promptText = (overrides[shortcut.id] || "").trim();
+    if (!promptText) {
+      try {
+        promptText = (await loadShortcutText(shortcut.file)).trim();
+      } catch {
+        promptText = "";
+      }
+    }
+    const labelText = (labelOverrides[shortcut.id] || shortcut.label).trim();
+    editableShortcutsRaw.push({
+      id: shortcut.id,
+      kind: "builtin",
+      prompt: promptText,
+      label: labelText || shortcut.label,
+      defaultLabel: shortcut.label,
+    });
+  }
+
+  for (const shortcut of visibleCustomShortcuts) {
+    const label = shortcut.label.trim() || "Custom Shortcut";
+    editableShortcutsRaw.push({
+      id: shortcut.id,
+      kind: "custom",
+      prompt: shortcut.prompt.trim(),
+      label,
+      defaultLabel: label,
+    });
+  }
+  const currentVisibleIds = editableShortcutsRaw.map((shortcut) => shortcut.id);
+  const currentVisibleSet = new Set(currentVisibleIds);
+  const savedOrder = getShortcutOrder();
+  const normalizedOrder = [
+    ...savedOrder.filter((id) => currentVisibleSet.has(id)),
+    ...currentVisibleIds.filter((id) => !savedOrder.includes(id)),
+  ];
+  if (
+    normalizedOrder.length !== savedOrder.length ||
+    normalizedOrder.some((id, index) => id !== savedOrder[index])
+  ) {
+    setShortcutOrder(normalizedOrder);
+  }
+  const orderIndex = new Map(
+    normalizedOrder.map((shortcutId, index) => [shortcutId, index]),
+  );
+  const editableShortcuts = editableShortcutsRaw.sort(
+    (a, b) =>
+      (orderIndex.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+      (orderIndex.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+  );
+  const orderedEditableIds = editableShortcuts.map((shortcut) => shortcut.id);
+  const canAddShortcut = editableShortcuts.length < MAX_EDITABLE_SHORTCUTS;
+  let draggingShortcutId = "";
+  let draggingButton: HTMLButtonElement | null = null;
+
+  const setMoveMode = async (next: boolean) => {
+    shortcutMoveModeState.set(body, next);
+    await renderShortcuts(body, item);
+  };
+
+  const removeShortcut = async (
+    shortcutId: string,
+    kind: "builtin" | "custom",
+  ) => {
+    if (kind === "custom") {
+      const nextCustomShortcuts = getCustomShortcuts().filter(
+        (shortcut) => shortcut.id !== shortcutId,
+      );
+      setCustomShortcuts(nextCustomShortcuts);
+    } else {
+      const nextDeletedIds = new Set(getDeletedShortcutIds());
+      nextDeletedIds.add(shortcutId);
+      setDeletedShortcutIds(Array.from(nextDeletedIds));
+
+      const nextOverrides = getShortcutOverrides();
+      delete nextOverrides[shortcutId];
+      setShortcutOverrides(nextOverrides);
+
+      const nextLabelOverrides = getShortcutLabelOverrides();
+      delete nextLabelOverrides[shortcutId];
+      setShortcutLabelOverrides(nextLabelOverrides);
+    }
+
+    const nextOrder = getShortcutOrder().filter((id) => id !== shortcutId);
+    setShortcutOrder(nextOrder);
+    await renderShortcuts(body, item);
+  };
+
+  const addShortcut = async () => {
+    const updated = await openShortcutEditDialog("", "", "Add Shortcut");
+    if (!updated) return;
+
+    const prompt = updated.prompt.trim();
+    if (!prompt) {
+      const status = body.querySelector("#llm-status") as HTMLElement | null;
+      if (status) setStatus(status, "Shortcut prompt cannot be empty", "error");
+      return;
+    }
+
+    const currentDeleted = new Set(getDeletedShortcutIds());
+    const visibleBuiltinCount = BUILTIN_SHORTCUT_FILES.filter(
+      (shortcut) => !currentDeleted.has(shortcut.id),
+    ).length;
+    const currentCustomShortcuts = getCustomShortcuts();
+    if (
+      visibleBuiltinCount + currentCustomShortcuts.length >=
+      MAX_EDITABLE_SHORTCUTS
+    ) {
+      const status = body.querySelector("#llm-status") as HTMLElement | null;
+      if (status) {
+        setStatus(
+          status,
+          `Maximum ${MAX_EDITABLE_SHORTCUTS} editable shortcuts allowed`,
+          "error",
+        );
+      }
+      return;
+    }
+
+    const nextCustomShortcut: CustomShortcut = {
+      id: createCustomShortcutId(),
+      label: updated.label.trim() || "Custom Shortcut",
+      prompt,
+    };
+    const nextCustomShortcuts = [...currentCustomShortcuts, nextCustomShortcut];
+    setCustomShortcuts(nextCustomShortcuts);
+    const currentOrder = getShortcutOrder().filter((id) =>
+      currentVisibleSet.has(id),
+    );
+    setShortcutOrder([...currentOrder, nextCustomShortcut.id]);
+    await renderShortcuts(body, item);
+  };
+
+  const positionShortcutMenu = (x: number, y: number) => {
     if (!menu) return;
     const win = body.ownerDocument?.defaultView;
     if (!win) return;
 
     const viewportMargin = 8;
-    const gap = 6;
     menu.style.position = "fixed";
     menu.style.display = "grid";
     menu.style.visibility = "hidden";
@@ -1963,168 +2243,422 @@ async function renderShortcuts(body: Element, item?: Zotero.Item | null) {
     menu.style.overflowY = "auto";
 
     const menuRect = menu.getBoundingClientRect();
-    const anchorRect = anchor.getBoundingClientRect();
-    let left = anchorRect.left + (anchorRect.width - menuRect.width) / 2;
-    const belowTop = anchorRect.bottom + gap;
-    const aboveTop = anchorRect.top - gap - menuRect.height;
-    let top = belowTop;
-
-    const maxLeft = Math.max(
-      viewportMargin,
-      win.innerWidth - menuRect.width - viewportMargin,
+    const maxLeft = win.innerWidth - menuRect.width - viewportMargin;
+    const maxTop = win.innerHeight - menuRect.height - viewportMargin;
+    const left = Math.min(
+      Math.max(viewportMargin, x),
+      Math.max(viewportMargin, maxLeft),
     );
-    const maxTop = Math.max(
-      viewportMargin,
-      win.innerHeight - menuRect.height - viewportMargin,
+    const top = Math.min(
+      Math.max(viewportMargin, y),
+      Math.max(viewportMargin, maxTop),
     );
-
-    left = Math.min(Math.max(viewportMargin, left), maxLeft);
-    if (belowTop + menuRect.height > win.innerHeight - viewportMargin) {
-      if (aboveTop >= viewportMargin) {
-        top = aboveTop;
-      } else {
-        top = maxTop;
-      }
-    }
-    top = Math.min(Math.max(viewportMargin, top), maxTop);
 
     menu.style.left = `${Math.round(left)}px`;
     menu.style.top = `${Math.round(top)}px`;
     menu.style.visibility = "visible";
   };
 
-  for (const shortcut of SHORTCUT_FILES) {
-    const isIncludeSelected = shortcut.id === INCLUDE_SELECTED_TEXT_SHORTCUT_ID;
-    let promptText = "";
-    if (!isIncludeSelected) {
-      promptText = overrides[shortcut.id];
-      if (!promptText) {
-        try {
-          promptText = (await loadShortcutText(shortcut.file)).trim();
-        } catch {
-          promptText = "";
-        }
-      }
+  const openMenuForShortcut = (
+    event: MouseEvent,
+    shortcutId: string,
+    shortcutKind: "builtin" | "custom",
+  ) => {
+    if (
+      !menu ||
+      !menuEdit ||
+      !menuDelete ||
+      !menuAdd ||
+      !menuMove ||
+      !menuReset
+    ) {
+      return;
     }
+    menu.dataset.menuKind = "shortcut";
+    menu.dataset.shortcutId = shortcutId;
+    menu.dataset.shortcutKind = shortcutKind;
+    menuEdit.style.display = "flex";
+    menuDelete.style.display = "flex";
+    menuAdd.style.display = "none";
+    menuMove.style.display = "none";
+    menuReset.style.display = "none";
+    menu.style.display = "grid";
+    positionShortcutMenu(event.clientX + 4, event.clientY + 4);
+  };
 
-    const labelText = (labelOverrides[shortcut.id] || shortcut.label).trim();
+  const openMenuForPanel = (event: MouseEvent) => {
+    if (
+      !menu ||
+      !menuEdit ||
+      !menuDelete ||
+      !menuAdd ||
+      !menuMove ||
+      !menuReset
+    ) {
+      return;
+    }
+    menu.dataset.menuKind = "panel";
+    menu.dataset.shortcutId = "";
+    menu.dataset.shortcutKind = "";
+    menuEdit.style.display = "none";
+    menuDelete.style.display = "none";
+    menuAdd.style.display = "flex";
+    menuMove.style.display = "flex";
+    menuReset.style.display = "flex";
+    menuAdd.disabled = !canAddShortcut;
+    menuMove.disabled = orderedEditableIds.length < 2;
+    menu.style.display = "grid";
+    positionShortcutMenu(event.clientX + 4, event.clientY + 4);
+  };
 
+  for (const shortcut of editableShortcuts) {
     const btn = body.ownerDocument!.createElementNS(
       "http://www.w3.org/1999/xhtml",
       "button",
     ) as HTMLButtonElement;
     btn.className = "llm-shortcut-btn";
     btn.type = "button";
-    btn.textContent = labelText;
+    btn.textContent = "";
     btn.dataset.shortcutId = shortcut.id;
-    btn.dataset.prompt = promptText || "";
-    btn.dataset.label = labelText;
-    btn.dataset.defaultLabel = shortcut.label;
-    btn.disabled = !item || (!promptText && !isIncludeSelected);
-    let pendingSelectedText = "";
+    btn.dataset.shortcutKind = shortcut.kind;
+    btn.dataset.prompt = shortcut.prompt;
+    btn.dataset.label = shortcut.label;
+    btn.dataset.defaultLabel = shortcut.defaultLabel;
+    btn.disabled = !moveMode && (!item || !shortcut.prompt);
+    btn.draggable = moveMode;
+    if (moveMode) btn.classList.add("llm-shortcut-move-mode");
 
-    if (isIncludeSelected) {
-      const cacheSelectionBeforeFocusShift = () => {
-        pendingSelectedText = getActiveReaderSelectionText(
-          body.ownerDocument as Document,
-          item,
-        );
-      };
-      btn.addEventListener("pointerdown", cacheSelectionBeforeFocusShift);
-      btn.addEventListener("mousedown", cacheSelectionBeforeFocusShift);
+    if (moveMode) {
+      const handle = body.ownerDocument!.createElementNS(
+        "http://www.w3.org/1999/xhtml",
+        "span",
+      ) as HTMLSpanElement;
+      handle.className = "llm-shortcut-drag-handle";
+      handle.textContent = "≡";
+      handle.title = "Drag to reorder";
+      handle.draggable = false;
+      handle.addEventListener("click", (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      btn.appendChild(handle);
     }
+
+    const label = body.ownerDocument!.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "span",
+    ) as HTMLSpanElement;
+    label.className = "llm-shortcut-label";
+    label.textContent = shortcut.label;
+    btn.appendChild(label);
 
     btn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
+      if (moveMode) return;
       if (!item) return;
-      if (isIncludeSelected) {
-        const selectedText =
-          pendingSelectedText ||
-          getActiveReaderSelectionText(body.ownerDocument as Document, item);
-        pendingSelectedText = "";
-        const status = body.querySelector("#llm-status") as HTMLElement | null;
-        if (!selectedText) {
-          if (status) setStatus(status, "No text selected in reader", "error");
-          return;
-        }
-        selectedTextCache.set(item.id, selectedText);
-        applySelectedTextPreview(body, item.id);
-        if (status) setStatus(status, "Selected text included", "ready");
-        const inputEl = body.querySelector(
-          "#llm-input",
-        ) as HTMLTextAreaElement | null;
-        inputEl?.focus();
-        return;
-      }
       const nextPrompt = (btn.dataset.prompt || "").trim();
       if (!nextPrompt) return;
       sendQuestion(body, item, nextPrompt);
     });
 
     btn.addEventListener("contextmenu", (e: Event) => {
-      if (isIncludeSelected) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (!menu) return;
-      positionShortcutMenu(btn);
-      menu.dataset.shortcutId = shortcut.id;
-      (menu as any)._target = btn;
-      menu.style.display = "grid";
+      const event = e as MouseEvent;
+      event.preventDefault();
+      event.stopPropagation();
+      openMenuForShortcut(event, shortcut.id, shortcut.kind);
     });
+
+    if (moveMode) {
+      btn.addEventListener("dragstart", (e: DragEvent) => {
+        draggingShortcutId = shortcut.id;
+        draggingButton = btn;
+        btn.classList.add("llm-shortcut-dragging");
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", shortcut.id);
+          // Use the full shortcut chip as the drag ghost for clearer feedback.
+          const rect = btn.getBoundingClientRect();
+          e.dataTransfer.setDragImage(
+            btn,
+            Math.floor(rect.width / 2),
+            Math.floor(rect.height / 2),
+          );
+        }
+      });
+      btn.addEventListener("dragenter", (e: DragEvent) => {
+        e.preventDefault();
+        if (!draggingShortcutId || draggingShortcutId === shortcut.id) return;
+        btn.classList.add("llm-shortcut-drop-target");
+      });
+      btn.addEventListener("dragover", (e: DragEvent) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        if (!draggingShortcutId || draggingShortcutId === shortcut.id) return;
+        btn.classList.add("llm-shortcut-drop-target");
+      });
+      btn.addEventListener("dragleave", () => {
+        btn.classList.remove("llm-shortcut-drop-target");
+      });
+      btn.addEventListener("drop", async (e: DragEvent) => {
+        e.preventDefault();
+        btn.classList.remove("llm-shortcut-drop-target");
+        const sourceId =
+          draggingShortcutId ||
+          (e.dataTransfer ? e.dataTransfer.getData("text/plain") : "");
+        const targetId = shortcut.id;
+        if (!sourceId || !targetId || sourceId === targetId) return;
+
+        const nextOrder = orderedEditableIds.slice();
+        const fromIndex = nextOrder.indexOf(sourceId);
+        const toIndex = nextOrder.indexOf(targetId);
+        if (fromIndex < 0 || toIndex < 0) return;
+        const [moved] = nextOrder.splice(fromIndex, 1);
+        nextOrder.splice(toIndex, 0, moved);
+        setShortcutOrder(nextOrder);
+        await renderShortcuts(body, item);
+      });
+      btn.addEventListener("dragend", () => {
+        draggingShortcutId = "";
+        if (draggingButton) {
+          draggingButton.classList.remove("llm-shortcut-dragging");
+          draggingButton = null;
+        }
+        const highlighted = container.querySelectorAll(
+          ".llm-shortcut-drop-target",
+        );
+        highlighted.forEach((el: Element) =>
+          (el as HTMLElement).classList.remove("llm-shortcut-drop-target"),
+        );
+      });
+    }
 
     container.appendChild(btn);
   }
 
-  if (menu && menuEdit) {
-    if (!menu.dataset.listenerAttached) {
-      menu.dataset.listenerAttached = "true";
-      menuEdit.addEventListener("click", async (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const shortcutId = menu.dataset.shortcutId || "";
-        if (!shortcutId) return;
-        const target = (menu as any)._target as HTMLButtonElement | null;
-        const currentPrompt = target?.dataset.prompt || "";
-        const currentLabel = target?.dataset.label || "";
-        const updated = await openShortcutEditDialog(
-          currentLabel,
-          currentPrompt,
+  container.oncontextmenu = (e: Event) => {
+    const event = e as MouseEvent;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest(".llm-shortcut-btn")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openMenuForPanel(event);
+  };
+
+  const includeSelectedBtn = body.ownerDocument!.createElementNS(
+    "http://www.w3.org/1999/xhtml",
+    "button",
+  ) as HTMLButtonElement;
+  includeSelectedBtn.className = "llm-shortcut-btn";
+  includeSelectedBtn.type = "button";
+  includeSelectedBtn.textContent = "Add Text Selection";
+  includeSelectedBtn.dataset.shortcutId = INCLUDE_SELECTED_TEXT_SHORTCUT_ID;
+  includeSelectedBtn.dataset.shortcutKind = "special";
+  includeSelectedBtn.dataset.prompt = "";
+  includeSelectedBtn.disabled = !item || moveMode;
+  let pendingSelectedText = "";
+  const cacheSelectionBeforeFocusShift = () => {
+    pendingSelectedText = getActiveReaderSelectionText(
+      body.ownerDocument as Document,
+      item,
+    );
+  };
+  includeSelectedBtn.addEventListener(
+    "pointerdown",
+    cacheSelectionBeforeFocusShift,
+  );
+  includeSelectedBtn.addEventListener(
+    "mousedown",
+    cacheSelectionBeforeFocusShift,
+  );
+  includeSelectedBtn.addEventListener("click", (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (moveMode) return;
+    if (!item) return;
+    const selectedText =
+      pendingSelectedText ||
+      getActiveReaderSelectionText(body.ownerDocument as Document, item);
+    pendingSelectedText = "";
+    const status = body.querySelector("#llm-status") as HTMLElement | null;
+    if (!selectedText) {
+      if (status) setStatus(status, "No text selected in reader", "error");
+      return;
+    }
+    selectedTextCache.set(item.id, selectedText);
+    applySelectedTextPreview(body, item.id);
+    if (status) setStatus(status, "Selected text included", "ready");
+    const inputEl = body.querySelector(
+      "#llm-input",
+    ) as HTMLTextAreaElement | null;
+    inputEl?.focus();
+  });
+  includeSelectedBtn.addEventListener("contextmenu", (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  container.appendChild(includeSelectedBtn);
+
+  if (menu && menuEdit && menuDelete && menuAdd && menuMove && menuReset) {
+    menuEdit.onclick = async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (menu.dataset.menuKind !== "shortcut") return;
+      const shortcutId = menu.dataset.shortcutId || "";
+      const shortcutKind = menu.dataset.shortcutKind || "";
+      if (!shortcutId || !shortcutKind) return;
+      const target = container.querySelector(
+        `.llm-shortcut-btn[data-shortcut-id="${shortcutId}"]`,
+      ) as HTMLButtonElement | null;
+      const currentPrompt = target?.dataset.prompt || "";
+      const currentLabel = target?.dataset.label || "";
+      const updated = await openShortcutEditDialog(currentLabel, currentPrompt);
+      if (!updated) {
+        menu.style.display = "none";
+        return;
+      }
+      const nextPrompt = updated.prompt.trim();
+      if (!nextPrompt) {
+        const status = body.querySelector("#llm-status") as HTMLElement | null;
+        if (status)
+          setStatus(status, "Shortcut prompt cannot be empty", "error");
+        menu.style.display = "none";
+        return;
+      }
+      const nextLabel = updated.label.trim();
+
+      if (shortcutKind === "custom") {
+        const nextCustomShortcuts = getCustomShortcuts().map((shortcut) =>
+          shortcut.id === shortcutId
+            ? {
+                ...shortcut,
+                label: nextLabel || shortcut.label || "Custom Shortcut",
+                prompt: nextPrompt,
+              }
+            : shortcut,
         );
-        if (!updated) {
-          menu.style.display = "none";
-          return;
-        }
-        const { label: nextLabel, prompt: nextPrompt } = updated;
-        const next = nextPrompt.trim();
+        setCustomShortcuts(nextCustomShortcuts);
+      } else {
         const nextOverrides = getShortcutOverrides();
-        nextOverrides[shortcutId] = next;
+        nextOverrides[shortcutId] = nextPrompt;
         setShortcutOverrides(nextOverrides);
+
         const nextLabelOverrides = getShortcutLabelOverrides();
-        const labelValue = nextLabel.trim();
-        if (labelValue) {
-          nextLabelOverrides[shortcutId] = labelValue;
+        if (nextLabel) {
+          nextLabelOverrides[shortcutId] = nextLabel;
         } else {
           delete nextLabelOverrides[shortcutId];
         }
         setShortcutLabelOverrides(nextLabelOverrides);
-        if (target) {
-          target.dataset.prompt = next;
-          target.disabled = !next;
-          const fallbackLabel =
-            target.dataset.defaultLabel || target.dataset.label || shortcutId;
-          const resolvedLabel = labelValue || fallbackLabel;
-          target.dataset.label = resolvedLabel;
-          target.textContent = resolvedLabel;
-        }
-        menu.style.display = "none";
-      });
+      }
 
-      body.addEventListener("click", () => {
+      menu.style.display = "none";
+      menu.dataset.menuKind = "";
+      menu.dataset.shortcutId = "";
+      menu.dataset.shortcutKind = "";
+      await renderShortcuts(body, item);
+    };
+
+    menuDelete.onclick = async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (menu.dataset.menuKind !== "shortcut") return;
+      const shortcutId = menu.dataset.shortcutId || "";
+      const shortcutKind = menu.dataset.shortcutKind || "";
+      if (
+        !shortcutId ||
+        (shortcutKind !== "builtin" && shortcutKind !== "custom")
+      ) {
+        return;
+      }
+      await removeShortcut(shortcutId, shortcutKind);
+      menu.style.display = "none";
+      menu.dataset.menuKind = "";
+      menu.dataset.shortcutId = "";
+      menu.dataset.shortcutKind = "";
+    };
+
+    menuAdd.onclick = async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (menu.dataset.menuKind !== "panel" || menuAdd.disabled) return;
+      menu.style.display = "none";
+      menu.dataset.menuKind = "";
+      menu.dataset.shortcutId = "";
+      menu.dataset.shortcutKind = "";
+      await addShortcut();
+    };
+
+    menuMove.onclick = async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (menu.dataset.menuKind !== "panel" || menuMove.disabled) return;
+      menu.style.display = "none";
+      menu.dataset.menuKind = "";
+      menu.dataset.shortcutId = "";
+      menu.dataset.shortcutKind = "";
+      const next = shortcutMoveModeState.get(body) !== true;
+      await setMoveMode(next);
+    };
+
+    menuReset.onclick = async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (menu.dataset.menuKind !== "panel") return;
+      const shouldReset = await openResetShortcutsDialog();
+      if (!shouldReset) {
         menu.style.display = "none";
+        menu.dataset.menuKind = "";
         menu.dataset.shortcutId = "";
-        (menu as any)._target = null;
+        menu.dataset.shortcutKind = "";
+        return;
+      }
+      resetShortcutsToDefault();
+      shortcutMoveModeState.set(body, false);
+      menu.style.display = "none";
+      menu.dataset.menuKind = "";
+      menu.dataset.shortcutId = "";
+      menu.dataset.shortcutKind = "";
+      await renderShortcuts(body, item);
+    };
+
+    if (!menu.dataset.bodyClickAttached) {
+      menu.dataset.bodyClickAttached = "true";
+      body.addEventListener("click", (e: Event) => {
+        const target = e.target as Node | null;
+        const targetEl = target as Element | null;
+        const clickedShortcutButton = Boolean(
+          targetEl?.closest(".llm-shortcut-btn"),
+        );
+        menu.style.display = "none";
+        menu.dataset.menuKind = "";
+        menu.dataset.shortcutId = "";
+        menu.dataset.shortcutKind = "";
+        if (shortcutMoveModeState.get(body) === true && !clickedShortcutButton) {
+          shortcutMoveModeState.set(body, false);
+          void renderShortcuts(body, item);
+        }
+        if (shortcutMoveModeState.get(body) === true && !target) {
+          shortcutMoveModeState.set(body, false);
+          void renderShortcuts(body, item);
+        }
       });
+    }
+
+    if (!menu.dataset.escapeKeyAttached) {
+      menu.dataset.escapeKeyAttached = "true";
+      body.ownerDocument?.addEventListener(
+        "keydown",
+        (e: Event) => {
+          const keyEvent = e as KeyboardEvent;
+          if (keyEvent.key !== "Escape") return;
+          if (shortcutMoveModeState.get(body) !== true) return;
+          keyEvent.preventDefault();
+          shortcutMoveModeState.set(body, false);
+          void renderShortcuts(body, item);
+        },
+        true,
+      );
     }
   }
 }
@@ -2132,6 +2666,7 @@ async function renderShortcuts(body: Element, item?: Zotero.Item | null) {
 async function openShortcutEditDialog(
   initialLabel: string,
   initialPrompt: string,
+  dialogTitle = "Edit Shortcut",
 ): Promise<{ label: string; prompt: string } | null> {
   const dialogData: { [key: string]: any } = {
     labelValue: initialLabel || "",
@@ -2147,7 +2682,7 @@ async function openShortcutEditDialog(
   const dialog = new ztoolkit.Dialog(3, 2)
     .addCell(0, 0, {
       tag: "h2",
-      properties: { innerHTML: "Edit Shortcut" },
+      properties: { innerHTML: dialogTitle },
       styles: { margin: "0 0 8px 0" },
     })
     .addCell(1, 0, {
@@ -2201,7 +2736,7 @@ async function openShortcutEditDialog(
     .addButton("Save", "save")
     .addButton("Cancel", "cancel")
     .setDialogData(dialogData)
-    .open("Edit Shortcut");
+    .open(dialogTitle);
 
   addon.data.dialog = dialog;
   await dialogData.unloadLock.promise;
@@ -2213,6 +2748,39 @@ async function openShortcutEditDialog(
     label: dialogData.labelValue || "",
     prompt: dialogData.promptValue || "",
   };
+}
+
+async function openResetShortcutsDialog(): Promise<boolean> {
+  const dialogData: { [key: string]: any } = {
+    loadCallback: () => {
+      return;
+    },
+    unloadCallback: () => {
+      return;
+    },
+  };
+
+  const dialog = new ztoolkit.Dialog(1, 1)
+    .addCell(0, 0, {
+      tag: "div",
+      namespace: "html",
+      properties: {
+        innerHTML: "Reset all shortcuts to default settings?",
+      },
+      styles: {
+        width: "320px",
+        lineHeight: "1.45",
+      },
+    })
+    .addButton("Reset", "reset")
+    .addButton("Cancel", "cancel")
+    .setDialogData(dialogData)
+    .open("Reset Shortcuts");
+
+  addon.data.dialog = dialog;
+  await dialogData.unloadLock.promise;
+  addon.data.dialog = undefined;
+  return dialogData._lastButtonId === "reset";
 }
 
 function setupHandlers(body: Element, item?: Zotero.Item | null) {

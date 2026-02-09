@@ -147,6 +147,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  position: relative;
   min-width: 0;
   background: var(--fill-quinary);
   border: 1px solid var(--stroke-secondary);
@@ -162,7 +163,9 @@
   text-overflow: ellipsis;
   transition:
     background 0.15s,
-    border-color 0.15s;
+    border-color 0.15s,
+    transform 0.12s ease,
+    opacity 0.12s ease;
 }
 
 .llm-shortcut-btn:hover:not(:disabled) {
@@ -175,44 +178,47 @@
   cursor: not-allowed;
 }
 
-.llm-shortcut-menu {
-  position: absolute;
-  z-index: 10;
-  background: var(--material-background);
-  border: 1px solid var(--stroke-secondary);
-  border-radius: calc(6px * var(--llm-font-scale, 1));
-  padding: calc(4px * var(--llm-font-scale, 1));
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.2);
+.llm-shortcut-move-mode {
+  justify-content: flex-start;
+  gap: 6px;
 }
 
-.llm-shortcut-menu-item {
-  appearance: none;
-  -moz-appearance: none;
-  display: flex;
+.llm-shortcut-label {
+  display: inline-block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.llm-shortcut-drag-handle {
+  flex: 0 0 auto;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-sizing: border-box;
-  width: auto;
-  min-width: calc(32px * var(--llm-font-scale, 1));
-  min-height: calc(24px * var(--llm-font-scale, 1));
-  margin: 0;
-  background: none;
-  border: none;
-  color: var(--fill-primary);
-  padding: calc(4px * var(--llm-font-scale, 1))
-    calc(6px * var(--llm-font-scale, 1));
-  font-size: var(--llm-fs-11);
+  width: 14px;
+  color: var(--fill-tertiary);
+  font-weight: 700;
   line-height: 1;
-  font-family: inherit;
-  text-align: center;
-  cursor: pointer;
-  border-radius: calc(4px * var(--llm-font-scale, 1));
+  user-select: none;
+  cursor: grab;
 }
 
-.llm-shortcut-menu-item:hover {
-  background: var(--fill-quinary);
+.llm-shortcut-drag-handle:active {
+  cursor: grabbing;
 }
 
+.llm-shortcut-dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.llm-shortcut-drop-target {
+  background: var(--color-accent10);
+  border-color: var(--color-accent);
+}
+
+.llm-shortcut-menu,
 .llm-response-menu {
   position: absolute;
   z-index: 12;
@@ -221,9 +227,11 @@
   border-radius: calc(6px * var(--llm-font-scale, 1));
   padding: calc(4px * var(--llm-font-scale, 1));
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.2);
+  min-width: calc(64px * var(--llm-font-scale, 1));
   gap: 2px;
 }
 
+.llm-shortcut-menu-item,
 .llm-response-menu-item {
   appearance: none;
   -moz-appearance: none;
@@ -248,8 +256,14 @@
   white-space: nowrap;
 }
 
+.llm-shortcut-menu-item:hover,
 .llm-response-menu-item:hover {
   background: var(--fill-quinary);
+}
+
+.llm-shortcut-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* Welcome Message */
