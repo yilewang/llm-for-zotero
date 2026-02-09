@@ -5,7 +5,7 @@
   "description": "Zotero LLM assistant in the reader side panel",
   "config": {
     "addonName": "zotero-llm",
-    "addonID": "zotero-llm@github.com/yilewang",
+    "addonID": "zotero-llm@github.com.yilewang",
     "addonRef": "zoterollm",
     "addonInstance": "ZoteroLLM",
     "prefsPrefix": "extensions.zotero.zoterollm"
