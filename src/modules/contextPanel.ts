@@ -925,7 +925,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   body.textContent = "";
   const doc = body.ownerDocument!;
   const hasItem = Boolean(item);
-  const iconUrl = `chrome://${config.addonRef}/content/icons/neuron.jpg`;
 
   // Main container
   const container = createElement(doc, "div", "llm-panel", { id: "llm-main" });
@@ -934,19 +933,18 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const header = createElement(doc, "div", "llm-header");
   const headerTop = createElement(doc, "div", "llm-header-top");
   const headerInfo = createElement(doc, "div", "llm-header-info");
-
-  const headerIcon = createElement(doc, "img", "llm-header-icon", {
-    alt: "LLM",
-    src: iconUrl,
-  });
+  // const headerIcon = createElement(doc, "img", "llm-header-icon", {
+  //   alt: "LLM",
+  //   src: iconUrl,
+  // });
+  // const title = createElement(doc, "div", "llm-title", {
+  //   textContent: "LLM Assistant",
+  // });
   const title = createElement(doc, "div", "llm-title", {
     textContent: "LLM Assistant",
   });
-  const subtitle = createElement(doc, "div", "llm-subtitle", {
-    textContent: "Ask questions about your documents",
-  });
 
-  headerInfo.append(headerIcon, title, subtitle);
+  headerInfo.append(title);
   headerTop.appendChild(headerInfo);
 
   const clearBtn = createElement(doc, "button", "llm-btn-icon", {
