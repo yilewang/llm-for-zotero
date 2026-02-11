@@ -5,11 +5,7 @@
  */
 
 import { config } from "../../package.json";
-import {
-  DEFAULT_MAX_TOKENS,
-  DEFAULT_TEMPERATURE,
-  MAX_ALLOWED_TOKENS,
-} from "./llmDefaults";
+// llmDefaults values are used via ./normalization
 import {
   getAnthropicReasoningProfileForModel,
   getGeminiReasoningProfileForModel,
@@ -21,6 +17,19 @@ import {
   shouldUseDeepseekThinkingPayload,
   supportsReasoningForModel,
 } from "./reasoningProfiles";
+import {
+  API_ENDPOINT,
+  RESPONSES_ENDPOINT,
+  EMBEDDINGS_ENDPOINT,
+  resolveEndpoint,
+  buildHeaders,
+  usesMaxCompletionTokens,
+  isResponsesBase,
+} from "./apiHelpers";
+import {
+  normalizeTemperature,
+  normalizeMaxTokens,
+} from "./normalization";
 
 // =============================================================================
 // Types
@@ -182,9 +191,6 @@ When answering questions:
 - If you don't have enough information to answer, say so clearly
 - Provide actionable insights when possible`;
 
-const API_ENDPOINT = "/v1/chat/completions";
-const RESPONSES_ENDPOINT = "/v1/responses";
-const EMBEDDINGS_ENDPOINT = "/v1/embeddings";
 const DEFAULT_MODEL = "gpt-4o-mini";
 const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 
@@ -194,52 +200,6 @@ const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 
 const prefKey = (key: string) => `${config.prefsPrefix}.${key}`;
 const getPref = (key: string) => Zotero.Prefs.get(prefKey(key), true) as string;
-
-/** Get configured API settings */
-function resolveEndpoint(baseOrUrl: string, path: string): string {
-  const cleaned = baseOrUrl.trim().replace(/\/$/, "");
-  if (!cleaned) return "";
-  const chatSuffix = "/chat/completions";
-  const responsesSuffix = "/responses";
-  const embeddingSuffix = "/embeddings";
-  const hasChat = cleaned.endsWith(chatSuffix);
-  const hasResponses = cleaned.endsWith(responsesSuffix);
-  const hasEmbeddings = cleaned.endsWith(embeddingSuffix);
-
-  if (hasChat) {
-    if (path === EMBEDDINGS_ENDPOINT) {
-      return cleaned.replace(/\/chat\/completions$/, embeddingSuffix);
-    }
-    if (path === RESPONSES_ENDPOINT) {
-      return cleaned.replace(/\/chat\/completions$/, responsesSuffix);
-    }
-    return cleaned;
-  }
-
-  if (hasResponses) {
-    if (path === EMBEDDINGS_ENDPOINT) {
-      return cleaned.replace(/\/responses$/, embeddingSuffix);
-    }
-    if (path === API_ENDPOINT) {
-      return cleaned.replace(/\/responses$/, chatSuffix);
-    }
-    return cleaned;
-  }
-
-  if (hasEmbeddings) {
-    return path === API_ENDPOINT
-      ? cleaned.replace(/\/embeddings$/, chatSuffix)
-      : cleaned;
-  }
-
-  // If a version segment is already present (e.g., /v1 or /v1beta),
-  // avoid appending a second /v1 from the default OpenAI path.
-  const hasVersion = /\/v\d+(?:beta)?\b/.test(cleaned);
-  const normalizedPath =
-    hasVersion && path.startsWith("/v1/") ? path.replace(/^\/v1\//, "/") : path;
-
-  return `${cleaned}${normalizedPath}`;
-}
 
 function getApiConfig(overrides?: {
   apiBase?: string;
@@ -331,25 +291,9 @@ function buildMessages(
   return messages;
 }
 
-/** Build request headers */
-function buildHeaders(apiKey: string): Record<string, string> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (apiKey) {
-    headers.Authorization = `Bearer ${apiKey}`;
-  }
-  return headers;
-}
-
 /** Get fetch function from Zotero global */
 function getFetch(): typeof fetch {
   return ztoolkit.getGlobal("fetch") as typeof fetch;
-}
-
-function isResponsesBase(baseOrUrl: string): boolean {
-  const cleaned = baseOrUrl.trim().replace(/\/$/, "");
-  return cleaned.endsWith("/v1/responses") || cleaned.endsWith("/responses");
 }
 
 function normalizeStreamText(value: unknown): string {
@@ -450,15 +394,6 @@ function splitThoughtTaggedText(
   return { answer, thought };
 }
 
-function usesMaxCompletionTokens(model: string): boolean {
-  const name = model.toLowerCase();
-  return (
-    name.startsWith("gpt-5") ||
-    name.startsWith("o") ||
-    name.includes("reasoning")
-  );
-}
-
 function buildTokenParam(model: string, maxTokens: number) {
   return usesMaxCompletionTokens(model)
     ? { max_completion_tokens: maxTokens }
@@ -489,54 +424,23 @@ function getReasoningLevelAlias(level: ReasoningLevel): ReasoningLevel | null {
   return REASONING_LEVEL_ALIAS_MAP[level] || null;
 }
 
-export function getRuntimeReasoningOptions(params: {
-  provider: ReasoningProvider;
-  modelName?: string;
-  apiBase?: string;
-}): RuntimeReasoningOption[] {
-  void params.apiBase;
-  return getRuntimeReasoningOptionsForModel(params.provider, params.modelName);
-}
+// Re-export reasoning profile helpers so consumers can import from llmClient
+// without coupling directly to reasoningProfiles.
+export {
+  getRuntimeReasoningOptionsForModel as getRuntimeReasoningOptions,
+  getOpenAIReasoningProfileForModel as getOpenAIReasoningProfile,
+  getGrokReasoningProfileForModel as getGrokReasoningProfile,
+  getGeminiReasoningProfileForModel as getGeminiReasoningProfile,
+  getAnthropicReasoningProfileForModel as getAnthropicReasoningProfile,
+  getQwenReasoningProfileForModel as getQwenReasoningProfile,
+} from "./reasoningProfiles";
 
-export function getOpenAIReasoningProfile(
-  modelName?: string,
-  apiBase?: string,
-): OpenAIReasoningProfile {
-  void apiBase;
-  return getOpenAIReasoningProfileForModel(modelName);
-}
-
-export function getGrokReasoningProfile(
-  modelName?: string,
-  apiBase?: string,
-): OpenAIReasoningProfile {
-  void apiBase;
-  return getGrokReasoningProfileForModel(modelName);
-}
-
-export function getGeminiReasoningProfile(
-  modelName?: string,
-  apiBase?: string,
-): GeminiReasoningProfile {
-  void apiBase;
-  return getGeminiReasoningProfileForModel(modelName);
-}
-
-export function getAnthropicReasoningProfile(
-  modelName?: string,
-  apiBase?: string,
-): AnthropicReasoningProfile {
-  void apiBase;
-  return getAnthropicReasoningProfileForModel(modelName);
-}
-
-export function getQwenReasoningProfile(
-  modelName?: string,
-  apiBase?: string,
-): QwenReasoningProfile {
-  void apiBase;
-  return getQwenReasoningProfileForModel(modelName);
-}
+// Local aliases for internal use (re-exports above don't create local bindings)
+const getOpenAIReasoningProfile = getOpenAIReasoningProfileForModel;
+const getGrokReasoningProfile = getGrokReasoningProfileForModel;
+const getGeminiReasoningProfile = getGeminiReasoningProfileForModel;
+const getAnthropicReasoningProfile = getAnthropicReasoningProfileForModel;
+const getQwenReasoningProfile = getQwenReasoningProfileForModel;
 
 function resolveOpenAIReasoningEffort(
   provider: "openai" | "grok",
@@ -546,8 +450,8 @@ function resolveOpenAIReasoningEffort(
 ): OpenAIReasoningEffort | null {
   const profile =
     provider === "grok"
-      ? getGrokReasoningProfile(modelName, apiBase)
-      : getOpenAIReasoningProfile(modelName, apiBase);
+      ? getGrokReasoningProfile(modelName)
+      : getOpenAIReasoningProfile(modelName);
   const direct = profile.levelToEffort[level];
   if (direct !== undefined) {
     return direct;
@@ -661,18 +565,6 @@ function resolveGeminiReasoningOption(
   return profile.options[0] || { level: "medium", value: profile.defaultValue };
 }
 
-function normalizeTemperature(temperature?: number): number {
-  if (!Number.isFinite(temperature)) return DEFAULT_TEMPERATURE;
-  return Math.min(2, Math.max(0, Number(temperature)));
-}
-
-function normalizeMaxTokens(maxTokens?: number): number {
-  if (!Number.isFinite(maxTokens)) return DEFAULT_MAX_TOKENS;
-  const normalized = Math.floor(Number(maxTokens));
-  if (normalized < 1) return DEFAULT_MAX_TOKENS;
-  return Math.min(normalized, MAX_ALLOWED_TOKENS);
-}
-
 function stringifyContent(content: MessageContent): string {
   if (typeof content === "string") return content;
   return content
@@ -783,7 +675,7 @@ function buildReasoningPayload(
   }
 
   if (reasoning.provider === "gemini") {
-    const profile = getGeminiReasoningProfile(modelName, apiBase);
+    const profile = getGeminiReasoningProfile(modelName);
     const resolvedOption = resolveGeminiReasoningOption(
       reasoning.level,
       profile,
@@ -818,7 +710,7 @@ function buildReasoningPayload(
   }
 
   if (reasoning.provider === "qwen") {
-    const profile = getQwenReasoningProfile(modelName, apiBase);
+    const profile = getQwenReasoningProfile(modelName);
     const enableThinking = resolveQwenEnableThinking(reasoning.level, profile);
     if (enableThinking === null) {
       return emptyReasoningPayload();
@@ -862,7 +754,7 @@ function buildReasoningPayload(
   }
 
   if (reasoning.provider === "anthropic") {
-    const profile = getAnthropicReasoningProfile(modelName, apiBase);
+    const profile = getAnthropicReasoningProfile(modelName);
     const budgetTokens = resolveAnthropicThinkingBudget(
       reasoning.level,
       profile,

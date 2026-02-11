@@ -2,8 +2,15 @@ import { config } from "../../package.json";
 import {
   DEFAULT_MAX_TOKENS,
   DEFAULT_TEMPERATURE,
-  MAX_ALLOWED_TOKENS,
 } from "../utils/llmDefaults";
+import { HTML_NS } from "../utils/domHelpers";
+import { normalizeTemperature, normalizeMaxTokens } from "../utils/normalization";
+import {
+  resolveEndpoint,
+  buildHeaders,
+  usesMaxCompletionTokens,
+  isResponsesBase as checkIsResponsesBase,
+} from "../utils/apiHelpers";
 
 type PrefKey =
   | "apiBase"
@@ -87,7 +94,6 @@ const PROFILE_CONFIGS: ProfileConfig[] = [
     defaultModel: "",
   },
 ];
-const HTML_NS = "http://www.w3.org/1999/xhtml";
 const API_HELPER_TEXT =
   "API base URL or full endpoint URL. Examples: https://api.openai.com | https://api.openai.com/v1/chat/completions | https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 
@@ -260,22 +266,7 @@ function renderModelSections(doc: Document) {
   }
 }
 
-function normalizeTemperature(value: string): string {
-  const parsed = Number.parseFloat(value);
-  const normalized = Number.isFinite(parsed)
-    ? Math.min(2, Math.max(0, parsed))
-    : DEFAULT_TEMPERATURE;
-  return normalized.toString();
-}
-
-function normalizeMaxTokens(value: string): string {
-  const parsed = Number.parseInt(value, 10);
-  const normalized =
-    Number.isFinite(parsed) && parsed >= 1
-      ? Math.min(parsed, MAX_ALLOWED_TOKENS)
-      : DEFAULT_MAX_TOKENS;
-  return `${normalized}`;
-}
+// normalizeTemperature and normalizeMaxTokens imported from ../utils/normalization
 
 type ProfileInputRefs = {
   apiBaseInput: HTMLInputElement | null;
@@ -387,25 +378,25 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     const temperatureKey = getProfilePrefKey(profile, "temperature");
     const maxTokensKey = getProfilePrefKey(profile, "maxTokens");
 
-    let savedTemperature = normalizeTemperature(
+    let savedTemperature = String(normalizeTemperature(
       getPref(temperatureKey) || `${DEFAULT_TEMPERATURE}`,
-    );
-    let savedMaxTokens = normalizeMaxTokens(
+    ));
+    let savedMaxTokens = String(normalizeMaxTokens(
       getPref(maxTokensKey) || `${DEFAULT_MAX_TOKENS}`,
-    );
+    ));
     setPref(temperatureKey, savedTemperature);
     setPref(maxTokensKey, savedMaxTokens);
     temperatureInput.value = savedTemperature;
     maxTokensInput.value = savedMaxTokens;
 
     const commitTemperature = () => {
-      savedTemperature = normalizeTemperature(temperatureInput.value);
+      savedTemperature = String(normalizeTemperature(temperatureInput.value));
       setPref(temperatureKey, savedTemperature);
       temperatureInput.value = savedTemperature;
     };
 
     const commitMaxTokens = () => {
-      savedMaxTokens = normalizeMaxTokens(maxTokensInput.value);
+      savedMaxTokens = String(normalizeMaxTokens(maxTokensInput.value));
       setPref(maxTokensKey, savedMaxTokens);
       maxTokensInput.value = savedMaxTokens;
     };
@@ -446,68 +437,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           throw new Error("API URL is required");
         }
 
-        const resolveEndpoint = (baseOrUrl: string, path: string) => {
-          const cleaned = baseOrUrl.trim().replace(/\/$/, "");
-          if (!cleaned) return "";
-          const chatSuffix = "/chat/completions";
-          const responsesSuffix = "/responses";
-          const embeddingSuffix = "/embeddings";
-          const hasChat = cleaned.endsWith(chatSuffix);
-          const hasResponses = cleaned.endsWith(responsesSuffix);
-          const hasEmbeddings = cleaned.endsWith(embeddingSuffix);
+        const headers = buildHeaders(apiKey);
 
-          if (hasChat) {
-            if (path === "/v1/embeddings") {
-              return cleaned.replace(/\/chat\/completions$/, embeddingSuffix);
-            }
-            if (path === "/v1/responses") {
-              return cleaned.replace(/\/chat\/completions$/, responsesSuffix);
-            }
-            return cleaned;
-          }
-
-          if (hasResponses) {
-            if (path === "/v1/embeddings") {
-              return cleaned.replace(/\/responses$/, embeddingSuffix);
-            }
-            if (path === "/v1/chat/completions") {
-              return cleaned.replace(/\/responses$/, chatSuffix);
-            }
-            return cleaned;
-          }
-
-          if (hasEmbeddings) {
-            return path === "/v1/chat/completions"
-              ? cleaned.replace(/\/embeddings$/, chatSuffix)
-              : cleaned;
-          }
-
-          const hasVersion = /\/v\d+(?:beta)?\b/.test(cleaned);
-          const normalizedPath =
-            hasVersion && path.startsWith("/v1/")
-              ? path.replace(/^\/v1\//, "/")
-              : path;
-          return `${cleaned}${normalizedPath}`;
-        };
-
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-        };
-        if (apiKey) {
-          headers["Authorization"] = `Bearer ${apiKey}`;
-        }
-
-        const usesMaxCompletionTokens = (name: string) => {
-          const value = name.toLowerCase();
-          return (
-            value.startsWith("gpt-5") ||
-            value.startsWith("o") ||
-            value.includes("reasoning")
-          );
-        };
-
-        const isResponsesBase =
-          apiBase.endsWith("/v1/responses") || apiBase.endsWith("/responses");
+        const isResponsesBase = checkIsResponsesBase(apiBase);
         const testUrl = resolveEndpoint(
           apiBase,
           isResponsesBase ? "/v1/responses" : "/v1/chat/completions",
