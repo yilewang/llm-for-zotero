@@ -10,6 +10,14 @@ import {
   DEFAULT_TEMPERATURE,
   MAX_ALLOWED_TOKENS,
 } from "./llmDefaults";
+import {
+  getGeminiReasoningProfileForModel,
+  getOpenAIReasoningProfileForModel,
+  getReasoningDefaultLevelForModel,
+  getRuntimeReasoningOptionsForModel,
+  shouldUseDeepseekThinkingPayload,
+  supportsReasoningForModel,
+} from "./reasoningProfiles";
 
 // =============================================================================
 // Types
@@ -51,6 +59,7 @@ export type ReasoningConfig = {
   level: ReasoningLevel;
 };
 export type OpenAIReasoningEffort =
+  | "default"
   | "none"
   | "minimal"
   | "low"
@@ -60,6 +69,8 @@ export type OpenAIReasoningEffort =
 export type OpenAIReasoningProfile = {
   defaultEffort: OpenAIReasoningEffort;
   supportedEfforts: OpenAIReasoningEffort[];
+  levelToEffort: Partial<Record<ReasoningLevel, OpenAIReasoningEffort | null>>;
+  defaultLevel: ReasoningLevel;
 };
 export type GeminiThinkingParam = "thinking_level" | "thinking_budget";
 export type GeminiThinkingValue = "low" | "medium" | "high" | number;
@@ -71,6 +82,13 @@ export type GeminiReasoningProfile = {
   param: GeminiThinkingParam;
   defaultValue: GeminiThinkingValue;
   options: GeminiReasoningOption[];
+  levelToValue: Partial<Record<ReasoningLevel, GeminiThinkingValue>>;
+  defaultLevel: ReasoningLevel;
+};
+export type RuntimeReasoningOption = {
+  level: ReasoningLevel;
+  label: string;
+  enabled: boolean;
 };
 
 export type ChatParams = {
@@ -431,111 +449,68 @@ function buildResponsesTokenParam(maxTokens: number) {
   return { max_output_tokens: maxTokens };
 }
 
-export function getOpenAIReasoningProfile(
-  modelName?: string,
-): OpenAIReasoningProfile {
-  const normalizedModel = (modelName || "").trim().toLowerCase();
-
-  // GPT-5.1/5.2 defaults to no added effort unless explicitly set.
-  if (/^gpt-5\.(1|2)(\b|[.-])/.test(normalizedModel)) {
-    return {
-      defaultEffort: "none",
-      supportedEfforts: ["none", "low", "medium", "high"],
-    };
-  }
-
-  // Earlier GPT-5 variants expose a broader effort scale.
-  if (/^gpt-5(\b|[.-])/.test(normalizedModel)) {
-    return {
-      defaultEffort: "medium",
-      supportedEfforts: ["minimal", "low", "medium", "high"],
-    };
-  }
-
-  // Conservative fallback for unknown OpenAI-compatible models.
-  return {
-    defaultEffort: "medium",
-    supportedEfforts: ["medium", "high", "xhigh"],
-  };
+const OPENAI_EFFORT_ORDER: OpenAIReasoningEffort[] = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+];
+export function getRuntimeReasoningOptions(params: {
+  provider: ReasoningProvider;
+  modelName?: string;
+  apiBase?: string;
+}): RuntimeReasoningOption[] {
+  void params.apiBase;
+  return getRuntimeReasoningOptionsForModel(params.provider, params.modelName);
 }
 
-function isGemini3ProFamilyModel(normalizedModel: string): boolean {
-  return (
-    normalizedModel === "gemini-3-pro" ||
-    normalizedModel === "gemini-3-pro-preview" ||
-    normalizedModel.startsWith("gemini-3-pro-preview-") ||
-    normalizedModel.startsWith("gemini-3-pro-")
-  );
+export function getOpenAIReasoningProfile(
+  modelName?: string,
+  apiBase?: string,
+): OpenAIReasoningProfile {
+  void apiBase;
+  return getOpenAIReasoningProfileForModel(modelName);
 }
 
 export function getGeminiReasoningProfile(
   modelName?: string,
+  apiBase?: string,
 ): GeminiReasoningProfile {
-  const normalizedModel = (modelName || "").trim().toLowerCase();
-  const isGemini25 = normalizedModel.startsWith("gemini-2.5");
-  const isGemini3ProFamily = isGemini3ProFamilyModel(normalizedModel);
-
-  if (isGemini25) {
-    return {
-      param: "thinking_budget",
-      defaultValue: 8192,
-      options: [
-        { level: "low", value: 1024 },
-        { level: "medium", value: 8192 },
-        { level: "high", value: 24576 },
-      ],
-    };
-  }
-
-  if (isGemini3ProFamily) {
-    return {
-      param: "thinking_level",
-      defaultValue: "high",
-      options: [
-        { level: "low", value: "low" },
-        { level: "high", value: "high" },
-      ],
-    };
-  }
-
-  return {
-    param: "thinking_level",
-    defaultValue: "medium",
-    options: [{ level: "medium", value: "medium" }],
-  };
+  void apiBase;
+  return getGeminiReasoningProfileForModel(modelName);
 }
 
 function resolveOpenAIReasoningEffort(
   level: ReasoningLevel,
   modelName?: string,
+  apiBase?: string,
 ): OpenAIReasoningEffort | null {
-  if (level === "default") return null;
-
-  const profile = getOpenAIReasoningProfile(modelName);
-  const requested: OpenAIReasoningEffort = level;
-  if (profile.supportedEfforts.includes(requested)) {
-    return requested;
+  const profile = getOpenAIReasoningProfile(modelName, apiBase);
+  const direct = profile.levelToEffort[level];
+  if (direct !== undefined) {
+    return direct;
   }
 
-  // Backward compatibility for legacy UI labels.
-  if (requested === "xhigh" && profile.supportedEfforts.includes("high")) {
-    return "high";
-  }
-  if (requested === "minimal" && profile.supportedEfforts.includes("low")) {
-    return "low";
+  const requestedAlias =
+    level === "xhigh" ? "high" : level === "minimal" ? "low" : null;
+  if (requestedAlias) {
+    const aliasValue = profile.levelToEffort[requestedAlias];
+    if (aliasValue !== undefined) {
+      return aliasValue;
+    }
   }
 
-  const fallbackOrder: OpenAIReasoningEffort[] = [
-    "medium",
-    "high",
-    "low",
-    "minimal",
-    "xhigh",
-  ];
-  for (const candidate of fallbackOrder) {
+  for (const candidate of OPENAI_EFFORT_ORDER) {
     if (profile.supportedEfforts.includes(candidate)) {
       return candidate;
     }
+  }
+
+  const defaultEffort = profile.levelToEffort[profile.defaultLevel];
+  if (defaultEffort !== undefined) {
+    return defaultEffort;
   }
 
   return null;
@@ -545,32 +520,35 @@ function resolveGeminiReasoningOption(
   level: ReasoningLevel,
   profile: GeminiReasoningProfile,
 ): GeminiReasoningOption {
-  const options = profile.options;
-  const levelMap = new Map(options.map((option) => [option.level, option]));
-  const requestedLevel =
-    level === "default"
-      ? null
-      : level === "xhigh"
-        ? "high"
-        : level === "minimal"
-          ? "low"
-          : level;
-
+  const normalizedLevel =
+    level === "xhigh" ? "high" : level === "minimal" ? "low" : level;
   if (
-    requestedLevel === "low" ||
-    requestedLevel === "medium" ||
-    requestedLevel === "high"
+    normalizedLevel === "low" ||
+    normalizedLevel === "medium" ||
+    normalizedLevel === "high"
   ) {
-    const matched = levelMap.get(requestedLevel);
-    if (matched) return matched;
+    const value = profile.levelToValue[normalizedLevel];
+    if (value !== undefined) {
+      return { level: normalizedLevel, value };
+    }
   }
 
-  const byDefaultValue = options.find(
+  if (
+    profile.defaultLevel === "low" ||
+    profile.defaultLevel === "medium" ||
+    profile.defaultLevel === "high"
+  ) {
+    const defaultValue =
+      profile.levelToValue[profile.defaultLevel] ?? profile.defaultValue;
+    return { level: profile.defaultLevel, value: defaultValue };
+  }
+
+  const byDefaultValue = profile.options.find(
     (option) => option.value === profile.defaultValue,
   );
   if (byDefaultValue) return byDefaultValue;
 
-  return options[0] || { level: "medium", value: "medium" };
+  return profile.options[0] || { level: "medium", value: "medium" };
 }
 
 function normalizeTemperature(temperature?: number): number {
@@ -652,13 +630,21 @@ function buildReasoningPayload(
   reasoning: ReasoningConfig | undefined,
   useResponses: boolean,
   modelName?: string,
+  apiBase?: string,
 ): { extra: Record<string, unknown>; omitTemperature: boolean } {
   if (!reasoning) {
     return { extra: {}, omitTemperature: false };
   }
+  if (!supportsReasoningForModel(reasoning.provider, modelName)) {
+    return { extra: {}, omitTemperature: false };
+  }
 
   if (reasoning.provider === "openai") {
-    const effort = resolveOpenAIReasoningEffort(reasoning.level, modelName);
+    const effort = resolveOpenAIReasoningEffort(
+      reasoning.level,
+      modelName,
+      apiBase,
+    );
     if (useResponses) {
       const responseReasoning: Record<string, unknown> = {
         summary: "detailed",
@@ -681,7 +667,7 @@ function buildReasoningPayload(
   }
 
   if (reasoning.provider === "gemini") {
-    const profile = getGeminiReasoningProfile(modelName);
+    const profile = getGeminiReasoningProfile(modelName, apiBase);
     const resolvedOption = resolveGeminiReasoningOption(
       reasoning.level,
       profile,
@@ -716,6 +702,9 @@ function buildReasoningPayload(
   }
 
   if (reasoning.provider === "deepseek") {
+    if (!shouldUseDeepseekThinkingPayload(modelName)) {
+      return { extra: {}, omitTemperature: false };
+    }
     return {
       extra: {
         thinking: {
@@ -872,6 +861,102 @@ async function postWithTemperatureFallback(params: {
   throw new Error(`${res.status} ${res.statusText} - ${firstErr}`);
 }
 
+function parseStatusFromErrorMessage(message: string): number | null {
+  const match = message.trim().match(/^(\d{3})\b/);
+  if (!match) return null;
+  const value = Number.parseInt(match[1], 10);
+  return Number.isFinite(value) ? value : null;
+}
+
+function isReasoningErrorMessage(errorMessage: string): boolean {
+  const status = parseStatusFromErrorMessage(errorMessage);
+  if (status !== 400 && status !== 422) return false;
+  const text = errorMessage.toLowerCase();
+  return (
+    text.includes("reasoning") ||
+    text.includes("effort") ||
+    text.includes("thinking") ||
+    text.includes("thinking_level") ||
+    text.includes("thinking_budget")
+  );
+}
+
+function getReasoningRecoverySelection(params: {
+  currentReasoning: ReasoningConfig | undefined;
+  modelName?: string;
+}): ReasoningConfig | undefined | null {
+  const { currentReasoning, modelName } = params;
+  if (!currentReasoning) return null;
+  const defaultLevel = getReasoningDefaultLevelForModel(
+    currentReasoning.provider,
+    modelName,
+  );
+  if (defaultLevel && currentReasoning.level !== defaultLevel) {
+    return {
+      provider: currentReasoning.provider,
+      level: defaultLevel,
+    };
+  }
+  return undefined;
+}
+
+async function postWithReasoningFallback(params: {
+  url: string;
+  apiKey: string;
+  modelName?: string;
+  initialReasoning: ReasoningConfig | undefined;
+  buildPayload: (
+    reasoningOverride: ReasoningConfig | undefined,
+  ) => Record<string, unknown>;
+  signal?: AbortSignal;
+}) {
+  let reasoningSelection = params.initialReasoning;
+  let retries = 0;
+  const maxRetries = 2;
+  let lastError: unknown;
+  const attemptedSelections = new Set<string>([
+    reasoningSelection
+      ? `${reasoningSelection.provider}:${reasoningSelection.level}`
+      : "none",
+  ]);
+
+  while (retries <= maxRetries) {
+    const payload = params.buildPayload(reasoningSelection);
+    try {
+      return await postWithTemperatureFallback({
+        url: params.url,
+        apiKey: params.apiKey,
+        payload,
+        signal: params.signal,
+      });
+    } catch (err) {
+      lastError = err;
+      const message = err instanceof Error ? err.message : String(err);
+      if (!isReasoningErrorMessage(message)) {
+        throw err;
+      }
+      const recovered = getReasoningRecoverySelection({
+        currentReasoning: reasoningSelection,
+        modelName: params.modelName,
+      });
+      if (recovered === null) {
+        throw err;
+      }
+      const nextKey = recovered
+        ? `${recovered.provider}:${recovered.level}`
+        : "none";
+      if (attemptedSelections.has(nextKey)) {
+        throw err;
+      }
+      attemptedSelections.add(nextKey);
+      reasoningSelection = recovered;
+      retries += 1;
+    }
+  }
+
+  throw (lastError as Error) || new Error("Request failed after retries");
+}
+
 function extractResponsesOutputText(data: {
   output_text?: string;
   output?: Array<{
@@ -902,43 +987,47 @@ export async function callLLM(params: ChatParams): Promise<string> {
   });
   const messages = buildMessages(params, systemPrompt);
   const useResponses = isResponsesBase(apiBase);
-  const reasoningPayload = buildReasoningPayload(
-    params.reasoning,
-    useResponses,
-    model,
-  );
   const effectiveTemperature = normalizeTemperature(params.temperature);
   const effectiveMaxTokens = normalizeMaxTokens(params.maxTokens);
-  const temperatureParam = reasoningPayload.omitTemperature
-    ? {}
-    : { temperature: effectiveTemperature };
-
-  const payload = (
-    useResponses
-      ? {
-          model,
-          ...buildResponsesInput(messages),
-          ...reasoningPayload.extra,
-          ...temperatureParam,
-          ...buildResponsesTokenParam(effectiveMaxTokens),
-        }
-      : {
-          model,
-          messages,
-          ...reasoningPayload.extra,
-          ...temperatureParam,
-          ...buildTokenParam(model, effectiveMaxTokens),
-        }
-  ) as Record<string, unknown>;
 
   const url = resolveEndpoint(
     apiBase,
     useResponses ? RESPONSES_ENDPOINT : API_ENDPOINT,
   );
-  const res = await postWithTemperatureFallback({
+  const buildPayload = (reasoningOverride: ReasoningConfig | undefined) => {
+    const reasoningPayload = buildReasoningPayload(
+      reasoningOverride,
+      useResponses,
+      model,
+      apiBase,
+    );
+    const temperatureParam = reasoningPayload.omitTemperature
+      ? {}
+      : { temperature: effectiveTemperature };
+    return (
+      useResponses
+        ? {
+            model,
+            ...buildResponsesInput(messages),
+            ...reasoningPayload.extra,
+            ...temperatureParam,
+            ...buildResponsesTokenParam(effectiveMaxTokens),
+          }
+        : {
+            model,
+            messages,
+            ...reasoningPayload.extra,
+            ...temperatureParam,
+            ...buildTokenParam(model, effectiveMaxTokens),
+          }
+    ) as Record<string, unknown>;
+  };
+  const res = await postWithReasoningFallback({
     url,
     apiKey,
-    payload,
+    modelName: model,
+    initialReasoning: params.reasoning,
+    buildPayload,
     signal: params.signal,
   });
 
@@ -971,45 +1060,49 @@ export async function callLLMStream(
   });
   const messages = buildMessages(params, systemPrompt);
   const useResponses = isResponsesBase(apiBase);
-  const reasoningPayload = buildReasoningPayload(
-    params.reasoning,
-    useResponses,
-    model,
-  );
   const effectiveTemperature = normalizeTemperature(params.temperature);
   const effectiveMaxTokens = normalizeMaxTokens(params.maxTokens);
-  const temperatureParam = reasoningPayload.omitTemperature
-    ? {}
-    : { temperature: effectiveTemperature };
-
-  const payload = (
-    useResponses
-      ? {
-          model,
-          ...buildResponsesInput(messages),
-          ...reasoningPayload.extra,
-          ...temperatureParam,
-          ...buildResponsesTokenParam(effectiveMaxTokens),
-          stream: true,
-        }
-      : {
-          model,
-          messages,
-          ...reasoningPayload.extra,
-          ...temperatureParam,
-          ...buildTokenParam(model, effectiveMaxTokens),
-          stream: true,
-        }
-  ) as Record<string, unknown>;
 
   const url = resolveEndpoint(
     apiBase,
     useResponses ? RESPONSES_ENDPOINT : API_ENDPOINT,
   );
-  const res = await postWithTemperatureFallback({
+  const buildPayload = (reasoningOverride: ReasoningConfig | undefined) => {
+    const reasoningPayload = buildReasoningPayload(
+      reasoningOverride,
+      useResponses,
+      model,
+      apiBase,
+    );
+    const temperatureParam = reasoningPayload.omitTemperature
+      ? {}
+      : { temperature: effectiveTemperature };
+    return (
+      useResponses
+        ? {
+            model,
+            ...buildResponsesInput(messages),
+            ...reasoningPayload.extra,
+            ...temperatureParam,
+            ...buildResponsesTokenParam(effectiveMaxTokens),
+            stream: true,
+          }
+        : {
+            model,
+            messages,
+            ...reasoningPayload.extra,
+            ...temperatureParam,
+            ...buildTokenParam(model, effectiveMaxTokens),
+            stream: true,
+          }
+    ) as Record<string, unknown>;
+  };
+  const res = await postWithReasoningFallback({
     url,
     apiKey,
-    payload,
+    modelName: model,
+    initialReasoning: params.reasoning,
+    buildPayload,
     signal: params.signal,
   });
 

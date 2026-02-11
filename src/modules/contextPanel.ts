@@ -11,8 +11,7 @@ import {
   callEmbeddings,
   callLLMStream,
   ChatMessage,
-  getGeminiReasoningProfile,
-  getOpenAIReasoningProfile,
+  getRuntimeReasoningOptions,
   ReasoningConfig as LLMReasoningConfig,
   ReasoningEvent,
   ReasoningLevel as LLMReasoningLevel,
@@ -369,73 +368,25 @@ function detectReasoningProvider(modelName: string): ReasoningProviderKind {
     return "kimi";
   }
   if (name.includes("gemini")) return "gemini";
-  if (/^gpt-5(\b|[.-])/.test(name)) return "openai";
+  if (/^(gpt-5|o\d)(\b|[.-])/.test(name)) return "openai";
   return "unsupported";
 }
 
 function getReasoningOptions(
   provider: ReasoningProviderKind,
   modelName: string,
+  apiBase?: string,
 ): ReasoningOption[] {
-  if (provider === "openai") {
-    const profile = getOpenAIReasoningProfile(modelName);
-    const options: ReasoningOption[] = [
-      { level: "default", enabled: true, label: profile.defaultEffort },
-    ];
-    const seenLabels = new Set<string>(
-      options.map((entry) => entry.label || "").filter(Boolean),
-    );
-    for (const effort of profile.supportedEfforts) {
-      if (effort === "none") continue;
-      if (seenLabels.has(effort)) continue;
-      seenLabels.add(effort);
-      options.push({
-        level: effort as LLMReasoningLevel,
-        enabled: true,
-        label: effort,
-      });
-    }
-    return options;
-  }
-  if (provider === "gemini") {
-    const profile = getGeminiReasoningProfile(modelName);
-    const normalizedModel = modelName.trim().toLowerCase();
-    const isGemini3ProFamily =
-      normalizedModel === "gemini-3-pro" ||
-      normalizedModel === "gemini-3-pro-preview" ||
-      normalizedModel.startsWith("gemini-3-pro-preview-") ||
-      normalizedModel.startsWith("gemini-3-pro-");
-    const options: ReasoningOption[] = isGemini3ProFamily
-      ? []
-      : [
-          {
-            level: "default",
-            enabled: true,
-            label: `${profile.defaultValue}`,
-          },
-        ];
-    const seenLabels = new Set<string>(
-      options.map((entry) => entry.label || "").filter(Boolean),
-    );
-    for (const option of profile.options) {
-      const label = `${option.value}`;
-      if (seenLabels.has(label)) continue;
-      seenLabels.add(label);
-      options.push({
-        level: option.level,
-        enabled: true,
-        label,
-      });
-    }
-    return options;
-  }
-  if (provider === "deepseek") {
-    return [{ level: "default", enabled: true, label: "enabled" }];
-  }
-  if (provider === "kimi") {
-    return [{ level: "default", enabled: true, label: "model" }];
-  }
-  return [];
+  if (provider === "unsupported") return [];
+  return getRuntimeReasoningOptions({
+    provider,
+    modelName,
+    apiBase,
+  }).map((option) => ({
+    level: option.level as LLMReasoningLevel,
+    enabled: option.enabled,
+    label: option.label,
+  }));
 }
 
 async function optimizeImageDataUrl(
@@ -2482,10 +2433,11 @@ function getAdvancedModelParamsForProfile(
 function getSelectedReasoningForItem(
   itemId: number,
   modelName: string,
+  apiBase?: string,
 ): LLMReasoningConfig | undefined {
   const provider = detectReasoningProvider(modelName);
   if (provider === "unsupported") return undefined;
-  const enabledLevels = getReasoningOptions(provider, modelName)
+  const enabledLevels = getReasoningOptions(provider, modelName, apiBase)
     .filter((option) => option.enabled)
     .map((option) => option.level);
   if (!enabledLevels.length) return undefined;
@@ -4077,12 +4029,8 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
     if (provider === "kimi") {
       return "model";
     }
-    // Keep "default" for providers with explicit level controls.
-    // (OpenAI reasoning_effort / Responses reasoning.effort, Gemini thinking_level/budget)
+    // Keep "default" as final fallback when no runtime label is available.
     void modelName;
-    if (provider === "openai") {
-      return getOpenAIReasoningProfile(modelName).defaultEffort;
-    }
     return "default";
   };
 
@@ -4097,8 +4045,13 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
       };
     }
     const { currentModel } = getSelectedModelInfo();
+    const selectedProfile = getSelectedProfileForItem(item.id);
     const provider = detectReasoningProvider(currentModel);
-    const options = getReasoningOptions(provider, currentModel);
+    const options = getReasoningOptions(
+      provider,
+      currentModel,
+      selectedProfile.apiBase,
+    );
     const enabledLevels = options
       .filter((option) => option.enabled)
       .map((option) => option.level);
@@ -4813,7 +4766,8 @@ async function sendQuestion(
   const effectiveApiBase = (apiBase || fallbackProfile.apiBase).trim();
   const effectiveApiKey = (apiKey || fallbackProfile.apiKey).trim();
   const effectiveReasoning =
-    reasoning || getSelectedReasoningForItem(item.id, effectiveModel);
+    reasoning ||
+    getSelectedReasoningForItem(item.id, effectiveModel, effectiveApiBase);
   const effectiveAdvanced =
     advanced || getAdvancedModelParamsForProfile(fallbackProfile.key);
   const shownQuestion = displayQuestion || question;
