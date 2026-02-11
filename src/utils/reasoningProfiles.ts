@@ -209,7 +209,7 @@ const GEMINI_25_PRO_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
   options: [
-    option("default", "dynamic (-1)"),
+    option("default", "dynamic"),
     option("low", "128"),
     option("high", "32768"),
   ],
@@ -228,8 +228,8 @@ const GEMINI_25_FLASH_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
   options: [
-    option("default", "dynamic (-1)"),
-    option("minimal", "off (0)"),
+    option("default", "dynamic"),
+    option("minimal", "off"),
     option("low", "1"),
     option("high", "24576"),
   ],
@@ -249,8 +249,8 @@ const GEMINI_25_FLASH_LITE_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
   options: [
-    option("default", "off (0)"),
-    option("minimal", "dynamic (-1)"),
+    option("default", "off"),
+    option("minimal", "dynamic"),
     option("low", "512"),
     option("high", "24576"),
   ],

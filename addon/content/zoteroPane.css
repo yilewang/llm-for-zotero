@@ -43,6 +43,12 @@
   gap: 8px;
 }
 
+.llm-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .llm-header-icon {
   width: 18px;
   height: 18px;

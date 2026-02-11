@@ -970,11 +970,21 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   headerInfo.append(title);
   headerTop.appendChild(headerInfo);
 
+  const headerActions = createElement(doc, "div", "llm-header-actions");
+  const exportBtn = createElement(doc, "button", "llm-btn-icon", {
+    id: "llm-export",
+    type: "button",
+    textContent: "⤓",
+    title: "Export",
+    disabled: !hasItem,
+  });
   const clearBtn = createElement(doc, "button", "llm-btn-icon", {
     id: "llm-clear",
+    type: "button",
     textContent: "Clear",
   });
-  headerTop.appendChild(clearBtn);
+  headerActions.append(exportBtn, clearBtn);
+  headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
   container.appendChild(header);
 
@@ -1056,6 +1066,34 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   responseMenu.append(responseMenuCopyBtn, responseMenuNoteBtn);
   container.appendChild(responseMenu);
+
+  // Export menu
+  const exportMenu = createElement(doc, "div", "llm-response-menu", {
+    id: "llm-export-menu",
+  });
+  exportMenu.style.display = "none";
+  const exportMenuCopyBtn = createElement(
+    doc,
+    "button",
+    "llm-response-menu-item",
+    {
+      id: "llm-export-copy",
+      type: "button",
+      textContent: "Copy chat as md",
+    },
+  );
+  const exportMenuNoteBtn = createElement(
+    doc,
+    "button",
+    "llm-response-menu-item",
+    {
+      id: "llm-export-note",
+      type: "button",
+      textContent: "Save chat as note",
+    },
+  );
+  exportMenu.append(exportMenuCopyBtn, exportMenuNoteBtn);
+  container.appendChild(exportMenu);
 
   // Input section
   const inputSection = createElement(doc, "div", "llm-input-section");
@@ -2128,6 +2166,18 @@ function escapeNoteHtml(text: string): string {
     .replace(/'/g, "&#39;");
 }
 
+function getCurrentLocalTimestamp(): string {
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+    hour12: false,
+  }).format(new Date());
+}
+
 function resolveParentItemForNote(item: Zotero.Item): Zotero.Item | null {
   if (item.isAttachment() && item.parentID) {
     return Zotero.Items.get(item.parentID) || null;
@@ -2141,15 +2191,7 @@ function buildAssistantNoteHtml(
 ): string {
   const response = sanitizeText(contentText || "").trim();
   const source = modelName.trim() || "unknown";
-  const timestamp = new Intl.DateTimeFormat("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    month: "2-digit",
-    day: "2-digit",
-    year: "numeric",
-    hour12: false,
-  }).format(new Date());
+  const timestamp = getCurrentLocalTimestamp();
   let responseHtml = "";
   try {
     // Use Zotero note-editor native math format so that note.setNote()
@@ -2167,20 +2209,53 @@ function buildAssistantNoteHtmlFromRenderedSelection(
   modelName: string,
 ): string {
   const source = modelName.trim() || "unknown";
-  const timestamp = new Intl.DateTimeFormat("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    month: "2-digit",
-    day: "2-digit",
-    year: "numeric",
-    hour12: false,
-  }).format(new Date());
+  const timestamp = getCurrentLocalTimestamp();
   const body = renderedHtml.trim();
   if (!body) {
     return buildAssistantNoteHtml("", modelName);
   }
   return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p><p><strong>${escapeNoteHtml(source)}:</strong></p><div>${body}</div><hr/><p>Written by Zoter-LLM</p>`;
+}
+
+function renderChatMessageHtmlForNote(text: string): string {
+  const safeText = sanitizeText(text || "").trim();
+  if (!safeText) return "";
+  try {
+    // Reuse the same markdown-to-note rendering path as single-response save.
+    return renderMarkdownForNote(safeText);
+  } catch (err) {
+    ztoolkit.log("Chat history markdown render error:", err);
+    return escapeNoteHtml(safeText).replace(/\n/g, "<br/>");
+  }
+}
+
+function buildChatHistoryNotePayload(messages: Message[]): {
+  noteHtml: string;
+  noteText: string;
+} {
+  const timestamp = getCurrentLocalTimestamp();
+  const textLines: string[] = [];
+  const htmlBlocks: string[] = [];
+  for (const msg of messages) {
+    const text = sanitizeText(msg.text || "").trim();
+    if (!text) continue;
+    const speaker =
+      msg.role === "user"
+        ? "user"
+        : sanitizeText(msg.modelName || "").trim() || "model";
+    const rendered = renderChatMessageHtmlForNote(text);
+    if (!rendered) continue;
+    textLines.push(`${speaker}: ${text}`);
+    htmlBlocks.push(
+      `<p><strong>${escapeNoteHtml(speaker)}:</strong></p><div>${rendered}</div>`,
+    );
+  }
+  const noteText = textLines.join("\n\n");
+  const bodyHtml = htmlBlocks.join("<hr/>");
+  return {
+    noteText,
+    noteHtml: `<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div><hr/><p>Written by Zotero-LLM</p>`,
+  };
 }
 
 function getAssistantNoteMap(): Record<string, string> {
@@ -2443,23 +2518,85 @@ function positionMenuAtPointer(
   if (!win) return;
 
   const viewportMargin = 8;
+  const panelRect = body.getBoundingClientRect();
+  const minLeftBound = Math.max(viewportMargin, Math.round(panelRect.left) + 2);
+  const minTopBound = Math.max(viewportMargin, Math.round(panelRect.top) + 2);
   menu.style.position = "fixed";
   menu.style.display = "grid";
   menu.style.visibility = "hidden";
-  menu.style.maxHeight = `${Math.max(120, win.innerHeight - viewportMargin * 2)}px`;
+  menu.style.maxHeight = `${Math.max(120, Math.floor(panelRect.height) - viewportMargin * 2)}px`;
   menu.style.overflowY = "auto";
 
   const menuRect = menu.getBoundingClientRect();
   const maxLeft = Math.max(
-    viewportMargin,
-    win.innerWidth - menuRect.width - viewportMargin,
+    minLeftBound,
+    Math.min(
+      win.innerWidth - menuRect.width - viewportMargin,
+      Math.round(panelRect.right) - menuRect.width - 2,
+    ),
   );
   const maxTop = Math.max(
-    viewportMargin,
-    win.innerHeight - menuRect.height - viewportMargin,
+    minTopBound,
+    Math.min(
+      win.innerHeight - menuRect.height - viewportMargin,
+      Math.round(panelRect.bottom) - menuRect.height - 2,
+    ),
   );
-  const left = Math.min(Math.max(viewportMargin, clientX), maxLeft);
-  const top = Math.min(Math.max(viewportMargin, clientY), maxTop);
+  const left = Math.min(Math.max(minLeftBound, clientX), maxLeft);
+  const top = Math.min(Math.max(minTopBound, clientY), maxTop);
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.top = `${Math.round(top)}px`;
+  menu.style.visibility = "visible";
+}
+
+function positionMenuBelowButton(
+  body: Element,
+  menu: HTMLDivElement,
+  button: HTMLElement,
+): void {
+  const win = body.ownerDocument?.defaultView;
+  if (!win) return;
+
+  const viewportMargin = 8;
+  const panelRect = body.getBoundingClientRect();
+  const minLeftBound = Math.max(viewportMargin, Math.round(panelRect.left) + 2);
+  const minTopBound = Math.max(viewportMargin, Math.round(panelRect.top) + 2);
+  const maxRightBound = Math.round(panelRect.right) - 2;
+  const maxBottomBound = Math.round(panelRect.bottom) - 2;
+  const buttonRect = button.getBoundingClientRect();
+  menu.style.position = "fixed";
+  menu.style.display = "grid";
+  menu.style.visibility = "hidden";
+  menu.style.maxHeight = `${Math.max(120, Math.floor(panelRect.height) - viewportMargin * 2)}px`;
+  menu.style.overflowY = "auto";
+
+  const menuRect = menu.getBoundingClientRect();
+  const maxLeft = Math.max(
+    minLeftBound,
+    Math.min(
+      win.innerWidth - menuRect.width - viewportMargin,
+      maxRightBound - menuRect.width,
+    ),
+  );
+  const maxTop = Math.max(
+    minTopBound,
+    Math.min(
+      win.innerHeight - menuRect.height - viewportMargin,
+      maxBottomBound - menuRect.height,
+    ),
+  );
+  const preferredLeft =
+    buttonRect.left + menuRect.width <= maxRightBound
+      ? buttonRect.left
+      : buttonRect.right - menuRect.width;
+  const spaceBelow = maxBottomBound - buttonRect.bottom;
+  const spaceAbove = buttonRect.top - minTopBound;
+  const preferredTop =
+    spaceBelow >= menuRect.height || spaceBelow >= spaceAbove
+      ? buttonRect.bottom + 6
+      : buttonRect.top - menuRect.height - 6;
+  const left = Math.min(Math.max(minLeftBound, preferredLeft), maxLeft);
+  const top = Math.min(Math.max(minTopBound, preferredTop), maxTop);
   menu.style.left = `${Math.round(left)}px`;
   menu.style.top = `${Math.round(top)}px`;
   menu.style.visibility = "visible";
@@ -2582,6 +2719,21 @@ async function createNoteFromAssistantText(
     rememberAssistantNoteForParent(parentItem.id, note.id);
   }
   return "created";
+}
+
+async function createNoteFromChatHistory(
+  item: Zotero.Item,
+  history: Message[],
+): Promise<void> {
+  const parentItem = resolveParentItemForNote(item);
+  if (!parentItem?.id) {
+    throw new Error("No parent item available for note creation");
+  }
+  const note = new Zotero.Item("note");
+  note.libraryID = parentItem.libraryID;
+  note.parentID = parentItem.id;
+  note.setNote(buildChatHistoryNotePayload(history).noteHtml);
+  await note.saveTx();
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -3594,6 +3746,9 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const actionsRight = body.querySelector(
     ".llm-actions-right",
   ) as HTMLDivElement | null;
+  const exportBtn = body.querySelector(
+    "#llm-export",
+  ) as HTMLButtonElement | null;
   const clearBtn = body.querySelector("#llm-clear") as HTMLButtonElement | null;
   const selectTextBtn = body.querySelector(
     "#llm-select-text",
@@ -3624,6 +3779,15 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
   ) as HTMLButtonElement | null;
   const responseMenuNoteBtn = body.querySelector(
     "#llm-response-menu-note",
+  ) as HTMLButtonElement | null;
+  const exportMenu = body.querySelector(
+    "#llm-export-menu",
+  ) as HTMLDivElement | null;
+  const exportMenuCopyBtn = body.querySelector(
+    "#llm-export-copy",
+  ) as HTMLButtonElement | null;
+  const exportMenuNoteBtn = body.querySelector(
+    "#llm-export-note",
   ) as HTMLButtonElement | null;
   const status = body.querySelector("#llm-status") as HTMLElement | null;
 
@@ -3660,6 +3824,9 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const closeResponseMenu = () => {
     if (responseMenu) responseMenu.style.display = "none";
     responseMenuTarget = null;
+  };
+  const closeExportMenu = () => {
+    if (exportMenu) exportMenu.style.display = "none";
   };
 
   if (responseMenu && responseMenuCopyBtn && responseMenuNoteBtn) {
@@ -3722,6 +3889,74 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
         }
       });
     }
+  }
+
+  if (exportMenu && exportMenuCopyBtn && exportMenuNoteBtn) {
+    if (!exportMenu.dataset.listenerAttached) {
+      exportMenu.dataset.listenerAttached = "true";
+      exportMenu.addEventListener("mousedown", (e: Event) => {
+        e.stopPropagation();
+      });
+      exportMenu.addEventListener("contextmenu", (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      exportMenuCopyBtn.addEventListener("click", async (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!item) return;
+        await ensureConversationLoaded(item);
+        const conversationKey = getConversationKey(item);
+        const history = chatHistory.get(conversationKey) || [];
+        const payload = buildChatHistoryNotePayload(history);
+        if (!payload.noteText) {
+          if (status) setStatus(status, "No chat history detected.", "ready");
+          closeExportMenu();
+          return;
+        }
+        // Match single-response "copy as md": copy markdown/plain text only.
+        await copyTextToClipboard(body, payload.noteText);
+        if (status) setStatus(status, "Copied chat as md", "ready");
+        closeExportMenu();
+      });
+      exportMenuNoteBtn.addEventListener("click", async (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!item) return;
+        try {
+          await ensureConversationLoaded(item);
+          const conversationKey = getConversationKey(item);
+          const history = chatHistory.get(conversationKey) || [];
+          const payload = buildChatHistoryNotePayload(history);
+          if (!payload.noteText) {
+            if (status) setStatus(status, "No chat history detected.", "ready");
+            closeExportMenu();
+            return;
+          }
+          await createNoteFromChatHistory(item, history);
+          if (status) setStatus(status, "Saved chat history to new note", "ready");
+        } catch (err) {
+          ztoolkit.log("Save chat history note failed:", err);
+          if (status) setStatus(status, "Failed to save chat history", "error");
+        } finally {
+          closeExportMenu();
+        }
+      });
+    }
+  }
+
+  if (exportBtn) {
+    exportBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (exportBtn.disabled || !exportMenu || !item) return;
+      closeResponseMenu();
+      if (exportMenu.style.display !== "none") {
+        closeExportMenu();
+        return;
+      }
+      positionMenuBelowButton(body, exportMenu, exportBtn);
+    });
   }
 
   // Clicking non-interactive panel area gives keyboard focus to the panel.
@@ -4875,6 +5110,12 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
       const responseMenuEl = doc.querySelector(
         "#llm-response-menu",
       ) as HTMLDivElement | null;
+      const exportMenuEl = doc.querySelector(
+        "#llm-export-menu",
+      ) as HTMLDivElement | null;
+      const exportButtonEl = doc.querySelector(
+        "#llm-export",
+      ) as HTMLButtonElement | null;
       const target = e.target as Node | null;
       if (
         modelMenuEl &&
@@ -4901,6 +5142,15 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
       ) {
         responseMenuEl.style.display = "none";
         responseMenuTarget = null;
+      }
+      if (
+        exportMenuEl &&
+        exportMenuEl.style.display !== "none" &&
+        me.button === 0 &&
+        (!target ||
+          (!exportMenuEl.contains(target) && !exportButtonEl?.contains(target)))
+      ) {
+        exportMenuEl.style.display = "none";
       }
     });
     (
@@ -4958,6 +5208,7 @@ function setupHandlers(body: Element, item?: Zotero.Item | null) {
     clearBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
+      closeExportMenu();
       if (item) {
         const conversationKey = getConversationKey(item);
         chatHistory.delete(conversationKey);
@@ -5276,7 +5527,11 @@ function refreshChat(body: Element, item?: Zotero.Item | null) {
           const responseMenu = doc.querySelector(
             "#llm-response-menu",
           ) as HTMLDivElement | null;
+          const exportMenu = doc.querySelector(
+            "#llm-export-menu",
+          ) as HTMLDivElement | null;
           if (!responseMenu || !item) return;
+          if (exportMenu) exportMenu.style.display = "none";
           const selectedText = getSelectedTextWithinElement(doc, bubble);
           const selectedHtml = getSelectedHtmlWithinElement(doc, bubble);
           const fallbackText = sanitizeText(msg.text || "").trim();
