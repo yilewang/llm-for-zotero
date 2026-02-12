@@ -1,7 +1,5 @@
 import { config } from "../../../package.json";
-import {
-  ReasoningLevel as LLMReasoningLevel,
-} from "../../utils/llmClient";
+import { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
 
 // =============================================================================
 // Constants
@@ -107,7 +105,11 @@ export const STOPWORDS = new Set([
   "al",
 ]);
 
-export type ModelProfileKey = "primary" | "secondary" | "tertiary" | "quaternary";
+export type ModelProfileKey =
+  | "primary"
+  | "secondary"
+  | "tertiary"
+  | "quaternary";
 
 export const MODEL_PROFILE_ORDER: ModelProfileKey[] = [
   "primary",

@@ -1,10 +1,10 @@
 import { config } from "../../package.json";
-import {
-  DEFAULT_MAX_TOKENS,
-  DEFAULT_TEMPERATURE,
-} from "../utils/llmDefaults";
+import { DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE } from "../utils/llmDefaults";
 import { HTML_NS } from "../utils/domHelpers";
-import { normalizeTemperature, normalizeMaxTokens } from "../utils/normalization";
+import {
+  normalizeTemperature,
+  normalizeMaxTokens,
+} from "../utils/normalization";
 import {
   resolveEndpoint,
   buildHeaders,
@@ -378,12 +378,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     const temperatureKey = getProfilePrefKey(profile, "temperature");
     const maxTokensKey = getProfilePrefKey(profile, "maxTokens");
 
-    let savedTemperature = String(normalizeTemperature(
-      getPref(temperatureKey) || `${DEFAULT_TEMPERATURE}`,
-    ));
-    let savedMaxTokens = String(normalizeMaxTokens(
-      getPref(maxTokensKey) || `${DEFAULT_MAX_TOKENS}`,
-    ));
+    let savedTemperature = String(
+      normalizeTemperature(getPref(temperatureKey) || `${DEFAULT_TEMPERATURE}`),
+    );
+    let savedMaxTokens = String(
+      normalizeMaxTokens(getPref(maxTokensKey) || `${DEFAULT_MAX_TOKENS}`),
+    );
     setPref(temperatureKey, savedTemperature);
     setPref(maxTokensKey, savedMaxTokens);
     temperatureInput.value = savedTemperature;

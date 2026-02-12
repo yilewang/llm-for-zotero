@@ -43,7 +43,10 @@ export async function loadShortcutText(file: string): Promise<string> {
   return text;
 }
 
-export async function renderShortcuts(body: Element, item?: Zotero.Item | null) {
+export async function renderShortcuts(
+  body: Element,
+  item?: Zotero.Item | null,
+) {
   shortcutRenderItemState.set(body, item);
   const container = body.querySelector(
     "#llm-shortcuts",

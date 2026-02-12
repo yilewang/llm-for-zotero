@@ -498,9 +498,7 @@ function renderInline(text: string): string {
       }
       if (zoteroNoteMode) {
         // Zotero note-editor: <span class="math">$LaTeX$</span>
-        return protect(
-          `<span class="math">$${escapeHtml(trimmed)}$</span>`,
-        );
+        return protect(`<span class="math">$${escapeHtml(trimmed)}$</span>`);
       }
       const rendered = renderLatex(trimmed, false);
       return protect(`<span class="math-inline">${rendered}</span>`);

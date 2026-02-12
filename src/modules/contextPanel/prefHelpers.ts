@@ -3,7 +3,10 @@ import {
   DEFAULT_TEMPERATURE,
   MAX_ALLOWED_TOKENS,
 } from "../../utils/llmDefaults";
-import { normalizeTemperature, normalizeMaxTokens } from "../../utils/normalization";
+import {
+  normalizeTemperature,
+  normalizeMaxTokens,
+} from "../../utils/normalization";
 import {
   config,
   MODEL_PROFILE_SUFFIX,
@@ -75,9 +78,10 @@ export function getSelectedProfileForItem(itemId: number): {
   return { key: "primary", ...profiles.primary };
 }
 
-export function getAdvancedModelParamsForProfile(
-  profileKey: ModelProfileKey,
-): { temperature: number; maxTokens: number } {
+export function getAdvancedModelParamsForProfile(profileKey: ModelProfileKey): {
+  temperature: number;
+  maxTokens: number;
+} {
   const suffix = MODEL_PROFILE_SUFFIX[profileKey];
   return {
     temperature: normalizeTemperaturePref(
@@ -114,10 +118,12 @@ export const setShortcutOverrides = (v: Record<string, string>) =>
 export const getShortcutLabelOverrides = () => getJsonPref("shortcutLabels");
 export const setShortcutLabelOverrides = (v: Record<string, string>) =>
   setJsonPref("shortcutLabels", v);
-export const getDeletedShortcutIds = () => getStringArrayPref("shortcutDeleted");
+export const getDeletedShortcutIds = () =>
+  getStringArrayPref("shortcutDeleted");
 export const setDeletedShortcutIds = (v: string[]) =>
   setStringArrayPref("shortcutDeleted", v);
-export const getCustomShortcuts = () => getCustomShortcutsPref("customShortcuts");
+export const getCustomShortcuts = () =>
+  getCustomShortcutsPref("customShortcuts");
 export const setCustomShortcuts = (v: CustomShortcut[]) =>
   setCustomShortcutsPref("customShortcuts", v);
 export const getShortcutOrder = () => getStringArrayPref("shortcutOrder");
@@ -177,7 +183,10 @@ export function getCustomShortcutsPref(key: string): CustomShortcut[] {
   }
 }
 
-export function setCustomShortcutsPref(key: string, value: CustomShortcut[]): void {
+export function setCustomShortcutsPref(
+  key: string,
+  value: CustomShortcut[],
+): void {
   Zotero.Prefs.set(`${config.prefsPrefix}.${key}`, JSON.stringify(value), true);
 }
 
@@ -219,7 +228,9 @@ export function removeAssistantNoteMapEntry(parentItemId: number): void {
   setAssistantNoteMap(map);
 }
 
-export function getTrackedAssistantNoteForParent(parentItemId: number): Zotero.Item | null {
+export function getTrackedAssistantNoteForParent(
+  parentItemId: number,
+): Zotero.Item | null {
   const parentKey = String(parentItemId);
   const map = getAssistantNoteMap();
   const rawNoteId = map[parentKey];
@@ -237,14 +248,22 @@ export function getTrackedAssistantNoteForParent(parentItemId: number): Zotero.I
     removeAssistantNoteMapEntry(parentItemId);
     return null;
   }
-  if (!note || !note.isNote?.() || note.deleted || note.parentID !== parentItemId) {
+  if (
+    !note ||
+    !note.isNote?.() ||
+    note.deleted ||
+    note.parentID !== parentItemId
+  ) {
     removeAssistantNoteMapEntry(parentItemId);
     return null;
   }
   return note;
 }
 
-export function rememberAssistantNoteForParent(parentItemId: number, noteId: number): void {
+export function rememberAssistantNoteForParent(
+  parentItemId: number,
+  noteId: number,
+): void {
   if (!Number.isFinite(noteId) || noteId <= 0) return;
   const map = getAssistantNoteMap();
   map[String(parentItemId)] = String(noteId);

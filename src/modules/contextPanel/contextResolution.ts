@@ -54,7 +54,9 @@ export function getZoteroTabsStateWithSource(): {
   let mainWindow: any = null;
   try {
     mainWindow = Zotero.getMainWindow?.() || null;
-  } catch {}
+  } catch (_error) {
+    void _error;
+  }
   if (mainWindow) {
     push("mainWindow.Zotero.Tabs", mainWindow.Zotero?.Tabs);
     push("mainWindow.Zotero_Tabs", mainWindow.Zotero_Tabs);
@@ -65,7 +67,9 @@ export function getZoteroTabsStateWithSource(): {
   try {
     activePaneWindow =
       Zotero.getActiveZoteroPane?.()?.document?.defaultView || null;
-  } catch {}
+  } catch (_error) {
+    void _error;
+  }
   if (activePaneWindow) {
     push("activePaneWindow.Zotero.Tabs", activePaneWindow.Zotero?.Tabs);
     push("activePaneWindow.Zotero_Tabs", activePaneWindow.Zotero_Tabs);
@@ -75,7 +79,9 @@ export function getZoteroTabsStateWithSource(): {
   try {
     const windows = Zotero.getMainWindows?.() || [];
     anyMainWindow = windows[0] || null;
-  } catch {}
+  } catch (_error) {
+    void _error;
+  }
   if (anyMainWindow) {
     push("mainWindows[0].Zotero.Tabs", anyMainWindow.Zotero?.Tabs);
     push("mainWindows[0].Zotero_Tabs", anyMainWindow.Zotero_Tabs);
@@ -87,12 +93,16 @@ export function getZoteroTabsStateWithSource(): {
     ) as any;
     push("wm:navigator:browser.Zotero.Tabs", wmRecent?.Zotero?.Tabs);
     push("wm:navigator:browser.Zotero_Tabs", wmRecent?.Zotero_Tabs);
-  } catch {}
+  } catch (_error) {
+    void _error;
+  }
   try {
     const wmAny = (Services as any).wm?.getMostRecentWindow?.("") as any;
     push("wm:any.Zotero.Tabs", wmAny?.Zotero?.Tabs);
     push("wm:any.Zotero_Tabs", wmAny?.Zotero_Tabs);
-  } catch {}
+  } catch (_error) {
+    void _error;
+  }
 
   const globalAny = globalThis as any;
   push("globalThis.Zotero_Tabs", globalAny.Zotero_Tabs);

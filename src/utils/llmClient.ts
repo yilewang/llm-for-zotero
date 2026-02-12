@@ -26,10 +26,7 @@ import {
   usesMaxCompletionTokens,
   isResponsesBase,
 } from "./apiHelpers";
-import {
-  normalizeTemperature,
-  normalizeMaxTokens,
-} from "./normalization";
+import { normalizeTemperature, normalizeMaxTokens } from "./normalization";
 
 // =============================================================================
 // Types

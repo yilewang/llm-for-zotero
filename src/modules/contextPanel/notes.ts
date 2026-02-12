@@ -11,7 +11,9 @@ import {
 } from "./prefHelpers";
 import type { Message } from "./types";
 
-export function resolveParentItemForNote(item: Zotero.Item): Zotero.Item | null {
+export function resolveParentItemForNote(
+  item: Zotero.Item,
+): Zotero.Item | null {
   if (item.isAttachment() && item.parentID) {
     return Zotero.Items.get(item.parentID) || null;
   }
@@ -119,12 +121,17 @@ export async function createNoteFromAssistantText(
       );
       existingNote.setNote(appendedHtml);
       await existingNote.saveTx();
-      ztoolkit.log(`LLM: Appended to existing note ${existingNote.id} for parent ${parentId}`);
+      ztoolkit.log(
+        `LLM: Appended to existing note ${existingNote.id} for parent ${parentId}`,
+      );
       return "appended";
     } catch (appendErr) {
       // If appending fails (e.g. note was deleted externally), fall through
       // to create a new note instead.
-      ztoolkit.log("LLM: Failed to append to existing note, creating new:", appendErr);
+      ztoolkit.log(
+        "LLM: Failed to append to existing note, creating new:",
+        appendErr,
+      );
       removeAssistantNoteMapEntry(parentId);
     }
   }
@@ -137,14 +144,15 @@ export async function createNoteFromAssistantText(
   const saveResult = await note.saveTx();
   // saveTx() returns the new item ID (number) on creation.
   // Also check note.id as a fallback.
-  const newNoteId = typeof saveResult === "number" && saveResult > 0
-    ? saveResult
-    : note.id;
+  const newNoteId =
+    typeof saveResult === "number" && saveResult > 0 ? saveResult : note.id;
   if (newNoteId && newNoteId > 0) {
     rememberAssistantNoteForParent(parentId, newNoteId);
     ztoolkit.log(`LLM: Created new note ${newNoteId} for parent ${parentId}`);
   } else {
-    ztoolkit.log("LLM: Warning – note was saved but could not determine note ID");
+    ztoolkit.log(
+      "LLM: Warning – note was saved but could not determine note ID",
+    );
   }
   return "created";
 }

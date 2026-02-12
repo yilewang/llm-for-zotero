@@ -1,5 +1,10 @@
 import type { ModelProfileKey } from "./constants";
-import type { Message, PdfContext, ReasoningLevelSelection, CustomShortcut } from "./types";
+import type {
+  Message,
+  PdfContext,
+  ReasoningLevelSelection,
+  CustomShortcut,
+} from "./types";
 
 // =============================================================================
 // Module State
@@ -9,7 +14,10 @@ export const chatHistory = new Map<number, Message[]>();
 export const loadedConversationKeys = new Set<number>();
 export const loadingConversationTasks = new Map<number, Promise<void>>();
 export const selectedModelCache = new Map<number, ModelProfileKey>();
-export const selectedReasoningCache = new Map<number, ReasoningLevelSelection>();
+export const selectedReasoningCache = new Map<
+  number,
+  ReasoningLevelSelection
+>();
 
 export const pdfTextCache = new Map<number, PdfContext>();
 export const pdfTextLoadingTasks = new Map<number, Promise<void>>();

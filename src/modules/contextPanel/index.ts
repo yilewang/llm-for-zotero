@@ -31,9 +31,7 @@ import {
   setReaderContextPanelRegistered,
   recentReaderSelectionCache,
 } from "./state";
-import {
-  clearConversation as clearStoredConversation,
-} from "../../utils/chatStore";
+import { clearConversation as clearStoredConversation } from "../../utils/chatStore";
 import { normalizeSelectedText } from "./textUtils";
 import { buildUI } from "./buildUI";
 import { setupHandlers } from "./setupHandlers";

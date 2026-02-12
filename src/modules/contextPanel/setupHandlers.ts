@@ -41,7 +41,10 @@ import {
   buildQuestionWithSelectedText,
   getSelectedTextWithinBubble,
 } from "./textUtils";
-import { positionMenuBelowButton, positionMenuAtPointer } from "./menuPositioning";
+import {
+  positionMenuBelowButton,
+  positionMenuAtPointer,
+} from "./menuPositioning";
 import {
   getApiProfiles,
   getSelectedProfileForItem,
@@ -64,10 +67,7 @@ import {
   applySelectedTextPreview,
   includeSelectedTextFromReader,
 } from "./contextResolution";
-import {
-  captureScreenshotSelection,
-  optimizeImageDataUrl,
-} from "./screenshot";
+import { captureScreenshotSelection, optimizeImageDataUrl } from "./screenshot";
 import {
   createNoteFromAssistantText,
   createNoteFromChatHistory,
@@ -316,7 +316,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
             return;
           }
           await createNoteFromChatHistory(currentItem, history);
-          if (status) setStatus(status, "Saved chat history to new note", "ready");
+          if (status)
+            setStatus(status, "Saved chat history to new note", "ready");
         } catch (err) {
           ztoolkit.log("Save chat history note failed:", err);
           if (status) setStatus(status, "Failed to save chat history", "error");

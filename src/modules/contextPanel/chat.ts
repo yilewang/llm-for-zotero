@@ -77,7 +77,10 @@ export function getAbortController(): new () => AbortController {
   );
 }
 
-export function appendReasoningPart(base: string | undefined, next?: string): string {
+export function appendReasoningPart(
+  base: string | undefined,
+  next?: string,
+): string {
   const chunk = sanitizeText(next || "");
   if (!chunk) return base || "";
   return `${base || ""}${chunk}`;
@@ -114,7 +117,9 @@ export function toPanelMessage(message: StoredChatMessage): Message {
   };
 }
 
-export async function ensureConversationLoaded(item: Zotero.Item): Promise<void> {
+export async function ensureConversationLoaded(
+  item: Zotero.Item,
+): Promise<void> {
   const conversationKey = getConversationKey(item);
 
   if (loadedConversationKeys.has(conversationKey)) return;
@@ -154,7 +159,9 @@ export async function ensureConversationLoaded(item: Zotero.Item): Promise<void>
   await task;
 }
 
-export function detectReasoningProvider(modelName: string): ReasoningProviderKind {
+export function detectReasoningProvider(
+  modelName: string,
+): ReasoningProviderKind {
   const name = modelName.trim().toLowerCase();
   if (!name) return "unsupported";
   if (name.startsWith("deepseek")) {
@@ -183,17 +190,17 @@ export function getReasoningOptions(
   apiBase?: string,
 ): ReasoningOption[] {
   if (provider === "unsupported") return [];
-  return getRuntimeReasoningOptions(
-    provider,
-    modelName,
-  ).map((option) => ({
+  return getRuntimeReasoningOptions(provider, modelName).map((option) => ({
     level: option.level as LLMReasoningLevel,
     enabled: option.enabled,
     label: option.label,
   }));
 }
 
-export async function copyTextToClipboard(body: Element, text: string): Promise<void> {
+export async function copyTextToClipboard(
+  body: Element,
+  text: string,
+): Promise<void> {
   const safeText = sanitizeText(text).trim();
   if (!safeText) return;
 

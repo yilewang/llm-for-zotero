@@ -114,10 +114,7 @@ async function captureScreenshotSelection(win: Window): Promise<string | null> {
     cancelBtn.textContent = "Cancel (Esc)";
 
     // Selection rectangle
-    const selection = doc.createElementNS(
-      HTML_NS,
-      "div",
-    ) as HTMLDivElement;
+    const selection = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
     Object.assign(selection.style, {
       position: "absolute",
       border: "2px dashed #2563eb",

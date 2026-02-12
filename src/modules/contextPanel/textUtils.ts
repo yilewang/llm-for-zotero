@@ -1,4 +1,7 @@
-import { SELECTED_TEXT_MAX_LENGTH, SELECTED_TEXT_PREVIEW_LENGTH } from "./constants";
+import {
+  SELECTED_TEXT_MAX_LENGTH,
+  SELECTED_TEXT_PREVIEW_LENGTH,
+} from "./constants";
 
 export function sanitizeText(text: string) {
   let out = "";
@@ -127,13 +130,9 @@ export function getSelectedTextWithinBubble(
     const temp = doc.createElement("div");
     temp.appendChild(fragment);
 
-    const katexEls = Array.from(
-      temp.querySelectorAll(".katex"),
-    ) as Element[];
+    const katexEls = Array.from(temp.querySelectorAll(".katex")) as Element[];
     for (const el of katexEls) {
-      const ann = el.querySelector(
-        'annotation[encoding="application/x-tex"]',
-      );
+      const ann = el.querySelector('annotation[encoding="application/x-tex"]');
       if (ann) {
         const latex = (ann.textContent || "").trim();
         const mathEl = ann.closest("math");

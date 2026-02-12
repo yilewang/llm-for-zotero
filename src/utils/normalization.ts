@@ -23,7 +23,9 @@ export function normalizeTemperature(value?: number | string): number {
 /** Clamp a max-tokens value to [1, MAX_ALLOWED_TOKENS], falling back to DEFAULT_MAX_TOKENS. */
 export function normalizeMaxTokens(value?: number | string): number {
   const parsed =
-    typeof value === "string" ? Number.parseInt(value, 10) : Math.floor(Number(value));
+    typeof value === "string"
+      ? Number.parseInt(value, 10)
+      : Math.floor(Number(value));
   if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_MAX_TOKENS;
   return Math.min(parsed, MAX_ALLOWED_TOKENS);
 }

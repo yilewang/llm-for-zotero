@@ -133,10 +133,10 @@
   flex: 1 1 auto;
   overflow-y: auto;
   overflow-x: hidden;
-  border: 1px solid var(--stroke-secondary);
-  border-radius: 10px;
+  border: none;
+  border-radius: 0;
   padding: 12px;
-  background: var(--material-background);
+  background: transparent;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -339,9 +339,10 @@
 }
 
 .llm-bubble.assistant {
-  background: var(--fill-quinary);
+  background: transparent;
   color: var(--fill-primary);
-  border-bottom-left-radius: 4px;
+  border-radius: 0;
+  padding: 0;
 }
 
 .llm-model-name {

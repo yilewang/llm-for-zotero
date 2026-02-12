@@ -1,6 +1,4 @@
-import type {
-  ReasoningLevel as LLMReasoningLevel,
-} from "../../utils/llmClient";
+import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
 
 export interface Message {
   role: "user" | "assistant";
