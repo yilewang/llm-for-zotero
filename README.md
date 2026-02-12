@@ -9,7 +9,7 @@
 
 
 ## 🚀 Zotero-LLM v3.5.7 Release
-Please see the latest[release notes](https://github.com/yilewang/zotero-llm/releases) for details. The UI has been redesigned (again😂) to be more intuitive and elegant. You can also customize the quick-action presets to fit your specific research needs.
+Please see the latest [release notes](https://github.com/yilewang/zotero-llm/releases) for details. The UI has been redesigned (again😂) to be more intuitive and elegant. Optimized the codebase.
 
 
 ## 🗓️ Zotero-LLM v3.0 Release
