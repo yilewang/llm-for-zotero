@@ -692,12 +692,27 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             : "Expand screenshots";
         };
 
+        const toggleScreenshotsExpanded = () => {
+          msg.screenshotExpanded = !msg.screenshotExpanded;
+          applyScreenshotState();
+        };
         applyScreenshotState();
+        screenshotBar.addEventListener("mousedown", (e: Event) => {
+          const mouse = e as MouseEvent;
+          if (mouse.button !== 0) return;
+          mouse.preventDefault();
+          mouse.stopPropagation();
+          toggleScreenshotsExpanded();
+        });
         screenshotBar.addEventListener("click", (e: Event) => {
           e.preventDefault();
           e.stopPropagation();
-          msg.screenshotExpanded = !msg.screenshotExpanded;
-          applyScreenshotState();
+        });
+        screenshotBar.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleScreenshotsExpanded();
         });
 
         wrapper.appendChild(screenshotBar);
@@ -736,12 +751,27 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             ? "Collapse selected text"
             : "Expand selected text";
         };
+        const toggleSelectedTextExpanded = () => {
+          msg.selectedTextExpanded = !msg.selectedTextExpanded;
+          applySelectedTextState();
+        };
         applySelectedTextState();
+        selectedBar.addEventListener("mousedown", (e: Event) => {
+          const mouse = e as MouseEvent;
+          if (mouse.button !== 0) return;
+          mouse.preventDefault();
+          mouse.stopPropagation();
+          toggleSelectedTextExpanded();
+        });
         selectedBar.addEventListener("click", (e: Event) => {
           e.preventDefault();
           e.stopPropagation();
-          msg.selectedTextExpanded = !msg.selectedTextExpanded;
-          applySelectedTextState();
+        });
+        selectedBar.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleSelectedTextExpanded();
         });
         wrapper.appendChild(selectedBar);
         wrapper.appendChild(selectedExpanded);
