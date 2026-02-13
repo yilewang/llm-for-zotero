@@ -297,9 +297,27 @@ function splitTextBlocks(text: string): TextBlock[] {
     // Ordered list
     if (/^\d+\.\s+/.test(trimmed)) {
       const listLines: string[] = [];
-      while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
-        listLines.push(lines[i]);
-        i++;
+      while (i < lines.length) {
+        const listLine = lines[i].trim();
+        if (/^\d+\.\s+/.test(listLine)) {
+          listLines.push(lines[i]);
+          i++;
+          continue;
+        }
+
+        // Allow blank lines between list items when the next non-empty line
+        // is still an ordered list item.
+        if (!listLine) {
+          let next = i + 1;
+          while (next < lines.length && !lines[next].trim()) {
+            next++;
+          }
+          if (next < lines.length && /^\d+\.\s+/.test(lines[next].trim())) {
+            i = next;
+            continue;
+          }
+        }
+        break;
       }
       const raw = listLines.join("\n");
       blocks.push({ type: "list", content: raw, raw });
@@ -309,9 +327,27 @@ function splitTextBlocks(text: string): TextBlock[] {
     // Unordered list
     if (/^[-*]\s+/.test(trimmed)) {
       const listLines: string[] = [];
-      while (i < lines.length && /^[-*]\s+/.test(lines[i].trim())) {
-        listLines.push(lines[i]);
-        i++;
+      while (i < lines.length) {
+        const listLine = lines[i].trim();
+        if (/^[-*]\s+/.test(listLine)) {
+          listLines.push(lines[i]);
+          i++;
+          continue;
+        }
+
+        // Allow blank lines between list items when the next non-empty line
+        // is still an unordered list item.
+        if (!listLine) {
+          let next = i + 1;
+          while (next < lines.length && !lines[next].trim()) {
+            next++;
+          }
+          if (next < lines.length && /^[-*]\s+/.test(lines[next].trim())) {
+            i = next;
+            continue;
+          }
+        }
+        break;
       }
       const raw = listLines.join("\n");
       blocks.push({ type: "list", content: raw, raw });
@@ -423,14 +459,19 @@ function renderHeader(content: string): string {
 /** Render list (ordered or unordered) */
 function renderList(content: string): string {
   const lines = content.split(/\r?\n/).filter((l) => l.trim());
-  const isOrdered = /^\d+\.\s+/.test(lines[0]?.trim() || "");
+  const orderedMatch = lines[0]?.trim().match(/^(\d+)\.\s+/);
+  const isOrdered = Boolean(orderedMatch);
   const tag = isOrdered ? "ol" : "ul";
+  const start = orderedMatch ? parseInt(orderedMatch[1], 10) : 1;
 
   const items = lines.map((line) => {
     const text = line.trim().replace(/^(\d+\.)\s+|^[-*]\s+/, "");
     return `<li>${renderInline(text)}</li>`;
   });
 
+  if (isOrdered && Number.isFinite(start) && start > 1) {
+    return `<${tag} start="${start}">${items.join("")}</${tag}>`;
+  }
   return `<${tag}>${items.join("")}</${tag}>`;
 }
 
