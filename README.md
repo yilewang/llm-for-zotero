@@ -122,9 +122,9 @@ I will give some popular model as example:
 | https://api.openai.com/v1/responses                                       | gpt-5.2              | default, medium, high, xhigh |
 | https://api.deepseek.com/v1/chat/completions                              | deepseek-chat        | default                      |
 | https://api.deepseek.com/v1/chat/completions                              | deepseek-reasoner    | default                      |
-|  https://generativelanguage.googleapis.com/v1beta/openai/chat/completions | gemini-3-pro-preview | low, high                    |
-|  https://generativelanguage.googleapis.com/v1beta/openai/chat/completions | gemini-2.5-flash     | medium                       |
-| https://api.moonshot.ai/v1/chat/completions                               | kimi-k2.5            | default                      |
+| https://generativelanguage.googleapis.com/v1beta/openai/chat/completions | gemini-3-pro-preview | low, high                    |
+| https://generativelanguage.googleapis.com/v1beta/openai/chat/completions | gemini-2.5-flash     | medium                       |
+| https://api.moonshot.cn/v1/chat/completions                               | kimi-k2.5            | default                      |
 
 You can always check the connections by clicking the "Test Connection" button.
 
