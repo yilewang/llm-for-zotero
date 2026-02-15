@@ -12,7 +12,7 @@ import {
 } from "./state";
 import type { ZoteroTabsState, ResolvedContextSource } from "./types";
 
-export function getActiveReaderForSelectedTab(): any | null {
+function getActiveReaderForSelectedTab(): any | null {
   const tabs = getZoteroTabsState();
   const selectedTabId = tabs?.selectedID;
   if (selectedTabId === undefined || selectedTabId === null) return null;
@@ -25,7 +25,7 @@ export function getActiveReaderForSelectedTab(): any | null {
   );
 }
 
-export function parseItemID(value: unknown): number | null {
+function parseItemID(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
     const parsed = Number.parseInt(value, 10);
@@ -34,7 +34,7 @@ export function parseItemID(value: unknown): number | null {
   return null;
 }
 
-export function isTabsState(value: unknown): value is ZoteroTabsState {
+function isTabsState(value: unknown): value is ZoteroTabsState {
   if (!value || typeof value !== "object") return false;
   const obj = value as any;
   return (
@@ -42,7 +42,7 @@ export function isTabsState(value: unknown): value is ZoteroTabsState {
   );
 }
 
-export function getZoteroTabsStateWithSource(): {
+function getZoteroTabsStateWithSource(): {
   tabs: ZoteroTabsState | null;
   source: string;
 } {
@@ -121,11 +121,11 @@ export function getZoteroTabsStateWithSource(): {
   return { tabs: null, source: "none" };
 }
 
-export function getZoteroTabsState(): ZoteroTabsState | null {
+function getZoteroTabsState(): ZoteroTabsState | null {
   return getZoteroTabsStateWithSource().tabs;
 }
 
-export function collectCandidateItemIDsFromObject(source: any): number[] {
+function collectCandidateItemIDsFromObject(source: any): number[] {
   if (!source || typeof source !== "object") return [];
   const directCandidates = [
     source.itemID,
@@ -206,7 +206,7 @@ export function getActiveContextAttachmentFromTabs(): Zotero.Item | null {
   return null;
 }
 
-export function isSupportedContextAttachment(
+function isSupportedContextAttachment(
   item: Zotero.Item | null | undefined,
 ): item is Zotero.Item {
   return Boolean(
@@ -216,13 +216,13 @@ export function isSupportedContextAttachment(
   );
 }
 
-export function getContextItemLabel(item: Zotero.Item): string {
+function getContextItemLabel(item: Zotero.Item): string {
   const title = sanitizeText(item.getField("title") || "").trim();
   if (title) return title;
   return `Attachment ${item.id}`;
 }
 
-export function getFirstPdfChildAttachment(
+function getFirstPdfChildAttachment(
   item: Zotero.Item | null | undefined,
 ): Zotero.Item | null {
   if (!item || item.isAttachment()) return null;

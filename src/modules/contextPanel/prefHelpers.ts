@@ -22,11 +22,11 @@ export function getStringPref(key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-export function normalizeTemperaturePref(raw: string): number {
+function normalizeTemperaturePref(raw: string): number {
   return normalizeTemperature(raw);
 }
 
-export function normalizeMaxTokensPref(raw: string): number {
+function normalizeMaxTokensPref(raw: string): number {
   return normalizeMaxTokens(raw);
 }
 
@@ -97,7 +97,7 @@ export function applyPanelFontScale(panel: HTMLElement | null): void {
 }
 
 /** Get/set JSON preferences with error handling */
-export function getJsonPref(key: string): Record<string, string> {
+function getJsonPref(key: string): Record<string, string> {
   const raw =
     (Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true) as string) || "";
   if (!raw) return {};
@@ -108,7 +108,7 @@ export function getJsonPref(key: string): Record<string, string> {
   }
 }
 
-export function setJsonPref(key: string, value: Record<string, string>): void {
+function setJsonPref(key: string, value: Record<string, string>): void {
   Zotero.Prefs.set(`${config.prefsPrefix}.${key}`, JSON.stringify(value), true);
 }
 
@@ -130,7 +130,7 @@ export const getShortcutOrder = () => getStringArrayPref("shortcutOrder");
 export const setShortcutOrder = (v: string[]) =>
   setStringArrayPref("shortcutOrder", v);
 
-export function getStringArrayPref(key: string): string[] {
+function getStringArrayPref(key: string): string[] {
   const raw =
     (Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true) as string) || "";
   if (!raw) return [];
@@ -146,11 +146,11 @@ export function getStringArrayPref(key: string): string[] {
   }
 }
 
-export function setStringArrayPref(key: string, value: string[]): void {
+function setStringArrayPref(key: string, value: string[]): void {
   Zotero.Prefs.set(`${config.prefsPrefix}.${key}`, JSON.stringify(value), true);
 }
 
-export function getCustomShortcutsPref(key: string): CustomShortcut[] {
+function getCustomShortcutsPref(key: string): CustomShortcut[] {
   const raw =
     (Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true) as string) || "";
   if (!raw) return [];
@@ -183,7 +183,7 @@ export function getCustomShortcutsPref(key: string): CustomShortcut[] {
   }
 }
 
-export function setCustomShortcutsPref(
+function setCustomShortcutsPref(
   key: string,
   value: CustomShortcut[],
 ): void {
@@ -203,7 +203,7 @@ export function resetShortcutsToDefault(): void {
   setShortcutOrder([]);
 }
 
-export function getAssistantNoteMap(): Record<string, string> {
+function getAssistantNoteMap(): Record<string, string> {
   try {
     return getJsonPref(ASSISTANT_NOTE_MAP_PREF_KEY);
   } catch (err) {
@@ -212,7 +212,7 @@ export function getAssistantNoteMap(): Record<string, string> {
   }
 }
 
-export function setAssistantNoteMap(value: Record<string, string>): void {
+function setAssistantNoteMap(value: Record<string, string>): void {
   try {
     setJsonPref(ASSISTANT_NOTE_MAP_PREF_KEY, value);
   } catch (err) {

@@ -4,9 +4,11 @@
 [![zotero target version](https://img.shields.io/badge/Zotero-8-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
 [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
 
-![image](./assets/_neuron.png)
+<p align="center">
+  <img src="./assets/label.png" alt="LLM for Zotero icon" width="512" />
+</p>
 
-## 🚀 Zotero-LLM now renamed to LLM-for-Zotero
+## 🚀 This plugin is now renamed to LLM-for-Zotero
 
 Please see the latest [release notes](https://github.com/yilewang/llm-for-zotero/releases). The plugin name is now changed to `llm-for-zotero`. 
 
@@ -14,7 +16,6 @@ Please see the latest [release notes](https://github.com/yilewang/llm-for-zotero
 
 **llm-for-zotero** is a powerful plugin for [Zotero](https://www.zotero.org/) that integrates Large Language Models (LLMs) directly into the Zotero PDF reader. Unlike other tools that require you to upload your pdfs to a portal, this plugin is designed to conveniently access LLMs without the need to leave Zotero. It quietly sits in the panel of the Zotero reader, like your standby research assistant, ready to help you with any questions you have when reading a paper.
 
-<!-- ![image](./assets/demo_video1.gif) -->
 
 ![image](./assets/demo.png)
 

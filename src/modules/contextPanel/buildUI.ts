@@ -414,4 +414,4 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   body.appendChild(container);
 }
 
-export { buildUI, createActionDropdown };
+export { buildUI };

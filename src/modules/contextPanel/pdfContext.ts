@@ -15,7 +15,7 @@ import {
 import { pdfTextCache, pdfTextLoadingTasks } from "./state";
 import type { PdfContext, ChunkStat } from "./types";
 
-export async function cachePDFText(item: Zotero.Item) {
+async function cachePDFText(item: Zotero.Item) {
   if (pdfTextCache.has(item.id)) return;
 
   try {
@@ -98,7 +98,7 @@ export async function ensurePDFTextCached(item: Zotero.Item): Promise<void> {
   await task;
 }
 
-export function splitIntoChunks(text: string, targetLength: number): string[] {
+function splitIntoChunks(text: string, targetLength: number): string[] {
   if (!text) return [];
   const normalized = text.replace(/\r\n?/g, "\n").trim();
   if (!normalized) return [];
@@ -138,12 +138,12 @@ export function splitIntoChunks(text: string, targetLength: number): string[] {
   return chunks;
 }
 
-export function tokenizeText(text: string): string[] {
+function tokenizeText(text: string): string[] {
   const tokens = text.toLowerCase().match(/[a-z0-9]+/g) || [];
   return tokens.filter((t) => t.length >= 3 && !STOPWORDS.has(t));
 }
 
-export function buildChunkIndex(chunks: string[]): {
+function buildChunkIndex(chunks: string[]): {
   chunkStats: ChunkStat[];
   docFreq: Record<string, number>;
   avgChunkLength: number;
@@ -171,12 +171,12 @@ export function buildChunkIndex(chunks: string[]): {
   return { chunkStats, docFreq, avgChunkLength };
 }
 
-export function tokenizeQuery(query: string): string[] {
+function tokenizeQuery(query: string): string[] {
   const tokens = tokenizeText(query);
   return Array.from(new Set(tokens));
 }
 
-export function scoreChunkBM25(
+function scoreChunkBM25(
   chunk: ChunkStat,
   terms: string[],
   docFreq: Record<string, number>,
@@ -202,7 +202,7 @@ export function scoreChunkBM25(
   return score;
 }
 
-export function cosineSimilarity(a: number[], b: number[]): number {
+function cosineSimilarity(a: number[], b: number[]): number {
   if (!a.length || !b.length || a.length !== b.length) return 0;
   let dot = 0;
   let normA = 0;
@@ -218,7 +218,7 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-export function normalizeScores(scores: number[]): number[] {
+function normalizeScores(scores: number[]): number[] {
   if (!scores.length) return [];
   let min = scores[0];
   let max = scores[0];
@@ -230,7 +230,7 @@ export function normalizeScores(scores: number[]): number[] {
   return scores.map((s) => (s - min) / (max - min));
 }
 
-export async function embedTexts(
+async function embedTexts(
   texts: string[],
   overrides?: { apiBase?: string; apiKey?: string },
 ): Promise<number[][]> {
@@ -243,7 +243,7 @@ export async function embedTexts(
   return all;
 }
 
-export async function ensureEmbeddings(
+async function ensureEmbeddings(
   pdfContext: PdfContext,
   overrides?: { apiBase?: string; apiKey?: string },
 ): Promise<boolean> {

@@ -12,7 +12,7 @@ import {
 } from "./prefHelpers";
 import type { Message } from "./types";
 
-export function resolveParentItemForNote(
+function resolveParentItemForNote(
   item: Zotero.Item,
 ): Zotero.Item | null {
   if (item.isAttachment() && item.parentID) {
@@ -21,7 +21,7 @@ export function resolveParentItemForNote(
   return item;
 }
 
-export function buildAssistantNoteHtml(
+function buildAssistantNoteHtml(
   contentText: string,
   modelName: string,
 ): string {
@@ -37,10 +37,10 @@ export function buildAssistantNoteHtml(
     ztoolkit.log("Note markdown render error:", err);
     responseHtml = escapeNoteHtml(response).replace(/\n/g, "<br/>");
   }
-  return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p><p><strong>${escapeNoteHtml(source)}:</strong></p><div>${responseHtml}</div><hr/><p>Written by llm-for-zotero</p>`;
+  return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p><p><strong>${escapeNoteHtml(source)}:</strong></p><div>${responseHtml}</div><hr/><p>Written by LLM-for-Zotero plugin</p>`;
 }
 
-export function renderChatMessageHtmlForNote(text: string): string {
+function renderChatMessageHtmlForNote(text: string): string {
   const safeText = sanitizeText(text || "").trim();
   if (!safeText) return "";
   try {
@@ -147,11 +147,11 @@ export function buildChatHistoryNotePayload(messages: Message[]): {
   const bodyHtml = htmlBlocks.join("<hr/>");
   return {
     noteText,
-    noteHtml: `<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div><hr/><p>Written by llm-for-zotero</p>`,
+    noteHtml: `<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div><hr/><p>Written by LLM-for-Zotero plugin</p>`,
   };
 }
 
-export function appendAssistantAnswerToNoteHtml(
+function appendAssistantAnswerToNoteHtml(
   existingHtml: string,
   newAnswerHtml: string,
 ): string {

@@ -66,7 +66,7 @@ import {
 import { buildChatHistoryNotePayload } from "./notes";
 
 /** Get AbortController constructor from global scope */
-export function getAbortController(): new () => AbortController {
+function getAbortController(): new () => AbortController {
   return (
     (ztoolkit.getGlobal("AbortController") as new () => AbortController) ||
     (
@@ -77,7 +77,7 @@ export function getAbortController(): new () => AbortController {
   );
 }
 
-export function appendReasoningPart(
+function appendReasoningPart(
   base: string | undefined,
   next?: string,
 ): string {
@@ -268,7 +268,7 @@ function scheduleFollowBottomStabilization(
   followBottomStabilizers.set(conversationKey, handle);
 }
 
-export function applyChatScrollPolicy(
+function applyChatScrollPolicy(
   item: Zotero.Item,
   chatBox: HTMLDivElement,
 ): void {
@@ -299,7 +299,7 @@ export function persistChatScrollSnapshotFromBody(body: Element): void {
   persistChatScrollSnapshot(panelItem, chatBox);
 }
 
-export async function persistConversationMessage(
+async function persistConversationMessage(
   conversationKey: number,
   message: StoredChatMessage,
 ): Promise<void> {
@@ -311,7 +311,7 @@ export async function persistConversationMessage(
   }
 }
 
-export function toPanelMessage(message: StoredChatMessage): Message {
+function toPanelMessage(message: StoredChatMessage): Message {
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
     : undefined;

@@ -121,11 +121,6 @@ function hasBalancedCodeBlocks(text: string): boolean {
   return countOccurrences(text, "```") % 2 === 0;
 }
 
-/** Check if display math delimiters are balanced */
-function hasBalancedDisplayMath(text: string): boolean {
-  return countOccurrences(text, "$$") % 2 === 0;
-}
-
 /** Check if inline delimiters are balanced (for $, `, **, etc.) */
 function hasBalancedInlineDelimiter(text: string, delimiter: string): boolean {
   // For single-char delimiters, count them
