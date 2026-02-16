@@ -26,10 +26,19 @@ import {
   selectedReasoningCache,
   selectedImageCache,
   selectedImageNameCache,
+  selectedImagePinnedCache,
   selectedFileAttachmentCache,
+  selectedFilePinnedCache,
   selectedImagePreviewExpandedCache,
   selectedImagePreviewActiveIndexCache,
   selectedTextCache,
+  selectedTextAutoSyncCache,
+  selectedTextSourceCache,
+  selectedTextReaderSelectionCache,
+  selectedTextPanelSelectionCache,
+  selectedTextReaderUpdatedAtCache,
+  selectedTextPanelUpdatedAtCache,
+  selectedTextSuppressedSelectionCache,
   selectedTextPreviewExpandedCache,
   setCancelledRequestId,
   currentAbortController,
@@ -75,7 +84,6 @@ import {
 import {
   getActiveReaderSelectionText,
   applySelectedTextPreview,
-  includeSelectedTextFromReader,
 } from "./contextResolution";
 import { captureScreenshotSelection, optimizeImageDataUrl } from "./screenshot";
 import {
@@ -149,9 +157,15 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const imagePreview = body.querySelector(
     "#llm-image-preview",
   ) as HTMLDivElement | null;
+  const inputSection = body.querySelector(
+    ".llm-input-section",
+  ) as HTMLDivElement | null;
   const selectedContextClear = body.querySelector(
     "#llm-selected-context-clear",
   ) as HTMLButtonElement | null;
+  const selectedContextLabel = body.querySelector(
+    "#llm-selected-context-label",
+  ) as HTMLDivElement | null;
   const selectedContextPanel = body.querySelector(
     "#llm-selected-context",
   ) as HTMLDivElement | null;
@@ -423,17 +437,40 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const clearSelectedImageState = (itemId: number) => {
     selectedImageCache.delete(itemId);
     selectedImageNameCache.delete(itemId);
+    selectedImagePinnedCache.delete(itemId);
     selectedImagePreviewExpandedCache.delete(itemId);
     selectedImagePreviewActiveIndexCache.delete(itemId);
   };
   const clearSelectedAttachmentState = (itemId: number) => {
     clearSelectedImageState(itemId);
     selectedFileAttachmentCache.delete(itemId);
+    selectedFilePinnedCache.delete(itemId);
+  };
+
+  const isSelectedTextAutoSyncEnabled = (itemId: number) =>
+    selectedTextAutoSyncCache.get(itemId) !== false;
+  const setSelectedTextAutoSyncEnabled = (itemId: number, enabled: boolean) => {
+    selectedTextAutoSyncCache.set(itemId, enabled);
+  };
+  const updateSelectedTextSyncToggle = () => {
+    if (!item) return;
+    const autoSyncEnabled = isSelectedTextAutoSyncEnabled(item.id);
+    if (selectTextBtn) {
+      selectTextBtn.classList.toggle("llm-action-btn-active", autoSyncEnabled);
+      selectTextBtn.title = autoSyncEnabled
+        ? "Disable selection tracking"
+        : "Enable selection tracking";
+    }
   };
 
   const clearSelectedTextState = (itemId: number) => {
     selectedTextCache.delete(itemId);
     selectedTextPreviewExpandedCache.delete(itemId);
+    selectedTextSourceCache.delete(itemId);
+    selectedTextReaderSelectionCache.delete(itemId);
+    selectedTextPanelSelectionCache.delete(itemId);
+    selectedTextReaderUpdatedAtCache.delete(itemId);
+    selectedTextPanelUpdatedAtCache.delete(itemId);
   };
 
   // Helper to update image preview UI
@@ -457,7 +494,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     const screenshotDisabledHint = getScreenshotDisabledHint(currentModel);
     let selectedImages = selectedImageCache.get(item.id) || [];
     let selectedImageNames = selectedImageNameCache.get(item.id) || [];
+    let selectedImagePinned = selectedImagePinnedCache.get(item.id) || [];
     const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
+    let selectedFilesPinned = selectedFilePinnedCache.get(item.id) || [];
     if (screenshotUnsupported && selectedImages.length) {
       clearSelectedImageState(item.id);
       selectedImages = [];
@@ -469,6 +508,21 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       );
       selectedImageNameCache.set(item.id, selectedImageNames);
     }
+    if (selectedImagePinned.length !== selectedImages.length) {
+      selectedImagePinned = selectedImages.map(
+        (_entry, index) => selectedImagePinned[index] === true,
+      );
+      selectedImagePinnedCache.set(item.id, selectedImagePinned);
+    }
+    if (selectedFilesPinned.length !== selectedFiles.length) {
+      selectedFilesPinned = selectedFiles.map(
+        (_entry, index) => selectedFilesPinned[index] === true,
+      );
+      selectedFilePinnedCache.set(item.id, selectedFilesPinned);
+    }
+    const pinnedCount =
+      selectedImagePinned.filter(Boolean).length +
+      selectedFilesPinned.filter(Boolean).length;
     const attachmentCount = selectedImages.length + selectedFiles.length;
     if (attachmentCount) {
       const imageCount = selectedImages.length;
@@ -490,7 +544,10 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         selectedImagePreviewActiveIndexCache.set(item.id, activeIndex);
       }
 
-      previewMeta.textContent = `attachments (${attachmentCount}) embedded`;
+      previewMeta.textContent =
+        pinnedCount > 0
+          ? `attachments (${attachmentCount}) embedded · pinned ${pinnedCount}`
+          : `attachments (${attachmentCount}) embedded`;
       previewMeta.classList.toggle("expanded", expanded);
       previewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
       previewMeta.title = expanded
@@ -522,6 +579,30 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           },
         );
         fileMeta.append(fileName, fileInfo);
+        const pinOneBtn = createElement(
+          ownerDoc,
+          "button",
+          "llm-file-preview-pin-one",
+          {
+            type: "button",
+            textContent: selectedFilesPinned[index] ? "Unpin" : "Pin",
+            title: selectedFilesPinned[index]
+              ? `Unpin ${fileAttachment.name}`
+              : `Pin ${fileAttachment.name}`,
+          },
+        );
+        pinOneBtn.classList.toggle("pinned", selectedFilesPinned[index] === true);
+        pinOneBtn.addEventListener("click", (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!item) return;
+          const currentPins = selectedFilePinnedCache.get(item.id) || [];
+          const nextPins = selectedFiles.map(
+            (_entry, i) => (i === index ? !currentPins[i] : currentPins[i] === true),
+          );
+          selectedFilePinnedCache.set(item.id, nextPins);
+          updateImagePreview();
+        });
         const removeOneBtn = createElement(
           ownerDoc,
           "button",
@@ -537,11 +618,15 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           e.stopPropagation();
           if (!item) return;
           const currentFiles = selectedFileAttachmentCache.get(item.id) || [];
+          const currentPins = selectedFilePinnedCache.get(item.id) || [];
           const nextFiles = currentFiles.filter((_entry, i) => i !== index);
+          const nextPins = currentPins.filter((_entry, i) => i !== index);
           if (nextFiles.length) {
             selectedFileAttachmentCache.set(item.id, nextFiles);
+            selectedFilePinnedCache.set(item.id, nextPins);
           } else {
             selectedFileAttachmentCache.delete(item.id);
+            selectedFilePinnedCache.delete(item.id);
           }
           updateImagePreview();
           if (status) {
@@ -550,7 +635,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
             setStatus(status, `Attachment removed (${nextTotal})`, "ready");
           }
         });
-        fileItem.append(fileMeta, removeOneBtn);
+        fileItem.append(fileMeta, pinOneBtn, removeOneBtn);
         filePreviewList.appendChild(fileItem);
       }
       for (const [index, imageUrl] of selectedImages.entries()) {
@@ -591,18 +676,45 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
             title: `Remove screenshot ${index + 1}`,
           },
         );
+        const pinOneBtn = createElement(
+          ownerDoc,
+          "button",
+          "llm-preview-pin-one",
+          {
+            type: "button",
+            textContent: selectedImagePinned[index] ? "📌" : "📍",
+            title: selectedImagePinned[index]
+              ? `Unpin screenshot ${index + 1}`
+              : `Pin screenshot ${index + 1}`,
+          },
+        );
+        pinOneBtn.classList.toggle("pinned", selectedImagePinned[index] === true);
+        pinOneBtn.addEventListener("click", (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!item) return;
+          const currentPins = selectedImagePinnedCache.get(item.id) || [];
+          const nextPins = selectedImages.map(
+            (_entry, i) => (i === index ? !currentPins[i] : currentPins[i] === true),
+          );
+          selectedImagePinnedCache.set(item.id, nextPins);
+          updateImagePreview();
+        });
         removeOneBtn.addEventListener("click", (e: Event) => {
           e.preventDefault();
           e.stopPropagation();
           if (!item) return;
           const currentImages = selectedImageCache.get(item.id) || [];
           const currentNames = selectedImageNameCache.get(item.id) || [];
+          const currentPins = selectedImagePinnedCache.get(item.id) || [];
           if (index < 0 || index >= currentImages.length) return;
           const nextImages = currentImages.filter((_, i) => i !== index);
           const nextNames = currentNames.filter((_, i) => i !== index);
+          const nextPins = currentPins.filter((_entry, i) => i !== index);
           if (nextImages.length) {
             selectedImageCache.set(item.id, nextImages);
             selectedImageNameCache.set(item.id, nextNames);
+            selectedImagePinnedCache.set(item.id, nextPins);
             let nextActive =
               selectedImagePreviewActiveIndexCache.get(item.id) || 0;
             if (index < nextActive) {
@@ -627,7 +739,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
             );
           }
         });
-        thumbItem.append(thumbBtn, removeOneBtn);
+        thumbItem.append(thumbBtn, pinOneBtn, removeOneBtn);
         previewStrip.appendChild(thumbItem);
       }
       if (imageCount > 0) {
@@ -668,7 +780,127 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   const updateSelectedTextPreview = () => {
     if (!item) return;
+    if (selectedContextLabel) {
+      const selectedText = selectedTextCache.get(item.id) || "";
+      const source = selectedTextSourceCache.get(item.id);
+      const sourceLabel =
+        source === "reader" ? "Reader" : source === "panel" ? "Panel" : "Manual";
+      selectedContextLabel.textContent = selectedText
+        ? `Selected Context · ${sourceLabel}`
+        : "Selected Context";
+    }
     applySelectedTextPreview(body, item.id);
+    updateSelectedTextSyncToggle();
+  };
+
+  const syncSelectedTextFromReader = () => {
+    if (!item) return;
+    if (!isSelectedTextAutoSyncEnabled(item.id)) return;
+    const liveReaderSelectedText = getActiveReaderSelectionText(
+      body.ownerDocument as Document,
+      item,
+      { allowCacheFallback: false, readerOnly: true },
+    );
+    const livePanelSelectedText = getActiveReaderSelectionText(
+      body.ownerDocument as Document,
+      item,
+      { allowCacheFallback: false, panelOnly: true },
+    );
+    const now = Date.now();
+    const prevReaderSelectedText = selectedTextReaderSelectionCache.get(item.id) || "";
+    const prevPanelSelectedText = selectedTextPanelSelectionCache.get(item.id) || "";
+    if (liveReaderSelectedText !== prevReaderSelectedText) {
+      selectedTextReaderSelectionCache.set(item.id, liveReaderSelectedText);
+      if (liveReaderSelectedText) {
+        selectedTextReaderUpdatedAtCache.set(item.id, now);
+      }
+    }
+    if (livePanelSelectedText !== prevPanelSelectedText) {
+      selectedTextPanelSelectionCache.set(item.id, livePanelSelectedText);
+      if (livePanelSelectedText) {
+        selectedTextPanelUpdatedAtCache.set(item.id, now);
+      }
+    }
+
+    const activeElement = (body.ownerDocument as Document)
+      .activeElement as Element | null;
+    const isFocusInsidePanel = activeElement ? body.contains(activeElement) : false;
+    const readerUpdatedAt = selectedTextReaderUpdatedAtCache.get(item.id) || 0;
+    const panelUpdatedAt = selectedTextPanelUpdatedAtCache.get(item.id) || 0;
+    let liveSelectionSource: "reader" | "panel" | null = null;
+    let liveSelectedText = "";
+    if (liveReaderSelectedText && livePanelSelectedText) {
+      if (readerUpdatedAt > panelUpdatedAt) {
+        liveSelectionSource = "reader";
+        liveSelectedText = liveReaderSelectedText;
+      } else if (panelUpdatedAt > readerUpdatedAt) {
+        liveSelectionSource = "panel";
+        liveSelectedText = livePanelSelectedText;
+      } else {
+        liveSelectionSource = isFocusInsidePanel ? "panel" : "reader";
+        liveSelectedText =
+          liveSelectionSource === "panel"
+            ? livePanelSelectedText
+            : liveReaderSelectedText;
+      }
+    } else if (liveReaderSelectedText) {
+      liveSelectionSource = "reader";
+      liveSelectedText = liveReaderSelectedText;
+    } else if (livePanelSelectedText) {
+      liveSelectionSource = "panel";
+      liveSelectedText = livePanelSelectedText;
+    }
+
+    const selectedTextSource = selectedTextSourceCache.get(item.id);
+    // Keep panel selection when user is still interacting inside LLM panel
+    // (e.g. clicking input). If focus moves outside (e.g. paper area), allow
+    // it to clear once the live selection disappears.
+    const keepPanelSelection = selectedTextSource === "panel" && isFocusInsidePanel;
+    // Keep manual text until explicit clear, and keep unknown source for
+    // backward compatibility with older cache entries.
+    const shouldKeepWithoutLiveSelection =
+      keepPanelSelection || selectedTextSource === "manual" || !selectedTextSource;
+    const suppressedSelection =
+      selectedTextSuppressedSelectionCache.get(item.id) || "";
+    const cachedSelectedText = selectedTextCache.get(item.id) || "";
+    if (liveSelectedText) {
+      if (suppressedSelection && liveSelectedText === suppressedSelection) {
+        return;
+      }
+      if (suppressedSelection && liveSelectedText !== suppressedSelection) {
+        selectedTextSuppressedSelectionCache.delete(item.id);
+      }
+      if (
+        liveSelectedText === cachedSelectedText &&
+        liveSelectionSource === selectedTextSource
+      )
+        return;
+      selectedTextCache.set(item.id, liveSelectedText);
+      if (liveSelectionSource) {
+        selectedTextSourceCache.set(item.id, liveSelectionSource);
+      }
+      selectedTextPreviewExpandedCache.set(item.id, false);
+      updateSelectedTextPreview();
+      return;
+    }
+    if (suppressedSelection) {
+      selectedTextSuppressedSelectionCache.delete(item.id);
+    }
+    if (!cachedSelectedText) return;
+    if (shouldKeepWithoutLiveSelection) return;
+    clearSelectedTextState(item.id);
+    updateSelectedTextPreview();
+  };
+
+  const clearAutoSelectedTextOnEscape = () => {
+    if (!item) return;
+    if (!isSelectedTextAutoSyncEnabled(item.id)) return;
+    const currentText = (selectedTextCache.get(item.id) || "").trim();
+    if (!currentText) return;
+    selectedTextSuppressedSelectionCache.set(item.id, currentText);
+    clearSelectedTextState(item.id);
+    updateSelectedTextPreview();
+    if (status) setStatus(status, "Selection cleared", "ready");
   };
 
   const getModelChoices = () => {
@@ -1308,7 +1540,39 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   // Initialize image preview state
   updateImagePreview();
   updateSelectedTextPreview();
+  syncSelectedTextFromReader();
   syncModelFromPrefs();
+
+  // Keep selected-text preview synchronized with current reader selection:
+  // - selection exists: auto-fill selected text
+  // - selection cleared: auto-clear selected text
+  // Preserve existing manual Add Text flow; this only mirrors live selection.
+  const selectionSyncTickMs = 220;
+  const selectionSyncTimer = setInterval(() => {
+    if (!body.isConnected) {
+      clearInterval(selectionSyncTimer);
+      return;
+    }
+    syncSelectedTextFromReader();
+  }, selectionSyncTickMs);
+
+  const selectionSyncDoc = body.ownerDocument;
+  selectionSyncDoc?.addEventListener(
+    "pointerup",
+    () => {
+      if (!body.isConnected) return;
+      syncSelectedTextFromReader();
+    },
+    true,
+  );
+  selectionSyncDoc?.addEventListener(
+    "keyup",
+    () => {
+      if (!body.isConnected) return;
+      syncSelectedTextFromReader();
+    },
+    true,
+  );
 
   // Preferences can change outside this panel (e.g., settings window).
   // Re-sync model label when the user comes back (pointerenter).
@@ -1430,6 +1694,122 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     });
   };
 
+  const processIncomingFiles = async (
+    incomingFiles: File[],
+    source: "upload" | "drop" | "paste",
+  ) => {
+    if (!item || !incomingFiles.length) return;
+    const { currentModel } = getSelectedModelInfo();
+    const imageUnsupported = isScreenshotUnsupportedModel(currentModel);
+
+    let addedCount = 0;
+    let rejectedPdfCount = 0;
+    let skippedImageCount = 0;
+    const nextImages = [...(selectedImageCache.get(item.id) || [])];
+    const nextImageNames = [...(selectedImageNameCache.get(item.id) || [])];
+    const nextImagePins = [...(selectedImagePinnedCache.get(item.id) || [])];
+    const nextFiles = [...(selectedFileAttachmentCache.get(item.id) || [])];
+    const nextFilePins = [...(selectedFilePinnedCache.get(item.id) || [])];
+
+    for (const [index, file] of incomingFiles.entries()) {
+      const fallbackName =
+        source === "paste"
+          ? `pasted-file-${Date.now()}-${index + 1}`
+          : `uploaded-file-${Date.now()}-${index + 1}`;
+      const fileName = (file.name || "").trim() || fallbackName;
+      const lowerName = fileName.toLowerCase();
+      const isPdf = file.type === "application/pdf" || lowerName.endsWith(".pdf");
+      if (isPdf && file.size > MAX_UPLOAD_PDF_SIZE_BYTES) {
+        rejectedPdfCount += 1;
+        continue;
+      }
+      const normalizedFile = new File([file], fileName, {
+        type: file.type || "application/octet-stream",
+        lastModified: file.lastModified || Date.now(),
+      });
+      const category = resolveAttachmentCategory(normalizedFile);
+      if (category === "image") {
+        if (imageUnsupported) {
+          skippedImageCount += 1;
+          continue;
+        }
+        try {
+          const dataUrl = await readFileAsDataURL(normalizedFile);
+          nextImages.push(dataUrl);
+          nextImageNames.push(fileName || `Image ${nextImages.length}.png`);
+          nextImagePins.push(false);
+          addedCount += 1;
+        } catch (err) {
+          ztoolkit.log("LLM: Failed to read image upload", err);
+        }
+        continue;
+      }
+      let textContent: string | undefined;
+      if (
+        category === "markdown" ||
+        category === "code" ||
+        category === "text"
+      ) {
+        try {
+          textContent = await readFileAsText(normalizedFile);
+        } catch (err) {
+          ztoolkit.log("LLM: Failed to read text upload", err);
+        }
+      }
+      nextFiles.push({
+        id: createAttachmentId(),
+        name: fileName || "untitled",
+        mimeType: normalizedFile.type || "application/octet-stream",
+        sizeBytes: normalizedFile.size || 0,
+        category,
+        textContent,
+      });
+      nextFilePins.push(false);
+      addedCount += 1;
+    }
+
+    if (nextImages.length) {
+      selectedImageCache.set(item.id, nextImages);
+      selectedImageNameCache.set(item.id, nextImageNames);
+      selectedImagePinnedCache.set(item.id, nextImagePins);
+      selectedImagePreviewExpandedCache.set(item.id, true);
+      if (typeof selectedImagePreviewActiveIndexCache.get(item.id) !== "number") {
+        selectedImagePreviewActiveIndexCache.set(item.id, nextImages.length - 1);
+      }
+    }
+    if (nextFiles.length) {
+      selectedFileAttachmentCache.set(item.id, nextFiles);
+      selectedFilePinnedCache.set(item.id, nextFilePins);
+    }
+    updateImagePreview();
+
+    if (status) {
+      const sourceLabel =
+        source === "drop" ? "Dropped" : source === "paste" ? "Pasted" : "Uploaded";
+      if (addedCount > 0 && (rejectedPdfCount > 0 || skippedImageCount > 0)) {
+        setStatus(
+          status,
+          `${sourceLabel} ${addedCount} attachment(s), skipped ${rejectedPdfCount} PDF(s) > 50MB and ${skippedImageCount} image(s)`,
+          "warning",
+        );
+      } else if (addedCount > 0) {
+        setStatus(status, `${sourceLabel} ${addedCount} attachment(s)`, "ready");
+      } else if (skippedImageCount > 0) {
+        setStatus(
+          status,
+          `${skippedImageCount} image(s) skipped: ${getScreenshotDisabledHint(currentModel)}`,
+          "warning",
+        );
+      } else if (rejectedPdfCount > 0) {
+        setStatus(
+          status,
+          `PDF exceeds 50MB limit (${rejectedPdfCount} file(s) skipped)`,
+          "error",
+        );
+      }
+    }
+  };
+
   const buildModelPromptWithFileContext = (
     baseQuestion: string,
     fileAttachments: ChatAttachment[],
@@ -1458,11 +1838,16 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   const doSend = async () => {
     if (!item) return;
+    if (isSelectedTextAutoSyncEnabled(item.id)) {
+      syncSelectedTextFromReader();
+    }
     const text = inputBox.value.trim();
     const selectedText = selectedTextCache.get(item.id) || "";
     const selectedImages = selectedImageCache.get(item.id) || [];
     const selectedImageNames = selectedImageNameCache.get(item.id) || [];
+    const selectedImagePinned = selectedImagePinnedCache.get(item.id) || [];
     const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
+    const selectedFilesPinned = selectedFilePinnedCache.get(item.id) || [];
     if (!text && !selectedText && !selectedImages.length && !selectedFiles.length)
       return;
     const promptText =
@@ -1499,9 +1884,46 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       imageDataUrl,
     }));
     const attachments: ChatAttachment[] = [...imageAttachments, ...selectedFiles];
-    // Clear selected attachments after sending
-    clearSelectedAttachmentState(item.id);
-    updateImagePreview();
+    const keptImages = selectedImages.filter(
+      (_entry, index) => selectedImagePinned[index] === true,
+    );
+    const keptImageNames = selectedImageNames.filter(
+      (_entry, index) => selectedImagePinned[index] === true,
+    );
+    const keptImagePins = keptImages.map(() => true);
+    const keptFiles = selectedFiles.filter(
+      (_entry, index) => selectedFilesPinned[index] === true,
+    );
+    const keptFilePins = keptFiles.map(() => true);
+    if (keptImages.length || keptFiles.length) {
+      if (keptImages.length) {
+        selectedImageCache.set(item.id, keptImages);
+        selectedImageNameCache.set(item.id, keptImageNames);
+        selectedImagePinnedCache.set(item.id, keptImagePins);
+      } else {
+        selectedImageCache.delete(item.id);
+        selectedImageNameCache.delete(item.id);
+        selectedImagePinnedCache.delete(item.id);
+      }
+      if (keptFiles.length) {
+        selectedFileAttachmentCache.set(item.id, keptFiles);
+        selectedFilePinnedCache.set(item.id, keptFilePins);
+      } else {
+        selectedFileAttachmentCache.delete(item.id);
+        selectedFilePinnedCache.delete(item.id);
+      }
+      updateImagePreview();
+      if (status) {
+        setStatus(
+          status,
+          `Sending with ${keptImages.length + keptFiles.length} pinned attachment(s)...`,
+          "sending",
+        );
+      }
+    } else {
+      clearSelectedAttachmentState(item.id);
+      updateImagePreview();
+    }
     if (selectedText) {
       clearSelectedTextState(item.id);
       updateSelectedTextPreview();
@@ -1540,8 +1962,84 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       doSend();
     }
   });
+  inputBox.addEventListener("keydown", (e: Event) => {
+    const ke = e as KeyboardEvent;
+    if (ke.key !== "Escape") return;
+    clearAutoSelectedTextOnEscape();
+  });
+
+  let inputDragDepth = 0;
+  const setInputDragActive = (active: boolean) => {
+    inputSection?.classList.toggle("llm-file-drag-active", active);
+  };
+  const hasFileDragData = (event: DragEvent): boolean => {
+    const types = event.dataTransfer?.types;
+    if (!types) return false;
+    return Array.from(types).includes("Files");
+  };
+
+  inputBox.addEventListener("dragenter", (e: Event) => {
+    const de = e as DragEvent;
+    if (!hasFileDragData(de)) return;
+    de.preventDefault();
+    de.stopPropagation();
+    inputDragDepth += 1;
+    setInputDragActive(true);
+  });
+  inputBox.addEventListener("dragover", (e: Event) => {
+    const de = e as DragEvent;
+    if (!hasFileDragData(de)) return;
+    de.preventDefault();
+    de.stopPropagation();
+    if (de.dataTransfer) de.dataTransfer.dropEffect = "copy";
+    setInputDragActive(true);
+  });
+  inputBox.addEventListener("dragleave", (e: Event) => {
+    const de = e as DragEvent;
+    if (!hasFileDragData(de)) return;
+    de.preventDefault();
+    de.stopPropagation();
+    inputDragDepth = Math.max(0, inputDragDepth - 1);
+    if (inputDragDepth === 0) setInputDragActive(false);
+  });
+  inputBox.addEventListener("drop", async (e: Event) => {
+    const de = e as DragEvent;
+    if (!hasFileDragData(de)) return;
+    de.preventDefault();
+    de.stopPropagation();
+    inputDragDepth = 0;
+    setInputDragActive(false);
+    const files = Array.from(de.dataTransfer?.files || []);
+    if (!files.length) return;
+    await processIncomingFiles(files, "drop");
+  });
+  inputBox.addEventListener("paste", async (e: Event) => {
+    const pe = e as ClipboardEvent;
+    const clipboard = pe.clipboardData;
+    if (!clipboard) return;
+    const fileItems = Array.from(clipboard.items || []).filter(
+      (entry) => entry.kind === "file",
+    );
+    if (!fileItems.length) return;
+    const files = fileItems
+      .map((entry) => entry.getAsFile())
+      .filter((entry): entry is File => Boolean(entry));
+    if (!files.length) return;
+    pe.preventDefault();
+    pe.stopPropagation();
+    await processIncomingFiles(files, "paste");
+  });
 
   const panelDoc = body.ownerDocument;
+  panelDoc?.addEventListener(
+    "keydown",
+    (e: Event) => {
+      const ke = e as KeyboardEvent;
+      if (ke.key !== "Escape") return;
+      clearAutoSelectedTextOnEscape();
+    },
+    true,
+  );
   if (
     panelDoc &&
     !(panelDoc as unknown as { __llmFontScaleShortcut?: boolean })
@@ -1645,26 +2143,25 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   }
 
   if (selectTextBtn) {
-    let pendingSelectedText = "";
-    const cacheSelectionBeforeFocusShift = () => {
-      if (!item) return;
-      pendingSelectedText = getActiveReaderSelectionText(
-        body.ownerDocument as Document,
-        item,
-      );
-    };
-    selectTextBtn.addEventListener(
-      "pointerdown",
-      cacheSelectionBeforeFocusShift,
-    );
-    selectTextBtn.addEventListener("mousedown", cacheSelectionBeforeFocusShift);
     selectTextBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
       if (!item) return;
-      const selectedText = pendingSelectedText;
-      pendingSelectedText = "";
-      includeSelectedTextFromReader(body, item, selectedText);
+      const nextEnabled = !isSelectedTextAutoSyncEnabled(item.id);
+      setSelectedTextAutoSyncEnabled(item.id, nextEnabled);
+      if (nextEnabled) {
+        syncSelectedTextFromReader();
+      }
+      updateSelectedTextPreview();
+      if (status) {
+        setStatus(
+          status,
+          nextEnabled
+            ? "Selection tracking enabled"
+            : "Selection tracking disabled",
+          "ready",
+        );
+      }
     });
   }
 
@@ -1725,10 +2222,13 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           const optimized = await optimizeImageDataUrl(mainWindow, dataUrl);
           const existingImages = selectedImageCache.get(item.id) || [];
           const existingNames = selectedImageNameCache.get(item.id) || [];
+          const existingPins = selectedImagePinnedCache.get(item.id) || [];
           const nextImages = [...existingImages, optimized];
           const nextNames = [...existingNames, `Screenshot ${nextImages.length}.png`];
+          const nextPins = [...existingPins, false];
           selectedImageCache.set(item.id, nextImages);
           selectedImageNameCache.set(item.id, nextNames);
+          selectedImagePinnedCache.set(item.id, nextPins);
           selectedImagePreviewExpandedCache.set(item.id, true);
           selectedImagePreviewActiveIndexCache.set(
             item.id,
@@ -1764,101 +2264,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       const files = Array.from(uploadInput.files || []);
       uploadInput.value = "";
       if (!files.length) return;
-      const { currentModel } = getSelectedModelInfo();
-      const imageUnsupported = isScreenshotUnsupportedModel(currentModel);
-
-      let addedCount = 0;
-      let rejectedPdfCount = 0;
-      let skippedImageCount = 0;
-      const nextImages = [...(selectedImageCache.get(item.id) || [])];
-      const nextImageNames = [...(selectedImageNameCache.get(item.id) || [])];
-      const nextFiles = [...(selectedFileAttachmentCache.get(item.id) || [])];
-
-      for (const file of files) {
-        const lowerName = (file.name || "").toLowerCase();
-        const isPdf =
-          file.type === "application/pdf" || lowerName.endsWith(".pdf");
-        if (isPdf && file.size > MAX_UPLOAD_PDF_SIZE_BYTES) {
-          rejectedPdfCount += 1;
-          continue;
-        }
-        const category = resolveAttachmentCategory(file);
-        if (category === "image") {
-          if (imageUnsupported) {
-            skippedImageCount += 1;
-            continue;
-          }
-          try {
-            const dataUrl = await readFileAsDataURL(file);
-            nextImages.push(dataUrl);
-            nextImageNames.push(file.name || `Image ${nextImages.length}.png`);
-            addedCount += 1;
-          } catch (err) {
-            ztoolkit.log("LLM: Failed to read image upload", err);
-          }
-          continue;
-        }
-        let textContent: string | undefined;
-        if (
-          category === "markdown" ||
-          category === "code" ||
-          category === "text"
-        ) {
-          try {
-            textContent = await readFileAsText(file);
-          } catch (err) {
-            ztoolkit.log("LLM: Failed to read text upload", err);
-          }
-        }
-        nextFiles.push({
-          id: createAttachmentId(),
-          name: file.name || "untitled",
-          mimeType: file.type || "application/octet-stream",
-          sizeBytes: file.size || 0,
-          category,
-          textContent,
-        });
-        addedCount += 1;
-      }
-
-      if (nextImages.length) {
-        selectedImageCache.set(item.id, nextImages);
-        selectedImageNameCache.set(item.id, nextImageNames);
-        selectedImagePreviewExpandedCache.set(item.id, true);
-        if (
-          typeof selectedImagePreviewActiveIndexCache.get(item.id) !== "number"
-        ) {
-          selectedImagePreviewActiveIndexCache.set(item.id, nextImages.length - 1);
-        }
-      }
-      if (nextFiles.length) {
-        selectedFileAttachmentCache.set(item.id, nextFiles);
-      }
-      updateImagePreview();
-
-      if (status) {
-        if (addedCount > 0 && (rejectedPdfCount > 0 || skippedImageCount > 0)) {
-          setStatus(
-            status,
-            `Uploaded ${addedCount} attachment(s), skipped ${rejectedPdfCount} PDF(s) > 50MB and ${skippedImageCount} image(s)`,
-            "warning",
-          );
-        } else if (addedCount > 0) {
-          setStatus(status, `Uploaded ${addedCount} attachment(s)`, "ready");
-        } else if (skippedImageCount > 0) {
-          setStatus(
-            status,
-            `${skippedImageCount} image(s) skipped: ${getScreenshotDisabledHint(currentModel)}`,
-            "warning",
-          );
-        } else if (rejectedPdfCount > 0) {
-          setStatus(
-            status,
-            `PDF exceeds 50MB limit (${rejectedPdfCount} file(s) skipped)`,
-            "error",
-          );
-        }
-      }
+      await processIncomingFiles(files, "upload");
     });
   }
 
@@ -2064,7 +2470,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       e.stopPropagation();
       if (!item) return;
       const selectedImages = selectedImageCache.get(item.id) || [];
-      if (!selectedImages.length) return;
+      const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
+      if (!selectedImages.length && !selectedFiles.length) return;
       const expanded = selectedImagePreviewExpandedCache.get(item.id) === true;
       selectedImagePreviewExpandedCache.set(item.id, !expanded);
       updateImagePreview();
@@ -2087,9 +2494,21 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       e.preventDefault();
       e.stopPropagation();
       if (!item) return;
+      const liveSelectedText = getActiveReaderSelectionText(
+        body.ownerDocument as Document,
+        item,
+        { allowCacheFallback: false },
+      ).trim();
+      if (liveSelectedText) {
+        selectedTextSuppressedSelectionCache.set(item.id, liveSelectedText);
+      } else {
+        selectedTextSuppressedSelectionCache.delete(item.id);
+      }
       clearSelectedTextState(item.id);
       updateSelectedTextPreview();
-      if (status) setStatus(status, "Selected text removed", "ready");
+      if (status) {
+        setStatus(status, "Selected text cleared", "ready");
+      }
     });
   }
 

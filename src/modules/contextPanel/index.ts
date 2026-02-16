@@ -31,6 +31,7 @@ import {
   setReaderContextPanelRegistered,
   recentReaderSelectionCache,
   selectedTextCache,
+  selectedTextSourceCache,
   selectedTextPreviewExpandedCache,
 } from "./state";
 import { clearConversation as clearStoredConversation } from "../../utils/chatStore";
@@ -144,6 +145,7 @@ export function registerReaderSelectionTracking() {
       const addTextToPanel = () => {
         for (const key of keys) {
           selectedTextCache.set(key, selectedText);
+          selectedTextSourceCache.set(key, "manual");
           selectedTextPreviewExpandedCache.set(key, false);
         }
         try {

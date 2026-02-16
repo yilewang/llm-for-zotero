@@ -7,6 +7,7 @@ import {
 } from "./textUtils";
 import {
   selectedTextCache,
+  selectedTextSourceCache,
   selectedTextPreviewExpandedCache,
   recentReaderSelectionCache,
 } from "./state";
@@ -314,7 +315,11 @@ export function getItemSelectionCacheKeys(
 export function getActiveReaderSelectionText(
   panelDoc: Document,
   currentItem?: Zotero.Item | null,
+  options?: { allowCacheFallback?: boolean; readerOnly?: boolean; panelOnly?: boolean },
 ): string {
+  const allowCacheFallback = options?.allowCacheFallback !== false;
+  const readerOnly = options?.readerOnly === true;
+  const panelOnly = options?.panelOnly === true;
   const reader = getActiveReaderForSelectedTab();
 
   const selectionFrom = (doc?: Document | null): string => {
@@ -323,44 +328,53 @@ export function getActiveReaderSelectionText(
     return normalizeSelectedText(selected);
   };
 
-  // 1. Check the reader's outer iframe document
-  const readerDoc =
-    (reader?._iframeWindow?.document as Document | undefined) ||
-    (reader?._iframe?.contentDocument as Document | undefined) ||
-    (reader?._window?.document as Document | undefined);
-  const fromReaderDoc = selectionFrom(readerDoc);
-  if (fromReaderDoc) return fromReaderDoc;
+  if (!panelOnly) {
+    // 1. Check the reader's outer iframe document
+    const readerDoc =
+      (reader?._iframeWindow?.document as Document | undefined) ||
+      (reader?._iframe?.contentDocument as Document | undefined) ||
+      (reader?._window?.document as Document | undefined);
+    const fromReaderDoc = selectionFrom(readerDoc);
+    if (fromReaderDoc) return fromReaderDoc;
 
-  // 2. Check the inner view iframe(s) (PDF text-layer, EPUB, snapshot)
-  const internalReader = reader?._internalReader;
-  const views = [internalReader?._primaryView, internalReader?._secondaryView];
-  for (const view of views) {
-    if (!view) continue;
-    const viewDoc =
-      (view._iframeWindow?.document as Document | undefined) ||
-      (view._iframe?.contentDocument as Document | undefined);
-    if (viewDoc) {
-      const fromView = selectionFrom(viewDoc);
-      if (fromView) return fromView;
+    // 2. Check the inner view iframe(s) (PDF text-layer, EPUB, snapshot)
+    const internalReader = reader?._internalReader;
+    const views = [internalReader?._primaryView, internalReader?._secondaryView];
+    for (const view of views) {
+      if (!view) continue;
+      const viewDoc =
+        (view._iframeWindow?.document as Document | undefined) ||
+        (view._iframe?.contentDocument as Document | undefined);
+      if (viewDoc) {
+        const fromView = selectionFrom(viewDoc);
+        if (fromView) return fromView;
+      }
     }
   }
 
-  // 3. Check the panel document and its iframes
-  const fromPanelDoc = selectionFrom(panelDoc);
-  if (fromPanelDoc) return fromPanelDoc;
+  // 3. Check the panel document and its iframes (optional)
+  if (!readerOnly) {
+    const fromPanelDoc = selectionFrom(panelDoc);
+    if (fromPanelDoc) return fromPanelDoc;
 
-  const iframes = Array.from(
-    panelDoc.querySelectorAll("iframe"),
-  ) as HTMLIFrameElement[];
-  for (const frame of iframes) {
-    const fromFrame = selectionFrom(frame.contentDocument);
-    if (fromFrame) return fromFrame;
+    const iframes = Array.from(
+      panelDoc.querySelectorAll("iframe"),
+    ) as HTMLIFrameElement[];
+    for (const frame of iframes) {
+      const fromFrame = selectionFrom(frame.contentDocument);
+      if (fromFrame) return fromFrame;
+    }
   }
 
   // 4. Cache fallback — populated by the renderTextSelectionPopup event
   //    handler which also tracks popup lifecycle via a sentinel element.
   //    When the popup is dismissed the sentinel becomes disconnected and
   //    the cache entry is automatically cleared, preventing stale results.
+  //    For live selection tracking, callers can disable this fallback to
+  //    avoid stale selections after ESC clears reader highlight.
+  if (!allowCacheFallback) {
+    return "";
+  }
   const itemId = reader?._item?.id || reader?.itemID;
   if (typeof itemId === "number") {
     const readerItem = Zotero.Items.get(itemId) || null;
@@ -390,9 +404,6 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
   const previewWarning = body.querySelector(
     "#llm-selected-context-warning",
   ) as HTMLDivElement | null;
-  const selectTextBtn = body.querySelector(
-    "#llm-select-text",
-  ) as HTMLButtonElement | null;
   if (!previewBox || !previewText) return;
   const selectedText = selectedTextCache.get(itemId) || "";
   if (!selectedText) {
@@ -403,9 +414,6 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     previewText.textContent = "";
     selectedTextPreviewExpandedCache.delete(itemId);
     if (previewWarning) previewWarning.style.display = "none";
-    if (selectTextBtn) {
-      selectTextBtn.classList.remove("llm-action-btn-active");
-    }
     return;
   }
   const expanded = selectedTextPreviewExpandedCache.get(itemId) === true;
@@ -423,9 +431,6 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
       ? "block"
       : "none";
   }
-  if (selectTextBtn) {
-    selectTextBtn.classList.add("llm-action-btn-active");
-  }
 }
 
 export function includeSelectedTextFromReader(
@@ -442,6 +447,7 @@ export function includeSelectedTextFromReader(
     return false;
   }
   selectedTextCache.set(item.id, selectedText);
+  selectedTextSourceCache.set(item.id, "manual");
   selectedTextPreviewExpandedCache.set(item.id, false);
   applySelectedTextPreview(body, item.id);
   if (status) setStatus(status, "Selected text included", "ready");

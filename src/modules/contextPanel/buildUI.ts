@@ -200,8 +200,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     "div",
     "llm-selected-context-label",
     {
+      id: "llm-selected-context-label",
       textContent: "Selected Context",
     },
+  );
+  const selectedContextControls = createElement(
+    doc,
+    "div",
+    "llm-selected-context-controls",
   );
   const selectedContextClear = createElement(
     doc,
@@ -231,7 +237,8 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     },
   );
   selectedContextWarning.style.display = "none";
-  selectedContextTop.append(selectedContextLabel, selectedContextClear);
+  selectedContextControls.append(selectedContextClear);
+  selectedContextTop.append(selectedContextLabel, selectedContextControls);
   selectedContext.append(
     selectedContextTop,
     selectedContextText,
@@ -300,12 +307,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     textContent: "Clear All",
     title: "Clear selected attachments",
   });
+  const imagePreviewActions = createElement(doc, "div", "llm-image-preview-actions");
+  imagePreviewActions.append(removeImgBtn);
 
   imagePreviewExpanded.append(
     filePreviewList,
     previewStrip,
     previewLargeWrap,
-    removeImgBtn,
+    imagePreviewActions,
   );
   imagePreview.append(imagePreviewMeta, imagePreviewExpanded);
   inputSection.appendChild(imagePreview);
@@ -331,7 +340,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     {
       id: "llm-select-text",
       textContent: SELECT_TEXT_EXPANDED_LABEL,
-      title: "Include selected reader text",
+      title: "Toggle selection tracking",
       disabled: !hasItem,
     },
   );
