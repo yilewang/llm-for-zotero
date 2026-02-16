@@ -465,6 +465,21 @@
   background: rgba(255, 255, 255, 0.06);
 }
 
+.llm-user-attachments-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.llm-user-attachments-file {
+  color: var(--fill-secondary);
+  font-size: var(--llm-fs-11);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .llm-user-screenshots-thumbs {
   display: flex;
   flex-wrap: wrap;
@@ -1018,7 +1033,8 @@
 }
 
 .llm-actions .llm-select-text-btn,
-.llm-actions .llm-screenshot-btn {
+.llm-actions .llm-screenshot-btn,
+.llm-actions .llm-upload-file-btn {
   padding-left: 8px;
   padding-right: 8px;
 }
@@ -1066,7 +1082,8 @@
 }
 
 .llm-select-text-btn,
-.llm-screenshot-btn {
+.llm-screenshot-btn,
+.llm-upload-file-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1090,7 +1107,8 @@
 }
 
 .llm-select-text-btn.llm-action-icon-only,
-.llm-screenshot-btn.llm-action-icon-only {
+.llm-screenshot-btn.llm-action-icon-only,
+.llm-upload-file-btn.llm-action-icon-only {
   width: 36px;
   min-width: 36px;
   padding: 0;
@@ -1101,8 +1119,10 @@
 
 .llm-select-text-btn:hover:not(:disabled),
 .llm-screenshot-btn:hover:not(:disabled),
+.llm-upload-file-btn:hover:not(:disabled),
 .llm-select-text-btn:focus-visible,
-.llm-screenshot-btn:focus-visible {
+.llm-screenshot-btn:focus-visible,
+.llm-upload-file-btn:focus-visible {
   background: transparent;
   border-color: transparent;
 }
@@ -1457,6 +1477,71 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.llm-file-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-file-preview-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.llm-file-preview-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.llm-file-preview-name {
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-11);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-file-preview-info {
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-10);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-file-preview-remove-one {
+  appearance: none;
+  -moz-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid #b91c1c;
+  background: #dc2626;
+  color: #fff;
+  font-family: sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0 0 1px;
+  flex: 0 0 auto;
+}
+
+.llm-file-preview-remove-one:hover {
+  background: #ef4444;
+  border-color: #ef4444;
 }
 
 .llm-preview-item {

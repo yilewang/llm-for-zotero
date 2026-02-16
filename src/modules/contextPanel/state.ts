@@ -4,6 +4,7 @@ import type {
   PdfContext,
   ReasoningLevelSelection,
   CustomShortcut,
+  ChatAttachment,
 } from "./types";
 
 // =============================================================================
@@ -61,6 +62,8 @@ export function setResponseMenuTarget(value: typeof responseMenuTarget) {
 
 // Screenshot selection state (per item)
 export const selectedImageCache = new Map<number, string[]>();
+export const selectedImageNameCache = new Map<number, string[]>();
+export const selectedFileAttachmentCache = new Map<number, ChatAttachment[]>();
 export const selectedTextCache = new Map<number, string>();
 export const selectedTextPreviewExpandedCache = new Map<number, boolean>();
 export const selectedImagePreviewExpandedCache = new Map<number, boolean>();

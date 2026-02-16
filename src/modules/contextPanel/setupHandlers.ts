@@ -1,6 +1,6 @@
 import { createElement } from "../../utils/domHelpers";
 import {
-  MAX_SELECTED_IMAGES,
+  MAX_UPLOAD_PDF_SIZE_BYTES,
   FONT_SCALE_MIN_PERCENT,
   FONT_SCALE_MAX_PERCENT,
   FONT_SCALE_STEP_PERCENT,
@@ -9,6 +9,8 @@ import {
   SELECT_TEXT_COMPACT_LABEL,
   SCREENSHOT_EXPANDED_LABEL,
   SCREENSHOT_COMPACT_LABEL,
+  UPLOAD_FILE_EXPANDED_LABEL,
+  UPLOAD_FILE_COMPACT_LABEL,
   REASONING_COMPACT_LABEL,
   ACTION_LAYOUT_FULL_MODE_BUFFER_PX,
   ACTION_LAYOUT_PARTIAL_MODE_BUFFER_PX,
@@ -23,6 +25,8 @@ import {
   selectedModelCache,
   selectedReasoningCache,
   selectedImageCache,
+  selectedImageNameCache,
+  selectedFileAttachmentCache,
   selectedImagePreviewExpandedCache,
   selectedImagePreviewActiveIndexCache,
   selectedTextCache,
@@ -85,6 +89,7 @@ import type {
   ReasoningOption,
   ReasoningProviderKind,
   AdvancedModelParams,
+  ChatAttachment,
 } from "./types";
 import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClient";
@@ -135,6 +140,12 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const screenshotBtn = body.querySelector(
     "#llm-screenshot",
   ) as HTMLButtonElement | null;
+  const uploadBtn = body.querySelector(
+    "#llm-upload-file",
+  ) as HTMLButtonElement | null;
+  const uploadInput = body.querySelector(
+    "#llm-upload-input",
+  ) as HTMLInputElement | null;
   const imagePreview = body.querySelector(
     "#llm-image-preview",
   ) as HTMLDivElement | null;
@@ -146,6 +157,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   ) as HTMLDivElement | null;
   const previewStrip = body.querySelector(
     "#llm-image-preview-strip",
+  ) as HTMLDivElement | null;
+  const filePreviewList = body.querySelector(
+    "#llm-file-preview-list",
   ) as HTMLDivElement | null;
   const previewExpanded = body.querySelector(
     "#llm-image-preview-expanded",
@@ -408,8 +422,13 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   const clearSelectedImageState = (itemId: number) => {
     selectedImageCache.delete(itemId);
+    selectedImageNameCache.delete(itemId);
     selectedImagePreviewExpandedCache.delete(itemId);
     selectedImagePreviewActiveIndexCache.delete(itemId);
+  };
+  const clearSelectedAttachmentState = (itemId: number) => {
+    clearSelectedImageState(itemId);
+    selectedFileAttachmentCache.delete(itemId);
   };
 
   const clearSelectedTextState = (itemId: number) => {
@@ -423,6 +442,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       !item ||
       !imagePreview ||
       !previewStrip ||
+      !filePreviewList ||
       !previewExpanded ||
       !previewSelected ||
       !previewSelectedImg ||
@@ -436,11 +456,21 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     const screenshotUnsupported = isScreenshotUnsupportedModel(currentModel);
     const screenshotDisabledHint = getScreenshotDisabledHint(currentModel);
     let selectedImages = selectedImageCache.get(item.id) || [];
+    let selectedImageNames = selectedImageNameCache.get(item.id) || [];
+    const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
     if (screenshotUnsupported && selectedImages.length) {
       clearSelectedImageState(item.id);
       selectedImages = [];
+      selectedImageNames = [];
     }
-    if (selectedImages.length) {
+    if (selectedImages.length !== selectedImageNames.length) {
+      selectedImageNames = selectedImages.map(
+        (_entry, index) => `Screenshot ${index + 1}.png`,
+      );
+      selectedImageNameCache.set(item.id, selectedImageNames);
+    }
+    const attachmentCount = selectedImages.length + selectedFiles.length;
+    if (attachmentCount) {
       const imageCount = selectedImages.length;
       let expanded = selectedImagePreviewExpandedCache.get(item.id);
       if (typeof expanded !== "boolean") {
@@ -454,23 +484,75 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       }
       activeIndex = Math.max(
         0,
-        Math.min(imageCount - 1, Math.floor(activeIndex)),
+        Math.min(Math.max(0, imageCount - 1), Math.floor(activeIndex)),
       );
-      selectedImagePreviewActiveIndexCache.set(item.id, activeIndex);
+      if (imageCount) {
+        selectedImagePreviewActiveIndexCache.set(item.id, activeIndex);
+      }
 
-      previewMeta.textContent = `screenshots (${imageCount}/${MAX_SELECTED_IMAGES}) embedded`;
+      previewMeta.textContent = `attachments (${attachmentCount}) embedded`;
       previewMeta.classList.toggle("expanded", expanded);
       previewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
       previewMeta.title = expanded
-        ? "Collapse screenshots"
-        : "Expand screenshots";
+        ? "Collapse attachments"
+        : "Expand attachments";
 
       imagePreview.style.display = "flex";
       previewExpanded.hidden = !expanded;
       previewExpanded.style.display = expanded ? "flex" : "none";
-      previewSelected.style.display = expanded ? "block" : "none";
 
       previewStrip.innerHTML = "";
+      filePreviewList.innerHTML = "";
+      for (const [index, fileAttachment] of selectedFiles.entries()) {
+        const fileItem = createElement(ownerDoc, "div", "llm-file-preview-item");
+        const fileMeta = createElement(ownerDoc, "div", "llm-file-preview-meta");
+        const fileName = createElement(
+          ownerDoc,
+          "div",
+          "llm-file-preview-name",
+          { textContent: fileAttachment.name },
+        );
+        const fileSizeMb = (fileAttachment.sizeBytes / 1024 / 1024).toFixed(2);
+        const fileInfo = createElement(
+          ownerDoc,
+          "div",
+          "llm-file-preview-info",
+          {
+            textContent: `${fileAttachment.mimeType || "application/octet-stream"} · ${fileSizeMb} MB`,
+          },
+        );
+        fileMeta.append(fileName, fileInfo);
+        const removeOneBtn = createElement(
+          ownerDoc,
+          "button",
+          "llm-file-preview-remove-one",
+          {
+            type: "button",
+            textContent: "×",
+            title: `Remove ${fileAttachment.name}`,
+          },
+        );
+        removeOneBtn.addEventListener("click", (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (!item) return;
+          const currentFiles = selectedFileAttachmentCache.get(item.id) || [];
+          const nextFiles = currentFiles.filter((_entry, i) => i !== index);
+          if (nextFiles.length) {
+            selectedFileAttachmentCache.set(item.id, nextFiles);
+          } else {
+            selectedFileAttachmentCache.delete(item.id);
+          }
+          updateImagePreview();
+          if (status) {
+            const nextTotal =
+              (selectedImageCache.get(item.id) || []).length + nextFiles.length;
+            setStatus(status, `Attachment removed (${nextTotal})`, "ready");
+          }
+        });
+        fileItem.append(fileMeta, removeOneBtn);
+        filePreviewList.appendChild(fileItem);
+      }
       for (const [index, imageUrl] of selectedImages.entries()) {
         const thumbItem = createElement(ownerDoc, "div", "llm-preview-item");
         const thumbBtn = createElement(
@@ -479,12 +561,12 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           "llm-preview-thumb",
           {
             type: "button",
-            title: `Screenshot ${index + 1}`,
+            title: selectedImageNames[index] || `Screenshot ${index + 1}`,
           },
         ) as HTMLButtonElement;
         thumbBtn.classList.toggle("active", index === activeIndex);
         const thumb = createElement(ownerDoc, "img", "llm-preview-img", {
-          alt: "Selected screenshot",
+          alt: selectedImageNames[index] || "Selected screenshot",
         }) as HTMLImageElement;
         thumb.src = imageUrl;
         thumbBtn.appendChild(thumb);
@@ -514,10 +596,13 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           e.stopPropagation();
           if (!item) return;
           const currentImages = selectedImageCache.get(item.id) || [];
+          const currentNames = selectedImageNameCache.get(item.id) || [];
           if (index < 0 || index >= currentImages.length) return;
           const nextImages = currentImages.filter((_, i) => i !== index);
+          const nextNames = currentNames.filter((_, i) => i !== index);
           if (nextImages.length) {
             selectedImageCache.set(item.id, nextImages);
+            selectedImageNameCache.set(item.id, nextNames);
             let nextActive =
               selectedImagePreviewActiveIndexCache.get(item.id) || 0;
             if (index < nextActive) {
@@ -532,9 +617,12 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           }
           updateImagePreview();
           if (status) {
+            const nextTotal =
+              nextImages.length +
+              (selectedFileAttachmentCache.get(item.id) || []).length;
             setStatus(
               status,
-              `Screenshot removed (${nextImages.length}/${MAX_SELECTED_IMAGES})`,
+              `Attachment removed (${nextTotal})`,
               "ready",
             );
           }
@@ -542,28 +630,34 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         thumbItem.append(thumbBtn, removeOneBtn);
         previewStrip.appendChild(thumbItem);
       }
-      previewSelectedImg.src = selectedImages[activeIndex];
-      previewSelectedImg.alt = `Selected screenshot ${activeIndex + 1}`;
-      screenshotBtn.disabled =
-        screenshotUnsupported || imageCount >= MAX_SELECTED_IMAGES;
+      if (imageCount > 0) {
+        previewSelected.style.display = expanded ? "block" : "none";
+        previewSelectedImg.src = selectedImages[activeIndex];
+        previewSelectedImg.alt = selectedImageNames[activeIndex]
+          ? selectedImageNames[activeIndex]
+          : `Selected screenshot ${activeIndex + 1}`;
+      } else {
+        previewSelected.style.display = "none";
+        previewSelectedImg.removeAttribute("src");
+        previewSelectedImg.alt = "Selected screenshot preview";
+      }
+      screenshotBtn.disabled = screenshotUnsupported;
       screenshotBtn.title = screenshotUnsupported
         ? screenshotDisabledHint
-        : imageCount >= MAX_SELECTED_IMAGES
-          ? `Max ${MAX_SELECTED_IMAGES} screenshots`
-          : `Add screenshot (${imageCount}/${MAX_SELECTED_IMAGES})`;
+        : `Add screenshot (${imageCount})`;
     } else {
       imagePreview.style.display = "none";
       previewExpanded.hidden = true;
       previewExpanded.style.display = "none";
+      filePreviewList.innerHTML = "";
       previewStrip.innerHTML = "";
       previewSelected.style.display = "none";
       previewSelectedImg.removeAttribute("src");
       previewSelectedImg.alt = "Selected screenshot preview";
-      previewMeta.textContent = `screenshots (0/${MAX_SELECTED_IMAGES}) embedded`;
+      previewMeta.textContent = "attachments (0) embedded";
       previewMeta.classList.remove("expanded");
       previewMeta.setAttribute("aria-expanded", "false");
-      previewMeta.title = "Expand screenshots";
-      clearSelectedImageState(item.id);
+      previewMeta.title = "Expand attachments";
       screenshotBtn.disabled = screenshotUnsupported;
       screenshotBtn.title = screenshotUnsupported
         ? screenshotDisabledHint
@@ -817,6 +911,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       };
       const selectTextSlot = selectTextBtn?.parentElement as HTMLElement | null;
       const screenshotSlot = screenshotBtn?.parentElement as HTMLElement | null;
+      const uploadSlot = uploadBtn?.parentElement as HTMLElement | null;
       const leftSlotWidths = [
         contextButtonMode === "full"
           ? getFullSlotRequiredWidth(
@@ -841,6 +936,15 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
                 screenshotBtn,
                 ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
               )
+            : 0,
+        contextButtonMode === "full"
+          ? getFullSlotRequiredWidth(
+              uploadSlot,
+              uploadBtn,
+              UPLOAD_FILE_EXPANDED_LABEL,
+            )
+          : uploadBtn
+            ? getRenderedWidthPx(uploadBtn, ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX)
             : 0,
         dropdownMode === "full"
           ? getFullSlotRequiredWidth(
@@ -921,6 +1025,12 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         screenshotBtn,
         SCREENSHOT_EXPANDED_LABEL,
         SCREENSHOT_COMPACT_LABEL,
+        contextButtonMode,
+      );
+      setActionButtonLabel(
+        uploadBtn,
+        UPLOAD_FILE_EXPANDED_LABEL,
+        UPLOAD_FILE_COMPACT_LABEL,
         contextButtonMode,
       );
 
@@ -1247,16 +1357,127 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     return { provider, level: selectedLevel as LLMReasoningLevel };
   };
 
+  const createAttachmentId = () =>
+    `att-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const isTextLikeFile = (file: File): boolean => {
+    const lowerName = (file.name || "").toLowerCase();
+    const mime = (file.type || "").toLowerCase();
+    if (
+      mime.startsWith("text/") ||
+      mime.includes("json") ||
+      mime.includes("xml") ||
+      mime.includes("javascript") ||
+      mime.includes("typescript")
+    ) {
+      return true;
+    }
+    return /\.(md|markdown|txt|json|ya?ml|xml|html?|css|scss|less|js|jsx|ts|tsx|py|java|c|cc|cpp|h|hpp|go|rs|rb|php|swift|kt|scala|sh|bash|zsh|sql|r|m|mm|lua|toml|ini|cfg|conf)$/i.test(
+      lowerName,
+    );
+  };
+
+  const resolveAttachmentCategory = (
+    file: File,
+  ): ChatAttachment["category"] => {
+    const lowerName = (file.name || "").toLowerCase();
+    const mime = (file.type || "").toLowerCase();
+    if (mime.startsWith("image/")) return "image";
+    if (mime === "application/pdf" || lowerName.endsWith(".pdf")) return "pdf";
+    if (/\.(md|markdown)$/i.test(lowerName)) return "markdown";
+    if (
+      /\.(js|jsx|ts|tsx|py|java|c|cc|cpp|h|hpp|go|rs|rb|php|swift|kt|scala|sh|bash|zsh|sql|r|m|mm|lua)$/i.test(
+        lowerName,
+      )
+    ) {
+      return "code";
+    }
+    if (isTextLikeFile(file)) return "text";
+    return "file";
+  };
+
+  const readFileAsDataURL = async (file: File): Promise<string> => {
+    const view = body.ownerDocument?.defaultView;
+    const FileReaderCtor = view?.FileReader || globalThis.FileReader;
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReaderCtor();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error("Invalid data URL result"));
+      };
+      reader.onerror = () => reject(reader.error || new Error("File read failed"));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const readFileAsText = async (file: File): Promise<string> => {
+    const view = body.ownerDocument?.defaultView;
+    const FileReaderCtor = view?.FileReader || globalThis.FileReader;
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReaderCtor();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error("Invalid text result"));
+      };
+      reader.onerror = () => reject(reader.error || new Error("File read failed"));
+      reader.readAsText(file);
+    });
+  };
+
+  const buildModelPromptWithFileContext = (
+    baseQuestion: string,
+    fileAttachments: ChatAttachment[],
+  ) => {
+    if (!fileAttachments.length) return baseQuestion;
+    const textBlocks: string[] = [];
+    const metaBlocks: string[] = [];
+    for (const attachment of fileAttachments) {
+      metaBlocks.push(
+        `- ${attachment.name} (${attachment.mimeType || "application/octet-stream"}, ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB)`,
+      );
+      if (attachment.textContent) {
+        const clipped = attachment.textContent.slice(0, 12000);
+        textBlocks.push(`### ${attachment.name}\n${clipped}`);
+      }
+    }
+    const blocks: string[] = [baseQuestion];
+    if (metaBlocks.length) {
+      blocks.push(`\nAttached files:\n${metaBlocks.join("\n")}`);
+    }
+    if (textBlocks.length) {
+      blocks.push(`\nAttached file contents:\n${textBlocks.join("\n\n")}`);
+    }
+    return blocks.join("\n");
+  };
+
   const doSend = async () => {
     if (!item) return;
     const text = inputBox.value.trim();
     const selectedText = selectedTextCache.get(item.id) || "";
-    if (!text && !selectedText) return;
-    const promptText = text || "Please explain this selected text.";
-    const composedQuestion = selectedText
+    const selectedImages = selectedImageCache.get(item.id) || [];
+    const selectedImageNames = selectedImageNameCache.get(item.id) || [];
+    const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
+    if (!text && !selectedText && !selectedImages.length && !selectedFiles.length)
+      return;
+    const promptText =
+      text ||
+      (selectedText
+        ? "Please explain this selected text."
+        : "Please analyze the attached files.");
+    const composedBaseQuestion = selectedText
       ? buildQuestionWithSelectedText(selectedText, text)
       : text;
-    const displayQuestion = selectedText ? promptText : text;
+    const composedQuestion = buildModelPromptWithFileContext(
+      composedBaseQuestion || promptText,
+      selectedFiles,
+    );
+    const displayQuestion = selectedText ? promptText : text || promptText;
     inputBox.value = "";
     const selectedProfile = getSelectedProfile();
     const activeModelName = (
@@ -1264,15 +1485,22 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       getSelectedModelInfo().currentModel ||
       ""
     ).trim();
-    const selectedImages = (selectedImageCache.get(item.id) || []).slice(
-      0,
-      MAX_SELECTED_IMAGES,
-    );
     const images = isScreenshotUnsupportedModel(activeModelName)
       ? []
       : selectedImages;
-    // Clear selected images after sending
-    clearSelectedImageState(item.id);
+    const imageAttachments: ChatAttachment[] = images.map((imageDataUrl, index) => ({
+      id: createAttachmentId(),
+      name:
+        selectedImageNames[index] ||
+        `Screenshot ${index + 1}.png`,
+      mimeType: "image/png",
+      sizeBytes: 0,
+      category: "image",
+      imageDataUrl,
+    }));
+    const attachments: ChatAttachment[] = [...imageAttachments, ...selectedFiles];
+    // Clear selected attachments after sending
+    clearSelectedAttachmentState(item.id);
     updateImagePreview();
     if (selectedText) {
       clearSelectedTextState(item.id);
@@ -1285,6 +1513,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       item,
       composedQuestion,
       images,
+      attachments,
       selectedProfile?.model,
       selectedProfile?.apiBase,
       selectedProfile?.apiKey,
@@ -1483,18 +1712,6 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         !!mainWindow.document.documentElement,
       );
 
-      const currentImages = selectedImageCache.get(item.id) || [];
-      if (currentImages.length >= MAX_SELECTED_IMAGES) {
-        if (status) {
-          setStatus(
-            status,
-            `Maximum ${MAX_SELECTED_IMAGES} screenshots allowed`,
-            "error",
-          );
-        }
-        updateImagePreview();
-        return;
-      }
       if (status) setStatus(status, "Select a region...", "sending");
 
       try {
@@ -1507,11 +1724,11 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         if (dataUrl) {
           const optimized = await optimizeImageDataUrl(mainWindow, dataUrl);
           const existingImages = selectedImageCache.get(item.id) || [];
-          const nextImages = [...existingImages, optimized].slice(
-            0,
-            MAX_SELECTED_IMAGES,
-          );
+          const existingNames = selectedImageNameCache.get(item.id) || [];
+          const nextImages = [...existingImages, optimized];
+          const nextNames = [...existingNames, `Screenshot ${nextImages.length}.png`];
           selectedImageCache.set(item.id, nextImages);
+          selectedImageNameCache.set(item.id, nextNames);
           selectedImagePreviewExpandedCache.set(item.id, true);
           selectedImagePreviewActiveIndexCache.set(
             item.id,
@@ -1521,7 +1738,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           if (status) {
             setStatus(
               status,
-              `Screenshot captured (${nextImages.length}/${MAX_SELECTED_IMAGES})`,
+              `Screenshot captured (${nextImages.length})`,
               "ready",
             );
           }
@@ -1531,6 +1748,116 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       } catch (err) {
         ztoolkit.log("Screenshot selection error:", err);
         if (status) setStatus(status, "Screenshot failed", "error");
+      }
+    });
+  }
+
+  if (uploadBtn && uploadInput) {
+    uploadBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!item) return;
+      uploadInput.click();
+    });
+    uploadInput.addEventListener("change", async () => {
+      if (!item) return;
+      const files = Array.from(uploadInput.files || []);
+      uploadInput.value = "";
+      if (!files.length) return;
+      const { currentModel } = getSelectedModelInfo();
+      const imageUnsupported = isScreenshotUnsupportedModel(currentModel);
+
+      let addedCount = 0;
+      let rejectedPdfCount = 0;
+      let skippedImageCount = 0;
+      const nextImages = [...(selectedImageCache.get(item.id) || [])];
+      const nextImageNames = [...(selectedImageNameCache.get(item.id) || [])];
+      const nextFiles = [...(selectedFileAttachmentCache.get(item.id) || [])];
+
+      for (const file of files) {
+        const lowerName = (file.name || "").toLowerCase();
+        const isPdf =
+          file.type === "application/pdf" || lowerName.endsWith(".pdf");
+        if (isPdf && file.size > MAX_UPLOAD_PDF_SIZE_BYTES) {
+          rejectedPdfCount += 1;
+          continue;
+        }
+        const category = resolveAttachmentCategory(file);
+        if (category === "image") {
+          if (imageUnsupported) {
+            skippedImageCount += 1;
+            continue;
+          }
+          try {
+            const dataUrl = await readFileAsDataURL(file);
+            nextImages.push(dataUrl);
+            nextImageNames.push(file.name || `Image ${nextImages.length}.png`);
+            addedCount += 1;
+          } catch (err) {
+            ztoolkit.log("LLM: Failed to read image upload", err);
+          }
+          continue;
+        }
+        let textContent: string | undefined;
+        if (
+          category === "markdown" ||
+          category === "code" ||
+          category === "text"
+        ) {
+          try {
+            textContent = await readFileAsText(file);
+          } catch (err) {
+            ztoolkit.log("LLM: Failed to read text upload", err);
+          }
+        }
+        nextFiles.push({
+          id: createAttachmentId(),
+          name: file.name || "untitled",
+          mimeType: file.type || "application/octet-stream",
+          sizeBytes: file.size || 0,
+          category,
+          textContent,
+        });
+        addedCount += 1;
+      }
+
+      if (nextImages.length) {
+        selectedImageCache.set(item.id, nextImages);
+        selectedImageNameCache.set(item.id, nextImageNames);
+        selectedImagePreviewExpandedCache.set(item.id, true);
+        if (
+          typeof selectedImagePreviewActiveIndexCache.get(item.id) !== "number"
+        ) {
+          selectedImagePreviewActiveIndexCache.set(item.id, nextImages.length - 1);
+        }
+      }
+      if (nextFiles.length) {
+        selectedFileAttachmentCache.set(item.id, nextFiles);
+      }
+      updateImagePreview();
+
+      if (status) {
+        if (addedCount > 0 && (rejectedPdfCount > 0 || skippedImageCount > 0)) {
+          setStatus(
+            status,
+            `Uploaded ${addedCount} attachment(s), skipped ${rejectedPdfCount} PDF(s) > 50MB and ${skippedImageCount} image(s)`,
+            "warning",
+          );
+        } else if (addedCount > 0) {
+          setStatus(status, `Uploaded ${addedCount} attachment(s)`, "ready");
+        } else if (skippedImageCount > 0) {
+          setStatus(
+            status,
+            `${skippedImageCount} image(s) skipped: ${getScreenshotDisabledHint(currentModel)}`,
+            "warning",
+          );
+        } else if (rejectedPdfCount > 0) {
+          setStatus(
+            status,
+            `PDF exceeds 50MB limit (${rejectedPdfCount} file(s) skipped)`,
+            "error",
+          );
+        }
       }
     });
   }
@@ -1749,9 +2076,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       e.preventDefault();
       e.stopPropagation();
       if (!item) return;
-      clearSelectedImageState(item.id);
+      clearSelectedAttachmentState(item.id);
       updateImagePreview();
-      if (status) setStatus(status, "Screenshots cleared", "ready");
+      if (status) setStatus(status, "Attachments cleared", "ready");
     });
   }
 

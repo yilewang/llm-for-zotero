@@ -2,6 +2,7 @@ import { createElement } from "../../utils/domHelpers";
 import {
   SELECT_TEXT_EXPANDED_LABEL,
   SCREENSHOT_EXPANDED_LABEL,
+  UPLOAD_FILE_EXPANDED_LABEL,
 } from "./constants";
 import type { ActionDropdownSpec } from "./types";
 
@@ -251,8 +252,8 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     {
       id: "llm-image-preview-meta",
       type: "button",
-      textContent: "screenshots (0/5) embedded",
-      title: "Expand screenshots",
+      textContent: "attachments (0) embedded",
+      title: "Expand attachments",
     },
   );
   const imagePreviewExpanded = createElement(
@@ -266,6 +267,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const previewStrip = createElement(doc, "div", "llm-image-preview-strip", {
     id: "llm-image-preview-strip",
   });
+  const filePreviewList = createElement(
+    doc,
+    "div",
+    "llm-file-preview-list",
+    {
+      id: "llm-file-preview-list",
+    },
+  );
   const previewLargeWrap = createElement(
     doc,
     "div",
@@ -289,10 +298,15 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     id: "llm-remove-img",
     type: "button",
     textContent: "Clear All",
-    title: "Clear selected screenshots",
+    title: "Clear selected attachments",
   });
 
-  imagePreviewExpanded.append(previewStrip, previewLargeWrap, removeImgBtn);
+  imagePreviewExpanded.append(
+    filePreviewList,
+    previewStrip,
+    previewLargeWrap,
+    removeImgBtn,
+  );
   imagePreview.append(imagePreviewMeta, imagePreviewExpanded);
   inputSection.appendChild(imagePreview);
 
@@ -338,6 +352,26 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   const screenshotSlot = createElement(doc, "div", "llm-action-slot");
   screenshotSlot.appendChild(screenshotBtn);
+
+  const uploadBtn = createElement(
+    doc,
+    "button",
+    "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-upload-file-btn",
+    {
+      id: "llm-upload-file",
+      textContent: UPLOAD_FILE_EXPANDED_LABEL,
+      title: "Upload attachments",
+      disabled: !hasItem,
+    },
+  );
+  const uploadInput = createElement(doc, "input", "", {
+    id: "llm-upload-input",
+    type: "file",
+  }) as HTMLInputElement;
+  uploadInput.multiple = true;
+  uploadInput.style.display = "none";
+  const uploadSlot = createElement(doc, "div", "llm-action-slot");
+  uploadSlot.append(uploadBtn, uploadInput);
 
   const {
     slot: modelDropdown,
@@ -403,6 +437,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   actionsLeft.append(
     selectTextSlot,
     screenshotSlot,
+    uploadSlot,
     modelDropdown,
     reasoningDropdown,
   );
