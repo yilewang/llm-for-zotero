@@ -25,6 +25,13 @@
   background: var(--material-sidepane);
 }
 
+.llm-panel:focus,
+.llm-panel:focus-visible,
+.llm-panel:-moz-focusring {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 /* Header */
 .llm-header {
   display: flex;
@@ -278,6 +285,70 @@
 .llm-shortcut-menu-item:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.llm-assistant-selection-action {
+  appearance: none;
+  -moz-appearance: none;
+  position: absolute;
+  z-index: 8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(24px * var(--llm-font-scale, 1));
+  padding: calc(4px * var(--llm-font-scale, 1))
+    calc(10px * var(--llm-font-scale, 1));
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--stroke-secondary) 70%, transparent);
+  background: color-mix(in srgb, var(--material-background) 88%, transparent);
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-11);
+  font-weight: 500;
+  line-height: 1.2;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(4px) scale(0.985);
+  will-change: opacity, transform;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease,
+    visibility 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.llm-assistant-selection-action.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.llm-assistant-selection-action:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--material-background) 78%, #000);
+  box-shadow: 0 5px 11px rgba(0, 0, 0, 0.18);
+  transform: translateY(-0.8px) scale(1.008);
+}
+
+.llm-assistant-selection-action:active {
+  background: color-mix(in srgb, var(--material-background) 76%, #000);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+  transform: translateY(0) scale(0.992);
+}
+
+@media (prefers-color-scheme: light) {
+  .llm-assistant-selection-action:hover {
+    background: #f2f2f2;
+  }
+
+  .llm-assistant-selection-action:active {
+    background: #eaeaea;
+  }
 }
 
 /* Welcome Message */
