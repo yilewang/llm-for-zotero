@@ -1,7 +1,6 @@
 import {
   sanitizeText,
   normalizeSelectedText,
-  truncateSelectedText,
   isLikelyCorruptedSelectedText,
   setStatus,
 } from "./textUtils";
@@ -384,6 +383,12 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
   const previewBox = body.querySelector(
     "#llm-selected-context",
   ) as HTMLDivElement | null;
+  const previewMeta = body.querySelector(
+    "#llm-selected-context-meta",
+  ) as HTMLButtonElement | null;
+  const previewExpanded = body.querySelector(
+    "#llm-selected-context-expanded",
+  ) as HTMLDivElement | null;
   const previewText = body.querySelector(
     "#llm-selected-context-text",
   ) as HTMLDivElement | null;
@@ -393,13 +398,16 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
   const selectTextBtn = body.querySelector(
     "#llm-select-text",
   ) as HTMLButtonElement | null;
-  if (!previewBox || !previewText) return;
+  if (!previewBox || !previewMeta || !previewExpanded || !previewText) return;
   const selectedText = selectedTextCache.get(itemId) || "";
   if (!selectedText) {
     previewBox.style.display = "none";
-    previewBox.classList.remove("expanded");
-    previewBox.setAttribute("aria-expanded", "false");
-    previewBox.title = "";
+    previewBox.classList.remove("expanded", "collapsed");
+    previewMeta.classList.remove("expanded");
+    previewMeta.setAttribute("aria-expanded", "false");
+    previewMeta.title = "Pin text context";
+    previewExpanded.hidden = true;
+    previewExpanded.style.display = "none";
     previewText.textContent = "";
     selectedTextPreviewExpandedCache.delete(itemId);
     if (previewWarning) previewWarning.style.display = "none";
@@ -411,13 +419,13 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
   const expanded = selectedTextPreviewExpandedCache.get(itemId) === true;
   previewBox.style.display = "flex";
   previewBox.classList.toggle("expanded", expanded);
-  previewBox.setAttribute("aria-expanded", expanded ? "true" : "false");
-  previewBox.title = expanded
-    ? "Click to collapse selected context"
-    : "Click to expand selected context";
-  previewText.textContent = expanded
-    ? selectedText
-    : truncateSelectedText(selectedText);
+  previewBox.classList.toggle("collapsed", !expanded);
+  previewMeta.classList.toggle("expanded", expanded);
+  previewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
+  previewMeta.title = expanded ? "Unpin text context" : "Pin text context";
+  previewExpanded.hidden = false;
+  previewExpanded.style.display = "flex";
+  previewText.textContent = selectedText;
   if (previewWarning) {
     previewWarning.style.display = isLikelyCorruptedSelectedText(selectedText)
       ? "block"

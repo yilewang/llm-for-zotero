@@ -27,13 +27,20 @@ export const SELECTED_TEXT_MAX_LENGTH = 4000;
 export const SELECTED_TEXT_PREVIEW_LENGTH = 240;
 export const MAX_EDITABLE_SHORTCUTS = 5;
 export const MAX_SELECTED_IMAGES = 5;
-export const MAX_UPLOAD_PDF_SIZE_BYTES = 50 * 1024 * 1024;
+
+export function formatFigureCountLabel(
+  count: number,
+  maxCount = MAX_SELECTED_IMAGES,
+): string {
+  if (count <= 0) return "";
+  const noun = count === 1 ? "Figure" : "Figures";
+  return `${noun} (${count}/${maxCount})`;
+}
+
 export const SELECT_TEXT_EXPANDED_LABEL = "Add Text";
 export const SELECT_TEXT_COMPACT_LABEL = "✍🏻";
 export const SCREENSHOT_EXPANDED_LABEL = "Screenshots";
 export const SCREENSHOT_COMPACT_LABEL = "📷";
-export const UPLOAD_FILE_EXPANDED_LABEL = "+";
-export const UPLOAD_FILE_COMPACT_LABEL = "+";
 export const REASONING_COMPACT_LABEL = "💭";
 export const ACTION_LAYOUT_FULL_MODE_BUFFER_PX = 0;
 export const ACTION_LAYOUT_PARTIAL_MODE_BUFFER_PX = 0;

@@ -147,15 +147,86 @@ export function registerReaderSelectionTracking() {
           selectedTextPreviewExpandedCache.set(key, false);
         }
         try {
-          const mainWin = Zotero.getMainWindow();
-          const panelRoot = mainWin?.document.querySelector(
-            "#llm-main",
-          ) as HTMLDivElement | null;
-          if (!panelRoot) return;
+          const docs = new Set<Document>();
+          const pushDoc = (doc?: Document | null) => {
+            if (doc) docs.add(doc);
+          };
+          pushDoc(event.doc);
+          pushDoc(event.doc.defaultView?.top?.document || null);
+          try {
+            pushDoc(Zotero.getMainWindow()?.document || null);
+          } catch (_err) {
+            void _err;
+          }
+          try {
+            const wins = Zotero.getMainWindows?.() || [];
+            for (const win of wins) {
+              pushDoc(win?.document || null);
+            }
+          } catch (_err) {
+            void _err;
+          }
 
-          const panelItemId = Number(panelRoot.dataset.itemId || 0);
-          if (!Number.isFinite(panelItemId) || panelItemId <= 0) return;
-          if (!keys.includes(panelItemId)) return;
+          const panelRoots: HTMLDivElement[] = [];
+          const seenRoots = new Set<Element>();
+          for (const doc of docs) {
+            const roots = Array.from(
+              doc.querySelectorAll("#llm-main"),
+            ) as HTMLDivElement[];
+            for (const root of roots) {
+              if (seenRoots.has(root)) continue;
+              seenRoots.add(root);
+              panelRoots.push(root);
+            }
+          }
+          if (!panelRoots.length) return;
+
+          const getPanelItemId = (root: HTMLDivElement): number | null => {
+            const parsed = Number(root.dataset.itemId || 0);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+          };
+          const isVisible = (root: HTMLElement) =>
+            root.getClientRects().length > 0;
+          const popupTopDoc = event.doc.defaultView?.top?.document || null;
+          const rootStates = panelRoots
+            .map((root) => ({
+              root,
+              panelItemId: getPanelItemId(root),
+              keyed: false,
+              visible: isVisible(root),
+              sameDoc: popupTopDoc ? root.ownerDocument === popupTopDoc : false,
+            }))
+            .filter((state) => state.panelItemId !== null);
+          if (!rootStates.length) return;
+          for (const state of rootStates) {
+            state.keyed = keys.includes(state.panelItemId as number);
+          }
+
+          // Deterministic single-target ranking:
+          // 1) keyed + visible, 2) keyed, 3) same popup top-doc + visible,
+          // 4) visible, 5) any remaining.
+          const scoreState = (state: (typeof rootStates)[number]) => {
+            if (state.keyed && state.visible) return 5;
+            if (state.keyed) return 4;
+            if (state.sameDoc && state.visible) return 3;
+            if (state.visible) return 2;
+            return 1;
+          };
+          let bestState = rootStates[0];
+          let bestScore = scoreState(bestState);
+          for (const state of rootStates.slice(1)) {
+            const score = scoreState(state);
+            if (score > bestScore) {
+              bestState = state;
+              bestScore = score;
+            }
+          }
+
+          const panelRoot = bestState.root;
+          const panelItemId = bestState.panelItemId as number;
+
+          selectedTextCache.set(panelItemId, selectedText);
+          selectedTextPreviewExpandedCache.set(panelItemId, false);
 
           const panelBody = panelRoot.parentElement || panelRoot;
           applySelectedTextPreview(panelBody, panelItemId);

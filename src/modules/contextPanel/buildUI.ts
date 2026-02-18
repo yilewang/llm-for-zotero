@@ -2,7 +2,7 @@ import { createElement } from "../../utils/domHelpers";
 import {
   SELECT_TEXT_EXPANDED_LABEL,
   SCREENSHOT_EXPANDED_LABEL,
-  UPLOAD_FILE_EXPANDED_LABEL,
+  formatFigureCountLabel,
 } from "./constants";
 import type { ActionDropdownSpec } from "./types";
 
@@ -186,37 +186,52 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
 
   // Input section
   const inputSection = createElement(doc, "div", "llm-input-section");
+  const contextPreviews = createElement(doc, "div", "llm-context-previews", {
+    id: "llm-context-previews",
+  });
   const selectedContext = createElement(doc, "div", "llm-selected-context", {
     id: "llm-selected-context",
   });
   selectedContext.style.display = "none";
-  const selectedContextTop = createElement(
+  const selectedContextHeader = createElement(
     doc,
     "div",
-    "llm-selected-context-top",
-  );
-  const selectedContextLabel = createElement(
-    doc,
-    "div",
-    "llm-selected-context-label",
+    "llm-image-preview-header llm-selected-context-header",
     {
-      id: "llm-selected-context-label",
-      textContent: "Selected Context",
+      id: "llm-selected-context-header",
     },
   );
-  const selectedContextControls = createElement(
+  const selectedContextMeta = createElement(
     doc,
-    "div",
-    "llm-selected-context-controls",
+    "button",
+    "llm-image-preview-meta llm-selected-context-meta",
+    {
+      id: "llm-selected-context-meta",
+      type: "button",
+      textContent: "Text Context",
+      title: "Expand text context",
+    },
   );
   const selectedContextClear = createElement(
     doc,
     "button",
-    "llm-selected-context-clear",
+    "llm-remove-img-btn llm-selected-context-clear",
     {
       id: "llm-selected-context-clear",
       type: "button",
-      textContent: "Clear",
+      textContent: "×",
+      title: "Clear selected context",
+    },
+  );
+  selectedContextClear.setAttribute("aria-label", "Clear selected context");
+  selectedContextHeader.append(selectedContextMeta, selectedContextClear);
+
+  const selectedContextExpanded = createElement(
+    doc,
+    "div",
+    "llm-image-preview-expanded llm-selected-context-expanded",
+    {
+      id: "llm-selected-context-expanded",
     },
   );
   const selectedContextText = createElement(
@@ -237,14 +252,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     },
   );
   selectedContextWarning.style.display = "none";
-  selectedContextControls.append(selectedContextClear);
-  selectedContextTop.append(selectedContextLabel, selectedContextControls);
-  selectedContext.append(
-    selectedContextTop,
-    selectedContextText,
-    selectedContextWarning,
-  );
-  inputSection.appendChild(selectedContext);
+  selectedContextExpanded.append(selectedContextText, selectedContextWarning);
+  selectedContext.append(selectedContextHeader, selectedContextExpanded);
+  contextPreviews.appendChild(selectedContext);
 
   // Image preview area (shows selected screenshot)
   const imagePreview = createElement(doc, "div", "llm-image-preview", {
@@ -259,10 +269,27 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     {
       id: "llm-image-preview-meta",
       type: "button",
-      textContent: "attachments (0) embedded",
-      title: "Expand attachments",
+      textContent: formatFigureCountLabel(0),
+      title: "Expand figures",
     },
   );
+  const imagePreviewHeader = createElement(
+    doc,
+    "div",
+    "llm-image-preview-header",
+    {
+      id: "llm-image-preview-header",
+    },
+  );
+  const removeImgBtn = createElement(doc, "button", "llm-remove-img-btn", {
+    id: "llm-remove-img",
+    type: "button",
+    textContent: "×",
+    title: "Clear selected screenshots",
+  });
+  removeImgBtn.setAttribute("aria-label", "Clear selected screenshots");
+  imagePreviewHeader.append(imagePreviewMeta, removeImgBtn);
+
   const imagePreviewExpanded = createElement(
     doc,
     "div",
@@ -274,14 +301,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const previewStrip = createElement(doc, "div", "llm-image-preview-strip", {
     id: "llm-image-preview-strip",
   });
-  const filePreviewList = createElement(
-    doc,
-    "div",
-    "llm-file-preview-list",
-    {
-      id: "llm-file-preview-list",
-    },
-  );
   const previewLargeWrap = createElement(
     doc,
     "div",
@@ -301,23 +320,10 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   ) as HTMLImageElement;
   previewLargeWrap.appendChild(previewLargeImg);
 
-  const removeImgBtn = createElement(doc, "button", "llm-remove-img-btn", {
-    id: "llm-remove-img",
-    type: "button",
-    textContent: "Clear All",
-    title: "Clear selected attachments",
-  });
-  const imagePreviewActions = createElement(doc, "div", "llm-image-preview-actions");
-  imagePreviewActions.append(removeImgBtn);
-
-  imagePreviewExpanded.append(
-    filePreviewList,
-    previewStrip,
-    previewLargeWrap,
-    imagePreviewActions,
-  );
-  imagePreview.append(imagePreviewMeta, imagePreviewExpanded);
-  inputSection.appendChild(imagePreview);
+  imagePreviewExpanded.append(previewStrip, previewLargeWrap);
+  imagePreview.append(imagePreviewHeader, imagePreviewExpanded);
+  contextPreviews.appendChild(imagePreview);
+  inputSection.appendChild(contextPreviews);
 
   const inputBox = createElement(doc, "textarea", "llm-input", {
     id: "llm-input",
@@ -361,26 +367,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   const screenshotSlot = createElement(doc, "div", "llm-action-slot");
   screenshotSlot.appendChild(screenshotBtn);
-
-  const uploadBtn = createElement(
-    doc,
-    "button",
-    "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-upload-file-btn",
-    {
-      id: "llm-upload-file",
-      textContent: UPLOAD_FILE_EXPANDED_LABEL,
-      title: "Upload attachments",
-      disabled: !hasItem,
-    },
-  );
-  const uploadInput = createElement(doc, "input", "", {
-    id: "llm-upload-input",
-    type: "file",
-  }) as HTMLInputElement;
-  uploadInput.multiple = true;
-  uploadInput.style.display = "none";
-  const uploadSlot = createElement(doc, "div", "llm-action-slot");
-  uploadSlot.append(uploadBtn, uploadInput);
 
   const {
     slot: modelDropdown,
@@ -444,7 +430,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
 
   actionsLeft.append(
-    uploadSlot,
     selectTextSlot,
     screenshotSlot,
     modelDropdown,

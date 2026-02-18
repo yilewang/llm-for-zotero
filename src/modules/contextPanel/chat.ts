@@ -18,12 +18,13 @@ import {
   PERSISTED_HISTORY_LIMIT,
   MAX_HISTORY_MESSAGES,
   AUTO_SCROLL_BOTTOM_THRESHOLD,
+  MAX_SELECTED_IMAGES,
+  formatFigureCountLabel,
   MODEL_PROFILE_ORDER,
   type ModelProfileKey,
 } from "./constants";
 import type {
   Message,
-  ChatAttachment,
   ReasoningProviderKind,
   ReasoningOption,
   ReasoningLevelSelection,
@@ -41,6 +42,7 @@ import {
   setCurrentAbortController,
   nextRequestId,
   setResponseMenuTarget,
+  selectedImageCache,
   selectedTextCache,
   pdfTextCache,
 } from "./state";
@@ -310,73 +312,16 @@ async function persistConversationMessage(
   }
 }
 
-function normalizeMessageAttachments(
-  attachments: unknown,
-): ChatAttachment[] | undefined {
-  if (!Array.isArray(attachments)) return undefined;
-  const normalized = attachments.reduce<ChatAttachment[]>((out, entry) => {
-    if (!entry || typeof entry !== "object") return out;
-    const typed = entry as Record<string, unknown>;
-    const id =
-      typeof typed.id === "string" && typed.id.trim() ? typed.id.trim() : null;
-    const name =
-      typeof typed.name === "string" && typed.name.trim()
-        ? typed.name.trim()
-        : null;
-    const mimeType =
-      typeof typed.mimeType === "string" && typed.mimeType.trim()
-        ? typed.mimeType.trim()
-        : "application/octet-stream";
-    const sizeBytes = Number(typed.sizeBytes);
-    const category = typed.category;
-    if (
-      !id ||
-      !name ||
-      (category !== "image" &&
-        category !== "pdf" &&
-        category !== "markdown" &&
-        category !== "code" &&
-        category !== "text" &&
-        category !== "file")
-    ) {
-      return out;
-    }
-    out.push({
-      id,
-      name,
-      mimeType,
-      sizeBytes: Number.isFinite(sizeBytes) ? Math.max(0, sizeBytes) : 0,
-      category,
-      imageDataUrl:
-        typeof typed.imageDataUrl === "string" && typed.imageDataUrl.trim()
-          ? typed.imageDataUrl
-          : undefined,
-      textContent:
-        typeof typed.textContent === "string" && typed.textContent
-          ? typed.textContent
-          : undefined,
-    });
-    return out;
-  }, []);
-  return normalized.length ? normalized : undefined;
-}
-
 function toPanelMessage(message: StoredChatMessage): Message {
-  const attachments = normalizeMessageAttachments(message.attachments);
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
-    : attachments
-      ?.filter((entry) => entry.category === "image" && entry.imageDataUrl)
-      .map((entry) => entry.imageDataUrl as string);
+    : undefined;
   return {
     role: message.role,
     text: message.text,
     timestamp: message.timestamp,
     selectedText: message.selectedText,
     selectedTextExpanded: false,
-    attachments,
-    attachmentsExpanded: false,
-    attachmentActiveIndex: attachments?.length ? 0 : undefined,
     screenshotImages,
     screenshotExpanded: false,
     screenshotActiveIndex: screenshotImages?.length ? 0 : undefined,
@@ -583,7 +528,6 @@ export async function sendQuestion(
   item: Zotero.Item,
   question: string,
   images?: string[],
-  attachments?: ChatAttachment[],
   model?: string,
   apiBase?: string,
   apiKey?: string,
@@ -641,8 +585,8 @@ export async function sendQuestion(
         .filter((entry): entry is string => typeof entry === "string")
         .map((entry) => entry.trim())
         .filter(Boolean)
+        .slice(0, MAX_SELECTED_IMAGES)
     : [];
-  const attachmentsForMessage = normalizeMessageAttachments(attachments);
   const imageCount = screenshotImagesForMessage.length;
   const userMessageText = shownQuestion;
   const userMessage: Message = {
@@ -651,9 +595,6 @@ export async function sendQuestion(
     timestamp: Date.now(),
     selectedText: selectedTextForMessage || undefined,
     selectedTextExpanded: false,
-    attachments: attachmentsForMessage,
-    attachmentsExpanded: false,
-    attachmentActiveIndex: 0,
     screenshotImages: screenshotImagesForMessage.length
       ? screenshotImagesForMessage
       : undefined,
@@ -666,7 +607,6 @@ export async function sendQuestion(
     text: userMessage.text,
     timestamp: userMessage.timestamp,
     selectedText: userMessage.selectedText,
-    attachments: userMessage.attachments,
     screenshotImages: userMessage.screenshotImages,
   });
 
@@ -873,189 +813,118 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     bubble.className = `llm-bubble ${isUser ? "user" : "assistant"}`;
 
     if (isUser) {
-      const attachments = normalizeMessageAttachments(msg.attachments) || [];
-      const legacyScreenshots = Array.isArray(msg.screenshotImages)
+      const screenshotImages = Array.isArray(msg.screenshotImages)
         ? msg.screenshotImages.filter((entry) => Boolean(entry))
         : [];
-      if (!attachments.length && legacyScreenshots.length) {
-        attachments.push(
-          ...legacyScreenshots.map((imageUrl, index) => ({
-            id: `screenshot-${index + 1}`,
-            name: `Screenshot ${index + 1}.png`,
-            mimeType: "image/png",
-            sizeBytes: 0,
-            category: "image" as const,
-            imageDataUrl: imageUrl,
-          })),
+      if (screenshotImages.length) {
+        const screenshotBar = doc.createElement("button") as HTMLButtonElement;
+        screenshotBar.type = "button";
+        screenshotBar.className = "llm-user-screenshots-bar";
+
+        const screenshotIcon = doc.createElement("span") as HTMLSpanElement;
+        screenshotIcon.className = "llm-user-screenshots-icon";
+        screenshotIcon.textContent = "🖼";
+
+        const screenshotLabel = doc.createElement("span") as HTMLSpanElement;
+        screenshotLabel.className = "llm-user-screenshots-label";
+        screenshotLabel.textContent = formatFigureCountLabel(
+          screenshotImages.length,
         );
-      }
-      if (attachments.length) {
-        const imageAttachments = attachments.filter(
-          (entry) => entry.category === "image" && entry.imageDataUrl,
-        );
-        const fileAttachments = attachments.filter(
-          (entry) => entry.category !== "image",
-        );
-        const attachmentBar = doc.createElement("button") as HTMLButtonElement;
-        attachmentBar.type = "button";
-        attachmentBar.className = "llm-user-screenshots-bar";
 
-        const attachmentIcon = doc.createElement("span") as HTMLSpanElement;
-        attachmentIcon.className = "llm-user-screenshots-icon";
-        attachmentIcon.textContent = "📎";
+        screenshotBar.append(screenshotIcon, screenshotLabel);
 
-        const attachmentLabel = doc.createElement("span") as HTMLSpanElement;
-        attachmentLabel.className = "llm-user-screenshots-label";
-        attachmentLabel.textContent = `attachments (${attachments.length}) embedded`;
+        const screenshotExpanded = doc.createElement("div") as HTMLDivElement;
+        screenshotExpanded.className = "llm-user-screenshots-expanded";
 
-        attachmentBar.append(attachmentIcon, attachmentLabel);
+        const thumbStrip = doc.createElement("div") as HTMLDivElement;
+        thumbStrip.className = "llm-user-screenshots-thumbs";
 
-        const attachmentExpanded = doc.createElement("div") as HTMLDivElement;
-        attachmentExpanded.className = "llm-user-screenshots-expanded";
+        const previewWrap = doc.createElement("div") as HTMLDivElement;
+        previewWrap.className = "llm-user-screenshots-preview";
+        const previewImg = doc.createElement("img") as HTMLImageElement;
+        previewImg.className = "llm-user-screenshots-preview-img";
+        previewImg.alt = "Screenshot preview";
+        previewWrap.appendChild(previewImg);
 
-        if (fileAttachments.length) {
-          const fileList = doc.createElement("div") as HTMLDivElement;
-          fileList.className = "llm-user-attachments-files";
-          for (const file of fileAttachments) {
-            const fileItem = doc.createElement("div") as HTMLDivElement;
-            fileItem.className = "llm-user-attachments-file";
-            const sizeText =
-              file.sizeBytes > 0
-                ? ` · ${(file.sizeBytes / 1024 / 1024).toFixed(2)} MB`
-                : "";
-            fileItem.textContent = `${file.name}${sizeText}`;
-            fileList.appendChild(fileItem);
-          }
-          attachmentExpanded.appendChild(fileList);
-        }
+        const thumbButtons: HTMLButtonElement[] = [];
+        screenshotImages.forEach((imageUrl, index) => {
+          const thumbBtn = doc.createElement("button") as HTMLButtonElement;
+          thumbBtn.type = "button";
+          thumbBtn.className = "llm-user-screenshot-thumb";
+          thumbBtn.title = `Screenshot ${index + 1}`;
 
-        if (imageAttachments.length) {
-          const thumbStrip = doc.createElement("div") as HTMLDivElement;
-          thumbStrip.className = "llm-user-screenshots-thumbs";
+          const thumbImg = doc.createElement("img") as HTMLImageElement;
+          thumbImg.className = "llm-user-screenshot-thumb-img";
+          thumbImg.src = imageUrl;
+          thumbImg.alt = `Screenshot ${index + 1}`;
+          thumbBtn.appendChild(thumbImg);
 
-          const previewWrap = doc.createElement("div") as HTMLDivElement;
-          previewWrap.className = "llm-user-screenshots-preview";
-          const previewImg = doc.createElement("img") as HTMLImageElement;
-          previewImg.className = "llm-user-screenshots-preview-img";
-          previewImg.alt = "Attachment image preview";
-          previewWrap.appendChild(previewImg);
-
-          const thumbButtons: HTMLButtonElement[] = [];
-          imageAttachments.forEach((attachment, index) => {
-            const thumbBtn = doc.createElement("button") as HTMLButtonElement;
-            thumbBtn.type = "button";
-            thumbBtn.className = "llm-user-screenshot-thumb";
-            thumbBtn.title = attachment.name || `Image ${index + 1}`;
-
-            const thumbImg = doc.createElement("img") as HTMLImageElement;
-            thumbImg.className = "llm-user-screenshot-thumb-img";
-            thumbImg.src = attachment.imageDataUrl as string;
-            thumbImg.alt = attachment.name || `Image ${index + 1}`;
-            thumbBtn.appendChild(thumbImg);
-
-            thumbBtn.addEventListener("click", (e: Event) => {
-              e.preventDefault();
-              e.stopPropagation();
-              msg.attachmentActiveIndex = index;
-              if (!msg.attachmentsExpanded) {
-                msg.attachmentsExpanded = true;
-              }
-              applyAttachmentState();
-            });
-            thumbButtons.push(thumbBtn);
-            thumbStrip.appendChild(thumbBtn);
-          });
-
-          attachmentExpanded.append(thumbStrip, previewWrap);
-
-          const applyAttachmentState = () => {
-            const expanded = Boolean(msg.attachmentsExpanded);
-            let activeIndex =
-              typeof msg.attachmentActiveIndex === "number"
-                ? Math.floor(msg.attachmentActiveIndex)
-                : 0;
-            if (activeIndex < 0 || activeIndex >= imageAttachments.length) {
-              activeIndex = 0;
-              msg.attachmentActiveIndex = 0;
+          thumbBtn.addEventListener("click", (e: Event) => {
+            e.preventDefault();
+            e.stopPropagation();
+            msg.screenshotActiveIndex = index;
+            if (!msg.screenshotExpanded) {
+              msg.screenshotExpanded = true;
             }
-            attachmentBar.classList.toggle("expanded", expanded);
-            attachmentBar.setAttribute(
-              "aria-expanded",
-              expanded ? "true" : "false",
-            );
-            attachmentExpanded.hidden = !expanded;
-            attachmentExpanded.style.display = expanded ? "flex" : "none";
-            previewImg.src = imageAttachments[activeIndex].imageDataUrl as string;
-            thumbButtons.forEach((btn, index) => {
-              btn.classList.toggle("active", index === activeIndex);
-            });
-            attachmentBar.title = expanded
-              ? "Collapse attachments"
-              : "Expand attachments";
-          };
+            applyScreenshotState();
+          });
+          thumbButtons.push(thumbBtn);
+          thumbStrip.appendChild(thumbBtn);
+        });
 
-          const toggleAttachmentsExpanded = () => {
-            msg.attachmentsExpanded = !msg.attachmentsExpanded;
-            applyAttachmentState();
-          };
-          applyAttachmentState();
-          attachmentBar.addEventListener("mousedown", (e: Event) => {
-            const mouse = e as MouseEvent;
-            if (mouse.button !== 0) return;
-            mouse.preventDefault();
-            mouse.stopPropagation();
-            toggleAttachmentsExpanded();
-          });
-          attachmentBar.addEventListener("click", (e: Event) => {
-            e.preventDefault();
-            e.stopPropagation();
-          });
-          attachmentBar.addEventListener("keydown", (e: KeyboardEvent) => {
-            if (e.key !== "Enter" && e.key !== " ") return;
-            e.preventDefault();
-            e.stopPropagation();
-            toggleAttachmentsExpanded();
-          });
-        } else {
-          const applyAttachmentState = () => {
-            const expanded = Boolean(msg.attachmentsExpanded);
-            attachmentBar.classList.toggle("expanded", expanded);
-            attachmentBar.setAttribute(
-              "aria-expanded",
-              expanded ? "true" : "false",
-            );
-            attachmentExpanded.hidden = !expanded;
-            attachmentExpanded.style.display = expanded ? "flex" : "none";
-            attachmentBar.title = expanded
-              ? "Collapse attachments"
-              : "Expand attachments";
-          };
-          const toggleAttachmentsExpanded = () => {
-            msg.attachmentsExpanded = !msg.attachmentsExpanded;
-            applyAttachmentState();
-          };
-          applyAttachmentState();
-          attachmentBar.addEventListener("mousedown", (e: Event) => {
-            const mouse = e as MouseEvent;
-            if (mouse.button !== 0) return;
-            mouse.preventDefault();
-            mouse.stopPropagation();
-            toggleAttachmentsExpanded();
-          });
-          attachmentBar.addEventListener("click", (e: Event) => {
-            e.preventDefault();
-            e.stopPropagation();
-          });
-          attachmentBar.addEventListener("keydown", (e: KeyboardEvent) => {
-            if (e.key !== "Enter" && e.key !== " ") return;
-            e.preventDefault();
-            e.stopPropagation();
-            toggleAttachmentsExpanded();
-          });
-        }
+        screenshotExpanded.append(thumbStrip, previewWrap);
 
-        wrapper.appendChild(attachmentBar);
-        wrapper.appendChild(attachmentExpanded);
+        const applyScreenshotState = () => {
+          const expanded = Boolean(msg.screenshotExpanded);
+          let activeIndex =
+            typeof msg.screenshotActiveIndex === "number"
+              ? Math.floor(msg.screenshotActiveIndex)
+              : 0;
+          if (activeIndex < 0 || activeIndex >= screenshotImages.length) {
+            activeIndex = 0;
+            msg.screenshotActiveIndex = 0;
+          }
+          screenshotBar.classList.toggle("expanded", expanded);
+          screenshotBar.setAttribute(
+            "aria-expanded",
+            expanded ? "true" : "false",
+          );
+          screenshotExpanded.hidden = !expanded;
+          screenshotExpanded.style.display = expanded ? "flex" : "none";
+          previewImg.src = screenshotImages[activeIndex];
+          thumbButtons.forEach((btn, index) => {
+            btn.classList.toggle("active", index === activeIndex);
+          });
+          screenshotBar.title = expanded
+            ? "Collapse figures"
+            : "Expand figures";
+        };
+
+        const toggleScreenshotsExpanded = () => {
+          msg.screenshotExpanded = !msg.screenshotExpanded;
+          applyScreenshotState();
+        };
+        applyScreenshotState();
+        screenshotBar.addEventListener("mousedown", (e: Event) => {
+          const mouse = e as MouseEvent;
+          if (mouse.button !== 0) return;
+          mouse.preventDefault();
+          mouse.stopPropagation();
+          toggleScreenshotsExpanded();
+        });
+        screenshotBar.addEventListener("click", (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        screenshotBar.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleScreenshotsExpanded();
+        });
+
+        wrapper.appendChild(screenshotBar);
+        wrapper.appendChild(screenshotExpanded);
       }
 
       const selectedText = sanitizeText(msg.selectedText || "").trim();
