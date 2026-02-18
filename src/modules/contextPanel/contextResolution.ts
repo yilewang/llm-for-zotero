@@ -405,7 +405,7 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     previewBox.classList.remove("expanded", "collapsed");
     previewMeta.classList.remove("expanded");
     previewMeta.setAttribute("aria-expanded", "false");
-    previewMeta.title = "Expand text context";
+    previewMeta.title = "Pin text context";
     previewExpanded.hidden = true;
     previewExpanded.style.display = "none";
     previewText.textContent = "";
@@ -422,15 +422,14 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
   previewBox.classList.toggle("collapsed", !expanded);
   previewMeta.classList.toggle("expanded", expanded);
   previewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
-  previewMeta.title = expanded ? "Collapse text context" : "Expand text context";
-  previewExpanded.hidden = !expanded;
-  previewExpanded.style.display = expanded ? "flex" : "none";
+  previewMeta.title = expanded ? "Unpin text context" : "Pin text context";
+  previewExpanded.hidden = false;
+  previewExpanded.style.display = "flex";
   previewText.textContent = selectedText;
   if (previewWarning) {
-    previewWarning.style.display =
-      expanded && isLikelyCorruptedSelectedText(selectedText)
-        ? "block"
-        : "none";
+    previewWarning.style.display = isLikelyCorruptedSelectedText(selectedText)
+      ? "block"
+      : "none";
   }
   if (selectTextBtn) {
     selectTextBtn.classList.add("llm-action-btn-active");

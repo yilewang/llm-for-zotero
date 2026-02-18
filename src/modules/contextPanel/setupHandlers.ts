@@ -138,6 +138,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const imagePreview = body.querySelector(
     "#llm-image-preview",
   ) as HTMLDivElement | null;
+  const selectedContextPanel = body.querySelector(
+    "#llm-selected-context",
+  ) as HTMLDivElement | null;
   const selectedContextClear = body.querySelector(
     "#llm-selected-context-clear",
   ) as HTMLButtonElement | null;
@@ -461,14 +464,14 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       previewMeta.textContent = `Figures (${imageCount}/${MAX_SELECTED_IMAGES})`;
       previewMeta.classList.toggle("expanded", expanded);
       previewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
-      previewMeta.title = expanded ? "Collapse figures" : "Expand figures";
+      previewMeta.title = expanded ? "Unpin figures panel" : "Pin figures panel";
 
       imagePreview.style.display = "flex";
       imagePreview.classList.toggle("expanded", expanded);
       imagePreview.classList.toggle("collapsed", !expanded);
-      previewExpanded.hidden = !expanded;
-      previewExpanded.style.display = expanded ? "flex" : "none";
-      previewSelected.style.display = expanded ? "block" : "none";
+      previewExpanded.hidden = false;
+      previewExpanded.style.display = "grid";
+      previewSelected.style.display = "";
 
       previewStrip.innerHTML = "";
       for (const [index, imageUrl] of selectedImages.entries()) {
@@ -563,7 +566,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       previewMeta.textContent = `Figures (0/${MAX_SELECTED_IMAGES})`;
       previewMeta.classList.remove("expanded");
       previewMeta.setAttribute("aria-expanded", "false");
-      previewMeta.title = "Expand figures";
+      previewMeta.title = "Pin figures panel";
       clearSelectedImageState(item.id);
       screenshotBtn.disabled = screenshotUnsupported;
       screenshotBtn.title = screenshotUnsupported
@@ -1748,7 +1751,13 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       const selectedImages = selectedImageCache.get(item.id) || [];
       if (!selectedImages.length) return;
       const expanded = selectedImagePreviewExpandedCache.get(item.id) === true;
-      selectedImagePreviewExpandedCache.set(item.id, !expanded);
+      const nextExpanded = !expanded;
+      selectedImagePreviewExpandedCache.set(item.id, nextExpanded);
+      if (nextExpanded) {
+        selectedImagePreviewActiveIndexCache.set(item.id, 0);
+        selectedTextPreviewExpandedCache.set(item.id, false);
+      }
+      updateSelectedTextPreview();
       updateImagePreview();
     });
   }
@@ -1783,10 +1792,50 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       const selectedText = selectedTextCache.get(item.id) || "";
       if (!selectedText) return;
       const expanded = selectedTextPreviewExpandedCache.get(item.id) === true;
-      selectedTextPreviewExpandedCache.set(item.id, !expanded);
+      const nextExpanded = !expanded;
+      selectedTextPreviewExpandedCache.set(item.id, nextExpanded);
+      if (nextExpanded) {
+        selectedImagePreviewExpandedCache.set(item.id, false);
+      }
+      updateImagePreview();
       updateSelectedTextPreview();
     });
   }
+
+  const bodyWithPinnedDismiss = body as Element & {
+    __llmPinnedContextDismissHandler?: (event: MouseEvent) => void;
+  };
+  if (bodyWithPinnedDismiss.__llmPinnedContextDismissHandler) {
+    body.removeEventListener(
+      "mousedown",
+      bodyWithPinnedDismiss.__llmPinnedContextDismissHandler,
+      true,
+    );
+  }
+  const dismissPinnedContextPanels = (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    if (!item) return;
+    const target = e.target as Node | null;
+    const clickedInsideTextPanel = Boolean(
+      selectedContextPanel && target && selectedContextPanel.contains(target),
+    );
+    const clickedInsideFigurePanel = Boolean(
+      imagePreview && target && imagePreview.contains(target),
+    );
+    if (clickedInsideTextPanel || clickedInsideFigurePanel) return;
+
+    const textPinned = selectedTextPreviewExpandedCache.get(item.id) === true;
+    const figurePinned = selectedImagePreviewExpandedCache.get(item.id) === true;
+    if (!textPinned && !figurePinned) return;
+
+    selectedTextPreviewExpandedCache.set(item.id, false);
+    selectedImagePreviewExpandedCache.set(item.id, false);
+    updateSelectedTextPreview();
+    updateImagePreview();
+  };
+  body.addEventListener("mousedown", dismissPinnedContextPanels, true);
+  bodyWithPinnedDismiss.__llmPinnedContextDismissHandler =
+    dismissPinnedContextPanels;
 
   // Cancel button
   if (cancelBtn) {
