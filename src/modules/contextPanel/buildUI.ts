@@ -2,7 +2,9 @@ import { createElement } from "../../utils/domHelpers";
 import {
   SELECT_TEXT_EXPANDED_LABEL,
   SCREENSHOT_EXPANDED_LABEL,
+  UPLOAD_FILE_EXPANDED_LABEL,
   formatFigureCountLabel,
+  formatFileCountLabel,
 } from "./constants";
 import type { ActionDropdownSpec } from "./types";
 
@@ -323,6 +325,56 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   imagePreviewExpanded.append(previewStrip, previewLargeWrap);
   imagePreview.append(imagePreviewHeader, imagePreviewExpanded);
   contextPreviews.appendChild(imagePreview);
+
+  const filePreview = createElement(doc, "div", "llm-image-preview", {
+    id: "llm-file-context-preview",
+  });
+  filePreview.style.display = "none";
+  const filePreviewMeta = createElement(
+    doc,
+    "button",
+    "llm-image-preview-meta llm-file-context-meta",
+    {
+      id: "llm-file-context-meta",
+      type: "button",
+      textContent: formatFileCountLabel(0),
+      title: "Expand files",
+    },
+  );
+  const filePreviewHeader = createElement(
+    doc,
+    "div",
+    "llm-image-preview-header",
+    {
+      id: "llm-file-context-header",
+    },
+  );
+  const filePreviewClear = createElement(
+    doc,
+    "button",
+    "llm-remove-img-btn",
+    {
+      id: "llm-file-context-clear",
+      type: "button",
+      textContent: "×",
+      title: "Clear uploaded files",
+    },
+  );
+  filePreviewHeader.append(filePreviewMeta, filePreviewClear);
+  const filePreviewExpanded = createElement(
+    doc,
+    "div",
+    "llm-image-preview-expanded llm-file-context-expanded",
+    {
+      id: "llm-file-context-expanded",
+    },
+  );
+  const filePreviewList = createElement(doc, "div", "llm-file-context-list", {
+    id: "llm-file-context-list",
+  });
+  filePreviewExpanded.append(filePreviewList);
+  filePreview.append(filePreviewHeader, filePreviewExpanded);
+  contextPreviews.appendChild(filePreview);
   inputSection.appendChild(contextPreviews);
 
   const inputBox = createElement(doc, "textarea", "llm-input", {
@@ -367,6 +419,26 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   const screenshotSlot = createElement(doc, "div", "llm-action-slot");
   screenshotSlot.appendChild(screenshotBtn);
+
+  const uploadBtn = createElement(
+    doc,
+    "button",
+    "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-upload-file-btn",
+    {
+      id: "llm-upload-file",
+      textContent: UPLOAD_FILE_EXPANDED_LABEL,
+      title: "Upload files",
+      disabled: !hasItem,
+    },
+  );
+  const uploadInput = createElement(doc, "input", "", {
+    id: "llm-upload-input",
+    type: "file",
+  }) as HTMLInputElement;
+  uploadInput.multiple = true;
+  uploadInput.style.display = "none";
+  const uploadSlot = createElement(doc, "div", "llm-action-slot");
+  uploadSlot.append(uploadBtn, uploadInput);
 
   const {
     slot: modelDropdown,
@@ -430,6 +502,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
 
   actionsLeft.append(
+    uploadSlot,
     selectTextSlot,
     screenshotSlot,
     modelDropdown,

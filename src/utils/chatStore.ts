@@ -12,6 +12,7 @@ export type StoredChatMessage = {
     category: "image" | "pdf" | "markdown" | "code" | "text" | "file";
     imageDataUrl?: string;
     textContent?: string;
+    storedPath?: string;
   }>;
   modelName?: string;
   reasoningSummary?: string;
@@ -264,6 +265,10 @@ export async function loadConversation(
               textContent:
                 typeof typed.textContent === "string" && typed.textContent
                   ? typed.textContent
+                  : undefined,
+              storedPath:
+                typeof typed.storedPath === "string" && typed.storedPath.trim()
+                  ? typed.storedPath.trim()
                   : undefined,
             });
             return out;

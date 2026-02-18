@@ -10,7 +10,8 @@ import {
   removeAssistantNoteMapEntry,
   rememberAssistantNoteForParent,
 } from "./prefHelpers";
-import type { Message } from "./types";
+import { copyAttachmentFileToNoteDir, toFileUrl } from "./attachmentStorage";
+import type { ChatAttachment, Message } from "./types";
 
 function resolveParentItemForNote(
   item: Zotero.Item,
@@ -71,6 +72,25 @@ function formatScreenshotEmbeddedLabel(count: number): string {
   return `Screenshots (${count}/${MAX_SELECTED_IMAGES}) are embedded below`;
 }
 
+function normalizeFileAttachmentsForNote(
+  attachments: unknown,
+): ChatAttachment[] {
+  if (!Array.isArray(attachments)) return [];
+  return attachments.filter(
+    (entry): entry is ChatAttachment =>
+      Boolean(entry) &&
+      typeof entry === "object" &&
+      (entry as ChatAttachment).category !== "image" &&
+      typeof (entry as ChatAttachment).name === "string",
+  );
+}
+
+function formatFileEmbeddedLabel(files: ChatAttachment[]): string {
+  if (!files.length) return "";
+  const names = files.map((entry) => entry.name).filter(Boolean);
+  return `Files (${names.length}): ${names.join(", ")}`;
+}
+
 function formatSelectedTextQuoteMarkdown(selectedText: string): string {
   const quoted = selectedText
     .split(/\r?\n/)
@@ -91,6 +111,71 @@ function buildScreenshotImagesHtmlForNote(images: string[]): string {
   return `<div><p>${escapeNoteHtml(label)}</p>${blocks}</div>`;
 }
 
+function buildFileListHtmlForNote(files: ChatAttachment[]): string {
+  if (!files.length) return "";
+  const items = files
+    .map((entry) => {
+      const href = toFileUrl(entry.storedPath);
+      const typeText = escapeNoteHtml(
+        (entry.mimeType || "application/octet-stream").trim(),
+      );
+      const sizeText = `${(entry.sizeBytes / 1024 / 1024).toFixed(2)} MB`;
+      const escapedName = escapeNoteHtml(entry.name);
+      const linkedName = href
+        ? `<a href="${escapeNoteHtml(href)}">${escapedName}</a>`
+        : `<strong>${escapedName}</strong>`;
+      return `<li>${linkedName} (${typeText}, ${escapeNoteHtml(sizeText)})</li>`;
+    })
+    .join("");
+  return `<div><p>${escapeNoteHtml(formatFileEmbeddedLabel(files))}</p><ul>${items}</ul></div>`;
+}
+
+async function cloneHistoryWithNoteAttachmentCopies(
+  noteId: number,
+  history: Message[],
+): Promise<Message[]> {
+  const cloned: Message[] = [];
+  for (const msg of history) {
+    const attachments = Array.isArray(msg.attachments)
+      ? msg.attachments
+      : undefined;
+    if (!attachments?.length) {
+      cloned.push({ ...msg });
+      continue;
+    }
+    const nextAttachments: ChatAttachment[] = [];
+    for (const attachment of attachments) {
+      if (
+        attachment.category === "image" ||
+        !attachment.storedPath ||
+        !attachment.storedPath.trim()
+      ) {
+        nextAttachments.push({ ...attachment });
+        continue;
+      }
+      try {
+        const copiedPath = await copyAttachmentFileToNoteDir(
+          noteId,
+          attachment.storedPath,
+          attachment.name,
+        );
+        nextAttachments.push({
+          ...attachment,
+          storedPath: copiedPath,
+        });
+      } catch (err) {
+        ztoolkit.log("LLM: Failed to copy attachment into note folder", err);
+        nextAttachments.push({ ...attachment, storedPath: undefined });
+      }
+    }
+    cloned.push({
+      ...msg,
+      attachments: nextAttachments,
+    });
+  }
+  return cloned;
+}
+
 export function buildChatHistoryNotePayload(messages: Message[]): {
   noteHtml: string;
   noteText: string;
@@ -104,8 +189,10 @@ export function buildChatHistoryNotePayload(messages: Message[]): {
     const screenshotImages = normalizeScreenshotImagesForNote(
       msg.screenshotImages,
     );
+    const fileAttachments = normalizeFileAttachmentsForNote(msg.attachments);
     const screenshotCount = screenshotImages.length;
-    if (!text && !selectedText && !screenshotCount) continue;
+    if (!text && !selectedText && !screenshotCount && !fileAttachments.length)
+      continue;
     let textWithContext = text;
     let htmlTextWithContext = text;
     if (msg.role === "user") {
@@ -117,6 +204,9 @@ export function buildChatHistoryNotePayload(messages: Message[]): {
       }
       if (screenshotCount) {
         userBlocks.push(formatScreenshotEmbeddedLabel(screenshotCount));
+      }
+      if (fileAttachments.length) {
+        userBlocks.push(formatFileEmbeddedLabel(fileAttachments));
       }
       if (text) {
         userBlocks.push(text);
@@ -133,14 +223,16 @@ export function buildChatHistoryNotePayload(messages: Message[]): {
       msg.role === "user"
         ? buildScreenshotImagesHtmlForNote(screenshotImages)
         : "";
+    const fileHtml =
+      msg.role === "user" ? buildFileListHtmlForNote(fileAttachments) : "";
     const rendered = renderChatMessageHtmlForNote(
       msg.role === "user" ? htmlTextWithContext : textWithContext,
     );
-    if (!rendered && !screenshotHtml) continue;
+    if (!rendered && !screenshotHtml && !fileHtml) continue;
     textLines.push(`${speaker}: ${textWithContext}`);
     const renderedBlock = rendered ? `<div>${rendered}</div>` : "";
     htmlBlocks.push(
-      `<p><strong>${escapeNoteHtml(speaker)}:</strong></p>${renderedBlock}${screenshotHtml}`,
+      `<p><strong>${escapeNoteHtml(speaker)}:</strong></p>${renderedBlock}${screenshotHtml}${fileHtml}`,
     );
   }
   const noteText = textLines.join("\n\n");
@@ -244,7 +336,19 @@ export async function createNoteFromChatHistory(
   const note = new Zotero.Item("note");
   note.libraryID = parentItem.libraryID;
   note.parentID = parentId;
-  note.setNote(buildChatHistoryNotePayload(history).noteHtml);
+  // Create first to get stable note ID for chat-attachments/notes/<noteId>.
+  note.setNote("<p>Preparing chat history export...</p>");
+  const saveResult = await note.saveTx();
+  const noteId =
+    typeof saveResult === "number" && saveResult > 0 ? saveResult : note.id;
+  if (!noteId || noteId <= 0) {
+    throw new Error("Unable to resolve new note ID for chat history export");
+  }
+  const copiedHistory = await cloneHistoryWithNoteAttachmentCopies(
+    noteId,
+    history,
+  );
+  note.setNote(buildChatHistoryNotePayload(copiedHistory).noteHtml);
   await note.saveTx();
-  ztoolkit.log(`LLM: Created chat history note for parent ${parentId}`);
+  ztoolkit.log(`LLM: Created chat history note ${noteId} for parent ${parentId}`);
 }

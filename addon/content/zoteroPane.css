@@ -406,13 +406,22 @@
   overflow-wrap: anywhere;
 }
 
-.llm-user-screenshots-bar {
+.llm-user-context-badges {
   align-self: flex-end;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  width: auto;
+  max-width: min(95%, 620px);
+}
+
+.llm-user-screenshots-bar {
+  display: inline-flex;
   align-items: center;
   gap: 6px;
-  width: clamp(170px, 52%, 360px);
+  width: auto;
   max-width: 100%;
   padding: 3px 8px;
   margin: 0;
@@ -425,6 +434,122 @@
   font-size: var(--llm-fs-12);
   line-height: 1.25;
   overflow: hidden;
+}
+
+.llm-user-files-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  max-width: 100%;
+  padding: 3px 8px;
+  margin: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fill-secondary);
+  text-align: left;
+  cursor: pointer;
+  font-size: var(--llm-fs-12);
+  line-height: 1.25;
+  overflow: hidden;
+}
+
+.llm-user-files-bar:hover {
+  color: var(--fill-primary);
+}
+
+.llm-user-files-bar:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.llm-user-files-bar.expanded {
+  color: var(--fill-primary);
+}
+
+.llm-user-files-icon {
+  flex: 0 0 auto;
+  font-size: var(--llm-fs-13);
+  line-height: 1.1;
+  opacity: 0.9;
+}
+
+.llm-user-files-label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-user-files-expanded {
+  align-self: flex-end;
+  width: min(95%, 620px);
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.llm-user-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-user-files-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0 10px;
+}
+
+.llm-user-files-item-type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-width: 40px;
+  max-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--material-background));
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-12);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.llm-user-files-item-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  width: 100%;
+}
+
+.llm-user-files-item-name {
+  display: block;
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-11);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-user-files-item-meta {
+  display: block;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-10);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .llm-user-screenshots-bar:hover {
@@ -859,6 +984,16 @@
   background: var(--material-background);
 }
 
+.llm-input-section.llm-input-drop-active {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--material-background));
+}
+
+.llm-input.llm-input-drop-active {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+}
+
 .llm-context-previews {
   display: flex;
   flex-wrap: wrap;
@@ -870,7 +1005,8 @@
 }
 
 .llm-context-previews > .llm-selected-context,
-.llm-context-previews > .llm-image-preview {
+.llm-context-previews > .llm-image-preview,
+.llm-context-previews > #llm-file-context-preview {
   flex: 0 0 auto;
   max-width: 100%;
   width: fit-content;
@@ -878,7 +1014,8 @@
 }
 
 .llm-context-previews > .llm-selected-context.expanded,
-.llm-context-previews > .llm-image-preview.expanded {
+.llm-context-previews > .llm-image-preview.expanded,
+.llm-context-previews > #llm-file-context-preview.expanded {
   flex: 0 0 auto;
   width: fit-content;
 }
@@ -1517,6 +1654,10 @@
   opacity: 0.9;
 }
 
+.llm-file-context-meta::before {
+  content: "📄";
+}
+
 .llm-image-preview-meta:hover {
   color: var(--fill-primary);
 }
@@ -1555,6 +1696,91 @@
     opacity 0.14s ease,
     transform 0.14s ease,
     visibility 0.14s ease;
+}
+
+.llm-file-context-expanded {
+  display: grid;
+  grid-template-rows: auto;
+}
+
+.llm-file-context-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-file-context-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.llm-file-context-type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-width: 40px;
+  max-width: 40px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--material-background));
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-12);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.llm-file-context-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  width: 100%;
+}
+
+.llm-file-context-name {
+  display: block;
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-11);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-file-context-meta-info {
+  display: block;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-10);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-file-context-remove {
+  grid-column: 3;
+  appearance: none;
+  -moz-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-14);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.llm-file-context-remove:hover {
+  background: var(--fill-quaternary);
+  color: var(--fill-primary);
 }
 
 .llm-image-preview:hover .llm-image-preview-expanded,
@@ -1717,4 +1943,29 @@
 .llm-remove-img-btn:focus-visible {
   outline: 1px solid var(--color-accent);
   outline-offset: 1px;
+}
+
+.llm-upload-file-btn {
+  min-width: 20px;
+  width: 20px;
+  height: var(--llm-action-height);
+  min-height: var(--llm-action-height);
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 30px;
+  line-height: 0.9;
+  font-weight: 400;
+  border-radius: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  transform: translateY(-1px);
+}
+
+.llm-upload-file-btn:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fill-primary);
 }

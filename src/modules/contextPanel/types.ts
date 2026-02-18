@@ -79,6 +79,7 @@ export type ChatAttachment = {
   category: ChatAttachmentCategory;
   imageDataUrl?: string;
   textContent?: string;
+  storedPath?: string;
 };
 
 export type PdfContext = {

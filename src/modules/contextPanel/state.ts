@@ -66,6 +66,7 @@ export const selectedImageNameCache = new Map<number, string[]>();
 export const selectedImagePinnedCache = new Map<number, boolean[]>();
 export const selectedFileAttachmentCache = new Map<number, ChatAttachment[]>();
 export const selectedFilePinnedCache = new Map<number, boolean[]>();
+export const selectedFilePreviewExpandedCache = new Map<number, boolean>();
 export const selectedTextCache = new Map<number, string>();
 export const selectedTextPreviewExpandedCache = new Map<number, boolean>();
 export const selectedImagePreviewExpandedCache = new Map<number, boolean>();
