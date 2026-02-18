@@ -189,27 +189,45 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     id: "llm-selected-context",
   });
   selectedContext.style.display = "none";
-  const selectedContextTop = createElement(
+  const selectedContextHeader = createElement(
     doc,
     "div",
-    "llm-selected-context-top",
-  );
-  const selectedContextLabel = createElement(
-    doc,
-    "div",
-    "llm-selected-context-label",
+    "llm-image-preview-header llm-selected-context-header",
     {
-      textContent: "Selected Context",
+      id: "llm-selected-context-header",
+    },
+  );
+  const selectedContextMeta = createElement(
+    doc,
+    "button",
+    "llm-image-preview-meta llm-selected-context-meta",
+    {
+      id: "llm-selected-context-meta",
+      type: "button",
+      textContent: "Text Context",
+      title: "Expand text context",
     },
   );
   const selectedContextClear = createElement(
     doc,
     "button",
-    "llm-selected-context-clear",
+    "llm-remove-img-btn llm-selected-context-clear",
     {
       id: "llm-selected-context-clear",
       type: "button",
-      textContent: "Clear",
+      textContent: "×",
+      title: "Clear selected context",
+    },
+  );
+  selectedContextClear.setAttribute("aria-label", "Clear selected context");
+  selectedContextHeader.append(selectedContextMeta, selectedContextClear);
+
+  const selectedContextExpanded = createElement(
+    doc,
+    "div",
+    "llm-image-preview-expanded llm-selected-context-expanded",
+    {
+      id: "llm-selected-context-expanded",
     },
   );
   const selectedContextText = createElement(
@@ -230,12 +248,8 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     },
   );
   selectedContextWarning.style.display = "none";
-  selectedContextTop.append(selectedContextLabel, selectedContextClear);
-  selectedContext.append(
-    selectedContextTop,
-    selectedContextText,
-    selectedContextWarning,
-  );
+  selectedContextExpanded.append(selectedContextText, selectedContextWarning);
+  selectedContext.append(selectedContextHeader, selectedContextExpanded);
   inputSection.appendChild(selectedContext);
 
   // Image preview area (shows selected screenshot)
@@ -251,10 +265,27 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     {
       id: "llm-image-preview-meta",
       type: "button",
-      textContent: "screenshots (0/5) embedded",
-      title: "Expand screenshots",
+      textContent: "Figures (0/5)",
+      title: "Expand figures",
     },
   );
+  const imagePreviewHeader = createElement(
+    doc,
+    "div",
+    "llm-image-preview-header",
+    {
+      id: "llm-image-preview-header",
+    },
+  );
+  const removeImgBtn = createElement(doc, "button", "llm-remove-img-btn", {
+    id: "llm-remove-img",
+    type: "button",
+    textContent: "×",
+    title: "Clear selected screenshots",
+  });
+  removeImgBtn.setAttribute("aria-label", "Clear selected screenshots");
+  imagePreviewHeader.append(imagePreviewMeta, removeImgBtn);
+
   const imagePreviewExpanded = createElement(
     doc,
     "div",
@@ -285,15 +316,8 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   ) as HTMLImageElement;
   previewLargeWrap.appendChild(previewLargeImg);
 
-  const removeImgBtn = createElement(doc, "button", "llm-remove-img-btn", {
-    id: "llm-remove-img",
-    type: "button",
-    textContent: "Clear All",
-    title: "Clear selected screenshots",
-  });
-
-  imagePreviewExpanded.append(previewStrip, previewLargeWrap, removeImgBtn);
-  imagePreview.append(imagePreviewMeta, imagePreviewExpanded);
+  imagePreviewExpanded.append(previewStrip, previewLargeWrap);
+  imagePreview.append(imagePreviewHeader, imagePreviewExpanded);
   inputSection.appendChild(imagePreview);
 
   const inputBox = createElement(doc, "textarea", "llm-input", {

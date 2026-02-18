@@ -141,9 +141,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const selectedContextClear = body.querySelector(
     "#llm-selected-context-clear",
   ) as HTMLButtonElement | null;
-  const selectedContextPanel = body.querySelector(
-    "#llm-selected-context",
-  ) as HTMLDivElement | null;
+  const selectedContextMeta = body.querySelector(
+    "#llm-selected-context-meta",
+  ) as HTMLButtonElement | null;
   const previewStrip = body.querySelector(
     "#llm-image-preview-strip",
   ) as HTMLDivElement | null;
@@ -444,8 +444,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       const imageCount = selectedImages.length;
       let expanded = selectedImagePreviewExpandedCache.get(item.id);
       if (typeof expanded !== "boolean") {
-        expanded = true;
-        selectedImagePreviewExpandedCache.set(item.id, true);
+        expanded = false;
+        selectedImagePreviewExpandedCache.set(item.id, false);
       }
 
       let activeIndex = selectedImagePreviewActiveIndexCache.get(item.id);
@@ -458,14 +458,14 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       );
       selectedImagePreviewActiveIndexCache.set(item.id, activeIndex);
 
-      previewMeta.textContent = `screenshots (${imageCount}/${MAX_SELECTED_IMAGES}) embedded`;
+      previewMeta.textContent = `Figures (${imageCount}/${MAX_SELECTED_IMAGES})`;
       previewMeta.classList.toggle("expanded", expanded);
       previewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
-      previewMeta.title = expanded
-        ? "Collapse screenshots"
-        : "Expand screenshots";
+      previewMeta.title = expanded ? "Collapse figures" : "Expand figures";
 
       imagePreview.style.display = "flex";
+      imagePreview.classList.toggle("expanded", expanded);
+      imagePreview.classList.toggle("collapsed", !expanded);
       previewExpanded.hidden = !expanded;
       previewExpanded.style.display = expanded ? "flex" : "none";
       previewSelected.style.display = expanded ? "block" : "none";
@@ -553,16 +553,17 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           : `Add screenshot (${imageCount}/${MAX_SELECTED_IMAGES})`;
     } else {
       imagePreview.style.display = "none";
+      imagePreview.classList.remove("expanded", "collapsed");
       previewExpanded.hidden = true;
       previewExpanded.style.display = "none";
       previewStrip.innerHTML = "";
       previewSelected.style.display = "none";
       previewSelectedImg.removeAttribute("src");
       previewSelectedImg.alt = "Selected screenshot preview";
-      previewMeta.textContent = `screenshots (0/${MAX_SELECTED_IMAGES}) embedded`;
+      previewMeta.textContent = `Figures (0/${MAX_SELECTED_IMAGES})`;
       previewMeta.classList.remove("expanded");
       previewMeta.setAttribute("aria-expanded", "false");
-      previewMeta.title = "Expand screenshots";
+      previewMeta.title = "Expand figures";
       clearSelectedImageState(item.id);
       screenshotBtn.disabled = screenshotUnsupported;
       screenshotBtn.title = screenshotUnsupported
@@ -1512,7 +1513,15 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
             MAX_SELECTED_IMAGES,
           );
           selectedImageCache.set(item.id, nextImages);
-          selectedImagePreviewExpandedCache.set(item.id, true);
+          const expandedBeforeCapture = selectedImagePreviewExpandedCache.get(
+            item.id,
+          );
+          selectedImagePreviewExpandedCache.set(
+            item.id,
+            typeof expandedBeforeCapture === "boolean"
+              ? expandedBeforeCapture
+              : false,
+          );
           selectedImagePreviewActiveIndexCache.set(
             item.id,
             nextImages.length - 1,
@@ -1751,7 +1760,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       if (!item) return;
       clearSelectedImageState(item.id);
       updateImagePreview();
-      if (status) setStatus(status, "Screenshots cleared", "ready");
+      if (status) setStatus(status, "Figures cleared", "ready");
     });
   }
 
@@ -1766,41 +1775,16 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     });
   }
 
-  if (selectedContextPanel) {
-    selectedContextPanel.tabIndex = 0;
-    selectedContextPanel.setAttribute("role", "button");
-    const toggleSelectedContextExpanded = () => {
+  if (selectedContextMeta) {
+    selectedContextMeta.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
       if (!item) return;
       const selectedText = selectedTextCache.get(item.id) || "";
       if (!selectedText) return;
       const expanded = selectedTextPreviewExpandedCache.get(item.id) === true;
       selectedTextPreviewExpandedCache.set(item.id, !expanded);
       updateSelectedTextPreview();
-    };
-    selectedContextPanel.addEventListener("click", (e: Event) => {
-      const target = e.target as Node | null;
-      if (
-        selectedContextClear &&
-        target &&
-        selectedContextClear.contains(target)
-      )
-        return;
-      e.preventDefault();
-      e.stopPropagation();
-      toggleSelectedContextExpanded();
-    });
-    selectedContextPanel.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key !== "Enter" && e.key !== " ") return;
-      const target = e.target as Node | null;
-      if (
-        selectedContextClear &&
-        target &&
-        selectedContextClear.contains(target)
-      )
-        return;
-      e.preventDefault();
-      e.stopPropagation();
-      toggleSelectedContextExpanded();
     });
   }
 

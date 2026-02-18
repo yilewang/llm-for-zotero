@@ -826,7 +826,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
         const screenshotLabel = doc.createElement("span") as HTMLSpanElement;
         screenshotLabel.className = "llm-user-screenshots-label";
-        screenshotLabel.textContent = `screenshots (${screenshotImages.length}/${MAX_SELECTED_IMAGES}) embedded`;
+        screenshotLabel.textContent = `Figures (${screenshotImages.length}/${MAX_SELECTED_IMAGES})`;
 
         screenshotBar.append(screenshotIcon, screenshotLabel);
 
@@ -893,8 +893,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             btn.classList.toggle("active", index === activeIndex);
           });
           screenshotBar.title = expanded
-            ? "Collapse screenshots"
-            : "Expand screenshots";
+            ? "Collapse figures"
+            : "Expand figures";
         };
 
         const toggleScreenshotsExpanded = () => {
