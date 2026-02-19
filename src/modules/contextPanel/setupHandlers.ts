@@ -310,7 +310,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const selectionPopup = createElement(
     panelDoc,
     "button",
-    "llm-assistant-selection-action",
+    "llm-shortcut-btn llm-assistant-selection-action",
     {
       type: "button",
       textContent: "❞ Quote",
@@ -476,6 +476,12 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   const onPanelMouseUp = (e: Event) => {
     if (!panelWin) return;
+    const me = e as MouseEvent;
+    if (typeof me.button === "number" && me.button !== 0) {
+      selectionDragStartBubble = null;
+      hideSelectionPopup();
+      return;
+    }
     const target = e.target as Element | null;
     const bubble = target?.closest(".llm-bubble.assistant") as HTMLElement | null;
     const fallbackBubble = bubble || selectionDragStartBubble;
@@ -506,6 +512,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   selectionPopup.addEventListener("contextmenu", (e: Event) => {
     e.preventDefault();
     e.stopPropagation();
+    hideSelectionPopup();
   });
 
   panelDoc.addEventListener("mouseup", onPanelMouseUp, true);
