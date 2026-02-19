@@ -1775,43 +1775,48 @@
 }
 
 .llm-file-context-list {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 6px;
 }
 
 .llm-file-context-item {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 2px 8px;
+  gap: 2px 10px;
   align-items: center;
+  min-height: 50px;
   padding: 6px 8px;
   border: 1px solid var(--stroke-secondary);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.04);
+  border-radius: 10px;
+  background: color-mix(
+    in srgb,
+    var(--material-background) 84%,
+    var(--fill-quinary)
+  );
 }
 
 .llm-file-context-type {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  min-width: 40px;
-  max-width: 40px;
-  height: 40px;
-  min-height: 40px;
-  max-height: 40px;
-  border-radius: 10px;
+  width: 34px;
+  min-width: 34px;
+  max-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--color-accent) 10%, var(--material-background));
   color: var(--fill-primary);
-  font-size: var(--llm-fs-12);
+  font-size: var(--llm-fs-11);
   font-weight: 700;
   letter-spacing: 0.02em;
 }
 
 .llm-file-context-text {
   display: grid;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
   width: 100%;
 }
@@ -1820,6 +1825,7 @@
   display: block;
   color: var(--fill-primary);
   font-size: var(--llm-fs-11);
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1838,20 +1844,28 @@
   grid-column: 3;
   appearance: none;
   -moz-appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
   border: none;
   background: transparent;
   color: var(--fill-tertiary);
-  font-size: var(--llm-fs-14);
+  font-size: var(--llm-fs-15);
   line-height: 1;
   cursor: pointer;
+  justify-self: end;
+  align-self: start;
 }
 
 .llm-file-context-remove:hover {
   background: var(--fill-quaternary);
   color: var(--fill-primary);
+}
+
+@media (max-width: 520px) {
+  .llm-file-context-list {
+    grid-template-columns: 1fr;
+  }
 }
 
 .llm-image-preview:hover .llm-image-preview-expanded,
