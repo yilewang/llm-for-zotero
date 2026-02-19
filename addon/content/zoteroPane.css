@@ -563,7 +563,11 @@
   min-height: 40px;
   max-height: 40px;
   border-radius: 10px;
-  background: color-mix(in srgb, var(--color-accent) 10%, var(--material-background));
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 10%,
+    var(--material-background)
+  );
   color: var(--fill-primary);
   font-size: var(--llm-fs-12);
   font-weight: 700;
@@ -638,8 +642,10 @@
 
 .llm-message-wrapper.user.llm-user-context-aligned .llm-user-selected-text,
 .llm-message-wrapper.user.llm-user-context-aligned .llm-user-screenshots-bar,
-.llm-message-wrapper.user.llm-user-context-aligned .llm-user-selected-text-expanded,
-.llm-message-wrapper.user.llm-user-context-aligned .llm-user-screenshots-expanded {
+.llm-message-wrapper.user.llm-user-context-aligned
+  .llm-user-selected-text-expanded,
+.llm-message-wrapper.user.llm-user-context-aligned
+  .llm-user-screenshots-expanded {
   width: var(--llm-user-bubble-width);
   max-width: var(--llm-user-bubble-width);
 }
@@ -1039,7 +1045,11 @@
 
 .llm-input-section.llm-input-drop-active {
   border-color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 8%, var(--material-background));
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 8%,
+    var(--material-background)
+  );
 }
 
 .llm-input.llm-input-drop-active {
@@ -1789,7 +1799,11 @@
   min-height: 34px;
   max-height: 34px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--color-accent) 10%, var(--material-background));
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 10%,
+    var(--material-background)
+  );
   color: var(--fill-primary);
   font-size: var(--llm-fs-11);
   font-weight: 700;

@@ -13,9 +13,7 @@ import {
 import { copyAttachmentFileToNoteDir, toFileUrl } from "./attachmentStorage";
 import type { ChatAttachment, Message } from "./types";
 
-function resolveParentItemForNote(
-  item: Zotero.Item,
-): Zotero.Item | null {
+function resolveParentItemForNote(item: Zotero.Item): Zotero.Item | null {
   if (item.isAttachment() && item.parentID) {
     return Zotero.Items.get(item.parentID) || null;
   }
@@ -350,5 +348,7 @@ export async function createNoteFromChatHistory(
   );
   note.setNote(buildChatHistoryNotePayload(copiedHistory).noteHtml);
   await note.saveTx();
-  ztoolkit.log(`LLM: Created chat history note ${noteId} for parent ${parentId}`);
+  ztoolkit.log(
+    `LLM: Created chat history note ${noteId} for parent ${parentId}`,
+  );
 }

@@ -10,12 +10,11 @@
 
 ## 🚀 This plugin is now renamed to LLM-for-Zotero
 
-Please see the latest [release notes](https://github.com/yilewang/llm-for-zotero/releases). The plugin name is now changed to `llm-for-zotero`. 
+Please see the latest [release notes](https://github.com/yilewang/llm-for-zotero/releases). The plugin name is now changed to `llm-for-zotero`.
 
 ## Introduction
 
 **llm-for-zotero** is a powerful plugin for [Zotero](https://www.zotero.org/) that integrates Large Language Models (LLMs) directly into the Zotero PDF reader. Unlike other tools that require you to upload your pdfs to a portal, this plugin is designed to conveniently access LLMs without the need to leave Zotero. It quietly sits in the panel of the Zotero reader, like your standby research assistant, ready to help you with any questions you have when reading a paper.
-
 
 ![image](./assets/demo.png)
 
@@ -31,9 +30,9 @@ It is always the first question that comes to mind when you open a new paper. Wi
 
 ![image](./assets/text.gif)
 
-If you come across a complex paragraph or a technical term that you don't understand, simply select the text and ask the model to explain it. 
+If you come across a complex paragraph or a technical term that you don't understand, simply select the text and ask the model to explain it.
 
-In the plugin, you can enable the pop-up option to conveniently add text to the chat. 
+In the plugin, you can enable the pop-up option to conveniently add text to the chat.
 
 **If you don't like it, that's totally fine. You can always disable it in the settings! I really think it is important to give you the choice.**
 
@@ -117,15 +116,15 @@ Paste your API Base URL, secret key and model name.
 
 I will give some popular model as example:
 
-| API url                                                                   | Model Name           | Reasoning Level              |
-| ------------------------------------------------------------------------- | -------------------- | ---------------------------- |
-| https://api.openai.com/v1/chat/completions                                | gpt-5.2              | default, medium, high, xhigh |
-| https://api.openai.com/v1/responses                                       | gpt-5.2              | default, medium, high, xhigh |
-| https://api.deepseek.com/v1/chat/completions                              | deepseek-chat        | default                      |
-| https://api.deepseek.com/v1/chat/completions                              | deepseek-reasoner    | default                      |
+| API url                                                                  | Model Name           | Reasoning Level              |
+| ------------------------------------------------------------------------ | -------------------- | ---------------------------- |
+| https://api.openai.com/v1/chat/completions                               | gpt-5.2              | default, medium, high, xhigh |
+| https://api.openai.com/v1/responses                                      | gpt-5.2              | default, medium, high, xhigh |
+| https://api.deepseek.com/v1/chat/completions                             | deepseek-chat        | default                      |
+| https://api.deepseek.com/v1/chat/completions                             | deepseek-reasoner    | default                      |
 | https://generativelanguage.googleapis.com/v1beta/openai/chat/completions | gemini-3-pro-preview | low, high                    |
 | https://generativelanguage.googleapis.com/v1beta/openai/chat/completions | gemini-2.5-flash     | medium                       |
-| https://api.moonshot.ai/v1                               | kimi-k2.5            | default                      |
+| https://api.moonshot.ai/v1                                               | kimi-k2.5            | default                      |
 
 You can always check the connections by clicking the "Test Connection" button.
 

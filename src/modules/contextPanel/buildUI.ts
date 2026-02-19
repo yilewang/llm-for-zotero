@@ -349,17 +349,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       id: "llm-file-context-header",
     },
   );
-  const filePreviewClear = createElement(
-    doc,
-    "button",
-    "llm-remove-img-btn",
-    {
-      id: "llm-file-context-clear",
-      type: "button",
-      textContent: "×",
-      title: "Clear uploaded files",
-    },
-  );
+  const filePreviewClear = createElement(doc, "button", "llm-remove-img-btn", {
+    id: "llm-file-context-clear",
+    type: "button",
+    textContent: "×",
+    title: "Clear uploaded files",
+  });
   filePreviewHeader.append(filePreviewMeta, filePreviewClear);
   const filePreviewExpanded = createElement(
     doc,

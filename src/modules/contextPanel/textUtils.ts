@@ -116,7 +116,11 @@ export function getAttachmentTypeLabel(entry: {
   const mimeType = (entry.mimeType || "").trim().toLowerCase();
   const category = (entry.category || "").trim().toLowerCase();
 
-  if (category === "pdf" || mimeType === "application/pdf" || name.endsWith(".pdf"))
+  if (
+    category === "pdf" ||
+    mimeType === "application/pdf" ||
+    name.endsWith(".pdf")
+  )
     return "PDF";
   if (
     category === "markdown" ||

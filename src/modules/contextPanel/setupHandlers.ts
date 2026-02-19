@@ -485,7 +485,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       return;
     }
     const target = e.target as Element | null;
-    const bubble = target?.closest(".llm-bubble.assistant") as HTMLElement | null;
+    const bubble = target?.closest(
+      ".llm-bubble.assistant",
+    ) as HTMLElement | null;
     const fallbackBubble = bubble || selectionDragStartBubble;
     selectionDragStartBubble = null;
     panelWin.setTimeout(() => updateSelectionPopup(fallbackBubble), 0);
@@ -498,7 +500,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     if (target && selectionPopup.contains(target)) return;
     const targetEl = target as Element | null;
     selectionDragStartBubble =
-      (targetEl?.closest(".llm-bubble.assistant") as HTMLElement | null) || null;
+      (targetEl?.closest(".llm-bubble.assistant") as HTMLElement | null) ||
+      null;
     hideSelectionPopup();
   };
   const onChatScrollHide = () => hideSelectionPopup();
@@ -756,9 +759,14 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         textContent: attachment.name,
         title: attachment.name,
       });
-      const meta = createElement(ownerDoc, "span", "llm-file-context-meta-info", {
-        textContent: `${attachment.mimeType || "application/octet-stream"} · ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB`,
-      });
+      const meta = createElement(
+        ownerDoc,
+        "span",
+        "llm-file-context-meta-info",
+        {
+          textContent: `${attachment.mimeType || "application/octet-stream"} · ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB`,
+        },
+      );
       const removeBtn = createElement(
         ownerDoc,
         "button",
@@ -783,12 +791,19 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         }
         if (removedEntry?.storedPath) {
           void removeAttachmentFile(removedEntry.storedPath).catch((err) => {
-            ztoolkit.log("LLM: Failed to remove discarded attachment file", err);
+            ztoolkit.log(
+              "LLM: Failed to remove discarded attachment file",
+              err,
+            );
           });
         }
         updateFilePreview();
         if (status) {
-          setStatus(status, `Attachment removed (${nextFiles.length})`, "ready");
+          setStatus(
+            status,
+            `Attachment removed (${nextFiles.length})`,
+            "ready",
+          );
         }
       });
       info.append(name, meta);
@@ -841,7 +856,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       previewMeta.textContent = formatFigureCountLabel(imageCount);
       previewMeta.classList.toggle("expanded", expanded);
       previewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
-      previewMeta.title = expanded ? "Unpin figures panel" : "Pin figures panel";
+      previewMeta.title = expanded
+        ? "Unpin figures panel"
+        : "Pin figures panel";
 
       imagePreview.style.display = "flex";
       imagePreview.classList.toggle("expanded", expanded);
@@ -1284,7 +1301,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           actionsRight?.getBoundingClientRect?.().width || 0,
         );
         const actionsRightScroll = actionsRight?.scrollWidth || 0;
-        const sendRendered = Math.ceil(sendBtn?.getBoundingClientRect?.().width || 0);
+        const sendRendered = Math.ceil(
+          sendBtn?.getBoundingClientRect?.().width || 0,
+        );
         const sendScroll = sendBtn?.scrollWidth || 0;
         return Math.max(
           actionsRightRendered,
@@ -1553,7 +1572,10 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           )
         : "Reasoning";
       reasoningBtn.disabled = !item || !available;
-      reasoningBtn.classList.toggle("llm-reasoning-btn-unavailable", !available);
+      reasoningBtn.classList.toggle(
+        "llm-reasoning-btn-unavailable",
+        !available,
+      );
       reasoningBtn.classList.toggle("llm-reasoning-btn-active", active);
       reasoningBtn.style.background = "";
       reasoningBtn.style.borderColor = "";
@@ -1726,7 +1748,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         }
         reject(new Error("Invalid data URL result"));
       };
-      reader.onerror = () => reject(reader.error || new Error("File read failed"));
+      reader.onerror = () =>
+        reject(reader.error || new Error("File read failed"));
       reader.readAsDataURL(file);
     });
   };
@@ -1743,7 +1766,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         }
         reject(new Error("Invalid text result"));
       };
-      reader.onerror = () => reject(reader.error || new Error("File read failed"));
+      reader.onerror = () =>
+        reject(reader.error || new Error("File read failed"));
       reader.readAsText(file);
     });
   };
@@ -1786,10 +1810,10 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     let failedPersistCount = 0;
     for (const [index, file] of incomingFiles.entries()) {
       const fileName =
-        (file.name || "").trim() ||
-        `uploaded-file-${Date.now()}-${index + 1}`;
+        (file.name || "").trim() || `uploaded-file-${Date.now()}-${index + 1}`;
       const lowerName = fileName.toLowerCase();
-      const isPdf = file.type === "application/pdf" || lowerName.endsWith(".pdf");
+      const isPdf =
+        file.type === "application/pdf" || lowerName.endsWith(".pdf");
       if (isPdf && file.size > MAX_UPLOAD_PDF_SIZE_BYTES) {
         rejectedPdfCount += 1;
         continue;
@@ -1878,7 +1902,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       (addedCount > 0 || replacedCount > 0) &&
       (rejectedPdfCount > 0 || skippedImageCount > 0 || failedPersistCount > 0)
     ) {
-      const replaceText = replacedCount > 0 ? `, replaced ${replacedCount}` : "";
+      const replaceText =
+        replacedCount > 0 ? `, replaced ${replacedCount}` : "";
       setStatus(
         status,
         `Uploaded ${addedCount} attachment(s)${replaceText}, skipped ${rejectedPdfCount} PDF(s) > 50MB, ${skippedImageCount} image(s), ${failedPersistCount} file(s) not persisted`,
@@ -1887,7 +1912,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       return;
     }
     if (addedCount > 0 || replacedCount > 0) {
-      const replaceText = replacedCount > 0 ? `, replaced ${replacedCount}` : "";
+      const replaceText =
+        replacedCount > 0 ? `, replaced ${replacedCount}` : "";
       setStatus(
         status,
         `Uploaded ${addedCount} attachment(s)${replaceText}`,
@@ -2687,11 +2713,16 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     const clickedInsideFilePanel = Boolean(
       filePreview && target && filePreview.contains(target),
     );
-    if (clickedInsideTextPanel || clickedInsideFigurePanel || clickedInsideFilePanel)
+    if (
+      clickedInsideTextPanel ||
+      clickedInsideFigurePanel ||
+      clickedInsideFilePanel
+    )
       return;
 
     const textPinned = selectedTextPreviewExpandedCache.get(item.id) === true;
-    const figurePinned = selectedImagePreviewExpandedCache.get(item.id) === true;
+    const figurePinned =
+      selectedImagePreviewExpandedCache.get(item.id) === true;
     const filePinned = selectedFilePreviewExpandedCache.get(item.id) === true;
     if (!textPinned && !figurePinned && !filePinned) return;
 

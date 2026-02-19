@@ -80,10 +80,7 @@ function getAbortController(): new () => AbortController {
   );
 }
 
-function appendReasoningPart(
-  base: string | undefined,
-  next?: string,
-): string {
+function appendReasoningPart(base: string | undefined, next?: string): string {
   const chunk = sanitizeText(next || "");
   if (!chunk) return base || "";
   return `${base || ""}${chunk}`;
@@ -883,9 +880,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
         screenshotBar.append(screenshotIcon, screenshotLabel);
 
-        const screenshotExpandedEl = doc.createElement(
-          "div",
-        ) as HTMLDivElement;
+        const screenshotExpandedEl = doc.createElement("div") as HTMLDivElement;
         screenshotExpandedEl.className = "llm-user-screenshots-expanded";
         screenshotExpanded = screenshotExpandedEl;
 
@@ -1305,7 +1300,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       const bubbleWidth = Math.round(bubble.getBoundingClientRect().width);
       if (bubbleWidth > 0) {
         wrapper.classList.add("llm-user-context-aligned");
-        wrapper.style.setProperty("--llm-user-bubble-width", `${bubbleWidth}px`);
+        wrapper.style.setProperty(
+          "--llm-user-bubble-width",
+          `${bubbleWidth}px`,
+        );
       }
     }
   }

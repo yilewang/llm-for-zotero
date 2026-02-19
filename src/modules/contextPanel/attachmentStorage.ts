@@ -27,7 +27,10 @@ type OSFileLike = {
   ) => Promise<void>;
   writeAtomic?: (path: string, data: Uint8Array) => Promise<void>;
   copy?: (sourcePath: string, destPath: string) => Promise<void>;
-  remove?: (path: string, options?: { ignoreAbsent?: boolean }) => Promise<void>;
+  remove?: (
+    path: string,
+    options?: { ignoreAbsent?: boolean },
+  ) => Promise<void>;
   removeDir?: (
     path: string,
     options?: { ignoreAbsent?: boolean; ignorePermissions?: boolean },
@@ -54,7 +57,9 @@ function joinPath(...parts: string[]): string {
   const normalized = parts
     .filter((part) => Boolean(part))
     .map((part, index) =>
-      index === 0 ? part.replace(/[\\/]+$/, "") : part.replace(/^[\\/]+|[\\/]+$/g, ""),
+      index === 0
+        ? part.replace(/[\\/]+$/, "")
+        : part.replace(/^[\\/]+|[\\/]+$/g, ""),
     )
     .filter((part) => Boolean(part));
   return normalized.join("/");
@@ -64,17 +69,21 @@ function getParentPath(path: string): string {
   const pathUtils = getPathUtils();
   if (pathUtils?.parent) return pathUtils.parent(path);
   const normalized = path.replace(/[\\/]+$/, "");
-  const index = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  const index = Math.max(
+    normalized.lastIndexOf("/"),
+    normalized.lastIndexOf("\\"),
+  );
   return index > 0 ? normalized.slice(0, index) : normalized;
 }
 
 function sanitizeFileName(name: string): string {
   const trimmed = (name || "").trim() || "attachment";
-  const sanitized = trimmed
-    .replace(/[\/\\?%*:|"<>]/g, "_")
-    .replace(/[\x00-\x1f\x7f]/g, "_")
-    .replace(/\s+/g, " ")
-    .trim();
+  const withoutReserved = trimmed.replace(/[\\?%*:|"<>/]/g, "_");
+  const withoutControlChars = Array.from(withoutReserved, (ch) => {
+    const code = ch.charCodeAt(0);
+    return code < 32 || code === 127 ? "_" : ch;
+  }).join("");
+  const sanitized = withoutControlChars.replace(/\s+/g, " ").trim();
   return sanitized || "attachment";
 }
 
@@ -108,7 +117,9 @@ function getBaseWritableDir(): string {
   if (typeof tempDirObj?.path === "string" && tempDirObj.path.trim()) {
     return tempDirObj.path.trim();
   }
-  throw new Error("Cannot resolve writable data directory for chat attachments");
+  throw new Error(
+    "Cannot resolve writable data directory for chat attachments",
+  );
 }
 
 async function ensureDir(path: string): Promise<void> {
@@ -192,7 +203,10 @@ async function removePath(path: string, recursive: boolean): Promise<void> {
   const osFile = getOSFile();
   try {
     if (recursive && osFile?.removeDir) {
-      await osFile.removeDir(path, { ignoreAbsent: true, ignorePermissions: false });
+      await osFile.removeDir(path, {
+        ignoreAbsent: true,
+        ignorePermissions: false,
+      });
       return;
     }
     if (osFile?.remove) {
@@ -203,7 +217,10 @@ async function removePath(path: string, recursive: boolean): Promise<void> {
   }
 }
 
-async function reserveUniquePath(dirPath: string, fileName: string): Promise<string> {
+async function reserveUniquePath(
+  dirPath: string,
+  fileName: string,
+): Promise<string> {
   const { stem, ext } = splitFileName(fileName);
   const safeStem = stem.slice(0, 120) || "attachment";
   let attempt = 0;

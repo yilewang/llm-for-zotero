@@ -71,7 +71,9 @@ async function migrateLegacyChatStore(): Promise<void> {
     }
   }
 
-  await Zotero.DB.queryAsync(`DROP INDEX IF EXISTS ${LEGACY_CHAT_MESSAGES_INDEX}`);
+  await Zotero.DB.queryAsync(
+    `DROP INDEX IF EXISTS ${LEGACY_CHAT_MESSAGES_INDEX}`,
+  );
 }
 
 function normalizeConversationKey(conversationKey: number): number | null {
@@ -255,7 +257,9 @@ export async function loadConversation(
               id,
               name,
               mimeType,
-              sizeBytes: Number.isFinite(sizeBytes) ? Math.max(0, sizeBytes) : 0,
+              sizeBytes: Number.isFinite(sizeBytes)
+                ? Math.max(0, sizeBytes)
+                : 0,
               category,
               imageDataUrl:
                 typeof typed.imageDataUrl === "string" &&
