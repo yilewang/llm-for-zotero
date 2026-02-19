@@ -25,6 +25,13 @@
   background: var(--material-sidepane);
 }
 
+.llm-panel:focus,
+.llm-panel:focus-visible,
+.llm-panel:-moz-focusring {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 /* Header */
 .llm-header {
   display: flex;
@@ -278,6 +285,44 @@
 .llm-shortcut-menu-item:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.llm-assistant-selection-action {
+  appearance: none;
+  -moz-appearance: none;
+  position: absolute;
+  z-index: 8;
+  background: var(--material-background);
+  border-color: var(--stroke-secondary);
+  color: var(--fill-primary);
+  width: auto;
+  max-width: none;
+  margin: 0;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(4px);
+  will-change: opacity, transform;
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease,
+    visibility 140ms ease;
+}
+
+.llm-assistant-selection-action.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.llm-assistant-selection-action:hover:not(:disabled),
+.llm-assistant-selection-action:active:not(:disabled),
+.llm-assistant-selection-action:focus-visible {
+  background: var(--material-background);
+  border-color: var(--stroke-secondary);
+  color: var(--fill-primary);
 }
 
 /* Welcome Message */
