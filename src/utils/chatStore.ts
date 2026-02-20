@@ -353,6 +353,42 @@ export async function appendMessage(
   );
 }
 
+export async function updateLatestAssistantMessage(
+  conversationKey: number,
+  message: Pick<
+    StoredChatMessage,
+    "text" | "timestamp" | "modelName" | "reasoningSummary" | "reasoningDetails"
+  >,
+): Promise<void> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey) return;
+
+  const timestamp = Number(message.timestamp);
+  await Zotero.DB.queryAsync(
+    `UPDATE ${CHAT_MESSAGES_TABLE}
+     SET text = ?,
+         timestamp = ?,
+         model_name = ?,
+         reasoning_summary = ?,
+         reasoning_details = ?
+     WHERE id = (
+       SELECT id
+       FROM ${CHAT_MESSAGES_TABLE}
+       WHERE conversation_key = ? AND role = 'assistant'
+       ORDER BY timestamp DESC, id DESC
+       LIMIT 1
+     )`,
+    [
+      message.text || "",
+      Number.isFinite(timestamp) ? Math.floor(timestamp) : Date.now(),
+      message.modelName || null,
+      message.reasoningSummary || null,
+      message.reasoningDetails || null,
+      normalizedKey,
+    ],
+  );
+}
+
 export async function clearConversation(
   conversationKey: number,
 ): Promise<void> {

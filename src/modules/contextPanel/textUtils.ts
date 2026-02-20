@@ -3,6 +3,10 @@ import {
   SELECTED_TEXT_PREVIEW_LENGTH,
 } from "./constants";
 
+export const DEFAULT_SELECTED_TEXT_PROMPT =
+  "Please explain this selected text.";
+export const DEFAULT_FILE_ANALYSIS_PROMPT = "Please analyze attached files.";
+
 export function sanitizeText(text: string) {
   let out = "";
   for (let i = 0; i < text.length; i++) {
@@ -84,9 +88,53 @@ export function buildQuestionWithSelectedText(
   selectedText: string,
   userPrompt: string,
 ): string {
-  const normalizedPrompt =
-    userPrompt.trim() || "Please explain this selected text.";
+  const normalizedPrompt = userPrompt.trim() || DEFAULT_SELECTED_TEXT_PROMPT;
   return `Selected text from the PDF reader:\n"""\n${selectedText}\n"""\n\nUser question:\n${normalizedPrompt}`;
+}
+
+export function resolvePromptText(
+  userInput: string,
+  selectedText: string,
+  hasAttachments: boolean,
+): string {
+  const normalizedInput = sanitizeText(userInput).trim();
+  if (normalizedInput) return normalizedInput;
+  if (sanitizeText(selectedText).trim()) return DEFAULT_SELECTED_TEXT_PROMPT;
+  if (hasAttachments) return DEFAULT_FILE_ANALYSIS_PROMPT;
+  return "";
+}
+
+type FileContextAttachment = {
+  name: string;
+  mimeType?: string;
+  sizeBytes: number;
+  textContent?: string;
+};
+
+export function buildModelPromptWithFileContext(
+  baseQuestion: string,
+  fileAttachments: FileContextAttachment[],
+): string {
+  if (!fileAttachments.length) return baseQuestion;
+  const textBlocks: string[] = [];
+  const metaBlocks: string[] = [];
+  for (const attachment of fileAttachments) {
+    metaBlocks.push(
+      `- ${attachment.name} (${attachment.mimeType || "application/octet-stream"}, ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB)`,
+    );
+    if (attachment.textContent) {
+      const clipped = attachment.textContent.slice(0, 12000);
+      textBlocks.push(`### ${attachment.name}\n${clipped}`);
+    }
+  }
+  const blocks: string[] = [baseQuestion];
+  if (metaBlocks.length) {
+    blocks.push(`\nAttached files:\n${metaBlocks.join("\n")}`);
+  }
+  if (textBlocks.length) {
+    blocks.push(`\nAttached file contents:\n${textBlocks.join("\n\n")}`);
+  }
+  return blocks.join("\n");
 }
 
 export function escapeNoteHtml(text: string): string {

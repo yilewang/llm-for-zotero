@@ -4,6 +4,7 @@ import {
   clearConversation as clearStoredConversation,
   loadConversation,
   pruneConversation,
+  updateLatestAssistantMessage as updateStoredLatestAssistantMessage,
   StoredChatMessage,
 } from "../../utils/chatStore";
 import {
@@ -20,8 +21,6 @@ import {
   AUTO_SCROLL_BOTTOM_THRESHOLD,
   MAX_SELECTED_IMAGES,
   formatFigureCountLabel,
-  MODEL_PROFILE_ORDER,
-  type ModelProfileKey,
 } from "./constants";
 import type {
   Message,
@@ -29,7 +28,6 @@ import type {
   ReasoningOption,
   ReasoningLevelSelection,
   AdvancedModelParams,
-  ApiProfile,
   ChatAttachment,
 } from "./types";
 import {
@@ -43,8 +41,6 @@ import {
   setCurrentAbortController,
   nextRequestId,
   setResponseMenuTarget,
-  selectedImageCache,
-  selectedTextCache,
   pdfTextCache,
 } from "./state";
 import {
@@ -53,12 +49,14 @@ import {
   setStatus,
   getSelectedTextWithinBubble,
   getAttachmentTypeLabel,
+  buildQuestionWithSelectedText,
+  buildModelPromptWithFileContext,
+  resolvePromptText,
 } from "./textUtils";
 import { positionMenuAtPointer } from "./menuPositioning";
 import {
   getSelectedProfileForItem,
   getAdvancedModelParamsForProfile,
-  getApiProfiles,
   getStringPref,
 } from "./prefHelpers";
 import { buildContext, ensurePDFTextCached } from "./pdfContext";
@@ -535,6 +533,326 @@ export function getSelectedReasoningForItem(
   return { provider, level: selectedLevel as LLMReasoningLevel };
 }
 
+type LatestRetryPair = {
+  userIndex: number;
+  userMessage: Message;
+  assistantMessage: Message;
+};
+
+type AssistantMessageSnapshot = Pick<
+  Message,
+  | "text"
+  | "timestamp"
+  | "modelName"
+  | "reasoningSummary"
+  | "reasoningDetails"
+  | "reasoningOpen"
+>;
+
+function findLatestRetryPair(history: Message[]): LatestRetryPair | null {
+  for (let i = history.length - 1; i >= 1; i--) {
+    if (history[i]?.role !== "assistant") continue;
+    if (history[i - 1]?.role !== "user") return null;
+    return {
+      userIndex: i - 1,
+      userMessage: history[i - 1],
+      assistantMessage: history[i],
+    };
+  }
+  return null;
+}
+
+function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
+  return {
+    text: message.text,
+    timestamp: message.timestamp,
+    modelName: message.modelName,
+    reasoningSummary: message.reasoningSummary,
+    reasoningDetails: message.reasoningDetails,
+    reasoningOpen: message.reasoningOpen,
+  };
+}
+
+function restoreAssistantSnapshot(
+  message: Message,
+  snapshot: AssistantMessageSnapshot,
+): void {
+  message.text = snapshot.text;
+  message.timestamp = snapshot.timestamp;
+  message.modelName = snapshot.modelName;
+  message.reasoningSummary = snapshot.reasoningSummary;
+  message.reasoningDetails = snapshot.reasoningDetails;
+  message.reasoningOpen = snapshot.reasoningOpen;
+  message.streaming = false;
+}
+
+function reconstructRetryPayload(userMessage: Message): {
+  question: string;
+  screenshotImages: string[];
+} {
+  const selectedText = sanitizeText(userMessage.selectedText || "").trim();
+  const fileAttachments = (
+    Array.isArray(userMessage.attachments)
+      ? userMessage.attachments.filter(
+          (attachment) =>
+            Boolean(attachment) &&
+            typeof attachment === "object" &&
+            typeof attachment.id === "string" &&
+            attachment.id.trim() &&
+            typeof attachment.name === "string" &&
+            attachment.category !== "image",
+        )
+      : []
+  ) as ChatAttachment[];
+  const promptText = resolvePromptText(
+    sanitizeText(userMessage.text || ""),
+    selectedText,
+    fileAttachments.length > 0,
+  );
+  const composedQuestionBase = selectedText
+    ? buildQuestionWithSelectedText(selectedText, promptText)
+    : promptText;
+  const question = buildModelPromptWithFileContext(
+    composedQuestionBase,
+    fileAttachments,
+  );
+  const screenshotImages = Array.isArray(userMessage.screenshotImages)
+    ? userMessage.screenshotImages
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+        .slice(0, MAX_SELECTED_IMAGES)
+    : [];
+  return { question, screenshotImages };
+}
+
+export async function retryLatestAssistantResponse(
+  body: Element,
+  item: Zotero.Item,
+  model?: string,
+  apiBase?: string,
+  apiKey?: string,
+  reasoning?: LLMReasoningConfig,
+  advanced?: AdvancedModelParams,
+) {
+  const inputBox = body.querySelector(
+    "#llm-input",
+  ) as HTMLTextAreaElement | null;
+  const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
+  const sendBtn = body.querySelector("#llm-send") as HTMLButtonElement | null;
+  const cancelBtn = body.querySelector(
+    "#llm-cancel",
+  ) as HTMLButtonElement | null;
+  const status = body.querySelector("#llm-status") as HTMLElement | null;
+
+  await ensureConversationLoaded(item);
+  const conversationKey = getConversationKey(item);
+  const history = chatHistory.get(conversationKey) || [];
+  const retryPair = findLatestRetryPair(history);
+  if (!retryPair) {
+    if (status) setStatus(status, "No retryable response found", "error");
+    return;
+  }
+
+  const thisRequestId = nextRequestId();
+  withScrollGuard(chatBox, conversationKey, () => {
+    if (sendBtn) sendBtn.style.display = "none";
+    if (cancelBtn) cancelBtn.style.display = "";
+    if (inputBox) inputBox.disabled = true;
+    if (status) setStatus(status, "Preparing retry...", "sending");
+  });
+
+  const refreshChatSafely = () => {
+    withScrollGuard(chatBox, conversationKey, () => {
+      refreshChat(body, item);
+    });
+  };
+  const setStatusSafely = (
+    text: string,
+    kind: Parameters<typeof setStatus>[2],
+  ) => {
+    if (!status) return;
+    withScrollGuard(chatBox, conversationKey, () => {
+      setStatus(status, text, kind);
+    });
+  };
+
+  const historyForLLM = history
+    .slice(0, retryPair.userIndex)
+    .slice(-MAX_HISTORY_MESSAGES);
+  const { question, screenshotImages } = reconstructRetryPayload(
+    retryPair.userMessage,
+  );
+  if (!question.trim()) {
+    setStatusSafely("Nothing to retry for latest turn", "error");
+    withScrollGuard(chatBox, conversationKey, () => {
+      if (inputBox) {
+        inputBox.disabled = false;
+        inputBox.focus({ preventScroll: true });
+      }
+      if (sendBtn) sendBtn.style.display = "";
+      if (cancelBtn) cancelBtn.style.display = "none";
+    });
+    return;
+  }
+
+  const fallbackProfile = getSelectedProfileForItem(item.id);
+  const effectiveModel = (
+    model ||
+    fallbackProfile.model ||
+    getStringPref("modelPrimary") ||
+    getStringPref("model") ||
+    "gpt-4o-mini"
+  ).trim();
+  const effectiveApiBase = (apiBase || fallbackProfile.apiBase).trim();
+  const effectiveApiKey = (apiKey || fallbackProfile.apiKey).trim();
+  const effectiveReasoning =
+    reasoning ||
+    getSelectedReasoningForItem(item.id, effectiveModel, effectiveApiBase);
+  const effectiveAdvanced =
+    advanced || getAdvancedModelParamsForProfile(fallbackProfile.key);
+
+  const assistantMessage = retryPair.assistantMessage;
+  const assistantSnapshot = takeAssistantSnapshot(assistantMessage);
+  assistantMessage.text = "";
+  assistantMessage.timestamp = Date.now();
+  assistantMessage.modelName = effectiveModel;
+  assistantMessage.streaming = true;
+  assistantMessage.reasoningSummary = undefined;
+  assistantMessage.reasoningDetails = undefined;
+  assistantMessage.reasoningOpen = false;
+  refreshChatSafely();
+
+  const restoreOriginalAssistant = () => {
+    restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
+    refreshChatSafely();
+  };
+
+  try {
+    const contextSource = resolveContextSourceItem(item);
+    setStatusSafely(contextSource.statusText, "sending");
+
+    let pdfContext = "";
+    if (contextSource.contextItem) {
+      await ensurePDFTextCached(contextSource.contextItem);
+      pdfContext = await buildContext(
+        pdfTextCache.get(contextSource.contextItem.id),
+        question,
+        screenshotImages.length > 0,
+        { apiBase: effectiveApiBase, apiKey: effectiveApiKey },
+      );
+    }
+
+    const llmHistory: ChatMessage[] = historyForLLM.map((msg) => ({
+      role: msg.role,
+      content: msg.text,
+    }));
+
+    const AbortControllerCtor = getAbortController();
+    setCurrentAbortController(
+      AbortControllerCtor ? new AbortControllerCtor() : null,
+    );
+
+    let refreshQueued = false;
+    const queueRefresh = () => {
+      if (refreshQueued) return;
+      refreshQueued = true;
+      setTimeout(() => {
+        refreshQueued = false;
+        refreshChatSafely();
+      }, 50);
+    };
+
+    const answer = await callLLMStream(
+      {
+        prompt: question,
+        context: pdfContext,
+        history: llmHistory,
+        signal: currentAbortController?.signal,
+        images: screenshotImages,
+        model: effectiveModel,
+        apiBase: effectiveApiBase,
+        apiKey: effectiveApiKey,
+        reasoning: effectiveReasoning,
+        temperature: effectiveAdvanced?.temperature,
+        maxTokens: effectiveAdvanced?.maxTokens,
+      },
+      (delta) => {
+        assistantMessage.text += sanitizeText(delta);
+        queueRefresh();
+      },
+      (reasoningEvent: ReasoningEvent) => {
+        if (reasoningEvent.summary) {
+          assistantMessage.reasoningSummary = appendReasoningPart(
+            assistantMessage.reasoningSummary,
+            reasoningEvent.summary,
+          );
+        }
+        if (reasoningEvent.details) {
+          assistantMessage.reasoningDetails = appendReasoningPart(
+            assistantMessage.reasoningDetails,
+            reasoningEvent.details,
+          );
+        }
+        queueRefresh();
+      },
+    );
+
+    if (
+      cancelledRequestId >= thisRequestId ||
+      Boolean(currentAbortController?.signal.aborted)
+    ) {
+      restoreOriginalAssistant();
+      setStatusSafely("Cancelled", "ready");
+      return;
+    }
+
+    assistantMessage.text =
+      sanitizeText(answer) || assistantMessage.text || "No response.";
+    assistantMessage.streaming = false;
+    refreshChatSafely();
+
+    await updateStoredLatestAssistantMessage(conversationKey, {
+      text: assistantMessage.text,
+      timestamp: assistantMessage.timestamp,
+      modelName: assistantMessage.modelName,
+      reasoningSummary: assistantMessage.reasoningSummary,
+      reasoningDetails: assistantMessage.reasoningDetails,
+    });
+
+    setStatusSafely("Ready", "ready");
+  } catch (err) {
+    const isCancelled =
+      cancelledRequestId >= thisRequestId ||
+      Boolean(currentAbortController?.signal.aborted) ||
+      (err as { name?: string }).name === "AbortError";
+    if (isCancelled) {
+      restoreOriginalAssistant();
+      setStatusSafely("Cancelled", "ready");
+      return;
+    }
+
+    restoreOriginalAssistant();
+    const errMsg = (err as Error).message || "Error";
+    setStatusSafely(`Retry failed: ${errMsg.slice(0, 48)}`, "error");
+  } finally {
+    if (cancelledRequestId < thisRequestId) {
+      withScrollGuard(chatBox, conversationKey, () => {
+        if (inputBox) {
+          inputBox.disabled = false;
+          inputBox.focus({ preventScroll: true });
+        }
+        if (sendBtn) {
+          sendBtn.style.display = "";
+          sendBtn.disabled = false;
+        }
+        if (cancelBtn) cancelBtn.style.display = "none";
+      });
+    }
+    setCurrentAbortController(null);
+  }
+}
+
 export async function sendQuestion(
   body: Element,
   item: Zotero.Item,
@@ -840,7 +1158,15 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
   chatBox.innerHTML = "";
 
-  for (const msg of history) {
+  let latestAssistantIndex = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]?.role === "assistant") {
+      latestAssistantIndex = i;
+      break;
+    }
+  }
+
+  for (const [index, msg] of history.entries()) {
     const isUser = msg.role === "user";
     let hasUserContext = false;
     const wrapper = doc.createElement("div") as HTMLDivElement;
@@ -1292,6 +1618,20 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     time.className = "llm-message-time";
     time.textContent = formatTime(msg.timestamp);
     meta.appendChild(time);
+    if (
+      !isUser &&
+      index === latestAssistantIndex &&
+      !msg.streaming &&
+      msg.text.trim()
+    ) {
+      const retryBtn = doc.createElement("button") as HTMLButtonElement;
+      retryBtn.type = "button";
+      retryBtn.className = "llm-retry-latest";
+      retryBtn.textContent = "↻";
+      retryBtn.title = "Retry response with another model";
+      retryBtn.setAttribute("aria-label", "Retry latest response");
+      meta.appendChild(retryBtn);
+    }
 
     wrapper.appendChild(bubble);
     wrapper.appendChild(meta);

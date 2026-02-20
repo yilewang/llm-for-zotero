@@ -200,91 +200,6 @@ function splitTopLevelAdditiveTerms(text: string): string[] {
   return terms;
 }
 
-const WRAP_BREAK_COMMANDS = new Set([
-  "sum",
-  "prod",
-  "coprod",
-  "int",
-  "iint",
-  "iiint",
-  "oint",
-  "lim",
-]);
-
-function readCommandName(text: string, start: number): {
-  name: string;
-  end: number;
-} {
-  let end = start + 1;
-  while (end < text.length && /[A-Za-z]/.test(text[end])) {
-    end += 1;
-  }
-  return { name: text.slice(start + 1, end), end };
-}
-
-function findTopLevelCommandBreakPoints(text: string): number[] {
-  const points: number[] = [];
-  let braceDepth = 0;
-  let bracketDepth = 0;
-  let parenDepth = 0;
-
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === "\\") {
-      const { name, end } = readCommandName(text, i);
-      if (
-        name &&
-        braceDepth === 0 &&
-        bracketDepth === 0 &&
-        parenDepth === 0 &&
-        WRAP_BREAK_COMMANDS.has(name)
-      ) {
-        points.push(i);
-      }
-      i = Math.max(i + 1, end - 1);
-      continue;
-    }
-    if (ch === "{") braceDepth += 1;
-    else if (ch === "}") braceDepth = Math.max(0, braceDepth - 1);
-    else if (ch === "[") bracketDepth += 1;
-    else if (ch === "]") bracketDepth = Math.max(0, bracketDepth - 1);
-    else if (ch === "(") parenDepth += 1;
-    else if (ch === ")") parenDepth = Math.max(0, parenDepth - 1);
-  }
-
-  return points;
-}
-
-function splitLongTermByTopLevelCommands(
-  term: string,
-  maxTermLength = 95,
-): string[] {
-  const source = term.trim();
-  if (source.length <= maxTermLength) return [source];
-
-  const breakPoints = findTopLevelCommandBreakPoints(source);
-  if (breakPoints.length < 2) return [source];
-
-  const chunks: string[] = [];
-  let chunkStart = 0;
-  for (let i = 1; i < breakPoints.length; i++) {
-    const point = breakPoints[i];
-    const currentLength = point - chunkStart;
-    if (currentLength < Math.floor(maxTermLength * 0.7)) continue;
-    const chunk = source.slice(chunkStart, point).trim();
-    if (chunk) chunks.push(chunk);
-    chunkStart = point;
-  }
-
-  const tail = source.slice(chunkStart).trim();
-  if (tail) chunks.push(tail);
-  return chunks.length > 1 ? chunks : [source];
-}
-
-function expandTermsForAlignment(terms: string[]): string[] {
-  return terms.flatMap((term) => splitLongTermByTopLevelCommands(term));
-}
-
 function shouldAttemptDisplayWrap(math: string): boolean {
   const compact = math.replace(/\s+/g, " ").trim();
   if (compact.length < 120) return false;
@@ -303,20 +218,19 @@ function buildWrappedDisplayMath(math: string): string | null {
     const rhs = math.slice(eqIndex + 1).trim();
     if (!lhs || !rhs) return null;
     const rhsTerms = splitTopLevelAdditiveTerms(rhs);
-    const rhsExpandedTerms = expandTermsForAlignment(rhsTerms);
-    if (rhsExpandedTerms.length < 2) return null;
+    if (rhsTerms.length < 2) return null;
     const lines = [
-      `${lhs} &= ${rhsExpandedTerms[0]}`,
-      ...rhsExpandedTerms.slice(1).map((term) => `&\\quad ${term}`),
+      `${lhs} &= ${rhsTerms[0]}`,
+      ...rhsTerms.slice(1).map((term) => `& ${term}`),
     ];
     return `\\begin{aligned}${lines.join(" \\\\ ")}\\end{aligned}`;
   }
 
-  const terms = expandTermsForAlignment(splitTopLevelAdditiveTerms(math));
+  const terms = splitTopLevelAdditiveTerms(math);
   if (terms.length < 3) return null;
   const lines = [
     `& ${terms[0]}`,
-    ...terms.slice(1).map((term) => `&\\quad ${term}`),
+    ...terms.slice(1).map((term) => `& ${term}`),
   ];
   return `\\begin{aligned}${lines.join(" \\\\ ")}\\end{aligned}`;
 }

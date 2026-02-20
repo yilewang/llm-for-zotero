@@ -194,6 +194,13 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   exportMenu.append(exportMenuCopyBtn, exportMenuNoteBtn);
   container.appendChild(exportMenu);
 
+  // Retry model menu (opened from latest assistant retry action)
+  const retryModelMenu = createElement(doc, "div", "llm-model-menu", {
+    id: "llm-retry-model-menu",
+  });
+  retryModelMenu.style.display = "none";
+  container.appendChild(retryModelMenu);
+
   // Input section
   const inputSection = createElement(doc, "div", "llm-input-section");
   const contextPreviews = createElement(doc, "div", "llm-context-previews", {

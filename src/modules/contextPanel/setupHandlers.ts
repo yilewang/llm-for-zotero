@@ -49,6 +49,8 @@ import {
   setStatus,
   clampNumber,
   buildQuestionWithSelectedText,
+  buildModelPromptWithFileContext,
+  resolvePromptText,
   getSelectedTextWithinBubble,
   getAttachmentTypeLabel,
 } from "./textUtils";
@@ -75,6 +77,7 @@ import {
   detectReasoningProvider,
   getReasoningOptions,
   getSelectedReasoningForItem,
+  retryLatestAssistantResponse,
 } from "./chat";
 import {
   getActiveReaderSelectionText,
@@ -221,6 +224,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const exportMenuNoteBtn = body.querySelector(
     "#llm-export-note",
   ) as HTMLButtonElement | null;
+  const retryModelMenu = body.querySelector(
+    "#llm-retry-model-menu",
+  ) as HTMLDivElement | null;
   const status = body.querySelector("#llm-status") as HTMLElement | null;
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
 
@@ -275,6 +281,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   const MODEL_MENU_OPEN_CLASS = "llm-model-menu-open";
   const REASONING_MENU_OPEN_CLASS = "llm-reasoning-menu-open";
+  const RETRY_MODEL_MENU_OPEN_CLASS = "llm-model-menu-open";
+  let retryMenuAnchor: HTMLButtonElement | null = null;
   const setFloatingMenuOpen = (
     menu: HTMLDivElement | null,
     openClass: string,
@@ -297,6 +305,10 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   };
   const closeExportMenu = () => {
     if (exportMenu) exportMenu.style.display = "none";
+  };
+  const closeRetryModelMenu = () => {
+    setFloatingMenuOpen(retryModelMenu, RETRY_MODEL_MENU_OPEN_CLASS, false);
+    retryMenuAnchor = null;
   };
 
   // Show floating "Quote" action when selecting assistant response text.
@@ -666,6 +678,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       e.preventDefault();
       e.stopPropagation();
       if (exportBtn.disabled || !exportMenu || !item) return;
+      closeRetryModelMenu();
       closeResponseMenu();
       if (exportMenu.style.display !== "none") {
         closeExportMenu();
@@ -1329,11 +1342,14 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         (body as HTMLElement | null)?.getBoundingClientRect?.().width || 0,
       );
       const rowWidth = actionsRow?.clientWidth || 0;
-      if (rowWidth > 0) return hostWidth > 0 ? Math.min(rowWidth, hostWidth) : rowWidth;
+      if (rowWidth > 0)
+        return hostWidth > 0 ? Math.min(rowWidth, hostWidth) : rowWidth;
       const panelWidth = panelRoot?.clientWidth || 0;
-      if (panelWidth > 0) return hostWidth > 0 ? Math.min(panelWidth, hostWidth) : panelWidth;
+      if (panelWidth > 0)
+        return hostWidth > 0 ? Math.min(panelWidth, hostWidth) : panelWidth;
       const leftWidth = actionsLeft.clientWidth || 0;
-      if (leftWidth > 0) return hostWidth > 0 ? Math.min(leftWidth, hostWidth) : leftWidth;
+      if (leftWidth > 0)
+        return hostWidth > 0 ? Math.min(leftWidth, hostWidth) : leftWidth;
       return hostWidth;
     };
     const doesModeFit = (
@@ -1485,7 +1501,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       }
     }
     if (lastAttemptedMode) {
-      const [dropdownMode, contextButtonMode, modelWrapMode] = lastAttemptedMode;
+      const [dropdownMode, contextButtonMode, modelWrapMode] =
+        lastAttemptedMode;
       setPanelActionLayoutMode(
         getActionLayoutMode(dropdownMode, contextButtonMode, modelWrapMode),
       );
@@ -1545,6 +1562,54 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       option.addEventListener("pointerdown", applyModelSelection);
       option.addEventListener("click", applyModelSelection);
       modelMenu.appendChild(option);
+    }
+  };
+
+  const rebuildRetryModelMenu = () => {
+    if (!item || !retryModelMenu) return;
+    const { profiles, choices } = getModelChoices();
+    const selectedKey = selectedModelCache.get(item.id) || "primary";
+    retryModelMenu.innerHTML = "";
+    for (const entry of choices) {
+      const profile = profiles[entry.key];
+      const isSelected = selectedKey === entry.key;
+      const option = createElement(
+        body.ownerDocument as Document,
+        "button",
+        "llm-model-option",
+        {
+          type: "button",
+          textContent: isSelected
+            ? `\u2713 ${entry.model || "default"}`
+            : entry.model || "default",
+        },
+      );
+      const runRetry = async (e: Event) => {
+        if (!isPrimaryPointerEvent(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (!item) return;
+        closeRetryModelMenu();
+        const retryReasoning = getSelectedReasoningForItem(
+          item.id,
+          profile.model,
+          profile.apiBase,
+        );
+        const retryAdvanced = getAdvancedModelParams(entry.key);
+        await retryLatestAssistantResponse(
+          body,
+          item,
+          profile.model,
+          profile.apiBase,
+          profile.apiKey,
+          retryReasoning,
+          retryAdvanced,
+        );
+      };
+      option.addEventListener("click", (e: Event) => {
+        void runRetry(e);
+      });
+      retryModelMenu.appendChild(option);
     }
   };
 
@@ -2096,45 +2161,20 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     });
   }
 
-  const buildModelPromptWithFileContext = (
-    baseQuestion: string,
-    fileAttachments: ChatAttachment[],
-  ) => {
-    if (!fileAttachments.length) return baseQuestion;
-    const textBlocks: string[] = [];
-    const metaBlocks: string[] = [];
-    for (const attachment of fileAttachments) {
-      metaBlocks.push(
-        `- ${attachment.name} (${attachment.mimeType || "application/octet-stream"}, ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB)`,
-      );
-      if (attachment.textContent) {
-        const clipped = attachment.textContent.slice(0, 12000);
-        textBlocks.push(`### ${attachment.name}\n${clipped}`);
-      }
-    }
-    const blocks: string[] = [baseQuestion];
-    if (metaBlocks.length) {
-      blocks.push(`\nAttached files:\n${metaBlocks.join("\n")}`);
-    }
-    if (textBlocks.length) {
-      blocks.push(`\nAttached file contents:\n${textBlocks.join("\n\n")}`);
-    }
-    return blocks.join("\n");
-  };
-
   const doSend = async () => {
     if (!item) return;
     const text = inputBox.value.trim();
     const selectedText = selectedTextCache.get(item.id) || "";
     const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
     if (!text && !selectedText && !selectedFiles.length) return;
-    const promptText =
-      text ||
-      (selectedText
-        ? "Please explain this selected text."
-        : "Please analyze attached files.");
+    const promptText = resolvePromptText(
+      text,
+      selectedText,
+      selectedFiles.length > 0,
+    );
+    if (!promptText) return;
     const composedQuestionBase = selectedText
-      ? buildQuestionWithSelectedText(selectedText, text)
+      ? buildQuestionWithSelectedText(selectedText, promptText)
       : promptText;
     const composedQuestion = buildModelPromptWithFileContext(
       composedQuestionBase,
@@ -2494,6 +2534,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   const openModelMenu = () => {
     if (!modelMenu || !modelBtn) return;
+    closeRetryModelMenu();
     closeReasoningMenu();
     updateModelButton();
     rebuildModelMenu();
@@ -2511,6 +2552,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   const openReasoningMenu = () => {
     if (!reasoningMenu || !reasoningBtn) return;
+    closeRetryModelMenu();
     closeModelMenu();
     updateReasoningButton();
     rebuildReasoningMenu();
@@ -2524,6 +2566,22 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   const closeReasoningMenu = () => {
     setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+  };
+
+  const openRetryModelMenu = (anchor: HTMLButtonElement) => {
+    if (!item || !retryModelMenu) return;
+    closeResponseMenu();
+    closeExportMenu();
+    closeModelMenu();
+    closeReasoningMenu();
+    rebuildRetryModelMenu();
+    if (!retryModelMenu.childElementCount) {
+      closeRetryModelMenu();
+      return;
+    }
+    retryMenuAnchor = anchor;
+    positionFloatingMenu(retryModelMenu, anchor);
+    setFloatingMenuOpen(retryModelMenu, RETRY_MODEL_MENU_OPEN_CLASS, true);
   };
 
   if (modelMenu) {
@@ -2541,6 +2599,32 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     });
     reasoningMenu.addEventListener("mousedown", (e: Event) => {
       e.stopPropagation();
+    });
+  }
+
+  if (retryModelMenu) {
+    retryModelMenu.addEventListener("pointerdown", (e: Event) => {
+      e.stopPropagation();
+    });
+    retryModelMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+  }
+
+  if (chatBox) {
+    chatBox.addEventListener("click", (e: Event) => {
+      const target = (e.target as Element | null)?.closest(
+        ".llm-retry-latest",
+      ) as HTMLButtonElement | null;
+      if (!target) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!item || !retryModelMenu) return;
+      if (isFloatingMenuOpen(retryModelMenu)) {
+        closeRetryModelMenu();
+      } else {
+        openRetryModelMenu(target);
+      }
     });
   }
 
@@ -2590,6 +2674,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       const reasoningButtonEl = doc.querySelector(
         "#llm-reasoning-toggle",
       ) as HTMLButtonElement | null;
+      const retryModelMenuEl = doc.querySelector(
+        "#llm-retry-model-menu",
+      ) as HTMLDivElement | null;
       const responseMenus = Array.from(
         doc.querySelectorAll("#llm-response-menu"),
       ) as HTMLDivElement[];
@@ -2613,6 +2700,20 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
             !reasoningButtonEl?.contains(target)))
       ) {
         setFloatingMenuOpen(reasoningMenuEl, REASONING_MENU_OPEN_CLASS, false);
+      }
+      if (
+        retryModelMenuEl &&
+        isFloatingMenuOpen(retryModelMenuEl) &&
+        (!target ||
+          (!retryModelMenuEl.contains(target) &&
+            !retryMenuAnchor?.contains(target)))
+      ) {
+        setFloatingMenuOpen(
+          retryModelMenuEl,
+          RETRY_MODEL_MENU_OPEN_CLASS,
+          false,
+        );
+        retryMenuAnchor = null;
       }
       if (me.button === 0) {
         let responseMenuClosed = false;
