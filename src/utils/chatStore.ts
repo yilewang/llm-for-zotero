@@ -4,6 +4,16 @@ export type StoredChatMessage = {
   timestamp: number;
   selectedText?: string;
   screenshotImages?: string[];
+  attachments?: Array<{
+    id: string;
+    name: string;
+    mimeType: string;
+    sizeBytes: number;
+    category: "image" | "pdf" | "markdown" | "code" | "text" | "file";
+    imageDataUrl?: string;
+    textContent?: string;
+    storedPath?: string;
+  }>;
   modelName?: string;
   reasoningSummary?: string;
   reasoningDetails?: string;
@@ -61,7 +71,9 @@ async function migrateLegacyChatStore(): Promise<void> {
     }
   }
 
-  await Zotero.DB.queryAsync(`DROP INDEX IF EXISTS ${LEGACY_CHAT_MESSAGES_INDEX}`);
+  await Zotero.DB.queryAsync(
+    `DROP INDEX IF EXISTS ${LEGACY_CHAT_MESSAGES_INDEX}`,
+  );
 }
 
 function normalizeConversationKey(conversationKey: number): number | null {
@@ -88,6 +100,7 @@ export async function initChatStore(): Promise<void> {
         timestamp INTEGER NOT NULL,
         selected_text TEXT,
         screenshot_images TEXT,
+        attachments_json TEXT,
         model_name TEXT,
         reasoning_summary TEXT,
         reasoning_details TEXT
@@ -124,6 +137,15 @@ export async function initChatStore(): Promise<void> {
          ADD COLUMN screenshot_images TEXT`,
       );
     }
+    const hasAttachmentsJsonColumn = Boolean(
+      columns?.some((column) => column?.name === "attachments_json"),
+    );
+    if (!hasAttachmentsJsonColumn) {
+      await Zotero.DB.queryAsync(
+        `ALTER TABLE ${CHAT_MESSAGES_TABLE}
+         ADD COLUMN attachments_json TEXT`,
+      );
+    }
 
     await Zotero.DB.queryAsync(
       `CREATE INDEX IF NOT EXISTS ${CHAT_MESSAGES_INDEX}
@@ -146,6 +168,7 @@ export async function loadConversation(
             timestamp,
             selected_text AS selectedText,
             screenshot_images AS screenshotImages,
+            attachments_json AS attachmentsJson,
             model_name AS modelName,
             reasoning_summary AS reasoningSummary,
             reasoning_details AS reasoningDetails
@@ -161,6 +184,7 @@ export async function loadConversation(
         timestamp: unknown;
         selectedText?: unknown;
         screenshotImages?: unknown;
+        attachmentsJson?: unknown;
         modelName?: unknown;
         reasoningSummary?: unknown;
         reasoningDetails?: unknown;
@@ -197,6 +221,80 @@ export async function loadConversation(
         screenshotImages = undefined;
       }
     }
+    let attachments: StoredChatMessage["attachments"] | undefined;
+    if (typeof row.attachmentsJson === "string" && row.attachmentsJson) {
+      try {
+        const parsed = JSON.parse(row.attachmentsJson) as unknown;
+        if (Array.isArray(parsed)) {
+          const normalized = parsed.reduce<
+            NonNullable<StoredChatMessage["attachments"]>
+          >((out, entry) => {
+            if (!entry || typeof entry !== "object") return out;
+            const typed = entry as Record<string, unknown>;
+            const id =
+              typeof typed.id === "string" && typed.id.trim()
+                ? typed.id.trim()
+                : null;
+            const name =
+              typeof typed.name === "string" && typed.name.trim()
+                ? typed.name.trim()
+                : null;
+            const mimeType =
+              typeof typed.mimeType === "string" && typed.mimeType.trim()
+                ? typed.mimeType.trim()
+                : "application/octet-stream";
+            const sizeBytes = Number(typed.sizeBytes);
+            const category = typed.category;
+            const validCategory =
+              category === "image" ||
+              category === "pdf" ||
+              category === "markdown" ||
+              category === "code" ||
+              category === "text" ||
+              category === "file";
+            if (!id || !name || !validCategory) return out;
+            out.push({
+              id,
+              name,
+              mimeType,
+              sizeBytes: Number.isFinite(sizeBytes)
+                ? Math.max(0, sizeBytes)
+                : 0,
+              category,
+              imageDataUrl:
+                typeof typed.imageDataUrl === "string" &&
+                typed.imageDataUrl.trim()
+                  ? typed.imageDataUrl
+                  : undefined,
+              textContent:
+                typeof typed.textContent === "string" && typed.textContent
+                  ? typed.textContent
+                  : undefined,
+              storedPath:
+                typeof typed.storedPath === "string" && typed.storedPath.trim()
+                  ? typed.storedPath.trim()
+                  : undefined,
+            });
+            return out;
+          }, []);
+          if (normalized.length) {
+            attachments = normalized;
+          }
+        }
+      } catch (_err) {
+        attachments = undefined;
+      }
+    }
+    if (!attachments?.length && screenshotImages?.length) {
+      attachments = screenshotImages.map((url, index) => ({
+        id: `legacy-screenshot-${index + 1}`,
+        name: `Screenshot ${index + 1}.png`,
+        mimeType: "image/png",
+        sizeBytes: 0,
+        category: "image" as const,
+        imageDataUrl: url,
+      }));
+    }
     messages.push({
       role,
       text: typeof row.text === "string" ? row.text : "",
@@ -204,6 +302,7 @@ export async function loadConversation(
       selectedText:
         typeof row.selectedText === "string" ? row.selectedText : undefined,
       screenshotImages,
+      attachments,
       modelName: typeof row.modelName === "string" ? row.modelName : undefined,
       reasoningSummary:
         typeof row.reasoningSummary === "string"
@@ -230,10 +329,15 @@ export async function appendMessage(
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
     : [];
+  const attachments = Array.isArray(message.attachments)
+    ? message.attachments.filter(
+        (entry) => entry && typeof entry.id === "string" && entry.id.trim(),
+      )
+    : [];
   await Zotero.DB.queryAsync(
     `INSERT INTO ${CHAT_MESSAGES_TABLE}
-      (conversation_key, role, text, timestamp, selected_text, screenshot_images, model_name, reasoning_summary, reasoning_details)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (conversation_key, role, text, timestamp, selected_text, screenshot_images, attachments_json, model_name, reasoning_summary, reasoning_details)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       normalizedKey,
       message.role,
@@ -241,6 +345,7 @@ export async function appendMessage(
       Number.isFinite(timestamp) ? Math.floor(timestamp) : Date.now(),
       message.selectedText || null,
       screenshotImages.length ? JSON.stringify(screenshotImages) : null,
+      attachments.length ? JSON.stringify(attachments) : null,
       message.modelName || null,
       message.reasoningSummary || null,
       message.reasoningDetails || null,

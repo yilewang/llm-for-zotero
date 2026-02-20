@@ -1,7 +1,9 @@
 import { createElement } from "../../utils/domHelpers";
 import {
   MAX_SELECTED_IMAGES,
+  MAX_UPLOAD_PDF_SIZE_BYTES,
   formatFigureCountLabel,
+  formatFileCountLabel,
   FONT_SCALE_MIN_PERCENT,
   FONT_SCALE_MAX_PERCENT,
   FONT_SCALE_STEP_PERCENT,
@@ -10,6 +12,8 @@ import {
   SELECT_TEXT_COMPACT_LABEL,
   SCREENSHOT_EXPANDED_LABEL,
   SCREENSHOT_COMPACT_LABEL,
+  UPLOAD_FILE_EXPANDED_LABEL,
+  UPLOAD_FILE_COMPACT_LABEL,
   REASONING_COMPACT_LABEL,
   ACTION_LAYOUT_FULL_MODE_BUFFER_PX,
   ACTION_LAYOUT_PARTIAL_MODE_BUFFER_PX,
@@ -24,8 +28,10 @@ import {
   selectedModelCache,
   selectedReasoningCache,
   selectedImageCache,
+  selectedFileAttachmentCache,
   selectedImagePreviewExpandedCache,
   selectedImagePreviewActiveIndexCache,
+  selectedFilePreviewExpandedCache,
   selectedTextCache,
   selectedTextPreviewExpandedCache,
   setCancelledRequestId,
@@ -44,6 +50,7 @@ import {
   clampNumber,
   buildQuestionWithSelectedText,
   getSelectedTextWithinBubble,
+  getAttachmentTypeLabel,
 } from "./textUtils";
 import {
   positionMenuBelowButton,
@@ -80,12 +87,18 @@ import {
   createNoteFromChatHistory,
   buildChatHistoryNotePayload,
 } from "./notes";
+import {
+  persistConversationAttachmentFile,
+  removeAttachmentFile,
+  removeConversationAttachmentFiles,
+} from "./attachmentStorage";
 import { clearConversation as clearStoredConversation } from "../../utils/chatStore";
 import type {
   ReasoningLevelSelection,
   ReasoningOption,
   ReasoningProviderKind,
   AdvancedModelParams,
+  ChatAttachment,
 } from "./types";
 import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClient";
@@ -95,6 +108,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const inputBox = body.querySelector(
     "#llm-input",
   ) as HTMLTextAreaElement | null;
+  const inputSection = body.querySelector(
+    ".llm-input-section",
+  ) as HTMLDivElement | null;
   const sendBtn = body.querySelector("#llm-send") as HTMLButtonElement | null;
   const cancelBtn = body.querySelector(
     "#llm-cancel",
@@ -136,6 +152,12 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const screenshotBtn = body.querySelector(
     "#llm-screenshot",
   ) as HTMLButtonElement | null;
+  const uploadBtn = body.querySelector(
+    "#llm-upload-file",
+  ) as HTMLButtonElement | null;
+  const uploadInput = body.querySelector(
+    "#llm-upload-input",
+  ) as HTMLInputElement | null;
   const imagePreview = body.querySelector(
     "#llm-image-preview",
   ) as HTMLDivElement | null;
@@ -165,6 +187,21 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   ) as HTMLButtonElement | null;
   const removeImgBtn = body.querySelector(
     "#llm-remove-img",
+  ) as HTMLButtonElement | null;
+  const filePreview = body.querySelector(
+    "#llm-file-context-preview",
+  ) as HTMLDivElement | null;
+  const filePreviewMeta = body.querySelector(
+    "#llm-file-context-meta",
+  ) as HTMLButtonElement | null;
+  const filePreviewExpanded = body.querySelector(
+    "#llm-file-context-expanded",
+  ) as HTMLDivElement | null;
+  const filePreviewList = body.querySelector(
+    "#llm-file-context-list",
+  ) as HTMLDivElement | null;
+  const filePreviewClear = body.querySelector(
+    "#llm-file-context-clear",
   ) as HTMLButtonElement | null;
   const responseMenu = body.querySelector(
     "#llm-response-menu",
@@ -448,7 +485,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       return;
     }
     const target = e.target as Element | null;
-    const bubble = target?.closest(".llm-bubble.assistant") as HTMLElement | null;
+    const bubble = target?.closest(
+      ".llm-bubble.assistant",
+    ) as HTMLElement | null;
     const fallbackBubble = bubble || selectionDragStartBubble;
     selectionDragStartBubble = null;
     panelWin.setTimeout(() => updateSelectionPopup(fallbackBubble), 0);
@@ -461,7 +500,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     if (target && selectionPopup.contains(target)) return;
     const targetEl = target as Element | null;
     selectionDragStartBubble =
-      (targetEl?.closest(".llm-bubble.assistant") as HTMLElement | null) || null;
+      (targetEl?.closest(".llm-bubble.assistant") as HTMLElement | null) ||
+      null;
     hideSelectionPopup();
   };
   const onChatScrollHide = () => hideSelectionPopup();
@@ -657,12 +697,119 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     selectedImagePreviewActiveIndexCache.delete(itemId);
   };
 
+  const clearSelectedFileState = (itemId: number) => {
+    selectedFileAttachmentCache.delete(itemId);
+    selectedFilePreviewExpandedCache.delete(itemId);
+  };
+
   const clearSelectedTextState = (itemId: number) => {
     selectedTextCache.delete(itemId);
     selectedTextPreviewExpandedCache.delete(itemId);
   };
   const runWithChatScrollGuard = (fn: () => void) => {
     withScrollGuard(chatBox, conversationKey, fn);
+  };
+
+  const updateFilePreview = () => {
+    if (
+      !item ||
+      !filePreview ||
+      !filePreviewMeta ||
+      !filePreviewExpanded ||
+      !filePreviewList
+    )
+      return;
+    const files = selectedFileAttachmentCache.get(item.id) || [];
+    if (!files.length) {
+      filePreview.style.display = "none";
+      filePreview.classList.remove("expanded", "collapsed");
+      filePreviewExpanded.style.display = "none";
+      filePreviewMeta.textContent = formatFileCountLabel(0);
+      filePreviewMeta.classList.remove("expanded");
+      filePreviewMeta.setAttribute("aria-expanded", "false");
+      filePreviewMeta.title = "Pin files panel";
+      filePreviewList.innerHTML = "";
+      clearSelectedFileState(item.id);
+      return;
+    }
+    let expanded = selectedFilePreviewExpandedCache.get(item.id);
+    if (typeof expanded !== "boolean") {
+      expanded = false;
+      selectedFilePreviewExpandedCache.set(item.id, false);
+    }
+    filePreview.style.display = "flex";
+    filePreview.classList.toggle("expanded", expanded);
+    filePreview.classList.toggle("collapsed", !expanded);
+    filePreviewExpanded.style.display = "grid";
+    filePreviewMeta.textContent = formatFileCountLabel(files.length);
+    filePreviewMeta.classList.toggle("expanded", expanded);
+    filePreviewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
+    filePreviewMeta.title = expanded ? "Unpin files panel" : "Pin files panel";
+    filePreviewList.innerHTML = "";
+    const ownerDoc = body.ownerDocument;
+    if (!ownerDoc) return;
+    files.forEach((attachment, index) => {
+      const row = createElement(ownerDoc, "div", "llm-file-context-item");
+      const type = createElement(ownerDoc, "span", "llm-file-context-type", {
+        textContent: getAttachmentTypeLabel(attachment),
+        title: attachment.mimeType || attachment.category || "file",
+      });
+      const info = createElement(ownerDoc, "div", "llm-file-context-text");
+      const name = createElement(ownerDoc, "span", "llm-file-context-name", {
+        textContent: attachment.name,
+        title: attachment.name,
+      });
+      const meta = createElement(
+        ownerDoc,
+        "span",
+        "llm-file-context-meta-info",
+        {
+          textContent: `${attachment.mimeType || "application/octet-stream"} · ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB`,
+        },
+      );
+      const removeBtn = createElement(
+        ownerDoc,
+        "button",
+        "llm-file-context-remove",
+        {
+          type: "button",
+          textContent: "×",
+          title: `Remove ${attachment.name}`,
+        },
+      );
+      removeBtn.addEventListener("click", (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!item) return;
+        const currentFiles = selectedFileAttachmentCache.get(item.id) || [];
+        const removedEntry = currentFiles[index];
+        const nextFiles = currentFiles.filter((_entry, i) => i !== index);
+        if (nextFiles.length) {
+          selectedFileAttachmentCache.set(item.id, nextFiles);
+        } else {
+          clearSelectedFileState(item.id);
+        }
+        if (removedEntry?.storedPath) {
+          void removeAttachmentFile(removedEntry.storedPath).catch((err) => {
+            ztoolkit.log(
+              "LLM: Failed to remove discarded attachment file",
+              err,
+            );
+          });
+        }
+        updateFilePreview();
+        if (status) {
+          setStatus(
+            status,
+            `Attachment removed (${nextFiles.length})`,
+            "ready",
+          );
+        }
+      });
+      info.append(name, meta);
+      row.append(type, info, removeBtn);
+      filePreviewList.appendChild(row);
+    });
   };
 
   // Helper to update image preview UI
@@ -709,7 +856,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       previewMeta.textContent = formatFigureCountLabel(imageCount);
       previewMeta.classList.toggle("expanded", expanded);
       previewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
-      previewMeta.title = expanded ? "Unpin figures panel" : "Pin figures panel";
+      previewMeta.title = expanded
+        ? "Unpin figures panel"
+        : "Pin figures panel";
 
       imagePreview.style.display = "flex";
       imagePreview.classList.toggle("expanded", expanded);
@@ -825,6 +974,11 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     if (!item) return;
     applySelectedTextPreview(body, item.id);
   };
+  const updateFilePreviewPreservingScroll = () => {
+    runWithChatScrollGuard(() => {
+      updateFilePreview();
+    });
+  };
   const updateImagePreviewPreservingScroll = () => {
     runWithChatScrollGuard(() => {
       updateImagePreview();
@@ -913,6 +1067,14 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       button.textContent = nextLabel;
     }
     button.classList.toggle("llm-action-icon-only", mode === "icon");
+  };
+  const setSendButtonLabel = (mode: "icon" | "full") => {
+    const nextLabel = mode === "icon" ? "↑" : "Send";
+    if (sendBtn.textContent !== nextLabel) {
+      sendBtn.textContent = nextLabel;
+    }
+    sendBtn.classList.toggle("llm-action-icon-only", mode === "icon");
+    sendBtn.title = "Send";
   };
 
   let layoutRetryScheduled = false;
@@ -1079,9 +1241,16 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         const width = element?.getBoundingClientRect?.().width || 0;
         return width > 0 ? Math.ceil(width) : fallback;
       };
+      const uploadSlot = uploadBtn?.parentElement as HTMLElement | null;
       const selectTextSlot = selectTextBtn?.parentElement as HTMLElement | null;
       const screenshotSlot = screenshotBtn?.parentElement as HTMLElement | null;
       const leftSlotWidths = [
+        uploadBtn
+          ? getRenderedWidthPx(
+              uploadSlot || uploadBtn,
+              Math.max(uploadBtn.scrollWidth || 0, 20),
+            )
+          : 0,
         contextButtonMode === "full"
           ? getFullSlotRequiredWidth(
               selectTextSlot,
@@ -1135,17 +1304,37 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       const leftRequiredWidth =
         leftSlotWidths.reduce((sum, width) => sum + width, 0) +
         Math.max(0, leftSlotWidths.length - 1) * leftGap;
-      const rightRequiredWidth =
-        actionsRight?.scrollWidth || sendBtn?.scrollWidth || 0;
+      const rightRequiredWidth = (() => {
+        const actionsRightRendered = Math.ceil(
+          actionsRight?.getBoundingClientRect?.().width || 0,
+        );
+        const actionsRightScroll = actionsRight?.scrollWidth || 0;
+        const sendRendered = Math.ceil(
+          sendBtn?.getBoundingClientRect?.().width || 0,
+        );
+        const sendScroll = sendBtn?.scrollWidth || 0;
+        return Math.max(
+          actionsRightRendered,
+          actionsRightScroll,
+          sendRendered,
+          sendScroll,
+          72,
+        );
+      })();
       const rowGap = getElementGapPx(actionsRow);
       return leftRequiredWidth + rightRequiredWidth + rowGap;
     };
     const getAvailableRowWidth = () => {
+      const hostWidth = Math.ceil(
+        (body as HTMLElement | null)?.getBoundingClientRect?.().width || 0,
+      );
       const rowWidth = actionsRow?.clientWidth || 0;
-      if (rowWidth > 0) return rowWidth;
+      if (rowWidth > 0) return hostWidth > 0 ? Math.min(rowWidth, hostWidth) : rowWidth;
       const panelWidth = panelRoot?.clientWidth || 0;
-      if (panelWidth > 0) return panelWidth;
-      return actionsLeft.clientWidth || 0;
+      if (panelWidth > 0) return hostWidth > 0 ? Math.min(panelWidth, hostWidth) : panelWidth;
+      const leftWidth = actionsLeft.clientWidth || 0;
+      if (leftWidth > 0) return hostWidth > 0 ? Math.min(leftWidth, hostWidth) : leftWidth;
+      return hostWidth;
     };
     const doesModeFit = (
       dropdownMode: DropdownMode,
@@ -1169,6 +1358,30 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     type DropdownMode = "icon" | "full";
     type ContextButtonMode = "icon" | "full";
     type ModelWrapMode = "single" | "wrap2";
+    type ActionLayoutMode = "icon" | "half" | "full";
+
+    const setPanelActionLayoutMode = (mode: ActionLayoutMode) => {
+      if (panelRoot.dataset.llmActionLayoutMode !== mode) {
+        panelRoot.dataset.llmActionLayoutMode = mode;
+      }
+    };
+
+    const getActionLayoutMode = (
+      dropdownMode: DropdownMode,
+      contextButtonMode: ContextButtonMode,
+      modelWrapMode: ModelWrapMode,
+    ): ActionLayoutMode => {
+      if (dropdownMode === "icon" && contextButtonMode === "icon") {
+        return "icon";
+      }
+      if (dropdownMode === "full" && contextButtonMode === "full") {
+        return "full";
+      }
+      if (modelWrapMode === "wrap2") {
+        return "half";
+      }
+      return "half";
+    };
 
     const applyLayoutModes = (
       dropdownMode: DropdownMode,
@@ -1186,6 +1399,17 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         SCREENSHOT_EXPANDED_LABEL,
         SCREENSHOT_COMPACT_LABEL,
         contextButtonMode,
+      );
+      setActionButtonLabel(
+        uploadBtn,
+        UPLOAD_FILE_EXPANDED_LABEL,
+        UPLOAD_FILE_COMPACT_LABEL,
+        contextButtonMode,
+      );
+      setSendButtonLabel(
+        dropdownMode === "icon" && contextButtonMode === "icon"
+          ? "icon"
+          : "full",
       );
 
       modelBtn.classList.remove("llm-model-btn-collapsed");
@@ -1243,15 +1467,28 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           ["full", "icon", "single"],
           ["icon", "icon", "single"],
         ];
+    let lastAttemptedMode:
+      | [DropdownMode, ContextButtonMode, ModelWrapMode]
+      | null = null;
     for (const [
       dropdownMode,
       contextButtonMode,
       modelWrapMode,
     ] of candidateModes) {
+      lastAttemptedMode = [dropdownMode, contextButtonMode, modelWrapMode];
       applyLayoutModes(dropdownMode, contextButtonMode, modelWrapMode);
       if (!layoutHasIssues(dropdownMode, contextButtonMode, modelWrapMode)) {
+        setPanelActionLayoutMode(
+          getActionLayoutMode(dropdownMode, contextButtonMode, modelWrapMode),
+        );
         return;
       }
+    }
+    if (lastAttemptedMode) {
+      const [dropdownMode, contextButtonMode, modelWrapMode] = lastAttemptedMode;
+      setPanelActionLayoutMode(
+        getActionLayoutMode(dropdownMode, contextButtonMode, modelWrapMode),
+      );
     }
   };
 
@@ -1390,7 +1627,10 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           )
         : "Reasoning";
       reasoningBtn.disabled = !item || !available;
-      reasoningBtn.classList.toggle("llm-reasoning-btn-unavailable", !available);
+      reasoningBtn.classList.toggle(
+        "llm-reasoning-btn-unavailable",
+        !available,
+      );
       reasoningBtn.classList.toggle("llm-reasoning-btn-active", active);
       reasoningBtn.style.background = "";
       reasoningBtn.style.borderColor = "";
@@ -1459,7 +1699,8 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     }
   };
 
-  // Initialize image preview state
+  // Initialize preview state
+  updateFilePreviewPreservingScroll();
   updateImagePreviewPreservingScroll();
   updateSelectedTextPreviewPreservingScroll();
   syncModelFromPrefs();
@@ -1511,16 +1752,395 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     return { provider, level: selectedLevel as LLMReasoningLevel };
   };
 
+  const createAttachmentId = () =>
+    `att-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+  const isTextLikeFile = (file: File): boolean => {
+    const lowerName = (file.name || "").toLowerCase();
+    const mime = (file.type || "").toLowerCase();
+    if (
+      mime.startsWith("text/") ||
+      mime.includes("json") ||
+      mime.includes("xml") ||
+      mime.includes("javascript") ||
+      mime.includes("typescript")
+    ) {
+      return true;
+    }
+    return /\.(md|markdown|txt|json|ya?ml|xml|html?|css|scss|less|js|jsx|ts|tsx|py|java|c|cc|cpp|h|hpp|go|rs|rb|php|swift|kt|scala|sh|bash|zsh|sql|r|m|mm|lua|toml|ini|cfg|conf)$/i.test(
+      lowerName,
+    );
+  };
+
+  const resolveAttachmentCategory = (
+    file: File,
+  ): ChatAttachment["category"] => {
+    const lowerName = (file.name || "").toLowerCase();
+    const mime = (file.type || "").toLowerCase();
+    if (mime.startsWith("image/")) return "image";
+    if (mime === "application/pdf" || lowerName.endsWith(".pdf")) return "pdf";
+    if (/\.(md|markdown)$/i.test(lowerName)) return "markdown";
+    if (
+      /\.(js|jsx|ts|tsx|py|java|c|cc|cpp|h|hpp|go|rs|rb|php|swift|kt|scala|sh|bash|zsh|sql|r|m|mm|lua)$/i.test(
+        lowerName,
+      )
+    ) {
+      return "code";
+    }
+    if (isTextLikeFile(file)) return "text";
+    return "file";
+  };
+
+  const readFileAsDataURL = async (file: File): Promise<string> => {
+    const view = body.ownerDocument?.defaultView;
+    const FileReaderCtor = view?.FileReader || globalThis.FileReader;
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReaderCtor();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error("Invalid data URL result"));
+      };
+      reader.onerror = () =>
+        reject(reader.error || new Error("File read failed"));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const readFileAsText = async (file: File): Promise<string> => {
+    const view = body.ownerDocument?.defaultView;
+    const FileReaderCtor = view?.FileReader || globalThis.FileReader;
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReaderCtor();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error("Invalid text result"));
+      };
+      reader.onerror = () =>
+        reject(reader.error || new Error("File read failed"));
+      reader.readAsText(file);
+    });
+  };
+
+  const readFileAsArrayBuffer = async (file: File): Promise<ArrayBuffer> => {
+    const withArrayBuffer = file as File & {
+      arrayBuffer?: () => Promise<ArrayBuffer>;
+    };
+    if (typeof withArrayBuffer.arrayBuffer === "function") {
+      return await withArrayBuffer.arrayBuffer();
+    }
+    const view = body.ownerDocument?.defaultView;
+    const FileReaderCtor = view?.FileReader || globalThis.FileReader;
+    return await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReaderCtor();
+      reader.onload = () => {
+        if (reader.result instanceof ArrayBuffer) {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error("Invalid arrayBuffer result"));
+      };
+      reader.onerror = () =>
+        reject(reader.error || new Error("File read failed"));
+      reader.readAsArrayBuffer(file);
+    });
+  };
+
+  const processIncomingFiles = async (incomingFiles: File[]) => {
+    if (!item || !incomingFiles.length) return;
+    const conversationKey = getConversationKey(item);
+    const { currentModel } = getSelectedModelInfo();
+    const imageUnsupported = isScreenshotUnsupportedModel(currentModel);
+    const nextImages = [...(selectedImageCache.get(item.id) || [])];
+    const nextFiles = [...(selectedFileAttachmentCache.get(item.id) || [])];
+    let addedCount = 0;
+    let replacedCount = 0;
+    let rejectedPdfCount = 0;
+    let skippedImageCount = 0;
+    let failedPersistCount = 0;
+    for (const [index, file] of incomingFiles.entries()) {
+      const fileName =
+        (file.name || "").trim() || `uploaded-file-${Date.now()}-${index + 1}`;
+      const lowerName = fileName.toLowerCase();
+      const isPdf =
+        file.type === "application/pdf" || lowerName.endsWith(".pdf");
+      if (isPdf && file.size > MAX_UPLOAD_PDF_SIZE_BYTES) {
+        rejectedPdfCount += 1;
+        continue;
+      }
+      const normalizedFile = new File([file], fileName, {
+        type: file.type || "application/octet-stream",
+        lastModified: file.lastModified || Date.now(),
+      });
+      const category = resolveAttachmentCategory(normalizedFile);
+      if (category === "image") {
+        if (imageUnsupported || nextImages.length >= MAX_SELECTED_IMAGES) {
+          skippedImageCount += 1;
+          continue;
+        }
+        try {
+          const dataUrl = await readFileAsDataURL(normalizedFile);
+          nextImages.push(dataUrl);
+          addedCount += 1;
+        } catch (err) {
+          ztoolkit.log("LLM: Failed to read image upload", err);
+        }
+        continue;
+      }
+      let textContent: string | undefined;
+      if (
+        category === "markdown" ||
+        category === "code" ||
+        category === "text"
+      ) {
+        try {
+          textContent = await readFileAsText(normalizedFile);
+        } catch (err) {
+          ztoolkit.log("LLM: Failed to read text upload", err);
+        }
+      }
+      let storedPath: string | undefined;
+      try {
+        const buffer = await readFileAsArrayBuffer(normalizedFile);
+        storedPath = await persistConversationAttachmentFile(
+          conversationKey,
+          fileName,
+          new Uint8Array(buffer),
+        );
+      } catch (err) {
+        failedPersistCount += 1;
+        ztoolkit.log("LLM: Failed to persist uploaded attachment", err);
+        continue;
+      }
+      const existingIndex = nextFiles.findIndex(
+        (entry) =>
+          entry &&
+          typeof entry.name === "string" &&
+          entry.name.trim().toLowerCase() === fileName.toLowerCase(),
+      );
+      const nextEntry: ChatAttachment = {
+        id: createAttachmentId(),
+        name: fileName || "untitled",
+        mimeType: normalizedFile.type || "application/octet-stream",
+        sizeBytes: normalizedFile.size || 0,
+        category,
+        textContent,
+        storedPath,
+      };
+      if (existingIndex >= 0) {
+        const existing = nextFiles[existingIndex];
+        nextFiles[existingIndex] = {
+          ...nextEntry,
+          id: existing.id,
+        };
+        replacedCount += 1;
+      } else {
+        nextFiles.push(nextEntry);
+        addedCount += 1;
+      }
+    }
+    if (nextImages.length) {
+      selectedImageCache.set(item.id, nextImages);
+    }
+    if (nextFiles.length) {
+      selectedFileAttachmentCache.set(item.id, nextFiles);
+    }
+    updateImagePreview();
+    updateFilePreview();
+    if (!status) return;
+    if (
+      (addedCount > 0 || replacedCount > 0) &&
+      (rejectedPdfCount > 0 || skippedImageCount > 0 || failedPersistCount > 0)
+    ) {
+      const replaceText =
+        replacedCount > 0 ? `, replaced ${replacedCount}` : "";
+      setStatus(
+        status,
+        `Uploaded ${addedCount} attachment(s)${replaceText}, skipped ${rejectedPdfCount} PDF(s) > 50MB, ${skippedImageCount} image(s), ${failedPersistCount} file(s) not persisted`,
+        "warning",
+      );
+      return;
+    }
+    if (addedCount > 0 || replacedCount > 0) {
+      const replaceText =
+        replacedCount > 0 ? `, replaced ${replacedCount}` : "";
+      setStatus(
+        status,
+        `Uploaded ${addedCount} attachment(s)${replaceText}`,
+        "ready",
+      );
+      return;
+    }
+    if (rejectedPdfCount > 0) {
+      setStatus(
+        status,
+        `PDF exceeds 50MB limit (${rejectedPdfCount} file(s) skipped)`,
+        "error",
+      );
+      return;
+    }
+    if (failedPersistCount > 0) {
+      setStatus(
+        status,
+        `Failed to persist ${failedPersistCount} file(s) to local chat-attachments`,
+        "error",
+      );
+    }
+  };
+
+  const isFileDragEvent = (event: DragEvent): boolean => {
+    const dataTransfer = event.dataTransfer;
+    if (!dataTransfer) return false;
+    if (dataTransfer.files && dataTransfer.files.length > 0) return true;
+    const types = Array.from(dataTransfer.types || []);
+    return types.includes("Files");
+  };
+
+  const extractFilesFromClipboard = (event: ClipboardEvent): File[] => {
+    const clipboardData = event.clipboardData;
+    if (!clipboardData) return [];
+    const files: File[] = [];
+    if (clipboardData.files && clipboardData.files.length > 0) {
+      files.push(...Array.from(clipboardData.files));
+    }
+    const items = Array.from(clipboardData.items || []);
+    for (const item of items) {
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile();
+      if (!file) continue;
+      const duplicated = files.some(
+        (existing) =>
+          existing.name === file.name &&
+          existing.size === file.size &&
+          existing.type === file.type,
+      );
+      if (!duplicated) files.push(file);
+    }
+    return files;
+  };
+
+  const setInputDropActive = (active: boolean) => {
+    if (inputSection) {
+      inputSection.classList.toggle("llm-input-drop-active", active);
+    }
+    if (inputBox) {
+      inputBox.classList.toggle("llm-input-drop-active", active);
+    }
+  };
+
+  if (inputSection && inputBox) {
+    let fileDragDepth = 0;
+
+    inputSection.addEventListener("dragenter", (e: Event) => {
+      const dragEvent = e as DragEvent;
+      if (!isFileDragEvent(dragEvent)) return;
+      dragEvent.preventDefault();
+      dragEvent.stopPropagation();
+      fileDragDepth += 1;
+      setInputDropActive(true);
+    });
+
+    inputSection.addEventListener("dragover", (e: Event) => {
+      const dragEvent = e as DragEvent;
+      if (!isFileDragEvent(dragEvent)) return;
+      dragEvent.preventDefault();
+      dragEvent.stopPropagation();
+      if (dragEvent.dataTransfer) {
+        dragEvent.dataTransfer.dropEffect = "copy";
+      }
+      if (!inputSection.classList.contains("llm-input-drop-active")) {
+        setInputDropActive(true);
+      }
+    });
+
+    inputSection.addEventListener("dragleave", (e: Event) => {
+      const dragEvent = e as DragEvent;
+      if (!isFileDragEvent(dragEvent)) return;
+      dragEvent.preventDefault();
+      dragEvent.stopPropagation();
+      fileDragDepth = Math.max(0, fileDragDepth - 1);
+      if (fileDragDepth === 0) {
+        setInputDropActive(false);
+      }
+    });
+
+    inputSection.addEventListener("drop", (e: Event) => {
+      const dragEvent = e as DragEvent;
+      if (!isFileDragEvent(dragEvent)) return;
+      dragEvent.preventDefault();
+      dragEvent.stopPropagation();
+      fileDragDepth = 0;
+      setInputDropActive(false);
+      const files = dragEvent.dataTransfer?.files
+        ? Array.from(dragEvent.dataTransfer.files)
+        : [];
+      if (!files.length) return;
+      void processIncomingFiles(files);
+      inputBox.focus({ preventScroll: true });
+    });
+
+    inputBox.addEventListener("paste", (e: Event) => {
+      if (!item) return;
+      const clipboardEvent = e as ClipboardEvent;
+      const files = extractFilesFromClipboard(clipboardEvent);
+      if (!files.length) return;
+      clipboardEvent.preventDefault();
+      clipboardEvent.stopPropagation();
+      void processIncomingFiles(files);
+      inputBox.focus({ preventScroll: true });
+    });
+  }
+
+  const buildModelPromptWithFileContext = (
+    baseQuestion: string,
+    fileAttachments: ChatAttachment[],
+  ) => {
+    if (!fileAttachments.length) return baseQuestion;
+    const textBlocks: string[] = [];
+    const metaBlocks: string[] = [];
+    for (const attachment of fileAttachments) {
+      metaBlocks.push(
+        `- ${attachment.name} (${attachment.mimeType || "application/octet-stream"}, ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB)`,
+      );
+      if (attachment.textContent) {
+        const clipped = attachment.textContent.slice(0, 12000);
+        textBlocks.push(`### ${attachment.name}\n${clipped}`);
+      }
+    }
+    const blocks: string[] = [baseQuestion];
+    if (metaBlocks.length) {
+      blocks.push(`\nAttached files:\n${metaBlocks.join("\n")}`);
+    }
+    if (textBlocks.length) {
+      blocks.push(`\nAttached file contents:\n${textBlocks.join("\n\n")}`);
+    }
+    return blocks.join("\n");
+  };
+
   const doSend = async () => {
     if (!item) return;
     const text = inputBox.value.trim();
     const selectedText = selectedTextCache.get(item.id) || "";
-    if (!text && !selectedText) return;
-    const promptText = text || "Please explain this selected text.";
-    const composedQuestion = selectedText
+    const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
+    if (!text && !selectedText && !selectedFiles.length) return;
+    const promptText =
+      text ||
+      (selectedText
+        ? "Please explain this selected text."
+        : "Please analyze attached files.");
+    const composedQuestionBase = selectedText
       ? buildQuestionWithSelectedText(selectedText, text)
-      : text;
-    const displayQuestion = selectedText ? promptText : text;
+      : promptText;
+    const composedQuestion = buildModelPromptWithFileContext(
+      composedQuestionBase,
+      selectedFiles,
+    );
+    const displayQuestion = selectedText ? promptText : text || promptText;
     inputBox.value = "";
     const selectedProfile = getSelectedProfile();
     const activeModelName = (
@@ -1537,6 +2157,10 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       : selectedImages;
     // Clear selected images after sending
     clearSelectedImageState(item.id);
+    if (selectedFiles.length) {
+      clearSelectedFileState(item.id);
+      updateFilePreviewPreservingScroll();
+    }
     updateImagePreviewPreservingScroll();
     if (selectedText) {
       clearSelectedTextState(item.id);
@@ -1556,6 +2180,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       advancedParams,
       displayQuestion,
       selectedText || undefined,
+      selectedFiles.length ? selectedFiles : undefined,
     );
   };
 
@@ -1806,6 +2431,21 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     });
   }
 
+  if (uploadBtn && uploadInput) {
+    uploadBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!item) return;
+      uploadInput.click();
+    });
+    uploadInput.addEventListener("change", async () => {
+      if (!item) return;
+      const files = Array.from(uploadInput.files || []);
+      uploadInput.value = "";
+      await processIncomingFiles(files);
+    });
+  }
+
   const positionFloatingMenu = (
     menu: HTMLDivElement,
     anchor: HTMLButtonElement,
@@ -2017,7 +2657,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       if (nextExpanded) {
         selectedImagePreviewActiveIndexCache.set(item.id, 0);
         selectedTextPreviewExpandedCache.set(item.id, false);
+        selectedFilePreviewExpandedCache.set(item.id, false);
       }
+      updateFilePreviewPreservingScroll();
       updateSelectedTextPreviewPreservingScroll();
       updateImagePreviewPreservingScroll();
     });
@@ -2031,6 +2673,44 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       clearSelectedImageState(item.id);
       updateImagePreviewPreservingScroll();
       if (status) setStatus(status, "Figures cleared", "ready");
+    });
+  }
+
+  if (filePreviewMeta) {
+    filePreviewMeta.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!item) return;
+      const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
+      if (!selectedFiles.length) return;
+      const expanded = selectedFilePreviewExpandedCache.get(item.id) === true;
+      const nextExpanded = !expanded;
+      selectedFilePreviewExpandedCache.set(item.id, nextExpanded);
+      if (nextExpanded) {
+        selectedTextPreviewExpandedCache.set(item.id, false);
+        selectedImagePreviewExpandedCache.set(item.id, false);
+      }
+      updateSelectedTextPreview();
+      updateImagePreview();
+      updateFilePreview();
+    });
+  }
+
+  if (filePreviewClear) {
+    filePreviewClear.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!item) return;
+      const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
+      for (const entry of selectedFiles) {
+        if (!entry?.storedPath) continue;
+        void removeAttachmentFile(entry.storedPath).catch((err) => {
+          ztoolkit.log("LLM: Failed to remove cleared attachment file", err);
+        });
+      }
+      clearSelectedFileState(item.id);
+      updateFilePreview();
+      if (status) setStatus(status, "Files cleared", "ready");
     });
   }
 
@@ -2057,7 +2737,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       selectedTextPreviewExpandedCache.set(item.id, nextExpanded);
       if (nextExpanded) {
         selectedImagePreviewExpandedCache.set(item.id, false);
+        selectedFilePreviewExpandedCache.set(item.id, false);
       }
+      updateFilePreviewPreservingScroll();
       updateImagePreviewPreservingScroll();
       updateSelectedTextPreviewPreservingScroll();
     });
@@ -2083,14 +2765,26 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     const clickedInsideFigurePanel = Boolean(
       imagePreview && target && imagePreview.contains(target),
     );
-    if (clickedInsideTextPanel || clickedInsideFigurePanel) return;
+    const clickedInsideFilePanel = Boolean(
+      filePreview && target && filePreview.contains(target),
+    );
+    if (
+      clickedInsideTextPanel ||
+      clickedInsideFigurePanel ||
+      clickedInsideFilePanel
+    )
+      return;
 
     const textPinned = selectedTextPreviewExpandedCache.get(item.id) === true;
-    const figurePinned = selectedImagePreviewExpandedCache.get(item.id) === true;
-    if (!textPinned && !figurePinned) return;
+    const figurePinned =
+      selectedImagePreviewExpandedCache.get(item.id) === true;
+    const filePinned = selectedFilePreviewExpandedCache.get(item.id) === true;
+    if (!textPinned && !figurePinned && !filePinned) return;
 
     selectedTextPreviewExpandedCache.set(item.id, false);
     selectedImagePreviewExpandedCache.set(item.id, false);
+    selectedFilePreviewExpandedCache.set(item.id, false);
+    updateFilePreviewPreservingScroll();
     updateSelectedTextPreviewPreservingScroll();
     updateImagePreviewPreservingScroll();
   };
@@ -2131,8 +2825,13 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         void clearStoredConversation(conversationKey).catch((err) => {
           ztoolkit.log("LLM: Failed to clear persisted chat history", err);
         });
+        void removeConversationAttachmentFiles(conversationKey).catch((err) => {
+          ztoolkit.log("LLM: Failed to clear chat attachment files", err);
+        });
         clearSelectedImageState(item.id);
+        clearSelectedFileState(item.id);
         clearSelectedTextState(item.id);
+        updateFilePreviewPreservingScroll();
         updateImagePreviewPreservingScroll();
         updateSelectedTextPreviewPreservingScroll();
         refreshChatPreservingScroll();

@@ -107,6 +107,40 @@ export function formatTime(timestamp: number) {
   return `${hour}:${minute}`;
 }
 
+export function getAttachmentTypeLabel(entry: {
+  name?: string;
+  mimeType?: string;
+  category?: string;
+}): string {
+  const name = (entry.name || "").trim().toLowerCase();
+  const mimeType = (entry.mimeType || "").trim().toLowerCase();
+  const category = (entry.category || "").trim().toLowerCase();
+
+  if (
+    category === "pdf" ||
+    mimeType === "application/pdf" ||
+    name.endsWith(".pdf")
+  )
+    return "PDF";
+  if (
+    category === "markdown" ||
+    name.endsWith(".md") ||
+    name.endsWith(".markdown")
+  )
+    return "MD";
+  if (category === "text") return "TXT";
+
+  const dotIndex = name.lastIndexOf(".");
+  if (dotIndex > -1 && dotIndex < name.length - 1) {
+    const ext = name.slice(dotIndex + 1).replace(/[^a-z0-9]/g, "");
+    if (ext) return ext.slice(0, 4).toUpperCase();
+  }
+
+  if (mimeType.startsWith("text/")) return "TXT";
+  if (category === "code") return "CODE";
+  return "FILE";
+}
+
 export function setStatus(
   statusEl: HTMLElement,
   text: string,

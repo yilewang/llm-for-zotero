@@ -9,8 +9,7 @@ declare const Services:
   | undefined;
 
 const LEGACY_PREFS_PREFIX = "extensions.zotero.zoterollm";
-const PREF_MIGRATION_MARKER_KEY =
-  `${config.prefsPrefix}.migrationFromZoterollmV1Done`;
+const PREF_MIGRATION_MARKER_KEY = `${config.prefsPrefix}.migrationFromZoterollmV1Done`;
 
 const MIGRATABLE_PREF_KEYS = [
   "enable",

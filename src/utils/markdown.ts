@@ -107,6 +107,231 @@ function renderLatex(latex: string, displayMode: boolean): string {
   }
 }
 
+function findPreviousNonSpace(text: string, index: number): string {
+  for (let i = index - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (!/\s/.test(ch)) return ch;
+  }
+  return "";
+}
+
+function findNextNonSpace(text: string, index: number): string {
+  for (let i = index + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (!/\s/.test(ch)) return ch;
+  }
+  return "";
+}
+
+function findTopLevelEqualsIndex(text: string): number {
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    if (ch === "{") braceDepth += 1;
+    else if (ch === "}") braceDepth = Math.max(0, braceDepth - 1);
+    else if (ch === "[") bracketDepth += 1;
+    else if (ch === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+    else if (ch === "(") parenDepth += 1;
+    else if (ch === ")") parenDepth = Math.max(0, parenDepth - 1);
+    else if (
+      ch === "=" &&
+      braceDepth === 0 &&
+      bracketDepth === 0 &&
+      parenDepth === 0
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function splitTopLevelAdditiveTerms(text: string): string[] {
+  const terms: string[] = [];
+  let start = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+
+  const isBinaryAdditiveOperator = (index: number): boolean => {
+    const ch = text[index];
+    if (ch !== "+" && ch !== "-") return false;
+    const prev = findPreviousNonSpace(text, index);
+    const next = findNextNonSpace(text, index);
+    if (!prev || !next) return false;
+    if ("=+-*/^_({[,".includes(prev)) return false;
+    if ("=+-*/^_)}],".includes(next)) return false;
+    return true;
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i++;
+      continue;
+    }
+    if (ch === "{") braceDepth += 1;
+    else if (ch === "}") braceDepth = Math.max(0, braceDepth - 1);
+    else if (ch === "[") bracketDepth += 1;
+    else if (ch === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+    else if (ch === "(") parenDepth += 1;
+    else if (ch === ")") parenDepth = Math.max(0, parenDepth - 1);
+
+    if (
+      braceDepth === 0 &&
+      bracketDepth === 0 &&
+      parenDepth === 0 &&
+      isBinaryAdditiveOperator(i)
+    ) {
+      const term = text.slice(start, i).trim();
+      if (term) terms.push(term);
+      start = i;
+    }
+  }
+
+  const last = text.slice(start).trim();
+  if (last) terms.push(last);
+  return terms;
+}
+
+const WRAP_BREAK_COMMANDS = new Set([
+  "sum",
+  "prod",
+  "coprod",
+  "int",
+  "iint",
+  "iiint",
+  "oint",
+  "lim",
+]);
+
+function readCommandName(text: string, start: number): {
+  name: string;
+  end: number;
+} {
+  let end = start + 1;
+  while (end < text.length && /[A-Za-z]/.test(text[end])) {
+    end += 1;
+  }
+  return { name: text.slice(start + 1, end), end };
+}
+
+function findTopLevelCommandBreakPoints(text: string): number[] {
+  const points: number[] = [];
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let parenDepth = 0;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\") {
+      const { name, end } = readCommandName(text, i);
+      if (
+        name &&
+        braceDepth === 0 &&
+        bracketDepth === 0 &&
+        parenDepth === 0 &&
+        WRAP_BREAK_COMMANDS.has(name)
+      ) {
+        points.push(i);
+      }
+      i = Math.max(i + 1, end - 1);
+      continue;
+    }
+    if (ch === "{") braceDepth += 1;
+    else if (ch === "}") braceDepth = Math.max(0, braceDepth - 1);
+    else if (ch === "[") bracketDepth += 1;
+    else if (ch === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+    else if (ch === "(") parenDepth += 1;
+    else if (ch === ")") parenDepth = Math.max(0, parenDepth - 1);
+  }
+
+  return points;
+}
+
+function splitLongTermByTopLevelCommands(
+  term: string,
+  maxTermLength = 95,
+): string[] {
+  const source = term.trim();
+  if (source.length <= maxTermLength) return [source];
+
+  const breakPoints = findTopLevelCommandBreakPoints(source);
+  if (breakPoints.length < 2) return [source];
+
+  const chunks: string[] = [];
+  let chunkStart = 0;
+  for (let i = 1; i < breakPoints.length; i++) {
+    const point = breakPoints[i];
+    const currentLength = point - chunkStart;
+    if (currentLength < Math.floor(maxTermLength * 0.7)) continue;
+    const chunk = source.slice(chunkStart, point).trim();
+    if (chunk) chunks.push(chunk);
+    chunkStart = point;
+  }
+
+  const tail = source.slice(chunkStart).trim();
+  if (tail) chunks.push(tail);
+  return chunks.length > 1 ? chunks : [source];
+}
+
+function expandTermsForAlignment(terms: string[]): string[] {
+  return terms.flatMap((term) => splitLongTermByTopLevelCommands(term));
+}
+
+function shouldAttemptDisplayWrap(math: string): boolean {
+  const compact = math.replace(/\s+/g, " ").trim();
+  if (compact.length < 120) return false;
+  if (/\\begin\{[^}]+\}/.test(compact)) return false;
+  if (/\\\\/.test(compact)) return false;
+  if (/\\tag\{/.test(compact)) return false;
+  return true;
+}
+
+function buildWrappedDisplayMath(math: string): string | null {
+  if (!shouldAttemptDisplayWrap(math)) return null;
+
+  const eqIndex = findTopLevelEqualsIndex(math);
+  if (eqIndex >= 0) {
+    const lhs = math.slice(0, eqIndex).trim();
+    const rhs = math.slice(eqIndex + 1).trim();
+    if (!lhs || !rhs) return null;
+    const rhsTerms = splitTopLevelAdditiveTerms(rhs);
+    const rhsExpandedTerms = expandTermsForAlignment(rhsTerms);
+    if (rhsExpandedTerms.length < 2) return null;
+    const lines = [
+      `${lhs} &= ${rhsExpandedTerms[0]}`,
+      ...rhsExpandedTerms.slice(1).map((term) => `&\\quad ${term}`),
+    ];
+    return `\\begin{aligned}${lines.join(" \\\\ ")}\\end{aligned}`;
+  }
+
+  const terms = expandTermsForAlignment(splitTopLevelAdditiveTerms(math));
+  if (terms.length < 3) return null;
+  const lines = [
+    `& ${terms[0]}`,
+    ...terms.slice(1).map((term) => `&\\quad ${term}`),
+  ];
+  return `\\begin{aligned}${lines.join(" \\\\ ")}\\end{aligned}`;
+}
+
+function renderDisplayLatex(latex: string): string {
+  const wrapped = buildWrappedDisplayMath(latex);
+  if (wrapped) {
+    const wrappedHtml = renderLatex(wrapped, true);
+    if (!wrappedHtml.includes('class="math-error"')) {
+      return wrappedHtml;
+    }
+  }
+  return renderLatex(latex, true);
+}
+
 // =============================================================================
 // Delimiter Validation
 // =============================================================================
@@ -429,7 +654,7 @@ function renderMathBlock(content: string): string {
     return `<pre class="math">$$${escapeHtml(math)}$$</pre>`;
   }
 
-  const rendered = renderLatex(math, true);
+  const rendered = renderDisplayLatex(math);
   return `<div class="math-display">${rendered}</div>`;
 }
 
@@ -547,7 +772,7 @@ function renderInline(text: string): string {
           `<span class="math">$${escapeHtml(math.trim())}$</span>`,
         );
       }
-      const rendered = renderLatex(math.trim(), true);
+      const rendered = renderDisplayLatex(math.trim());
       return protect(`<span class="math-display-inline">${rendered}</span>`);
     });
 

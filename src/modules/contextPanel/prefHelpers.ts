@@ -183,10 +183,7 @@ function getCustomShortcutsPref(key: string): CustomShortcut[] {
   }
 }
 
-function setCustomShortcutsPref(
-  key: string,
-  value: CustomShortcut[],
-): void {
+function setCustomShortcutsPref(key: string, value: CustomShortcut[]): void {
   Zotero.Prefs.set(`${config.prefsPrefix}.${key}`, JSON.stringify(value), true);
 }
 

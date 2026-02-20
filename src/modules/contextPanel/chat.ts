@@ -30,6 +30,7 @@ import type {
   ReasoningLevelSelection,
   AdvancedModelParams,
   ApiProfile,
+  ChatAttachment,
 } from "./types";
 import {
   chatHistory,
@@ -51,6 +52,7 @@ import {
   formatTime,
   setStatus,
   getSelectedTextWithinBubble,
+  getAttachmentTypeLabel,
 } from "./textUtils";
 import { positionMenuAtPointer } from "./menuPositioning";
 import {
@@ -78,10 +80,7 @@ function getAbortController(): new () => AbortController {
   );
 }
 
-function appendReasoningPart(
-  base: string | undefined,
-  next?: string,
-): string {
+function appendReasoningPart(base: string | undefined, next?: string): string {
   const chunk = sanitizeText(next || "");
   if (!chunk) return base || "";
   return `${base || ""}${chunk}`;
@@ -316,6 +315,17 @@ function toPanelMessage(message: StoredChatMessage): Message {
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
     : undefined;
+  const attachments = Array.isArray(message.attachments)
+    ? message.attachments.filter(
+        (entry) =>
+          Boolean(entry) &&
+          typeof entry === "object" &&
+          typeof entry.id === "string" &&
+          Boolean(entry.id.trim()) &&
+          typeof entry.name === "string" &&
+          Boolean(entry.name.trim()),
+      )
+    : undefined;
   return {
     role: message.role,
     text: message.text,
@@ -323,6 +333,8 @@ function toPanelMessage(message: StoredChatMessage): Message {
     selectedText: message.selectedText,
     selectedTextExpanded: false,
     screenshotImages,
+    attachments,
+    attachmentsExpanded: false,
     screenshotExpanded: false,
     screenshotActiveIndex: screenshotImages?.length ? 0 : undefined,
     modelName: message.modelName,
@@ -535,6 +547,7 @@ export async function sendQuestion(
   advanced?: AdvancedModelParams,
   displayQuestion?: string,
   selectedText?: string,
+  attachments?: ChatAttachment[],
 ) {
   const inputBox = body.querySelector(
     "#llm-input",
@@ -618,6 +631,7 @@ export async function sendQuestion(
       : undefined,
     screenshotExpanded: false,
     screenshotActiveIndex: 0,
+    attachments: attachments?.length ? attachments : undefined,
   };
   history.push(userMessage);
   await persistConversationMessage(conversationKey, {
@@ -626,6 +640,7 @@ export async function sendQuestion(
     timestamp: userMessage.timestamp,
     selectedText: userMessage.selectedText,
     screenshotImages: userMessage.screenshotImages,
+    attachments: userMessage.attachments,
   });
 
   const assistantMessage: Message = {
@@ -835,9 +850,15 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     bubble.className = `llm-bubble ${isUser ? "user" : "assistant"}`;
 
     if (isUser) {
+      const contextBadgesRow = doc.createElement("div") as HTMLDivElement;
+      contextBadgesRow.className = "llm-user-context-badges";
+      let hasContextBadge = false;
+
       const screenshotImages = Array.isArray(msg.screenshotImages)
         ? msg.screenshotImages.filter((entry) => Boolean(entry))
         : [];
+      let screenshotExpanded: HTMLDivElement | null = null;
+      let filesExpanded: HTMLDivElement | null = null;
       const selectedText = sanitizeText(msg.selectedText || "").trim();
       const hasScreenshotContext = screenshotImages.length > 0;
       const hasSelectedTextContext = Boolean(selectedText);
@@ -859,8 +880,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
         screenshotBar.append(screenshotIcon, screenshotLabel);
 
-        const screenshotExpanded = doc.createElement("div") as HTMLDivElement;
-        screenshotExpanded.className = "llm-user-screenshots-expanded";
+        const screenshotExpandedEl = doc.createElement("div") as HTMLDivElement;
+        screenshotExpandedEl.className = "llm-user-screenshots-expanded";
+        screenshotExpanded = screenshotExpandedEl;
 
         const thumbStrip = doc.createElement("div") as HTMLDivElement;
         thumbStrip.className = "llm-user-screenshots-thumbs";
@@ -911,7 +933,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           thumbStrip.appendChild(thumbBtn);
         });
 
-        screenshotExpanded.append(thumbStrip, previewWrap);
+        screenshotExpandedEl.append(thumbStrip, previewWrap);
 
         const applyScreenshotState = () => {
           const expanded = Boolean(msg.screenshotExpanded);
@@ -928,8 +950,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             "aria-expanded",
             expanded ? "true" : "false",
           );
-          screenshotExpanded.hidden = !expanded;
-          screenshotExpanded.style.display = expanded ? "flex" : "none";
+          screenshotExpandedEl.hidden = !expanded;
+          screenshotExpandedEl.style.display = expanded ? "flex" : "none";
           previewImg.src = screenshotImages[activeIndex];
           thumbButtons.forEach((btn, index) => {
             btn.classList.toggle("active", index === activeIndex);
@@ -964,8 +986,111 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           toggleScreenshotsExpanded();
         });
 
-        wrapper.appendChild(screenshotBar);
+        contextBadgesRow.appendChild(screenshotBar);
+        hasContextBadge = true;
+      }
+
+      const fileAttachments = Array.isArray(msg.attachments)
+        ? msg.attachments.filter(
+            (entry) =>
+              entry &&
+              typeof entry === "object" &&
+              entry.category !== "image" &&
+              typeof entry.name === "string",
+          )
+        : [];
+      if (fileAttachments.length) {
+        const filesBar = doc.createElement("button") as HTMLButtonElement;
+        filesBar.type = "button";
+        filesBar.className = "llm-user-files-bar";
+
+        const filesIcon = doc.createElement("span") as HTMLSpanElement;
+        filesIcon.className = "llm-user-files-icon";
+        filesIcon.textContent = "📎";
+
+        const filesLabel = doc.createElement("span") as HTMLSpanElement;
+        filesLabel.className = "llm-user-files-label";
+        filesLabel.textContent = `Files (${fileAttachments.length})`;
+        filesLabel.title = fileAttachments.map((f) => f.name).join("\n");
+
+        filesBar.append(filesIcon, filesLabel);
+
+        const filesExpandedEl = doc.createElement("div") as HTMLDivElement;
+        filesExpandedEl.className = "llm-user-files-expanded";
+        filesExpanded = filesExpandedEl;
+        const filesList = doc.createElement("div") as HTMLDivElement;
+        filesList.className = "llm-user-files-list";
+
+        for (const attachment of fileAttachments) {
+          const fileItem = doc.createElement("div") as HTMLDivElement;
+          fileItem.className = "llm-user-files-item";
+
+          const fileType = doc.createElement("span") as HTMLSpanElement;
+          fileType.className = "llm-user-files-item-type";
+          fileType.textContent = getAttachmentTypeLabel(attachment);
+          fileType.title = attachment.mimeType || attachment.category || "file";
+
+          const fileInfo = doc.createElement("div") as HTMLDivElement;
+          fileInfo.className = "llm-user-files-item-text";
+
+          const fileName = doc.createElement("span") as HTMLSpanElement;
+          fileName.className = "llm-user-files-item-name";
+          fileName.textContent = attachment.name;
+          fileName.title = attachment.name;
+
+          const fileMeta = doc.createElement("span") as HTMLSpanElement;
+          fileMeta.className = "llm-user-files-item-meta";
+          fileMeta.textContent = `${attachment.mimeType || "application/octet-stream"} · ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB`;
+
+          fileInfo.append(fileName, fileMeta);
+          fileItem.append(fileType, fileInfo);
+          filesList.appendChild(fileItem);
+        }
+        filesExpandedEl.appendChild(filesList);
+
+        const applyFilesState = () => {
+          const expanded = Boolean(msg.attachmentsExpanded);
+          filesBar.classList.toggle("expanded", expanded);
+          filesBar.setAttribute("aria-expanded", expanded ? "true" : "false");
+          filesExpandedEl.hidden = !expanded;
+          filesExpandedEl.style.display = expanded ? "block" : "none";
+          filesBar.title = expanded ? "Collapse files" : "Expand files";
+        };
+        const toggleFilesExpanded = () => {
+          msg.attachmentsExpanded = !msg.attachmentsExpanded;
+          applyFilesState();
+        };
+        applyFilesState();
+        filesBar.addEventListener("mousedown", (e: Event) => {
+          const mouse = e as MouseEvent;
+          if (mouse.button !== 0) return;
+          mouse.preventDefault();
+          mouse.stopPropagation();
+          toggleFilesExpanded();
+        });
+        filesBar.addEventListener("click", (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        filesBar.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleFilesExpanded();
+        });
+
+        contextBadgesRow.appendChild(filesBar);
+        hasContextBadge = true;
+      }
+
+      if (hasContextBadge) {
+        wrapper.appendChild(contextBadgesRow);
+      }
+      if (screenshotExpanded) {
         wrapper.appendChild(screenshotExpanded);
+      }
+      if (filesExpanded) {
+        wrapper.appendChild(filesExpanded);
       }
 
       if (hasSelectedTextContext) {
@@ -1175,7 +1300,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       const bubbleWidth = Math.round(bubble.getBoundingClientRect().width);
       if (bubbleWidth > 0) {
         wrapper.classList.add("llm-user-context-aligned");
-        wrapper.style.setProperty("--llm-user-bubble-width", `${bubbleWidth}px`);
+        wrapper.style.setProperty(
+          "--llm-user-bubble-width",
+          `${bubbleWidth}px`,
+        );
       }
     }
   }

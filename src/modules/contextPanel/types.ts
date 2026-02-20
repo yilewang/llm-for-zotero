@@ -7,6 +7,9 @@ export interface Message {
   selectedText?: string;
   selectedTextExpanded?: boolean;
   screenshotImages?: string[];
+  attachments?: ChatAttachment[];
+  attachmentsExpanded?: boolean;
+  attachmentActiveIndex?: number;
   screenshotExpanded?: boolean;
   screenshotActiveIndex?: number;
   modelName?: string;
@@ -58,6 +61,25 @@ export type CustomShortcut = {
 export type ResolvedContextSource = {
   contextItem: Zotero.Item | null;
   statusText: string;
+};
+
+export type ChatAttachmentCategory =
+  | "image"
+  | "pdf"
+  | "markdown"
+  | "code"
+  | "text"
+  | "file";
+
+export type ChatAttachment = {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  category: ChatAttachmentCategory;
+  imageDataUrl?: string;
+  textContent?: string;
+  storedPath?: string;
 };
 
 export type PdfContext = {
