@@ -284,6 +284,8 @@ export function isScrollUpdateSuspended(): boolean {
   return _scrollUpdatesSuspended;
 }
 
+type ScrollGuardRestoreMode = "absolute" | "relative";
+
 /**
  * Run `fn` (which may mutate the DOM / change layout) while protecting
  * the chatBox scroll position.  The current scroll state is saved before
@@ -297,6 +299,7 @@ export function withScrollGuard(
   chatBox: HTMLDivElement | null,
   conversationKey: number | null,
   fn: () => void,
+  restoreMode: ScrollGuardRestoreMode = "absolute",
 ): void {
   if (!chatBox || conversationKey === null) {
     fn();
@@ -305,20 +308,31 @@ export function withScrollGuard(
   // Capture current state before mutations.
   const wasNearBottom = isNearBottom(chatBox);
   const savedScrollTop = chatBox.scrollTop;
+  const savedMaxScrollTop = getMaxScrollTop(chatBox);
 
   _scrollUpdatesSuspended = true;
   try {
     fn();
   } finally {
     // Restore: if the user was at the bottom, stick there;
-    // otherwise restore the exact pixel offset.
+    // otherwise restore either exact pixel offset or relative position.
     if (wasNearBottom) {
       chatBox.scrollTop = chatBox.scrollHeight;
+    } else if (restoreMode === "relative" && savedMaxScrollTop > 0) {
+      const nextMaxScrollTop = getMaxScrollTop(chatBox);
+      const progress = Math.min(
+        1,
+        Math.max(0, savedScrollTop / savedMaxScrollTop),
+      );
+      chatBox.scrollTop = Math.round(nextMaxScrollTop * progress);
     } else {
       chatBox.scrollTop = savedScrollTop;
     }
-    // Persist the (restored) position.
-    persistChatScrollSnapshotByKey(conversationKey, chatBox);
+    // Persist only when the viewport is visible; hidden/collapsed layout
+    // phases can report transient top positions and would corrupt snapshots.
+    if (isChatViewportVisible(chatBox)) {
+      persistChatScrollSnapshotByKey(conversationKey, chatBox);
+    }
     // Keep the guard up through the microtask so that any synchronous
     // scroll events dispatched by the above writes are also suppressed.
     Promise.resolve().then(() => {
@@ -329,6 +343,10 @@ export function withScrollGuard(
 
 function getMaxScrollTop(chatBox: HTMLDivElement): number {
   return Math.max(0, chatBox.scrollHeight - chatBox.clientHeight);
+}
+
+function isChatViewportVisible(chatBox: HTMLDivElement): boolean {
+  return chatBox.clientHeight > 0 && chatBox.getClientRects().length > 0;
 }
 
 function clampScrollTop(chatBox: HTMLDivElement, scrollTop: number): number {
@@ -356,6 +374,7 @@ function persistChatScrollSnapshotByKey(
   conversationKey: number,
   chatBox: HTMLDivElement,
 ): void {
+  if (!isChatViewportVisible(chatBox)) return;
   chatScrollSnapshots.set(conversationKey, buildChatScrollSnapshot(chatBox));
 }
 
@@ -455,6 +474,7 @@ export function persistChatScrollSnapshotFromBody(body: Element): void {
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!panel || !chatBox) return;
   if (!chatBox.childElementCount) return;
+  if (!isChatViewportVisible(chatBox)) return;
 
   const panelItemId = Number(panel.dataset.itemId || 0);
   if (!Number.isFinite(panelItemId) || panelItemId <= 0) return;

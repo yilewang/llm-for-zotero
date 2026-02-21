@@ -42,7 +42,6 @@ import { buildUI } from "./buildUI";
 import { setupHandlers } from "./setupHandlers";
 import {
   ensureConversationLoaded,
-  persistChatScrollSnapshotFromBody,
 } from "./chat";
 import { renderShortcuts } from "./shortcuts";
 import { refreshChat } from "./chat";
@@ -98,8 +97,6 @@ export function registerReaderContextPanel() {
       return true;
     },
     onRender: ({ body, item }) => {
-      // Preserve existing chat scroll before the panel DOM is rebuilt.
-      persistChatScrollSnapshotFromBody(body);
       buildUI(body, item);
     },
     onAsyncRender: async ({ body, item }) => {

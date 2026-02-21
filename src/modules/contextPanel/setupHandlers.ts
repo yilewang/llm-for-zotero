@@ -272,6 +272,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   // Compute conversation key early so all closures can reference it.
   const conversationKey = item ? getConversationKey(item) : null;
+  const SCROLL_STABILITY_BOTTOM_THRESHOLD = 64;
   let activeEditSession: EditLatestTurnMarker | null = null;
   let attachmentGcTimer: number | null = null;
   const scheduleAttachmentGc = (delayMs = 5_000) => {
@@ -304,17 +305,69 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   const persistCurrentChatScrollSnapshot = () => {
     if (!item || !chatBox || !chatBox.childElementCount) return;
+    if (chatBox.clientHeight <= 0 || chatBox.getClientRects().length === 0)
+      return;
     persistChatScrollSnapshot(item, chatBox);
+  };
+
+  type ChatBoxViewportState = {
+    width: number;
+    height: number;
+    maxScrollTop: number;
+    scrollTop: number;
+    nearBottom: boolean;
+  };
+  const buildChatBoxViewportState = (): ChatBoxViewportState | null => {
+    if (!chatBox) return null;
+    if (chatBox.clientHeight <= 0 || chatBox.getClientRects().length === 0) {
+      return null;
+    }
+    const width = Math.max(0, Math.round(chatBox.clientWidth));
+    const height = Math.max(0, Math.round(chatBox.clientHeight));
+    const maxScrollTop = Math.max(0, chatBox.scrollHeight - chatBox.clientHeight);
+    const scrollTop = Math.max(0, Math.min(maxScrollTop, chatBox.scrollTop));
+    const nearBottom =
+      maxScrollTop - scrollTop <= SCROLL_STABILITY_BOTTOM_THRESHOLD;
+    return {
+      width,
+      height,
+      maxScrollTop,
+      scrollTop,
+      nearBottom,
+    };
+  };
+  let chatBoxViewportState = buildChatBoxViewportState();
+  const captureChatBoxViewportState = () => {
+    chatBoxViewportState = buildChatBoxViewportState();
   };
 
   if (item && chatBox) {
     const persistScroll = () => {
       if (!chatBox.childElementCount) return;
+      if (chatBox.clientHeight <= 0 || chatBox.getClientRects().length === 0) {
+        return;
+      }
+      const currentWidth = Math.max(0, Math.round(chatBox.clientWidth));
+      const currentHeight = Math.max(0, Math.round(chatBox.clientHeight));
+      const previousViewport = chatBoxViewportState;
+      let viewportResized = false;
+      if (previousViewport) {
+        viewportResized =
+          currentWidth !== previousViewport.width ||
+          currentHeight !== previousViewport.height;
+      }
+      // Ignore resize-induced scroll events so the last pre-resize viewport
+      // state remains available for relative-position restoration.
+      if (viewportResized) return;
       // Skip persistence when scroll was caused by our own programmatic
       // scrollTop writes or by layout mutations (e.g. button relayout
       // changing the flex-sized chat area).
-      if (isScrollUpdateSuspended()) return;
+      if (isScrollUpdateSuspended()) {
+        captureChatBoxViewportState();
+        return;
+      }
       persistChatScrollSnapshot(item, chatBox);
+      captureChatBoxViewportState();
     };
     chatBox.addEventListener("scroll", persistScroll, { passive: true });
   }
@@ -2037,11 +2090,63 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       withScrollGuard(chatBox, conversationKey, () => {
         applyResponsiveActionButtonsLayout();
         syncUserContextAlignmentWidths(body);
-      });
+      }, "relative");
     });
     ro.observe(panelRoot);
     if (actionsRow) ro.observe(actionsRow);
     if (actionsLeft) ro.observe(actionsLeft);
+    if (chatBox) {
+      const chatBoxResizeObserver = new ResizeObserverCtor(() => {
+        if (!chatBox) return;
+        if (chatBox.clientHeight <= 0 || chatBox.getClientRects().length === 0) {
+          return;
+        }
+        const previous = chatBoxViewportState;
+        const current = buildChatBoxViewportState();
+        if (!current) return;
+        const viewportChanged = Boolean(
+          previous &&
+            (current.width !== previous.width ||
+              current.height !== previous.height),
+        );
+        if (viewportChanged && previous && previous.nearBottom) {
+          const targetBottom = Math.max(
+            0,
+            chatBox.scrollHeight - chatBox.clientHeight,
+          );
+          if (Math.abs(chatBox.scrollTop - targetBottom) > 1) {
+            chatBox.scrollTop = chatBox.scrollHeight;
+          }
+          captureChatBoxViewportState();
+          if (item && chatBox.childElementCount) {
+            persistChatScrollSnapshot(item, chatBox);
+          }
+          return;
+        }
+        if (
+          viewportChanged &&
+          previous &&
+          !previous.nearBottom &&
+          previous.maxScrollTop > 0
+        ) {
+          const progress = Math.max(
+            0,
+            Math.min(1, previous.scrollTop / previous.maxScrollTop),
+          );
+          const targetScrollTop = Math.round(current.maxScrollTop * progress);
+          if (Math.abs(chatBox.scrollTop - targetScrollTop) > 1) {
+            chatBox.scrollTop = targetScrollTop;
+          }
+          captureChatBoxViewportState();
+          if (item && chatBox.childElementCount) {
+            persistChatScrollSnapshot(item, chatBox);
+          }
+          return;
+        }
+        chatBoxViewportState = current;
+      });
+      chatBoxResizeObserver.observe(chatBox);
+    }
   }
 
   const getSelectedProfile = () => {
