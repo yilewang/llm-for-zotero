@@ -46,12 +46,12 @@ export function formatFileCountLabel(count: number): string {
 }
 
 export const SELECT_TEXT_EXPANDED_LABEL = "Add Text";
-export const SELECT_TEXT_COMPACT_LABEL = "✍🏻";
+export const SELECT_TEXT_COMPACT_LABEL = "";
 export const SCREENSHOT_EXPANDED_LABEL = "Screenshots";
-export const SCREENSHOT_COMPACT_LABEL = "📷";
-export const UPLOAD_FILE_EXPANDED_LABEL = "＋";
-export const UPLOAD_FILE_COMPACT_LABEL = "＋";
-export const REASONING_COMPACT_LABEL = "💭";
+export const SCREENSHOT_COMPACT_LABEL = "";
+export const UPLOAD_FILE_EXPANDED_LABEL = "";
+export const UPLOAD_FILE_COMPACT_LABEL = "";
+export const REASONING_COMPACT_LABEL = "";
 export const ACTION_LAYOUT_FULL_MODE_BUFFER_PX = 0;
 export const ACTION_LAYOUT_PARTIAL_MODE_BUFFER_PX = 0;
 export const ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX = 36;

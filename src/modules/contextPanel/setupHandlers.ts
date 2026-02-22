@@ -1755,7 +1755,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         state.model === "full-wrap2",
       );
       if (modelCollapsed) {
-        modelBtn.textContent = "🧠";
+        modelBtn.textContent = "";
         modelBtn.title = modelHint ? `${modelLabel}\n${modelHint}` : modelLabel;
       } else {
         modelBtn.textContent = modelLabel;

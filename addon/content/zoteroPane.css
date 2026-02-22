@@ -1534,9 +1534,9 @@
   padding: 0;
   margin: 0;
   font-family: inherit;
-  font-size: var(--llm-action-icon-font-size);
+  font-size: 0;
   font-weight: 600;
-  line-height: 1;
+  line-height: 0;
   background: transparent;
   border: 1px solid transparent;
   box-shadow: none;
@@ -1548,9 +1548,44 @@
   width: 36px;
   min-width: 36px;
   padding: 0;
-  font-family:
-    "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
-  font-size: var(--llm-action-icon-font-size);
+  font-size: 0;
+  line-height: 0;
+}
+
+.llm-upload-file-btn::before,
+.llm-select-text-btn.llm-action-icon-only::before,
+.llm-screenshot-btn.llm-action-icon-only::before,
+.llm-action-slot.llm-model-dropdown
+  > .llm-model-btn.llm-model-btn-collapsed::before,
+.llm-action-slot.llm-reasoning-dropdown
+  > .llm-reasoning-btn.llm-reasoning-btn-collapsed::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  pointer-events: none;
+}
+
+.llm-upload-file-btn::before {
+  mask-image: url("icons/action-upload-file.svg");
+  -webkit-mask-image: url("icons/action-upload-file.svg");
+}
+
+.llm-select-text-btn.llm-action-icon-only::before {
+  mask-image: url("icons/action-add-text.svg");
+  -webkit-mask-image: url("icons/action-add-text.svg");
+}
+
+.llm-screenshot-btn.llm-action-icon-only::before {
+  mask-image: url("icons/action-screenshot.svg");
+  -webkit-mask-image: url("icons/action-screenshot.svg");
 }
 
 .llm-select-text-btn:hover:not(:disabled),
@@ -1705,9 +1740,8 @@
   max-height: none;
   overflow: hidden;
   text-overflow: clip;
-  font-family:
-    "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
-  font-size: var(--llm-action-icon-font-size);
+  font-size: 0;
+  line-height: 0;
 }
 
 .llm-action-slot.llm-reasoning-dropdown
@@ -1725,9 +1759,20 @@
   max-height: none;
   overflow: hidden;
   text-overflow: clip;
-  font-family:
-    "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
-  font-size: var(--llm-action-icon-font-size);
+  font-size: 0;
+  line-height: 0;
+}
+
+.llm-action-slot.llm-model-dropdown
+  > .llm-model-btn.llm-model-btn-collapsed::before {
+  mask-image: url("icons/action-model-chip.svg");
+  -webkit-mask-image: url("icons/action-model-chip.svg");
+}
+
+.llm-action-slot.llm-reasoning-dropdown
+  > .llm-reasoning-btn.llm-reasoning-btn-collapsed::before {
+  mask-image: url("icons/action-reasoning-brain.svg");
+  -webkit-mask-image: url("icons/action-reasoning-brain.svg");
 }
 
 .llm-model-btn::after,
