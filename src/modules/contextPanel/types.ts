@@ -115,6 +115,27 @@ export type PaperContextRef = {
   year?: string;
 };
 
+export type GlobalConversationSummary = {
+  conversationKey: number;
+  libraryID: number;
+  createdAt: number;
+  title?: string;
+  lastActivityAt: number;
+  userTurnCount: number;
+};
+
+export type GlobalPortalItem = {
+  __llmGlobalPortalItem: true;
+  id: number;
+  libraryID: number;
+  parentID?: number;
+  attachmentContentType?: string;
+  isAttachment: () => boolean;
+  getAttachments: () => number[];
+  getField: (field: string) => string;
+  isRegularItem: () => boolean;
+};
+
 export type ChunkStat = {
   index: number;
   length: number;

@@ -7,6 +7,7 @@ import {
   formatFileCountLabel,
 } from "./constants";
 import type { ActionDropdownSpec } from "./types";
+import { isGlobalPortalItem } from "./portalScope";
 
 function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
   const slot = createElement(
@@ -32,6 +33,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   body.textContent = "";
   const doc = body.ownerDocument!;
   const hasItem = Boolean(item);
+  const isGlobalMode = Boolean(item && isGlobalPortalItem(item));
 
   // Disable CSS scroll anchoring on the Zotero-provided panel body so that
   // Gecko doesn't fight with our programmatic scroll management.
@@ -50,6 +52,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   // Main container
   const container = createElement(doc, "div", "llm-panel", { id: "llm-main" });
   container.dataset.itemId = hasItem && item ? `${item.id}` : "";
+  container.dataset.libraryId = hasItem && item ? `${item.libraryID}` : "";
 
   // Header section
   const header = createElement(doc, "div", "llm-header");
@@ -63,10 +66,34 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   //   textContent: "LLM Assistant",
   // });
   const title = createElement(doc, "div", "llm-title", {
+    id: "llm-title-static",
     textContent: "LLM Assistant",
   });
+  if (hasItem) {
+    title.style.display = "none";
+  }
+  const historyBar = createElement(doc, "div", "llm-history-bar", {
+    id: "llm-history-bar",
+  });
+  historyBar.style.display = hasItem ? "inline-flex" : "none";
+  const historyNewBtn = createElement(doc, "button", "llm-history-new", {
+    id: "llm-history-new",
+    type: "button",
+    textContent: "",
+    title: "Start a new conversation",
+  });
+  historyNewBtn.setAttribute("aria-label", "Start a new conversation");
+  const historyToggleBtn = createElement(doc, "button", "llm-history-toggle", {
+    id: "llm-history-toggle",
+    type: "button",
+    textContent: "History",
+    title: "Conversation history",
+  });
+  historyToggleBtn.setAttribute("aria-haspopup", "menu");
+  historyToggleBtn.setAttribute("aria-expanded", "false");
+  historyBar.append(historyNewBtn, historyToggleBtn);
 
-  headerInfo.append(title);
+  headerInfo.append(title, historyBar);
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
@@ -85,6 +112,29 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   headerActions.append(exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
+  const historyMenu = createElement(doc, "div", "llm-history-menu", {
+    id: "llm-history-menu",
+  });
+  historyMenu.style.display = "none";
+  header.appendChild(historyMenu);
+
+  const historyUndo = createElement(doc, "div", "llm-history-undo", {
+    id: "llm-history-undo",
+  });
+  historyUndo.style.display = "none";
+  const historyUndoText = createElement(doc, "span", "llm-history-undo-text", {
+    id: "llm-history-undo-text",
+    textContent: "",
+  });
+  const historyUndoBtn = createElement(doc, "button", "llm-history-undo-btn", {
+    id: "llm-history-undo-btn",
+    type: "button",
+    textContent: "Undo",
+    title: "Restore deleted conversation",
+  });
+  historyUndo.append(historyUndoText, historyUndoBtn);
+  header.appendChild(historyUndo);
+
   container.appendChild(header);
 
   // Chat display area
@@ -382,7 +432,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const inputBox = createElement(doc, "textarea", "llm-input", {
     id: "llm-input",
     placeholder: hasItem
-      ? "Ask a question about this paper..."
+      ? isGlobalMode
+        ? "Ask anything... Type / to add papers"
+        : "Ask a question about this paper..."
       : "Open a PDF first",
     disabled: !hasItem,
   });
@@ -500,7 +552,11 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
 
   const statusLine = createElement(doc, "div", "llm-status", {
     id: "llm-status",
-    textContent: hasItem ? "Ready" : "Select an item or open a PDF",
+    textContent: hasItem
+      ? isGlobalMode
+        ? "No active paper context. Type / to add papers."
+        : "Ready"
+      : "Select an item or open a PDF",
   });
 
   actionsLeft.append(

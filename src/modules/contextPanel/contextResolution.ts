@@ -16,6 +16,7 @@ import type {
   SelectedTextContext,
   SelectedTextSource,
 } from "./types";
+import { isGlobalPortalItem } from "./portalScope";
 
 function getActiveReaderForSelectedTab(): any | null {
   const tabs = getZoteroTabsState();
@@ -250,6 +251,13 @@ export function resolveContextSourceItem(
     return {
       contextItem: activeItem,
       statusText: `Using context: ${label} (active tab)`,
+    };
+  }
+
+  if (isGlobalPortalItem(panelItem)) {
+    return {
+      contextItem: null,
+      statusText: "No active paper context. Type / to add papers.",
     };
   }
 
@@ -537,7 +545,9 @@ export function addSelectedTextContext(
     setStatus(status, options.successStatusText, "ready");
   }
   if (options.focusInput !== false) {
-    const inputEl = body.querySelector("#llm-input") as HTMLTextAreaElement | null;
+    const inputEl = body.querySelector(
+      "#llm-input",
+    ) as HTMLTextAreaElement | null;
     inputEl?.focus({ preventScroll: true });
   }
   return true;
@@ -598,7 +608,8 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     );
 
     const previewHeader = ownerDoc.createElement("div");
-    previewHeader.className = "llm-image-preview-header llm-selected-context-header";
+    previewHeader.className =
+      "llm-image-preview-header llm-selected-context-header";
 
     const previewMeta = ownerDoc.createElement("button");
     previewMeta.type = "button";

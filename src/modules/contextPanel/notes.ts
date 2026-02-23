@@ -484,3 +484,47 @@ export async function createNoteFromChatHistory(
     `LLM: Created chat history note ${noteId} for parent ${parentId}`,
   );
 }
+
+export async function createStandaloneNoteFromChatHistory(
+  libraryID: number,
+  history: Message[],
+): Promise<void> {
+  const normalizedLibraryID = Number.isFinite(libraryID)
+    ? Math.floor(libraryID)
+    : 0;
+  if (normalizedLibraryID <= 0) {
+    throw new Error("Invalid library ID for standalone note export");
+  }
+  const note = new Zotero.Item("note");
+  note.libraryID = normalizedLibraryID;
+  note.setNote("<p>Preparing chat history export...</p>");
+  const saveResult = await note.saveTx();
+  const noteId =
+    typeof saveResult === "number" && saveResult > 0 ? saveResult : note.id;
+  if (!noteId || noteId <= 0) {
+    throw new Error(
+      "Unable to resolve new standalone note ID for chat history export",
+    );
+  }
+  const normalizedHistory =
+    await normalizeHistoryAttachmentsToSharedBlobs(history);
+  note.setNote(buildChatHistoryNotePayload(normalizedHistory).noteHtml);
+  await note.saveTx();
+  const attachmentHashes = collectAttachmentHashes(normalizedHistory);
+  try {
+    await replaceOwnerAttachmentRefs("note", noteId, attachmentHashes);
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to persist standalone note attachment refs", err);
+  }
+  void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
+    (err) => {
+      ztoolkit.log(
+        "LLM: Attachment GC after standalone note export failed",
+        err,
+      );
+    },
+  );
+  ztoolkit.log(
+    `LLM: Created standalone chat history note ${noteId} in library ${normalizedLibraryID}`,
+  );
+}

@@ -22,6 +22,7 @@ import {
   ACTION_LAYOUT_MODEL_WRAP_MIN_CHARS,
   ACTION_LAYOUT_MODEL_FULL_MAX_LINES,
   MODEL_PROFILE_ORDER,
+  GLOBAL_HISTORY_LIMIT,
   type ModelProfileKey,
 } from "./constants";
 import {
@@ -45,6 +46,7 @@ import {
   chatHistory,
   loadedConversationKeys,
   currentRequestId,
+  activeGlobalConversationByLibrary,
 } from "./state";
 import {
   sanitizeText,
@@ -102,6 +104,7 @@ import { captureScreenshotSelection, optimizeImageDataUrl } from "./screenshot";
 import {
   createNoteFromAssistantText,
   createNoteFromChatHistory,
+  createStandaloneNoteFromChatHistory,
   buildChatHistoryNotePayload,
 } from "./notes";
 import {
@@ -110,7 +113,15 @@ import {
   removeAttachmentFile,
   removeConversationAttachmentFiles,
 } from "./attachmentStorage";
-import { clearConversation as clearStoredConversation } from "../../utils/chatStore";
+import {
+  clearConversation as clearStoredConversation,
+  createGlobalConversation,
+  deleteGlobalConversation,
+  getGlobalConversationUserTurnCount,
+  getLatestEmptyGlobalConversation,
+  listGlobalConversations,
+  touchGlobalConversationTitle,
+} from "../../utils/chatStore";
 import {
   ATTACHMENT_GC_MIN_AGE_MS,
   clearOwnerAttachmentRefs,
@@ -127,8 +138,20 @@ import type {
 import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClient";
 import { searchPaperCandidates } from "./paperSearch";
+import {
+  createGlobalPortalItem,
+  isGlobalPortalItem,
+  resolveActiveLibraryID,
+} from "./portalScope";
 
-export function setupHandlers(body: Element, item?: Zotero.Item | null) {
+export function setupHandlers(
+  body: Element,
+  initialItem?: Zotero.Item | null,
+) {
+  let item = initialItem || null;
+  const basePaperItem =
+    item && !isGlobalPortalItem(item) ? (item as Zotero.Item) : null;
+
   // Use querySelector on body to find elements
   const inputBox = body.querySelector(
     "#llm-input",
@@ -171,6 +194,30 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     "#llm-export",
   ) as HTMLButtonElement | null;
   const clearBtn = body.querySelector("#llm-clear") as HTMLButtonElement | null;
+  const titleStatic = body.querySelector(
+    "#llm-title-static",
+  ) as HTMLDivElement | null;
+  const historyBar = body.querySelector(
+    "#llm-history-bar",
+  ) as HTMLDivElement | null;
+  const historyNewBtn = body.querySelector(
+    "#llm-history-new",
+  ) as HTMLButtonElement | null;
+  const historyToggleBtn = body.querySelector(
+    "#llm-history-toggle",
+  ) as HTMLButtonElement | null;
+  const historyMenu = body.querySelector(
+    "#llm-history-menu",
+  ) as HTMLDivElement | null;
+  const historyUndo = body.querySelector(
+    "#llm-history-undo",
+  ) as HTMLDivElement | null;
+  const historyUndoText = body.querySelector(
+    "#llm-history-undo-text",
+  ) as HTMLSpanElement | null;
+  const historyUndoBtn = body.querySelector(
+    "#llm-history-undo-btn",
+  ) as HTMLButtonElement | null;
   const selectTextBtn = body.querySelector(
     "#llm-select-text",
   ) as HTMLButtonElement | null;
@@ -286,8 +333,28 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   panelRoot.tabIndex = 0;
   applyPanelFontScale(panelRoot);
 
+  const isGlobalMode = () => Boolean(item && isGlobalPortalItem(item));
+  const getCurrentLibraryID = (): number => {
+    const fromItem =
+      item && Number.isFinite(item.libraryID) && item.libraryID > 0
+        ? Math.floor(item.libraryID)
+        : 0;
+    if (fromItem > 0) return fromItem;
+    return resolveActiveLibraryID() || 0;
+  };
+
   // Compute conversation key early so all closures can reference it.
-  const conversationKey = item ? getConversationKey(item) : null;
+  let conversationKey = item ? getConversationKey(item) : null;
+  const syncConversationIdentity = () => {
+    conversationKey = item ? getConversationKey(item) : null;
+    panelRoot.dataset.itemId = item ? `${item.id}` : "";
+    const libraryID = getCurrentLibraryID();
+    panelRoot.dataset.libraryId = libraryID > 0 ? `${libraryID}` : "";
+    if (isGlobalMode() && item && libraryID > 0) {
+      activeGlobalConversationByLibrary.set(libraryID, item.id);
+    }
+  };
+  syncConversationIdentity();
   let activeEditSession: EditLatestTurnMarker | null = null;
   let attachmentGcTimer: number | null = null;
   const scheduleAttachmentGc = (delayMs = 5_000) => {
@@ -361,6 +428,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
 
   if (item && chatBox) {
     const persistScroll = () => {
+      if (!item) return;
       if (!chatBox.childElementCount) return;
       if (!isChatViewportVisible(chatBox)) return;
       const currentWidth = Math.max(0, Math.round(chatBox.clientWidth));
@@ -429,6 +497,14 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const closeExportMenu = () => {
     if (exportMenu) exportMenu.style.display = "none";
   };
+  const closeHistoryMenu = () => {
+    if (historyMenu) historyMenu.style.display = "none";
+    if (historyToggleBtn) {
+      historyToggleBtn.setAttribute("aria-expanded", "false");
+    }
+  };
+  const isHistoryMenuOpen = () =>
+    Boolean(historyMenu && historyMenu.style.display !== "none");
   const closeRetryModelMenu = () => {
     setFloatingMenuOpen(retryModelMenu, RETRY_MODEL_MENU_OPEN_CLASS, false);
     retryMenuAnchor = null;
@@ -609,8 +685,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       return;
     }
     let added = false;
+    const activeItemId = item.id;
     runWithChatScrollGuard(() => {
-      added = addSelectedTextContext(body, item.id, selected, {
+      added = addSelectedTextContext(body, activeItemId, selected, {
         successStatusText: "Selected response text included",
         focusInput: false,
         source: "model",
@@ -745,6 +822,24 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           return;
         }
         try {
+          if (isGlobalPortalItem(targetItem)) {
+            const libraryID =
+              Number.isFinite(targetItem.libraryID) && targetItem.libraryID > 0
+                ? Math.floor(targetItem.libraryID)
+                : getCurrentLibraryID();
+            await createStandaloneNoteFromChatHistory(libraryID, [
+              {
+                role: "assistant",
+                text: contentText,
+                timestamp: Date.now(),
+                modelName,
+              },
+            ]);
+            if (status) {
+              setStatus(status, "Created a new note", "ready");
+            }
+            return;
+          }
           const saveResult = await createNoteFromAssistantText(
             targetItem,
             contentText,
@@ -962,6 +1057,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         e.preventDefault();
         e.stopPropagation();
         const currentItem = item;
+        const currentLibraryID = getCurrentLibraryID();
         closeExportMenu();
         if (!currentItem) return;
         try {
@@ -973,7 +1069,14 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
             if (status) setStatus(status, "No chat history detected.", "ready");
             return;
           }
-          await createNoteFromChatHistory(currentItem, history);
+          if (isGlobalMode()) {
+            await createStandaloneNoteFromChatHistory(
+              currentLibraryID,
+              history,
+            );
+          } else {
+            await createNoteFromChatHistory(currentItem, history);
+          }
           if (status)
             setStatus(status, "Saved chat history to new note", "ready");
         } catch (err) {
@@ -992,6 +1095,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       closeRetryModelMenu();
       closeResponseMenu();
       closePromptMenu();
+      closeHistoryMenu();
       if (exportMenu.style.display !== "none") {
         closeExportMenu();
         return;
@@ -1035,6 +1139,12 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   const clearSelectedTextState = (itemId: number) => {
     setSelectedTextContexts(itemId, []);
     setSelectedTextExpandedIndex(itemId, null);
+  };
+  const clearTransientComposeStateForItem = (itemId: number) => {
+    clearSelectedImageState(itemId);
+    clearSelectedPaperState(itemId);
+    clearSelectedFileState(itemId);
+    clearSelectedTextState(itemId);
   };
   const runWithChatScrollGuard = (fn: () => void) => {
     withScrollGuard(chatBox, conversationKey, fn);
@@ -1134,7 +1244,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     };
   };
 
-  const extractFirstAuthorLastName = (paperContext: PaperContextRef): string => {
+  const extractFirstAuthorLastName = (
+    paperContext: PaperContextRef,
+  ): string => {
     const metadata = resolvePaperContextDisplayMetadata(paperContext);
     let creator = sanitizeText(metadata.firstCreator || "").trim();
     if (!creator) return "Paper";
@@ -1166,7 +1278,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     return resolvePaperContextDisplayMetadata(paperContext).year || null;
   };
 
-  const formatPaperContextChipLabel = (paperContext: PaperContextRef): string => {
+  const formatPaperContextChipLabel = (
+    paperContext: PaperContextRef,
+  ): string => {
     const authorLastName = extractFirstAuthorLastName(paperContext);
     const year = extractPaperYear(paperContext);
     return year
@@ -1174,7 +1288,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       : `📝 ${authorLastName} et al.`;
   };
 
-  const formatPaperContextChipTitle = (paperContext: PaperContextRef): string => {
+  const formatPaperContextChipTitle = (
+    paperContext: PaperContextRef,
+  ): string => {
     const metadata = resolvePaperContextDisplayMetadata(paperContext);
     const meta = [metadata.firstCreator || "", metadata.year || ""]
       .filter(Boolean)
@@ -1535,6 +1651,875 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       refreshChat(body, item);
     });
   };
+
+  const GLOBAL_HISTORY_UNDO_WINDOW_MS = 6_000;
+  const GLOBAL_HISTORY_TITLE_MAX_LENGTH = 64;
+  const HISTORY_ROW_TITLE_MAX_LENGTH = 42;
+
+  const formatGlobalHistoryTimestamp = (timestamp: number): string => {
+    try {
+      const parsed = Number(timestamp);
+      if (!Number.isFinite(parsed) || parsed <= 0) return "";
+      return new Intl.DateTimeFormat(undefined, {
+        year: "2-digit",
+        month: "numeric",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date(parsed));
+    } catch (_err) {
+      return "";
+    }
+  };
+
+  const normalizeConversationTitleSeed = (
+    raw: unknown,
+    maxLength = GLOBAL_HISTORY_TITLE_MAX_LENGTH,
+  ): string => {
+    const normalized = sanitizeText(String(raw || ""))
+      .replace(/[\u0000-\u001F\u007F]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!normalized) return "";
+    if (!Number.isFinite(maxLength) || maxLength <= 3) {
+      return normalized;
+    }
+    return normalized.length > maxLength
+      ? `${normalized.slice(0, maxLength - 3)}...`
+      : normalized;
+  };
+
+  const normalizeHistoryTitle = (raw: unknown): string => {
+    return normalizeConversationTitleSeed(raw, GLOBAL_HISTORY_TITLE_MAX_LENGTH);
+  };
+
+  const formatHistoryRowDisplayTitle = (title: string): string => {
+    return (
+      normalizeConversationTitleSeed(title, HISTORY_ROW_TITLE_MAX_LENGTH) ||
+      "Untitled chat"
+    );
+  };
+
+  type ConversationHistoryEntry = {
+    kind: "paper" | "global";
+    conversationKey: number;
+    title: string;
+    timestampText: string;
+    deletable: boolean;
+    isDraft: boolean;
+    isPendingDelete: boolean;
+    lastActivityAt: number;
+  };
+
+  type HistorySwitchTarget =
+    | { kind: "paper" }
+    | { kind: "global"; conversationKey: number }
+    | null;
+
+  type PendingHistoryDeletion = {
+    conversationKey: number;
+    libraryID: number;
+    title: string;
+    wasActive: boolean;
+    fallbackTarget: HistorySwitchTarget;
+    expiresAt: number;
+    timeoutId: number | null;
+  };
+
+  let latestConversationHistory: ConversationHistoryEntry[] = [];
+  let globalHistoryLoadSeq = 0;
+  let pendingHistoryDeletion: PendingHistoryDeletion | null = null;
+  const pendingHistoryDeletionKeys = new Set<number>();
+
+  const getWindowTimeout = (fn: () => void, delayMs: number): number => {
+    const win = body.ownerDocument?.defaultView;
+    if (win) return win.setTimeout(fn, delayMs);
+    return (setTimeout(fn, delayMs) as unknown as number) || 0;
+  };
+
+  const clearWindowTimeout = (timeoutId: number | null) => {
+    if (!Number.isFinite(timeoutId)) return;
+    const win = body.ownerDocument?.defaultView;
+    if (win) {
+      win.clearTimeout(timeoutId as number);
+      return;
+    }
+    clearTimeout(timeoutId as unknown as ReturnType<typeof setTimeout>);
+  };
+
+  const hideHistoryUndoToast = () => {
+    if (historyUndo) historyUndo.style.display = "none";
+    if (historyUndoText) historyUndoText.textContent = "";
+  };
+
+  const showHistoryUndoToast = (title: string) => {
+    if (!historyUndo || !historyUndoText) return;
+    const displayTitle =
+      normalizeHistoryTitle(title) || normalizeHistoryTitle("Untitled chat");
+    historyUndoText.textContent = `Deleted "${displayTitle}"`;
+    historyUndo.style.display = "flex";
+  };
+
+  const getPaperHistoryEntry = (): ConversationHistoryEntry | null => {
+    if (!basePaperItem) return null;
+    const conversationKey = getConversationKey(basePaperItem);
+    const title =
+      normalizeHistoryTitle(basePaperItem.getField("title")) || "Current paper";
+    const history = chatHistory.get(conversationKey) || [];
+    let lastTimestamp = 0;
+    for (const message of history) {
+      const parsed = Number(message.timestamp);
+      if (Number.isFinite(parsed)) {
+        lastTimestamp = Math.max(lastTimestamp, Math.floor(parsed));
+      }
+    }
+    return {
+      kind: "paper",
+      conversationKey,
+      title,
+      timestampText: lastTimestamp
+        ? formatGlobalHistoryTimestamp(lastTimestamp)
+        : "Current paper",
+      deletable: false,
+      isDraft: false,
+      isPendingDelete: false,
+      lastActivityAt: lastTimestamp || 0,
+    };
+  };
+
+  const isHistoryEntryActive = (entry: ConversationHistoryEntry): boolean => {
+    if (!item) return false;
+    const activeConversationKey = getConversationKey(item);
+    if (entry.kind === "paper") {
+      return !isGlobalMode() && activeConversationKey === entry.conversationKey;
+    }
+    return isGlobalMode() && activeConversationKey === entry.conversationKey;
+  };
+
+  const renderGlobalHistoryMenu = () => {
+    if (!historyMenu) return;
+    historyMenu.innerHTML = "";
+    if (!latestConversationHistory.length) {
+      const emptyRow = createElement(
+        body.ownerDocument as Document,
+        "div",
+        "llm-history-menu-empty",
+        {
+          textContent: "No history yet",
+        },
+      );
+      historyMenu.appendChild(emptyRow);
+      return;
+    }
+    for (const entry of latestConversationHistory) {
+      if (entry.isPendingDelete) continue;
+      const row = createElement(
+        body.ownerDocument as Document,
+        "div",
+        "llm-history-menu-row",
+      ) as HTMLDivElement;
+      row.dataset.conversationKey = `${entry.conversationKey}`;
+      row.dataset.historyKind = entry.kind;
+      if (isHistoryEntryActive(entry)) {
+        row.classList.add("active");
+      }
+      if (entry.isPendingDelete) {
+        row.classList.add("pending-delete");
+      }
+      const rowMain = createElement(
+        body.ownerDocument as Document,
+        "button",
+        "llm-history-menu-row-main",
+        {
+          type: "button",
+        },
+      ) as HTMLButtonElement;
+      rowMain.dataset.action = "switch";
+      const title = createElement(
+        body.ownerDocument as Document,
+        "span",
+        "llm-history-row-title",
+        {
+          textContent: formatHistoryRowDisplayTitle(entry.title),
+          title: entry.title,
+        },
+      );
+      const meta = createElement(
+        body.ownerDocument as Document,
+        "span",
+        "llm-history-row-meta",
+        {
+          textContent: entry.timestampText,
+          title: entry.timestampText,
+        },
+      );
+      rowMain.append(title, meta);
+      row.appendChild(rowMain);
+
+      if (entry.deletable) {
+        const deleteBtn = createElement(
+          body.ownerDocument as Document,
+          "button",
+          "llm-history-row-delete",
+          {
+            type: "button",
+            textContent: "×",
+            title: "Delete conversation",
+          },
+        ) as HTMLButtonElement;
+        deleteBtn.setAttribute("aria-label", `Delete ${entry.title}`);
+        deleteBtn.dataset.action = "delete";
+        row.appendChild(deleteBtn);
+      }
+
+      historyMenu.appendChild(row);
+    }
+  };
+
+  const refreshGlobalHistoryHeader = async () => {
+    if (!historyBar || !titleStatic || !item) {
+      if (titleStatic) titleStatic.style.display = "";
+      if (historyBar) historyBar.style.display = "none";
+      closeHistoryMenu();
+      hideHistoryUndoToast();
+      return;
+    }
+    const libraryID = getCurrentLibraryID();
+    const requestId = ++globalHistoryLoadSeq;
+    const nextEntries: ConversationHistoryEntry[] = [];
+
+    const paperHistoryEntry = getPaperHistoryEntry();
+    if (paperHistoryEntry) {
+      nextEntries.push(paperHistoryEntry);
+    }
+
+    if (libraryID) {
+      let historyEntries: Awaited<ReturnType<typeof listGlobalConversations>> =
+        [];
+      try {
+        historyEntries = await listGlobalConversations(
+          libraryID,
+          GLOBAL_HISTORY_LIMIT,
+          false,
+        );
+      } catch (err) {
+        ztoolkit.log("LLM: Failed to load global history entries", err);
+      }
+      if (requestId !== globalHistoryLoadSeq) return;
+
+      const globalEntries: ConversationHistoryEntry[] = [];
+      const seenGlobalKeys = new Set<number>();
+      for (const entry of historyEntries) {
+        const conversationKey = Number(entry.conversationKey);
+        if (!Number.isFinite(conversationKey) || conversationKey <= 0) continue;
+        const normalizedKey = Math.floor(conversationKey);
+        if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
+        if (seenGlobalKeys.has(normalizedKey)) continue;
+        seenGlobalKeys.add(normalizedKey);
+        const title = normalizeHistoryTitle(entry.title) || "Untitled chat";
+        const lastActivity = Number(entry.lastActivityAt || entry.createdAt || 0);
+        globalEntries.push({
+          kind: "global",
+          conversationKey: normalizedKey,
+          title,
+          timestampText:
+            formatGlobalHistoryTimestamp(lastActivity) || "Standalone chat",
+          deletable: true,
+          isDraft: false,
+          isPendingDelete: false,
+          lastActivityAt: Number.isFinite(lastActivity)
+            ? Math.floor(lastActivity)
+            : 0,
+        });
+      }
+
+      let activeGlobalKey = 0;
+      if (isGlobalMode() && item && Number.isFinite(item.id) && item.id > 0) {
+        activeGlobalKey = Math.floor(item.id);
+      } else {
+        const remembered = Number(activeGlobalConversationByLibrary.get(libraryID));
+        if (Number.isFinite(remembered) && remembered > 0) {
+          activeGlobalKey = Math.floor(remembered);
+        }
+      }
+      if (activeGlobalKey > 0 && !pendingHistoryDeletionKeys.has(activeGlobalKey)) {
+        let userTurnCount = 0;
+        try {
+          userTurnCount = await getGlobalConversationUserTurnCount(activeGlobalKey);
+        } catch (err) {
+          ztoolkit.log(
+            "LLM: Failed to inspect active global draft conversation",
+            err,
+          );
+        }
+        if (requestId !== globalHistoryLoadSeq) return;
+        if (userTurnCount === 0) {
+          const existsInHistorical = globalEntries.some(
+            (entry) => entry.conversationKey === activeGlobalKey,
+          );
+          if (!existsInHistorical) {
+            globalEntries.unshift({
+              kind: "global",
+              conversationKey: activeGlobalKey,
+              title: "New chat",
+              timestampText: "Draft",
+              deletable: true,
+              isDraft: true,
+              isPendingDelete: false,
+              lastActivityAt: 0,
+            });
+          }
+        }
+      }
+
+      const dedupedGlobalEntries: ConversationHistoryEntry[] = [];
+      const seenGlobalEntryKeys = new Set<number>();
+      for (const entry of globalEntries) {
+        if (seenGlobalEntryKeys.has(entry.conversationKey)) continue;
+        seenGlobalEntryKeys.add(entry.conversationKey);
+        dedupedGlobalEntries.push(entry);
+      }
+      nextEntries.push(...dedupedGlobalEntries);
+    }
+
+    latestConversationHistory = nextEntries.filter(
+      (entry) => !pendingHistoryDeletionKeys.has(entry.conversationKey),
+    );
+
+    titleStatic.style.display = "none";
+    historyBar.style.display = "inline-flex";
+    renderGlobalHistoryMenu();
+  };
+
+  const resetComposePreviewUI = () => {
+    updatePaperPreviewPreservingScroll();
+    updateFilePreviewPreservingScroll();
+    updateImagePreviewPreservingScroll();
+    updateSelectedTextPreviewPreservingScroll();
+  };
+
+  const switchGlobalConversation = async (
+    nextConversationKey: number,
+    clearCompose = true,
+  ) => {
+    if (!item) return;
+    const libraryID = getCurrentLibraryID();
+    if (!libraryID) return;
+    const normalizedConversationKey = Number.isFinite(nextConversationKey)
+      ? Math.floor(nextConversationKey)
+      : 0;
+    if (normalizedConversationKey <= 0) return;
+    const nextItem = createGlobalPortalItem(libraryID, normalizedConversationKey);
+    const previousItemId = item.id;
+    if (clearCompose) {
+      clearTransientComposeStateForItem(previousItemId);
+    }
+    item = nextItem;
+    syncConversationIdentity();
+    clearTransientComposeStateForItem(item.id);
+    activeEditSession = null;
+    closePaperPicker();
+    closePromptMenu();
+    closeResponseMenu();
+    closeRetryModelMenu();
+    closeExportMenu();
+    closeHistoryMenu();
+    await ensureConversationLoaded(item);
+    refreshChatPreservingScroll();
+    resetComposePreviewUI();
+    updateModelButton();
+    updateReasoningButton();
+    void refreshGlobalHistoryHeader();
+  };
+
+  const switchPaperConversation = async (clearCompose = true) => {
+    if (!basePaperItem || !item) return;
+    const previousItemId = item.id;
+    if (clearCompose) {
+      clearTransientComposeStateForItem(previousItemId);
+    }
+    item = basePaperItem;
+    syncConversationIdentity();
+    clearTransientComposeStateForItem(item.id);
+    activeEditSession = null;
+    closePaperPicker();
+    closePromptMenu();
+    closeResponseMenu();
+    closeRetryModelMenu();
+    closeExportMenu();
+    closeHistoryMenu();
+    await ensureConversationLoaded(item);
+    refreshChatPreservingScroll();
+    resetComposePreviewUI();
+    updateModelButton();
+    updateReasoningButton();
+    void refreshGlobalHistoryHeader();
+  };
+
+  const switchToHistoryTarget = async (
+    target: HistorySwitchTarget,
+  ): Promise<void> => {
+    if (!target) return;
+    if (target.kind === "paper") {
+      await switchPaperConversation(true);
+      return;
+    }
+    await switchGlobalConversation(target.conversationKey, true);
+  };
+
+  const resolveFallbackAfterGlobalDelete = async (
+    libraryID: number,
+    deletedConversationKey: number,
+  ): Promise<HistorySwitchTarget> => {
+    let remainingHistorical: Awaited<ReturnType<typeof listGlobalConversations>> =
+      [];
+    try {
+      remainingHistorical = await listGlobalConversations(
+        libraryID,
+        GLOBAL_HISTORY_LIMIT,
+        false,
+      );
+    } catch (err) {
+      ztoolkit.log(
+        "LLM: Failed to load fallback global history candidates",
+        err,
+      );
+    }
+    for (const entry of remainingHistorical) {
+      const candidateKey = Number(entry.conversationKey);
+      if (!Number.isFinite(candidateKey) || candidateKey <= 0) continue;
+      const normalizedKey = Math.floor(candidateKey);
+      if (normalizedKey === deletedConversationKey) continue;
+      if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
+      return { kind: "global", conversationKey: normalizedKey };
+    }
+    if (basePaperItem) {
+      return { kind: "paper" };
+    }
+
+    const isEmptyDraft = async (conversationKey: number): Promise<boolean> => {
+      if (!Number.isFinite(conversationKey) || conversationKey <= 0) return false;
+      const normalizedKey = Math.floor(conversationKey);
+      if (normalizedKey === deletedConversationKey) return false;
+      if (pendingHistoryDeletionKeys.has(normalizedKey)) return false;
+      try {
+        const count = await getGlobalConversationUserTurnCount(normalizedKey);
+        return count === 0;
+      } catch (err) {
+        ztoolkit.log(
+          "LLM: Failed to inspect draft candidate user turn count",
+          err,
+        );
+        return false;
+      }
+    };
+
+    let candidateDraftKey = Number(activeGlobalConversationByLibrary.get(libraryID));
+    if (!(await isEmptyDraft(candidateDraftKey))) {
+      candidateDraftKey = 0;
+      try {
+        const latestEmpty = await getLatestEmptyGlobalConversation(libraryID);
+        const latestEmptyKey = Number(latestEmpty?.conversationKey || 0);
+        if (await isEmptyDraft(latestEmptyKey)) {
+          candidateDraftKey = Math.floor(latestEmptyKey);
+        }
+      } catch (err) {
+        ztoolkit.log("LLM: Failed to load latest empty draft candidate", err);
+      }
+    }
+    if (candidateDraftKey > 0) {
+      return {
+        kind: "global",
+        conversationKey: Math.floor(candidateDraftKey),
+      };
+    }
+
+    let createdDraftKey = 0;
+    try {
+      createdDraftKey = await createGlobalConversation(libraryID);
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to create fallback draft conversation", err);
+    }
+    if (createdDraftKey > 0) {
+      ztoolkit.log("LLM: Fallback target created new draft", {
+        libraryID,
+        conversationKey: createdDraftKey,
+      });
+      return {
+        kind: "global",
+        conversationKey: Math.floor(createdDraftKey),
+      };
+    }
+    return null;
+  };
+
+  const clearPendingDeletionCaches = (conversationKey: number) => {
+    chatHistory.delete(conversationKey);
+    loadedConversationKeys.delete(conversationKey);
+    selectedModelCache.delete(conversationKey);
+    selectedReasoningCache.delete(conversationKey);
+    clearTransientComposeStateForItem(conversationKey);
+  };
+
+  const finalizeGlobalConversationDeletion = async (
+    pending: PendingHistoryDeletion,
+  ): Promise<void> => {
+    const conversationKey = pending.conversationKey;
+    const rememberedKey = Number(
+      activeGlobalConversationByLibrary.get(pending.libraryID),
+    );
+    if (
+      Number.isFinite(rememberedKey) &&
+      Math.floor(rememberedKey) === conversationKey
+    ) {
+      activeGlobalConversationByLibrary.delete(pending.libraryID);
+    }
+    clearPendingDeletionCaches(conversationKey);
+    let hasError = false;
+    try {
+      await clearStoredConversation(conversationKey);
+    } catch (err) {
+      hasError = true;
+      ztoolkit.log("LLM: Failed to clear deleted history conversation", err);
+    }
+    try {
+      await clearOwnerAttachmentRefs("conversation", conversationKey);
+    } catch (err) {
+      hasError = true;
+      ztoolkit.log(
+        "LLM: Failed to clear deleted history attachment refs",
+        err,
+      );
+    }
+    try {
+      await removeConversationAttachmentFiles(conversationKey);
+    } catch (err) {
+      hasError = true;
+      ztoolkit.log("LLM: Failed to remove deleted history attachment files", err);
+    }
+    try {
+      await deleteGlobalConversation(conversationKey);
+    } catch (err) {
+      hasError = true;
+      ztoolkit.log("LLM: Failed to delete global history conversation", err);
+    }
+    scheduleAttachmentGc();
+    if (hasError && status) {
+      setStatus(
+        status,
+        "Failed to fully delete conversation. Check logs.",
+        "error",
+      );
+    }
+  };
+
+  const clearPendingHistoryDeletion = (
+    restoreRowVisibility: boolean,
+  ): PendingHistoryDeletion | null => {
+    if (!pendingHistoryDeletion) return null;
+    const pending = pendingHistoryDeletion;
+    clearWindowTimeout(pending.timeoutId);
+    pending.timeoutId = null;
+    if (restoreRowVisibility) {
+      pendingHistoryDeletionKeys.delete(pending.conversationKey);
+    }
+    pendingHistoryDeletion = null;
+    hideHistoryUndoToast();
+    return pending;
+  };
+
+  const finalizePendingHistoryDeletion = async (
+    reason: "timeout" | "superseded",
+  ) => {
+    const pending = clearPendingHistoryDeletion(false);
+    if (!pending) return;
+    ztoolkit.log("LLM: Finalizing pending history deletion", {
+      reason,
+      conversationKey: pending.conversationKey,
+      libraryID: pending.libraryID,
+      title: pending.title,
+    });
+    await finalizeGlobalConversationDeletion(pending);
+    pendingHistoryDeletionKeys.delete(pending.conversationKey);
+    await refreshGlobalHistoryHeader();
+  };
+
+  const undoPendingHistoryDeletion = async () => {
+    const pending = clearPendingHistoryDeletion(true);
+    if (!pending) return;
+    ztoolkit.log("LLM: Restoring pending history deletion", {
+      conversationKey: pending.conversationKey,
+      libraryID: pending.libraryID,
+      title: pending.title,
+    });
+    if (pending.wasActive) {
+      await switchGlobalConversation(pending.conversationKey, true);
+      if (status) setStatus(status, "Conversation restored", "ready");
+      return;
+    }
+    await refreshGlobalHistoryHeader();
+    if (status) setStatus(status, "Conversation restored", "ready");
+  };
+
+  const findHistoryEntryByKey = (
+    historyKind: "paper" | "global",
+    conversationKey: number,
+  ): ConversationHistoryEntry | null => {
+    return (
+      latestConversationHistory.find(
+        (entry) =>
+          entry.kind === historyKind && entry.conversationKey === conversationKey,
+      ) || null
+    );
+  };
+
+  const queueHistoryDeletion = async (entry: ConversationHistoryEntry) => {
+    if (!item) return;
+    if (entry.kind !== "global" || !entry.deletable) return;
+    const libraryID = getCurrentLibraryID();
+    if (!libraryID) {
+      if (status) setStatus(status, "No active library for deletion", "error");
+      return;
+    }
+
+    if (pendingHistoryDeletion) {
+      if (pendingHistoryDeletion.conversationKey === entry.conversationKey) {
+        return;
+      }
+      await finalizePendingHistoryDeletion("superseded");
+    }
+
+    const wasActive = isHistoryEntryActive(entry);
+    let fallbackTarget: HistorySwitchTarget = null;
+    if (wasActive) {
+      fallbackTarget = await resolveFallbackAfterGlobalDelete(
+        libraryID,
+        entry.conversationKey,
+      );
+      if (!fallbackTarget) {
+        if (status) {
+          setStatus(status, "Cannot delete active conversation right now", "error");
+        }
+        return;
+      }
+      await switchToHistoryTarget(fallbackTarget);
+      if (fallbackTarget.kind === "paper") {
+        activeGlobalConversationByLibrary.delete(libraryID);
+      }
+    }
+
+    pendingHistoryDeletionKeys.add(entry.conversationKey);
+    const pending: PendingHistoryDeletion = {
+      conversationKey: entry.conversationKey,
+      libraryID,
+      title: entry.title,
+      wasActive,
+      fallbackTarget,
+      expiresAt: Date.now() + GLOBAL_HISTORY_UNDO_WINDOW_MS,
+      timeoutId: null,
+    };
+    pending.timeoutId = getWindowTimeout(() => {
+      void finalizePendingHistoryDeletion("timeout");
+    }, GLOBAL_HISTORY_UNDO_WINDOW_MS);
+    pendingHistoryDeletion = pending;
+
+    ztoolkit.log("LLM: Queued history deletion", {
+      conversationKey: entry.conversationKey,
+      libraryID,
+      wasActive,
+      fallbackTarget,
+      expiresAt: pending.expiresAt,
+    });
+    showHistoryUndoToast(entry.title);
+    await refreshGlobalHistoryHeader();
+    if (status) setStatus(status, "Conversation deleted. Undo available.", "ready");
+  };
+
+  const createAndSwitchGlobalConversation = async () => {
+    if (!item) return;
+    const libraryID = getCurrentLibraryID();
+    if (!libraryID) {
+      if (status) {
+        setStatus(status, "No active library for global conversation", "error");
+      }
+      return;
+    }
+
+    let targetConversationKey = 0;
+    let reuseReason: "active-draft" | "latest-draft" | null = null;
+
+    const currentCandidate = isGlobalMode()
+      ? getConversationKey(item)
+      : Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
+    const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
+      ? Math.floor(currentCandidate)
+      : 0;
+    if (normalizedCurrentCandidate > 0) {
+      try {
+        const turnCount = await getGlobalConversationUserTurnCount(
+          normalizedCurrentCandidate,
+        );
+        if (turnCount === 0) {
+          targetConversationKey = normalizedCurrentCandidate;
+          reuseReason = "active-draft";
+        }
+      } catch (err) {
+        ztoolkit.log(
+          "LLM: Failed to inspect active candidate for draft reuse",
+          err,
+        );
+      }
+    }
+
+    if (targetConversationKey <= 0) {
+      try {
+        const latestEmpty = await getLatestEmptyGlobalConversation(libraryID);
+        const latestEmptyKey = Number(latestEmpty?.conversationKey || 0);
+        if (Number.isFinite(latestEmptyKey) && latestEmptyKey > 0) {
+          targetConversationKey = Math.floor(latestEmptyKey);
+          reuseReason = "latest-draft";
+        }
+      } catch (err) {
+        ztoolkit.log("LLM: Failed to load latest empty global conversation", err);
+      }
+    }
+
+    if (targetConversationKey <= 0) {
+      try {
+        targetConversationKey = await createGlobalConversation(libraryID);
+      } catch (err) {
+        ztoolkit.log("LLM: Failed to create new global conversation", err);
+      }
+      reuseReason = null;
+    }
+    if (!targetConversationKey) {
+      if (status) setStatus(status, "Failed to create conversation", "error");
+      return;
+    }
+
+    ztoolkit.log("LLM: + conversation action", {
+      libraryID,
+      targetConversationKey,
+      action: reuseReason ? "reuse" : "create",
+      reason: reuseReason || "new",
+    });
+    activeGlobalConversationByLibrary.set(libraryID, targetConversationKey);
+    await switchGlobalConversation(targetConversationKey, true);
+    if (status) {
+      setStatus(
+        status,
+        reuseReason
+          ? "Reused existing new conversation"
+          : "Started new conversation",
+        "ready",
+      );
+    }
+    inputBox.focus({ preventScroll: true });
+  };
+
+  if (historyNewBtn) {
+    historyNewBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void createAndSwitchGlobalConversation();
+    });
+  }
+
+  if (historyUndoBtn) {
+    historyUndoBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void undoPendingHistoryDeletion();
+    });
+  }
+
+  if (historyToggleBtn && historyMenu) {
+    historyToggleBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!item) return;
+      void (async () => {
+        closeModelMenu();
+        closeReasoningMenu();
+        closeRetryModelMenu();
+        closeResponseMenu();
+        closePromptMenu();
+        closeExportMenu();
+        await refreshGlobalHistoryHeader();
+        if (!latestConversationHistory.length) {
+          closeHistoryMenu();
+          return;
+        }
+        if (isHistoryMenuOpen()) {
+          closeHistoryMenu();
+          return;
+        }
+        renderGlobalHistoryMenu();
+        positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+        historyMenu.style.display = "flex";
+        historyToggleBtn.setAttribute("aria-expanded", "true");
+      })();
+    });
+  }
+
+  if (historyMenu) {
+    historyMenu.addEventListener("click", (e: Event) => {
+      const target = e.target as Element | null;
+      if (!target || !item) return;
+
+      const deleteBtn = target.closest(
+        ".llm-history-row-delete",
+      ) as HTMLButtonElement | null;
+      if (deleteBtn) {
+        const row = deleteBtn.closest(".llm-history-menu-row") as
+          | HTMLDivElement
+          | null;
+        if (!row) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const parsedConversationKey = Number.parseInt(
+          row.dataset.conversationKey || "",
+          10,
+        );
+        if (
+          !Number.isFinite(parsedConversationKey) ||
+          parsedConversationKey <= 0
+        ) {
+          return;
+        }
+        const historyKind = row.dataset.historyKind === "paper" ? "paper" : "global";
+        const entry = findHistoryEntryByKey(historyKind, parsedConversationKey);
+        if (!entry || !entry.deletable) return;
+        void queueHistoryDeletion(entry);
+        return;
+      }
+
+      const rowMain = target.closest(
+        ".llm-history-menu-row-main",
+      ) as HTMLButtonElement | null;
+      if (!rowMain) return;
+      const row = rowMain.closest(".llm-history-menu-row") as HTMLDivElement | null;
+      if (!row) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const parsedConversationKey = Number.parseInt(
+        row.dataset.conversationKey || "",
+        10,
+      );
+      if (!Number.isFinite(parsedConversationKey) || parsedConversationKey <= 0) {
+        return;
+      }
+      const historyKind = row.dataset.historyKind === "paper" ? "paper" : "global";
+      void (async () => {
+        if (historyKind === "paper") {
+          await switchPaperConversation(true);
+        } else {
+          await switchGlobalConversation(parsedConversationKey, true);
+        }
+        if (status) setStatus(status, "Conversation loaded", "ready");
+      })();
+    });
+  }
 
   const getModelChoices = () => {
     const profiles = getApiProfiles();
@@ -2348,6 +3333,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
   updateImagePreviewPreservingScroll();
   updateSelectedTextPreviewPreservingScroll();
   syncModelFromPrefs();
+  void refreshGlobalHistoryHeader();
 
   // Preferences can change outside this panel (e.g., settings window).
   // Re-sync model label when the user comes back (pointerenter).
@@ -2938,9 +3924,16 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
         closePaperPicker();
         return;
       }
-      const currentConversationItemId = getConversationKey(item);
+      const libraryID = getCurrentLibraryID();
+      if (!libraryID) {
+        closePaperPicker();
+        return;
+      }
+      const currentConversationItemId = isGlobalMode()
+        ? null
+        : getConversationKey(item);
       const results = await searchPaperCandidates(
-        item.libraryID,
+        libraryID,
         activeSlashToken.query,
         currentConversationItemId,
         20,
@@ -3096,6 +4089,17 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     const displayQuestion = primarySelectedText
       ? resolvedPromptText
       : text || resolvedPromptText;
+    if (isGlobalMode()) {
+      const titleSeed =
+        normalizeConversationTitleSeed(text) ||
+        normalizeConversationTitleSeed(resolvedPromptText);
+      void touchGlobalConversationTitle(
+        getConversationKey(item),
+        titleSeed,
+      ).catch((err) => {
+        ztoolkit.log("LLM: Failed to touch global conversation title", err);
+      });
+    }
     const selectedProfile = getSelectedProfile();
     const activeModelName = (
       selectedProfile?.model ||
@@ -3180,6 +4184,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       }
       activeEditSession = null;
       scheduleAttachmentGc();
+      void refreshGlobalHistoryHeader();
       return;
     }
 
@@ -3199,7 +4204,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       clearSelectedTextState(item.id);
       updateSelectedTextPreviewPreservingScroll();
     }
-    await sendQuestion(
+    const sendTask = sendQuestion(
       body,
       item,
       composedQuestion,
@@ -3215,6 +4220,14 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       selectedPaperContexts.length ? selectedPaperContexts : undefined,
       selectedFiles.length ? selectedFiles : undefined,
     );
+    const win = body.ownerDocument?.defaultView;
+    if (win) {
+      win.setTimeout(() => {
+        void refreshGlobalHistoryHeader();
+      }, 120);
+    }
+    await sendTask;
+    void refreshGlobalHistoryHeader();
   };
 
   // Send button - use addEventListener
@@ -3565,6 +4578,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     closeRetryModelMenu();
     closeReasoningMenu();
     closePromptMenu();
+    closeHistoryMenu();
     updateModelButton();
     rebuildModelMenu();
     if (!modelMenu.childElementCount) {
@@ -3584,6 +4598,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     closeRetryModelMenu();
     closeModelMenu();
     closePromptMenu();
+    closeHistoryMenu();
     updateReasoningButton();
     rebuildReasoningMenu();
     if (!reasoningMenu.childElementCount) {
@@ -3603,6 +4618,7 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
     closeResponseMenu();
     closeExportMenu();
     closePromptMenu();
+    closeHistoryMenu();
     closeModelMenu();
     closeReasoningMenu();
     rebuildRetryModelMenu();
@@ -3638,6 +4654,15 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       e.stopPropagation();
     });
     retryModelMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+  }
+
+  if (historyMenu) {
+    historyMenu.addEventListener("pointerdown", (e: Event) => {
+      e.stopPropagation();
+    });
+    historyMenu.addEventListener("mousedown", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -3827,6 +4852,9 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       const exportMenus = Array.from(
         doc.querySelectorAll("#llm-export-menu"),
       ) as HTMLDivElement[];
+      const historyMenus = Array.from(
+        doc.querySelectorAll("#llm-history-menu"),
+      ) as HTMLDivElement[];
       if (
         modelMenuEl &&
         isFloatingMenuOpen(modelMenuEl) &&
@@ -3895,6 +4923,22 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
           ) as HTMLButtonElement | null;
           if (target && exportButtonEl?.contains(target)) continue;
           exportMenuEl.style.display = "none";
+        }
+
+        for (const historyMenuEl of historyMenus) {
+          if (historyMenuEl.style.display === "none") continue;
+          if (target && historyMenuEl.contains(target)) continue;
+          const panelRoot = historyMenuEl.closest("#llm-main");
+          const historyToggleEl = panelRoot?.querySelector(
+            "#llm-history-toggle",
+          ) as HTMLButtonElement | null;
+          const historyNewEl = panelRoot?.querySelector(
+            "#llm-history-new",
+          ) as HTMLButtonElement | null;
+          if (target && historyToggleEl?.contains(target)) continue;
+          if (target && historyNewEl?.contains(target)) continue;
+          historyMenuEl.style.display = "none";
+          historyToggleEl?.setAttribute("aria-expanded", "false");
         }
       }
     });
@@ -4013,7 +5057,11 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       }
       updatePaperPreview();
       if (status) {
-        setStatus(status, `Paper context removed (${nextPapers.length})`, "ready");
+        setStatus(
+          status,
+          `Paper context removed (${nextPapers.length})`,
+          "ready",
+        );
       }
     });
   }
@@ -4165,37 +5213,83 @@ export function setupHandlers(body: Element, item?: Zotero.Item | null) {
       closePaperPicker();
       closeExportMenu();
       closePromptMenu();
+      closeHistoryMenu();
       activeEditSession = null;
-      if (item) {
-        const conversationKey = getConversationKey(item);
-        chatHistory.delete(conversationKey);
-        loadedConversationKeys.add(conversationKey);
-        void clearStoredConversation(conversationKey).catch((err) => {
+      if (!item) return;
+      const conversationToClear = getConversationKey(item);
+      const currentItemId = item.id;
+      const libraryID = getCurrentLibraryID();
+      clearTransientComposeStateForItem(currentItemId);
+      resetComposePreviewUI();
+      void (async () => {
+        chatHistory.delete(conversationToClear);
+        loadedConversationKeys.add(conversationToClear);
+        try {
+          await clearStoredConversation(conversationToClear);
+        } catch (err) {
           ztoolkit.log("LLM: Failed to clear persisted chat history", err);
-        });
-        void clearOwnerAttachmentRefs("conversation", conversationKey).catch(
-          (err) => {
+        }
+        try {
+          await clearOwnerAttachmentRefs("conversation", conversationToClear);
+        } catch (err) {
+          ztoolkit.log(
+            "LLM: Failed to clear conversation attachment refs",
+            err,
+          );
+        }
+        try {
+          await removeConversationAttachmentFiles(conversationToClear);
+        } catch (err) {
+          ztoolkit.log("LLM: Failed to clear chat attachment files", err);
+        }
+
+        if (isGlobalMode() && libraryID > 0) {
+          try {
+            await deleteGlobalConversation(conversationToClear);
+          } catch (err) {
+            ztoolkit.log("LLM: Failed to delete global conversation row", err);
+          }
+          let nextConversationKey = 0;
+          try {
+            const nextConversations = await listGlobalConversations(
+              libraryID,
+              1,
+              true,
+            );
+            nextConversationKey = nextConversations[0]?.conversationKey || 0;
+          } catch (err) {
             ztoolkit.log(
-              "LLM: Failed to clear conversation attachment refs",
+              "LLM: Failed to load next global conversation after clear",
               err,
             );
-          },
-        );
-        void removeConversationAttachmentFiles(conversationKey).catch((err) => {
-          ztoolkit.log("LLM: Failed to clear chat attachment files", err);
-        });
+          }
+          if (!nextConversationKey) {
+            if (basePaperItem) {
+              await switchPaperConversation(true);
+              void refreshGlobalHistoryHeader();
+              scheduleAttachmentGc();
+              if (status) setStatus(status, "Cleared", "ready");
+              return;
+            }
+            nextConversationKey = await createGlobalConversation(libraryID);
+          }
+          if (nextConversationKey > 0) {
+            activeGlobalConversationByLibrary.set(
+              libraryID,
+              nextConversationKey,
+            );
+            await switchGlobalConversation(nextConversationKey, true);
+          } else {
+            refreshChatPreservingScroll();
+          }
+          void refreshGlobalHistoryHeader();
+        } else {
+          refreshChatPreservingScroll();
+          void refreshGlobalHistoryHeader();
+        }
         scheduleAttachmentGc();
-        clearSelectedImageState(item.id);
-        clearSelectedPaperState(item.id);
-        clearSelectedFileState(item.id);
-        clearSelectedTextState(item.id);
-        updatePaperPreviewPreservingScroll();
-        updateFilePreviewPreservingScroll();
-        updateImagePreviewPreservingScroll();
-        updateSelectedTextPreviewPreservingScroll();
-        refreshChatPreservingScroll();
         if (status) setStatus(status, "Cleared", "ready");
-      }
+      })();
     });
   }
 }

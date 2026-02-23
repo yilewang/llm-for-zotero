@@ -78,6 +78,7 @@ export const selectedFileAttachmentCache = new Map<number, ChatAttachment[]>();
 export const selectedFilePreviewExpandedCache = new Map<number, boolean>();
 export const selectedPaperContextCache = new Map<number, PaperContextRef[]>();
 export const selectedPaperPreviewExpandedCache = new Map<number, boolean>();
+export const activeGlobalConversationByLibrary = new Map<number, number>();
 export const selectedTextCache = new Map<number, SelectedTextContext[]>();
 export const selectedTextPreviewExpandedCache = new Map<number, number>();
 export const selectedImagePreviewExpandedCache = new Map<number, boolean>();

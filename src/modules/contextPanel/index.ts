@@ -40,9 +40,7 @@ import {
 import { normalizeSelectedText, setStatus } from "./textUtils";
 import { buildUI } from "./buildUI";
 import { setupHandlers } from "./setupHandlers";
-import {
-  ensureConversationLoaded,
-} from "./chat";
+import { ensureConversationLoaded } from "./chat";
 import { renderShortcuts } from "./shortcuts";
 import { refreshChat } from "./chat";
 import {
@@ -92,14 +90,30 @@ export function registerReaderContextPanel() {
       l10nID: getLocaleID("llm-panel-sidenav-tooltip"),
       icon: `chrome://${config.addonRef}/content/icons/icon-20.png`,
     },
+    onInit: ({ setEnabled, tabType }) => {
+      const enabled = tabType === "reader" || tabType === "library";
+      setEnabled(enabled);
+      ztoolkit.log(`LLM: panel init tabType=${tabType} enabled=${enabled}`);
+    },
     onItemChange: ({ setEnabled, tabType }) => {
-      setEnabled(tabType === "reader" || tabType === "library");
+      const enabled = tabType === "reader" || tabType === "library";
+      setEnabled(enabled);
+      ztoolkit.log(
+        `LLM: panel itemChange tabType=${tabType} enabled=${enabled}`,
+      );
       return true;
     },
     onRender: ({ body, item }) => {
       buildUI(body, item);
     },
-    onAsyncRender: async ({ body, item }) => {
+    onAsyncRender: async ({ body, item, setEnabled, tabType }) => {
+      const enabled = tabType === "reader" || tabType === "library";
+      setEnabled(enabled);
+      ztoolkit.log(
+        `LLM: panel asyncRender tabType=${tabType} enabled=${enabled} hasItem=${Boolean(item)}`,
+      );
+
+      buildUI(body, item);
       if (item) {
         await ensureConversationLoaded(item);
       }
