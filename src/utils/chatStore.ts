@@ -5,6 +5,7 @@ import type {
 } from "../modules/contextPanel/types";
 import { GLOBAL_CONVERSATION_KEY_BASE } from "../modules/contextPanel/constants";
 import {
+  normalizeSelectedTextPaperContexts,
   normalizeSelectedTextSource,
   normalizePaperContextRefs,
 } from "../modules/contextPanel/normalizers";
@@ -16,6 +17,7 @@ export type StoredChatMessage = {
   selectedText?: string;
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
+  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   paperContexts?: PaperContextRef[];
   screenshotImages?: string[];
   attachments?: Array<{
@@ -135,6 +137,7 @@ export async function initChatStore(): Promise<void> {
         selected_text TEXT,
         selected_texts_json TEXT,
         selected_text_sources_json TEXT,
+        selected_text_paper_contexts_json TEXT,
         paper_contexts_json TEXT,
         screenshot_images TEXT,
         attachments_json TEXT,
@@ -181,6 +184,17 @@ export async function initChatStore(): Promise<void> {
       await Zotero.DB.queryAsync(
         `ALTER TABLE ${CHAT_MESSAGES_TABLE}
          ADD COLUMN selected_text_sources_json TEXT`,
+      );
+    }
+    const hasSelectedTextPaperContextsJsonColumn = Boolean(
+      columns?.some(
+        (column) => column?.name === "selected_text_paper_contexts_json",
+      ),
+    );
+    if (!hasSelectedTextPaperContextsJsonColumn) {
+      await Zotero.DB.queryAsync(
+        `ALTER TABLE ${CHAT_MESSAGES_TABLE}
+         ADD COLUMN selected_text_paper_contexts_json TEXT`,
       );
     }
     const hasPaperContextsJsonColumn = Boolean(
@@ -247,6 +261,7 @@ export async function loadConversation(
             selected_text AS selectedText,
             selected_texts_json AS selectedTextsJson,
             selected_text_sources_json AS selectedTextSourcesJson,
+            selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
             paper_contexts_json AS paperContextsJson,
             screenshot_images AS screenshotImages,
             attachments_json AS attachmentsJson,
@@ -266,6 +281,7 @@ export async function loadConversation(
         selectedText?: unknown;
         selectedTextsJson?: unknown;
         selectedTextSourcesJson?: unknown;
+        selectedTextPaperContextsJson?: unknown;
         paperContextsJson?: unknown;
         screenshotImages?: unknown;
         attachmentsJson?: unknown;
@@ -319,6 +335,29 @@ export async function loadConversation(
         }
       } catch (_err) {
         selectedTextSources = undefined;
+      }
+    }
+    const normalizedTexts = selectedTexts?.length
+      ? selectedTexts
+      : typeof row.selectedText === "string" && row.selectedText.trim()
+        ? [row.selectedText]
+        : [];
+    let selectedTextPaperContexts: (PaperContextRef | undefined)[] | undefined;
+    if (
+      typeof row.selectedTextPaperContextsJson === "string" &&
+      row.selectedTextPaperContextsJson
+    ) {
+      try {
+        const parsed = JSON.parse(row.selectedTextPaperContextsJson) as unknown;
+        const normalized = normalizeSelectedTextPaperContexts(
+          parsed,
+          normalizedTexts.length,
+        );
+        if (normalized.some((entry) => Boolean(entry))) {
+          selectedTextPaperContexts = normalized;
+        }
+      } catch (_err) {
+        selectedTextPaperContexts = undefined;
       }
     }
     let paperContexts: PaperContextRef[] | undefined;
@@ -435,25 +474,14 @@ export async function loadConversation(
       timestamp: Number.isFinite(timestamp) ? timestamp : Date.now(),
       selectedText:
         typeof row.selectedText === "string" ? row.selectedText : undefined,
-      selectedTexts: (() => {
-        const normalizedTexts = selectedTexts?.length
-          ? selectedTexts
-          : typeof row.selectedText === "string" && row.selectedText.trim()
-            ? [row.selectedText]
-            : [];
-        return normalizedTexts.length ? normalizedTexts : undefined;
-      })(),
+      selectedTexts: normalizedTexts.length ? normalizedTexts : undefined,
       selectedTextSources: (() => {
-        const normalizedTexts = selectedTexts?.length
-          ? selectedTexts
-          : typeof row.selectedText === "string" && row.selectedText.trim()
-            ? [row.selectedText]
-            : [];
         if (!normalizedTexts.length) return undefined;
         return normalizedTexts.map((_, index) =>
           normalizeSelectedTextSource(selectedTextSources?.[index]),
         );
       })(),
+      selectedTextPaperContexts,
       paperContexts,
       screenshotImages,
       attachments,
@@ -491,6 +519,10 @@ export async function appendMessage(
   const selectedTextSources = selectedTexts.map((_, index) =>
     normalizeSelectedTextSource(message.selectedTextSources?.[index]),
   );
+  const selectedTextPaperContexts = normalizeSelectedTextPaperContexts(
+    message.selectedTextPaperContexts,
+    selectedTexts.length,
+  );
   const paperContexts = normalizePaperContextRefs(message.paperContexts);
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
@@ -515,8 +547,8 @@ export async function appendMessage(
     : [];
   await Zotero.DB.queryAsync(
     `INSERT INTO ${CHAT_MESSAGES_TABLE}
-      (conversation_key, role, text, timestamp, selected_text, selected_texts_json, selected_text_sources_json, paper_contexts_json, screenshot_images, attachments_json, model_name, reasoning_summary, reasoning_details)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (conversation_key, role, text, timestamp, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, paper_contexts_json, screenshot_images, attachments_json, model_name, reasoning_summary, reasoning_details)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       normalizedKey,
       message.role,
@@ -525,6 +557,9 @@ export async function appendMessage(
       selectedTexts[0] || message.selectedText || null,
       selectedTexts.length ? JSON.stringify(selectedTexts) : null,
       selectedTextSources.length ? JSON.stringify(selectedTextSources) : null,
+      selectedTextPaperContexts.some((entry) => Boolean(entry))
+        ? JSON.stringify(selectedTextPaperContexts)
+        : null,
       paperContexts.length ? JSON.stringify(paperContexts) : null,
       screenshotImages.length ? JSON.stringify(screenshotImages) : null,
       attachments.length ? JSON.stringify(attachments) : null,
@@ -544,6 +579,7 @@ export async function updateLatestUserMessage(
     | "selectedText"
     | "selectedTexts"
     | "selectedTextSources"
+    | "selectedTextPaperContexts"
     | "paperContexts"
     | "screenshotImages"
     | "attachments"
@@ -563,6 +599,10 @@ export async function updateLatestUserMessage(
       : [];
   const selectedTextSources = selectedTexts.map((_, index) =>
     normalizeSelectedTextSource(message.selectedTextSources?.[index]),
+  );
+  const selectedTextPaperContexts = normalizeSelectedTextPaperContexts(
+    message.selectedTextPaperContexts,
+    selectedTexts.length,
   );
   const paperContexts = normalizePaperContextRefs(message.paperContexts);
   const screenshotImages = Array.isArray(message.screenshotImages)
@@ -594,6 +634,7 @@ export async function updateLatestUserMessage(
          selected_text = ?,
          selected_texts_json = ?,
          selected_text_sources_json = ?,
+         selected_text_paper_contexts_json = ?,
          paper_contexts_json = ?,
          screenshot_images = ?,
          attachments_json = ?
@@ -610,6 +651,9 @@ export async function updateLatestUserMessage(
       selectedTexts[0] || message.selectedText || null,
       selectedTexts.length ? JSON.stringify(selectedTexts) : null,
       selectedTextSources.length ? JSON.stringify(selectedTextSources) : null,
+      selectedTextPaperContexts.some((entry) => Boolean(entry))
+        ? JSON.stringify(selectedTextPaperContexts)
+        : null,
       paperContexts.length ? JSON.stringify(paperContexts) : null,
       screenshotImages.length ? JSON.stringify(screenshotImages) : null,
       attachments.length ? JSON.stringify(attachments) : null,

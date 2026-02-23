@@ -22,9 +22,11 @@
  */
 
 import { getLocaleID } from "../../utils/locale";
-import { config, PANE_ID } from "./constants";
+import { config, GLOBAL_CONVERSATION_KEY_BASE, PANE_ID } from "./constants";
 import type { Message } from "./types";
 import {
+  activeConversationModeByLibrary,
+  activeGlobalConversationByLibrary,
   chatHistory,
   loadedConversationKeys,
   readerContextPanelRegistered,
@@ -54,6 +56,7 @@ import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
 } from "./readerSelection";
+import { resolvePaperContextRefFromAttachment } from "./paperAttribution";
 
 // =============================================================================
 // Public API
@@ -209,13 +212,6 @@ export function registerReaderSelectionTracking() {
           ztoolkit.log("LLM: Add Text popup action skipped (no selection)");
           return;
         }
-        const appendByKey = new Map<number, boolean>();
-        for (const key of keys) {
-          appendByKey.set(
-            key,
-            appendSelectedTextContextForItem(key, effectiveSelectedText, "pdf"),
-          );
-        }
         try {
           const docs = new Set<Document>();
           const pushDoc = (doc?: Document | null) => {
@@ -251,61 +247,126 @@ export function registerReaderSelectionTracking() {
           }
           if (!panelRoots.length) return;
 
+          const readerLibraryID = Number(item?.libraryID || 0);
+          const normalizedReaderLibraryID =
+            Number.isFinite(readerLibraryID) && readerLibraryID > 0
+              ? Math.floor(readerLibraryID)
+              : 0;
+          const readerModeLock =
+            normalizedReaderLibraryID > 0
+              ? activeConversationModeByLibrary.get(normalizedReaderLibraryID)
+              : null;
+          const readerGlobalConversationKey =
+            readerModeLock === "global" && normalizedReaderLibraryID > 0
+              ? Math.floor(
+                  Number(
+                    activeGlobalConversationByLibrary.get(
+                      normalizedReaderLibraryID,
+                    ) || 0,
+                  ),
+                )
+              : 0;
+          const readerPaperContext = resolvePaperContextRefFromAttachment(item);
+          const readerPaperConversationKey =
+            readerPaperContext && Number.isFinite(readerPaperContext.itemId)
+              ? Math.floor(readerPaperContext.itemId)
+              : 0;
           const getPanelItemId = (root: HTMLDivElement): number | null => {
             const parsed = Number(root.dataset.itemId || 0);
             return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+          };
+          const getPanelLibraryId = (root: HTMLDivElement): number | null => {
+            const parsed = Number(root.dataset.libraryId || 0);
+            return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+          };
+          const resolvePanelConversationKey = (
+            root: HTMLDivElement,
+            panelItemId: number | null,
+          ): number | null => {
+            if (!panelItemId) return null;
+            const libraryID = getPanelLibraryId(root);
+            if (libraryID) {
+              const mode = activeConversationModeByLibrary.get(libraryID);
+              if (mode === "global") {
+                const lockedGlobal = Number(
+                  activeGlobalConversationByLibrary.get(libraryID) || 0,
+                );
+                if (Number.isFinite(lockedGlobal) && lockedGlobal > 0) {
+                  return Math.floor(lockedGlobal);
+                }
+              }
+            }
+            if (
+              readerGlobalConversationKey > 0 &&
+              panelItemId < GLOBAL_CONVERSATION_KEY_BASE
+            ) {
+              return readerGlobalConversationKey;
+            }
+            return panelItemId;
           };
           const isVisible = (root: HTMLElement) =>
             root.getClientRects().length > 0;
           const popupTopDoc = event.doc.defaultView?.top?.document || null;
           const rootStates = panelRoots
-            .map((root) => ({
-              root,
-              panelItemId: getPanelItemId(root),
-              keyed: false,
-              visible: isVisible(root),
-              sameDoc: popupTopDoc ? root.ownerDocument === popupTopDoc : false,
-              matchesReaderItem: false,
-            }))
-            .filter((state) => state.panelItemId !== null);
+            .map((root) => {
+              const ownerDoc = root.ownerDocument;
+              const panelItemId = getPanelItemId(root);
+              const panelLibraryId = getPanelLibraryId(root);
+              const conversationKey = resolvePanelConversationKey(root, panelItemId);
+              return {
+                root,
+                panelItemId,
+                panelLibraryId,
+                conversationKey,
+                visible: isVisible(root),
+                sameDoc: popupTopDoc ? ownerDoc === popupTopDoc : false,
+                sameLibrary:
+                  normalizedReaderLibraryID > 0 &&
+                  panelLibraryId === normalizedReaderLibraryID,
+                matchesReaderPaper:
+                  readerPaperConversationKey > 0 &&
+                  conversationKey === readerPaperConversationKey,
+                matchesLockedGlobal:
+                  readerGlobalConversationKey > 0 &&
+                  conversationKey === readerGlobalConversationKey,
+                hasActiveFocus: Boolean(
+                  ownerDoc?.activeElement && root.contains(ownerDoc.activeElement),
+                ),
+              };
+            })
+            .filter((state) => state.panelItemId !== null && state.conversationKey);
           if (!rootStates.length) return;
-          for (const state of rootStates) {
-            state.keyed = keys.includes(state.panelItemId as number);
-            state.matchesReaderItem = state.panelItemId === itemId;
-          }
-
-          const refreshedPanelItemIds = new Set<number>();
-          for (const state of rootStates) {
-            if (!state.visible || !state.keyed) continue;
-            const panelItemId = state.panelItemId as number;
-            const panelBody = state.root.parentElement || state.root;
-            applySelectedTextPreview(panelBody, panelItemId);
-            refreshedPanelItemIds.add(panelItemId);
-          }
-
-          const statusCandidates = rootStates.filter((state) => state.keyed);
-          const rankedStates = statusCandidates.length
-            ? statusCandidates
+          const sameLibraryStates =
+            normalizedReaderLibraryID > 0
+              ? rootStates.filter((state) => state.sameLibrary)
+              : [];
+          const rankedStates = sameLibraryStates.length
+            ? sameLibraryStates
             : rootStates;
 
           // Deterministic status/focus target ranking:
-          // 1) same doc + visible + exact reader item
-          // 2) same doc + visible
-          // 3) visible + exact reader item
-          // 4) visible + keyed
-          // 5) visible
-          // 6) same doc
-          // 7) keyed
+          // 1) same doc + visible + focused panel
+          // 2) visible + focused panel
+          // 3) same doc + visible + matching global lock
+          // 4) same doc + visible + matching reader paper
+          // 5) same doc + visible
+          // 6) visible + matching global lock
+          // 7) visible + matching reader paper
+          // 8) visible
+          // 9) same doc
+          // 10) focused panel
           const scoreState = (state: (typeof rankedStates)[number]) => {
-            if (state.sameDoc && state.visible && state.matchesReaderItem) {
-              return 7;
-            }
-            if (state.sameDoc && state.visible) return 6;
-            if (state.visible && state.matchesReaderItem) return 5;
-            if (state.visible && state.keyed) return 4;
+            if (state.sameDoc && state.visible && state.hasActiveFocus) return 8;
+            if (state.visible && state.hasActiveFocus) return 7;
+            if (state.sameDoc && state.visible && state.matchesLockedGlobal)
+              return 6.5;
+            if (state.sameDoc && state.visible && state.matchesReaderPaper) return 6;
+            if (state.sameDoc && state.visible) return 5;
+            if (state.visible && state.matchesLockedGlobal) return 4.5;
+            if (state.visible && state.matchesReaderPaper) return 4;
             if (state.visible) return 3;
             if (state.sameDoc) return 2;
-            if (state.keyed) return 1;
+            if (state.hasActiveFocus) return 1;
             return 0;
           };
           let bestState = rankedStates[0];
@@ -319,23 +380,47 @@ export function registerReaderSelectionTracking() {
           }
 
           const panelRoot = bestState.root;
-          const panelItemId = bestState.panelItemId as number;
-          if (!appendByKey.has(panelItemId)) {
-            appendByKey.set(
-              panelItemId,
-              appendSelectedTextContextForItem(
-                panelItemId,
-                effectiveSelectedText,
-                "pdf",
-              ),
-            );
+          const conversationKey = bestState.conversationKey as number;
+          const isGlobalConversation =
+            conversationKey >= GLOBAL_CONVERSATION_KEY_BASE;
+          if (!isGlobalConversation) {
+            const paperMismatch =
+              !readerPaperContext || readerPaperContext.itemId !== conversationKey;
+            if (paperMismatch) {
+              const panelBody = panelRoot.parentElement || panelRoot;
+              const status = panelBody.querySelector(
+                "#llm-status",
+              ) as HTMLElement | null;
+              if (status) {
+                setStatus(
+                  status,
+                  "Paper mode only accepts text from this paper",
+                  "error",
+                );
+              }
+              return;
+            }
           }
-
+          const selectedPaperContext =
+            isGlobalConversation ? readerPaperContext : null;
+          const added = appendSelectedTextContextForItem(
+            conversationKey,
+            effectiveSelectedText,
+            "pdf",
+            selectedPaperContext,
+          );
+          const refreshRoots = rootStates.filter(
+            (state) => (state.conversationKey as number) === conversationKey,
+          );
+          for (const state of refreshRoots) {
+            const panelBody = state.root.parentElement || state.root;
+            applySelectedTextPreview(panelBody, conversationKey);
+          }
+          if (!refreshRoots.length) {
+            const panelBody = panelRoot.parentElement || panelRoot;
+            applySelectedTextPreview(panelBody, conversationKey);
+          }
           const panelBody = panelRoot.parentElement || panelRoot;
-          if (!refreshedPanelItemIds.has(panelItemId)) {
-            applySelectedTextPreview(panelBody, panelItemId);
-          }
-          const added = appendByKey.get(panelItemId) === true;
           const status = panelBody.querySelector(
             "#llm-status",
           ) as HTMLElement | null;

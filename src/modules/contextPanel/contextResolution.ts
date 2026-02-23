@@ -4,8 +4,11 @@ import {
   isLikelyCorruptedSelectedText,
   setStatus,
 } from "./textUtils";
-import { normalizeSelectedTextSource } from "./normalizers";
-import { MAX_SELECTED_TEXT_CONTEXTS } from "./constants";
+import { normalizePaperContextRefs, normalizeSelectedTextSource } from "./normalizers";
+import {
+  GLOBAL_CONVERSATION_KEY_BASE,
+  MAX_SELECTED_TEXT_CONTEXTS,
+} from "./constants";
 import {
   selectedTextCache,
   selectedTextPreviewExpandedCache,
@@ -16,8 +19,10 @@ import type {
   ResolvedContextSource,
   SelectedTextContext,
   SelectedTextSource,
+  PaperContextRef,
 } from "./types";
 import { isGlobalPortalItem } from "./portalScope";
+import { formatOpenChatTextContextLabel } from "./paperAttribution";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
@@ -386,14 +391,21 @@ function normalizeSelectedTextContexts(value: unknown): SelectedTextContext[] {
         continue;
       }
       if (!entry || typeof entry !== "object") continue;
-      const typed = entry as { text?: unknown; source?: unknown };
+      const typed = entry as {
+        text?: unknown;
+        source?: unknown;
+        paperContext?: unknown;
+      };
       const normalizedText = normalizeSelectedText(
         typeof typed.text === "string" ? typed.text : "",
       );
       if (!normalizedText) continue;
+      const normalizedPaperContext =
+        normalizePaperContextRefs([typed.paperContext])[0];
       out.push({
         text: normalizedText,
         source: normalizeSelectedTextSource(typed.source),
+        paperContext: normalizedPaperContext,
       });
     }
     return out;
@@ -441,16 +453,33 @@ export function appendSelectedTextContextForItem(
   itemId: number,
   text: string,
   source: SelectedTextSource = "pdf",
+  paperContext?: PaperContextRef | null,
 ): boolean {
   const normalizedText = normalizeSelectedText(text || "");
   if (!normalizedText) return false;
   const existingContexts = getSelectedTextContextEntries(itemId);
+  const normalizedPaperContext = normalizePaperContextRefs([paperContext])[0];
+  const dedupeKey = (entry: SelectedTextContext): string => {
+    const paperKey = entry.paperContext
+      ? `${entry.paperContext.itemId}:${entry.paperContext.contextItemId}`
+      : "-";
+    return `${entry.text}\u241f${paperKey}`;
+  };
+  const incomingKey = dedupeKey({
+    text: normalizedText,
+    source: normalizeSelectedTextSource(source),
+    paperContext: normalizedPaperContext,
+  });
+  if (existingContexts.some((entry) => dedupeKey(entry) === incomingKey)) {
+    return false;
+  }
   if (existingContexts.length >= MAX_SELECTED_TEXT_CONTEXTS) return false;
   setSelectedTextContextEntries(itemId, [
     ...existingContexts,
     {
       text: normalizedText,
       source: normalizeSelectedTextSource(source),
+      paperContext: normalizedPaperContext,
     },
   ]);
   selectedTextPreviewExpandedCache.delete(itemId);
@@ -492,6 +521,7 @@ type AddSelectedTextContextOptions = {
   successStatusText?: string;
   focusInput?: boolean;
   source?: SelectedTextSource;
+  paperContext?: PaperContextRef | null;
 };
 
 export function addSelectedTextContext(
@@ -513,6 +543,7 @@ export function addSelectedTextContext(
     itemId,
     normalizedText,
     options.source || "pdf",
+    options.paperContext,
   );
   if (!appended) {
     if (status) setStatus(status, "Text Context up to 5", "error");
@@ -558,6 +589,7 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     itemId,
     selectedContexts.length,
   );
+  const isGlobalConversation = itemId >= GLOBAL_CONVERSATION_KEY_BASE;
   previewList.style.display = "contents";
   previewList.innerHTML = "";
 
@@ -566,9 +598,11 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     const selectedSource = selectedContext.source;
     const isExpanded = expandedIndex === index;
     const contextLabel =
-      selectedContexts.length > 1 && index > 0
-        ? `Text Context (${index + 1})`
-        : "Text Context";
+      isGlobalConversation && selectedSource === "pdf"
+        ? formatOpenChatTextContextLabel(selectedContext.paperContext)
+        : selectedContexts.length > 1 && index > 0
+          ? `Text Context (${index + 1})`
+          : "Text Context";
 
     const previewBox = ownerDoc.createElement("div");
     previewBox.className = "llm-selected-context";
@@ -651,14 +685,23 @@ export function includeSelectedTextFromReader(
   body: Element,
   item: Zotero.Item,
   prefetchedText?: string,
+  options?: {
+    paperContext?: PaperContextRef | null;
+    targetItemId?: number | null;
+  },
 ): boolean {
   const selectedText =
     normalizeSelectedText(prefetchedText || "") ||
     getActiveReaderSelectionText(body.ownerDocument as Document, item);
-  return addSelectedTextContext(body, item.id, selectedText, {
+  const targetItemId =
+    typeof options?.targetItemId === "number" && options.targetItemId > 0
+      ? Math.floor(options.targetItemId)
+      : item.id;
+  return addSelectedTextContext(body, targetItemId, selectedText, {
     noSelectionStatusText: "No text selected in reader",
     successStatusText: "Selected text included",
     focusInput: true,
     source: "pdf",
+    paperContext: options?.paperContext,
   });
 }

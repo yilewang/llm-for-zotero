@@ -46,6 +46,7 @@ import {
   loadedConversationKeys,
   currentRequestId,
   activeGlobalConversationByLibrary,
+  activeConversationModeByLibrary,
 } from "./state";
 import {
   sanitizeText,
@@ -58,6 +59,7 @@ import {
   getAttachmentTypeLabel,
   normalizeSelectedTextSource,
 } from "./textUtils";
+import { normalizeSelectedTextPaperContexts } from "./normalizers";
 import {
   positionMenuBelowButton,
   positionMenuAtPointer,
@@ -93,6 +95,7 @@ import {
 } from "./chat";
 import {
   getActiveReaderSelectionText,
+  getActiveContextAttachmentFromTabs,
   addSelectedTextContext,
   applySelectedTextPreview,
   getSelectedTextContextEntries,
@@ -104,6 +107,7 @@ import {
   setSelectedTextContexts,
   setSelectedTextExpandedIndex,
 } from "./contextResolution";
+import { resolvePaperContextRefFromAttachment } from "./paperAttribution";
 import { captureScreenshotSelection, optimizeImageDataUrl } from "./screenshot";
 import {
   createNoteFromAssistantText,
@@ -192,8 +196,30 @@ export function setupHandlers(
   initialItem?: Zotero.Item | null,
 ) {
   let item = initialItem || null;
-  const basePaperItem =
+  const initialPaperItem =
     item && !isGlobalPortalItem(item) ? (item as Zotero.Item) : null;
+  const resolveLibraryIdFromItem = (
+    targetItem: Zotero.Item | null | undefined,
+  ): number => {
+    const parsed = Number(targetItem?.libraryID);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+    return resolveActiveLibraryID() || 0;
+  };
+  if (initialPaperItem) {
+    const libraryID = resolveLibraryIdFromItem(initialPaperItem);
+    const modeLock = activeConversationModeByLibrary.get(libraryID);
+    const rememberedGlobalKey = Number(
+      activeGlobalConversationByLibrary.get(libraryID) || 0,
+    );
+    if (
+      modeLock === "global" &&
+      Number.isFinite(rememberedGlobalKey) &&
+      rememberedGlobalKey > 0
+    ) {
+      item = createGlobalPortalItem(libraryID, Math.floor(rememberedGlobalKey));
+    }
+  }
+  const basePaperItem = initialPaperItem;
 
   const {
     inputBox,
@@ -215,6 +241,7 @@ export function setupHandlers(
     historyBar,
     historyNewBtn,
     historyToggleBtn,
+    historyModeIndicator,
     historyMenu,
     historyUndo,
     historyUndoText,
@@ -290,13 +317,29 @@ export function setupHandlers(
 
   // Compute conversation key early so all closures can reference it.
   let conversationKey = item ? getConversationKey(item) : null;
+  const getTextContextConversationKey = (): number | null =>
+    item ? getConversationKey(item) : null;
   const syncConversationIdentity = () => {
     conversationKey = item ? getConversationKey(item) : null;
-    panelRoot.dataset.itemId = item ? `${item.id}` : "";
+    panelRoot.dataset.itemId =
+      Number.isFinite(conversationKey) && (conversationKey as number) > 0
+        ? `${conversationKey}`
+        : "";
     const libraryID = getCurrentLibraryID();
     panelRoot.dataset.libraryId = libraryID > 0 ? `${libraryID}` : "";
-    if (isGlobalMode() && item && libraryID > 0) {
-      activeGlobalConversationByLibrary.set(libraryID, item.id);
+    if (item && libraryID > 0) {
+      const mode = isGlobalMode() ? "global" : "paper";
+      activeConversationModeByLibrary.set(libraryID, mode);
+      if (mode === "global") {
+        activeGlobalConversationByLibrary.set(libraryID, item.id);
+      }
+    }
+    if (historyModeIndicator) {
+      historyModeIndicator.textContent = item
+        ? isGlobalMode()
+          ? "Open chat"
+          : "Paper chat"
+        : "";
     }
   };
   syncConversationIdentity();
@@ -617,7 +660,11 @@ export function setupHandlers(
       return;
     }
     let added = false;
-    const activeItemId = item.id;
+    const activeItemId = getTextContextConversationKey();
+    if (!activeItemId) {
+      hideSelectionPopup();
+      return;
+    }
     runWithChatScrollGuard(() => {
       added = addSelectedTextContext(body, activeItemId, selected, {
         successStatusText: "Selected response text included",
@@ -852,20 +899,28 @@ export function setupHandlers(
               sanitizeText(pair.userMessage.selectedText).trim()
             ? [sanitizeText(pair.userMessage.selectedText).trim()]
             : [];
+        const selectedTextPaperContexts = normalizeSelectedTextPaperContexts(
+          pair.userMessage.selectedTextPaperContexts,
+          restoredSelectedTexts.length,
+          { sanitizeText },
+        );
         const restoredSelectedEntries = restoredSelectedTexts.map(
           (text, index) => ({
             text,
             source: normalizeSelectedTextSource(
               pair.userMessage.selectedTextSources?.[index],
             ),
+            paperContext: selectedTextPaperContexts[index],
           }),
         );
+        const textContextKey = getTextContextConversationKey();
+        if (!textContextKey) return;
         if (restoredSelectedEntries.length) {
-          setSelectedTextContextEntries(item.id, restoredSelectedEntries);
+          setSelectedTextContextEntries(textContextKey, restoredSelectedEntries);
         } else {
-          clearSelectedTextState(item.id);
+          clearSelectedTextState(textContextKey);
         }
-        setSelectedTextExpandedIndex(item.id, null);
+        setSelectedTextExpandedIndex(textContextKey, null);
 
         const restoredPaperContexts = normalizePaperContextEntries(
           pair.userMessage.paperContexts,
@@ -1097,57 +1152,7 @@ export function setupHandlers(
   const resolveAutoLoadedPaperContext = (): PaperContextRef | null => {
     if (!item || isGlobalMode()) return null;
     const contextSource = resolveContextSourceItem(item);
-    const contextItem = contextSource.contextItem;
-    if (!contextItem) return null;
-
-    const parentItem =
-      contextItem.isAttachment() && contextItem.parentID
-        ? Zotero.Items.get(contextItem.parentID) || null
-        : contextItem;
-    const paperItem = parentItem || contextItem;
-    const paperItemId = Number(paperItem.id);
-    const contextItemId = Number(contextItem.id);
-    if (!Number.isFinite(paperItemId) || !Number.isFinite(contextItemId)) {
-      return null;
-    }
-    const normalizedPaperItemId = Math.floor(paperItemId);
-    const normalizedContextItemId = Math.floor(contextItemId);
-    if (normalizedPaperItemId <= 0 || normalizedContextItemId <= 0) {
-      return null;
-    }
-
-    const title = sanitizeText(
-      String(
-        paperItem.getField("title") ||
-          contextItem.getField("title") ||
-          `Paper ${normalizedPaperItemId}`,
-      ),
-    ).trim();
-    const citationKey = sanitizeText(
-      String(paperItem.getField("citationKey") || ""),
-    ).trim();
-    const firstCreator = sanitizeText(
-      String(
-        paperItem.getField("firstCreator") || (paperItem as Zotero.Item).firstCreator || "",
-      ),
-    ).trim();
-    const year = sanitizeText(
-      String(
-        paperItem.getField("year") ||
-          paperItem.getField("date") ||
-          paperItem.getField("issued") ||
-          "",
-      ),
-    ).trim();
-
-    return {
-      itemId: normalizedPaperItemId,
-      contextItemId: normalizedContextItemId,
-      title: title || `Paper ${normalizedPaperItemId}`,
-      citationKey: citationKey || undefined,
-      firstCreator: firstCreator || undefined,
-      year: year || undefined,
-    };
+    return resolvePaperContextRefFromAttachment(contextSource.contextItem);
   };
 
   const appendPaperChip = (
@@ -1511,7 +1516,9 @@ export function setupHandlers(
 
   const updateSelectedTextPreview = () => {
     if (!item) return;
-    applySelectedTextPreview(body, item.id);
+    const textContextKey = getTextContextConversationKey();
+    if (!textContextKey) return;
+    applySelectedTextPreview(body, textContextKey);
   };
   const updatePaperPreviewPreservingScroll = () => {
     runWithChatScrollGuard(() => {
@@ -1811,10 +1818,7 @@ export function setupHandlers(
     updateSelectedTextPreviewPreservingScroll();
   };
 
-  const switchGlobalConversation = async (
-    nextConversationKey: number,
-    clearCompose = true,
-  ) => {
+  const switchGlobalConversation = async (nextConversationKey: number) => {
     if (!item) return;
     const libraryID = getCurrentLibraryID();
     if (!libraryID) return;
@@ -1823,13 +1827,8 @@ export function setupHandlers(
       : 0;
     if (normalizedConversationKey <= 0) return;
     const nextItem = createGlobalPortalItem(libraryID, normalizedConversationKey);
-    const previousItemId = item.id;
-    if (clearCompose) {
-      clearTransientComposeStateForItem(previousItemId);
-    }
     item = nextItem;
     syncConversationIdentity();
-    clearTransientComposeStateForItem(item.id);
     activeEditSession = null;
     closePaperPicker();
     closePromptMenu();
@@ -1845,15 +1844,10 @@ export function setupHandlers(
     void refreshGlobalHistoryHeader();
   };
 
-  const switchPaperConversation = async (clearCompose = true) => {
+  const switchPaperConversation = async () => {
     if (!basePaperItem || !item) return;
-    const previousItemId = item.id;
-    if (clearCompose) {
-      clearTransientComposeStateForItem(previousItemId);
-    }
     item = basePaperItem;
     syncConversationIdentity();
-    clearTransientComposeStateForItem(item.id);
     activeEditSession = null;
     closePaperPicker();
     closePromptMenu();
@@ -1874,10 +1868,10 @@ export function setupHandlers(
   ): Promise<void> => {
     if (!target) return;
     if (target.kind === "paper") {
-      await switchPaperConversation(true);
+      await switchPaperConversation();
       return;
     }
-    await switchGlobalConversation(target.conversationKey, true);
+    await switchGlobalConversation(target.conversationKey);
   };
 
   const resolveFallbackAfterGlobalDelete = async (
@@ -2066,7 +2060,7 @@ export function setupHandlers(
       title: pending.title,
     });
     if (pending.wasActive) {
-      await switchGlobalConversation(pending.conversationKey, true);
+      await switchGlobalConversation(pending.conversationKey);
       if (status) setStatus(status, "Conversation restored", "ready");
       return;
     }
@@ -2227,7 +2221,7 @@ export function setupHandlers(
       reason: reuseReason || "new",
     });
     activeGlobalConversationByLibrary.set(libraryID, targetConversationKey);
-    await switchGlobalConversation(targetConversationKey, true);
+    await switchGlobalConversation(targetConversationKey);
     if (status) {
       setStatus(
         status,
@@ -2352,9 +2346,9 @@ export function setupHandlers(
       const historyKind = row.dataset.historyKind === "paper" ? "paper" : "global";
       void (async () => {
         if (historyKind === "paper") {
-          await switchPaperConversation(true);
+          await switchPaperConversation();
         } else {
-          await switchGlobalConversation(parsedConversationKey, true);
+          await switchGlobalConversation(parsedConversationKey);
         }
         if (status) setStatus(status, "Conversation loaded", "ready");
       })();
@@ -4162,7 +4156,29 @@ export function setupHandlers(
       if (!item) return;
       const selectedText = pendingSelectedText;
       pendingSelectedText = "";
-      includeSelectedTextFromReader(body, item, selectedText);
+      const activeReaderAttachment = getActiveContextAttachmentFromTabs();
+      const resolvedPaperContext =
+        resolvePaperContextRefFromAttachment(activeReaderAttachment);
+      const textContextKey = getTextContextConversationKey();
+      if (!textContextKey) return;
+      if (!isGlobalMode()) {
+        const paperMismatch =
+          !resolvedPaperContext || resolvedPaperContext.itemId !== textContextKey;
+        if (paperMismatch) {
+          if (status) {
+            setStatus(
+              status,
+              "Paper mode only accepts text from this paper",
+              "error",
+            );
+          }
+          return;
+        }
+      }
+      includeSelectedTextFromReader(body, item, selectedText, {
+        targetItemId: textContextKey,
+        paperContext: isGlobalMode() ? resolvedPaperContext : null,
+      });
     });
   }
 
@@ -4770,7 +4786,10 @@ export function setupHandlers(
       selectedImagePreviewExpandedCache.set(item.id, nextExpanded);
       if (nextExpanded) {
         selectedImagePreviewActiveIndexCache.set(item.id, 0);
-        setSelectedTextExpandedIndex(item.id, null);
+        const textContextKey = getTextContextConversationKey();
+        if (textContextKey) {
+          setSelectedTextExpandedIndex(textContextKey, null);
+        }
         selectedPaperPreviewExpandedCache.set(item.id, false);
         selectedFilePreviewExpandedCache.set(item.id, false);
       }
@@ -4803,7 +4822,10 @@ export function setupHandlers(
       const nextExpanded = !expanded;
       selectedFilePreviewExpandedCache.set(item.id, nextExpanded);
       if (nextExpanded) {
-        setSelectedTextExpandedIndex(item.id, null);
+        const textContextKey = getTextContextConversationKey();
+        if (textContextKey) {
+          setSelectedTextExpandedIndex(textContextKey, null);
+        }
         selectedImagePreviewExpandedCache.set(item.id, false);
         selectedPaperPreviewExpandedCache.set(item.id, false);
       }
@@ -4888,8 +4910,10 @@ export function setupHandlers(
       if (clearBtn) {
         e.preventDefault();
         e.stopPropagation();
+        const textContextKey = getTextContextConversationKey();
+        if (!textContextKey) return;
         const index = Number.parseInt(clearBtn.dataset.contextIndex || "", 10);
-        const selectedContexts = getSelectedTextContextEntries(item.id);
+        const selectedContexts = getSelectedTextContextEntries(textContextKey);
         if (
           !Number.isFinite(index) ||
           index < 0 ||
@@ -4898,8 +4922,8 @@ export function setupHandlers(
           return;
         }
         const nextContexts = selectedContexts.filter((_, i) => i !== index);
-        setSelectedTextContextEntries(item.id, nextContexts);
-        setSelectedTextExpandedIndex(item.id, null);
+        setSelectedTextContextEntries(textContextKey, nextContexts);
+        setSelectedTextExpandedIndex(textContextKey, null);
         updateSelectedTextPreviewPreservingScroll();
         if (status) setStatus(status, "Selected text removed", "ready");
         return;
@@ -4911,8 +4935,10 @@ export function setupHandlers(
       if (!metaBtn) return;
       e.preventDefault();
       e.stopPropagation();
+      const textContextKey = getTextContextConversationKey();
+      if (!textContextKey) return;
       const index = Number.parseInt(metaBtn.dataset.contextIndex || "", 10);
-      const selectedContexts = getSelectedTextContextEntries(item.id);
+      const selectedContexts = getSelectedTextContextEntries(textContextKey);
       if (
         !Number.isFinite(index) ||
         index < 0 ||
@@ -4920,11 +4946,11 @@ export function setupHandlers(
       )
         return;
       const expandedIndex = getSelectedTextExpandedIndex(
-        item.id,
+        textContextKey,
         selectedContexts.length,
       );
       const nextExpandedIndex = expandedIndex === index ? null : index;
-      setSelectedTextExpandedIndex(item.id, nextExpandedIndex);
+      setSelectedTextExpandedIndex(textContextKey, nextExpandedIndex);
       if (nextExpandedIndex !== null) {
         selectedImagePreviewExpandedCache.set(item.id, false);
         selectedPaperPreviewExpandedCache.set(item.id, false);
@@ -4971,10 +4997,12 @@ export function setupHandlers(
     )
       return;
 
+    const textContextKey = getTextContextConversationKey();
+    if (!textContextKey) return;
     const textPinned =
       getSelectedTextExpandedIndex(
-        item.id,
-        getSelectedTextContexts(item.id).length,
+        textContextKey,
+        getSelectedTextContexts(textContextKey).length,
       ) >= 0;
     const figurePinned =
       selectedImagePreviewExpandedCache.get(item.id) === true;
@@ -4982,7 +5010,7 @@ export function setupHandlers(
     const filePinned = selectedFilePreviewExpandedCache.get(item.id) === true;
     if (!textPinned && !figurePinned && !paperPinned && !filePinned) return;
 
-    setSelectedTextExpandedIndex(item.id, null);
+    setSelectedTextExpandedIndex(textContextKey, null);
     selectedImagePreviewExpandedCache.set(item.id, false);
     selectedPaperPreviewExpandedCache.set(item.id, false);
     selectedFilePreviewExpandedCache.set(item.id, false);
@@ -5083,7 +5111,7 @@ export function setupHandlers(
           }
           if (!nextConversationKey) {
             if (basePaperItem) {
-              await switchPaperConversation(true);
+              await switchPaperConversation();
               void refreshGlobalHistoryHeader();
               scheduleAttachmentGc();
               if (status) setStatus(status, "Cleared", "ready");
@@ -5096,7 +5124,7 @@ export function setupHandlers(
               libraryID,
               nextConversationKey,
             );
-            await switchGlobalConversation(nextConversationKey, true);
+            await switchGlobalConversation(nextConversationKey);
           } else {
             refreshChatPreservingScroll();
           }

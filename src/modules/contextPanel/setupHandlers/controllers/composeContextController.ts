@@ -1,49 +1,17 @@
 import { normalizePaperContextRefs } from "../../normalizers";
 import { sanitizeText } from "../../textUtils";
+import { resolvePaperContextDisplayMetadata as resolvePaperContextDisplayMetadataShared } from "../../paperAttribution";
 import type { PaperContextRef } from "../../types";
 
 export function normalizePaperContextEntries(value: unknown): PaperContextRef[] {
   return normalizePaperContextRefs(value, { sanitizeText });
 }
 
-function extractYearValue(value: unknown): string | undefined {
-  const text = sanitizeText(String(value || "")).trim();
-  if (!text) return undefined;
-  const match = text.match(/\b(19|20)\d{2}\b/);
-  return match?.[0];
-}
-
 export function resolvePaperContextDisplayMetadata(paperContext: PaperContextRef): {
   firstCreator?: string;
   year?: string;
 } {
-  let firstCreator = sanitizeText(paperContext.firstCreator || "").trim();
-  let year = extractYearValue(paperContext.year);
-  if (!firstCreator || !year) {
-    const zoteroItem = Zotero.Items.get(paperContext.itemId);
-    if (zoteroItem?.isRegularItem?.()) {
-      if (!firstCreator) {
-        firstCreator = sanitizeText(
-          String(zoteroItem.getField("firstCreator") || ""),
-        ).trim();
-        if (!firstCreator) {
-          firstCreator = sanitizeText(
-            String((zoteroItem as Zotero.Item).firstCreator || ""),
-          ).trim();
-        }
-      }
-      if (!year) {
-        year =
-          extractYearValue(zoteroItem.getField("year")) ||
-          extractYearValue(zoteroItem.getField("date")) ||
-          extractYearValue(zoteroItem.getField("issued"));
-      }
-    }
-  }
-  return {
-    firstCreator: firstCreator || undefined,
-    year: year || undefined,
-  };
+  return resolvePaperContextDisplayMetadataShared(paperContext);
 }
 
 function extractFirstAuthorLastName(paperContext: PaperContextRef): string {

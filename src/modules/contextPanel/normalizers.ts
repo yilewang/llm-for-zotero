@@ -74,3 +74,43 @@ export function normalizePaperContextRefs(
   }
   return out;
 }
+
+export function normalizeSelectedTextPaperContexts(
+  value: unknown,
+  count: number,
+  options?: {
+    sanitizeText?: TextSanitizer;
+  },
+): (PaperContextRef | undefined)[] {
+  if (count <= 0) return [];
+  const raw = Array.isArray(value) ? value : [];
+  const sanitize = options?.sanitizeText;
+  const out: (PaperContextRef | undefined)[] = [];
+  for (let index = 0; index < count; index++) {
+    const entry = raw[index];
+    if (!entry || typeof entry !== "object") {
+      out.push(undefined);
+      continue;
+    }
+    const typed = entry as Record<string, unknown>;
+    const itemId = normalizePositiveInt(typed.itemId);
+    const contextItemId = normalizePositiveInt(typed.contextItemId);
+    const title = normalizeText(typed.title, sanitize);
+    if (!itemId || !contextItemId || !title) {
+      out.push(undefined);
+      continue;
+    }
+    const citationKey = normalizeText(typed.citationKey, sanitize);
+    const firstCreator = normalizeText(typed.firstCreator, sanitize);
+    const year = normalizeText(typed.year, sanitize);
+    out.push({
+      itemId,
+      contextItemId,
+      title,
+      citationKey: citationKey || undefined,
+      firstCreator: firstCreator || undefined,
+      year: year || undefined,
+    });
+  }
+  return out;
+}

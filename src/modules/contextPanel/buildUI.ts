@@ -34,6 +34,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const doc = body.ownerDocument!;
   const hasItem = Boolean(item);
   const isGlobalMode = Boolean(item && isGlobalPortalItem(item));
+  const conversationItemId =
+    hasItem && item
+      ? item.isAttachment() && item.parentID
+        ? item.parentID
+        : item.id
+      : 0;
 
   // Disable CSS scroll anchoring on the Zotero-provided panel body so that
   // Gecko doesn't fight with our programmatic scroll management.
@@ -51,7 +57,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
 
   // Main container
   const container = createElement(doc, "div", "llm-panel", { id: "llm-main" });
-  container.dataset.itemId = hasItem && item ? `${item.id}` : "";
+  container.dataset.itemId = conversationItemId > 0 ? `${conversationItemId}` : "";
   container.dataset.libraryId = hasItem && item ? `${item.libraryID}` : "";
 
   // Header section
@@ -91,7 +97,17 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
   historyToggleBtn.setAttribute("aria-haspopup", "menu");
   historyToggleBtn.setAttribute("aria-expanded", "false");
-  historyBar.append(historyNewBtn, historyToggleBtn);
+  const historyModeIndicator = createElement(
+    doc,
+    "span",
+    "llm-history-mode-indicator",
+    {
+      id: "llm-history-mode-indicator",
+      textContent: hasItem ? (isGlobalMode ? "Open chat" : "Paper chat") : "",
+    },
+  );
+  historyModeIndicator.setAttribute("aria-live", "polite");
+  historyBar.append(historyNewBtn, historyToggleBtn, historyModeIndicator);
 
   headerInfo.append(title, historyBar);
   headerTop.appendChild(headerInfo);

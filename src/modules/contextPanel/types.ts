@@ -4,6 +4,7 @@ export type SelectedTextSource = "pdf" | "model";
 export type SelectedTextContext = {
   text: string;
   source: SelectedTextSource;
+  paperContext?: PaperContextRef;
 };
 
 export interface Message {
@@ -14,6 +15,7 @@ export interface Message {
   selectedTextExpanded?: boolean;
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
+  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   selectedTextExpandedIndex?: number;
   screenshotImages?: string[];
   paperContexts?: PaperContextRef[];

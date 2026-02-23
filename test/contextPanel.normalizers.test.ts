@@ -3,6 +3,7 @@ import {
   normalizeAttachmentContentHash,
   normalizePaperContextRefs,
   normalizePositiveInt,
+  normalizeSelectedTextPaperContexts,
   normalizeSelectedTextSource,
   normalizeSelectedTextSources,
 } from "../src/modules/contextPanel/normalizers";
@@ -85,5 +86,35 @@ describe("contextPanel normalizers", function () {
     );
     assert.lengthOf(rows, 1);
     assert.equal(rows[0].title, "AB");
+  });
+
+  it("normalizeSelectedTextPaperContexts should preserve index alignment", function () {
+    const rows = normalizeSelectedTextPaperContexts(
+      [
+        { itemId: 1, contextItemId: 2, title: " Paper A " },
+        { itemId: "bad", contextItemId: 3, title: "Broken" },
+        { itemId: 4, contextItemId: 5, title: "Paper C", year: "2020-11-12" },
+      ],
+      4,
+    );
+    assert.lengthOf(rows, 4);
+    assert.deepEqual(rows[0], {
+      itemId: 1,
+      contextItemId: 2,
+      title: "Paper A",
+      citationKey: undefined,
+      firstCreator: undefined,
+      year: undefined,
+    });
+    assert.isUndefined(rows[1]);
+    assert.deepEqual(rows[2], {
+      itemId: 4,
+      contextItemId: 5,
+      title: "Paper C",
+      citationKey: undefined,
+      firstCreator: undefined,
+      year: "2020-11-12",
+    });
+    assert.isUndefined(rows[3]);
   });
 });

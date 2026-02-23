@@ -54,6 +54,10 @@ type SendFlowControllerDeps = {
     selectedTexts: string[],
     selectedTextSources: SelectedTextSource[],
     promptText: string,
+    options?: {
+      selectedTextPaperContexts?: (PaperContextRef | undefined)[];
+      includePaperAttribution?: boolean;
+    },
   ) => string;
   buildModelPromptWithFileContext: (
     question: string,
@@ -82,6 +86,7 @@ type SendFlowControllerDeps = {
     displayQuestion: string,
     selectedTexts?: string[],
     selectedTextSources?: SelectedTextSource[],
+    selectedTextPaperContexts?: (PaperContextRef | undefined)[],
     screenshotImages?: string[],
     paperContexts?: PaperContextRef[],
     attachments?: ChatAttachment[],
@@ -105,6 +110,7 @@ type SendFlowControllerDeps = {
     displayQuestion?: string,
     selectedTexts?: string[],
     selectedTextSources?: SelectedTextSource[],
+    selectedTextPaperContexts?: (PaperContextRef | undefined)[],
     paperContexts?: PaperContextRef[],
     attachments?: ChatAttachment[],
   ) => Promise<void>;
@@ -132,10 +138,16 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     deps.closeSlashMenu();
     deps.closePaperPicker();
 
+    const textContextConversationKey = deps.getConversationKey(item);
     const text = deps.inputBox.value.trim();
-    const selectedContexts = deps.getSelectedTextContextEntries(item.id);
+    const selectedContexts = deps.getSelectedTextContextEntries(
+      textContextConversationKey,
+    );
     const selectedTexts = selectedContexts.map((entry) => entry.text);
     const selectedTextSources = selectedContexts.map((entry) => entry.source);
+    const selectedTextPaperContexts = selectedContexts.map(
+      (entry) => entry.paperContext,
+    );
     const primarySelectedText = selectedTexts[0] || "";
     const selectedPaperContexts = deps.getSelectedPaperContexts(item.id);
     const selectedFiles = deps.getSelectedFiles(item.id);
@@ -169,6 +181,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           selectedTexts,
           selectedTextSources,
           resolvedPromptText,
+          {
+            selectedTextPaperContexts,
+            includePaperAttribution: deps.isGlobalMode(),
+          },
         )
       : resolvedPromptText;
 
@@ -232,6 +248,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         displayQuestion,
         selectedTexts.length ? selectedTexts : undefined,
         selectedTexts.length ? selectedTextSources : undefined,
+        selectedTexts.length ? selectedTextPaperContexts : undefined,
         images,
         selectedPaperContexts.length ? selectedPaperContexts : undefined,
         selectedFiles.length ? selectedFiles : undefined,
@@ -269,7 +286,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       }
       deps.updateImagePreviewPreservingScroll();
       if (primarySelectedText) {
-        deps.clearSelectedTextState(item.id);
+        deps.clearSelectedTextState(textContextConversationKey);
         deps.updateSelectedTextPreviewPreservingScroll();
       }
       deps.setActiveEditSession(null);
@@ -290,7 +307,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     }
     deps.updateImagePreviewPreservingScroll();
     if (primarySelectedText) {
-      deps.clearSelectedTextState(item.id);
+      deps.clearSelectedTextState(textContextConversationKey);
       deps.updateSelectedTextPreviewPreservingScroll();
     }
 
@@ -307,6 +324,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       displayQuestion,
       selectedTexts.length ? selectedTexts : undefined,
       selectedTexts.length ? selectedTextSources : undefined,
+      selectedTexts.length ? selectedTextPaperContexts : undefined,
       selectedPaperContexts.length ? selectedPaperContexts : undefined,
       selectedFiles.length ? selectedFiles : undefined,
     );

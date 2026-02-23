@@ -1,6 +1,10 @@
 import { SELECTED_TEXT_MAX_LENGTH } from "./constants";
-import { normalizeSelectedTextSource } from "./normalizers";
-import type { SelectedTextSource } from "./types";
+import {
+  normalizeSelectedTextPaperContexts,
+  normalizeSelectedTextSource,
+} from "./normalizers";
+import type { PaperContextRef, SelectedTextSource } from "./types";
+import { formatPaperCitationLabel } from "./paperAttribution";
 export { normalizeSelectedTextSource } from "./normalizers";
 
 export const DEFAULT_SELECTED_TEXT_PROMPT =
@@ -126,6 +130,10 @@ export function buildQuestionWithSelectedTextContexts(
   selectedTexts: string[],
   selectedTextSources: SelectedTextSource[] | undefined,
   userPrompt: string,
+  options?: {
+    selectedTextPaperContexts?: (PaperContextRef | undefined)[];
+    includePaperAttribution?: boolean;
+  },
 ): string {
   const normalizedPrompt = userPrompt.trim() || DEFAULT_SELECTED_TEXT_PROMPT;
   const normalizedTexts = selectedTexts
@@ -137,14 +145,31 @@ export function buildQuestionWithSelectedTextContexts(
   const normalizedSources = normalizedTexts.map((_, index) =>
     normalizeSelectedTextSource(selectedTextSources?.[index]),
   );
-  if (normalizedTexts.length === 1 && normalizedSources[0] === "pdf") {
+  const selectedTextPaperContexts = normalizeSelectedTextPaperContexts(
+    options?.selectedTextPaperContexts,
+    normalizedTexts.length,
+    { sanitizeText },
+  );
+  const includePaperAttribution =
+    options?.includePaperAttribution === true &&
+    selectedTextPaperContexts.some((entry) => Boolean(entry));
+  if (
+    normalizedTexts.length === 1 &&
+    normalizedSources[0] === "pdf" &&
+    !includePaperAttribution
+  ) {
     return buildQuestionWithSelectedText(normalizedTexts[0], normalizedPrompt);
   }
   const contextBlocks = normalizedTexts.map((text, index) => {
     const source = normalizedSources[index];
     const sourceLabel =
       source === "model" ? "model_response 🧠" : "pdf_reader 📋";
-    return `Text Context ${index + 1} [source=${sourceLabel}]:\n"""\n${text}\n"""`;
+    const paperLabel =
+      includePaperAttribution && source === "pdf"
+        ? formatPaperCitationLabel(selectedTextPaperContexts[index])
+        : "";
+    const paperPart = paperLabel ? ` [paper=${paperLabel}]` : "";
+    return `Text Context ${index + 1} [source=${sourceLabel}]${paperPart}:\n"""\n${text}\n"""`;
   });
   return `Selected text contexts with explicit sources:\n${contextBlocks.join(
     "\n\n",

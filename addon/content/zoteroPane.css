@@ -141,6 +141,23 @@
   text-overflow: ellipsis;
 }
 
+.llm-history-mode-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke-secondary);
+  background: var(--fill-quinary);
+  color: var(--fill-primary);
+  font: inherit;
+  font-size: var(--llm-fs-12);
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .llm-history-toggle::after {
   content: "▾";
   position: absolute;

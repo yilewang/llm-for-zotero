@@ -22,6 +22,7 @@ import {
   MAX_HISTORY_MESSAGES,
   AUTO_SCROLL_BOTTOM_THRESHOLD,
   MAX_SELECTED_IMAGES,
+  GLOBAL_CONVERSATION_KEY_BASE,
   formatFigureCountLabel,
   formatPaperCountLabel,
   ACTIVE_PAPER_MULTI_CONTEXT_MAX_CHUNKS,
@@ -63,6 +64,7 @@ import {
   resolvePromptText,
 } from "./textUtils";
 import {
+  normalizeSelectedTextPaperContexts as normalizeSelectedTextPaperContextEntries,
   normalizeSelectedTextSources,
   normalizePaperContextRefs,
   normalizeAttachmentContentHash,
@@ -78,6 +80,7 @@ import {
 } from "./prefHelpers";
 import { buildContext, ensurePDFTextCached } from "./pdfContext";
 import { buildSupplementalPaperContext } from "./paperContext";
+import { formatPaperCitationLabel } from "./paperAttribution";
 import {
   getActiveContextAttachmentFromTabs,
   resolveContextSourceItem,
@@ -201,6 +204,15 @@ function normalizeSelectedTexts(
   }
   const legacy = normalize(legacySelectedText);
   return legacy ? [legacy] : [];
+}
+
+function normalizeSelectedTextPaperContextsByIndex(
+  selectedTextPaperContexts: unknown,
+  count: number,
+): (PaperContextRef | undefined)[] {
+  return normalizeSelectedTextPaperContextEntries(selectedTextPaperContexts, count, {
+    sanitizeText,
+  });
 }
 
 function normalizePaperContexts(paperContexts: unknown): PaperContextRef[] {
@@ -540,6 +552,10 @@ function toPanelMessage(message: StoredChatMessage): Message {
     message.selectedTextSources,
     selectedTexts.length,
   );
+  const selectedTextPaperContexts = normalizeSelectedTextPaperContextsByIndex(
+    message.selectedTextPaperContexts,
+    selectedTexts.length,
+  );
   const paperContexts = normalizePaperContexts(message.paperContexts);
   return {
     role: message.role,
@@ -550,6 +566,11 @@ function toPanelMessage(message: StoredChatMessage): Message {
     selectedTexts: selectedTexts.length ? selectedTexts : undefined,
     selectedTextSources: selectedTextSources.length
       ? selectedTextSources
+      : undefined,
+    selectedTextPaperContexts: selectedTextPaperContexts.some((entry) =>
+      Boolean(entry),
+    )
+      ? selectedTextPaperContexts
       : undefined,
     selectedTextExpandedIndex: -1,
     paperContexts: paperContexts.length ? paperContexts : undefined,
@@ -1005,6 +1026,10 @@ function reconstructRetryPayload(userMessage: Message): {
     userMessage.selectedTextSources,
     selectedTexts.length,
   );
+  const selectedTextPaperContexts = normalizeSelectedTextPaperContextsByIndex(
+    userMessage.selectedTextPaperContexts,
+    selectedTexts.length,
+  );
   const primarySelectedText = selectedTexts[0] || "";
   const fileAttachments = (
     Array.isArray(userMessage.attachments)
@@ -1029,6 +1054,12 @@ function reconstructRetryPayload(userMessage: Message): {
         selectedTexts,
         selectedTextSources,
         promptText,
+        {
+          selectedTextPaperContexts,
+          includePaperAttribution: selectedTextPaperContexts.some((entry) =>
+            Boolean(entry),
+          ),
+        },
       )
     : promptText;
   const question = buildModelPromptWithFileContext(
@@ -1183,6 +1214,7 @@ export async function editLatestUserMessageAndRetry(
   displayQuestion: string,
   selectedTexts?: string[],
   selectedTextSources?: SelectedTextSource[],
+  selectedTextPaperContexts?: (PaperContextRef | undefined)[],
   screenshotImages?: string[],
   paperContexts?: PaperContextRef[],
   attachments?: ChatAttachment[],
@@ -1213,6 +1245,11 @@ export async function editLatestUserMessageAndRetry(
     selectedTextSources,
     selectedTextsForMessage.length,
   );
+  const selectedTextPaperContextsForMessage =
+    normalizeSelectedTextPaperContextsByIndex(
+      selectedTextPaperContexts,
+      selectedTextsForMessage.length,
+    );
   const selectedTextForMessage = selectedTextsForMessage[0] || "";
   const screenshotImagesForMessage = Array.isArray(screenshotImages)
     ? screenshotImages
@@ -1236,6 +1273,10 @@ export async function editLatestUserMessageAndRetry(
   retryPair.userMessage.selectedTextSources =
     selectedTextSourcesForMessage.length
       ? selectedTextSourcesForMessage
+      : undefined;
+  retryPair.userMessage.selectedTextPaperContexts =
+    selectedTextPaperContextsForMessage.some((entry) => Boolean(entry))
+      ? selectedTextPaperContextsForMessage
       : undefined;
   retryPair.userMessage.selectedTextExpandedIndex = -1;
   retryPair.userMessage.screenshotImages = screenshotImagesForMessage.length
@@ -1261,6 +1302,7 @@ export async function editLatestUserMessageAndRetry(
       selectedText: retryPair.userMessage.selectedText,
       selectedTexts: retryPair.userMessage.selectedTexts,
       selectedTextSources: retryPair.userMessage.selectedTextSources,
+      selectedTextPaperContexts: retryPair.userMessage.selectedTextPaperContexts,
       screenshotImages: retryPair.userMessage.screenshotImages,
       paperContexts: retryPair.userMessage.paperContexts,
       attachments: retryPair.userMessage.attachments,
@@ -1488,6 +1530,7 @@ export async function sendQuestion(
   displayQuestion?: string,
   selectedTexts?: string[],
   selectedTextSources?: SelectedTextSource[],
+  selectedTextPaperContexts?: (PaperContextRef | undefined)[],
   paperContexts?: PaperContextRef[],
   attachments?: ChatAttachment[],
 ) {
@@ -1530,6 +1573,11 @@ export async function sendQuestion(
     selectedTextSources,
     selectedTextsForMessage.length,
   );
+  const selectedTextPaperContextsForMessage =
+    normalizeSelectedTextPaperContextsByIndex(
+      selectedTextPaperContexts,
+      selectedTextsForMessage.length,
+    );
   const selectedTextForMessage = selectedTextsForMessage[0] || "";
   const paperContextsForMessage = normalizePaperContexts(paperContexts);
   const screenshotImagesForMessage = Array.isArray(images)
@@ -1553,6 +1601,11 @@ export async function sendQuestion(
     selectedTextSources: selectedTextSourcesForMessage.length
       ? selectedTextSourcesForMessage
       : undefined,
+    selectedTextPaperContexts: selectedTextPaperContextsForMessage.some((entry) =>
+      Boolean(entry),
+    )
+      ? selectedTextPaperContextsForMessage
+      : undefined,
     selectedTextExpandedIndex: -1,
     paperContexts: paperContextsForMessage.length
       ? paperContextsForMessage
@@ -1573,6 +1626,7 @@ export async function sendQuestion(
     selectedText: userMessage.selectedText,
     selectedTexts: userMessage.selectedTexts,
     selectedTextSources: userMessage.selectedTextSources,
+    selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
     paperContexts: userMessage.paperContexts,
     screenshotImages: userMessage.screenshotImages,
     attachments: userMessage.attachments,
@@ -1728,6 +1782,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
   }
 
   const conversationKey = getConversationKey(item);
+  const isGlobalConversation = conversationKey >= GLOBAL_CONVERSATION_KEY_BASE;
   const mutateChatWithScrollGuard = (fn: () => void) => {
     withScrollGuard(chatBox, conversationKey, fn);
   };
@@ -1794,6 +1849,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       const selectedTexts = getMessageSelectedTexts(msg);
       const selectedTextSources = normalizeSelectedTextSources(
         msg.selectedTextSources,
+        selectedTexts.length,
+      );
+      const selectedTextPaperContexts = normalizeSelectedTextPaperContextsByIndex(
+        msg.selectedTextPaperContexts,
         selectedTexts.length,
       );
       const hasScreenshotContext = screenshotImages.length > 0;
@@ -2166,6 +2225,13 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
         selectedTexts.forEach((selectedText, contextIndex) => {
           const selectedSource = selectedTextSources[contextIndex] || "pdf";
+          const selectedTextPaperContext = selectedTextPaperContexts[contextIndex];
+          const selectedTextPaperLabel =
+            isGlobalConversation &&
+            selectedSource === "pdf" &&
+            selectedTextPaperContext
+              ? formatPaperCitationLabel(selectedTextPaperContext)
+              : "";
           const selectedBar = doc.createElement("button") as HTMLButtonElement;
           selectedBar.type = "button";
           selectedBar.className = "llm-user-selected-text";
@@ -2177,11 +2243,15 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
           const selectedContent = doc.createElement("span") as HTMLSpanElement;
           selectedContent.className = "llm-user-selected-text-content";
-          selectedContent.textContent = selectedText;
+          selectedContent.textContent = selectedTextPaperLabel
+            ? `${selectedTextPaperLabel} - ${selectedText}`
+            : selectedText;
 
           const selectedExpanded = doc.createElement("div") as HTMLDivElement;
           selectedExpanded.className = "llm-user-selected-text-expanded";
-          selectedExpanded.textContent = selectedText;
+          selectedExpanded.textContent = selectedTextPaperLabel
+            ? `${selectedTextPaperLabel}\n\n${selectedText}`
+            : selectedText;
 
           selectedBar.append(selectedIcon, selectedContent);
           const applySelectedTextState = () => {
