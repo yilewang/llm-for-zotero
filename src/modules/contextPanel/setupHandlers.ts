@@ -3,7 +3,6 @@ import {
   AUTO_SCROLL_BOTTOM_THRESHOLD,
   MAX_SELECTED_IMAGES,
   MAX_SELECTED_PAPER_CONTEXTS,
-  MAX_UPLOAD_PDF_SIZE_BYTES,
   formatFigureCountLabel,
   formatFileCountLabel,
   FONT_SCALE_MIN_PERCENT,
@@ -135,9 +134,7 @@ import {
 import type {
   ReasoningLevelSelection,
   ReasoningOption,
-  ReasoningProviderKind,
   AdvancedModelParams,
-  ChatAttachment,
   PaperContextRef,
 } from "./types";
 import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
@@ -152,6 +149,43 @@ import {
   isGlobalPortalItem,
   resolveActiveLibraryID,
 } from "./portalScope";
+import { getPanelDomRefs } from "./setupHandlers/domRefs";
+import {
+  MODEL_MENU_OPEN_CLASS,
+  REASONING_MENU_OPEN_CLASS,
+  RETRY_MODEL_MENU_OPEN_CLASS,
+  SLASH_MENU_OPEN_CLASS,
+  isFloatingMenuOpen,
+  positionFloatingMenu,
+  setFloatingMenuOpen,
+} from "./setupHandlers/controllers/menuController";
+import {
+  getReasoningLevelDisplayLabel,
+  getScreenshotDisabledHint,
+  isScreenshotUnsupportedModel,
+} from "./setupHandlers/controllers/modelReasoningController";
+import {
+  GLOBAL_HISTORY_UNDO_WINDOW_MS,
+  type ConversationHistoryEntry,
+  type HistorySwitchTarget,
+  type PendingHistoryDeletion,
+  formatGlobalHistoryTimestamp,
+  formatHistoryRowDisplayTitle,
+  normalizeConversationTitleSeed,
+  normalizeHistoryTitle,
+} from "./setupHandlers/controllers/conversationHistoryController";
+import {
+  formatPaperContextChipLabel,
+  formatPaperContextChipTitle,
+  normalizePaperContextEntries,
+  resolvePaperContextDisplayMetadata,
+} from "./setupHandlers/controllers/composeContextController";
+import {
+  createFileIntakeController,
+  extractFilesFromClipboard,
+  isFileDragEvent,
+} from "./setupHandlers/controllers/fileIntakeController";
+import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
 
 export function setupHandlers(
   body: Element,
@@ -161,180 +195,73 @@ export function setupHandlers(
   const basePaperItem =
     item && !isGlobalPortalItem(item) ? (item as Zotero.Item) : null;
 
-  // Use querySelector on body to find elements
-  const inputBox = body.querySelector(
-    "#llm-input",
-  ) as HTMLTextAreaElement | null;
-  const inputSection = body.querySelector(
-    ".llm-input-section",
-  ) as HTMLDivElement | null;
-  const sendBtn = body.querySelector("#llm-send") as HTMLButtonElement | null;
-  const cancelBtn = body.querySelector(
-    "#llm-cancel",
-  ) as HTMLButtonElement | null;
-  const modelBtn = body.querySelector(
-    "#llm-model-toggle",
-  ) as HTMLButtonElement | null;
-  const modelSlot = body.querySelector(
-    "#llm-model-dropdown",
-  ) as HTMLDivElement | null;
-  const modelMenu = body.querySelector(
-    "#llm-model-menu",
-  ) as HTMLDivElement | null;
-  const reasoningBtn = body.querySelector(
-    "#llm-reasoning-toggle",
-  ) as HTMLButtonElement | null;
-  const reasoningSlot = body.querySelector(
-    "#llm-reasoning-dropdown",
-  ) as HTMLDivElement | null;
-  const reasoningMenu = body.querySelector(
-    "#llm-reasoning-menu",
-  ) as HTMLDivElement | null;
-  const actionsRow = body.querySelector(
-    ".llm-actions",
-  ) as HTMLDivElement | null;
-  const actionsLeft = body.querySelector(
-    ".llm-actions-left",
-  ) as HTMLDivElement | null;
-  const actionsRight = body.querySelector(
-    ".llm-actions-right",
-  ) as HTMLDivElement | null;
-  const exportBtn = body.querySelector(
-    "#llm-export",
-  ) as HTMLButtonElement | null;
-  const clearBtn = body.querySelector("#llm-clear") as HTMLButtonElement | null;
-  const titleStatic = body.querySelector(
-    "#llm-title-static",
-  ) as HTMLDivElement | null;
-  const historyBar = body.querySelector(
-    "#llm-history-bar",
-  ) as HTMLDivElement | null;
-  const historyNewBtn = body.querySelector(
-    "#llm-history-new",
-  ) as HTMLButtonElement | null;
-  const historyToggleBtn = body.querySelector(
-    "#llm-history-toggle",
-  ) as HTMLButtonElement | null;
-  const historyMenu = body.querySelector(
-    "#llm-history-menu",
-  ) as HTMLDivElement | null;
-  const historyUndo = body.querySelector(
-    "#llm-history-undo",
-  ) as HTMLDivElement | null;
-  const historyUndoText = body.querySelector(
-    "#llm-history-undo-text",
-  ) as HTMLSpanElement | null;
-  const historyUndoBtn = body.querySelector(
-    "#llm-history-undo-btn",
-  ) as HTMLButtonElement | null;
-  const selectTextBtn = body.querySelector(
-    "#llm-select-text",
-  ) as HTMLButtonElement | null;
-  const screenshotBtn = body.querySelector(
-    "#llm-screenshot",
-  ) as HTMLButtonElement | null;
-  const uploadBtn = body.querySelector(
-    "#llm-upload-file",
-  ) as HTMLButtonElement | null;
-  const uploadInput = body.querySelector(
-    "#llm-upload-input",
-  ) as HTMLInputElement | null;
-  const slashMenu = body.querySelector(
-    "#llm-slash-menu",
-  ) as HTMLDivElement | null;
-  const slashUploadOption = body.querySelector(
-    "#llm-slash-upload-option",
-  ) as HTMLButtonElement | null;
-  const slashReferenceOption = body.querySelector(
-    "#llm-slash-reference-option",
-  ) as HTMLButtonElement | null;
-  const imagePreview = body.querySelector(
-    "#llm-image-preview",
-  ) as HTMLDivElement | null;
-  const selectedContextList = body.querySelector(
-    "#llm-selected-context-list",
-  ) as HTMLDivElement | null;
-  const previewStrip = body.querySelector(
-    "#llm-image-preview-strip",
-  ) as HTMLDivElement | null;
-  const previewExpanded = body.querySelector(
-    "#llm-image-preview-expanded",
-  ) as HTMLDivElement | null;
-  const previewSelected = body.querySelector(
-    "#llm-image-preview-selected",
-  ) as HTMLDivElement | null;
-  const previewSelectedImg = body.querySelector(
-    "#llm-image-preview-selected-img",
-  ) as HTMLImageElement | null;
-  const previewMeta = body.querySelector(
-    "#llm-image-preview-meta",
-  ) as HTMLButtonElement | null;
-  const removeImgBtn = body.querySelector(
-    "#llm-remove-img",
-  ) as HTMLButtonElement | null;
-  const filePreview = body.querySelector(
-    "#llm-file-context-preview",
-  ) as HTMLDivElement | null;
-  const filePreviewMeta = body.querySelector(
-    "#llm-file-context-meta",
-  ) as HTMLButtonElement | null;
-  const filePreviewExpanded = body.querySelector(
-    "#llm-file-context-expanded",
-  ) as HTMLDivElement | null;
-  const filePreviewList = body.querySelector(
-    "#llm-file-context-list",
-  ) as HTMLDivElement | null;
-  const filePreviewClear = body.querySelector(
-    "#llm-file-context-clear",
-  ) as HTMLButtonElement | null;
-  const paperPreview = body.querySelector(
-    "#llm-paper-context-preview",
-  ) as HTMLDivElement | null;
-  const paperPreviewList = body.querySelector(
-    "#llm-paper-context-list",
-  ) as HTMLDivElement | null;
-  const paperPicker = body.querySelector(
-    "#llm-paper-picker",
-  ) as HTMLDivElement | null;
-  const paperPickerList = body.querySelector(
-    "#llm-paper-picker-list",
-  ) as HTMLDivElement | null;
-  const responseMenu = body.querySelector(
-    "#llm-response-menu",
-  ) as HTMLDivElement | null;
-  const responseMenuCopyBtn = body.querySelector(
-    "#llm-response-menu-copy",
-  ) as HTMLButtonElement | null;
-  const responseMenuNoteBtn = body.querySelector(
-    "#llm-response-menu-note",
-  ) as HTMLButtonElement | null;
-  const promptMenu = body.querySelector(
-    "#llm-prompt-menu",
-  ) as HTMLDivElement | null;
-  const promptMenuEditBtn = body.querySelector(
-    "#llm-prompt-menu-edit",
-  ) as HTMLButtonElement | null;
-  const exportMenu = body.querySelector(
-    "#llm-export-menu",
-  ) as HTMLDivElement | null;
-  const exportMenuCopyBtn = body.querySelector(
-    "#llm-export-copy",
-  ) as HTMLButtonElement | null;
-  const exportMenuNoteBtn = body.querySelector(
-    "#llm-export-note",
-  ) as HTMLButtonElement | null;
-  const retryModelMenu = body.querySelector(
-    "#llm-retry-model-menu",
-  ) as HTMLDivElement | null;
-  const status = body.querySelector("#llm-status") as HTMLElement | null;
-  const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
+  const {
+    inputBox,
+    inputSection,
+    sendBtn,
+    cancelBtn,
+    modelBtn,
+    modelSlot,
+    modelMenu,
+    reasoningBtn,
+    reasoningSlot,
+    reasoningMenu,
+    actionsRow,
+    actionsLeft,
+    actionsRight,
+    exportBtn,
+    clearBtn,
+    titleStatic,
+    historyBar,
+    historyNewBtn,
+    historyToggleBtn,
+    historyMenu,
+    historyUndo,
+    historyUndoText,
+    historyUndoBtn,
+    selectTextBtn,
+    screenshotBtn,
+    uploadBtn,
+    uploadInput,
+    slashMenu,
+    slashUploadOption,
+    slashReferenceOption,
+    imagePreview,
+    selectedContextList,
+    previewStrip,
+    previewExpanded,
+    previewSelected,
+    previewSelectedImg,
+    previewMeta,
+    removeImgBtn,
+    filePreview,
+    filePreviewMeta,
+    filePreviewExpanded,
+    filePreviewList,
+    filePreviewClear,
+    paperPreview,
+    paperPreviewList,
+    paperPicker,
+    paperPickerList,
+    responseMenu,
+    responseMenuCopyBtn,
+    responseMenuNoteBtn,
+    promptMenu,
+    promptMenuEditBtn,
+    exportMenu,
+    exportMenuCopyBtn,
+    exportMenuNoteBtn,
+    retryModelMenu,
+    status,
+    chatBox,
+    panelRoot,
+  } = getPanelDomRefs(body);
 
   if (!inputBox || !sendBtn) {
     ztoolkit.log("LLM: Could not find input or send button");
     return;
   }
 
-  const panelRoot = body.querySelector("#llm-main") as HTMLDivElement | null;
   if (!panelRoot) {
     ztoolkit.log("LLM: Could not find panel root");
     return;
@@ -484,27 +411,7 @@ export function setupHandlers(
   // handler on chatBox already keeps the snapshot up to date for programmatic
   // scroll changes.
 
-  const MODEL_MENU_OPEN_CLASS = "llm-model-menu-open";
-  const REASONING_MENU_OPEN_CLASS = "llm-reasoning-menu-open";
-  const RETRY_MODEL_MENU_OPEN_CLASS = "llm-model-menu-open";
-  const SLASH_MENU_OPEN_CLASS = "llm-slash-menu-open";
   let retryMenuAnchor: HTMLButtonElement | null = null;
-  const setFloatingMenuOpen = (
-    menu: HTMLDivElement | null,
-    openClass: string,
-    isOpen: boolean,
-  ) => {
-    if (!menu) return;
-    if (isOpen) {
-      menu.style.display = "grid";
-      menu.classList.add(openClass);
-      return;
-    }
-    menu.classList.remove(openClass);
-    menu.style.display = "none";
-  };
-  const isFloatingMenuOpen = (menu: HTMLDivElement | null) =>
-    Boolean(menu && menu.style.display !== "none");
   const closeResponseMenu = () => {
     if (responseMenu) responseMenu.style.display = "none";
     setResponseMenuTarget(null);
@@ -1187,197 +1094,6 @@ export function setupHandlers(
     return { conversationKey: key, pair };
   };
 
-  const normalizePaperContextEntries = (value: unknown): PaperContextRef[] => {
-    if (!Array.isArray(value)) return [];
-    const out: PaperContextRef[] = [];
-    const seen = new Set<string>();
-    for (const entry of value) {
-      if (!entry || typeof entry !== "object") continue;
-      const typed = entry as Record<string, unknown>;
-      const itemId = Number(typed.itemId);
-      const contextItemId = Number(typed.contextItemId);
-      if (!Number.isFinite(itemId) || !Number.isFinite(contextItemId)) continue;
-      const normalizedItemId = Math.floor(itemId);
-      const normalizedContextItemId = Math.floor(contextItemId);
-      if (normalizedItemId <= 0 || normalizedContextItemId <= 0) continue;
-      const title = sanitizeText(
-        typeof typed.title === "string" ? typed.title : "",
-      ).trim();
-      if (!title) continue;
-      const citationKey = sanitizeText(
-        typeof typed.citationKey === "string" ? typed.citationKey : "",
-      ).trim();
-      const firstCreator = sanitizeText(
-        typeof typed.firstCreator === "string" ? typed.firstCreator : "",
-      ).trim();
-      const year = sanitizeText(
-        typeof typed.year === "string" ? typed.year : "",
-      ).trim();
-      const dedupeKey = `${normalizedItemId}:${normalizedContextItemId}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
-      out.push({
-        itemId: normalizedItemId,
-        contextItemId: normalizedContextItemId,
-        title,
-        citationKey: citationKey || undefined,
-        firstCreator: firstCreator || undefined,
-        year: year || undefined,
-      });
-    }
-    return out;
-  };
-
-  const extractYearValue = (value: unknown): string | undefined => {
-    const text = sanitizeText(String(value || "")).trim();
-    if (!text) return undefined;
-    const match = text.match(/\b(19|20)\d{2}\b/);
-    return match?.[0];
-  };
-
-  const resolvePaperContextDisplayMetadata = (
-    paperContext: PaperContextRef,
-  ): {
-    firstCreator?: string;
-    year?: string;
-  } => {
-    let firstCreator = sanitizeText(paperContext.firstCreator || "").trim();
-    let year = extractYearValue(paperContext.year);
-    if (!firstCreator || !year) {
-      const zoteroItem = Zotero.Items.get(paperContext.itemId);
-      if (zoteroItem?.isRegularItem?.()) {
-        if (!firstCreator) {
-          firstCreator = sanitizeText(
-            String(zoteroItem.getField("firstCreator") || ""),
-          ).trim();
-          if (!firstCreator) {
-            firstCreator = sanitizeText(
-              String((zoteroItem as Zotero.Item).firstCreator || ""),
-            ).trim();
-          }
-        }
-        if (!year) {
-          year =
-            extractYearValue(zoteroItem.getField("year")) ||
-            extractYearValue(zoteroItem.getField("date")) ||
-            extractYearValue(zoteroItem.getField("issued"));
-        }
-      }
-    }
-    return {
-      firstCreator: firstCreator || undefined,
-      year: year || undefined,
-    };
-  };
-
-  const extractFirstAuthorLastName = (
-    paperContext: PaperContextRef,
-  ): string => {
-    const metadata = resolvePaperContextDisplayMetadata(paperContext);
-    let creator = sanitizeText(metadata.firstCreator || "").trim();
-    if (!creator) return "Paper";
-    creator = creator
-      .replace(/\s+et\s+al\.?$/i, "")
-      .replace(/\s+al\.?$/i, "")
-      .replace(/[;,.]+$/g, "")
-      .trim();
-    if (!creator) return "Paper";
-    const primaryAuthor =
-      creator.split(/\s+(?:and|&)\s+/i).find((part) => part.trim()) || creator;
-    const normalizedPrimary = primaryAuthor.replace(/[;,.]+$/g, "").trim();
-    if (!normalizedPrimary) return "Paper";
-    if (normalizedPrimary.includes(",")) {
-      const commaSeparated = normalizedPrimary.split(",")[0]?.trim();
-      if (commaSeparated) return commaSeparated;
-    }
-    const parts = normalizedPrimary.split(/\s+/g).filter(Boolean);
-    if (!parts.length) return "Paper";
-    if (parts.length === 1) return parts[0];
-    const trailingToken = parts[parts.length - 1];
-    if (/^[A-Z](?:\.[A-Z])?\.?$/i.test(trailingToken)) {
-      return parts[parts.length - 2] || parts[0];
-    }
-    return trailingToken;
-  };
-
-  const extractPaperYear = (paperContext: PaperContextRef): string | null => {
-    return resolvePaperContextDisplayMetadata(paperContext).year || null;
-  };
-
-  const resolvePaperContextAttachmentItem = (
-    paperContext: PaperContextRef,
-  ): Zotero.Item | null => {
-    const attachment = Zotero.Items.get(paperContext.contextItemId) || null;
-    if (!attachment?.isAttachment?.()) return null;
-    return attachment;
-  };
-
-  const resolvePaperContextParentItem = (
-    paperContext: PaperContextRef,
-  ): Zotero.Item | null => {
-    const item = Zotero.Items.get(paperContext.itemId) || null;
-    if (item?.isRegularItem?.()) return item;
-    const contextAttachment = resolvePaperContextAttachmentItem(paperContext);
-    if (contextAttachment?.parentID) {
-      const parent = Zotero.Items.get(contextAttachment.parentID) || null;
-      if (parent?.isRegularItem?.()) return parent;
-    }
-    return null;
-  };
-
-  const resolveMultiPdfAttachmentTitle = (
-    paperContext: PaperContextRef,
-  ): string => {
-    const parentItem = resolvePaperContextParentItem(paperContext);
-    if (!parentItem) return "";
-    const attachmentIds = parentItem.getAttachments?.() || [];
-    let pdfCount = 0;
-    for (const attachmentId of attachmentIds) {
-      const attachment = Zotero.Items.get(attachmentId);
-      if (
-        attachment?.isAttachment?.() &&
-        attachment.attachmentContentType === "application/pdf"
-      ) {
-        pdfCount += 1;
-      }
-    }
-    if (pdfCount <= 1) return "";
-    const contextAttachment = resolvePaperContextAttachmentItem(paperContext);
-    if (!contextAttachment) return "";
-    return sanitizeText(String(contextAttachment.getField("title") || ""))
-      .replace(/\s+/g, " ")
-      .trim();
-  };
-
-  const formatPaperContextChipLabel = (
-    paperContext: PaperContextRef,
-  ): string => {
-    const authorLastName = extractFirstAuthorLastName(paperContext);
-    const year = extractPaperYear(paperContext);
-    const base = year
-      ? `📝 ${authorLastName} et al., ${year}`
-      : `📝 ${authorLastName} et al.`;
-    const attachmentTitle = resolveMultiPdfAttachmentTitle(paperContext);
-    return attachmentTitle ? `${base} - ${attachmentTitle}` : base;
-  };
-
-  const formatPaperContextChipTitle = (
-    paperContext: PaperContextRef,
-  ): string => {
-    const metadata = resolvePaperContextDisplayMetadata(paperContext);
-    const meta = [metadata.firstCreator || "", metadata.year || ""]
-      .filter(Boolean)
-      .join(" · ");
-    const attachmentTitle = resolveMultiPdfAttachmentTitle(paperContext);
-    return [
-      paperContext.title,
-      meta,
-      attachmentTitle ? `Attachment: ${attachmentTitle}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-  };
-
   const resolveAutoLoadedPaperContext = (): PaperContextRef | null => {
     if (!item || isGlobalMode()) return null;
     const contextSource = resolveContextSourceItem(item);
@@ -1821,80 +1537,6 @@ export function setupHandlers(
     runWithChatScrollGuard(() => {
       refreshChat(body, item);
     });
-  };
-
-  const GLOBAL_HISTORY_UNDO_WINDOW_MS = 6_000;
-  const GLOBAL_HISTORY_TITLE_MAX_LENGTH = 64;
-  const HISTORY_ROW_TITLE_MAX_LENGTH = 42;
-
-  const formatGlobalHistoryTimestamp = (timestamp: number): string => {
-    try {
-      const parsed = Number(timestamp);
-      if (!Number.isFinite(parsed) || parsed <= 0) return "";
-      return new Intl.DateTimeFormat(undefined, {
-        year: "2-digit",
-        month: "numeric",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      }).format(new Date(parsed));
-    } catch (_err) {
-      return "";
-    }
-  };
-
-  const normalizeConversationTitleSeed = (
-    raw: unknown,
-    maxLength = GLOBAL_HISTORY_TITLE_MAX_LENGTH,
-  ): string => {
-    const normalized = sanitizeText(String(raw || ""))
-      .replace(/[\u0000-\u001F\u007F]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!normalized) return "";
-    if (!Number.isFinite(maxLength) || maxLength <= 3) {
-      return normalized;
-    }
-    return normalized.length > maxLength
-      ? `${normalized.slice(0, maxLength - 3)}...`
-      : normalized;
-  };
-
-  const normalizeHistoryTitle = (raw: unknown): string => {
-    return normalizeConversationTitleSeed(raw, GLOBAL_HISTORY_TITLE_MAX_LENGTH);
-  };
-
-  const formatHistoryRowDisplayTitle = (title: string): string => {
-    return (
-      normalizeConversationTitleSeed(title, HISTORY_ROW_TITLE_MAX_LENGTH) ||
-      "Untitled chat"
-    );
-  };
-
-  type ConversationHistoryEntry = {
-    kind: "paper" | "global";
-    conversationKey: number;
-    title: string;
-    timestampText: string;
-    deletable: boolean;
-    isDraft: boolean;
-    isPendingDelete: boolean;
-    lastActivityAt: number;
-  };
-
-  type HistorySwitchTarget =
-    | { kind: "paper" }
-    | { kind: "global"; conversationKey: number }
-    | null;
-
-  type PendingHistoryDeletion = {
-    conversationKey: number;
-    libraryID: number;
-    title: string;
-    wasActive: boolean;
-    fallbackTarget: HistorySwitchTarget;
-    expiresAt: number;
-    timeoutId: number | null;
   };
 
   let latestConversationHistory: ConversationHistoryEntry[] = [];
@@ -2770,16 +2412,6 @@ export function setupHandlers(
     };
   };
 
-  const isScreenshotUnsupportedModel = (modelName: string): boolean => {
-    const normalized = modelName.trim().toLowerCase();
-    return /^deepseek-(?:chat|reasoner)(?:$|[.-])/.test(normalized);
-  };
-
-  const getScreenshotDisabledHint = (modelName: string): string => {
-    const label = modelName.trim() || "current model";
-    return `Screenshots are disabled for ${label}`;
-  };
-
   type ActionLabelMode = "icon" | "full";
   type ModelLabelMode = "icon" | "full-single" | "full-wrap2";
   type ActionLayoutMode = "icon" | "half" | "full";
@@ -3376,33 +3008,6 @@ export function setupHandlers(
     }
   };
 
-  const getReasoningLevelDisplayLabel = (
-    level: LLMReasoningLevel,
-    provider: ReasoningProviderKind,
-    modelName: string,
-    options: ReasoningOption[],
-  ): string => {
-    const option = options.find((entry) => entry.level === level);
-    if (option?.label) {
-      return option.label;
-    }
-    if (level !== "default") {
-      return level;
-    }
-    // Align UI wording with provider payload semantics in llmClient.ts:
-    // - DeepSeek: thinking.type = "enabled"
-    // - Kimi: reasoning is model-native (no separate level payload)
-    if (provider === "deepseek") {
-      return "enabled";
-    }
-    if (provider === "kimi") {
-      return "model";
-    }
-    // Keep "default" as final fallback when no runtime label is available.
-    void modelName;
-    return "default";
-  };
-
   const getReasoningState = () => {
     if (!item) {
       return {
@@ -3643,286 +3248,24 @@ export function setupHandlers(
     return { provider, level: selectedLevel as LLMReasoningLevel };
   };
 
-  const createAttachmentId = () =>
-    `att-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-
-  const isTextLikeFile = (file: File): boolean => {
-    const lowerName = (file.name || "").toLowerCase();
-    const mime = (file.type || "").toLowerCase();
-    if (
-      mime.startsWith("text/") ||
-      mime.includes("json") ||
-      mime.includes("xml") ||
-      mime.includes("javascript") ||
-      mime.includes("typescript")
-    ) {
-      return true;
-    }
-    return /\.(md|markdown|txt|json|ya?ml|xml|html?|css|scss|less|js|jsx|ts|tsx|py|java|c|cc|cpp|h|hpp|go|rs|rb|php|swift|kt|scala|sh|bash|zsh|sql|r|m|mm|lua|toml|ini|cfg|conf)$/i.test(
-      lowerName,
-    );
-  };
-
-  const resolveAttachmentCategory = (
-    file: File,
-  ): ChatAttachment["category"] => {
-    const lowerName = (file.name || "").toLowerCase();
-    const mime = (file.type || "").toLowerCase();
-    if (mime.startsWith("image/")) return "image";
-    if (mime === "application/pdf" || lowerName.endsWith(".pdf")) return "pdf";
-    if (/\.(md|markdown)$/i.test(lowerName)) return "markdown";
-    if (
-      /\.(js|jsx|ts|tsx|py|java|c|cc|cpp|h|hpp|go|rs|rb|php|swift|kt|scala|sh|bash|zsh|sql|r|m|mm|lua)$/i.test(
-        lowerName,
-      )
-    ) {
-      return "code";
-    }
-    if (isTextLikeFile(file)) return "text";
-    return "file";
-  };
-
-  const readFileAsDataURL = async (file: File): Promise<string> => {
-    const view = body.ownerDocument?.defaultView;
-    const FileReaderCtor = view?.FileReader || globalThis.FileReader;
-    return await new Promise<string>((resolve, reject) => {
-      const reader = new FileReaderCtor();
-      reader.onload = () => {
-        if (typeof reader.result === "string") {
-          resolve(reader.result);
-          return;
+  const { processIncomingFiles } = createFileIntakeController({
+    body,
+    getItem: () => item,
+    getCurrentModel: () => getSelectedModelInfo().currentModel,
+    isScreenshotUnsupportedModel,
+    optimizeImageDataUrl,
+    persistAttachmentBlob,
+    selectedImageCache,
+    selectedFileAttachmentCache,
+    updateImagePreview,
+    updateFilePreview,
+    scheduleAttachmentGc,
+    setStatusMessage: status
+      ? (message, level) => {
+          setStatus(status, message, level);
         }
-        reject(new Error("Invalid data URL result"));
-      };
-      reader.onerror = () =>
-        reject(reader.error || new Error("File read failed"));
-      reader.readAsDataURL(file);
-    });
-  };
-
-  const readFileAsText = async (file: File): Promise<string> => {
-    const view = body.ownerDocument?.defaultView;
-    const FileReaderCtor = view?.FileReader || globalThis.FileReader;
-    return await new Promise<string>((resolve, reject) => {
-      const reader = new FileReaderCtor();
-      reader.onload = () => {
-        if (typeof reader.result === "string") {
-          resolve(reader.result);
-          return;
-        }
-        reject(new Error("Invalid text result"));
-      };
-      reader.onerror = () =>
-        reject(reader.error || new Error("File read failed"));
-      reader.readAsText(file);
-    });
-  };
-
-  const readFileAsArrayBuffer = async (file: File): Promise<ArrayBuffer> => {
-    const withArrayBuffer = file as File & {
-      arrayBuffer?: () => Promise<ArrayBuffer>;
-    };
-    if (typeof withArrayBuffer.arrayBuffer === "function") {
-      return await withArrayBuffer.arrayBuffer();
-    }
-    const view = body.ownerDocument?.defaultView;
-    const FileReaderCtor = view?.FileReader || globalThis.FileReader;
-    return await new Promise<ArrayBuffer>((resolve, reject) => {
-      const reader = new FileReaderCtor();
-      reader.onload = () => {
-        if (reader.result instanceof ArrayBuffer) {
-          resolve(reader.result);
-          return;
-        }
-        reject(new Error("Invalid arrayBuffer result"));
-      };
-      reader.onerror = () =>
-        reject(reader.error || new Error("File read failed"));
-      reader.readAsArrayBuffer(file);
-    });
-  };
-
-  const processIncomingFiles = async (incomingFiles: File[]) => {
-    if (!item || !incomingFiles.length) return;
-    const { currentModel } = getSelectedModelInfo();
-    const imageUnsupported = isScreenshotUnsupportedModel(currentModel);
-    const nextImages = [...(selectedImageCache.get(item.id) || [])];
-    const nextFiles = [...(selectedFileAttachmentCache.get(item.id) || [])];
-    let addedCount = 0;
-    let replacedCount = 0;
-    let rejectedPdfCount = 0;
-    let skippedImageCount = 0;
-    let failedPersistCount = 0;
-    for (const [index, file] of incomingFiles.entries()) {
-      const fileName =
-        (file.name || "").trim() || `uploaded-file-${Date.now()}-${index + 1}`;
-      const lowerName = fileName.toLowerCase();
-      const isPdf =
-        file.type === "application/pdf" || lowerName.endsWith(".pdf");
-      if (isPdf && file.size > MAX_UPLOAD_PDF_SIZE_BYTES) {
-        rejectedPdfCount += 1;
-        continue;
-      }
-      const normalizedFile = new File([file], fileName, {
-        type: file.type || "application/octet-stream",
-        lastModified: file.lastModified || Date.now(),
-      });
-      const category = resolveAttachmentCategory(normalizedFile);
-      if (category === "image") {
-        if (imageUnsupported || nextImages.length >= MAX_SELECTED_IMAGES) {
-          skippedImageCount += 1;
-          continue;
-        }
-        try {
-          const dataUrl = await readFileAsDataURL(normalizedFile);
-          const panelWindow = body.ownerDocument?.defaultView;
-          const optimizedDataUrl = panelWindow
-            ? await optimizeImageDataUrl(panelWindow, dataUrl)
-            : dataUrl;
-          nextImages.push(optimizedDataUrl);
-          addedCount += 1;
-        } catch (err) {
-          ztoolkit.log("LLM: Failed to read image upload", err);
-        }
-        continue;
-      }
-      let textContent: string | undefined;
-      if (
-        category === "markdown" ||
-        category === "code" ||
-        category === "text"
-      ) {
-        try {
-          textContent = await readFileAsText(normalizedFile);
-        } catch (err) {
-          ztoolkit.log("LLM: Failed to read text upload", err);
-        }
-      }
-      let storedPath: string | undefined;
-      let contentHash: string | undefined;
-      try {
-        const buffer = await readFileAsArrayBuffer(normalizedFile);
-        const persisted = await persistAttachmentBlob(
-          fileName,
-          new Uint8Array(buffer),
-        );
-        storedPath = persisted.storedPath;
-        contentHash = persisted.contentHash;
-      } catch (err) {
-        failedPersistCount += 1;
-        ztoolkit.log("LLM: Failed to persist uploaded attachment", err);
-        continue;
-      }
-      const existingIndex = nextFiles.findIndex(
-        (entry) =>
-          entry &&
-          typeof entry.name === "string" &&
-          entry.name.trim().toLowerCase() === fileName.toLowerCase(),
-      );
-      const nextEntry: ChatAttachment = {
-        id: createAttachmentId(),
-        name: fileName || "untitled",
-        mimeType: normalizedFile.type || "application/octet-stream",
-        sizeBytes: normalizedFile.size || 0,
-        category,
-        textContent,
-        storedPath,
-        contentHash,
-      };
-      if (existingIndex >= 0) {
-        const existing = nextFiles[existingIndex];
-        nextFiles[existingIndex] = {
-          ...nextEntry,
-          id: existing.id,
-        };
-        replacedCount += 1;
-      } else {
-        nextFiles.push(nextEntry);
-        addedCount += 1;
-      }
-    }
-    if (nextImages.length) {
-      selectedImageCache.set(item.id, nextImages);
-    }
-    if (nextFiles.length) {
-      selectedFileAttachmentCache.set(item.id, nextFiles);
-    }
-    if (addedCount > 0 || replacedCount > 0) {
-      scheduleAttachmentGc();
-    }
-    updateImagePreview();
-    updateFilePreview();
-    if (!status) return;
-    if (
-      (addedCount > 0 || replacedCount > 0) &&
-      (rejectedPdfCount > 0 || skippedImageCount > 0 || failedPersistCount > 0)
-    ) {
-      const replaceText =
-        replacedCount > 0 ? `, replaced ${replacedCount}` : "";
-      setStatus(
-        status,
-        `Uploaded ${addedCount} attachment(s)${replaceText}, skipped ${rejectedPdfCount} PDF(s) > 50MB, ${skippedImageCount} image(s), ${failedPersistCount} file(s) not persisted`,
-        "warning",
-      );
-      return;
-    }
-    if (addedCount > 0 || replacedCount > 0) {
-      const replaceText =
-        replacedCount > 0 ? `, replaced ${replacedCount}` : "";
-      setStatus(
-        status,
-        `Uploaded ${addedCount} attachment(s)${replaceText}`,
-        "ready",
-      );
-      return;
-    }
-    if (rejectedPdfCount > 0) {
-      setStatus(
-        status,
-        `PDF exceeds 50MB limit (${rejectedPdfCount} file(s) skipped)`,
-        "error",
-      );
-      return;
-    }
-    if (failedPersistCount > 0) {
-      setStatus(
-        status,
-        `Failed to persist ${failedPersistCount} file(s) to local chat-attachments`,
-        "error",
-      );
-    }
-  };
-
-  const isFileDragEvent = (event: DragEvent): boolean => {
-    const dataTransfer = event.dataTransfer;
-    if (!dataTransfer) return false;
-    if (dataTransfer.files && dataTransfer.files.length > 0) return true;
-    const types = Array.from(dataTransfer.types || []);
-    return types.includes("Files");
-  };
-
-  const extractFilesFromClipboard = (event: ClipboardEvent): File[] => {
-    const clipboardData = event.clipboardData;
-    if (!clipboardData) return [];
-    const files: File[] = [];
-    if (clipboardData.files && clipboardData.files.length > 0) {
-      files.push(...Array.from(clipboardData.files));
-    }
-    const items = Array.from(clipboardData.items || []);
-    for (const item of items) {
-      if (item.kind !== "file") continue;
-      const file = item.getAsFile();
-      if (!file) continue;
-      const duplicated = files.some(
-        (existing) =>
-          existing.name === file.name &&
-          existing.size === file.size &&
-          existing.type === file.type,
-      );
-      if (!duplicated) files.push(file);
-    }
-    return files;
-  };
+      : undefined,
+  });
 
   const setInputDropActive = (active: boolean) => {
     if (inputSection) {
@@ -4556,193 +3899,55 @@ export function setupHandlers(
     });
   }
 
-  const doSend = async () => {
-    if (!item) return;
-    closeSlashMenu();
-    closePaperPicker();
-    const text = inputBox.value.trim();
-    const selectedContexts = getSelectedTextContextEntries(item.id);
-    const selectedTexts = selectedContexts.map((entry) => entry.text);
-    const selectedTextSources = selectedContexts.map((entry) => entry.source);
-    const primarySelectedText = selectedTexts[0] || "";
-    const selectedPaperContexts = normalizePaperContextEntries(
-      selectedPaperContextCache.get(item.id) || [],
-    );
-    const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
-    if (
-      !text &&
-      !primarySelectedText &&
-      !selectedPaperContexts.length &&
-      !selectedFiles.length
-    )
-      return;
-    const promptText = resolvePromptText(
-      text,
-      primarySelectedText,
-      selectedFiles.length > 0 || selectedPaperContexts.length > 0,
-    );
-    if (!promptText) return;
-    const resolvedPromptText =
-      !text &&
-      !primarySelectedText &&
-      selectedPaperContexts.length > 0 &&
-      !selectedFiles.length
-        ? "Please analyze selected papers."
-        : promptText;
-    const composedQuestionBase = primarySelectedText
-      ? buildQuestionWithSelectedTextContexts(
-          selectedTexts,
-          selectedTextSources,
-          resolvedPromptText,
-        )
-      : resolvedPromptText;
-    const composedQuestion = buildModelPromptWithFileContext(
-      composedQuestionBase,
-      selectedFiles,
-    );
-    const displayQuestion = primarySelectedText
-      ? resolvedPromptText
-      : text || resolvedPromptText;
-    if (isGlobalMode()) {
-      const titleSeed =
-        normalizeConversationTitleSeed(text) ||
-        normalizeConversationTitleSeed(resolvedPromptText);
-      void touchGlobalConversationTitle(
-        getConversationKey(item),
-        titleSeed,
-      ).catch((err) => {
-        ztoolkit.log("LLM: Failed to touch global conversation title", err);
-      });
-    }
-    const selectedProfile = getSelectedProfile();
-    const activeModelName = (
-      selectedProfile?.model ||
-      getSelectedModelInfo().currentModel ||
-      ""
-    ).trim();
-    const selectedImages = (selectedImageCache.get(item.id) || []).slice(
-      0,
-      MAX_SELECTED_IMAGES,
-    );
-    const images = isScreenshotUnsupportedModel(activeModelName)
-      ? []
-      : selectedImages;
-    const selectedReasoning = getSelectedReasoning();
-    const advancedParams = getAdvancedModelParams(selectedProfile?.key);
-    if (activeEditSession) {
-      const latest = await getLatestEditablePair();
-      if (!latest) {
-        activeEditSession = null;
-        if (status) setStatus(status, "No editable latest prompt", "error");
-        return;
-      }
-      const { conversationKey: latestKey, pair } = latest;
-      if (
-        pair.assistantMessage.streaming ||
-        activeEditSession.conversationKey !== latestKey ||
-        activeEditSession.userTimestamp !== pair.userMessage.timestamp ||
-        activeEditSession.assistantTimestamp !== pair.assistantMessage.timestamp
-      ) {
-        activeEditSession = null;
-        if (status) setStatus(status, EDIT_STALE_STATUS_TEXT, "error");
-        return;
-      }
-
-      const editResult = await editLatestUserMessageAndRetry(
-        body,
-        item,
-        displayQuestion,
-        selectedTexts.length ? selectedTexts : undefined,
-        selectedTexts.length ? selectedTextSources : undefined,
-        images,
-        selectedPaperContexts.length ? selectedPaperContexts : undefined,
-        selectedFiles.length ? selectedFiles : undefined,
-        activeEditSession,
-        selectedProfile?.model,
-        selectedProfile?.apiBase,
-        selectedProfile?.apiKey,
-        selectedReasoning,
-        advancedParams,
-      );
-      if (editResult !== "ok") {
-        if (editResult === "stale") {
-          activeEditSession = null;
-          if (status) setStatus(status, EDIT_STALE_STATUS_TEXT, "error");
-          return;
-        }
-        if (editResult === "missing") {
-          activeEditSession = null;
-          if (status) setStatus(status, "No editable latest prompt", "error");
-          return;
-        }
-        if (status) {
-          setStatus(status, "Failed to save edited prompt", "error");
-        }
-        return;
-      }
-
-      inputBox.value = "";
-      clearSelectedImageState(item.id);
-      if (selectedPaperContexts.length) {
-        clearSelectedPaperState(item.id);
-        updatePaperPreviewPreservingScroll();
-      }
-      if (selectedFiles.length) {
-        clearSelectedFileState(item.id);
-        updateFilePreviewPreservingScroll();
-      }
-      updateImagePreviewPreservingScroll();
-      if (primarySelectedText) {
-        clearSelectedTextState(item.id);
-        updateSelectedTextPreviewPreservingScroll();
-      }
-      activeEditSession = null;
-      scheduleAttachmentGc();
+  const { doSend } = createSendFlowController({
+    body,
+    inputBox,
+    getItem: () => item,
+    closeSlashMenu,
+    closePaperPicker,
+    getSelectedTextContextEntries,
+    getSelectedPaperContexts: (itemId) =>
+      normalizePaperContextEntries(selectedPaperContextCache.get(itemId) || []),
+    getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],
+    getSelectedImages: (itemId) => selectedImageCache.get(itemId) || [],
+    resolvePromptText,
+    buildQuestionWithSelectedTextContexts,
+    buildModelPromptWithFileContext,
+    isGlobalMode,
+    normalizeConversationTitleSeed,
+    getConversationKey,
+    touchGlobalConversationTitle,
+    getSelectedProfile,
+    getCurrentModelName: () => getSelectedModelInfo().currentModel,
+    isScreenshotUnsupportedModel,
+    getSelectedReasoning,
+    getAdvancedModelParams,
+    getActiveEditSession: () => activeEditSession,
+    setActiveEditSession: (nextEditSession) => {
+      activeEditSession = nextEditSession;
+    },
+    getLatestEditablePair,
+    editLatestUserMessageAndRetry,
+    sendQuestion,
+    clearSelectedImageState,
+    clearSelectedPaperState,
+    clearSelectedFileState,
+    clearSelectedTextState,
+    updatePaperPreviewPreservingScroll,
+    updateFilePreviewPreservingScroll,
+    updateImagePreviewPreservingScroll,
+    updateSelectedTextPreviewPreservingScroll,
+    scheduleAttachmentGc,
+    refreshGlobalHistoryHeader: () => {
       void refreshGlobalHistoryHeader();
-      return;
-    }
-
-    inputBox.value = "";
-    // Clear selected images after sending
-    clearSelectedImageState(item.id);
-    if (selectedPaperContexts.length) {
-      clearSelectedPaperState(item.id);
-      updatePaperPreviewPreservingScroll();
-    }
-    if (selectedFiles.length) {
-      clearSelectedFileState(item.id);
-      updateFilePreviewPreservingScroll();
-    }
-    updateImagePreviewPreservingScroll();
-    if (primarySelectedText) {
-      clearSelectedTextState(item.id);
-      updateSelectedTextPreviewPreservingScroll();
-    }
-    const sendTask = sendQuestion(
-      body,
-      item,
-      composedQuestion,
-      images,
-      selectedProfile?.model,
-      selectedProfile?.apiBase,
-      selectedProfile?.apiKey,
-      selectedReasoning,
-      advancedParams,
-      displayQuestion,
-      selectedTexts.length ? selectedTexts : undefined,
-      selectedTexts.length ? selectedTextSources : undefined,
-      selectedPaperContexts.length ? selectedPaperContexts : undefined,
-      selectedFiles.length ? selectedFiles : undefined,
-    );
-    const win = body.ownerDocument?.defaultView;
-    if (win) {
-      win.setTimeout(() => {
-        void refreshGlobalHistoryHeader();
-      }, 120);
-    }
-    await sendTask;
-    void refreshGlobalHistoryHeader();
-  };
+    },
+    setStatusMessage: status
+      ? (message, level) => {
+          setStatus(status, message, level);
+        }
+      : undefined,
+    editStaleStatusText: EDIT_STALE_STATUS_TEXT,
+  });
 
   // Send button - use addEventListener
   sendBtn.addEventListener("click", (e: Event) => {
@@ -5085,7 +4290,7 @@ export function setupHandlers(
       closeResponseMenu();
       closePromptMenu();
       closeExportMenu();
-      positionFloatingMenu(slashMenu, uploadBtn);
+      positionFloatingMenu(body, slashMenu, uploadBtn);
       setFloatingMenuOpen(slashMenu, SLASH_MENU_OPEN_CLASS, true);
       uploadBtn.setAttribute("aria-expanded", "true");
     });
@@ -5116,52 +4321,6 @@ export function setupHandlers(
     });
   }
 
-  const positionFloatingMenu = (
-    menu: HTMLDivElement,
-    anchor: HTMLButtonElement,
-  ) => {
-    const win = body.ownerDocument?.defaultView;
-    if (!win) return;
-
-    const viewportMargin = 8;
-    const gap = 6;
-
-    menu.style.position = "fixed";
-    menu.style.display = "grid";
-    menu.style.visibility = "hidden";
-    menu.style.maxHeight = `${Math.max(120, win.innerHeight - viewportMargin * 2)}px`;
-    menu.style.overflowY = "auto";
-
-    const anchorRect = anchor.getBoundingClientRect();
-    const menuRect = menu.getBoundingClientRect();
-
-    let left = anchorRect.left;
-    const maxLeft = Math.max(
-      viewportMargin,
-      win.innerWidth - menuRect.width - viewportMargin,
-    );
-    left = Math.min(Math.max(viewportMargin, left), maxLeft);
-
-    const belowTop = anchorRect.bottom + gap;
-    const aboveTop = anchorRect.top - gap - menuRect.height;
-    let top = belowTop;
-
-    if (belowTop + menuRect.height > win.innerHeight - viewportMargin) {
-      if (aboveTop >= viewportMargin) {
-        top = aboveTop;
-      } else {
-        top = Math.max(
-          viewportMargin,
-          win.innerHeight - menuRect.height - viewportMargin,
-        );
-      }
-    }
-
-    menu.style.left = `${Math.round(left)}px`;
-    menu.style.top = `${Math.round(top)}px`;
-    menu.style.visibility = "visible";
-  };
-
   const openModelMenu = () => {
     if (!modelMenu || !modelBtn) return;
     closeSlashMenu();
@@ -5175,7 +4334,7 @@ export function setupHandlers(
       closeModelMenu();
       return;
     }
-    positionFloatingMenu(modelMenu, modelBtn);
+    positionFloatingMenu(body, modelMenu, modelBtn);
     setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, true);
   };
 
@@ -5196,7 +4355,7 @@ export function setupHandlers(
       closeReasoningMenu();
       return;
     }
-    positionFloatingMenu(reasoningMenu, reasoningBtn);
+    positionFloatingMenu(body, reasoningMenu, reasoningBtn);
     setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, true);
   };
 
@@ -5219,7 +4378,7 @@ export function setupHandlers(
       return;
     }
     retryMenuAnchor = anchor;
-    positionFloatingMenu(retryModelMenu, anchor);
+    positionFloatingMenu(body, retryModelMenu, anchor);
     setFloatingMenuOpen(retryModelMenu, RETRY_MODEL_MENU_OPEN_CLASS, true);
   };
 

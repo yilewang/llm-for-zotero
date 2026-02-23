@@ -40,6 +40,7 @@ import {
   usesMaxCompletionTokens,
   isResponsesBase,
 } from "./apiHelpers";
+import { pathToFileUrl } from "./pathFileUrl";
 import { normalizeTemperature, normalizeMaxTokens } from "./normalization";
 
 // =============================================================================
@@ -247,20 +248,6 @@ function getZoteroFile(): ZoteroFileLike | undefined {
   const fromToolkit = toolkitZotero?.File;
   if (fromToolkit?.getContentsAsync || fromToolkit?.getBinaryContentsAsync) {
     return fromToolkit;
-  }
-  return undefined;
-}
-
-function pathToFileUrl(path: string): string | undefined {
-  const raw = (path || "").trim();
-  if (!raw) return undefined;
-  if (/^file:\/\//i.test(raw)) return raw;
-  const normalized = raw.replace(/\\/g, "/");
-  if (/^[A-Za-z]:\//.test(normalized)) {
-    return `file:///${encodeURI(normalized)}`;
-  }
-  if (normalized.startsWith("/")) {
-    return `file://${encodeURI(normalized)}`;
   }
   return undefined;
 }

@@ -1,4 +1,5 @@
 import { CHAT_ATTACHMENTS_DIR_NAME } from "./constants";
+import { fileUrlToPath, toFileUrl } from "../../utils/pathFileUrl";
 
 export const ATTACHMENT_BLOBS_TABLE = "llm_for_zotero_attachment_blobs";
 
@@ -346,24 +347,6 @@ export function isManagedBlobPath(storedPath: string | undefined): boolean {
   return Boolean(extractManagedBlobHash(storedPath));
 }
 
-export function fileUrlToPath(url: string | undefined): string | undefined {
-  const raw = (url || "").trim();
-  if (!raw) return undefined;
-  if (!/^file:\/\//i.test(raw)) return undefined;
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== "file:") return undefined;
-    let pathname = decodeURIComponent(parsed.pathname || "");
-    if (!pathname) return undefined;
-    if (/^\/[A-Za-z]:\//.test(pathname)) {
-      pathname = pathname.slice(1);
-    }
-    return pathname;
-  } catch (_err) {
-    return undefined;
-  }
-}
-
 export async function persistAttachmentBlob(
   fileName: string,
   bytes: Uint8Array,
@@ -481,16 +464,4 @@ export async function removeAttachmentFile(path: string): Promise<void> {
   await removePath(trimmed, false);
 }
 
-export function toFileUrl(path: string | undefined): string | undefined {
-  const raw = (path || "").trim();
-  if (!raw) return undefined;
-  if (/^file:\/\//i.test(raw)) return raw;
-  const normalized = raw.replace(/\\/g, "/");
-  if (/^[A-Za-z]:\//.test(normalized)) {
-    return `file:///${encodeURI(normalized)}`;
-  }
-  if (normalized.startsWith("/")) {
-    return `file://${encodeURI(normalized)}`;
-  }
-  return undefined;
-}
+export { fileUrlToPath, toFileUrl };

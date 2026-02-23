@@ -4,6 +4,10 @@ import type {
   GlobalConversationSummary,
 } from "../modules/contextPanel/types";
 import { GLOBAL_CONVERSATION_KEY_BASE } from "../modules/contextPanel/constants";
+import {
+  normalizeSelectedTextSource,
+  normalizePaperContextRefs,
+} from "../modules/contextPanel/normalizers";
 
 export type StoredChatMessage = {
   role: "user" | "assistant";
@@ -37,55 +41,6 @@ const GLOBAL_CONVERSATIONS_LIBRARY_INDEX =
   "llm_for_zotero_global_conversations_library_idx";
 const LEGACY_CHAT_MESSAGES_TABLE = "zoterollm_chat_messages";
 const LEGACY_CHAT_MESSAGES_INDEX = "zoterollm_chat_messages_conversation_idx";
-
-function normalizeSelectedTextSource(value: unknown): SelectedTextSource {
-  return value === "model" ? "model" : "pdf";
-}
-
-function normalizePaperContextRefs(value: unknown): PaperContextRef[] {
-  if (!Array.isArray(value)) return [];
-  const out: PaperContextRef[] = [];
-  const seen = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") continue;
-    const typed = entry as Record<string, unknown>;
-    const itemId = Number(typed.itemId);
-    const contextItemId = Number(typed.contextItemId);
-    if (!Number.isFinite(itemId) || !Number.isFinite(contextItemId)) continue;
-    const normalizedItemId = Math.floor(itemId);
-    const normalizedContextItemId = Math.floor(contextItemId);
-    if (normalizedItemId <= 0 || normalizedContextItemId <= 0) continue;
-    const title =
-      typeof typed.title === "string" && typed.title.trim()
-        ? typed.title.trim()
-        : "";
-    if (!title) continue;
-    const citationKey =
-      typeof typed.citationKey === "string" && typed.citationKey.trim()
-        ? typed.citationKey.trim()
-        : undefined;
-    const firstCreator =
-      typeof typed.firstCreator === "string" && typed.firstCreator.trim()
-        ? typed.firstCreator.trim()
-        : undefined;
-    const year =
-      typeof typed.year === "string" && typed.year.trim()
-        ? typed.year.trim()
-        : undefined;
-    const dedupeKey = `${normalizedItemId}:${normalizedContextItemId}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-    out.push({
-      itemId: normalizedItemId,
-      contextItemId: normalizedContextItemId,
-      title,
-      citationKey,
-      firstCreator,
-      year,
-    });
-  }
-  return out;
-}
 
 async function tableExists(tableName: string): Promise<boolean> {
   const rows = (await Zotero.DB.queryAsync(

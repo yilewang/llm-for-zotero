@@ -1,13 +1,11 @@
 import { SELECTED_TEXT_MAX_LENGTH } from "./constants";
+import { normalizeSelectedTextSource } from "./normalizers";
 import type { SelectedTextSource } from "./types";
+export { normalizeSelectedTextSource } from "./normalizers";
 
 export const DEFAULT_SELECTED_TEXT_PROMPT =
   "Please explain this selected text.";
 export const DEFAULT_FILE_ANALYSIS_PROMPT = "Please analyze attached files.";
-
-export function normalizeSelectedTextSource(value: unknown): SelectedTextSource {
-  return value === "model" ? "model" : "pdf";
-}
 
 export function getSelectedTextSourceIcon(source: SelectedTextSource): string {
   return source === "model" ? "🧠" : "📋";

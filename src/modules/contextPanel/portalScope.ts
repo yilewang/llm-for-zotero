@@ -1,12 +1,6 @@
 import { GLOBAL_CONVERSATION_KEY_BASE } from "./constants";
+import { normalizePositiveInt } from "./normalizers";
 import type { GlobalPortalItem } from "./types";
-
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return null;
-  const normalized = Math.floor(parsed);
-  return normalized > 0 ? normalized : null;
-}
 
 export function resolveActiveLibraryID(): number | null {
   try {

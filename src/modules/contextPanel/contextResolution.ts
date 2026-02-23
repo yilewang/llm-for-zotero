@@ -4,6 +4,7 @@ import {
   isLikelyCorruptedSelectedText,
   setStatus,
 } from "./textUtils";
+import { normalizeSelectedTextSource } from "./normalizers";
 import { MAX_SELECTED_TEXT_CONTEXTS } from "./constants";
 import {
   selectedTextCache,
@@ -17,6 +18,10 @@ import type {
   SelectedTextSource,
 } from "./types";
 import { isGlobalPortalItem } from "./portalScope";
+import {
+  getFirstSelectionFromReader,
+  getSelectionFromDocument,
+} from "./readerSelection";
 
 function getActiveReaderForSelectedTab(): any | null {
   const tabs = getZoteroTabsState();
@@ -329,44 +334,21 @@ export function getActiveReaderSelectionText(
   currentItem?: Zotero.Item | null,
 ): string {
   const reader = getActiveReaderForSelectedTab();
-
-  const selectionFrom = (doc?: Document | null): string => {
-    if (!doc) return "";
-    const selected = doc.defaultView?.getSelection?.()?.toString() || "";
-    return normalizeSelectedText(selected);
-  };
-
-  // 1. Check the reader's outer iframe document
-  const readerDoc =
-    (reader?._iframeWindow?.document as Document | undefined) ||
-    (reader?._iframe?.contentDocument as Document | undefined) ||
-    (reader?._window?.document as Document | undefined);
-  const fromReaderDoc = selectionFrom(readerDoc);
-  if (fromReaderDoc) return fromReaderDoc;
-
-  // 2. Check the inner view iframe(s) (PDF text-layer, EPUB, snapshot)
-  const internalReader = reader?._internalReader;
-  const views = [internalReader?._primaryView, internalReader?._secondaryView];
-  for (const view of views) {
-    if (!view) continue;
-    const viewDoc =
-      (view._iframeWindow?.document as Document | undefined) ||
-      (view._iframe?.contentDocument as Document | undefined);
-    if (viewDoc) {
-      const fromView = selectionFrom(viewDoc);
-      if (fromView) return fromView;
-    }
-  }
+  const fromReader = getFirstSelectionFromReader(reader, normalizeSelectedText);
+  if (fromReader) return fromReader;
 
   // 3. Check the panel document and its iframes
-  const fromPanelDoc = selectionFrom(panelDoc);
+  const fromPanelDoc = getSelectionFromDocument(panelDoc, normalizeSelectedText);
   if (fromPanelDoc) return fromPanelDoc;
 
   const iframes = Array.from(
     panelDoc.querySelectorAll("iframe"),
   ) as HTMLIFrameElement[];
   for (const frame of iframes) {
-    const fromFrame = selectionFrom(frame.contentDocument);
+    const fromFrame = getSelectionFromDocument(
+      frame.contentDocument,
+      normalizeSelectedText,
+    );
     if (fromFrame) return fromFrame;
   }
 
@@ -391,10 +373,6 @@ export function getActiveReaderSelectionText(
   }
 
   return "";
-}
-
-function normalizeSelectedTextSource(value: unknown): SelectedTextSource {
-  return value === "model" ? "model" : "pdf";
 }
 
 function normalizeSelectedTextContexts(value: unknown): SelectedTextContext[] {

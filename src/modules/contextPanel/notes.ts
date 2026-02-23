@@ -6,6 +6,7 @@ import {
   getSelectedTextSourceIcon,
   normalizeSelectedTextSource,
 } from "./textUtils";
+import { normalizeAttachmentContentHash } from "./normalizers";
 import { MAX_SELECTED_IMAGES } from "./constants";
 import {
   getTrackedAssistantNoteForParent,
@@ -16,8 +17,8 @@ import {
   ensureAttachmentBlobFromPath,
   extractManagedBlobHash,
   isManagedBlobPath,
-  toFileUrl,
 } from "./attachmentStorage";
+import { toFileUrl } from "../../utils/pathFileUrl";
 import {
   ATTACHMENT_GC_MIN_AGE_MS,
   collectAndDeleteUnreferencedBlobs,
@@ -180,12 +181,6 @@ function buildFileListHtmlForNote(files: ChatAttachment[]): string {
   return `<div><p>${escapeNoteHtml(formatFileEmbeddedLabel(files))}</p><ul>${items}</ul></div>`;
 }
 
-function normalizeAttachmentHash(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase();
-  return /^[a-f0-9]{64}$/.test(normalized) ? normalized : undefined;
-}
-
 function collectAttachmentHashes(messages: Message[]): string[] {
   const hashes = new Set<string>();
   for (const msg of messages) {
@@ -193,7 +188,7 @@ function collectAttachmentHashes(messages: Message[]): string[] {
     for (const attachment of attachments) {
       if (!attachment || attachment.category === "image") continue;
       const hash =
-        normalizeAttachmentHash(attachment.contentHash) ||
+        normalizeAttachmentContentHash(attachment.contentHash) ||
         extractManagedBlobHash(attachment.storedPath);
       if (!hash) continue;
       hashes.add(hash);
@@ -226,7 +221,9 @@ async function normalizeHistoryAttachmentsToSharedBlobs(
       }
       try {
         const normalizedPath = attachment.storedPath.trim();
-        const existingHash = normalizeAttachmentHash(attachment.contentHash);
+        const existingHash = normalizeAttachmentContentHash(
+          attachment.contentHash,
+        );
         if (existingHash && isManagedBlobPath(normalizedPath)) {
           nextAttachments.push({
             ...attachment,

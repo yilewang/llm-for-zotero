@@ -60,9 +60,13 @@ import {
   buildQuestionWithSelectedTextContexts,
   buildModelPromptWithFileContext,
   getSelectedTextSourceIcon,
-  normalizeSelectedTextSource,
   resolvePromptText,
 } from "./textUtils";
+import {
+  normalizeSelectedTextSources,
+  normalizePaperContextRefs,
+  normalizeAttachmentContentHash,
+} from "./normalizers";
 import { positionMenuAtPointer } from "./menuPositioning";
 import {
   getSelectedProfileForItem,
@@ -79,7 +83,8 @@ import {
   resolveContextSourceItem,
 } from "./contextResolution";
 import { buildChatHistoryNotePayload } from "./notes";
-import { extractManagedBlobHash, toFileUrl } from "./attachmentStorage";
+import { extractManagedBlobHash } from "./attachmentStorage";
+import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 
 /** Get AbortController constructor from global scope */
@@ -198,64 +203,8 @@ function normalizeSelectedTexts(
   return legacy ? [legacy] : [];
 }
 
-function normalizeSelectedTextSources(
-  selectedTextSources: unknown,
-  count: number,
-): SelectedTextSource[] {
-  if (count <= 0) return [];
-  const raw = Array.isArray(selectedTextSources) ? selectedTextSources : [];
-  const out: SelectedTextSource[] = [];
-  for (let index = 0; index < count; index++) {
-    out.push(normalizeSelectedTextSource(raw[index]));
-  }
-  return out;
-}
-
 function normalizePaperContexts(paperContexts: unknown): PaperContextRef[] {
-  if (!Array.isArray(paperContexts)) return [];
-  const out: PaperContextRef[] = [];
-  const seen = new Set<string>();
-  for (const entry of paperContexts) {
-    if (!entry || typeof entry !== "object") continue;
-    const typed = entry as Record<string, unknown>;
-    const itemId = Number(typed.itemId);
-    const contextItemId = Number(typed.contextItemId);
-    if (!Number.isFinite(itemId) || !Number.isFinite(contextItemId)) continue;
-    const normalizedItemId = Math.floor(itemId);
-    const normalizedContextItemId = Math.floor(contextItemId);
-    if (normalizedItemId <= 0 || normalizedContextItemId <= 0) continue;
-    const title = sanitizeText(
-      typeof typed.title === "string" ? typed.title : "",
-    ).trim();
-    if (!title) continue;
-    const citationKey = sanitizeText(
-      typeof typed.citationKey === "string" ? typed.citationKey : "",
-    ).trim();
-    const firstCreator = sanitizeText(
-      typeof typed.firstCreator === "string" ? typed.firstCreator : "",
-    ).trim();
-    const year = sanitizeText(
-      typeof typed.year === "string" ? typed.year : "",
-    ).trim();
-    const dedupeKey = `${normalizedItemId}:${normalizedContextItemId}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-    out.push({
-      itemId: normalizedItemId,
-      contextItemId: normalizedContextItemId,
-      title,
-      citationKey: citationKey || undefined,
-      firstCreator: firstCreator || undefined,
-      year: year || undefined,
-    });
-  }
-  return out;
-}
-
-function normalizeAttachmentContentHash(value: unknown): string {
-  if (typeof value !== "string") return "";
-  const normalized = value.trim().toLowerCase();
-  return /^[a-f0-9]{64}$/.test(normalized) ? normalized : "";
+  return normalizePaperContextRefs(paperContexts, { sanitizeText });
 }
 
 function collectAttachmentHashesFromStoredMessages(
@@ -809,6 +758,187 @@ export function getSelectedReasoningForItem(
   return { provider, level: selectedLevel as LLMReasoningLevel };
 }
 
+type PanelRequestUI = {
+  inputBox: HTMLTextAreaElement | null;
+  chatBox: HTMLDivElement | null;
+  sendBtn: HTMLButtonElement | null;
+  cancelBtn: HTMLButtonElement | null;
+  status: HTMLElement | null;
+};
+
+function getPanelRequestUI(body: Element): PanelRequestUI {
+  return {
+    inputBox: body.querySelector("#llm-input") as HTMLTextAreaElement | null,
+    chatBox: body.querySelector("#llm-chat-box") as HTMLDivElement | null,
+    sendBtn: body.querySelector("#llm-send") as HTMLButtonElement | null,
+    cancelBtn: body.querySelector("#llm-cancel") as HTMLButtonElement | null,
+    status: body.querySelector("#llm-status") as HTMLElement | null,
+  };
+}
+
+function setRequestUIBusy(
+  body: Element,
+  ui: PanelRequestUI,
+  conversationKey: number,
+  statusText: string,
+): void {
+  withScrollGuard(ui.chatBox, conversationKey, () => {
+    if (ui.sendBtn) ui.sendBtn.style.display = "none";
+    if (ui.cancelBtn) ui.cancelBtn.style.display = "";
+    if (ui.inputBox) ui.inputBox.disabled = true;
+    if (ui.status) setStatus(ui.status, statusText, "sending");
+  });
+  setHistoryControlsDisabled(body, true);
+}
+
+function restoreRequestUIIdle(
+  ui: PanelRequestUI,
+  conversationKey: number,
+  requestId: number,
+): void {
+  if (cancelledRequestId >= requestId) return;
+  withScrollGuard(ui.chatBox, conversationKey, () => {
+    if (ui.inputBox) {
+      ui.inputBox.disabled = false;
+      ui.inputBox.focus({ preventScroll: true });
+    }
+    if (ui.sendBtn) {
+      ui.sendBtn.style.display = "";
+      ui.sendBtn.disabled = false;
+    }
+    if (ui.cancelBtn) ui.cancelBtn.style.display = "none";
+  });
+}
+
+function createPanelUpdateHelpers(
+  body: Element,
+  item: Zotero.Item,
+  conversationKey: number,
+  ui: PanelRequestUI,
+): {
+  refreshChatSafely: () => void;
+  setStatusSafely: (
+    text: string,
+    kind: Parameters<typeof setStatus>[2],
+  ) => void;
+} {
+  const refreshChatSafely = () => {
+    withScrollGuard(ui.chatBox, conversationKey, () => {
+      refreshChat(body, item);
+    });
+  };
+  const setStatusSafely = (
+    text: string,
+    kind: Parameters<typeof setStatus>[2],
+  ) => {
+    if (!ui.status) return;
+    withScrollGuard(ui.chatBox, conversationKey, () => {
+      setStatus(ui.status as HTMLElement, text, kind);
+    });
+  };
+  return { refreshChatSafely, setStatusSafely };
+}
+
+type EffectiveRequestConfig = {
+  model: string;
+  apiBase: string;
+  apiKey: string;
+  reasoning: LLMReasoningConfig | undefined;
+  advanced: AdvancedModelParams;
+};
+
+function resolveEffectiveRequestConfig(params: {
+  item: Zotero.Item;
+  model?: string;
+  apiBase?: string;
+  apiKey?: string;
+  reasoning?: LLMReasoningConfig;
+  advanced?: AdvancedModelParams;
+}): EffectiveRequestConfig {
+  const fallbackProfile = getSelectedProfileForItem(params.item.id);
+  const model = (
+    params.model ||
+    fallbackProfile.model ||
+    getStringPref("modelPrimary") ||
+    getStringPref("model") ||
+    "gpt-4o-mini"
+  ).trim();
+  const apiBase = (params.apiBase || fallbackProfile.apiBase).trim();
+  const apiKey = (params.apiKey || fallbackProfile.apiKey).trim();
+  const reasoning =
+    params.reasoning ||
+    getSelectedReasoningForItem(params.item.id, model, apiBase);
+  const advanced =
+    params.advanced || getAdvancedModelParamsForProfile(fallbackProfile.key);
+  return { model, apiBase, apiKey, reasoning, advanced };
+}
+
+async function buildCombinedContextForRequest(params: {
+  item: Zotero.Item;
+  question: string;
+  imageCount: number;
+  paperContexts: PaperContextRef[];
+  apiBase: string;
+  apiKey: string;
+  setStatusSafely: (
+    text: string,
+    kind: Parameters<typeof setStatus>[2],
+  ) => void;
+}): Promise<string> {
+  const contextSource = resolveContextSourceItem(params.item);
+  params.setStatusSafely(contextSource.statusText, "sending");
+
+  const hasSupplementalPaperContexts = params.paperContexts.length > 0;
+  let pdfContext = "";
+  if (contextSource.contextItem) {
+    await ensurePDFTextCached(contextSource.contextItem);
+    pdfContext = await buildContext(
+      pdfTextCache.get(contextSource.contextItem.id),
+      params.question,
+      params.imageCount > 0,
+      { apiBase: params.apiBase, apiKey: params.apiKey },
+      {
+        forceRetrieval: hasSupplementalPaperContexts,
+        maxChunks: hasSupplementalPaperContexts
+          ? ACTIVE_PAPER_MULTI_CONTEXT_MAX_CHUNKS
+          : undefined,
+        maxLength: hasSupplementalPaperContexts
+          ? ACTIVE_PAPER_MULTI_CONTEXT_MAX_LENGTH
+          : undefined,
+      },
+    );
+  }
+
+  const supplementalPaperContext = hasSupplementalPaperContexts
+    ? await buildSupplementalPaperContext(params.paperContexts, params.question, {
+        apiBase: params.apiBase,
+        apiKey: params.apiKey,
+      })
+    : "";
+  if (hasSupplementalPaperContexts) {
+    params.setStatusSafely(
+      `Using ${params.paperContexts.length} supplemental paper context(s)`,
+      "sending",
+    );
+  }
+  return [pdfContext, supplementalPaperContext]
+    .map((entry) => sanitizeText(entry || "").trim())
+    .filter(Boolean)
+    .join("\n\n====================\n\n");
+}
+
+function createQueuedRefresh(refresh: () => void): () => void {
+  let refreshQueued = false;
+  return () => {
+    if (refreshQueued) return;
+    refreshQueued = true;
+    setTimeout(() => {
+      refreshQueued = false;
+      refresh();
+    }, 50);
+  };
+}
+
 export type LatestRetryPair = {
   userIndex: number;
   userMessage: Message;
@@ -1173,48 +1303,25 @@ export async function retryLatestAssistantResponse(
   reasoning?: LLMReasoningConfig,
   advanced?: AdvancedModelParams,
 ) {
-  const inputBox = body.querySelector(
-    "#llm-input",
-  ) as HTMLTextAreaElement | null;
-  const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
-  const sendBtn = body.querySelector("#llm-send") as HTMLButtonElement | null;
-  const cancelBtn = body.querySelector(
-    "#llm-cancel",
-  ) as HTMLButtonElement | null;
-  const status = body.querySelector("#llm-status") as HTMLElement | null;
+  const ui = getPanelRequestUI(body);
 
   await ensureConversationLoaded(item);
   const conversationKey = getConversationKey(item);
   const history = chatHistory.get(conversationKey) || [];
   const retryPair = findLatestRetryPair(history);
   if (!retryPair) {
-    if (status) setStatus(status, "No retryable response found", "error");
+    if (ui.status) setStatus(ui.status, "No retryable response found", "error");
     return;
   }
 
   const thisRequestId = nextRequestId();
-  withScrollGuard(chatBox, conversationKey, () => {
-    if (sendBtn) sendBtn.style.display = "none";
-    if (cancelBtn) cancelBtn.style.display = "";
-    if (inputBox) inputBox.disabled = true;
-    if (status) setStatus(status, "Preparing retry...", "sending");
-  });
-  setHistoryControlsDisabled(body, true);
-
-  const refreshChatSafely = () => {
-    withScrollGuard(chatBox, conversationKey, () => {
-      refreshChat(body, item);
-    });
-  };
-  const setStatusSafely = (
-    text: string,
-    kind: Parameters<typeof setStatus>[2],
-  ) => {
-    if (!status) return;
-    withScrollGuard(chatBox, conversationKey, () => {
-      setStatus(status, text, kind);
-    });
-  };
+  setRequestUIBusy(body, ui, conversationKey, "Preparing retry...");
+  const { refreshChatSafely, setStatusSafely } = createPanelUpdateHelpers(
+    body,
+    item,
+    conversationKey,
+    ui,
+  );
 
   const historyForLLM = history
     .slice(0, retryPair.userIndex)
@@ -1223,39 +1330,25 @@ export async function retryLatestAssistantResponse(
     reconstructRetryPayload(retryPair.userMessage);
   if (!question.trim()) {
     setStatusSafely("Nothing to retry for latest turn", "error");
-    withScrollGuard(chatBox, conversationKey, () => {
-      if (inputBox) {
-        inputBox.disabled = false;
-        inputBox.focus({ preventScroll: true });
-      }
-      if (sendBtn) sendBtn.style.display = "";
-      if (cancelBtn) cancelBtn.style.display = "none";
-    });
+    restoreRequestUIIdle(ui, conversationKey, thisRequestId);
     setHistoryControlsDisabled(body, false);
     return;
   }
 
-  const fallbackProfile = getSelectedProfileForItem(item.id);
-  const effectiveModel = (
-    model ||
-    fallbackProfile.model ||
-    getStringPref("modelPrimary") ||
-    getStringPref("model") ||
-    "gpt-4o-mini"
-  ).trim();
-  const effectiveApiBase = (apiBase || fallbackProfile.apiBase).trim();
-  const effectiveApiKey = (apiKey || fallbackProfile.apiKey).trim();
-  const effectiveReasoning =
-    reasoning ||
-    getSelectedReasoningForItem(item.id, effectiveModel, effectiveApiBase);
-  const effectiveAdvanced =
-    advanced || getAdvancedModelParamsForProfile(fallbackProfile.key);
+  const effectiveRequestConfig = resolveEffectiveRequestConfig({
+    item,
+    model,
+    apiBase,
+    apiKey,
+    reasoning,
+    advanced,
+  });
 
   const assistantMessage = retryPair.assistantMessage;
   const assistantSnapshot = takeAssistantSnapshot(assistantMessage);
   assistantMessage.text = "";
   assistantMessage.timestamp = Date.now();
-  assistantMessage.modelName = effectiveModel;
+  assistantMessage.modelName = effectiveRequestConfig.model;
   assistantMessage.reasoningSummary = undefined;
   assistantMessage.reasoningDetails = undefined;
   assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
@@ -1268,61 +1361,22 @@ export async function retryLatestAssistantResponse(
   };
 
   try {
-    const contextSource = resolveContextSourceItem(item);
-    setStatusSafely(contextSource.statusText, "sending");
-
-    const hasSupplementalPaperContexts = paperContexts.length > 0;
-    let pdfContext = "";
-    if (contextSource.contextItem) {
-      await ensurePDFTextCached(contextSource.contextItem);
-      pdfContext = await buildContext(
-        pdfTextCache.get(contextSource.contextItem.id),
-        question,
-        screenshotImages.length > 0,
-        { apiBase: effectiveApiBase, apiKey: effectiveApiKey },
-        {
-          forceRetrieval: hasSupplementalPaperContexts,
-          maxChunks: hasSupplementalPaperContexts
-            ? ACTIVE_PAPER_MULTI_CONTEXT_MAX_CHUNKS
-            : undefined,
-          maxLength: hasSupplementalPaperContexts
-            ? ACTIVE_PAPER_MULTI_CONTEXT_MAX_LENGTH
-            : undefined,
-        },
-      );
-    }
-    const supplementalPaperContext = hasSupplementalPaperContexts
-      ? await buildSupplementalPaperContext(paperContexts, question, {
-          apiBase: effectiveApiBase,
-          apiKey: effectiveApiKey,
-        })
-      : "";
-    if (hasSupplementalPaperContexts) {
-      setStatusSafely(
-        `Using ${paperContexts.length} supplemental paper context(s)`,
-        "sending",
-      );
-    }
-    const combinedContext = [pdfContext, supplementalPaperContext]
-      .map((entry) => sanitizeText(entry || "").trim())
-      .filter(Boolean)
-      .join("\n\n====================\n\n");
-
+    const combinedContext = await buildCombinedContextForRequest({
+      item,
+      question,
+      imageCount: screenshotImages.length,
+      paperContexts,
+      apiBase: effectiveRequestConfig.apiBase,
+      apiKey: effectiveRequestConfig.apiKey,
+      setStatusSafely,
+    });
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
 
     const AbortControllerCtor = getAbortController();
     setCurrentAbortController(
       AbortControllerCtor ? new AbortControllerCtor() : null,
     );
-    let refreshQueued = false;
-    const queueRefresh = () => {
-      if (refreshQueued) return;
-      refreshQueued = true;
-      setTimeout(() => {
-        refreshQueued = false;
-        refreshChatSafely();
-      }, 50);
-    };
+    const queueRefresh = createQueuedRefresh(refreshChatSafely);
 
     const answer = await callLLMStream(
       {
@@ -1332,12 +1386,12 @@ export async function retryLatestAssistantResponse(
         signal: currentAbortController?.signal,
         images: screenshotImages,
         attachments: fileAttachments,
-        model: effectiveModel,
-        apiBase: effectiveApiBase,
-        apiKey: effectiveApiKey,
-        reasoning: effectiveReasoning,
-        temperature: effectiveAdvanced?.temperature,
-        maxTokens: effectiveAdvanced?.maxTokens,
+        model: effectiveRequestConfig.model,
+        apiBase: effectiveRequestConfig.apiBase,
+        apiKey: effectiveRequestConfig.apiKey,
+        reasoning: effectiveRequestConfig.reasoning,
+        temperature: effectiveRequestConfig.advanced?.temperature,
+        maxTokens: effectiveRequestConfig.advanced?.maxTokens,
       },
       (delta) => {
         assistantMessage.text += sanitizeText(delta);
@@ -1372,7 +1426,7 @@ export async function retryLatestAssistantResponse(
     assistantMessage.text =
       sanitizeText(answer) || assistantMessage.text || "No response.";
     assistantMessage.timestamp = Date.now();
-    assistantMessage.modelName = effectiveModel;
+    assistantMessage.modelName = effectiveRequestConfig.model;
     assistantMessage.streaming = false;
     refreshChatSafely();
 
@@ -1408,19 +1462,7 @@ export async function retryLatestAssistantResponse(
     );
   } finally {
     setHistoryControlsDisabled(body, false);
-    if (cancelledRequestId < thisRequestId) {
-      withScrollGuard(chatBox, conversationKey, () => {
-        if (inputBox) {
-          inputBox.disabled = false;
-          inputBox.focus({ preventScroll: true });
-        }
-        if (sendBtn) {
-          sendBtn.style.display = "";
-          sendBtn.disabled = false;
-        }
-        if (cancelBtn) cancelBtn.style.display = "none";
-      });
-    }
+    restoreRequestUIIdle(ui, conversationKey, thisRequestId);
     setCurrentAbortController(null);
   }
 }
@@ -1441,45 +1483,23 @@ export async function sendQuestion(
   paperContexts?: PaperContextRef[],
   attachments?: ChatAttachment[],
 ) {
-  const inputBox = body.querySelector(
-    "#llm-input",
-  ) as HTMLTextAreaElement | null;
-  const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
-  const sendBtn = body.querySelector("#llm-send") as HTMLButtonElement | null;
-  const cancelBtn = body.querySelector(
-    "#llm-cancel",
-  ) as HTMLButtonElement | null;
-  const status = body.querySelector("#llm-status") as HTMLElement | null;
+  const ui = getPanelRequestUI(body);
 
   // Track this request
   const thisRequestId = nextRequestId();
   const initialConversationKey = getConversationKey(item);
 
   // Show cancel, hide send
-  withScrollGuard(chatBox, initialConversationKey, () => {
-    if (sendBtn) sendBtn.style.display = "none";
-    if (cancelBtn) cancelBtn.style.display = "";
-    if (inputBox) inputBox.disabled = true;
-    if (status) setStatus(status, "Preparing request...", "sending");
-  });
-  setHistoryControlsDisabled(body, true);
+  setRequestUIBusy(body, ui, initialConversationKey, "Preparing request...");
 
   await ensureConversationLoaded(item);
   const conversationKey = getConversationKey(item);
-  const refreshChatSafely = () => {
-    withScrollGuard(chatBox, conversationKey, () => {
-      refreshChat(body, item);
-    });
-  };
-  const setStatusSafely = (
-    text: string,
-    kind: Parameters<typeof setStatus>[2],
-  ) => {
-    if (!status) return;
-    withScrollGuard(chatBox, conversationKey, () => {
-      setStatus(status, text, kind);
-    });
-  };
+  const { refreshChatSafely, setStatusSafely } = createPanelUpdateHelpers(
+    body,
+    item,
+    conversationKey,
+    ui,
+  );
 
   // Add user message with attached selected text / screenshots metadata
   if (!chatHistory.has(conversationKey)) {
@@ -1488,21 +1508,14 @@ export async function sendQuestion(
   const history = chatHistory.get(conversationKey)!;
   const historyForLLM = history.slice(-MAX_HISTORY_MESSAGES);
   const requestFileAttachments = normalizeModelFileAttachments(attachments);
-  const fallbackProfile = getSelectedProfileForItem(item.id);
-  const effectiveModel = (
-    model ||
-    fallbackProfile.model ||
-    getStringPref("modelPrimary") ||
-    getStringPref("model") ||
-    "gpt-4o-mini"
-  ).trim();
-  const effectiveApiBase = (apiBase || fallbackProfile.apiBase).trim();
-  const effectiveApiKey = (apiKey || fallbackProfile.apiKey).trim();
-  const effectiveReasoning =
-    reasoning ||
-    getSelectedReasoningForItem(item.id, effectiveModel, effectiveApiBase);
-  const effectiveAdvanced =
-    advanced || getAdvancedModelParamsForProfile(fallbackProfile.key);
+  const effectiveRequestConfig = resolveEffectiveRequestConfig({
+    item,
+    model,
+    apiBase,
+    apiKey,
+    reasoning,
+    advanced,
+  });
   const shownQuestion = displayQuestion || question;
   const selectedTextsForMessage = normalizeSelectedTexts(selectedTexts);
   const selectedTextSourcesForMessage = normalizeSelectedTextSources(
@@ -1561,7 +1574,7 @@ export async function sendQuestion(
     role: "assistant",
     text: "",
     timestamp: Date.now(),
-    modelName: effectiveModel,
+    modelName: effectiveRequestConfig.model,
     streaming: true,
     reasoningOpen: isReasoningExpandedByDefault(),
   };
@@ -1596,45 +1609,15 @@ export async function sendQuestion(
   };
 
   try {
-    const contextSource = resolveContextSourceItem(item);
-    setStatusSafely(contextSource.statusText, "sending");
-
-    const hasSupplementalPaperContexts = paperContextsForMessage.length > 0;
-    let pdfContext = "";
-    if (contextSource.contextItem) {
-      await ensurePDFTextCached(contextSource.contextItem);
-      pdfContext = await buildContext(
-        pdfTextCache.get(contextSource.contextItem.id),
-        question,
-        imageCount > 0,
-        { apiBase: effectiveApiBase, apiKey: effectiveApiKey },
-        {
-          forceRetrieval: hasSupplementalPaperContexts,
-          maxChunks: hasSupplementalPaperContexts
-            ? ACTIVE_PAPER_MULTI_CONTEXT_MAX_CHUNKS
-            : undefined,
-          maxLength: hasSupplementalPaperContexts
-            ? ACTIVE_PAPER_MULTI_CONTEXT_MAX_LENGTH
-            : undefined,
-        },
-      );
-    }
-    const supplementalPaperContext = hasSupplementalPaperContexts
-      ? await buildSupplementalPaperContext(paperContextsForMessage, question, {
-          apiBase: effectiveApiBase,
-          apiKey: effectiveApiKey,
-        })
-      : "";
-    if (hasSupplementalPaperContexts) {
-      setStatusSafely(
-        `Using ${paperContextsForMessage.length} supplemental paper context(s)`,
-        "sending",
-      );
-    }
-    const combinedContext = [pdfContext, supplementalPaperContext]
-      .map((entry) => sanitizeText(entry || "").trim())
-      .filter(Boolean)
-      .join("\n\n====================\n\n");
+    const combinedContext = await buildCombinedContextForRequest({
+      item,
+      question,
+      imageCount,
+      paperContexts: paperContextsForMessage,
+      apiBase: effectiveRequestConfig.apiBase,
+      apiKey: effectiveRequestConfig.apiKey,
+      setStatusSafely,
+    });
 
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
 
@@ -1642,15 +1625,7 @@ export async function sendQuestion(
     setCurrentAbortController(
       AbortControllerCtor ? new AbortControllerCtor() : null,
     );
-    let refreshQueued = false;
-    const queueRefresh = () => {
-      if (refreshQueued) return;
-      refreshQueued = true;
-      setTimeout(() => {
-        refreshQueued = false;
-        refreshChatSafely();
-      }, 50);
-    };
+    const queueRefresh = createQueuedRefresh(refreshChatSafely);
 
     const answer = await callLLMStream(
       {
@@ -1660,12 +1635,12 @@ export async function sendQuestion(
         signal: currentAbortController?.signal,
         images: images,
         attachments: requestFileAttachments,
-        model: effectiveModel,
-        apiBase: effectiveApiBase,
-        apiKey: effectiveApiKey,
-        reasoning: effectiveReasoning,
-        temperature: effectiveAdvanced?.temperature,
-        maxTokens: effectiveAdvanced?.maxTokens,
+        model: effectiveRequestConfig.model,
+        apiBase: effectiveRequestConfig.apiBase,
+        apiKey: effectiveRequestConfig.apiKey,
+        reasoning: effectiveRequestConfig.reasoning,
+        temperature: effectiveRequestConfig.advanced?.temperature,
+        maxTokens: effectiveRequestConfig.advanced?.maxTokens,
       },
       (delta) => {
         assistantMessage.text += sanitizeText(delta);
@@ -1723,20 +1698,7 @@ export async function sendQuestion(
     setStatusSafely(`Error: ${`${errMsg}${retryHint}`.slice(0, 40)}`, "error");
   } finally {
     setHistoryControlsDisabled(body, false);
-    // Only restore UI if this is still the current request
-    if (cancelledRequestId < thisRequestId) {
-      withScrollGuard(chatBox, conversationKey, () => {
-        if (inputBox) {
-          inputBox.disabled = false;
-          inputBox.focus({ preventScroll: true });
-        }
-        if (sendBtn) {
-          sendBtn.style.display = "";
-          sendBtn.disabled = false;
-        }
-        if (cancelBtn) cancelBtn.style.display = "none";
-      });
-    }
+    restoreRequestUIIdle(ui, conversationKey, thisRequestId);
     setCurrentAbortController(null);
   }
 }

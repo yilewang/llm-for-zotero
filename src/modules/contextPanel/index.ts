@@ -50,6 +50,10 @@ import {
   applySelectedTextPreview,
 } from "./contextResolution";
 import { ensurePDFTextCached } from "./pdfContext";
+import {
+  getFirstSelectionFromReader,
+  getSelectionFromDocument,
+} from "./readerSelection";
 
 // =============================================================================
 // Public API
@@ -138,39 +142,17 @@ export function registerReaderSelectionTracking() {
   const handler: _ZoteroTypes.Reader.EventHandler<
     "renderTextSelectionPopup"
   > = (event) => {
-    const selectionFrom = (doc?: Document | null): string => {
-      if (!doc) return "";
-      const raw = doc.defaultView?.getSelection?.()?.toString() || "";
-      return normalizeSelectedText(raw);
-    };
     const selectedText = (() => {
       const fromAnnotation = normalizeSelectedText(
         event.params?.annotation?.text || "",
       );
       if (fromAnnotation) return fromAnnotation;
-      const fromPopupDoc = selectionFrom(event.doc);
+      const fromPopupDoc = getSelectionFromDocument(
+        event.doc,
+        normalizeSelectedText,
+      );
       if (fromPopupDoc) return fromPopupDoc;
-      const reader = event.reader as any;
-      const readerDoc =
-        (reader?._iframeWindow?.document as Document | undefined) ||
-        (reader?._iframe?.contentDocument as Document | undefined) ||
-        (reader?._window?.document as Document | undefined);
-      const fromReaderDoc = selectionFrom(readerDoc);
-      if (fromReaderDoc) return fromReaderDoc;
-      const internalReader = reader?._internalReader;
-      const views = [
-        internalReader?._primaryView,
-        internalReader?._secondaryView,
-      ];
-      for (const view of views) {
-        if (!view) continue;
-        const viewDoc =
-          (view._iframeWindow?.document as Document | undefined) ||
-          (view._iframe?.contentDocument as Document | undefined);
-        const fromView = selectionFrom(viewDoc);
-        if (fromView) return fromView;
-      }
-      return "";
+      return getFirstSelectionFromReader(event.reader as any, normalizeSelectedText);
     })();
     const itemId = event.reader?._item?.id || event.reader?.itemID;
     if (typeof itemId !== "number") return;
@@ -186,7 +168,10 @@ export function registerReaderSelectionTracking() {
       `${popupPrefValue || ""}`.toLowerCase() !== "false";
 
     const resolveSelectedTextForPopupAction = (): string => {
-      const fromPopupDoc = selectionFrom(event.doc);
+      const fromPopupDoc = getSelectionFromDocument(
+        event.doc,
+        normalizeSelectedText,
+      );
       if (fromPopupDoc) return fromPopupDoc;
       const fromParams = normalizeSelectedText(
         (event.params as unknown as { text?: string; selectedText?: string })
@@ -200,23 +185,11 @@ export function registerReaderSelectionTracking() {
         event.params?.annotation?.text || "",
       );
       if (fromAnnotation) return fromAnnotation;
-      const reader = event.reader as any;
-      const readerDoc =
-        (reader?._iframeWindow?.document as Document | undefined) ||
-        (reader?._iframe?.contentDocument as Document | undefined) ||
-        (reader?._window?.document as Document | undefined);
-      const fromReaderDoc = selectionFrom(readerDoc);
-      if (fromReaderDoc) return fromReaderDoc;
-      const internalReader = reader?._internalReader;
-      const views = [internalReader?._primaryView, internalReader?._secondaryView];
-      for (const view of views) {
-        if (!view) continue;
-        const viewDoc =
-          (view._iframeWindow?.document as Document | undefined) ||
-          (view._iframe?.contentDocument as Document | undefined);
-        const fromView = selectionFrom(viewDoc);
-        if (fromView) return fromView;
-      }
+      const fromReader = getFirstSelectionFromReader(
+        event.reader as any,
+        normalizeSelectedText,
+      );
+      if (fromReader) return fromReader;
       for (const key of keys) {
         const cached = normalizeSelectedText(
           recentReaderSelectionCache.get(key) || "",

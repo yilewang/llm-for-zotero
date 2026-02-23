@@ -1,9 +1,9 @@
 import {
   ATTACHMENT_BLOBS_TABLE,
   extractManagedBlobHash,
-  fileUrlToPath,
   removeAttachmentFile,
 } from "../modules/contextPanel/attachmentStorage";
+import { fileUrlToPath } from "./pathFileUrl";
 
 export type AttachmentRefOwnerType = "conversation" | "note";
 
