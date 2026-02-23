@@ -2564,7 +2564,7 @@ export function setupHandlers(
         getComputedSizePx(style, "border-left-width") +
         getComputedSizePx(style, "border-right-width");
       const chevronAllowance =
-        button === modelBtn || button === reasoningBtn ? 4 : 0;
+        button === modelBtn || button === reasoningBtn ? 16 : 0;
       return Math.ceil(
         wrappedTextWidth + paddingWidth + borderWidth + chevronAllowance,
       );
@@ -2923,11 +2923,33 @@ export function setupHandlers(
     return typeof me.button !== "number" || me.button === 0;
   };
 
+  const appendDropdownInstruction = (
+    menu: HTMLDivElement,
+    text: string,
+    className: string,
+  ) => {
+    const hint = createElement(
+      body.ownerDocument as Document,
+      "div",
+      className,
+      {
+        textContent: text,
+      },
+    );
+    hint.setAttribute("aria-hidden", "true");
+    menu.appendChild(hint);
+  };
+
   const rebuildModelMenu = () => {
     if (!item || !modelMenu) return;
     const { choices, selected } = getSelectedModelInfo();
 
     modelMenu.innerHTML = "";
+    appendDropdownInstruction(
+      modelMenu,
+      "Select model",
+      "llm-model-menu-hint",
+    );
     for (const entry of choices) {
       const isSelected = entry.key === selected;
       const option = createElement(
@@ -3085,6 +3107,11 @@ export function setupHandlers(
     const { provider, currentModel, options, selectedLevel } =
       getReasoningState();
     reasoningMenu.innerHTML = "";
+    appendDropdownInstruction(
+      reasoningMenu,
+      "Reasoning level",
+      "llm-reasoning-menu-hint",
+    );
     for (const optionState of options) {
       const level = optionState.level;
       const option = createElement(
