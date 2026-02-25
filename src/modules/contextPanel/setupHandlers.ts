@@ -34,6 +34,10 @@ import {
   selectedFilePreviewExpandedCache,
   selectedPaperContextCache,
   selectedPaperPreviewExpandedCache,
+  pinnedSelectedTextKeys,
+  pinnedImageKeys,
+  pinnedFileKeys,
+  pinnedPaperKeys,
   setCancelledRequestId,
   currentAbortController,
   panelFontScalePercent,
@@ -201,16 +205,34 @@ import {
   resolvePaperContextDisplayMetadata,
 } from "./setupHandlers/controllers/composeContextController";
 import {
+  clearPinnedContextOwner,
+  isPinnedFile,
+  isPinnedImage,
+  isPinnedPaper,
+  prunePinnedFileKeys,
+  prunePinnedImageKeys,
+  prunePinnedPaperKeys,
+  removePinnedFile,
+  removePinnedImage,
+  removePinnedPaper,
+  removePinnedSelectedText,
+  retainPinnedFiles,
+  retainPinnedImages,
+  retainPinnedPapers,
+  retainPinnedSelectedTextContexts,
+  togglePinnedFile,
+  togglePinnedImage,
+  togglePinnedPaper,
+  togglePinnedSelectedText,
+} from "./setupHandlers/controllers/pinnedContextController";
+import {
   createFileIntakeController,
   extractFilesFromClipboard,
   isFileDragEvent,
 } from "./setupHandlers/controllers/fileIntakeController";
 import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
 
-export function setupHandlers(
-  body: Element,
-  initialItem?: Zotero.Item | null,
-) {
+export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   let item = initialItem || null;
   const resolveBasePaperItem = (
     targetItem: Zotero.Item | null | undefined,
@@ -254,7 +276,9 @@ export function setupHandlers(
       const rememberedPaperKey = Number(
         activePaperConversationByPaper.get(
           buildPaperStateKey(libraryID, paperItemID),
-        ) || getLastUsedPaperConversationKey(libraryID, paperItemID) || 0,
+        ) ||
+          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
+          0,
       );
       if (
         Number.isFinite(rememberedPaperKey) &&
@@ -356,7 +380,9 @@ export function setupHandlers(
   const ElementCtor = panelDoc.defaultView?.Element;
   const isElementNode = (value: unknown): value is Element =>
     Boolean(ElementCtor && value instanceof ElementCtor);
-  const headerTop = body.querySelector(".llm-header-top") as HTMLDivElement | null;
+  const headerTop = body.querySelector(
+    ".llm-header-top",
+  ) as HTMLDivElement | null;
   panelRoot.tabIndex = 0;
   applyPanelFontScale(panelRoot);
 
@@ -394,7 +420,12 @@ export function setupHandlers(
   const getTextContextConversationKey = (): number | null =>
     item ? getConversationKey(item) : null;
   const updateHistoryModeIndicatorPosition = () => {
-    if (!historyModeIndicator || !historyToggleBtn || !exportBtn || !headerTop) {
+    if (
+      !historyModeIndicator ||
+      !historyToggleBtn ||
+      !exportBtn ||
+      !headerTop
+    ) {
       return;
     }
     if (!historyBar || historyBar.style.display === "none") return;
@@ -420,7 +451,11 @@ export function setupHandlers(
     const minLeft = historyRect.right - hostRect.left + 8;
     const maxLeft = exportRect.left - hostRect.left - indicatorWidth - 8;
     let left = midpoint - hostRect.left - indicatorWidth / 2;
-    if (Number.isFinite(minLeft) && Number.isFinite(maxLeft) && maxLeft >= minLeft) {
+    if (
+      Number.isFinite(minLeft) &&
+      Number.isFinite(maxLeft) &&
+      maxLeft >= minLeft
+    ) {
       left = clampNumber(left, minLeft, maxLeft);
     } else {
       left = clampNumber(left, 0, Math.max(0, hostRect.width - indicatorWidth));
@@ -613,9 +648,10 @@ export function setupHandlers(
   const closeExportMenu = () => {
     if (exportMenu) exportMenu.style.display = "none";
   };
-  let historyRowMenuTarget:
-    | { kind: "paper" | "global"; conversationKey: number }
-    | null = null;
+  let historyRowMenuTarget: {
+    kind: "paper" | "global";
+    conversationKey: number;
+  } | null = null;
   const closeHistoryRowMenu = () => {
     if (historyRowMenu) historyRowMenu.style.display = "none";
     historyRowMenuTarget = null;
@@ -1080,7 +1116,10 @@ export function setupHandlers(
         const textContextKey = getTextContextConversationKey();
         if (!textContextKey) return;
         if (restoredSelectedEntries.length) {
-          setSelectedTextContextEntries(textContextKey, restoredSelectedEntries);
+          setSelectedTextContextEntries(
+            textContextKey,
+            restoredSelectedEntries,
+          );
         } else {
           clearSelectedTextState(textContextKey);
         }
@@ -1277,20 +1316,84 @@ export function setupHandlers(
     selectedImageCache.delete(itemId);
     selectedImagePreviewExpandedCache.delete(itemId);
     selectedImagePreviewActiveIndexCache.delete(itemId);
+    clearPinnedContextOwner(pinnedImageKeys, itemId);
   };
 
   const clearSelectedFileState = (itemId: number) => {
     selectedFileAttachmentCache.delete(itemId);
     selectedFilePreviewExpandedCache.delete(itemId);
+    clearPinnedContextOwner(pinnedFileKeys, itemId);
   };
 
   const clearSelectedPaperState = (itemId: number) => {
     selectedPaperContextCache.delete(itemId);
     selectedPaperPreviewExpandedCache.delete(itemId);
+    clearPinnedContextOwner(pinnedPaperKeys, itemId);
   };
 
   const clearSelectedTextState = (itemId: number) => {
     setSelectedTextContexts(itemId, []);
+    setSelectedTextExpandedIndex(itemId, null);
+    clearPinnedContextOwner(pinnedSelectedTextKeys, itemId);
+  };
+  const retainPinnedImageState = (itemId: number) => {
+    const retained = retainPinnedImages(
+      pinnedImageKeys,
+      itemId,
+      selectedImageCache.get(itemId) || [],
+    );
+    if (retained.length) {
+      selectedImageCache.set(itemId, retained);
+      const currentActiveIndex =
+        selectedImagePreviewActiveIndexCache.get(itemId);
+      const normalizedActiveIndex =
+        typeof currentActiveIndex === "number" &&
+        Number.isFinite(currentActiveIndex)
+          ? Math.max(
+              0,
+              Math.min(retained.length - 1, Math.floor(currentActiveIndex)),
+            )
+          : 0;
+      selectedImagePreviewActiveIndexCache.set(itemId, normalizedActiveIndex);
+      return;
+    }
+    selectedImageCache.delete(itemId);
+    selectedImagePreviewExpandedCache.delete(itemId);
+    selectedImagePreviewActiveIndexCache.delete(itemId);
+  };
+  const retainPinnedFileState = (itemId: number) => {
+    const retained = retainPinnedFiles(
+      pinnedFileKeys,
+      itemId,
+      selectedFileAttachmentCache.get(itemId) || [],
+    );
+    if (retained.length) {
+      selectedFileAttachmentCache.set(itemId, retained);
+      return;
+    }
+    selectedFileAttachmentCache.delete(itemId);
+    selectedFilePreviewExpandedCache.delete(itemId);
+  };
+  const retainPinnedPaperState = (itemId: number) => {
+    const retained = retainPinnedPapers(
+      pinnedPaperKeys,
+      itemId,
+      normalizePaperContextEntries(selectedPaperContextCache.get(itemId) || []),
+    );
+    if (retained.length) {
+      selectedPaperContextCache.set(itemId, retained);
+      return;
+    }
+    selectedPaperContextCache.delete(itemId);
+    selectedPaperPreviewExpandedCache.delete(itemId);
+  };
+  const retainPinnedTextState = (itemId: number) => {
+    const retained = retainPinnedSelectedTextContexts(
+      pinnedSelectedTextKeys,
+      itemId,
+      getSelectedTextContextEntries(itemId),
+    );
+    setSelectedTextContextEntries(itemId, retained);
     setSelectedTextExpandedIndex(itemId, null);
   };
   const clearTransientComposeStateForItem = (itemId: number) => {
@@ -1324,9 +1427,15 @@ export function setupHandlers(
     ownerDoc: Document,
     list: HTMLDivElement,
     paperContext: PaperContextRef,
-    options?: { removable?: boolean; removableIndex?: number; autoLoaded?: boolean },
+    options?: {
+      removable?: boolean;
+      removableIndex?: number;
+      autoLoaded?: boolean;
+      pinned?: boolean;
+    },
   ) => {
     const removable = options?.removable === true;
+    const pinned = options?.pinned === true;
     const chip = createElement(
       ownerDoc,
       "div",
@@ -1339,6 +1448,8 @@ export function setupHandlers(
     if (removable) {
       chip.dataset.paperContextIndex = `${options?.removableIndex ?? -1}`;
     }
+    chip.dataset.pinned = pinned ? "true" : "false";
+    chip.classList.toggle("llm-paper-context-chip-pinned", pinned);
     chip.classList.add("collapsed");
 
     const chipHeader = createElement(
@@ -1379,22 +1490,24 @@ export function setupHandlers(
 
   const updatePaperPreview = () => {
     if (!item || !paperPreview || !paperPreviewList) return;
+    const itemId = item.id;
     const selectedPapers = normalizePaperContextEntries(
-      selectedPaperContextCache.get(item.id) || [],
+      selectedPaperContextCache.get(itemId) || [],
     );
+    prunePinnedPaperKeys(pinnedPaperKeys, itemId, selectedPapers);
     const autoLoadedPaperContext = resolveAutoLoadedPaperContext();
     if (!selectedPapers.length && !autoLoadedPaperContext) {
       paperPreview.style.display = "none";
       paperPreviewList.innerHTML = "";
-      clearSelectedPaperState(item.id);
+      clearSelectedPaperState(itemId);
       return;
     }
     if (selectedPapers.length) {
-      selectedPaperContextCache.set(item.id, selectedPapers);
+      selectedPaperContextCache.set(itemId, selectedPapers);
     } else {
-      clearSelectedPaperState(item.id);
+      clearSelectedPaperState(itemId);
     }
-    selectedPaperPreviewExpandedCache.set(item.id, false);
+    selectedPaperPreviewExpandedCache.set(itemId, false);
     paperPreview.style.display = "contents";
     paperPreviewList.style.display = "contents";
     paperPreviewList.innerHTML = "";
@@ -1403,12 +1516,14 @@ export function setupHandlers(
     if (autoLoadedPaperContext) {
       appendPaperChip(ownerDoc, paperPreviewList, autoLoadedPaperContext, {
         autoLoaded: true,
+        pinned: true,
       });
     }
     selectedPapers.forEach((paperContext, index) => {
       appendPaperChip(ownerDoc, paperPreviewList, paperContext, {
         removable: true,
         removableIndex: index,
+        pinned: isPinnedPaper(pinnedPaperKeys, itemId, paperContext),
       });
     });
   };
@@ -1422,7 +1537,9 @@ export function setupHandlers(
       !filePreviewList
     )
       return;
-    const files = selectedFileAttachmentCache.get(item.id) || [];
+    const itemId = item.id;
+    const files = selectedFileAttachmentCache.get(itemId) || [];
+    prunePinnedFileKeys(pinnedFileKeys, itemId, files);
     if (!files.length) {
       filePreview.style.display = "none";
       filePreview.classList.remove("expanded", "collapsed");
@@ -1430,15 +1547,15 @@ export function setupHandlers(
       filePreviewMeta.textContent = formatFileCountLabel(0);
       filePreviewMeta.classList.remove("expanded");
       filePreviewMeta.setAttribute("aria-expanded", "false");
-      filePreviewMeta.title = "Pin files panel";
+      filePreviewMeta.title = "Expand files panel";
       filePreviewList.innerHTML = "";
-      clearSelectedFileState(item.id);
+      clearSelectedFileState(itemId);
       return;
     }
-    let expanded = selectedFilePreviewExpandedCache.get(item.id);
+    let expanded = selectedFilePreviewExpandedCache.get(itemId);
     if (typeof expanded !== "boolean") {
       expanded = false;
-      selectedFilePreviewExpandedCache.set(item.id, false);
+      selectedFilePreviewExpandedCache.set(itemId, false);
     }
     filePreview.style.display = "flex";
     filePreview.classList.toggle("expanded", expanded);
@@ -1447,12 +1564,18 @@ export function setupHandlers(
     filePreviewMeta.textContent = formatFileCountLabel(files.length);
     filePreviewMeta.classList.toggle("expanded", expanded);
     filePreviewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
-    filePreviewMeta.title = expanded ? "Unpin files panel" : "Pin files panel";
+    filePreviewMeta.title = expanded
+      ? "Collapse files panel"
+      : "Expand files panel";
     filePreviewList.innerHTML = "";
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc) return;
     files.forEach((attachment, index) => {
       const row = createElement(ownerDoc, "div", "llm-file-context-item");
+      row.dataset.fileContextIndex = `${index}`;
+      const pinned = isPinnedFile(pinnedFileKeys, itemId, attachment);
+      row.classList.toggle("llm-file-context-item-pinned", pinned);
+      row.dataset.pinned = pinned ? "true" : "false";
       const type = createElement(ownerDoc, "span", "llm-file-context-type", {
         textContent: getAttachmentTypeLabel(attachment),
         title: attachment.mimeType || attachment.category || "file",
@@ -1487,6 +1610,9 @@ export function setupHandlers(
         const currentFiles = selectedFileAttachmentCache.get(item.id) || [];
         const removedEntry = currentFiles[index];
         const nextFiles = currentFiles.filter((_entry, i) => i !== index);
+        if (removedEntry) {
+          removePinnedFile(pinnedFileKeys, item.id, removedEntry);
+        }
         if (nextFiles.length) {
           selectedFileAttachmentCache.set(item.id, nextFiles);
         } else {
@@ -1544,6 +1670,7 @@ export function setupHandlers(
       clearSelectedImageState(item.id);
       selectedImages = [];
     }
+    prunePinnedImageKeys(pinnedImageKeys, item.id, selectedImages);
     if (selectedImages.length) {
       const imageCount = selectedImages.length;
       let expanded = selectedImagePreviewExpandedCache.get(item.id);
@@ -1566,8 +1693,8 @@ export function setupHandlers(
       previewMeta.classList.toggle("expanded", expanded);
       previewMeta.setAttribute("aria-expanded", expanded ? "true" : "false");
       previewMeta.title = expanded
-        ? "Unpin figures panel"
-        : "Pin figures panel";
+        ? "Collapse figures panel"
+        : "Expand figures panel";
 
       imagePreview.style.display = "flex";
       imagePreview.classList.toggle("expanded", expanded);
@@ -1579,6 +1706,10 @@ export function setupHandlers(
       previewStrip.innerHTML = "";
       for (const [index, imageUrl] of selectedImages.entries()) {
         const thumbItem = createElement(ownerDoc, "div", "llm-preview-item");
+        thumbItem.dataset.imageContextIndex = `${index}`;
+        const pinned = isPinnedImage(pinnedImageKeys, item.id, imageUrl);
+        thumbItem.classList.toggle("llm-preview-item-pinned", pinned);
+        thumbItem.dataset.pinned = pinned ? "true" : "false";
         const thumbBtn = createElement(
           ownerDoc,
           "button",
@@ -1621,6 +1752,10 @@ export function setupHandlers(
           if (!item) return;
           const currentImages = selectedImageCache.get(item.id) || [];
           if (index < 0 || index >= currentImages.length) return;
+          const removedImage = currentImages[index];
+          if (removedImage) {
+            removePinnedImage(pinnedImageKeys, item.id, removedImage);
+          }
           const nextImages = currentImages.filter((_, i) => i !== index);
           if (nextImages.length) {
             selectedImageCache.set(item.id, nextImages);
@@ -1669,7 +1804,7 @@ export function setupHandlers(
       previewMeta.textContent = formatFigureCountLabel(0);
       previewMeta.classList.remove("expanded");
       previewMeta.setAttribute("aria-expanded", "false");
-      previewMeta.title = "Pin figures panel";
+      previewMeta.title = "Expand figures panel";
       clearSelectedImageState(item.id);
       screenshotBtn.disabled = screenshotUnsupported;
       screenshotBtn.title = screenshotUnsupported
@@ -1879,10 +2014,7 @@ export function setupHandlers(
               title: "Delete conversation",
             },
           ) as HTMLButtonElement;
-          deleteBtn.setAttribute(
-            "aria-label",
-            `Delete ${entry.title}`,
-          );
+          deleteBtn.setAttribute("aria-label", `Delete ${entry.title}`);
           deleteBtn.dataset.action = "delete";
           row.appendChild(deleteBtn);
         }
@@ -2005,7 +2137,9 @@ export function setupHandlers(
         if (seenGlobalKeys.has(normalizedKey)) continue;
         seenGlobalKeys.add(normalizedKey);
         const title = normalizeHistoryTitle(entry.title) || "Untitled chat";
-        const lastActivity = Number(entry.lastActivityAt || entry.createdAt || 0);
+        const lastActivity = Number(
+          entry.lastActivityAt || entry.createdAt || 0,
+        );
         globalEntries.push({
           kind: "global",
           section: "open",
@@ -2027,15 +2161,21 @@ export function setupHandlers(
       if (isGlobalMode() && item && Number.isFinite(item.id) && item.id > 0) {
         activeGlobalKey = Math.floor(item.id);
       } else {
-        const remembered = Number(activeGlobalConversationByLibrary.get(libraryID));
+        const remembered = Number(
+          activeGlobalConversationByLibrary.get(libraryID),
+        );
         if (Number.isFinite(remembered) && remembered > 0) {
           activeGlobalKey = Math.floor(remembered);
         }
       }
-      if (activeGlobalKey > 0 && !pendingHistoryDeletionKeys.has(activeGlobalKey)) {
+      if (
+        activeGlobalKey > 0 &&
+        !pendingHistoryDeletionKeys.has(activeGlobalKey)
+      ) {
         let userTurnCount = 0;
         try {
-          userTurnCount = await getGlobalConversationUserTurnCount(activeGlobalKey);
+          userTurnCount =
+            await getGlobalConversationUserTurnCount(activeGlobalKey);
         } catch (err) {
           ztoolkit.log(
             "LLM: Failed to inspect active global draft conversation",
@@ -2102,7 +2242,9 @@ export function setupHandlers(
         ),
       },
     ]
-      .filter((entry) => visibleEntries.some((row) => row.section === entry.section))
+      .filter((entry) =>
+        visibleEntries.some((row) => row.section === entry.section),
+      )
       .sort((a, b) => {
         if (b.latestActivity !== a.latestActivity) {
           return b.latestActivity - a.latestActivity;
@@ -2135,7 +2277,10 @@ export function setupHandlers(
       ? Math.floor(nextConversationKey)
       : 0;
     if (normalizedConversationKey <= 0) return;
-    const nextItem = createGlobalPortalItem(libraryID, normalizedConversationKey);
+    const nextItem = createGlobalPortalItem(
+      libraryID,
+      normalizedConversationKey,
+    );
     item = nextItem;
     syncConversationIdentity();
     activeEditSession = null;
@@ -2176,13 +2321,21 @@ export function setupHandlers(
       const rememberedConversationKey = Number(
         activePaperConversationByPaper.get(
           buildPaperStateKey(libraryID, paperItemID),
-        ) || getLastUsedPaperConversationKey(libraryID, paperItemID) || 0,
+        ) ||
+          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
+          0,
       );
-      if (Number.isFinite(rememberedConversationKey) && rememberedConversationKey > 0) {
+      if (
+        Number.isFinite(rememberedConversationKey) &&
+        rememberedConversationKey > 0
+      ) {
         const rememberedSummary = await getPaperConversation(
           Math.floor(rememberedConversationKey),
         );
-        if (rememberedSummary && rememberedSummary.paperItemID === paperItemID) {
+        if (
+          rememberedSummary &&
+          rememberedSummary.paperItemID === paperItemID
+        ) {
           targetSummary = rememberedSummary;
         }
       }
@@ -2243,7 +2396,10 @@ export function setupHandlers(
         true,
       );
     } catch (err) {
-      ztoolkit.log("LLM: Failed to load fallback paper history candidates", err);
+      ztoolkit.log(
+        "LLM: Failed to load fallback paper history candidates",
+        err,
+      );
     }
     for (const summary of summaries) {
       const candidateKey = Number(summary.conversationKey);
@@ -2253,7 +2409,8 @@ export function setupHandlers(
       if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
       return { kind: "paper", conversationKey: normalizedKey };
     }
-    let createdSummary: Awaited<ReturnType<typeof createPaperConversation>> = null;
+    let createdSummary: Awaited<ReturnType<typeof createPaperConversation>> =
+      null;
     try {
       createdSummary = await createPaperConversation(libraryID, paperItemID);
     } catch (err) {
@@ -2286,8 +2443,9 @@ export function setupHandlers(
     libraryID: number,
     deletedConversationKey: number,
   ): Promise<HistorySwitchTarget> => {
-    let remainingHistorical: Awaited<ReturnType<typeof listGlobalConversations>> =
-      [];
+    let remainingHistorical: Awaited<
+      ReturnType<typeof listGlobalConversations>
+    > = [];
     try {
       remainingHistorical = await listGlobalConversations(
         libraryID,
@@ -2320,7 +2478,8 @@ export function setupHandlers(
     }
 
     const isEmptyDraft = async (conversationKey: number): Promise<boolean> => {
-      if (!Number.isFinite(conversationKey) || conversationKey <= 0) return false;
+      if (!Number.isFinite(conversationKey) || conversationKey <= 0)
+        return false;
       const normalizedKey = Math.floor(conversationKey);
       if (normalizedKey === deletedConversationKey) return false;
       if (pendingHistoryDeletionKeys.has(normalizedKey)) return false;
@@ -2336,7 +2495,9 @@ export function setupHandlers(
       }
     };
 
-    let candidateDraftKey = Number(activeGlobalConversationByLibrary.get(libraryID));
+    let candidateDraftKey = Number(
+      activeGlobalConversationByLibrary.get(libraryID),
+    );
     if (!(await isEmptyDraft(candidateDraftKey))) {
       candidateDraftKey = 0;
       try {
@@ -2408,16 +2569,16 @@ export function setupHandlers(
       await clearOwnerAttachmentRefs("conversation", conversationKey);
     } catch (err) {
       hasError = true;
-      ztoolkit.log(
-        "LLM: Failed to clear deleted history attachment refs",
-        err,
-      );
+      ztoolkit.log("LLM: Failed to clear deleted history attachment refs", err);
     }
     try {
       await removeConversationAttachmentFiles(conversationKey);
     } catch (err) {
       hasError = true;
-      ztoolkit.log("LLM: Failed to remove deleted history attachment files", err);
+      ztoolkit.log(
+        "LLM: Failed to remove deleted history attachment files",
+        err,
+      );
     }
     try {
       await deleteGlobalConversation(conversationKey);
@@ -2489,7 +2650,10 @@ export function setupHandlers(
       await deletePaperConversation(conversationKey);
     } catch (err) {
       hasError = true;
-      ztoolkit.log("LLM: Failed to delete paper conversation metadata row", err);
+      ztoolkit.log(
+        "LLM: Failed to delete paper conversation metadata row",
+        err,
+      );
     }
     scheduleAttachmentGc();
     if (hasError && status) {
@@ -2565,7 +2729,8 @@ export function setupHandlers(
     return (
       latestConversationHistory.find(
         (entry) =>
-          entry.kind === historyKind && entry.conversationKey === conversationKey,
+          entry.kind === historyKind &&
+          entry.conversationKey === conversationKey,
       ) || null
     );
   };
@@ -2584,7 +2749,11 @@ export function setupHandlers(
     const promptFn = panelWin?.prompt;
     if (typeof promptFn !== "function") {
       if (status) {
-        setStatus(status, "Rename prompt is unavailable in this window", "error");
+        setStatus(
+          status,
+          "Rename prompt is unavailable in this window",
+          "error",
+        );
       }
       return null;
     }
@@ -2602,7 +2771,11 @@ export function setupHandlers(
   const renameHistoryEntry = async (
     entry: ConversationHistoryEntry,
   ): Promise<void> => {
-    if (currentAbortController || historyToggleBtn?.disabled || inputBox?.disabled) {
+    if (
+      currentAbortController ||
+      historyToggleBtn?.disabled ||
+      inputBox?.disabled
+    ) {
       if (status) {
         setStatus(status, "History is unavailable while generating", "ready");
       }
@@ -2664,7 +2837,11 @@ export function setupHandlers(
       }
       if (!fallbackTarget) {
         if (status) {
-          setStatus(status, "Cannot delete active conversation right now", "error");
+          setStatus(
+            status,
+            "Cannot delete active conversation right now",
+            "error",
+          );
         }
         return;
       }
@@ -2701,12 +2878,17 @@ export function setupHandlers(
     });
     showHistoryUndoToast(entry.title);
     await refreshGlobalHistoryHeader();
-    if (status) setStatus(status, "Conversation deleted. Undo available.", "ready");
+    if (status)
+      setStatus(status, "Conversation deleted. Undo available.", "ready");
   };
 
   const createAndSwitchGlobalConversation = async () => {
     if (!item) return;
-    if (currentAbortController || historyNewBtn?.disabled || inputBox?.disabled) {
+    if (
+      currentAbortController ||
+      historyNewBtn?.disabled ||
+      inputBox?.disabled
+    ) {
       if (status) {
         setStatus(
           status,
@@ -2760,7 +2942,10 @@ export function setupHandlers(
           reuseReason = "latest-draft";
         }
       } catch (err) {
-        ztoolkit.log("LLM: Failed to load latest empty global conversation", err);
+        ztoolkit.log(
+          "LLM: Failed to load latest empty global conversation",
+          err,
+        );
       }
     }
 
@@ -2799,7 +2984,11 @@ export function setupHandlers(
 
   const createAndSwitchPaperConversation = async () => {
     if (!item) return;
-    if (currentAbortController || historyNewBtn?.disabled || inputBox?.disabled) {
+    if (
+      currentAbortController ||
+      historyNewBtn?.disabled ||
+      inputBox?.disabled
+    ) {
       if (status) {
         setStatus(
           status,
@@ -2826,7 +3015,8 @@ export function setupHandlers(
       }
       return;
     }
-    let createdSummary: Awaited<ReturnType<typeof createPaperConversation>> = null;
+    let createdSummary: Awaited<ReturnType<typeof createPaperConversation>> =
+      null;
     try {
       createdSummary = await createPaperConversation(libraryID, paperItemID);
     } catch (err) {
@@ -2868,10 +3058,18 @@ export function setupHandlers(
       e.preventDefault();
       e.stopPropagation();
       if (!item) return;
-      if (currentAbortController || historyNewBtn.disabled || inputBox?.disabled) {
+      if (
+        currentAbortController ||
+        historyNewBtn.disabled ||
+        inputBox?.disabled
+      ) {
         closeHistoryNewMenu();
         if (status) {
-          setStatus(status, "New chat is unavailable while generating", "ready");
+          setStatus(
+            status,
+            "New chat is unavailable while generating",
+            "ready",
+          );
         }
         return;
       }
@@ -2936,7 +3134,11 @@ export function setupHandlers(
       e.preventDefault();
       e.stopPropagation();
       if (!item) return;
-      if (currentAbortController || historyToggleBtn.disabled || inputBox?.disabled) {
+      if (
+        currentAbortController ||
+        historyToggleBtn.disabled ||
+        inputBox?.disabled
+      ) {
         closeHistoryNewMenu();
         closeHistoryMenu();
         if (status) {
@@ -2974,7 +3176,11 @@ export function setupHandlers(
     historyMenu.addEventListener("click", (e: Event) => {
       const target = e.target as Element | null;
       if (!target || !item) return;
-      if (currentAbortController || historyToggleBtn?.disabled || inputBox?.disabled) {
+      if (
+        currentAbortController ||
+        historyToggleBtn?.disabled ||
+        inputBox?.disabled
+      ) {
         e.preventDefault();
         e.stopPropagation();
         closeHistoryNewMenu();
@@ -2990,9 +3196,9 @@ export function setupHandlers(
         ".llm-history-row-delete",
       ) as HTMLButtonElement | null;
       if (deleteBtn) {
-        const row = deleteBtn.closest(".llm-history-menu-row") as
-          | HTMLDivElement
-          | null;
+        const row = deleteBtn.closest(
+          ".llm-history-menu-row",
+        ) as HTMLDivElement | null;
         if (!row) return;
         e.preventDefault();
         e.stopPropagation();
@@ -3006,7 +3212,8 @@ export function setupHandlers(
         ) {
           return;
         }
-        const historyKind = row.dataset.historyKind === "paper" ? "paper" : "global";
+        const historyKind =
+          row.dataset.historyKind === "paper" ? "paper" : "global";
         const entry = findHistoryEntryByKey(historyKind, parsedConversationKey);
         if (!entry || !entry.deletable) return;
         void queueHistoryDeletion(entry);
@@ -3017,7 +3224,9 @@ export function setupHandlers(
         ".llm-history-menu-row-main",
       ) as HTMLButtonElement | null;
       if (!rowMain) return;
-      const row = rowMain.closest(".llm-history-menu-row") as HTMLDivElement | null;
+      const row = rowMain.closest(
+        ".llm-history-menu-row",
+      ) as HTMLDivElement | null;
       if (!row) return;
       e.preventDefault();
       e.stopPropagation();
@@ -3025,10 +3234,14 @@ export function setupHandlers(
         row.dataset.conversationKey || "",
         10,
       );
-      if (!Number.isFinite(parsedConversationKey) || parsedConversationKey <= 0) {
+      if (
+        !Number.isFinite(parsedConversationKey) ||
+        parsedConversationKey <= 0
+      ) {
         return;
       }
-      const historyKind = row.dataset.historyKind === "paper" ? "paper" : "global";
+      const historyKind =
+        row.dataset.historyKind === "paper" ? "paper" : "global";
       void (async () => {
         if (historyKind === "paper") {
           await switchPaperConversation(parsedConversationKey);
@@ -3042,7 +3255,11 @@ export function setupHandlers(
     historyMenu.addEventListener("contextmenu", (e: Event) => {
       const target = e.target as Element | null;
       if (!target || !item) return;
-      if (currentAbortController || historyToggleBtn?.disabled || inputBox?.disabled) {
+      if (
+        currentAbortController ||
+        historyToggleBtn?.disabled ||
+        inputBox?.disabled
+      ) {
         e.preventDefault();
         e.stopPropagation();
         closeHistoryRowMenu();
@@ -3051,7 +3268,9 @@ export function setupHandlers(
         }
         return;
       }
-      const row = target.closest(".llm-history-menu-row") as HTMLDivElement | null;
+      const row = target.closest(
+        ".llm-history-menu-row",
+      ) as HTMLDivElement | null;
       if (!row) {
         closeHistoryRowMenu();
         return;
@@ -3060,11 +3279,15 @@ export function setupHandlers(
         row.dataset.conversationKey || "",
         10,
       );
-      if (!Number.isFinite(parsedConversationKey) || parsedConversationKey <= 0) {
+      if (
+        !Number.isFinite(parsedConversationKey) ||
+        parsedConversationKey <= 0
+      ) {
         closeHistoryRowMenu();
         return;
       }
-      const historyKind = row.dataset.historyKind === "paper" ? "paper" : "global";
+      const historyKind =
+        row.dataset.historyKind === "paper" ? "paper" : "global";
       const entry = findHistoryEntryByKey(historyKind, parsedConversationKey);
       if (!entry) {
         closeHistoryRowMenu();
@@ -3143,7 +3366,9 @@ export function setupHandlers(
       };
     }
     let selected =
-      getLastUsedModelProfileKey() || selectedModelCache.get(item.id) || "primary";
+      getLastUsedModelProfileKey() ||
+      selectedModelCache.get(item.id) ||
+      "primary";
     if (!choices.some((entry) => entry.key === selected)) {
       selected = choices[0]?.key || "primary";
     }
@@ -3690,11 +3915,7 @@ export function setupHandlers(
     const { choices, selected } = getSelectedModelInfo();
 
     modelMenu.innerHTML = "";
-    appendDropdownInstruction(
-      modelMenu,
-      "Select model",
-      "llm-model-menu-hint",
-    );
+    appendDropdownInstruction(modelMenu, "Select model", "llm-model-menu-hint");
     for (const entry of choices) {
       const isSelected = entry.key === selected;
       const option = createElement(
@@ -4171,7 +4392,9 @@ export function setupHandlers(
     }
     return -1;
   };
-  const findPaperPickerFirstAttachmentRowIndex = (groupIndex: number): number => {
+  const findPaperPickerFirstAttachmentRowIndex = (
+    groupIndex: number,
+  ): number => {
     for (let index = 0; index < paperPickerRows.length; index += 1) {
       const row = paperPickerRows[index];
       if (row.kind === "attachment" && row.groupIndex === groupIndex) {
@@ -4415,10 +4638,15 @@ export function setupHandlers(
           "div",
           "llm-paper-picker-group-title-line",
         );
-        const title = createElement(ownerDoc, "span", "llm-paper-picker-title", {
-          textContent: group.title,
-          title: group.title,
-        });
+        const title = createElement(
+          ownerDoc,
+          "span",
+          "llm-paper-picker-title",
+          {
+            textContent: group.title,
+            title: group.title,
+          },
+        );
         titleLine.appendChild(title);
         if (isMultiAttachment) {
           const attachmentCount = createElement(
@@ -4465,10 +4693,15 @@ export function setupHandlers(
           "div",
           "llm-paper-picker-attachment-main",
         );
-        const title = createElement(ownerDoc, "span", "llm-paper-picker-title", {
-          textContent: attachmentTitle,
-          title: attachmentTitle,
-        });
+        const title = createElement(
+          ownerDoc,
+          "span",
+          "llm-paper-picker-title",
+          {
+            textContent: attachmentTitle,
+            title: attachmentTitle,
+          },
+        );
         const meta = createElement(ownerDoc, "span", "llm-paper-picker-meta", {
           textContent: "PDF attachment",
         });
@@ -4709,10 +4942,10 @@ export function setupHandlers(
     getLatestEditablePair,
     editLatestUserMessageAndRetry,
     sendQuestion,
-    clearSelectedImageState,
-    clearSelectedPaperState,
-    clearSelectedFileState,
-    clearSelectedTextState,
+    retainPinnedImageState,
+    retainPinnedPaperState,
+    retainPinnedFileState,
+    retainPinnedTextState,
     updatePaperPreviewPreservingScroll,
     updateFilePreviewPreservingScroll,
     updateImagePreviewPreservingScroll,
@@ -4916,13 +5149,16 @@ export function setupHandlers(
       const selectedText = pendingSelectedText;
       pendingSelectedText = "";
       const activeReaderAttachment = getActiveContextAttachmentFromTabs();
-      const resolvedPaperContext =
-        resolvePaperContextRefFromAttachment(activeReaderAttachment);
+      const resolvedPaperContext = resolvePaperContextRefFromAttachment(
+        activeReaderAttachment,
+      );
       const textContextKey = getTextContextConversationKey();
       if (!textContextKey) return;
       if (!isGlobalMode()) {
         const activeBasePaperItemID = Number(
-          resolveCurrentPaperBaseItem()?.id || getPaperPortalBaseItemID(item) || 0,
+          resolveCurrentPaperBaseItem()?.id ||
+            getPaperPortalBaseItemID(item) ||
+            0,
         );
         const paperMismatch =
           !resolvedPaperContext ||
@@ -5073,7 +5309,11 @@ export function setupHandlers(
     inputBox.focus({ preventScroll: true });
     schedulePaperPickerSearch();
     if (status) {
-      setStatus(status, "Reference picker ready. Type to search papers.", "ready");
+      setStatus(
+        status,
+        "Reference picker ready. Type to search papers.",
+        "ready",
+      );
     }
   };
 
@@ -5671,6 +5911,83 @@ export function setupHandlers(
     });
   }
 
+  if (filePreviewList) {
+    filePreviewList.addEventListener("contextmenu", (e: Event) => {
+      if (!item) return;
+      const target = e.target as Element | null;
+      if (!target) return;
+      const row = target.closest(
+        ".llm-file-context-item",
+      ) as HTMLDivElement | null;
+      if (!row || !filePreviewList.contains(row)) return;
+      const index = Number.parseInt(row.dataset.fileContextIndex || "", 10);
+      const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
+      if (
+        !Number.isFinite(index) ||
+        index < 0 ||
+        index >= selectedFiles.length
+      ) {
+        return;
+      }
+      const targetFile = selectedFiles[index];
+      if (!targetFile) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const nextPinned = togglePinnedFile(pinnedFileKeys, item.id, targetFile);
+      updateFilePreviewPreservingScroll();
+      if (status) {
+        setStatus(
+          status,
+          nextPinned ? "File pinned for next sends" : "File unpinned",
+          "ready",
+        );
+      }
+    });
+  }
+
+  if (previewStrip) {
+    previewStrip.addEventListener("contextmenu", (e: Event) => {
+      if (!item) return;
+      const target = e.target as Element | null;
+      if (!target) return;
+      const thumbItem = target.closest(
+        ".llm-preview-item",
+      ) as HTMLDivElement | null;
+      if (!thumbItem || !previewStrip.contains(thumbItem)) return;
+      const index = Number.parseInt(
+        thumbItem.dataset.imageContextIndex || "",
+        10,
+      );
+      const selectedImages = selectedImageCache.get(item.id) || [];
+      if (
+        !Number.isFinite(index) ||
+        index < 0 ||
+        index >= selectedImages.length
+      ) {
+        return;
+      }
+      const targetImage = selectedImages[index];
+      if (!targetImage) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const nextPinned = togglePinnedImage(
+        pinnedImageKeys,
+        item.id,
+        targetImage,
+      );
+      updateImagePreviewPreservingScroll();
+      if (status) {
+        setStatus(
+          status,
+          nextPinned
+            ? "Screenshot pinned for next sends"
+            : "Screenshot unpinned",
+          "ready",
+        );
+      }
+    });
+  }
+
   if (paperPreview) {
     paperPreview.addEventListener("click", (e: Event) => {
       if (!item) return;
@@ -5696,6 +6013,7 @@ export function setupHandlers(
       ) {
         return;
       }
+      removePinnedPaper(pinnedPaperKeys, item.id, selectedPapers[index]);
       const nextPapers = selectedPapers.filter((_, i) => i !== index);
       if (nextPapers.length) {
         selectedPaperContextCache.set(item.id, nextPapers);
@@ -5707,6 +6025,50 @@ export function setupHandlers(
         setStatus(
           status,
           `Paper context removed (${nextPapers.length})`,
+          "ready",
+        );
+      }
+    });
+    paperPreview.addEventListener("contextmenu", (e: Event) => {
+      if (!item) return;
+      const target = e.target as Element | null;
+      if (!target) return;
+      const paperChip = target.closest(
+        ".llm-paper-context-chip",
+      ) as HTMLDivElement | null;
+      if (!paperChip || !paperPreview.contains(paperChip)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (paperChip.dataset.autoLoaded === "true") {
+        if (status) {
+          setStatus(status, "Default paper context is always pinned", "ready");
+        }
+        return;
+      }
+      const index = Number.parseInt(
+        paperChip.dataset.paperContextIndex || "",
+        10,
+      );
+      const selectedPapers = normalizePaperContextEntries(
+        selectedPaperContextCache.get(item.id) || [],
+      );
+      if (
+        !Number.isFinite(index) ||
+        index < 0 ||
+        index >= selectedPapers.length
+      ) {
+        return;
+      }
+      const nextPinned = togglePinnedPaper(
+        pinnedPaperKeys,
+        item.id,
+        selectedPapers[index],
+      );
+      updatePaperPreviewPreservingScroll();
+      if (status) {
+        setStatus(
+          status,
+          nextPinned ? "Paper pinned for next sends" : "Paper unpinned",
           "ready",
         );
       }
@@ -5736,6 +6098,11 @@ export function setupHandlers(
         ) {
           return;
         }
+        removePinnedSelectedText(
+          pinnedSelectedTextKeys,
+          textContextKey,
+          selectedContexts[index],
+        );
         const nextContexts = selectedContexts.filter((_, i) => i !== index);
         setSelectedTextContextEntries(textContextKey, nextContexts);
         setSelectedTextExpandedIndex(textContextKey, null);
@@ -5775,6 +6142,48 @@ export function setupHandlers(
       updateFilePreviewPreservingScroll();
       updateImagePreviewPreservingScroll();
       updateSelectedTextPreviewPreservingScroll();
+    });
+    selectedContextList.addEventListener("contextmenu", (e: Event) => {
+      if (!item) return;
+      const target = e.target as Element | null;
+      if (!target) return;
+      const selectedContext = target.closest(
+        ".llm-selected-context",
+      ) as HTMLDivElement | null;
+      if (!selectedContext || !selectedContextList.contains(selectedContext)) {
+        return;
+      }
+      const textContextKey = getTextContextConversationKey();
+      if (!textContextKey) return;
+      const index = Number.parseInt(
+        selectedContext.dataset.contextIndex || "",
+        10,
+      );
+      const selectedContexts = getSelectedTextContextEntries(textContextKey);
+      if (
+        !Number.isFinite(index) ||
+        index < 0 ||
+        index >= selectedContexts.length
+      ) {
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      const nextPinned = togglePinnedSelectedText(
+        pinnedSelectedTextKeys,
+        textContextKey,
+        selectedContexts[index],
+      );
+      updateSelectedTextPreviewPreservingScroll();
+      if (status) {
+        setStatus(
+          status,
+          nextPinned
+            ? "Text context pinned for next sends"
+            : "Text context unpinned",
+          "ready",
+        );
+      }
     });
   }
 

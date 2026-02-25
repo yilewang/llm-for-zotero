@@ -79,11 +79,18 @@ export const selectedFilePreviewExpandedCache = new Map<number, boolean>();
 export const selectedPaperContextCache = new Map<number, PaperContextRef[]>();
 export const selectedPaperPreviewExpandedCache = new Map<number, boolean>();
 export const activeGlobalConversationByLibrary = new Map<number, number>();
-export const activeConversationModeByLibrary = new Map<number, "paper" | "global">();
+export const activeConversationModeByLibrary = new Map<
+  number,
+  "paper" | "global"
+>();
 export const selectedTextCache = new Map<number, SelectedTextContext[]>();
 export const selectedTextPreviewExpandedCache = new Map<number, number>();
 export const selectedImagePreviewExpandedCache = new Map<number, boolean>();
 export const selectedImagePreviewActiveIndexCache = new Map<number, number>();
+export const pinnedSelectedTextKeys = new Map<number, Set<string>>();
+export const pinnedImageKeys = new Map<number, Set<string>>();
+export const pinnedFileKeys = new Map<number, Set<string>>();
+export const pinnedPaperKeys = new Map<number, Set<string>>();
 export const recentReaderSelectionCache = new Map<number, string>();
 
 export const activePaperConversationByPaper = new Map<string, number>();

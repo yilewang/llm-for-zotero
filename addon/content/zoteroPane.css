@@ -11,6 +11,12 @@
   --llm-fs-32: calc(32px * var(--llm-font-scale));
   --llm-screenshot-thumb-size: 56px;
   --llm-file-card-min-width: 184px;
+  --llm-pin-border-color: color-mix(
+    in srgb,
+    var(--color-accent) 55%,
+    var(--stroke-secondary)
+  );
+  --llm-pin-bg: color-mix(in srgb, var(--color-accent) 10%, transparent);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -518,7 +524,11 @@
 
 .llm-history-menu-row:hover {
   border-color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent10) 42%, var(--material-background));
+  background: color-mix(
+    in srgb,
+    var(--color-accent10) 42%,
+    var(--material-background)
+  );
 }
 
 .llm-history-menu-row.active {
@@ -1804,6 +1814,13 @@
   width: fit-content;
 }
 
+.llm-paper-context-chip.llm-paper-context-chip-pinned
+  .llm-paper-context-chip-header {
+  border: 1px solid var(--llm-pin-border-color);
+  border-radius: 8px;
+  background: var(--llm-pin-bg);
+}
+
 .llm-paper-context-chip-label {
   display: inline-flex;
   align-items: center;
@@ -2002,6 +2019,12 @@
   gap: 2px;
   width: fit-content;
   max-width: 100%;
+}
+
+.llm-selected-context.llm-selected-context-pinned .llm-selected-context-header {
+  border: 1px solid var(--llm-pin-border-color);
+  border-radius: 8px;
+  background: var(--llm-pin-bg);
 }
 
 .llm-image-preview-meta.llm-selected-context-meta.llm-selected-context-source-pdf::before {
@@ -2837,6 +2860,16 @@
   );
 }
 
+.llm-file-context-item.llm-file-context-item-pinned {
+  border-color: var(--llm-pin-border-color);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 28%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--material-background) 88%,
+    var(--color-accent) 12%
+  );
+}
+
 .llm-file-context-type {
   display: inline-flex;
   align-items: center;
@@ -3029,6 +3062,12 @@
   min-height: var(--llm-screenshot-thumb-size);
   max-height: var(--llm-screenshot-thumb-size);
   aspect-ratio: 1 / 1;
+}
+
+.llm-preview-item.llm-preview-item-pinned .llm-preview-thumb {
+  border-color: var(--llm-pin-border-color);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent);
+  background: var(--llm-pin-bg);
 }
 
 .llm-preview-thumb {

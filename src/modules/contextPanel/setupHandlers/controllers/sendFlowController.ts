@@ -7,10 +7,7 @@ import type {
   SelectedTextContext,
 } from "../../types";
 import type { SelectedTextSource } from "../../types";
-import type {
-  EditLatestTurnMarker,
-  EditLatestTurnResult,
-} from "../../chat";
+import type { EditLatestTurnMarker, EditLatestTurnResult } from "../../chat";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../../../utils/llmClient";
 
 type StatusLevel = "ready" | "warning" | "error";
@@ -118,10 +115,10 @@ type SendFlowControllerDeps = {
     paperContexts?: PaperContextRef[],
     attachments?: ChatAttachment[],
   ) => Promise<void>;
-  clearSelectedImageState: (itemId: number) => void;
-  clearSelectedPaperState: (itemId: number) => void;
-  clearSelectedFileState: (itemId: number) => void;
-  clearSelectedTextState: (itemId: number) => void;
+  retainPinnedImageState: (itemId: number) => void;
+  retainPinnedPaperState: (itemId: number) => void;
+  retainPinnedFileState: (itemId: number) => void;
+  retainPinnedTextState: (conversationKey: number) => void;
   updatePaperPreviewPreservingScroll: () => void;
   updateFilePreviewPreservingScroll: () => void;
   updateImagePreviewPreservingScroll: () => void;
@@ -206,7 +203,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     if (titleSeed) {
       if (deps.isGlobalMode()) {
         void deps
-          .touchGlobalConversationTitle(deps.getConversationKey(item), titleSeed)
+          .touchGlobalConversationTitle(
+            deps.getConversationKey(item),
+            titleSeed,
+          )
           .catch((err) => {
             ztoolkit.log("LLM: Failed to touch global conversation title", err);
           });
@@ -287,18 +287,18 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       }
 
       deps.inputBox.value = "";
-      deps.clearSelectedImageState(item.id);
+      deps.retainPinnedImageState(item.id);
       if (selectedPaperContexts.length) {
-        deps.clearSelectedPaperState(item.id);
+        deps.retainPinnedPaperState(item.id);
         deps.updatePaperPreviewPreservingScroll();
       }
       if (selectedFiles.length) {
-        deps.clearSelectedFileState(item.id);
+        deps.retainPinnedFileState(item.id);
         deps.updateFilePreviewPreservingScroll();
       }
       deps.updateImagePreviewPreservingScroll();
       if (primarySelectedText) {
-        deps.clearSelectedTextState(textContextConversationKey);
+        deps.retainPinnedTextState(textContextConversationKey);
         deps.updateSelectedTextPreviewPreservingScroll();
       }
       deps.setActiveEditSession(null);
@@ -308,18 +308,18 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     }
 
     deps.inputBox.value = "";
-    deps.clearSelectedImageState(item.id);
+    deps.retainPinnedImageState(item.id);
     if (selectedPaperContexts.length) {
-      deps.clearSelectedPaperState(item.id);
+      deps.retainPinnedPaperState(item.id);
       deps.updatePaperPreviewPreservingScroll();
     }
     if (selectedFiles.length) {
-      deps.clearSelectedFileState(item.id);
+      deps.retainPinnedFileState(item.id);
       deps.updateFilePreviewPreservingScroll();
     }
     deps.updateImagePreviewPreservingScroll();
     if (primarySelectedText) {
-      deps.clearSelectedTextState(textContextConversationKey);
+      deps.retainPinnedTextState(textContextConversationKey);
       deps.updateSelectedTextPreviewPreservingScroll();
     }
 

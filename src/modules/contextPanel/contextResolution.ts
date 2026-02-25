@@ -4,12 +4,16 @@ import {
   isLikelyCorruptedSelectedText,
   setStatus,
 } from "./textUtils";
-import { normalizePaperContextRefs, normalizeSelectedTextSource } from "./normalizers";
+import {
+  normalizePaperContextRefs,
+  normalizeSelectedTextSource,
+} from "./normalizers";
 import { MAX_SELECTED_TEXT_CONTEXTS } from "./constants";
 import {
   selectedTextCache,
   selectedTextPreviewExpandedCache,
   recentReaderSelectionCache,
+  pinnedSelectedTextKeys,
 } from "./state";
 import type {
   ZoteroTabsState,
@@ -24,6 +28,11 @@ import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
 } from "./readerSelection";
+import {
+  buildPinnedSelectedTextKey,
+  isPinnedSelectedText,
+  prunePinnedSelectedTextKeys,
+} from "./setupHandlers/controllers/pinnedContextController";
 
 function getActiveReaderForSelectedTab(): any | null {
   const tabs = getZoteroTabsState();
@@ -340,7 +349,10 @@ export function getActiveReaderSelectionText(
   if (fromReader) return fromReader;
 
   // 3. Check the panel document and its iframes
-  const fromPanelDoc = getSelectionFromDocument(panelDoc, normalizeSelectedText);
+  const fromPanelDoc = getSelectionFromDocument(
+    panelDoc,
+    normalizeSelectedText,
+  );
   if (fromPanelDoc) return fromPanelDoc;
 
   const iframes = Array.from(
@@ -397,8 +409,9 @@ function normalizeSelectedTextContexts(value: unknown): SelectedTextContext[] {
         typeof typed.text === "string" ? typed.text : "",
       );
       if (!normalizedText) continue;
-      const normalizedPaperContext =
-        normalizePaperContextRefs([typed.paperContext])[0];
+      const normalizedPaperContext = normalizePaperContextRefs([
+        typed.paperContext,
+      ])[0];
       out.push({
         text: normalizedText,
         source: normalizeSelectedTextSource(typed.source),
@@ -569,6 +582,7 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
   if (!previewList) return;
 
   const selectedContexts = getSelectedTextContextEntries(itemId);
+  prunePinnedSelectedTextKeys(pinnedSelectedTextKeys, itemId, selectedContexts);
   if (!selectedContexts.length) {
     previewList.style.display = "none";
     previewList.innerHTML = "";
@@ -595,6 +609,11 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     const selectedText = selectedContext.text;
     const selectedSource = selectedContext.source;
     const isExpanded = expandedIndex === index;
+    const pinned = isPinnedSelectedText(
+      pinnedSelectedTextKeys,
+      itemId,
+      selectedContext,
+    );
     const contextLabel =
       isGlobalConversation && selectedSource === "pdf"
         ? formatOpenChatTextContextLabel(selectedContext.paperContext)
@@ -616,6 +635,10 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
       "llm-selected-context-source-model",
       selectedSource === "model",
     );
+    previewBox.classList.toggle("llm-selected-context-pinned", pinned);
+    previewBox.dataset.pinned = pinned ? "true" : "false";
+    previewBox.dataset.contextPinKey =
+      buildPinnedSelectedTextKey(selectedContext);
 
     const previewHeader = ownerDoc.createElement("div");
     previewHeader.className =
@@ -640,7 +663,9 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
       "llm-selected-context-meta-corrupted",
       isCorrupted,
     );
-    previewMeta.title = isExpanded ? "Unpin text context" : "Pin text context";
+    previewMeta.title = isExpanded
+      ? "Collapse text context"
+      : "Expand text context";
     previewMeta.setAttribute("aria-expanded", isExpanded ? "true" : "false");
 
     const previewClear = ownerDoc.createElement("button");
