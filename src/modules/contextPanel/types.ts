@@ -60,6 +60,7 @@ export type ActionDropdownSpec = {
 export type AdvancedModelParams = {
   temperature: number;
   maxTokens: number;
+  inputTokenCap: number;
 };
 export type ApiProfile = {
   apiBase: string;

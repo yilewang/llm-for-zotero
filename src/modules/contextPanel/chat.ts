@@ -219,9 +219,13 @@ function normalizeSelectedTextPaperContextsByIndex(
   selectedTextPaperContexts: unknown,
   count: number,
 ): (PaperContextRef | undefined)[] {
-  return normalizeSelectedTextPaperContextEntries(selectedTextPaperContexts, count, {
-    sanitizeText,
-  });
+  return normalizeSelectedTextPaperContextEntries(
+    selectedTextPaperContexts,
+    count,
+    {
+      sanitizeText,
+    },
+  );
 }
 
 function normalizePaperContexts(paperContexts: unknown): PaperContextRef[] {
@@ -940,10 +944,14 @@ async function buildCombinedContextForRequest(params: {
   }
 
   const supplementalPaperContext = hasSupplementalPaperContexts
-    ? await buildSupplementalPaperContext(params.paperContexts, params.question, {
-        apiBase: params.apiBase,
-        apiKey: params.apiKey,
-      })
+    ? await buildSupplementalPaperContext(
+        params.paperContexts,
+        params.question,
+        {
+          apiBase: params.apiBase,
+          apiKey: params.apiKey,
+        },
+      )
     : "";
   if (hasSupplementalPaperContexts) {
     params.setStatusSafely(
@@ -1311,7 +1319,8 @@ export async function editLatestUserMessageAndRetry(
       selectedText: retryPair.userMessage.selectedText,
       selectedTexts: retryPair.userMessage.selectedTexts,
       selectedTextSources: retryPair.userMessage.selectedTextSources,
-      selectedTextPaperContexts: retryPair.userMessage.selectedTextPaperContexts,
+      selectedTextPaperContexts:
+        retryPair.userMessage.selectedTextPaperContexts,
       screenshotImages: retryPair.userMessage.screenshotImages,
       paperContexts: retryPair.userMessage.paperContexts,
       attachments: retryPair.userMessage.attachments,
@@ -1450,6 +1459,7 @@ export async function retryLatestAssistantResponse(
         reasoning: effectiveRequestConfig.reasoning,
         temperature: effectiveRequestConfig.advanced?.temperature,
         maxTokens: effectiveRequestConfig.advanced?.maxTokens,
+        inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
       },
       (delta) => {
         streamedAnswer += sanitizeText(delta);
@@ -1610,8 +1620,8 @@ export async function sendQuestion(
     selectedTextSources: selectedTextSourcesForMessage.length
       ? selectedTextSourcesForMessage
       : undefined,
-    selectedTextPaperContexts: selectedTextPaperContextsForMessage.some((entry) =>
-      Boolean(entry),
+    selectedTextPaperContexts: selectedTextPaperContextsForMessage.some(
+      (entry) => Boolean(entry),
     )
       ? selectedTextPaperContextsForMessage
       : undefined,
@@ -1712,6 +1722,7 @@ export async function sendQuestion(
         reasoning: effectiveRequestConfig.reasoning,
         temperature: effectiveRequestConfig.advanced?.temperature,
         maxTokens: effectiveRequestConfig.advanced?.maxTokens,
+        inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
       },
       (delta) => {
         assistantMessage.text += sanitizeText(delta);
@@ -1863,10 +1874,11 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         msg.selectedTextSources,
         selectedTexts.length,
       );
-      const selectedTextPaperContexts = normalizeSelectedTextPaperContextsByIndex(
-        msg.selectedTextPaperContexts,
-        selectedTexts.length,
-      );
+      const selectedTextPaperContexts =
+        normalizeSelectedTextPaperContextsByIndex(
+          msg.selectedTextPaperContexts,
+          selectedTexts.length,
+        );
       const hasScreenshotContext = screenshotImages.length > 0;
       const hasSelectedTextContext = selectedTexts.length > 0;
       hasUserContext = hasScreenshotContext || hasSelectedTextContext;
@@ -2237,7 +2249,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
         selectedTexts.forEach((selectedText, contextIndex) => {
           const selectedSource = selectedTextSources[contextIndex] || "pdf";
-          const selectedTextPaperContext = selectedTextPaperContexts[contextIndex];
+          const selectedTextPaperContext =
+            selectedTextPaperContexts[contextIndex];
           const selectedTextPaperLabel =
             isGlobalConversation &&
             selectedSource === "pdf" &&

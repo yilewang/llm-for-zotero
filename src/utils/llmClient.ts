@@ -42,6 +42,7 @@ import {
 } from "./apiHelpers";
 import { pathToFileUrl } from "./pathFileUrl";
 import { normalizeTemperature, normalizeMaxTokens } from "./normalization";
+import { applyModelInputTokenCap } from "./modelInputCap";
 
 // =============================================================================
 // Types
@@ -102,6 +103,8 @@ export type ChatParams = {
   temperature?: number;
   /** Optional custom token budget for completion/output */
   maxTokens?: number;
+  /** Optional override for input token cap. */
+  inputTokenCap?: number;
   /** Local files to upload and attach when using Responses API */
   attachments?: ChatFileAttachment[];
 };
@@ -1526,7 +1529,22 @@ export async function callLLM(params: ChatParams): Promise<string> {
     apiKey: params.apiKey,
     model: params.model,
   });
-  const messages = buildMessages(params, systemPrompt);
+  const rawMessages = buildMessages(params, systemPrompt);
+  const cappedInput = applyModelInputTokenCap(
+    rawMessages,
+    model,
+    params.inputTokenCap,
+  );
+  const messages = cappedInput.messages as ChatMessage[];
+  if (cappedInput.capped) {
+    ztoolkit.log("LLM: Applied model-aware input cap", {
+      model,
+      beforeTokens: cappedInput.estimatedBeforeTokens,
+      afterTokens: cappedInput.estimatedAfterTokens,
+      capTokens: cappedInput.limitTokens,
+      softCapTokens: cappedInput.softLimitTokens,
+    });
+  }
   const useResponses = isResponsesBase(apiBase);
   const responseFileIds = useResponses
     ? await uploadFilesForResponses({
@@ -1589,7 +1607,22 @@ export async function callLLMStream(
     apiKey: params.apiKey,
     model: params.model,
   });
-  const messages = buildMessages(params, systemPrompt);
+  const rawMessages = buildMessages(params, systemPrompt);
+  const cappedInput = applyModelInputTokenCap(
+    rawMessages,
+    model,
+    params.inputTokenCap,
+  );
+  const messages = cappedInput.messages as ChatMessage[];
+  if (cappedInput.capped) {
+    ztoolkit.log("LLM: Applied model-aware input cap", {
+      model,
+      beforeTokens: cappedInput.estimatedBeforeTokens,
+      afterTokens: cappedInput.estimatedAfterTokens,
+      capTokens: cappedInput.limitTokens,
+      softCapTokens: cappedInput.softLimitTokens,
+    });
+  }
   const useResponses = isResponsesBase(apiBase);
   const responseFileIds = useResponses
     ? await uploadFilesForResponses({

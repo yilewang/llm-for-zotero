@@ -1,8 +1,14 @@
 import { assert } from "chai";
-import { normalizeMaxTokens, normalizeTemperature } from "../src/utils/normalization";
 import {
+  normalizeInputTokenCap,
+  normalizeMaxTokens,
+  normalizeTemperature,
+} from "../src/utils/normalization";
+import {
+  DEFAULT_INPUT_TOKEN_CAP,
   DEFAULT_MAX_TOKENS,
   DEFAULT_TEMPERATURE,
+  MAX_ALLOWED_INPUT_TOKEN_CAP,
   MAX_ALLOWED_TOKENS,
 } from "../src/utils/llmDefaults";
 
@@ -33,7 +39,32 @@ describe("normalization", function () {
     it("should clamp to [1, MAX_ALLOWED_TOKENS]", function () {
       assert.equal(normalizeMaxTokens(1), 1);
       assert.equal(normalizeMaxTokens("42"), 42);
-      assert.equal(normalizeMaxTokens(MAX_ALLOWED_TOKENS + 99), MAX_ALLOWED_TOKENS);
+      assert.equal(
+        normalizeMaxTokens(MAX_ALLOWED_TOKENS + 99),
+        MAX_ALLOWED_TOKENS,
+      );
+    });
+  });
+
+  describe("normalizeInputTokenCap", function () {
+    it("should use default cap for invalid input", function () {
+      assert.equal(normalizeInputTokenCap(undefined), DEFAULT_INPUT_TOKEN_CAP);
+      assert.equal(normalizeInputTokenCap(0), DEFAULT_INPUT_TOKEN_CAP);
+      assert.equal(normalizeInputTokenCap(""), DEFAULT_INPUT_TOKEN_CAP);
+      assert.equal(normalizeInputTokenCap("abc"), DEFAULT_INPUT_TOKEN_CAP);
+    });
+
+    it("should clamp to [1, MAX_ALLOWED_INPUT_TOKEN_CAP]", function () {
+      assert.equal(normalizeInputTokenCap(1), 1);
+      assert.equal(normalizeInputTokenCap("2048"), 2048);
+      assert.equal(
+        normalizeInputTokenCap(MAX_ALLOWED_INPUT_TOKEN_CAP + 99),
+        MAX_ALLOWED_INPUT_TOKEN_CAP,
+      );
+    });
+
+    it("should honor a valid custom fallback", function () {
+      assert.equal(normalizeInputTokenCap(undefined, 200000), 200000);
     });
   });
 });

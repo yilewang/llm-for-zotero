@@ -1,12 +1,10 @@
-import {
-  DEFAULT_MAX_TOKENS,
-  DEFAULT_TEMPERATURE,
-  MAX_ALLOWED_TOKENS,
-} from "../../utils/llmDefaults";
+import { DEFAULT_INPUT_TOKEN_CAP } from "../../utils/llmDefaults";
 import {
   normalizeTemperature,
   normalizeMaxTokens,
+  normalizeInputTokenCap,
 } from "../../utils/normalization";
+import { getModelInputTokenLimit } from "../../utils/modelInputCap";
 import {
   config,
   MODEL_PROFILE_SUFFIX,
@@ -46,7 +44,10 @@ const REASONING_LEVEL_SELECTIONS = new Set<ReasoningLevelSelection>([
   "xhigh",
 ]);
 
-function buildPaperConversationMapKey(libraryID: number, paperItemID: number): string {
+function buildPaperConversationMapKey(
+  libraryID: number,
+  paperItemID: number,
+): string {
   return `${Math.floor(libraryID)}:${Math.floor(paperItemID)}`;
 }
 
@@ -58,7 +59,11 @@ export function getLastUsedModelProfileKey(): ModelProfileKey | null {
 
 export function setLastUsedModelProfileKey(key: ModelProfileKey): void {
   if (!MODEL_PROFILE_KEYS.has(key)) return;
-  Zotero.Prefs.set(`${config.prefsPrefix}.${LAST_MODEL_PROFILE_PREF_KEY}`, key, true);
+  Zotero.Prefs.set(
+    `${config.prefsPrefix}.${LAST_MODEL_PROFILE_PREF_KEY}`,
+    key,
+    true,
+  );
 }
 
 export function getLastUsedReasoningLevel(): ReasoningLevelSelection | null {
@@ -69,7 +74,9 @@ export function getLastUsedReasoningLevel(): ReasoningLevelSelection | null {
   return raw as ReasoningLevelSelection;
 }
 
-export function setLastUsedReasoningLevel(level: ReasoningLevelSelection): void {
+export function setLastUsedReasoningLevel(
+  level: ReasoningLevelSelection,
+): void {
   if (!REASONING_LEVEL_SELECTIONS.has(level)) return;
   Zotero.Prefs.set(
     `${config.prefsPrefix}.${LAST_REASONING_LEVEL_PREF_KEY}`,
@@ -232,13 +239,24 @@ export function getSelectedProfileForItem(itemId: number): {
 export function getAdvancedModelParamsForProfile(profileKey: ModelProfileKey): {
   temperature: number;
   maxTokens: number;
+  inputTokenCap: number;
 } {
   const suffix = MODEL_PROFILE_SUFFIX[profileKey];
+  const modelName =
+    suffix === "Primary"
+      ? (getStringPref(`model${suffix}`) || getStringPref("model")).trim()
+      : getStringPref(`model${suffix}`).trim();
+  const defaultInputTokenCap =
+    getModelInputTokenLimit(modelName) || DEFAULT_INPUT_TOKEN_CAP;
   return {
     temperature: normalizeTemperaturePref(
       getStringPref(`temperature${suffix}`),
     ),
     maxTokens: normalizeMaxTokensPref(getStringPref(`maxTokens${suffix}`)),
+    inputTokenCap: normalizeInputTokenCap(
+      getStringPref(`inputTokenCap${suffix}`),
+      defaultInputTokenCap,
+    ),
   };
 }
 

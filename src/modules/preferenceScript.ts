@@ -1,9 +1,14 @@
 import { config } from "../../package.json";
-import { DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE } from "../utils/llmDefaults";
+import {
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_TEMPERATURE,
+  DEFAULT_INPUT_TOKEN_CAP,
+} from "../utils/llmDefaults";
 import { HTML_NS } from "../utils/domHelpers";
 import {
   normalizeTemperature,
   normalizeMaxTokens,
+  normalizeInputTokenCap,
 } from "../utils/normalization";
 import {
   resolveEndpoint,
@@ -11,6 +16,7 @@ import {
   usesMaxCompletionTokens,
   isResponsesBase as checkIsResponsesBase,
 } from "../utils/apiHelpers";
+import { getModelInputTokenLimit } from "../utils/modelInputCap";
 
 type PrefKey =
   | "apiBase"
@@ -31,12 +37,16 @@ type PrefKey =
   | "systemPrompt"
   | "temperaturePrimary"
   | "maxTokensPrimary"
+  | "inputTokenCapPrimary"
   | "temperatureSecondary"
   | "maxTokensSecondary"
+  | "inputTokenCapSecondary"
   | "temperatureTertiary"
   | "maxTokensTertiary"
+  | "inputTokenCapTertiary"
   | "temperatureQuaternary"
-  | "maxTokensQuaternary";
+  | "maxTokensQuaternary"
+  | "inputTokenCapQuaternary";
 
 type ProfileKind = "primary" | "secondary" | "tertiary" | "quaternary";
 type ProfileConfig = {
@@ -228,6 +238,17 @@ function createModelSection(
       compact: true,
     }),
   );
+  advancedWrap.append(
+    createLabeledInputBlock(doc, {
+      id: `${config.addonRef}-input-token-cap-${suffix}`,
+      label: "Input_token_cap",
+      type: "text",
+      inputMode: "numeric",
+      helper:
+        "Maximum input tokens allowed for this model profile (prompt + context + history).",
+      compact: true,
+    }),
+  );
   details.append(summary, advancedWrap);
   section.append(details);
 
@@ -274,13 +295,20 @@ type ProfileInputRefs = {
   modelInput: HTMLInputElement | null;
   temperatureInput: HTMLInputElement | null;
   maxTokensInput: HTMLInputElement | null;
+  inputTokenCapInput: HTMLInputElement | null;
   testButton: HTMLButtonElement | null;
   testStatus: HTMLElement | null;
 };
 
 function getProfilePrefKey(
   profile: ProfileConfig,
-  field: "apiBase" | "apiKey" | "model" | "temperature" | "maxTokens",
+  field:
+    | "apiBase"
+    | "apiKey"
+    | "model"
+    | "temperature"
+    | "maxTokens"
+    | "inputTokenCap",
 ): PrefKey {
   return `${field}${profile.prefSuffix}` as PrefKey;
 }
@@ -322,6 +350,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       ) as HTMLInputElement | null,
       maxTokensInput: doc.querySelector(
         `#${config.addonRef}-max-tokens-${profile.key}`,
+      ) as HTMLInputElement | null,
+      inputTokenCapInput: doc.querySelector(
+        `#${config.addonRef}-input-token-cap-${profile.key}`,
       ) as HTMLInputElement | null,
       testButton: doc.querySelector(
         `#${config.addonRef}-test-button-${profile.key}`,
@@ -389,13 +420,24 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
   const setupAdvancedOptions = (
     profile: ProfileConfig,
+    modelInput: HTMLInputElement | null,
     temperatureInput: HTMLInputElement | null,
     maxTokensInput: HTMLInputElement | null,
+    inputTokenCapInput: HTMLInputElement | null,
   ) => {
-    if (!temperatureInput || !maxTokensInput) return;
+    if (!temperatureInput || !maxTokensInput || !inputTokenCapInput) return;
 
     const temperatureKey = getProfilePrefKey(profile, "temperature");
     const maxTokensKey = getProfilePrefKey(profile, "maxTokens");
+    const inputTokenCapKey = getProfilePrefKey(profile, "inputTokenCap");
+    const resolveDefaultInputTokenCap = () => {
+      const modelName = (
+        modelInput?.value ||
+        profile.defaultModel ||
+        "gpt-4o-mini"
+      ).trim();
+      return getModelInputTokenLimit(modelName) || DEFAULT_INPUT_TOKEN_CAP;
+    };
 
     let savedTemperature = String(
       normalizeTemperature(getPref(temperatureKey) || `${DEFAULT_TEMPERATURE}`),
@@ -403,10 +445,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     let savedMaxTokens = String(
       normalizeMaxTokens(getPref(maxTokensKey) || `${DEFAULT_MAX_TOKENS}`),
     );
+    let savedInputTokenCap = String(
+      normalizeInputTokenCap(
+        getPref(inputTokenCapKey) || `${resolveDefaultInputTokenCap()}`,
+        resolveDefaultInputTokenCap(),
+      ),
+    );
     setPref(temperatureKey, savedTemperature);
     setPref(maxTokensKey, savedMaxTokens);
+    setPref(inputTokenCapKey, savedInputTokenCap);
     temperatureInput.value = savedTemperature;
     maxTokensInput.value = savedMaxTokens;
+    inputTokenCapInput.value = savedInputTokenCap;
 
     const commitTemperature = () => {
       savedTemperature = String(normalizeTemperature(temperatureInput.value));
@@ -420,18 +470,33 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       maxTokensInput.value = savedMaxTokens;
     };
 
+    const commitInputTokenCap = () => {
+      savedInputTokenCap = String(
+        normalizeInputTokenCap(
+          inputTokenCapInput.value,
+          resolveDefaultInputTokenCap(),
+        ),
+      );
+      setPref(inputTokenCapKey, savedInputTokenCap);
+      inputTokenCapInput.value = savedInputTokenCap;
+    };
+
     temperatureInput.addEventListener("change", commitTemperature);
     temperatureInput.addEventListener("blur", commitTemperature);
     maxTokensInput.addEventListener("change", commitMaxTokens);
     maxTokensInput.addEventListener("blur", commitMaxTokens);
+    inputTokenCapInput.addEventListener("change", commitInputTokenCap);
+    inputTokenCapInput.addEventListener("blur", commitInputTokenCap);
   };
 
   for (const profile of PROFILE_CONFIGS) {
     const refs = profileInputs.get(profile.key);
     setupAdvancedOptions(
       profile,
+      refs?.modelInput || null,
       refs?.temperatureInput || null,
       refs?.maxTokensInput || null,
+      refs?.inputTokenCapInput || null,
     );
   }
 
