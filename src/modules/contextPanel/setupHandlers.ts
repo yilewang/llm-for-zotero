@@ -47,6 +47,7 @@ import {
   currentRequestId,
   activeGlobalConversationByLibrary,
   activeConversationModeByLibrary,
+  activePaperConversationByPaper,
 } from "./state";
 import {
   sanitizeText,
@@ -73,6 +74,9 @@ import {
   setLastUsedModelProfileKey,
   getLastUsedReasoningLevel,
   setLastUsedReasoningLevel,
+  getLastUsedPaperConversationKey,
+  setLastUsedPaperConversationKey,
+  removeLastUsedPaperConversationKey,
 } from "./prefHelpers";
 import {
   sendQuestion,
@@ -124,10 +128,18 @@ import {
 import {
   clearConversation as clearStoredConversation,
   createGlobalConversation,
+  createPaperConversation,
   deleteGlobalConversation,
+  deletePaperConversation,
   getGlobalConversationUserTurnCount,
   getLatestEmptyGlobalConversation,
+  getPaperConversation,
   listGlobalConversations,
+  listPaperConversations,
+  ensurePaperV1Conversation,
+  setGlobalConversationTitle,
+  setPaperConversationTitle,
+  touchPaperConversationTitle,
   touchGlobalConversationTitle,
 } from "../../utils/chatStore";
 import {
@@ -150,7 +162,11 @@ import {
 } from "./paperSearch";
 import {
   createGlobalPortalItem,
+  createPaperPortalItem,
+  getPaperPortalBaseItemID,
   isGlobalPortalItem,
+  isPaperPortalItem,
+  resolvePaperPortalBaseItem,
   resolveActiveLibraryID,
 } from "./portalScope";
 import { getPanelDomRefs } from "./setupHandlers/domRefs";
@@ -196,8 +212,24 @@ export function setupHandlers(
   initialItem?: Zotero.Item | null,
 ) {
   let item = initialItem || null;
-  const initialPaperItem =
-    item && !isGlobalPortalItem(item) ? (item as Zotero.Item) : null;
+  const resolveBasePaperItem = (
+    targetItem: Zotero.Item | null | undefined,
+  ): Zotero.Item | null => {
+    if (!targetItem) return null;
+    if (isGlobalPortalItem(targetItem)) return null;
+    if (isPaperPortalItem(targetItem)) {
+      return resolvePaperPortalBaseItem(targetItem);
+    }
+    if (targetItem.isAttachment() && targetItem.parentID) {
+      const parent = Zotero.Items.get(targetItem.parentID) || null;
+      return parent?.isRegularItem?.() ? parent : null;
+    }
+    return targetItem?.isRegularItem?.() ? targetItem : null;
+  };
+  const initialPaperItem = resolveBasePaperItem(item);
+  let basePaperItem = initialPaperItem;
+  const buildPaperStateKey = (libraryID: number, paperItemID: number): string =>
+    `${Math.floor(libraryID)}:${Math.floor(paperItemID)}`;
   const resolveLibraryIdFromItem = (
     targetItem: Zotero.Item | null | undefined,
   ): number => {
@@ -217,9 +249,26 @@ export function setupHandlers(
       rememberedGlobalKey > 0
     ) {
       item = createGlobalPortalItem(libraryID, Math.floor(rememberedGlobalKey));
+    } else if (modeLock === "paper") {
+      const paperItemID = Number(initialPaperItem.id || 0);
+      const rememberedPaperKey = Number(
+        activePaperConversationByPaper.get(
+          buildPaperStateKey(libraryID, paperItemID),
+        ) || getLastUsedPaperConversationKey(libraryID, paperItemID) || 0,
+      );
+      if (
+        Number.isFinite(rememberedPaperKey) &&
+        rememberedPaperKey > 0 &&
+        Math.floor(rememberedPaperKey) !== paperItemID
+      ) {
+        item = createPaperPortalItem(
+          initialPaperItem,
+          Math.floor(rememberedPaperKey),
+          0,
+        );
+      }
     }
   }
-  const basePaperItem = initialPaperItem;
 
   const {
     inputBox,
@@ -240,9 +289,14 @@ export function setupHandlers(
     titleStatic,
     historyBar,
     historyNewBtn,
+    historyNewMenu,
+    historyNewOpenBtn,
+    historyNewPaperBtn,
     historyToggleBtn,
     historyModeIndicator,
     historyMenu,
+    historyRowMenu,
+    historyRowRenameBtn,
     historyUndo,
     historyUndoText,
     historyUndoBtn,
@@ -302,10 +356,12 @@ export function setupHandlers(
   const ElementCtor = panelDoc.defaultView?.Element;
   const isElementNode = (value: unknown): value is Element =>
     Boolean(ElementCtor && value instanceof ElementCtor);
+  const headerTop = body.querySelector(".llm-header-top") as HTMLDivElement | null;
   panelRoot.tabIndex = 0;
   applyPanelFontScale(panelRoot);
 
   const isGlobalMode = () => Boolean(item && isGlobalPortalItem(item));
+  const isPaperMode = () => Boolean(item && !isGlobalPortalItem(item));
   const getCurrentLibraryID = (): number => {
     const fromItem =
       item && Number.isFinite(item.libraryID) && item.libraryID > 0
@@ -314,11 +370,63 @@ export function setupHandlers(
     if (fromItem > 0) return fromItem;
     return resolveActiveLibraryID() || 0;
   };
+  const resolveCurrentPaperBaseItem = (): Zotero.Item | null => {
+    if (basePaperItem?.isRegularItem?.()) return basePaperItem;
+    const resolvedFromItem = resolveBasePaperItem(item);
+    if (resolvedFromItem) {
+      basePaperItem = resolvedFromItem;
+      return resolvedFromItem;
+    }
+    const activeContext = getActiveContextAttachmentFromTabs();
+    const resolvedFromContext =
+      activeContext && activeContext.parentID
+        ? Zotero.Items.get(activeContext.parentID) || null
+        : null;
+    if (resolvedFromContext?.isRegularItem?.()) {
+      basePaperItem = resolvedFromContext;
+      return resolvedFromContext;
+    }
+    return null;
+  };
 
   // Compute conversation key early so all closures can reference it.
   let conversationKey = item ? getConversationKey(item) : null;
   const getTextContextConversationKey = (): number | null =>
     item ? getConversationKey(item) : null;
+  const updateHistoryModeIndicatorPosition = () => {
+    if (!historyModeIndicator || !historyToggleBtn || !exportBtn || !headerTop) {
+      return;
+    }
+    if (!historyBar || historyBar.style.display === "none") return;
+    if (!item) return;
+
+    const hostRect = headerTop.getBoundingClientRect();
+    const historyRect = historyToggleBtn.getBoundingClientRect();
+    const exportRect = exportBtn.getBoundingClientRect();
+    if (
+      hostRect.width <= 0 ||
+      historyRect.width <= 0 ||
+      exportRect.width <= 0
+    ) {
+      return;
+    }
+
+    const indicatorWidth = Math.max(
+      historyModeIndicator.getBoundingClientRect().width,
+      historyModeIndicator.offsetWidth,
+      0,
+    );
+    const midpoint = (historyRect.right + exportRect.left) / 2;
+    const minLeft = historyRect.right - hostRect.left + 8;
+    const maxLeft = exportRect.left - hostRect.left - indicatorWidth - 8;
+    let left = midpoint - hostRect.left - indicatorWidth / 2;
+    if (Number.isFinite(minLeft) && Number.isFinite(maxLeft) && maxLeft >= minLeft) {
+      left = clampNumber(left, minLeft, maxLeft);
+    } else {
+      left = clampNumber(left, 0, Math.max(0, hostRect.width - indicatorWidth));
+    }
+    historyModeIndicator.style.left = `${Math.round(left)}px`;
+  };
   const syncConversationIdentity = () => {
     conversationKey = item ? getConversationKey(item) : null;
     panelRoot.dataset.itemId =
@@ -327,19 +435,58 @@ export function setupHandlers(
         : "";
     const libraryID = getCurrentLibraryID();
     panelRoot.dataset.libraryId = libraryID > 0 ? `${libraryID}` : "";
-    if (item && libraryID > 0) {
-      const mode = isGlobalMode() ? "global" : "paper";
+    const mode: "global" | "paper" | null = item
+      ? isGlobalMode()
+        ? "global"
+        : "paper"
+      : null;
+    panelRoot.dataset.conversationKind = mode || "";
+    const currentBasePaperItemID =
+      mode === "paper" ? Number(resolveCurrentPaperBaseItem()?.id || 0) : 0;
+    panelRoot.dataset.basePaperItemId =
+      Number.isFinite(currentBasePaperItemID) && currentBasePaperItemID > 0
+        ? `${Math.floor(currentBasePaperItemID)}`
+        : "";
+    if (item && libraryID > 0 && mode) {
       activeConversationModeByLibrary.set(libraryID, mode);
       if (mode === "global") {
         activeGlobalConversationByLibrary.set(libraryID, item.id);
+      } else if (
+        Number.isFinite(conversationKey) &&
+        (conversationKey as number) > 0 &&
+        Number.isFinite(currentBasePaperItemID) &&
+        currentBasePaperItemID > 0
+      ) {
+        const normalizedConversationKey = Math.floor(conversationKey as number);
+        const paperStateKey = buildPaperStateKey(
+          libraryID,
+          Math.floor(currentBasePaperItemID),
+        );
+        activePaperConversationByPaper.set(
+          paperStateKey,
+          normalizedConversationKey,
+        );
+        setLastUsedPaperConversationKey(
+          libraryID,
+          Math.floor(currentBasePaperItemID),
+          normalizedConversationKey,
+        );
       }
     }
     if (historyModeIndicator) {
       historyModeIndicator.textContent = item
-        ? isGlobalMode()
+        ? mode === "global"
           ? "Open chat"
           : "Paper chat"
         : "";
+      const requestFrame = panelWin?.requestAnimationFrame;
+      if (typeof requestFrame === "function") {
+        requestFrame(() => {
+          updateHistoryModeIndicatorPosition();
+        });
+      } else {
+        updateHistoryModeIndicatorPosition();
+      }
     }
   };
   syncConversationIdentity();
@@ -466,11 +613,26 @@ export function setupHandlers(
   const closeExportMenu = () => {
     if (exportMenu) exportMenu.style.display = "none";
   };
+  let historyRowMenuTarget:
+    | { kind: "paper" | "global"; conversationKey: number }
+    | null = null;
+  const closeHistoryRowMenu = () => {
+    if (historyRowMenu) historyRowMenu.style.display = "none";
+    historyRowMenuTarget = null;
+  };
+  const closeHistoryNewMenu = () => {
+    if (historyNewMenu) historyNewMenu.style.display = "none";
+    if (historyNewBtn) {
+      historyNewBtn.setAttribute("aria-expanded", "false");
+    }
+    closeHistoryRowMenu();
+  };
   const closeHistoryMenu = () => {
     if (historyMenu) historyMenu.style.display = "none";
     if (historyToggleBtn) {
       historyToggleBtn.setAttribute("aria-expanded", "false");
     }
+    closeHistoryRowMenu();
   };
   const closeSlashMenu = () => {
     setFloatingMenuOpen(slashMenu, SLASH_MENU_OPEN_CLASS, false);
@@ -480,6 +642,8 @@ export function setupHandlers(
   };
   const isHistoryMenuOpen = () =>
     Boolean(historyMenu && historyMenu.style.display !== "none");
+  const isHistoryNewMenuOpen = () =>
+    Boolean(historyNewMenu && historyNewMenu.style.display !== "none");
   const closeRetryModelMenu = () => {
     setFloatingMenuOpen(retryModelMenu, RETRY_MODEL_MENU_OPEN_CLASS, false);
     retryMenuAnchor = null;
@@ -1083,6 +1247,7 @@ export function setupHandlers(
       closeSlashMenu();
       closeResponseMenu();
       closePromptMenu();
+      closeHistoryNewMenu();
       closeHistoryMenu();
       if (exportMenu.style.display !== "none") {
         closeExportMenu();
@@ -1580,40 +1745,16 @@ export function setupHandlers(
     historyUndo.style.display = "flex";
   };
 
-  const getPaperHistoryEntry = (): ConversationHistoryEntry | null => {
-    if (!basePaperItem) return null;
-    const conversationKey = getConversationKey(basePaperItem);
-    const title =
-      normalizeHistoryTitle(basePaperItem.getField("title")) || "Current paper";
-    const history = chatHistory.get(conversationKey) || [];
-    let lastTimestamp = 0;
-    for (const message of history) {
-      const parsed = Number(message.timestamp);
-      if (Number.isFinite(parsed)) {
-        lastTimestamp = Math.max(lastTimestamp, Math.floor(parsed));
-      }
-    }
-    return {
-      kind: "paper",
-      conversationKey,
-      title,
-      timestampText: lastTimestamp
-        ? formatGlobalHistoryTimestamp(lastTimestamp)
-        : "Current paper",
-      deletable: false,
-      isDraft: false,
-      isPendingDelete: false,
-      lastActivityAt: lastTimestamp || 0,
-    };
-  };
-
   const isHistoryEntryActive = (entry: ConversationHistoryEntry): boolean => {
     if (!item) return false;
     const activeConversationKey = getConversationKey(item);
-    if (entry.kind === "paper") {
+    if (entry.kind === "paper" && !isGlobalMode()) {
       return !isGlobalMode() && activeConversationKey === entry.conversationKey;
     }
-    return isGlobalMode() && activeConversationKey === entry.conversationKey;
+    if (entry.kind === "global" && isGlobalMode()) {
+      return activeConversationKey === entry.conversationKey;
+    }
+    return false;
   };
 
   const renderGlobalHistoryMenu = () => {
@@ -1631,68 +1772,123 @@ export function setupHandlers(
       historyMenu.appendChild(emptyRow);
       return;
     }
+    const sectionEntries = new Map<
+      "paper" | "open",
+      { title: string; entries: ConversationHistoryEntry[] }
+    >();
     for (const entry of latestConversationHistory) {
       if (entry.isPendingDelete) continue;
-      const row = createElement(
+      const section = sectionEntries.get(entry.section) || {
+        title: entry.sectionTitle,
+        entries: [],
+      };
+      section.entries.push(entry);
+      sectionEntries.set(entry.section, section);
+    }
+    const orderedSections = Array.from(sectionEntries.entries())
+      .map(([sectionKey, section]) => {
+        const latestActivity = section.entries.reduce(
+          (max, entry) => Math.max(max, entry.lastActivityAt || 0),
+          0,
+        );
+        return {
+          sectionKey,
+          title: section.title,
+          entries: section.entries,
+          latestActivity,
+        };
+      })
+      .sort((a, b) => {
+        if (b.latestActivity !== a.latestActivity) {
+          return b.latestActivity - a.latestActivity;
+        }
+        if (a.sectionKey === b.sectionKey) return 0;
+        return a.sectionKey === "paper" ? -1 : 1;
+      });
+
+    for (const section of orderedSections) {
+      const sectionHeader = createElement(
         body.ownerDocument as Document,
         "div",
-        "llm-history-menu-row",
-      ) as HTMLDivElement;
-      row.dataset.conversationKey = `${entry.conversationKey}`;
-      row.dataset.historyKind = entry.kind;
-      if (isHistoryEntryActive(entry)) {
-        row.classList.add("active");
-      }
-      if (entry.isPendingDelete) {
-        row.classList.add("pending-delete");
-      }
-      const rowMain = createElement(
-        body.ownerDocument as Document,
-        "button",
-        "llm-history-menu-row-main",
+        "llm-history-menu-section",
         {
-          type: "button",
-        },
-      ) as HTMLButtonElement;
-      rowMain.dataset.action = "switch";
-      const title = createElement(
-        body.ownerDocument as Document,
-        "span",
-        "llm-history-row-title",
-        {
-          textContent: formatHistoryRowDisplayTitle(entry.title),
-          title: entry.title,
+          textContent: section.title,
         },
       );
-      const meta = createElement(
-        body.ownerDocument as Document,
-        "span",
-        "llm-history-row-meta",
-        {
-          textContent: entry.timestampText,
-          title: entry.timestampText,
-        },
-      );
-      rowMain.append(title, meta);
-      row.appendChild(rowMain);
+      historyMenu.appendChild(sectionHeader);
 
-      if (entry.deletable) {
-        const deleteBtn = createElement(
+      for (const entry of section.entries) {
+        const row = createElement(
+          body.ownerDocument as Document,
+          "div",
+          "llm-history-menu-row",
+        ) as HTMLDivElement;
+        row.dataset.conversationKey = `${entry.conversationKey}`;
+        row.dataset.historyKind = entry.kind;
+        row.dataset.historySection = entry.section;
+        if (isHistoryEntryActive(entry)) {
+          row.classList.add("active");
+        }
+        if (entry.isPendingDelete) {
+          row.classList.add("pending-delete");
+        }
+        const rowMain = createElement(
           body.ownerDocument as Document,
           "button",
-          "llm-history-row-delete",
+          "llm-history-menu-row-main",
           {
             type: "button",
-            textContent: "×",
-            title: "Delete conversation",
           },
         ) as HTMLButtonElement;
-        deleteBtn.setAttribute("aria-label", `Delete ${entry.title}`);
-        deleteBtn.dataset.action = "delete";
-        row.appendChild(deleteBtn);
-      }
+        rowMain.dataset.action = "switch";
+        const titleLine = createElement(
+          body.ownerDocument as Document,
+          "div",
+          "llm-history-row-title-line",
+        );
+        const title = createElement(
+          body.ownerDocument as Document,
+          "span",
+          "llm-history-row-title",
+          {
+            textContent: formatHistoryRowDisplayTitle(entry.title),
+            title: entry.title,
+          },
+        );
+        titleLine.append(title);
+        const meta = createElement(
+          body.ownerDocument as Document,
+          "span",
+          "llm-history-row-meta",
+          {
+            textContent: entry.timestampText,
+            title: entry.timestampText,
+          },
+        );
+        rowMain.append(titleLine, meta);
+        row.appendChild(rowMain);
 
-      historyMenu.appendChild(row);
+        if (entry.deletable) {
+          const deleteBtn = createElement(
+            body.ownerDocument as Document,
+            "button",
+            "llm-history-row-delete",
+            {
+              type: "button",
+              textContent: "×",
+              title: "Delete conversation",
+            },
+          ) as HTMLButtonElement;
+          deleteBtn.setAttribute(
+            "aria-label",
+            `Delete ${entry.title}`,
+          );
+          deleteBtn.dataset.action = "delete";
+          row.appendChild(deleteBtn);
+        }
+
+        historyMenu.appendChild(row);
+      }
     }
   };
 
@@ -1700,17 +1896,90 @@ export function setupHandlers(
     if (!historyBar || !titleStatic || !item) {
       if (titleStatic) titleStatic.style.display = "";
       if (historyBar) historyBar.style.display = "none";
+      closeHistoryNewMenu();
       closeHistoryMenu();
       hideHistoryUndoToast();
       return;
     }
     const libraryID = getCurrentLibraryID();
     const requestId = ++globalHistoryLoadSeq;
-    const nextEntries: ConversationHistoryEntry[] = [];
+    const paperEntries: ConversationHistoryEntry[] = [];
+    const globalEntries: ConversationHistoryEntry[] = [];
+    const paperItem = resolveCurrentPaperBaseItem();
 
-    const paperHistoryEntry = getPaperHistoryEntry();
-    if (paperHistoryEntry) {
-      nextEntries.push(paperHistoryEntry);
+    if (libraryID && paperItem) {
+      const paperItemID = Number(paperItem.id || 0);
+      if (paperItemID > 0) {
+        try {
+          await ensurePaperV1Conversation(libraryID, paperItemID);
+        } catch (err) {
+          ztoolkit.log("LLM: Failed to ensure legacy v1 paper session", err);
+        }
+        if (requestId !== globalHistoryLoadSeq) return;
+        let summaries: Awaited<ReturnType<typeof listPaperConversations>> = [];
+        try {
+          summaries = await listPaperConversations(
+            libraryID,
+            paperItemID,
+            GLOBAL_HISTORY_LIMIT,
+            true,
+          );
+        } catch (err) {
+          ztoolkit.log("LLM: Failed to load paper history entries", err);
+        }
+        if (requestId !== globalHistoryLoadSeq) return;
+        const seenPaperKeys = new Set<number>();
+        for (const summary of summaries) {
+          const conversationKey = Number(summary.conversationKey);
+          const sessionVersion = Number(summary.sessionVersion);
+          const summaryPaperItemID = Number(summary.paperItemID);
+          if (
+            !Number.isFinite(conversationKey) ||
+            conversationKey <= 0 ||
+            !Number.isFinite(sessionVersion) ||
+            sessionVersion <= 0 ||
+            !Number.isFinite(summaryPaperItemID) ||
+            summaryPaperItemID !== paperItemID
+          ) {
+            continue;
+          }
+          const normalizedKey = Math.floor(conversationKey);
+          if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
+          if (seenPaperKeys.has(normalizedKey)) continue;
+          seenPaperKeys.add(normalizedKey);
+          const lastActivity = Number(
+            summary.lastActivityAt || summary.createdAt || 0,
+          );
+          const isDraft = Number(summary.userTurnCount || 0) <= 0;
+          const title =
+            normalizeHistoryTitle(summary.title) ||
+            (isDraft ? "New chat" : "Untitled chat");
+          paperEntries.push({
+            kind: "paper",
+            section: "paper",
+            sectionTitle: "Paper Chat",
+            conversationKey: normalizedKey,
+            title,
+            timestampText: isDraft
+              ? "Draft"
+              : formatGlobalHistoryTimestamp(lastActivity) || "Paper chat",
+            deletable: true,
+            isDraft,
+            isPendingDelete: false,
+            lastActivityAt: Number.isFinite(lastActivity)
+              ? Math.floor(lastActivity)
+              : 0,
+            paperItemID: paperItemID,
+            sessionVersion: Math.floor(sessionVersion),
+          });
+        }
+        paperEntries.sort((a, b) => {
+          if (b.lastActivityAt !== a.lastActivityAt) {
+            return b.lastActivityAt - a.lastActivityAt;
+          }
+          return b.conversationKey - a.conversationKey;
+        });
+      }
     }
 
     if (libraryID) {
@@ -1727,7 +1996,6 @@ export function setupHandlers(
       }
       if (requestId !== globalHistoryLoadSeq) return;
 
-      const globalEntries: ConversationHistoryEntry[] = [];
       const seenGlobalKeys = new Set<number>();
       for (const entry of historyEntries) {
         const conversationKey = Number(entry.conversationKey);
@@ -1740,6 +2008,8 @@ export function setupHandlers(
         const lastActivity = Number(entry.lastActivityAt || entry.createdAt || 0);
         globalEntries.push({
           kind: "global",
+          section: "open",
+          sectionTitle: "Open Chat",
           conversationKey: normalizedKey,
           title,
           timestampText:
@@ -1780,6 +2050,8 @@ export function setupHandlers(
           if (!existsInHistorical) {
             globalEntries.unshift({
               kind: "global",
+              section: "open",
+              sectionTitle: "Open Chat",
               conversationKey: activeGlobalKey,
               title: "New chat",
               timestampText: "Draft",
@@ -1799,16 +2071,53 @@ export function setupHandlers(
         seenGlobalEntryKeys.add(entry.conversationKey);
         dedupedGlobalEntries.push(entry);
       }
-      nextEntries.push(...dedupedGlobalEntries);
+      dedupedGlobalEntries.sort((a, b) => {
+        if (b.lastActivityAt !== a.lastActivityAt) {
+          return b.lastActivityAt - a.lastActivityAt;
+        }
+        if (a.isDraft !== b.isDraft) {
+          return a.isDraft ? 1 : -1;
+        }
+        return b.conversationKey - a.conversationKey;
+      });
+      globalEntries.splice(0, globalEntries.length, ...dedupedGlobalEntries);
     }
 
-    latestConversationHistory = nextEntries.filter(
+    const visibleEntries = [...paperEntries, ...globalEntries].filter(
       (entry) => !pendingHistoryDeletionKeys.has(entry.conversationKey),
+    );
+    const visibleSections = [
+      {
+        section: "paper" as const,
+        latestActivity: paperEntries.reduce(
+          (max, entry) => Math.max(max, entry.lastActivityAt || 0),
+          0,
+        ),
+      },
+      {
+        section: "open" as const,
+        latestActivity: globalEntries.reduce(
+          (max, entry) => Math.max(max, entry.lastActivityAt || 0),
+          0,
+        ),
+      },
+    ]
+      .filter((entry) => visibleEntries.some((row) => row.section === entry.section))
+      .sort((a, b) => {
+        if (b.latestActivity !== a.latestActivity) {
+          return b.latestActivity - a.latestActivity;
+        }
+        if (a.section === b.section) return 0;
+        return a.section === "paper" ? -1 : 1;
+      });
+    latestConversationHistory = visibleSections.flatMap((section) =>
+      visibleEntries.filter((entry) => entry.section === section.section),
     );
 
     titleStatic.style.display = "none";
     historyBar.style.display = "inline-flex";
     renderGlobalHistoryMenu();
+    updateHistoryModeIndicatorPosition();
   };
 
   const resetComposePreviewUI = () => {
@@ -1835,6 +2144,7 @@ export function setupHandlers(
     closeResponseMenu();
     closeRetryModelMenu();
     closeExportMenu();
+    closeHistoryNewMenu();
     closeHistoryMenu();
     await ensureConversationLoaded(item);
     refreshChatPreservingScroll();
@@ -1844,9 +2154,53 @@ export function setupHandlers(
     void refreshGlobalHistoryHeader();
   };
 
-  const switchPaperConversation = async () => {
-    if (!basePaperItem || !item) return;
-    item = basePaperItem;
+  const switchPaperConversation = async (nextConversationKey?: number) => {
+    if (!item) return;
+    const paperItem = resolveCurrentPaperBaseItem();
+    if (!paperItem) return;
+    basePaperItem = paperItem;
+    const libraryID = getCurrentLibraryID();
+    if (!libraryID) return;
+    const paperItemID = Number(paperItem.id || 0);
+    if (!Number.isFinite(paperItemID) || paperItemID <= 0) return;
+
+    const requestedConversationKey = Number(nextConversationKey || 0);
+    let targetSummary =
+      Number.isFinite(requestedConversationKey) && requestedConversationKey > 0
+        ? await getPaperConversation(Math.floor(requestedConversationKey))
+        : null;
+    if (targetSummary && targetSummary.paperItemID !== paperItemID) {
+      targetSummary = null;
+    }
+    if (!targetSummary) {
+      const rememberedConversationKey = Number(
+        activePaperConversationByPaper.get(
+          buildPaperStateKey(libraryID, paperItemID),
+        ) || getLastUsedPaperConversationKey(libraryID, paperItemID) || 0,
+      );
+      if (Number.isFinite(rememberedConversationKey) && rememberedConversationKey > 0) {
+        const rememberedSummary = await getPaperConversation(
+          Math.floor(rememberedConversationKey),
+        );
+        if (rememberedSummary && rememberedSummary.paperItemID === paperItemID) {
+          targetSummary = rememberedSummary;
+        }
+      }
+    }
+    if (!targetSummary) {
+      targetSummary = await ensurePaperV1Conversation(libraryID, paperItemID);
+    }
+    if (!targetSummary) return;
+    const normalizedConversationKey = Math.floor(targetSummary.conversationKey);
+    const nextItem =
+      normalizedConversationKey === paperItemID
+        ? paperItem
+        : createPaperPortalItem(
+            paperItem,
+            normalizedConversationKey,
+            targetSummary.sessionVersion,
+          );
+    item = nextItem;
     syncConversationIdentity();
     activeEditSession = null;
     closePaperPicker();
@@ -1854,6 +2208,7 @@ export function setupHandlers(
     closeResponseMenu();
     closeRetryModelMenu();
     closeExportMenu();
+    closeHistoryNewMenu();
     closeHistoryMenu();
     await ensureConversationLoaded(item);
     refreshChatPreservingScroll();
@@ -1868,10 +2223,63 @@ export function setupHandlers(
   ): Promise<void> => {
     if (!target) return;
     if (target.kind === "paper") {
-      await switchPaperConversation();
+      await switchPaperConversation(target.conversationKey);
       return;
     }
     await switchGlobalConversation(target.conversationKey);
+  };
+
+  const resolveFallbackAfterPaperDelete = async (
+    libraryID: number,
+    paperItemID: number,
+    deletedConversationKey: number,
+  ): Promise<HistorySwitchTarget> => {
+    let summaries: Awaited<ReturnType<typeof listPaperConversations>> = [];
+    try {
+      summaries = await listPaperConversations(
+        libraryID,
+        paperItemID,
+        GLOBAL_HISTORY_LIMIT,
+        true,
+      );
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to load fallback paper history candidates", err);
+    }
+    for (const summary of summaries) {
+      const candidateKey = Number(summary.conversationKey);
+      if (!Number.isFinite(candidateKey) || candidateKey <= 0) continue;
+      const normalizedKey = Math.floor(candidateKey);
+      if (normalizedKey === deletedConversationKey) continue;
+      if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
+      return { kind: "paper", conversationKey: normalizedKey };
+    }
+    let createdSummary: Awaited<ReturnType<typeof createPaperConversation>> = null;
+    try {
+      createdSummary = await createPaperConversation(libraryID, paperItemID);
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to create fallback paper conversation", err);
+    }
+    if (createdSummary?.conversationKey) {
+      return {
+        kind: "paper",
+        conversationKey: Math.floor(createdSummary.conversationKey),
+      };
+    }
+    const ensured = await ensurePaperV1Conversation(libraryID, paperItemID);
+    if (ensured?.conversationKey) {
+      const normalizedKey = Math.floor(ensured.conversationKey);
+      if (
+        normalizedKey === deletedConversationKey ||
+        pendingHistoryDeletionKeys.has(normalizedKey)
+      ) {
+        return null;
+      }
+      return {
+        kind: "paper",
+        conversationKey: normalizedKey,
+      };
+    }
+    return null;
   };
 
   const resolveFallbackAfterGlobalDelete = async (
@@ -1900,8 +2308,15 @@ export function setupHandlers(
       if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
       return { kind: "global", conversationKey: normalizedKey };
     }
-    if (basePaperItem) {
-      return { kind: "paper" };
+    const paperItem = resolveCurrentPaperBaseItem();
+    const paperItemID = Number(paperItem?.id || 0);
+    if (paperItemID > 0) {
+      const paperTarget = await resolveFallbackAfterPaperDelete(
+        libraryID,
+        paperItemID,
+        deletedConversationKey,
+      );
+      if (paperTarget) return paperTarget;
     }
 
     const isEmptyDraft = async (conversationKey: number): Promise<boolean> => {
@@ -2020,6 +2435,72 @@ export function setupHandlers(
     }
   };
 
+  const finalizePaperConversationDeletion = async (
+    pending: PendingHistoryDeletion,
+  ): Promise<void> => {
+    const conversationKey = pending.conversationKey;
+    let paperItemID = Number(pending.paperItemID || 0);
+    if (!paperItemID) {
+      const summary = await getPaperConversation(conversationKey);
+      paperItemID = Number(summary?.paperItemID || 0);
+    }
+    if (paperItemID > 0) {
+      const paperStateKey = buildPaperStateKey(pending.libraryID, paperItemID);
+      const rememberedConversationKey = Number(
+        activePaperConversationByPaper.get(paperStateKey) || 0,
+      );
+      if (
+        Number.isFinite(rememberedConversationKey) &&
+        Math.floor(rememberedConversationKey) === conversationKey
+      ) {
+        activePaperConversationByPaper.delete(paperStateKey);
+      }
+      const persistedConversationKey = Number(
+        getLastUsedPaperConversationKey(pending.libraryID, paperItemID) || 0,
+      );
+      if (
+        Number.isFinite(persistedConversationKey) &&
+        Math.floor(persistedConversationKey) === conversationKey
+      ) {
+        removeLastUsedPaperConversationKey(pending.libraryID, paperItemID);
+      }
+    }
+    clearPendingDeletionCaches(conversationKey);
+    let hasError = false;
+    try {
+      await clearStoredConversation(conversationKey);
+    } catch (err) {
+      hasError = true;
+      ztoolkit.log("LLM: Failed to clear deleted paper conversation", err);
+    }
+    try {
+      await clearOwnerAttachmentRefs("conversation", conversationKey);
+    } catch (err) {
+      hasError = true;
+      ztoolkit.log("LLM: Failed to clear deleted paper attachment refs", err);
+    }
+    try {
+      await removeConversationAttachmentFiles(conversationKey);
+    } catch (err) {
+      hasError = true;
+      ztoolkit.log("LLM: Failed to remove deleted paper attachment files", err);
+    }
+    try {
+      await deletePaperConversation(conversationKey);
+    } catch (err) {
+      hasError = true;
+      ztoolkit.log("LLM: Failed to delete paper conversation metadata row", err);
+    }
+    scheduleAttachmentGc();
+    if (hasError && status) {
+      setStatus(
+        status,
+        "Failed to fully delete conversation. Check logs.",
+        "error",
+      );
+    }
+  };
+
   const clearPendingHistoryDeletion = (
     restoreRowVisibility: boolean,
   ): PendingHistoryDeletion | null => {
@@ -2042,11 +2523,16 @@ export function setupHandlers(
     if (!pending) return;
     ztoolkit.log("LLM: Finalizing pending history deletion", {
       reason,
+      kind: pending.kind,
       conversationKey: pending.conversationKey,
       libraryID: pending.libraryID,
       title: pending.title,
     });
-    await finalizeGlobalConversationDeletion(pending);
+    if (pending.kind === "global") {
+      await finalizeGlobalConversationDeletion(pending);
+    } else {
+      await finalizePaperConversationDeletion(pending);
+    }
     pendingHistoryDeletionKeys.delete(pending.conversationKey);
     await refreshGlobalHistoryHeader();
   };
@@ -2055,12 +2541,16 @@ export function setupHandlers(
     const pending = clearPendingHistoryDeletion(true);
     if (!pending) return;
     ztoolkit.log("LLM: Restoring pending history deletion", {
+      kind: pending.kind,
       conversationKey: pending.conversationKey,
       libraryID: pending.libraryID,
       title: pending.title,
     });
     if (pending.wasActive) {
-      await switchGlobalConversation(pending.conversationKey);
+      await switchToHistoryTarget({
+        kind: pending.kind,
+        conversationKey: pending.conversationKey,
+      });
       if (status) setStatus(status, "Conversation restored", "ready");
       return;
     }
@@ -2080,9 +2570,63 @@ export function setupHandlers(
     );
   };
 
+  const getHistoryRowMenuEntry = (): ConversationHistoryEntry | null => {
+    if (!historyRowMenuTarget) return null;
+    return findHistoryEntryByKey(
+      historyRowMenuTarget.kind,
+      historyRowMenuTarget.conversationKey,
+    );
+  };
+
+  const promptConversationRename = (
+    entry: ConversationHistoryEntry,
+  ): string | null => {
+    const promptFn = panelWin?.prompt;
+    if (typeof promptFn !== "function") {
+      if (status) {
+        setStatus(status, "Rename prompt is unavailable in this window", "error");
+      }
+      return null;
+    }
+    const suggestedTitle = normalizeHistoryTitle(entry.title) || "";
+    const raw = promptFn.call(panelWin, "Rename chat", suggestedTitle);
+    if (raw === null) return null;
+    const normalized = normalizeConversationTitleSeed(raw);
+    if (!normalized) {
+      if (status) setStatus(status, "Chat title cannot be empty", "error");
+      return null;
+    }
+    return normalized;
+  };
+
+  const renameHistoryEntry = async (
+    entry: ConversationHistoryEntry,
+  ): Promise<void> => {
+    if (currentAbortController || historyToggleBtn?.disabled || inputBox?.disabled) {
+      if (status) {
+        setStatus(status, "History is unavailable while generating", "ready");
+      }
+      return;
+    }
+    const nextTitle = promptConversationRename(entry);
+    if (!nextTitle) return;
+    try {
+      if (entry.kind === "paper") {
+        await setPaperConversationTitle(entry.conversationKey, nextTitle);
+      } else {
+        await setGlobalConversationTitle(entry.conversationKey, nextTitle);
+      }
+      await refreshGlobalHistoryHeader();
+      if (status) setStatus(status, "Conversation renamed", "ready");
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to rename conversation", err);
+      if (status) setStatus(status, "Failed to rename conversation", "error");
+    }
+  };
+
   const queueHistoryDeletion = async (entry: ConversationHistoryEntry) => {
     if (!item) return;
-    if (entry.kind !== "global" || !entry.deletable) return;
+    if (!entry.deletable) return;
     const libraryID = getCurrentLibraryID();
     if (!libraryID) {
       if (status) setStatus(status, "No active library for deletion", "error");
@@ -2099,10 +2643,25 @@ export function setupHandlers(
     const wasActive = isHistoryEntryActive(entry);
     let fallbackTarget: HistorySwitchTarget = null;
     if (wasActive) {
-      fallbackTarget = await resolveFallbackAfterGlobalDelete(
-        libraryID,
-        entry.conversationKey,
-      );
+      if (entry.kind === "paper") {
+        const paperItemID = Number(entry.paperItemID || 0);
+        if (!paperItemID) {
+          if (status) {
+            setStatus(status, "Cannot resolve active paper session", "error");
+          }
+          return;
+        }
+        fallbackTarget = await resolveFallbackAfterPaperDelete(
+          libraryID,
+          paperItemID,
+          entry.conversationKey,
+        );
+      } else {
+        fallbackTarget = await resolveFallbackAfterGlobalDelete(
+          libraryID,
+          entry.conversationKey,
+        );
+      }
       if (!fallbackTarget) {
         if (status) {
           setStatus(status, "Cannot delete active conversation right now", "error");
@@ -2117,8 +2676,10 @@ export function setupHandlers(
 
     pendingHistoryDeletionKeys.add(entry.conversationKey);
     const pending: PendingHistoryDeletion = {
+      kind: entry.kind,
       conversationKey: entry.conversationKey,
       libraryID,
+      paperItemID: entry.paperItemID,
       title: entry.title,
       wasActive,
       fallbackTarget,
@@ -2131,6 +2692,7 @@ export function setupHandlers(
     pendingHistoryDeletion = pending;
 
     ztoolkit.log("LLM: Queued history deletion", {
+      kind: entry.kind,
       conversationKey: entry.conversationKey,
       libraryID,
       wasActive,
@@ -2154,6 +2716,7 @@ export function setupHandlers(
       }
       return;
     }
+    closeHistoryNewMenu();
     const libraryID = getCurrentLibraryID();
     if (!libraryID) {
       if (status) {
@@ -2234,11 +2797,129 @@ export function setupHandlers(
     inputBox.focus({ preventScroll: true });
   };
 
-  if (historyNewBtn) {
+  const createAndSwitchPaperConversation = async () => {
+    if (!item) return;
+    if (currentAbortController || historyNewBtn?.disabled || inputBox?.disabled) {
+      if (status) {
+        setStatus(
+          status,
+          "Wait for the current response to finish before starting a new chat",
+          "ready",
+        );
+      }
+      return;
+    }
+    closeHistoryNewMenu();
+    const paperItem = resolveCurrentPaperBaseItem();
+    if (!paperItem) {
+      if (status) {
+        setStatus(status, "Open a paper to start a paper chat", "error");
+      }
+      return;
+    }
+    basePaperItem = paperItem;
+    const libraryID = getCurrentLibraryID();
+    const paperItemID = Number(paperItem.id || 0);
+    if (!libraryID || !Number.isFinite(paperItemID) || paperItemID <= 0) {
+      if (status) {
+        setStatus(status, "No active paper for paper chat", "error");
+      }
+      return;
+    }
+    let createdSummary: Awaited<ReturnType<typeof createPaperConversation>> = null;
+    try {
+      createdSummary = await createPaperConversation(libraryID, paperItemID);
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to create new paper conversation", err);
+    }
+    if (!createdSummary?.conversationKey) {
+      if (status) setStatus(status, "Failed to create paper chat", "error");
+      return;
+    }
+    await switchPaperConversation(createdSummary.conversationKey);
+    if (status) {
+      setStatus(status, "Started paper chat", "ready");
+    }
+    inputBox.focus({ preventScroll: true });
+  };
+
+  const openHistoryRowMenuAtPointer = (
+    entry: ConversationHistoryEntry,
+    clientX: number,
+    clientY: number,
+  ) => {
+    if (!historyRowMenu || !historyRowRenameBtn) return;
+    historyRowMenuTarget = {
+      kind: entry.kind,
+      conversationKey: entry.conversationKey,
+    };
+    const renameDisabled = entry.isPendingDelete;
+    historyRowRenameBtn.disabled = renameDisabled;
+    historyRowRenameBtn.setAttribute(
+      "aria-disabled",
+      renameDisabled ? "true" : "false",
+    );
+    positionMenuAtPointer(body, historyRowMenu, clientX, clientY);
+    historyRowMenu.style.display = "grid";
+  };
+
+  if (historyNewBtn && historyNewMenu) {
     historyNewBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
+      if (!item) return;
+      if (currentAbortController || historyNewBtn.disabled || inputBox?.disabled) {
+        closeHistoryNewMenu();
+        if (status) {
+          setStatus(status, "New chat is unavailable while generating", "ready");
+        }
+        return;
+      }
+      closeModelMenu();
+      closeReasoningMenu();
+      closeRetryModelMenu();
+      closeSlashMenu();
+      closeResponseMenu();
+      closePromptMenu();
+      closeExportMenu();
+      closeHistoryMenu();
+      const paperContextAvailable = Boolean(resolveCurrentPaperBaseItem());
+      if (historyNewPaperBtn) {
+        historyNewPaperBtn.disabled = !paperContextAvailable;
+        historyNewPaperBtn.setAttribute(
+          "aria-disabled",
+          paperContextAvailable ? "false" : "true",
+        );
+        historyNewPaperBtn.title = paperContextAvailable
+          ? "Start a new paper chat session"
+          : "Open a paper to enable paper chat";
+      }
+      if (isHistoryNewMenuOpen()) {
+        closeHistoryNewMenu();
+        return;
+      }
+      positionMenuBelowButton(body, historyNewMenu, historyNewBtn);
+      historyNewMenu.style.display = "flex";
+      historyNewBtn.setAttribute("aria-expanded", "true");
+    });
+  }
+
+  if (historyNewOpenBtn) {
+    historyNewOpenBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeHistoryNewMenu();
       void createAndSwitchGlobalConversation();
+    });
+  }
+
+  if (historyNewPaperBtn) {
+    historyNewPaperBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (historyNewPaperBtn.disabled) return;
+      closeHistoryNewMenu();
+      void createAndSwitchPaperConversation();
     });
   }
 
@@ -2256,6 +2937,7 @@ export function setupHandlers(
       e.stopPropagation();
       if (!item) return;
       if (currentAbortController || historyToggleBtn.disabled || inputBox?.disabled) {
+        closeHistoryNewMenu();
         closeHistoryMenu();
         if (status) {
           setStatus(status, "History is unavailable while generating", "ready");
@@ -2270,6 +2952,7 @@ export function setupHandlers(
         closeResponseMenu();
         closePromptMenu();
         closeExportMenu();
+        closeHistoryNewMenu();
         await refreshGlobalHistoryHeader();
         if (!latestConversationHistory.length) {
           closeHistoryMenu();
@@ -2294,12 +2977,14 @@ export function setupHandlers(
       if (currentAbortController || historyToggleBtn?.disabled || inputBox?.disabled) {
         e.preventDefault();
         e.stopPropagation();
+        closeHistoryNewMenu();
         closeHistoryMenu();
         if (status) {
           setStatus(status, "History is unavailable while generating", "ready");
         }
         return;
       }
+      closeHistoryRowMenu();
 
       const deleteBtn = target.closest(
         ".llm-history-row-delete",
@@ -2346,12 +3031,78 @@ export function setupHandlers(
       const historyKind = row.dataset.historyKind === "paper" ? "paper" : "global";
       void (async () => {
         if (historyKind === "paper") {
-          await switchPaperConversation();
+          await switchPaperConversation(parsedConversationKey);
         } else {
           await switchGlobalConversation(parsedConversationKey);
         }
         if (status) setStatus(status, "Conversation loaded", "ready");
       })();
+    });
+
+    historyMenu.addEventListener("contextmenu", (e: Event) => {
+      const target = e.target as Element | null;
+      if (!target || !item) return;
+      if (currentAbortController || historyToggleBtn?.disabled || inputBox?.disabled) {
+        e.preventDefault();
+        e.stopPropagation();
+        closeHistoryRowMenu();
+        if (status) {
+          setStatus(status, "History is unavailable while generating", "ready");
+        }
+        return;
+      }
+      const row = target.closest(".llm-history-menu-row") as HTMLDivElement | null;
+      if (!row) {
+        closeHistoryRowMenu();
+        return;
+      }
+      const parsedConversationKey = Number.parseInt(
+        row.dataset.conversationKey || "",
+        10,
+      );
+      if (!Number.isFinite(parsedConversationKey) || parsedConversationKey <= 0) {
+        closeHistoryRowMenu();
+        return;
+      }
+      const historyKind = row.dataset.historyKind === "paper" ? "paper" : "global";
+      const entry = findHistoryEntryByKey(historyKind, parsedConversationKey);
+      if (!entry) {
+        closeHistoryRowMenu();
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      closeHistoryNewMenu();
+      closeModelMenu();
+      closeReasoningMenu();
+      closeRetryModelMenu();
+      closeSlashMenu();
+      closeResponseMenu();
+      closePromptMenu();
+      closeExportMenu();
+      const mouse = e as MouseEvent;
+      let { clientX, clientY } = mouse;
+      if (
+        !Number.isFinite(clientX) ||
+        !Number.isFinite(clientY) ||
+        (clientX === 0 && clientY === 0)
+      ) {
+        const rect = row.getBoundingClientRect();
+        clientX = rect.left + Math.min(18, rect.width / 2);
+        clientY = rect.top + Math.min(18, rect.height / 2);
+      }
+      openHistoryRowMenuAtPointer(entry, clientX, clientY);
+    });
+  }
+
+  if (historyRowRenameBtn) {
+    historyRowRenameBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const entry = getHistoryRowMenuEntry();
+      closeHistoryRowMenu();
+      if (!entry) return;
+      void renameHistoryEntry(entry);
     });
   }
 
@@ -3164,7 +3915,13 @@ export function setupHandlers(
   updateImagePreviewPreservingScroll();
   updateSelectedTextPreviewPreservingScroll();
   syncModelFromPrefs();
-  void refreshGlobalHistoryHeader();
+  if (isPaperMode()) {
+    void switchPaperConversation().catch((err) => {
+      ztoolkit.log("LLM: Failed to restore paper conversation session", err);
+    });
+  } else {
+    void refreshGlobalHistoryHeader();
+  }
 
   // Preferences can change outside this panel (e.g., settings window).
   // Re-sync model label when the user comes back (pointerenter).
@@ -3187,6 +3944,7 @@ export function setupHandlers(
         () => {
           applyResponsiveActionButtonsLayout();
           syncUserContextAlignmentWidths(body);
+          updateHistoryModeIndicatorPosition();
         },
         "relative",
       );
@@ -3938,6 +4696,7 @@ export function setupHandlers(
     normalizeConversationTitleSeed,
     getConversationKey,
     touchGlobalConversationTitle,
+    touchPaperConversationTitle,
     getSelectedProfile,
     getCurrentModelName: () => getSelectedModelInfo().currentModel,
     isScreenshotUnsupportedModel,
@@ -4162,8 +4921,13 @@ export function setupHandlers(
       const textContextKey = getTextContextConversationKey();
       if (!textContextKey) return;
       if (!isGlobalMode()) {
+        const activeBasePaperItemID = Number(
+          resolveCurrentPaperBaseItem()?.id || getPaperPortalBaseItemID(item) || 0,
+        );
         const paperMismatch =
-          !resolvedPaperContext || resolvedPaperContext.itemId !== textContextKey;
+          !resolvedPaperContext ||
+          activeBasePaperItemID <= 0 ||
+          resolvedPaperContext.itemId !== activeBasePaperItemID;
         if (paperMismatch) {
           if (status) {
             setStatus(
@@ -4329,6 +5093,7 @@ export function setupHandlers(
       closeRetryModelMenu();
       closeModelMenu();
       closeReasoningMenu();
+      closeHistoryNewMenu();
       closeHistoryMenu();
       closeResponseMenu();
       closePromptMenu();
@@ -4370,6 +5135,7 @@ export function setupHandlers(
     closeRetryModelMenu();
     closeReasoningMenu();
     closePromptMenu();
+    closeHistoryNewMenu();
     closeHistoryMenu();
     updateModelButton();
     rebuildModelMenu();
@@ -4391,6 +5157,7 @@ export function setupHandlers(
     closeRetryModelMenu();
     closeModelMenu();
     closePromptMenu();
+    closeHistoryNewMenu();
     closeHistoryMenu();
     updateReasoningButton();
     rebuildReasoningMenu();
@@ -4412,6 +5179,7 @@ export function setupHandlers(
     closeResponseMenu();
     closeExportMenu();
     closePromptMenu();
+    closeHistoryNewMenu();
     closeHistoryMenu();
     closeModelMenu();
     closeReasoningMenu();
@@ -4466,6 +5234,28 @@ export function setupHandlers(
       e.stopPropagation();
     });
     historyMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+  }
+
+  if (historyNewMenu) {
+    historyNewMenu.addEventListener("pointerdown", (e: Event) => {
+      e.stopPropagation();
+    });
+    historyNewMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+  }
+
+  if (historyRowMenu) {
+    historyRowMenu.addEventListener("pointerdown", (e: Event) => {
+      e.stopPropagation();
+    });
+    historyRowMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    historyRowMenu.addEventListener("contextmenu", (e: Event) => {
+      e.preventDefault();
       e.stopPropagation();
     });
   }
@@ -4655,6 +5445,12 @@ export function setupHandlers(
       const historyMenus = Array.from(
         doc.querySelectorAll("#llm-history-menu"),
       ) as HTMLDivElement[];
+      const historyNewMenus = Array.from(
+        doc.querySelectorAll("#llm-history-new-menu"),
+      ) as HTMLDivElement[];
+      const historyRowMenus = Array.from(
+        doc.querySelectorAll("#llm-history-row-menu"),
+      ) as HTMLDivElement[];
       for (const modelMenuEl of modelMenus) {
         if (!isFloatingMenuOpen(modelMenuEl)) continue;
         const panelRoot = modelMenuEl.closest("#llm-main");
@@ -4765,6 +5561,25 @@ export function setupHandlers(
           if (target && historyNewEl?.contains(target)) continue;
           historyMenuEl.style.display = "none";
           historyToggleEl?.setAttribute("aria-expanded", "false");
+        }
+
+        for (const historyNewMenuEl of historyNewMenus) {
+          if (historyNewMenuEl.style.display === "none") continue;
+          if (target && historyNewMenuEl.contains(target)) continue;
+          const panelRoot = historyNewMenuEl.closest("#llm-main");
+          const historyNewEl = panelRoot?.querySelector(
+            "#llm-history-new",
+          ) as HTMLButtonElement | null;
+          if (target && historyNewEl?.contains(target)) continue;
+          historyNewMenuEl.style.display = "none";
+          historyNewEl?.setAttribute("aria-expanded", "false");
+        }
+
+        for (const historyRowMenuEl of historyRowMenus) {
+          if (historyRowMenuEl.style.display === "none") continue;
+          if (target && historyRowMenuEl.contains(target)) continue;
+          closeHistoryRowMenu();
+          break;
         }
       }
     });
@@ -5059,6 +5874,7 @@ export function setupHandlers(
       closePaperPicker();
       closeExportMenu();
       closePromptMenu();
+      closeHistoryNewMenu();
       closeHistoryMenu();
       activeEditSession = null;
       if (!item) return;

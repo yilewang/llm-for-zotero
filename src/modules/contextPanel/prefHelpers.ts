@@ -29,6 +29,7 @@ export function getStringPref(key: string): string {
 const LAST_MODEL_PROFILE_PREF_KEY = "lastUsedModelProfile";
 const LAST_REASONING_LEVEL_PREF_KEY = "lastUsedReasoningLevel";
 const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
+const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";
 const MODEL_PROFILE_KEYS = new Set<ModelProfileKey>([
   "primary",
   "secondary",
@@ -44,6 +45,10 @@ const REASONING_LEVEL_SELECTIONS = new Set<ReasoningLevelSelection>([
   "high",
   "xhigh",
 ]);
+
+function buildPaperConversationMapKey(libraryID: number, paperItemID: number): string {
+  return `${Math.floor(libraryID)}:${Math.floor(paperItemID)}`;
+}
 
 export function getLastUsedModelProfileKey(): ModelProfileKey | null {
   const raw = getStringPref(LAST_MODEL_PROFILE_PREF_KEY).trim().toLowerCase();
@@ -95,6 +100,74 @@ export function setLastReasoningExpanded(expanded: boolean): void {
     Boolean(expanded),
     true,
   );
+}
+
+function getLastPaperConversationMap(): Record<string, number> {
+  const raw = Zotero.Prefs.get(
+    `${config.prefsPrefix}.${LAST_PAPER_CONVERSATION_MAP_PREF_KEY}`,
+    true,
+  );
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const normalized = Number(value);
+      if (!Number.isFinite(normalized) || normalized <= 0) continue;
+      out[key] = Math.floor(normalized);
+    }
+    return out;
+  } catch (_err) {
+    return {};
+  }
+}
+
+function setLastPaperConversationMap(value: Record<string, number>): void {
+  Zotero.Prefs.set(
+    `${config.prefsPrefix}.${LAST_PAPER_CONVERSATION_MAP_PREF_KEY}`,
+    JSON.stringify(value),
+    true,
+  );
+}
+
+export function getLastUsedPaperConversationKey(
+  libraryID: number,
+  paperItemID: number,
+): number | null {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
+  if (!Number.isFinite(paperItemID) || paperItemID <= 0) return null;
+  const map = getLastPaperConversationMap();
+  const key = buildPaperConversationMapKey(libraryID, paperItemID);
+  const value = Number(map[key]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.floor(value);
+}
+
+export function setLastUsedPaperConversationKey(
+  libraryID: number,
+  paperItemID: number,
+  conversationKey: number,
+): void {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return;
+  if (!Number.isFinite(paperItemID) || paperItemID <= 0) return;
+  if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
+  const map = getLastPaperConversationMap();
+  const key = buildPaperConversationMapKey(libraryID, paperItemID);
+  map[key] = Math.floor(conversationKey);
+  setLastPaperConversationMap(map);
+}
+
+export function removeLastUsedPaperConversationKey(
+  libraryID: number,
+  paperItemID: number,
+): void {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return;
+  if (!Number.isFinite(paperItemID) || paperItemID <= 0) return;
+  const map = getLastPaperConversationMap();
+  const key = buildPaperConversationMapKey(libraryID, paperItemID);
+  if (!(key in map)) return;
+  delete map[key];
+  setLastPaperConversationMap(map);
 }
 
 function normalizeTemperaturePref(raw: string): number {

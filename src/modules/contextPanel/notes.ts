@@ -25,8 +25,19 @@ import {
   replaceOwnerAttachmentRefs,
 } from "../../utils/attachmentRefStore";
 import type { ChatAttachment, Message, SelectedTextSource } from "./types";
+import {
+  isGlobalPortalItem,
+  isPaperPortalItem,
+  resolvePaperPortalBaseItem,
+} from "./portalScope";
 
 function resolveParentItemForNote(item: Zotero.Item): Zotero.Item | null {
+  if (isGlobalPortalItem(item)) {
+    return null;
+  }
+  if (isPaperPortalItem(item)) {
+    return resolvePaperPortalBaseItem(item);
+  }
   if (item.isAttachment() && item.parentID) {
     return Zotero.Items.get(item.parentID) || null;
   }

@@ -22,7 +22,6 @@ import {
   MAX_HISTORY_MESSAGES,
   AUTO_SCROLL_BOTTOM_THRESHOLD,
   MAX_SELECTED_IMAGES,
-  GLOBAL_CONVERSATION_KEY_BASE,
   formatFigureCountLabel,
   formatPaperCountLabel,
   ACTIVE_PAPER_MULTI_CONTEXT_MAX_CHUNKS,
@@ -85,6 +84,7 @@ import {
   getActiveContextAttachmentFromTabs,
   resolveContextSourceItem,
 } from "./contextResolution";
+import { isGlobalPortalItem } from "./portalScope";
 import { buildChatHistoryNotePayload } from "./notes";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { toFileUrl } from "../../utils/pathFileUrl";
@@ -119,6 +119,9 @@ function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
   if (historyNewBtn) {
     historyNewBtn.disabled = disabled;
     historyNewBtn.setAttribute("aria-disabled", disabled ? "true" : "false");
+    if (disabled) {
+      historyNewBtn.setAttribute("aria-expanded", "false");
+    }
   }
   const historyToggleBtn = body.querySelector(
     "#llm-history-toggle",
@@ -131,6 +134,12 @@ function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
     }
   }
   if (disabled) {
+    const historyNewMenu = body.querySelector(
+      "#llm-history-new-menu",
+    ) as HTMLDivElement | null;
+    if (historyNewMenu) {
+      historyNewMenu.style.display = "none";
+    }
     const historyMenu = body.querySelector(
       "#llm-history-menu",
     ) as HTMLDivElement | null;
@@ -1782,7 +1791,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
   }
 
   const conversationKey = getConversationKey(item);
-  const isGlobalConversation = conversationKey >= GLOBAL_CONVERSATION_KEY_BASE;
+  const panelRoot = body.querySelector("#llm-main") as HTMLDivElement | null;
+  const isGlobalConversation =
+    isGlobalPortalItem(item) ||
+    panelRoot?.dataset.conversationKind === "global";
   const mutateChatWithScrollGuard = (fn: () => void) => {
     withScrollGuard(chatBox, conversationKey, fn);
   };

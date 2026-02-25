@@ -93,8 +93,8 @@ export function formatPaperContextChipLabel(paperContext: PaperContextRef): stri
   const authorLastName = extractFirstAuthorLastName(paperContext);
   const year = extractPaperYear(paperContext);
   const base = year
-    ? `📝 ${authorLastName} et al., ${year}`
-    : `📝 ${authorLastName} et al.`;
+    ? `📚 ${authorLastName} et al., ${year}`
+    : `📚 ${authorLastName} et al.`;
   const attachmentTitle = resolveMultiPdfAttachmentTitle(paperContext);
   return attachmentTitle ? `${base} - ${attachmentTitle}` : base;
 }

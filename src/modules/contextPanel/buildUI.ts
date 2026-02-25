@@ -7,7 +7,11 @@ import {
   formatFileCountLabel,
 } from "./constants";
 import type { ActionDropdownSpec } from "./types";
-import { isGlobalPortalItem } from "./portalScope";
+import {
+  getPaperPortalBaseItemID,
+  isGlobalPortalItem,
+  isPaperPortalItem,
+} from "./portalScope";
 
 function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
   const slot = createElement(
@@ -34,12 +38,24 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const doc = body.ownerDocument!;
   const hasItem = Boolean(item);
   const isGlobalMode = Boolean(item && isGlobalPortalItem(item));
+  const isPaperMode = Boolean(item && !isGlobalMode);
   const conversationItemId =
     hasItem && item
       ? item.isAttachment() && item.parentID
         ? item.parentID
         : item.id
       : 0;
+  const basePaperItemId =
+    hasItem && item
+      ? isPaperPortalItem(item)
+        ? getPaperPortalBaseItemID(item) || 0
+        : item.isAttachment() && item.parentID
+          ? item.parentID
+          : isPaperMode
+            ? item.id
+            : 0
+      : 0;
+  const hasPaperContext = basePaperItemId > 0;
 
   // Disable CSS scroll anchoring on the Zotero-provided panel body so that
   // Gecko doesn't fight with our programmatic scroll management.
@@ -59,6 +75,13 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const container = createElement(doc, "div", "llm-panel", { id: "llm-main" });
   container.dataset.itemId = conversationItemId > 0 ? `${conversationItemId}` : "";
   container.dataset.libraryId = hasItem && item ? `${item.libraryID}` : "";
+  container.dataset.conversationKind = hasItem
+    ? isGlobalMode
+      ? "global"
+      : "paper"
+    : "";
+  container.dataset.basePaperItemId =
+    basePaperItemId > 0 ? `${basePaperItemId}` : "";
 
   // Header section
   const header = createElement(doc, "div", "llm-header");
@@ -86,9 +109,11 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     id: "llm-history-new",
     type: "button",
     textContent: "",
-    title: "Start a new conversation",
+    title: "Start a new chat",
   });
-  historyNewBtn.setAttribute("aria-label", "Start a new conversation");
+  historyNewBtn.setAttribute("aria-label", "Start a new chat");
+  historyNewBtn.setAttribute("aria-haspopup", "menu");
+  historyNewBtn.setAttribute("aria-expanded", "false");
   const historyToggleBtn = createElement(doc, "button", "llm-history-toggle", {
     id: "llm-history-toggle",
     type: "button",
@@ -133,6 +158,56 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
   historyMenu.style.display = "none";
   header.appendChild(historyMenu);
+
+  const historyRowMenu = createElement(doc, "div", "llm-history-row-menu", {
+    id: "llm-history-row-menu",
+  });
+  historyRowMenu.style.display = "none";
+  const historyRowRenameBtn = createElement(
+    doc,
+    "button",
+    "llm-history-row-menu-item",
+    {
+      id: "llm-history-row-rename",
+      type: "button",
+      textContent: "Rename",
+      title: "Rename chat",
+    },
+  );
+  historyRowMenu.append(historyRowRenameBtn);
+  header.appendChild(historyRowMenu);
+
+  const historyNewMenu = createElement(doc, "div", "llm-history-new-menu", {
+    id: "llm-history-new-menu",
+  });
+  historyNewMenu.style.display = "none";
+  const historyNewOpenBtn = createElement(
+    doc,
+    "button",
+    "llm-history-new-menu-item",
+    {
+      id: "llm-history-new-open",
+      type: "button",
+      textContent: "Open Chat",
+      title: "Start a new open chat",
+    },
+  );
+  const historyNewPaperBtn = createElement(
+    doc,
+    "button",
+    "llm-history-new-menu-item",
+    {
+      id: "llm-history-new-paper",
+      type: "button",
+      textContent: "Paper Chat",
+      title: hasPaperContext
+        ? "Start a new paper chat session"
+        : "Open a paper to enable paper chat",
+      disabled: !hasPaperContext,
+    },
+  );
+  historyNewMenu.append(historyNewOpenBtn, historyNewPaperBtn);
+  header.appendChild(historyNewMenu);
 
   const historyUndo = createElement(doc, "div", "llm-history-undo", {
     id: "llm-history-undo",

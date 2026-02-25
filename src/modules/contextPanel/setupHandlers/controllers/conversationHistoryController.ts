@@ -6,6 +6,8 @@ export const HISTORY_ROW_TITLE_MAX_LENGTH = 42;
 
 export type ConversationHistoryEntry = {
   kind: "paper" | "global";
+  section: "paper" | "open";
+  sectionTitle: string;
   conversationKey: number;
   title: string;
   timestampText: string;
@@ -13,16 +15,20 @@ export type ConversationHistoryEntry = {
   isDraft: boolean;
   isPendingDelete: boolean;
   lastActivityAt: number;
+  paperItemID?: number;
+  sessionVersion?: number;
 };
 
 export type HistorySwitchTarget =
-  | { kind: "paper" }
+  | { kind: "paper"; conversationKey: number }
   | { kind: "global"; conversationKey: number }
   | null;
 
 export type PendingHistoryDeletion = {
+  kind: "paper" | "global";
   conversationKey: number;
   libraryID: number;
+  paperItemID?: number;
   title: string;
   wasActive: boolean;
   fallbackTarget: HistorySwitchTarget;

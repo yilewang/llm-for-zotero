@@ -126,8 +126,33 @@ export type GlobalConversationSummary = {
   userTurnCount: number;
 };
 
+export type PaperConversationSummary = {
+  conversationKey: number;
+  libraryID: number;
+  paperItemID: number;
+  sessionVersion: number;
+  createdAt: number;
+  title?: string;
+  lastActivityAt: number;
+  userTurnCount: number;
+};
+
 export type GlobalPortalItem = {
   __llmGlobalPortalItem: true;
+  id: number;
+  libraryID: number;
+  parentID?: number;
+  attachmentContentType?: string;
+  isAttachment: () => boolean;
+  getAttachments: () => number[];
+  getField: (field: string) => string;
+  isRegularItem: () => boolean;
+};
+
+export type PaperPortalItem = {
+  __llmPaperPortalItem: true;
+  __llmPaperPortalBaseItemID: number;
+  __llmPaperPortalSessionVersion: number;
   id: number;
   libraryID: number;
   parentID?: number;

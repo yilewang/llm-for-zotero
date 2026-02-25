@@ -2,8 +2,12 @@ import type {
   SelectedTextSource,
   PaperContextRef,
   GlobalConversationSummary,
+  PaperConversationSummary,
 } from "../modules/contextPanel/types";
-import { GLOBAL_CONVERSATION_KEY_BASE } from "../modules/contextPanel/constants";
+import {
+  GLOBAL_CONVERSATION_KEY_BASE,
+  PAPER_CONVERSATION_KEY_BASE,
+} from "../modules/contextPanel/constants";
 import {
   normalizeSelectedTextPaperContexts,
   normalizeSelectedTextSource,
@@ -41,6 +45,11 @@ const CHAT_MESSAGES_INDEX = "llm_for_zotero_chat_messages_conversation_idx";
 const GLOBAL_CONVERSATIONS_TABLE = "llm_for_zotero_global_conversations";
 const GLOBAL_CONVERSATIONS_LIBRARY_INDEX =
   "llm_for_zotero_global_conversations_library_idx";
+const PAPER_CONVERSATIONS_TABLE = "llm_for_zotero_paper_conversations";
+const PAPER_CONVERSATIONS_PAPER_INDEX =
+  "llm_for_zotero_paper_conversations_paper_idx";
+const PAPER_CONVERSATIONS_CONVERSATION_INDEX =
+  "llm_for_zotero_paper_conversations_conversation_idx";
 const LEGACY_CHAT_MESSAGES_TABLE = "zoterollm_chat_messages";
 const LEGACY_CHAT_MESSAGES_INDEX = "zoterollm_chat_messages_conversation_idx";
 
@@ -105,6 +114,18 @@ function normalizeConversationKey(conversationKey: number): number | null {
 function normalizeLibraryID(libraryID: number): number | null {
   if (!Number.isFinite(libraryID)) return null;
   const normalized = Math.floor(libraryID);
+  return normalized > 0 ? normalized : null;
+}
+
+function normalizePaperItemID(paperItemID: number): number | null {
+  if (!Number.isFinite(paperItemID)) return null;
+  const normalized = Math.floor(paperItemID);
+  return normalized > 0 ? normalized : null;
+}
+
+function normalizeSessionVersion(sessionVersion: number): number | null {
+  if (!Number.isFinite(sessionVersion)) return null;
+  const normalized = Math.floor(sessionVersion);
   return normalized > 0 ? normalized : null;
 }
 
@@ -242,6 +263,41 @@ export async function initChatStore(): Promise<void> {
     await Zotero.DB.queryAsync(
       `CREATE INDEX IF NOT EXISTS ${GLOBAL_CONVERSATIONS_LIBRARY_INDEX}
        ON ${GLOBAL_CONVERSATIONS_TABLE} (library_id, created_at DESC, conversation_key DESC)`,
+    );
+
+    await Zotero.DB.queryAsync(
+      `CREATE TABLE IF NOT EXISTS ${PAPER_CONVERSATIONS_TABLE} (
+        conversation_key INTEGER PRIMARY KEY,
+        library_id INTEGER NOT NULL,
+        paper_item_id INTEGER NOT NULL,
+        session_version INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        title TEXT,
+        UNIQUE(paper_item_id, session_version)
+      )`,
+    );
+
+    const paperColumns = (await Zotero.DB.queryAsync(
+      `PRAGMA table_info(${PAPER_CONVERSATIONS_TABLE})`,
+    )) as Array<{ name?: unknown }> | undefined;
+    const hasPaperTitleColumn = Boolean(
+      paperColumns?.some((column) => column?.name === "title"),
+    );
+    if (!hasPaperTitleColumn) {
+      await Zotero.DB.queryAsync(
+        `ALTER TABLE ${PAPER_CONVERSATIONS_TABLE}
+         ADD COLUMN title TEXT`,
+      );
+    }
+
+    await Zotero.DB.queryAsync(
+      `CREATE INDEX IF NOT EXISTS ${PAPER_CONVERSATIONS_PAPER_INDEX}
+       ON ${PAPER_CONVERSATIONS_TABLE} (paper_item_id, library_id, session_version, created_at DESC, conversation_key DESC)`,
+    );
+
+    await Zotero.DB.queryAsync(
+      `CREATE INDEX IF NOT EXISTS ${PAPER_CONVERSATIONS_CONVERSATION_INDEX}
+       ON ${PAPER_CONVERSATIONS_TABLE} (conversation_key, paper_item_id, session_version)`,
     );
   });
 }
@@ -774,6 +830,243 @@ function toGlobalConversationSummary(
   };
 }
 
+type PaperConversationSummaryRow = {
+  conversationKey?: unknown;
+  libraryID?: unknown;
+  paperItemID?: unknown;
+  sessionVersion?: unknown;
+  createdAt?: unknown;
+  title?: unknown;
+  lastActivityAt?: unknown;
+  userTurnCount?: unknown;
+};
+
+function toPaperConversationSummary(
+  row: PaperConversationSummaryRow,
+): PaperConversationSummary | null {
+  const conversationKey = normalizeConversationKey(Number(row.conversationKey));
+  const libraryID = normalizeLibraryID(Number(row.libraryID));
+  const paperItemID = normalizePaperItemID(Number(row.paperItemID));
+  const sessionVersion = normalizeSessionVersion(Number(row.sessionVersion));
+  const createdAt = Number(row.createdAt);
+  const lastActivityAt = Number(row.lastActivityAt);
+  const userTurnCount = Number(row.userTurnCount);
+  if (
+    !conversationKey ||
+    !libraryID ||
+    !paperItemID ||
+    !sessionVersion ||
+    !Number.isFinite(createdAt)
+  ) {
+    return null;
+  }
+  return {
+    conversationKey,
+    libraryID,
+    paperItemID,
+    sessionVersion,
+    createdAt: Math.floor(createdAt),
+    title:
+      typeof row.title === "string" && row.title.trim()
+        ? row.title.trim()
+        : undefined,
+    lastActivityAt: Number.isFinite(lastActivityAt)
+      ? Math.floor(lastActivityAt)
+      : Math.floor(createdAt),
+    userTurnCount: Number.isFinite(userTurnCount)
+      ? Math.max(0, Math.floor(userTurnCount))
+      : 0,
+  };
+}
+
+async function resolveNextPaperConversationKey(): Promise<number> {
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT MAX(conversation_key) AS maxConversationKey
+     FROM ${PAPER_CONVERSATIONS_TABLE}
+     WHERE conversation_key >= ?
+       AND conversation_key < ?`,
+    [PAPER_CONVERSATION_KEY_BASE, GLOBAL_CONVERSATION_KEY_BASE],
+  )) as Array<{ maxConversationKey?: unknown }> | undefined;
+  const maxConversationKey = Number(rows?.[0]?.maxConversationKey);
+  const next = Number.isFinite(maxConversationKey)
+    ? Math.max(PAPER_CONVERSATION_KEY_BASE, Math.floor(maxConversationKey) + 1)
+    : PAPER_CONVERSATION_KEY_BASE;
+  return next;
+}
+
+async function findLowestMissingPaperSessionVersion(
+  paperItemID: number,
+): Promise<number> {
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT session_version AS sessionVersion
+     FROM ${PAPER_CONVERSATIONS_TABLE}
+     WHERE paper_item_id = ?
+     ORDER BY session_version ASC`,
+    [paperItemID],
+  )) as Array<{ sessionVersion?: unknown }> | undefined;
+  const used = new Set<number>();
+  for (const row of rows || []) {
+    const normalized = normalizeSessionVersion(Number(row.sessionVersion));
+    if (!normalized) continue;
+    used.add(normalized);
+  }
+  let candidate = 1;
+  while (used.has(candidate)) {
+    candidate += 1;
+  }
+  return candidate;
+}
+
+export async function ensurePaperV1Conversation(
+  libraryID: number,
+  paperItemID: number,
+): Promise<PaperConversationSummary | null> {
+  const normalizedLibraryID = normalizeLibraryID(libraryID);
+  const normalizedPaperItemID = normalizePaperItemID(paperItemID);
+  if (!normalizedLibraryID || !normalizedPaperItemID) return null;
+  const createdAt = Date.now();
+  await Zotero.DB.queryAsync(
+    `INSERT OR IGNORE INTO ${PAPER_CONVERSATIONS_TABLE}
+      (conversation_key, library_id, paper_item_id, session_version, created_at, title)
+     VALUES (?, ?, ?, 1, ?, NULL)`,
+    [normalizedPaperItemID, normalizedLibraryID, normalizedPaperItemID, createdAt],
+  );
+  return await getPaperConversation(normalizedPaperItemID);
+}
+
+export async function createPaperConversation(
+  libraryID: number,
+  paperItemID: number,
+): Promise<PaperConversationSummary | null> {
+  const normalizedLibraryID = normalizeLibraryID(libraryID);
+  const normalizedPaperItemID = normalizePaperItemID(paperItemID);
+  if (!normalizedLibraryID || !normalizedPaperItemID) return null;
+  await ensurePaperV1Conversation(normalizedLibraryID, normalizedPaperItemID);
+  return await Zotero.DB.executeTransaction(async () => {
+    const nextVersion = await findLowestMissingPaperSessionVersion(
+      normalizedPaperItemID,
+    );
+    const createdAt = Date.now();
+    const nextConversationKey =
+      nextVersion === 1
+        ? normalizedPaperItemID
+        : await resolveNextPaperConversationKey();
+    await Zotero.DB.queryAsync(
+      `INSERT INTO ${PAPER_CONVERSATIONS_TABLE}
+        (conversation_key, library_id, paper_item_id, session_version, created_at, title)
+       VALUES (?, ?, ?, ?, ?, NULL)`,
+      [
+        nextConversationKey,
+        normalizedLibraryID,
+        normalizedPaperItemID,
+        nextVersion,
+        createdAt,
+      ],
+    );
+    return await getPaperConversation(nextConversationKey);
+  });
+}
+
+export async function listPaperConversations(
+  libraryID: number,
+  paperItemID: number,
+  limit: number,
+  includeEmpty = true,
+): Promise<PaperConversationSummary[]> {
+  const normalizedLibraryID = normalizeLibraryID(libraryID);
+  const normalizedPaperItemID = normalizePaperItemID(paperItemID);
+  if (!normalizedLibraryID || !normalizedPaperItemID) return [];
+  const normalizedLimit = normalizeLimit(limit, 50);
+
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT pc.conversation_key AS conversationKey,
+            pc.library_id AS libraryID,
+            pc.paper_item_id AS paperItemID,
+            pc.session_version AS sessionVersion,
+            pc.created_at AS createdAt,
+            COALESCE(
+              NULLIF(TRIM(pc.title), ''),
+              (
+                SELECT m0.text
+                FROM ${CHAT_MESSAGES_TABLE} m0
+                WHERE m0.conversation_key = pc.conversation_key
+                  AND m0.role = 'user'
+                ORDER BY m0.timestamp ASC, m0.id ASC
+                LIMIT 1
+              )
+            ) AS title,
+            COALESCE(MAX(m.timestamp), pc.created_at) AS lastActivityAt,
+            SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) AS userTurnCount
+     FROM ${PAPER_CONVERSATIONS_TABLE} pc
+     LEFT JOIN ${CHAT_MESSAGES_TABLE} m
+       ON m.conversation_key = pc.conversation_key
+     WHERE pc.library_id = ?
+       AND pc.paper_item_id = ?
+     GROUP BY pc.conversation_key, pc.library_id, pc.paper_item_id, pc.session_version, pc.created_at, pc.title
+     ${includeEmpty ? "" : "HAVING SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) > 0"}
+     ORDER BY lastActivityAt DESC, pc.conversation_key DESC
+     LIMIT ?`,
+    [normalizedLibraryID, normalizedPaperItemID, normalizedLimit],
+  )) as PaperConversationSummaryRow[] | undefined;
+
+  if (!rows?.length) return [];
+  const out: PaperConversationSummary[] = [];
+  for (const row of rows) {
+    const normalized = toPaperConversationSummary(row);
+    if (!normalized) continue;
+    out.push(normalized);
+  }
+  return out;
+}
+
+export async function getPaperConversation(
+  conversationKey: number,
+): Promise<PaperConversationSummary | null> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey) return null;
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT pc.conversation_key AS conversationKey,
+            pc.library_id AS libraryID,
+            pc.paper_item_id AS paperItemID,
+            pc.session_version AS sessionVersion,
+            pc.created_at AS createdAt,
+            COALESCE(
+              NULLIF(TRIM(pc.title), ''),
+              (
+                SELECT m0.text
+                FROM ${CHAT_MESSAGES_TABLE} m0
+                WHERE m0.conversation_key = pc.conversation_key
+                  AND m0.role = 'user'
+                ORDER BY m0.timestamp ASC, m0.id ASC
+                LIMIT 1
+              )
+            ) AS title,
+            COALESCE(MAX(m.timestamp), pc.created_at) AS lastActivityAt,
+            SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) AS userTurnCount
+     FROM ${PAPER_CONVERSATIONS_TABLE} pc
+     LEFT JOIN ${CHAT_MESSAGES_TABLE} m
+       ON m.conversation_key = pc.conversation_key
+     WHERE pc.conversation_key = ?
+     GROUP BY pc.conversation_key, pc.library_id, pc.paper_item_id, pc.session_version, pc.created_at, pc.title
+     LIMIT 1`,
+    [normalizedKey],
+  )) as PaperConversationSummaryRow[] | undefined;
+  if (!rows?.length) return null;
+  return toPaperConversationSummary(rows[0]);
+}
+
+export async function deletePaperConversation(
+  conversationKey: number,
+): Promise<void> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey) return;
+  await Zotero.DB.queryAsync(
+    `DELETE FROM ${PAPER_CONVERSATIONS_TABLE}
+     WHERE conversation_key = ?`,
+    [normalizedKey],
+  );
+}
+
 export async function createGlobalConversation(
   libraryID: number,
 ): Promise<number> {
@@ -918,6 +1211,55 @@ export async function touchGlobalConversationTitle(
      SET title = ?
      WHERE conversation_key = ?
        AND (title IS NULL OR TRIM(title) = '')`,
+    [title, normalizedKey],
+  );
+}
+
+export async function setGlobalConversationTitle(
+  conversationKey: number,
+  titleSeed: string,
+): Promise<void> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey) return;
+  const title = normalizeConversationTitleSeed(titleSeed);
+  if (!title) return;
+  await Zotero.DB.queryAsync(
+    `UPDATE ${GLOBAL_CONVERSATIONS_TABLE}
+     SET title = ?
+     WHERE conversation_key = ?`,
+    [title, normalizedKey],
+  );
+}
+
+export async function touchPaperConversationTitle(
+  conversationKey: number,
+  titleSeed: string,
+): Promise<void> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey) return;
+  const title = normalizeConversationTitleSeed(titleSeed);
+  if (!title) return;
+  await Zotero.DB.queryAsync(
+    `UPDATE ${PAPER_CONVERSATIONS_TABLE}
+     SET title = ?
+     WHERE conversation_key = ?
+       AND (title IS NULL OR TRIM(title) = '')`,
+    [title, normalizedKey],
+  );
+}
+
+export async function setPaperConversationTitle(
+  conversationKey: number,
+  titleSeed: string,
+): Promise<void> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey) return;
+  const title = normalizeConversationTitleSeed(titleSeed);
+  if (!title) return;
+  await Zotero.DB.queryAsync(
+    `UPDATE ${PAPER_CONVERSATIONS_TABLE}
+     SET title = ?
+     WHERE conversation_key = ?`,
     [title, normalizedKey],
   );
 }

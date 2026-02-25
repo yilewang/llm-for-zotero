@@ -85,3 +85,5 @@ export const selectedTextPreviewExpandedCache = new Map<number, number>();
 export const selectedImagePreviewExpandedCache = new Map<number, boolean>();
 export const selectedImagePreviewActiveIndexCache = new Map<number, number>();
 export const recentReaderSelectionCache = new Map<number, string>();
+
+export const activePaperConversationByPaper = new Map<string, number>();

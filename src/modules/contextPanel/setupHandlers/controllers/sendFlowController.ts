@@ -70,6 +70,10 @@ type SendFlowControllerDeps = {
     conversationKey: number,
     title: string,
   ) => Promise<void>;
+  touchPaperConversationTitle: (
+    conversationKey: number,
+    title: string,
+  ) => Promise<void>;
   getSelectedProfile: () => SelectedProfile | null;
   getCurrentModelName: () => string;
   isScreenshotUnsupportedModel: (modelName: string) => boolean;
@@ -196,15 +200,23 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       ? resolvedPromptText
       : text || resolvedPromptText;
 
-    if (deps.isGlobalMode()) {
-      const titleSeed =
-        deps.normalizeConversationTitleSeed(text) ||
-        deps.normalizeConversationTitleSeed(resolvedPromptText);
-      void deps
-        .touchGlobalConversationTitle(deps.getConversationKey(item), titleSeed)
-        .catch((err) => {
-          ztoolkit.log("LLM: Failed to touch global conversation title", err);
-        });
+    const titleSeed =
+      deps.normalizeConversationTitleSeed(text) ||
+      deps.normalizeConversationTitleSeed(resolvedPromptText);
+    if (titleSeed) {
+      if (deps.isGlobalMode()) {
+        void deps
+          .touchGlobalConversationTitle(deps.getConversationKey(item), titleSeed)
+          .catch((err) => {
+            ztoolkit.log("LLM: Failed to touch global conversation title", err);
+          });
+      } else {
+        void deps
+          .touchPaperConversationTitle(deps.getConversationKey(item), titleSeed)
+          .catch((err) => {
+            ztoolkit.log("LLM: Failed to touch paper conversation title", err);
+          });
+      }
     }
 
     const selectedProfile = deps.getSelectedProfile();

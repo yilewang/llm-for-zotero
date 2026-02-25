@@ -41,10 +41,16 @@ Use this checklist after each optimization phase to verify behavior parity.
 
 ## History and Conversation Management
 
-- [ ] Switch paper conversation from history.
-- [ ] Switch global conversation from history.
-- [ ] Create new global conversation.
-- [ ] Delete conversation from history and undo successfully.
+- [ ] `+` menu shows `Open Chat` and `Paper Chat`.
+- [ ] `Paper Chat` option is disabled (with hint) when no paper context exists.
+- [ ] Create paper chat `v2`/`v3` sessions and verify each starts empty.
+- [ ] Delete paper chat `v{n}` and verify new paper session reuses lowest missing version.
+- [ ] Switch paper conversation sessions from history (same paper only).
+- [ ] Switch open/global conversation from history.
+- [ ] Paper history section never shows sessions from other papers.
+- [ ] Open history section still shows library open chats with `Open` tags.
+- [ ] Delete/undo works for both open and paper sessions.
+- [ ] Active paper-session delete falls back to most recent remaining paper session, or auto-creates one.
 - [ ] Clear button clears current conversation and resets compose state.
 
 ## Export / Notes

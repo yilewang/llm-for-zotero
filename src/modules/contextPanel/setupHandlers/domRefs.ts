@@ -17,9 +17,14 @@ export type PanelDomRefs = {
   titleStatic: HTMLDivElement | null;
   historyBar: HTMLDivElement | null;
   historyNewBtn: HTMLButtonElement | null;
+  historyNewMenu: HTMLDivElement | null;
+  historyNewOpenBtn: HTMLButtonElement | null;
+  historyNewPaperBtn: HTMLButtonElement | null;
   historyToggleBtn: HTMLButtonElement | null;
   historyModeIndicator: HTMLSpanElement | null;
   historyMenu: HTMLDivElement | null;
+  historyRowMenu: HTMLDivElement | null;
+  historyRowRenameBtn: HTMLButtonElement | null;
   historyUndo: HTMLDivElement | null;
   historyUndoText: HTMLSpanElement | null;
   historyUndoBtn: HTMLButtonElement | null;
@@ -85,6 +90,13 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     titleStatic: body.querySelector("#llm-title-static") as HTMLDivElement | null,
     historyBar: body.querySelector("#llm-history-bar") as HTMLDivElement | null,
     historyNewBtn: body.querySelector("#llm-history-new") as HTMLButtonElement | null,
+    historyNewMenu: body.querySelector("#llm-history-new-menu") as HTMLDivElement | null,
+    historyNewOpenBtn: body.querySelector(
+      "#llm-history-new-open",
+    ) as HTMLButtonElement | null,
+    historyNewPaperBtn: body.querySelector(
+      "#llm-history-new-paper",
+    ) as HTMLButtonElement | null,
     historyToggleBtn: body.querySelector(
       "#llm-history-toggle",
     ) as HTMLButtonElement | null,
@@ -92,6 +104,12 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
       "#llm-history-mode-indicator",
     ) as HTMLSpanElement | null,
     historyMenu: body.querySelector("#llm-history-menu") as HTMLDivElement | null,
+    historyRowMenu: body.querySelector(
+      "#llm-history-row-menu",
+    ) as HTMLDivElement | null,
+    historyRowRenameBtn: body.querySelector(
+      "#llm-history-row-rename",
+    ) as HTMLButtonElement | null,
     historyUndo: body.querySelector("#llm-history-undo") as HTMLDivElement | null,
     historyUndoText: body.querySelector("#llm-history-undo-text") as HTMLSpanElement | null,
     historyUndoBtn: body.querySelector(

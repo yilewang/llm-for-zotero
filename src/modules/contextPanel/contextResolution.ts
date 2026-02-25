@@ -5,10 +5,7 @@ import {
   setStatus,
 } from "./textUtils";
 import { normalizePaperContextRefs, normalizeSelectedTextSource } from "./normalizers";
-import {
-  GLOBAL_CONVERSATION_KEY_BASE,
-  MAX_SELECTED_TEXT_CONTEXTS,
-} from "./constants";
+import { MAX_SELECTED_TEXT_CONTEXTS } from "./constants";
 import {
   selectedTextCache,
   selectedTextPreviewExpandedCache,
@@ -589,7 +586,8 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     itemId,
     selectedContexts.length,
   );
-  const isGlobalConversation = itemId >= GLOBAL_CONVERSATION_KEY_BASE;
+  const panelRoot = body.querySelector("#llm-main") as HTMLDivElement | null;
+  const isGlobalConversation = panelRoot?.dataset.conversationKind === "global";
   previewList.style.display = "contents";
   previewList.innerHTML = "";
 

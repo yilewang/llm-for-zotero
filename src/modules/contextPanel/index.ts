@@ -22,7 +22,7 @@
  */
 
 import { getLocaleID } from "../../utils/locale";
-import { config, GLOBAL_CONVERSATION_KEY_BASE, PANE_ID } from "./constants";
+import { config, PANE_ID } from "./constants";
 import type { Message } from "./types";
 import {
   activeConversationModeByLibrary,
@@ -267,7 +267,7 @@ export function registerReaderSelectionTracking() {
                 )
               : 0;
           const readerPaperContext = resolvePaperContextRefFromAttachment(item);
-          const readerPaperConversationKey =
+          const readerPaperItemID =
             readerPaperContext && Number.isFinite(readerPaperContext.itemId)
               ? Math.floor(readerPaperContext.itemId)
               : 0;
@@ -279,30 +279,17 @@ export function registerReaderSelectionTracking() {
             const parsed = Number(root.dataset.libraryId || 0);
             return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
           };
-          const resolvePanelConversationKey = (
+          const getPanelConversationKind = (
             root: HTMLDivElement,
-            panelItemId: number | null,
-          ): number | null => {
-            if (!panelItemId) return null;
-            const libraryID = getPanelLibraryId(root);
-            if (libraryID) {
-              const mode = activeConversationModeByLibrary.get(libraryID);
-              if (mode === "global") {
-                const lockedGlobal = Number(
-                  activeGlobalConversationByLibrary.get(libraryID) || 0,
-                );
-                if (Number.isFinite(lockedGlobal) && lockedGlobal > 0) {
-                  return Math.floor(lockedGlobal);
-                }
-              }
-            }
-            if (
-              readerGlobalConversationKey > 0 &&
-              panelItemId < GLOBAL_CONVERSATION_KEY_BASE
-            ) {
-              return readerGlobalConversationKey;
-            }
-            return panelItemId;
+          ): "global" | "paper" | null => {
+            const raw = `${root.dataset.conversationKind || ""}`.trim().toLowerCase();
+            if (raw === "global") return "global";
+            if (raw === "paper") return "paper";
+            return null;
+          };
+          const getPanelBasePaperItemID = (root: HTMLDivElement): number | null => {
+            const parsed = Number(root.dataset.basePaperItemId || 0);
+            return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
           };
           const isVisible = (root: HTMLElement) =>
             root.getClientRects().length > 0;
@@ -312,11 +299,21 @@ export function registerReaderSelectionTracking() {
               const ownerDoc = root.ownerDocument;
               const panelItemId = getPanelItemId(root);
               const panelLibraryId = getPanelLibraryId(root);
-              const conversationKey = resolvePanelConversationKey(root, panelItemId);
+              const conversationKind = getPanelConversationKind(root);
+              const conversationKey = panelItemId;
+              const basePaperItemID = getPanelBasePaperItemID(root);
+              const sameConversationMode =
+                readerModeLock === "global"
+                  ? conversationKind === "global"
+                  : readerModeLock === "paper"
+                    ? conversationKind === "paper"
+                    : false;
               return {
                 root,
                 panelItemId,
                 panelLibraryId,
+                conversationKind,
+                basePaperItemID,
                 conversationKey,
                 visible: isVisible(root),
                 sameDoc: popupTopDoc ? ownerDoc === popupTopDoc : false,
@@ -324,17 +321,24 @@ export function registerReaderSelectionTracking() {
                   normalizedReaderLibraryID > 0 &&
                   panelLibraryId === normalizedReaderLibraryID,
                 matchesReaderPaper:
-                  readerPaperConversationKey > 0 &&
-                  conversationKey === readerPaperConversationKey,
+                  readerPaperItemID > 0 &&
+                  basePaperItemID !== null &&
+                  basePaperItemID === readerPaperItemID,
                 matchesLockedGlobal:
                   readerGlobalConversationKey > 0 &&
                   conversationKey === readerGlobalConversationKey,
+                sameConversationMode,
                 hasActiveFocus: Boolean(
                   ownerDoc?.activeElement && root.contains(ownerDoc.activeElement),
                 ),
               };
             })
-            .filter((state) => state.panelItemId !== null && state.conversationKey);
+            .filter(
+              (state) =>
+                state.panelItemId !== null &&
+                state.conversationKey !== null &&
+                state.conversationKind !== null,
+            );
           if (!rootStates.length) return;
           const sameLibraryStates =
             normalizedReaderLibraryID > 0
@@ -361,6 +365,7 @@ export function registerReaderSelectionTracking() {
             if (state.sameDoc && state.visible && state.matchesLockedGlobal)
               return 6.5;
             if (state.sameDoc && state.visible && state.matchesReaderPaper) return 6;
+            if (state.visible && state.sameConversationMode) return 5.5;
             if (state.sameDoc && state.visible) return 5;
             if (state.visible && state.matchesLockedGlobal) return 4.5;
             if (state.visible && state.matchesReaderPaper) return 4;
@@ -381,11 +386,13 @@ export function registerReaderSelectionTracking() {
 
           const panelRoot = bestState.root;
           const conversationKey = bestState.conversationKey as number;
-          const isGlobalConversation =
-            conversationKey >= GLOBAL_CONVERSATION_KEY_BASE;
+          const isGlobalConversation = bestState.conversationKind === "global";
           if (!isGlobalConversation) {
+            const panelBasePaperItemID = Number(bestState.basePaperItemID || 0);
             const paperMismatch =
-              !readerPaperContext || readerPaperContext.itemId !== conversationKey;
+              !readerPaperContext ||
+              panelBasePaperItemID <= 0 ||
+              readerPaperContext.itemId !== panelBasePaperItemID;
             if (paperMismatch) {
               const panelBody = panelRoot.parentElement || panelRoot;
               const status = panelBody.querySelector(
