@@ -1942,15 +1942,35 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       });
 
     for (const section of orderedSections) {
+      const sectionBlock = createElement(
+        body.ownerDocument as Document,
+        "div",
+        "llm-history-menu-section-block",
+      ) as HTMLDivElement;
+      sectionBlock.dataset.historySection = section.sectionKey;
+
       const sectionHeader = createElement(
         body.ownerDocument as Document,
         "div",
         "llm-history-menu-section",
+      );
+      const sectionLabel = createElement(
+        body.ownerDocument as Document,
+        "span",
+        "llm-history-menu-section-label",
         {
           textContent: section.title,
         },
       );
-      historyMenu.appendChild(sectionHeader);
+      sectionHeader.append(sectionLabel);
+      sectionBlock.appendChild(sectionHeader);
+
+      const sectionRows = createElement(
+        body.ownerDocument as Document,
+        "div",
+        "llm-history-menu-section-rows",
+      ) as HTMLDivElement;
+      sectionBlock.appendChild(sectionRows);
 
       for (const entry of section.entries) {
         const row = createElement(
@@ -1958,6 +1978,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           "div",
           "llm-history-menu-row",
         ) as HTMLDivElement;
+        row.classList.add(
+          section.sectionKey === "paper"
+            ? "llm-history-menu-row-paper"
+            : "llm-history-menu-row-open",
+        );
         row.dataset.conversationKey = `${entry.conversationKey}`;
         row.dataset.historyKind = entry.kind;
         row.dataset.historySection = entry.section;
@@ -2019,8 +2044,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           row.appendChild(deleteBtn);
         }
 
-        historyMenu.appendChild(row);
+        sectionRows.appendChild(row);
       }
+
+      historyMenu.appendChild(sectionBlock);
     }
   };
 
