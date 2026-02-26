@@ -9,8 +9,8 @@ This folder implements the reader/library side-panel chat experience.
 - `setupHandlers.ts`: runtime orchestration and event wiring across panel features.
 - `chat.ts`: conversation load/render/send/retry/edit and streaming orchestration.
 - `contextResolution.ts`: active context resolution and selected-text context state updates.
-- `pdfContext.ts`: PDF text extraction/caching and retrieval context building.
-- `paperContext.ts`: supplemental paper context construction.
+- `pdfContext.ts`: PDF text extraction/caching and context candidate/full-text builders.
+- `multiContextPlanner.ts`: adaptive budget-first context planning across multiple papers.
 - `notes.ts`: note export and assistant-response save flows.
 - `shortcuts.ts`: quick-action shortcut render/edit/reorder behavior.
 

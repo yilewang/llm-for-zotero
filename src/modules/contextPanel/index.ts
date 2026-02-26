@@ -14,6 +14,7 @@
  * - shortcuts.ts   – shortcut rendering and management
  * - screenshot.ts  – screenshot capture from PDF reader
  * - pdfContext.ts   – PDF text extraction, chunking, BM25, embeddings
+ * - multiContextPlanner.ts – budget-first adaptive multi-context assembly
  * - notes.ts       – Zotero note creation from chat
  * - contextResolution.ts – tab/reader context resolution
  * - menuPositioning.ts   – dropdown/context menu positioning
@@ -155,7 +156,10 @@ export function registerReaderSelectionTracking() {
         normalizeSelectedText,
       );
       if (fromPopupDoc) return fromPopupDoc;
-      return getFirstSelectionFromReader(event.reader as any, normalizeSelectedText);
+      return getFirstSelectionFromReader(
+        event.reader as any,
+        normalizeSelectedText,
+      );
     })();
     const itemId = event.reader?._item?.id || event.reader?.itemID;
     if (typeof itemId !== "number") return;
@@ -277,19 +281,27 @@ export function registerReaderSelectionTracking() {
           };
           const getPanelLibraryId = (root: HTMLDivElement): number | null => {
             const parsed = Number(root.dataset.libraryId || 0);
-            return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+            return Number.isFinite(parsed) && parsed > 0
+              ? Math.floor(parsed)
+              : null;
           };
           const getPanelConversationKind = (
             root: HTMLDivElement,
           ): "global" | "paper" | null => {
-            const raw = `${root.dataset.conversationKind || ""}`.trim().toLowerCase();
+            const raw = `${root.dataset.conversationKind || ""}`
+              .trim()
+              .toLowerCase();
             if (raw === "global") return "global";
             if (raw === "paper") return "paper";
             return null;
           };
-          const getPanelBasePaperItemID = (root: HTMLDivElement): number | null => {
+          const getPanelBasePaperItemID = (
+            root: HTMLDivElement,
+          ): number | null => {
             const parsed = Number(root.dataset.basePaperItemId || 0);
-            return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+            return Number.isFinite(parsed) && parsed > 0
+              ? Math.floor(parsed)
+              : null;
           };
           const isVisible = (root: HTMLElement) =>
             root.getClientRects().length > 0;
@@ -329,7 +341,8 @@ export function registerReaderSelectionTracking() {
                   conversationKey === readerGlobalConversationKey,
                 sameConversationMode,
                 hasActiveFocus: Boolean(
-                  ownerDoc?.activeElement && root.contains(ownerDoc.activeElement),
+                  ownerDoc?.activeElement &&
+                  root.contains(ownerDoc.activeElement),
                 ),
               };
             })
@@ -360,11 +373,13 @@ export function registerReaderSelectionTracking() {
           // 9) same doc
           // 10) focused panel
           const scoreState = (state: (typeof rankedStates)[number]) => {
-            if (state.sameDoc && state.visible && state.hasActiveFocus) return 8;
+            if (state.sameDoc && state.visible && state.hasActiveFocus)
+              return 8;
             if (state.visible && state.hasActiveFocus) return 7;
             if (state.sameDoc && state.visible && state.matchesLockedGlobal)
               return 6.5;
-            if (state.sameDoc && state.visible && state.matchesReaderPaper) return 6;
+            if (state.sameDoc && state.visible && state.matchesReaderPaper)
+              return 6;
             if (state.visible && state.sameConversationMode) return 5.5;
             if (state.sameDoc && state.visible) return 5;
             if (state.visible && state.matchesLockedGlobal) return 4.5;
@@ -408,8 +423,9 @@ export function registerReaderSelectionTracking() {
               return;
             }
           }
-          const selectedPaperContext =
-            isGlobalConversation ? readerPaperContext : null;
+          const selectedPaperContext = isGlobalConversation
+            ? readerPaperContext
+            : null;
           const added = appendSelectedTextContextForItem(
             conversationKey,
             effectiveSelectedText,

@@ -24,8 +24,6 @@ import {
   MAX_SELECTED_IMAGES,
   formatFigureCountLabel,
   formatPaperCountLabel,
-  ACTIVE_PAPER_MULTI_CONTEXT_MAX_CHUNKS,
-  ACTIVE_PAPER_MULTI_CONTEXT_MAX_LENGTH,
 } from "./constants";
 import type {
   Message,
@@ -49,7 +47,6 @@ import {
   nextRequestId,
   setResponseMenuTarget,
   setPromptMenuTarget,
-  pdfTextCache,
 } from "./state";
 import {
   sanitizeText,
@@ -77,8 +74,7 @@ import {
   getLastUsedReasoningLevel,
   setLastReasoningExpanded,
 } from "./prefHelpers";
-import { buildContext, ensurePDFTextCached } from "./pdfContext";
-import { buildSupplementalPaperContext } from "./paperContext";
+import { resolveMultiContextPlan } from "./multiContextPlanner";
 import { formatPaperCitationLabel } from "./paperAttribution";
 import {
   getActiveContextAttachmentFromTabs,
@@ -907,13 +903,13 @@ function resolveEffectiveRequestConfig(params: {
   return { model, apiBase, apiKey, reasoning, advanced };
 }
 
-async function buildCombinedContextForRequest(params: {
+async function buildContextPlanForRequest(params: {
   item: Zotero.Item;
   question: string;
-  imageCount: number;
+  images?: string[];
   paperContexts: PaperContextRef[];
-  apiBase: string;
-  apiKey: string;
+  history: ChatMessage[];
+  effectiveRequestConfig: EffectiveRequestConfig;
   setStatusSafely: (
     text: string,
     kind: Parameters<typeof setStatus>[2],
@@ -921,48 +917,36 @@ async function buildCombinedContextForRequest(params: {
 }): Promise<string> {
   const contextSource = resolveContextSourceItem(params.item);
   params.setStatusSafely(contextSource.statusText, "sending");
+  const systemPrompt = getStringPref("systemPrompt") || undefined;
+  const plan = await resolveMultiContextPlan({
+    activeContextItem: contextSource.contextItem,
+    question: params.question,
+    paperContexts: params.paperContexts,
+    history: params.history,
+    images: params.images,
+    model: params.effectiveRequestConfig.model,
+    reasoning: params.effectiveRequestConfig.reasoning,
+    advanced: params.effectiveRequestConfig.advanced,
+    apiBase: params.effectiveRequestConfig.apiBase,
+    apiKey: params.effectiveRequestConfig.apiKey,
+    systemPrompt,
+  });
 
-  const hasSupplementalPaperContexts = params.paperContexts.length > 0;
-  let pdfContext = "";
-  if (contextSource.contextItem) {
-    await ensurePDFTextCached(contextSource.contextItem);
-    pdfContext = await buildContext(
-      pdfTextCache.get(contextSource.contextItem.id),
-      params.question,
-      params.imageCount > 0,
-      { apiBase: params.apiBase, apiKey: params.apiKey },
-      {
-        forceRetrieval: hasSupplementalPaperContexts,
-        maxChunks: hasSupplementalPaperContexts
-          ? ACTIVE_PAPER_MULTI_CONTEXT_MAX_CHUNKS
-          : undefined,
-        maxLength: hasSupplementalPaperContexts
-          ? ACTIVE_PAPER_MULTI_CONTEXT_MAX_LENGTH
-          : undefined,
-      },
-    );
+  if (plan.selectedPaperCount > 0) {
+    const modeStatus =
+      plan.mode === "full"
+        ? `Using full context (${plan.selectedPaperCount} papers)`
+        : `Using retrieved evidence (${plan.selectedPaperCount} papers, ${plan.selectedChunkCount} chunks)`;
+    params.setStatusSafely(modeStatus, "sending");
   }
-
-  const supplementalPaperContext = hasSupplementalPaperContexts
-    ? await buildSupplementalPaperContext(
-        params.paperContexts,
-        params.question,
-        {
-          apiBase: params.apiBase,
-          apiKey: params.apiKey,
-        },
-      )
-    : "";
-  if (hasSupplementalPaperContexts) {
-    params.setStatusSafely(
-      `Using ${params.paperContexts.length} supplemental paper context(s)`,
-      "sending",
-    );
-  }
-  return [pdfContext, supplementalPaperContext]
-    .map((entry) => sanitizeText(entry || "").trim())
-    .filter(Boolean)
-    .join("\n\n====================\n\n");
+  ztoolkit.log("LLM: Multi-context plan", {
+    mode: plan.mode,
+    selectedPaperCount: plan.selectedPaperCount,
+    selectedChunkCount: plan.selectedChunkCount,
+    contextBudgetTokens: plan.contextBudget.contextBudgetTokens,
+    usedContextTokens: plan.usedContextTokens,
+  });
+  return sanitizeText(plan.contextText || "").trim();
 }
 
 function createQueuedRefresh(refresh: () => void): () => void {
@@ -1406,6 +1390,10 @@ export async function retryLatestAssistantResponse(
 
   const assistantMessage = retryPair.assistantMessage;
   const assistantSnapshot = takeAssistantSnapshot(assistantMessage);
+  assistantMessage.text = "";
+  assistantMessage.reasoningSummary = undefined;
+  assistantMessage.reasoningDetails = undefined;
+  assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
   assistantMessage.streaming = true;
   refreshChatSafely();
   let streamedAnswer = "";
@@ -1418,13 +1406,14 @@ export async function retryLatestAssistantResponse(
   };
 
   try {
-    const combinedContext = await buildCombinedContextForRequest({
+    const llmHistory = buildLLMHistoryMessages(historyForLLM);
+    const combinedContext = await buildContextPlanForRequest({
       item,
       question,
-      imageCount: screenshotImages.length,
+      images: screenshotImages,
       paperContexts,
-      apiBase: effectiveRequestConfig.apiBase,
-      apiKey: effectiveRequestConfig.apiKey,
+      history: llmHistory,
+      effectiveRequestConfig,
       setStatusSafely,
     });
     if (cancelledRequestId >= thisRequestId) {
@@ -1432,12 +1421,12 @@ export async function retryLatestAssistantResponse(
       setStatusSafely("Cancelled", "ready");
       return;
     }
-    const llmHistory = buildLLMHistoryMessages(historyForLLM);
 
     const AbortControllerCtor = getAbortController();
     setCurrentAbortController(
       AbortControllerCtor ? new AbortControllerCtor() : null,
     );
+    const queueRefresh = createQueuedRefresh(refreshChatSafely);
     if (cancelledRequestId >= thisRequestId) {
       currentAbortController?.abort();
       restoreOriginalAssistant();
@@ -1462,21 +1451,28 @@ export async function retryLatestAssistantResponse(
         inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
       },
       (delta) => {
-        streamedAnswer += sanitizeText(delta);
+        const chunk = sanitizeText(delta);
+        if (!chunk) return;
+        streamedAnswer += chunk;
+        assistantMessage.text += chunk;
+        queueRefresh();
       },
       (reasoningEvent: ReasoningEvent) => {
         if (reasoningEvent.summary) {
-          streamedReasoningSummary = appendReasoningPart(
-            streamedReasoningSummary,
+          assistantMessage.reasoningSummary = appendReasoningPart(
+            assistantMessage.reasoningSummary,
             reasoningEvent.summary,
           );
+          streamedReasoningSummary = assistantMessage.reasoningSummary;
         }
         if (reasoningEvent.details) {
-          streamedReasoningDetails = appendReasoningPart(
-            streamedReasoningDetails,
+          assistantMessage.reasoningDetails = appendReasoningPart(
+            assistantMessage.reasoningDetails,
             reasoningEvent.details,
           );
+          streamedReasoningDetails = assistantMessage.reasoningDetails;
         }
+        queueRefresh();
       },
     );
 
@@ -1690,17 +1686,16 @@ export async function sendQuestion(
   };
 
   try {
-    const combinedContext = await buildCombinedContextForRequest({
+    const llmHistory = buildLLMHistoryMessages(historyForLLM);
+    const combinedContext = await buildContextPlanForRequest({
       item,
       question,
-      imageCount,
+      images,
       paperContexts: paperContextsForMessage,
-      apiBase: effectiveRequestConfig.apiBase,
-      apiKey: effectiveRequestConfig.apiKey,
+      history: llmHistory,
+      effectiveRequestConfig,
       setStatusSafely,
     });
-
-    const llmHistory = buildLLMHistoryMessages(historyForLLM);
 
     const AbortControllerCtor = getAbortController();
     setCurrentAbortController(

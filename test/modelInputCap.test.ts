@@ -92,5 +92,20 @@ describe("modelInputCap", function () {
       assert.equal(result.limitTokens, 2048);
       assert.isAtMost(result.estimatedAfterTokens, result.softLimitTokens);
     });
+
+    it("should keep large but budgeted context unchanged on long-context models", function () {
+      const context = "D".repeat(300000);
+      const messages: InputCapMessage[] = [
+        { role: "system", content: "System prompt" },
+        {
+          role: "system",
+          content: `Document Context:\n${context}`,
+        },
+        { role: "user", content: "Compare these papers." },
+      ];
+      const result = applyModelInputTokenCap(messages, "gemini-2.5-pro");
+      assert.isFalse(result.capped);
+      assert.equal(result.estimatedAfterTokens, result.estimatedBeforeTokens);
+    });
   });
 });

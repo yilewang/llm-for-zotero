@@ -118,6 +118,43 @@ export type PaperContextRef = {
   year?: string;
 };
 
+export type ContextAssemblyMode = "full" | "retrieval";
+
+export type ContextBudgetPlan = {
+  modelLimitTokens: number;
+  limitTokens: number;
+  softLimitTokens: number;
+  baseInputTokens: number;
+  outputReserveTokens: number;
+  reasoningReserveTokens: number;
+  contextBudgetTokens: number;
+};
+
+export type PaperContextCandidate = {
+  paperKey: string;
+  itemId: number;
+  contextItemId: number;
+  title: string;
+  citationKey?: string;
+  firstCreator?: string;
+  year?: string;
+  chunkIndex: number;
+  chunkText: string;
+  estimatedTokens: number;
+  bm25Score: number;
+  embeddingScore: number;
+  hybridScore: number;
+};
+
+export type MultiContextPlan = {
+  mode: ContextAssemblyMode;
+  contextText: string;
+  contextBudget: ContextBudgetPlan;
+  usedContextTokens: number;
+  selectedPaperCount: number;
+  selectedChunkCount: number;
+};
+
 export type GlobalConversationSummary = {
   conversationKey: number;
   libraryID: number;

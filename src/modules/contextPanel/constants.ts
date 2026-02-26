@@ -6,16 +6,15 @@ import { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
 // =============================================================================
 
 export const PANE_ID = "llm-context-panel";
-export const MAX_CONTEXT_LENGTH = 8000;
-export const MAX_CONTEXT_LENGTH_WITH_IMAGE = 3000;
-export const FORCE_FULL_CONTEXT = true;
-export const FULL_CONTEXT_CHAR_LIMIT = 500000;
 export const CHUNK_TARGET_LENGTH = 2000;
 export const CHUNK_OVERLAP = 200;
-export const MAX_CONTEXT_CHUNKS = 4;
 export const EMBEDDING_BATCH_SIZE = 16;
 export const HYBRID_WEIGHT_BM25 = 0.5;
 export const HYBRID_WEIGHT_EMBEDDING = 0.5;
+export const RETRIEVAL_TOP_K_PER_PAPER = 24;
+export const RETRIEVAL_MMR_LAMBDA = 0.7;
+export const RETRIEVAL_MIN_ACTIVE_PAPER_CHUNKS = 2;
+export const RETRIEVAL_MIN_OTHER_PAPER_CHUNKS = 1;
 export const MAX_HISTORY_MESSAGES = 12;
 export const PERSISTED_HISTORY_LIMIT = 200;
 export const AUTO_SCROLL_BOTTOM_THRESHOLD = 64;
@@ -34,11 +33,6 @@ export const CHAT_ATTACHMENTS_DIR_NAME = "chat-attachments";
 export const PAPER_CONVERSATION_KEY_BASE = 1_500_000_000;
 export const GLOBAL_CONVERSATION_KEY_BASE = 2_000_000_000;
 export const GLOBAL_HISTORY_LIMIT = 50;
-export const ACTIVE_PAPER_MULTI_CONTEXT_MAX_CHUNKS = 4;
-export const ACTIVE_PAPER_MULTI_CONTEXT_MAX_LENGTH = 6000;
-export const SUPPLEMENTAL_PAPER_CONTEXT_MAX_CHUNKS = 2;
-export const SUPPLEMENTAL_PAPER_CONTEXT_MAX_LENGTH = 1800;
-export const SUPPLEMENTAL_PAPER_CONTEXT_TOTAL_MAX_LENGTH = 9000;
 
 export function formatFigureCountLabel(
   count: number,

@@ -1,19 +1,21 @@
 import { callEmbeddings } from "../../utils/llmClient";
+import { estimateTextTokens } from "../../utils/modelInputCap";
 import {
   CHUNK_TARGET_LENGTH,
   CHUNK_OVERLAP,
-  MAX_CONTEXT_CHUNKS,
   EMBEDDING_BATCH_SIZE,
   HYBRID_WEIGHT_BM25,
   HYBRID_WEIGHT_EMBEDDING,
-  MAX_CONTEXT_LENGTH,
-  MAX_CONTEXT_LENGTH_WITH_IMAGE,
-  FORCE_FULL_CONTEXT,
-  FULL_CONTEXT_CHAR_LIMIT,
+  RETRIEVAL_TOP_K_PER_PAPER,
   STOPWORDS,
 } from "./constants";
 import { pdfTextCache, pdfTextLoadingTasks } from "./state";
-import type { PdfContext, ChunkStat } from "./types";
+import type {
+  PdfContext,
+  ChunkStat,
+  PaperContextRef,
+  PaperContextCandidate,
+} from "./types";
 
 async function cachePDFText(item: Zotero.Item) {
   if (pdfTextCache.has(item.id)) return;
@@ -281,140 +283,165 @@ async function ensureEmbeddings(
   return false;
 }
 
-export async function buildContext(
+export function buildPaperKey(ref: PaperContextRef): string {
+  return `${Math.floor(ref.itemId)}:${Math.floor(ref.contextItemId)}`;
+}
+
+function formatPaperMetadataLines(ref: PaperContextRef): string[] {
+  const lines = [`Title: ${ref.title}`];
+  if (ref.citationKey) lines.push(`Citation key: ${ref.citationKey}`);
+  if (ref.firstCreator) lines.push(`Author: ${ref.firstCreator}`);
+  if (ref.year) lines.push(`Year: ${ref.year}`);
+  return lines;
+}
+
+export function buildFullPaperContext(
+  paperContext: PaperContextRef,
+  pdfContext: PdfContext | undefined,
+): string {
+  const metadata = formatPaperMetadataLines(paperContext);
+  if (!pdfContext || !pdfContext.chunks.length) {
+    return [
+      ...metadata,
+      "",
+      "[No extractable PDF text available. Using metadata only.]",
+    ].join("\n");
+  }
+  return [...metadata, "", "Paper Text:", pdfContext.chunks.join("\n\n")].join(
+    "\n",
+  );
+}
+
+function shouldTryEmbeddings(overrides?: {
+  apiBase?: string;
+  apiKey?: string;
+}): boolean {
+  if (!overrides) return false;
+  return Boolean(
+    (overrides.apiBase || "").trim() || (overrides.apiKey || "").trim(),
+  );
+}
+
+export async function buildPaperRetrievalCandidates(
+  paperContext: PaperContextRef,
   pdfContext: PdfContext | undefined,
   question: string,
-  hasImage: boolean,
   apiOverrides?: { apiBase?: string; apiKey?: string },
   options?: {
-    forceRetrieval?: boolean;
-    maxChunks?: number;
-    maxLength?: number;
+    topK?: number;
   },
-): Promise<string> {
-  if (!pdfContext) return "";
-  const { title, chunks, chunkStats, docFreq, avgChunkLength, fullLength } =
-    pdfContext;
-  const contextParts: string[] = [];
-  if (title) contextParts.push(`Title: ${title}`);
-  if (!chunks.length) return contextParts.join("\n\n");
-  const forceRetrieval = options?.forceRetrieval === true;
-  const maxChunks = Number.isFinite(options?.maxChunks)
-    ? Math.max(1, Math.floor(options?.maxChunks as number))
-    : MAX_CONTEXT_CHUNKS;
-  const maxLength = Number.isFinite(options?.maxLength)
-    ? Math.max(256, Math.floor(options?.maxLength as number))
-    : hasImage
-      ? MAX_CONTEXT_LENGTH_WITH_IMAGE
-      : MAX_CONTEXT_LENGTH;
+): Promise<PaperContextCandidate[]> {
+  if (!pdfContext) return [];
+  const { chunks, chunkStats, docFreq, avgChunkLength } = pdfContext;
+  if (!chunks.length || !chunkStats.length) return [];
 
-  if (FORCE_FULL_CONTEXT && !hasImage && !forceRetrieval) {
-    if (!fullLength || fullLength <= FULL_CONTEXT_CHAR_LIMIT) {
-      contextParts.push("Paper Text:");
-      contextParts.push(chunks.join("\n\n"));
-      if (fullLength) {
-        contextParts.push(`\n[Full context ${fullLength} chars]`);
-      }
-      return contextParts.join("\n\n");
-    }
-    contextParts.push(
-      `\n[Full context ${fullLength} chars exceeds ${FULL_CONTEXT_CHAR_LIMIT}. Falling back to retrieval.]`,
-    );
-  }
+  const topK = Number.isFinite(options?.topK)
+    ? Math.max(1, Math.floor(options?.topK as number))
+    : RETRIEVAL_TOP_K_PER_PAPER;
 
   const terms = tokenizeQuery(question);
   const bm25Scores = chunkStats.map((chunk) =>
     scoreChunkBM25(chunk, terms, docFreq, chunks.length, avgChunkLength || 1),
   );
+  const bm25Norm = normalizeScores(bm25Scores);
 
-  let embeddingScores: number[] | null = null;
-  const embeddingsReady = await ensureEmbeddings(pdfContext, apiOverrides);
-  if (embeddingsReady && pdfContext.embeddings) {
-    try {
-      const queryEmbedding =
-        (await callEmbeddings([question], apiOverrides))[0] || [];
-      if (queryEmbedding.length) {
-        embeddingScores = pdfContext.embeddings.map((vec) =>
-          cosineSimilarity(queryEmbedding, vec),
-        );
+  let embedNorm: number[] | null = null;
+  if (question.trim() && shouldTryEmbeddings(apiOverrides)) {
+    const embeddingsReady = await ensureEmbeddings(pdfContext, apiOverrides);
+    if (embeddingsReady && pdfContext.embeddings) {
+      try {
+        const queryEmbedding =
+          (await callEmbeddings([question], apiOverrides))[0] || [];
+        if (queryEmbedding.length) {
+          const embeddingScores = pdfContext.embeddings.map((vec) =>
+            cosineSimilarity(queryEmbedding, vec),
+          );
+          embedNorm = normalizeScores(embeddingScores);
+        }
+      } catch (err) {
+        ztoolkit.log("Query embedding failed:", err);
       }
-    } catch (err) {
-      ztoolkit.log("Query embedding failed:", err);
     }
   }
-
-  const bm25Norm = normalizeScores(bm25Scores);
-  const embedNorm = embeddingScores ? normalizeScores(embeddingScores) : null;
 
   const bm25Weight = embedNorm ? HYBRID_WEIGHT_BM25 : 1;
   const embedWeight = embedNorm ? HYBRID_WEIGHT_EMBEDDING : 0;
 
-  const scored = chunkStats.map((chunk, idx) => ({
-    index: chunk.index,
-    chunk: chunks[chunk.index],
-    score:
-      bm25Norm[idx] * bm25Weight +
-      (embedNorm ? embedNorm[idx] * embedWeight : 0),
+  const scored = chunkStats.map((chunk, idx) => {
+    const bm25Score = bm25Norm[idx] || 0;
+    const embeddingScore = embedNorm ? embedNorm[idx] || 0 : 0;
+    const hybridScore = bm25Score * bm25Weight + embeddingScore * embedWeight;
+    return {
+      index: chunk.index,
+      chunkText: chunks[chunk.index],
+      bm25Score,
+      embeddingScore,
+      hybridScore,
+    };
+  });
+
+  scored.sort((a, b) => {
+    if (b.hybridScore !== a.hybridScore) return b.hybridScore - a.hybridScore;
+    return a.index - b.index;
+  });
+
+  return scored.slice(0, topK).map((entry) => ({
+    paperKey: buildPaperKey(paperContext),
+    itemId: paperContext.itemId,
+    contextItemId: paperContext.contextItemId,
+    title: paperContext.title,
+    citationKey: paperContext.citationKey,
+    firstCreator: paperContext.firstCreator,
+    year: paperContext.year,
+    chunkIndex: entry.index,
+    chunkText: entry.chunkText,
+    estimatedTokens: Math.max(1, estimateTextTokens(entry.chunkText)),
+    bm25Score: entry.bm25Score,
+    embeddingScore: entry.embeddingScore,
+    hybridScore: entry.hybridScore,
   }));
+}
 
-  scored.sort((a, b) => b.score - a.score);
-  const picked = new Set<number>();
-  const addIndex = (idx: number) => {
-    if (idx < 0 || idx >= chunks.length) return;
-    if (picked.size >= maxChunks) return;
-    picked.add(idx);
-  };
+export function renderEvidencePack(params: {
+  papers: PaperContextRef[];
+  candidates: PaperContextCandidate[];
+}): string {
+  const { papers, candidates } = params;
+  if (!papers.length || !candidates.length) return "";
 
-  for (const entry of scored) {
-    if (picked.size >= maxChunks) break;
-    if (entry.score === 0 && picked.size > 0) break;
-    addIndex(entry.index);
-  }
-
-  if (picked.size === 0) {
-    addIndex(0);
-    addIndex(1);
-  }
-
-  if (picked.size < maxChunks) {
-    const primary = Array.from(picked);
-    for (const idx of primary) {
-      if (picked.size >= maxChunks) break;
-      addIndex(idx - 1);
-      if (picked.size >= maxChunks) break;
-      addIndex(idx + 1);
+  const deduped = new Map<string, PaperContextCandidate>();
+  for (const candidate of candidates) {
+    const key = `${candidate.paperKey}:${candidate.chunkIndex}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, candidate);
     }
   }
 
-  const totalChunks = chunks.length;
-  let remaining = maxLength;
-  if (title) remaining -= `Title: ${title}`.length + 2;
+  const byPaper = new Map<string, PaperContextCandidate[]>();
+  for (const candidate of deduped.values()) {
+    const list = byPaper.get(candidate.paperKey) || [];
+    list.push(candidate);
+    byPaper.set(candidate.paperKey, list);
+  }
 
-  const excerpts: string[] = [];
-  const sortedPicked = Array.from(picked).sort((a, b) => a - b);
-  for (const index of sortedPicked) {
-    if (index < 0 || index >= totalChunks) continue;
-    const label = `Excerpt ${index + 1}/${totalChunks}`;
-    const body = chunks[index];
-    const block = `${label}\n${body}`;
-    if (remaining <= 0) break;
-    if (block.length > remaining) {
-      excerpts.push(block.slice(0, Math.max(0, remaining)));
-      remaining = 0;
-      break;
+  const blocks: string[] = [];
+  for (const [paperIndex, paper] of papers.entries()) {
+    const paperKey = buildPaperKey(paper);
+    const paperCandidates = byPaper.get(paperKey) || [];
+    if (!paperCandidates.length) continue;
+    paperCandidates.sort((a, b) => a.chunkIndex - b.chunkIndex);
+    const lines: string[] = [`Paper ${paperIndex + 1}`];
+    lines.push(...formatPaperMetadataLines(paper));
+    lines.push("", "Evidence:");
+    for (const candidate of paperCandidates) {
+      const label = `[P${paperIndex + 1}-C${candidate.chunkIndex + 1}]`;
+      lines.push(label);
+      lines.push(candidate.chunkText);
+      lines.push("");
     }
-    excerpts.push(block);
-    remaining -= block.length + 2;
+    blocks.push(lines.join("\n").trimEnd());
   }
 
-  if (excerpts.length) {
-    contextParts.push("Paper Text:");
-    contextParts.push(excerpts.join("\n\n"));
-  }
-
-  if (fullLength) {
-    contextParts.push(`\n[Context window from ${fullLength} chars total]`);
-  }
-
-  return contextParts.join("\n\n");
+  if (!blocks.length) return "";
+  return `Retrieved Evidence:\n\n${blocks.join("\n\n---\n\n")}`;
 }

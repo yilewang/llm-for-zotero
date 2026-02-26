@@ -41,8 +41,16 @@ import {
   isResponsesBase,
 } from "./apiHelpers";
 import { pathToFileUrl } from "./pathFileUrl";
-import { normalizeTemperature, normalizeMaxTokens } from "./normalization";
-import { applyModelInputTokenCap } from "./modelInputCap";
+import {
+  normalizeTemperature,
+  normalizeMaxTokens,
+  normalizeInputTokenCap,
+} from "./normalization";
+import {
+  applyModelInputTokenCap,
+  estimateConversationTokens,
+  getModelInputTokenLimit,
+} from "./modelInputCap";
 
 // =============================================================================
 // Types
@@ -112,6 +120,16 @@ export type ChatParams = {
 export type ReasoningEvent = {
   summary?: string;
   details?: string;
+};
+
+export type ContextBudgetPlan = {
+  modelLimitTokens: number;
+  limitTokens: number;
+  softLimitTokens: number;
+  baseInputTokens: number;
+  outputReserveTokens: number;
+  reasoningReserveTokens: number;
+  contextBudgetTokens: number;
 };
 
 interface StreamChoice {
@@ -669,6 +687,85 @@ function buildMessages(
   }
 
   return messages;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getReasoningReserveTokens(reasoning?: ReasoningConfig): number {
+  const level = reasoning?.level || "none";
+  switch (level) {
+    case "minimal":
+      return 512;
+    case "low":
+      return 1_024;
+    case "default":
+      return 1_024;
+    case "medium":
+      return 2_048;
+    case "high":
+      return 4_096;
+    case "xhigh":
+      return 8_192;
+    default:
+      return 256;
+  }
+}
+
+export function estimateAvailableContextBudget(params: {
+  prompt: string;
+  history?: ChatMessage[];
+  image?: string;
+  images?: string[];
+  model: string;
+  reasoning?: ReasoningConfig;
+  maxTokens?: number;
+  inputTokenCap?: number;
+  systemPrompt?: string;
+}): ContextBudgetPlan {
+  const normalizedModel =
+    (params.model || DEFAULT_MODEL).trim() || DEFAULT_MODEL;
+  const modelLimitTokens = getModelInputTokenLimit(normalizedModel);
+  const limitTokens = normalizeInputTokenCap(
+    params.inputTokenCap,
+    modelLimitTokens,
+  );
+  const softLimitTokens = Math.max(1_024, Math.floor(limitTokens * 0.9));
+  const outputReserveTokens = clampNumber(
+    normalizeMaxTokens(params.maxTokens),
+    512,
+    8_192,
+  );
+  const reasoningReserveTokens = getReasoningReserveTokens(params.reasoning);
+
+  const baseMessages = buildMessages(
+    {
+      prompt: params.prompt,
+      history: params.history,
+      image: params.image,
+      images: params.images,
+    },
+    params.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+  );
+  const baseInputTokens = estimateConversationTokens(baseMessages);
+  const contextBudgetTokens = Math.max(
+    1_024,
+    softLimitTokens -
+      baseInputTokens -
+      outputReserveTokens -
+      reasoningReserveTokens,
+  );
+
+  return {
+    modelLimitTokens,
+    limitTokens,
+    softLimitTokens,
+    baseInputTokens,
+    outputReserveTokens,
+    reasoningReserveTokens,
+    contextBudgetTokens,
+  };
 }
 
 /** Get fetch function from Zotero global */
@@ -1794,11 +1891,188 @@ async function parseResponsesStream(
   let buffer = "";
   let fullText = "";
   const thoughtState: ThoughtTagState = { inThought: false, buffer: "" };
-  let sawOutputTextDelta = false;
+  let sawAnswerDelta = false;
+  let sawAnswerFinal = false;
   let sawSummaryDelta = false;
   let sawDetailsDelta = false;
   let sawSummaryFinal = false;
   let sawDetailsFinal = false;
+
+  const normalizeReasoningText = (value: unknown): string => {
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => {
+          if (typeof entry === "string") return entry;
+          if (entry && typeof entry === "object") {
+            const row = entry as { text?: unknown; summary?: unknown };
+            return (
+              normalizeStreamText(row.text) || normalizeStreamText(row.summary)
+            );
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n");
+    }
+    if (value && typeof value === "object") {
+      const row = value as { text?: unknown; summary?: unknown };
+      return normalizeStreamText(row.text) || normalizeStreamText(row.summary);
+    }
+    return "";
+  };
+
+  const extractSummary = (value: unknown): string => {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => {
+          if (typeof entry === "string") return entry;
+          if (entry && typeof entry === "object") {
+            const row = entry as { text?: unknown; summary?: unknown };
+            return (
+              normalizeStreamText(row.text) || normalizeStreamText(row.summary)
+            );
+          }
+          return "";
+        })
+        .filter(Boolean)
+        .join("\n");
+    }
+    if (value && typeof value === "object") {
+      const row = value as { text?: unknown; summary?: unknown };
+      return normalizeStreamText(row.text) || normalizeStreamText(row.summary);
+    }
+    return "";
+  };
+
+  const emitReasoning = (event: ReasoningEvent) => {
+    if (!onReasoning) return;
+    const summary =
+      typeof event.summary === "string" && event.summary.length > 0
+        ? event.summary
+        : undefined;
+    const details =
+      typeof event.details === "string" && event.details.length > 0
+        ? event.details
+        : undefined;
+    if (!summary && !details) return;
+    onReasoning({ summary, details });
+  };
+
+  const emitAnswer = (value: unknown, mode: "delta" | "final"): void => {
+    const text = normalizeStreamText(value);
+    if (!text) return;
+    if (mode === "delta" && sawAnswerFinal) return;
+    if (mode === "final" && (sawAnswerDelta || sawAnswerFinal)) return;
+
+    const { answer, thought } = splitThoughtTaggedText(text, thoughtState);
+    if (thought && onReasoning) {
+      onReasoning({ details: thought });
+    }
+    if (!answer) return;
+
+    if (mode === "delta") {
+      sawAnswerDelta = true;
+    } else {
+      sawAnswerFinal = true;
+    }
+    fullText += answer;
+    onDelta(answer);
+  };
+
+  const extractOutputTextFromContent = (value: unknown): string => {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      return value
+        .map((entry) => extractOutputTextFromContent(entry))
+        .filter(Boolean)
+        .join("");
+    }
+    if (value && typeof value === "object") {
+      const row = value as {
+        type?: unknown;
+        text?: unknown;
+        delta?: unknown;
+        content?: unknown;
+      };
+      const typeValue =
+        typeof row.type === "string" ? row.type.toLowerCase() : "";
+      if (typeValue === "reasoning" || typeValue === "reasoning_summary") {
+        return "";
+      }
+      if (
+        typeValue === "output_text" ||
+        typeValue === "text" ||
+        typeValue === "message" ||
+        typeValue === ""
+      ) {
+        return (
+          normalizeStreamText(row.text) ||
+          normalizeStreamText(row.delta) ||
+          extractOutputTextFromContent(row.content)
+        );
+      }
+    }
+    return "";
+  };
+
+  const extractOutputTextFromOutputItem = (value: unknown): string => {
+    if (!value || typeof value !== "object") return "";
+    const row = value as {
+      type?: unknown;
+      text?: unknown;
+      content?: unknown;
+    };
+    const typeValue =
+      typeof row.type === "string" ? row.type.toLowerCase() : "";
+    if (
+      typeValue &&
+      typeValue !== "message" &&
+      typeValue !== "output_text" &&
+      typeValue !== "text"
+    ) {
+      return "";
+    }
+    return (
+      extractOutputTextFromContent(row.content) || normalizeStreamText(row.text)
+    );
+  };
+
+  const extractOutputTextFromOutputs = (outputs: unknown): string => {
+    if (!Array.isArray(outputs)) return "";
+    return outputs
+      .map((entry) => extractOutputTextFromOutputItem(entry))
+      .filter(Boolean)
+      .join("");
+  };
+
+  const emitReasoningFromOutputItem = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    const row = value as {
+      type?: unknown;
+      summary?: unknown;
+      content?: unknown;
+      text?: unknown;
+      reasoning?: unknown;
+    };
+    const typeValue =
+      typeof row.type === "string" ? row.type.toLowerCase() : "";
+    if (typeValue !== "reasoning") return;
+    if (!sawSummaryDelta && !sawSummaryFinal) {
+      emitReasoning({ summary: extractSummary(row.summary) });
+    }
+    if (!sawDetailsDelta && !sawDetailsFinal) {
+      emitReasoning({
+        details:
+          normalizeReasoningText(row.content) ||
+          normalizeReasoningText(row.reasoning) ||
+          normalizeReasoningText(row.text),
+      });
+    }
+  };
 
   try {
     while (true) {
@@ -1819,172 +2093,150 @@ async function parseResponsesStream(
         try {
           const parsed = JSON.parse(data) as {
             type?: string;
-            delta?: string;
-            text?: string;
-            summary?: Array<{ type?: string; text?: string }> | string;
-            reasoning?: string | Array<{ text?: string; summary?: string }>;
-            message?: { content?: string };
+            delta?: unknown;
+            text?: unknown;
+            summary?: unknown;
+            reasoning?: unknown;
+            message?: { content?: unknown };
+            item?: {
+              type?: string;
+              summary?: unknown;
+              content?: unknown;
+              text?: unknown;
+            };
+            part?: {
+              type?: string;
+              summary?: unknown;
+              content?: unknown;
+              text?: unknown;
+            };
             response?: {
-              output_text?: string;
-              output?: Array<{
-                type?: string;
-                content?: Array<{
-                  type?: string;
-                  text?: string;
-                  summary?: string;
-                }>;
-                summary?: Array<{ type?: string; text?: string }> | string;
-              }>;
+              output_text?: unknown;
+              output?: unknown;
             };
           };
 
-          const normalizeReasoningText = (value: unknown): string => {
-            if (typeof value === "string") return value;
-            if (Array.isArray(value)) {
-              return value
-                .map((entry) => {
-                  if (typeof entry === "string") return entry;
-                  if (entry && typeof entry === "object") {
-                    const row = entry as { text?: string; summary?: string };
-                    return row.text || row.summary || "";
-                  }
-                  return "";
-                })
-                .filter(Boolean)
-                .join("\n");
-            }
-            if (value && typeof value === "object") {
-              const row = value as { text?: string; summary?: string };
-              return row.text || row.summary || "";
-            }
-            return "";
-          };
+          const eventType =
+            typeof parsed.type === "string" ? parsed.type.toLowerCase() : "";
 
-          const extractSummary = (
-            value: Array<{ type?: string; text?: string }> | string | undefined,
-          ): string => {
-            if (!value) return "";
-            if (typeof value === "string") return value;
-            return value
-              .map((entry) => entry.text || "")
-              .filter(Boolean)
-              .join("\n");
-          };
-
-          const emitReasoning = (event: ReasoningEvent) => {
-            if (!onReasoning) return;
-            const summary =
-              typeof event.summary === "string" && event.summary.length > 0
-                ? event.summary
-                : undefined;
-            const details =
-              typeof event.details === "string" && event.details.length > 0
-                ? event.details
-                : undefined;
-            if (!summary && !details) return;
-            onReasoning({ summary, details });
-          };
-
-          if (parsed.type === "response.output_text.delta" && parsed.delta) {
-            sawOutputTextDelta = true;
-            const { answer, thought } = splitThoughtTaggedText(
-              parsed.delta,
-              thoughtState,
-            );
-            if (thought && onReasoning) {
-              onReasoning({ details: thought });
-            }
-            if (answer) {
-              fullText += answer;
-              onDelta(answer);
-            }
-            continue;
-          }
-
-          if (parsed.type === "response.output_text.done" && parsed.text) {
-            // Some providers emit full text in `done` after streaming deltas.
-            // Ignore it when delta events have already been consumed.
-            if (sawOutputTextDelta) {
-              continue;
-            }
-            const { answer, thought } = splitThoughtTaggedText(
-              parsed.text,
-              thoughtState,
-            );
-            if (thought && onReasoning) {
-              onReasoning({ details: thought });
-            }
-            if (answer) {
-              fullText += answer;
-              onDelta(answer);
-            }
+          if (eventType === "response.output_text.delta" && parsed.delta) {
+            emitAnswer(parsed.delta, "delta");
             continue;
           }
 
           if (
-            parsed.type === "response.completed" &&
-            parsed.response?.output_text
+            eventType === "response.content_part.added" ||
+            eventType === "response.content_part.delta"
           ) {
-            if (!fullText) {
-              const { answer, thought } = splitThoughtTaggedText(
-                parsed.response.output_text,
-                thoughtState,
+            const partType =
+              typeof parsed.part?.type === "string"
+                ? parsed.part.type.toLowerCase()
+                : "";
+            if (
+              !partType ||
+              partType === "output_text" ||
+              partType === "text"
+            ) {
+              emitAnswer(
+                parsed.delta ??
+                  parsed.text ??
+                  parsed.part?.text ??
+                  parsed.part?.content,
+                "delta",
               );
-              if (thought && onReasoning) {
-                onReasoning({ details: thought });
-              }
-              if (answer) {
-                fullText = answer;
-                onDelta(answer);
-              }
             }
+            continue;
+          }
+
+          if (eventType === "response.output_text.done") {
+            // Some providers emit full text in `done` after streaming deltas.
+            emitAnswer(parsed.text ?? parsed.delta, "final");
+            continue;
+          }
+
+          if (eventType === "response.content_part.done") {
+            const partType =
+              typeof parsed.part?.type === "string"
+                ? parsed.part.type.toLowerCase()
+                : "";
+            if (
+              !partType ||
+              partType === "output_text" ||
+              partType === "text"
+            ) {
+              emitAnswer(
+                parsed.text ??
+                  parsed.delta ??
+                  parsed.part?.text ??
+                  parsed.part?.content,
+                "final",
+              );
+            }
+            continue;
           }
 
           if (
-            (parsed.type === "response.reasoning_summary.delta" ||
-              parsed.type === "response.reasoning_summary_text.delta") &&
+            eventType === "response.message.delta" ||
+            eventType === "response.message.added"
+          ) {
+            emitAnswer(parsed.message?.content, "delta");
+            continue;
+          }
+
+          if (eventType === "response.message.done") {
+            emitAnswer(parsed.message?.content, "final");
+            continue;
+          }
+
+          if (
+            (eventType === "response.reasoning_summary.delta" ||
+              eventType === "response.reasoning_summary_text.delta") &&
             parsed.delta
           ) {
             sawSummaryDelta = true;
-            emitReasoning({ summary: parsed.delta });
+            emitReasoning({ summary: normalizeStreamText(parsed.delta) });
             continue;
           }
 
           if (
-            (parsed.type === "response.reasoning_summary.done" ||
-              parsed.type === "response.reasoning_summary_text.done") &&
+            (eventType === "response.reasoning_summary.done" ||
+              eventType === "response.reasoning_summary_text.done") &&
             (parsed.text || parsed.delta)
           ) {
             sawSummaryFinal = true;
             if (!sawSummaryDelta) {
-              emitReasoning({ summary: parsed.text || parsed.delta });
+              emitReasoning({
+                summary: normalizeStreamText(parsed.text ?? parsed.delta),
+              });
             }
             continue;
           }
 
           if (
-            (parsed.type === "response.reasoning.delta" ||
-              parsed.type === "response.reasoning_text.delta") &&
+            (eventType === "response.reasoning.delta" ||
+              eventType === "response.reasoning_text.delta") &&
             parsed.delta
           ) {
             sawDetailsDelta = true;
-            emitReasoning({ details: parsed.delta });
+            emitReasoning({ details: normalizeStreamText(parsed.delta) });
             continue;
           }
 
           if (
-            (parsed.type === "response.reasoning.done" ||
-              parsed.type === "response.reasoning_text.done") &&
+            (eventType === "response.reasoning.done" ||
+              eventType === "response.reasoning_text.done") &&
             (parsed.text || parsed.delta)
           ) {
             sawDetailsFinal = true;
             if (!sawDetailsDelta) {
-              emitReasoning({ details: parsed.text || parsed.delta });
+              emitReasoning({
+                details: normalizeStreamText(parsed.text ?? parsed.delta),
+              });
             }
             continue;
           }
 
-          if (parsed.type === "response.reasoning" && parsed.reasoning) {
+          if (eventType === "response.reasoning" && parsed.reasoning) {
             sawDetailsFinal = true;
             if (!sawDetailsDelta) {
               emitReasoning({
@@ -1995,23 +2247,48 @@ async function parseResponsesStream(
           }
 
           if (
-            parsed.type === "response.output_item.added" ||
-            parsed.type === "response.output_item.done" ||
-            parsed.type === "response.completed"
+            eventType === "response.output_item.added" ||
+            eventType === "response.output_item.delta"
           ) {
-            const outputs = parsed.response?.output || [];
+            emitReasoningFromOutputItem(parsed.item);
+            emitAnswer(extractOutputTextFromOutputItem(parsed.item), "delta");
+            continue;
+          }
+
+          if (eventType === "response.output_item.done") {
+            emitReasoningFromOutputItem(parsed.item);
+            emitAnswer(extractOutputTextFromOutputItem(parsed.item), "final");
+            emitAnswer(
+              extractOutputTextFromOutputs(parsed.response?.output),
+              "final",
+            );
+            const outputs = Array.isArray(parsed.response?.output)
+              ? parsed.response.output
+              : [];
             for (const out of outputs) {
-              if (out.type !== "reasoning") continue;
-              if (!sawSummaryDelta && !sawSummaryFinal) {
-                emitReasoning({
-                  summary: extractSummary(out.summary),
-                });
-              }
-              if (!sawDetailsDelta && !sawDetailsFinal) {
-                emitReasoning({
-                  details: normalizeReasoningText(out.content),
-                });
-              }
+              emitReasoningFromOutputItem(out);
+            }
+            continue;
+          }
+
+          if (eventType === "response.completed") {
+            emitAnswer(
+              parsed.response?.output_text ??
+                extractOutputTextFromOutputs(parsed.response?.output),
+              "final",
+            );
+          }
+
+          if (
+            eventType === "response.output_item.added" ||
+            eventType === "response.output_item.done" ||
+            eventType === "response.completed"
+          ) {
+            const outputs = Array.isArray(parsed.response?.output)
+              ? parsed.response.output
+              : [];
+            for (const out of outputs) {
+              emitReasoningFromOutputItem(out);
             }
           }
         } catch (err) {
