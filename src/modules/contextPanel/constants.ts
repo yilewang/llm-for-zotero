@@ -48,12 +48,9 @@ export function formatFileCountLabel(count: number): string {
   return `Files (${count})`;
 }
 
-export function formatPaperCountLabel(
-  count: number,
-  maxCount = MAX_SELECTED_PAPER_CONTEXTS,
-): string {
+export function formatPaperCountLabel(count: number): string {
   if (count <= 0) return "";
-  return `Papers (${count}/${maxCount})`;
+  return "Papers";
 }
 
 export const SELECT_TEXT_EXPANDED_LABEL = "Add Text";
