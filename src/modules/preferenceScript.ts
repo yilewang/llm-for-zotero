@@ -487,6 +487,45 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     maxTokensInput.addEventListener("blur", commitMaxTokens);
     inputTokenCapInput.addEventListener("change", commitInputTokenCap);
     inputTokenCapInput.addEventListener("blur", commitInputTokenCap);
+
+    const advancedDetails = temperatureInput.closest("details") as
+      | HTMLDetailsElement
+      | null;
+    const advancedSummary = advancedDetails?.querySelector(
+      "summary",
+    ) as HTMLElement | null;
+    const setAdvancedEnabled = (enabled: boolean) => {
+      temperatureInput.disabled = !enabled;
+      maxTokensInput.disabled = !enabled;
+      inputTokenCapInput.disabled = !enabled;
+      if (advancedDetails) {
+        if (!enabled) advancedDetails.open = false;
+        advancedDetails.dataset.disabled = enabled ? "false" : "true";
+        advancedDetails.style.opacity = enabled ? "1" : "0.56";
+      }
+      if (advancedSummary) {
+        advancedSummary.style.cursor = enabled ? "pointer" : "not-allowed";
+        advancedSummary.style.color = enabled ? "" : "#666";
+      }
+    };
+    const syncAdvancedEnabledState = () => {
+      const modelName = (modelInput?.value || "").trim();
+      setAdvancedEnabled(Boolean(modelName));
+    };
+
+    if (advancedSummary) {
+      advancedSummary.addEventListener("click", (event) => {
+        if (advancedDetails?.dataset.disabled === "true") {
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      });
+    }
+    if (modelInput) {
+      modelInput.addEventListener("input", syncAdvancedEnabledState);
+      modelInput.addEventListener("change", syncAdvancedEnabledState);
+    }
+    syncAdvancedEnabledState();
   };
 
   for (const profile of PROFILE_CONFIGS) {

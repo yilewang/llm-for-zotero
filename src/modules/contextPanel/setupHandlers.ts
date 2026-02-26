@@ -64,7 +64,10 @@ import {
   getAttachmentTypeLabel,
   normalizeSelectedTextSource,
 } from "./textUtils";
-import { normalizeSelectedTextPaperContexts } from "./normalizers";
+import {
+  normalizeAttachmentContentHash,
+  normalizeSelectedTextPaperContexts,
+} from "./normalizers";
 import {
   positionMenuBelowButton,
   positionMenuAtPointer,
@@ -125,6 +128,7 @@ import {
 } from "./notes";
 import {
   persistAttachmentBlob,
+  extractManagedBlobHash,
   isManagedBlobPath,
   removeAttachmentFile,
   removeConversationAttachmentFiles,
@@ -133,6 +137,7 @@ import {
   clearConversation as clearStoredConversation,
   createGlobalConversation,
   createPaperConversation,
+  deleteTurnMessages,
   deleteGlobalConversation,
   deletePaperConversation,
   getGlobalConversationUserTurnCount,
@@ -150,8 +155,10 @@ import {
   ATTACHMENT_GC_MIN_AGE_MS,
   clearOwnerAttachmentRefs,
   collectAndDeleteUnreferencedBlobs,
+  replaceOwnerAttachmentRefs,
 } from "../../utils/attachmentRefStore";
 import type {
+  Message,
   ReasoningLevelSelection,
   ReasoningOption,
   AdvancedModelParams,
@@ -351,8 +358,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     responseMenu,
     responseMenuCopyBtn,
     responseMenuNoteBtn,
+    responseMenuDeleteBtn,
     promptMenu,
     promptMenuEditBtn,
+    promptMenuDeleteBtn,
     exportMenu,
     exportMenuCopyBtn,
     exportMenuNoteBtn,
@@ -1038,6 +1047,34 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           if (status) setStatus(status, "Failed to create note", "error");
         }
       });
+      if (responseMenuDeleteBtn) {
+        responseMenuDeleteBtn.addEventListener("click", async (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const target = responseMenuTarget;
+          closeResponseMenu();
+          if (!target || !item) return;
+          const conversationKey = Number(target.conversationKey || 0);
+          const userTimestamp = Number(target.userTimestamp || 0);
+          const assistantTimestamp = Number(target.assistantTimestamp || 0);
+          if (
+            !Number.isFinite(conversationKey) ||
+            conversationKey <= 0 ||
+            !Number.isFinite(userTimestamp) ||
+            userTimestamp <= 0 ||
+            !Number.isFinite(assistantTimestamp) ||
+            assistantTimestamp <= 0
+          ) {
+            if (status) setStatus(status, "No deletable turn found", "error");
+            return;
+          }
+          await queueTurnDeletion({
+            conversationKey: Math.floor(conversationKey),
+            userTimestamp: Math.floor(userTimestamp),
+            assistantTimestamp: Math.floor(assistantTimestamp),
+          });
+        });
+      }
     }
   }
 
@@ -1060,6 +1097,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         const target = promptMenuTarget;
         closePromptMenu();
         if (!item || !target) return;
+        if (!target.editable) {
+          if (status) setStatus(status, "Only the latest prompt is editable", "ready");
+          return;
+        }
         if (
           target.item.id !== item.id ||
           target.conversationKey !== getConversationKey(item)
@@ -1209,6 +1250,29 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         inputBox.focus({ preventScroll: true });
         if (status) setStatus(status, "Editing latest prompt", "ready");
       });
+      if (promptMenuDeleteBtn) {
+        promptMenuDeleteBtn.addEventListener("click", async (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const target = promptMenuTarget;
+          closePromptMenu();
+          if (!target || !item) return;
+          if (
+            !Number.isFinite(target.userTimestamp) ||
+            target.userTimestamp <= 0 ||
+            !Number.isFinite(target.assistantTimestamp) ||
+            target.assistantTimestamp <= 0
+          ) {
+            if (status) setStatus(status, "No deletable turn found", "error");
+            return;
+          }
+          await queueTurnDeletion({
+            conversationKey: Math.floor(target.conversationKey),
+            userTimestamp: Math.floor(target.userTimestamp),
+            assistantTimestamp: Math.floor(target.assistantTimestamp),
+          });
+        });
+      }
     }
   }
 
@@ -1850,6 +1914,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   let globalHistoryLoadSeq = 0;
   let pendingHistoryDeletion: PendingHistoryDeletion | null = null;
   const pendingHistoryDeletionKeys = new Set<number>();
+  const MESSAGE_TURN_UNDO_WINDOW_MS = 8000;
+  type PendingTurnDeletion = {
+    conversationKey: number;
+    userTimestamp: number;
+    assistantTimestamp: number;
+    userIndex: number;
+    userMessage: Message;
+    assistantMessage: Message;
+    timeoutId: number | null;
+    expiresAt: number;
+  };
+  let pendingTurnDeletion: PendingTurnDeletion | null = null;
 
   const getWindowTimeout = (fn: () => void, delayMs: number): number => {
     const win = body.ownerDocument?.defaultView;
@@ -1878,6 +1954,86 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       normalizeHistoryTitle(title) || normalizeHistoryTitle("Untitled chat");
     historyUndoText.textContent = `Deleted "${displayTitle}"`;
     historyUndo.style.display = "flex";
+  };
+
+  const showTurnUndoToast = () => {
+    if (!historyUndo || !historyUndoText) return;
+    historyUndoText.textContent = "Deleted one turn";
+    historyUndo.style.display = "flex";
+  };
+
+  const cloneTurnMessageForUndo = (message: Message): Message => ({
+    ...message,
+    selectedTexts: Array.isArray(message.selectedTexts)
+      ? [...message.selectedTexts]
+      : undefined,
+    selectedTextSources: Array.isArray(message.selectedTextSources)
+      ? [...message.selectedTextSources]
+      : undefined,
+    selectedTextPaperContexts: Array.isArray(message.selectedTextPaperContexts)
+      ? [...message.selectedTextPaperContexts]
+      : undefined,
+    screenshotImages: Array.isArray(message.screenshotImages)
+      ? [...message.screenshotImages]
+      : undefined,
+    paperContexts: Array.isArray(message.paperContexts)
+      ? [...message.paperContexts]
+      : undefined,
+    pinnedPaperContexts: Array.isArray(message.pinnedPaperContexts)
+      ? [...message.pinnedPaperContexts]
+      : undefined,
+    attachments: Array.isArray(message.attachments)
+      ? message.attachments.map((attachment) => ({ ...attachment }))
+      : undefined,
+  });
+
+  const findTurnPairByTimestamps = (
+    history: Message[],
+    userTimestamp: number,
+    assistantTimestamp: number,
+  ): { userIndex: number; userMessage: Message; assistantMessage: Message } | null => {
+    const normalizedUserTimestamp = Number.isFinite(userTimestamp)
+      ? Math.floor(userTimestamp)
+      : 0;
+    const normalizedAssistantTimestamp = Number.isFinite(assistantTimestamp)
+      ? Math.floor(assistantTimestamp)
+      : 0;
+    if (normalizedUserTimestamp <= 0 || normalizedAssistantTimestamp <= 0) {
+      return null;
+    }
+    for (let index = 0; index < history.length - 1; index++) {
+      const userMessage = history[index];
+      const assistantMessage = history[index + 1];
+      if (!userMessage || !assistantMessage) continue;
+      if (userMessage.role !== "user" || assistantMessage.role !== "assistant") {
+        continue;
+      }
+      if (
+        Math.floor(userMessage.timestamp) === normalizedUserTimestamp &&
+        Math.floor(assistantMessage.timestamp) === normalizedAssistantTimestamp
+      ) {
+        return { userIndex: index, userMessage, assistantMessage };
+      }
+    }
+    return null;
+  };
+
+  const collectAttachmentHashesFromMessages = (messages: Message[]): string[] => {
+    const hashes = new Set<string>();
+    for (const message of messages) {
+      const attachments = Array.isArray(message.attachments)
+        ? message.attachments
+        : [];
+      for (const attachment of attachments) {
+        if (!attachment || attachment.category === "image") continue;
+        const contentHash =
+          normalizeAttachmentContentHash(attachment.contentHash) ||
+          extractManagedBlobHash(attachment.storedPath);
+        if (!contentHash) continue;
+        hashes.add(contentHash);
+      }
+    }
+    return Array.from(hashes);
   };
 
   const isHistoryEntryActive = (entry: ConversationHistoryEntry): boolean => {
@@ -2035,7 +2191,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             "llm-history-row-delete",
             {
               type: "button",
-              textContent: "×",
               title: "Delete conversation",
             },
           ) as HTMLButtonElement;
@@ -2692,6 +2847,150 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
   };
 
+  const clearPendingTurnDeletion = (): PendingTurnDeletion | null => {
+    if (!pendingTurnDeletion) return null;
+    const pending = pendingTurnDeletion;
+    clearWindowTimeout(pending.timeoutId);
+    pending.timeoutId = null;
+    pendingTurnDeletion = null;
+    hideHistoryUndoToast();
+    return pending;
+  };
+
+  const finalizePendingTurnDeletion = async (
+    reason: "timeout" | "superseded",
+  ): Promise<void> => {
+    const pending = clearPendingTurnDeletion();
+    if (!pending) return;
+    let hasError = false;
+    try {
+      await deleteTurnMessages(
+        pending.conversationKey,
+        pending.userTimestamp,
+        pending.assistantTimestamp,
+      );
+    } catch (err) {
+      hasError = true;
+      ztoolkit.log("LLM: Failed to delete turn messages", err);
+    }
+    try {
+      const remainingHistory = chatHistory.get(pending.conversationKey) || [];
+      await replaceOwnerAttachmentRefs(
+        "conversation",
+        pending.conversationKey,
+        collectAttachmentHashesFromMessages(remainingHistory),
+      );
+    } catch (err) {
+      hasError = true;
+      ztoolkit.log("LLM: Failed to refresh turn attachment refs", err);
+    }
+    scheduleAttachmentGc();
+    if (hasError && status) {
+      setStatus(status, "Failed to fully delete turn. Check logs.", "error");
+    } else if (reason === "timeout" && status) {
+      setStatus(status, "Turn deleted", "ready");
+    }
+    void refreshGlobalHistoryHeader();
+  };
+
+  const undoPendingTurnDeletion = () => {
+    const pending = clearPendingTurnDeletion();
+    if (!pending) return;
+    const history = chatHistory.get(pending.conversationKey) || [];
+    const existingPair = findTurnPairByTimestamps(
+      history,
+      pending.userTimestamp,
+      pending.assistantTimestamp,
+    );
+    if (!existingPair) {
+      const insertAt = Math.max(0, Math.min(pending.userIndex, history.length));
+      history.splice(
+        insertAt,
+        0,
+        cloneTurnMessageForUndo(pending.userMessage),
+        cloneTurnMessageForUndo(pending.assistantMessage),
+      );
+      chatHistory.set(pending.conversationKey, history);
+    }
+    if (item && getConversationKey(item) === pending.conversationKey) {
+      activeEditSession = null;
+      refreshChatPreservingScroll();
+    }
+    if (status) setStatus(status, "Turn restored", "ready");
+    void refreshGlobalHistoryHeader();
+  };
+
+  const queueTurnDeletion = async (target: {
+    conversationKey: number;
+    userTimestamp: number;
+    assistantTimestamp: number;
+  }) => {
+    if (!item) return;
+    if (
+      currentAbortController ||
+      historyToggleBtn?.disabled ||
+      inputBox?.disabled
+    ) {
+      if (status) {
+        setStatus(status, "Cannot delete while generating", "ready");
+      }
+      return;
+    }
+    const activeConversationKey = getConversationKey(item);
+    if (activeConversationKey !== target.conversationKey) {
+      if (status) setStatus(status, "Delete target changed", "error");
+      return;
+    }
+    await ensureConversationLoaded(item);
+    if (!item || getConversationKey(item) !== target.conversationKey) {
+      if (status) setStatus(status, "Delete target changed", "error");
+      return;
+    }
+    if (pendingHistoryDeletion) {
+      await finalizePendingHistoryDeletion("superseded");
+    }
+    if (pendingTurnDeletion) {
+      const sameTurn =
+        pendingTurnDeletion.conversationKey === target.conversationKey &&
+        pendingTurnDeletion.userTimestamp === target.userTimestamp &&
+        pendingTurnDeletion.assistantTimestamp === target.assistantTimestamp;
+      if (sameTurn) return;
+      await finalizePendingTurnDeletion("superseded");
+    }
+    const history = chatHistory.get(target.conversationKey) || [];
+    const pair = findTurnPairByTimestamps(
+      history,
+      target.userTimestamp,
+      target.assistantTimestamp,
+    );
+    if (!pair) {
+      if (status) setStatus(status, "No deletable turn found", "error");
+      return;
+    }
+
+    history.splice(pair.userIndex, 2);
+    chatHistory.set(target.conversationKey, history);
+    activeEditSession = null;
+    refreshChatPreservingScroll();
+
+    const pending: PendingTurnDeletion = {
+      conversationKey: target.conversationKey,
+      userTimestamp: Math.floor(target.userTimestamp),
+      assistantTimestamp: Math.floor(target.assistantTimestamp),
+      userIndex: pair.userIndex,
+      userMessage: cloneTurnMessageForUndo(pair.userMessage),
+      assistantMessage: cloneTurnMessageForUndo(pair.assistantMessage),
+      timeoutId: null,
+      expiresAt: Date.now() + MESSAGE_TURN_UNDO_WINDOW_MS,
+    };
+    pending.timeoutId = getWindowTimeout(() => {
+      void finalizePendingTurnDeletion("timeout");
+    }, MESSAGE_TURN_UNDO_WINDOW_MS);
+    pendingTurnDeletion = pending;
+    showTurnUndoToast();
+    if (status) setStatus(status, "Turn deleted. Undo available.", "ready");
+  };
+
   const clearPendingHistoryDeletion = (
     restoreRowVisibility: boolean,
   ): PendingHistoryDeletion | null => {
@@ -2838,6 +3137,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         return;
       }
       await finalizePendingHistoryDeletion("superseded");
+    }
+    if (pendingTurnDeletion) {
+      await finalizePendingTurnDeletion("superseded");
     }
 
     const wasActive = isHistoryEntryActive(entry);
@@ -3152,6 +3454,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     historyUndoBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
+      if (pendingTurnDeletion) {
+        undoPendingTurnDeletion();
+        return;
+      }
       void undoPendingHistoryDeletion();
     });
   }
@@ -5635,7 +5941,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           conversationKey: getConversationKey(item),
           userTimestamp,
           assistantTimestamp,
+          editable: true,
         });
+        promptMenuEditBtn.disabled = false;
         promptMenuEditBtn.click();
         return;
       }
@@ -6321,6 +6629,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       activeEditSession = null;
       if (!item) return;
       const conversationToClear = getConversationKey(item);
+      if (pendingTurnDeletion?.conversationKey === conversationToClear) {
+        clearPendingTurnDeletion();
+      }
       const currentItemId = item.id;
       const libraryID = getCurrentLibraryID();
       clearTransientComposeStateForItem(currentItemId);

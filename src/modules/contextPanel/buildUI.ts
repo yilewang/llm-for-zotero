@@ -308,7 +308,18 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       textContent: "Save as note",
     },
   );
-  responseMenu.append(responseMenuCopyBtn, responseMenuNoteBtn);
+  const responseMenuDeleteBtn = createElement(
+    doc,
+    "button",
+    "llm-response-menu-item",
+    {
+      id: "llm-response-menu-delete",
+      type: "button",
+      textContent: "Delete this turn",
+      title: "Delete this prompt and response",
+    },
+  );
+  responseMenu.append(responseMenuCopyBtn, responseMenuNoteBtn, responseMenuDeleteBtn);
   container.appendChild(responseMenu);
 
   // Prompt context menu
@@ -326,7 +337,18 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       textContent: "Edit",
     },
   );
-  promptMenu.append(promptMenuEditBtn);
+  const promptMenuDeleteBtn = createElement(
+    doc,
+    "button",
+    "llm-response-menu-item",
+    {
+      id: "llm-prompt-menu-delete",
+      type: "button",
+      textContent: "Delete this turn",
+      title: "Delete this prompt and response",
+    },
+  );
+  promptMenu.append(promptMenuEditBtn, promptMenuDeleteBtn);
   container.appendChild(promptMenu);
 
   // Export menu

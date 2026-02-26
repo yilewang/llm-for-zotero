@@ -57,6 +57,9 @@ export let responseMenuTarget: {
   item: Zotero.Item;
   contentText: string;
   modelName: string;
+  conversationKey?: number;
+  userTimestamp?: number;
+  assistantTimestamp?: number;
 } | null = null;
 export function setResponseMenuTarget(value: typeof responseMenuTarget) {
   responseMenuTarget = value;
@@ -67,6 +70,7 @@ export let promptMenuTarget: {
   conversationKey: number;
   userTimestamp: number;
   assistantTimestamp: number;
+  editable?: boolean;
 } | null = null;
 export function setPromptMenuTarget(value: typeof promptMenuTarget) {
   promptMenuTarget = value;

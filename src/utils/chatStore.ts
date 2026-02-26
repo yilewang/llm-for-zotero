@@ -767,6 +767,51 @@ export async function clearConversation(
   );
 }
 
+export async function deleteTurnMessages(
+  conversationKey: number,
+  userTimestamp: number,
+  assistantTimestamp: number,
+): Promise<void> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey) return;
+  const normalizedUserTimestamp = Number.isFinite(userTimestamp)
+    ? Math.floor(userTimestamp)
+    : 0;
+  const normalizedAssistantTimestamp = Number.isFinite(assistantTimestamp)
+    ? Math.floor(assistantTimestamp)
+    : 0;
+  if (normalizedUserTimestamp <= 0 || normalizedAssistantTimestamp <= 0) return;
+
+  await Zotero.DB.executeTransaction(async () => {
+    await Zotero.DB.queryAsync(
+      `DELETE FROM ${CHAT_MESSAGES_TABLE}
+       WHERE id = (
+         SELECT id
+         FROM ${CHAT_MESSAGES_TABLE}
+         WHERE conversation_key = ?
+           AND role = 'user'
+           AND timestamp = ?
+         ORDER BY id DESC
+         LIMIT 1
+       )`,
+      [normalizedKey, normalizedUserTimestamp],
+    );
+    await Zotero.DB.queryAsync(
+      `DELETE FROM ${CHAT_MESSAGES_TABLE}
+       WHERE id = (
+         SELECT id
+         FROM ${CHAT_MESSAGES_TABLE}
+         WHERE conversation_key = ?
+           AND role = 'assistant'
+           AND timestamp = ?
+         ORDER BY id DESC
+         LIMIT 1
+       )`,
+      [normalizedKey, normalizedAssistantTimestamp],
+    );
+  });
+}
+
 export async function pruneConversation(
   conversationKey: number,
   keep: number,

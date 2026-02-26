@@ -2376,7 +2376,14 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         renderSelectedTextStates();
       }
       bubble.textContent = sanitizeText(msg.text || "");
-      if (canEditLatestUserPrompt) {
+      const assistantTurnMessage = history[index + 1];
+      const hasPromptTurnPair = Boolean(
+        assistantTurnMessage?.role === "assistant",
+      );
+      const canDeletePromptTurn = Boolean(
+        hasPromptTurnPair && !assistantTurnMessage?.streaming,
+      );
+      if (hasPromptTurnPair || canEditLatestUserPrompt) {
         bubble.addEventListener("contextmenu", (e: Event) => {
           const me = e as MouseEvent;
           me.preventDefault();
@@ -2396,7 +2403,20 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           const retryModelMenu = body.querySelector(
             "#llm-retry-model-menu",
           ) as HTMLDivElement | null;
+          const promptMenuEditBtn = promptMenu?.querySelector(
+            "#llm-prompt-menu-edit",
+          ) as HTMLButtonElement | null;
+          const promptMenuDeleteBtn = promptMenu?.querySelector(
+            "#llm-prompt-menu-delete",
+          ) as HTMLButtonElement | null;
           if (!promptMenu) return;
+          if (promptMenuEditBtn) {
+            promptMenuEditBtn.disabled = !canEditLatestUserPrompt;
+          }
+          if (promptMenuDeleteBtn) {
+            promptMenuDeleteBtn.disabled = !canDeletePromptTurn;
+          }
+          if (!canEditLatestUserPrompt && !canDeletePromptTurn) return;
           if (responseMenu) responseMenu.style.display = "none";
           if (exportMenu) exportMenu.style.display = "none";
           if (retryModelMenu) {
@@ -2407,8 +2427,11 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           setPromptMenuTarget({
             item,
             conversationKey,
-            userTimestamp: latestEditableUserTimestamp as number,
-            assistantTimestamp: latestEditableAssistantTimestamp as number,
+            userTimestamp: Math.floor(msg.timestamp),
+            assistantTimestamp: hasPromptTurnPair
+              ? Math.floor(assistantTurnMessage?.timestamp || 0)
+              : 0,
+            editable: canEditLatestUserPrompt,
           });
           positionMenuAtPointer(body, promptMenu, me.clientX, me.clientY);
         });
@@ -2444,7 +2467,17 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           const retryModelMenu = body.querySelector(
             "#llm-retry-model-menu",
           ) as HTMLDivElement | null;
+          const responseMenuDeleteBtn = responseMenu?.querySelector(
+            "#llm-response-menu-delete",
+          ) as HTMLButtonElement | null;
+          const pairedUserMessage = history[index - 1];
+          const canDeleteResponseTurn = Boolean(
+            pairedUserMessage?.role === "user" && !msg.streaming,
+          );
           if (!responseMenu || !item) return;
+          if (responseMenuDeleteBtn) {
+            responseMenuDeleteBtn.disabled = !canDeleteResponseTurn;
+          }
           if (exportMenu) exportMenu.style.display = "none";
           if (promptMenu) promptMenu.style.display = "none";
           if (retryModelMenu) {
@@ -2463,6 +2496,12 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             item,
             contentText,
             modelName: msg.modelName?.trim() || "unknown",
+            conversationKey,
+            userTimestamp:
+              pairedUserMessage?.role === "user"
+                ? Math.floor(pairedUserMessage.timestamp)
+                : 0,
+            assistantTimestamp: Math.floor(msg.timestamp),
           });
           positionMenuAtPointer(body, responseMenu, me.clientX, me.clientY);
         });
