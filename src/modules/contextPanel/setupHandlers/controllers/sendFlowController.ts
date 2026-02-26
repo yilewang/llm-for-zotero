@@ -40,6 +40,7 @@ type SendFlowControllerDeps = {
   closePaperPicker: () => void;
   getSelectedTextContextEntries: (itemId: number) => SelectedTextContext[];
   getSelectedPaperContexts: (itemId: number) => PaperContextRef[];
+  getPinnedPaperContexts: (itemId: number) => PaperContextRef[];
   getSelectedFiles: (itemId: number) => ChatAttachment[];
   getSelectedImages: (itemId: number) => string[];
   resolvePromptText: (
@@ -90,6 +91,7 @@ type SendFlowControllerDeps = {
     selectedTextPaperContexts?: (PaperContextRef | undefined)[],
     screenshotImages?: string[],
     paperContexts?: PaperContextRef[],
+    pinnedPaperContexts?: PaperContextRef[],
     attachments?: ChatAttachment[],
     expected?: EditLatestTurnMarker,
     model?: string,
@@ -113,6 +115,7 @@ type SendFlowControllerDeps = {
     selectedTextSources?: SelectedTextSource[],
     selectedTextPaperContexts?: (PaperContextRef | undefined)[],
     paperContexts?: PaperContextRef[],
+    pinnedPaperContexts?: PaperContextRef[],
     attachments?: ChatAttachment[],
   ) => Promise<void>;
   retainPinnedImageState: (itemId: number) => void;
@@ -151,6 +154,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     );
     const primarySelectedText = selectedTexts[0] || "";
     const selectedPaperContexts = deps.getSelectedPaperContexts(item.id);
+    const pinnedPaperContexts = deps.getPinnedPaperContexts(item.id);
     const selectedFiles = deps.getSelectedFiles(item.id);
 
     if (
@@ -263,6 +267,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         selectedTexts.length ? selectedTextPaperContexts : undefined,
         images,
         selectedPaperContexts.length ? selectedPaperContexts : undefined,
+        pinnedPaperContexts.length ? pinnedPaperContexts : undefined,
         selectedFiles.length ? selectedFiles : undefined,
         activeEditSession,
         selectedProfile?.model,
@@ -338,6 +343,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       selectedTexts.length ? selectedTextSources : undefined,
       selectedTexts.length ? selectedTextPaperContexts : undefined,
       selectedPaperContexts.length ? selectedPaperContexts : undefined,
+      pinnedPaperContexts.length ? pinnedPaperContexts : undefined,
       selectedFiles.length ? selectedFiles : undefined,
     );
     const win = deps.body.ownerDocument?.defaultView;

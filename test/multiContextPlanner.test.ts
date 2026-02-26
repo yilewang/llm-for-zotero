@@ -105,9 +105,13 @@ describe("multiContextPlanner", function () {
       papers: papers as any,
       question: "summarize common result",
       contextBudgetTokens: 10_000,
-      activePaperKey: buildPaperKey(paperA),
+      minChunksByPaper: new Map([
+        [buildPaperKey(paperA), 2],
+        [buildPaperKey(paperB), 1],
+      ]),
     });
     assert.isAtLeast(result.selectedChunkCount, 3);
+    assert.isAtLeast(result.selectedPaperCount, 2);
     assert.include(result.contextText, "[P1-");
     assert.include(result.contextText, "[P2-");
   });

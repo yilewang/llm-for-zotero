@@ -4947,6 +4947,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     getSelectedTextContextEntries,
     getSelectedPaperContexts: (itemId) =>
       normalizePaperContextEntries(selectedPaperContextCache.get(itemId) || []),
+    getPinnedPaperContexts: (itemId) =>
+      normalizePaperContextEntries(
+        selectedPaperContextCache.get(itemId) || [],
+      ).filter((paperContext) =>
+        isPinnedPaper(pinnedPaperKeys, itemId, paperContext),
+      ),
     getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],
     getSelectedImages: (itemId) => selectedImageCache.get(itemId) || [],
     resolvePromptText,

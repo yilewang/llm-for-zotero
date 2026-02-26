@@ -19,6 +19,7 @@ export interface Message {
   selectedTextExpandedIndex?: number;
   screenshotImages?: string[];
   paperContexts?: PaperContextRef[];
+  pinnedPaperContexts?: PaperContextRef[];
   paperContextsExpanded?: boolean;
   attachments?: ChatAttachment[];
   attachmentsExpanded?: boolean;

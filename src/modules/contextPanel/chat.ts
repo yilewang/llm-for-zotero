@@ -228,6 +228,23 @@ function normalizePaperContexts(paperContexts: unknown): PaperContextRef[] {
   return normalizePaperContextRefs(paperContexts, { sanitizeText });
 }
 
+function collectRecentPaperContexts(history: Message[]): PaperContextRef[] {
+  const out: PaperContextRef[] = [];
+  const seen = new Set<string>();
+  for (let index = history.length - 1; index >= 0; index--) {
+    const message = history[index];
+    if (!message || message.role !== "user") continue;
+    const contexts = normalizePaperContexts(message.paperContexts);
+    for (const context of contexts) {
+      const key = `${context.itemId}:${context.contextItemId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(context);
+    }
+  }
+  return out;
+}
+
 function collectAttachmentHashesFromStoredMessages(
   messages: StoredChatMessage[],
 ): string[] {
@@ -908,6 +925,8 @@ async function buildContextPlanForRequest(params: {
   question: string;
   images?: string[];
   paperContexts: PaperContextRef[];
+  pinnedPaperContexts: PaperContextRef[];
+  recentPaperContexts: PaperContextRef[];
   history: ChatMessage[];
   effectiveRequestConfig: EffectiveRequestConfig;
   setStatusSafely: (
@@ -920,8 +939,11 @@ async function buildContextPlanForRequest(params: {
   const systemPrompt = getStringPref("systemPrompt") || undefined;
   const plan = await resolveMultiContextPlan({
     activeContextItem: contextSource.contextItem,
+    conversationMode: isGlobalPortalItem(params.item) ? "open" : "paper",
     question: params.question,
     paperContexts: params.paperContexts,
+    pinnedPaperContexts: params.pinnedPaperContexts,
+    historyPaperContexts: params.recentPaperContexts,
     history: params.history,
     images: params.images,
     model: params.effectiveRequestConfig.model,
@@ -1021,6 +1043,7 @@ function reconstructRetryPayload(userMessage: Message): {
   screenshotImages: string[];
   fileAttachments: ChatFileAttachment[];
   paperContexts: PaperContextRef[];
+  pinnedPaperContexts: PaperContextRef[];
 } {
   const selectedTexts = getMessageSelectedTexts(userMessage);
   const selectedTextSources = normalizeSelectedTextSources(
@@ -1075,6 +1098,9 @@ function reconstructRetryPayload(userMessage: Message): {
         .slice(0, MAX_SELECTED_IMAGES)
     : [];
   const paperContexts = normalizePaperContexts(userMessage.paperContexts);
+  const pinnedPaperContexts = normalizePaperContexts(
+    userMessage.pinnedPaperContexts,
+  );
   const fileAttachmentsForModel: ChatFileAttachment[] = [];
   for (const attachment of fileAttachments) {
     if (
@@ -1096,6 +1122,7 @@ function reconstructRetryPayload(userMessage: Message): {
     screenshotImages,
     fileAttachments: fileAttachmentsForModel,
     paperContexts,
+    pinnedPaperContexts,
   };
 }
 
@@ -1209,6 +1236,12 @@ function normalizeEditablePaperContexts(
   return normalizePaperContexts(paperContexts);
 }
 
+function normalizeEditablePinnedPaperContexts(
+  pinnedPaperContexts?: PaperContextRef[],
+): PaperContextRef[] {
+  return normalizePaperContexts(pinnedPaperContexts);
+}
+
 export async function editLatestUserMessageAndRetry(
   body: Element,
   item: Zotero.Item,
@@ -1218,6 +1251,7 @@ export async function editLatestUserMessageAndRetry(
   selectedTextPaperContexts?: (PaperContextRef | undefined)[],
   screenshotImages?: string[],
   paperContexts?: PaperContextRef[],
+  pinnedPaperContexts?: PaperContextRef[],
   attachments?: ChatAttachment[],
   expected?: EditLatestTurnMarker,
   model?: string,
@@ -1260,6 +1294,8 @@ export async function editLatestUserMessageAndRetry(
         .slice(0, MAX_SELECTED_IMAGES)
     : [];
   const paperContextsForMessage = normalizeEditablePaperContexts(paperContexts);
+  const pinnedPaperContextsForMessage =
+    normalizeEditablePinnedPaperContexts(pinnedPaperContexts);
   const attachmentsForMessage = normalizeEditableAttachments(attachments);
   const updatedTimestamp = Date.now();
   const nextDisplayQuestion = sanitizeText(displayQuestion || "");
@@ -1289,6 +1325,10 @@ export async function editLatestUserMessageAndRetry(
   retryPair.userMessage.paperContexts = paperContextsForMessage.length
     ? paperContextsForMessage
     : undefined;
+  retryPair.userMessage.pinnedPaperContexts =
+    pinnedPaperContextsForMessage.length
+      ? pinnedPaperContextsForMessage
+      : undefined;
   retryPair.userMessage.paperContextsExpanded = false;
   retryPair.userMessage.attachments = attachmentsForMessage.length
     ? attachmentsForMessage
@@ -1370,8 +1410,13 @@ export async function retryLatestAssistantResponse(
   const historyForLLM = history
     .slice(0, retryPair.userIndex)
     .slice(-MAX_HISTORY_MESSAGES);
-  const { question, screenshotImages, fileAttachments, paperContexts } =
-    reconstructRetryPayload(retryPair.userMessage);
+  const {
+    question,
+    screenshotImages,
+    fileAttachments,
+    paperContexts,
+    pinnedPaperContexts,
+  } = reconstructRetryPayload(retryPair.userMessage);
   if (!question.trim()) {
     setStatusSafely("Nothing to retry for latest turn", "error");
     restoreRequestUIIdle(ui, conversationKey, thisRequestId);
@@ -1407,11 +1452,14 @@ export async function retryLatestAssistantResponse(
 
   try {
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
+    const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
     const combinedContext = await buildContextPlanForRequest({
       item,
       question,
       images: screenshotImages,
       paperContexts,
+      pinnedPaperContexts,
+      recentPaperContexts,
       history: llmHistory,
       effectiveRequestConfig,
       setStatusSafely,
@@ -1547,6 +1595,7 @@ export async function sendQuestion(
   selectedTextSources?: SelectedTextSource[],
   selectedTextPaperContexts?: (PaperContextRef | undefined)[],
   paperContexts?: PaperContextRef[],
+  pinnedPaperContexts?: PaperContextRef[],
   attachments?: ChatAttachment[],
 ) {
   const ui = getPanelRequestUI(body);
@@ -1595,6 +1644,8 @@ export async function sendQuestion(
     );
   const selectedTextForMessage = selectedTextsForMessage[0] || "";
   const paperContextsForMessage = normalizePaperContexts(paperContexts);
+  const pinnedPaperContextsForMessage =
+    normalizePaperContexts(pinnedPaperContexts);
   const screenshotImagesForMessage = Array.isArray(images)
     ? images
         .filter((entry): entry is string => typeof entry === "string")
@@ -1624,6 +1675,9 @@ export async function sendQuestion(
     selectedTextExpandedIndex: -1,
     paperContexts: paperContextsForMessage.length
       ? paperContextsForMessage
+      : undefined,
+    pinnedPaperContexts: pinnedPaperContextsForMessage.length
+      ? pinnedPaperContextsForMessage
       : undefined,
     paperContextsExpanded: false,
     screenshotImages: screenshotImagesForMessage.length
@@ -1687,11 +1741,14 @@ export async function sendQuestion(
 
   try {
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
+    const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
     const combinedContext = await buildContextPlanForRequest({
       item,
       question,
       images,
       paperContexts: paperContextsForMessage,
+      pinnedPaperContexts: pinnedPaperContextsForMessage,
+      recentPaperContexts,
       history: llmHistory,
       effectiveRequestConfig,
       setStatusSafely,

@@ -42,6 +42,7 @@ describe("sendFlowController", function () {
       closePaperPicker: () => undefined,
       getSelectedTextContextEntries: () => selectedTextContexts,
       getSelectedPaperContexts: () => [selectedPaper],
+      getPinnedPaperContexts: () => [selectedPaper],
       getSelectedFiles: () => [selectedFile],
       getSelectedImages: () => ["data:image/png;base64,AAA"],
       resolvePromptText: () => "ask question",

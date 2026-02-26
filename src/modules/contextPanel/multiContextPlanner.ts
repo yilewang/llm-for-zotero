@@ -27,10 +27,16 @@ import type {
 } from "./types";
 
 type PlannerPaperEntry = {
+  order: number;
+  paperKey: string;
   paperContext: PaperContextRef;
   contextItem: Zotero.Item | null;
   pdfContext: PdfContext | undefined;
+  isActive: boolean;
+  pinKind: "explicit" | "implicit-active" | "none";
 };
+
+type ConversationMode = "paper" | "open";
 
 function getFirstPdfChildAttachment(
   item: Zotero.Item | null | undefined,
@@ -116,9 +122,167 @@ function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
   return intersection / union;
 }
 
+function tokenizeForMatching(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]{3,}/g) || [];
+}
+
+function hasPaperQuestionSignals(question: string): boolean {
+  const normalized = question.toLowerCase();
+  if (!normalized.trim()) return false;
+  if (
+    /\b(paper|study|article|author|method|methodology|experiment|result|finding|conclusion|limitation|evidence|dataset|table|figure|section|citation|related work|ablation|baseline)\b/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(compare|contrast|difference|similarity|why|how|what about|based on)\b/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  if (/\b(this|that|these|those|it|they|them)\b/.test(normalized)) {
+    return true;
+  }
+  return false;
+}
+
+function isObviouslyContextFreeQuestion(question: string): boolean {
+  const normalized = question.trim().toLowerCase();
+  if (!normalized) return true;
+  if (
+    /^(hi|hello|hey|thanks|thank you|thx|ok|okay|cool|great|sounds good|got it)[.!?]*$/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function normalizeTextForLookup(value: string | undefined): string {
+  return sanitizeText(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function collectPaperReferenceTokens(
+  paperContext: PaperContextRef,
+): Set<string> {
+  const tokens = new Set<string>();
+  const add = (value: string | undefined) => {
+    const terms = tokenizeForMatching(value || "");
+    for (const term of terms) tokens.add(term);
+  };
+  add(paperContext.title);
+  add(paperContext.firstCreator);
+  add(paperContext.citationKey);
+  if (paperContext.year && /^\d{4}$/.test(paperContext.year.trim())) {
+    tokens.add(paperContext.year.trim());
+  }
+  return tokens;
+}
+
+function parseOrdinalTargets(question: string): Set<number> {
+  const normalized = question.toLowerCase();
+  const out = new Set<number>();
+  const numericMatches = normalized.match(/\bpaper\s*(\d+)\b/g) || [];
+  for (const match of numericMatches) {
+    const raw = match.replace(/[^0-9]/g, "");
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) out.add(parsed);
+  }
+  if (/\bfirst\b/.test(normalized)) out.add(1);
+  if (/\bsecond\b/.test(normalized)) out.add(2);
+  if (/\bthird\b/.test(normalized)) out.add(3);
+  if (/\bfourth\b/.test(normalized)) out.add(4);
+  if (/\bfifth\b/.test(normalized)) out.add(5);
+  return out;
+}
+
+function rankUnpinnedPapersByQuestion(params: {
+  papers: PlannerPaperEntry[];
+  question: string;
+}): PlannerPaperEntry[] {
+  if (!params.papers.length) return [];
+  if (isObviouslyContextFreeQuestion(params.question)) return [];
+
+  const questionText = normalizeTextForLookup(params.question);
+  const questionTokens = new Set(tokenizeForMatching(questionText));
+  const ordinalTargets = parseOrdinalTargets(questionText);
+
+  const scored = params.papers.map((paper) => {
+    let score = 0;
+    let explicit = false;
+    if (ordinalTargets.has(paper.order)) {
+      score += 10;
+      explicit = true;
+    }
+
+    const citation = normalizeTextForLookup(paper.paperContext.citationKey);
+    if (citation && questionText.includes(citation)) {
+      score += 8;
+      explicit = true;
+    }
+
+    const author = normalizeTextForLookup(paper.paperContext.firstCreator);
+    if (author) {
+      const authorTokens = tokenizeForMatching(author);
+      for (const authorToken of authorTokens) {
+        if (questionTokens.has(authorToken)) {
+          score += 4;
+          explicit = true;
+          break;
+        }
+      }
+    }
+
+    const year = normalizeTextForLookup(paper.paperContext.year);
+    if (year && questionText.includes(year)) {
+      score += 2;
+      explicit = true;
+    }
+
+    const paperTokens = collectPaperReferenceTokens(paper.paperContext);
+    let overlap = 0;
+    for (const token of paperTokens) {
+      if (questionTokens.has(token)) overlap += 1;
+    }
+    score += overlap;
+    if (overlap >= 2) explicit = true;
+
+    return { paper, score, explicit };
+  });
+
+  const explicitHits = scored.filter(
+    (entry) => entry.explicit && entry.score > 0,
+  );
+  if (explicitHits.length) {
+    explicitHits.sort((a, b) => b.score - a.score);
+    return explicitHits.map((entry) => entry.paper);
+  }
+
+  const questionLooksPaperGrounded = hasPaperQuestionSignals(questionText);
+  if (!questionLooksPaperGrounded) {
+    return [];
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  const positive = scored
+    .filter((entry) => entry.score > 0)
+    .map((entry) => entry.paper);
+  if (positive.length) {
+    return positive.slice(0, Math.min(2, positive.length));
+  }
+  return params.papers.slice(0, 1);
+}
+
 type RetrievedAssembly = {
   contextText: string;
   selectedChunkCount: number;
+  selectedPaperCount: number;
 };
 
 export function assembleFullMultiPaperContext(params: {
@@ -158,18 +322,18 @@ export async function assembleRetrievedMultiPaperContext(params: {
   papers: PlannerPaperEntry[];
   question: string;
   contextBudgetTokens: number;
-  activePaperKey?: string;
+  minChunksByPaper?: Map<string, number>;
   apiOverrides?: { apiBase?: string; apiKey?: string };
 }): Promise<RetrievedAssembly> {
   const {
     papers,
     question,
     contextBudgetTokens,
-    activePaperKey,
+    minChunksByPaper,
     apiOverrides,
   } = params;
   if (!papers.length || contextBudgetTokens <= 0) {
-    return { contextText: "", selectedChunkCount: 0 };
+    return { contextText: "", selectedChunkCount: 0, selectedPaperCount: 0 };
   }
 
   const allCandidates: PaperContextCandidate[] = [];
@@ -190,6 +354,7 @@ export async function assembleRetrievedMultiPaperContext(params: {
         papers.map((entry) => entry.paperContext),
       ),
       selectedChunkCount: 0,
+      selectedPaperCount: papers.length,
     };
   }
 
@@ -230,11 +395,8 @@ export async function assembleRetrievedMultiPaperContext(params: {
 
   // First pass: guarantee per-paper coverage before global reranking.
   for (const paper of papers) {
-    const key = buildPaperKey(paper.paperContext);
-    const minChunks =
-      key === activePaperKey
-        ? RETRIEVAL_MIN_ACTIVE_PAPER_CHUNKS
-        : RETRIEVAL_MIN_OTHER_PAPER_CHUNKS;
+    const key = paper.paperKey;
+    const minChunks = Math.max(0, minChunksByPaper?.get(key) || 0);
     if (minChunks <= 0) continue;
     const list = candidatesByPaper.get(key) || [];
     let added = 0;
@@ -302,52 +464,127 @@ export async function assembleRetrievedMultiPaperContext(params: {
   return {
     contextText,
     selectedChunkCount: selectedCandidates.length,
+    selectedPaperCount: selectedCandidates.length
+      ? new Set(selectedCandidates.map((candidate) => candidate.paperKey)).size
+      : papers.length,
   };
 }
 
+function buildMinChunkMapForRetrievedPapers(
+  papers: PlannerPaperEntry[],
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const paper of papers) {
+    if (paper.pinKind === "none") {
+      out.set(paper.paperKey, 0);
+      continue;
+    }
+    out.set(
+      paper.paperKey,
+      paper.isActive
+        ? RETRIEVAL_MIN_ACTIVE_PAPER_CHUNKS
+        : RETRIEVAL_MIN_OTHER_PAPER_CHUNKS,
+    );
+  }
+  return out;
+}
+
+function appendContextBlocks(blocks: string[]): string {
+  const nonEmpty = blocks
+    .map((entry) => sanitizeText(entry || "").trim())
+    .filter(Boolean);
+  if (!nonEmpty.length) return "";
+  return nonEmpty.join("\n\n---\n\n");
+}
+
 async function resolvePlannerPaperEntries(params: {
+  conversationMode: ConversationMode;
   activeContextItem: Zotero.Item | null;
   paperContexts: PaperContextRef[] | undefined;
+  pinnedPaperContexts: PaperContextRef[] | undefined;
+  historyPaperContexts: PaperContextRef[] | undefined;
 }): Promise<PlannerPaperEntry[]> {
   const selected = normalizePaperContextEntries(params.paperContexts || []);
+  const explicitlyPinned = normalizePaperContextEntries(
+    params.pinnedPaperContexts || [],
+  );
+  const historyPool = normalizePaperContextEntries(
+    params.historyPaperContexts || [],
+  );
   const orderedRefs: PaperContextRef[] = [];
   const seen = new Set<string>();
 
-  const activePaper = buildPaperRefFromContextItem(params.activeContextItem);
+  const explicitPinnedKeys = new Set(
+    explicitlyPinned.map((paper) => buildPaperKey(paper)),
+  );
+  const activePaper =
+    params.conversationMode === "paper"
+      ? buildPaperRefFromContextItem(params.activeContextItem)
+      : null;
+  const activeKey = activePaper ? buildPaperKey(activePaper) : "";
+  const includeHistoryPool =
+    params.conversationMode === "paper" &&
+    selected.length === 0 &&
+    explicitlyPinned.length === 0;
+
+  const pushRef = (paper: PaperContextRef) => {
+    const key = buildPaperKey(paper);
+    if (seen.has(key)) return;
+    seen.add(key);
+    orderedRefs.push(paper);
+  };
+
   if (activePaper) {
-    const key = buildPaperKey(activePaper);
-    if (!seen.has(key)) {
-      seen.add(key);
-      orderedRefs.push(activePaper);
-    }
+    pushRef(activePaper);
   }
 
   for (const paper of selected) {
-    const key = buildPaperKey(paper);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    orderedRefs.push(paper);
+    pushRef(paper);
+  }
+  for (const paper of explicitlyPinned) {
+    pushRef(paper);
+  }
+  if (includeHistoryPool) {
+    for (const paper of historyPool) {
+      pushRef(paper);
+    }
   }
 
   const out: PlannerPaperEntry[] = [];
-  for (const paperContext of orderedRefs) {
+  for (const [index, paperContext] of orderedRefs.entries()) {
+    const paperKey = buildPaperKey(paperContext);
     const contextItem = resolveContextItem(paperContext);
     if (contextItem) {
       await ensurePDFTextCached(contextItem);
     }
+    const isActive = Boolean(activeKey && paperKey === activeKey);
+    const pinKind: PlannerPaperEntry["pinKind"] = explicitPinnedKeys.has(
+      paperKey,
+    )
+      ? "explicit"
+      : isActive && params.conversationMode === "paper"
+        ? "implicit-active"
+        : "none";
     out.push({
+      order: index + 1,
+      paperKey,
       paperContext,
       contextItem,
       pdfContext: contextItem ? pdfTextCache.get(contextItem.id) : undefined,
+      isActive,
+      pinKind,
     });
   }
   return out;
 }
 
 export async function resolveMultiContextPlan(params: {
+  conversationMode: ConversationMode;
   activeContextItem: Zotero.Item | null;
   question: string;
   paperContexts?: PaperContextRef[];
+  pinnedPaperContexts?: PaperContextRef[];
+  historyPaperContexts?: PaperContextRef[];
   history?: ChatMessage[];
   images?: string[];
   image?: string;
@@ -359,8 +596,11 @@ export async function resolveMultiContextPlan(params: {
   systemPrompt?: string;
 }): Promise<MultiContextPlan> {
   const papers = await resolvePlannerPaperEntries({
+    conversationMode: params.conversationMode,
     activeContextItem: params.activeContextItem,
     paperContexts: params.paperContexts,
+    pinnedPaperContexts: params.pinnedPaperContexts,
+    historyPaperContexts: params.historyPaperContexts,
   });
   const contextBudget = estimateAvailableContextBudget({
     model: params.model,
@@ -385,30 +625,86 @@ export async function resolveMultiContextPlan(params: {
     };
   }
 
-  const full = assembleFullMultiPaperContext({ papers });
-  if (
-    selectContextAssemblyMode({
-      fullContextText: full.contextText,
-      fullContextTokens: full.estimatedTokens,
-      contextBudgetTokens: contextBudget.contextBudgetTokens,
-    }) === "full"
-  ) {
+  const pinned = papers.filter((paper) => paper.pinKind !== "none");
+  const explicitPinned = papers.filter((paper) => paper.pinKind === "explicit");
+  const unpinned = papers.filter((paper) => paper.pinKind === "none");
+  const relevantUnpinned = rankUnpinnedPapersByQuestion({
+    papers: unpinned,
+    question: params.question,
+  });
+  const hasExplicitPinned = explicitPinned.length > 0;
+  const forceRetrievalForImplicitOnly =
+    params.conversationMode === "paper" && !hasExplicitPinned;
+  const fullEligiblePapers = forceRetrievalForImplicitOnly ? [] : pinned;
+
+  if (fullEligiblePapers.length) {
+    const full = assembleFullMultiPaperContext({ papers: fullEligiblePapers });
+    if (
+      selectContextAssemblyMode({
+        fullContextText: full.contextText,
+        fullContextTokens: full.estimatedTokens,
+        contextBudgetTokens: contextBudget.contextBudgetTokens,
+      }) === "full"
+    ) {
+      const remainingTokens = Math.max(
+        0,
+        contextBudget.contextBudgetTokens - full.estimatedTokens,
+      );
+      let extraUnpinned: RetrievedAssembly | null = null;
+      if (remainingTokens >= 1024 && relevantUnpinned.length) {
+        extraUnpinned = await assembleRetrievedMultiPaperContext({
+          papers: relevantUnpinned,
+          question: params.question,
+          contextBudgetTokens: remainingTokens,
+          minChunksByPaper: new Map<string, number>(),
+          apiOverrides: {
+            apiBase: params.apiBase,
+            apiKey: params.apiKey,
+          },
+        });
+      }
+      const extraBlock =
+        extraUnpinned && extraUnpinned.selectedChunkCount > 0
+          ? extraUnpinned.contextText
+          : "";
+      const combinedContext = appendContextBlocks([
+        full.contextText,
+        extraBlock,
+      ]);
+      const usedContextTokens = estimateTextTokens(combinedContext);
+      const selectedPaperCount =
+        fullEligiblePapers.length +
+        (extraUnpinned?.selectedChunkCount
+          ? extraUnpinned.selectedPaperCount
+          : 0);
+      return {
+        mode: "full",
+        contextText: combinedContext,
+        contextBudget,
+        usedContextTokens,
+        selectedPaperCount,
+        selectedChunkCount: extraUnpinned?.selectedChunkCount || 0,
+      };
+    }
+  }
+
+  const retrievalPapers = [...pinned, ...relevantUnpinned];
+  if (!retrievalPapers.length) {
     return {
-      mode: "full",
-      contextText: full.contextText,
+      mode: "retrieval",
+      contextText: "",
       contextBudget,
-      usedContextTokens: full.estimatedTokens,
-      selectedPaperCount: papers.length,
+      usedContextTokens: 0,
+      selectedPaperCount: 0,
       selectedChunkCount: 0,
     };
   }
 
-  const activePaper = buildPaperRefFromContextItem(params.activeContextItem);
   const retrieved = await assembleRetrievedMultiPaperContext({
-    papers,
+    papers: retrievalPapers,
     question: params.question,
     contextBudgetTokens: contextBudget.contextBudgetTokens,
-    activePaperKey: activePaper ? buildPaperKey(activePaper) : undefined,
+    minChunksByPaper: buildMinChunkMapForRetrievedPapers(retrievalPapers),
     apiOverrides: {
       apiBase: params.apiBase,
       apiKey: params.apiKey,
@@ -420,7 +716,7 @@ export async function resolveMultiContextPlan(params: {
     contextText: retrieved.contextText,
     contextBudget,
     usedContextTokens,
-    selectedPaperCount: papers.length,
+    selectedPaperCount: retrieved.selectedPaperCount,
     selectedChunkCount: retrieved.selectedChunkCount,
   };
 }
