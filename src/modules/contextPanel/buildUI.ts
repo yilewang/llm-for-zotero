@@ -73,7 +73,8 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
 
   // Main container
   const container = createElement(doc, "div", "llm-panel", { id: "llm-main" });
-  container.dataset.itemId = conversationItemId > 0 ? `${conversationItemId}` : "";
+  container.dataset.itemId =
+    conversationItemId > 0 ? `${conversationItemId}` : "";
   container.dataset.libraryId = hasItem && item ? `${item.libraryID}` : "";
   container.dataset.conversationKind = hasItem
     ? isGlobalMode
@@ -319,7 +320,11 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       title: "Delete this prompt and response",
     },
   );
-  responseMenu.append(responseMenuCopyBtn, responseMenuNoteBtn, responseMenuDeleteBtn);
+  responseMenu.append(
+    responseMenuCopyBtn,
+    responseMenuNoteBtn,
+    responseMenuDeleteBtn,
+  );
   container.appendChild(responseMenu);
 
   // Prompt context menu
@@ -379,9 +384,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   exportMenu.append(exportMenuCopyBtn, exportMenuNoteBtn);
   container.appendChild(exportMenu);
 
-  const slashMenu = createElement(doc, "div", "llm-response-menu llm-slash-menu", {
-    id: "llm-slash-menu",
-  });
+  const slashMenu = createElement(
+    doc,
+    "div",
+    "llm-response-menu llm-slash-menu",
+    {
+      id: "llm-slash-menu",
+    },
+  );
   slashMenu.style.display = "none";
   const slashUploadBtn = createElement(
     doc,
@@ -558,6 +568,11 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   contextPreviews.appendChild(filePreview);
   inputSection.appendChild(contextPreviews);
 
+  const composeArea = createElement(doc, "div", "llm-compose-area", {
+    id: "llm-compose-area",
+  });
+  inputSection.appendChild(composeArea);
+
   const paperPicker = createElement(doc, "div", "llm-paper-picker", {
     id: "llm-paper-picker",
   });
@@ -567,7 +582,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
   paperPickerList.setAttribute("role", "listbox");
   paperPicker.appendChild(paperPickerList);
-  inputSection.appendChild(paperPicker);
+  composeArea.appendChild(paperPicker);
 
   const inputBox = createElement(doc, "textarea", "llm-input", {
     id: "llm-input",
@@ -578,7 +593,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       : "Open a PDF first",
     disabled: !hasItem,
   });
-  inputSection.appendChild(inputBox);
+  composeArea.appendChild(inputBox);
 
   // Actions row
   const actionsRow = createElement(doc, "div", "llm-actions");
@@ -712,7 +727,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   actionsRight.append(sendSlot);
   actionsRow.append(actionsLeft, actionsRight);
-  inputSection.appendChild(actionsRow);
+  composeArea.appendChild(actionsRow);
   container.appendChild(inputSection);
   container.appendChild(statusLine);
   body.appendChild(container);

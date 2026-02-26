@@ -1860,6 +1860,14 @@
   width: fit-content;
 }
 
+.llm-compose-area {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
 .llm-paper-context-inline {
   display: none;
 }
@@ -1920,6 +1928,11 @@
 
 .llm-paper-picker {
   display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
   max-height: min(40vh, 280px);
   overflow-y: auto;
   border: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.35));
