@@ -39,6 +39,26 @@ export function positionMenuAtPointer(
   menu.style.visibility = "visible";
 }
 
+function applyPanelBoundMenuWidth(
+  body: Element,
+  menu: HTMLDivElement,
+  viewportMargin: number,
+): void {
+  const panelRect = body.getBoundingClientRect();
+  const availableWidth = Math.max(
+    1,
+    Math.floor(panelRect.width) - viewportMargin * 2 - 4,
+  );
+  if (menu.id === "llm-history-menu") {
+    menu.style.boxSizing = "border-box";
+    menu.style.minWidth = `${Math.min(240, availableWidth)}px`;
+    menu.style.width = `${Math.min(360, availableWidth)}px`;
+    menu.style.maxWidth = `${availableWidth}px`;
+    return;
+  }
+  menu.style.maxWidth = `${availableWidth}px`;
+}
+
 export function positionMenuBelowButton(
   body: Element,
   menu: HTMLDivElement,
@@ -59,6 +79,7 @@ export function positionMenuBelowButton(
   menu.style.visibility = "hidden";
   menu.style.maxHeight = `${Math.max(120, Math.floor(panelRect.height) - viewportMargin * 2)}px`;
   menu.style.overflowY = "auto";
+  applyPanelBoundMenuWidth(body, menu, viewportMargin);
 
   const menuRect = menu.getBoundingClientRect();
   const maxLeft = Math.max(

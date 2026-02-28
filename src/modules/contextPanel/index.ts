@@ -28,6 +28,8 @@ import type { Message } from "./types";
 import {
   activeConversationModeByLibrary,
   activeGlobalConversationByLibrary,
+  activeContextPanels,
+  activeContextPanelStateSync,
   chatHistory,
   loadedConversationKeys,
   readerContextPanelRegistered,
@@ -219,6 +221,30 @@ export function registerReaderSelectionTracking() {
           return;
         }
         try {
+          const panelRecords: Array<{
+            body: Element;
+            root: HTMLDivElement;
+          }> = [];
+          const seenRoots = new Set<Element>();
+          const pushPanelRecord = (
+            body: Element | null | undefined,
+            root: HTMLDivElement | null | undefined,
+          ) => {
+            if (!body || !root || seenRoots.has(root)) return;
+            seenRoots.add(root);
+            panelRecords.push({ body, root });
+          };
+          for (const [panelBody] of activeContextPanels.entries()) {
+            if (!(panelBody as Element).isConnected) {
+              activeContextPanels.delete(panelBody);
+              activeContextPanelStateSync.delete(panelBody);
+              continue;
+            }
+            const root = panelBody.querySelector(
+              "#llm-main",
+            ) as HTMLDivElement | null;
+            pushPanelRecord(panelBody, root);
+          }
           const docs = new Set<Document>();
           const pushDoc = (doc?: Document | null) => {
             if (doc) docs.add(doc);
@@ -239,19 +265,18 @@ export function registerReaderSelectionTracking() {
             void _err;
           }
 
-          const panelRoots: HTMLDivElement[] = [];
-          const seenRoots = new Set<Element>();
-          for (const doc of docs) {
-            const roots = Array.from(
-              doc.querySelectorAll("#llm-main"),
-            ) as HTMLDivElement[];
-            for (const root of roots) {
-              if (seenRoots.has(root)) continue;
-              seenRoots.add(root);
-              panelRoots.push(root);
+          if (!panelRecords.length) {
+            for (const doc of docs) {
+              const roots = Array.from(
+                doc.querySelectorAll("#llm-main"),
+              ) as HTMLDivElement[];
+              for (const root of roots) {
+                const panelBody = root.parentElement || root;
+                pushPanelRecord(panelBody, root);
+              }
             }
           }
-          if (!panelRoots.length) return;
+          if (!panelRecords.length) return;
 
           const readerLibraryID = Number(item?.libraryID || 0);
           const normalizedReaderLibraryID =
@@ -308,9 +333,9 @@ export function registerReaderSelectionTracking() {
           const isVisible = (root: HTMLElement) =>
             root.getClientRects().length > 0;
           const popupTopDoc = event.doc.defaultView?.top?.document || null;
-          const rootStates = panelRoots
-            .map((root) => {
-              const ownerDoc = root.ownerDocument;
+          const rootStates = panelRecords
+            .map(({ body, root }) => {
+              const ownerDoc = body.ownerDocument;
               const panelItemId = getPanelItemId(root);
               const panelLibraryId = getPanelLibraryId(root);
               const conversationKind = getPanelConversationKind(root);
@@ -323,6 +348,7 @@ export function registerReaderSelectionTracking() {
                     ? conversationKind === "paper"
                     : false;
               return {
+                body,
                 root,
                 panelItemId,
                 panelLibraryId,
@@ -402,6 +428,7 @@ export function registerReaderSelectionTracking() {
           }
 
           const panelRoot = bestState.root;
+          const panelBody = bestState.body;
           const conversationKey = bestState.conversationKey as number;
           const isGlobalConversation = bestState.conversationKind === "global";
           if (!isGlobalConversation) {
@@ -411,7 +438,6 @@ export function registerReaderSelectionTracking() {
               panelBasePaperItemID <= 0 ||
               readerPaperContext.itemId !== panelBasePaperItemID;
             if (paperMismatch) {
-              const panelBody = panelRoot.parentElement || panelRoot;
               const status = panelBody.querySelector(
                 "#llm-status",
               ) as HTMLElement | null;
@@ -434,18 +460,34 @@ export function registerReaderSelectionTracking() {
             "pdf",
             selectedPaperContext,
           );
-          const refreshRoots = rootStates.filter(
-            (state) => (state.conversationKey as number) === conversationKey,
-          );
-          for (const state of refreshRoots) {
-            const panelBody = state.root.parentElement || state.root;
+          let refreshedPanels = 0;
+          for (const [
+            activeBody,
+            syncPanelState,
+          ] of activeContextPanelStateSync) {
+            if (!(activeBody as Element).isConnected) {
+              activeContextPanels.delete(activeBody);
+              activeContextPanelStateSync.delete(activeBody);
+              continue;
+            }
+            const activeRoot = activeBody.querySelector(
+              "#llm-main",
+            ) as HTMLDivElement | null;
+            const activeConversationKey = activeRoot
+              ? Number(activeRoot.dataset.itemId || 0)
+              : 0;
+            if (
+              !Number.isFinite(activeConversationKey) ||
+              activeConversationKey !== conversationKey
+            ) {
+              continue;
+            }
+            syncPanelState();
+            refreshedPanels += 1;
+          }
+          if (!refreshedPanels) {
             applySelectedTextPreview(panelBody, conversationKey);
           }
-          if (!refreshRoots.length) {
-            const panelBody = panelRoot.parentElement || panelRoot;
-            applySelectedTextPreview(panelBody, conversationKey);
-          }
-          const panelBody = panelRoot.parentElement || panelRoot;
           const status = panelBody.querySelector(
             "#llm-status",
           ) as HTMLElement | null;

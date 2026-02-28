@@ -3,6 +3,7 @@ import {
   AUTO_SCROLL_BOTTOM_THRESHOLD,
   MAX_SELECTED_IMAGES,
   MAX_SELECTED_PAPER_CONTEXTS,
+  PERSISTED_HISTORY_LIMIT,
   formatFigureCountLabel,
   formatFileCountLabel,
   FONT_SCALE_MIN_PERCENT,
@@ -146,6 +147,7 @@ import {
   deletePaperConversation,
   getGlobalConversationUserTurnCount,
   getLatestEmptyGlobalConversation,
+  loadConversation,
   getPaperConversation,
   listGlobalConversations,
   listPaperConversations,
@@ -632,6 +634,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (historyToggleBtn) {
       historyToggleBtn.setAttribute("aria-expanded", "false");
     }
+    historySearchLoadSeq += 1;
+    historySearchQuery = "";
+    historySearchExpanded = false;
+    historySearchLoading = false;
+    historySearchDocumentCache.clear();
+    historySearchDocumentTasks.clear();
     closeHistoryRowMenu();
   };
   const closeSlashMenu = () => {
@@ -889,13 +897,31 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const onChatScrollHide = () => hideSelectionPopup();
   const onChatContextMenu = () => hideSelectionPopup();
 
-  selectionPopup.addEventListener("mousedown", (e: Event) => {
-    const me = e as MouseEvent;
-    if (me.button !== 0) return;
-    me.preventDefault();
-    me.stopPropagation();
+  let selectionPopupHandled = false;
+  const triggerSelectionPopupAction = (e: Event) => {
+    if (selectionPopupHandled) return;
+    selectionPopupHandled = true;
+    e.preventDefault();
+    e.stopPropagation();
     quoteSelectedAssistantText();
+    panelWin?.setTimeout(() => {
+      selectionPopupHandled = false;
+    }, 0);
+  };
+  const isPrimarySelectionPopupEvent = (e: Event): boolean => {
+    const maybeMouse = e as MouseEvent;
+    return typeof maybeMouse.button !== "number" || maybeMouse.button === 0;
+  };
+  selectionPopup.addEventListener("pointerdown", (e: Event) => {
+    if (!isPrimarySelectionPopupEvent(e)) return;
+    triggerSelectionPopupAction(e);
   });
+  selectionPopup.addEventListener("mousedown", (e: Event) => {
+    if (!isPrimarySelectionPopupEvent(e)) return;
+    triggerSelectionPopupAction(e);
+  });
+  selectionPopup.addEventListener("click", triggerSelectionPopupAction);
+  selectionPopup.addEventListener("command", triggerSelectionPopupAction);
   selectionPopup.addEventListener("contextmenu", (e: Event) => {
     e.preventDefault();
     e.stopPropagation();
@@ -1926,11 +1952,41 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     refreshConversationPanels(body, item);
   };
 
+  type HistorySearchTextCandidate = {
+    kind: "title" | "message";
+    text: string;
+    normalizedText: string;
+  };
+  type HistorySearchDocument = {
+    conversationKey: number;
+    candidates: HistorySearchTextCandidate[];
+  };
+  type HistorySearchRange = {
+    start: number;
+    end: number;
+  };
+  type HistorySearchResult = {
+    entry: ConversationHistoryEntry;
+    matchCount: number;
+    titleRanges: HistorySearchRange[];
+    previewText: string;
+    previewRanges: HistorySearchRange[];
+  };
+
   let latestConversationHistory: ConversationHistoryEntry[] = [];
   const historySectionExpandedState = new Map<"paper" | "open", boolean>([
     ["paper", true],
     ["open", false],
   ]);
+  let historySearchQuery = "";
+  let historySearchExpanded = false;
+  let historySearchLoading = false;
+  let historySearchLoadSeq = 0;
+  const historySearchDocumentCache = new Map<number, HistorySearchDocument>();
+  const historySearchDocumentTasks = new Map<
+    number,
+    Promise<HistorySearchDocument>
+  >();
   let globalHistoryLoadSeq = 0;
   let pendingHistoryDeletion: PendingHistoryDeletion | null = null;
   const pendingHistoryDeletionKeys = new Set<number>();
@@ -2078,13 +2134,321 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
 
   const isHistorySectionExpanded = (section: "paper" | "open"): boolean =>
-    historySectionExpandedState.get(section) ?? (section === "paper");
+    historySectionExpandedState.get(section) ?? section === "paper";
 
   const setHistorySectionExpanded = (
     section: "paper" | "open",
     expanded: boolean,
   ) => {
     historySectionExpandedState.set(section, expanded);
+  };
+
+  const normalizeHistorySearchQuery = (value: string): string =>
+    sanitizeText(value || "")
+      .trim()
+      .toLocaleLowerCase();
+
+  const normalizeHistorySearchText = (value: unknown): string =>
+    sanitizeText(typeof value === "string" ? value : String(value || ""))
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const tokenizeHistorySearchQuery = (normalizedQuery: string): string[] =>
+    Array.from(
+      new Set(
+        normalizedQuery
+          .split(/\s+/)
+          .map((token) => token.trim())
+          .filter(Boolean),
+      ),
+    );
+
+  const countHistorySearchTokenOccurrences = (
+    normalizedText: string,
+    token: string,
+  ): { count: number; firstIndex: number } => {
+    if (!normalizedText || !token) {
+      return { count: 0, firstIndex: -1 };
+    }
+    let count = 0;
+    let firstIndex = -1;
+    let cursor = 0;
+    while (cursor < normalizedText.length) {
+      const index = normalizedText.indexOf(token, cursor);
+      if (index < 0) break;
+      count += 1;
+      if (firstIndex < 0) {
+        firstIndex = index;
+      }
+      cursor = index + token.length;
+    }
+    return { count, firstIndex };
+  };
+
+  const collectHistorySearchRanges = (
+    text: string,
+    searchTokens: string[],
+  ): HistorySearchRange[] => {
+    if (!text || !searchTokens.length) return [];
+    const normalizedText = text.toLocaleLowerCase();
+    const ranges: HistorySearchRange[] = [];
+    for (const token of searchTokens) {
+      let cursor = 0;
+      while (cursor < normalizedText.length) {
+        const index = normalizedText.indexOf(token, cursor);
+        if (index < 0) break;
+        ranges.push({
+          start: index,
+          end: index + token.length,
+        });
+        cursor = index + token.length;
+      }
+    }
+    if (!ranges.length) return [];
+    ranges.sort((a, b) => {
+      if (a.start !== b.start) return a.start - b.start;
+      return a.end - b.end;
+    });
+    const merged: HistorySearchRange[] = [ranges[0]];
+    for (const range of ranges.slice(1)) {
+      const previous = merged[merged.length - 1];
+      if (range.start <= previous.end) {
+        previous.end = Math.max(previous.end, range.end);
+        continue;
+      }
+      merged.push({ ...range });
+    }
+    return merged;
+  };
+
+  const appendHistorySearchHighlightedText = (
+    container: HTMLElement,
+    text: string,
+    ranges: HistorySearchRange[],
+  ) => {
+    container.textContent = "";
+    if (!ranges.length) {
+      container.textContent = text;
+      return;
+    }
+    const ownerDoc = container.ownerDocument;
+    if (!ownerDoc) {
+      container.textContent = text;
+      return;
+    }
+    let cursor = 0;
+    for (const range of ranges) {
+      const start = Math.max(0, Math.min(text.length, range.start));
+      const end = Math.max(start, Math.min(text.length, range.end));
+      if (start > cursor) {
+        container.appendChild(
+          ownerDoc.createTextNode(text.slice(cursor, start)),
+        );
+      }
+      const mark = createElement(
+        ownerDoc,
+        "mark",
+        "llm-history-search-highlight",
+        {
+          textContent: text.slice(start, end),
+        },
+      );
+      container.appendChild(mark);
+      cursor = end;
+    }
+    if (cursor < text.length) {
+      container.appendChild(ownerDoc.createTextNode(text.slice(cursor)));
+    }
+  };
+
+  const scoreHistorySearchCandidate = (
+    candidate: HistorySearchTextCandidate,
+    searchTokens: string[],
+  ): { matchCount: number; firstIndex: number } => {
+    let matchCount = 0;
+    let firstIndex = -1;
+    for (const token of searchTokens) {
+      const occurrence = countHistorySearchTokenOccurrences(
+        candidate.normalizedText,
+        token,
+      );
+      matchCount += occurrence.count;
+      if (
+        occurrence.firstIndex >= 0 &&
+        (firstIndex < 0 || occurrence.firstIndex < firstIndex)
+      ) {
+        firstIndex = occurrence.firstIndex;
+      }
+    }
+    return { matchCount, firstIndex };
+  };
+
+  const buildHistorySearchPreview = (
+    text: string,
+    searchTokens: string[],
+  ): { previewText: string; previewRanges: HistorySearchRange[] } => {
+    const normalizedText = normalizeHistorySearchText(text);
+    if (!normalizedText) {
+      return { previewText: "", previewRanges: [] };
+    }
+    const ranges = collectHistorySearchRanges(normalizedText, searchTokens);
+    if (!ranges.length) {
+      return { previewText: "", previewRanges: [] };
+    }
+    const firstRange = ranges[0];
+    const beforeContext = 14;
+    const afterContext = 52;
+    const minimumSnippetLength = 72;
+    let start = Math.max(0, firstRange.start - beforeContext);
+    let end = Math.min(normalizedText.length, firstRange.end + afterContext);
+    if (end - start < minimumSnippetLength) {
+      const deficit = minimumSnippetLength - (end - start);
+      const shiftLeft = Math.min(start, Math.ceil(deficit / 2));
+      start -= shiftLeft;
+      end = Math.min(normalizedText.length, end + (deficit - shiftLeft));
+    }
+    const prefix = start > 0 ? "... " : "";
+    const suffix = end < normalizedText.length ? " ..." : "";
+    const snippet = normalizedText.slice(start, end);
+    const snippetRanges = ranges
+      .filter((range) => range.end > start && range.start < end)
+      .map((range) => ({
+        start: prefix.length + Math.max(0, range.start - start),
+        end: prefix.length + Math.min(end, range.end) - start,
+      }));
+    return {
+      previewText: `${prefix}${snippet}${suffix}`,
+      previewRanges: snippetRanges,
+    };
+  };
+
+  const buildHistorySearchDocument = async (
+    entry: ConversationHistoryEntry,
+  ): Promise<HistorySearchDocument> => {
+    const titleText = normalizeHistorySearchText(entry.title);
+    const messages = await loadConversation(
+      entry.conversationKey,
+      PERSISTED_HISTORY_LIMIT,
+    );
+    const candidates: HistorySearchTextCandidate[] = [];
+    if (titleText) {
+      candidates.push({
+        kind: "title",
+        text: titleText,
+        normalizedText: titleText.toLocaleLowerCase(),
+      });
+    }
+    for (const message of messages) {
+      const text = normalizeHistorySearchText(message.text);
+      if (!text) continue;
+      candidates.push({
+        kind: "message",
+        text,
+        normalizedText: text.toLocaleLowerCase(),
+      });
+    }
+    return {
+      conversationKey: entry.conversationKey,
+      candidates,
+    };
+  };
+
+  const ensureHistorySearchDocument = async (
+    entry: ConversationHistoryEntry,
+  ): Promise<HistorySearchDocument> => {
+    const cached = historySearchDocumentCache.get(entry.conversationKey);
+    if (cached) return cached;
+    const pending = historySearchDocumentTasks.get(entry.conversationKey);
+    if (pending) return pending;
+    const task = buildHistorySearchDocument(entry)
+      .then((document) => {
+        historySearchDocumentCache.set(entry.conversationKey, document);
+        historySearchDocumentTasks.delete(entry.conversationKey);
+        return document;
+      })
+      .catch((error) => {
+        historySearchDocumentTasks.delete(entry.conversationKey);
+        ztoolkit.log("LLM: Failed to index conversation history for search", {
+          conversationKey: entry.conversationKey,
+          error,
+        });
+        const fallback: HistorySearchDocument = {
+          conversationKey: entry.conversationKey,
+          candidates: [],
+        };
+        historySearchDocumentCache.set(entry.conversationKey, fallback);
+        return fallback;
+      });
+    historySearchDocumentTasks.set(entry.conversationKey, task);
+    return task;
+  };
+
+  const ensureHistorySearchDocuments = async (
+    entries: ConversationHistoryEntry[],
+  ) => {
+    await Promise.all(
+      entries.map((entry) => ensureHistorySearchDocument(entry)),
+    );
+  };
+
+  const buildHistorySearchResults = (
+    entries: ConversationHistoryEntry[],
+    normalizedQuery: string,
+  ): HistorySearchResult[] => {
+    const searchTokens = tokenizeHistorySearchQuery(normalizedQuery);
+    if (!searchTokens.length) return [];
+    const results: HistorySearchResult[] = [];
+    for (const entry of entries) {
+      const document = historySearchDocumentCache.get(entry.conversationKey);
+      if (!document) continue;
+      let matchCount = 0;
+      let bestPreviewCandidate: HistorySearchTextCandidate | null = null;
+      let bestPreviewScore = 0;
+      let bestPreviewIndex = Number.POSITIVE_INFINITY;
+      for (const candidate of document.candidates) {
+        const score = scoreHistorySearchCandidate(candidate, searchTokens);
+        if (score.matchCount <= 0) continue;
+        matchCount += score.matchCount;
+        if (
+          candidate.kind === "message" &&
+          (score.matchCount > bestPreviewScore ||
+            (score.matchCount === bestPreviewScore &&
+              score.firstIndex >= 0 &&
+              score.firstIndex < bestPreviewIndex))
+        ) {
+          bestPreviewCandidate = candidate;
+          bestPreviewScore = score.matchCount;
+          bestPreviewIndex =
+            score.firstIndex >= 0 ? score.firstIndex : bestPreviewIndex;
+        }
+      }
+      if (matchCount <= 0) continue;
+      const displayTitle = formatHistoryRowDisplayTitle(entry.title);
+      const titleRanges = collectHistorySearchRanges(
+        displayTitle,
+        searchTokens,
+      );
+      const preview = bestPreviewCandidate
+        ? buildHistorySearchPreview(bestPreviewCandidate.text, searchTokens)
+        : { previewText: "", previewRanges: [] };
+      results.push({
+        entry,
+        matchCount,
+        titleRanges,
+        previewText: preview.previewText,
+        previewRanges: preview.previewRanges,
+      });
+    }
+    results.sort((a, b) => {
+      if (b.matchCount !== a.matchCount) {
+        return b.matchCount - a.matchCount;
+      }
+      if (b.entry.lastActivityAt !== a.entry.lastActivityAt) {
+        return b.entry.lastActivityAt - a.entry.lastActivityAt;
+      }
+      return b.entry.conversationKey - a.entry.conversationKey;
+    });
+    return results;
   };
 
   const applyHistorySectionExpandedState = (
@@ -2116,7 +2480,14 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const renderGlobalHistoryMenu = () => {
     if (!historyMenu) return;
     historyMenu.innerHTML = "";
-    if (!latestConversationHistory.length) {
+    const searchQuery = historySearchQuery;
+    const normalizedSearchQuery = normalizeHistorySearchQuery(searchQuery);
+    const searchTokens = tokenizeHistorySearchQuery(normalizedSearchQuery);
+    const searchActive = searchTokens.length > 0;
+    const allEntries = latestConversationHistory.filter(
+      (entry) => !entry.isPendingDelete,
+    );
+    if (!allEntries.length) {
       const emptyRow = createElement(
         body.ownerDocument as Document,
         "div",
@@ -2128,12 +2499,85 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       historyMenu.appendChild(emptyRow);
       return;
     }
+    const searchWrap = createElement(
+      body.ownerDocument as Document,
+      "div",
+      "llm-history-menu-search",
+    ) as HTMLDivElement;
+    if (historySearchExpanded) {
+      const searchInput = createElement(
+        body.ownerDocument as Document,
+        "input",
+        "llm-history-menu-search-input",
+        {
+          type: "text",
+          value: searchQuery,
+          placeholder: "Search history",
+          autocomplete: "off",
+          spellcheck: false,
+        },
+      ) as HTMLInputElement;
+      searchInput.setAttribute("aria-label", "Search chat history");
+      searchWrap.appendChild(searchInput);
+    } else {
+      const searchTrigger = createElement(
+        body.ownerDocument as Document,
+        "button",
+        "llm-history-menu-search-trigger",
+        {
+          type: "button",
+          textContent: "\u{1F50D} Search history",
+          title: "Search chat history",
+        },
+      ) as HTMLButtonElement;
+      searchTrigger.dataset.action = "expand-search";
+      searchWrap.appendChild(searchTrigger);
+    }
+    historyMenu.appendChild(searchWrap);
+
+    const searchDocumentsReady = searchActive
+      ? allEntries.every((entry) =>
+          historySearchDocumentCache.has(entry.conversationKey),
+        )
+      : true;
+    if (searchActive && !searchDocumentsReady) {
+      const loadingRow = createElement(
+        body.ownerDocument as Document,
+        "div",
+        "llm-history-menu-empty",
+        {
+          textContent: "Searching history...",
+        },
+      );
+      historyMenu.appendChild(loadingRow);
+      return;
+    }
+    const searchResults = searchActive
+      ? buildHistorySearchResults(allEntries, normalizedSearchQuery)
+      : [];
+    const searchResultsByKey = new Map<number, HistorySearchResult>(
+      searchResults.map((result) => [result.entry.conversationKey, result]),
+    );
+    const filteredEntries = searchActive
+      ? searchResults.map((result) => result.entry)
+      : allEntries;
+    if (!filteredEntries.length) {
+      const emptyRow = createElement(
+        body.ownerDocument as Document,
+        "div",
+        "llm-history-menu-empty",
+        {
+          textContent: "No matching history",
+        },
+      );
+      historyMenu.appendChild(emptyRow);
+      return;
+    }
     const sectionEntries = new Map<
       "paper" | "open",
       { title: string; entries: ConversationHistoryEntry[] }
     >();
-    for (const entry of latestConversationHistory) {
-      if (entry.isPendingDelete) continue;
+    for (const entry of filteredEntries) {
       const section = sectionEntries.get(entry.section) || {
         title: entry.sectionTitle,
         entries: [],
@@ -2147,14 +2591,41 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           (max, entry) => Math.max(max, entry.lastActivityAt || 0),
           0,
         );
+        const topMatchCount = searchActive
+          ? section.entries.reduce(
+              (max, entry) =>
+                Math.max(
+                  max,
+                  searchResultsByKey.get(entry.conversationKey)?.matchCount ||
+                    0,
+                ),
+              0,
+            )
+          : 0;
+        const orderedEntries = searchActive
+          ? [...section.entries].sort((a, b) => {
+              const matchDelta =
+                (searchResultsByKey.get(b.conversationKey)?.matchCount || 0) -
+                (searchResultsByKey.get(a.conversationKey)?.matchCount || 0);
+              if (matchDelta !== 0) return matchDelta;
+              if (b.lastActivityAt !== a.lastActivityAt) {
+                return b.lastActivityAt - a.lastActivityAt;
+              }
+              return b.conversationKey - a.conversationKey;
+            })
+          : section.entries;
         return {
           sectionKey,
           title: section.title,
-          entries: section.entries,
+          entries: orderedEntries,
           latestActivity,
+          topMatchCount,
         };
       })
       .sort((a, b) => {
+        if (searchActive && b.topMatchCount !== a.topMatchCount) {
+          return b.topMatchCount - a.topMatchCount;
+        }
         if (b.latestActivity !== a.latestActivity) {
           return b.latestActivity - a.latestActivity;
         }
@@ -2163,7 +2634,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       });
 
     for (const section of orderedSections) {
-      const expanded = isHistorySectionExpanded(section.sectionKey);
+      const expanded = normalizedSearchQuery
+        ? true
+        : isHistorySectionExpanded(section.sectionKey);
       const sectionBlock = createElement(
         body.ownerDocument as Document,
         "div",
@@ -2247,12 +2720,35 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           body.ownerDocument as Document,
           "span",
           "llm-history-row-title",
-          {
-            textContent: formatHistoryRowDisplayTitle(entry.title),
-            title: entry.title,
-          },
         );
+        const displayTitle = formatHistoryRowDisplayTitle(entry.title);
+        title.title = entry.title;
+        const searchResult = searchResultsByKey.get(entry.conversationKey);
+        if (searchResult?.titleRanges.length) {
+          appendHistorySearchHighlightedText(
+            title,
+            displayTitle,
+            searchResult.titleRanges,
+          );
+        } else {
+          title.textContent = displayTitle;
+        }
         titleLine.append(title);
+        const preview =
+          searchResult && searchResult.previewText
+            ? createElement(
+                body.ownerDocument as Document,
+                "div",
+                "llm-history-row-preview",
+              )
+            : null;
+        if (preview && searchResult) {
+          appendHistorySearchHighlightedText(
+            preview,
+            searchResult.previewText,
+            searchResult.previewRanges,
+          );
+        }
         const meta = createElement(
           body.ownerDocument as Document,
           "span",
@@ -2262,7 +2758,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             title: entry.timestampText,
           },
         );
-        rowMain.append(titleLine, meta);
+        if (preview) {
+          rowMain.append(titleLine, preview, meta);
+        } else {
+          rowMain.append(titleLine, meta);
+        }
         row.appendChild(rowMain);
 
         if (entry.deletable) {
@@ -2285,6 +2785,111 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
       historyMenu.appendChild(sectionBlock);
     }
+  };
+
+  const restoreHistorySearchInputFocus = () => {
+    if (!historySearchExpanded) return;
+    if (!historyMenu || historyMenu.style.display === "none") return;
+    const searchInput = historyMenu.querySelector(
+      ".llm-history-menu-search-input",
+    ) as HTMLInputElement | null;
+    if (!searchInput) return;
+    const caret = searchInput.value.length;
+    searchInput.focus({ preventScroll: true });
+    try {
+      searchInput.setSelectionRange(caret, caret);
+    } catch (_error) {
+      void _error;
+    }
+  };
+
+  const expandHistorySearch = () => {
+    historySearchExpanded = true;
+    renderGlobalHistoryMenu();
+    if (
+      historyToggleBtn &&
+      historyMenu &&
+      historyMenu.style.display !== "none"
+    ) {
+      positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+    }
+    restoreHistorySearchInputFocus();
+  };
+
+  const collapseHistorySearch = () => {
+    if (!historySearchExpanded && !historySearchQuery) return;
+    historySearchLoadSeq += 1;
+    historySearchExpanded = false;
+    historySearchQuery = "";
+    historySearchLoading = false;
+    renderGlobalHistoryMenu();
+    if (
+      historyToggleBtn &&
+      historyMenu &&
+      historyMenu.style.display !== "none"
+    ) {
+      positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+    }
+  };
+
+  const refreshHistorySearchMenu = async () => {
+    const requestId = ++historySearchLoadSeq;
+    const normalizedSearchQuery =
+      normalizeHistorySearchQuery(historySearchQuery);
+    const entries = latestConversationHistory.filter(
+      (entry) => !entry.isPendingDelete,
+    );
+    if (!normalizedSearchQuery) {
+      historySearchLoading = false;
+      renderGlobalHistoryMenu();
+      if (
+        historyToggleBtn &&
+        historyMenu &&
+        historyMenu.style.display !== "none"
+      ) {
+        positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+      }
+      restoreHistorySearchInputFocus();
+      return;
+    }
+    const missingEntries = entries.filter(
+      (entry) => !historySearchDocumentCache.has(entry.conversationKey),
+    );
+    if (!missingEntries.length) {
+      historySearchLoading = false;
+      renderGlobalHistoryMenu();
+      if (
+        historyToggleBtn &&
+        historyMenu &&
+        historyMenu.style.display !== "none"
+      ) {
+        positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+      }
+      restoreHistorySearchInputFocus();
+      return;
+    }
+    historySearchLoading = true;
+    renderGlobalHistoryMenu();
+    if (
+      historyToggleBtn &&
+      historyMenu &&
+      historyMenu.style.display !== "none"
+    ) {
+      positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+    }
+    restoreHistorySearchInputFocus();
+    await ensureHistorySearchDocuments(missingEntries);
+    if (requestId !== historySearchLoadSeq) return;
+    historySearchLoading = false;
+    renderGlobalHistoryMenu();
+    if (
+      historyToggleBtn &&
+      historyMenu &&
+      historyMenu.style.display !== "none"
+    ) {
+      positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+    }
+    restoreHistorySearchInputFocus();
   };
 
   const refreshGlobalHistoryHeader = async () => {
@@ -3591,6 +4196,31 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   }
 
   if (historyMenu) {
+    historyMenu.addEventListener("input", (e: Event) => {
+      const target = e.target as HTMLInputElement | null;
+      if (
+        !target ||
+        !target.classList.contains("llm-history-menu-search-input")
+      )
+        return;
+      historySearchQuery = target.value || "";
+      void refreshHistorySearchMenu();
+    });
+    historyMenu.addEventListener("keydown", (e: Event) => {
+      const keyboardEvent = e as KeyboardEvent;
+      const target = e.target as HTMLInputElement | null;
+      if (
+        !target ||
+        !target.classList.contains("llm-history-menu-search-input") ||
+        keyboardEvent.key !== "Escape"
+      ) {
+        return;
+      }
+      keyboardEvent.preventDefault();
+      keyboardEvent.stopPropagation();
+      collapseHistorySearch();
+    });
+
     historyMenu.addEventListener("click", (e: Event) => {
       const target = e.target as Element | null;
       if (!target || !item) return;
@@ -3609,6 +4239,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         return;
       }
       closeHistoryRowMenu();
+
+      const searchTrigger = target.closest(
+        ".llm-history-menu-search-trigger",
+      ) as HTMLButtonElement | null;
+      if (searchTrigger) {
+        e.preventDefault();
+        e.stopPropagation();
+        expandHistorySearch();
+        return;
+      }
 
       const sectionToggle = target.closest(
         ".llm-history-menu-section",

@@ -497,6 +497,7 @@
   border: 1px solid var(--stroke-secondary);
   border-radius: calc(8px * var(--llm-font-scale, 1));
   padding: calc(6px * var(--llm-font-scale, 1));
+  box-sizing: border-box;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
 }
 
@@ -508,6 +509,69 @@
   border-radius: 8px;
   padding: 6px;
   background: transparent;
+}
+
+.llm-history-menu-search {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  margin-bottom: 2px;
+}
+
+.llm-history-menu-search-trigger {
+  appearance: none;
+  -moz-appearance: none;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fill-secondary);
+  font: inherit;
+  font-size: var(--llm-fs-10);
+  line-height: 1.25;
+  padding: 7px 9px;
+  box-sizing: border-box;
+  text-align: left;
+  cursor: pointer;
+}
+
+.llm-history-menu-search-trigger:hover,
+.llm-history-menu-search-trigger:focus-visible {
+  color: var(--fill-primary);
+  border-color: color-mix(
+    in srgb,
+    var(--fill-secondary) 28%,
+    var(--stroke-secondary)
+  );
+  background: color-mix(
+    in srgb,
+    var(--material-background) 84%,
+    var(--fill-quinary)
+  );
+}
+
+.llm-history-menu-search-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--material-background) 86%, black 14%);
+  color: var(--fill-primary);
+  font: inherit;
+  font-size: var(--llm-fs-10);
+  line-height: 1.25;
+  padding: 7px 9px;
+  box-sizing: border-box;
+}
+
+.llm-history-menu-search-input::placeholder {
+  color: var(--fill-secondary);
+}
+
+.llm-history-menu-search-input:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
 }
 
 .llm-history-menu-section {
@@ -722,6 +786,25 @@
 .llm-history-row-title-line .llm-history-row-title {
   flex: 1 1 auto;
   width: auto;
+}
+
+.llm-history-row-preview {
+  display: block;
+  min-width: 0;
+  color: var(--fill-secondary);
+  font-size: var(--llm-fs-10);
+  line-height: 1.28;
+  white-space: normal;
+  word-break: break-word;
+  overflow: hidden;
+  max-height: calc(1.28em * 2);
+}
+
+.llm-history-search-highlight {
+  background: rgba(250, 204, 21, 0.72);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
 }
 
 .llm-history-row-meta {
