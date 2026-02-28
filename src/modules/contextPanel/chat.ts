@@ -78,7 +78,11 @@ import {
 } from "./prefHelpers";
 import { resolveMultiContextPlan } from "./multiContextPlanner";
 import { resolveAgentContext } from "./agentContext";
-import { formatPaperCitationLabel } from "./paperAttribution";
+import { planAgentQuery } from "./agentPlanner";
+import {
+  formatPaperCitationLabel,
+  resolvePaperContextRefFromAttachment,
+} from "./paperAttribution";
 import {
   getActiveContextAttachmentFromTabs,
   resolveContextSourceItem,
@@ -117,6 +121,13 @@ function normalizeTransientAgentStatusText(text: string): string {
     .trim();
 }
 
+function normalizeAgentTraceLines(text: string | undefined): string[] {
+  return sanitizeText(text || "")
+    .split(/\n+/)
+    .map((line) => normalizeTransientAgentStatusText(line))
+    .filter(Boolean);
+}
+
 export function clearTransientAgentStatusForConversation(
   conversationKey: number,
 ): void {
@@ -124,23 +135,24 @@ export function clearTransientAgentStatusForConversation(
   for (const message of history) {
     if (message.role !== "assistant") continue;
     delete message.agentStatusText;
+    delete message.agentTraceText;
+    delete message.agentOpen;
   }
 }
 
-function buildAgentStatusLine(doc: Document, text: string): HTMLDivElement {
-  const line = doc.createElement("div") as HTMLDivElement;
-  line.className = "llm-agent-inline-status llm-agent-toggle-enabled";
-
-  const indicator = doc.createElement("span") as HTMLSpanElement;
-  indicator.className = "llm-agent-toggle-indicator";
-  indicator.setAttribute("aria-hidden", "true");
-
-  const label = doc.createElement("span") as HTMLSpanElement;
-  label.className = "llm-agent-inline-status-label";
-  label.textContent = `Agent is working on: ${text}`;
-
-  line.append(indicator, label);
-  return line;
+function appendAgentTraceLine(
+  previous: string | undefined,
+  nextLine: string,
+): string {
+  const normalizedNext = normalizeTransientAgentStatusText(nextLine);
+  const previousLines = normalizeAgentTraceLines(previous);
+  if (!normalizedNext) return previousLines.join("\n");
+  if (!previousLines.length) return normalizedNext;
+  if (previousLines[previousLines.length - 1] === normalizedNext) {
+    return previousLines.join("\n");
+  }
+  previousLines.push(normalizedNext);
+  return previousLines.join("\n");
 }
 
 function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
@@ -935,11 +947,20 @@ function createPanelUpdateHelpers(
     if (!normalized) {
       if (!previous) return;
       delete assistantMessage.agentStatusText;
+      delete assistantMessage.agentTraceText;
+      delete assistantMessage.agentOpen;
       refreshChatSafely();
       return;
     }
     if (previous === normalized) return;
     assistantMessage.agentStatusText = normalized;
+    assistantMessage.agentTraceText = appendAgentTraceLine(
+      assistantMessage.agentTraceText,
+      normalized,
+    );
+    if (typeof assistantMessage.agentOpen !== "boolean") {
+      assistantMessage.agentOpen = true;
+    }
     refreshChatSafely();
   };
   return {
@@ -1007,33 +1028,99 @@ async function buildContextPlanForRequest(params: {
     : "paper";
   let paperContexts = params.paperContexts;
   let pinnedPaperContexts = params.pinnedPaperContexts;
+  let recentPaperContexts = params.recentPaperContexts;
   const contextBlocks: string[] = [];
   let agentContextResolved = false;
 
   if (params.agentEnabled) {
-    params.setAgentStatusSafely?.("Checking Zotero access now...");
-    const agentContext = await resolveAgentContext({
+    params.setAgentStatusSafely?.("Planning Zotero retrieval...");
+    const activePaperContext =
+      resolvePaperContextRefFromAttachment(activeContextItem);
+    const agentPlan = await planAgentQuery({
       question: params.question,
-      libraryID: Number(params.item.libraryID),
       conversationMode,
-      onStatus: (statusText) => {
-        params.setStatusSafely(statusText, "sending");
-        params.setAgentStatusSafely?.(statusText);
-      },
+      libraryID: Number(params.item.libraryID),
+      model: params.effectiveRequestConfig.model,
+      apiBase: params.effectiveRequestConfig.apiBase,
+      apiKey: params.effectiveRequestConfig.apiKey,
+      reasoning: params.effectiveRequestConfig.reasoning,
+      activePaperContext,
+      paperContexts,
+      pinnedPaperContexts,
+      recentPaperContexts,
     });
-    if (agentContext) {
-      agentContextResolved = true;
-      conversationMode = "open";
-      activeContextItem = null;
-      paperContexts = agentContext.paperContexts;
-      pinnedPaperContexts = agentContext.pinnedPaperContexts;
-      const prefix = sanitizeText(agentContext.contextPrefix || "").trim();
-      if (prefix) {
-        contextBlocks.push(prefix);
+    ztoolkit.log("LLM: Agent planner decision", agentPlan);
+    for (const traceLine of agentPlan.traceLines) {
+      params.setAgentStatusSafely?.(traceLine);
+    }
+
+    if (
+      agentPlan.action === "library-overview" ||
+      agentPlan.action === "library-search"
+    ) {
+      params.setAgentStatusSafely?.("Checking Zotero access now...");
+      const agentContext = await resolveAgentContext({
+        question: params.question,
+        libraryID: Number(params.item.libraryID),
+        conversationMode,
+        plan: agentPlan,
+        onStatus: (statusText) => {
+          params.setStatusSafely(statusText, "sending");
+          params.setAgentStatusSafely?.(statusText);
+        },
+      });
+      if (agentContext) {
+        agentContextResolved = true;
+        conversationMode = "open";
+        activeContextItem = null;
+        paperContexts = agentContext.paperContexts;
+        pinnedPaperContexts = agentContext.pinnedPaperContexts;
+        recentPaperContexts = [];
+        const prefix = sanitizeText(agentContext.contextPrefix || "").trim();
+        if (prefix) {
+          contextBlocks.push(prefix);
+        }
+        params.setStatusSafely(agentContext.statusText, "sending");
+        params.setAgentStatusSafely?.(agentContext.statusText);
+        for (const traceLine of agentContext.traceLines) {
+          params.setAgentStatusSafely?.(traceLine);
+        }
+      } else {
+        activeContextItem = null;
+        paperContexts = [];
+        pinnedPaperContexts = [];
+        recentPaperContexts = [];
+        conversationMode = "open";
+        params.setAgentStatusSafely?.(
+          "Planner requested library access, but no library retrieval was available.",
+        );
       }
-      params.setStatusSafely(agentContext.statusText, "sending");
-      params.setAgentStatusSafely?.(agentContext.statusText);
+    } else if (agentPlan.action === "active-paper") {
+      paperContexts = [];
+      pinnedPaperContexts = [];
+      recentPaperContexts = [];
+      if (activePaperContext) {
+        params.setAgentStatusSafely?.(
+          `Using the active paper: ${formatPaperCitationLabel(activePaperContext)}.`,
+        );
+      } else {
+        activeContextItem = null;
+        params.setAgentStatusSafely?.(
+          "No active paper was available, so Zotero retrieval was skipped.",
+        );
+      }
+    } else if (agentPlan.action === "existing-paper-contexts") {
+      activeContextItem = null;
+      conversationMode = "open";
+      params.setAgentStatusSafely?.(
+        "Using existing selected, pinned, and recent paper contexts.",
+      );
     } else {
+      activeContextItem = null;
+      conversationMode = "open";
+      paperContexts = [];
+      pinnedPaperContexts = [];
+      recentPaperContexts = [];
       params.setAgentStatusSafely?.("No Zotero retrieval was needed.");
     }
   }
@@ -1045,7 +1132,7 @@ async function buildContextPlanForRequest(params: {
     question: params.question,
     paperContexts,
     pinnedPaperContexts,
-    historyPaperContexts: params.recentPaperContexts,
+    historyPaperContexts: recentPaperContexts,
     history: params.history,
     images: params.images,
     model: params.effectiveRequestConfig.model,
@@ -1106,6 +1193,8 @@ type AssistantMessageSnapshot = Pick<
   | "timestamp"
   | "modelName"
   | "agentStatusText"
+  | "agentTraceText"
+  | "agentOpen"
   | "reasoningSummary"
   | "reasoningDetails"
   | "reasoningOpen"
@@ -1132,6 +1221,8 @@ function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
     timestamp: message.timestamp,
     modelName: message.modelName,
     agentStatusText: message.agentStatusText,
+    agentTraceText: message.agentTraceText,
+    agentOpen: message.agentOpen,
     reasoningSummary: message.reasoningSummary,
     reasoningDetails: message.reasoningDetails,
     reasoningOpen: message.reasoningOpen,
@@ -1146,6 +1237,8 @@ function restoreAssistantSnapshot(
   message.timestamp = snapshot.timestamp;
   message.modelName = snapshot.modelName;
   message.agentStatusText = snapshot.agentStatusText;
+  message.agentTraceText = snapshot.agentTraceText;
+  message.agentOpen = snapshot.agentOpen;
   message.reasoningSummary = snapshot.reasoningSummary;
   message.reasoningDetails = snapshot.reasoningDetails;
   message.reasoningOpen = snapshot.reasoningOpen;
@@ -1521,6 +1614,8 @@ export async function retryLatestAssistantResponse(
   const assistantSnapshot = takeAssistantSnapshot(assistantMessage);
   assistantMessage.text = "";
   assistantMessage.agentStatusText = undefined;
+  assistantMessage.agentTraceText = undefined;
+  assistantMessage.agentOpen = true;
   assistantMessage.reasoningSummary = undefined;
   assistantMessage.reasoningDetails = undefined;
   assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
@@ -2569,10 +2664,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       }
     } else {
       const hasModelName = Boolean(msg.modelName?.trim());
-      const agentStatusText = normalizeTransientAgentStatusText(
-        msg.agentStatusText || "",
-      );
-      const showAgentStatus = Boolean(agentStatusText);
+      const agentTraceText = normalizeAgentTraceLines(
+        msg.agentTraceText || "",
+      ).join("\n");
+      const showAgentStatus = Boolean(agentTraceText);
       const hasAnswerText = Boolean(msg.text);
       if (hasAnswerText) {
         const safeText = sanitizeText(msg.text);
@@ -2652,7 +2747,56 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       }
 
       if (showAgentStatus) {
-        bubbleHeaderNodes.push(buildAgentStatusLine(doc, agentStatusText));
+        const details = doc.createElement("details") as HTMLDetailsElement;
+        details.className = "llm-reasoning llm-agent-process";
+        details.open = msg.agentOpen !== false;
+
+        const summary = doc.createElement("summary") as HTMLElement;
+        summary.className =
+          "llm-reasoning-summary llm-agent-process-summary llm-agent-toggle-enabled";
+        const indicator = doc.createElement("span") as HTMLSpanElement;
+        indicator.className = "llm-agent-toggle-indicator";
+        indicator.setAttribute("aria-hidden", "true");
+        const summaryLabel = doc.createElement("span") as HTMLSpanElement;
+        summaryLabel.className = "llm-agent-process-summary-label";
+        summaryLabel.textContent = "Agent";
+        summary.append(indicator, summaryLabel);
+        const toggleAgent = (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+          mutateChatWithScrollGuard(() => {
+            const next = !details.open;
+            msg.agentOpen = next;
+            details.open = next;
+          });
+        };
+        summary.addEventListener("mousedown", toggleAgent);
+        summary.addEventListener("click", (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        summary.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            toggleAgent(e);
+          }
+        });
+        details.appendChild(summary);
+
+        const bodyWrap = doc.createElement("div") as HTMLDivElement;
+        bodyWrap.className = "llm-reasoning-body";
+
+        const processBlock = doc.createElement("div") as HTMLDivElement;
+        processBlock.className = "llm-reasoning-block";
+        const label = doc.createElement("div") as HTMLDivElement;
+        label.className = "llm-reasoning-label";
+        label.textContent = "Process";
+        const text = doc.createElement("div") as HTMLDivElement;
+        text.className = "llm-reasoning-text llm-agent-process-text";
+        text.textContent = agentTraceText;
+        processBlock.append(label, text);
+        bodyWrap.appendChild(processBlock);
+        details.appendChild(bodyWrap);
+        bubbleHeaderNodes.push(details);
       }
 
       const hasReasoningSummary = Boolean(msg.reasoningSummary?.trim());

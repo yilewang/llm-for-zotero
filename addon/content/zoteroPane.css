@@ -994,28 +994,27 @@
   min-width: 0;
 }
 
-.llm-agent-inline-status {
+.llm-agent-process-summary {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  min-width: 0;
-  margin-bottom: 8px;
-  color: var(--fill-secondary);
-  opacity: 0.88;
 }
 
-.llm-agent-inline-status .llm-agent-toggle-indicator {
+.llm-agent-process-summary::before {
+  content: none;
+  display: none;
+}
+
+.llm-agent-process-summary .llm-agent-toggle-indicator {
   flex: 0 0 auto;
 }
 
-.llm-agent-inline-status-label {
+.llm-agent-process-summary-label {
   min-width: 0;
-  font-size: var(--llm-fs-12);
-  line-height: 1.5;
-  font-weight: 500;
-  color: inherit;
-  overflow-wrap: anywhere;
+}
+
+.llm-agent-process-text {
+  white-space: pre-wrap;
 }
 
 /* Message Bubbles */

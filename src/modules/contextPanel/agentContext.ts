@@ -6,6 +6,7 @@ import {
 } from "./paperSearch";
 import { sanitizeText } from "./textUtils";
 import type { PaperContextRef } from "./types";
+import type { AgentQueryPlan } from "./agentTypes";
 
 const MAX_LIBRARY_OVERVIEW_LIST = 40;
 const MAX_LIBRARY_OVERVIEW_READ = 12;
@@ -18,6 +19,7 @@ export type AgentContextResolution = {
   paperContexts: PaperContextRef[];
   pinnedPaperContexts: PaperContextRef[];
   statusText: string;
+  traceLines: string[];
 };
 
 function normalizeQuestionText(value: string): string {
@@ -92,6 +94,33 @@ function buildPaperContextRef(
   };
 }
 
+function formatTracePaperLabel(candidate: PaperSearchGroupCandidate): string {
+  const ref = buildPaperContextRef(candidate);
+  if (!ref) return candidate.title;
+  const citation = formatPaperCitationLabel(ref);
+  return citation ? `${citation} - ${candidate.title}` : candidate.title;
+}
+
+function buildSelectedPaperTraceLine(
+  candidates: PaperSearchGroupCandidate[],
+): string {
+  const labels = candidates
+    .slice(0, 4)
+    .map((candidate) => formatTracePaperLabel(candidate));
+  if (!labels.length) return "";
+  return `Selected papers: ${labels.join(" | ")}`;
+}
+
+function clampReadLimit(
+  value: number | undefined,
+  fallback: number,
+  maximum: number,
+): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(maximum, Math.floor(parsed)));
+}
+
 function dedupePaperContexts(values: PaperContextRef[]): PaperContextRef[] {
   const out: PaperContextRef[] = [];
   const seen = new Set<string>();
@@ -123,13 +152,14 @@ function buildGroundingRulesBlock(extraLine: string): string[] {
 
 function buildLibraryOverviewContext(
   candidates: PaperSearchGroupCandidate[],
+  papersToRead: number,
 ): string {
   const listedCandidates = candidates.slice(0, MAX_LIBRARY_OVERVIEW_LIST);
   const lines = [
     "Zotero Agent Retrieval",
     "- Mode: whole-library overview",
     `- Readable PDF-backed papers found in the active Zotero library: ${candidates.length}`,
-    `- Papers loaded for detailed reading in this answer: ${Math.min(candidates.length, MAX_LIBRARY_OVERVIEW_READ)}`,
+    `- Papers loaded for detailed reading in this answer: ${Math.min(candidates.length, papersToRead)}`,
     ...buildGroundingRulesBlock(
       "- If the user asks for information outside this retrieved snapshot, say that you do not have enough grounded Zotero data.",
     ),
@@ -150,6 +180,7 @@ function buildLibraryOverviewContext(
 function buildLibrarySearchContext(
   question: string,
   candidates: PaperSearchGroupCandidate[],
+  papersToRead: number,
 ): string {
   const listedCandidates = candidates.slice(0, MAX_LIBRARY_SEARCH_LIST);
   const lines = [
@@ -157,7 +188,7 @@ function buildLibrarySearchContext(
     "- Mode: library search",
     `- User request: ${sanitizeText(question).trim() || "(empty)"}`,
     `- Matched readable PDF-backed papers: ${candidates.length}`,
-    `- Papers loaded for detailed reading in this answer: ${Math.min(candidates.length, MAX_LIBRARY_SEARCH_READ)}`,
+    `- Papers loaded for detailed reading in this answer: ${Math.min(candidates.length, papersToRead)}`,
     ...buildGroundingRulesBlock(
       "- If there are no retrieved matches for a claim, say that the current Zotero retrieval did not find evidence for it.",
     ),
@@ -193,6 +224,7 @@ export async function resolveAgentContext(params: {
   question: string;
   libraryID: number;
   conversationMode: "paper" | "open";
+  plan?: AgentQueryPlan | null;
   onStatus?: (statusText: string) => void;
 }): Promise<AgentContextResolution | null> {
   const normalizedLibraryID = Number(params.libraryID);
@@ -200,52 +232,88 @@ export async function resolveAgentContext(params: {
     return null;
   }
 
-  if (isLibraryOverviewQuery(params.question)) {
+  const planAction = params.plan?.action;
+  const forceOverview =
+    planAction === "library-overview" ||
+    (!planAction && isLibraryOverviewQuery(params.question));
+  const forceSearch =
+    planAction === "library-search" ||
+    (!planAction &&
+      isLibraryScopedSearchQuery(params.question, params.conversationMode));
+
+  if (forceOverview) {
     params.onStatus?.("Reading library metadata now...");
     const candidates = await listLibraryPaperCandidates(normalizedLibraryID);
+    const papersToRead = clampReadLimit(
+      params.plan?.maxPapersToRead,
+      MAX_LIBRARY_OVERVIEW_READ,
+      MAX_LIBRARY_OVERVIEW_READ,
+    );
+    const selectedCandidates = candidates.slice(0, papersToRead);
     const paperContexts = dedupePaperContexts(
-      candidates
-        .slice(0, MAX_LIBRARY_OVERVIEW_READ)
+      selectedCandidates
         .map((candidate) => buildPaperContextRef(candidate))
         .filter((candidate): candidate is PaperContextRef => Boolean(candidate)),
     );
+    const traceLines = [
+      candidates.length
+        ? `Retrieved ${candidates.length} readable papers from the active library.`
+        : "No readable library papers were found.",
+      buildSelectedPaperTraceLine(selectedCandidates),
+    ].filter(Boolean);
     return {
       mode: "library-overview",
       contextPrefix: candidates.length
-        ? buildLibraryOverviewContext(candidates)
+        ? buildLibraryOverviewContext(candidates, papersToRead)
         : buildNoResultsContext("library-overview", params.question),
       paperContexts,
       pinnedPaperContexts: paperContexts,
       statusText: candidates.length
         ? `Reading library (${candidates.length} papers)`
         : "No readable library papers found",
+      traceLines,
     };
   }
 
-  if (isLibraryScopedSearchQuery(params.question, params.conversationMode)) {
+  if (forceSearch) {
     params.onStatus?.("Searching library metadata now...");
+    const searchQuery =
+      sanitizeText(params.plan?.searchQuery || "").trim() || params.question;
     const candidates = await searchPaperCandidates(
       normalizedLibraryID,
-      params.question,
+      searchQuery,
       null,
       MAX_LIBRARY_SEARCH_LIST,
     );
+    const papersToRead = clampReadLimit(
+      params.plan?.maxPapersToRead,
+      MAX_LIBRARY_SEARCH_READ,
+      MAX_LIBRARY_SEARCH_READ,
+    );
+    const selectedCandidates = candidates.slice(0, papersToRead);
     const paperContexts = dedupePaperContexts(
-      candidates
-        .slice(0, MAX_LIBRARY_SEARCH_READ)
+      selectedCandidates
         .map((candidate) => buildPaperContextRef(candidate))
         .filter((candidate): candidate is PaperContextRef => Boolean(candidate)),
     );
+    const traceLines = [
+      `Library search query: ${sanitizeText(searchQuery).replace(/\s+/g, " ").trim() || "(empty)"}`,
+      candidates.length
+        ? `Matched ${candidates.length} readable papers in the active library.`
+        : "No readable library matches were found.",
+      buildSelectedPaperTraceLine(selectedCandidates),
+    ].filter(Boolean);
     return {
       mode: "library-search",
       contextPrefix: candidates.length
-        ? buildLibrarySearchContext(params.question, candidates)
-        : buildNoResultsContext("library-search", params.question),
+        ? buildLibrarySearchContext(searchQuery, candidates, papersToRead)
+        : buildNoResultsContext("library-search", searchQuery),
       paperContexts,
       pinnedPaperContexts: paperContexts,
       statusText: candidates.length
         ? `Searching library (${candidates.length} matches)`
         : "No readable library matches found",
+      traceLines,
     };
   }
 

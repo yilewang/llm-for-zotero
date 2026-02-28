@@ -29,6 +29,8 @@ export interface Message {
   modelName?: string;
   streaming?: boolean;
   agentStatusText?: string;
+  agentTraceText?: string;
+  agentOpen?: boolean;
   reasoningSummary?: string;
   reasoningDetails?: string;
   reasoningOpen?: boolean;
