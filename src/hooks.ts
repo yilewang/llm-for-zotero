@@ -5,6 +5,7 @@ import {
   registerLLMStyles,
   registerReaderSelectionTracking,
 } from "./modules/contextPanel";
+import { invalidatePaperSearchCache } from "./modules/contextPanel/paperSearch";
 import { initChatStore } from "./utils/chatStore";
 import {
   initAttachmentRefStore,
@@ -107,6 +108,20 @@ async function onNotify(
   ids: Array<string | number>,
   extraData: { [key: string]: any },
 ) {
+  const shouldInvalidatePaperSearch =
+    (type === "item" || type === "file") &&
+    [
+      "add",
+      "modify",
+      "delete",
+      "move",
+      "remove",
+      "trash",
+      "refresh",
+    ].includes(event);
+  if (shouldInvalidatePaperSearch) {
+    invalidatePaperSearchCache();
+  }
   // You can add your code to the corresponding notify type
   ztoolkit.log("notify", event, type, ids, extraData);
   return;

@@ -2124,12 +2124,29 @@
   min-width: 0;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
 .llm-paper-picker-group-meta {
   flex: 0 0 auto;
   color: var(--fill-tertiary);
+  font-size: var(--llm-fs-10);
+  line-height: 1.2;
+}
+
+.llm-paper-picker-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(
+    in srgb,
+    var(--color-accent, #3584e4) 14%,
+    transparent
+  );
+  color: var(--fill-secondary);
   font-size: var(--llm-fs-10);
   line-height: 1.2;
 }
