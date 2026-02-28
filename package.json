@@ -1,7 +1,7 @@
 {
   "name": "llm-for-zotero",
   "type": "module",
-  "version": "3.6.4",
+  "version": "3.6.5",
   "description": "LLM assistant for Zotero in the reader side panel",
   "config": {
     "addonName": "llm-for-zotero",
