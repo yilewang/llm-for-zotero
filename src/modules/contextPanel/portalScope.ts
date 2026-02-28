@@ -3,6 +3,8 @@ import {
   PAPER_CONVERSATION_KEY_BASE,
 } from "./constants";
 import { normalizePositiveInt } from "./normalizers";
+import { getLastUsedPaperConversationKey } from "./prefHelpers";
+import { activePaperConversationByPaper } from "./state";
 import type { GlobalPortalItem, PaperPortalItem } from "./types";
 
 export function resolveActiveLibraryID(): number | null {
@@ -70,7 +72,8 @@ export function createPaperPortalItem(
   sessionVersion: number,
 ): Zotero.Item {
   const basePaperItemID = normalizePositiveInt(basePaperItem?.id) || 0;
-  const normalizedLibraryID = normalizePositiveInt(basePaperItem?.libraryID) || 1;
+  const normalizedLibraryID =
+    normalizePositiveInt(basePaperItem?.libraryID) || 1;
   const normalizedConversationKey =
     normalizePositiveInt(conversationKey) || PAPER_CONVERSATION_KEY_BASE;
   const normalizedSessionVersion = normalizePositiveInt(sessionVersion) || 1;
@@ -139,4 +142,67 @@ export function resolvePaperPortalBaseItem(
   if (!baseItemID) return null;
   const resolved = Zotero.Items.get(baseItemID) || null;
   return resolved?.isRegularItem?.() ? resolved : null;
+}
+
+export function resolveConversationBaseItem(
+  targetItem: Zotero.Item | null | undefined,
+): Zotero.Item | null {
+  if (!targetItem) return null;
+  if (isGlobalPortalItem(targetItem)) return null;
+  if (isPaperPortalItem(targetItem)) {
+    return resolvePaperPortalBaseItem(targetItem);
+  }
+  if (targetItem.isAttachment() && targetItem.parentID) {
+    const parent = Zotero.Items.get(targetItem.parentID) || null;
+    return parent?.isRegularItem?.() ? parent : null;
+  }
+  return targetItem?.isRegularItem?.() ? targetItem : null;
+}
+
+function buildPaperStateKey(libraryID: number, paperItemID: number): string {
+  return `${Math.floor(libraryID)}:${Math.floor(paperItemID)}`;
+}
+
+function resolveLibraryIdFromItem(
+  targetItem: Zotero.Item | null | undefined,
+): number {
+  const parsed = Number(targetItem?.libraryID);
+  if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  return resolveActiveLibraryID() || 0;
+}
+
+export function resolveInitialPanelItemState(
+  initialItem: Zotero.Item | null | undefined,
+): {
+  item: Zotero.Item | null;
+  basePaperItem: Zotero.Item | null;
+} {
+  let item = initialItem || null;
+  const basePaperItem = resolveConversationBaseItem(item);
+  if (!basePaperItem) {
+    return { item, basePaperItem: null };
+  }
+
+  const libraryID = resolveLibraryIdFromItem(basePaperItem);
+  const paperItemID = Number(basePaperItem.id || 0);
+  const rememberedPaperKey = Number(
+    activePaperConversationByPaper.get(
+      buildPaperStateKey(libraryID, paperItemID),
+    ) ||
+      getLastUsedPaperConversationKey(libraryID, paperItemID) ||
+      0,
+  );
+  if (
+    Number.isFinite(rememberedPaperKey) &&
+    rememberedPaperKey > 0 &&
+    Math.floor(rememberedPaperKey) !== paperItemID
+  ) {
+    item = createPaperPortalItem(
+      basePaperItem,
+      Math.floor(rememberedPaperKey),
+      0,
+    );
+  }
+
+  return { item, basePaperItem };
 }

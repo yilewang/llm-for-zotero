@@ -137,19 +137,6 @@
 }
 
 .llm-history-toggle {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-  max-width: 160px;
-  padding-right: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.llm-history-mode-indicator {
   position: absolute;
   left: 0;
   top: 50%;
@@ -157,30 +144,35 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  min-width: 0;
   min-height: 22px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid var(--stroke-secondary);
-  background: var(--fill-quinary);
-  color: var(--fill-primary);
-  font: inherit;
-  font-size: var(--llm-fs-12);
-  font-weight: 600;
-  line-height: 1.2;
-  white-space: nowrap;
   max-width: min(42vw, 220px);
+  padding: 0 16px 0 10px;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 999px;
+  background: var(--fill-quinary);
+  font-weight: 600;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  pointer-events: none;
+  transition:
+    color 0.15s,
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.llm-history-mode-indicator {
+  text-align: center;
 }
 
 .llm-history-toggle::after {
   content: "▾";
   position: absolute;
-  right: 0;
+  right: 5px;
   top: 50%;
-  transform: translateY(-52%);
-  font-size: 11px;
+  transform: translateY(-54%);
+  font-size: 14px;
+  font-weight: 700;
   line-height: 1;
   pointer-events: none;
   opacity: 0.9;
@@ -256,6 +248,15 @@
   color: var(--color-accent);
 }
 
+.llm-history-toggle:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--color-accent) 50%,
+    var(--stroke-secondary)
+  );
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--fill-quinary));
+}
+
 .llm-history-new:disabled {
   color: var(--fill-tertiary);
   opacity: 0.55;
@@ -274,6 +275,8 @@
 
 .llm-history-toggle:disabled:hover {
   color: var(--fill-tertiary);
+  border-color: var(--stroke-secondary);
+  background: var(--fill-quinary);
 }
 
 .llm-history-new:focus-visible,

@@ -115,25 +115,22 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   historyNewBtn.setAttribute("aria-label", "Start a new chat");
   historyNewBtn.setAttribute("aria-haspopup", "menu");
   historyNewBtn.setAttribute("aria-expanded", "false");
-  const historyToggleBtn = createElement(doc, "button", "llm-history-toggle", {
-    id: "llm-history-toggle",
-    type: "button",
-    textContent: "History",
-    title: "Conversation history",
-  });
-  historyToggleBtn.setAttribute("aria-haspopup", "menu");
-  historyToggleBtn.setAttribute("aria-expanded", "false");
   const historyModeIndicator = createElement(
     doc,
-    "span",
-    "llm-history-mode-indicator",
+    "button",
+    "llm-history-toggle llm-history-mode-indicator",
     {
-      id: "llm-history-mode-indicator",
+      id: "llm-history-toggle",
+      type: "button",
       textContent: hasItem ? (isGlobalMode ? "Open chat" : "Paper chat") : "",
+      title: "Conversation history",
     },
   );
+  historyModeIndicator.setAttribute("aria-label", "Conversation history");
+  historyModeIndicator.setAttribute("aria-haspopup", "menu");
+  historyModeIndicator.setAttribute("aria-expanded", "false");
   historyModeIndicator.setAttribute("aria-live", "polite");
-  historyBar.append(historyNewBtn, historyToggleBtn, historyModeIndicator);
+  historyBar.append(historyNewBtn, historyModeIndicator);
 
   headerInfo.append(title, historyBar);
   headerTop.appendChild(headerInfo);

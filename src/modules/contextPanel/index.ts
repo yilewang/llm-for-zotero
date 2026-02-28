@@ -58,6 +58,7 @@ import {
   getSelectionFromDocument,
 } from "./readerSelection";
 import { resolvePaperContextRefFromAttachment } from "./paperAttribution";
+import { resolveInitialPanelItemState } from "./portalScope";
 
 // =============================================================================
 // Public API
@@ -122,12 +123,13 @@ export function registerReaderContextPanel() {
       );
 
       buildUI(body, item);
-      if (item) {
-        await ensureConversationLoaded(item);
+      const resolvedItem = resolveInitialPanelItemState(item).item;
+      if (resolvedItem) {
+        await ensureConversationLoaded(resolvedItem);
       }
-      await renderShortcuts(body, item);
+      await renderShortcuts(body, resolvedItem);
       setupHandlers(body, item);
-      refreshChat(body, item);
+      refreshChat(body, resolvedItem);
       // Defer PDF extraction so the panel becomes interactive sooner.
       const activeContextItem = getActiveContextAttachmentFromTabs();
       if (activeContextItem) {

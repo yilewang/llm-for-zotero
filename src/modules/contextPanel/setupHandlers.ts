@@ -52,6 +52,9 @@ import {
   activeGlobalConversationByLibrary,
   activeConversationModeByLibrary,
   activePaperConversationByPaper,
+  draftInputCache,
+  activeContextPanels,
+  activeContextPanelStateSync,
 } from "./state";
 import {
   sanitizeText,
@@ -96,6 +99,7 @@ import {
   withScrollGuard,
   copyTextToClipboard,
   copyRenderedMarkdownToClipboard,
+  refreshConversationPanels,
   detectReasoningProvider,
   getReasoningOptions,
   getSelectedReasoningForItem,
@@ -176,8 +180,8 @@ import {
   createPaperPortalItem,
   getPaperPortalBaseItemID,
   isGlobalPortalItem,
-  isPaperPortalItem,
-  resolvePaperPortalBaseItem,
+  resolveConversationBaseItem,
+  resolveInitialPanelItemState,
   resolveActiveLibraryID,
 } from "./portalScope";
 import { getPanelDomRefs } from "./setupHandlers/domRefs";
@@ -240,23 +244,9 @@ import {
 import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
 
 export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
-  let item = initialItem || null;
-  const resolveBasePaperItem = (
-    targetItem: Zotero.Item | null | undefined,
-  ): Zotero.Item | null => {
-    if (!targetItem) return null;
-    if (isGlobalPortalItem(targetItem)) return null;
-    if (isPaperPortalItem(targetItem)) {
-      return resolvePaperPortalBaseItem(targetItem);
-    }
-    if (targetItem.isAttachment() && targetItem.parentID) {
-      const parent = Zotero.Items.get(targetItem.parentID) || null;
-      return parent?.isRegularItem?.() ? parent : null;
-    }
-    return targetItem?.isRegularItem?.() ? targetItem : null;
-  };
-  const initialPaperItem = resolveBasePaperItem(item);
-  let basePaperItem = initialPaperItem;
+  const resolvedInitialState = resolveInitialPanelItemState(initialItem);
+  let item = resolvedInitialState.item;
+  let basePaperItem = resolvedInitialState.basePaperItem;
   const buildPaperStateKey = (libraryID: number, paperItemID: number): string =>
     `${Math.floor(libraryID)}:${Math.floor(paperItemID)}`;
   const resolveLibraryIdFromItem = (
@@ -266,40 +256,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
     return resolveActiveLibraryID() || 0;
   };
-  if (initialPaperItem) {
-    const libraryID = resolveLibraryIdFromItem(initialPaperItem);
-    const modeLock = activeConversationModeByLibrary.get(libraryID);
-    const rememberedGlobalKey = Number(
-      activeGlobalConversationByLibrary.get(libraryID) || 0,
-    );
-    if (
-      modeLock === "global" &&
-      Number.isFinite(rememberedGlobalKey) &&
-      rememberedGlobalKey > 0
-    ) {
-      item = createGlobalPortalItem(libraryID, Math.floor(rememberedGlobalKey));
-    } else if (modeLock === "paper") {
-      const paperItemID = Number(initialPaperItem.id || 0);
-      const rememberedPaperKey = Number(
-        activePaperConversationByPaper.get(
-          buildPaperStateKey(libraryID, paperItemID),
-        ) ||
-          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
-          0,
-      );
-      if (
-        Number.isFinite(rememberedPaperKey) &&
-        rememberedPaperKey > 0 &&
-        Math.floor(rememberedPaperKey) !== paperItemID
-      ) {
-        item = createPaperPortalItem(
-          initialPaperItem,
-          Math.floor(rememberedPaperKey),
-          0,
-        );
-      }
-    }
-  }
 
   const {
     inputBox,
@@ -380,6 +336,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     ztoolkit.log("LLM: Could not find panel root");
     return;
   }
+  activeContextPanels.set(body, () => item);
   const panelDoc = body.ownerDocument;
   if (!panelDoc) {
     ztoolkit.log("LLM: Could not find panel document");
@@ -407,7 +364,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
   const resolveCurrentPaperBaseItem = (): Zotero.Item | null => {
     if (basePaperItem?.isRegularItem?.()) return basePaperItem;
-    const resolvedFromItem = resolveBasePaperItem(item);
+    const resolvedFromItem = resolveConversationBaseItem(item);
     if (resolvedFromItem) {
       basePaperItem = resolvedFromItem;
       return resolvedFromItem;
@@ -429,23 +386,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const getTextContextConversationKey = (): number | null =>
     item ? getConversationKey(item) : null;
   const updateHistoryModeIndicatorPosition = () => {
-    if (
-      !historyModeIndicator ||
-      !historyToggleBtn ||
-      !exportBtn ||
-      !headerTop
-    ) {
+    if (!historyModeIndicator || !historyNewBtn || !exportBtn || !headerTop) {
       return;
     }
     if (!historyBar || historyBar.style.display === "none") return;
     if (!item) return;
 
     const hostRect = headerTop.getBoundingClientRect();
-    const historyRect = historyToggleBtn.getBoundingClientRect();
+    const historyAnchorRect = historyNewBtn.getBoundingClientRect();
     const exportRect = exportBtn.getBoundingClientRect();
     if (
       hostRect.width <= 0 ||
-      historyRect.width <= 0 ||
+      historyAnchorRect.width <= 0 ||
       exportRect.width <= 0
     ) {
       return;
@@ -456,16 +408,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       historyModeIndicator.offsetWidth,
       0,
     );
-    const midpoint = (historyRect.right + exportRect.left) / 2;
-    const minLeft = historyRect.right - hostRect.left + 8;
+    const preferredLeft = historyAnchorRect.right - hostRect.left + 6;
     const maxLeft = exportRect.left - hostRect.left - indicatorWidth - 8;
-    let left = midpoint - hostRect.left - indicatorWidth / 2;
-    if (
-      Number.isFinite(minLeft) &&
-      Number.isFinite(maxLeft) &&
-      maxLeft >= minLeft
-    ) {
-      left = clampNumber(left, minLeft, maxLeft);
+    let left = preferredLeft;
+    if (Number.isFinite(maxLeft) && maxLeft >= preferredLeft) {
+      left = clampNumber(preferredLeft, preferredLeft, maxLeft);
     } else {
       left = clampNumber(left, 0, Math.max(0, hostRect.width - indicatorWidth));
     }
@@ -518,11 +465,19 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       }
     }
     if (historyModeIndicator) {
-      historyModeIndicator.textContent = item
+      const modeLabel = item
         ? mode === "global"
           ? "Open chat"
           : "Paper chat"
         : "";
+      historyModeIndicator.textContent = item ? modeLabel : "";
+      historyModeIndicator.title = modeLabel
+        ? `${modeLabel} history`
+        : "Conversation history";
+      historyModeIndicator.setAttribute(
+        "aria-label",
+        modeLabel ? `${modeLabel} history` : "Conversation history",
+      );
       const requestFrame = panelWin?.requestAnimationFrame;
       if (typeof requestFrame === "function") {
         requestFrame(() => {
@@ -881,6 +836,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         source: "model",
       });
     });
+    if (added) {
+      updateSelectedTextPreviewPreservingScroll();
+    }
     hideSelectionPopup();
     if (added) {
       inputBox.focus({ preventScroll: true });
@@ -1098,7 +1056,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         closePromptMenu();
         if (!item || !target) return;
         if (!target.editable) {
-          if (status) setStatus(status, "Only the latest prompt is editable", "ready");
+          if (status)
+            setStatus(status, "Only the latest prompt is editable", "ready");
           return;
         }
         if (
@@ -1127,6 +1086,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }
 
         inputBox.value = sanitizeText(pair.userMessage.text || "");
+        persistDraftInputForCurrentConversation();
 
         const restoredSelectedTexts = Array.isArray(
           pair.userMessage.selectedTexts,
@@ -1400,6 +1360,29 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     setSelectedTextExpandedIndex(itemId, null);
     clearPinnedContextOwner(pinnedSelectedTextKeys, itemId);
   };
+  const setDraftInputForConversation = (
+    conversationKey: number,
+    value: string,
+  ) => {
+    if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
+    const normalizedKey = Math.floor(conversationKey);
+    if (value) {
+      draftInputCache.set(normalizedKey, value);
+    } else {
+      draftInputCache.delete(normalizedKey);
+    }
+  };
+  const persistDraftInputForCurrentConversation = () => {
+    if (!item || !inputBox) return;
+    setDraftInputForConversation(getConversationKey(item), inputBox.value);
+  };
+  const restoreDraftInputForCurrentConversation = () => {
+    if (!item || !inputBox) return;
+    inputBox.value = draftInputCache.get(getConversationKey(item)) || "";
+  };
+  const clearDraftInputState = (itemId: number) => {
+    draftInputCache.delete(itemId);
+  };
   const retainPinnedImageState = (itemId: number) => {
     const retained = retainPinnedImages(
       pinnedImageKeys,
@@ -1461,6 +1444,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     setSelectedTextExpandedIndex(itemId, null);
   };
   const clearTransientComposeStateForItem = (itemId: number) => {
+    clearDraftInputState(itemId);
     clearSelectedImageState(itemId);
     clearSelectedPaperState(itemId);
     clearSelectedFileState(itemId);
@@ -1696,7 +1680,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         } else if (removedEntry?.storedPath) {
           scheduleAttachmentGc();
         }
-        updateFilePreview();
+        updateFilePreviewPreservingScroll();
         if (status) {
           setStatus(
             status,
@@ -1884,30 +1868,62 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (!textContextKey) return;
     applySelectedTextPreview(body, textContextKey);
   };
+  const syncConversationPanelState = () => {
+    restoreDraftInputForCurrentConversation();
+    updatePaperPreview();
+    updateFilePreview();
+    updateImagePreview();
+    updateSelectedTextPreview();
+  };
+  activeContextPanelStateSync.set(body, syncConversationPanelState);
   const updatePaperPreviewPreservingScroll = () => {
-    runWithChatScrollGuard(() => {
-      updatePaperPreview();
+    if (!item) {
+      runWithChatScrollGuard(syncConversationPanelState);
+      return;
+    }
+    refreshConversationPanels(body, item, {
+      includeChat: false,
+      includePanelState: true,
     });
   };
   const updateFilePreviewPreservingScroll = () => {
-    runWithChatScrollGuard(() => {
-      updateFilePreview();
+    if (!item) {
+      runWithChatScrollGuard(syncConversationPanelState);
+      return;
+    }
+    refreshConversationPanels(body, item, {
+      includeChat: false,
+      includePanelState: true,
     });
   };
   const updateImagePreviewPreservingScroll = () => {
-    runWithChatScrollGuard(() => {
-      updateImagePreview();
+    if (!item) {
+      runWithChatScrollGuard(syncConversationPanelState);
+      return;
+    }
+    refreshConversationPanels(body, item, {
+      includeChat: false,
+      includePanelState: true,
     });
   };
   const updateSelectedTextPreviewPreservingScroll = () => {
-    runWithChatScrollGuard(() => {
-      updateSelectedTextPreview();
+    if (!item) {
+      runWithChatScrollGuard(syncConversationPanelState);
+      return;
+    }
+    refreshConversationPanels(body, item, {
+      includeChat: false,
+      includePanelState: true,
     });
   };
   const refreshChatPreservingScroll = () => {
-    runWithChatScrollGuard(() => {
-      refreshChat(body, item);
-    });
+    if (!item) {
+      runWithChatScrollGuard(() => {
+        refreshChat(body, item);
+      });
+      return;
+    }
+    refreshConversationPanels(body, item);
   };
 
   let latestConversationHistory: ConversationHistoryEntry[] = [];
@@ -1991,7 +2007,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     history: Message[],
     userTimestamp: number,
     assistantTimestamp: number,
-  ): { userIndex: number; userMessage: Message; assistantMessage: Message } | null => {
+  ): {
+    userIndex: number;
+    userMessage: Message;
+    assistantMessage: Message;
+  } | null => {
     const normalizedUserTimestamp = Number.isFinite(userTimestamp)
       ? Math.floor(userTimestamp)
       : 0;
@@ -2005,7 +2025,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const userMessage = history[index];
       const assistantMessage = history[index + 1];
       if (!userMessage || !assistantMessage) continue;
-      if (userMessage.role !== "user" || assistantMessage.role !== "assistant") {
+      if (
+        userMessage.role !== "user" ||
+        assistantMessage.role !== "assistant"
+      ) {
         continue;
       }
       if (
@@ -2018,7 +2041,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     return null;
   };
 
-  const collectAttachmentHashesFromMessages = (messages: Message[]): string[] => {
+  const collectAttachmentHashesFromMessages = (
+    messages: Message[],
+  ): string[] => {
     const hashes = new Set<string>();
     for (const message of messages) {
       const attachments = Array.isArray(message.attachments)
@@ -2453,6 +2478,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
   const switchGlobalConversation = async (nextConversationKey: number) => {
     if (!item) return;
+    persistDraftInputForCurrentConversation();
     const libraryID = getCurrentLibraryID();
     if (!libraryID) return;
     const normalizedConversationKey = Number.isFinite(nextConversationKey)
@@ -2474,6 +2500,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     closeHistoryNewMenu();
     closeHistoryMenu();
     await ensureConversationLoaded(item);
+    restoreDraftInputForCurrentConversation();
     refreshChatPreservingScroll();
     resetComposePreviewUI();
     updateModelButton();
@@ -2483,6 +2510,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
   const switchPaperConversation = async (nextConversationKey?: number) => {
     if (!item) return;
+    persistDraftInputForCurrentConversation();
     const paperItem = resolveCurrentPaperBaseItem();
     if (!paperItem) return;
     basePaperItem = paperItem;
@@ -2546,6 +2574,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     closeHistoryNewMenu();
     closeHistoryMenu();
     await ensureConversationLoaded(item);
+    restoreDraftInputForCurrentConversation();
     refreshChatPreservingScroll();
     resetComposePreviewUI();
     updateModelButton();
@@ -4217,7 +4246,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         : "Only one model is configured";
       modelBtn.disabled = !item;
       applyResponsiveActionButtonsLayout();
-      updateImagePreview();
+      updateImagePreviewPreservingScroll();
     });
   };
 
@@ -4469,6 +4498,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   updateImagePreviewPreservingScroll();
   updateSelectedTextPreviewPreservingScroll();
   syncModelFromPrefs();
+  restoreDraftInputForCurrentConversation();
   if (isPaperMode()) {
     void switchPaperConversation().catch((err) => {
       ztoolkit.log("LLM: Failed to restore paper conversation session", err);
@@ -4485,7 +4515,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   // mutates DOM → changes flex layout → resizes .llm-messages → shifts scroll
   // position.  pointerenter is sufficient and fires before interaction.
   body.addEventListener("pointerenter", () => {
-    withScrollGuard(chatBox, conversationKey, syncModelFromPrefs);
+    withScrollGuard(chatBox, conversationKey, () => {
+      syncModelFromPrefs();
+      syncConversationPanelState();
+    });
   });
   const ResizeObserverCtor = body.ownerDocument?.defaultView?.ResizeObserver;
   if (ResizeObserverCtor && panelRoot && modelBtn) {
@@ -4805,6 +4838,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const beforeSlash = inputBox.value.slice(0, token.slashStart);
     const afterCaret = inputBox.value.slice(token.caretEnd);
     inputBox.value = `${beforeSlash}${afterCaret}`;
+    persistDraftInputForCurrentConversation();
     const nextCaret = beforeSlash.length;
     inputBox.setSelectionRange(nextCaret, nextCaret);
     return true;
@@ -5225,6 +5259,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     });
 
     inputBox.addEventListener("input", () => {
+      persistDraftInputForCurrentConversation();
       schedulePaperPickerSearch();
     });
     inputBox.addEventListener("click", () => {
@@ -5300,12 +5335,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       : undefined,
     editStaleStatusText: EDIT_STALE_STATUS_TEXT,
   });
+  const executeSend = async () => {
+    await doSend();
+    persistDraftInputForCurrentConversation();
+  };
 
   // Send button - use addEventListener
   sendBtn.addEventListener("click", (e: Event) => {
     e.preventDefault();
     e.stopPropagation();
-    doSend();
+    void executeSend();
   });
 
   // Enter key (Shift+Enter for newline)
@@ -5361,7 +5400,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (ke.key === "Enter" && !ke.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
-      doSend();
+      void executeSend();
     }
   });
 
@@ -5514,10 +5553,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           return;
         }
       }
-      includeSelectedTextFromReader(body, item, selectedText, {
+      const added = includeSelectedTextFromReader(body, item, selectedText, {
         targetItemId: textContextKey,
         paperContext: isGlobalMode() ? resolvedPaperContext : null,
       });
+      if (added) {
+        updateSelectedTextPreviewPreservingScroll();
+      }
     });
   }
 
@@ -5642,6 +5684,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
       const insertion = `${needsLeadingSpace ? " " : ""}/`;
       inputBox.value = `${before}${insertion}${after}`;
+      persistDraftInputForCurrentConversation();
       const nextCaret = before.length + insertion.length;
       inputBox.setSelectionRange(nextCaret, nextCaret);
     }
@@ -6225,10 +6268,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         selectedImagePreviewExpandedCache.set(item.id, false);
         selectedPaperPreviewExpandedCache.set(item.id, false);
       }
-      updatePaperPreview();
-      updateSelectedTextPreview();
-      updateImagePreview();
-      updateFilePreview();
+      updatePaperPreviewPreservingScroll();
+      updateSelectedTextPreviewPreservingScroll();
+      updateImagePreviewPreservingScroll();
+      updateFilePreviewPreservingScroll();
     });
   }
 
@@ -6246,7 +6289,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         });
       }
       clearSelectedFileState(item.id);
-      updateFilePreview();
+      updateFilePreviewPreservingScroll();
       scheduleAttachmentGc();
       if (status) setStatus(status, "Files cleared", "ready");
     });
@@ -6361,7 +6404,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       } else {
         clearSelectedPaperState(item.id);
       }
-      updatePaperPreview();
+      updatePaperPreviewPreservingScroll();
       if (status) {
         setStatus(
           status,

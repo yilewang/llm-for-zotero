@@ -41,6 +41,8 @@ import {
   loadingConversationTasks,
   selectedModelCache,
   selectedReasoningCache,
+  activeContextPanels,
+  activeContextPanelStateSync,
   cancelledRequestId,
   currentAbortController,
   setCurrentAbortController,
@@ -870,9 +872,7 @@ function createPanelUpdateHelpers(
   ) => void;
 } {
   const refreshChatSafely = () => {
-    withScrollGuard(ui.chatBox, conversationKey, () => {
-      refreshChat(body, item);
-    });
+    refreshConversationPanels(body, item);
   };
   const setStatusSafely = (
     text: string,
@@ -2661,5 +2661,64 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       }
       followBottomStabilizers.delete(conversationKey);
     }
+  }
+}
+
+export function refreshConversationPanels(
+  primaryBody: Element,
+  primaryItem?: Zotero.Item | null,
+  options: {
+    includeChat?: boolean;
+    includePanelState?: boolean;
+  } = {},
+): void {
+  const { includeChat = true, includePanelState = false } = options;
+  if (!primaryItem) {
+    if (includeChat) {
+      refreshChat(primaryBody, primaryItem);
+    }
+    if (includePanelState) {
+      activeContextPanelStateSync.get(primaryBody)?.();
+    }
+    return;
+  }
+
+  const conversationKey = getConversationKey(primaryItem);
+  const refreshedPanels = new Set<Element>();
+  const refreshOne = (body: Element, item: Zotero.Item) => {
+    const chatBox = body.querySelector(
+      "#llm-chat-box",
+    ) as HTMLDivElement | null;
+    if (includeChat && !chatBox) return;
+    const syncPanelState = activeContextPanelStateSync.get(body);
+    const updatePanel = () => {
+      if (includeChat) {
+        refreshChat(body, item);
+      }
+      if (includePanelState) {
+        syncPanelState?.();
+      }
+    };
+    if (chatBox) {
+      withScrollGuard(chatBox, conversationKey, updatePanel);
+    } else {
+      updatePanel();
+    }
+    refreshedPanels.add(body);
+  };
+
+  refreshOne(primaryBody, primaryItem);
+
+  for (const [body, getItem] of activeContextPanels.entries()) {
+    if (!(body as Element).isConnected) {
+      activeContextPanels.delete(body);
+      activeContextPanelStateSync.delete(body);
+      continue;
+    }
+    if (refreshedPanels.has(body)) continue;
+    const item = getItem();
+    if (!item) continue;
+    if (getConversationKey(item) !== conversationKey) continue;
+    refreshOne(body, item);
   }
 }
