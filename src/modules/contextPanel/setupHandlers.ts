@@ -6048,6 +6048,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     refreshGlobalHistoryHeader: () => {
       void refreshGlobalHistoryHeader();
     },
+    persistDraftInput: persistDraftInputForCurrentConversation,
     setStatusMessage: status
       ? (message, level) => {
           setStatus(status, message, level);

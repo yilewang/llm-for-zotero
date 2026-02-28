@@ -128,6 +128,7 @@ type SendFlowControllerDeps = {
   updateSelectedTextPreviewPreservingScroll: () => void;
   scheduleAttachmentGc: () => void;
   refreshGlobalHistoryHeader: () => void;
+  persistDraftInput: () => void;
   setStatusMessage?: (message: string, level: StatusLevel) => void;
   editStaleStatusText: string;
 };
@@ -292,6 +293,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       }
 
       deps.inputBox.value = "";
+      deps.persistDraftInput();
       deps.retainPinnedImageState(item.id);
       if (selectedPaperContexts.length) {
         deps.retainPinnedPaperState(item.id);
@@ -313,6 +315,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     }
 
     deps.inputBox.value = "";
+    deps.persistDraftInput();
     deps.retainPinnedImageState(item.id);
     if (selectedPaperContexts.length) {
       deps.retainPinnedPaperState(item.id);
