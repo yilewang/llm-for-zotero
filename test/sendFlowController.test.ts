@@ -26,12 +26,14 @@ describe("sendFlowController", function () {
 
   function createBaseDeps(overrides: Record<string, unknown> = {}) {
     const inputBox = { value: "ask question" } as HTMLTextAreaElement;
+    let draftValue = inputBox.value;
     let sendCalled = 0;
     let editCalled = 0;
     let retainImageCalled = 0;
     let retainPaperCalled = 0;
     let retainFileCalled = 0;
     let retainTextCalled = 0;
+    let persistDraftInputCalls = 0;
     let setActiveEditSessionCalls = 0;
 
     const deps = {
@@ -95,6 +97,10 @@ describe("sendFlowController", function () {
       updateSelectedTextPreviewPreservingScroll: () => undefined,
       scheduleAttachmentGc: () => undefined,
       refreshGlobalHistoryHeader: () => undefined,
+      persistDraftInput: () => {
+        persistDraftInputCalls += 1;
+        draftValue = inputBox.value;
+      },
       setStatusMessage: () => undefined,
       editStaleStatusText: "stale",
       ...overrides,
@@ -111,8 +117,10 @@ describe("sendFlowController", function () {
         retainPaperCalled,
         retainFileCalled,
         retainTextCalled,
+        persistDraftInputCalls,
         setActiveEditSessionCalls,
       }),
+      getDraftValue: () => draftValue,
     };
   }
 
@@ -156,5 +164,65 @@ describe("sendFlowController", function () {
     assert.equal(counts.retainFileCalled, 1);
     assert.equal(counts.retainTextCalled, 1);
     assert.isAtLeast(counts.setActiveEditSessionCalls, 1);
+  });
+
+  it("persists the cleared draft before preview sync in normal send flow", async function () {
+    const { controller, inputBox, getCounts, getDraftValue } = createBaseDeps({
+      updatePaperPreviewPreservingScroll: () => {
+        inputBox.value = getDraftValue();
+      },
+      updateFilePreviewPreservingScroll: () => {
+        inputBox.value = getDraftValue();
+      },
+      updateImagePreviewPreservingScroll: () => {
+        inputBox.value = getDraftValue();
+      },
+      updateSelectedTextPreviewPreservingScroll: () => {
+        inputBox.value = getDraftValue();
+      },
+    });
+
+    await controller.doSend();
+    const counts = getCounts();
+
+    assert.equal(getDraftValue(), "");
+    assert.equal(inputBox.value, "");
+    assert.equal(counts.persistDraftInputCalls, 1);
+  });
+
+  it("persists the cleared draft before preview sync in edit flow", async function () {
+    const { controller, inputBox, getCounts, getDraftValue } = createBaseDeps({
+      getActiveEditSession: () => ({
+        conversationKey: item.id,
+        userTimestamp: 10,
+        assistantTimestamp: 20,
+      }),
+      getLatestEditablePair: async () => ({
+        conversationKey: item.id,
+        pair: {
+          userMessage: { timestamp: 10 },
+          assistantMessage: { timestamp: 20, streaming: false },
+        },
+      }),
+      updatePaperPreviewPreservingScroll: () => {
+        inputBox.value = getDraftValue();
+      },
+      updateFilePreviewPreservingScroll: () => {
+        inputBox.value = getDraftValue();
+      },
+      updateImagePreviewPreservingScroll: () => {
+        inputBox.value = getDraftValue();
+      },
+      updateSelectedTextPreviewPreservingScroll: () => {
+        inputBox.value = getDraftValue();
+      },
+    });
+
+    await controller.doSend();
+    const counts = getCounts();
+
+    assert.equal(getDraftValue(), "");
+    assert.equal(inputBox.value, "");
+    assert.equal(counts.persistDraftInputCalls, 1);
   });
 });
