@@ -1927,6 +1927,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
 
   let latestConversationHistory: ConversationHistoryEntry[] = [];
+  const historySectionExpandedState = new Map<"paper" | "open", boolean>([
+    ["paper", true],
+    ["open", false],
+  ]);
   let globalHistoryLoadSeq = 0;
   let pendingHistoryDeletion: PendingHistoryDeletion | null = null;
   const pendingHistoryDeletionKeys = new Set<number>();
@@ -2073,6 +2077,42 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     return false;
   };
 
+  const isHistorySectionExpanded = (section: "paper" | "open"): boolean =>
+    historySectionExpandedState.get(section) ?? (section === "paper");
+
+  const setHistorySectionExpanded = (
+    section: "paper" | "open",
+    expanded: boolean,
+  ) => {
+    historySectionExpandedState.set(section, expanded);
+  };
+
+  const applyHistorySectionExpandedState = (
+    sectionBlock: HTMLDivElement,
+    expanded: boolean,
+  ) => {
+    sectionBlock.dataset.expanded = expanded ? "true" : "false";
+    const sectionHeader = sectionBlock.querySelector(
+      ".llm-history-menu-section",
+    ) as HTMLButtonElement | null;
+    if (sectionHeader) {
+      sectionHeader.setAttribute("aria-expanded", expanded ? "true" : "false");
+    }
+    const sectionIcon = sectionBlock.querySelector(
+      ".llm-history-menu-section-icon",
+    ) as HTMLSpanElement | null;
+    if (sectionIcon) {
+      sectionIcon.textContent = expanded ? "▾" : "▸";
+    }
+    const sectionRows = sectionBlock.querySelector(
+      ".llm-history-menu-section-rows",
+    ) as HTMLDivElement | null;
+    if (sectionRows) {
+      sectionRows.hidden = !expanded;
+      sectionRows.style.display = expanded ? "flex" : "none";
+    }
+  };
+
   const renderGlobalHistoryMenu = () => {
     if (!historyMenu) return;
     historyMenu.innerHTML = "";
@@ -2123,6 +2163,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       });
 
     for (const section of orderedSections) {
+      const expanded = isHistorySectionExpanded(section.sectionKey);
       const sectionBlock = createElement(
         body.ownerDocument as Document,
         "div",
@@ -2132,9 +2173,14 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
       const sectionHeader = createElement(
         body.ownerDocument as Document,
-        "div",
+        "button",
         "llm-history-menu-section",
+        {
+          type: "button",
+        },
       );
+      sectionHeader.dataset.action = "toggle-section";
+      sectionHeader.dataset.historySection = section.sectionKey;
       const sectionLabel = createElement(
         body.ownerDocument as Document,
         "span",
@@ -2143,7 +2189,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           textContent: section.title,
         },
       );
-      sectionHeader.append(sectionLabel);
+      const sectionIcon = createElement(
+        body.ownerDocument as Document,
+        "span",
+        "llm-history-menu-section-icon",
+        {
+          textContent: expanded ? "▾" : "▸",
+        },
+      );
+      sectionIcon.setAttribute("aria-hidden", "true");
+      sectionHeader.append(sectionLabel, sectionIcon);
       sectionBlock.appendChild(sectionHeader);
 
       const sectionRows = createElement(
@@ -2152,6 +2207,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         "llm-history-menu-section-rows",
       ) as HTMLDivElement;
       sectionBlock.appendChild(sectionRows);
+      applyHistorySectionExpandedState(sectionBlock, expanded);
 
       for (const entry of section.entries) {
         const row = createElement(
@@ -3553,6 +3609,30 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         return;
       }
       closeHistoryRowMenu();
+
+      const sectionToggle = target.closest(
+        ".llm-history-menu-section",
+      ) as HTMLButtonElement | null;
+      if (sectionToggle) {
+        e.preventDefault();
+        e.stopPropagation();
+        const section =
+          sectionToggle.dataset.historySection === "paper" ? "paper" : "open";
+        const nextExpanded =
+          sectionToggle.getAttribute("aria-expanded") !== "true";
+        setHistorySectionExpanded(section, nextExpanded);
+        sectionToggle.setAttribute(
+          "aria-expanded",
+          nextExpanded ? "true" : "false",
+        );
+        const sectionBlock = sectionToggle.closest(
+          ".llm-history-menu-section-block",
+        ) as HTMLDivElement | null;
+        if (sectionBlock) {
+          applyHistorySectionExpandedState(sectionBlock, nextExpanded);
+        }
+        return;
+      }
 
       const deleteBtn = target.closest(
         ".llm-history-row-delete",

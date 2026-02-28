@@ -511,11 +511,37 @@
 }
 
 .llm-history-menu-section {
+  appearance: none;
+  -moz-appearance: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 6px;
+  justify-content: flex-start;
+  gap: 4px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
   padding: 1px 2px 2px;
+}
+
+.llm-history-menu-section-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 10px;
+  color: var(--fill-secondary);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.llm-history-menu-section:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+  border-radius: 6px;
 }
 
 .llm-history-menu-section-label {
