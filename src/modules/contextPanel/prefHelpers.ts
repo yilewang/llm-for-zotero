@@ -19,8 +19,19 @@ import type {
 } from "./types";
 import { selectedModelCache, panelFontScalePercent } from "./state";
 
+type ZoteroPrefsAPI = {
+  get?: (key: string, global?: boolean) => unknown;
+  set?: (key: string, value: unknown, global?: boolean) => void;
+};
+
+function getZoteroPrefs(): ZoteroPrefsAPI | null {
+  return (
+    (Zotero as unknown as { Prefs?: ZoteroPrefsAPI } | undefined)?.Prefs || null
+  );
+}
+
 export function getStringPref(key: string): string {
-  const value = Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true);
+  const value = getZoteroPrefs()?.get?.(`${config.prefsPrefix}.${key}`, true);
   return typeof value === "string" ? value : "";
 }
 
@@ -59,7 +70,7 @@ export function getLastUsedModelProfileKey(): ModelProfileKey | null {
 
 export function setLastUsedModelProfileKey(key: ModelProfileKey): void {
   if (!MODEL_PROFILE_KEYS.has(key)) return;
-  Zotero.Prefs.set(
+  getZoteroPrefs()?.set?.(
     `${config.prefsPrefix}.${LAST_MODEL_PROFILE_PREF_KEY}`,
     key,
     true,
@@ -78,7 +89,7 @@ export function setLastUsedReasoningLevel(
   level: ReasoningLevelSelection,
 ): void {
   if (!REASONING_LEVEL_SELECTIONS.has(level)) return;
-  Zotero.Prefs.set(
+  getZoteroPrefs()?.set?.(
     `${config.prefsPrefix}.${LAST_REASONING_LEVEL_PREF_KEY}`,
     level,
     true,
@@ -86,7 +97,7 @@ export function setLastUsedReasoningLevel(
 }
 
 export function getLastReasoningExpanded(): boolean {
-  const value = Zotero.Prefs.get(
+  const value = getZoteroPrefs()?.get?.(
     `${config.prefsPrefix}.${LAST_REASONING_EXPANDED_PREF_KEY}`,
     true,
   );
@@ -102,7 +113,7 @@ export function getLastReasoningExpanded(): boolean {
 }
 
 export function setLastReasoningExpanded(expanded: boolean): void {
-  Zotero.Prefs.set(
+  getZoteroPrefs()?.set?.(
     `${config.prefsPrefix}.${LAST_REASONING_EXPANDED_PREF_KEY}`,
     Boolean(expanded),
     true,
@@ -110,7 +121,7 @@ export function setLastReasoningExpanded(expanded: boolean): void {
 }
 
 function getLastPaperConversationMap(): Record<string, number> {
-  const raw = Zotero.Prefs.get(
+  const raw = getZoteroPrefs()?.get?.(
     `${config.prefsPrefix}.${LAST_PAPER_CONVERSATION_MAP_PREF_KEY}`,
     true,
   );
@@ -130,7 +141,7 @@ function getLastPaperConversationMap(): Record<string, number> {
 }
 
 function setLastPaperConversationMap(value: Record<string, number>): void {
-  Zotero.Prefs.set(
+  getZoteroPrefs()?.set?.(
     `${config.prefsPrefix}.${LAST_PAPER_CONVERSATION_MAP_PREF_KEY}`,
     JSON.stringify(value),
     true,

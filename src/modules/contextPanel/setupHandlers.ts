@@ -173,9 +173,14 @@ import type {
 import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClient";
 import {
+  browsePaperCollectionCandidates,
+  normalizePaperSearchText,
+  parsePaperSearchSlashToken,
   searchPaperCandidates,
+  type PaperBrowseCollectionCandidate,
   type PaperSearchAttachmentCandidate,
   type PaperSearchGroupCandidate,
+  type PaperSearchSlashToken,
 } from "./paperSearch";
 import {
   createGlobalPortalItem,
@@ -5362,54 +5367,78 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
   };
 
-  type ActiveSlashToken = {
-    query: string;
-    slashStart: number;
-    caretEnd: number;
-  };
+  type ActiveSlashToken = PaperSearchSlashToken;
+  type PaperPickerMode = "browse" | "search" | "empty";
   type PaperPickerRow =
     | {
+        kind: "collection";
+        collectionId: number;
+        depth: number;
+      }
+    | {
         kind: "paper";
-        groupIndex: number;
+        itemId: number;
+        depth: number;
       }
     | {
         kind: "attachment";
-        groupIndex: number;
+        itemId: number;
         attachmentIndex: number;
+        depth: number;
       };
+  let paperPickerMode: PaperPickerMode = "browse";
+  let paperPickerEmptyMessage = "No references available.";
   let paperPickerGroups: PaperSearchGroupCandidate[] = [];
-  let paperPickerExpandedGroupKeys = new Set<number>();
+  let paperPickerCollections: PaperBrowseCollectionCandidate[] = [];
+  let paperPickerGroupByItemId = new Map<number, PaperSearchGroupCandidate>();
+  let paperPickerCollectionById = new Map<number, PaperBrowseCollectionCandidate>();
+  let paperPickerExpandedPaperKeys = new Set<number>();
+  let paperPickerExpandedCollectionKeys = new Set<number>();
   let paperPickerRows: PaperPickerRow[] = [];
   let paperPickerActiveRowIndex = 0;
   let paperPickerRequestSeq = 0;
   let paperPickerDebounceTimer: number | null = null;
+  const clearPaperPickerDebounceTimer = () => {
+    if (paperPickerDebounceTimer === null) return;
+    const win = body.ownerDocument?.defaultView;
+    if (win) {
+      win.clearTimeout(paperPickerDebounceTimer);
+    } else {
+      clearTimeout(paperPickerDebounceTimer);
+    }
+    paperPickerDebounceTimer = null;
+  };
+  const resetPaperPickerState = () => {
+    paperPickerMode = "browse";
+    paperPickerEmptyMessage = "No references available.";
+    paperPickerGroups = [];
+    paperPickerCollections = [];
+    paperPickerGroupByItemId = new Map<number, PaperSearchGroupCandidate>();
+    paperPickerCollectionById = new Map<number, PaperBrowseCollectionCandidate>();
+    paperPickerExpandedPaperKeys = new Set<number>();
+    paperPickerExpandedCollectionKeys = new Set<number>();
+    paperPickerRows = [];
+    paperPickerActiveRowIndex = 0;
+  };
   const getActiveSlashToken = (): ActiveSlashToken | null => {
     const caretEnd =
       typeof inputBox.selectionStart === "number"
         ? inputBox.selectionStart
         : inputBox.value.length;
-    const prefix = inputBox.value.slice(0, caretEnd);
-    const match = prefix.match(/(?:^|\s)\/([^\s/]*)$/);
-    if (!match) return null;
-    const raw = match[0] || "";
-    const fullStart = (match.index ?? prefix.length - raw.length) || 0;
-    const slashStart = raw.startsWith(" ") ? fullStart + 1 : fullStart;
-    return {
-      query: sanitizeText(match[1] || "").trim(),
-      slashStart,
-      caretEnd,
-    };
+    return parsePaperSearchSlashToken(inputBox.value, caretEnd);
   };
   const isPaperPickerOpen = () =>
     Boolean(paperPicker && paperPicker.style.display !== "none");
   const closePaperPicker = () => {
-    if (!paperPicker || !paperPickerList) return;
-    paperPicker.style.display = "none";
-    paperPickerGroups = [];
-    paperPickerExpandedGroupKeys = new Set<number>();
-    paperPickerRows = [];
-    paperPickerActiveRowIndex = 0;
-    paperPickerList.innerHTML = "";
+    paperPickerRequestSeq += 1;
+    clearPaperPickerDebounceTimer();
+    resetPaperPickerState();
+    if (paperPicker) {
+      paperPicker.style.display = "none";
+    }
+    if (paperPickerList) {
+      paperPickerList.innerHTML = "";
+    }
   };
   const buildPaperMetaText = (paper: {
     citationKey?: string;
@@ -5417,9 +5446,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     year?: string;
   }): string => {
     const parts = [
-      paper.citationKey || "",
       paper.firstCreator || "",
       paper.year || "",
+      paper.citationKey || "",
     ].filter(Boolean);
     return parts.join(" · ");
   };
@@ -5432,31 +5461,139 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (normalizedTitle) return normalizedTitle;
     return group.attachments.length > 1 ? `PDF ${attachmentIndex + 1}` : "PDF";
   };
-  const getPaperPickerGroupKey = (group: PaperSearchGroupCandidate): number =>
-    group.itemId;
-  const isPaperPickerGroupExpanded = (
-    group: PaperSearchGroupCandidate,
+  const getPaperPickerGroupByItemId = (
+    itemId: number,
+  ): PaperSearchGroupCandidate | null => paperPickerGroupByItemId.get(itemId) || null;
+  const getPaperPickerCollectionById = (
+    collectionId: number,
+  ): PaperBrowseCollectionCandidate | null =>
+    paperPickerCollectionById.get(collectionId) || null;
+  const isPaperPickerGroupExpanded = (itemId: number): boolean => {
+    const group = getPaperPickerGroupByItemId(itemId);
+    if (!group || group.attachments.length <= 1) return false;
+    return paperPickerExpandedPaperKeys.has(itemId);
+  };
+  const isPaperPickerCollectionExpanded = (collectionId: number): boolean =>
+    paperPickerExpandedCollectionKeys.has(collectionId);
+  const togglePaperPickerGroupExpanded = (
+    itemId: number,
+    expanded?: boolean,
   ): boolean => {
-    if (group.attachments.length <= 1) return false;
-    return paperPickerExpandedGroupKeys.has(getPaperPickerGroupKey(group));
+    const group = getPaperPickerGroupByItemId(itemId);
+    if (!group || group.attachments.length <= 1) return false;
+    const currentlyExpanded = paperPickerExpandedPaperKeys.has(itemId);
+    const nextExpanded = expanded === undefined ? !currentlyExpanded : expanded;
+    if (nextExpanded === currentlyExpanded) return false;
+    if (nextExpanded) {
+      paperPickerExpandedPaperKeys.add(itemId);
+    } else {
+      paperPickerExpandedPaperKeys.delete(itemId);
+    }
+    rebuildPaperPickerRows();
+    return true;
+  };
+  const togglePaperPickerCollectionExpanded = (
+    collectionId: number,
+    expanded?: boolean,
+  ): boolean => {
+    const collection = getPaperPickerCollectionById(collectionId);
+    if (!collection) return false;
+    const currentlyExpanded = paperPickerExpandedCollectionKeys.has(collectionId);
+    const nextExpanded = expanded === undefined ? !currentlyExpanded : expanded;
+    if (nextExpanded === currentlyExpanded) return false;
+    if (nextExpanded) {
+      paperPickerExpandedCollectionKeys.add(collectionId);
+    } else {
+      paperPickerExpandedCollectionKeys.delete(collectionId);
+    }
+    rebuildPaperPickerRows();
+    return true;
+  };
+  const setPaperPickerSearchGroups = (
+    groups: PaperSearchGroupCandidate[],
+  ): void => {
+    paperPickerMode = groups.length ? "search" : "empty";
+    paperPickerEmptyMessage = "No papers matched.";
+    paperPickerGroups = groups;
+    paperPickerCollections = [];
+    paperPickerGroupByItemId = new Map<number, PaperSearchGroupCandidate>();
+    paperPickerCollectionById = new Map<number, PaperBrowseCollectionCandidate>();
+    paperPickerExpandedPaperKeys = new Set<number>();
+    paperPickerExpandedCollectionKeys = new Set<number>();
+    for (const group of groups) {
+      paperPickerGroupByItemId.set(group.itemId, group);
+    }
+  };
+  const setPaperPickerCollections = (
+    collections: PaperBrowseCollectionCandidate[],
+  ): void => {
+    paperPickerMode = collections.length ? "browse" : "empty";
+    paperPickerEmptyMessage = "No references available.";
+    paperPickerGroups = [];
+    paperPickerCollections = collections;
+    paperPickerGroupByItemId = new Map<number, PaperSearchGroupCandidate>();
+    paperPickerCollectionById = new Map<number, PaperBrowseCollectionCandidate>();
+    paperPickerExpandedPaperKeys = new Set<number>();
+    paperPickerExpandedCollectionKeys = new Set<number>();
+
+    const registerCollection = (collection: PaperBrowseCollectionCandidate) => {
+      paperPickerCollectionById.set(collection.collectionId, collection);
+      for (const paper of collection.papers) {
+        paperPickerGroupByItemId.set(paper.itemId, paper);
+      }
+      for (const child of collection.childCollections) {
+        registerCollection(child);
+      }
+    };
+    for (const collection of collections) {
+      registerCollection(collection);
+    }
   };
   const rebuildPaperPickerRows = () => {
     const rows: PaperPickerRow[] = [];
-    paperPickerGroups.forEach((group, groupIndex) => {
+    const appendPaperRow = (group: PaperSearchGroupCandidate, depth: number) => {
       rows.push({
         kind: "paper",
-        groupIndex,
+        itemId: group.itemId,
+        depth,
       });
       if (group.attachments.length <= 1) return;
-      if (!isPaperPickerGroupExpanded(group)) return;
+      if (!isPaperPickerGroupExpanded(group.itemId)) return;
       group.attachments.forEach((_attachment, attachmentIndex) => {
         rows.push({
           kind: "attachment",
-          groupIndex,
+          itemId: group.itemId,
           attachmentIndex,
+          depth: depth + 1,
         });
       });
-    });
+    };
+    const appendCollectionRows = (
+      collections: PaperBrowseCollectionCandidate[],
+      depth: number,
+    ) => {
+      for (const collection of collections) {
+        rows.push({
+          kind: "collection",
+          collectionId: collection.collectionId,
+          depth,
+        });
+        if (!isPaperPickerCollectionExpanded(collection.collectionId)) continue;
+        appendCollectionRows(collection.childCollections, depth + 1);
+        for (const paper of collection.papers) {
+          appendPaperRow(paper, depth + 1);
+        }
+      }
+    };
+
+    if (paperPickerMode === "browse") {
+      appendCollectionRows(paperPickerCollections, 0);
+    } else if (paperPickerMode === "search") {
+      paperPickerGroups.forEach((group) => {
+        appendPaperRow(group, 0);
+      });
+    }
+
     paperPickerRows = rows;
     if (!paperPickerRows.length) {
       paperPickerActiveRowIndex = 0;
@@ -5469,43 +5606,45 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
   const getPaperPickerRowAt = (index: number): PaperPickerRow | null =>
     paperPickerRows[index] || null;
-  const findPaperPickerPaperRowIndex = (groupIndex: number): number => {
+  const findPaperPickerPaperRowIndex = (itemId: number): number => {
     for (let index = 0; index < paperPickerRows.length; index += 1) {
       const row = paperPickerRows[index];
-      if (row.kind === "paper" && row.groupIndex === groupIndex) {
+      if (row.kind === "paper" && row.itemId === itemId) {
         return index;
       }
     }
     return -1;
   };
   const findPaperPickerFirstAttachmentRowIndex = (
-    groupIndex: number,
+    itemId: number,
   ): number => {
     for (let index = 0; index < paperPickerRows.length; index += 1) {
       const row = paperPickerRows[index];
-      if (row.kind === "attachment" && row.groupIndex === groupIndex) {
+      if (row.kind === "attachment" && row.itemId === itemId) {
         return index;
       }
     }
     return -1;
   };
-  const togglePaperPickerGroupExpanded = (
-    groupIndex: number,
-    expanded?: boolean,
-  ): boolean => {
-    const group = paperPickerGroups[groupIndex];
-    if (!group || group.attachments.length <= 1) return false;
-    const groupKey = getPaperPickerGroupKey(group);
-    const currentlyExpanded = paperPickerExpandedGroupKeys.has(groupKey);
-    const nextExpanded = expanded === undefined ? !currentlyExpanded : expanded;
-    if (nextExpanded === currentlyExpanded) return false;
-    if (nextExpanded) {
-      paperPickerExpandedGroupKeys.add(groupKey);
-    } else {
-      paperPickerExpandedGroupKeys.delete(groupKey);
+  const findPaperPickerParentRowIndex = (index: number): number => {
+    const row = getPaperPickerRowAt(index);
+    if (!row || row.depth <= 0) return -1;
+    for (let candidateIndex = index - 1; candidateIndex >= 0; candidateIndex -= 1) {
+      const candidateRow = paperPickerRows[candidateIndex];
+      if (candidateRow && candidateRow.depth === row.depth - 1) {
+        return candidateIndex;
+      }
     }
-    rebuildPaperPickerRows();
-    return true;
+    return -1;
+  };
+  const findPaperPickerFirstChildRowIndex = (index: number): number => {
+    const row = getPaperPickerRowAt(index);
+    if (!row) return -1;
+    const nextRow = getPaperPickerRowAt(index + 1);
+    if (nextRow && nextRow.depth === row.depth + 1) {
+      return index + 1;
+    }
+    return -1;
   };
   const upsertPaperContext = (paper: PaperContextRef): boolean => {
     if (!item) return false;
@@ -5564,11 +5703,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     return true;
   };
   const selectPaperPickerAttachment = (
-    groupIndex: number,
+    itemId: number,
     attachmentIndex: number,
     selectionKind: "paper-single" | "attachment",
   ): boolean => {
-    const selectedGroup = paperPickerGroups[groupIndex];
+    const selectedGroup = getPaperPickerGroupByItemId(itemId);
     if (!selectedGroup) return false;
     const selectedAttachment = selectedGroup.attachments[attachmentIndex];
     if (!selectedAttachment) return false;
@@ -5593,20 +5732,25 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const selectPaperPickerRowAt = (index: number): boolean => {
     const row = getPaperPickerRowAt(index);
     if (!row) return false;
+    if (row.kind === "collection") {
+      togglePaperPickerCollectionExpanded(row.collectionId);
+      renderPaperPicker();
+      return true;
+    }
     if (row.kind === "attachment") {
       return selectPaperPickerAttachment(
-        row.groupIndex,
+        row.itemId,
         row.attachmentIndex,
         "attachment",
       );
     }
-    const group = paperPickerGroups[row.groupIndex];
+    const group = getPaperPickerGroupByItemId(row.itemId);
     if (!group) return false;
     if (group.attachments.length <= 1) {
-      return selectPaperPickerAttachment(row.groupIndex, 0, "paper-single");
+      return selectPaperPickerAttachment(row.itemId, 0, "paper-single");
     }
-    if (!isPaperPickerGroupExpanded(group)) {
-      togglePaperPickerGroupExpanded(row.groupIndex, true);
+    if (!isPaperPickerGroupExpanded(row.itemId)) {
+      togglePaperPickerGroupExpanded(row.itemId, true);
       ztoolkit.log("LLM: Paper picker expanded group via keyboard", {
         itemId: group.itemId,
       });
@@ -5614,7 +5758,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       return true;
     }
     const firstChildIndex = findPaperPickerFirstAttachmentRowIndex(
-      row.groupIndex,
+      row.itemId,
     );
     if (firstChildIndex >= 0) {
       paperPickerActiveRowIndex = firstChildIndex;
@@ -5625,16 +5769,33 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
   const handlePaperPickerArrowRight = (): boolean => {
     const activeRow = getPaperPickerRowAt(paperPickerActiveRowIndex);
-    if (!activeRow || activeRow.kind !== "paper") return false;
-    const group = paperPickerGroups[activeRow.groupIndex];
+    if (!activeRow) return false;
+    if (activeRow.kind === "collection") {
+      if (!isPaperPickerCollectionExpanded(activeRow.collectionId)) {
+        togglePaperPickerCollectionExpanded(activeRow.collectionId, true);
+        renderPaperPicker();
+        return true;
+      }
+      const firstChildIndex = findPaperPickerFirstChildRowIndex(
+        paperPickerActiveRowIndex,
+      );
+      if (firstChildIndex >= 0) {
+        paperPickerActiveRowIndex = firstChildIndex;
+        renderPaperPicker();
+        return true;
+      }
+      return false;
+    }
+    if (activeRow.kind !== "paper") return false;
+    const group = getPaperPickerGroupByItemId(activeRow.itemId);
     if (!group || group.attachments.length <= 1) return false;
-    if (!isPaperPickerGroupExpanded(group)) {
-      togglePaperPickerGroupExpanded(activeRow.groupIndex, true);
+    if (!isPaperPickerGroupExpanded(activeRow.itemId)) {
+      togglePaperPickerGroupExpanded(activeRow.itemId, true);
       renderPaperPicker();
       return true;
     }
     const firstChildIndex = findPaperPickerFirstAttachmentRowIndex(
-      activeRow.groupIndex,
+      activeRow.itemId,
     );
     if (firstChildIndex >= 0 && firstChildIndex !== paperPickerActiveRowIndex) {
       paperPickerActiveRowIndex = firstChildIndex;
@@ -5646,8 +5807,22 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const handlePaperPickerArrowLeft = (): boolean => {
     const activeRow = getPaperPickerRowAt(paperPickerActiveRowIndex);
     if (!activeRow) return false;
+    if (activeRow.kind === "collection") {
+      if (isPaperPickerCollectionExpanded(activeRow.collectionId)) {
+        togglePaperPickerCollectionExpanded(activeRow.collectionId, false);
+        renderPaperPicker();
+        return true;
+      }
+      const parentIndex = findPaperPickerParentRowIndex(paperPickerActiveRowIndex);
+      if (parentIndex >= 0) {
+        paperPickerActiveRowIndex = parentIndex;
+        renderPaperPicker();
+        return true;
+      }
+      return false;
+    }
     if (activeRow.kind === "attachment") {
-      const parentIndex = findPaperPickerPaperRowIndex(activeRow.groupIndex);
+      const parentIndex = findPaperPickerPaperRowIndex(activeRow.itemId);
       if (parentIndex >= 0 && parentIndex !== paperPickerActiveRowIndex) {
         paperPickerActiveRowIndex = parentIndex;
         renderPaperPicker();
@@ -5655,25 +5830,29 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       }
       return false;
     }
-    const group = paperPickerGroups[activeRow.groupIndex];
-    if (!group || group.attachments.length <= 1) return false;
-    if (!isPaperPickerGroupExpanded(group)) return false;
-    togglePaperPickerGroupExpanded(activeRow.groupIndex, false);
-    const parentIndex = findPaperPickerPaperRowIndex(activeRow.groupIndex);
+    const group = getPaperPickerGroupByItemId(activeRow.itemId);
+    if (group && group.attachments.length > 1 && isPaperPickerGroupExpanded(activeRow.itemId)) {
+      togglePaperPickerGroupExpanded(activeRow.itemId, false);
+      renderPaperPicker();
+      return true;
+    }
+    const parentIndex = findPaperPickerParentRowIndex(paperPickerActiveRowIndex);
     if (parentIndex >= 0) {
       paperPickerActiveRowIndex = parentIndex;
+      renderPaperPicker();
+      return true;
     }
-    renderPaperPicker();
-    return true;
+    return false;
   };
   const renderPaperPicker = () => {
     if (!paperPicker || !paperPickerList) return;
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc) return;
-    if (!paperPickerGroups.length) {
+    if (paperPickerMode === "empty") {
       paperPickerList.innerHTML = "";
+      paperPicker.scrollTop = 0;
       const empty = createElement(ownerDoc, "div", "llm-paper-picker-empty", {
-        textContent: "No papers matched.",
+        textContent: paperPickerEmptyMessage,
       });
       paperPickerList.appendChild(empty);
       paperPicker.style.display = "block";
@@ -5681,12 +5860,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     rebuildPaperPickerRows();
     if (!paperPickerRows.length) {
-      paperPickerList.innerHTML = "";
-      const empty = createElement(ownerDoc, "div", "llm-paper-picker-empty", {
-        textContent: "No papers matched.",
-      });
-      paperPickerList.appendChild(empty);
-      paperPicker.style.display = "block";
+      const emptyMessage =
+        paperPickerMode === "browse"
+          ? "No references available."
+          : "No papers matched.";
+      paperPickerMode = "empty";
+      paperPickerEmptyMessage = emptyMessage;
+      renderPaperPicker();
       return;
     }
     paperPickerList.innerHTML = "";
@@ -5695,9 +5875,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         ownerDoc,
         "div",
         `llm-paper-picker-item ${
-          row.kind === "paper"
+          row.kind === "attachment"
+            ? "llm-paper-picker-attachment-row"
+            : row.kind === "paper"
             ? "llm-paper-picker-group-row"
-            : "llm-paper-picker-attachment-row"
+            : "llm-paper-picker-group-row llm-paper-picker-collection-row"
         }`,
       );
       option.setAttribute("role", "option");
@@ -5706,12 +5888,45 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         rowIndex === paperPickerActiveRowIndex ? "true" : "false",
       );
       option.tabIndex = -1;
+      option.style.paddingLeft = `${9 + row.depth * 14}px`;
 
-      if (row.kind === "paper") {
-        const group = paperPickerGroups[row.groupIndex];
+      if (row.kind === "collection") {
+        const collection = getPaperPickerCollectionById(row.collectionId);
+        if (!collection) return;
+        option.setAttribute(
+          "aria-expanded",
+          isPaperPickerCollectionExpanded(row.collectionId) ? "true" : "false",
+        );
+        const rowMain = createElement(
+          ownerDoc,
+          "div",
+          "llm-paper-picker-group-row-main",
+        );
+        const titleLine = createElement(
+          ownerDoc,
+          "div",
+          "llm-paper-picker-group-title-line",
+        );
+        const chevron = createElement(ownerDoc, "span", "llm-paper-picker-group-chevron", {
+          textContent: isPaperPickerCollectionExpanded(row.collectionId) ? "▾" : "▸",
+        });
+        const title = createElement(
+          ownerDoc,
+          "span",
+          "llm-paper-picker-title",
+          {
+            textContent: collection.name,
+            title: collection.name,
+          },
+        );
+        titleLine.append(chevron, title);
+        rowMain.appendChild(titleLine);
+        option.appendChild(rowMain);
+      } else if (row.kind === "paper") {
+        const group = getPaperPickerGroupByItemId(row.itemId);
         if (!group) return;
         const isMultiAttachment = group.attachments.length > 1;
-        const expanded = isPaperPickerGroupExpanded(group);
+        const expanded = isPaperPickerGroupExpanded(row.itemId);
         if (isMultiAttachment) {
           option.setAttribute("aria-expanded", expanded ? "true" : "false");
         }
@@ -5739,7 +5954,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           const attachmentCount = createElement(
             ownerDoc,
             "span",
-            "llm-paper-picker-group-meta",
+            "llm-paper-picker-badge",
             {
               textContent: `${group.attachments.length} PDFs`,
             },
@@ -5755,13 +5970,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           titleLine.append(attachmentCount, chevron);
         }
         rowMain.appendChild(titleLine);
-        const meta = createElement(ownerDoc, "span", "llm-paper-picker-meta", {
-          textContent: buildPaperMetaText(group) || "Supplemental paper",
-        });
-        rowMain.appendChild(meta);
+        const metaText = buildPaperMetaText(group);
+        if (metaText) {
+          const meta = createElement(ownerDoc, "span", "llm-paper-picker-meta", {
+            textContent: metaText,
+          });
+          rowMain.appendChild(meta);
+        }
         option.appendChild(rowMain);
       } else {
-        const group = paperPickerGroups[row.groupIndex];
+        const group = getPaperPickerGroupByItemId(row.itemId);
         if (!group) return;
         const attachment = group.attachments[row.attachmentIndex];
         if (!attachment) return;
@@ -5801,25 +6019,29 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         if (typeof mouse.button === "number" && mouse.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
+        paperPickerActiveRowIndex = rowIndex;
+        if (row.kind === "collection") {
+          togglePaperPickerCollectionExpanded(row.collectionId);
+          renderPaperPicker();
+          return;
+        }
         if (row.kind === "paper") {
-          paperPickerActiveRowIndex = rowIndex;
-          const group = paperPickerGroups[row.groupIndex];
+          const group = getPaperPickerGroupByItemId(row.itemId);
           if (!group) return;
           if (group.attachments.length <= 1) {
-            selectPaperPickerAttachment(row.groupIndex, 0, "paper-single");
+            selectPaperPickerAttachment(row.itemId, 0, "paper-single");
             return;
           }
-          togglePaperPickerGroupExpanded(row.groupIndex);
-          const parentIndex = findPaperPickerPaperRowIndex(row.groupIndex);
+          togglePaperPickerGroupExpanded(row.itemId);
+          const parentIndex = findPaperPickerPaperRowIndex(row.itemId);
           if (parentIndex >= 0) {
             paperPickerActiveRowIndex = parentIndex;
           }
           renderPaperPicker();
           return;
         }
-        paperPickerActiveRowIndex = rowIndex;
         selectPaperPickerAttachment(
-          row.groupIndex,
+          row.itemId,
           row.attachmentIndex,
           "attachment",
         );
@@ -5832,6 +6054,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       paperPickerList.appendChild(option);
     });
     paperPicker.style.display = "block";
+    const activeOption = paperPickerList.children[
+      paperPickerActiveRowIndex
+    ] as HTMLElement | null;
+    if (paperPickerActiveRowIndex <= 0) {
+      paperPicker.scrollTop = 0;
+    } else {
+      activeOption?.scrollIntoView({
+        block: "nearest",
+      });
+    }
   };
   const schedulePaperPickerSearch = () => {
     if (!item || !paperPicker || !paperPickerList) {
@@ -5843,15 +6075,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       closePaperPicker();
       return;
     }
-    if (paperPickerDebounceTimer !== null) {
-      const win = body.ownerDocument?.defaultView;
-      if (win) {
-        win.clearTimeout(paperPickerDebounceTimer);
-      } else {
-        clearTimeout(paperPickerDebounceTimer);
-      }
-      paperPickerDebounceTimer = null;
-    }
+    clearPaperPickerDebounceTimer();
     const requestId = ++paperPickerRequestSeq;
     const runSearch = async () => {
       paperPickerDebounceTimer = null;
@@ -5866,8 +6090,24 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         closePaperPicker();
         return;
       }
+      const normalizedQuery = normalizePaperSearchText(activeSlashToken.query);
       const contextSource = resolveContextSourceItem(item);
       const excludeContextItemId = contextSource.contextItem?.id ?? null;
+      if (!normalizedQuery) {
+        const collections = await browsePaperCollectionCandidates(
+          libraryID,
+          excludeContextItemId,
+        );
+        if (requestId !== paperPickerRequestSeq) return;
+        if (!getActiveSlashToken()) {
+          closePaperPicker();
+          return;
+        }
+        setPaperPickerCollections(collections);
+        paperPickerActiveRowIndex = 0;
+        renderPaperPicker();
+        return;
+      }
       const results = await searchPaperCandidates(
         libraryID,
         activeSlashToken.query,
@@ -5879,27 +6119,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         closePaperPicker();
         return;
       }
-      paperPickerGroups = results;
-      paperPickerExpandedGroupKeys = new Set<number>();
-      if (activeSlashToken.query.trim()) {
-        for (const group of paperPickerGroups) {
-          if (
-            group.attachments.length > 1 &&
-            group.attachments.some((attachment) => attachment.score > 0)
-          ) {
-            paperPickerExpandedGroupKeys.add(getPaperPickerGroupKey(group));
-          }
-        }
-      }
-      const attachmentCount = paperPickerGroups.reduce(
-        (count, group) => count + group.attachments.length,
-        0,
-      );
-      ztoolkit.log("LLM: Paper picker grouped candidates", {
-        groups: paperPickerGroups.length,
-        attachments: attachmentCount,
-        autoExpandedGroups: paperPickerExpandedGroupKeys.size,
-      });
+      setPaperPickerSearchGroups(results);
       paperPickerActiveRowIndex = 0;
       renderPaperPicker();
     };
@@ -6414,7 +6634,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (status) {
       setStatus(
         status,
-        "Reference picker ready. Type to search papers.",
+        "Reference picker ready. Browse collections or type to search papers.",
         "ready",
       );
     }
