@@ -36,14 +36,11 @@ export type StoredChatMessage = {
     contentHash?: string;
   }>;
   modelName?: string;
-<<<<<<< HEAD
+  modelEntryId?: string;
+  modelProviderLabel?: string;
   agentStatusText?: string;
   agentTraceText?: string;
   agentOpen?: boolean;
-=======
-  modelEntryId?: string;
-  modelProviderLabel?: string;
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
   reasoningSummary?: string;
   reasoningDetails?: string;
 };
@@ -171,14 +168,11 @@ export async function initChatStore(): Promise<void> {
         screenshot_images TEXT,
         attachments_json TEXT,
         model_name TEXT,
-<<<<<<< HEAD
+        model_entry_id TEXT,
+        model_provider_label TEXT,
         agent_status_text TEXT,
         agent_trace_text TEXT,
         agent_open INTEGER,
-=======
-        model_entry_id TEXT,
-        model_provider_label TEXT,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
         reasoning_summary TEXT,
         reasoning_details TEXT
       )`,
@@ -383,14 +377,11 @@ export async function loadConversation(
             screenshot_images AS screenshotImages,
             attachments_json AS attachmentsJson,
             model_name AS modelName,
-<<<<<<< HEAD
+            model_entry_id AS modelEntryId,
+            model_provider_label AS modelProviderLabel,
             agent_status_text AS agentStatusText,
             agent_trace_text AS agentTraceText,
             agent_open AS agentOpen,
-=======
-            model_entry_id AS modelEntryId,
-            model_provider_label AS modelProviderLabel,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
             reasoning_summary AS reasoningSummary,
             reasoning_details AS reasoningDetails
      FROM ${CHAT_MESSAGES_TABLE}
@@ -411,14 +402,11 @@ export async function loadConversation(
         screenshotImages?: unknown;
         attachmentsJson?: unknown;
         modelName?: unknown;
-<<<<<<< HEAD
+        modelEntryId?: unknown;
+        modelProviderLabel?: unknown;
         agentStatusText?: unknown;
         agentTraceText?: unknown;
         agentOpen?: unknown;
-=======
-        modelEntryId?: unknown;
-        modelProviderLabel?: unknown;
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
         reasoningSummary?: unknown;
         reasoningDetails?: unknown;
       }>
@@ -619,7 +607,12 @@ export async function loadConversation(
       screenshotImages,
       attachments,
       modelName: typeof row.modelName === "string" ? row.modelName : undefined,
-<<<<<<< HEAD
+      modelEntryId:
+        typeof row.modelEntryId === "string" ? row.modelEntryId : undefined,
+      modelProviderLabel:
+        typeof row.modelProviderLabel === "string"
+          ? row.modelProviderLabel
+          : undefined,
       agentStatusText:
         typeof row.agentStatusText === "string"
           ? row.agentStatusText
@@ -635,15 +628,7 @@ export async function loadConversation(
             ? row.agentOpen !== 0
             : row.agentOpen === "0" || row.agentOpen === "1"
               ? row.agentOpen === "1"
-            : undefined,
-=======
-      modelEntryId:
-        typeof row.modelEntryId === "string" ? row.modelEntryId : undefined,
-      modelProviderLabel:
-        typeof row.modelProviderLabel === "string"
-          ? row.modelProviderLabel
-          : undefined,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
+              : undefined,
       reasoningSummary:
         typeof row.reasoningSummary === "string"
           ? row.reasoningSummary
@@ -705,13 +690,8 @@ export async function appendMessage(
     : [];
   await Zotero.DB.queryAsync(
     `INSERT INTO ${CHAT_MESSAGES_TABLE}
-<<<<<<< HEAD
-      (conversation_key, role, text, timestamp, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, paper_contexts_json, screenshot_images, attachments_json, model_name, agent_status_text, agent_trace_text, agent_open, reasoning_summary, reasoning_details)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-=======
-      (conversation_key, role, text, timestamp, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, paper_contexts_json, screenshot_images, attachments_json, model_name, model_entry_id, model_provider_label, reasoning_summary, reasoning_details)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
+      (conversation_key, role, text, timestamp, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, paper_contexts_json, screenshot_images, attachments_json, model_name, model_entry_id, model_provider_label, agent_status_text, agent_trace_text, agent_open, reasoning_summary, reasoning_details)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       normalizedKey,
       message.role,
@@ -727,7 +707,8 @@ export async function appendMessage(
       screenshotImages.length ? JSON.stringify(screenshotImages) : null,
       attachments.length ? JSON.stringify(attachments) : null,
       message.modelName || null,
-<<<<<<< HEAD
+      message.modelEntryId || null,
+      message.modelProviderLabel || null,
       message.agentStatusText || null,
       message.agentTraceText || null,
       typeof message.agentOpen === "boolean"
@@ -735,10 +716,6 @@ export async function appendMessage(
           ? 1
           : 0
         : null,
-=======
-      message.modelEntryId || null,
-      message.modelProviderLabel || null,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
       message.reasoningSummary || null,
       message.reasoningDetails || null,
     ],
@@ -844,14 +821,11 @@ export async function updateLatestAssistantMessage(
     | "text"
     | "timestamp"
     | "modelName"
-<<<<<<< HEAD
+    | "modelEntryId"
+    | "modelProviderLabel"
     | "agentStatusText"
     | "agentTraceText"
     | "agentOpen"
-=======
-    | "modelEntryId"
-    | "modelProviderLabel"
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
     | "reasoningSummary"
     | "reasoningDetails"
   >,
@@ -865,14 +839,11 @@ export async function updateLatestAssistantMessage(
      SET text = ?,
          timestamp = ?,
          model_name = ?,
-<<<<<<< HEAD
+         model_entry_id = ?,
+         model_provider_label = ?,
          agent_status_text = ?,
          agent_trace_text = ?,
          agent_open = ?,
-=======
-         model_entry_id = ?,
-         model_provider_label = ?,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
          reasoning_summary = ?,
          reasoning_details = ?
      WHERE id = (
@@ -886,7 +857,8 @@ export async function updateLatestAssistantMessage(
       message.text || "",
       Number.isFinite(timestamp) ? Math.floor(timestamp) : Date.now(),
       message.modelName || null,
-<<<<<<< HEAD
+      message.modelEntryId || null,
+      message.modelProviderLabel || null,
       message.agentStatusText || null,
       message.agentTraceText || null,
       typeof message.agentOpen === "boolean"
@@ -894,10 +866,6 @@ export async function updateLatestAssistantMessage(
           ? 1
           : 0
         : null,
-=======
-      message.modelEntryId || null,
-      message.modelProviderLabel || null,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
       message.reasoningSummary || null,
       message.reasoningDetails || null,
       normalizedKey,

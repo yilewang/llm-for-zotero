@@ -1438,14 +1438,11 @@ function toPanelMessage(message: StoredChatMessage): Message {
     screenshotExpanded: false,
     screenshotActiveIndex: screenshotImages?.length ? 0 : undefined,
     modelName: message.modelName,
-<<<<<<< HEAD
     agentStatusText: message.agentStatusText,
     agentTraceText: message.agentTraceText,
     agentOpen: message.agentOpen,
-=======
     modelEntryId: message.modelEntryId,
     modelProviderLabel: message.modelProviderLabel,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
     reasoningSummary: message.reasoningSummary,
     reasoningDetails: message.reasoningDetails,
     reasoningOpen: isReasoningExpandedByDefault(),
@@ -1972,14 +1969,11 @@ type AssistantMessageSnapshot = Pick<
   | "text"
   | "timestamp"
   | "modelName"
-<<<<<<< HEAD
   | "agentStatusText"
   | "agentTraceText"
   | "agentOpen"
-=======
   | "modelEntryId"
   | "modelProviderLabel"
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
   | "reasoningSummary"
   | "reasoningDetails"
   | "reasoningOpen"
@@ -2005,14 +1999,11 @@ function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
     text: message.text,
     timestamp: message.timestamp,
     modelName: message.modelName,
-<<<<<<< HEAD
     agentStatusText: message.agentStatusText,
     agentTraceText: message.agentTraceText,
     agentOpen: message.agentOpen,
-=======
     modelEntryId: message.modelEntryId,
     modelProviderLabel: message.modelProviderLabel,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
     reasoningSummary: message.reasoningSummary,
     reasoningDetails: message.reasoningDetails,
     reasoningOpen: message.reasoningOpen,
@@ -2026,14 +2017,11 @@ function restoreAssistantSnapshot(
   message.text = snapshot.text;
   message.timestamp = snapshot.timestamp;
   message.modelName = snapshot.modelName;
-<<<<<<< HEAD
   message.agentStatusText = snapshot.agentStatusText;
   message.agentTraceText = snapshot.agentTraceText;
   message.agentOpen = snapshot.agentOpen;
-=======
   message.modelEntryId = snapshot.modelEntryId;
   message.modelProviderLabel = snapshot.modelProviderLabel;
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
   message.reasoningSummary = snapshot.reasoningSummary;
   message.reasoningDetails = snapshot.reasoningDetails;
   message.reasoningOpen = snapshot.reasoningOpen;
@@ -2587,14 +2575,11 @@ export async function retryLatestAssistantResponse(
       text: assistantMessage.text,
       timestamp: assistantMessage.timestamp,
       modelName: assistantMessage.modelName,
-<<<<<<< HEAD
       agentStatusText: assistantMessage.agentStatusText,
       agentTraceText: assistantMessage.agentTraceText,
       agentOpen: assistantMessage.agentOpen,
-=======
       modelEntryId: assistantMessage.modelEntryId,
       modelProviderLabel: assistantMessage.modelProviderLabel,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
       reasoningSummary: assistantMessage.reasoningSummary,
       reasoningDetails: assistantMessage.reasoningDetails,
     });
@@ -2713,11 +2698,6 @@ export async function editUserTurnAndRetry(
   }
 
   // Resolve current model settings and retry
-<<<<<<< HEAD
-  const profile = getSelectedProfileForItem(item.id);
-  const reasoning = getSelectedReasoningForItem(item.id, profile.model, profile.apiBase);
-  const advanced = getAdvancedModelParamsForProfile(profile.key);
-=======
   const profile = getSelectedModelEntryForItem(item.id);
   const reasoning = getSelectedReasoningForItem(
     item.id,
@@ -2725,7 +2705,6 @@ export async function editUserTurnAndRetry(
     profile?.apiBase,
   );
   const advanced = getAdvancedModelParamsForEntry(profile?.entryId);
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
   await retryLatestAssistantResponse(
     body,
     item,
@@ -2889,14 +2868,11 @@ export async function sendQuestion(
       text: assistantMessage.text,
       timestamp: assistantMessage.timestamp,
       modelName: assistantMessage.modelName,
-<<<<<<< HEAD
       agentStatusText: assistantMessage.agentStatusText,
       agentTraceText: assistantMessage.agentTraceText,
       agentOpen: assistantMessage.agentOpen,
-=======
       modelEntryId: assistantMessage.modelEntryId,
       modelProviderLabel: assistantMessage.modelProviderLabel,
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
       reasoningSummary: assistantMessage.reasoningSummary,
       reasoningDetails: assistantMessage.reasoningDetails,
     });

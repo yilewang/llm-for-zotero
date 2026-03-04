@@ -5108,19 +5108,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const { groupedChoices, selectedEntryId } = getSelectedModelInfo();
 
     modelMenu.innerHTML = "";
-<<<<<<< HEAD
     appendDropdownInstruction(
       modelMenu,
       "Select model",
       "llm-model-menu-hint",
     );
-=======
-    appendDropdownInstruction(modelMenu, "Select model", "llm-model-menu-hint");
     if (!groupedChoices.length) {
       appendModelMenuEmptyState(modelMenu, "No models configured yet.");
       return;
     }
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
 
     for (const group of groupedChoices) {
       appendModelProviderSection(modelMenu, group.providerLabel);
@@ -5163,9 +5159,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const convKey = getConversationKey(item);
     const historyForRetry = chatHistory.get(convKey) || [];
     const latestPair = findLatestRetryPair(historyForRetry);
-<<<<<<< HEAD
-    const latestAssistantModelName = latestPair?.assistantMessage?.modelName?.trim();
-=======
     const latestAssistantModelName =
       latestPair?.assistantMessage?.modelName?.trim() || "";
     const latestAssistantModelEntryId =
@@ -5177,7 +5170,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           group.entries.filter((entry) => entry.model === latestAssistantModelName),
         )
       : [];
->>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
     retryModelMenu.innerHTML = "";
     if (!groupedChoices.length) {
       appendModelMenuEmptyState(retryModelMenu, "No models configured yet.");

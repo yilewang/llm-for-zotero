@@ -461,10 +461,11 @@ export function registerReaderSelectionTracking() {
           const selectedPaperContext = isGlobalConversation
             ? readerPaperContext
             : null;
-          const selectedTextLocation = getCurrentSelectionPageLocationFromReader(
-            event.reader as any,
-            effectiveSelectedText,
-          );
+          const selectedTextLocation =
+            await resolveCurrentSelectionPageLocationFromReader(
+              event.reader as any,
+              effectiveSelectedText,
+            );
           const added = appendSelectedTextContextForItem(
             conversationKey,
             effectiveSelectedText,
