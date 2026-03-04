@@ -3467,6 +3467,7 @@ button.llm-at-target-btn:focus-visible {
   background: var(--stroke-secondary);
 }
 
+.llm-model-menu-section,
 .llm-reasoning-menu-section {
   display: flex;
   align-items: center;
@@ -3480,6 +3481,7 @@ button.llm-at-target-btn:focus-visible {
   user-select: none;
 }
 
+.llm-model-menu-empty,
 .llm-reasoning-menu-empty {
   padding: calc(4px * var(--llm-font-scale, 1))
     calc(8px * var(--llm-font-scale, 1));

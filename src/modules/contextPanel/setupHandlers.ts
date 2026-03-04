@@ -1,4 +1,5 @@
 import { createElement } from "../../utils/domHelpers";
+import type { RuntimeModelEntry } from "../../utils/modelProviders";
 import {
   AUTO_SCROLL_BOTTOM_THRESHOLD,
   MAX_SELECTED_IMAGES,
@@ -21,9 +22,7 @@ import {
   ACTION_LAYOUT_DROPDOWN_ICON_WIDTH_PX,
   ACTION_LAYOUT_MODEL_WRAP_MIN_CHARS,
   ACTION_LAYOUT_MODEL_FULL_MAX_LINES,
-  MODEL_PROFILE_ORDER,
   GLOBAL_HISTORY_LIMIT,
-  type ModelProfileKey,
 } from "./constants";
 import {
   selectedModelCache,
@@ -84,12 +83,12 @@ import {
   positionMenuAtPointer,
 } from "./menuPositioning";
 import {
-  getApiProfiles,
-  getSelectedProfileForItem,
+  getAvailableModelEntries,
+  getStringPref,
+  getSelectedModelEntryForItem,
   applyPanelFontScale,
-  getAdvancedModelParamsForProfile,
-  getLastUsedModelProfileKey,
-  setLastUsedModelProfileKey,
+  getAdvancedModelParamsForEntry,
+  setSelectedModelEntryForItem,
   getLastUsedReasoningLevel,
   setLastUsedReasoningLevel,
   getLastUsedPaperConversationKey,
@@ -4475,55 +4474,49 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   }
 
   const getModelChoices = () => {
-    const profiles = getApiProfiles();
-    const normalize = (value: string) =>
-      value.trim().replace(/\s+/g, " ").toLowerCase();
-    const primaryModel =
-      (profiles.primary.model || "default").trim() || "default";
-    const choices: Array<{ key: ModelProfileKey; model: string }> = [];
-    const seenModels = new Set<string>();
+    const choices = getAvailableModelEntries();
+    const groupedChoices: Array<{
+      providerLabel: string;
+      entries: RuntimeModelEntry[];
+    }> = [];
+    const groupedByProvider = new Map<string, RuntimeModelEntry[]>();
 
-    for (const key of MODEL_PROFILE_ORDER) {
-      const model = (
-        key === "primary" ? primaryModel : profiles[key].model
-      ).trim();
-      if (!model) continue;
-      const normalized = normalize(model);
-      if (seenModels.has(normalized)) continue;
-      seenModels.add(normalized);
-      choices.push({ key, model });
+    for (const entry of choices) {
+      const existing = groupedByProvider.get(entry.providerLabel);
+      if (existing) {
+        existing.push(entry);
+        continue;
+      }
+      const entries = [entry];
+      groupedByProvider.set(entry.providerLabel, entries);
+      groupedChoices.push({
+        providerLabel: entry.providerLabel,
+        entries,
+      });
     }
 
-    if (!choices.length) {
-      choices.push({ key: "primary", model: primaryModel });
-    }
-
-    return { profiles, choices };
+    return { choices, groupedChoices };
   };
 
   const getSelectedModelInfo = () => {
-    const { choices } = getModelChoices();
-    if (!item) {
-      return {
-        selected: "primary" as const,
-        choices,
-        currentModel: choices[0]?.model || "default",
-      };
-    }
-    let selected =
-      getLastUsedModelProfileKey() ||
-      selectedModelCache.get(item.id) ||
-      "primary";
-    if (!choices.some((entry) => entry.key === selected)) {
-      selected = choices[0]?.key || "primary";
-    }
-    selectedModelCache.set(item.id, selected);
-    const current =
-      choices.find((entry) => entry.key === selected) || choices[0];
+    const { choices, groupedChoices } = getModelChoices();
+    const selectedEntry = item ? getSelectedModelEntryForItem(item.id) : null;
+    const currentModel =
+      selectedEntry?.model ||
+      choices[0]?.model ||
+      getStringPref("modelPrimary") ||
+      getStringPref("model") ||
+      "default";
+    const currentModelHint = selectedEntry
+      ? `${selectedEntry.providerLabel} · ${selectedEntry.model}`
+      : currentModel;
     return {
-      selected,
+      selectedEntryId: selectedEntry?.entryId || "",
+      selectedEntry,
       choices,
-      currentModel: current?.model || "default",
+      groupedChoices,
+      currentModel,
+      currentModelHint,
     };
   };
 
@@ -5021,12 +5014,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const updateModelButton = () => {
     if (!item || !modelBtn) return;
     withScrollGuard(chatBox, conversationKey, () => {
-      const { choices, currentModel } = getSelectedModelInfo();
+      const { choices, currentModel, currentModelHint } = getSelectedModelInfo();
       const hasSecondary = choices.length > 1;
       modelBtn.dataset.modelLabel = `${currentModel || "default"}`;
       modelBtn.dataset.modelHint = hasSecondary
-        ? "Click to choose a model"
-        : "Only one model is configured";
+        ? currentModelHint
+        : currentModelHint || "Only one model is configured";
       modelBtn.disabled = !item;
       applyResponsiveActionButtonsLayout();
       updateImagePreviewPreservingScroll();
@@ -5055,100 +5048,165 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     menu.appendChild(hint);
   };
 
+  const appendModelProviderSection = (
+    menu: HTMLDivElement,
+    providerLabel: string,
+  ) => {
+    const section = createElement(
+      body.ownerDocument as Document,
+      "div",
+      "llm-model-menu-section",
+      {
+        textContent: providerLabel,
+      },
+    );
+    section.setAttribute("aria-hidden", "true");
+    menu.appendChild(section);
+  };
+
+  const appendModelMenuEmptyState = (menu: HTMLDivElement, text: string) => {
+    const empty = createElement(
+      body.ownerDocument as Document,
+      "div",
+      "llm-model-menu-empty",
+      {
+        textContent: text,
+      },
+    );
+    empty.setAttribute("aria-hidden", "true");
+    menu.appendChild(empty);
+  };
+
   const rebuildModelMenu = () => {
     if (!item || !modelMenu) return;
-    const { choices, selected } = getSelectedModelInfo();
+    const { groupedChoices, selectedEntryId } = getSelectedModelInfo();
 
     modelMenu.innerHTML = "";
+<<<<<<< HEAD
     appendDropdownInstruction(
       modelMenu,
       "Select model",
       "llm-model-menu-hint",
     );
+=======
+    appendDropdownInstruction(modelMenu, "Select model", "llm-model-menu-hint");
+    if (!groupedChoices.length) {
+      appendModelMenuEmptyState(modelMenu, "No models configured yet.");
+      return;
+    }
+>>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
 
-    for (const entry of choices) {
-      const isSelected = entry.key === selected;
-      const option = createElement(
-        body.ownerDocument as Document,
-        "button",
-        "llm-response-menu-item llm-model-option",
-        {
-          type: "button",
-          textContent: isSelected
-            ? `\u2713 ${entry.model || "default"}`
-            : entry.model || "default",
-        },
-      );
-      const applyModelSelection = (e: Event) => {
-        if (!isPrimaryPointerEvent(e)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (!item) return;
-        selectedModelCache.clear();
-        selectedModelCache.set(item.id, entry.key);
-        setLastUsedModelProfileKey(entry.key);
-        setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
-        setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
-        updateModelButton();
-        updateReasoningButton();
-      };
-      option.addEventListener("pointerdown", applyModelSelection);
-      option.addEventListener("click", applyModelSelection);
-      modelMenu.appendChild(option);
+    for (const group of groupedChoices) {
+      appendModelProviderSection(modelMenu, group.providerLabel);
+      for (const entry of group.entries) {
+        const isSelected = entry.entryId === selectedEntryId;
+        const option = createElement(
+          body.ownerDocument as Document,
+          "button",
+          "llm-response-menu-item llm-model-option",
+          {
+            type: "button",
+            textContent: isSelected
+              ? `\u2713 ${entry.displayModelLabel || "default"}`
+              : entry.displayModelLabel || "default",
+            title: `${entry.providerLabel} · ${entry.model}`,
+          },
+        );
+        const applyModelSelection = (e: Event) => {
+          if (!isPrimaryPointerEvent(e)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (!item) return;
+          setSelectedModelEntryForItem(item.id, entry.entryId);
+          setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
+          setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+          updateModelButton();
+          updateReasoningButton();
+        };
+        option.addEventListener("pointerdown", applyModelSelection);
+        option.addEventListener("click", applyModelSelection);
+        modelMenu.appendChild(option);
+      }
     }
   };
 
   const rebuildRetryModelMenu = () => {
     if (!item || !retryModelMenu) return;
-    const { profiles, choices } = getModelChoices();
+    const { groupedChoices } = getModelChoices();
     // Show checkmark on the model that generated the current response, not the currently selected model
     const convKey = getConversationKey(item);
     const historyForRetry = chatHistory.get(convKey) || [];
     const latestPair = findLatestRetryPair(historyForRetry);
+<<<<<<< HEAD
     const latestAssistantModelName = latestPair?.assistantMessage?.modelName?.trim();
+=======
+    const latestAssistantModelName =
+      latestPair?.assistantMessage?.modelName?.trim() || "";
+    const latestAssistantModelEntryId =
+      latestPair?.assistantMessage?.modelEntryId?.trim() || "";
+    const latestAssistantProviderLabel =
+      latestPair?.assistantMessage?.modelProviderLabel?.trim() || "";
+    const matchingLegacyEntries = latestAssistantModelName
+      ? groupedChoices.flatMap((group) =>
+          group.entries.filter((entry) => entry.model === latestAssistantModelName),
+        )
+      : [];
+>>>>>>> 3e1868d (improve the preference page display. now support multiple models by one provider)
     retryModelMenu.innerHTML = "";
-    for (const entry of choices) {
-      const profile = profiles[entry.key];
-      const isSelected = latestAssistantModelName
-        ? entry.model === latestAssistantModelName
-        : false;
-      const option = createElement(
-        body.ownerDocument as Document,
-        "button",
-        "llm-response-menu-item llm-model-option",
-        {
-          type: "button",
-          textContent: isSelected
-            ? `\u2713 ${entry.model || "default"}`
-            : entry.model || "default",
-        },
-      );
-      const runRetry = async (e: Event) => {
-        if (!isPrimaryPointerEvent(e)) return;
-        e.preventDefault();
-        e.stopPropagation();
-        if (!item) return;
-        closeRetryModelMenu();
-        const retryReasoning = getSelectedReasoningForItem(
-          item.id,
-          profile.model,
-          profile.apiBase,
+    if (!groupedChoices.length) {
+      appendModelMenuEmptyState(retryModelMenu, "No models configured yet.");
+      return;
+    }
+    for (const group of groupedChoices) {
+      appendModelProviderSection(retryModelMenu, group.providerLabel);
+      for (const entry of group.entries) {
+        const isSelected = latestAssistantModelEntryId
+          ? entry.entryId === latestAssistantModelEntryId
+          : latestAssistantModelName
+            ? entry.model === latestAssistantModelName &&
+              (latestAssistantProviderLabel
+                ? entry.providerLabel === latestAssistantProviderLabel
+                : matchingLegacyEntries.length === 1)
+            : false;
+        const option = createElement(
+          body.ownerDocument as Document,
+          "button",
+          "llm-response-menu-item llm-model-option",
+          {
+            type: "button",
+            textContent: isSelected
+              ? `\u2713 ${entry.displayModelLabel || "default"}`
+              : entry.displayModelLabel || "default",
+            title: `${entry.providerLabel} · ${entry.model}`,
+          },
         );
-        const retryAdvanced = getAdvancedModelParams(entry.key);
-        await retryLatestAssistantResponse(
-          body,
-          item,
-          profile.model,
-          profile.apiBase,
-          profile.apiKey,
-          retryReasoning,
-          retryAdvanced,
-        );
-      };
-      option.addEventListener("click", (e: Event) => {
-        void runRetry(e);
-      });
-      retryModelMenu.appendChild(option);
+        const runRetry = async (e: Event) => {
+          if (!isPrimaryPointerEvent(e)) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (!item) return;
+          closeRetryModelMenu();
+          const retryReasoning = getSelectedReasoningForItem(
+            item.id,
+            entry.model,
+            entry.apiBase,
+          );
+          const retryAdvanced = getAdvancedModelParams(entry.entryId);
+          await retryLatestAssistantResponse(
+            body,
+            item,
+            entry.model,
+            entry.apiBase,
+            entry.apiKey,
+            retryReasoning,
+            retryAdvanced,
+          );
+        };
+        option.addEventListener("click", (e: Event) => {
+          void runRetry(e);
+        });
+        retryModelMenu.appendChild(option);
+      }
     }
   };
 
@@ -5163,12 +5221,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       };
     }
     const { currentModel } = getSelectedModelInfo();
-    const selectedProfile = getSelectedProfileForItem(item.id);
+    const selectedProfile = getSelectedModelEntryForItem(item.id);
     const provider = detectReasoningProvider(currentModel);
     const options = getReasoningOptions(
       provider,
       currentModel,
-      selectedProfile.apiBase,
+      selectedProfile?.apiBase,
     );
     const enabledLevels = options
       .filter((option) => option.enabled)
@@ -5412,14 +5470,14 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
   const getSelectedProfile = () => {
     if (!item) return null;
-    return getSelectedProfileForItem(item.id);
+    return getSelectedModelEntryForItem(item.id);
   };
 
   const getAdvancedModelParams = (
-    profileKey: ModelProfileKey | undefined,
+    entryId: string | undefined,
   ): AdvancedModelParams | undefined => {
-    if (!profileKey) return undefined;
-    return getAdvancedModelParamsForProfile(profileKey);
+    if (!entryId) return undefined;
+    return getAdvancedModelParamsForEntry(entryId);
   };
 
   const getSelectedReasoning = (): LLMReasoningConfig | undefined => {

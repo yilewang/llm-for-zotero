@@ -49,3 +49,17 @@ export function normalizeInputTokenCap(
   if (!Number.isFinite(parsed) || parsed < 1) return normalizedFallback;
   return Math.min(parsed, MAX_ALLOWED_INPUT_TOKEN_CAP);
 }
+
+/** Clamp an optional input-token-cap value to [1, MAX_ALLOWED_INPUT_TOKEN_CAP], returning undefined when blank/invalid. */
+export function normalizeOptionalInputTokenCap(
+  value?: number | string | null,
+): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string" && !value.trim()) return undefined;
+  const parsed =
+    typeof value === "string"
+      ? Number.parseInt(value, 10)
+      : Math.floor(Number(value));
+  if (!Number.isFinite(parsed) || parsed < 1) return undefined;
+  return Math.min(parsed, MAX_ALLOWED_INPUT_TOKEN_CAP);
+}

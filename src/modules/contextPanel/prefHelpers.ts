@@ -1,23 +1,21 @@
-import { DEFAULT_INPUT_TOKEN_CAP } from "../../utils/llmDefaults";
-import {
-  normalizeTemperature,
-  normalizeMaxTokens,
-  normalizeInputTokenCap,
-} from "../../utils/normalization";
-import { getModelInputTokenLimit } from "../../utils/modelInputCap";
 import {
   config,
-  MODEL_PROFILE_SUFFIX,
   ASSISTANT_NOTE_MAP_PREF_KEY,
   CUSTOM_SHORTCUT_ID_PREFIX,
-  type ModelProfileKey,
 } from "./constants";
-import type {
-  ApiProfile,
-  CustomShortcut,
-  ReasoningLevelSelection,
-} from "./types";
+import type { CustomShortcut, ReasoningLevelSelection } from "./types";
 import { selectedModelCache, panelFontScalePercent } from "./state";
+import {
+  deriveProviderLabel,
+  getDefaultModelEntry,
+  getLastUsedModelEntryId,
+  getModelEntryById,
+  getModelProviderGroups,
+  getRuntimeModelEntries,
+  setLastUsedModelEntryId,
+  type ModelProviderGroup,
+  type RuntimeModelEntry,
+} from "../../utils/modelProviders";
 
 type ZoteroPrefsAPI = {
   get?: (key: string, global?: boolean) => unknown;
@@ -35,16 +33,9 @@ export function getStringPref(key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-const LAST_MODEL_PROFILE_PREF_KEY = "lastUsedModelProfile";
 const LAST_REASONING_LEVEL_PREF_KEY = "lastUsedReasoningLevel";
 const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
 const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";
-const MODEL_PROFILE_KEYS = new Set<ModelProfileKey>([
-  "primary",
-  "secondary",
-  "tertiary",
-  "quaternary",
-]);
 const REASONING_LEVEL_SELECTIONS = new Set<ReasoningLevelSelection>([
   "none",
   "default",
@@ -60,21 +51,6 @@ function buildPaperConversationMapKey(
   paperItemID: number,
 ): string {
   return `${Math.floor(libraryID)}:${Math.floor(paperItemID)}`;
-}
-
-export function getLastUsedModelProfileKey(): ModelProfileKey | null {
-  const raw = getStringPref(LAST_MODEL_PROFILE_PREF_KEY).trim().toLowerCase();
-  if (!raw || !MODEL_PROFILE_KEYS.has(raw as ModelProfileKey)) return null;
-  return raw as ModelProfileKey;
-}
-
-export function setLastUsedModelProfileKey(key: ModelProfileKey): void {
-  if (!MODEL_PROFILE_KEYS.has(key)) return;
-  getZoteroPrefs()?.set?.(
-    `${config.prefsPrefix}.${LAST_MODEL_PROFILE_PREF_KEY}`,
-    key,
-    true,
-  );
 }
 
 export function getLastUsedReasoningLevel(): ReasoningLevelSelection | null {
@@ -188,87 +164,61 @@ export function removeLastUsedPaperConversationKey(
   setLastPaperConversationMap(map);
 }
 
-function normalizeTemperaturePref(raw: string): number {
-  return normalizeTemperature(raw);
+export function getModelConfigGroups(): ModelProviderGroup[] {
+  return getModelProviderGroups();
 }
 
-function normalizeMaxTokensPref(raw: string): number {
-  return normalizeMaxTokens(raw);
+export function getAvailableModelEntries(): RuntimeModelEntry[] {
+  return getRuntimeModelEntries();
 }
 
-export function getApiProfiles(): Record<ModelProfileKey, ApiProfile> {
-  const primary: ApiProfile = {
-    apiBase: getStringPref("apiBasePrimary") || getStringPref("apiBase") || "",
-    apiKey: getStringPref("apiKeyPrimary") || getStringPref("apiKey") || "",
-    model:
-      getStringPref("modelPrimary") || getStringPref("model") || "gpt-4o-mini",
-  };
+export function getSelectedModelEntryForItem(
+  itemId: number,
+): RuntimeModelEntry | null {
+  const entries = getRuntimeModelEntries();
+  if (!entries.length) {
+    selectedModelCache.delete(itemId);
+    return null;
+  }
 
-  const profiles: Record<ModelProfileKey, ApiProfile> = {
-    primary: {
-      apiBase: primary.apiBase.trim(),
-      apiKey: primary.apiKey.trim(),
-      model: primary.model.trim(),
-    },
-    secondary: {
-      apiBase: getStringPref("apiBaseSecondary").trim(),
-      apiKey: getStringPref("apiKeySecondary").trim(),
-      model: getStringPref("modelSecondary").trim(),
-    },
-    tertiary: {
-      apiBase: getStringPref("apiBaseTertiary").trim(),
-      apiKey: getStringPref("apiKeyTertiary").trim(),
-      model: getStringPref("modelTertiary").trim(),
-    },
-    quaternary: {
-      apiBase: getStringPref("apiBaseQuaternary").trim(),
-      apiKey: getStringPref("apiKeyQuaternary").trim(),
-      model: getStringPref("modelQuaternary").trim(),
-    },
-  };
+  const preferredId =
+    getLastUsedModelEntryId() || selectedModelCache.get(itemId) || "";
+  const selected =
+    entries.find((entry) => entry.entryId === preferredId) ||
+    getDefaultModelEntry() ||
+    entries[0] ||
+    null;
+  if (!selected) {
+    selectedModelCache.delete(itemId);
+    return null;
+  }
 
-  return profiles;
+  selectedModelCache.set(itemId, selected.entryId);
+  return selected;
 }
 
-export function getSelectedProfileForItem(itemId: number): {
-  key: ModelProfileKey;
-  apiBase: string;
-  apiKey: string;
-  model: string;
-} {
-  const profiles = getApiProfiles();
-  const preferredKey =
-    getLastUsedModelProfileKey() || selectedModelCache.get(itemId) || "primary";
-  const selectedKey =
-    preferredKey !== "primary" && profiles[preferredKey].model
-      ? preferredKey
-      : "primary";
-  selectedModelCache.set(itemId, selectedKey);
-  return { key: selectedKey, ...profiles[selectedKey] };
+export function setSelectedModelEntryForItem(
+  itemId: number,
+  entryId: string,
+): void {
+  const selected = getModelEntryById(entryId);
+  if (!selected) return;
+  selectedModelCache.set(itemId, selected.entryId);
+  setLastUsedModelEntryId(selected.entryId);
 }
 
-export function getAdvancedModelParamsForProfile(profileKey: ModelProfileKey): {
-  temperature: number;
-  maxTokens: number;
-  inputTokenCap: number;
-} {
-  const suffix = MODEL_PROFILE_SUFFIX[profileKey];
-  const modelName =
-    suffix === "Primary"
-      ? (getStringPref(`model${suffix}`) || getStringPref("model")).trim()
-      : getStringPref(`model${suffix}`).trim();
-  const defaultInputTokenCap =
-    getModelInputTokenLimit(modelName) || DEFAULT_INPUT_TOKEN_CAP;
-  return {
-    temperature: normalizeTemperaturePref(
-      getStringPref(`temperature${suffix}`),
-    ),
-    maxTokens: normalizeMaxTokensPref(getStringPref(`maxTokens${suffix}`)),
-    inputTokenCap: normalizeInputTokenCap(
-      getStringPref(`inputTokenCap${suffix}`),
-      defaultInputTokenCap,
-    ),
-  };
+export function getAdvancedModelParamsForEntry(
+  entryId: string | undefined,
+): RuntimeModelEntry["advanced"] | undefined {
+  const selected = getModelEntryById(entryId);
+  return selected?.advanced;
+}
+
+export function getProviderLabelForSettings(
+  apiBase: string,
+  providerIndex: number,
+): string {
+  return deriveProviderLabel(apiBase, providerIndex);
 }
 
 export function applyPanelFontScale(panel: HTMLElement | null): void {

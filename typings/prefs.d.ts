@@ -12,6 +12,9 @@ declare namespace _ZoteroTypes {
       "apiBase": string;
       "apiKey": string;
       "model": string;
+      "modelProviderGroups": string;
+      "modelProviderGroupsMigrationVersion": number;
+      "lastUsedModelEntryId": string;
       "systemPrompt": string;
       "showPopupAddText": boolean;
       "temperaturePrimary": string;

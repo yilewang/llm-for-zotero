@@ -47,6 +47,10 @@ import {
   normalizeInputTokenCap,
 } from "./normalization";
 import {
+  getDefaultModelEntry,
+  getDefaultProviderGroup,
+} from "./modelProviders";
+import {
   applyModelInputTokenCap,
   estimateConversationTokens,
   getModelInputTokenLimit,
@@ -196,16 +200,28 @@ function getApiConfig(overrides?: {
   apiKey?: string;
   model?: string;
 }) {
-  const prefApiBase = getPref("apiBasePrimary") || getPref("apiBase") || "";
+  const defaultEntry = getDefaultModelEntry();
+  const defaultProviderGroup = getDefaultProviderGroup();
+  const prefApiBase =
+    defaultEntry?.apiBase ||
+    defaultProviderGroup?.apiBase ||
+    getPref("apiBasePrimary") ||
+    getPref("apiBase") ||
+    "";
   const apiBase = (overrides?.apiBase || prefApiBase).trim().replace(/\/$/, "");
   const apiKey = (
     overrides?.apiKey ||
+    defaultEntry?.apiKey ||
+    defaultProviderGroup?.apiKey ||
     getPref("apiKeyPrimary") ||
     getPref("apiKey") ||
     ""
   ).trim();
   const modelPrimary =
-    getPref("modelPrimary") || getPref("model") || DEFAULT_MODEL;
+    defaultEntry?.model ||
+    getPref("modelPrimary") ||
+    getPref("model") ||
+    DEFAULT_MODEL;
   const model = (overrides?.model || modelPrimary).trim();
   const embeddingModel = getPref("embeddingModel") || DEFAULT_EMBEDDING_MODEL;
   const customSystemPrompt = getPref("systemPrompt") || "";

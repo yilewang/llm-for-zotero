@@ -23,7 +23,7 @@
       <html:div style="display: flex; flex-direction: column; gap: 4px">
         <html:label
           for="__addonRef__-system-prompt"
-          style="font-weight: 600; font-size: 13px"
+          style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 4px;"
         >
           Custom System Prompt (Optional)
         </html:label>
@@ -33,27 +33,30 @@
           placeholder="Custom instructions for the AI assistant..."
           style="
             width: 100%;
-            padding: 8px 12px;
+            padding: 6px 10px;
             font-size: 13px;
-            border: 1px solid #ccc;
+            border: 1px solid var(--stroke-secondary, #c8c8c8);
             border-radius: 6px;
             box-sizing: border-box;
             resize: vertical;
+            background: Field;
+            color: FieldText;
           "
         ></html:textarea>
-        <html:span style="font-size: 11px; color: #666">
+        <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 3px; display: block;">
           Override the default system prompt (leave empty to use default)
         </html:span>
       </html:div>
 
-      <html:div style="display: flex; flex-direction: column; gap: 6px">
+      <html:div style="display: flex; flex-direction: column; gap: 4px">
         <html:label
           style="
             display: inline-flex;
             align-items: center;
             gap: 8px;
             font-weight: 600;
-            font-size: 13px;
+            font-size: 12px;
+            color: var(--fill-primary, inherit);
           "
         >
           <html:input
@@ -62,7 +65,7 @@
           ></html:input>
           Show "Add Text" in reader selection popup
         </html:label>
-        <html:span style="font-size: 11px; color: #666">
+        <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
           Disable this if you prefer not to show the Add Text option in Zotero's
           text selection popup menu.
         </html:span>

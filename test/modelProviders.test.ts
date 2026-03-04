@@ -1,0 +1,168 @@
+import { assert } from "chai";
+import { config } from "../package.json";
+import {
+  buildModelProviderGroupsFromLegacySlots,
+  deriveProviderLabel,
+  getRuntimeModelEntries,
+  setModelProviderGroups,
+  type LegacyModelSlot,
+  type ModelProviderGroup,
+} from "../src/utils/modelProviders";
+
+describe("modelProviders", function () {
+  const originalZotero = globalThis.Zotero;
+
+  beforeEach(function () {
+    const prefStore = new Map<string, unknown>();
+    (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero = {
+      Prefs: {
+        get: (key: string) => prefStore.get(key),
+        set: (key: string, value: unknown) => {
+          prefStore.set(key, value);
+        },
+      },
+    } as typeof Zotero;
+  });
+
+  after(function () {
+    (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero =
+      originalZotero;
+  });
+
+  it("derives provider labels from known hosts and falls back to hostname", function () {
+    assert.equal(
+      deriveProviderLabel("https://api.openai.com/v1/chat/completions"),
+      "OpenAI",
+    );
+    assert.equal(deriveProviderLabel("https://api.deepseek.com/v1"), "DeepSeek");
+    assert.equal(deriveProviderLabel("https://api.moonshot.ai/v1"), "Moonshot");
+    assert.equal(
+      deriveProviderLabel(
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      ),
+      "Gemini",
+    );
+    assert.equal(
+      deriveProviderLabel("https://custom.provider.example/v1"),
+      "custom.provider.example",
+    );
+    assert.equal(deriveProviderLabel("", 3), "Provider 3");
+  });
+
+  it("migrates legacy slots into grouped providers while preserving per-model advanced params", function () {
+    const legacySlots: LegacyModelSlot[] = [
+      {
+        key: "primary",
+        apiBase: "https://api.openai.com/v1",
+        apiKey: "sk-openai",
+        model: "gpt-4o-mini",
+        temperature: 0.3,
+        maxTokens: 4096,
+        inputTokenCap: 128000,
+      },
+      {
+        key: "secondary",
+        apiBase: "https://api.openai.com/v1/",
+        apiKey: "sk-openai",
+        model: "gpt-4o",
+        temperature: 0.1,
+        maxTokens: 2048,
+        inputTokenCap: 64000,
+      },
+      {
+        key: "tertiary",
+        apiBase: "",
+        apiKey: "",
+        model: "local-model",
+        temperature: 0.7,
+        maxTokens: 1024,
+        inputTokenCap: 16000,
+      },
+    ];
+
+    const result = buildModelProviderGroupsFromLegacySlots(legacySlots);
+
+    assert.lengthOf(result.groups, 2);
+    assert.lengthOf(result.groups[0].models, 2);
+    assert.equal(result.groups[0].apiBase, "https://api.openai.com/v1");
+    assert.equal(result.groups[0].apiKey, "sk-openai");
+    assert.equal(result.groups[0].models[0].model, "gpt-4o-mini");
+    assert.equal(result.groups[0].models[1].model, "gpt-4o");
+    assert.equal(result.groups[0].models[1].temperature, 0.1);
+    assert.equal(result.groups[0].models[1].maxTokens, 2048);
+    assert.equal(result.groups[0].models[1].inputTokenCap, 64000);
+    assert.equal(result.groups[1].apiBase, "");
+    assert.equal(result.groups[1].models[0].model, "local-model");
+    assert.isString(result.legacyToEntryId.primary);
+    assert.isString(result.legacyToEntryId.secondary);
+    assert.isString(result.legacyToEntryId.tertiary);
+  });
+
+  it("keeps duplicate model names and disambiguates runtime display labels within a provider", function () {
+    const groups: ModelProviderGroup[] = [
+      {
+        id: "provider-1",
+        apiBase: "https://api.openai.com/v1",
+        apiKey: "sk-openai",
+        models: [
+          {
+            id: "model-1",
+            model: "gpt-4o-mini",
+            temperature: 0.3,
+            maxTokens: 4096,
+            inputTokenCap: 128000,
+          },
+          {
+            id: "model-2",
+            model: "gpt-4o-mini",
+            temperature: 0.2,
+            maxTokens: 2048,
+            inputTokenCap: 64000,
+          },
+        ],
+      },
+    ];
+
+    setModelProviderGroups(groups);
+    (
+      globalThis.Zotero.Prefs as {
+        set: (key: string, value: unknown, global?: boolean) => void;
+      }
+    ).set(`${config.prefsPrefix}.modelProviderGroupsMigrationVersion`, 1, true);
+    const entries = getRuntimeModelEntries();
+
+    assert.lengthOf(entries, 2);
+    assert.equal(entries[0].displayModelLabel, "gpt-4o-mini");
+    assert.equal(entries[1].displayModelLabel, "gpt-4o-mini #2");
+    assert.equal(entries[0].providerLabel, "OpenAI");
+  });
+
+  it("keeps input token cap unset when no override is stored", function () {
+    const groups: ModelProviderGroup[] = [
+      {
+        id: "provider-1",
+        apiBase: "https://api.openai.com/v1",
+        apiKey: "sk-openai",
+        models: [
+          {
+            id: "model-1",
+            model: "gpt-4o-mini",
+            temperature: 0.3,
+            maxTokens: 4096,
+          },
+        ],
+      },
+    ];
+
+    setModelProviderGroups(groups);
+    (
+      globalThis.Zotero.Prefs as {
+        set: (key: string, value: unknown, global?: boolean) => void;
+      }
+    ).set(`${config.prefsPrefix}.modelProviderGroupsMigrationVersion`, 1, true);
+    const entries = getRuntimeModelEntries();
+
+    assert.lengthOf(entries, 1);
+    assert.isUndefined(entries[0].advanced.inputTokenCap);
+  });
+});

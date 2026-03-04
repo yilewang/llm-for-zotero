@@ -1,5 +1,4 @@
 import { MAX_SELECTED_IMAGES } from "../../constants";
-import type { ModelProfileKey } from "../../constants";
 import type {
   AdvancedModelParams,
   ChatAttachment,
@@ -13,10 +12,11 @@ import type { ReasoningConfig as LLMReasoningConfig } from "../../../../utils/ll
 type StatusLevel = "ready" | "warning" | "error";
 
 type SelectedProfile = {
-  key: ModelProfileKey;
+  entryId: string;
   model: string;
   apiBase: string;
   apiKey: string;
+  providerLabel: string;
 };
 
 type LatestEditablePair = {
@@ -77,7 +77,7 @@ type SendFlowControllerDeps = {
   isScreenshotUnsupportedModel: (modelName: string) => boolean;
   getSelectedReasoning: () => LLMReasoningConfig | undefined;
   getAdvancedModelParams: (
-    profileKey: ModelProfileKey | undefined,
+    entryId: string | undefined,
   ) => AdvancedModelParams | undefined;
   getActiveEditSession: () => EditLatestTurnMarker | null;
   setActiveEditSession: (value: EditLatestTurnMarker | null) => void;
@@ -237,7 +237,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       ? []
       : selectedImages;
     const selectedReasoning = deps.getSelectedReasoning();
-    const advancedParams = deps.getAdvancedModelParams(selectedProfile?.key);
+    const advancedParams = deps.getAdvancedModelParams(selectedProfile?.entryId);
 
     const activeEditSession = deps.getActiveEditSession();
     if (activeEditSession) {

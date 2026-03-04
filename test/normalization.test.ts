@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   normalizeInputTokenCap,
   normalizeMaxTokens,
+  normalizeOptionalInputTokenCap,
   normalizeTemperature,
 } from "../src/utils/normalization";
 import {
@@ -65,6 +66,24 @@ describe("normalization", function () {
 
     it("should honor a valid custom fallback", function () {
       assert.equal(normalizeInputTokenCap(undefined, 200000), 200000);
+    });
+  });
+
+  describe("normalizeOptionalInputTokenCap", function () {
+    it("should return undefined for blank or invalid input", function () {
+      assert.isUndefined(normalizeOptionalInputTokenCap(undefined));
+      assert.isUndefined(normalizeOptionalInputTokenCap(""));
+      assert.isUndefined(normalizeOptionalInputTokenCap("abc"));
+      assert.isUndefined(normalizeOptionalInputTokenCap(0));
+    });
+
+    it("should clamp valid values", function () {
+      assert.equal(normalizeOptionalInputTokenCap(1), 1);
+      assert.equal(normalizeOptionalInputTokenCap("2048"), 2048);
+      assert.equal(
+        normalizeOptionalInputTokenCap(MAX_ALLOWED_INPUT_TOKEN_CAP + 99),
+        MAX_ALLOWED_INPUT_TOKEN_CAP,
+      );
     });
   });
 });

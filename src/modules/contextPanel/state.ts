@@ -1,4 +1,3 @@
-import type { ModelProfileKey } from "./constants";
 import type {
   Message,
   PdfContext,
@@ -16,7 +15,7 @@ import type {
 export const chatHistory = new Map<number, Message[]>();
 export const loadedConversationKeys = new Set<number>();
 export const loadingConversationTasks = new Map<number, Promise<void>>();
-export const selectedModelCache = new Map<number, ModelProfileKey>();
+export const selectedModelCache = new Map<number, string>();
 export const selectedReasoningCache = new Map<
   number,
   ReasoningLevelSelection
