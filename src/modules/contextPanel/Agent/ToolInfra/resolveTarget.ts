@@ -39,7 +39,10 @@ export function resolveContextItemFromPaperContext(
   return getFirstPdfChildAttachment(item);
 }
 
-function formatTargetLabel(paperContext: PaperContextRef | null, fallback: string): string {
+function formatTargetLabel(
+  paperContext: PaperContextRef | null,
+  fallback: string,
+): string {
   if (!paperContext) return fallback;
   return formatPaperContextReferenceLabel(paperContext);
 }
@@ -65,7 +68,10 @@ export function resolveAgentToolTarget(
       fallbackLabel = "active-paper";
       break;
     case "selected-paper":
-      paperContext = selectIndexedPaper(ctx.selectedPaperContexts, target.index);
+      paperContext = selectIndexedPaper(
+        ctx.selectedPaperContexts,
+        target.index,
+      );
       fallbackLabel = `selected-paper#${target.index}`;
       break;
     case "pinned-paper":
@@ -77,7 +83,10 @@ export function resolveAgentToolTarget(
       fallbackLabel = `recent-paper#${target.index}`;
       break;
     case "retrieved-paper":
-      paperContext = selectIndexedPaper(ctx.retrievedPaperContexts, target.index);
+      paperContext = selectIndexedPaper(
+        ctx.retrievedPaperContexts,
+        target.index,
+      );
       fallbackLabel = `retrieved-paper#${target.index}`;
       break;
   }

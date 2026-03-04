@@ -1,17 +1,17 @@
-import { formatPaperCitationLabel } from "../paperAttribution";
+import { formatPaperCitationLabel } from "../../paperAttribution";
 import {
   TOKEN_ESTIMATE_CHARS_PER_TOKEN,
   estimateTextTokens,
-} from "../../../utils/modelInputCap";
-import { CHUNK_TARGET_LENGTH } from "../constants";
+} from "../../../../utils/modelInputCap";
+import { CHUNK_TARGET_LENGTH } from "../../constants";
 import {
   listLibraryPaperCandidates,
   searchPaperCandidates,
   type PaperSearchGroupCandidate,
-} from "../paperSearch";
-import { sanitizeText } from "../textUtils";
-import type { PaperContextRef } from "../types";
-import { AGENT_METADATA_PREFIX_RATIO } from "./config";
+} from "../../paperSearch";
+import { sanitizeText } from "../../textUtils";
+import type { PaperContextRef } from "../../types";
+import { AGENT_METADATA_PREFIX_RATIO } from "../config";
 
 /** Minimal plan shape consumed by resolveAgentContext. */
 type AgentContextPlan = {
@@ -74,15 +74,15 @@ export function isLibraryScopedSearchQuery(
     return false;
   }
   return (
-    ((/\b(?:which|find|show|list|compare|review|search|look for)\b/.test(
+    (/\b(?:which|find|show|list|compare|review|search|look for)\b/.test(
       normalizedQuestion,
     ) &&
       /\b(?:paper|papers|study|studies|article|articles|author|authors|work|works)\b/.test(
         normalizedQuestion,
       )) ||
-      /\bwhat\s+(?:papers|studies|articles|authors|works)\b/.test(
-        normalizedQuestion,
-      ))
+    /\bwhat\s+(?:papers|studies|articles|authors|works)\b/.test(
+      normalizedQuestion,
+    )
   );
 }
 
@@ -118,10 +118,7 @@ function buildSelectedPaperTraceLine(
   return `Selected papers: ${labels.join(" | ")}`;
 }
 
-function clampReadLimit(
-  value: number | undefined,
-  fallback: number,
-): number {
+function clampReadLimit(value: number | undefined, fallback: number): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(1, Math.floor(parsed));
@@ -236,7 +233,10 @@ function deriveAgentPrefixTokenBudget(params: {
     Math.floor(CHUNK_TARGET_LENGTH / TOKEN_ESTIMATE_CHARS_PER_TOKEN),
   );
   const reservedRetrievalBudget = params.papersToRead * estimatedPerPaperBudget;
-  const availableAfterReserve = Math.max(0, totalBudget - reservedRetrievalBudget);
+  const availableAfterReserve = Math.max(
+    0,
+    totalBudget - reservedRetrievalBudget,
+  );
   return Math.max(0, Math.min(sharedPrefixBudget, availableAfterReserve));
 }
 
@@ -249,7 +249,8 @@ function appendPaperListWithinBudget(params: {
 }): string {
   const lines = [...params.baseLines, "", params.heading];
   const budget =
-    Number.isFinite(params.maxPrefixTokens) && Number(params.maxPrefixTokens) > 0
+    Number.isFinite(params.maxPrefixTokens) &&
+    Number(params.maxPrefixTokens) > 0
       ? Math.floor(Number(params.maxPrefixTokens))
       : Number.POSITIVE_INFINITY;
   if (budget <= 0) {
@@ -318,7 +319,9 @@ export async function resolveAgentContext(params: {
     const paperContexts = dedupePaperContexts(
       selectedCandidates
         .map((candidate) => buildPaperContextRef(candidate))
-        .filter((candidate): candidate is PaperContextRef => Boolean(candidate)),
+        .filter((candidate): candidate is PaperContextRef =>
+          Boolean(candidate),
+        ),
     );
     const traceLines = [
       candidates.length
@@ -359,7 +362,9 @@ export async function resolveAgentContext(params: {
     const paperContexts = dedupePaperContexts(
       selectedCandidates
         .map((candidate) => buildPaperContextRef(candidate))
-        .filter((candidate): candidate is PaperContextRef => Boolean(candidate)),
+        .filter((candidate): candidate is PaperContextRef =>
+          Boolean(candidate),
+        ),
     );
     const traceLines = [
       `Library search query: ${sanitizeText(searchQuery).replace(/\s+/g, " ").trim() || "(empty)"}`,

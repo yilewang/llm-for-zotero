@@ -1,13 +1,13 @@
 import { estimateTextTokens } from "../../../../utils/modelInputCap";
 import { pdfTextCache } from "../../state";
 import { ensurePDFTextCached } from "../../pdfContext";
-import { normalizePaperToolTarget } from "./shared";
+import { normalizePaperToolTarget } from "../ToolInfra/shared";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "./types";
+} from "../ToolInfra/types";
 
 /** Maximum snippets returned even if token budget allows more. */
 const MAX_SNIPPETS = 20;
@@ -37,7 +37,9 @@ export async function executeSearchPaperContentCall(
       name: "search_paper_content",
       targetLabel: target.targetLabel,
       ok: false,
-      traceLines: [target.error || `Tool target was unavailable: ${target.targetLabel}.`],
+      traceLines: [
+        target.error || `Tool target was unavailable: ${target.targetLabel}.`,
+      ],
       groundingText: "",
       addedPaperContexts: [],
       estimatedTokens: 0,
@@ -82,7 +84,9 @@ export async function executeSearchPaperContentCall(
       name: "search_paper_content",
       targetLabel: target.targetLabel,
       ok: true,
-      traceLines: [`No extractable text for ${target.targetLabel}; content search unavailable.`],
+      traceLines: [
+        `No extractable text for ${target.targetLabel}; content search unavailable.`,
+      ],
       groundingText,
       addedPaperContexts: [target.paperContext],
       estimatedTokens: estimateTextTokens(groundingText),

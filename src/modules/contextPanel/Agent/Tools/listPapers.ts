@@ -1,7 +1,11 @@
 import { estimateTextTokens } from "../../../../utils/modelInputCap";
-import { resolveAgentContext } from "../context";
+import { resolveAgentContext } from "../ToolInfra/context";
 import { sanitizeText } from "../../textUtils";
-import type { AgentToolCall, AgentToolExecutionContext, AgentToolExecutionResult } from "./types";
+import type {
+  AgentToolCall,
+  AgentToolExecutionContext,
+  AgentToolExecutionResult,
+} from "../ToolInfra/types";
 
 /**
  * Executes the list_papers tool: lists or searches the active Zotero library,
@@ -14,7 +18,10 @@ export async function executeListPapersCall(
 ): Promise<AgentToolExecutionResult> {
   const libraryID = ctx.libraryID;
   const query = sanitizeText(call.query || "").trim();
-  const limit = Math.max(1, Math.min(12, Math.floor(Number(call.limit || 0)) || 6));
+  const limit = Math.max(
+    1,
+    Math.min(12, Math.floor(Number(call.limit || 0)) || 6),
+  );
 
   const errorResult = (message: string): AgentToolExecutionResult => ({
     name: "list_papers",
@@ -65,12 +72,15 @@ export async function executeListPapersCall(
   };
 }
 
-export function validateListPapersCall(call: AgentToolCall): AgentToolCall | null {
+export function validateListPapersCall(
+  call: AgentToolCall,
+): AgentToolCall | null {
   if (call.name !== "list_papers") return null;
   const query = sanitizeText(call.query || "").trim();
   const rawLimit = Number(call.limit || 0);
-  const limit = Number.isFinite(rawLimit) && rawLimit > 0
-    ? Math.max(1, Math.min(12, Math.floor(rawLimit)))
-    : 6;
+  const limit =
+    Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.max(1, Math.min(12, Math.floor(rawLimit)))
+      : 6;
   return { name: "list_papers", query: query || undefined, limit };
 }

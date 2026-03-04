@@ -1,13 +1,13 @@
 import { estimateTextTokens } from "../../../../utils/modelInputCap";
 import { pdfTextCache } from "../../state";
 import { ensurePDFTextCached } from "../../pdfContext";
-import { validateSinglePaperToolCall } from "./shared";
+import { validateSinglePaperToolCall } from "../ToolInfra/shared";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "./types";
+} from "../ToolInfra/types";
 
 export function validateGetPaperSectionsCall(
   call: AgentToolCall,
@@ -25,7 +25,9 @@ export async function executeGetPaperSectionsCall(
       name: "get_paper_sections",
       targetLabel: target.targetLabel,
       ok: false,
-      traceLines: [target.error || `Tool target was unavailable: ${target.targetLabel}.`],
+      traceLines: [
+        target.error || `Tool target was unavailable: ${target.targetLabel}.`,
+      ],
       groundingText: "",
       addedPaperContexts: [],
       estimatedTokens: 0,
@@ -55,7 +57,9 @@ export async function executeGetPaperSectionsCall(
       name: "get_paper_sections",
       targetLabel: target.targetLabel,
       ok: true,
-      traceLines: [`No extractable text for ${target.targetLabel}; section outline unavailable.`],
+      traceLines: [
+        `No extractable text for ${target.targetLabel}; section outline unavailable.`,
+      ],
       groundingText,
       addedPaperContexts: [target.paperContext],
       estimatedTokens: estimateTextTokens(groundingText),
@@ -122,7 +126,9 @@ export async function executeGetPaperSectionsCall(
     name: "get_paper_sections",
     targetLabel: target.targetLabel,
     ok: true,
-    traceLines: [`Found ${sections.length} section${sections.length !== 1 ? "s" : ""} in ${target.targetLabel}.`],
+    traceLines: [
+      `Found ${sections.length} section${sections.length !== 1 ? "s" : ""} in ${target.targetLabel}.`,
+    ],
     groundingText,
     addedPaperContexts: [target.paperContext],
     estimatedTokens,

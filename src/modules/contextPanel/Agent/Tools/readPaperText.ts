@@ -3,13 +3,13 @@ import {
   buildTruncatedFullPaperContext,
   ensurePDFTextCached,
 } from "../../pdfContext";
-import { validateSinglePaperToolCall } from "./shared";
+import { validateSinglePaperToolCall } from "../ToolInfra/shared";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "./types";
+} from "../ToolInfra/types";
 
 export function validateReadPaperTextCall(
   call: AgentToolCall,
@@ -27,7 +27,9 @@ export async function executeReadPaperTextCall(
       name: "read_paper_text",
       targetLabel: target.targetLabel,
       ok: false,
-      traceLines: [target.error || `Tool target was unavailable: ${target.targetLabel}.`],
+      traceLines: [
+        target.error || `Tool target was unavailable: ${target.targetLabel}.`,
+      ],
       groundingText: "",
       addedPaperContexts: [],
       estimatedTokens: 0,

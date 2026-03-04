@@ -2,34 +2,39 @@ import { callLLM } from "../../../../utils/llmClient";
 import { estimateTextTokens } from "../../../../utils/modelInputCap";
 import { pdfTextCache, pendingMetadataProposals } from "../../state";
 import type { MetadataFieldProposal, MetadataAuthorEntry } from "../../state";
-import { buildTruncatedFullPaperContext, ensurePDFTextCached } from "../../pdfContext";
-import { validateSinglePaperToolCall } from "./shared";
+import {
+  buildTruncatedFullPaperContext,
+  ensurePDFTextCached,
+} from "../../pdfContext";
+import { validateSinglePaperToolCall } from "../ToolInfra/shared";
 import { sanitizeText } from "../../textUtils";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "./types";
+} from "../ToolInfra/types";
 
 /** Approx token budget for the paper text fed to the LLM. */
 const FIX_METADATA_PAPER_CONTEXT_TOKENS = 6000;
 
 /** Fields we will attempt to fill. Order matters — it controls display order. */
 const METADATA_FIELDS: Array<{ fieldName: string; displayName: string }> = [
-  { fieldName: "title",            displayName: "Title" },
-  { fieldName: "abstractNote",     displayName: "Abstract" },
-  { fieldName: "date",             displayName: "Year / Date" },
+  { fieldName: "title", displayName: "Title" },
+  { fieldName: "abstractNote", displayName: "Abstract" },
+  { fieldName: "date", displayName: "Year / Date" },
   { fieldName: "publicationTitle", displayName: "Journal / Publication" },
-  { fieldName: "volume",           displayName: "Volume" },
-  { fieldName: "issue",            displayName: "Issue" },
-  { fieldName: "pages",            displayName: "Pages" },
-  { fieldName: "DOI",              displayName: "DOI" },
-  { fieldName: "url",              displayName: "URL" },
-  { fieldName: "language",         displayName: "Language" },
+  { fieldName: "volume", displayName: "Volume" },
+  { fieldName: "issue", displayName: "Issue" },
+  { fieldName: "pages", displayName: "Pages" },
+  { fieldName: "DOI", displayName: "DOI" },
+  { fieldName: "url", displayName: "URL" },
+  { fieldName: "language", displayName: "Language" },
 ];
 
-export function validateFixMetadataCall(call: AgentToolCall): AgentToolCall | null {
+export function validateFixMetadataCall(
+  call: AgentToolCall,
+): AgentToolCall | null {
   return validateSinglePaperToolCall("fix_metadata", call);
 }
 
@@ -50,7 +55,9 @@ export async function executeFixMetadataCall(
   });
 
   if (!target.paperContext) {
-    return failed(target.error || `Tool target was unavailable: ${target.targetLabel}.`);
+    return failed(
+      target.error || `Tool target was unavailable: ${target.targetLabel}.`,
+    );
   }
 
   // Resolve the PARENT Zotero item (the journal article / book chapter) —
@@ -79,7 +86,9 @@ export async function executeFixMetadataCall(
   const currentFields: Record<string, string> = {};
   for (const { fieldName } of METADATA_FIELDS) {
     try {
-      currentFields[fieldName] = String((parentItem as any).getField(fieldName) ?? "").trim();
+      currentFields[fieldName] = String(
+        (parentItem as any).getField(fieldName) ?? "",
+      ).trim();
     } catch {
       currentFields[fieldName] = "";
     }
@@ -91,7 +100,9 @@ export async function executeFixMetadataCall(
   try {
     const creators: any[] = (parentItem as any).getCreators?.() ?? [];
     const authorTypeId: number = Zotero.CreatorTypes.getID("author") as number;
-    const authors = creators.filter((c: any) => c.creatorTypeID === authorTypeId);
+    const authors = creators.filter(
+      (c: any) => c.creatorTypeID === authorTypeId,
+    );
     currentAuthorsStr = authors
       .map((c: any) => [c.firstName, c.lastName].filter(Boolean).join(" "))
       .join("; ");
@@ -110,7 +121,9 @@ export async function executeFixMetadataCall(
       name: "fix_metadata",
       targetLabel: target.targetLabel,
       ok: true,
-      traceLines: [`Metadata appears complete for ${target.targetLabel} — nothing to fix.`],
+      traceLines: [
+        `Metadata appears complete for ${target.targetLabel} — nothing to fix.`,
+      ],
       groundingText: [
         "Agent Tool Result",
         "- Tool: fix_metadata",
@@ -133,8 +146,9 @@ export async function executeFixMetadataCall(
   ].join(", ");
 
   const schemaLines = [
-    ...emptyFields.map(({ fieldName, displayName }) =>
-      `  "${fieldName}": "<${displayName} from the paper, or null if not found>"`
+    ...emptyFields.map(
+      ({ fieldName, displayName }) =>
+        `  "${fieldName}": "<${displayName} from the paper, or null if not found>"`,
     ),
     ...(hasNoAuthors
       ? ['  "authors": [{"firstName": "...", "lastName": "..."}, ...] or null']
@@ -168,7 +182,9 @@ export async function executeFixMetadataCall(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return failed(`Metadata extraction failed for ${target.targetLabel}: ${msg}`);
+    return failed(
+      `Metadata extraction failed for ${target.targetLabel}: ${msg}`,
+    );
   }
 
   // ── Parse JSON ──────────────────────────────────────────────────────────────
@@ -200,7 +216,11 @@ export async function executeFixMetadataCall(
 
   // ── Build author proposal ──────────────────────────────────────────────────
   let authorProposal:
-    | { current: string; proposed: string; parsedAuthors: MetadataAuthorEntry[] }
+    | {
+        current: string;
+        proposed: string;
+        parsedAuthors: MetadataAuthorEntry[];
+      }
     | undefined;
 
   if (hasNoAuthors) {
@@ -235,7 +255,9 @@ export async function executeFixMetadataCall(
       name: "fix_metadata",
       targetLabel: target.targetLabel,
       ok: true,
-      traceLines: [`Could not extract missing metadata from ${target.targetLabel}.`],
+      traceLines: [
+        `Could not extract missing metadata from ${target.targetLabel}.`,
+      ],
       groundingText: [
         "Agent Tool Result",
         "- Tool: fix_metadata",

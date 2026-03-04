@@ -6,13 +6,13 @@ import {
   ensurePDFTextCached,
 } from "../../pdfContext";
 import { sanitizeText } from "../../textUtils";
-import { validateSinglePaperToolCall } from "./shared";
+import { validateSinglePaperToolCall } from "../ToolInfra/shared";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "./types";
+} from "../ToolInfra/types";
 
 /** Approximate token budget for the paper context fed to the note writer. */
 const NOTE_PAPER_CONTEXT_TOKENS = 6000;
@@ -38,7 +38,9 @@ function wantsPreviousAnswerInNote(params: {
   return hasWriteIntent && hasNoteIntent && hasAnswerIntent;
 }
 
-export function validateWriteNoteCall(call: AgentToolCall): AgentToolCall | null {
+export function validateWriteNoteCall(
+  call: AgentToolCall,
+): AgentToolCall | null {
   const validated = validateSinglePaperToolCall("write_note", call);
   if (!validated) return null;
   // validateSinglePaperToolCall only returns {name, target} — preserve query
@@ -56,7 +58,9 @@ export async function executeWriteNoteCall(
       name: "write_note",
       targetLabel: target.targetLabel,
       ok: false,
-      traceLines: [target.error || `Tool target was unavailable: ${target.targetLabel}.`],
+      traceLines: [
+        target.error || `Tool target was unavailable: ${target.targetLabel}.`,
+      ],
       groundingText: "",
       addedPaperContexts: [],
       estimatedTokens: 0,
@@ -115,18 +119,18 @@ export async function executeWriteNoteCall(
     // in the user `prompt` so the model sees them as the primary task request.
     const userPrompt = topicFocus
       ? [
-        "TASK: " + topicFocus,
-        "Follow the task instruction exactly. Do not add extra sections, headings, or content beyond what the task asks for.",
-        "",
-        "Paper:",
-        fullPaper.text,
-      ].join("\n")
+          "TASK: " + topicFocus,
+          "Follow the task instruction exactly. Do not add extra sections, headings, or content beyond what the task asks for.",
+          "",
+          "Paper:",
+          fullPaper.text,
+        ].join("\n")
       : [
-        "Write a structured research note for the following paper with these sections: Summary, Key Findings, Methodology, Limitations, Notes.",
-        "",
-        "Paper:",
-        fullPaper.text,
-      ].join("\n");
+          "Write a structured research note for the following paper with these sections: Summary, Key Findings, Methodology, Limitations, Notes.",
+          "",
+          "Paper:",
+          fullPaper.text,
+        ].join("\n");
 
     try {
       noteContent = await callLLM({
@@ -142,7 +146,9 @@ export async function executeWriteNoteCall(
         name: "write_note",
         targetLabel: target.targetLabel,
         ok: false,
-        traceLines: [`Note generation failed for ${target.targetLabel}: ${errMsg}`],
+        traceLines: [
+          `Note generation failed for ${target.targetLabel}: ${errMsg}`,
+        ],
         groundingText: "",
         addedPaperContexts: [],
         estimatedTokens: 0,
@@ -156,7 +162,9 @@ export async function executeWriteNoteCall(
       name: "write_note",
       targetLabel: target.targetLabel,
       ok: false,
-      traceLines: [`Note generation returned empty content for ${target.targetLabel}.`],
+      traceLines: [
+        `Note generation returned empty content for ${target.targetLabel}.`,
+      ],
       groundingText: "",
       addedPaperContexts: [],
       estimatedTokens: 0,

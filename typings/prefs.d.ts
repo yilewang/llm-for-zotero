@@ -16,7 +16,6 @@ declare namespace _ZoteroTypes {
       "modelProviderGroupsMigrationVersion": number;
       "lastUsedModelEntryId": string;
       "systemPrompt": string;
-      "agentWorkflowV2Enabled": boolean;
       "agentModeEnabled": boolean;
       "showPopupAddText": boolean;
       "temperaturePrimary": string;

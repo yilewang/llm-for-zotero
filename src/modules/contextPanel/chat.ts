@@ -2089,7 +2089,7 @@ async function buildContextPlanForRequest(params: {
         uiActionCount: v2.uiActions.length,
       });
     } catch (err) {
-      ztoolkit.log("LLM: AgentV2 failed (V1 is disabled)", err);
+      ztoolkit.log("LLM: AgentV2 failed", err);
       params.setAgentStatusSafely?.("AgentV2 failed.");
       throw err;
     }

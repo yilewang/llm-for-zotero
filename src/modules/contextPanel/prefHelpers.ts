@@ -48,10 +48,6 @@ export function setBooleanPref(key: string, value: boolean): void {
   getZoteroPrefs()?.set?.(`${config.prefsPrefix}.${key}`, Boolean(value), true);
 }
 
-export function isAgentWorkflowV2Enabled(): boolean {
-  return getBooleanPref("agentWorkflowV2Enabled", false);
-}
-
 export function getAgentModeEnabled(): boolean {
   return getBooleanPref("agentModeEnabled", true);
 }

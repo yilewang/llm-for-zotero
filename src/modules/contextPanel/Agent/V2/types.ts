@@ -4,8 +4,12 @@ import type {
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   AgentToolExecutorState,
-} from "../Tools/types";
-import type { Message, PaperContextRef, AdvancedModelParams } from "../../types";
+} from "../ToolInfra/types";
+import type {
+  Message,
+  PaperContextRef,
+  AdvancedModelParams,
+} from "../../types";
 
 export type RouterContextSummary = {
   question: string;
@@ -28,16 +32,16 @@ export type RouterContextSummary = {
 
 export type RouterDecision =
   | {
-    decision: "stop";
-    trace: string;
-    stopReason?: string;
-  }
+      decision: "stop";
+      trace: string;
+      stopReason?: string;
+    }
   | {
-    decision: "tool_call";
-    trace: string;
-    call: AgentToolCall;
-    stopReason?: string;
-  };
+      decision: "tool_call";
+      trace: string;
+      call: AgentToolCall;
+      stopReason?: string;
+    };
 
 export type ToolSpecV2 = {
   name: string;
@@ -49,36 +53,36 @@ export type ToolSpecV2 = {
 
 export type UiActionDirective =
   | {
-    type: "show_note_review";
-    targetLabel: string;
-    message: string;
-  }
+      type: "show_note_review";
+      targetLabel: string;
+      message: string;
+    }
   | {
-    type: "show_metadata_review";
-    targetLabel: string;
-    message: string;
-  }
+      type: "show_metadata_review";
+      targetLabel: string;
+      message: string;
+    }
   | {
-    type: "custom";
-    targetLabel: string;
-    message: string;
-  };
+      type: "custom";
+      targetLabel: string;
+      message: string;
+    };
 
 export type ToolExecutionOutcome =
   | {
-    kind: "context_update";
-    result: AgentToolExecutionResult;
-  }
+      kind: "context_update";
+      result: AgentToolExecutionResult;
+    }
   | {
-    kind: "ui_action";
-    result: AgentToolExecutionResult;
-    action: UiActionDirective;
-  }
+      kind: "ui_action";
+      result: AgentToolExecutionResult;
+      action: UiActionDirective;
+    }
   | {
-    kind: "error";
-    result: AgentToolExecutionResult;
-    error: string;
-  };
+      kind: "error";
+      result: AgentToolExecutionResult;
+      error: string;
+    };
 
 export type AgentV2ToolLog = {
   iteration: number;

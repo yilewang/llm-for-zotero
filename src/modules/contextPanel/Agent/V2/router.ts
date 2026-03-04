@@ -1,8 +1,16 @@
 import { callLLM } from "../../../../utils/llmClient";
-import type { AgentToolCall, AgentToolName, AgentToolTarget } from "../Tools/types";
+import type {
+  AgentToolCall,
+  AgentToolName,
+  AgentToolTarget,
+} from "../ToolInfra/types";
 import { sanitizeText } from "../../textUtils";
 import { getToolSpecsV2 } from "./toolBroker";
-import type { AgentV2RouterParams, RouterDecision, RouterContextSummary } from "./types";
+import type {
+  AgentV2RouterParams,
+  RouterDecision,
+  RouterContextSummary,
+} from "./types";
 
 function findJsonObject(raw: string): string {
   const source = String(raw || "");
@@ -49,7 +57,9 @@ function findJsonObject(raw: string): string {
 function normalizeTarget(value: unknown): AgentToolTarget | null {
   if (!value || typeof value !== "object") return null;
   const typed = value as { scope?: unknown; index?: unknown };
-  const scope = sanitizeText(String(typed.scope || "")).trim().toLowerCase();
+  const scope = sanitizeText(String(typed.scope || ""))
+    .trim()
+    .toLowerCase();
 
   if (scope === "active-paper") {
     return { scope: "active-paper" };
@@ -81,7 +91,9 @@ function normalizeCall(value: unknown): AgentToolCall | null {
     limit?: unknown;
   };
 
-  const name = sanitizeText(String(typed.name || "")).trim().toLowerCase();
+  const name = sanitizeText(String(typed.name || ""))
+    .trim()
+    .toLowerCase();
   if (!name) return null;
 
   if (name === "list_papers") {
@@ -198,7 +210,8 @@ export function parseRouterDecision(raw: string): RouterDecision {
     .trim()
     .toLowerCase();
   const trace = normalizeTrace(typed.trace) || "No router trace provided.";
-  const stopReason = sanitizeText(String(typed.stopReason || "")).trim() || undefined;
+  const stopReason =
+    sanitizeText(String(typed.stopReason || "")).trim() || undefined;
 
   if (decision === "stop") {
     return {
@@ -267,7 +280,8 @@ function buildContextBlock(summary: RouterContextSummary): string {
 }
 
 function buildRouterPrompt(params: AgentV2RouterParams): string {
-  const question = sanitizeText(params.summary.question || "").trim() || "(empty)";
+  const question =
+    sanitizeText(params.summary.question || "").trim() || "(empty)";
   return [
     params.promptPack.routerPrompt,
     "",

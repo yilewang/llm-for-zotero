@@ -11,7 +11,7 @@ import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
-} from "../Tools/types";
+} from "../ToolInfra/types";
 import type { Message, PaperContextRef } from "../../types";
 import { loadAgentV2PromptPack } from "./promptPack";
 import { buildResponderContextBlock } from "./responseComposer";
@@ -104,10 +104,16 @@ function summarizeToolResult(
 function deriveAvailableContextBudgetTokens(
   params: AgentV2OrchestratorParams,
 ): number {
-  const explicitBudget = Math.floor(Number(params.availableContextBudgetTokens));
-  if (Number.isFinite(explicitBudget) && explicitBudget >= 0) return explicitBudget;
+  const explicitBudget = Math.floor(
+    Number(params.availableContextBudgetTokens),
+  );
+  if (Number.isFinite(explicitBudget) && explicitBudget >= 0)
+    return explicitBudget;
   const modelLimitTokens = getModelInputTokenLimit(params.model);
-  const limitTokens = normalizeInputTokenCap(params.advanced?.inputTokenCap, modelLimitTokens);
+  const limitTokens = normalizeInputTokenCap(
+    params.advanced?.inputTokenCap,
+    modelLimitTokens,
+  );
   const softLimitTokens = Math.max(1, Math.floor(limitTokens * 0.9));
   const outputReserveTokens = normalizeMaxTokens(params.advanced?.maxTokens);
   return Math.max(0, softLimitTokens - outputReserveTokens);
@@ -119,7 +125,10 @@ function computeToolTokenCap(
   maxIterations: number,
   iterationIndex: number,
 ): number {
-  const remainingBudget = Math.max(0, totalBudget - state.contextPrefixEstimatedTokens);
+  const remainingBudget = Math.max(
+    0,
+    totalBudget - state.contextPrefixEstimatedTokens,
+  );
   if (remainingBudget <= 0) return 0;
   const remainingIterations = Math.max(1, maxIterations - iterationIndex);
   return Math.max(1, Math.floor(remainingBudget / remainingIterations));
@@ -182,7 +191,9 @@ function buildAvailableTargetLines(state: AgentV2State): string[] {
   return lines;
 }
 
-function summarizeConversationHistory(messages: Message[] | undefined): string[] {
+function summarizeConversationHistory(
+  messages: Message[] | undefined,
+): string[] {
   if (!messages?.length) return [];
 
   const out: string[] = [];
@@ -241,20 +252,28 @@ function buildContextDescriptors(params: {
   );
 
   if (params.state.activePaperContext) {
-    descriptors.push(`active context: ${summarizePaperRef(params.state.activePaperContext)}`);
+    descriptors.push(
+      `active context: ${summarizePaperRef(params.state.activePaperContext)}`,
+    );
   }
 
   if (params.state.paperContexts.length) {
     descriptors.push(`selected contexts: ${params.state.paperContexts.length}`);
   }
   if (params.state.pinnedPaperContexts.length) {
-    descriptors.push(`pinned contexts: ${params.state.pinnedPaperContexts.length}`);
+    descriptors.push(
+      `pinned contexts: ${params.state.pinnedPaperContexts.length}`,
+    );
   }
   if (params.state.recentPaperContexts.length) {
-    descriptors.push(`recent contexts: ${params.state.recentPaperContexts.length}`);
+    descriptors.push(
+      `recent contexts: ${params.state.recentPaperContexts.length}`,
+    );
   }
   if (params.state.retrievedPaperContexts.length) {
-    descriptors.push(`retrieved contexts: ${params.state.retrievedPaperContexts.length}`);
+    descriptors.push(
+      `retrieved contexts: ${params.state.retrievedPaperContexts.length}`,
+    );
   }
 
   return descriptors.slice(0, MAX_ROUTER_CONTEXT_DESCRIPTORS);
@@ -286,7 +305,9 @@ function buildRouterSummary(params: {
       hasImages: params.hasImages,
       previousAssistantAnswerText: params.previousAssistantAnswerText,
     }),
-    recentConversationSummary: summarizeConversationHistory(params.historyMessages),
+    recentConversationSummary: summarizeConversationHistory(
+      params.historyMessages,
+    ),
     recentToolLogs: params.toolLogs
       .slice(-MAX_ROUTER_TOOL_LOG_LINES)
       .map((entry) => entry.summary),
@@ -384,7 +405,9 @@ export function createAgentV2OrchestratorRunner(
     const state: AgentV2State = {
       activeContextItem: params.activeContextItem,
       conversationMode: params.conversationMode,
-      activePaperContext: resolvePaperContextRefFromAttachment(params.activeContextItem),
+      activePaperContext: resolvePaperContextRefFromAttachment(
+        params.activeContextItem,
+      ),
       paperContexts: [...params.paperContexts],
       pinnedPaperContexts: [...params.pinnedPaperContexts],
       recentPaperContexts: [...params.recentPaperContexts],
@@ -479,9 +502,16 @@ export function createAgentV2OrchestratorRunner(
       const toolLabel = formatToolCallLabel(decision.call);
       params.onTrace?.(`Tool call: ${toolLabel}.`);
 
-      const toolTokenCap = computeToolTokenCap(totalBudget, state, maxIterations, i);
+      const toolTokenCap = computeToolTokenCap(
+        totalBudget,
+        state,
+        maxIterations,
+        i,
+      );
       if (toolTokenCap <= 0) {
-        params.onTrace?.(`No remaining context budget for ${toolLabel}; stopping retrieval.`);
+        params.onTrace?.(
+          `No remaining context budget for ${toolLabel}; stopping retrieval.`,
+        );
         break;
       }
 

@@ -16,14 +16,11 @@ This folder implements the reader/library side-panel chat experience.
 
 ## Agent Modules
 
-- `Agent/loop.ts`: legacy retrieval loop (V1) used as stable fallback.
-- `Agent/step.ts`: V1 single-step planner for stop/tool decisions.
-- `Agent/context.ts`: library overview/search grounding helpers.
+- `Agent/V2/`: active modular agent workflow (router/broker/orchestrator/prompt-pack stack).
+- `Agent/Tools/`: callable tool implementations (read/search/write/fix actions).
+- `Agent/ToolInfra/`: tool contracts, registry, target resolution, and execution/broker plumbing.
+- `Agent/heuristics.ts`: fast-path skip heuristics shared by the V2 orchestrator.
 - `Agent/config.ts`: shared agent constants and limits.
-- `Agent/heuristics.ts`: fast-path skip heuristics.
-- `Agent/types.ts`: V1 planner/loop context and decision types.
-- `Agent/Tools/`: all tool registry, executor, resolver, and tool implementations.
-- `Agent/V2/`: modular V2 router/broker/orchestrator/prompt-pack stack.
 
 ## Shared Domain Helpers
 

@@ -2,13 +2,13 @@ import { estimateTextTokens } from "../../../../utils/modelInputCap";
 import { pdfTextCache } from "../../state";
 import { ensurePDFTextCached } from "../../pdfContext";
 import { sanitizeText } from "../../textUtils";
-import { validateSinglePaperToolCall } from "./shared";
+import { validateSinglePaperToolCall } from "../ToolInfra/shared";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "./types";
+} from "../ToolInfra/types";
 
 const REFERENCE_HEADING_PATTERNS = [
   /^(?:\d+[\].)]\s+)?references$/i,
@@ -111,7 +111,10 @@ function extractReferenceEntries(fullText: string): {
   if (referenceStart < 0) {
     return { sectionFound: false, entries: [] };
   }
-  const sectionText = paragraphs.slice(referenceStart + 1).join("\n\n").trim();
+  const sectionText = paragraphs
+    .slice(referenceStart + 1)
+    .join("\n\n")
+    .trim();
   if (!sectionText) {
     return { sectionFound: true, entries: [] };
   }
@@ -167,7 +170,9 @@ export async function executeReadReferencesCall(
       name: "read_references",
       targetLabel: target.targetLabel,
       ok: false,
-      traceLines: [target.error || `Tool target was unavailable: ${target.targetLabel}.`],
+      traceLines: [
+        target.error || `Tool target was unavailable: ${target.targetLabel}.`,
+      ],
       groundingText: "",
       addedPaperContexts: [],
       estimatedTokens: 0,
@@ -189,9 +194,7 @@ export async function executeReadReferencesCall(
     ctx.toolTokenCap,
   );
   const renderedReferences = selected.length
-    ? selected
-        .map((entry, index) => `${index + 1}. ${entry}`)
-        .join("\n")
+    ? selected.map((entry, index) => `${index + 1}. ${entry}`).join("\n")
     : !extractable
       ? "[No extractable PDF text available. References could not be read from the paper body.]"
       : sectionFound

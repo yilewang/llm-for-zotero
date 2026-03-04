@@ -3,9 +3,12 @@ import { buildChunkMetadata } from "../src/modules/contextPanel/pdfContext";
 import {
   createAgentToolExecutorState,
   executeAgentToolCall,
-} from "../src/modules/contextPanel/Agent/Tools/executor";
+} from "../src/modules/contextPanel/Agent/ToolInfra/executor";
 import { pdfTextCache } from "../src/modules/contextPanel/state";
-import type { PaperContextRef, PdfContext } from "../src/modules/contextPanel/types";
+import type {
+  PaperContextRef,
+  PdfContext,
+} from "../src/modules/contextPanel/types";
 
 describe("agentToolExecutor", function () {
   const originalZotero = globalThis.Zotero;

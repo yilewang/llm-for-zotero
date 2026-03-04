@@ -1,8 +1,4 @@
-import type {
-  AgentToolCall,
-  AgentToolName,
-  AgentToolTarget,
-} from "./types";
+import type { AgentToolCall, AgentToolName, AgentToolTarget } from "./types";
 
 export function normalizePaperToolTarget(
   target: AgentToolTarget | undefined,

@@ -8,13 +8,13 @@ import {
   renderClaimEvidencePack,
 } from "../../pdfContext";
 import { sanitizeText } from "../../textUtils";
-import { validateSinglePaperToolCall } from "./shared";
+import { validateSinglePaperToolCall } from "../ToolInfra/shared";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "./types";
+} from "../ToolInfra/types";
 import type { PaperContextCandidate } from "../../types";
 
 const RAW_EVIDENCE_TOP_K = 12;
@@ -222,10 +222,7 @@ function normalizeVerifierAssessment(
   }
 }
 
-function normalizeVerifierIndexes(
-  value: unknown,
-  maxIndex: number,
-): number[] {
+function normalizeVerifierIndexes(value: unknown, maxIndex: number): number[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<number>();
   const out: number[] = [];
@@ -336,9 +333,7 @@ async function verifyClaimEvidence(params: {
             return judgment;
           })
           .filter(
-            (
-              entry,
-            ): entry is EvidenceVerifierSnippetJudgment => entry !== null,
+            (entry): entry is EvidenceVerifierSnippetJudgment => entry !== null,
           )
       : [];
     return {
@@ -373,7 +368,9 @@ export async function executeFindClaimEvidenceCall(
       name: "find_claim_evidence",
       targetLabel: target.targetLabel,
       ok: false,
-      traceLines: [target.error || `Tool target was unavailable: ${target.targetLabel}.`],
+      traceLines: [
+        target.error || `Tool target was unavailable: ${target.targetLabel}.`,
+      ],
       groundingText: "",
       addedPaperContexts: [],
       estimatedTokens: 0,
@@ -389,7 +386,9 @@ export async function executeFindClaimEvidenceCall(
       name: "find_claim_evidence",
       targetLabel: target.targetLabel,
       ok: false,
-      traceLines: ["Claim-evidence lookup was skipped because the query was empty."],
+      traceLines: [
+        "Claim-evidence lookup was skipped because the query was empty.",
+      ],
       groundingText: "",
       addedPaperContexts: [],
       estimatedTokens: 0,

@@ -1,6 +1,10 @@
 import { estimateTextTokens } from "../../../../utils/modelInputCap";
 import { sanitizeText } from "../../textUtils";
-import type { AgentToolCall, AgentToolExecutionContext, AgentToolExecutionResult } from "./types";
+import type {
+  AgentToolCall,
+  AgentToolExecutionContext,
+  AgentToolExecutionResult,
+} from "../ToolInfra/types";
 
 const SEMANTIC_SCHOLAR_SEARCH_URL =
   "https://api.semanticscholar.org/graph/v1/paper/search";
@@ -26,7 +30,9 @@ type SemanticScholarResponse = {
   data?: SemanticScholarPaper[];
 };
 
-export function validateSearchInternetCall(call: AgentToolCall): AgentToolCall | null {
+export function validateSearchInternetCall(
+  call: AgentToolCall,
+): AgentToolCall | null {
   if (call.name !== "search_internet") return null;
   const query = sanitizeText(call.query || "").trim();
   if (!query) return null;
@@ -56,9 +62,10 @@ function formatPaperEntry(paper: SemanticScholarPaper, index: number): string {
   const arxiv = paper.externalIds?.ArXiv;
   const pdfUrl = paper.openAccessPdf?.url;
   const rawAbstract = sanitizeText(paper.abstract || "").trim();
-  const abstract = rawAbstract.length > ABSTRACT_PREVIEW_CHARS
-    ? rawAbstract.slice(0, ABSTRACT_PREVIEW_CHARS) + "\u2026"
-    : rawAbstract;
+  const abstract =
+    rawAbstract.length > ABSTRACT_PREVIEW_CHARS
+      ? rawAbstract.slice(0, ABSTRACT_PREVIEW_CHARS) + "\u2026"
+      : rawAbstract;
 
   const urlParts: string[] = [];
   if (doi) urlParts.push(`DOI: ${doi}`);
@@ -80,7 +87,10 @@ export async function executeSearchInternetCall(
   ctx: AgentToolExecutionContext,
 ): Promise<AgentToolExecutionResult> {
   const query = sanitizeText(call.query || "").trim();
-  const limit = Math.max(1, Math.min(MAX_LIMIT, Math.floor(Number(call.limit || DEFAULT_LIMIT))));
+  const limit = Math.max(
+    1,
+    Math.min(MAX_LIMIT, Math.floor(Number(call.limit || DEFAULT_LIMIT))),
+  );
 
   const errorResult = (message: string): AgentToolExecutionResult => ({
     name: "search_internet",
@@ -115,14 +125,14 @@ export async function executeSearchInternetCall(
       const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
       response = await fetchFn(url.toString(), {
         method: "GET",
-        headers: { "Accept": "application/json" },
+        headers: { Accept: "application/json" },
         signal: controller.signal,
       });
       clearTimeout(timer);
     } else {
       response = await fetchFn(url.toString(), {
         method: "GET",
-        headers: { "Accept": "application/json" },
+        headers: { Accept: "application/json" },
       });
     }
     if (!response.ok) {

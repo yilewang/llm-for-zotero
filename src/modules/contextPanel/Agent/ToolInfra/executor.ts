@@ -1,7 +1,7 @@
 import { getAgentToolDefinition } from "./registry";
 import { resolveAgentToolTarget } from "./resolveTarget";
-import { executeListPapersCall } from "./listPapers";
-import { executeSearchInternetCall } from "./searchInternet";
+import { executeListPapersCall } from "../Tools/listPapers";
+import { executeSearchInternetCall } from "../Tools/searchInternet";
 import { sanitizeText } from "../../textUtils";
 import type {
   AgentToolCall,
@@ -51,7 +51,11 @@ export async function executeAgentToolCall(params: {
   if (params.call.name === "search_internet") {
     const callKey = `search_internet:${sanitizeText(params.call.query || "").trim()}:${params.call.limit ?? 6}`;
     if (params.state.executedCallKeys.has(callKey)) {
-      return buildSkipResult(params.call, `internet: "${params.call.query}"`, "Duplicate search_internet call was ignored.");
+      return buildSkipResult(
+        params.call,
+        `internet: "${params.call.query}"`,
+        "Duplicate search_internet call was ignored.",
+      );
     }
     const result = await executeSearchInternetCall(params.call, params.ctx);
     if (result.ok) {
@@ -100,7 +104,10 @@ export async function executeAgentToolCall(params: {
     );
   }
 
-  const resolvedTarget = resolveAgentToolTarget(params.ctx, validatedCall.target!);
+  const resolvedTarget = resolveAgentToolTarget(
+    params.ctx,
+    validatedCall.target!,
+  );
   if (!resolvedTarget.paperContext) {
     return buildSkipResult(
       validatedCall,
@@ -119,7 +126,11 @@ export async function executeAgentToolCall(params: {
     );
   }
 
-  const result = await definition.execute(params.ctx, validatedCall, resolvedTarget);
+  const result = await definition.execute(
+    params.ctx,
+    validatedCall,
+    resolvedTarget,
+  );
   if (!result.ok) return result;
 
   params.state.executedCallKeys.add(callKey);

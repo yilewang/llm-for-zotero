@@ -8,33 +8,33 @@ import type {
 import {
   executeFindClaimEvidenceCall,
   validateFindClaimEvidenceCall,
-} from "./findClaimEvidence";
+} from "../Tools/findClaimEvidence";
 import {
   executeReadPaperTextCall,
   validateReadPaperTextCall,
-} from "./readPaperText";
+} from "../Tools/readPaperText";
 import {
   executeReadReferencesCall,
   validateReadReferencesCall,
-} from "./readReferences";
-import { validateListPapersCall } from "./listPapers";
-import { validateSearchInternetCall } from "./searchInternet";
+} from "../Tools/readReferences";
+import { validateListPapersCall } from "../Tools/listPapers";
+import { validateSearchInternetCall } from "../Tools/searchInternet";
 import {
   executeGetPaperSectionsCall,
   validateGetPaperSectionsCall,
-} from "./getPaperSections";
+} from "../Tools/getPaperSections";
 import {
   executeSearchPaperContentCall,
   validateSearchPaperContentCall,
-} from "./searchPaperContent";
+} from "../Tools/searchPaperContent";
 import {
   executeWriteNoteCall,
   validateWriteNoteCall,
-} from "./writeNote";
+} from "../Tools/writeNote";
 import {
   executeFixMetadataCall,
   validateFixMetadataCall,
-} from "./fixMetadata";
+} from "../Tools/fixMetadata";
 
 export type AgentToolDefinition = {
   name: AgentToolName;
@@ -58,14 +58,16 @@ const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
     name: "list_papers",
     plannerDescription:
       "list or search the active Zotero library; returns a metadata overview and loads results as retrieved-paper#N targets for subsequent tool calls",
-    callExample: '{"name":"list_papers","query":"optional search terms","limit":6}',
+    callExample:
+      '{"name":"list_papers","query":"optional search terms","limit":6}',
     validate: validateListPapersCall,
   },
   {
     name: "read_paper_text",
     plannerDescription:
       "read the full body text of one specific paper; expensive — use only when complete paper text is necessary",
-    callExample: '{"name":"read_paper_text","target":{"scope":"retrieved-paper","index":1}}',
+    callExample:
+      '{"name":"read_paper_text","target":{"scope":"retrieved-paper","index":1}}',
     validate: validateReadPaperTextCall,
     execute: executeReadPaperTextCall,
   },
@@ -73,7 +75,8 @@ const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
     name: "find_claim_evidence",
     plannerDescription:
       "retrieve the most relevant evidence snippets from one paper for the user question; cheaper and more focused than reading the full text",
-    callExample: '{"name":"find_claim_evidence","target":{"scope":"active-paper"}}',
+    callExample:
+      '{"name":"find_claim_evidence","target":{"scope":"active-paper"}}',
     validate: validateFindClaimEvidenceCall,
     execute: executeFindClaimEvidenceCall,
   },
@@ -81,7 +84,8 @@ const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
     name: "read_references",
     plannerDescription:
       "extract the references or bibliography section of one paper when the user asks what the paper cites",
-    callExample: '{"name":"read_references","target":{"scope":"selected-paper","index":1}}',
+    callExample:
+      '{"name":"read_references","target":{"scope":"selected-paper","index":1}}',
     validate: validateReadReferencesCall,
     execute: executeReadReferencesCall,
   },
@@ -89,7 +93,8 @@ const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
     name: "get_paper_sections",
     plannerDescription:
       "list the sections and structure of one paper; useful for understanding layout before targeted retrieval",
-    callExample: '{"name":"get_paper_sections","target":{"scope":"active-paper"}}',
+    callExample:
+      '{"name":"get_paper_sections","target":{"scope":"active-paper"}}',
     validate: validateGetPaperSectionsCall,
     execute: executeGetPaperSectionsCall,
   },
@@ -97,7 +102,8 @@ const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
     name: "search_paper_content",
     plannerDescription:
       "keyword search inside one paper's full text; use when you need to find all passages mentioning a specific term or phrase",
-    callExample: '{"name":"search_paper_content","target":{"scope":"active-paper"},"query":"keyword or phrase"}',
+    callExample:
+      '{"name":"search_paper_content","target":{"scope":"active-paper"},"query":"keyword or phrase"}',
     validate: validateSearchPaperContentCall,
     execute: executeSearchPaperContentCall,
   },
@@ -105,14 +111,16 @@ const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
     name: "search_internet",
     plannerDescription:
       "search Semantic Scholar for academic papers on the internet; use when the user asks about papers not in their Zotero library or wants to find related work",
-    callExample: '{"name":"search_internet","query":"neural plasticity memory","limit":6}',
+    callExample:
+      '{"name":"search_internet","query":"neural plasticity memory","limit":6}',
     validate: validateSearchInternetCall,
   },
   {
     name: "write_note",
     plannerDescription:
       "generate and save a structured reading note for one paper to Zotero; use the query field to specify what the note should contain (extracted from the user's request)",
-    callExample: '{"name":"write_note","target":{"scope":"active-paper"},"query":"one sentence key point"}',
+    callExample:
+      '{"name":"write_note","target":{"scope":"active-paper"},"query":"one sentence key point"}',
     validate: validateWriteNoteCall,
     execute: executeWriteNoteCall,
   },
@@ -133,5 +141,8 @@ export function getAgentToolDefinitions(): readonly AgentToolDefinition[] {
 export function getAgentToolDefinition(
   name: AgentToolName,
 ): AgentToolDefinition | null {
-  return AGENT_TOOL_DEFINITIONS.find((definition) => definition.name === name) || null;
+  return (
+    AGENT_TOOL_DEFINITIONS.find((definition) => definition.name === name) ||
+    null
+  );
 }

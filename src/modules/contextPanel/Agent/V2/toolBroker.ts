@@ -1,14 +1,14 @@
 import {
   createAgentToolExecutorState,
   executeAgentToolCall,
-} from "../Tools/executor";
-import { getAgentToolDefinitions } from "../Tools/registry";
+} from "../ToolInfra/executor";
+import { getAgentToolDefinitions } from "../ToolInfra/registry";
 import type {
   AgentToolCall,
   AgentToolExecutionResult,
   AgentToolExecutorState,
   AgentToolName,
-} from "../Tools/types";
+} from "../ToolInfra/types";
 import type {
   AgentV2ToolBrokerParams,
   ToolExecutionOutcome,
@@ -80,7 +80,10 @@ function buildToolInputSchema(name: AgentToolName): Record<string, unknown> {
   }
 }
 
-function buildErrorResult(call: AgentToolCall, message: string): AgentToolExecutionResult {
+function buildErrorResult(
+  call: AgentToolCall,
+  message: string,
+): AgentToolExecutionResult {
   return {
     name: call.name,
     targetLabel: call.target ? call.target.scope : call.name,
@@ -93,7 +96,9 @@ function buildErrorResult(call: AgentToolCall, message: string): AgentToolExecut
   };
 }
 
-function buildUiActionDirective(result: AgentToolExecutionResult): UiActionDirective | null {
+function buildUiActionDirective(
+  result: AgentToolExecutionResult,
+): UiActionDirective | null {
   if (result.name === "write_note") {
     return {
       type: "show_note_review",
@@ -144,7 +149,9 @@ export function createToolBrokerExecutor(deps?: {
 }): (params: AgentV2ToolBrokerParams) => Promise<ToolExecutionOutcome> {
   const executeCall = deps?.executeCall || executeAgentToolCall;
 
-  return async (params: AgentV2ToolBrokerParams): Promise<ToolExecutionOutcome> => {
+  return async (
+    params: AgentV2ToolBrokerParams,
+  ): Promise<ToolExecutionOutcome> => {
     const specs = getToolSpecsV2();
     const spec = specs.find((entry) => entry.name === params.call.name);
     if (!spec) {
