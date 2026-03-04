@@ -1,5 +1,5 @@
-import { formatPaperContextReferenceLabel } from "../paperAttribution";
-import type { PaperContextRef } from "../types";
+import { formatPaperContextReferenceLabel } from "../../paperAttribution";
+import type { PaperContextRef } from "../../types";
 import type {
   AgentToolExecutionContext,
   AgentToolTarget,

@@ -1,4 +1,4 @@
-import type { PaperContextRef } from "../types";
+import type { PaperContextRef } from "../../types";
 
 export type AgentToolName =
   | "read_paper_text"
@@ -54,6 +54,8 @@ export type AgentToolExecutionResult = {
 
 export type AgentToolExecutionContext = {
   question: string;
+  /** Latest non-empty assistant answer from chat history, if available. */
+  previousAssistantAnswerText?: string;
   libraryID: number;
   /**
    * The Zotero item ID of the panel/conversation item (may be a global portal

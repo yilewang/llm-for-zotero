@@ -1,7 +1,7 @@
 import { assert } from "chai";
-import { createAgentLoopRunner } from "../src/modules/contextPanel/agentLoop";
-import type { AgentStepDecision } from "../src/modules/contextPanel/agentTypes";
-import type { AgentToolExecutionResult } from "../src/modules/contextPanel/agentTools/types";
+import { createAgentLoopRunner } from "../src/modules/contextPanel/Agent/loop";
+import type { AgentStepDecision } from "../src/modules/contextPanel/Agent/types";
+import type { AgentToolExecutionResult } from "../src/modules/contextPanel/Agent/Tools/types";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 
 describe("agentLoop", function () {

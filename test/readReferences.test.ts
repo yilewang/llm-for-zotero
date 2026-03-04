@@ -1,6 +1,6 @@
 import { assert } from "chai";
 import { buildChunkMetadata } from "../src/modules/contextPanel/pdfContext";
-import { executeReadReferencesCall } from "../src/modules/contextPanel/agentTools/tools/readReferences";
+import { executeReadReferencesCall } from "../src/modules/contextPanel/Agent/Tools/readReferences";
 import { pdfTextCache } from "../src/modules/contextPanel/state";
 import type { PaperContextRef, PdfContext } from "../src/modules/contextPanel/types";
 

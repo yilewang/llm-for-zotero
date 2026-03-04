@@ -90,6 +90,7 @@ import { positionMenuAtPointer } from "./menuPositioning";
 import {
   getAvailableModelEntries,
   getAdvancedModelParamsForEntry,
+  getAgentModeEnabled,
   getLastReasoningExpanded,
   getLastUsedReasoningLevel,
   getSelectedModelEntryForItem,
@@ -103,8 +104,11 @@ import {
   resolveContextSourceItem,
 } from "./contextResolution";
 import { isGlobalPortalItem } from "./portalScope";
-import { runAgentLoop } from "./agentLoop";
-import { buildChatHistoryNotePayload, createNoteFromAssistantText } from "./notes";
+import { runAgentV2Orchestrator } from "./Agent/V2/orchestrator";
+import {
+  buildChatHistoryNotePayload,
+  createNoteFromAssistantText,
+} from "./notes";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
@@ -200,7 +204,9 @@ function buildAgentTraceHtml(
     if (raw.startsWith('"') && raw.endsWith('"') && raw.length >= 2) {
       return raw.slice(1, -1);
     }
-    const m = raw.match(/^(active|selected|pinned|recent|retrieved)-paper(?:#(\d+))?$/);
+    const m = raw.match(
+      /^(active|selected|pinned|recent|retrieved)-paper(?:#(\d+))?$/,
+    );
     if (!m) return raw;
     const kindMap: Record<string, string> = {
       active: "Active Paper",
@@ -209,7 +215,9 @@ function buildAgentTraceHtml(
       recent: "Recent",
       retrieved: "Retrieved",
     };
-    return m[2] ? `${kindMap[m[1]!] ?? m[1]} #${m[2]}` : (kindMap[m[1]!] ?? raw);
+    return m[2]
+      ? `${kindMap[m[1]!] ?? m[1]} #${m[2]}`
+      : (kindMap[m[1]!] ?? raw);
   }
 
   function trunc(s: string, max = 48): string {
@@ -238,7 +246,11 @@ function buildAgentTraceHtml(
     return papers[0] ?? null;
   }
 
-  function el<T extends HTMLElement>(tag: string, cls: string, text?: string): T {
+  function el<T extends HTMLElement>(
+    tag: string,
+    cls: string,
+    text?: string,
+  ): T {
     const e = doc.createElement(tag) as T;
     e.className = cls;
     if (text != null) e.textContent = text;
@@ -271,7 +283,9 @@ function buildAgentTraceHtml(
         const [, name, rawTarget] = m;
         const r = row("tool");
         r.appendChild(el("span", "llm-at-icon", "\u2699\uFE0F"));
-        r.appendChild(el("span", "llm-at-tool-name", TOOL_READABLE[name!] ?? name!));
+        r.appendChild(
+          el("span", "llm-at-tool-name", TOOL_READABLE[name!] ?? name!),
+        );
         r.appendChild(el("span", "llm-at-sep", "\u00B7"));
 
         const resolvedPaper = resolvePaperForTarget(rawTarget ?? "");
@@ -294,7 +308,11 @@ function buildAgentTraceHtml(
             }
             const popover = doc.createElement("div") as HTMLDivElement;
             popover.className = "llm-at-paper-popover";
-            const ptitle = el("span", "llm-at-popover-title", resolvedPaper.title);
+            const ptitle = el(
+              "span",
+              "llm-at-popover-title",
+              resolvedPaper.title,
+            );
             popover.appendChild(ptitle);
             const metaParts = [
               resolvedPaper.firstCreator || "",
@@ -313,7 +331,9 @@ function buildAgentTraceHtml(
           });
           r.appendChild(targetBtn);
         } else {
-          r.appendChild(el("span", "llm-at-target", prettyTarget(rawTarget ?? "")));
+          r.appendChild(
+            el("span", "llm-at-target", prettyTarget(rawTarget ?? "")),
+          );
         }
         container.appendChild(r);
         continue;
@@ -326,7 +346,13 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
-        r.appendChild(el("span", "llm-at-ok-text", `${m[1]} snippet${Number(m[1]) !== 1 ? "s" : ""}`));
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-ok-text",
+            `${m[1]} snippet${Number(m[1]) !== 1 ? "s" : ""}`,
+          ),
+        );
         r.appendChild(el("span", "llm-at-sep", "\u00B7"));
         r.appendChild(el("span", "llm-at-paper-label", trunc(m[2]!)));
         container.appendChild(r);
@@ -336,11 +362,19 @@ function buildAgentTraceHtml(
 
     // ── No evidence snippets ──────────────────────────────────────────────────
     {
-      const m = t.match(/^No strong evidence snippets were found for (.+?)\.?$/);
+      const m = t.match(
+        /^No strong evidence snippets were found for (.+?)\.?$/,
+      );
       if (m) {
         const r = row("skip");
         r.appendChild(el("span", "llm-at-icon", "\u2715"));
-        r.appendChild(el("span", "llm-at-skip-text", `No snippets \u00B7 ${trunc(m[1]!, 40)}`));
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-skip-text",
+            `No snippets \u00B7 ${trunc(m[1]!, 40)}`,
+          ),
+        );
         container.appendChild(r);
         continue;
       }
@@ -366,7 +400,13 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("skip");
         r.appendChild(el("span", "llm-at-icon", "\u2715"));
-        r.appendChild(el("span", "llm-at-skip-text", `No full text \u00B7 ${trunc(m[1]!, 40)}`));
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-skip-text",
+            `No full text \u00B7 ${trunc(m[1]!, 40)}`,
+          ),
+        );
         container.appendChild(r);
         continue;
       }
@@ -378,7 +418,13 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
-        r.appendChild(el("span", "llm-at-ok-text", `${m[1]} ref${Number(m[1]) !== 1 ? "s" : ""} loaded`));
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-ok-text",
+            `${m[1]} ref${Number(m[1]) !== 1 ? "s" : ""} loaded`,
+          ),
+        );
         r.appendChild(el("span", "llm-at-sep", "\u00B7"));
         r.appendChild(el("span", "llm-at-paper-label", trunc(m[2]!)));
         container.appendChild(r);
@@ -392,7 +438,9 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
-        r.appendChild(el("span", "llm-at-ok-text", `${m[1]} papers from library`));
+        r.appendChild(
+          el("span", "llm-at-ok-text", `${m[1]} papers from library`),
+        );
         container.appendChild(r);
         continue;
       }
@@ -404,7 +452,13 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("plan");
         r.appendChild(el("span", "llm-at-icon", "\uD83D\uDD0D"));
-        r.appendChild(el("span", "llm-at-plan-text", `Searching: \u201C${trunc(m[1]!, 50)}\u201D`));
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-plan-text",
+            `Searching: \u201C${trunc(m[1]!, 50)}\u201D`,
+          ),
+        );
         container.appendChild(r);
         continue;
       }
@@ -432,7 +486,9 @@ function buildAgentTraceHtml(
     if (/^(?:Unknown|Malformed) tool call was ignored/i.test(t)) {
       const r = row("skip");
       r.appendChild(el("span", "llm-at-icon", "\u2715"));
-      r.appendChild(el("span", "llm-at-skip-text", "Unsupported tool \u2014 skipped"));
+      r.appendChild(
+        el("span", "llm-at-skip-text", "Unsupported tool \u2014 skipped"),
+      );
       container.appendChild(r);
       continue;
     }
@@ -441,13 +497,19 @@ function buildAgentTraceHtml(
     if (/^Tool target was unavailable/i.test(t)) {
       const r = row("skip");
       r.appendChild(el("span", "llm-at-icon", "\u2715"));
-      r.appendChild(el("span", "llm-at-skip-text", "Target unavailable \u2014 skipped"));
+      r.appendChild(
+        el("span", "llm-at-skip-text", "Target unavailable \u2014 skipped"),
+      );
       container.appendChild(r);
       continue;
     }
 
     // ── No library / no result ────────────────────────────────────────────────
-    if (/^(?:No Zotero library is available|Library retrieval returned no result)/i.test(t)) {
+    if (
+      /^(?:No Zotero library is available|Library retrieval returned no result)/i.test(
+        t,
+      )
+    ) {
       const r = row("skip");
       r.appendChild(el("span", "llm-at-icon", "\u2715"));
       r.appendChild(el("span", "llm-at-skip-text", "No library available"));
@@ -459,7 +521,9 @@ function buildAgentTraceHtml(
     if (/^(?:Context budget exhausted|No remaining context budget)/i.test(t)) {
       const r = row("budget");
       r.appendChild(el("span", "llm-at-icon", "\u23F1"));
-      r.appendChild(el("span", "llm-at-budget-text", "Budget reached \u2014 stopping"));
+      r.appendChild(
+        el("span", "llm-at-budget-text", "Budget reached \u2014 stopping"),
+      );
       container.appendChild(r);
       continue;
     }
@@ -475,7 +539,13 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
-        r.appendChild(el("span", "llm-at-ok-text", `${m[1]} section${Number(m[1]) !== 1 ? "s" : ""}`))
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-ok-text",
+            `${m[1]} section${Number(m[1]) !== 1 ? "s" : ""}`,
+          ),
+        );
         r.appendChild(el("span", "llm-at-sep", "\u00B7"));
         r.appendChild(el("span", "llm-at-paper-label", trunc(m[2]!)));
         container.appendChild(r);
@@ -485,14 +555,23 @@ function buildAgentTraceHtml(
 
     // ── Content search matches ────────────────────────────────────────────────
     {
-      const m = t.match(/^Found (\d+) matches? for \u201C(.+?)\u201D in (.+?)\.$/) ||
-                t.match(/^Found (\d+) matches? for "(.+?)" in (.+?)\.?$/);
+      const m =
+        t.match(/^Found (\d+) matches? for \u201C(.+?)\u201D in (.+?)\.$/) ||
+        t.match(/^Found (\d+) matches? for "(.+?)" in (.+?)\.?$/);
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
-        r.appendChild(el("span", "llm-at-ok-text", `${m[1]} match${Number(m[1]) !== 1 ? "es" : ""}`));
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-ok-text",
+            `${m[1]} match${Number(m[1]) !== 1 ? "es" : ""}`,
+          ),
+        );
         r.appendChild(el("span", "llm-at-sep", "\u00B7"));
-        r.appendChild(el("span", "llm-at-paper-label", `\u201C${trunc(m[2]!, 30)}\u201D`));
+        r.appendChild(
+          el("span", "llm-at-paper-label", `\u201C${trunc(m[2]!, 30)}\u201D`),
+        );
         container.appendChild(r);
         continue;
       }
@@ -514,13 +593,23 @@ function buildAgentTraceHtml(
 
     // ── Internet search results ───────────────────────────────────────────────
     {
-      const m = t.match(/^Found (\d+) results? for "(.+?)" on Semantic Scholar\.?$/);
+      const m = t.match(
+        /^Found (\d+) results? for "(.+?)" on Semantic Scholar\.?$/,
+      );
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\uD83C\uDF10"));
-        r.appendChild(el("span", "llm-at-ok-text", `${m[1]} result${Number(m[1]) !== 1 ? "s" : ""}`));
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-ok-text",
+            `${m[1]} result${Number(m[1]) !== 1 ? "s" : ""}`,
+          ),
+        );
         r.appendChild(el("span", "llm-at-sep", "\u00B7"));
-        r.appendChild(el("span", "llm-at-paper-label", `\u201C${trunc(m[2]!, 40)}\u201D`));
+        r.appendChild(
+          el("span", "llm-at-paper-label", `\u201C${trunc(m[2]!, 40)}\u201D`),
+        );
         container.appendChild(r);
         continue;
       }
@@ -528,11 +617,19 @@ function buildAgentTraceHtml(
 
     // ── Internet search — no results ──────────────────────────────────────────
     {
-      const m = t.match(/^No results found for "(.+?)" on Semantic Scholar\.?$/);
+      const m = t.match(
+        /^No results found for "(.+?)" on Semantic Scholar\.?$/,
+      );
       if (m) {
         const r = row("skip");
         r.appendChild(el("span", "llm-at-icon", "\u2715"));
-        r.appendChild(el("span", "llm-at-skip-text", `No results \u00B7 \u201C${trunc(m[1]!, 40)}\u201D`));
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-skip-text",
+            `No results \u00B7 \u201C${trunc(m[1]!, 40)}\u201D`,
+          ),
+        );
         container.appendChild(r);
         continue;
       }
@@ -544,7 +641,13 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\uD83D\uDD8A"));
-        r.appendChild(el("span", "llm-at-ok-text", `${m[1]} field${Number(m[1]) !== 1 ? "s" : ""}  to update`));
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-ok-text",
+            `${m[1]} field${Number(m[1]) !== 1 ? "s" : ""}  to update`,
+          ),
+        );
         r.appendChild(el("span", "llm-at-sep", "\u00B7"));
         r.appendChild(el("span", "llm-at-paper-label", trunc(m[2]!)));
         container.appendChild(r);
@@ -554,11 +657,15 @@ function buildAgentTraceHtml(
 
     // ── Metadata complete ─────────────────────────────────────────────────────
     {
-      const m = t.match(/^Metadata appears complete for (.+?) \u2014 nothing to fix\.?$/);
+      const m = t.match(
+        /^Metadata appears complete for (.+?) \u2014 nothing to fix\.?$/,
+      );
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
-        r.appendChild(el("span", "llm-at-ok-text", "Metadata already complete"));
+        r.appendChild(
+          el("span", "llm-at-ok-text", "Metadata already complete"),
+        );
         r.appendChild(el("span", "llm-at-sep", "\u00B7"));
         r.appendChild(el("span", "llm-at-paper-label", trunc(m[1]!)));
         container.appendChild(r);
@@ -597,7 +704,11 @@ function buildMetadataReviewCard(
   body: Element,
   proposal: MetadataProposal,
 ): HTMLDivElement {
-  function el<T extends HTMLElement>(tag: string, cls: string, text?: string): T {
+  function el<T extends HTMLElement>(
+    tag: string,
+    cls: string,
+    text?: string,
+  ): T {
     const e = doc.createElement(tag) as T;
     e.className = cls;
     if (text != null) e.textContent = text;
@@ -608,10 +719,15 @@ function buildMetadataReviewCard(
 
   // ── Header ─────────────────────────────────────────────────────────────────
   const header = el("div", "llm-mrc-header");
-  header.appendChild(el("div", "llm-mrc-title", "\uD83D\uDCC4 Metadata Review"));
   header.appendChild(
-    el("div", "llm-mrc-subtitle",
-      `${proposal.targetLabel} \u2014 check each proposed change and click Accept to apply.`)
+    el("div", "llm-mrc-title", "\uD83D\uDCC4 Metadata Review"),
+  );
+  header.appendChild(
+    el(
+      "div",
+      "llm-mrc-subtitle",
+      `${proposal.targetLabel} \u2014 check each proposed change and click Accept to apply.`,
+    ),
   );
   card.appendChild(header);
 
@@ -669,18 +785,36 @@ function buildMetadataReviewCard(
   }
 
   for (const field of proposal.fields) {
-    addRow(field.fieldName, field.displayName, field.currentValue, field.proposedValue);
+    addRow(
+      field.fieldName,
+      field.displayName,
+      field.currentValue,
+      field.proposedValue,
+    );
   }
   if (proposal.authors) {
-    addRow("__authors__", "Authors", proposal.authors.current, proposal.authors.proposed);
+    addRow(
+      "__authors__",
+      "Authors",
+      proposal.authors.current,
+      proposal.authors.proposed,
+    );
   }
   card.appendChild(table);
 
   // ── Action row ─────────────────────────────────────────────────────────────
   const actions = el("div", "llm-mrc-actions");
-  const acceptBtn = el<HTMLButtonElement>("button", "llm-mrc-accept-btn", "Accept Selected");
+  const acceptBtn = el<HTMLButtonElement>(
+    "button",
+    "llm-mrc-accept-btn",
+    "Accept Selected",
+  );
   acceptBtn.type = "button";
-  const dismissBtn = el<HTMLButtonElement>("button", "llm-mrc-dismiss-btn", "Dismiss");
+  const dismissBtn = el<HTMLButtonElement>(
+    "button",
+    "llm-mrc-dismiss-btn",
+    "Dismiss",
+  );
   dismissBtn.type = "button";
   const statusMsg = el("span", "llm-mrc-status");
 
@@ -706,7 +840,9 @@ function buildMetadataReviewCard(
           (item as any).setField(field.fieldName, field.proposedValue);
           applied++;
         } catch (err) {
-          errors.push(`${field.displayName}: ${err instanceof Error ? err.message : String(err)}`);
+          errors.push(
+            `${field.displayName}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
 
@@ -715,9 +851,13 @@ function buildMetadataReviewCard(
         const cb = checkboxMap.get("__authors__");
         if (cb?.checked) {
           try {
-            const authorTypeId: number = Zotero.CreatorTypes.getID("author") as number;
+            const authorTypeId: number = Zotero.CreatorTypes.getID(
+              "author",
+            ) as number;
             const existing: any[] = (item as any).getCreators?.() ?? [];
-            const nonAuthors = existing.filter((c: any) => c.creatorTypeID !== authorTypeId);
+            const nonAuthors = existing.filter(
+              (c: any) => c.creatorTypeID !== authorTypeId,
+            );
             const newAuthors = proposal.authors.parsedAuthors.map((a) => ({
               firstName: a.firstName,
               lastName: a.lastName,
@@ -727,7 +867,9 @@ function buildMetadataReviewCard(
             (item as any).setCreators([...newAuthors, ...nonAuthors]);
             applied++;
           } catch (err) {
-            errors.push(`Authors: ${err instanceof Error ? err.message : String(err)}`);
+            errors.push(
+              `Authors: ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         }
       }
@@ -736,7 +878,9 @@ function buildMetadataReviewCard(
         try {
           await (item as any).saveTx();
         } catch (err) {
-          errors.push(`Save: ${err instanceof Error ? err.message : String(err)}`);
+          errors.push(
+            `Save: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
 
@@ -750,8 +894,15 @@ function buildMetadataReviewCard(
         statusMsg.textContent = `\u2713 ${applied} field${applied !== 1 ? "s" : ""} updated.`;
         card.classList.add("llm-mrc-done");
         const win = doc.defaultView;
-        if (win) win.setTimeout(() => { card.remove(); refreshChat(body, item); }, 1800);
-        else { card.remove(); refreshChat(body, item); }
+        if (win)
+          win.setTimeout(() => {
+            card.remove();
+            refreshChat(body, item);
+          }, 1800);
+        else {
+          card.remove();
+          refreshChat(body, item);
+        }
       }
     })();
   });
@@ -767,7 +918,11 @@ function buildNoteReviewCard(
   body: Element,
   proposal: PendingNoteProposal,
 ): HTMLDivElement {
-  function el<T extends HTMLElement>(tag: string, cls: string, text?: string): T {
+  function el<T extends HTMLElement>(
+    tag: string,
+    cls: string,
+    text?: string,
+  ): T {
     const e = doc.createElement(tag) as T;
     e.className = cls;
     if (text != null) e.textContent = text;
@@ -780,8 +935,11 @@ function buildNoteReviewCard(
   const header = el("div", "llm-mrc-header");
   header.appendChild(el("div", "llm-mrc-title", "\uD83D\uDCDD Note Review"));
   header.appendChild(
-    el("div", "llm-mrc-subtitle",
-      `${proposal.targetLabel} \u2014 edit if needed, then click Save to Zotero.`)
+    el(
+      "div",
+      "llm-mrc-subtitle",
+      `${proposal.targetLabel} \u2014 edit if needed, then click Save to Zotero.`,
+    ),
   );
   card.appendChild(header);
 
@@ -796,9 +954,17 @@ function buildNoteReviewCard(
 
   // ── Actions ──────────────────────────────────────────────────────────────
   const actions = el("div", "llm-mrc-actions");
-  const saveBtn = el<HTMLButtonElement>("button", "llm-mrc-accept-btn", "Save to Zotero");
+  const saveBtn = el<HTMLButtonElement>(
+    "button",
+    "llm-mrc-accept-btn",
+    "Save to Zotero",
+  );
   saveBtn.type = "button";
-  const dismissBtn = el<HTMLButtonElement>("button", "llm-mrc-dismiss-btn", "Dismiss");
+  const dismissBtn = el<HTMLButtonElement>(
+    "button",
+    "llm-mrc-dismiss-btn",
+    "Dismiss",
+  );
   dismissBtn.type = "button";
   const statusMsg = el("span", "llm-mrc-status");
 
@@ -821,11 +987,16 @@ function buildNoteReviewCard(
         return;
       }
 
-      const parentItem = Zotero.Items.get(proposal.itemId) as Zotero.Item | false;
+      const parentItem = Zotero.Items.get(proposal.itemId) as
+        | Zotero.Item
+        | false;
       if (!parentItem) {
         const errText = "Could not find the Zotero item \u2014 try reloading.";
         statusMsg.textContent = `\u26A0 ${errText}`;
-        ztoolkit.log("LLM: Note save failed \u2013 item not found:", proposal.itemId);
+        ztoolkit.log(
+          "LLM: Note save failed \u2013 item not found:",
+          proposal.itemId,
+        );
         saveBtn.disabled = false;
         dismissBtn.disabled = false;
         return;
@@ -885,8 +1056,15 @@ function buildNoteReviewCard(
         statusMsg.textContent = `\u2713 Note ${saveOutcome} in Zotero under \u201c${proposal.targetLabel}\u201d.`;
         card.classList.add("llm-mrc-done");
         const win = doc.defaultView;
-        if (win) win.setTimeout(() => { card.remove(); refreshChat(body, item); }, 1800);
-        else { card.remove(); refreshChat(body, item); }
+        if (win)
+          win.setTimeout(() => {
+            card.remove();
+            refreshChat(body, item);
+          }, 1800);
+        else {
+          card.remove();
+          refreshChat(body, item);
+        }
       }
     })();
   });
@@ -1141,7 +1319,10 @@ const followBottomStabilizers = new Map<
 /** Cumulative API token usage per conversation key for the current session. */
 const sessionTokenTotals = new Map<number, number>();
 
-function accumulateSessionTokens(conversationKey: number, delta: number): number {
+function accumulateSessionTokens(
+  conversationKey: number,
+  delta: number,
+): number {
   const prev = sessionTokenTotals.get(conversationKey) ?? 0;
   const next = prev + delta;
   sessionTokenTotals.set(conversationKey, next);
@@ -1152,7 +1333,10 @@ function accumulateSessionTokens(conversationKey: number, delta: number): number
  * Seed the session token total from the existing chat history if it hasn't
  * been set yet in this Zotero session. Returns the seeded (or existing) total.
  */
-function getOrSeedSessionTokens(conversationKey: number, history: Message[]): number {
+function getOrSeedSessionTokens(
+  conversationKey: number,
+  history: Message[],
+): number {
   if (sessionTokenTotals.has(conversationKey)) {
     return sessionTokenTotals.get(conversationKey)!;
   }
@@ -1825,6 +2009,7 @@ async function buildContextPlanForRequest(params: {
   pinnedPaperContexts: PaperContextRef[];
   recentPaperContexts: PaperContextRef[];
   history: ChatMessage[];
+  messageHistory?: Message[];
   effectiveRequestConfig: EffectiveRequestConfig;
   setStatusSafely: (
     text: string,
@@ -1848,6 +2033,7 @@ async function buildContextPlanForRequest(params: {
   let recentPaperContexts = params.recentPaperContexts;
   const contextBlocks: string[] = [];
   let contextPrefix = "";
+  let responderContext = "";
   const systemPrompt = getStringPref("systemPrompt") || undefined;
   const baseContextBudget = estimateAvailableContextBudget({
     model: params.effectiveRequestConfig.model,
@@ -1860,47 +2046,67 @@ async function buildContextPlanForRequest(params: {
     systemPrompt,
   });
 
-  const agentLoop = await runAgentLoop({
-    item: params.item,
-    question: params.question,
-    images: params.images,
-    activeContextItem,
-    conversationMode,
-    paperContexts,
-    pinnedPaperContexts,
-    recentPaperContexts,
-    model: params.effectiveRequestConfig.model,
-    apiBase: params.effectiveRequestConfig.apiBase,
-    apiKey: params.effectiveRequestConfig.apiKey,
-    reasoning: params.effectiveRequestConfig.reasoning,
-    advanced: params.effectiveRequestConfig.advanced,
-    availableContextBudgetTokens: baseContextBudget.contextBudgetTokens,
-    onStatus: (statusText) => {
-      params.setStatusSafely(statusText, "sending");
-    },
-    onTrace: (traceLine) => {
-      params.setAgentStatusSafely?.(traceLine);
-    },
-  });
-  activeContextItem = agentLoop.activeContextItem;
-  conversationMode = agentLoop.conversationMode;
-  paperContexts = agentLoop.paperContexts;
-  pinnedPaperContexts = agentLoop.pinnedPaperContexts;
-  recentPaperContexts = agentLoop.recentPaperContexts;
-  contextPrefix = sanitizeText(agentLoop.contextPrefix || "").trim();
-  ztoolkit.log("LLM: Agent loop result", {
-    conversationMode,
-    paperContextCount: paperContexts.length,
-    pinnedPaperContextCount: pinnedPaperContexts.length,
-    recentPaperContextCount: recentPaperContexts.length,
-    hasContextPrefix: Boolean(contextPrefix),
-  });
+  const agentModeEnabled = getAgentModeEnabled();
+  if (agentModeEnabled) {
+    try {
+      const v2 = await runAgentV2Orchestrator({
+        item: params.item,
+        question: params.question,
+        images: params.images,
+        historyMessages: params.messageHistory,
+        activeContextItem,
+        conversationMode,
+        paperContexts,
+        pinnedPaperContexts,
+        recentPaperContexts,
+        model: params.effectiveRequestConfig.model,
+        apiBase: params.effectiveRequestConfig.apiBase,
+        apiKey: params.effectiveRequestConfig.apiKey,
+        reasoning: params.effectiveRequestConfig.reasoning,
+        advanced: params.effectiveRequestConfig.advanced,
+        availableContextBudgetTokens: baseContextBudget.contextBudgetTokens,
+        onStatus: (statusText) => {
+          params.setStatusSafely(statusText, "sending");
+        },
+        onTrace: (traceLine) => {
+          params.setAgentStatusSafely?.(traceLine);
+        },
+      });
+      activeContextItem = v2.activeContextItem;
+      conversationMode = v2.conversationMode;
+      paperContexts = v2.paperContexts;
+      pinnedPaperContexts = v2.pinnedPaperContexts;
+      recentPaperContexts = v2.recentPaperContexts;
+      contextPrefix = sanitizeText(v2.contextPrefix || "").trim();
+      responderContext = sanitizeText(v2.responderContext || "").trim();
+      ztoolkit.log("LLM: AgentV2 orchestrator result", {
+        conversationMode,
+        paperContextCount: paperContexts.length,
+        pinnedPaperContextCount: pinnedPaperContexts.length,
+        recentPaperContextCount: recentPaperContexts.length,
+        hasContextPrefix: Boolean(contextPrefix),
+        hasResponderContext: Boolean(responderContext),
+        uiActionCount: v2.uiActions.length,
+      });
+    } catch (err) {
+      ztoolkit.log("LLM: AgentV2 failed (V1 is disabled)", err);
+      params.setAgentStatusSafely?.("AgentV2 failed.");
+      throw err;
+    }
+  } else {
+    ztoolkit.log("LLM: Agent mode disabled; skipping AgentV2 orchestrator");
+  }
+
+  const plannerReservedPrefix = [contextPrefix, responderContext]
+    .map((entry) => sanitizeText(entry).trim())
+    .filter(Boolean)
+    .join("\n\n---\n\n");
 
   const plan = await resolveMultiContextPlan({
     activeContextItem,
     conversationMode,
     question: params.question,
-    contextPrefix,
+    contextPrefix: plannerReservedPrefix,
     paperContexts,
     pinnedPaperContexts,
     historyPaperContexts: recentPaperContexts,
@@ -1937,6 +2143,9 @@ async function buildContextPlanForRequest(params: {
   const planContext = sanitizeText(plan.contextText || "").trim();
   if (planContext) {
     contextBlocks.push(planContext);
+  }
+  if (responderContext) {
+    contextBlocks.push(responderContext);
   }
   return {
     combinedContext: contextBlocks.join("\n\n---\n\n"),
@@ -2401,17 +2610,8 @@ export async function retryLatestAssistantResponse(
   assistantMessage.reasoningDetails = undefined;
   assistantMessage.reasoningOpen = isReasoningExpandedByDefault();
   assistantMessage.streaming = true;
-  const {
-    refreshChatSafely,
-    setStatusSafely,
-    setAgentStatusSafely,
-  } = createPanelUpdateHelpers(
-    body,
-    item,
-    conversationKey,
-    ui,
-    assistantMessage,
-  );
+  const { refreshChatSafely, setStatusSafely, setAgentStatusSafely } =
+    createPanelUpdateHelpers(body, item, conversationKey, ui, assistantMessage);
 
   const historyForLLM = history.slice(0, retryPair.userIndex);
   const {
@@ -2439,7 +2639,8 @@ export async function retryLatestAssistantResponse(
   // Update model name before first refresh so streaming UI shows the correct model immediately
   assistantMessage.modelName = effectiveRequestConfig.model;
   assistantMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
-  assistantMessage.modelProviderLabel = effectiveRequestConfig.modelProviderLabel;
+  assistantMessage.modelProviderLabel =
+    effectiveRequestConfig.modelProviderLabel;
   refreshChatSafely();
   let streamedAnswer = "";
   let streamedReasoningSummary: string | undefined;
@@ -2461,6 +2662,7 @@ export async function retryLatestAssistantResponse(
       pinnedPaperContexts,
       recentPaperContexts,
       history: llmHistory,
+      messageHistory: historyForLLM,
       effectiveRequestConfig,
       setStatusSafely,
       setAgentStatusSafely,
@@ -2469,10 +2671,10 @@ export async function retryLatestAssistantResponse(
     retryPair.userMessage.paperContexts = contextPlan.paperContexts.length
       ? contextPlan.paperContexts
       : undefined;
-    retryPair.userMessage.pinnedPaperContexts =
-      contextPlan.pinnedPaperContexts.length
-        ? contextPlan.pinnedPaperContexts
-        : undefined;
+    retryPair.userMessage.pinnedPaperContexts = contextPlan.pinnedPaperContexts
+      .length
+      ? contextPlan.pinnedPaperContexts
+      : undefined;
     await updateStoredLatestUserMessage(conversationKey, {
       text: retryPair.userMessage.text,
       timestamp: retryPair.userMessage.timestamp,
@@ -2544,7 +2746,10 @@ export async function retryLatestAssistantResponse(
         queueRefresh();
       },
       (usage: UsageStats) => {
-        const total = accumulateSessionTokens(conversationKey, usage.totalTokens);
+        const total = accumulateSessionTokens(
+          conversationKey,
+          usage.totalTokens,
+        );
         if (ui.tokenUsageEl) setTokenUsage(ui.tokenUsageEl, total);
       },
     );
@@ -2846,17 +3051,8 @@ export async function sendQuestion(
   if (history.length > PERSISTED_HISTORY_LIMIT) {
     history.splice(0, history.length - PERSISTED_HISTORY_LIMIT);
   }
-  const {
-    refreshChatSafely,
-    setStatusSafely,
-    setAgentStatusSafely,
-  } = createPanelUpdateHelpers(
-    body,
-    item,
-    conversationKey,
-    ui,
-    assistantMessage,
-  );
+  const { refreshChatSafely, setStatusSafely, setAgentStatusSafely } =
+    createPanelUpdateHelpers(body, item, conversationKey, ui, assistantMessage);
   refreshChatSafely();
 
   let assistantPersisted = false;
@@ -2899,6 +3095,7 @@ export async function sendQuestion(
       pinnedPaperContexts: pinnedPaperContextsForMessage,
       recentPaperContexts,
       history: llmHistory,
+      messageHistory: historyForLLM,
       effectiveRequestConfig,
       setStatusSafely,
       setAgentStatusSafely,
@@ -2964,7 +3161,10 @@ export async function sendQuestion(
         queueRefresh();
       },
       (usage: UsageStats) => {
-        const total = accumulateSessionTokens(conversationKey, usage.totalTokens);
+        const total = accumulateSessionTokens(
+          conversationKey,
+          usage.totalTokens,
+        );
         if (ui.tokenUsageEl) setTokenUsage(ui.tokenUsageEl, total);
       },
     );
@@ -3028,7 +3228,9 @@ function buildInlineEditWidget(
   const isFirstEntry = !inlineEditInputSectionEl;
   let inputSectionEl = inlineEditInputSectionEl;
   if (isFirstEntry) {
-    inputSectionEl = body.querySelector(".llm-input-section") as HTMLElement | null;
+    inputSectionEl = body.querySelector(
+      ".llm-input-section",
+    ) as HTMLElement | null;
     if (inputSectionEl) {
       setInlineEditInputSection(
         inputSectionEl,
@@ -3039,8 +3241,9 @@ function buildInlineEditWidget(
   }
 
   // The real input <textarea>
-  const inputBoxEl = body.querySelector("#llm-input") as HTMLTextAreaElement | null
-    ?? (inputSectionEl?.querySelector("#llm-input") as HTMLTextAreaElement | null);
+  const inputBoxEl =
+    (body.querySelector("#llm-input") as HTMLTextAreaElement | null) ??
+    (inputSectionEl?.querySelector("#llm-input") as HTMLTextAreaElement | null);
 
   // On first entry: save draft and pre-fill with the user message
   if (isFirstEntry) {
@@ -3120,11 +3323,19 @@ function buildInlineEditWidget(
 
   // Focus on first entry only (don't steal focus on streaming refreshes)
   const win = body.ownerDocument?.defaultView;
-  if (win && inputBoxEl && isFirstEntry && !inputBoxEl.dataset.inlineEditFocused) {
+  if (
+    win &&
+    inputBoxEl &&
+    isFirstEntry &&
+    !inputBoxEl.dataset.inlineEditFocused
+  ) {
     inputBoxEl.dataset.inlineEditFocused = "1";
     win.setTimeout(() => {
       inputBoxEl.focus({ preventScroll: true });
-      inputBoxEl.setSelectionRange(inputBoxEl.value.length, inputBoxEl.value.length);
+      inputBoxEl.setSelectionRange(
+        inputBoxEl.value.length,
+        inputBoxEl.value.length,
+      );
     }, 0);
   }
 
@@ -3144,14 +3355,18 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         <div class="llm-welcome-text">Select an item or open a PDF to start.</div>
       </div>
     `;
-    const tokenUsageEl = body.querySelector("#llm-token-usage") as HTMLElement | null;
+    const tokenUsageEl = body.querySelector(
+      "#llm-token-usage",
+    ) as HTMLElement | null;
     if (tokenUsageEl) tokenUsageEl.style.display = "none";
     return;
   }
 
   const conversationKey = getConversationKey(item);
   // Sync token counter for this conversation
-  const tokenUsageEl = body.querySelector("#llm-token-usage") as HTMLElement | null;
+  const tokenUsageEl = body.querySelector(
+    "#llm-token-usage",
+  ) as HTMLElement | null;
   const panelRoot = body.querySelector("#llm-main") as HTMLDivElement | null;
   const isGlobalConversation =
     isGlobalPortalItem(item) ||
@@ -3160,13 +3375,18 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     withScrollGuard(chatBox, conversationKey, fn);
   };
   const hasExistingRenderedContent = chatBox.childElementCount > 0;
+  const agentModeEnabled = getAgentModeEnabled();
   const cachedSnapshot = chatScrollSnapshots.get(conversationKey);
   const baselineSnapshot =
     !hasExistingRenderedContent && cachedSnapshot
       ? cachedSnapshot
       : buildChatScrollSnapshot(chatBox);
   const history = chatHistory.get(conversationKey) || [];
-  if (tokenUsageEl) setTokenUsage(tokenUsageEl, getOrSeedSessionTokens(conversationKey, history));
+  if (tokenUsageEl)
+    setTokenUsage(
+      tokenUsageEl,
+      getOrSeedSessionTokens(conversationKey, history),
+    );
 
   if (history.length === 0) {
     chatBox.innerHTML = `
@@ -3662,15 +3882,18 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         });
         renderSelectedTextStates();
       }
-      const hasPromptTurnPair = Boolean(
-        assistantPairMsg?.role === "assistant",
-      );
+      const hasPromptTurnPair = Boolean(assistantPairMsg?.role === "assistant");
       const canDeletePromptTurn = Boolean(
         hasPromptTurnPair && !assistantPairMsg?.streaming,
       );
       if (isInlineEditBubble) {
         inlineEditEl = buildInlineEditWidget(
-          doc, body, item, msg, assistantPairMsg!, conversationKey,
+          doc,
+          body,
+          item,
+          msg,
+          assistantPairMsg!,
+          conversationKey,
         );
       } else {
         bubble.textContent = sanitizeText(msg.text || "");
@@ -3744,7 +3967,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       const agentTraceLines = normalizeAgentTraceLines(
         msg.agentTraceText || "",
       );
-      const showAgentStatus = agentTraceLines.length > 0;
+      const showAgentStatus = agentModeEnabled && agentTraceLines.length > 0;
       const hasAnswerText = Boolean(msg.text);
       if (hasAnswerText) {
         const safeText = sanitizeText(msg.text);
@@ -3759,11 +3982,17 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           try {
             const pairedUserMessage =
               history[index - 1]?.role === "user" ? history[index - 1] : null;
-            ztoolkit.log("LLM: calling decorateAssistantCitationLinks",
-              "msgLen =", msg.text.length,
-              "bubbleHTML =", String(bubble.innerHTML || "").length,
-              "hasPairedUser =", Boolean(pairedUserMessage),
-              "pairedPaperContexts =", pairedUserMessage?.paperContexts?.length ?? "none");
+            ztoolkit.log(
+              "LLM: calling decorateAssistantCitationLinks",
+              "msgLen =",
+              msg.text.length,
+              "bubbleHTML =",
+              String(bubble.innerHTML || "").length,
+              "hasPairedUser =",
+              Boolean(pairedUserMessage),
+              "pairedPaperContexts =",
+              pairedUserMessage?.paperContexts?.length ?? "none",
+            );
             decorateAssistantCitationLinks({
               body,
               panelItem: item,
@@ -3857,7 +4086,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         indicator.setAttribute("aria-hidden", "true");
         const summaryLabel = doc.createElement("span") as HTMLSpanElement;
         summaryLabel.className = "llm-agent-process-summary-label";
-        summaryLabel.textContent = msg.streaming ? "Agent is thinking" : "Agent logs";
+        summaryLabel.textContent = msg.streaming
+          ? "Agent is thinking"
+          : "Agent logs";
         summary.append(indicator, summaryLabel);
         const toggleAgent = (e: Event) => {
           e.preventDefault();

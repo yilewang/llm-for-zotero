@@ -1,0 +1,534 @@
+import { getModelInputTokenLimit } from "../../../../utils/modelInputCap";
+import {
+  normalizeInputTokenCap,
+  normalizeMaxTokens,
+} from "../../../../utils/normalization";
+import { DEFAULT_MAX_AGENT_ITERATIONS } from "../config";
+import { shouldSkipAgent } from "../heuristics";
+import { resolvePaperContextRefFromAttachment } from "../../paperAttribution";
+import { sanitizeText } from "../../textUtils";
+import type {
+  AgentToolCall,
+  AgentToolExecutionContext,
+  AgentToolExecutionResult,
+} from "../Tools/types";
+import type { Message, PaperContextRef } from "../../types";
+import { loadAgentV2PromptPack } from "./promptPack";
+import { buildResponderContextBlock } from "./responseComposer";
+import { runAgentV2RouterStep } from "./router";
+import {
+  createAgentV2ToolBrokerState,
+  executeToolViaBroker,
+  getToolSpecsV2,
+} from "./toolBroker";
+import type {
+  AgentV2OrchestratorParams,
+  AgentV2OrchestratorResult,
+  AgentV2ToolLog,
+  RouterContextSummary,
+  UiActionDirective,
+} from "./types";
+
+type AgentV2State = {
+  activeContextItem: Zotero.Item | null;
+  conversationMode: "paper" | "open";
+  activePaperContext: PaperContextRef | null;
+  paperContexts: PaperContextRef[];
+  pinnedPaperContexts: PaperContextRef[];
+  recentPaperContexts: PaperContextRef[];
+  retrievedPaperContexts: PaperContextRef[];
+  contextPrefixBlocks: string[];
+  contextPrefixEstimatedTokens: number;
+  toolLogs: AgentV2ToolLog[];
+  uiActions: UiActionDirective[];
+};
+
+const MAX_ROUTER_HISTORY_LINES = 8;
+const MAX_ROUTER_TOOL_LOG_LINES = 8;
+const MAX_ROUTER_CONTEXT_DESCRIPTORS = 12;
+const MAX_NO_PROGRESS_STEPS = 2;
+
+function dedupePaperContexts(
+  values: (PaperContextRef | null | undefined)[],
+): PaperContextRef[] {
+  const out: PaperContextRef[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (!value) continue;
+    const key = `${value.itemId}:${value.contextItemId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}
+
+function summarizePaperRef(ref: PaperContextRef): string {
+  const bits = [ref.title || "Untitled paper"];
+  const citationBits = [ref.firstCreator, ref.year].filter(Boolean).join(", ");
+  if (citationBits) {
+    bits.push(`(${citationBits})`);
+  }
+  return bits.join(" ").trim();
+}
+
+function formatToolCallLabel(call: AgentToolCall): string {
+  if (call.name === "list_papers" || call.name === "search_internet") {
+    const query = sanitizeText(call.query || "").trim();
+    return query ? `${call.name}(\"${query}\")` : `${call.name}()`;
+  }
+  if (call.target) {
+    if ("index" in call.target) {
+      return `${call.name}(${call.target.scope}#${call.target.index})`;
+    }
+    return `${call.name}(${call.target.scope})`;
+  }
+  return call.name;
+}
+
+function summarizeToolResult(
+  iteration: number,
+  result: AgentToolExecutionResult,
+): AgentV2ToolLog {
+  const summary = `${result.name} | ${result.targetLabel} | ${result.ok ? "complete" : "skipped"}`;
+  return {
+    iteration,
+    toolName: result.name,
+    targetLabel: result.targetLabel,
+    ok: result.ok,
+    traceLines: [...result.traceLines],
+    summary,
+  };
+}
+
+function deriveAvailableContextBudgetTokens(
+  params: AgentV2OrchestratorParams,
+): number {
+  const explicitBudget = Math.floor(Number(params.availableContextBudgetTokens));
+  if (Number.isFinite(explicitBudget) && explicitBudget >= 0) return explicitBudget;
+  const modelLimitTokens = getModelInputTokenLimit(params.model);
+  const limitTokens = normalizeInputTokenCap(params.advanced?.inputTokenCap, modelLimitTokens);
+  const softLimitTokens = Math.max(1, Math.floor(limitTokens * 0.9));
+  const outputReserveTokens = normalizeMaxTokens(params.advanced?.maxTokens);
+  return Math.max(0, softLimitTokens - outputReserveTokens);
+}
+
+function computeToolTokenCap(
+  totalBudget: number,
+  state: AgentV2State,
+  maxIterations: number,
+  iterationIndex: number,
+): number {
+  const remainingBudget = Math.max(0, totalBudget - state.contextPrefixEstimatedTokens);
+  if (remainingBudget <= 0) return 0;
+  const remainingIterations = Math.max(1, maxIterations - iterationIndex);
+  return Math.max(1, Math.floor(remainingBudget / remainingIterations));
+}
+
+function buildToolContext(
+  params: AgentV2OrchestratorParams,
+  state: AgentV2State,
+  previousAssistantAnswerText: string,
+  toolTokenCap?: number,
+): AgentToolExecutionContext {
+  return {
+    question: params.question,
+    previousAssistantAnswerText: previousAssistantAnswerText || undefined,
+    libraryID: Number(params.item.libraryID),
+    panelItemId: params.item.id,
+    conversationMode: state.conversationMode,
+    activePaperContext: state.activePaperContext,
+    selectedPaperContexts: state.paperContexts,
+    pinnedPaperContexts: state.pinnedPaperContexts,
+    recentPaperContexts: state.recentPaperContexts,
+    retrievedPaperContexts: state.retrievedPaperContexts,
+    toolTokenCap,
+    availableContextBudgetTokens: params.availableContextBudgetTokens,
+    apiBase: params.apiBase,
+    apiKey: params.apiKey,
+    model: params.model,
+    onTrace: params.onTrace,
+    onStatus: params.onStatus,
+  };
+}
+
+function buildAvailableTargetLines(state: AgentV2State): string[] {
+  const lines: string[] = [];
+
+  const selected = dedupePaperContexts(state.paperContexts);
+  for (const [i, paper] of selected.entries()) {
+    lines.push(`selected-paper#${i + 1}: ${summarizePaperRef(paper)}`);
+  }
+
+  const pinned = dedupePaperContexts(state.pinnedPaperContexts);
+  for (const [i, paper] of pinned.entries()) {
+    lines.push(`pinned-paper#${i + 1}: ${summarizePaperRef(paper)}`);
+  }
+
+  const recent = dedupePaperContexts(state.recentPaperContexts);
+  for (const [i, paper] of recent.entries()) {
+    lines.push(`recent-paper#${i + 1}: ${summarizePaperRef(paper)}`);
+  }
+
+  const retrieved = dedupePaperContexts(state.retrievedPaperContexts);
+  for (const [i, paper] of retrieved.entries()) {
+    lines.push(`retrieved-paper#${i + 1}: ${summarizePaperRef(paper)}`);
+  }
+
+  if (state.activePaperContext) {
+    lines.push(`active-paper: ${summarizePaperRef(state.activePaperContext)}`);
+  }
+
+  return lines;
+}
+
+function summarizeConversationHistory(messages: Message[] | undefined): string[] {
+  if (!messages?.length) return [];
+
+  const out: string[] = [];
+  const recent = messages.slice(-MAX_ROUTER_HISTORY_LINES);
+  for (const message of recent) {
+    const role = message.role === "assistant" ? "assistant" : "user";
+    const text = sanitizeText(message.text || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 160);
+    if (text) {
+      out.push(`${role}: ${text}`);
+    }
+
+    if (role === "assistant") {
+      const traceLines = sanitizeText(message.agentTraceText || "")
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-2)
+        .map((line) => `assistant-tool-log: ${line.slice(0, 160)}`);
+      out.push(...traceLines);
+    }
+  }
+
+  return out.slice(-MAX_ROUTER_HISTORY_LINES);
+}
+
+function derivePreviousAssistantAnswerText(messages?: Message[]): string {
+  if (!messages?.length) return "";
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message || message.role !== "assistant") continue;
+    const text = sanitizeText(message.text || "").trim();
+    if (!text) continue;
+    if (text === "[Cancelled]") continue;
+    if (/^Error:/i.test(text)) continue;
+    return text;
+  }
+  return "";
+}
+
+function buildContextDescriptors(params: {
+  state: AgentV2State;
+  question: string;
+  hasImages: boolean;
+  previousAssistantAnswerText: string;
+}): string[] {
+  const descriptors: string[] = [];
+  descriptors.push(
+    `question length: ${sanitizeText(params.question).trim().length} characters`,
+  );
+  descriptors.push(`images attached: ${params.hasImages ? "yes" : "no"}`);
+  descriptors.push(
+    `previous assistant answer available: ${params.previousAssistantAnswerText ? "yes" : "no"}`,
+  );
+
+  if (params.state.activePaperContext) {
+    descriptors.push(`active context: ${summarizePaperRef(params.state.activePaperContext)}`);
+  }
+
+  if (params.state.paperContexts.length) {
+    descriptors.push(`selected contexts: ${params.state.paperContexts.length}`);
+  }
+  if (params.state.pinnedPaperContexts.length) {
+    descriptors.push(`pinned contexts: ${params.state.pinnedPaperContexts.length}`);
+  }
+  if (params.state.recentPaperContexts.length) {
+    descriptors.push(`recent contexts: ${params.state.recentPaperContexts.length}`);
+  }
+  if (params.state.retrievedPaperContexts.length) {
+    descriptors.push(`retrieved contexts: ${params.state.retrievedPaperContexts.length}`);
+  }
+
+  return descriptors.slice(0, MAX_ROUTER_CONTEXT_DESCRIPTORS);
+}
+
+function buildRouterSummary(params: {
+  state: AgentV2State;
+  question: string;
+  iterationIndex: number;
+  maxIterations: number;
+  remainingBudgetTokens: number;
+  historyMessages?: Message[];
+  toolLogs: AgentV2ToolLog[];
+  hasImages: boolean;
+  libraryID: number;
+  previousAssistantAnswerText: string;
+}): RouterContextSummary {
+  const toolSpecs = getToolSpecsV2();
+  return {
+    question: params.question,
+    conversationMode: params.state.conversationMode,
+    libraryAvailable: params.libraryID > 0,
+    remainingBudgetTokens: params.remainingBudgetTokens,
+    iterationIndex: params.iterationIndex,
+    maxIterations: params.maxIterations,
+    contextDescriptors: buildContextDescriptors({
+      state: params.state,
+      question: params.question,
+      hasImages: params.hasImages,
+      previousAssistantAnswerText: params.previousAssistantAnswerText,
+    }),
+    recentConversationSummary: summarizeConversationHistory(params.historyMessages),
+    recentToolLogs: params.toolLogs
+      .slice(-MAX_ROUTER_TOOL_LOG_LINES)
+      .map((entry) => entry.summary),
+    availableTargets: buildAvailableTargetLines(params.state),
+    availableTools: toolSpecs.map((spec) => ({
+      name: spec.name,
+      description: spec.description,
+      inputSchema: spec.inputSchema,
+      callExample: spec.callExample,
+    })),
+  };
+}
+
+function applyToolResult(
+  state: AgentV2State,
+  result: AgentToolExecutionResult,
+  call: AgentToolCall,
+): boolean {
+  const groundingText = sanitizeText(result.groundingText || "").trim();
+  let progressed = false;
+
+  if (groundingText) {
+    state.contextPrefixBlocks.push(groundingText);
+    state.contextPrefixEstimatedTokens += result.estimatedTokens;
+    progressed = true;
+  }
+
+  if (call.name === "list_papers" && result.retrievedPaperContexts?.length) {
+    state.retrievedPaperContexts = result.retrievedPaperContexts;
+    state.paperContexts = [...result.retrievedPaperContexts];
+    state.pinnedPaperContexts = [...result.retrievedPaperContexts];
+    state.recentPaperContexts = [];
+    state.conversationMode = "open";
+    state.activeContextItem = null;
+    progressed = true;
+  } else if (result.addedPaperContexts.length) {
+    state.paperContexts = dedupePaperContexts([
+      ...state.paperContexts,
+      ...result.addedPaperContexts,
+    ]);
+    progressed = true;
+  }
+
+  return progressed;
+}
+
+function buildResult(params: {
+  state: AgentV2State;
+  responderPrompt: string;
+  promptSource: "file" | "fallback";
+}): AgentV2OrchestratorResult {
+  return {
+    activeContextItem: params.state.activeContextItem,
+    conversationMode: params.state.conversationMode,
+    paperContexts: params.state.paperContexts,
+    pinnedPaperContexts: params.state.pinnedPaperContexts,
+    recentPaperContexts: params.state.recentPaperContexts,
+    contextPrefix: params.state.contextPrefixBlocks
+      .map((block) => sanitizeText(block).trim())
+      .filter(Boolean)
+      .join("\n\n---\n\n"),
+    responderContext: buildResponderContextBlock({
+      responderPrompt: params.responderPrompt,
+      promptSource: params.promptSource,
+      toolLogs: params.state.toolLogs,
+      uiActions: params.state.uiActions,
+    }),
+    uiActions: params.state.uiActions,
+    toolLogs: params.state.toolLogs,
+  };
+}
+
+export type AgentV2OrchestratorDeps = {
+  runRouterStep: typeof runAgentV2RouterStep;
+  executeTool: typeof executeToolViaBroker;
+  loadPromptPack: typeof loadAgentV2PromptPack;
+};
+
+const defaultDeps: AgentV2OrchestratorDeps = {
+  runRouterStep: runAgentV2RouterStep,
+  executeTool: executeToolViaBroker,
+  loadPromptPack: loadAgentV2PromptPack,
+};
+
+export function createAgentV2OrchestratorRunner(
+  deps: Partial<AgentV2OrchestratorDeps> = {},
+): (params: AgentV2OrchestratorParams) => Promise<AgentV2OrchestratorResult> {
+  const resolvedDeps = { ...defaultDeps, ...deps };
+
+  return async function run(
+    params: AgentV2OrchestratorParams,
+  ): Promise<AgentV2OrchestratorResult> {
+    const promptPack = await resolvedDeps.loadPromptPack();
+
+    const state: AgentV2State = {
+      activeContextItem: params.activeContextItem,
+      conversationMode: params.conversationMode,
+      activePaperContext: resolvePaperContextRefFromAttachment(params.activeContextItem),
+      paperContexts: [...params.paperContexts],
+      pinnedPaperContexts: [...params.pinnedPaperContexts],
+      recentPaperContexts: [...params.recentPaperContexts],
+      retrievedPaperContexts: [],
+      contextPrefixBlocks: [],
+      contextPrefixEstimatedTokens: 0,
+      toolLogs: [],
+      uiActions: [],
+    };
+
+    const rawMaxIterations = Math.floor(Number(params.maxIterations || 0));
+    const maxIterations =
+      rawMaxIterations > 0 ? rawMaxIterations : DEFAULT_MAX_AGENT_ITERATIONS;
+
+    const hasExistingPaperContexts =
+      dedupePaperContexts([
+        ...state.paperContexts,
+        ...state.pinnedPaperContexts,
+        ...state.recentPaperContexts,
+      ]).length > 0;
+
+    if (
+      shouldSkipAgent({
+        question: params.question,
+        libraryID: Number(params.item.libraryID),
+        hasActivePaper: Boolean(state.activePaperContext),
+        hasExistingPaperContexts,
+        hasImages: (params.images?.length || 0) > 0,
+      })
+    ) {
+      return buildResult({
+        state,
+        responderPrompt: promptPack.responderPrompt,
+        promptSource: promptPack.source,
+      });
+    }
+
+    params.onTrace?.("Planning Zotero retrieval with agentV2...");
+
+    const totalBudget = deriveAvailableContextBudgetTokens(params);
+    const brokerState = createAgentV2ToolBrokerState();
+    let noProgressStreak = 0;
+    const previousAssistantAnswerText = derivePreviousAssistantAnswerText(
+      params.historyMessages,
+    );
+
+    for (let i = 0; i < maxIterations; i += 1) {
+      const remainingBudget = Math.max(
+        0,
+        totalBudget - state.contextPrefixEstimatedTokens,
+      );
+
+      if (remainingBudget <= 0) {
+        params.onTrace?.("Context budget exhausted; stopping retrieval.");
+        break;
+      }
+
+      if (noProgressStreak >= MAX_NO_PROGRESS_STEPS) {
+        params.onTrace?.("No retrieval progress in recent steps; stopping.");
+        break;
+      }
+
+      const summary = buildRouterSummary({
+        state,
+        question: params.question,
+        iterationIndex: i,
+        maxIterations,
+        remainingBudgetTokens: remainingBudget,
+        historyMessages: params.historyMessages,
+        toolLogs: state.toolLogs,
+        hasImages: (params.images?.length || 0) > 0,
+        libraryID: Number(params.item.libraryID),
+        previousAssistantAnswerText,
+      });
+
+      const decision = await resolvedDeps.runRouterStep({
+        summary,
+        model: params.model,
+        apiBase: params.apiBase,
+        apiKey: params.apiKey,
+        promptPack,
+      });
+
+      if (decision.trace) {
+        params.onTrace?.(decision.trace);
+      }
+
+      if (decision.decision === "stop") {
+        break;
+      }
+
+      const toolLabel = formatToolCallLabel(decision.call);
+      params.onTrace?.(`Tool call: ${toolLabel}.`);
+
+      const toolTokenCap = computeToolTokenCap(totalBudget, state, maxIterations, i);
+      if (toolTokenCap <= 0) {
+        params.onTrace?.(`No remaining context budget for ${toolLabel}; stopping retrieval.`);
+        break;
+      }
+
+      const outcome = await resolvedDeps.executeTool({
+        call: decision.call,
+        ctx: buildToolContext(
+          params,
+          state,
+          previousAssistantAnswerText,
+          toolTokenCap,
+        ),
+        state: brokerState,
+      });
+
+      const result = outcome.result;
+      for (const line of result.traceLines) {
+        params.onTrace?.(line);
+      }
+
+      const toolLog = summarizeToolResult(i + 1, result);
+      state.toolLogs.push(toolLog);
+
+      if (outcome.kind === "error") {
+        noProgressStreak += 1;
+        continue;
+      }
+
+      if (outcome.kind === "ui_action") {
+        state.uiActions.push(outcome.action);
+      }
+
+      const progressed = applyToolResult(state, result, decision.call);
+      if (outcome.kind === "ui_action") {
+        noProgressStreak = 0;
+      } else if (progressed) {
+        noProgressStreak = 0;
+      } else {
+        noProgressStreak += 1;
+      }
+    }
+
+    return buildResult({
+      state,
+      responderPrompt: promptPack.responderPrompt,
+      promptSource: promptPack.source,
+    });
+  };
+}
+
+export const runAgentV2Orchestrator = createAgentV2OrchestratorRunner();

@@ -7,7 +7,7 @@ import type {
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "../types";
+} from "./types";
 
 export function validateGetPaperSectionsCall(
   call: AgentToolCall,

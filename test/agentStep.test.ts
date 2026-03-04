@@ -2,7 +2,7 @@ import { assert } from "chai";
 import {
   findAgentPlanJsonObject,
   parseAgentStepDecision,
-} from "../src/modules/contextPanel/agentStep";
+} from "../src/modules/contextPanel/Agent/step";
 
 describe("agentStep", function () {
   describe("findAgentPlanJsonObject", function () {

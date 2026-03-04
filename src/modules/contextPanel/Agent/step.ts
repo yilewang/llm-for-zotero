@@ -8,18 +8,18 @@
  * routing logic — the model sees its full context and decides what to do next.
  */
 
-import { callLLM, type ReasoningConfig } from "../../utils/llmClient";
-import { getAgentToolDefinitions } from "./agentTools/registry";
-import { formatPaperContextReferenceLabel } from "./paperAttribution";
-import { isLibraryOverviewQuery, isLibraryScopedSearchQuery } from "./agentContext";
-import { sanitizeText } from "./textUtils";
+import { callLLM, type ReasoningConfig } from "../../../utils/llmClient";
+import { getAgentToolDefinitions } from "./Tools/registry";
+import { formatPaperContextReferenceLabel } from "../paperAttribution";
+import { isLibraryOverviewQuery, isLibraryScopedSearchQuery } from "./context";
+import { sanitizeText } from "../textUtils";
 import {
   MAX_AGENT_TRACE_LINES,
   MAX_AGENT_TRACE_LINE_LENGTH,
-} from "./agentConfig";
-import type { AgentStepContext, AgentStepDecision, AgentExecutedStep } from "./agentTypes";
-import type { AgentToolCall, AgentToolTarget } from "./agentTools/types";
-import type { PaperContextRef } from "./types";
+} from "./config";
+import type { AgentStepContext, AgentStepDecision, AgentExecutedStep } from "./types";
+import type { AgentToolCall, AgentToolTarget } from "./Tools/types";
+import type { PaperContextRef } from "../types";
 
 // ──────────────────────────────────────────────
 //  Helpers
@@ -85,6 +85,15 @@ function buildExecutedStepsLines(steps: AgentExecutedStep[]): string[] {
   return steps.map((s) => `- ${s.summary}`);
 }
 
+function buildHistorySummaryLines(ctx: AgentStepContext): string[] {
+  const lines = (ctx.historySummaryLines || [])
+    .map((line) => sanitizeText(line).replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(-8)
+    .map((line) => `- ${line}`);
+  return lines.length ? lines : ["- none"];
+}
+
 function buildContextHint(ctx: AgentStepContext): string {
   const question = sanitizeText(ctx.question || "").trim();
   const hints: string[] = [];
@@ -138,6 +147,7 @@ function buildStepPrompt(ctx: AgentStepContext): string {
     "- Use find_claim_evidence only when you need specific quoted evidence. For general or conceptual questions already covered by paper context, stop instead.",
     "- Prefer read_references when the user asks what a paper cites.",
     "- Use write_note when the user explicitly asks to write, create, or save a note for a paper. Always populate the query field with the note content instruction extracted from the user's request, stripping agent-directive phrases like 'into the note' or 'save to Zotero'. Example: user says 'write one sentence key point into the note' → query: \"write one sentence key point\". If no specific format is requested, omit query. write_note is a terminal action — call it at most once per request, then stop.",
+    "- If the user asks to save/write the previous or last assistant answer into a note and `Previous assistant answer available` is yes, call write_note once and stop.",
     "- Use search_paper_content when the user asks to find or locate a specific term, phrase, or passage within a paper.",
     "- Use get_paper_sections to inspect a paper's structure before targeted retrieval.",
     "- Use search_internet when the user wants to discover or find academic papers (e.g. 'find papers on X', 'search for papers about X', 'what papers exist on X'). This searches Semantic Scholar on the internet. Prefer this over list_papers for open-ended paper discovery questions.",
@@ -151,7 +161,14 @@ function buildStepPrompt(ctx: AgentStepContext): string {
     `User question: ${question}`,
     `Conversation mode: ${ctx.conversationMode}`,
     `Library available: ${ctx.libraryID > 0 ? "yes" : "no"}`,
+    `Previous assistant answer available: ${ctx.previousAssistantAnswerAvailable ? "yes" : "no"}`,
+    ctx.previousAssistantAnswerPreview
+      ? `Previous assistant answer preview: ${ctx.previousAssistantAnswerPreview}`
+      : "",
     hint,
+    "",
+    "Recent conversation summary:",
+    ...buildHistorySummaryLines(ctx),
     "",
     "Available targets:",
     ...buildAvailableTargetLines(ctx),

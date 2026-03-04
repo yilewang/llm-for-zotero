@@ -1,6 +1,6 @@
 import { assert } from "chai";
 import { buildChunkMetadata } from "../src/modules/contextPanel/pdfContext";
-import { executeFindClaimEvidenceCall } from "../src/modules/contextPanel/agentTools/tools/findClaimEvidence";
+import { executeFindClaimEvidenceCall } from "../src/modules/contextPanel/Agent/Tools/findClaimEvidence";
 import { pdfTextCache } from "../src/modules/contextPanel/state";
 import type {
   ChunkStat,

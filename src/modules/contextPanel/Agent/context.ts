@@ -1,17 +1,17 @@
-import { formatPaperCitationLabel } from "./paperAttribution";
+import { formatPaperCitationLabel } from "../paperAttribution";
 import {
   TOKEN_ESTIMATE_CHARS_PER_TOKEN,
   estimateTextTokens,
-} from "../../utils/modelInputCap";
-import { CHUNK_TARGET_LENGTH } from "./constants";
+} from "../../../utils/modelInputCap";
+import { CHUNK_TARGET_LENGTH } from "../constants";
 import {
   listLibraryPaperCandidates,
   searchPaperCandidates,
   type PaperSearchGroupCandidate,
-} from "./paperSearch";
-import { sanitizeText } from "./textUtils";
-import type { PaperContextRef } from "./types";
-import { AGENT_METADATA_PREFIX_RATIO } from "./agentConfig";
+} from "../paperSearch";
+import { sanitizeText } from "../textUtils";
+import type { PaperContextRef } from "../types";
+import { AGENT_METADATA_PREFIX_RATIO } from "./config";
 
 /** Minimal plan shape consumed by resolveAgentContext. */
 type AgentContextPlan = {

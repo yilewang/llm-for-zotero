@@ -8,7 +8,7 @@ import type {
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "../types";
+} from "./types";
 
 const REFERENCE_HEADING_PATTERNS = [
   /^(?:\d+[\].)]\s+)?references$/i,

@@ -1,6 +1,6 @@
 import { estimateTextTokens } from "../../../../utils/modelInputCap";
 import { sanitizeText } from "../../textUtils";
-import type { AgentToolCall, AgentToolExecutionContext, AgentToolExecutionResult } from "../types";
+import type { AgentToolCall, AgentToolExecutionContext, AgentToolExecutionResult } from "./types";
 
 const SEMANTIC_SCHOLAR_SEARCH_URL =
   "https://api.semanticscholar.org/graph/v1/paper/search";

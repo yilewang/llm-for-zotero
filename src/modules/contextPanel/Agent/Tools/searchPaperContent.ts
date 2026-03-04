@@ -7,7 +7,7 @@ import type {
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "../types";
+} from "./types";
 
 /** Maximum snippets returned even if token budget allows more. */
 const MAX_SNIPPETS = 20;

@@ -33,6 +33,33 @@ export function getStringPref(key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+export function getBooleanPref(key: string, fallback = false): boolean {
+  const value = getZoteroPrefs()?.get?.(`${config.prefsPrefix}.${key}`, true);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  return fallback;
+}
+
+export function setBooleanPref(key: string, value: boolean): void {
+  getZoteroPrefs()?.set?.(`${config.prefsPrefix}.${key}`, Boolean(value), true);
+}
+
+export function isAgentWorkflowV2Enabled(): boolean {
+  return getBooleanPref("agentWorkflowV2Enabled", false);
+}
+
+export function getAgentModeEnabled(): boolean {
+  return getBooleanPref("agentModeEnabled", true);
+}
+
+export function setAgentModeEnabled(enabled: boolean): void {
+  setBooleanPref("agentModeEnabled", enabled);
+}
+
 const LAST_REASONING_LEVEL_PREF_KEY = "lastUsedReasoningLevel";
 const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
 const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";

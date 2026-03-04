@@ -2,28 +2,28 @@
  * agentLoop.ts — open-ended ReAct retrieval loop.
  */
 
-import type { ReasoningConfig } from "../../utils/llmClient";
-import { getModelInputTokenLimit } from "../../utils/modelInputCap";
+import type { ReasoningConfig } from "../../../utils/llmClient";
+import { getModelInputTokenLimit } from "../../../utils/modelInputCap";
 import {
   normalizeInputTokenCap,
   normalizeMaxTokens,
-} from "../../utils/normalization";
-import { resolvePaperContextRefFromAttachment } from "./paperAttribution";
-import { sanitizeText } from "./textUtils";
-import { shouldSkipAgent } from "./agentHeuristics";
-import { runAgentStep } from "./agentStep";
-import { DEFAULT_MAX_AGENT_ITERATIONS } from "./agentConfig";
+} from "../../../utils/normalization";
+import { resolvePaperContextRefFromAttachment } from "../paperAttribution";
+import { sanitizeText } from "../textUtils";
+import { shouldSkipAgent } from "./heuristics";
+import { runAgentStep } from "./step";
+import { DEFAULT_MAX_AGENT_ITERATIONS } from "./config";
 import {
   createAgentToolExecutorState,
   executeAgentToolCall,
-} from "./agentTools/executor";
-import type { AgentStepContext, AgentStepDecision, AgentExecutedStep } from "./agentTypes";
+} from "./Tools/executor";
+import type { AgentStepContext, AgentStepDecision, AgentExecutedStep } from "./types";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
-} from "./agentTools/types";
-import type { AdvancedModelParams, PaperContextRef } from "./types";
+} from "./Tools/types";
+import type { AdvancedModelParams, Message, PaperContextRef } from "../types";
 
 // ── Public types ──────────────────────────────
 
@@ -35,6 +35,7 @@ export type AgentLoopParams = {
   paperContexts: PaperContextRef[];
   pinnedPaperContexts: PaperContextRef[];
   recentPaperContexts: PaperContextRef[];
+  historyMessages?: Message[];
   model: string;
   apiBase?: string;
   apiKey?: string;
@@ -123,6 +124,35 @@ function summarizeToolResult(result: AgentToolExecutionResult): AgentExecutedSte
   };
 }
 
+function summarizeHistoryMessages(historyMessages?: Message[]): string[] {
+  if (!historyMessages?.length) return [];
+  return historyMessages
+    .slice(-8)
+    .map((message) => {
+      const role = message.role === "assistant" ? "assistant" : "user";
+      const text = sanitizeText(message.text || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 180);
+      return text ? `${role}: ${text}` : "";
+    })
+    .filter(Boolean);
+}
+
+function derivePreviousAssistantAnswerText(historyMessages?: Message[]): string {
+  if (!historyMessages?.length) return "";
+  for (let i = historyMessages.length - 1; i >= 0; i -= 1) {
+    const message = historyMessages[i];
+    if (!message || message.role !== "assistant") continue;
+    const text = sanitizeText(message.text || "").trim();
+    if (!text) continue;
+    if (text === "[Cancelled]") continue;
+    if (/^Error:/i.test(text)) continue;
+    return text;
+  }
+  return "";
+}
+
 function deriveAvailableContextBudgetTokens(params: AgentLoopParams): number {
   const explicitBudget = Math.floor(Number(params.availableContextBudgetTokens));
   if (Number.isFinite(explicitBudget) && explicitBudget >= 0) return explicitBudget;
@@ -149,10 +179,12 @@ function computeToolTokenCap(
 function buildToolContext(
   params: AgentLoopParams,
   state: AgentLoopState,
+  previousAssistantAnswerText: string,
   toolTokenCap?: number,
 ): AgentToolExecutionContext {
   return {
     question: params.question,
+    previousAssistantAnswerText: previousAssistantAnswerText || undefined,
     libraryID: Number(params.item.libraryID),
     panelItemId: params.item.id,
     conversationMode: state.conversationMode,
@@ -174,6 +206,8 @@ function buildToolContext(
 function buildStepContext(
   params: AgentLoopParams,
   state: AgentLoopState,
+  historySummaryLines: string[],
+  previousAssistantAnswerText: string,
   iterationIndex: number,
   maxIterations: number,
   remainingBudgetTokens: number,
@@ -194,6 +228,11 @@ function buildStepContext(
     recentPaperContexts: state.recentPaperContexts,
     retrievedPaperContexts: state.retrievedPaperContexts,
     executedSteps: state.executedSteps,
+    historySummaryLines,
+    previousAssistantAnswerAvailable: Boolean(previousAssistantAnswerText),
+    previousAssistantAnswerPreview: previousAssistantAnswerText
+      ? previousAssistantAnswerText.slice(0, 400)
+      : undefined,
     remainingBudgetTokens,
   };
 }
@@ -293,6 +332,10 @@ export function createAgentLoopRunner(
 
     const totalBudget = deriveAvailableContextBudgetTokens(params);
     const executorState = createAgentToolExecutorState();
+    const historySummaryLines = summarizeHistoryMessages(params.historyMessages);
+    const previousAssistantAnswerText = derivePreviousAssistantAnswerText(
+      params.historyMessages,
+    );
 
     for (let i = 0; i < maxIterations; i++) {
       const remainingBudget = Math.max(
@@ -305,7 +348,15 @@ export function createAgentLoopRunner(
       }
 
       // One LLM call: decide the next step.
-      const stepCtx = buildStepContext(params, state, i, maxIterations, remainingBudget);
+      const stepCtx = buildStepContext(
+        params,
+        state,
+        historySummaryLines,
+        previousAssistantAnswerText,
+        i,
+        maxIterations,
+        remainingBudget,
+      );
       const decision = await resolvedDeps.runAgentStep(stepCtx);
 
       for (const line of decision.traceLines) {
@@ -326,7 +377,12 @@ export function createAgentLoopRunner(
 
       const result = await resolvedDeps.executeAgentToolCall({
         call: decision.call,
-        ctx: buildToolContext(params, state, toolTokenCap),
+        ctx: buildToolContext(
+          params,
+          state,
+          previousAssistantAnswerText,
+          toolTokenCap,
+        ),
         state: executorState,
       });
 

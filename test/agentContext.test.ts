@@ -2,7 +2,7 @@ import { assert } from "chai";
 import {
   isLibraryOverviewQuery,
   isLibraryScopedSearchQuery,
-} from "../src/modules/contextPanel/agentContext";
+} from "../src/modules/contextPanel/Agent/context";
 
 describe("agentContext", function () {
   it("detects whole-library overview requests", function () {

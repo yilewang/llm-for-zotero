@@ -8,33 +8,33 @@ import type {
 import {
   executeFindClaimEvidenceCall,
   validateFindClaimEvidenceCall,
-} from "./tools/findClaimEvidence";
+} from "./findClaimEvidence";
 import {
   executeReadPaperTextCall,
   validateReadPaperTextCall,
-} from "./tools/readPaperText";
+} from "./readPaperText";
 import {
   executeReadReferencesCall,
   validateReadReferencesCall,
-} from "./tools/readReferences";
-import { validateListPapersCall } from "./tools/listPapers";
-import { validateSearchInternetCall } from "./tools/searchInternet";
+} from "./readReferences";
+import { validateListPapersCall } from "./listPapers";
+import { validateSearchInternetCall } from "./searchInternet";
 import {
   executeGetPaperSectionsCall,
   validateGetPaperSectionsCall,
-} from "./tools/getPaperSections";
+} from "./getPaperSections";
 import {
   executeSearchPaperContentCall,
   validateSearchPaperContentCall,
-} from "./tools/searchPaperContent";
+} from "./searchPaperContent";
 import {
   executeWriteNoteCall,
   validateWriteNoteCall,
-} from "./tools/writeNote";
+} from "./writeNote";
 import {
   executeFixMetadataCall,
   validateFixMetadataCall,
-} from "./tools/fixMetadata";
+} from "./fixMetadata";
 
 export type AgentToolDefinition = {
   name: AgentToolName;

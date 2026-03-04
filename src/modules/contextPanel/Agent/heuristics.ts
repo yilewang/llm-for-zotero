@@ -1,4 +1,4 @@
-import { sanitizeText } from "./textUtils";
+import { sanitizeText } from "../textUtils";
 
 /**
  * Returns true when there is definitively nothing for the agent to retrieve.

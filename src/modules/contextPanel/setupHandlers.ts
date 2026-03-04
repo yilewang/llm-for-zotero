@@ -88,8 +88,10 @@ import {
   getStringPref,
   getSelectedModelEntryForItem,
   applyPanelFontScale,
+  getAgentModeEnabled,
   getAdvancedModelParamsForEntry,
   setSelectedModelEntryForItem,
+  setAgentModeEnabled,
   getLastUsedReasoningLevel,
   setLastUsedReasoningLevel,
   getLastUsedPaperConversationKey,
@@ -330,6 +332,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     slashReferenceOption,
     slashLocateSelectionOption,
     slashLocateQuoteOption,
+    contextAgentToggleBtn,
     imagePreview,
     selectedContextList,
     previewStrip,
@@ -392,9 +395,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       historyNewBtn.disabled = true;
       historyNewBtn.setAttribute("aria-disabled", "true");
     }
-    const contextAgentToggleBtn = body.querySelector(
-      "#llm-context-agent-toggle",
-    ) as HTMLButtonElement | null;
     if (contextAgentToggleBtn) {
       contextAgentToggleBtn.disabled = true;
       contextAgentToggleBtn.setAttribute("aria-disabled", "true");
@@ -513,7 +513,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     if (modeChipBtn) {
       modeChipBtn.textContent = isGlobalMode() ? "Open chat" : "Paper chat";
-      modeChipBtn.title = isGlobalMode() ? "Switch to paper chat" : "Switch to open chat";
+      modeChipBtn.title = isGlobalMode()
+        ? "Switch to paper chat"
+        : "Switch to open chat";
       modeChipBtn.setAttribute(
         "aria-label",
         isGlobalMode() ? "Switch to paper chat" : "Switch to open chat",
@@ -523,13 +525,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (modeLockBtn) {
       modeLockBtn.style.visibility = isGlobalMode() ? "visible" : "hidden";
       const libraryID = getCurrentLibraryID();
-      const lockedKey = libraryID > 0 ? getLockedGlobalConversationKey(libraryID) : null;
+      const lockedKey =
+        libraryID > 0 ? getLockedGlobalConversationKey(libraryID) : null;
       const currentKey =
         conversationKey !== null ? Math.floor(conversationKey as number) : null;
       const isLocked =
-        lockedKey !== null &&
-        currentKey !== null &&
-        lockedKey === currentKey;
+        lockedKey !== null && currentKey !== null && lockedKey === currentKey;
       modeLockBtn.dataset.locked = isLocked ? "true" : "false";
       modeLockBtn.title = isLocked
         ? "Unlock open chat default"
@@ -2437,8 +2438,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           ? parsedGap
           : 0;
       let visibleHeight = 0;
-      for (const row of rowElements.slice(0, HISTORY_SECTION_VISIBLE_ROW_COUNT)) {
-        const measuredHeight = row.getBoundingClientRect().height || row.offsetHeight;
+      for (const row of rowElements.slice(
+        0,
+        HISTORY_SECTION_VISIBLE_ROW_COUNT,
+      )) {
+        const measuredHeight =
+          row.getBoundingClientRect().height || row.offsetHeight;
         if (measuredHeight > 0) visibleHeight += measuredHeight;
       }
       if (visibleHeight <= 0) {
@@ -5040,7 +5045,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const updateModelButton = () => {
     if (!item || !modelBtn) return;
     withScrollGuard(chatBox, conversationKey, () => {
-      const { choices, currentModel, currentModelHint } = getSelectedModelInfo();
+      const { choices, currentModel, currentModelHint } =
+        getSelectedModelInfo();
       const hasSecondary = choices.length > 1;
       modelBtn.dataset.modelLabel = `${currentModel || "default"}`;
       modelBtn.dataset.modelHint = hasSecondary
@@ -5108,11 +5114,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const { groupedChoices, selectedEntryId } = getSelectedModelInfo();
 
     modelMenu.innerHTML = "";
-    appendDropdownInstruction(
-      modelMenu,
-      "Select model",
-      "llm-model-menu-hint",
-    );
+    appendDropdownInstruction(modelMenu, "Select model", "llm-model-menu-hint");
     if (!groupedChoices.length) {
       appendModelMenuEmptyState(modelMenu, "No models configured yet.");
       return;
@@ -5167,7 +5169,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       latestPair?.assistantMessage?.modelProviderLabel?.trim() || "";
     const matchingLegacyEntries = latestAssistantModelName
       ? groupedChoices.flatMap((group) =>
-          group.entries.filter((entry) => entry.model === latestAssistantModelName),
+          group.entries.filter(
+            (entry) => entry.model === latestAssistantModelName,
+          ),
         )
       : [];
     retryModelMenu.innerHTML = "";
@@ -5561,7 +5565,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   let paperPickerGroups: PaperSearchGroupCandidate[] = [];
   let paperPickerCollections: PaperBrowseCollectionCandidate[] = [];
   let paperPickerGroupByItemId = new Map<number, PaperSearchGroupCandidate>();
-  let paperPickerCollectionById = new Map<number, PaperBrowseCollectionCandidate>();
+  let paperPickerCollectionById = new Map<
+    number,
+    PaperBrowseCollectionCandidate
+  >();
   let paperPickerExpandedPaperKeys = new Set<number>();
   let paperPickerExpandedCollectionKeys = new Set<number>();
   let paperPickerRows: PaperPickerRow[] = [];
@@ -5584,7 +5591,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     paperPickerGroups = [];
     paperPickerCollections = [];
     paperPickerGroupByItemId = new Map<number, PaperSearchGroupCandidate>();
-    paperPickerCollectionById = new Map<number, PaperBrowseCollectionCandidate>();
+    paperPickerCollectionById = new Map<
+      number,
+      PaperBrowseCollectionCandidate
+    >();
     paperPickerExpandedPaperKeys = new Set<number>();
     paperPickerExpandedCollectionKeys = new Set<number>();
     paperPickerRows = [];
@@ -5633,7 +5643,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
   const getPaperPickerGroupByItemId = (
     itemId: number,
-  ): PaperSearchGroupCandidate | null => paperPickerGroupByItemId.get(itemId) || null;
+  ): PaperSearchGroupCandidate | null =>
+    paperPickerGroupByItemId.get(itemId) || null;
   const getPaperPickerCollectionById = (
     collectionId: number,
   ): PaperBrowseCollectionCandidate | null =>
@@ -5668,7 +5679,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   ): boolean => {
     const collection = getPaperPickerCollectionById(collectionId);
     if (!collection) return false;
-    const currentlyExpanded = paperPickerExpandedCollectionKeys.has(collectionId);
+    const currentlyExpanded =
+      paperPickerExpandedCollectionKeys.has(collectionId);
     const nextExpanded = expanded === undefined ? !currentlyExpanded : expanded;
     if (nextExpanded === currentlyExpanded) return false;
     if (nextExpanded) {
@@ -5687,7 +5699,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     paperPickerGroups = groups;
     paperPickerCollections = [];
     paperPickerGroupByItemId = new Map<number, PaperSearchGroupCandidate>();
-    paperPickerCollectionById = new Map<number, PaperBrowseCollectionCandidate>();
+    paperPickerCollectionById = new Map<
+      number,
+      PaperBrowseCollectionCandidate
+    >();
     paperPickerExpandedPaperKeys = new Set<number>();
     paperPickerExpandedCollectionKeys = new Set<number>();
     for (const group of groups) {
@@ -5702,7 +5717,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     paperPickerGroups = [];
     paperPickerCollections = collections;
     paperPickerGroupByItemId = new Map<number, PaperSearchGroupCandidate>();
-    paperPickerCollectionById = new Map<number, PaperBrowseCollectionCandidate>();
+    paperPickerCollectionById = new Map<
+      number,
+      PaperBrowseCollectionCandidate
+    >();
     paperPickerExpandedPaperKeys = new Set<number>();
     paperPickerExpandedCollectionKeys = new Set<number>();
 
@@ -5721,7 +5739,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
   const rebuildPaperPickerRows = () => {
     const rows: PaperPickerRow[] = [];
-    const appendPaperRow = (group: PaperSearchGroupCandidate, depth: number) => {
+    const appendPaperRow = (
+      group: PaperSearchGroupCandidate,
+      depth: number,
+    ) => {
       rows.push({
         kind: "paper",
         itemId: group.itemId,
@@ -5785,9 +5806,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     return -1;
   };
-  const findPaperPickerFirstAttachmentRowIndex = (
-    itemId: number,
-  ): number => {
+  const findPaperPickerFirstAttachmentRowIndex = (itemId: number): number => {
     for (let index = 0; index < paperPickerRows.length; index += 1) {
       const row = paperPickerRows[index];
       if (row.kind === "attachment" && row.itemId === itemId) {
@@ -5799,7 +5818,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const findPaperPickerParentRowIndex = (index: number): number => {
     const row = getPaperPickerRowAt(index);
     if (!row || row.depth <= 0) return -1;
-    for (let candidateIndex = index - 1; candidateIndex >= 0; candidateIndex -= 1) {
+    for (
+      let candidateIndex = index - 1;
+      candidateIndex >= 0;
+      candidateIndex -= 1
+    ) {
       const candidateRow = paperPickerRows[candidateIndex];
       if (candidateRow && candidateRow.depth === row.depth - 1) {
         return candidateIndex;
@@ -5928,9 +5951,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       renderPaperPicker();
       return true;
     }
-    const firstChildIndex = findPaperPickerFirstAttachmentRowIndex(
-      row.itemId,
-    );
+    const firstChildIndex = findPaperPickerFirstAttachmentRowIndex(row.itemId);
     if (firstChildIndex >= 0) {
       paperPickerActiveRowIndex = firstChildIndex;
       renderPaperPicker();
@@ -5984,7 +6005,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         renderPaperPicker();
         return true;
       }
-      const parentIndex = findPaperPickerParentRowIndex(paperPickerActiveRowIndex);
+      const parentIndex = findPaperPickerParentRowIndex(
+        paperPickerActiveRowIndex,
+      );
       if (parentIndex >= 0) {
         paperPickerActiveRowIndex = parentIndex;
         renderPaperPicker();
@@ -6002,12 +6025,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       return false;
     }
     const group = getPaperPickerGroupByItemId(activeRow.itemId);
-    if (group && group.attachments.length > 1 && isPaperPickerGroupExpanded(activeRow.itemId)) {
+    if (
+      group &&
+      group.attachments.length > 1 &&
+      isPaperPickerGroupExpanded(activeRow.itemId)
+    ) {
       togglePaperPickerGroupExpanded(activeRow.itemId, false);
       renderPaperPicker();
       return true;
     }
-    const parentIndex = findPaperPickerParentRowIndex(paperPickerActiveRowIndex);
+    const parentIndex = findPaperPickerParentRowIndex(
+      paperPickerActiveRowIndex,
+    );
     if (parentIndex >= 0) {
       paperPickerActiveRowIndex = parentIndex;
       renderPaperPicker();
@@ -6049,8 +6078,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           row.kind === "attachment"
             ? "llm-paper-picker-attachment-row"
             : row.kind === "paper"
-            ? "llm-paper-picker-group-row"
-            : "llm-paper-picker-group-row llm-paper-picker-collection-row"
+              ? "llm-paper-picker-group-row"
+              : "llm-paper-picker-group-row llm-paper-picker-collection-row"
         }`,
       );
       option.setAttribute("role", "option");
@@ -6147,9 +6176,14 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         rowMain.appendChild(titleLine);
         const metaText = buildPaperMetaText(group);
         if (metaText) {
-          const meta = createElement(ownerDoc, "span", "llm-paper-picker-meta", {
-            textContent: metaText,
-          });
+          const meta = createElement(
+            ownerDoc,
+            "span",
+            "llm-paper-picker-meta",
+            {
+              textContent: metaText,
+            },
+          );
           rowMain.appendChild(meta);
         }
         option.appendChild(rowMain);
@@ -6512,6 +6546,50 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     await doSend();
     persistDraftInputForCurrentConversation();
   };
+
+  const syncContextAgentToggleUi = () => {
+    if (!contextAgentToggleBtn) return;
+    const enabled = getAgentModeEnabled();
+    contextAgentToggleBtn.classList.toggle("llm-agent-toggle-enabled", enabled);
+    contextAgentToggleBtn.setAttribute(
+      "aria-pressed",
+      enabled ? "true" : "false",
+    );
+    contextAgentToggleBtn.title = enabled
+      ? "Agent mode enabled"
+      : "Agent mode disabled";
+  };
+
+  syncContextAgentToggleUi();
+  if (contextAgentToggleBtn) {
+    contextAgentToggleBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (pendingRequestId > 0) {
+        if (status) {
+          setStatus(
+            status,
+            "Cannot switch agent mode while generating",
+            "ready",
+          );
+        }
+        return;
+      }
+      const next = !getAgentModeEnabled();
+      setAgentModeEnabled(next);
+      syncContextAgentToggleUi();
+      if (item) {
+        refreshChat(body, item);
+      }
+      if (status) {
+        setStatus(
+          status,
+          next ? "Agent mode enabled" : "Agent mode disabled",
+          "ready",
+        );
+      }
+    });
+  }
 
   // Send button - use addEventListener
   sendBtn.addEventListener("click", (e: Event) => {
@@ -6899,11 +6977,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (!liveLocateDemo) return;
     const queryLabel = result.queryLabel || "Selection";
     const expectedPage =
-      result.expectedPageIndex !== null ? `${result.expectedPageIndex + 1}` : "n/a";
+      result.expectedPageIndex !== null
+        ? `${result.expectedPageIndex + 1}`
+        : "n/a";
     const computedPage =
-      result.computedPageIndex !== null ? `${result.computedPageIndex + 1}` : "n/a";
+      result.computedPageIndex !== null
+        ? `${result.computedPageIndex + 1}`
+        : "n/a";
     const matchedPages = result.matchedPageIndexes.length
-      ? result.matchedPageIndexes.map((pageIndex) => `${pageIndex + 1}`).join(", ")
+      ? result.matchedPageIndexes
+          .map((pageIndex) => `${pageIndex + 1}`)
+          .join(", ")
       : "none";
     const lines = [
       "Live Reader Locator Demo",
@@ -6943,7 +7027,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     );
     if (!reader) {
       if (status) {
-        setStatus(status, "Open a PDF reader tab to run the locate-selection demo", "error");
+        setStatus(
+          status,
+          "Open a PDF reader tab to run the locate-selection demo",
+          "error",
+        );
       }
       renderLiveLocateDemo({
         status: "unavailable",
@@ -6961,7 +7049,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     if (!selectedText) {
       if (status) {
-        setStatus(status, "Select text in the active PDF, then rerun the demo", "error");
+        setStatus(
+          status,
+          "Select text in the active PDF, then rerun the demo",
+          "error",
+        );
       }
       renderLiveLocateDemo({
         status: "unavailable",
@@ -6979,10 +7071,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
 
     if (status) {
-      setStatus(status, "Resolving the current selection against the live PDF reader...", "sending");
+      setStatus(
+        status,
+        "Resolving the current selection against the live PDF reader...",
+        "sending",
+      );
     }
     try {
-      const result = await locateCurrentSelectionInLivePdfReader(reader, selectedText);
+      const result = await locateCurrentSelectionInLivePdfReader(
+        reader,
+        selectedText,
+      );
       renderLiveLocateDemo(result);
       ztoolkit.log("LLM: Live reader selection locator demo", result);
       if (status) {
@@ -7003,9 +7102,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             "warning",
           );
         } else if (result.status === "ambiguous") {
-          setStatus(status, "Locate demo found multiple live-reader matches; see the result panel.", "warning");
+          setStatus(
+            status,
+            "Locate demo found multiple live-reader matches; see the result panel.",
+            "warning",
+          );
         } else {
-          setStatus(status, result.reason || "Locate demo could not resolve the current selection.", "error");
+          setStatus(
+            status,
+            result.reason ||
+              "Locate demo could not resolve the current selection.",
+            "error",
+          );
         }
       }
     } catch (error) {
@@ -7032,7 +7140,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const selectionStart =
       typeof inputBox.selectionStart === "number" ? inputBox.selectionStart : 0;
     const selectionEnd =
-      typeof inputBox.selectionEnd === "number" ? inputBox.selectionEnd : selectionStart;
+      typeof inputBox.selectionEnd === "number"
+        ? inputBox.selectionEnd
+        : selectionStart;
     if (selectionEnd > selectionStart) {
       return inputBox.value.slice(selectionStart, selectionEnd).trim();
     }
@@ -7046,7 +7156,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const quoteText = getInputQuoteForLocateDemo();
     if (!reader) {
       if (status) {
-        setStatus(status, "Open a PDF reader tab to run the locate-quote demo", "error");
+        setStatus(
+          status,
+          "Open a PDF reader tab to run the locate-quote demo",
+          "error",
+        );
       }
       renderLiveLocateDemo({
         status: "unavailable",
@@ -7065,7 +7179,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     if (!quoteText) {
       if (status) {
-        setStatus(status, "Paste or select a quote in the input box, then rerun the demo", "error");
+        setStatus(
+          status,
+          "Paste or select a quote in the input box, then rerun the demo",
+          "error",
+        );
       }
       renderLiveLocateDemo({
         status: "unavailable",
@@ -7084,7 +7202,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
 
     if (status) {
-      setStatus(status, "Resolving the current quote against the live PDF reader...", "sending");
+      setStatus(
+        status,
+        "Resolving the current quote against the live PDF reader...",
+        "sending",
+      );
     }
     try {
       const result = await locateQuoteInLivePdfReader(reader, quoteText);
@@ -7098,9 +7220,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             result.totalMatches > 1 ? "warning" : "ready",
           );
         } else if (result.status === "ambiguous") {
-          setStatus(status, "Locate quote demo found matches on multiple pages; see the result panel.", "warning");
+          setStatus(
+            status,
+            "Locate quote demo found matches on multiple pages; see the result panel.",
+            "warning",
+          );
         } else {
-          setStatus(status, result.reason || "Locate quote demo could not resolve the current quote.", "error");
+          setStatus(
+            status,
+            result.reason ||
+              "Locate quote demo could not resolve the current quote.",
+            "error",
+          );
         }
       }
     } catch (error) {
@@ -7889,7 +8020,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       return Math.floor(explicitContextItemId);
     }
 
-    const paperContextItemId = Number(selectedContext.paperContext?.contextItemId);
+    const paperContextItemId = Number(
+      selectedContext.paperContext?.contextItemId,
+    );
     if (Number.isFinite(paperContextItemId) && paperContextItemId > 0) {
       return Math.floor(paperContextItemId);
     }
@@ -7936,7 +8069,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       pageLabel,
     };
     const activeReader = getActiveReaderForSelectedTab();
-    const activeReaderItemId = Number(activeReader?._item?.id || activeReader?.itemID || 0);
+    const activeReaderItemId = Number(
+      activeReader?._item?.id || activeReader?.itemID || 0,
+    );
     if (
       Number.isFinite(activeReaderItemId) &&
       activeReaderItemId === targetItemId &&
@@ -7959,15 +8094,21 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const openedReader = await readerApi.open(targetItemId, location);
       const nextReader =
         openedReader ||
-        ((Zotero.Reader as
-          | {
-              getByTabID?: (tabID: string | number) => _ZoteroTypes.ReaderInstance;
-            }
-          | undefined)?.getByTabID &&
+        ((
+          Zotero.Reader as
+            | {
+                getByTabID?: (
+                  tabID: string | number,
+                ) => _ZoteroTypes.ReaderInstance;
+              }
+            | undefined
+        )?.getByTabID &&
           (() => {
-            const tabs = (Zotero as unknown as {
-              Tabs?: { selectedID?: string | number | null };
-            }).Tabs;
+            const tabs = (
+              Zotero as unknown as {
+                Tabs?: { selectedID?: string | number | null };
+              }
+            ).Tabs;
             const selectedTabId = tabs?.selectedID;
             return selectedTabId !== undefined && selectedTabId !== null
               ? Zotero.Reader.getByTabID?.(`${selectedTabId}`) || null
@@ -8069,12 +8210,23 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
               );
               return;
             }
-            setStatus(status, "Could not open the page for this text context", "error");
+            setStatus(
+              status,
+              "Could not open the page for this text context",
+              "error",
+            );
           })
           .catch((error) => {
-            ztoolkit.log("LLM: Failed to navigate selected text context", error);
+            ztoolkit.log(
+              "LLM: Failed to navigate selected text context",
+              error,
+            );
             if (status) {
-              setStatus(status, "Could not open the page for this text context", "error");
+              setStatus(
+                status,
+                "Could not open the page for this text context",
+                "error",
+              );
             }
           });
         return;

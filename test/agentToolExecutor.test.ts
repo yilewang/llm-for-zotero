@@ -3,7 +3,7 @@ import { buildChunkMetadata } from "../src/modules/contextPanel/pdfContext";
 import {
   createAgentToolExecutorState,
   executeAgentToolCall,
-} from "../src/modules/contextPanel/agentTools/executor";
+} from "../src/modules/contextPanel/Agent/Tools/executor";
 import { pdfTextCache } from "../src/modules/contextPanel/state";
 import type { PaperContextRef, PdfContext } from "../src/modules/contextPanel/types";
 

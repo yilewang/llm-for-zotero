@@ -1,6 +1,6 @@
-import type { AgentToolCall } from "./agentTools/types";
-import type { ReasoningConfig } from "../../utils/llmClient";
-import type { PaperContextRef } from "./types";
+import type { AgentToolCall } from "./Tools/types";
+import type { ReasoningConfig } from "../../../utils/llmClient";
+import type { PaperContextRef } from "../types";
 
 /** Summary of a completed tool call, recorded in the loop's execution history. */
 export type AgentExecutedStep = {
@@ -40,6 +40,12 @@ export type AgentStepContext = {
   retrievedPaperContexts: PaperContextRef[];
   /** History of tool calls already executed this loop. */
   executedSteps: AgentExecutedStep[];
+  /** Compact chat-history lines from recent user/assistant turns. */
+  historySummaryLines?: string[];
+  /** Whether a previous assistant answer is available from chat history. */
+  previousAssistantAnswerAvailable?: boolean;
+  /** Preview of the latest assistant answer for follow-up write requests. */
+  previousAssistantAnswerPreview?: string;
   /** Approximate tokens still available for tool output in this request. */
   remainingBudgetTokens: number;
 };

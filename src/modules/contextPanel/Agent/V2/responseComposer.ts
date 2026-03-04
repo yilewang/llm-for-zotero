@@ -1,0 +1,50 @@
+import { sanitizeText } from "../../textUtils";
+import type { AgentV2ToolLog, UiActionDirective } from "./types";
+
+function buildUiActionInstruction(action: UiActionDirective): string {
+  if (action.type === "show_note_review") {
+    return `${action.targetLabel}: review the note panel, edit if needed, then click Save to Zotero.`;
+  }
+  if (action.type === "show_metadata_review") {
+    return `${action.targetLabel}: review proposed metadata fields, then click Accept.`;
+  }
+  return `${action.targetLabel}: ${action.message}`;
+}
+
+export function buildResponderContextBlock(params: {
+  responderPrompt: string;
+  promptSource: "file" | "fallback";
+  toolLogs: AgentV2ToolLog[];
+  uiActions: UiActionDirective[];
+}): string {
+  const responderPrompt = sanitizeText(params.responderPrompt || "").trim();
+  const toolLogLines = params.toolLogs.slice(-8).map((log) => log.summary);
+  const uiActionLines = params.uiActions.map((action) =>
+    buildUiActionInstruction(action),
+  );
+
+  const lines = [
+    "Agent Responder Guidance",
+    `- Prompt source: ${params.promptSource}`,
+    "",
+    "Responder instructions:",
+    responderPrompt || "(none)",
+    "",
+    "Router and tool execution summary:",
+    ...(toolLogLines.length
+      ? toolLogLines.map((line) => `- ${line}`)
+      : ["- no tool calls were executed"]),
+  ];
+
+  if (uiActionLines.length) {
+    lines.push(
+      "",
+      "Pending UI actions to mention explicitly:",
+      ...uiActionLines.map((line) => `- ${line}`),
+      "",
+      "When writing the final user response, include a clear action sentence for these pending UI actions.",
+    );
+  }
+
+  return lines.join("\n");
+}

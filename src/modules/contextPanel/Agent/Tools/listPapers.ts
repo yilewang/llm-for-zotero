@@ -1,7 +1,7 @@
 import { estimateTextTokens } from "../../../../utils/modelInputCap";
-import { resolveAgentContext } from "../../agentContext";
+import { resolveAgentContext } from "../context";
 import { sanitizeText } from "../../textUtils";
-import type { AgentToolCall, AgentToolExecutionContext, AgentToolExecutionResult } from "../types";
+import type { AgentToolCall, AgentToolExecutionContext, AgentToolExecutionResult } from "./types";
 
 /**
  * Executes the list_papers tool: lists or searches the active Zotero library,

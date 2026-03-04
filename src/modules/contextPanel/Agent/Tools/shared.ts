@@ -2,7 +2,7 @@ import type {
   AgentToolCall,
   AgentToolName,
   AgentToolTarget,
-} from "../types";
+} from "./types";
 
 export function normalizePaperToolTarget(
   target: AgentToolTarget | undefined,

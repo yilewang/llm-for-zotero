@@ -1,9 +1,9 @@
 import { assert } from "chai";
-import { resolveAgentToolTarget } from "../src/modules/contextPanel/agentTools/resolveTarget";
+import { resolveAgentToolTarget } from "../src/modules/contextPanel/Agent/Tools/resolveTarget";
 import type {
   AgentToolExecutionContext,
   AgentToolTarget,
-} from "../src/modules/contextPanel/agentTools/types";
+} from "../src/modules/contextPanel/Agent/Tools/types";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 
 describe("agentToolTarget", function () {

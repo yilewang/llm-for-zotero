@@ -41,6 +41,7 @@ export type PanelDomRefs = {
   slashReferenceOption: HTMLButtonElement | null;
   slashLocateSelectionOption: HTMLButtonElement | null;
   slashLocateQuoteOption: HTMLButtonElement | null;
+  contextAgentToggleBtn: HTMLButtonElement | null;
   imagePreview: HTMLDivElement | null;
   selectedContextList: HTMLDivElement | null;
   previewStrip: HTMLDivElement | null;
@@ -106,7 +107,9 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     actionsRight: body.querySelector(
       ".llm-actions-right",
     ) as HTMLDivElement | null,
-    settingsBtn: body.querySelector("#llm-settings") as HTMLButtonElement | null,
+    settingsBtn: body.querySelector(
+      "#llm-settings",
+    ) as HTMLButtonElement | null,
     exportBtn: body.querySelector("#llm-export") as HTMLButtonElement | null,
     clearBtn: body.querySelector("#llm-clear") as HTMLButtonElement | null,
     titleStatic: body.querySelector(
@@ -131,9 +134,7 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     historyModeIndicator: body.querySelector(
       "#llm-history-toggle",
     ) as HTMLButtonElement | null,
-    modeCapsule: body.querySelector(
-      "#llm-mode-capsule",
-    ) as HTMLElement | null,
+    modeCapsule: body.querySelector("#llm-mode-capsule") as HTMLElement | null,
     modeChipBtn: body.querySelector(
       "#llm-mode-chip",
     ) as HTMLButtonElement | null,
@@ -182,6 +183,9 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     ) as HTMLButtonElement | null,
     slashLocateQuoteOption: body.querySelector(
       "#llm-slash-locate-quote-option",
+    ) as HTMLButtonElement | null,
+    contextAgentToggleBtn: body.querySelector(
+      "#llm-context-agent-toggle",
     ) as HTMLButtonElement | null,
     imagePreview: body.querySelector(
       "#llm-image-preview",

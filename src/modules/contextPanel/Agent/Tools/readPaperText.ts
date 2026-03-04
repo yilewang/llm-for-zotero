@@ -9,7 +9,7 @@ import type {
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "../types";
+} from "./types";
 
 export function validateReadPaperTextCall(
   call: AgentToolCall,

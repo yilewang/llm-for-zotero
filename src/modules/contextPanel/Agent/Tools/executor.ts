@@ -1,8 +1,8 @@
 import { getAgentToolDefinition } from "./registry";
 import { resolveAgentToolTarget } from "./resolveTarget";
-import { executeListPapersCall } from "./tools/listPapers";
-import { executeSearchInternetCall } from "./tools/searchInternet";
-import { sanitizeText } from "../textUtils";
+import { executeListPapersCall } from "./listPapers";
+import { executeSearchInternetCall } from "./searchInternet";
+import { sanitizeText } from "../../textUtils";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,

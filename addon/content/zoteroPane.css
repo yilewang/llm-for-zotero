@@ -236,7 +236,6 @@
   color: var(--color-accent);
 }
 
-
 .llm-history-new:disabled {
   color: var(--fill-tertiary);
   opacity: 0.55;
@@ -1225,11 +1224,18 @@ button.llm-at-target-btn {
   max-width: 200px;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    color 0.12s;
 }
 
 button.llm-at-target-btn:hover {
-  background: color-mix(in srgb, var(--fill-quinary) 70%, var(--color-accent) 30%);
+  background: color-mix(
+    in srgb,
+    var(--fill-quinary) 70%,
+    var(--color-accent) 30%
+  );
   color: var(--fill-primary);
   border-color: color-mix(in srgb, var(--color-accent) 35%, transparent);
 }
@@ -1248,13 +1254,20 @@ button.llm-at-target-btn:focus-visible {
   padding: 6px 9px;
   border-radius: 8px;
   background: var(--fill-quinary);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--stroke-secondary));
+  border: 1px solid
+    color-mix(in srgb, var(--color-accent) 22%, var(--stroke-secondary));
   animation: llm-at-popover-in 0.12s ease;
 }
 
 @keyframes llm-at-popover-in {
-  from { opacity: 0; transform: translateY(-3px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .llm-at-popover-title {
@@ -1361,8 +1374,13 @@ button.llm-at-target-btn:focus-visible {
 }
 
 @keyframes llm-at-pulse {
-  0%, 100% { opacity: 0.25; }
-  50%       { opacity: 1; }
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* Message Bubbles */
@@ -2284,7 +2302,9 @@ button.llm-at-target-btn:focus-visible {
   white-space: nowrap;
 }
 
-.llm-bubble.assistant .llm-paper-citation-link:hover .llm-paper-context-chip-label {
+.llm-bubble.assistant
+  .llm-paper-citation-link:hover
+  .llm-paper-context-chip-label {
   color: var(--fill-primary);
 }
 
@@ -2456,6 +2476,39 @@ button.llm-at-target-btn:focus-visible {
 
 .llm-context-previews > #llm-selected-context-list {
   display: contents;
+}
+
+#llm-context-agent-toggle {
+  order: -1000;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke-secondary);
+  background: color-mix(in srgb, var(--fill-quinary) 32%, transparent);
+  color: var(--fill-secondary);
+  font-size: var(--llm-fs-12);
+  line-height: 1.2;
+  cursor: pointer;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+#llm-context-agent-toggle:hover:not(:disabled) {
+  border-color: var(--stroke-primary);
+  color: var(--fill-primary);
+}
+
+#llm-context-agent-toggle:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+#llm-context-agent-toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .llm-context-previews > #llm-selected-context-list > .llm-selected-context,
@@ -2649,11 +2702,7 @@ button.llm-at-target-btn:focus-visible {
   align-items: center;
   padding: 1px 6px;
   border-radius: 999px;
-  background: color-mix(
-    in srgb,
-    var(--color-accent, #3584e4) 14%,
-    transparent
-  );
+  background: color-mix(in srgb, var(--color-accent, #3584e4) 14%, transparent);
   color: var(--fill-secondary);
   font-size: var(--llm-fs-10);
   line-height: 1.2;
@@ -3206,7 +3255,11 @@ button.llm-at-target-btn:focus-visible {
 }
 
 .llm-live-locate-demo[data-demo-state="resolved"] {
-  border-color: color-mix(in srgb, var(--color-accent) 35%, var(--stroke-secondary));
+  border-color: color-mix(
+    in srgb,
+    var(--color-accent) 35%,
+    var(--stroke-secondary)
+  );
 }
 
 .llm-live-locate-demo[data-demo-state="ambiguous"],
@@ -4061,7 +4114,11 @@ button.llm-at-target-btn:focus-visible {
   margin: 4px 0 0;
   border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--color-accent) 6%, var(--material-sidepanel));
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 6%,
+    var(--material-sidepanel)
+  );
   overflow: hidden;
   font-size: var(--llm-fs-12);
 }
@@ -4073,7 +4130,8 @@ button.llm-at-target-btn:focus-visible {
 
 .llm-mrc-header {
   padding: 10px 12px 8px;
-  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent);
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
 .llm-mrc-title {
@@ -4098,7 +4156,12 @@ button.llm-at-target-btn:focus-visible {
   align-items: baseline;
   gap: 6px;
   padding: 5px 12px;
-  border-bottom: 1px solid color-mix(in srgb, var(--fill-quinary, var(--fill-tertiary)) 40%, transparent);
+  border-bottom: 1px solid
+    color-mix(
+      in srgb,
+      var(--fill-quinary, var(--fill-tertiary)) 40%,
+      transparent
+    );
 }
 
 .llm-mrc-row:last-child {
@@ -4204,7 +4267,10 @@ button.llm-at-target-btn:focus-visible {
 }
 
 .llm-mrc-dismiss-btn:hover:not(:disabled) {
-  background: var(--fill-quinary, color-mix(in srgb, var(--fill-primary) 8%, transparent));
+  background: var(
+    --fill-quinary,
+    color-mix(in srgb, var(--fill-primary) 8%, transparent)
+  );
 }
 
 .llm-mrc-accept-btn:disabled,
@@ -4226,7 +4292,11 @@ button.llm-at-target-btn:focus-visible {
   margin: 4px 0 0;
   border: 1px solid color-mix(in srgb, var(--color-accent) 35%, transparent);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--color-accent) 6%, var(--material-sidepanel));
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 6%,
+    var(--material-sidepanel)
+  );
   overflow: hidden;
   font-size: var(--llm-fs-12);
 }
@@ -4250,8 +4320,15 @@ button.llm-at-target-btn:focus-visible {
   resize: vertical;
   min-height: 120px;
   max-height: 360px;
-  background: var(--fill-quinary, color-mix(in srgb, var(--fill-primary) 5%, transparent));
-  border: 1px solid var(--stroke-secondary, color-mix(in srgb, var(--fill-primary) 15%, transparent));
+  background: var(
+    --fill-quinary,
+    color-mix(in srgb, var(--fill-primary) 5%, transparent)
+  );
+  border: 1px solid
+    var(
+      --stroke-secondary,
+      color-mix(in srgb, var(--fill-primary) 15%, transparent)
+    );
   border-radius: 4px;
   color: var(--fill-primary);
   font-size: var(--llm-fs-12);

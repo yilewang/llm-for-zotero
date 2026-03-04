@@ -14,7 +14,7 @@ import type {
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "../types";
+} from "./types";
 import type { PaperContextCandidate } from "../../types";
 
 const RAW_EVIDENCE_TOP_K = 12;

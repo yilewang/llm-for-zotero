@@ -10,7 +10,7 @@ import type {
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
-} from "../types";
+} from "./types";
 
 /** Approx token budget for the paper text fed to the LLM. */
 const FIX_METADATA_PAPER_CONTEXT_TOKENS = 6000;

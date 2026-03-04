@@ -135,7 +135,8 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     id: "llm-mode-chip",
     type: "button",
     textContent: hasItem && isGlobalMode ? "Open chat" : "Paper chat",
-    title: hasItem && isGlobalMode ? "Switch to paper chat" : "Switch to open chat",
+    title:
+      hasItem && isGlobalMode ? "Switch to paper chat" : "Switch to open chat",
   });
   modeChipBtn.setAttribute(
     "aria-label",
@@ -160,11 +161,16 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
-  const settingsBtn = createElement(doc, "button", "llm-btn-icon llm-settings-btn", {
-    id: "llm-settings",
-    type: "button",
-    title: "Settings",
-  });
+  const settingsBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-settings-btn",
+    {
+      id: "llm-settings",
+      type: "button",
+      title: "Settings",
+    },
+  );
   settingsBtn.setAttribute("aria-label", "Open plugin settings");
   settingsBtn.dataset.preferencesPaneId = PREFERENCES_PANE_ID;
   const exportBtn = createElement(doc, "button", "llm-btn-icon", {
@@ -449,6 +455,38 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const contextPreviews = createElement(doc, "div", "llm-context-previews", {
     id: "llm-context-previews",
   });
+  const contextAgentToggleBtn = createElement(
+    doc,
+    "button",
+    "llm-context-agent-toggle llm-agent-process-summary llm-agent-toggle-enabled",
+    {
+      id: "llm-context-agent-toggle",
+      type: "button",
+      title: "Agent mode enabled",
+      disabled: !hasItem,
+    },
+  );
+  contextAgentToggleBtn.setAttribute("aria-label", "Toggle agent mode");
+  contextAgentToggleBtn.setAttribute("aria-pressed", "true");
+  const contextAgentToggleIndicator = createElement(
+    doc,
+    "span",
+    "llm-agent-toggle-indicator",
+  );
+  contextAgentToggleIndicator.setAttribute("aria-hidden", "true");
+  const contextAgentToggleLabel = createElement(
+    doc,
+    "span",
+    "llm-agent-toggle-label llm-agent-process-summary-label",
+    {
+      textContent: "Agent (beta)",
+    },
+  );
+  contextAgentToggleBtn.append(
+    contextAgentToggleIndicator,
+    contextAgentToggleLabel,
+  );
+  contextPreviews.appendChild(contextAgentToggleBtn);
   const selectedContextList = createElement(
     doc,
     "div",
