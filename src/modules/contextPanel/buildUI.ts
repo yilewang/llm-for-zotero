@@ -1,5 +1,6 @@
 import { createElement } from "../../utils/domHelpers";
 import {
+  PREFERENCES_PANE_ID,
   SELECT_TEXT_EXPANDED_LABEL,
   SCREENSHOT_EXPANDED_LABEL,
   UPLOAD_FILE_EXPANDED_LABEL,
@@ -159,6 +160,13 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
+  const settingsBtn = createElement(doc, "button", "llm-btn-icon llm-settings-btn", {
+    id: "llm-settings",
+    type: "button",
+    title: "Settings",
+  });
+  settingsBtn.setAttribute("aria-label", "Open plugin settings");
+  settingsBtn.dataset.preferencesPaneId = PREFERENCES_PANE_ID;
   const exportBtn = createElement(doc, "button", "llm-btn-icon", {
     id: "llm-export",
     type: "button",
@@ -171,7 +179,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     type: "button",
     textContent: "Clear",
   });
-  headerActions.append(exportBtn, clearBtn);
+  headerActions.append(settingsBtn, exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
   const historyMenu = createElement(doc, "div", "llm-history-menu", {

@@ -769,6 +769,61 @@ export function getCurrentSelectionPageLocationFromReader(
   return null;
 }
 
+function getPageLabelForIndex(
+  reader: any,
+  pageIndex: number,
+): string | undefined {
+  if (!Number.isFinite(pageIndex) || pageIndex < 0) return undefined;
+  const normalizedPageIndex = Math.floor(pageIndex);
+
+  const docs = collectReaderSelectionDocuments(reader);
+  for (const doc of docs) {
+    const pageElement = getPageElementByIndex(doc, normalizedPageIndex);
+    const pageLabel = getPageLabelFromElement(pageElement);
+    if (pageLabel) return pageLabel;
+  }
+
+  const app = getPdfViewerApplication(reader);
+  const labels = app?.pdfViewer?.pageLabels;
+  if (Array.isArray(labels) && labels[normalizedPageIndex]) {
+    return String(labels[normalizedPageIndex]);
+  }
+
+  return `${normalizedPageIndex + 1}`;
+}
+
+export async function resolveCurrentSelectionPageLocationFromReader(
+  reader: any,
+  selectionText: string,
+): Promise<LivePdfSelectionPageLocation | null> {
+  const directLocation = getCurrentSelectionPageLocationFromReader(
+    reader,
+    selectionText,
+  );
+  if (directLocation) return directLocation;
+
+  const resolved = await locateCurrentSelectionInLivePdfReader(
+    reader,
+    selectionText,
+  );
+  if (resolved.status !== "resolved" || resolved.computedPageIndex === null) {
+    return null;
+  }
+
+  const rawContextItemId = Number(reader?._item?.id || reader?.itemID || 0);
+  const contextItemId =
+    Number.isFinite(rawContextItemId) && rawContextItemId > 0
+      ? Math.floor(rawContextItemId)
+      : undefined;
+  const pageIndex = Math.floor(resolved.computedPageIndex);
+  return {
+    contextItemId,
+    pageIndex,
+    pageLabel: getPageLabelForIndex(reader, pageIndex),
+    pagesScanned: resolved.pagesScanned,
+  };
+}
+
 export async function flashPageInLivePdfReader(
   reader: any,
   pageIndex: number,

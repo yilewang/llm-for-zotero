@@ -23,6 +23,7 @@ import {
   ACTION_LAYOUT_MODEL_WRAP_MIN_CHARS,
   ACTION_LAYOUT_MODEL_FULL_MAX_LINES,
   GLOBAL_HISTORY_LIMIT,
+  PREFERENCES_PANE_ID,
 } from "./constants";
 import {
   selectedModelCache,
@@ -300,6 +301,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     actionsRow,
     actionsLeft,
     actionsRight,
+    settingsBtn,
     exportBtn,
     clearBtn,
     titleStatic,
@@ -1235,6 +1237,30 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         return;
       }
       positionMenuBelowButton(body, exportMenu, exportBtn);
+    });
+  }
+
+  if (settingsBtn) {
+    settingsBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        closeRetryModelMenu();
+        closeSlashMenu();
+        closeResponseMenu();
+        closePromptMenu();
+        closeHistoryNewMenu();
+        closeHistoryMenu();
+        closeExportMenu();
+        const paneId =
+          settingsBtn.dataset.preferencesPaneId || PREFERENCES_PANE_ID;
+        Zotero.Utilities.Internal.openPreferences(paneId);
+      } catch (error) {
+        ztoolkit.log("LLM: Failed to open plugin preferences", error);
+        if (status) {
+          setStatus(status, "Could not open plugin settings", "error");
+        }
+      }
     });
   }
 
@@ -6686,7 +6712,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       cacheSelectionBeforeFocusShift,
     );
     selectTextBtn.addEventListener("mousedown", cacheSelectionBeforeFocusShift);
-    selectTextBtn.addEventListener("click", (e: Event) => {
+    selectTextBtn.addEventListener("click", async (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
       if (!item) return;
@@ -6719,10 +6745,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           return;
         }
       }
-      const added = includeSelectedTextFromReader(body, item, selectedText, {
-        targetItemId: textContextKey,
-        paperContext: isGlobalMode() ? resolvedPaperContext : null,
-      });
+      const added = await includeSelectedTextFromReader(
+        body,
+        item,
+        selectedText,
+        {
+          targetItemId: textContextKey,
+          paperContext: isGlobalMode() ? resolvedPaperContext : null,
+        },
+      );
       if (added) {
         updateSelectedTextPreviewPreservingScroll();
       }

@@ -29,7 +29,7 @@ import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
 } from "./readerSelection";
-import { getCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
+import { resolveCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
 import {
   buildPinnedSelectedTextKey,
   isPinnedSelectedText,
@@ -827,7 +827,7 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
   }
 }
 
-export function includeSelectedTextFromReader(
+export async function includeSelectedTextFromReader(
   body: Element,
   item: Zotero.Item,
   prefetchedText?: string,
@@ -835,7 +835,7 @@ export function includeSelectedTextFromReader(
     paperContext?: PaperContextRef | null;
     targetItemId?: number | null;
   },
-): boolean {
+): Promise<boolean> {
   const selectedText =
     normalizeSelectedText(prefetchedText || "") ||
     getActiveReaderSelectionText(body.ownerDocument as Document, item);
@@ -844,7 +844,10 @@ export function includeSelectedTextFromReader(
       ? Math.floor(options.targetItemId)
       : item.id;
   const reader = getActiveReaderForSelectedTab();
-  const location = getCurrentSelectionPageLocationFromReader(reader, selectedText);
+  const location = await resolveCurrentSelectionPageLocationFromReader(
+    reader,
+    selectedText,
+  );
   return addSelectedTextContext(body, targetItemId, selectedText, {
     noSelectionStatusText: "No text selected in reader",
     successStatusText: "Selected text included",

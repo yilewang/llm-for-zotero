@@ -159,7 +159,7 @@ const OUTLINE_BTN_STYLE =
 const CARD_STYLE =
   "border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 8px; overflow: hidden;";
 
-const CARD_HEADER_STYLE =
+  const CARD_HEADER_STYLE =
   "display: flex; align-items: center; justify-content: space-between; padding: 8px 12px;" +
   " background: Field; color: FieldText;" +
   " border-bottom: 1px solid var(--stroke-secondary, #c8c8c8);";
@@ -609,4 +609,3 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 }
-

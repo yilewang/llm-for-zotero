@@ -58,7 +58,7 @@ import {
   applySelectedTextPreview,
 } from "./contextResolution";
 import { ensurePDFTextCached } from "./pdfContext";
-import { getCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
+import { resolveCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
@@ -216,7 +216,7 @@ export function registerReaderSelectionTracking() {
 
     if (selectedText || showAddTextInPopup) {
       let popupSentinelEl: HTMLElement | null = null;
-      const addTextToPanel = () => {
+      const addTextToPanel = async () => {
         const effectiveSelectedText =
           normalizeSelectedText(selectedText) ||
           resolveSelectedTextForPopupAction();
@@ -579,7 +579,7 @@ export function registerReaderSelectionTracking() {
             addTextHandled = true;
             e.preventDefault();
             e.stopPropagation();
-            addTextToPanel();
+            void addTextToPanel();
           };
           const isPrimaryButton = (e: Event): boolean => {
             const maybeMouse = e as MouseEvent;

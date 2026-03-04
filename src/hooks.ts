@@ -1,5 +1,6 @@
 import { initLocale } from "./utils/locale";
 import { registerPrefsScripts } from "./modules/preferenceScript";
+import { PREFERENCES_PANE_ID } from "./modules/contextPanel/constants";
 import {
   registerReaderContextPanel,
   registerLLMStyles,
@@ -78,6 +79,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
 function registerPrefsPane() {
   Zotero.PreferencePanes.register({
     pluginID: addon.data.config.addonID,
+    id: PREFERENCES_PANE_ID,
     src: `chrome://${addon.data.config.addonRef}/content/preferences.xhtml`,
     label: "llm-for-zotero",
     image: `chrome://${addon.data.config.addonRef}/content/icons/icon-20.png`,
