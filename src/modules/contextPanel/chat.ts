@@ -729,6 +729,9 @@ export function detectReasoningProvider(
   if (/(^|[/:])(?:qwen(?:\d+)?|qwq|qvq)(?:\b|[.-])/.test(name)) {
     return "qwen";
   }
+  if (/(^|[/:])(?:minimax|m2\.5)(?:\b|[.-])/.test(name)) {
+    return "anthropic";
+  }
   if (/(^|[/:])grok(?:\b|[.-])/.test(name)) {
     return "grok";
   }
@@ -1559,7 +1562,8 @@ export async function retryLatestAssistantResponse(
   // Update model name before first refresh so streaming UI shows the correct model immediately
   assistantMessage.modelName = effectiveRequestConfig.model;
   assistantMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
-  assistantMessage.modelProviderLabel = effectiveRequestConfig.modelProviderLabel;
+  assistantMessage.modelProviderLabel =
+    effectiveRequestConfig.modelProviderLabel;
   refreshChatSafely();
   let streamedAnswer = "";
   let streamedReasoningSummary: string | undefined;

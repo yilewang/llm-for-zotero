@@ -8,6 +8,7 @@
 
 export const API_ENDPOINT = "/v1/chat/completions";
 export const RESPONSES_ENDPOINT = "/v1/responses";
+export const ANTHROPIC_MESSAGES_ENDPOINT = "/v1/messages";
 export const EMBEDDINGS_ENDPOINT = "/v1/embeddings";
 export const FILES_ENDPOINT = "/v1/files";
 
@@ -24,10 +25,12 @@ export function resolveEndpoint(baseOrUrl: string, path: string): string {
   if (!cleaned) return "";
   const chatSuffix = "/chat/completions";
   const responsesSuffix = "/responses";
+  const messagesSuffix = "/messages";
   const embeddingSuffix = "/embeddings";
   const filesSuffix = "/files";
   const hasChat = cleaned.endsWith(chatSuffix);
   const hasResponses = cleaned.endsWith(responsesSuffix);
+  const hasMessages = cleaned.endsWith(messagesSuffix);
   const hasEmbeddings = cleaned.endsWith(embeddingSuffix);
   const hasFiles = cleaned.endsWith(filesSuffix);
 
@@ -53,6 +56,22 @@ export function resolveEndpoint(baseOrUrl: string, path: string): string {
     }
     if (path === FILES_ENDPOINT) {
       return cleaned.replace(/\/responses$/, filesSuffix);
+    }
+    return cleaned;
+  }
+
+  if (hasMessages) {
+    if (path === API_ENDPOINT) {
+      return cleaned.replace(/\/messages$/, chatSuffix);
+    }
+    if (path === RESPONSES_ENDPOINT) {
+      return cleaned.replace(/\/messages$/, responsesSuffix);
+    }
+    if (path === EMBEDDINGS_ENDPOINT) {
+      return cleaned.replace(/\/messages$/, embeddingSuffix);
+    }
+    if (path === FILES_ENDPOINT) {
+      return cleaned.replace(/\/messages$/, filesSuffix);
     }
     return cleaned;
   }
@@ -100,6 +119,18 @@ export function buildHeaders(apiKey: string): Record<string, string> {
   return headers;
 }
 
+/** Build headers for Anthropic-compatible Messages API. */
+export function buildAnthropicHeaders(apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "anthropic-version": "2023-06-01",
+  };
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+  }
+  return headers;
+}
+
 /** Check whether a model name implies `max_completion_tokens` instead of `max_tokens`. */
 export function usesMaxCompletionTokens(model: string): boolean {
   const name = model.toLowerCase();
@@ -114,4 +145,15 @@ export function usesMaxCompletionTokens(model: string): boolean {
 export function isResponsesBase(baseOrUrl: string): boolean {
   const cleaned = baseOrUrl.trim().replace(/\/$/, "");
   return cleaned.endsWith("/v1/responses") || cleaned.endsWith("/responses");
+}
+
+/** Check whether the base URL points at an Anthropic-compatible endpoint. */
+export function isAnthropicBase(baseOrUrl: string): boolean {
+  const cleaned = baseOrUrl.trim().replace(/\/$/, "").toLowerCase();
+  if (!cleaned) return false;
+  return (
+    cleaned.includes("/anthropic") ||
+    cleaned.endsWith("/v1/messages") ||
+    cleaned.endsWith("/messages")
+  );
 }

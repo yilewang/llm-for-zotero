@@ -33,12 +33,15 @@ import type {
 import {
   API_ENDPOINT,
   RESPONSES_ENDPOINT,
+  ANTHROPIC_MESSAGES_ENDPOINT,
   EMBEDDINGS_ENDPOINT,
   FILES_ENDPOINT,
   resolveEndpoint,
   buildHeaders,
+  buildAnthropicHeaders,
   usesMaxCompletionTokens,
   isResponsesBase,
+  isAnthropicBase,
 } from "./apiHelpers";
 import { pathToFileUrl } from "./pathFileUrl";
 import {
@@ -895,6 +898,48 @@ function buildResponsesTokenParam(maxTokens: number) {
   return { max_output_tokens: maxTokens };
 }
 
+type AnthropicMessageContent = {
+  type: "text";
+  text: string;
+};
+
+type AnthropicMessage = {
+  role: "user" | "assistant";
+  content: AnthropicMessageContent[];
+};
+
+function toAnthropicTextContent(content: MessageContent): string {
+  if (typeof content === "string") return content;
+  return content
+    .map((part) => {
+      if (part.type !== "text") return "";
+      return normalizeStreamText(part.text);
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildAnthropicMessages(messages: ChatMessage[]): {
+  system: string;
+  messages: AnthropicMessage[];
+} {
+  let system = "";
+  const chatMessages: AnthropicMessage[] = [];
+  for (const msg of messages) {
+    const text = toAnthropicTextContent(msg.content).trim();
+    if (!text) continue;
+    if (msg.role === "system") {
+      system = system ? `${system}\n\n${text}` : text;
+      continue;
+    }
+    chatMessages.push({
+      role: msg.role,
+      content: [{ type: "text", text }],
+    });
+  }
+  return { system, messages: chatMessages };
+}
+
 const OPENAI_EFFORT_ORDER: OpenAIReasoningEffort[] = [
   "none",
   "minimal",
@@ -1327,6 +1372,7 @@ function createChatPayloadBuilder(params: {
   model: string;
   messages: ChatMessage[];
   useResponses: boolean;
+  useAnthropic: boolean;
   responseFileIds?: string[];
   apiBase: string;
   effectiveTemperature: number;
@@ -1337,6 +1383,7 @@ function createChatPayloadBuilder(params: {
     model,
     messages,
     useResponses,
+    useAnthropic,
     responseFileIds,
     apiBase,
     effectiveTemperature,
@@ -1362,13 +1409,21 @@ function createChatPayloadBuilder(params: {
           ...temperatureParam,
           ...buildResponsesTokenParam(effectiveMaxTokens),
         }
-      : {
-          model,
-          messages,
-          ...reasoningPayload.extra,
-          ...temperatureParam,
-          ...buildTokenParam(model, effectiveMaxTokens),
-        };
+      : useAnthropic
+        ? {
+            model,
+            ...buildAnthropicMessages(messages),
+            ...reasoningPayload.extra,
+            ...temperatureParam,
+            max_tokens: effectiveMaxTokens,
+          }
+        : {
+            model,
+            messages,
+            ...reasoningPayload.extra,
+            ...temperatureParam,
+            ...buildTokenParam(model, effectiveMaxTokens),
+          };
 
     if (stream) {
       return {
@@ -1470,6 +1525,7 @@ function getTemperatureRecoveryPolicy(
 async function postWithTemperatureFallback(params: {
   url: string;
   apiKey: string;
+  useAnthropicHeaders?: boolean;
   payload: Record<string, unknown>;
   signal?: AbortSignal;
 }) {
@@ -1481,7 +1537,9 @@ async function postWithTemperatureFallback(params: {
   const send = (bodyPayload: Record<string, unknown>) =>
     getFetch()(params.url, {
       method: "POST",
-      headers: buildHeaders(params.apiKey),
+      headers: params.useAnthropicHeaders
+        ? buildAnthropicHeaders(params.apiKey)
+        : buildHeaders(params.apiKey),
       body: JSON.stringify(bodyPayload),
       signal: params.signal,
     });
@@ -1560,6 +1618,7 @@ function getReasoningRecoverySelection(params: {
 async function postWithReasoningFallback(params: {
   url: string;
   apiKey: string;
+  useAnthropicHeaders?: boolean;
   modelName?: string;
   initialReasoning: ReasoningConfig | undefined;
   buildPayload: (
@@ -1583,6 +1642,7 @@ async function postWithReasoningFallback(params: {
       return await postWithTemperatureFallback({
         url: params.url,
         apiKey: params.apiKey,
+        useAnthropicHeaders: params.useAnthropicHeaders,
         payload,
         signal: params.signal,
       });
@@ -1659,6 +1719,7 @@ export async function callLLM(params: ChatParams): Promise<string> {
     });
   }
   const useResponses = isResponsesBase(apiBase);
+  const useAnthropic = isAnthropicBase(apiBase) && !useResponses;
   const responseFileIds = useResponses
     ? await uploadFilesForResponses({
         apiBase,
@@ -1672,12 +1733,17 @@ export async function callLLM(params: ChatParams): Promise<string> {
 
   const url = resolveEndpoint(
     apiBase,
-    useResponses ? RESPONSES_ENDPOINT : API_ENDPOINT,
+    useResponses
+      ? RESPONSES_ENDPOINT
+      : useAnthropic
+        ? ANTHROPIC_MESSAGES_ENDPOINT
+        : API_ENDPOINT,
   );
   const buildPayload = createChatPayloadBuilder({
     model,
     messages,
     useResponses,
+    useAnthropic,
     responseFileIds,
     apiBase,
     effectiveTemperature,
@@ -1687,6 +1753,7 @@ export async function callLLM(params: ChatParams): Promise<string> {
   const res = await postWithReasoningFallback({
     url,
     apiKey,
+    useAnthropicHeaders: useAnthropic,
     modelName: model,
     initialReasoning: params.reasoning,
     buildPayload,
@@ -1694,9 +1761,19 @@ export async function callLLM(params: ChatParams): Promise<string> {
   });
 
   const data = (await res.json()) as CompletionResponse & {
+    content?: Array<{ type?: string; text?: string; thinking?: string }>;
     output_text?: string;
     output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
   };
+  if (useAnthropic) {
+    const textBlocks = Array.isArray(data?.content)
+      ? data.content
+          .filter((block) => (block?.type || "").toLowerCase() === "text")
+          .map((block) => normalizeStreamText(block?.text))
+      : [];
+    const responseText = textBlocks.join("\n").trim();
+    return responseText || JSON.stringify(data);
+  }
   if (useResponses) {
     return extractResponsesOutputText(data);
   }
@@ -1738,6 +1815,7 @@ export async function callLLMStream(
     });
   }
   const useResponses = isResponsesBase(apiBase);
+  const useAnthropic = isAnthropicBase(apiBase) && !useResponses;
   const responseFileIds = useResponses
     ? await uploadFilesForResponses({
         apiBase,
@@ -1751,12 +1829,17 @@ export async function callLLMStream(
 
   const url = resolveEndpoint(
     apiBase,
-    useResponses ? RESPONSES_ENDPOINT : API_ENDPOINT,
+    useResponses
+      ? RESPONSES_ENDPOINT
+      : useAnthropic
+        ? ANTHROPIC_MESSAGES_ENDPOINT
+        : API_ENDPOINT,
   );
   const buildPayload = createChatPayloadBuilder({
     model,
     messages,
     useResponses,
+    useAnthropic,
     responseFileIds,
     apiBase,
     effectiveTemperature,
@@ -1766,6 +1849,7 @@ export async function callLLMStream(
   const res = await postWithReasoningFallback({
     url,
     apiKey,
+    useAnthropicHeaders: useAnthropic,
     modelName: model,
     initialReasoning: params.reasoning,
     buildPayload,
@@ -1775,6 +1859,12 @@ export async function callLLMStream(
   // Fallback to non-streaming if body is not available
   if (!res.body) {
     return callLLM(params);
+  }
+
+  if (useAnthropic) {
+    const fullText = await callLLM(params);
+    if (fullText) onDelta(fullText);
+    return fullText;
   }
 
   return useResponses
@@ -1858,7 +1948,8 @@ async function parseStreamResponse(
           if (parsed.usage && onUsage) {
             const totalTokens =
               parsed.usage.total_tokens ??
-              (parsed.usage.prompt_tokens ?? 0) + (parsed.usage.completion_tokens ?? 0);
+              (parsed.usage.prompt_tokens ?? 0) +
+                (parsed.usage.completion_tokens ?? 0);
             if (totalTokens > 0) {
               onUsage({
                 promptTokens: parsed.usage.prompt_tokens ?? 0,
@@ -2322,7 +2413,9 @@ async function parseResponsesStream(
             );
             const u = parsed.response?.usage;
             if (u && onUsage) {
-              const total = u.total_tokens ?? (u.input_tokens ?? 0) + (u.output_tokens ?? 0);
+              const total =
+                u.total_tokens ??
+                (u.input_tokens ?? 0) + (u.output_tokens ?? 0);
               if (total > 0) {
                 onUsage({
                   promptTokens: u.input_tokens ?? 0,
