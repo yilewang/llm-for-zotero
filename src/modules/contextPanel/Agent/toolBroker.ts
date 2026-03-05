@@ -1,18 +1,18 @@
 import {
   createAgentToolExecutorState,
   executeAgentToolCall,
-} from "../ToolInfra/executor";
-import { getAgentToolDefinitions } from "../ToolInfra/registry";
+} from "./ToolInfra/executor";
+import { getAgentToolDefinitions } from "./ToolInfra/registry";
 import type {
   AgentToolCall,
   AgentToolExecutionResult,
   AgentToolExecutorState,
   AgentToolName,
-} from "../ToolInfra/types";
+} from "./ToolInfra/types";
 import type {
-  AgentV2ToolBrokerParams,
+  AgentToolBrokerParams,
   ToolExecutionOutcome,
-  ToolSpecV2,
+  ToolSpec,
   UiActionDirective,
 } from "./types";
 
@@ -118,41 +118,42 @@ function buildUiActionDirective(
   return null;
 }
 
-let cachedToolSpecs: ToolSpecV2[] | null = null;
+let cachedToolSpecs: ToolSpec[] | null = null;
 
-export function getToolSpecsV2(): ToolSpecV2[] {
+export function getToolSpecs(): ToolSpec[] {
   if (cachedToolSpecs) {
     return cachedToolSpecs;
   }
 
-  cachedToolSpecs = getAgentToolDefinitions().map((definition) => ({
+  const specs = getAgentToolDefinitions().map((definition) => ({
     name: definition.name,
     description: definition.plannerDescription,
     inputSchema: buildToolInputSchema(definition.name),
     callExample: definition.callExample,
     validate: definition.validate,
   }));
+  cachedToolSpecs = specs;
 
-  return cachedToolSpecs;
+  return specs;
 }
 
-export function resetToolSpecsV2Cache(): void {
+export function resetToolSpecsCache(): void {
   cachedToolSpecs = null;
 }
 
-export function createAgentV2ToolBrokerState(): AgentToolExecutorState {
+export function createAgentToolBrokerState(): AgentToolExecutorState {
   return createAgentToolExecutorState();
 }
 
 export function createToolBrokerExecutor(deps?: {
   executeCall?: typeof executeAgentToolCall;
-}): (params: AgentV2ToolBrokerParams) => Promise<ToolExecutionOutcome> {
+}): (params: AgentToolBrokerParams) => Promise<ToolExecutionOutcome> {
   const executeCall = deps?.executeCall || executeAgentToolCall;
 
   return async (
-    params: AgentV2ToolBrokerParams,
+    params: AgentToolBrokerParams,
   ): Promise<ToolExecutionOutcome> => {
-    const specs = getToolSpecsV2();
+    const specs = getToolSpecs();
     const spec = specs.find((entry) => entry.name === params.call.name);
     if (!spec) {
       const result = buildErrorResult(

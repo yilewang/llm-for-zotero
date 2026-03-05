@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   browsePaperCollectionCandidates,
+  countQuickSearchRegularItems,
   invalidatePaperSearchCache,
   searchPaperCandidates,
 } from "../src/modules/contextPanel/paperSearch";
@@ -146,6 +147,7 @@ describe("paperSearch", function () {
   let itemsById: Map<number, MockItem>;
   let collectionsById: Map<number, MockCollection>;
   let getAllCount = 0;
+  let quickSearchResultIDs: number[] = [];
 
   const installMockZotero = () => {
     (globalThis as typeof globalThis & { Zotero: typeof Zotero }).Zotero = {
@@ -162,6 +164,21 @@ describe("paperSearch", function () {
       Libraries: {
         getName: () => "My Library",
       },
+      Search: class {
+        libraryID = 0;
+
+        addCondition(
+          _condition: string,
+          _operator: string,
+          _value: string,
+        ): void {
+          // no-op in tests; result rows are supplied via quickSearchResultIDs.
+        }
+
+        async search(): Promise<number[]> {
+          return [...quickSearchResultIDs];
+        }
+      },
     } as typeof Zotero;
     (globalThis as typeof globalThis & { ztoolkit: { log: () => void } })
       .ztoolkit = {
@@ -173,6 +190,7 @@ describe("paperSearch", function () {
     itemsById = new Map<number, MockItem>();
     collectionsById = new Map<number, MockCollection>();
     getAllCount = 0;
+    quickSearchResultIDs = [];
     invalidatePaperSearchCache();
     installMockZotero();
   });
@@ -285,6 +303,47 @@ describe("paperSearch", function () {
 
     assert.lengthOf(results, 1);
     assert.equal(results[0].itemId, 4);
+  });
+
+  it("includes quicksearch-only matches (for attachment/full-text hits)", async function () {
+    itemsById.set(
+      20,
+      makeRegularItem({
+        id: 20,
+        title: "Memory stability in rodents",
+        firstCreator: "Example Author",
+        attachmentIDs: [220],
+      }),
+    );
+    itemsById.set(220, makeAttachment({ id: 220, title: "Main PDF" }));
+
+    // Simulate Zotero quicksearch returning the attachment row, not the parent item.
+    quickSearchResultIDs = [220];
+
+    const results = await searchPaperCandidates(1, "hippocampus", null, 0);
+
+    assert.lengthOf(results, 1);
+    assert.equal(results[0]?.itemId, 20);
+  });
+
+  it("counts quicksearch regular-item matches with attachment hits deduped", async function () {
+    itemsById.set(
+      21,
+      makeRegularItem({
+        id: 21,
+        title: "Hippocampus dynamics",
+        firstCreator: "Example Author",
+        attachmentIDs: [221],
+      }),
+    );
+    itemsById.set(221, makeAttachment({ id: 221, title: "Hippocampus PDF" }));
+
+    // Same logical paper appears as both parent and attachment hit.
+    quickSearchResultIDs = [21, 221];
+
+    const count = await countQuickSearchRegularItems(1, "hippocampus");
+
+    assert.equal(count, 1);
   });
 
   it("builds collection browse results with nested folders and unfiled papers", async function () {

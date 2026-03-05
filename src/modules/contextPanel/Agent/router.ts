@@ -1,13 +1,13 @@
-import { callLLM } from "../../../../utils/llmClient";
+import { callLLM } from "../../../utils/llmClient";
 import type {
   AgentToolCall,
   AgentToolName,
   AgentToolTarget,
-} from "../ToolInfra/types";
-import { sanitizeText } from "../../textUtils";
-import { getToolSpecsV2 } from "./toolBroker";
+} from "./ToolInfra/types";
+import { sanitizeText } from "../textUtils";
+import { getToolSpecs } from "./toolBroker";
 import type {
-  AgentV2RouterParams,
+  AgentRouterParams,
   RouterDecision,
   RouterContextSummary,
 } from "./types";
@@ -230,7 +230,7 @@ export function parseRouterDecision(raw: string): RouterDecision {
     return buildFallbackStop("Invalid tool call shape.");
   }
 
-  const spec = getToolSpecsV2().find((entry) => entry.name === call.name);
+  const spec = getToolSpecs().find((entry) => entry.name === call.name);
   if (!spec || !spec.validate(call)) {
     return buildFallbackStop("Tool call failed validation.");
   }
@@ -279,7 +279,7 @@ function buildContextBlock(summary: RouterContextSummary): string {
   ].join("\n");
 }
 
-function buildRouterPrompt(params: AgentV2RouterParams): string {
+function buildRouterPrompt(params: AgentRouterParams): string {
   const question =
     sanitizeText(params.summary.question || "").trim() || "(empty)";
   return [
@@ -292,8 +292,8 @@ function buildRouterPrompt(params: AgentV2RouterParams): string {
   ].join("\n");
 }
 
-export async function runAgentV2RouterStep(
-  params: AgentV2RouterParams,
+export async function runAgentRouterStep(
+  params: AgentRouterParams,
 ): Promise<RouterDecision> {
   const question = sanitizeText(params.summary.question || "").trim();
   if (!question) {
@@ -316,7 +316,7 @@ export async function runAgentV2RouterStep(
 
     return parseRouterDecision(raw);
   } catch (err) {
-    ztoolkit.log("LLM: agentV2 router step failed", err);
+    ztoolkit.log("LLM: agent router step failed", err);
     return {
       decision: "stop",
       trace: "Stopping because router call failed.",

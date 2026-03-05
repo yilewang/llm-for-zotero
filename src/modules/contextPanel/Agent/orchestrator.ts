@@ -1,35 +1,35 @@
-import { getModelInputTokenLimit } from "../../../../utils/modelInputCap";
+import { getModelInputTokenLimit } from "../../../utils/modelInputCap";
 import {
   normalizeInputTokenCap,
   normalizeMaxTokens,
-} from "../../../../utils/normalization";
-import { DEFAULT_MAX_AGENT_ITERATIONS } from "../config";
-import { shouldSkipAgent } from "../heuristics";
-import { resolvePaperContextRefFromAttachment } from "../../paperAttribution";
-import { sanitizeText } from "../../textUtils";
+} from "../../../utils/normalization";
+import { DEFAULT_MAX_AGENT_ITERATIONS } from "./config";
+import { shouldSkipAgent } from "./heuristics";
+import { resolvePaperContextRefFromAttachment } from "../paperAttribution";
+import { sanitizeText } from "../textUtils";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
-} from "../ToolInfra/types";
-import type { Message, PaperContextRef } from "../../types";
-import { loadAgentV2PromptPack } from "./promptPack";
+} from "./ToolInfra/types";
+import type { Message, PaperContextRef } from "../types";
+import { loadAgentPromptPack } from "./promptPack";
 import { buildResponderContextBlock } from "./responseComposer";
-import { runAgentV2RouterStep } from "./router";
+import { runAgentRouterStep } from "./router";
 import {
-  createAgentV2ToolBrokerState,
+  createAgentToolBrokerState,
   executeToolViaBroker,
-  getToolSpecsV2,
+  getToolSpecs,
 } from "./toolBroker";
 import type {
-  AgentV2OrchestratorParams,
-  AgentV2OrchestratorResult,
-  AgentV2ToolLog,
+  AgentOrchestratorParams,
+  AgentOrchestratorResult,
+  AgentToolLog,
   RouterContextSummary,
   UiActionDirective,
 } from "./types";
 
-type AgentV2State = {
+type AgentState = {
   activeContextItem: Zotero.Item | null;
   conversationMode: "paper" | "open";
   activePaperContext: PaperContextRef | null;
@@ -39,7 +39,7 @@ type AgentV2State = {
   retrievedPaperContexts: PaperContextRef[];
   contextPrefixBlocks: string[];
   contextPrefixEstimatedTokens: number;
-  toolLogs: AgentV2ToolLog[];
+  toolLogs: AgentToolLog[];
   uiActions: UiActionDirective[];
 };
 
@@ -89,7 +89,7 @@ function formatToolCallLabel(call: AgentToolCall): string {
 function summarizeToolResult(
   iteration: number,
   result: AgentToolExecutionResult,
-): AgentV2ToolLog {
+): AgentToolLog {
   const summary = `${result.name} | ${result.targetLabel} | ${result.ok ? "complete" : "skipped"}`;
   return {
     iteration,
@@ -102,7 +102,7 @@ function summarizeToolResult(
 }
 
 function deriveAvailableContextBudgetTokens(
-  params: AgentV2OrchestratorParams,
+  params: AgentOrchestratorParams,
 ): number {
   const explicitBudget = Math.floor(
     Number(params.availableContextBudgetTokens),
@@ -121,7 +121,7 @@ function deriveAvailableContextBudgetTokens(
 
 function computeToolTokenCap(
   totalBudget: number,
-  state: AgentV2State,
+  state: AgentState,
   maxIterations: number,
   iterationIndex: number,
 ): number {
@@ -135,8 +135,8 @@ function computeToolTokenCap(
 }
 
 function buildToolContext(
-  params: AgentV2OrchestratorParams,
-  state: AgentV2State,
+  params: AgentOrchestratorParams,
+  state: AgentState,
   previousAssistantAnswerText: string,
   toolTokenCap?: number,
 ): AgentToolExecutionContext {
@@ -161,7 +161,7 @@ function buildToolContext(
   };
 }
 
-function buildAvailableTargetLines(state: AgentV2State): string[] {
+function buildAvailableTargetLines(state: AgentState): string[] {
   const lines: string[] = [];
 
   const selected = dedupePaperContexts(state.paperContexts);
@@ -237,7 +237,7 @@ function derivePreviousAssistantAnswerText(messages?: Message[]): string {
 }
 
 function buildContextDescriptors(params: {
-  state: AgentV2State;
+  state: AgentState;
   question: string;
   hasImages: boolean;
   previousAssistantAnswerText: string;
@@ -280,18 +280,18 @@ function buildContextDescriptors(params: {
 }
 
 function buildRouterSummary(params: {
-  state: AgentV2State;
+  state: AgentState;
   question: string;
   iterationIndex: number;
   maxIterations: number;
   remainingBudgetTokens: number;
   historyMessages?: Message[];
-  toolLogs: AgentV2ToolLog[];
+  toolLogs: AgentToolLog[];
   hasImages: boolean;
   libraryID: number;
   previousAssistantAnswerText: string;
 }): RouterContextSummary {
-  const toolSpecs = getToolSpecsV2();
+  const toolSpecs = getToolSpecs();
   return {
     question: params.question,
     conversationMode: params.state.conversationMode,
@@ -322,7 +322,7 @@ function buildRouterSummary(params: {
 }
 
 function applyToolResult(
-  state: AgentV2State,
+  state: AgentState,
   result: AgentToolExecutionResult,
   call: AgentToolCall,
 ): boolean {
@@ -355,10 +355,10 @@ function applyToolResult(
 }
 
 function buildResult(params: {
-  state: AgentV2State;
+  state: AgentState;
   responderPrompt: string;
   promptSource: "file" | "fallback";
-}): AgentV2OrchestratorResult {
+}): AgentOrchestratorResult {
   return {
     activeContextItem: params.state.activeContextItem,
     conversationMode: params.state.conversationMode,
@@ -380,29 +380,29 @@ function buildResult(params: {
   };
 }
 
-export type AgentV2OrchestratorDeps = {
-  runRouterStep: typeof runAgentV2RouterStep;
+export type AgentOrchestratorDeps = {
+  runRouterStep: typeof runAgentRouterStep;
   executeTool: typeof executeToolViaBroker;
-  loadPromptPack: typeof loadAgentV2PromptPack;
+  loadPromptPack: typeof loadAgentPromptPack;
 };
 
-const defaultDeps: AgentV2OrchestratorDeps = {
-  runRouterStep: runAgentV2RouterStep,
+const defaultDeps: AgentOrchestratorDeps = {
+  runRouterStep: runAgentRouterStep,
   executeTool: executeToolViaBroker,
-  loadPromptPack: loadAgentV2PromptPack,
+  loadPromptPack: loadAgentPromptPack,
 };
 
-export function createAgentV2OrchestratorRunner(
-  deps: Partial<AgentV2OrchestratorDeps> = {},
-): (params: AgentV2OrchestratorParams) => Promise<AgentV2OrchestratorResult> {
+export function createAgentOrchestratorRunner(
+  deps: Partial<AgentOrchestratorDeps> = {},
+): (params: AgentOrchestratorParams) => Promise<AgentOrchestratorResult> {
   const resolvedDeps = { ...defaultDeps, ...deps };
 
   return async function run(
-    params: AgentV2OrchestratorParams,
-  ): Promise<AgentV2OrchestratorResult> {
+    params: AgentOrchestratorParams,
+  ): Promise<AgentOrchestratorResult> {
     const promptPack = await resolvedDeps.loadPromptPack();
 
-    const state: AgentV2State = {
+    const state: AgentState = {
       activeContextItem: params.activeContextItem,
       conversationMode: params.conversationMode,
       activePaperContext: resolvePaperContextRefFromAttachment(
@@ -445,10 +445,10 @@ export function createAgentV2OrchestratorRunner(
       });
     }
 
-    params.onTrace?.("Planning Zotero retrieval with agentV2...");
+    params.onTrace?.("Planning Zotero retrieval with agent...");
 
     const totalBudget = deriveAvailableContextBudgetTokens(params);
-    const brokerState = createAgentV2ToolBrokerState();
+    const brokerState = createAgentToolBrokerState();
     let noProgressStreak = 0;
     const previousAssistantAnswerText = derivePreviousAssistantAnswerText(
       params.historyMessages,
@@ -561,4 +561,4 @@ export function createAgentV2OrchestratorRunner(
   };
 }
 
-export const runAgentV2Orchestrator = createAgentV2OrchestratorRunner();
+export const runAgentOrchestrator = createAgentOrchestratorRunner();

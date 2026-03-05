@@ -16,11 +16,12 @@ This folder implements the reader/library side-panel chat experience.
 
 ## Agent Modules
 
-- `Agent/V2/`: active modular agent workflow (router/broker/orchestrator/prompt-pack stack).
+- `Agent/`: active modular agent workflow (router/broker/orchestrator/prompt-pack stack).
 - `Agent/Tools/`: callable tool implementations (read/search/write/fix actions).
 - `Agent/ToolInfra/`: tool contracts, registry, target resolution, and execution/broker plumbing.
-- `Agent/heuristics.ts`: fast-path skip heuristics shared by the V2 orchestrator.
+- `Agent/heuristics.ts`: fast-path skip heuristics shared by the orchestrator.
 - `Agent/config.ts`: shared agent constants and limits.
+- `addon/content/Agent/prompts/`: runtime prompt files (`agent-router.txt`, `agent-responder.txt`) used to regulate agent output behavior.
 
 ## Shared Domain Helpers
 

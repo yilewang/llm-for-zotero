@@ -104,7 +104,7 @@ import {
   resolveContextSourceItem,
 } from "./contextResolution";
 import { isGlobalPortalItem } from "./portalScope";
-import { runAgentV2Orchestrator } from "./Agent/V2/orchestrator";
+import { runAgentOrchestrator } from "./Agent/orchestrator";
 import {
   buildChatHistoryNotePayload,
   createNoteFromAssistantText,
@@ -220,9 +220,9 @@ function buildAgentTraceHtml(
       : (kindMap[m[1]!] ?? raw);
   }
 
-  function trunc(s: string, max = 48): string {
+  function trunc(s: string, _max = 48): string {
     const t = (s || "").trim();
-    return t.length > max ? t.slice(0, max - 1) + "\u2026" : t;
+    return t;
   }
 
   /** Resolve which known paper (if any) a target string like "active-paper"
@@ -577,15 +577,21 @@ function buildAgentTraceHtml(
       }
     }
 
-    // ── Note written ──────────────────────────────────────────────────────────
+    // ── Note written / draft prepared ────────────────────────────────────────
     {
-      const m = t.match(/^Note written for (.+?)\.$/);
+      const m = t.match(/^Note (written|ready to review) for (.+?)\.?$/);
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\uD83D\uDCDD"));
-        r.appendChild(el("span", "llm-at-ok-text", "Note saved"));
+        r.appendChild(
+          el(
+            "span",
+            "llm-at-ok-text",
+            m[1] === "ready to review" ? "Note ready to review" : "Note saved",
+          ),
+        );
         r.appendChild(el("span", "llm-at-sep", "\u00B7"));
-        r.appendChild(el("span", "llm-at-paper-label", trunc(m[1]!)));
+        r.appendChild(el("span", "llm-at-paper-label", trunc(m[2]!)));
         container.appendChild(r);
         continue;
       }
@@ -2049,7 +2055,7 @@ async function buildContextPlanForRequest(params: {
   const agentModeEnabled = getAgentModeEnabled();
   if (agentModeEnabled) {
     try {
-      const v2 = await runAgentV2Orchestrator({
+      const agentResult = await runAgentOrchestrator({
         item: params.item,
         question: params.question,
         images: params.images,
@@ -2072,29 +2078,29 @@ async function buildContextPlanForRequest(params: {
           params.setAgentStatusSafely?.(traceLine);
         },
       });
-      activeContextItem = v2.activeContextItem;
-      conversationMode = v2.conversationMode;
-      paperContexts = v2.paperContexts;
-      pinnedPaperContexts = v2.pinnedPaperContexts;
-      recentPaperContexts = v2.recentPaperContexts;
-      contextPrefix = sanitizeText(v2.contextPrefix || "").trim();
-      responderContext = sanitizeText(v2.responderContext || "").trim();
-      ztoolkit.log("LLM: AgentV2 orchestrator result", {
+      activeContextItem = agentResult.activeContextItem;
+      conversationMode = agentResult.conversationMode;
+      paperContexts = agentResult.paperContexts;
+      pinnedPaperContexts = agentResult.pinnedPaperContexts;
+      recentPaperContexts = agentResult.recentPaperContexts;
+      contextPrefix = sanitizeText(agentResult.contextPrefix || "").trim();
+      responderContext = sanitizeText(agentResult.responderContext || "").trim();
+      ztoolkit.log("LLM: Agent orchestrator result", {
         conversationMode,
         paperContextCount: paperContexts.length,
         pinnedPaperContextCount: pinnedPaperContexts.length,
         recentPaperContextCount: recentPaperContexts.length,
         hasContextPrefix: Boolean(contextPrefix),
         hasResponderContext: Boolean(responderContext),
-        uiActionCount: v2.uiActions.length,
+        uiActionCount: agentResult.uiActions.length,
       });
     } catch (err) {
-      ztoolkit.log("LLM: AgentV2 failed", err);
-      params.setAgentStatusSafely?.("AgentV2 failed.");
+      ztoolkit.log("LLM: Agent failed", err);
+      params.setAgentStatusSafely?.("Agent failed.");
       throw err;
     }
   } else {
-    ztoolkit.log("LLM: Agent mode disabled; skipping AgentV2 orchestrator");
+    ztoolkit.log("LLM: Agent mode disabled; skipping Agent orchestrator");
   }
 
   const plannerReservedPrefix = [contextPrefix, responderContext]

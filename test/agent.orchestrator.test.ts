@@ -1,10 +1,10 @@
 import { assert } from "chai";
-import { createAgentV2OrchestratorRunner } from "../src/modules/contextPanel/Agent/V2/orchestrator";
+import { createAgentOrchestratorRunner } from "../src/modules/contextPanel/Agent/orchestrator";
 
-describe("agentV2 orchestrator", function () {
+describe("agent orchestrator", function () {
   it("runs a tool step then stops and returns responder context", async function () {
     let step = 0;
-    const run = createAgentV2OrchestratorRunner({
+    const run = createAgentOrchestratorRunner({
       loadPromptPack: async () => ({
         routerPrompt: "router",
         responderPrompt: "responder instructions",
@@ -64,7 +64,7 @@ describe("agentV2 orchestrator", function () {
 
   it("stops when no progress repeats", async function () {
     let routerCalls = 0;
-    const run = createAgentV2OrchestratorRunner({
+    const run = createAgentOrchestratorRunner({
       loadPromptPack: async () => ({
         routerPrompt: "router",
         responderPrompt: "responder",

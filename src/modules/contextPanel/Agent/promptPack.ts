@@ -1,8 +1,9 @@
-import { config } from "../../constants";
-import type { AgentV2PromptPack } from "./types";
+import { config } from "../constants";
+import type { AgentPromptPack } from "./types";
 
 const ROUTER_PROMPT_FILE = "agent-router.txt";
 const RESPONDER_PROMPT_FILE = "agent-responder.txt";
+const PROMPTS_BASE_PATH = "content/Agent/prompts";
 
 const DEFAULT_ROUTER_PROMPT = [
   "You are the router for a Zotero agentic workflow.",
@@ -29,10 +30,10 @@ const DEFAULT_RESPONDER_PROMPT = [
   "Do not fabricate paper content or tool outcomes.",
 ].join("\n");
 
-let cachedPromptPack: AgentV2PromptPack | null = null;
+let cachedPromptPack: AgentPromptPack | null = null;
 
 async function loadPromptFile(fileName: string): Promise<string> {
-  const uri = `chrome://${config.addonRef}/content/prompts/${fileName}`;
+  const uri = `chrome://${config.addonRef}/${PROMPTS_BASE_PATH}/${fileName}`;
   const fetchFn = ztoolkit.getGlobal("fetch") as typeof fetch;
   const response = await fetchFn(uri);
   if (!response.ok) {
@@ -41,16 +42,16 @@ async function loadPromptFile(fileName: string): Promise<string> {
   return (await response.text()).trim();
 }
 
-export async function loadAgentV2PromptPack(
+export async function loadAgentPromptPack(
   forceReload = false,
-): Promise<AgentV2PromptPack> {
+): Promise<AgentPromptPack> {
   if (cachedPromptPack && !forceReload) {
     return cachedPromptPack;
   }
 
   let routerPrompt = "";
   let responderPrompt = "";
-  let source: AgentV2PromptPack["source"] = "file";
+  let source: AgentPromptPack["source"] = "file";
 
   try {
     routerPrompt = await loadPromptFile(ROUTER_PROMPT_FILE);
@@ -84,6 +85,6 @@ export async function loadAgentV2PromptPack(
   return cachedPromptPack;
 }
 
-export function resetAgentV2PromptPackCache(): void {
+export function resetAgentPromptPackCache(): void {
   cachedPromptPack = null;
 }

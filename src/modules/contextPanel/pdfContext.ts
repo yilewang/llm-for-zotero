@@ -24,6 +24,87 @@ import type {
   PdfChunkKind,
 } from "./types";
 
+const EMBEDDING_UNSUPPORTED_DEFAULT_KEY = "__default__";
+const embeddingUnsupportedBaseKeys = new Set<string>();
+const embeddingUnsupportedLogKeys = new Set<string>();
+
+function normalizeEmbeddingBaseKey(base: string | undefined): string {
+  return (base || "")
+    .trim()
+    .replace(/\/$/, "")
+    .toLowerCase();
+}
+
+function resolveEmbeddingCapabilityKey(overrides?: {
+  apiBase?: string;
+  apiKey?: string;
+}): string {
+  const baseKey = normalizeEmbeddingBaseKey(overrides?.apiBase);
+  if (baseKey) return baseKey;
+  if ((overrides?.apiKey || "").trim()) return EMBEDDING_UNSUPPORTED_DEFAULT_KEY;
+  return "";
+}
+
+function summarizeErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return (err.message || "Unknown error")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 240);
+  }
+  return String(err || "Unknown error")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+}
+
+function isEmbeddingsUnsupportedError(err: unknown): boolean {
+  const message = summarizeErrorMessage(err).toLowerCase();
+  if (!message) return false;
+
+  // OpenAI-compatible providers commonly return "404 -" for unsupported endpoints.
+  if (/\b404\b/.test(message)) {
+    return true;
+  }
+
+  // Common "endpoint unavailable" signatures across OpenAI-compatible gateways.
+  if (
+    /\b(405|410|501)\b/.test(message) &&
+    (message.includes("embedding") || message.includes("not found"))
+  ) {
+    return true;
+  }
+
+  if (
+    /unsupported|not supported|no route|unknown path|not found/.test(message) &&
+    message.includes("embedding")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function markEmbeddingsUnsupported(
+  overrides: { apiBase?: string; apiKey?: string } | undefined,
+  reason: string,
+): void {
+  const key = resolveEmbeddingCapabilityKey(overrides);
+  if (!key) return;
+
+  embeddingUnsupportedBaseKeys.add(key);
+  if (embeddingUnsupportedLogKeys.has(key)) return;
+  embeddingUnsupportedLogKeys.add(key);
+
+  const message = `Embeddings endpoint unavailable; using BM25-only retrieval. (${reason})`;
+  const debug = (Zotero as unknown as { debug?: (value: string) => void }).debug;
+  if (typeof debug === "function") {
+    debug(`[llm-for-zotero] ${message}`);
+    return;
+  }
+  ztoolkit.log(message);
+}
+
 async function cachePDFText(item: Zotero.Item) {
   if (pdfTextCache.has(item.id)) return;
 
@@ -618,7 +699,14 @@ async function ensureEmbeddings(
       const embeddings = await embedTexts(pdfContext.chunks, overrides);
       return embeddings;
     } catch (err) {
-      ztoolkit.log("Embedding generation failed:", err);
+      const reason = summarizeErrorMessage(err);
+      if (isEmbeddingsUnsupportedError(err)) {
+        markEmbeddingsUnsupported(overrides, reason);
+      } else {
+        ztoolkit.log(
+          `Embedding generation failed; falling back to BM25 retrieval. (${reason})`,
+        );
+      }
       return null;
     }
   })();
@@ -753,9 +841,13 @@ function shouldTryEmbeddings(overrides?: {
   apiKey?: string;
 }): boolean {
   if (!overrides) return false;
-  return Boolean(
+  const hasApiConfig = Boolean(
     (overrides.apiBase || "").trim() || (overrides.apiKey || "").trim(),
   );
+  if (!hasApiConfig) return false;
+  const capabilityKey = resolveEmbeddingCapabilityKey(overrides);
+  if (!capabilityKey) return true;
+  return !embeddingUnsupportedBaseKeys.has(capabilityKey);
 }
 
 function queryMentionsFiguresOrTables(question: string): boolean {
@@ -877,7 +969,14 @@ export async function buildPaperRetrievalCandidates(
           embedNorm = normalizeScores(embeddingScores);
         }
       } catch (err) {
-        ztoolkit.log("Query embedding failed:", err);
+        const reason = summarizeErrorMessage(err);
+        if (isEmbeddingsUnsupportedError(err)) {
+          markEmbeddingsUnsupported(apiOverrides, reason);
+        } else {
+          ztoolkit.log(
+            `Query embedding failed; using BM25 retrieval. (${reason})`,
+          );
+        }
       }
     }
   }

@@ -5,6 +5,7 @@ import {
 } from "../../../../utils/modelInputCap";
 import { CHUNK_TARGET_LENGTH } from "../../constants";
 import {
+  countQuickSearchRegularItems,
   listLibraryPaperCandidates,
   searchPaperCandidates,
   type PaperSearchGroupCandidate,
@@ -45,6 +46,14 @@ function hasLibraryReference(normalizedQuestion: string): boolean {
       normalizedQuestion,
     ) ||
     /\bzotero\s+library\b/.test(normalizedQuestion)
+  );
+}
+
+function isCountIntentQuestion(question: string): boolean {
+  const normalizedQuestion = normalizeQuestionText(question);
+  if (!normalizedQuestion) return false;
+  return /\b(?:how many|count|number of|total number|how much)\b/.test(
+    normalizedQuestion,
   );
 }
 
@@ -181,18 +190,27 @@ function buildLibrarySearchContext(
   question: string,
   candidates: PaperSearchGroupCandidate[],
   papersToRead: number,
+  quicksearchRegularMatchCount?: number,
   maxPrefixTokens?: number,
 ): string {
   const lines = [
     "Zotero Agent Retrieval",
     "- Mode: library search",
     `- User request: ${sanitizeText(question).trim() || "(empty)"}`,
+    Number.isFinite(quicksearchRegularMatchCount) &&
+    Number(quicksearchRegularMatchCount) > 0
+      ? `- Zotero quicksearch regular-item matches (library-wide): ${Math.floor(Number(quicksearchRegularMatchCount))}`
+      : "",
+    Number.isFinite(quicksearchRegularMatchCount) &&
+    Number(quicksearchRegularMatchCount) > 0
+      ? "- Counting guidance: for count/how-many requests, use the quicksearch regular-item match count as the total."
+      : "",
     `- Matched readable PDF-backed papers: ${candidates.length}`,
     `- Papers loaded for detailed reading in this answer: ${Math.min(candidates.length, papersToRead)}`,
     ...buildGroundingRulesBlock(
       "- If there are no retrieved matches for a claim, say that the current Zotero retrieval did not find evidence for it.",
     ),
-  ];
+  ].filter(Boolean) as string[];
   return appendPaperListWithinBudget({
     baseLines: lines,
     heading: "Top retrieved library matches:",
@@ -348,11 +366,18 @@ export async function resolveAgentContext(params: {
     const searchQuery =
       sanitizeText(params.plan?.searchQuery || "").trim() || params.question;
     const papersToRead = clampReadLimit(params.plan?.maxPapersToRead, 1);
+    const countIntent = isCountIntentQuestion(params.question);
+    const searchLimit = countIntent
+      ? 0
+      : Math.max(papersToRead, papersToRead * 4);
+    const quicksearchRegularMatchCount = countIntent
+      ? await countQuickSearchRegularItems(normalizedLibraryID, searchQuery)
+      : 0;
     const candidates = await searchPaperCandidates(
       normalizedLibraryID,
       searchQuery,
       null,
-      Math.max(papersToRead, papersToRead * 4),
+      searchLimit,
     );
     const selectedCandidates = candidates.slice(0, papersToRead);
     const prefixBudget = deriveAgentPrefixTokenBudget({
@@ -368,6 +393,12 @@ export async function resolveAgentContext(params: {
     );
     const traceLines = [
       `Library search query: ${sanitizeText(searchQuery).replace(/\s+/g, " ").trim() || "(empty)"}`,
+      countIntent
+        ? "Count intent detected: searching across all searchable library fields."
+        : "",
+      countIntent && quicksearchRegularMatchCount > 0
+        ? `Zotero quicksearch regular-item matches: ${quicksearchRegularMatchCount}.`
+        : "",
       candidates.length
         ? `Matched ${candidates.length} readable papers in the active library.`
         : "No readable library matches were found.",
@@ -380,6 +411,7 @@ export async function resolveAgentContext(params: {
             searchQuery,
             candidates,
             papersToRead,
+            quicksearchRegularMatchCount,
             prefixBudget,
           )
         : buildNoResultsContext("library-search", searchQuery),

@@ -1,15 +1,15 @@
 import { assert } from "chai";
 import {
-  loadAgentV2PromptPack,
-  resetAgentV2PromptPackCache,
-} from "../src/modules/contextPanel/Agent/V2/promptPack";
+  loadAgentPromptPack,
+  resetAgentPromptPackCache,
+} from "../src/modules/contextPanel/Agent/promptPack";
 
-describe("agentV2 promptPack", function () {
+describe("agent promptPack", function () {
   const originalToolkit = (globalThis as typeof globalThis & { ztoolkit?: any })
     .ztoolkit;
 
   beforeEach(function () {
-    resetAgentV2PromptPackCache();
+    resetAgentPromptPackCache();
   });
 
   after(function () {
@@ -20,12 +20,14 @@ describe("agentV2 promptPack", function () {
 
   it("loads prompts from files and caches them", async function () {
     let fetchCalls = 0;
+    const requestedUrls: string[] = [];
     (globalThis as typeof globalThis & { ztoolkit: { getGlobal: (name: string) => unknown } })
       .ztoolkit = {
       getGlobal: (name: string) => {
         if (name !== "fetch") return undefined;
         return async (url: string) => {
           fetchCalls += 1;
+          requestedUrls.push(url);
           if (url.includes("agent-router.txt")) {
             return {
               ok: true,
@@ -46,14 +48,20 @@ describe("agentV2 promptPack", function () {
       },
     };
 
-    const first = await loadAgentV2PromptPack();
-    const second = await loadAgentV2PromptPack();
+    const first = await loadAgentPromptPack();
+    const second = await loadAgentPromptPack();
 
     assert.equal(first.routerPrompt, "router-file-prompt");
     assert.equal(first.responderPrompt, "responder-file-prompt");
     assert.equal(first.source, "file");
     assert.equal(second.routerPrompt, "router-file-prompt");
     assert.equal(fetchCalls, 2);
+    assert.isTrue(
+      requestedUrls.every((url) =>
+        url.includes("/content/Agent/prompts/"),
+      ),
+      "Prompt files should be loaded from content/Agent/prompts",
+    );
   });
 
   it("falls back when prompt files cannot be loaded", async function () {
@@ -68,7 +76,7 @@ describe("agentV2 promptPack", function () {
       },
     };
 
-    const result = await loadAgentV2PromptPack();
+    const result = await loadAgentPromptPack();
 
     assert.equal(result.source, "fallback");
     assert.include(result.routerPrompt, "router");

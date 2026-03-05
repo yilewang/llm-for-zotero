@@ -401,6 +401,86 @@ export function invalidatePaperSearchCache(libraryID?: number): void {
   paperSearchLibraryLoadTasks.clear();
 }
 
+function normalizeIntegerID(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.floor(parsed);
+}
+
+async function searchLibraryItemIDsByQuickSearch(
+  libraryID: number,
+  query: string,
+): Promise<number[]> {
+  const normalizedLibraryID = normalizeIntegerID(libraryID);
+  const normalizedQuery = sanitizeText(query || "").trim();
+  if (!normalizedLibraryID || !normalizedQuery) return [];
+
+  try {
+    const SearchCtor = (Zotero as unknown as {
+      Search?: new () => {
+        libraryID?: number;
+        addCondition?: (
+          condition: string,
+          operator: string,
+          value: string,
+        ) => void;
+        search?: () => Promise<unknown> | unknown;
+      };
+    }).Search;
+    if (!SearchCtor) return [];
+
+    const search = new SearchCtor();
+    search.libraryID = normalizedLibraryID;
+    search.addCondition?.(
+      "quicksearch-everything",
+      "contains",
+      normalizedQuery,
+    );
+
+    const raw = await search.search?.();
+    if (!Array.isArray(raw)) return [];
+
+    const out: number[] = [];
+    const seen = new Set<number>();
+    for (const entry of raw) {
+      const id = normalizeIntegerID(entry);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
+  } catch (err) {
+    ztoolkit.log("LLM: Zotero quicksearch fallback failed", err);
+    return [];
+  }
+}
+
+function resolveQuicksearchRegularItemID(itemID: number): number | null {
+  const normalizedID = normalizeIntegerID(itemID);
+  if (!normalizedID) return null;
+
+  const item = Zotero.Items.get(normalizedID);
+  if (!item) return null;
+  if (item.isRegularItem?.()) return normalizedID;
+  if (!item.isAttachment?.()) return null;
+  return normalizeIntegerID(item.parentID);
+}
+
+export async function countQuickSearchRegularItems(
+  libraryID: number,
+  query: string,
+): Promise<number> {
+  const matchedIDs = await searchLibraryItemIDsByQuickSearch(libraryID, query);
+  if (!matchedIDs.length) return 0;
+  const regularItemIDs = new Set<number>();
+  for (const matchedID of matchedIDs) {
+    const regularItemID = resolveQuicksearchRegularItemID(matchedID);
+    if (!regularItemID) continue;
+    regularItemIDs.add(regularItemID);
+  }
+  return regularItemIDs.size;
+}
+
 function buildVisibleCandidate(
   candidate: IndexedPaperCandidate,
   excludeContextItemId?: number | null,
@@ -751,13 +831,20 @@ export async function searchPaperCandidates(
   const normalizedQuery = normalizePaperSearchText(query);
   if (!normalizedQuery) return [];
 
-  const normalizedLimit = Number.isFinite(limit)
-    ? Math.max(1, Math.floor(limit))
-    : DEFAULT_PAPER_SEARCH_LIMIT;
+  const hasLimit = Number.isFinite(limit) && limit > 0;
+  const normalizedLimit = hasLimit ? Math.max(1, Math.floor(limit)) : 0;
   const queryTokens = getSearchTokens(normalizedQuery);
   if (!queryTokens.length) return [];
 
   const libraryIndex = await getPaperSearchLibraryIndex(Math.floor(libraryID));
+  const indexedByItemId = new Map<number, IndexedPaperCandidate>();
+  const indexedByAttachmentId = new Map<number, IndexedPaperCandidate>();
+  for (const candidate of libraryIndex.candidates) {
+    indexedByItemId.set(candidate.itemId, candidate);
+    for (const attachment of candidate.attachments) {
+      indexedByAttachmentId.set(attachment.contextItemId, candidate);
+    }
+  }
   const rankedCandidates: Array<{
     candidate: PaperSearchGroupCandidate;
     matchedTokenCount: number;
@@ -796,7 +883,34 @@ export async function searchPaperCandidates(
     return b.candidate.modifiedAt - a.candidate.modifiedAt;
   });
 
-  return rankedCandidates
-    .slice(0, normalizedLimit)
-    .map((entry) => entry.candidate);
+  const orderedCandidates = rankedCandidates.map((entry) => entry.candidate);
+  const seenCandidateItemIDs = new Set<number>(
+    orderedCandidates.map((entry) => entry.itemId),
+  );
+
+  // Merge Zotero quicksearch matches so full-text/library-field hits are not missed
+  // when custom metadata ranking does not surface them.
+  const quicksearchIDs = await searchLibraryItemIDsByQuickSearch(
+    libraryID,
+    query,
+  );
+  for (const matchedID of quicksearchIDs) {
+    const indexedCandidate =
+      indexedByItemId.get(matchedID) || indexedByAttachmentId.get(matchedID);
+    if (!indexedCandidate || seenCandidateItemIDs.has(indexedCandidate.itemId)) {
+      continue;
+    }
+    const visibleCandidate = buildVisibleCandidate(
+      indexedCandidate,
+      excludeContextItemId,
+    );
+    if (!visibleCandidate) continue;
+    orderedCandidates.push(visibleCandidate);
+    seenCandidateItemIDs.add(indexedCandidate.itemId);
+  }
+
+  if (normalizedLimit > 0) {
+    return orderedCandidates.slice(0, normalizedLimit);
+  }
+  return orderedCandidates;
 }

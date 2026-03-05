@@ -1,15 +1,15 @@
-import type { ReasoningConfig } from "../../../../utils/llmClient";
+import type { ReasoningConfig } from "../../../utils/llmClient";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   AgentToolExecutorState,
-} from "../ToolInfra/types";
+} from "./ToolInfra/types";
 import type {
   Message,
   PaperContextRef,
   AdvancedModelParams,
-} from "../../types";
+} from "../types";
 
 export type RouterContextSummary = {
   question: string;
@@ -43,7 +43,7 @@ export type RouterDecision =
       stopReason?: string;
     };
 
-export type ToolSpecV2 = {
+export type ToolSpec = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
@@ -84,7 +84,7 @@ export type ToolExecutionOutcome =
       error: string;
     };
 
-export type AgentV2ToolLog = {
+export type AgentToolLog = {
   iteration: number;
   toolName: string;
   targetLabel: string;
@@ -93,13 +93,13 @@ export type AgentV2ToolLog = {
   summary: string;
 };
 
-export type AgentV2PromptPack = {
+export type AgentPromptPack = {
   routerPrompt: string;
   responderPrompt: string;
   source: "file" | "fallback";
 };
 
-export type AgentV2OrchestratorParams = {
+export type AgentOrchestratorParams = {
   item: Zotero.Item;
   question: string;
   activeContextItem: Zotero.Item | null;
@@ -120,7 +120,7 @@ export type AgentV2OrchestratorParams = {
   onTrace?: (line: string) => void;
 };
 
-export type AgentV2OrchestratorResult = {
+export type AgentOrchestratorResult = {
   activeContextItem: Zotero.Item | null;
   conversationMode: "paper" | "open";
   paperContexts: PaperContextRef[];
@@ -129,18 +129,18 @@ export type AgentV2OrchestratorResult = {
   contextPrefix: string;
   responderContext: string;
   uiActions: UiActionDirective[];
-  toolLogs: AgentV2ToolLog[];
+  toolLogs: AgentToolLog[];
 };
 
-export type AgentV2RouterParams = {
+export type AgentRouterParams = {
   summary: RouterContextSummary;
   model: string;
   apiBase?: string;
   apiKey?: string;
-  promptPack: AgentV2PromptPack;
+  promptPack: AgentPromptPack;
 };
 
-export type AgentV2ToolBrokerParams = {
+export type AgentToolBrokerParams = {
   call: AgentToolCall;
   ctx: AgentToolExecutionContext;
   state: AgentToolExecutorState;

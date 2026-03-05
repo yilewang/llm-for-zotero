@@ -1147,7 +1147,8 @@
 
 .llm-at-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  flex-wrap: wrap;
   gap: 5px;
   font-size: var(--llm-fs-11);
   line-height: 1.4;
@@ -1198,11 +1199,12 @@
   background: var(--fill-quinary);
   color: var(--fill-secondary);
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
   flex: 0 1 auto;
-  max-width: 200px;
+  max-width: 100%;
 }
 
 button.llm-at-target-btn {
@@ -1217,11 +1219,12 @@ button.llm-at-target-btn {
   background: var(--fill-quinary);
   color: var(--fill-secondary);
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
   flex: 0 1 auto;
-  max-width: 200px;
+  max-width: 100%;
   cursor: pointer;
   border: 1px solid transparent;
   transition:
@@ -1297,16 +1300,20 @@ button.llm-at-target-btn:focus-visible {
   font-size: var(--llm-fs-10);
   font-weight: 600;
   color: var(--fill-primary);
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .llm-at-paper-label {
   font-size: var(--llm-fs-10);
   color: var(--fill-secondary);
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
   flex: 1 1 0;
 }
 
@@ -1330,6 +1337,8 @@ button.llm-at-target-btn:focus-visible {
 .llm-at-skip-text {
   color: var(--fill-tertiary);
   font-size: var(--llm-fs-10);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* budget */
@@ -2191,7 +2200,11 @@ button.llm-at-target-btn:focus-visible {
 .llm-bubble.assistant ul,
 .llm-bubble.assistant ol {
   margin: 8px 0;
-  padding-left: 20px;
+  padding-left: 28px;
+}
+
+.llm-bubble.assistant ol li::marker {
+  font-variant-numeric: tabular-nums;
 }
 
 .llm-bubble.assistant li {

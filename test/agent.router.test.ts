@@ -1,7 +1,7 @@
 import { assert } from "chai";
-import { parseRouterDecision } from "../src/modules/contextPanel/Agent/V2/router";
+import { parseRouterDecision } from "../src/modules/contextPanel/Agent/router";
 
-describe("agentV2 router", function () {
+describe("agent router", function () {
   it("parses a stop decision", function () {
     const decision = parseRouterDecision(
       JSON.stringify({

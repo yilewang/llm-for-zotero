@@ -1,10 +1,10 @@
 import { assert } from "chai";
 import {
-  createAgentV2ToolBrokerState,
+  createAgentToolBrokerState,
   createToolBrokerExecutor,
-} from "../src/modules/contextPanel/Agent/V2/toolBroker";
+} from "../src/modules/contextPanel/Agent/toolBroker";
 
-describe("agentV2 tool broker", function () {
+describe("agent tool broker", function () {
   it("maps write_note success to ui_action", async function () {
     const executeToolViaBroker = createToolBrokerExecutor({
       executeCall: async () => ({
@@ -35,7 +35,7 @@ describe("agentV2 tool broker", function () {
         recentPaperContexts: [],
         retrievedPaperContexts: [],
       },
-      state: createAgentV2ToolBrokerState(),
+      state: createAgentToolBrokerState(),
     });
 
     assert.equal(outcome.kind, "ui_action");
@@ -66,7 +66,7 @@ describe("agentV2 tool broker", function () {
         recentPaperContexts: [],
         retrievedPaperContexts: [],
       },
-      state: createAgentV2ToolBrokerState(),
+      state: createAgentToolBrokerState(),
     });
 
     assert.equal(outcome.kind, "error");
@@ -103,7 +103,7 @@ describe("agentV2 tool broker", function () {
         recentPaperContexts: [],
         retrievedPaperContexts: [],
       },
-      state: createAgentV2ToolBrokerState(),
+      state: createAgentToolBrokerState(),
     });
 
     assert.equal(outcome.kind, "context_update");

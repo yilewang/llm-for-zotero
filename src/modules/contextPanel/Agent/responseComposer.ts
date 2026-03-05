@@ -1,5 +1,5 @@
-import { sanitizeText } from "../../textUtils";
-import type { AgentV2ToolLog, UiActionDirective } from "./types";
+import { sanitizeText } from "../textUtils";
+import type { AgentToolLog, UiActionDirective } from "./types";
 
 function buildUiActionInstruction(action: UiActionDirective): string {
   if (action.type === "show_note_review") {
@@ -14,7 +14,7 @@ function buildUiActionInstruction(action: UiActionDirective): string {
 export function buildResponderContextBlock(params: {
   responderPrompt: string;
   promptSource: "file" | "fallback";
-  toolLogs: AgentV2ToolLog[];
+  toolLogs: AgentToolLog[];
   uiActions: UiActionDirective[];
 }): string {
   const responderPrompt = sanitizeText(params.responderPrompt || "").trim();
