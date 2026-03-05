@@ -8359,7 +8359,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (currentAbortController) {
         currentAbortController.abort();
       }
-      setCancelledRequestId(currentRequestId);
+      setCancelledRequestId(
+        pendingRequestId > 0 ? pendingRequestId : currentRequestId,
+      );
       if (status) setStatus(status, "Cancelled", "ready");
       // Re-enable UI
       if (inputBox) inputBox.disabled = false;

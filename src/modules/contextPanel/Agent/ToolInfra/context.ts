@@ -119,12 +119,18 @@ function formatTracePaperLabel(candidate: PaperSearchGroupCandidate): string {
 
 function buildSelectedPaperTraceLine(
   candidates: PaperSearchGroupCandidate[],
+  totalMatches: number,
 ): string {
   const labels = candidates
     .slice(0, 4)
     .map((candidate) => formatTracePaperLabel(candidate));
   if (!labels.length) return "";
-  return `Selected papers: ${labels.join(" | ")}`;
+  const selectedCount = labels.length;
+  const normalizedTotal = Math.max(
+    selectedCount,
+    Math.floor(Number(totalMatches) || selectedCount),
+  );
+  return `Selected papers (${selectedCount} of ${normalizedTotal} matches): ${labels.join(" | ")}`;
 }
 
 function clampReadLimit(value: number | undefined, fallback: number): number {
@@ -345,7 +351,7 @@ export async function resolveAgentContext(params: {
       candidates.length
         ? `Retrieved ${candidates.length} readable papers from the active library.`
         : "No readable library papers were found.",
-      buildSelectedPaperTraceLine(selectedCandidates),
+      buildSelectedPaperTraceLine(selectedCandidates, candidates.length),
     ].filter(Boolean);
     return {
       mode: "library-overview",
@@ -402,7 +408,7 @@ export async function resolveAgentContext(params: {
       candidates.length
         ? `Matched ${candidates.length} readable papers in the active library.`
         : "No readable library matches were found.",
-      buildSelectedPaperTraceLine(selectedCandidates),
+      buildSelectedPaperTraceLine(selectedCandidates, candidates.length),
     ].filter(Boolean);
     return {
       mode: "library-search",

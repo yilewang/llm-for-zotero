@@ -5,11 +5,7 @@ import type {
   AgentToolExecutionResult,
   AgentToolExecutorState,
 } from "./ToolInfra/types";
-import type {
-  Message,
-  PaperContextRef,
-  AdvancedModelParams,
-} from "../types";
+import type { Message, PaperContextRef, AdvancedModelParams } from "../types";
 
 export type RouterContextSummary = {
   question: string;
@@ -116,6 +112,8 @@ export type AgentOrchestratorParams = {
   maxIterations?: number;
   images?: string[];
   historyMessages?: Message[];
+  signal?: AbortSignal;
+  shouldCancel?: () => boolean;
   onStatus?: (statusText: string) => void;
   onTrace?: (line: string) => void;
 };
@@ -137,6 +135,7 @@ export type AgentRouterParams = {
   model: string;
   apiBase?: string;
   apiKey?: string;
+  signal?: AbortSignal;
   promptPack: AgentPromptPack;
 };
 

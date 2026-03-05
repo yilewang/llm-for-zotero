@@ -126,6 +126,16 @@ function getAbortController(): new () => AbortController {
   );
 }
 
+function createAbortError(message = "Request cancelled"): Error {
+  const err = new Error(message);
+  (err as { name?: string }).name = "AbortError";
+  return err;
+}
+
+function isAbortError(err: unknown): boolean {
+  return (err as { name?: string } | null)?.name === "AbortError";
+}
+
 function appendReasoningPart(base: string | undefined, next?: string): string {
   const chunk = sanitizeText(next || "");
   if (!chunk) return base || "";
@@ -261,6 +271,17 @@ function buildAgentTraceHtml(
     return el<HTMLDivElement>("div", `llm-at-row llm-at-row-${typeClass}`);
   }
 
+  function appendOkRowWithPaper(
+    rowEl: HTMLDivElement,
+    metricText: string,
+    paperText: string,
+  ): void {
+    const body = el<HTMLDivElement>("div", "llm-at-ok-body");
+    body.appendChild(el("span", "llm-at-ok-text", metricText));
+    body.appendChild(el("span", "llm-at-paper-label", trunc(paperText)));
+    rowEl.appendChild(body);
+  }
+
   const container = el<HTMLDivElement>("div", "llm-agent-trace");
 
   for (const line of lines) {
@@ -346,15 +367,11 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
-        r.appendChild(
-          el(
-            "span",
-            "llm-at-ok-text",
-            `${m[1]} snippet${Number(m[1]) !== 1 ? "s" : ""}`,
-          ),
+        appendOkRowWithPaper(
+          r,
+          `${m[1]} snippet${Number(m[1]) !== 1 ? "s" : ""}`,
+          m[2]!,
         );
-        r.appendChild(el("span", "llm-at-sep", "\u00B7"));
-        r.appendChild(el("span", "llm-at-paper-label", trunc(m[2]!)));
         container.appendChild(r);
         continue;
       }
@@ -386,9 +403,7 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
-        r.appendChild(el("span", "llm-at-ok-text", "Full text loaded"));
-        r.appendChild(el("span", "llm-at-sep", "\u00B7"));
-        r.appendChild(el("span", "llm-at-paper-label", trunc(m[1]!)));
+        appendOkRowWithPaper(r, "Full text loaded", m[1]!);
         container.appendChild(r);
         continue;
       }
@@ -418,15 +433,11 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
-        r.appendChild(
-          el(
-            "span",
-            "llm-at-ok-text",
-            `${m[1]} ref${Number(m[1]) !== 1 ? "s" : ""} loaded`,
-          ),
+        appendOkRowWithPaper(
+          r,
+          `${m[1]} ref${Number(m[1]) !== 1 ? "s" : ""} loaded`,
+          m[2]!,
         );
-        r.appendChild(el("span", "llm-at-sep", "\u00B7"));
-        r.appendChild(el("span", "llm-at-paper-label", trunc(m[2]!)));
         container.appendChild(r);
         continue;
       }
@@ -465,12 +476,64 @@ function buildAgentTraceHtml(
     }
 
     // ── Selected papers summary ───────────────────────────────────────────────
-    if (/^Selected papers:/i.test(t)) {
-      const r = row("ok");
-      r.appendChild(el("span", "llm-at-icon", "\u2726"));
-      r.appendChild(el("span", "llm-at-ok-text", trunc(t, 80)));
-      container.appendChild(r);
-      continue;
+    {
+      const selectedMatch = t.match(
+        /^Selected papers(?:\s*\((\d+)\s+of\s+(\d+)\s+matches\))?:\s+(.+)$/i,
+      );
+      if (selectedMatch) {
+        const parsedSelectedCount = Number(selectedMatch[1] || 0);
+        const parsedTotalMatches = Number(selectedMatch[2] || 0);
+        const selectedTitles = sanitizeText(selectedMatch[3] || "")
+          .split(/\s+\|\s+/)
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        const selectedCount =
+          Number.isFinite(parsedSelectedCount) && parsedSelectedCount > 0
+            ? Math.floor(parsedSelectedCount)
+            : selectedTitles.length;
+        const totalMatches =
+          Number.isFinite(parsedTotalMatches) && parsedTotalMatches > 0
+            ? Math.floor(parsedTotalMatches)
+            : null;
+
+        const summary =
+          totalMatches && totalMatches >= selectedCount
+            ? `Selected ${selectedCount} paper${selectedCount === 1 ? "" : "s"} for detailed reading (from ${totalMatches} matches)`
+            : `Selected ${selectedCount} paper${selectedCount === 1 ? "" : "s"} for detailed reading`;
+
+        const r = row("ok");
+        r.appendChild(el("span", "llm-at-icon", "\u2726"));
+        r.appendChild(el("span", "llm-at-ok-text", summary));
+        container.appendChild(r);
+
+        if (totalMatches && totalMatches > selectedCount) {
+          const note = row("plan");
+          note.appendChild(el("span", "llm-at-icon", "\u2139\uFE0F"));
+          note.appendChild(
+            el(
+              "span",
+              "llm-at-selected-note",
+              `Showing the top ${selectedCount} papers in detail to stay within context budget.`,
+            ),
+          );
+          container.appendChild(note);
+        }
+
+        if (selectedTitles.length) {
+          const list = el<HTMLDivElement>("div", "llm-at-selected-list");
+          selectedTitles.forEach((title, idx) => {
+            list.appendChild(
+              el(
+                "div",
+                "llm-at-selected-item",
+                `${idx + 1}. ${trunc(title, 140)}`,
+              ),
+            );
+          });
+          container.appendChild(list);
+        }
+        continue;
+      }
     }
 
     // ── Duplicate call ────────────────────────────────────────────────────────
@@ -539,15 +602,11 @@ function buildAgentTraceHtml(
       if (m) {
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
-        r.appendChild(
-          el(
-            "span",
-            "llm-at-ok-text",
-            `${m[1]} section${Number(m[1]) !== 1 ? "s" : ""}`,
-          ),
+        appendOkRowWithPaper(
+          r,
+          `${m[1]} section${Number(m[1]) !== 1 ? "s" : ""}`,
+          m[2]!,
         );
-        r.appendChild(el("span", "llm-at-sep", "\u00B7"));
-        r.appendChild(el("span", "llm-at-paper-label", trunc(m[2]!)));
         container.appendChild(r);
         continue;
       }
@@ -2011,6 +2070,8 @@ async function buildContextPlanForRequest(params: {
   item: Zotero.Item;
   question: string;
   images?: string[];
+  signal?: AbortSignal;
+  isCancelled?: () => boolean;
   paperContexts: PaperContextRef[];
   pinnedPaperContexts: PaperContextRef[];
   recentPaperContexts: PaperContextRef[];
@@ -2028,6 +2089,13 @@ async function buildContextPlanForRequest(params: {
   pinnedPaperContexts: PaperContextRef[];
   recentPaperContexts: PaperContextRef[];
 }> {
+  const isCancelled = () =>
+    Boolean(params.signal?.aborted) || Boolean(params.isCancelled?.());
+  const throwIfCancelled = () => {
+    if (isCancelled()) throw createAbortError();
+  };
+
+  throwIfCancelled();
   const contextSource = resolveContextSourceItem(params.item);
   params.setStatusSafely(contextSource.statusText, "sending");
   let activeContextItem = contextSource.contextItem;
@@ -2055,10 +2123,13 @@ async function buildContextPlanForRequest(params: {
   const agentModeEnabled = getAgentModeEnabled();
   if (agentModeEnabled) {
     try {
+      throwIfCancelled();
       const agentResult = await runAgentOrchestrator({
         item: params.item,
         question: params.question,
         images: params.images,
+        signal: params.signal,
+        shouldCancel: isCancelled,
         historyMessages: params.messageHistory,
         activeContextItem,
         conversationMode,
@@ -2072,19 +2143,24 @@ async function buildContextPlanForRequest(params: {
         advanced: params.effectiveRequestConfig.advanced,
         availableContextBudgetTokens: baseContextBudget.contextBudgetTokens,
         onStatus: (statusText) => {
+          throwIfCancelled();
           params.setStatusSafely(statusText, "sending");
         },
         onTrace: (traceLine) => {
+          throwIfCancelled();
           params.setAgentStatusSafely?.(traceLine);
         },
       });
+      throwIfCancelled();
       activeContextItem = agentResult.activeContextItem;
       conversationMode = agentResult.conversationMode;
       paperContexts = agentResult.paperContexts;
       pinnedPaperContexts = agentResult.pinnedPaperContexts;
       recentPaperContexts = agentResult.recentPaperContexts;
       contextPrefix = sanitizeText(agentResult.contextPrefix || "").trim();
-      responderContext = sanitizeText(agentResult.responderContext || "").trim();
+      responderContext = sanitizeText(
+        agentResult.responderContext || "",
+      ).trim();
       ztoolkit.log("LLM: Agent orchestrator result", {
         conversationMode,
         paperContextCount: paperContexts.length,
@@ -2095,6 +2171,9 @@ async function buildContextPlanForRequest(params: {
         uiActionCount: agentResult.uiActions.length,
       });
     } catch (err) {
+      if (isAbortError(err) || isCancelled()) {
+        throw createAbortError();
+      }
       ztoolkit.log("LLM: Agent failed", err);
       params.setAgentStatusSafely?.("Agent failed.");
       throw err;
@@ -2108,6 +2187,7 @@ async function buildContextPlanForRequest(params: {
     .filter(Boolean)
     .join("\n\n---\n\n");
 
+  throwIfCancelled();
   const plan = await resolveMultiContextPlan({
     activeContextItem,
     conversationMode,
@@ -2125,6 +2205,7 @@ async function buildContextPlanForRequest(params: {
     apiKey: params.effectiveRequestConfig.apiKey,
     systemPrompt,
   });
+  throwIfCancelled();
 
   if (plan.selectedPaperCount > 0) {
     const modeStatus =
@@ -2656,6 +2737,11 @@ export async function retryLatestAssistantResponse(
     restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
     refreshChatSafely();
   };
+  const AbortControllerCtor = getAbortController();
+  setCurrentAbortController(
+    AbortControllerCtor ? new AbortControllerCtor() : null,
+  );
+  const requestSignal = currentAbortController?.signal;
 
   try {
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
@@ -2664,6 +2750,8 @@ export async function retryLatestAssistantResponse(
       item,
       question,
       images: screenshotImages,
+      signal: requestSignal,
+      isCancelled: () => cancelledRequestId >= thisRequestId,
       paperContexts,
       pinnedPaperContexts,
       recentPaperContexts,
@@ -2693,30 +2781,23 @@ export async function retryLatestAssistantResponse(
       paperContexts: retryPair.userMessage.paperContexts,
       attachments: retryPair.userMessage.attachments,
     });
-    if (cancelledRequestId >= thisRequestId) {
+    if (
+      cancelledRequestId >= thisRequestId ||
+      Boolean(requestSignal?.aborted)
+    ) {
       restoreOriginalAssistant();
       setStatusSafely("Cancelled", "ready");
       return;
     }
 
-    const AbortControllerCtor = getAbortController();
-    setCurrentAbortController(
-      AbortControllerCtor ? new AbortControllerCtor() : null,
-    );
     const queueRefresh = createQueuedRefresh(refreshChatSafely);
-    if (cancelledRequestId >= thisRequestId) {
-      currentAbortController?.abort();
-      restoreOriginalAssistant();
-      setStatusSafely("Cancelled", "ready");
-      return;
-    }
 
     const answer = await callLLMStream(
       {
         prompt: question,
         context: combinedContext,
         history: llmHistory,
-        signal: currentAbortController?.signal,
+        signal: requestSignal,
         images: screenshotImages,
         attachments: fileAttachments,
         model: effectiveRequestConfig.model,
@@ -3089,6 +3170,11 @@ export async function sendQuestion(
     await persistAssistantOnce();
     setStatusSafely("Cancelled", "ready");
   };
+  const AbortControllerCtor = getAbortController();
+  setCurrentAbortController(
+    AbortControllerCtor ? new AbortControllerCtor() : null,
+  );
+  const requestSignal = currentAbortController?.signal;
 
   try {
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
@@ -3097,6 +3183,8 @@ export async function sendQuestion(
       item,
       question,
       images,
+      signal: requestSignal,
+      isCancelled: () => cancelledRequestId >= thisRequestId,
       paperContexts: paperContextsForMessage,
       pinnedPaperContexts: pinnedPaperContextsForMessage,
       recentPaperContexts,
@@ -3124,11 +3212,14 @@ export async function sendQuestion(
       paperContexts: userMessage.paperContexts,
       attachments: userMessage.attachments,
     });
+    if (
+      cancelledRequestId >= thisRequestId ||
+      Boolean(requestSignal?.aborted)
+    ) {
+      await markCancelled();
+      return;
+    }
 
-    const AbortControllerCtor = getAbortController();
-    setCurrentAbortController(
-      AbortControllerCtor ? new AbortControllerCtor() : null,
-    );
     const queueRefresh = createQueuedRefresh(refreshChatSafely);
 
     const answer = await callLLMStream(
@@ -3136,7 +3227,7 @@ export async function sendQuestion(
         prompt: question,
         context: combinedContext,
         history: llmHistory,
-        signal: currentAbortController?.signal,
+        signal: requestSignal,
         images: images,
         attachments: requestFileAttachments,
         model: effectiveRequestConfig.model,

@@ -168,10 +168,12 @@ function normalizeCall(value: unknown): AgentToolCall | null {
 }
 
 function normalizeTrace(value: unknown): string {
-  return sanitizeText(String(value || ""))
+  const normalized = sanitizeText(String(value || ""))
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 120);
+    .trim();
+  const maxChars = 500;
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, maxChars - 1).trimEnd()}\u2026`;
 }
 
 function buildFallbackStop(reason: string): RouterDecision {
@@ -310,12 +312,16 @@ export async function runAgentRouterStep(
       model: params.model,
       apiBase: params.apiBase,
       apiKey: params.apiKey,
+      signal: params.signal,
       temperature: 0,
       maxTokens: 500,
     });
 
     return parseRouterDecision(raw);
   } catch (err) {
+    if ((err as { name?: string }).name === "AbortError") {
+      throw err;
+    }
     ztoolkit.log("LLM: agent router step failed", err);
     return {
       decision: "stop",

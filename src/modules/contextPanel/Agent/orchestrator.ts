@@ -400,6 +400,15 @@ export function createAgentOrchestratorRunner(
   return async function run(
     params: AgentOrchestratorParams,
   ): Promise<AgentOrchestratorResult> {
+    const throwIfCancelled = (): void => {
+      if (params.signal?.aborted || params.shouldCancel?.()) {
+        const err = new Error("Agent retrieval cancelled.");
+        (err as { name?: string }).name = "AbortError";
+        throw err;
+      }
+    };
+
+    throwIfCancelled();
     const promptPack = await resolvedDeps.loadPromptPack();
 
     const state: AgentState = {
@@ -445,6 +454,7 @@ export function createAgentOrchestratorRunner(
       });
     }
 
+    throwIfCancelled();
     params.onTrace?.("Planning Zotero retrieval with agent...");
 
     const totalBudget = deriveAvailableContextBudgetTokens(params);
@@ -455,6 +465,7 @@ export function createAgentOrchestratorRunner(
     );
 
     for (let i = 0; i < maxIterations; i += 1) {
+      throwIfCancelled();
       const remainingBudget = Math.max(
         0,
         totalBudget - state.contextPrefixEstimatedTokens,
@@ -488,9 +499,11 @@ export function createAgentOrchestratorRunner(
         model: params.model,
         apiBase: params.apiBase,
         apiKey: params.apiKey,
+        signal: params.signal,
         promptPack,
       });
 
+      throwIfCancelled();
       if (decision.trace) {
         params.onTrace?.(decision.trace);
       }
@@ -527,6 +540,7 @@ export function createAgentOrchestratorRunner(
       });
 
       const result = outcome.result;
+      throwIfCancelled();
       for (const line of result.traceLines) {
         params.onTrace?.(line);
       }

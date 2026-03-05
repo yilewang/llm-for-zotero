@@ -1149,17 +1149,34 @@
   display: flex;
   align-items: flex-start;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
   font-size: var(--llm-fs-11);
   line-height: 1.4;
   min-width: 0;
 }
 
+.llm-at-row-plan,
+.llm-at-row-tool {
+  align-items: center;
+}
+
+.llm-at-row-ok {
+  flex-wrap: nowrap;
+  align-items: flex-start;
+}
+
 .llm-at-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 16px;
-  text-align: center;
   font-size: 11px;
   line-height: 1;
+  margin-top: 0;
+}
+
+.llm-at-row-ok > .llm-at-icon {
+  margin-top: 2px;
 }
 
 /* plan */
@@ -1300,8 +1317,48 @@ button.llm-at-target-btn:focus-visible {
   font-size: var(--llm-fs-10);
   font-weight: 600;
   color: var(--fill-primary);
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.llm-at-ok-body {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.llm-at-ok-body .llm-at-ok-text {
+  flex: 0 0 auto;
+}
+
+.llm-at-ok-body .llm-at-paper-label {
+  flex: 0 0 auto;
+}
+
+.llm-at-selected-note {
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-10);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.llm-at-selected-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 1px 0 2px 21px;
+  min-width: 0;
+}
+
+.llm-at-selected-item {
+  font-size: var(--llm-fs-10);
+  color: var(--fill-secondary);
+  line-height: 1.35;
   white-space: normal;
   overflow-wrap: anywhere;
 }
