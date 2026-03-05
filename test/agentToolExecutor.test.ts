@@ -128,4 +128,91 @@ describe("agentToolExecutor", function () {
     assert.isTrue(second?.ok);
     assert.equal(state.executedCallCount, 2);
   });
+
+  it("allows materially different search_paper_content queries on the same target", async function () {
+    pdfTextCache.set(
+      100,
+      buildPdfContext([
+        "The olfactory stimulus varied across trial blocks.",
+        "Excitability metrics predicted stability over days.",
+      ]),
+    );
+    const state = createAgentToolExecutorState();
+    const ctx = {
+      question: "find evidence",
+      libraryID: 5,
+      conversationMode: "open" as const,
+      activePaperContext: paper,
+      selectedPaperContexts: [],
+      pinnedPaperContexts: [],
+      recentPaperContexts: [],
+      retrievedPaperContexts: [paper],
+    };
+
+    const first = await executeAgentToolCall({
+      call: {
+        name: "search_paper_content",
+        target: { scope: "retrieved-paper", index: 1 },
+        query: "olfactory stimulus",
+      },
+      ctx,
+      state,
+    });
+    const second = await executeAgentToolCall({
+      call: {
+        name: "search_paper_content",
+        target: { scope: "retrieved-paper", index: 1 },
+        query: "excitability metrics",
+      },
+      ctx,
+      state,
+    });
+
+    assert.isTrue(first?.ok);
+    assert.isTrue(second?.ok);
+    assert.equal(state.executedCallCount, 2);
+  });
+
+  it("still skips exact duplicate search_paper_content queries after normalization", async function () {
+    pdfTextCache.set(
+      100,
+      buildPdfContext([
+        "The olfactory stimulus varied across trial blocks.",
+      ]),
+    );
+    const state = createAgentToolExecutorState();
+    const ctx = {
+      question: "find evidence",
+      libraryID: 5,
+      conversationMode: "open" as const,
+      activePaperContext: paper,
+      selectedPaperContexts: [],
+      pinnedPaperContexts: [],
+      recentPaperContexts: [],
+      retrievedPaperContexts: [paper],
+    };
+
+    const first = await executeAgentToolCall({
+      call: {
+        name: "search_paper_content",
+        target: { scope: "retrieved-paper", index: 1 },
+        query: "Olfactory   Stimulus",
+      },
+      ctx,
+      state,
+    });
+    const second = await executeAgentToolCall({
+      call: {
+        name: "search_paper_content",
+        target: { scope: "retrieved-paper", index: 1 },
+        query: "olfactory stimulus",
+      },
+      ctx,
+      state,
+    });
+
+    assert.isTrue(first?.ok);
+    assert.isFalse(second?.ok);
+    assert.include(second?.traceLines[0] || "", "Duplicate tool call");
+  });
 });

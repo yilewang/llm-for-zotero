@@ -178,6 +178,16 @@ Open the LLM Assistant sidebar (click the distinct icon in the right-hand toolba
 
 Type a question in the chat box, such as "What is the main conclusion of this paper?"
 
+### Agent Contribution Conventions
+
+This repository includes project-local agent instructions in [`AGENTS.md`](./AGENTS.md).
+
+For citation-related tasks (citation labels/links, click-to-paper, click-to-page, author-year parsing, ambiguity handling, robustness/stability), follow the `citation-reliability` skill in:
+- `skills/citation-reliability/SKILL.md`
+
+For citation PRs, include the acceptance checklist in your PR description:
+- `skills/citation-reliability/templates/acceptance-checklist.md`
+
 ### FAQ
 
 > Q: Is it free to use?

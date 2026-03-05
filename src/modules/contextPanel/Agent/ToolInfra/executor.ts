@@ -42,6 +42,43 @@ function buildListPapersCallKey(call: AgentToolCall): string {
   return `list_papers:${query || "overview"}:${call.limit ?? "all"}:${depth}`;
 }
 
+const QUERY_BEARING_PAPER_TOOLS = new Set<AgentToolCall["name"]>([
+  "find_claim_evidence",
+  "search_paper_content",
+  "write_note",
+]);
+
+function normalizeToolQueryKey(value: string | undefined): string {
+  return sanitizeText(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function buildPaperToolCallKey(
+  call: AgentToolCall,
+  targetKey: string,
+): string {
+  const base = `${call.name}:${targetKey}`;
+  // Query-bearing paper tools: exact duplicate blocks should be strict by
+  // normalized query, while materially different queries should execute.
+  if (!QUERY_BEARING_PAPER_TOOLS.has(call.name)) {
+    return base;
+  }
+  const queryKey = normalizeToolQueryKey(call.query);
+  return `${base}:${queryKey || "__default__"}`;
+}
+
+function formatDuplicatePaperToolLabel(
+  call: AgentToolCall,
+  targetLabel: string,
+): string {
+  const query = sanitizeText(call.query || "").replace(/\s+/g, " ").trim();
+  if (!query) return `${call.name}(${targetLabel})`;
+  const clipped = query.length > 120 ? `${query.slice(0, 119)}…` : query;
+  return `${call.name}(${targetLabel}, query="${clipped}")`;
+}
+
 export async function executeAgentToolCall(params: {
   call?: AgentToolCall | null;
   ctx: AgentToolExecutionContext;
@@ -119,12 +156,15 @@ export async function executeAgentToolCall(params: {
     );
   }
 
-  const callKey = `${validatedCall.name}:${resolvedTarget.resolvedKey || resolvedTarget.targetLabel}`;
+  const callKey = buildPaperToolCallKey(
+    validatedCall,
+    resolvedTarget.resolvedKey || resolvedTarget.targetLabel,
+  );
   if (params.state.executedCallKeys.has(callKey)) {
     return buildSkipResult(
       validatedCall,
       resolvedTarget.targetLabel,
-      `Duplicate tool call was ignored: ${validatedCall.name}(${resolvedTarget.targetLabel}).`,
+      `Duplicate tool call was ignored: ${formatDuplicatePaperToolLabel(validatedCall, resolvedTarget.targetLabel)}.`,
     );
   }
 

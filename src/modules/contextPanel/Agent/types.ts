@@ -84,6 +84,7 @@ export type ToolExecutionOutcome =
 export type AgentToolLog = {
   iteration: number;
   toolName: string;
+  callLabel: string;
   targetLabel: string;
   ok: boolean;
   depthAchieved?: "metadata" | "abstract" | "deep";

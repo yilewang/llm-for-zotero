@@ -356,12 +356,15 @@ async function verifyClaimEvidence(params: {
 export function validateFindClaimEvidenceCall(
   call: AgentToolCall,
 ): AgentToolCall | null {
-  return validateSinglePaperToolCall("find_claim_evidence", call);
+  const validated = validateSinglePaperToolCall("find_claim_evidence", call);
+  if (!validated) return null;
+  const query = sanitizeText(call.query || "").trim();
+  return query ? { ...validated, query } : validated;
 }
 
 export async function executeFindClaimEvidenceCall(
   ctx: AgentToolExecutionContext,
-  _call: AgentToolCall,
+  call: AgentToolCall,
   target: ResolvedAgentToolTarget,
 ): Promise<AgentToolExecutionResult> {
   if (!target.paperContext) {
@@ -379,7 +382,7 @@ export async function executeFindClaimEvidenceCall(
     };
   }
 
-  const claimOrQuery = sanitizeText(ctx.question || "")
+  const claimOrQuery = sanitizeText(call.query || ctx.question || "")
     .replace(/\s+/g, " ")
     .trim();
   if (!claimOrQuery) {

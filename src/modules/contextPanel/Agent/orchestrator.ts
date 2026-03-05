@@ -123,10 +123,12 @@ function buildPolicyHints(params: {
   metadataAttempted: boolean;
   abstractAttempted: boolean;
   latestSufficiency: AgentSufficiency | null;
+  toolLogs: AgentToolLog[];
 }): string[] {
   const hints = [
     `intent: ${params.intent}`,
     `max depth allowed: ${params.maxDepthAllowed}`,
+    "avoid repeating duplicate-skipped calls; refine query or switch tool/target",
   ];
   if (params.maxDepthAllowed === "abstract") {
     hints.push("stage rule: metadata first, then abstract only if needed.");
@@ -139,6 +141,35 @@ function buildPolicyHints(params: {
   }
   if (params.latestSufficiency) {
     hints.push(`latest sufficiency: ${params.latestSufficiency}`);
+  }
+  const recentAttemptLabels = Array.from(
+    new Set(
+      params.toolLogs
+        .slice(-4)
+        .map((entry) => sanitizeText(entry.callLabel || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  if (recentAttemptLabels.length) {
+    hints.push(`recent attempted calls: ${recentAttemptLabels.join(" ; ")}`);
+  }
+  const recentDuplicateLabels = Array.from(
+    new Set(
+      params.toolLogs
+        .slice(-4)
+        .filter(
+          (entry) =>
+            !entry.ok &&
+            entry.traceLines.some((line) => /\bduplicate\b/i.test(line)),
+        )
+        .map((entry) => sanitizeText(entry.callLabel || "").trim())
+        .filter(Boolean),
+    ),
+  );
+  if (recentDuplicateLabels.length) {
+    hints.push(
+      `duplicate-skipped already: ${recentDuplicateLabels.join(" ; ")}`,
+    );
   }
   return hints;
 }
@@ -179,6 +210,28 @@ function formatToolCallLabel(call: AgentToolCall): string {
       ? `${call.name}(\"${query}\", depth=${depth})`
       : `${call.name}(depth=${depth})`;
   }
+  if (call.name === "find_claim_evidence") {
+    const query = sanitizeText(call.query || "").trim();
+    const targetLabel = call.target
+      ? "index" in call.target
+        ? `${call.target.scope}#${call.target.index}`
+        : call.target.scope
+      : "target";
+    return query
+      ? `${call.name}(${targetLabel}, query=\"${query}\")`
+      : `${call.name}(${targetLabel})`;
+  }
+  if (call.name === "search_paper_content" || call.name === "write_note") {
+    const query = sanitizeText(call.query || "").trim();
+    const targetLabel = call.target
+      ? "index" in call.target
+        ? `${call.target.scope}#${call.target.index}`
+        : call.target.scope
+      : "target";
+    return query
+      ? `${call.name}(${targetLabel}, query=\"${query}\")`
+      : `${call.name}(${targetLabel})`;
+  }
   if (call.target) {
     if ("index" in call.target) {
       return `${call.name}(${call.target.scope}#${call.target.index})`;
@@ -190,13 +243,14 @@ function formatToolCallLabel(call: AgentToolCall): string {
 
 function summarizeToolResult(
   iteration: number,
+  callLabel: string,
   result: AgentToolExecutionResult,
 ): AgentToolLog {
   const extra: string[] = [];
   if (result.depthAchieved) extra.push(`depth=${result.depthAchieved}`);
   if (result.sufficiency) extra.push(`sufficiency=${result.sufficiency}`);
   const summary = [
-    result.name,
+    callLabel || result.name,
     result.targetLabel,
     result.ok ? "complete" : "skipped",
     ...extra,
@@ -204,6 +258,7 @@ function summarizeToolResult(
   return {
     iteration,
     toolName: result.name,
+    callLabel: callLabel || result.name,
     targetLabel: result.targetLabel,
     ok: result.ok,
     depthAchieved: result.depthAchieved,
@@ -671,6 +726,7 @@ export function createAgentOrchestratorRunner(
         metadataAttempted,
         abstractAttempted,
         latestSufficiency,
+        toolLogs: state.toolLogs,
       });
 
       const summary = buildRouterSummary({
@@ -751,7 +807,7 @@ export function createAgentOrchestratorRunner(
         params.onTrace?.(line);
       }
 
-      const toolLog = summarizeToolResult(i + 1, result);
+      const toolLog = summarizeToolResult(i + 1, toolLabel, result);
       state.toolLogs.push(toolLog);
 
       if (policyCall.name === "list_papers") {

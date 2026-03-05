@@ -302,4 +302,46 @@ describe("findClaimEvidence", function () {
     assert.include(result.groundingText, "Extractable full text available: no");
     assert.include(result.groundingText, "Evidence lookup could not inspect the paper body");
   });
+
+  it("uses the planner-supplied query override when provided", async function () {
+    pdfTextCache.set(
+      contextItem.id,
+      buildPdfContext([
+        "Odour cues were absent in one task and informative in another.",
+      ]),
+    );
+
+    const result = await executeFindClaimEvidenceCall(
+      {
+        question: "This broad question should be overridden by call.query",
+        libraryID: 5,
+        conversationMode: "open",
+        selectedPaperContexts: [],
+        pinnedPaperContexts: [],
+        recentPaperContexts: [],
+        retrievedPaperContexts: [],
+      },
+      {
+        name: "find_claim_evidence",
+        target: { scope: "retrieved-paper", index: 1 },
+        query: "olfactory stimulus use in mice",
+      },
+      {
+        paperContext: paper,
+        contextItem,
+        targetLabel: "Evidence Paper",
+        resolvedKey: "1:100",
+      },
+    );
+
+    assert.isTrue(result.ok);
+    assert.include(
+      result.groundingText,
+      "- Claim or query: olfactory stimulus use in mice",
+    );
+    assert.notInclude(
+      result.groundingText,
+      "This broad question should be overridden",
+    );
+  });
 });

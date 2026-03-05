@@ -40,6 +40,11 @@ type ExtractedCitationLabel = {
   normalizedCitationKey?: string;
 };
 
+type BlockquoteTailCitationMatch = {
+  quoteText: string;
+  extractedCitation: ExtractedCitationLabel;
+};
+
 const citationPageCache = new Map<
   string,
   {
@@ -350,6 +355,61 @@ export function extractStandalonePaperSourceLabel(
   };
 }
 
+function isLikelyStandaloneCitationLabel(value: string): boolean {
+  const normalized = sanitizeText(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return false;
+  return (
+    /\bet\s+al\b/.test(normalized) ||
+    /\b(19|20)\d{2}\b/.test(normalized) ||
+    /\bcid:[^\]]+/.test(normalized) ||
+    /\[[^\]]+\]/.test(normalized) ||
+    /\bpaper(?:\s+\d+)?\b/.test(normalized)
+  );
+}
+
+export function extractBlockquoteTailCitation(
+  value: string,
+): BlockquoteTailCitationMatch | null {
+  const raw = sanitizeText(value || "").replace(/\r\n?/g, "\n");
+  if (!raw.trim()) return null;
+
+  const lines = raw
+    .split("\n")
+    .map((line) => sanitizeText(line || "").trim())
+    .filter(Boolean);
+  if (lines.length >= 2) {
+    const tailLine = lines[lines.length - 1];
+    if (isLikelyStandaloneCitationLabel(tailLine)) {
+      const extractedCitation = extractStandalonePaperSourceLabel(tailLine);
+      if (extractedCitation) {
+        const quoteText = sanitizeText(lines.slice(0, -1).join(" ")).trim();
+        if (quoteText.length >= 8) {
+          return { quoteText, extractedCitation };
+        }
+      }
+    }
+  }
+
+  const compact = sanitizeText(raw).replace(/\s+/g, " ").trim();
+  const tailMatch = compact.match(
+    /(\([^()]+?\)(?:\s*\[[^\]]+\])?(?:\s*,?\s*page\s+[^,;]+)?\.?)$/i,
+  );
+  if (!tailMatch) return null;
+  const tailCitation = sanitizeText(tailMatch[1] || "").trim();
+  if (!isLikelyStandaloneCitationLabel(tailCitation)) return null;
+  const extractedCitation = extractStandalonePaperSourceLabel(tailCitation);
+  if (!extractedCitation) return null;
+
+  const quoteText = sanitizeText(
+    compact.slice(0, compact.length - tailCitation.length),
+  ).trim();
+  if (quoteText.length < 8) return null;
+  return { quoteText, extractedCitation };
+}
+
 export function matchAssistantCitationCandidates(
   citationLineText: string,
   paperContexts: PaperContextRef[],
@@ -361,12 +421,11 @@ export function matchAssistantCitationCandidates(
     const candidateCitationKey = normalizeCitationKey(
       candidate.paperContext.citationKey || "",
     );
-    if (
-      extracted.normalizedCitationKey &&
-      candidateCitationKey &&
-      extracted.normalizedCitationKey === candidateCitationKey
-    ) {
-      return true;
+    if (extracted.normalizedCitationKey) {
+      return Boolean(
+        candidateCitationKey &&
+        extracted.normalizedCitationKey === candidateCitationKey,
+      );
     }
     return (
       candidate.normalizedSourceLabel === extracted.normalizedSourceLabel ||
@@ -1255,26 +1314,21 @@ export function decorateAssistantCitationLinks(params: {
     "bubble HTML length =", String(params.bubble.innerHTML || "").length,
     "bubble child count =", params.bubble.childElementCount);
   for (const blockquote of blockquotes) {
-    const quoteText = sanitizeText(blockquote.textContent || "").trim();
+    let quoteText = sanitizeText(blockquote.textContent || "").trim();
     if (!quoteText) continue;
-    const citationEl = getNextElementSibling(blockquote);
-    if (!citationEl) {
-      ztoolkit.log("LLM citation decoration: no sibling for blockquote, text =",
-        (blockquote.textContent || "").slice(0, 60));
-      continue;
-    }
+    let citationEl = getNextElementSibling(blockquote);
 
     // Primary attempt: entire element is a standalone citation label.
-    let extractedCitation = extractStandalonePaperSourceLabel(
-      citationEl.textContent || "",
-    );
+    let extractedCitation = citationEl
+      ? extractStandalonePaperSourceLabel(citationEl.textContent || "")
+      : null;
 
     // Edge-case fallback: the element may start with a citation label followed
     // by continuation paragraph text on subsequent lines (no blank line between
     // them in the LLM output → single <p> block in rendered HTML).
     // We extract only the first non-empty line and re-attempt parsing.
     let citationRemainder: string | null = null;
-    if (!extractedCitation) {
+    if (!extractedCitation && citationEl) {
       const rawLines = (citationEl.textContent || "").split("\n");
       const firstLine = sanitizeText(rawLines[0] || "").trim();
       if (firstLine) {
@@ -1287,9 +1341,46 @@ export function decorateAssistantCitationLinks(params: {
         }
       }
     }
+
+    // Some model outputs put the citation on the final line *inside* the same
+    // blockquote. Recover by splitting a trailing citation line from quote text.
     if (!extractedCitation) {
-      ztoolkit.log("LLM citation decoration: sibling text not a citation, text =",
-        JSON.stringify((citationEl.textContent || "").slice(0, 80)));
+      const tailMatch = extractBlockquoteTailCitation(
+        blockquote.textContent || "",
+      );
+      if (tailMatch) {
+        extractedCitation = tailMatch.extractedCitation;
+        quoteText = tailMatch.quoteText;
+        const syntheticCitationEl = ownerDoc.createElement("p");
+        syntheticCitationEl.textContent = extractedCitation.sourceLabel;
+        const insertParent = blockquote.parentElement;
+        if (insertParent) {
+          insertParent.insertBefore(
+            syntheticCitationEl,
+            citationEl || blockquote.nextSibling,
+          );
+          citationEl = syntheticCitationEl;
+        }
+      }
+    }
+
+    if (!extractedCitation) {
+      if (!citationEl) {
+        ztoolkit.log(
+          "LLM citation decoration: no sibling citation and no inline tail citation for blockquote, text =",
+          (blockquote.textContent || "").slice(0, 80),
+        );
+      } else {
+        ztoolkit.log("LLM citation decoration: sibling text not a citation, text =",
+          JSON.stringify((citationEl.textContent || "").slice(0, 80)));
+      }
+      continue;
+    }
+
+    if (!citationEl) {
+      ztoolkit.log(
+        "LLM citation decoration: citation parsed but no target element available",
+      );
       continue;
     }
     ztoolkit.log("LLM citation decoration: creating button for", extractedCitation.sourceLabel);

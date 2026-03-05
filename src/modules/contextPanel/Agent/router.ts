@@ -171,6 +171,20 @@ function normalizeCall(value: unknown): AgentToolCall | null {
   const target = normalizeTarget(typed.target);
   if (!target) return null;
 
+  if (name === "find_claim_evidence") {
+    const query = sanitizeText(String(typed.query || "")).trim();
+    return query
+      ? {
+          name: "find_claim_evidence",
+          target,
+          query,
+        }
+      : {
+          name: "find_claim_evidence",
+          target,
+        };
+  }
+
   if (name === "write_note") {
     const query = sanitizeText(String(typed.query || "")).trim();
     return {
@@ -201,6 +215,32 @@ function buildFallbackStop(reason: string): RouterDecision {
     trace: "Stopping router due to invalid planner output.",
     stopReason: reason,
   };
+}
+
+function recoverCallFromParsedObject(parsed: Record<string, unknown>): AgentToolCall | null {
+  const direct = normalizeCall(parsed);
+  if (direct) return direct;
+
+  const wrapperCandidates: unknown[] = [
+    parsed.call,
+    parsed.toolCall,
+    parsed.tool_call,
+    parsed.tool,
+    parsed.action,
+    parsed.nextAction,
+    parsed.next_action,
+  ];
+
+  for (const wrapper of wrapperCandidates) {
+    const normalized = normalizeCall(wrapper);
+    if (normalized) return normalized;
+    if (!wrapper || typeof wrapper !== "object") continue;
+    const nested = wrapper as Record<string, unknown>;
+    const nestedCall = normalizeCall(nested.call);
+    if (nestedCall) return nestedCall;
+  }
+
+  return null;
 }
 
 export function parseRouterDecision(raw: string): RouterDecision {
@@ -242,11 +282,21 @@ export function parseRouterDecision(raw: string): RouterDecision {
     };
   }
 
-  if (decision !== "tool_call") {
+  const recoveredCall = recoverCallFromParsedObject(
+    parsed as Record<string, unknown>,
+  );
+  const isToolCallDecision =
+    decision === "tool_call" ||
+    decision === "tool" ||
+    decision === "call" ||
+    decision === "action" ||
+    (!decision && Boolean(recoveredCall));
+
+  if (!isToolCallDecision) {
     return buildFallbackStop("Unknown router decision.");
   }
 
-  const call = normalizeCall(typed.call);
+  const call = normalizeCall(typed.call) || recoveredCall;
   if (!call) {
     return buildFallbackStop("Invalid tool call shape.");
   }

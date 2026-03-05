@@ -16,6 +16,7 @@ const DEFAULT_ROUTER_PROMPT = [
   "Rules:",
   "- Stop as soon as sufficient grounded context exists.",
   "- Never repeat tool calls already marked complete in prior tool logs.",
+  "- If a prior call was skipped as duplicate, do not repeat the same call signature; refine query focus or switch tool/target.",
   "- For library-level requests, use metadata first, then abstract only if metadata is insufficient.",
   "- Do not call deep paper tools unless the user explicitly asks for deep or paper-specific analysis.",
   "- Use write_note/fix_metadata only when user explicitly asks for write/fix actions.",

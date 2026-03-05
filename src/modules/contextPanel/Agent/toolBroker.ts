@@ -73,6 +73,29 @@ function buildToolInputSchema(name: AgentToolName): Record<string, unknown> {
         required: ["name", "target", "query"],
         additionalProperties: false,
       };
+    case "find_claim_evidence":
+      return {
+        type: "object",
+        properties: {
+          name: { const: "find_claim_evidence" },
+          target: {
+            type: "object",
+            properties: {
+              scope: { type: "string" },
+              index: { type: "integer", minimum: 1 },
+            },
+            required: ["scope"],
+            additionalProperties: false,
+          },
+          query: {
+            type: "string",
+            description:
+              "optional claim/query override; defaults to user question",
+          },
+        },
+        required: ["name", "target"],
+        additionalProperties: false,
+      };
     default:
       return {
         type: "object",

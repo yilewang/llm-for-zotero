@@ -24,7 +24,11 @@ export type AgentToolCall = {
   name: AgentToolName;
   /** Required for paper tools; absent for list_papers. */
   target?: AgentToolTarget;
-  /** For list_papers: optional search query (omit for full library overview). */
+  /**
+   * Optional query payload used by query-bearing tools:
+   * - list_papers/search_internet/search_paper_content: required by validators when needed
+   * - write_note/find_claim_evidence: optional refinement text
+   */
   query?: string;
   /** For list_papers: optional number of papers to return (minimum 1 when set). */
   limit?: number;

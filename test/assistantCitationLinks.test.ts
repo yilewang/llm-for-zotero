@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  extractBlockquoteTailCitation,
   extractStandalonePaperSourceLabel,
   formatSourceLabelWithPage,
   matchAssistantCitationCandidates,
@@ -140,6 +141,40 @@ describe("assistantCitationLinks", function () {
 
     assert.lengthOf(matches, 1);
     assert.equal(matches[0].contextItemId, 22);
+  });
+
+  it("extracts a trailing citation line embedded in a blockquote", function () {
+    const extracted = extractBlockquoteTailCitation(
+      "\"Therefore, representational drift is stable across days.\"\n(Climer et al., 2025)",
+    );
+
+    assert.isNotNull(extracted);
+    assert.equal(
+      extracted?.quoteText,
+      "\"Therefore, representational drift is stable across days.\"",
+    );
+    assert.equal(extracted?.extractedCitation.sourceLabel, "(Climer et al., 2025)");
+  });
+
+  it("extracts a trailing inline citation from blockquote text", function () {
+    const extracted = extractBlockquoteTailCitation(
+      "Therefore, representational drift is stable across days. (Climer et al., 2025)",
+    );
+
+    assert.isNotNull(extracted);
+    assert.equal(
+      extracted?.quoteText,
+      "Therefore, representational drift is stable across days.",
+    );
+    assert.equal(extracted?.extractedCitation.citationLabel, "Climer et al., 2025");
+  });
+
+  it("does not treat equation-style parentheses as citations in blockquotes", function () {
+    const extracted = extractBlockquoteTailCitation(
+      "The score can be written as (a + b + c).",
+    );
+
+    assert.isNull(extracted);
   });
 });
 

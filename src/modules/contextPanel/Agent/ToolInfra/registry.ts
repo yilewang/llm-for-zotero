@@ -74,9 +74,9 @@ const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
   {
     name: "find_claim_evidence",
     plannerDescription:
-      "retrieve the most relevant evidence snippets from one paper for the user question; cheaper and more focused than reading the full text",
+      "retrieve the most relevant evidence snippets from one paper for the user question; optional query can refine the focus and avoid duplicate broad lookups",
     callExample:
-      '{"name":"find_claim_evidence","target":{"scope":"active-paper"}}',
+      '{"name":"find_claim_evidence","target":{"scope":"active-paper"},"query":"optional focused claim"}',
     validate: validateFindClaimEvidenceCall,
     execute: executeFindClaimEvidenceCall,
   },

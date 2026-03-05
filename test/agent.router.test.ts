@@ -59,4 +59,59 @@ describe("agent router", function () {
       );
     }
   });
+
+  it("recovers a top-level tool call shape when decision key is missing", function () {
+    const decision = parseRouterDecision(
+      JSON.stringify({
+        trace: "Search paper content",
+        name: "search_paper_content",
+        target: { scope: "active-paper" },
+        query: "olfactory stimulus",
+      }),
+    );
+
+    assert.equal(decision.decision, "tool_call");
+    if (decision.decision !== "tool_call") return;
+    assert.equal(decision.call.name, "search_paper_content");
+    assert.equal(decision.call.query, "olfactory stimulus");
+  });
+
+  it("recovers wrapped tool call shapes under tool/action keys", function () {
+    const decision = parseRouterDecision(
+      JSON.stringify({
+        decision: "call",
+        trace: "Use wrapper",
+        tool: {
+          name: "list_papers",
+          query: "hippocampus",
+          depth: "metadata",
+          limit: 6,
+        },
+      }),
+    );
+
+    assert.equal(decision.decision, "tool_call");
+    if (decision.decision !== "tool_call") return;
+    assert.equal(decision.call.name, "list_papers");
+    assert.equal(decision.call.depth, "metadata");
+  });
+
+  it("preserves optional query for find_claim_evidence calls", function () {
+    const decision = parseRouterDecision(
+      JSON.stringify({
+        decision: "tool_call",
+        trace: "Find focused evidence",
+        call: {
+          name: "find_claim_evidence",
+          target: { scope: "active-paper" },
+          query: "olfactory stimulus use in mice",
+        },
+      }),
+    );
+
+    assert.equal(decision.decision, "tool_call");
+    if (decision.decision !== "tool_call") return;
+    assert.equal(decision.call.name, "find_claim_evidence");
+    assert.equal(decision.call.query, "olfactory stimulus use in mice");
+  });
 });
