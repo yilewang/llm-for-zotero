@@ -1,4 +1,5 @@
 import { sanitizeText } from "../textUtils";
+import { MAX_RESPONDER_TOOL_LOG_LINES } from "./config";
 import type { AgentToolLog, UiActionDirective } from "./types";
 
 function buildUiActionInstruction(action: UiActionDirective): string {
@@ -19,7 +20,9 @@ export function buildResponderContextBlock(params: {
   shouldOfferDeepenCTA?: boolean;
 }): string {
   const responderPrompt = sanitizeText(params.responderPrompt || "").trim();
-  const toolLogLines = params.toolLogs.slice(-8).map((log) => log.summary);
+  const toolLogLines = params.toolLogs
+    .slice(-MAX_RESPONDER_TOOL_LOG_LINES)
+    .map((log) => log.summary);
   const uiActionLines = params.uiActions.map((action) =>
     buildUiActionInstruction(action),
   );

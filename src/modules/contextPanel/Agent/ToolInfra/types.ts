@@ -26,7 +26,7 @@ export type AgentToolCall = {
   target?: AgentToolTarget;
   /** For list_papers: optional search query (omit for full library overview). */
   query?: string;
-  /** For list_papers: number of papers to return (1-12, default 6). */
+  /** For list_papers: optional number of papers to return (minimum 1 when set). */
   limit?: number;
   /** For list_papers: retrieval depth stage (metadata default, abstract on escalation). */
   depth?: ListPapersDepth;

@@ -8,6 +8,14 @@ import {
   renderClaimEvidencePack,
 } from "../../pdfContext";
 import { sanitizeText } from "../../textUtils";
+import {
+  DEFAULT_EVIDENCE_TOP_K,
+  ENABLE_FIND_CLAIM_EVIDENCE_VERIFIER,
+  MAX_EVIDENCE_TOP_K,
+  RAW_EVIDENCE_TOP_K,
+  ROUTER_MODEL_MAX_TOKENS,
+  ROUTER_MODEL_TEMPERATURE,
+} from "../config";
 import { validateSinglePaperToolCall } from "../ToolInfra/shared";
 import type {
   AgentToolCall,
@@ -16,13 +24,6 @@ import type {
   ResolvedAgentToolTarget,
 } from "../ToolInfra/types";
 import type { PaperContextCandidate } from "../../types";
-
-const RAW_EVIDENCE_TOP_K = 12;
-/** Default cap when no token budget is provided (pure count limit). */
-const DEFAULT_EVIDENCE_TOP_K = 8;
-/** Hard safety ceiling to avoid pathological responses (budget should control normally). */
-const MAX_EVIDENCE_TOP_K = 12;
-const ENABLE_FIND_CLAIM_EVIDENCE_VERIFIER = false;
 
 type EvidenceVerifierLabel =
   | "supports"
@@ -291,8 +292,8 @@ async function verifyClaimEvidence(params: {
       model: params.model,
       apiBase: params.apiBase,
       apiKey: params.apiKey,
-      temperature: 0,
-      maxTokens: 500,
+      temperature: ROUTER_MODEL_TEMPERATURE,
+      maxTokens: ROUTER_MODEL_MAX_TOKENS,
     });
     const jsonText = findJsonObject(raw);
     if (!jsonText) return null;

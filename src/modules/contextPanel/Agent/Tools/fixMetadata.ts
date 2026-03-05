@@ -8,15 +8,16 @@ import {
 } from "../../pdfContext";
 import { validateSinglePaperToolCall } from "../ToolInfra/shared";
 import { sanitizeText } from "../../textUtils";
+import {
+  FIX_METADATA_MAX_OUTPUT_TOKENS,
+  FIX_METADATA_PAPER_CONTEXT_TOKENS,
+} from "../config";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
 } from "../ToolInfra/types";
-
-/** Approx token budget for the paper text fed to the LLM. */
-const FIX_METADATA_PAPER_CONTEXT_TOKENS = 6000;
 
 /** Fields we will attempt to fill. Order matters — it controls display order. */
 const METADATA_FIELDS: Array<{ fieldName: string; displayName: string }> = [
@@ -178,7 +179,7 @@ export async function executeFixMetadataCall(
       model: ctx.model,
       apiBase: ctx.apiBase,
       apiKey: ctx.apiKey,
-      maxTokens: 800,
+      maxTokens: FIX_METADATA_MAX_OUTPUT_TOKENS,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

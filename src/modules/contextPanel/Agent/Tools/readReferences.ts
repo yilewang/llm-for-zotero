@@ -2,6 +2,7 @@ import { estimateTextTokens } from "../../../../utils/modelInputCap";
 import { pdfTextCache } from "../../state";
 import { ensurePDFTextCached } from "../../pdfContext";
 import { sanitizeText } from "../../textUtils";
+import { READ_REFERENCES_FALLBACK_TOP_K } from "../config";
 import { validateSinglePaperToolCall } from "../ToolInfra/shared";
 import type {
   AgentToolCall,
@@ -131,8 +132,8 @@ function selectReferenceEntries(
   const maxTokens = Math.floor(Number(toolTokenCap));
   if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
     return {
-      selected: entries.slice(0, 12),
-      truncated: entries.length > 12,
+      selected: entries.slice(0, READ_REFERENCES_FALLBACK_TOP_K),
+      truncated: entries.length > READ_REFERENCES_FALLBACK_TOP_K,
     };
   }
   const selected: string[] = [];

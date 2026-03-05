@@ -3,6 +3,7 @@ import { resolveAgentToolTarget } from "./resolveTarget";
 import { executeListPapersCall } from "../Tools/listPapers";
 import { executeSearchInternetCall } from "../Tools/searchInternet";
 import { sanitizeText } from "../../textUtils";
+import { SEARCH_INTERNET_DEFAULT_LIMIT } from "../config";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
@@ -38,7 +39,7 @@ function buildSkipResult(
 function buildListPapersCallKey(call: AgentToolCall): string {
   const query = sanitizeText(call.query || "").trim();
   const depth = call.depth === "abstract" ? "abstract" : "metadata";
-  return `list_papers:${query || "overview"}:${call.limit ?? 6}:${depth}`;
+  return `list_papers:${query || "overview"}:${call.limit ?? "all"}:${depth}`;
 }
 
 export async function executeAgentToolCall(params: {
@@ -50,7 +51,7 @@ export async function executeAgentToolCall(params: {
 
   // ── search_internet: no paper-target resolution needed ─────────────────────
   if (params.call.name === "search_internet") {
-    const callKey = `search_internet:${sanitizeText(params.call.query || "").trim()}:${params.call.limit ?? 6}`;
+    const callKey = `search_internet:${sanitizeText(params.call.query || "").trim()}:${params.call.limit ?? SEARCH_INTERNET_DEFAULT_LIMIT}`;
     if (params.state.executedCallKeys.has(callKey)) {
       return buildSkipResult(
         params.call,

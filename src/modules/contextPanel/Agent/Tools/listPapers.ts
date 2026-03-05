@@ -19,10 +19,11 @@ export async function executeListPapersCall(
 ): Promise<AgentToolExecutionResult> {
   const libraryID = ctx.libraryID;
   const query = sanitizeText(call.query || "").trim();
-  const limit = Math.max(
-    1,
-    Math.min(12, Math.floor(Number(call.limit || 0)) || 6),
-  );
+  const rawLimit = Number(call.limit || 0);
+  const limit =
+    Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.max(1, Math.floor(rawLimit))
+      : undefined;
   const depth: ListPapersDepth =
     call.depth === "abstract" ? "abstract" : "metadata";
 
@@ -92,8 +93,8 @@ export function validateListPapersCall(
   const rawLimit = Number(call.limit || 0);
   const limit =
     Number.isFinite(rawLimit) && rawLimit > 0
-      ? Math.max(1, Math.min(12, Math.floor(rawLimit)))
-      : 6;
+      ? Math.max(1, Math.floor(rawLimit))
+      : undefined;
   const depth: ListPapersDepth = rawDepth === "abstract" ? "abstract" : "metadata";
   return { name: "list_papers", query: query || undefined, limit, depth };
 }

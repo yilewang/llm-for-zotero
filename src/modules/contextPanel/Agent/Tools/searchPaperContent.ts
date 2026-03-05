@@ -1,6 +1,11 @@
 import { estimateTextTokens } from "../../../../utils/modelInputCap";
 import { pdfTextCache } from "../../state";
 import { ensurePDFTextCached } from "../../pdfContext";
+import {
+  SEARCH_PAPER_CONTENT_DEFAULT_TOKEN_BUDGET,
+  SEARCH_PAPER_CONTENT_MAX_SNIPPETS,
+  SEARCH_PAPER_CONTENT_MIN_TOKEN_BUDGET,
+} from "../config";
 import { normalizePaperToolTarget } from "../ToolInfra/shared";
 import type {
   AgentToolCall,
@@ -8,9 +13,6 @@ import type {
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
 } from "../ToolInfra/types";
-
-/** Maximum snippets returned even if token budget allows more. */
-const MAX_SNIPPETS = 20;
 
 export function validateSearchPaperContentCall(
   call: AgentToolCall,
@@ -97,8 +99,8 @@ export async function executeSearchPaperContentCall(
   const lowerQuery = query.toLowerCase();
   const tokenBudget =
     Number.isFinite(ctx.toolTokenCap) && Number(ctx.toolTokenCap) > 0
-      ? Math.max(500, Number(ctx.toolTokenCap))
-      : 4000;
+      ? Math.max(SEARCH_PAPER_CONTENT_MIN_TOKEN_BUDGET, Number(ctx.toolTokenCap))
+      : SEARCH_PAPER_CONTENT_DEFAULT_TOKEN_BUDGET;
 
   type MatchEntry = { sectionLabel: string; chunkIndex: number; text: string };
   const matches: MatchEntry[] = [];
@@ -153,7 +155,7 @@ export async function executeSearchPaperContentCall(
   let truncated = false;
 
   for (const match of matches) {
-    if (selectedSnippets.length >= MAX_SNIPPETS) {
+    if (selectedSnippets.length >= SEARCH_PAPER_CONTENT_MAX_SNIPPETS) {
       truncated = true;
       break;
     }

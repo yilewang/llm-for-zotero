@@ -2,6 +2,10 @@ import {
   createAgentToolExecutorState,
   executeAgentToolCall,
 } from "./ToolInfra/executor";
+import {
+  SEARCH_INTERNET_DEFAULT_LIMIT,
+  SEARCH_INTERNET_MAX_LIMIT,
+} from "./config";
 import { getAgentToolDefinitions } from "./ToolInfra/registry";
 import type {
   AgentToolCall,
@@ -24,7 +28,7 @@ function buildToolInputSchema(name: AgentToolName): Record<string, unknown> {
         properties: {
           name: { const: "list_papers" },
           query: { type: "string", description: "optional search terms" },
-          limit: { type: "integer", minimum: 1, maximum: 12, default: 6 },
+          limit: { type: "integer", minimum: 1 },
           depth: {
             type: "string",
             enum: ["metadata", "abstract"],
@@ -40,7 +44,12 @@ function buildToolInputSchema(name: AgentToolName): Record<string, unknown> {
         properties: {
           name: { const: "search_internet" },
           query: { type: "string", minLength: 1 },
-          limit: { type: "integer", minimum: 1, maximum: 10, default: 6 },
+          limit: {
+            type: "integer",
+            minimum: 1,
+            maximum: SEARCH_INTERNET_MAX_LIMIT,
+            default: SEARCH_INTERNET_DEFAULT_LIMIT,
+          },
         },
         required: ["name", "query"],
         additionalProperties: false,

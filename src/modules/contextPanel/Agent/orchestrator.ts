@@ -3,7 +3,16 @@ import {
   normalizeInputTokenCap,
   normalizeMaxTokens,
 } from "../../../utils/normalization";
-import { DEFAULT_MAX_AGENT_ITERATIONS } from "./config";
+import {
+  DEFAULT_MAX_AGENT_ITERATIONS,
+  MAX_NO_PROGRESS_STEPS,
+  MAX_ROUTER_CONTEXT_DESCRIPTORS,
+  MAX_ROUTER_HISTORY_LINES,
+  MAX_ROUTER_HISTORY_LINE_CHARS,
+  MAX_ROUTER_TOOL_LOG_LINES,
+  MAX_ROUTER_TOOL_LOG_RECENT_LINES,
+  ROUTER_CONTEXT_BUDGET_SOFT_RATIO,
+} from "./config";
 import { shouldSkipAgent } from "./heuristics";
 import { resolvePaperContextRefFromAttachment } from "../paperAttribution";
 import { sanitizeText } from "../textUtils";
@@ -50,10 +59,6 @@ type AgentState = {
   uiActions: UiActionDirective[];
 };
 
-const MAX_ROUTER_HISTORY_LINES = 8;
-const MAX_ROUTER_TOOL_LOG_LINES = 8;
-const MAX_ROUTER_CONTEXT_DESCRIPTORS = 12;
-const MAX_NO_PROGRESS_STEPS = 2;
 const DEPTH_RANK: Record<AgentDepthLevel, number> = {
   metadata: 1,
   abstract: 2,
@@ -221,7 +226,10 @@ function deriveAvailableContextBudgetTokens(
     params.advanced?.inputTokenCap,
     modelLimitTokens,
   );
-  const softLimitTokens = Math.max(1, Math.floor(limitTokens * 0.9));
+  const softLimitTokens = Math.max(
+    1,
+    Math.floor(limitTokens * ROUTER_CONTEXT_BUDGET_SOFT_RATIO),
+  );
   const outputReserveTokens = normalizeMaxTokens(params.advanced?.maxTokens);
   return Math.max(0, softLimitTokens - outputReserveTokens);
 }
@@ -310,7 +318,7 @@ function summarizeConversationHistory(
     const text = sanitizeText(message.text || "")
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 160);
+      .slice(0, MAX_ROUTER_HISTORY_LINE_CHARS);
     if (text) {
       out.push(`${role}: ${text}`);
     }
@@ -320,8 +328,11 @@ function summarizeConversationHistory(
         .split(/\n+/)
         .map((line) => line.trim())
         .filter(Boolean)
-        .slice(-2)
-        .map((line) => `assistant-tool-log: ${line.slice(0, 160)}`);
+        .slice(-MAX_ROUTER_TOOL_LOG_RECENT_LINES)
+        .map(
+          (line) =>
+            `assistant-tool-log: ${line.slice(0, MAX_ROUTER_HISTORY_LINE_CHARS)}`,
+        );
       out.push(...traceLines);
     }
   }

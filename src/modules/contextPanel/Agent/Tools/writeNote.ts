@@ -6,6 +6,10 @@ import {
   ensurePDFTextCached,
 } from "../../pdfContext";
 import { sanitizeText } from "../../textUtils";
+import {
+  NOTE_MAX_OUTPUT_TOKENS,
+  NOTE_PAPER_CONTEXT_TOKENS,
+} from "../config";
 import { validateSinglePaperToolCall } from "../ToolInfra/shared";
 import type {
   AgentToolCall,
@@ -13,11 +17,6 @@ import type {
   AgentToolExecutionResult,
   ResolvedAgentToolTarget,
 } from "../ToolInfra/types";
-
-/** Approximate token budget for the paper context fed to the note writer. */
-const NOTE_PAPER_CONTEXT_TOKENS = 6000;
-/** Approximate token budget for the note generation output. */
-const NOTE_MAX_OUTPUT_TOKENS = 8192;
 
 function wantsPreviousAnswerInNote(params: {
   question: string;

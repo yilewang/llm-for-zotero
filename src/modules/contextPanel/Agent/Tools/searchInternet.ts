@@ -1,5 +1,11 @@
 import { estimateTextTokens } from "../../../../utils/modelInputCap";
 import { sanitizeText } from "../../textUtils";
+import {
+  SEARCH_INTERNET_ABSTRACT_PREVIEW_CHARS,
+  SEARCH_INTERNET_DEFAULT_LIMIT,
+  SEARCH_INTERNET_FETCH_TIMEOUT_MS,
+  SEARCH_INTERNET_MAX_LIMIT,
+} from "../config";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
@@ -10,10 +16,6 @@ const SEMANTIC_SCHOLAR_SEARCH_URL =
   "https://api.semanticscholar.org/graph/v1/paper/search";
 const SEMANTIC_SCHOLAR_FIELDS =
   "title,authors,year,abstract,externalIds,openAccessPdf";
-const DEFAULT_LIMIT = 6;
-const MAX_LIMIT = 10;
-const ABSTRACT_PREVIEW_CHARS = 300;
-const FETCH_TIMEOUT_MS = 10_000;
 
 type SemanticScholarPaper = {
   paperId?: string;
@@ -39,8 +41,8 @@ export function validateSearchInternetCall(
   const rawLimit = Number(call.limit || 0);
   const limit =
     Number.isFinite(rawLimit) && rawLimit > 0
-      ? Math.max(1, Math.min(MAX_LIMIT, Math.floor(rawLimit)))
-      : DEFAULT_LIMIT;
+      ? Math.max(1, Math.min(SEARCH_INTERNET_MAX_LIMIT, Math.floor(rawLimit)))
+      : SEARCH_INTERNET_DEFAULT_LIMIT;
   return { name: "search_internet", query, limit };
 }
 
@@ -63,8 +65,8 @@ function formatPaperEntry(paper: SemanticScholarPaper, index: number): string {
   const pdfUrl = paper.openAccessPdf?.url;
   const rawAbstract = sanitizeText(paper.abstract || "").trim();
   const abstract =
-    rawAbstract.length > ABSTRACT_PREVIEW_CHARS
-      ? rawAbstract.slice(0, ABSTRACT_PREVIEW_CHARS) + "\u2026"
+    rawAbstract.length > SEARCH_INTERNET_ABSTRACT_PREVIEW_CHARS
+      ? rawAbstract.slice(0, SEARCH_INTERNET_ABSTRACT_PREVIEW_CHARS) + "\u2026"
       : rawAbstract;
 
   const urlParts: string[] = [];
@@ -89,7 +91,10 @@ export async function executeSearchInternetCall(
   const query = sanitizeText(call.query || "").trim();
   const limit = Math.max(
     1,
-    Math.min(MAX_LIMIT, Math.floor(Number(call.limit || DEFAULT_LIMIT))),
+    Math.min(
+      SEARCH_INTERNET_MAX_LIMIT,
+      Math.floor(Number(call.limit || SEARCH_INTERNET_DEFAULT_LIMIT)),
+    ),
   );
 
   const errorResult = (message: string): AgentToolExecutionResult => ({
@@ -122,7 +127,10 @@ export async function executeSearchInternetCall(
     let response: Response;
     if (AbortControllerCtor) {
       const controller = new AbortControllerCtor();
-      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+      const timer = setTimeout(
+        () => controller.abort(),
+        SEARCH_INTERNET_FETCH_TIMEOUT_MS,
+      );
       response = await fetchFn(url.toString(), {
         method: "GET",
         headers: { Accept: "application/json" },

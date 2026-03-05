@@ -12,7 +12,12 @@ import {
 } from "../../paperSearch";
 import { sanitizeText } from "../../textUtils";
 import type { PaperContextRef } from "../../types";
-import { AGENT_METADATA_PREFIX_RATIO } from "../config";
+import {
+  ABSTRACT_SNIPPET_MAX_CHARS,
+  AGENT_METADATA_PREFIX_RATIO,
+  MAX_SELECTED_PAPER_TRACE_LABELS,
+  SEARCH_CANDIDATE_WIDEN_FACTOR,
+} from "../config";
 import {
   isLibraryCountQuestion,
   hasExplicitDeepSignals,
@@ -39,8 +44,6 @@ export type AgentContextResolution = {
   statusText: string;
   traceLines: string[];
 };
-
-const ABSTRACT_SNIPPET_MAX_CHARS = 360;
 
 function normalizeQuestionText(value: string): string {
   return sanitizeText(value || "")
@@ -132,7 +135,7 @@ function buildSelectedPaperTraceLine(
   const selectedCount = candidates.length;
   if (selectedCount <= 0) return "";
   const labels = candidates
-    .slice(0, 4)
+    .slice(0, MAX_SELECTED_PAPER_TRACE_LABELS)
     .map((candidate) => formatTracePaperLabel(candidate));
   if (!labels.length) return "";
   const normalizedTotal = Math.max(
@@ -516,12 +519,17 @@ export async function resolveAgentContext(params: {
     const shouldSelectFollowUpCandidates =
       requestedDepth === "abstract" ||
       explicitDeepRequested;
-    const papersToRead = shouldSelectFollowUpCandidates
-      ? clampReadLimit(params.plan?.maxPapersToRead, 1)
+    const requestedReadLimit = shouldSelectFollowUpCandidates
+      ? clampReadLimit(params.plan?.maxPapersToRead, 0)
       : 0;
     const searchLimit = countIntent
       ? 0
-      : Math.max(papersToRead, papersToRead * 4);
+      : requestedReadLimit > 0
+        ? Math.max(
+            requestedReadLimit,
+            requestedReadLimit * SEARCH_CANDIDATE_WIDEN_FACTOR,
+          )
+        : 0;
     const quicksearchRegularMatchCount = countIntent
       ? await countQuickSearchRegularItems(normalizedLibraryID, searchQuery)
       : 0;
@@ -531,6 +539,9 @@ export async function resolveAgentContext(params: {
       null,
       searchLimit,
     );
+    const papersToRead = shouldSelectFollowUpCandidates
+      ? clampReadLimit(params.plan?.maxPapersToRead, candidates.length)
+      : 0;
     const selectedCandidates = shouldSelectFollowUpCandidates
       ? candidates.slice(0, papersToRead)
       : [];

@@ -5,6 +5,13 @@ import type {
   AgentToolTarget,
 } from "./ToolInfra/types";
 import { sanitizeText } from "../textUtils";
+import {
+  ROUTER_MODEL_MAX_TOKENS,
+  ROUTER_MODEL_TEMPERATURE,
+  ROUTER_TRACE_MAX_CHARS,
+  SEARCH_INTERNET_DEFAULT_LIMIT,
+  SEARCH_INTERNET_MAX_LIMIT,
+} from "./config";
 import { getToolSpecs } from "./toolBroker";
 import type {
   AgentRouterParams,
@@ -102,8 +109,8 @@ function normalizeCall(value: unknown): AgentToolCall | null {
     const rawLimit = Number(typed.limit || 0);
     const limit =
       Number.isFinite(rawLimit) && rawLimit > 0
-        ? Math.max(1, Math.min(12, Math.floor(rawLimit)))
-        : 6;
+        ? Math.max(1, Math.floor(rawLimit))
+        : undefined;
     const rawDepth = sanitizeText(String(typed.depth || ""))
       .trim()
       .toLowerCase();
@@ -128,8 +135,8 @@ function normalizeCall(value: unknown): AgentToolCall | null {
     const rawLimit = Number(typed.limit || 0);
     const limit =
       Number.isFinite(rawLimit) && rawLimit > 0
-        ? Math.max(1, Math.min(10, Math.floor(rawLimit)))
-        : 6;
+        ? Math.max(1, Math.min(SEARCH_INTERNET_MAX_LIMIT, Math.floor(rawLimit)))
+        : SEARCH_INTERNET_DEFAULT_LIMIT;
     return {
       name: "search_internet",
       query,
@@ -183,7 +190,7 @@ function normalizeTrace(value: unknown): string {
   const normalized = sanitizeText(String(value || ""))
     .replace(/\s+/g, " ")
     .trim();
-  const maxChars = 500;
+  const maxChars = ROUTER_TRACE_MAX_CHARS;
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, maxChars - 1).trimEnd()}\u2026`;
 }
@@ -330,8 +337,8 @@ export async function runAgentRouterStep(
       apiBase: params.apiBase,
       apiKey: params.apiKey,
       signal: params.signal,
-      temperature: 0,
-      maxTokens: 500,
+      temperature: ROUTER_MODEL_TEMPERATURE,
+      maxTokens: ROUTER_MODEL_MAX_TOKENS,
     });
 
     return parseRouterDecision(raw);
