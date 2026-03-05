@@ -37,7 +37,8 @@ function buildSkipResult(
 
 function buildListPapersCallKey(call: AgentToolCall): string {
   const query = sanitizeText(call.query || "").trim();
-  return `list_papers:${query || "overview"}:${call.limit ?? 6}`;
+  const depth = call.depth === "abstract" ? "abstract" : "metadata";
+  return `list_papers:${query || "overview"}:${call.limit ?? 6}:${depth}`;
 }
 
 export async function executeAgentToolCall(params: {

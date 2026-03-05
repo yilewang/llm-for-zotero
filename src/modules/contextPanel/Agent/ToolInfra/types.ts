@@ -1,5 +1,7 @@
 import type { PaperContextRef } from "../../types";
 
+export type ListPapersDepth = "metadata" | "abstract";
+
 export type AgentToolName =
   | "read_paper_text"
   | "find_claim_evidence"
@@ -26,6 +28,8 @@ export type AgentToolCall = {
   query?: string;
   /** For list_papers: number of papers to return (1-12, default 6). */
   limit?: number;
+  /** For list_papers: retrieval depth stage (metadata default, abstract on escalation). */
+  depth?: ListPapersDepth;
 };
 
 export type ResolvedAgentToolTarget = {
@@ -48,6 +52,10 @@ export type AgentToolExecutionResult = {
    * targets in subsequent tool calls.  Undefined for paper tools.
    */
   retrievedPaperContexts?: PaperContextRef[];
+  /** Coarse retrieval depth represented by this tool output. */
+  depthAchieved?: "metadata" | "abstract" | "deep";
+  /** Coarse answer sufficiency estimate for the current question. */
+  sufficiency?: "high" | "medium" | "low";
   estimatedTokens: number;
   truncated: boolean;
 };

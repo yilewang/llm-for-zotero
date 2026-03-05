@@ -498,8 +498,8 @@ function buildAgentTraceHtml(
 
         const summary =
           totalMatches && totalMatches >= selectedCount
-            ? `Selected ${selectedCount} paper${selectedCount === 1 ? "" : "s"} for detailed reading (from ${totalMatches} matches)`
-            : `Selected ${selectedCount} paper${selectedCount === 1 ? "" : "s"} for detailed reading`;
+            ? `Selected ${selectedCount} paper${selectedCount === 1 ? "" : "s"} as follow-up candidates (from ${totalMatches} matches)`
+            : `Selected ${selectedCount} paper${selectedCount === 1 ? "" : "s"} as follow-up candidates`;
 
         const r = row("ok");
         r.appendChild(el("span", "llm-at-icon", "\u2726"));
@@ -513,7 +513,7 @@ function buildAgentTraceHtml(
             el(
               "span",
               "llm-at-selected-note",
-              `Showing the top ${selectedCount} papers in detail to stay within context budget.`,
+              `Showing the top ${selectedCount} candidates to stay within context budget.`,
             ),
           );
           container.appendChild(note);
@@ -2105,6 +2105,8 @@ async function buildContextPlanForRequest(params: {
   let paperContexts = params.paperContexts;
   let pinnedPaperContexts = params.pinnedPaperContexts;
   let recentPaperContexts = params.recentPaperContexts;
+  let allowPlannerPaperReads = true;
+  let agentDepthAchieved: "metadata" | "abstract" | "deep" = "deep";
   const contextBlocks: string[] = [];
   let contextPrefix = "";
   let responderContext = "";
@@ -2157,6 +2159,8 @@ async function buildContextPlanForRequest(params: {
       paperContexts = agentResult.paperContexts;
       pinnedPaperContexts = agentResult.pinnedPaperContexts;
       recentPaperContexts = agentResult.recentPaperContexts;
+      allowPlannerPaperReads = agentResult.allowPlannerPaperReads;
+      agentDepthAchieved = agentResult.depthAchieved;
       contextPrefix = sanitizeText(agentResult.contextPrefix || "").trim();
       responderContext = sanitizeText(
         agentResult.responderContext || "",
@@ -2166,6 +2170,8 @@ async function buildContextPlanForRequest(params: {
         paperContextCount: paperContexts.length,
         pinnedPaperContextCount: pinnedPaperContexts.length,
         recentPaperContextCount: recentPaperContexts.length,
+        allowPlannerPaperReads,
+        depthAchieved: agentDepthAchieved,
         hasContextPrefix: Boolean(contextPrefix),
         hasResponderContext: Boolean(responderContext),
         uiActionCount: agentResult.uiActions.length,
@@ -2188,14 +2194,21 @@ async function buildContextPlanForRequest(params: {
     .join("\n\n---\n\n");
 
   throwIfCancelled();
+  const plannerPaperContexts = allowPlannerPaperReads ? paperContexts : [];
+  const plannerPinnedPaperContexts = allowPlannerPaperReads
+    ? pinnedPaperContexts
+    : [];
+  const plannerHistoryPaperContexts = allowPlannerPaperReads
+    ? recentPaperContexts
+    : [];
   const plan = await resolveMultiContextPlan({
     activeContextItem,
     conversationMode,
     question: params.question,
     contextPrefix: plannerReservedPrefix,
-    paperContexts,
-    pinnedPaperContexts,
-    historyPaperContexts: recentPaperContexts,
+    paperContexts: plannerPaperContexts,
+    pinnedPaperContexts: plannerPinnedPaperContexts,
+    historyPaperContexts: plannerHistoryPaperContexts,
     history: params.history,
     images: params.images,
     model: params.effectiveRequestConfig.model,

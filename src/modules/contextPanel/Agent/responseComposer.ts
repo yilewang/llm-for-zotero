@@ -16,6 +16,7 @@ export function buildResponderContextBlock(params: {
   promptSource: "file" | "fallback";
   toolLogs: AgentToolLog[];
   uiActions: UiActionDirective[];
+  shouldOfferDeepenCTA?: boolean;
 }): string {
   const responderPrompt = sanitizeText(params.responderPrompt || "").trim();
   const toolLogLines = params.toolLogs.slice(-8).map((log) => log.summary);
@@ -34,6 +35,10 @@ export function buildResponderContextBlock(params: {
     ...(toolLogLines.length
       ? toolLogLines.map((line) => `- ${line}`)
       : ["- no tool calls were executed"]),
+    "",
+    "Reference style requirements:",
+    "- Avoid opaque references like 'paper 1/2/3' unless you provide explicit mapping in the same answer.",
+    "- Prefer author-year and/or title labels when mentioning examples.",
   ];
 
   if (uiActionLines.length) {
@@ -43,6 +48,13 @@ export function buildResponderContextBlock(params: {
       ...uiActionLines.map((line) => `- ${line}`),
       "",
       "When writing the final user response, include a clear action sentence for these pending UI actions.",
+    );
+  }
+
+  if (params.shouldOfferDeepenCTA) {
+    lines.push(
+      "",
+      "If the answer is broad and library-level, end with one optional follow-up sentence offering deeper paper-by-paper analysis on request.",
     );
   }
 

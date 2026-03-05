@@ -5,6 +5,7 @@ import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
+  ListPapersDepth,
 } from "../ToolInfra/types";
 
 /**
@@ -22,6 +23,8 @@ export async function executeListPapersCall(
     1,
     Math.min(12, Math.floor(Number(call.limit || 0)) || 6),
   );
+  const depth: ListPapersDepth =
+    call.depth === "abstract" ? "abstract" : "metadata";
 
   const errorResult = (message: string): AgentToolExecutionResult => ({
     name: "list_papers",
@@ -49,6 +52,7 @@ export async function executeListPapersCall(
       action,
       searchQuery: query || undefined,
       maxPapersToRead: limit,
+      depth,
     },
     availableContextBudgetTokens: ctx.availableContextBudgetTokens,
     onStatus: ctx.onStatus,
@@ -67,6 +71,8 @@ export async function executeListPapersCall(
     groundingText,
     addedPaperContexts: result.paperContexts,
     retrievedPaperContexts: result.paperContexts,
+    depthAchieved: result.depthAchieved,
+    sufficiency: result.sufficiency,
     estimatedTokens: estimateTextTokens(groundingText),
     truncated: false,
   };
@@ -76,11 +82,18 @@ export function validateListPapersCall(
   call: AgentToolCall,
 ): AgentToolCall | null {
   if (call.name !== "list_papers") return null;
+  const rawDepth = sanitizeText(String(call.depth || ""))
+    .trim()
+    .toLowerCase();
+  if (rawDepth && rawDepth !== "metadata" && rawDepth !== "abstract") {
+    return null;
+  }
   const query = sanitizeText(call.query || "").trim();
   const rawLimit = Number(call.limit || 0);
   const limit =
     Number.isFinite(rawLimit) && rawLimit > 0
       ? Math.max(1, Math.min(12, Math.floor(rawLimit)))
       : 6;
-  return { name: "list_papers", query: query || undefined, limit };
+  const depth: ListPapersDepth = rawDepth === "abstract" ? "abstract" : "metadata";
+  return { name: "list_papers", query: query || undefined, limit, depth };
 }

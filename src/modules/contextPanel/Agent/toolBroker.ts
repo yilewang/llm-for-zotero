@@ -25,6 +25,11 @@ function buildToolInputSchema(name: AgentToolName): Record<string, unknown> {
           name: { const: "list_papers" },
           query: { type: "string", description: "optional search terms" },
           limit: { type: "integer", minimum: 1, maximum: 12, default: 6 },
+          depth: {
+            type: "string",
+            enum: ["metadata", "abstract"],
+            default: "metadata",
+          },
         },
         required: ["name"],
         additionalProperties: false,

@@ -7,10 +7,17 @@ import { DEFAULT_MAX_AGENT_ITERATIONS } from "./config";
 import { shouldSkipAgent } from "./heuristics";
 import { resolvePaperContextRefFromAttachment } from "../paperAttribution";
 import { sanitizeText } from "../textUtils";
+import {
+  deriveRetrievalPolicy,
+  isDeepPaperTool,
+  type AgentDepthLevel,
+  type AgentSufficiency,
+} from "./retrievalPolicy";
 import type {
   AgentToolCall,
   AgentToolExecutionContext,
   AgentToolExecutionResult,
+  AgentToolName,
 } from "./ToolInfra/types";
 import type { Message, PaperContextRef } from "../types";
 import { loadAgentPromptPack } from "./promptPack";
@@ -47,6 +54,89 @@ const MAX_ROUTER_HISTORY_LINES = 8;
 const MAX_ROUTER_TOOL_LOG_LINES = 8;
 const MAX_ROUTER_CONTEXT_DESCRIPTORS = 12;
 const MAX_NO_PROGRESS_STEPS = 2;
+const DEPTH_RANK: Record<AgentDepthLevel, number> = {
+  metadata: 1,
+  abstract: 2,
+  deep: 3,
+};
+
+function mergeDepthLevel(
+  current: AgentDepthLevel,
+  next: AgentDepthLevel,
+): AgentDepthLevel {
+  return DEPTH_RANK[next] > DEPTH_RANK[current] ? next : current;
+}
+
+function buildAllowedToolNames(maxDepthAllowed: AgentDepthLevel): Set<string> {
+  const out = new Set<string>(getToolSpecs().map((spec) => spec.name));
+  if (maxDepthAllowed === "deep") return out;
+  for (const name of Array.from(out)) {
+    if (isDeepPaperTool(name as AgentToolName)) {
+      out.delete(name);
+    }
+  }
+  return out;
+}
+
+function enforcePolicyOnToolCall(params: {
+  call: AgentToolCall;
+  maxDepthAllowed: AgentDepthLevel;
+  metadataAttempted: boolean;
+  latestSufficiency: AgentSufficiency | null;
+}): AgentToolCall | null {
+  if (
+    params.maxDepthAllowed !== "deep" &&
+    isDeepPaperTool(params.call.name as AgentToolName)
+  ) {
+    return null;
+  }
+
+  if (params.call.name !== "list_papers") {
+    return params.call;
+  }
+
+  let depth: "metadata" | "abstract" =
+    params.call.depth === "abstract" ? "abstract" : "metadata";
+  if (params.maxDepthAllowed === "metadata") {
+    depth = "metadata";
+  } else if (params.maxDepthAllowed === "abstract") {
+    if (!params.metadataAttempted) {
+      depth = "metadata";
+    } else if (params.latestSufficiency !== "high") {
+      depth = "abstract";
+    } else {
+      depth = "metadata";
+    }
+  }
+
+  return { ...params.call, depth };
+}
+
+function buildPolicyHints(params: {
+  intent: string;
+  maxDepthAllowed: AgentDepthLevel;
+  metadataAttempted: boolean;
+  abstractAttempted: boolean;
+  latestSufficiency: AgentSufficiency | null;
+}): string[] {
+  const hints = [
+    `intent: ${params.intent}`,
+    `max depth allowed: ${params.maxDepthAllowed}`,
+  ];
+  if (params.maxDepthAllowed === "abstract") {
+    hints.push("stage rule: metadata first, then abstract only if needed.");
+  }
+  if (params.metadataAttempted) {
+    hints.push("metadata stage already executed.");
+  }
+  if (params.abstractAttempted) {
+    hints.push("abstract stage already executed.");
+  }
+  if (params.latestSufficiency) {
+    hints.push(`latest sufficiency: ${params.latestSufficiency}`);
+  }
+  return hints;
+}
 
 function dedupePaperContexts(
   values: (PaperContextRef | null | undefined)[],
@@ -73,9 +163,16 @@ function summarizePaperRef(ref: PaperContextRef): string {
 }
 
 function formatToolCallLabel(call: AgentToolCall): string {
-  if (call.name === "list_papers" || call.name === "search_internet") {
+  if (call.name === "search_internet") {
     const query = sanitizeText(call.query || "").trim();
     return query ? `${call.name}(\"${query}\")` : `${call.name}()`;
+  }
+  if (call.name === "list_papers") {
+    const query = sanitizeText(call.query || "").trim();
+    const depth = call.depth === "abstract" ? "abstract" : "metadata";
+    return query
+      ? `${call.name}(\"${query}\", depth=${depth})`
+      : `${call.name}(depth=${depth})`;
   }
   if (call.target) {
     if ("index" in call.target) {
@@ -90,12 +187,22 @@ function summarizeToolResult(
   iteration: number,
   result: AgentToolExecutionResult,
 ): AgentToolLog {
-  const summary = `${result.name} | ${result.targetLabel} | ${result.ok ? "complete" : "skipped"}`;
+  const extra: string[] = [];
+  if (result.depthAchieved) extra.push(`depth=${result.depthAchieved}`);
+  if (result.sufficiency) extra.push(`sufficiency=${result.sufficiency}`);
+  const summary = [
+    result.name,
+    result.targetLabel,
+    result.ok ? "complete" : "skipped",
+    ...extra,
+  ].join(" | ");
   return {
     iteration,
     toolName: result.name,
     targetLabel: result.targetLabel,
     ok: result.ok,
+    depthAchieved: result.depthAchieved,
+    sufficiency: result.sufficiency,
     traceLines: [...result.traceLines],
     summary,
   };
@@ -290,12 +397,17 @@ function buildRouterSummary(params: {
   hasImages: boolean;
   libraryID: number;
   previousAssistantAnswerText: string;
+  policyHints: string[];
+  allowedToolNames: Set<string>;
 }): RouterContextSummary {
-  const toolSpecs = getToolSpecs();
+  const toolSpecs = getToolSpecs().filter((spec) =>
+    params.allowedToolNames.has(spec.name),
+  );
   return {
     question: params.question,
     conversationMode: params.state.conversationMode,
     libraryAvailable: params.libraryID > 0,
+    policyHints: params.policyHints,
     remainingBudgetTokens: params.remainingBudgetTokens,
     iterationIndex: params.iterationIndex,
     maxIterations: params.maxIterations,
@@ -338,7 +450,15 @@ function applyToolResult(
   if (call.name === "list_papers" && result.retrievedPaperContexts?.length) {
     state.retrievedPaperContexts = result.retrievedPaperContexts;
     state.paperContexts = [...result.retrievedPaperContexts];
-    state.pinnedPaperContexts = [...result.retrievedPaperContexts];
+    state.recentPaperContexts = [];
+    state.conversationMode = "open";
+    state.activeContextItem = null;
+    progressed = true;
+  } else if (call.name === "list_papers") {
+    // A list_papers call without follow-up candidates (e.g., count intent) must
+    // still reset stale retrieved/selected contexts from prior turns.
+    state.retrievedPaperContexts = [];
+    state.paperContexts = [];
     state.recentPaperContexts = [];
     state.conversationMode = "open";
     state.activeContextItem = null;
@@ -358,6 +478,9 @@ function buildResult(params: {
   state: AgentState;
   responderPrompt: string;
   promptSource: "file" | "fallback";
+  allowPlannerPaperReads: boolean;
+  depthAchieved: AgentDepthLevel;
+  shouldOfferDeepenCTA: boolean;
 }): AgentOrchestratorResult {
   return {
     activeContextItem: params.state.activeContextItem,
@@ -374,7 +497,10 @@ function buildResult(params: {
       promptSource: params.promptSource,
       toolLogs: params.state.toolLogs,
       uiActions: params.state.uiActions,
+      shouldOfferDeepenCTA: params.shouldOfferDeepenCTA,
     }),
+    allowPlannerPaperReads: params.allowPlannerPaperReads,
+    depthAchieved: params.depthAchieved,
     uiActions: params.state.uiActions,
     toolLogs: params.state.toolLogs,
   };
@@ -438,6 +564,14 @@ export function createAgentOrchestratorRunner(
         ...state.recentPaperContexts,
       ]).length > 0;
 
+    const retrievalPolicy = deriveRetrievalPolicy({
+      question: params.question,
+      conversationMode: state.conversationMode,
+      hasActivePaperContext: Boolean(state.activePaperContext),
+      selectedPaperContextCount: params.paperContexts.length,
+      pinnedPaperContextCount: params.pinnedPaperContexts.length,
+    });
+
     if (
       shouldSkipAgent({
         question: params.question,
@@ -451,15 +585,29 @@ export function createAgentOrchestratorRunner(
         state,
         responderPrompt: promptPack.responderPrompt,
         promptSource: promptPack.source,
+        allowPlannerPaperReads: retrievalPolicy.allowPlannerPaperReads,
+        depthAchieved:
+          retrievalPolicy.maxDepthAllowed === "deep"
+            ? "deep"
+            : "metadata",
+        shouldOfferDeepenCTA: retrievalPolicy.shouldOfferDeepenCTA,
       });
     }
 
     throwIfCancelled();
     params.onTrace?.("Planning Zotero retrieval with agent...");
+    params.onTrace?.(
+      `Retrieval policy: intent=${retrievalPolicy.intent}, maxDepth=${retrievalPolicy.maxDepthAllowed}.`,
+    );
 
     const totalBudget = deriveAvailableContextBudgetTokens(params);
     const brokerState = createAgentToolBrokerState();
     let noProgressStreak = 0;
+    let metadataAttempted = false;
+    let abstractAttempted = false;
+    let latestSufficiency: AgentSufficiency | null = null;
+    let depthAchieved: AgentDepthLevel =
+      retrievalPolicy.maxDepthAllowed === "deep" ? "deep" : "metadata";
     const previousAssistantAnswerText = derivePreviousAssistantAnswerText(
       params.historyMessages,
     );
@@ -481,6 +629,39 @@ export function createAgentOrchestratorRunner(
         break;
       }
 
+      if (retrievalPolicy.maxDepthAllowed === "metadata" && metadataAttempted) {
+        params.onTrace?.(
+          "Metadata stage complete under policy; stopping retrieval.",
+        );
+        break;
+      }
+
+      if (retrievalPolicy.maxDepthAllowed === "abstract") {
+        if (abstractAttempted) {
+          params.onTrace?.(
+            "Abstract stage complete under policy; stopping retrieval.",
+          );
+          break;
+        }
+        if (metadataAttempted && latestSufficiency === "high") {
+          params.onTrace?.(
+            "Metadata stage is already sufficient; stopping retrieval.",
+          );
+          break;
+        }
+      }
+
+      const allowedToolNames = buildAllowedToolNames(
+        retrievalPolicy.maxDepthAllowed,
+      );
+      const policyHints = buildPolicyHints({
+        intent: retrievalPolicy.intent,
+        maxDepthAllowed: retrievalPolicy.maxDepthAllowed,
+        metadataAttempted,
+        abstractAttempted,
+        latestSufficiency,
+      });
+
       const summary = buildRouterSummary({
         state,
         question: params.question,
@@ -492,6 +673,8 @@ export function createAgentOrchestratorRunner(
         hasImages: (params.images?.length || 0) > 0,
         libraryID: Number(params.item.libraryID),
         previousAssistantAnswerText,
+        policyHints,
+        allowedToolNames,
       });
 
       const decision = await resolvedDeps.runRouterStep({
@@ -512,7 +695,19 @@ export function createAgentOrchestratorRunner(
         break;
       }
 
-      const toolLabel = formatToolCallLabel(decision.call);
+      const policyCall = enforcePolicyOnToolCall({
+        call: decision.call,
+        maxDepthAllowed: retrievalPolicy.maxDepthAllowed,
+        metadataAttempted,
+        latestSufficiency,
+      });
+      if (!policyCall) {
+        params.onTrace?.("Skipped tool call due to retrieval depth policy.");
+        noProgressStreak += 1;
+        continue;
+      }
+
+      const toolLabel = formatToolCallLabel(policyCall);
       params.onTrace?.(`Tool call: ${toolLabel}.`);
 
       const toolTokenCap = computeToolTokenCap(
@@ -529,7 +724,7 @@ export function createAgentOrchestratorRunner(
       }
 
       const outcome = await resolvedDeps.executeTool({
-        call: decision.call,
+        call: policyCall,
         ctx: buildToolContext(
           params,
           state,
@@ -548,6 +743,20 @@ export function createAgentOrchestratorRunner(
       const toolLog = summarizeToolResult(i + 1, result);
       state.toolLogs.push(toolLog);
 
+      if (policyCall.name === "list_papers") {
+        const depth = result.depthAchieved || policyCall.depth || "metadata";
+        if (depth === "abstract") {
+          abstractAttempted = true;
+          depthAchieved = mergeDepthLevel(depthAchieved, "abstract");
+        } else {
+          metadataAttempted = true;
+          depthAchieved = mergeDepthLevel(depthAchieved, "metadata");
+        }
+        latestSufficiency = result.sufficiency || "medium";
+      } else if (isDeepPaperTool(policyCall.name as AgentToolName)) {
+        depthAchieved = mergeDepthLevel(depthAchieved, "deep");
+      }
+
       if (outcome.kind === "error") {
         noProgressStreak += 1;
         continue;
@@ -557,7 +766,7 @@ export function createAgentOrchestratorRunner(
         state.uiActions.push(outcome.action);
       }
 
-      const progressed = applyToolResult(state, result, decision.call);
+      const progressed = applyToolResult(state, result, policyCall);
       if (outcome.kind === "ui_action") {
         noProgressStreak = 0;
       } else if (progressed) {
@@ -571,6 +780,9 @@ export function createAgentOrchestratorRunner(
       state,
       responderPrompt: promptPack.responderPrompt,
       promptSource: promptPack.source,
+      allowPlannerPaperReads: retrievalPolicy.allowPlannerPaperReads,
+      depthAchieved,
+      shouldOfferDeepenCTA: retrievalPolicy.shouldOfferDeepenCTA,
     });
   };
 }

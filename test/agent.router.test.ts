@@ -22,18 +22,20 @@ describe("agent router", function () {
     const decision = parseRouterDecision(
       JSON.stringify({
         decision: "tool_call",
-        trace: "Read method section first.",
+        trace: "Read library metadata first.",
         call: {
-          name: "get_paper_sections",
-          target: { scope: "active-paper" },
+          name: "list_papers",
+          query: "hippocampus",
+          limit: 6,
+          depth: "metadata",
         },
       }),
     );
 
     assert.equal(decision.decision, "tool_call");
     if (decision.decision !== "tool_call") return;
-    assert.equal(decision.call.name, "get_paper_sections");
-    assert.deepEqual(decision.call.target, { scope: "active-paper" });
+    assert.equal(decision.call.name, "list_papers");
+    assert.equal(decision.call.depth, "metadata");
   });
 
   it("falls back to stop when call is invalid", function () {
@@ -42,8 +44,9 @@ describe("agent router", function () {
         decision: "tool_call",
         trace: "Malformed call",
         call: {
-          name: "search_paper_content",
-          target: { scope: "active-paper" },
+          name: "list_papers",
+          query: "hippocampus",
+          depth: "fulltext",
         },
       }),
     );

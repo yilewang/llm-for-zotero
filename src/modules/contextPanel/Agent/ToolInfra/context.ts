@@ -13,12 +13,20 @@ import {
 import { sanitizeText } from "../../textUtils";
 import type { PaperContextRef } from "../../types";
 import { AGENT_METADATA_PREFIX_RATIO } from "../config";
+import {
+  isLibraryCountQuestion,
+  hasExplicitDeepSignals,
+  isLibraryListingQuestion,
+  isLibraryThematicSummaryQuestion,
+  type AgentSufficiency,
+} from "../retrievalPolicy";
 
 /** Minimal plan shape consumed by resolveAgentContext. */
 type AgentContextPlan = {
   action?: string;
   searchQuery?: string;
   maxPapersToRead?: number;
+  depth?: "metadata" | "abstract";
 };
 
 export type AgentContextResolution = {
@@ -26,9 +34,13 @@ export type AgentContextResolution = {
   contextPrefix: string;
   paperContexts: PaperContextRef[];
   pinnedPaperContexts: PaperContextRef[];
+  depthAchieved: "metadata" | "abstract";
+  sufficiency: AgentSufficiency;
   statusText: string;
   traceLines: string[];
 };
+
+const ABSTRACT_SNIPPET_MAX_CHARS = 360;
 
 function normalizeQuestionText(value: string): string {
   return sanitizeText(value || "")
@@ -50,11 +62,7 @@ function hasLibraryReference(normalizedQuestion: string): boolean {
 }
 
 function isCountIntentQuestion(question: string): boolean {
-  const normalizedQuestion = normalizeQuestionText(question);
-  if (!normalizedQuestion) return false;
-  return /\b(?:how many|count|number of|total number|how much)\b/.test(
-    normalizedQuestion,
-  );
+  return isLibraryCountQuestion(question);
 }
 
 export function isLibraryOverviewQuery(question: string): boolean {
@@ -121,16 +129,19 @@ function buildSelectedPaperTraceLine(
   candidates: PaperSearchGroupCandidate[],
   totalMatches: number,
 ): string {
+  const selectedCount = candidates.length;
+  if (selectedCount <= 0) return "";
   const labels = candidates
     .slice(0, 4)
     .map((candidate) => formatTracePaperLabel(candidate));
   if (!labels.length) return "";
-  const selectedCount = labels.length;
   const normalizedTotal = Math.max(
     selectedCount,
     Math.floor(Number(totalMatches) || selectedCount),
   );
-  return `Selected papers (${selectedCount} of ${normalizedTotal} matches): ${labels.join(" | ")}`;
+  const hiddenCount = Math.max(0, selectedCount - labels.length);
+  const overflow = hiddenCount > 0 ? ` | +${hiddenCount} more` : "";
+  return `Selected papers (${selectedCount} of ${normalizedTotal} matches): ${labels.join(" | ")}${overflow}`;
 }
 
 function clampReadLimit(value: number | undefined, fallback: number): number {
@@ -153,11 +164,75 @@ function dedupePaperContexts(values: PaperContextRef[]): PaperContextRef[] {
 
 function formatPaperListLine(
   candidate: PaperSearchGroupCandidate,
-  index: number,
+  abstractText?: string,
 ): string {
   const ref = buildPaperContextRef(candidate);
   const citation = ref ? formatPaperCitationLabel(ref) : "";
-  return `${index + 1}. ${candidate.title}${citation ? ` - ${citation}` : ""}`;
+  const base = `- ${candidate.title}${citation ? ` - ${citation}` : ""}`;
+  if (!abstractText) return base;
+  return `${base}\n  Abstract: ${abstractText}`;
+}
+
+function normalizeAbstractText(value: string): string {
+  return sanitizeText(value || "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getAbstractSnippetForCandidate(
+  candidate: PaperSearchGroupCandidate,
+  maxChars = ABSTRACT_SNIPPET_MAX_CHARS,
+): string {
+  const item = Zotero.Items.get(candidate.itemId);
+  if (!item) return "";
+  const rawAbstract = normalizeAbstractText(
+    String(item.getField("abstractNote") || ""),
+  );
+  if (!rawAbstract) return "";
+  if (rawAbstract.length <= maxChars) return rawAbstract;
+  return `${rawAbstract.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function getSufficiencyForLibraryResult(params: {
+  question: string;
+  depth: "metadata" | "abstract";
+  hasResults: boolean;
+  hasQuicksearchCount: boolean;
+}): AgentSufficiency {
+  if (!params.hasResults) return "high";
+  if (params.depth === "abstract") return "high";
+  if (isLibraryCountQuestion(params.question) && params.hasQuicksearchCount) {
+    return "high";
+  }
+  if (isLibraryCountQuestion(params.question)) return "high";
+  if (isLibraryListingQuestion(params.question)) return "high";
+  if (isLibraryThematicSummaryQuestion(params.question)) return "low";
+  return "medium";
+}
+
+function buildSufficiencyTraceLine(params: {
+  sufficiency: AgentSufficiency;
+  depth: "metadata" | "abstract";
+  question: string;
+  hasQuicksearchCount: boolean;
+}): string {
+  if (
+    params.depth === "metadata" &&
+    params.sufficiency === "high" &&
+    isLibraryCountQuestion(params.question) &&
+    params.hasQuicksearchCount
+  ) {
+    return "Sufficiency hint: sufficiency=high (metadata count available).";
+  }
+  if (
+    params.depth === "metadata" &&
+    params.sufficiency === "low" &&
+    isLibraryThematicSummaryQuestion(params.question)
+  ) {
+    return "Sufficiency hint: sufficiency=low (abstract tier recommended).";
+  }
+  return `Sufficiency hint: sufficiency=${params.sufficiency} (depth=${params.depth}).`;
 }
 
 function buildGroundingRulesBlock(extraLine: string): string[] {
@@ -171,21 +246,27 @@ function buildGroundingRulesBlock(extraLine: string): string[] {
 function buildLibraryOverviewContext(
   candidates: PaperSearchGroupCandidate[],
   papersToRead: number,
+  depth: "metadata" | "abstract",
   maxPrefixTokens?: number,
 ): string {
+  const includeAbstract = depth === "abstract";
   const lines = [
     "Zotero Agent Retrieval",
     "- Mode: whole-library overview",
+    `- Retrieval depth: ${depth}`,
     `- Readable PDF-backed papers found in the active Zotero library: ${candidates.length}`,
-    `- Papers loaded for detailed reading in this answer: ${Math.min(candidates.length, papersToRead)}`,
+    `- Papers selected for optional follow-up tools in this step: ${Math.min(candidates.length, papersToRead)}`,
     ...buildGroundingRulesBlock(
       "- If the user asks for information outside this retrieved snapshot, say that you do not have enough grounded Zotero data.",
     ),
   ];
   return appendPaperListWithinBudget({
     baseLines: lines,
-    heading: "Retrieved library paper list:",
+    heading: includeAbstract
+      ? "Retrieved library paper list with abstracts:"
+      : "Retrieved library paper list:",
     candidates,
+    includeAbstract,
     maxPrefixTokens,
     overflowLabel: (remainingCount) =>
       `- Additional readable papers not listed here due to brevity: ${remainingCount}`,
@@ -196,12 +277,16 @@ function buildLibrarySearchContext(
   question: string,
   candidates: PaperSearchGroupCandidate[],
   papersToRead: number,
+  depth: "metadata" | "abstract",
+  includePaperList: boolean,
   quicksearchRegularMatchCount?: number,
   maxPrefixTokens?: number,
 ): string {
+  const includeAbstract = depth === "abstract";
   const lines = [
     "Zotero Agent Retrieval",
     "- Mode: library search",
+    `- Retrieval depth: ${depth}`,
     `- User request: ${sanitizeText(question).trim() || "(empty)"}`,
     Number.isFinite(quicksearchRegularMatchCount) &&
     Number(quicksearchRegularMatchCount) > 0
@@ -212,15 +297,24 @@ function buildLibrarySearchContext(
       ? "- Counting guidance: for count/how-many requests, use the quicksearch regular-item match count as the total."
       : "",
     `- Matched readable PDF-backed papers: ${candidates.length}`,
-    `- Papers loaded for detailed reading in this answer: ${Math.min(candidates.length, papersToRead)}`,
+    `- Papers selected for optional follow-up tools in this step: ${Math.min(candidates.length, papersToRead)}`,
+    includePaperList
+      ? ""
+      : "- Per-paper listing is omitted in count mode to save context tokens.",
     ...buildGroundingRulesBlock(
       "- If there are no retrieved matches for a claim, say that the current Zotero retrieval did not find evidence for it.",
     ),
   ].filter(Boolean) as string[];
+  if (!includePaperList) {
+    return lines.join("\n");
+  }
   return appendPaperListWithinBudget({
     baseLines: lines,
-    heading: "Top retrieved library matches:",
+    heading: includeAbstract
+      ? "Top retrieved library matches with abstracts:"
+      : "Top retrieved library matches:",
     candidates,
+    includeAbstract,
     maxPrefixTokens,
     overflowLabel: (remainingCount) =>
       `- Additional readable matches not listed here due to brevity: ${remainingCount}`,
@@ -268,6 +362,7 @@ function appendPaperListWithinBudget(params: {
   baseLines: string[];
   heading: string;
   candidates: PaperSearchGroupCandidate[];
+  includeAbstract?: boolean;
   maxPrefixTokens?: number;
   overflowLabel: (remainingCount: number) => string;
 }): string {
@@ -281,8 +376,13 @@ function appendPaperListWithinBudget(params: {
     return params.baseLines.join("\n");
   }
   let listedCount = 0;
-  for (const [index, candidate] of params.candidates.entries()) {
-    const line = formatPaperListLine(candidate, index);
+  for (const candidate of params.candidates) {
+    const line = formatPaperListLine(
+      candidate,
+      params.includeAbstract
+        ? getAbstractSnippetForCandidate(candidate)
+        : undefined,
+    );
     const next = [...lines, line].join("\n");
     if (estimateTextTokens(next) > budget && listedCount > 0) {
       break;
@@ -320,6 +420,7 @@ export async function resolveAgentContext(params: {
   }
 
   const planAction = params.plan?.action;
+  const requestedDepth = params.plan?.depth === "abstract" ? "abstract" : "metadata";
   const forceOverview =
     planAction === "library-overview" ||
     (!planAction && isLibraryOverviewQuery(params.question));
@@ -329,13 +430,21 @@ export async function resolveAgentContext(params: {
       isLibraryScopedSearchQuery(params.question, params.conversationMode));
 
   if (forceOverview) {
-    params.onStatus?.("Reading library metadata now...");
-    const candidates = await listLibraryPaperCandidates(normalizedLibraryID);
-    const papersToRead = clampReadLimit(
-      params.plan?.maxPapersToRead,
-      Math.max(1, candidates.length),
+    const explicitDeepRequested = hasExplicitDeepSignals(params.question);
+    const shouldSelectFollowUpCandidates =
+      requestedDepth === "abstract" || explicitDeepRequested;
+    params.onStatus?.(
+      requestedDepth === "abstract"
+        ? "Reading library abstracts now..."
+        : "Reading library metadata now...",
     );
-    const selectedCandidates = candidates.slice(0, papersToRead);
+    const candidates = await listLibraryPaperCandidates(normalizedLibraryID);
+    const papersToRead = shouldSelectFollowUpCandidates
+      ? clampReadLimit(params.plan?.maxPapersToRead, Math.max(1, candidates.length))
+      : 0;
+    const selectedCandidates = shouldSelectFollowUpCandidates
+      ? candidates.slice(0, papersToRead)
+      : [];
     const prefixBudget = deriveAgentPrefixTokenBudget({
       availableContextBudgetTokens: params.availableContextBudgetTokens,
       papersToRead,
@@ -348,18 +457,45 @@ export async function resolveAgentContext(params: {
         ),
     );
     const traceLines = [
+      `Depth stage: ${requestedDepth}.`,
       candidates.length
         ? `Retrieved ${candidates.length} readable papers from the active library.`
         : "No readable library papers were found.",
-      buildSelectedPaperTraceLine(selectedCandidates, candidates.length),
+      shouldSelectFollowUpCandidates
+        ? buildSelectedPaperTraceLine(selectedCandidates, candidates.length)
+        : "Metadata stage: skipped per-paper follow-up candidate selection.",
+      buildSufficiencyTraceLine({
+        sufficiency: getSufficiencyForLibraryResult({
+          question: params.question,
+          depth: requestedDepth,
+          hasResults: candidates.length > 0,
+          hasQuicksearchCount: false,
+        }),
+        depth: requestedDepth,
+        question: params.question,
+        hasQuicksearchCount: false,
+      }),
     ].filter(Boolean);
+    const sufficiency = getSufficiencyForLibraryResult({
+      question: params.question,
+      depth: requestedDepth,
+      hasResults: candidates.length > 0,
+      hasQuicksearchCount: false,
+    });
     return {
       mode: "library-overview",
       contextPrefix: candidates.length
-        ? buildLibraryOverviewContext(candidates, papersToRead, prefixBudget)
+        ? buildLibraryOverviewContext(
+            candidates,
+            papersToRead,
+            requestedDepth,
+            prefixBudget,
+          )
         : buildNoResultsContext("library-overview", params.question),
       paperContexts,
       pinnedPaperContexts: paperContexts,
+      depthAchieved: requestedDepth,
+      sufficiency,
       statusText: candidates.length
         ? `Reading library (${candidates.length} papers)`
         : "No readable library papers found",
@@ -368,11 +504,21 @@ export async function resolveAgentContext(params: {
   }
 
   if (forceSearch) {
-    params.onStatus?.("Searching library metadata now...");
+    params.onStatus?.(
+      requestedDepth === "abstract"
+        ? "Searching library abstracts now..."
+        : "Searching library metadata now...",
+    );
     const searchQuery =
       sanitizeText(params.plan?.searchQuery || "").trim() || params.question;
-    const papersToRead = clampReadLimit(params.plan?.maxPapersToRead, 1);
     const countIntent = isCountIntentQuestion(params.question);
+    const explicitDeepRequested = hasExplicitDeepSignals(params.question);
+    const shouldSelectFollowUpCandidates =
+      requestedDepth === "abstract" ||
+      explicitDeepRequested;
+    const papersToRead = shouldSelectFollowUpCandidates
+      ? clampReadLimit(params.plan?.maxPapersToRead, 1)
+      : 0;
     const searchLimit = countIntent
       ? 0
       : Math.max(papersToRead, papersToRead * 4);
@@ -385,7 +531,9 @@ export async function resolveAgentContext(params: {
       null,
       searchLimit,
     );
-    const selectedCandidates = candidates.slice(0, papersToRead);
+    const selectedCandidates = shouldSelectFollowUpCandidates
+      ? candidates.slice(0, papersToRead)
+      : [];
     const prefixBudget = deriveAgentPrefixTokenBudget({
       availableContextBudgetTokens: params.availableContextBudgetTokens,
       papersToRead,
@@ -398,6 +546,7 @@ export async function resolveAgentContext(params: {
         ),
     );
     const traceLines = [
+      `Depth stage: ${requestedDepth}.`,
       `Library search query: ${sanitizeText(searchQuery).replace(/\s+/g, " ").trim() || "(empty)"}`,
       countIntent
         ? "Count intent detected: searching across all searchable library fields."
@@ -408,8 +557,29 @@ export async function resolveAgentContext(params: {
       candidates.length
         ? `Matched ${candidates.length} readable papers in the active library.`
         : "No readable library matches were found.",
-      buildSelectedPaperTraceLine(selectedCandidates, candidates.length),
+      shouldSelectFollowUpCandidates
+        ? buildSelectedPaperTraceLine(selectedCandidates, candidates.length)
+        : countIntent
+          ? "Count-only metadata stage: skipped per-paper follow-up candidate selection."
+          : "Metadata stage: skipped per-paper follow-up candidate selection.",
+      buildSufficiencyTraceLine({
+        sufficiency: getSufficiencyForLibraryResult({
+          question: params.question,
+          depth: requestedDepth,
+          hasResults: candidates.length > 0,
+          hasQuicksearchCount: countIntent,
+        }),
+        depth: requestedDepth,
+        question: params.question,
+        hasQuicksearchCount: countIntent,
+      }),
     ].filter(Boolean);
+    const sufficiency = getSufficiencyForLibraryResult({
+      question: params.question,
+      depth: requestedDepth,
+      hasResults: candidates.length > 0,
+      hasQuicksearchCount: countIntent,
+    });
     return {
       mode: "library-search",
       contextPrefix: candidates.length
@@ -417,12 +587,16 @@ export async function resolveAgentContext(params: {
             searchQuery,
             candidates,
             papersToRead,
+            requestedDepth,
+            shouldSelectFollowUpCandidates,
             quicksearchRegularMatchCount,
             prefixBudget,
           )
         : buildNoResultsContext("library-search", searchQuery),
       paperContexts,
       pinnedPaperContexts: paperContexts,
+      depthAchieved: requestedDepth,
+      sufficiency,
       statusText: candidates.length
         ? `Searching library (${candidates.length} matches)`
         : "No readable library matches found",

@@ -11,6 +11,7 @@ export type RouterContextSummary = {
   question: string;
   conversationMode: "paper" | "open";
   libraryAvailable: boolean;
+  policyHints: string[];
   remainingBudgetTokens: number;
   iterationIndex: number;
   maxIterations: number;
@@ -85,6 +86,8 @@ export type AgentToolLog = {
   toolName: string;
   targetLabel: string;
   ok: boolean;
+  depthAchieved?: "metadata" | "abstract" | "deep";
+  sufficiency?: "high" | "medium" | "low";
   traceLines: string[];
   summary: string;
 };
@@ -126,6 +129,8 @@ export type AgentOrchestratorResult = {
   recentPaperContexts: PaperContextRef[];
   contextPrefix: string;
   responderContext: string;
+  allowPlannerPaperReads: boolean;
+  depthAchieved: "metadata" | "abstract" | "deep";
   uiActions: UiActionDirective[];
   toolLogs: AgentToolLog[];
 };

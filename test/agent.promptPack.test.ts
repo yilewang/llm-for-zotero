@@ -58,9 +58,9 @@ describe("agent promptPack", function () {
     assert.equal(fetchCalls, 2);
     assert.isTrue(
       requestedUrls.every((url) =>
-        url.includes("/content/Agent/prompts/"),
+        url.includes("/src/modules/contextPanel/Agent/prompts/"),
       ),
-      "Prompt files should be loaded from content/Agent/prompts",
+      "Prompt files should be loaded from src/modules/contextPanel/Agent/prompts",
     );
   });
 

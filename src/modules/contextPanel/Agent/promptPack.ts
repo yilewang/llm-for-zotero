@@ -3,7 +3,7 @@ import type { AgentPromptPack } from "./types";
 
 const ROUTER_PROMPT_FILE = "agent-router.txt";
 const RESPONDER_PROMPT_FILE = "agent-responder.txt";
-const PROMPTS_BASE_PATH = "content/Agent/prompts";
+const PROMPTS_BASE_PATH = "src/modules/contextPanel/Agent/prompts";
 
 const DEFAULT_ROUTER_PROMPT = [
   "You are the router for a Zotero agentic workflow.",
@@ -16,6 +16,8 @@ const DEFAULT_ROUTER_PROMPT = [
   "Rules:",
   "- Stop as soon as sufficient grounded context exists.",
   "- Never repeat tool calls already marked complete in prior tool logs.",
+  "- For library-level requests, use metadata first, then abstract only if metadata is insufficient.",
+  "- Do not call deep paper tools unless the user explicitly asks for deep or paper-specific analysis.",
   "- Use write_note/fix_metadata only when user explicitly asks for write/fix actions.",
   "- When user asks to write/save the previous or last answer into note, call write_note.",
   "- Keep trace short and concrete.",
@@ -27,6 +29,9 @@ const DEFAULT_RESPONDER_PROMPT = [
   "If a ui action is pending, explicitly tell the user what to do next.",
   "For note review: tell the user to review the panel and click Save to Zotero.",
   "For metadata review: tell the user to review proposed fields and click Accept.",
+  "For ambiguous library-level questions, answer broadly first and offer an optional follow-up deep dive sentence.",
+  "Do not use opaque references like 'paper 1/2/3' unless you also show the explicit mapping in the same answer.",
+  "Prefer human-readable references (author-year and/or title).",
   "Do not fabricate paper content or tool outcomes.",
 ].join("\n");
 

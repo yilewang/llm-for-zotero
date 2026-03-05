@@ -21,7 +21,7 @@ This folder implements the reader/library side-panel chat experience.
 - `Agent/ToolInfra/`: tool contracts, registry, target resolution, and execution/broker plumbing.
 - `Agent/heuristics.ts`: fast-path skip heuristics shared by the orchestrator.
 - `Agent/config.ts`: shared agent constants and limits.
-- `addon/content/Agent/prompts/`: runtime prompt files (`agent-router.txt`, `agent-responder.txt`) used to regulate agent output behavior.
+- `src/modules/contextPanel/Agent/prompts/`: runtime prompt files (`agent-router.txt`, `agent-responder.txt`) used to regulate agent output behavior.
 
 ## Shared Domain Helpers
 

@@ -89,6 +89,7 @@ function normalizeCall(value: unknown): AgentToolCall | null {
     target?: unknown;
     query?: unknown;
     limit?: unknown;
+    depth?: unknown;
   };
 
   const name = sanitizeText(String(typed.name || ""))
@@ -103,10 +104,21 @@ function normalizeCall(value: unknown): AgentToolCall | null {
       Number.isFinite(rawLimit) && rawLimit > 0
         ? Math.max(1, Math.min(12, Math.floor(rawLimit)))
         : 6;
+    const rawDepth = sanitizeText(String(typed.depth || ""))
+      .trim()
+      .toLowerCase();
+    if (rawDepth && rawDepth !== "metadata" && rawDepth !== "abstract") {
+      return null;
+    }
+    const depth =
+      rawDepth === "abstract" || rawDepth === "metadata"
+        ? rawDepth
+        : undefined;
     return {
       name: "list_papers",
       query: query || undefined,
       limit,
+      depth,
     };
   }
 
@@ -251,6 +263,11 @@ function buildContextBlock(summary: RouterContextSummary): string {
     `Remaining budget tokens: ~${summary.remainingBudgetTokens}`,
     `Conversation mode: ${summary.conversationMode}`,
     `Library available: ${summary.libraryAvailable ? "yes" : "no"}`,
+    "",
+    "Policy hints:",
+    ...(summary.policyHints.length
+      ? summary.policyHints.map((line) => `- ${line}`)
+      : ["- none"]),
     "",
     "Context descriptors:",
     ...(summary.contextDescriptors.length

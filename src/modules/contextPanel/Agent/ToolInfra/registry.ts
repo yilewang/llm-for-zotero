@@ -57,9 +57,9 @@ const AGENT_TOOL_DEFINITIONS: AgentToolDefinition[] = [
   {
     name: "list_papers",
     plannerDescription:
-      "list or search the active Zotero library; returns a metadata overview and loads results as retrieved-paper#N targets for subsequent tool calls",
+      "list or search the active Zotero library at metadata/abstract depth; returns a grounded library snapshot and retrieved-paper#N targets for optional follow-up tool calls",
     callExample:
-      '{"name":"list_papers","query":"optional search terms","limit":6}',
+      '{"name":"list_papers","query":"optional search terms","limit":6,"depth":"metadata"}',
     validate: validateListPapersCall,
   },
   {

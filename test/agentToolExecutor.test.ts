@@ -89,4 +89,43 @@ describe("agentToolExecutor", function () {
     assert.isFalse(second?.ok);
     assert.include(second?.traceLines[0] || "", "Duplicate tool call");
   });
+
+  it("treats list_papers metadata and abstract depths as distinct calls", async function () {
+    const state = createAgentToolExecutorState();
+    const ctx = {
+      question: "what themes in my library",
+      libraryID: 5,
+      conversationMode: "open" as const,
+      activePaperContext: null,
+      selectedPaperContexts: [],
+      pinnedPaperContexts: [],
+      recentPaperContexts: [],
+      retrievedPaperContexts: [],
+    };
+
+    const first = await executeAgentToolCall({
+      call: {
+        name: "list_papers",
+        query: "hippocampus",
+        limit: 6,
+        depth: "metadata",
+      },
+      ctx,
+      state,
+    });
+    const second = await executeAgentToolCall({
+      call: {
+        name: "list_papers",
+        query: "hippocampus",
+        limit: 6,
+        depth: "abstract",
+      },
+      ctx,
+      state,
+    });
+
+    assert.isTrue(first?.ok);
+    assert.isTrue(second?.ok);
+    assert.equal(state.executedCallCount, 2);
+  });
 });

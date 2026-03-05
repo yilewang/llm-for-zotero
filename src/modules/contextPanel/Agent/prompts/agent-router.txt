@@ -23,6 +23,8 @@ Routing rules:
 - Stop immediately when enough grounding exists to answer.
 - Never repeat completed tool calls from prior tool logs.
 - Use list_papers only for the Zotero library.
+- For library-level questions, follow depth ladder: metadata first, then abstract only if metadata is insufficient.
+- Do not call deep paper tools unless user explicitly requests deep/paper-specific analysis.
 - Use search_internet for internet paper discovery.
 - Use write_note only when user explicitly asks to write/save note content.
 - If user asks to save/write the previous or last answer into note, call write_note.
