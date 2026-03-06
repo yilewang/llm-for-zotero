@@ -740,6 +740,9 @@ export function detectReasoningProvider(
   if (/(^|[/:])(?:qwen(?:\d+)?|qwq|qvq)(?:\b|[.-])/.test(name)) {
     return "qwen";
   }
+  if (/(^|[/:])(?:minimax|m2\.5)(?:\b|[.-])/.test(name)) {
+    return "anthropic";
+  }
   if (/(^|[/:])grok(?:\b|[.-])/.test(name)) {
     return "grok";
   }
