@@ -345,7 +345,8 @@ describe("assistantCitationLinks", function () {
   });
 
   it("decorates inline citations before bubble is attached to DOM", function () {
-    const doc = Zotero.getMainWindow?.()?.document;
+    const Zotero = (globalThis as typeof globalThis & { Zotero?: { getMainWindow?: () => { document?: Document } } }).Zotero;
+    const doc = Zotero?.getMainWindow?.()?.document;
     if (!doc || typeof doc.createElement !== "function") {
       this.skip();
       return;
@@ -422,7 +423,8 @@ describe("assistantCitationLinks", function () {
   });
 
   it("decorates grouped inline citations as separate links", function () {
-    const doc = Zotero.getMainWindow?.()?.document;
+    const Zotero = (globalThis as typeof globalThis & { Zotero?: { getMainWindow?: () => { document?: Document } } }).Zotero;
+    const doc = Zotero?.getMainWindow?.()?.document;
     if (!doc || typeof doc.createElement !== "function") {
       this.skip();
       return;
@@ -507,7 +509,8 @@ describe("assistantCitationLinks", function () {
   });
 
   it("removes a duplicated trailing citation from a blockquote when a citation row follows", function () {
-    const doc = Zotero.getMainWindow?.()?.document;
+    const Zotero = (globalThis as typeof globalThis & { Zotero?: { getMainWindow?: () => { document?: Document } } }).Zotero;
+    const doc = Zotero?.getMainWindow?.()?.document;
     if (!doc || typeof doc.createElement !== "function") {
       this.skip();
       return;
