@@ -2315,6 +2315,77 @@
   min-width: 0;
 }
 
+.llm-agent-hitl-tag-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.llm-agent-hitl-tag-chip-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.llm-agent-hitl-tag-chip {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.llm-agent-hitl-tag-chip-header {
+  gap: 0;
+  padding-right: 4px;
+  cursor: text;
+}
+
+.llm-agent-hitl-tag-chip-input {
+  min-width: 44px;
+  max-width: 100%;
+  width: auto;
+  border: none;
+  background: transparent;
+  color: var(--fill-primary);
+  font: inherit;
+  font-size: var(--llm-fs-12);
+  line-height: 1.25;
+  box-sizing: content-box;
+  outline: none;
+}
+
+.llm-agent-hitl-tag-chip-input::placeholder {
+  color: var(--fill-tertiary);
+}
+
+.llm-agent-hitl-tag-chip-remove {
+  flex: 0 0 auto;
+}
+
+.llm-agent-hitl-tag-add {
+  appearance: none;
+  -moz-appearance: none;
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px 12px;
+  border: 1px dashed var(--stroke-secondary);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fill-secondary);
+  font: inherit;
+  font-size: var(--llm-fs-12);
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.llm-agent-hitl-tag-add:hover,
+.llm-agent-hitl-tag-add:focus-visible {
+  border-color: var(--color-accent);
+  color: var(--fill-primary);
+  background: color-mix(in srgb, var(--color-accent) 6%, transparent);
+}
+
 .llm-agent-hitl-actions {
   display: flex;
   flex-wrap: wrap;

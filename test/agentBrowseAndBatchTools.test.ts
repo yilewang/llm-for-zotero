@@ -273,8 +273,8 @@ describe("browse and batch agent tools", function () {
 
     const confirmed = tool.applyConfirmation?.(validated.value, {
       assignments: [
-        { id: "10", value: "beta, gamma" },
-        { id: "11", value: "reading-list" },
+        { id: "10", value: ["beta", "gamma"] },
+        { id: "11", value: ["reading-list"] },
       ],
     });
     assert.isTrue(Boolean(confirmed?.ok));

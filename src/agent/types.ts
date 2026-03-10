@@ -109,7 +109,7 @@ export type AgentPendingField =
         id: string;
         label: string;
         description?: string;
-        value?: string;
+        value?: string | string[];
         placeholder?: string;
       }>;
     };

@@ -413,7 +413,7 @@ function renderTagAssignmentTableField(
   element: HTMLDivElement;
   accessor: {
     id: string;
-    getValue: () => Array<{ id: string; value: string }>;
+    getValue: () => Array<{ id: string; value: string[] }>;
     setDisabled: (disabled: boolean) => void;
     isValid: () => boolean;
     bindValidity: (callback: () => void) => void;
@@ -423,7 +423,9 @@ function renderTagAssignmentTableField(
   wrap.className = "llm-agent-hitl-assignment-table";
 
   const rows: Array<{
-    input: HTMLInputElement;
+    buttons: HTMLButtonElement[];
+    getTags: () => string[];
+    setDisabled: (disabled: boolean) => void;
     id: string;
   }> = [];
   const listeners: Array<() => void> = [];
@@ -435,8 +437,18 @@ function renderTagAssignmentTableField(
   const getAssignments = () =>
     rows.map((row) => ({
       id: row.id,
-      value: row.input.value,
+      value: row.getTags(),
     }));
+  const parseInitialTags = (value: string | string[] | undefined): string[] => {
+    if (Array.isArray(value)) {
+      return value.map((entry) => entry.trim()).filter(Boolean);
+    }
+    if (typeof value !== "string") return [];
+    return value
+      .split(/\r?\n|,/g)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  };
 
   for (const item of field.rows) {
     const row = doc.createElement("div");
@@ -465,16 +477,143 @@ function renderTagAssignmentTableField(
     inputLabel.textContent = "Suggested tags";
     control.appendChild(inputLabel);
 
-    const input = doc.createElement("input");
-    input.type = "text";
-    input.className = "llm-agent-hitl-page-input llm-agent-hitl-tag-input";
-    input.value = item.value || "";
-    input.placeholder = item.placeholder || "tag-one, tag-two";
-    input.addEventListener("input", emitValidityChange);
-    control.appendChild(input);
+    const editor = doc.createElement("div");
+    editor.className = "llm-agent-hitl-tag-editor";
+
+    const chipList = doc.createElement("div");
+    chipList.className = "llm-agent-hitl-tag-chip-list";
+    editor.appendChild(chipList);
+
+    const addButton = doc.createElement("button");
+    addButton.type = "button";
+    addButton.className = "llm-agent-hitl-tag-add";
+    addButton.textContent = "Add tag";
+    editor.appendChild(addButton);
+
+    const chipInputs: HTMLInputElement[] = [];
+    const chipButtons: HTMLButtonElement[] = [addButton];
+
+    const updateChipInputSize = (input: HTMLInputElement) => {
+      input.size = Math.max(8, input.value.trim().length + 1);
+    };
+
+    const normalizeChipInput = (input: HTMLInputElement) => {
+      const segments = input.value
+        .split(/,/g)
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      if (!segments.length) {
+        input.value = "";
+        updateChipInputSize(input);
+        return;
+      }
+      input.value = segments[0];
+      updateChipInputSize(input);
+      for (const segment of segments.slice(1)) {
+        addChip(segment);
+      }
+    };
+
+    const removeChip = (chip: HTMLDivElement, input: HTMLInputElement) => {
+      const index = chipInputs.indexOf(input);
+      if (index >= 0) {
+        chipInputs.splice(index, 1);
+      }
+      chip.remove();
+      emitValidityChange();
+    };
+
+    const addChip = (initialValue = "") => {
+      const chip = doc.createElement("div");
+      chip.className =
+        "llm-selected-context llm-paper-context-chip llm-selected-context-pinned llm-agent-hitl-tag-chip";
+
+      const chipHeader = doc.createElement("div");
+      chipHeader.className =
+        "llm-selected-context-header llm-paper-context-chip-header llm-agent-hitl-tag-chip-header";
+
+      const input = doc.createElement("input");
+      input.type = "text";
+      input.className =
+        "llm-paper-context-chip-label llm-agent-hitl-tag-chip-input";
+      input.value = initialValue;
+      input.placeholder = item.placeholder || "tag";
+      updateChipInputSize(input);
+      input.addEventListener("input", () => {
+        updateChipInputSize(input);
+        emitValidityChange();
+      });
+      input.addEventListener("blur", () => {
+        normalizeChipInput(input);
+        emitValidityChange();
+      });
+      input.addEventListener("keydown", (event) => {
+        const keyboardEvent = event as KeyboardEvent;
+        if (keyboardEvent.key === "," || keyboardEvent.key === "Enter") {
+          event.preventDefault();
+          normalizeChipInput(input);
+          const nextChip = addChip();
+          nextChip.focus();
+          emitValidityChange();
+          return;
+        }
+        if (
+          keyboardEvent.key === "Backspace" &&
+          !input.value &&
+          chipInputs.length > 1
+        ) {
+          event.preventDefault();
+          const index = chipInputs.indexOf(input);
+          removeChip(chip, input);
+          const fallback = chipInputs[Math.max(0, index - 1)];
+          fallback?.focus();
+        }
+      });
+
+      const removeButton = doc.createElement("button");
+      removeButton.type = "button";
+      removeButton.className =
+        "llm-remove-img-btn llm-paper-context-clear llm-agent-hitl-tag-chip-remove";
+      removeButton.textContent = "×";
+      removeButton.addEventListener("click", () => {
+        removeChip(chip, input);
+      });
+      chipButtons.push(removeButton);
+
+      chipHeader.append(input, removeButton);
+      chip.append(chipHeader);
+      chipList.appendChild(chip);
+      chipInputs.push(input);
+      return input;
+    };
+
+    const initialTags = parseInitialTags(item.value);
+    for (const tag of initialTags) {
+      addChip(tag);
+    }
+    addButton.addEventListener("click", () => {
+      const input = addChip();
+      input.focus();
+      emitValidityChange();
+    });
+
+    control.appendChild(editor);
 
     rows.push({
-      input,
+      buttons: chipButtons,
+      getTags: () =>
+        chipInputs
+          .map((input) => input.value.trim())
+          .filter(Boolean),
+      setDisabled: (disabled) => {
+        addButton.disabled = disabled;
+        for (const input of chipInputs) {
+          input.disabled = disabled;
+        }
+        for (const button of chipButtons) {
+          button.disabled = disabled;
+        }
+      },
       id: item.id,
     });
 
@@ -489,11 +628,11 @@ function renderTagAssignmentTableField(
       getValue: () => getAssignments(),
       setDisabled: (disabled) => {
         for (const row of rows) {
-          row.input.disabled = disabled;
+          row.setDisabled(disabled);
         }
       },
       isValid: () =>
-        getAssignments().some((entry) => entry.value.trim().length > 0),
+        getAssignments().some((entry) => entry.value.length > 0),
       bindValidity: (callback) => {
         listeners.push(callback);
       },

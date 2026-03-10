@@ -227,8 +227,8 @@ describe("self-contained agent tool", function () {
                 { id: "demo-2", value: "__skip__", checked: false },
               ],
               tagAssignments: [
-                { id: "demo-1", value: "approved, demo" },
-                { id: "demo-2", value: "" },
+                { id: "demo-1", value: ["approved", "demo"] },
+                { id: "demo-2", value: [] },
               ],
             });
           }
