@@ -263,4 +263,61 @@ describe("CodexResponsesAgentAdapter", function () {
     assert.equal(step.text, "Final answer.");
     assert.deepEqual(reasoning, ["Plan first."]);
   });
+
+  it("extracts final text from response.message.done events", async function () {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(
+          encoder.encode(
+            'data: {"type":"response.message.done","message":{"content":[{"type":"output_text","text":"Figure 1 compares memory conditions."}]}}\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+
+    const step = await parseResponsesStepStream(stream);
+
+    assert.equal(step.text, "Figure 1 compares memory conditions.");
+  });
+
+  it("extracts final text from response.content_part.done events", async function () {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(
+          encoder.encode(
+            'data: {"type":"response.content_part.done","part":{"type":"output_text","text":"The right panel shows the emotional ratings."}}\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+
+    const step = await parseResponsesStepStream(stream);
+
+    assert.equal(step.text, "The right panel shows the emotional ratings.");
+  });
+
+  it("extracts nested final text payloads from response.message.done events", async function () {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(
+          encoder.encode(
+            'data: {"type":"response.message.done","message":{"content":[{"type":"output_text","text":{"value":"Figure 1 compares retrieval accuracy across conditions."}}]}}\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+
+    const step = await parseResponsesStepStream(stream);
+
+    assert.equal(
+      step.text,
+      "Figure 1 compares retrieval accuracy across conditions.",
+    );
+  });
 });

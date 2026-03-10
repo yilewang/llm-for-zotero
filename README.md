@@ -14,7 +14,14 @@
 Please see the latest [release notes](https://github.com/yilewang/llm-for-zotero/releases). The plugin name is now changed to `llm-for-zotero`.
 
 
-## Update: ChatGPT Plus subscription users can use their Codex quote to access Codex models (e.g. `gpt-5.4`) without an API key. Please see the [Usage Guide](#usage-guide) for more details. 
+## Update: 🤖 LLM-for-Zotero now becomes your own Zotero Agent (BETA)! Please check the [Agent Mode](#agent-mode) section for more details.
+
+LLM-for-Zotero now becomes your own Zotero Agent! It is currently in beta and is disabled by default. To enable it, please go to the settings and check the `Enable Agent Mode` checkbox.
+
+When you enable the agent mode, you will see the `Agent (beta)` toggle in the context bar. Click it to switch to agent mode.
+
+
+## Previous Update: ChatGPT Plus subscription users can use their Codex quote to access Codex models (e.g. `gpt-5.4`) without an API key. Please see the [Usage Guide](#usage-guide) for more details. 
 
 ## Introduction
 
@@ -177,20 +184,18 @@ codex auth v1 notes:
 I will give some popular model as example:
 
 | API url                                                                        | Model Name           | Reasoning Level                    | Notes                  |
-| ------------------------------------------------------------------------------ | -------------------- | ---------------------------------- | ---------------------- |
-| https://api.openai.com/v1/chat/completions                                     | gpt-5.4              | default, low, medium, high, xhigh  |                        |
+| ------------------------------------------------------------------------------ | -------------------- | ---------------------------------- | ---------------------- |                 
 | https://api.openai.com/v1/responses                                            | gpt-5.4              | default, low, medium, high, xhigh  | PDF uploads supported  |
 | https://api.openai.com/v1/responses                                            | gpt-5.4-pro          | medium, high, xhigh                | PDF uploads supported  |
-| https://api.deepseek.com/v1/chat/completions                                   | deepseek-chat        | default                            |                        |
-| https://api.deepseek.com/v1/chat/completions                                   | deepseek-reasoner    | default                            |                        |
-| https://generativelanguage.googleapis.com                                      | gemini-3-pro-preview | low, high                          | auto-expands to /v1beta/openai |
-| https://generativelanguage.googleapis.com                                      | gemini-2.5-flash     | medium                             | auto-expands to /v1beta/openai |
-| https://generativelanguage.googleapis.com/v1beta/openai/responses              | gemini-2.5-pro       | default, low, high                 | PDF uploads supported  |
+| https://api.deepseek.com/v1                                   | deepseek-chat        | default                            |                        |
+| https://api.deepseek.com/v1                                   | deepseek-reasoner    | default                            |                        |
+| https://generativelanguage.googleapis.com                                      | gemini-3-pro-preview | low, high                          | |
+| https://generativelanguage.googleapis.com                                      | gemini-2.5-flash     | medium                             | |
+| https://generativelanguage.googleapis.com                                      | gemini-2.5-pro       | default, low, high                 | |
 | https://api.moonshot.ai/v1                                                     | kimi-k2.5            | default                            |                        |
 
-> **Gemini base URL options:**
-> - `https://generativelanguage.googleapis.com` — simplest option; the plugin auto-expands it to the correct `/v1beta/openai` path. Use this for regular chat.
-> - `https://generativelanguage.googleapis.com/v1beta/openai/responses` — use this when you want to upload PDFs for analysis. The plugin will upload the file via the Files API and pass a `file_id` reference to the model.
+Now, the plugin natively supports different provider protocols, such as `responses_api`, `openai_chat_compat`, `anthropic_messages`, `gemini_native`, etc. You can choose the one that suits your needs.
+
 
 You can always check the connections by clicking the "Test Connection" button.
 

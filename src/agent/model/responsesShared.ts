@@ -53,10 +53,51 @@ export type ResponsesPayload = {
   output?: unknown;
 };
 
+function logEmptyResponse(message: string, payload: Record<string, unknown>): void {
+  const toolkit =
+    (globalThis as typeof globalThis & {
+      ztoolkit?: { log?: (...args: unknown[]) => void };
+    }).ztoolkit;
+  if (typeof toolkit?.log !== "function") return;
+  toolkit.log(message, payload);
+}
+
 function normalizeResponsesText(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") {
     return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => normalizeResponsesText(entry))
+      .filter(Boolean)
+      .join("");
+  }
+  if (value && typeof value === "object") {
+    const row = value as {
+      text?: unknown;
+      content?: unknown;
+      reasoning?: unknown;
+      summary?: unknown;
+      delta?: unknown;
+      thinking?: unknown;
+      thought?: unknown;
+      value?: unknown;
+      output_text?: unknown;
+      message?: unknown;
+    };
+    return (
+      normalizeResponsesText(row.text) ||
+      normalizeResponsesText(row.content) ||
+      normalizeResponsesText(row.reasoning) ||
+      normalizeResponsesText(row.summary) ||
+      normalizeResponsesText(row.delta) ||
+      normalizeResponsesText(row.thinking) ||
+      normalizeResponsesText(row.thought) ||
+      normalizeResponsesText(row.value) ||
+      normalizeResponsesText(row.output_text) ||
+      normalizeResponsesText(row.message)
+    );
   }
   return "";
 }
@@ -205,20 +246,37 @@ export async function buildResponsesContinuationInput(
 }
 
 function extractOutputTextFromContent(content: unknown): string {
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((entry) => {
-      if (!entry || typeof entry !== "object") return "";
-      const row = entry as ResponsesOutputContent;
-      const typeValue =
-        typeof row.type === "string" ? row.type.toLowerCase() : "";
-      if (typeValue && typeValue !== "output_text" && typeValue !== "text") {
-        return "";
-      }
-      return stringifyUnknown(row.text);
-    })
-    .filter(Boolean)
-    .join("");
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((entry) => extractOutputTextFromContent(entry))
+      .filter(Boolean)
+      .join("");
+  }
+  if (!content || typeof content !== "object") return "";
+  const row = content as ResponsesOutputContent & {
+    delta?: unknown;
+    content?: unknown;
+  };
+  const typeValue =
+    typeof row.type === "string" ? row.type.toLowerCase() : "";
+  if (typeValue === "reasoning" || typeValue === "reasoning_summary") {
+    return "";
+  }
+  if (
+    typeValue === "output_text" ||
+    typeValue === "text" ||
+    typeValue === "message" ||
+    typeValue === ""
+  ) {
+    return (
+      normalizeResponsesText(row.text) ||
+      normalizeResponsesText(row.delta) ||
+      extractOutputTextFromContent(row.content)
+    );
+  }
+  return "";
 }
 
 function extractToolCallsFromOutputs(outputs: unknown): AgentToolCall[] {
@@ -258,7 +316,10 @@ function extractOutputText(outputs: unknown): string {
       const typeValue =
         typeof row.type === "string" ? row.type.toLowerCase() : "";
       if (typeValue === "function_call") return "";
-      return extractOutputTextFromContent(row.content) || stringifyUnknown(row.text);
+      return (
+        extractOutputTextFromContent(row.content) ||
+        normalizeResponsesText(row.text)
+      );
     })
     .filter(Boolean)
     .join("");
@@ -369,6 +430,9 @@ export async function parseResponsesStepStream(
   let latestPayload: ResponsesPayload | null = null;
   let streamedText = "";
   const streamedOutputs: ResponsesOutputItem[] = [];
+  const eventTypesSeen = new Set<string>();
+  let sawAnswerDelta = false;
+  let sawAnswerFinal = false;
   let sawSummaryDelta = false;
   let sawSummaryFinal = false;
   let sawDetailsDelta = false;
@@ -406,6 +470,25 @@ export async function parseResponsesStepStream(
     await onReasoning({ summary, details });
   };
 
+  const emitAnswer = async (
+    value: unknown,
+    mode: "delta" | "final",
+  ): Promise<void> => {
+    const text = extractOutputTextFromContent(value) || normalizeResponsesText(value);
+    if (!text) return;
+    if (mode === "delta" && sawAnswerFinal) return;
+    if (mode === "final" && (sawAnswerDelta || sawAnswerFinal)) return;
+    if (mode === "delta") {
+      sawAnswerDelta = true;
+    } else {
+      sawAnswerFinal = true;
+    }
+    streamedText += text;
+    if (onTextDelta) {
+      await onTextDelta(text);
+    }
+  };
+
   const emitReasoningFromOutputItem = async (value: unknown) => {
     if (!value || typeof value !== "object") return;
     const row = value as {
@@ -431,6 +514,7 @@ export async function parseResponsesStepStream(
     }
   };
 
+  let rawDebugLines: string[] = [];
   try {
     while (true) {
       const { value, done } = await reader.read();
@@ -441,6 +525,7 @@ export async function parseResponsesStepStream(
 
       for (const line of lines) {
         const trimmed = line.trim();
+        if (rawDebugLines.length < 30) rawDebugLines.push(trimmed.slice(0, 200));
         if (!trimmed.startsWith("data:")) continue;
         const data = trimmed.slice(5).trim();
         if (!data || data === "[DONE]") continue;
@@ -452,6 +537,7 @@ export async function parseResponsesStepStream(
             summary?: unknown;
             reasoning?: unknown;
             item?: unknown;
+            message?: { content?: unknown };
             part?: {
               type?: unknown;
               summary?: unknown;
@@ -462,12 +548,59 @@ export async function parseResponsesStepStream(
           };
           const eventType =
             typeof parsed.type === "string" ? parsed.type.toLowerCase() : "";
+          if (eventType) eventTypesSeen.add(eventType);
           if (eventType === "response.output_text.delta") {
-            const delta = normalizeResponsesText(parsed.delta);
-            streamedText += delta;
-            if (delta && onTextDelta) {
-              await onTextDelta(delta);
+            await emitAnswer(parsed.delta, "delta");
+            continue;
+          }
+          if (eventType === "response.output_text.done") {
+            await emitAnswer(parsed.text ?? parsed.delta, "final");
+            continue;
+          }
+          if (
+            eventType === "response.content_part.added" ||
+            eventType === "response.content_part.delta"
+          ) {
+            const partType =
+              typeof parsed.part?.type === "string"
+                ? parsed.part.type.toLowerCase()
+                : "";
+            if (!partType || partType === "output_text" || partType === "text") {
+              await emitAnswer(
+                parsed.delta ??
+                  parsed.text ??
+                  parsed.part?.text ??
+                  parsed.part?.content,
+                "delta",
+              );
             }
+            continue;
+          }
+          if (eventType === "response.content_part.done") {
+            const partType =
+              typeof parsed.part?.type === "string"
+                ? parsed.part.type.toLowerCase()
+                : "";
+            if (!partType || partType === "output_text" || partType === "text") {
+              await emitAnswer(
+                parsed.text ??
+                  parsed.delta ??
+                  parsed.part?.text ??
+                  parsed.part?.content,
+                "final",
+              );
+            }
+            continue;
+          }
+          if (
+            eventType === "response.message.delta" ||
+            eventType === "response.message.added"
+          ) {
+            await emitAnswer(parsed.message?.content, "delta");
+            continue;
+          }
+          if (eventType === "response.message.done") {
+            await emitAnswer(parsed.message?.content, "final");
             continue;
           }
           if (
@@ -560,6 +693,22 @@ export async function parseResponsesStepStream(
           ) {
             mergeOutputItem(parsed.item);
             await emitReasoningFromOutputItem(parsed.item);
+            // Skip emitAnswer for reasoning items — their summary text would be
+            // incorrectly treated as an answer, setting sawAnswerFinal and
+            // blocking the real answer from being captured.
+            const itemType =
+              parsed.item && typeof parsed.item === "object"
+                ? String(
+                    (parsed.item as { type?: unknown }).type ?? "",
+                  ).toLowerCase()
+                : "";
+            if (itemType !== "reasoning" && itemType !== "reasoning_summary") {
+              if (eventType === "response.output_item.done") {
+                await emitAnswer(parsed.item, "final");
+              } else {
+                await emitAnswer(parsed.item, "delta");
+              }
+            }
             continue;
           }
           if (eventType === "response.completed" && parsed.response) {
@@ -576,6 +725,10 @@ export async function parseResponsesStepStream(
             for (const output of outputs) {
               await emitReasoningFromOutputItem(output);
             }
+            await emitAnswer(
+              parsed.response.output_text || extractOutputText(outputs),
+              "final",
+            );
           }
         } catch (_error) {
           continue;
@@ -592,21 +745,52 @@ export async function parseResponsesStepStream(
       normalized.outputItems,
       streamedOutputs,
     );
+    const finalText =
+      normalized.text ||
+      streamedText.trim() ||
+      extractOutputText(outputItems).trim();
+    if (!finalText && (outputItems.length || eventTypesSeen.size > 0)) {
+      logEmptyResponse("LLM Agent: Empty responses step after completed payload", {
+        responseId: normalized.responseId || responseId,
+        eventTypes: Array.from(eventTypesSeen),
+        outputItemTypes: outputItems
+          .map((item) =>
+            item && typeof item === "object"
+              ? (item as { type?: unknown }).type
+              : undefined,
+          )
+          .filter(Boolean),
+        hasOutputText:
+          Boolean(
+            latestPayload.output_text &&
+              normalizeResponsesText(latestPayload.output_text),
+          ) || false,
+        rawDebugSample: rawDebugLines,
+      });
+    }
     return {
       responseId: normalized.responseId || responseId,
-      text:
-        normalized.text ||
-        streamedText.trim() ||
-        extractOutputText(outputItems).trim(),
+      text: finalText,
       toolCalls: extractToolCallsFromOutputs(outputItems),
       outputItems,
     };
   }
 
   const toolCalls = extractToolCallsFromOutputs(streamedOutputs);
+  const finalText = streamedText.trim() || extractOutputText(streamedOutputs).trim();
+  if (!finalText && (streamedOutputs.length || eventTypesSeen.size > 0)) {
+    logEmptyResponse("LLM Agent: Empty responses step without completed payload", {
+      responseId,
+      eventTypes: Array.from(eventTypesSeen),
+      outputItemTypes: streamedOutputs
+        .map((item) => item.type)
+        .filter(Boolean),
+      rawDebugSample: rawDebugLines,
+    });
+  }
   return {
     responseId,
-    text: streamedText.trim() || extractOutputText(streamedOutputs).trim(),
+    text: finalText,
     toolCalls,
     outputItems: streamedOutputs,
   };
