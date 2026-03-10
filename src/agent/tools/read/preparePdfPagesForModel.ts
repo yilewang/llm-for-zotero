@@ -1,7 +1,6 @@
 import type { AgentModelContentPart, AgentToolDefinition } from "../../types";
 import {
   formatPageSelectionValue,
-  parsePageSelectionText,
   type PdfPageService,
 } from "../../services/pdfPageService";
 import {
@@ -63,6 +62,10 @@ function setCachedPages(
   });
 }
 
+export function clearPreparePdfPagesCache(conversationKey: number): void {
+  pagesCache.delete(conversationKey);
+}
+
 export function createPreparePdfPagesForModelTool(
   pdfPageService: PdfPageService,
 ): AgentToolDefinition<PdfTargetArgs, unknown> {
@@ -111,10 +114,7 @@ export function createPreparePdfPagesForModelTool(
       return ok(parsed.value);
     },
     shouldRequireConfirmation: async (input, context) => {
-      // User explicitly typed these page numbers — no need to ask
-      const explicit = parsePageSelectionText(context.request.userText);
-      if (samePageSet(input.pages, explicit?.pageIndexes)) return false;
-      // Same page set already confirmed earlier in this conversation
+      // Same page set already confirmed earlier in this conversation — skip
       const cached = getCachedPages(context.request.conversationKey);
       if (cached && samePageSet(input.pages, cached.pageIndexes)) return false;
       return true;

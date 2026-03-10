@@ -127,8 +127,51 @@ export type BatchMoveAssignment = {
   targetCollectionId: number;
 };
 
+export type PaperNoteRecord = {
+  noteId: number;
+  title: string;
+  noteText: string;
+  wordCount: number;
+};
+
+export type PaperAnnotationRecord = {
+  annotationId: number;
+  type: string;
+  text: string;
+  comment?: string;
+  color?: string;
+  pageLabel?: string;
+};
+
+export type RelatedPaperResult = LibraryPaperTarget & {
+  matchScore: number;
+  matchReasons: string[];
+};
+
+export type DuplicateGroup = {
+  matchReason: string;
+  papers: LibraryPaperTarget[];
+};
+
 function normalizeMetadataValue(value: unknown): string {
   return `${value ?? ""}`.trim();
+}
+
+function stripHtmlContent(html: string): string {
+  return html
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/h[1-6]>/gi, "\n")
+    .replace(/<hr\s*\/?>/gi, "\n---\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function normalizeText(value: unknown): string {
@@ -1011,6 +1054,326 @@ export class ZoteroGateway {
       params.content,
       params.modelName,
     );
+  }
+
+  getPaperNotes(params: {
+    item: Zotero.Item | null | undefined;
+    maxNotes?: number;
+  }): PaperNoteRecord[] {
+    const target = resolveRegularItem(params.item);
+    if (!target) return [];
+    const limit =
+      Number.isFinite(params.maxNotes) && (params.maxNotes as number) > 0
+        ? Math.floor(params.maxNotes as number)
+        : 20;
+    try {
+      const noteIds: number[] = target.getNotes?.() || [];
+      const results: PaperNoteRecord[] = [];
+      for (const noteId of noteIds) {
+        if (results.length >= limit) break;
+        const noteItem = Zotero.Items.get(noteId);
+        if (!noteItem?.isNote?.()) continue;
+        const html = noteItem.getNote?.() || "";
+        const text = stripHtmlContent(html);
+        if (!text.trim()) continue;
+        const rawTitle = normalizeText(
+          (noteItem as unknown as { getNoteTitle?: () => unknown }).getNoteTitle?.() || "",
+        ).trim();
+        results.push({
+          noteId: noteItem.id,
+          title: rawTitle || `Note ${noteItem.id}`,
+          noteText: text.length > 4000 ? `${text.slice(0, 4000)}\u2026` : text,
+          wordCount: text.split(/\s+/).filter(Boolean).length,
+        });
+      }
+      return results;
+    } catch (_error) {
+      void _error;
+      return [];
+    }
+  }
+
+  getPaperAnnotations(params: {
+    item: Zotero.Item | null | undefined;
+    maxAnnotations?: number;
+  }): PaperAnnotationRecord[] {
+    const target = resolveRegularItem(params.item);
+    if (!target) return [];
+    const limit =
+      Number.isFinite(params.maxAnnotations) &&
+      (params.maxAnnotations as number) > 0
+        ? Math.floor(params.maxAnnotations as number)
+        : 100;
+    const results: PaperAnnotationRecord[] = [];
+    try {
+      const pdfs = getPdfChildAttachments(target);
+      for (const pdf of pdfs) {
+        if (results.length >= limit) break;
+        const annotationIds: number[] = (
+          pdf as unknown as { getAnnotations?: () => number[] }
+        ).getAnnotations?.() || [];
+        for (const annotationId of annotationIds) {
+          if (results.length >= limit) break;
+          const annotation = Zotero.Items.get(annotationId);
+          if (!annotation?.isAnnotation?.()) continue;
+          const ann = annotation as unknown as {
+            annotationText?: string;
+            annotationComment?: string;
+            annotationType?: string;
+            annotationColor?: string;
+            annotationPageLabel?: string;
+          };
+          const text = normalizeText(ann.annotationText || "");
+          const comment = normalizeText(ann.annotationComment || "") || undefined;
+          if (!text && !comment) continue;
+          results.push({
+            annotationId: annotation.id,
+            type: normalizeText(ann.annotationType || "") || "highlight",
+            text: text.length > 500 ? `${text.slice(0, 500)}\u2026` : text,
+            comment:
+              comment && comment.length > 500
+                ? `${comment.slice(0, 500)}\u2026`
+                : comment,
+            color: normalizeText(ann.annotationColor || "") || undefined,
+            pageLabel: normalizeText(ann.annotationPageLabel || "") || undefined,
+          });
+        }
+      }
+    } catch (_error) {
+      void _error;
+    }
+    return results;
+  }
+
+  async createCollection(params: {
+    name: string;
+    parentCollectionId?: number;
+    libraryID: number;
+  }): Promise<CollectionSummary> {
+    const normalizedName = normalizeText(params.name).trim();
+    if (!normalizedName) {
+      throw new Error("Collection name is required");
+    }
+    const libraryID =
+      Number.isFinite(params.libraryID) && params.libraryID > 0
+        ? Math.floor(params.libraryID)
+        : 0;
+    if (!libraryID) {
+      throw new Error("No library available for collection creation");
+    }
+    if (params.parentCollectionId) {
+      const parentCollection = this.getCollection(params.parentCollectionId);
+      if (!parentCollection) {
+        throw new Error(
+          `Parent collection ${params.parentCollectionId} not found`,
+        );
+      }
+    }
+    const collection = new Zotero.Collection();
+    (collection as unknown as { libraryID: number }).libraryID = libraryID;
+    collection.name = normalizedName;
+    if (params.parentCollectionId) {
+      collection.parentID = params.parentCollectionId;
+    }
+    await collection.saveTx();
+    invalidatePaperSearchCache(libraryID);
+    const allCollections = listLibraryCollections(libraryID);
+    const pathMap = buildCollectionPathMap(allCollections);
+    return {
+      collectionId: collection.id,
+      name: normalizedName,
+      libraryID,
+      path: pathMap.get(collection.id) || normalizedName,
+    };
+  }
+
+  async deleteCollection(params: { collectionId: number }): Promise<void> {
+    const collection = this.getCollection(params.collectionId);
+    if (!collection) return;
+    const libraryID = Number(collection.libraryID) || 0;
+    await (collection as unknown as { eraseTx: () => Promise<void> }).eraseTx();
+    if (libraryID > 0) invalidatePaperSearchCache(libraryID);
+  }
+
+  async removeTagsFromItem(params: {
+    itemId: number;
+    tags: string[];
+  }): Promise<void> {
+    const item = this.resolveBibliographicItem(this.getItem(params.itemId));
+    if (!item || !params.tags.length) return;
+    let changed = false;
+    for (const tag of params.tags) {
+      if (!tag) continue;
+      if (item.hasTag?.(tag)) {
+        item.removeTag?.(tag);
+        changed = true;
+      }
+    }
+    if (changed) {
+      await item.saveTx();
+    }
+  }
+
+  async removeItemFromCollection(params: {
+    itemId: number;
+    collectionId: number;
+  }): Promise<void> {
+    const item = this.resolveBibliographicItem(this.getItem(params.itemId));
+    if (!item) return;
+    item.removeFromCollection(params.collectionId);
+    await item.saveTx();
+    const collection = this.getCollection(params.collectionId);
+    const libraryID = Number(collection?.libraryID) || 0;
+    if (libraryID > 0) invalidatePaperSearchCache(libraryID);
+  }
+
+  async findRelatedPapersInLibrary(params: {
+    libraryID: number;
+    referenceItemId: number;
+    limit?: number;
+  }): Promise<{
+    referenceTitle: string;
+    relatedPapers: RelatedPaperResult[];
+  }> {
+    const libraryID =
+      Number.isFinite(params.libraryID) ? Math.floor(params.libraryID) : 0;
+    if (!libraryID) throw new Error("No active library available");
+    const referenceItem = this.resolveBibliographicItem(
+      this.getItem(params.referenceItemId),
+    );
+    if (!referenceItem) throw new Error("Reference paper not found");
+    const referenceTarget = buildPaperTargetFromItem(referenceItem);
+    if (!referenceTarget) throw new Error("Reference paper has no PDF attachment");
+    const limit =
+      Number.isFinite(params.limit) && (params.limit as number) > 0
+        ? Math.floor(params.limit as number)
+        : 10;
+    const refTitle = normalizeText(referenceTarget.title).toLowerCase();
+    const refTitleWords = new Set(
+      refTitle.split(/\W+/).filter((w) => w.length > 3),
+    );
+    const refAuthor = normalizeText(referenceTarget.firstCreator || "").toLowerCase();
+    const refYear = referenceTarget.year ? Number(referenceTarget.year) : null;
+    const refJournal = normalizeText(
+      String(referenceItem.getField?.("publicationTitle") ?? ""),
+    ).toLowerCase();
+    const candidates = await listLibraryPaperCandidates(libraryID);
+    const scored: RelatedPaperResult[] = [];
+    for (const candidate of candidates) {
+      if (candidate.itemId === referenceTarget.itemId) continue;
+      const item = this.resolveBibliographicItem(this.getItem(candidate.itemId));
+      if (!item) continue;
+      const target = buildPaperTargetFromItem(item);
+      if (!target) continue;
+      let score = 0;
+      const reasons: string[] = [];
+      const candAuthor = normalizeText(target.firstCreator || "").toLowerCase();
+      if (refAuthor && candAuthor && refAuthor === candAuthor) {
+        score += 40;
+        reasons.push(`Same first author: ${target.firstCreator}`);
+      }
+      const candTitle = normalizeText(target.title).toLowerCase();
+      const candTitleWords = new Set(
+        candTitle.split(/\W+/).filter((w) => w.length > 3),
+      );
+      const sharedWords = [...refTitleWords].filter((w) => candTitleWords.has(w));
+      if (sharedWords.length >= 2) {
+        score += Math.min(sharedWords.length * 8, 30);
+        reasons.push(
+          `Shared title keywords: ${sharedWords.slice(0, 3).join(", ")}`,
+        );
+      }
+      const candJournal = normalizeText(
+        String(item.getField?.("publicationTitle") ?? ""),
+      ).toLowerCase();
+      if (refJournal && candJournal && refJournal === candJournal) {
+        score += 15;
+        reasons.push(
+          `Same journal: ${item.getField?.("publicationTitle")}`,
+        );
+      }
+      const candYear = target.year ? Number(target.year) : null;
+      if (refYear && candYear && Math.abs(refYear - candYear) <= 3) {
+        score += 5;
+      }
+      const sharedTags = referenceTarget.tags.filter((t) =>
+        target.tags.includes(t),
+      );
+      if (sharedTags.length > 0) {
+        score += sharedTags.length * 5;
+        reasons.push(`Shared tags: ${sharedTags.slice(0, 3).join(", ")}`);
+      }
+      if (score > 0) {
+        scored.push({ ...target, matchScore: score, matchReasons: reasons });
+      }
+    }
+    scored.sort((a, b) => b.matchScore - a.matchScore);
+    return {
+      referenceTitle: referenceTarget.title,
+      relatedPapers: scored.slice(0, limit),
+    };
+  }
+
+  async detectDuplicatesInLibrary(params: {
+    libraryID: number;
+    limit?: number;
+  }): Promise<{
+    totalGroups: number;
+    groups: DuplicateGroup[];
+  }> {
+    const libraryID =
+      Number.isFinite(params.libraryID) ? Math.floor(params.libraryID) : 0;
+    if (!libraryID) throw new Error("No active library available");
+    const limit =
+      Number.isFinite(params.limit) && (params.limit as number) > 0
+        ? Math.floor(params.limit as number)
+        : 20;
+    const candidates = await listLibraryPaperCandidates(libraryID);
+    const byDoi = new Map<string, LibraryPaperTarget[]>();
+    const byNormalizedTitle = new Map<string, LibraryPaperTarget[]>();
+    for (const candidate of candidates) {
+      const item = this.resolveBibliographicItem(this.getItem(candidate.itemId));
+      if (!item) continue;
+      const target = buildPaperTargetFromItem(item);
+      if (!target) continue;
+      const doi = normalizeText(
+        String(item.getField?.("DOI") ?? ""),
+      ).toLowerCase();
+      if (doi) {
+        const existing = byDoi.get(doi) || [];
+        existing.push(target);
+        byDoi.set(doi, existing);
+      }
+      const normalizedTitle = normalizeText(target.title)
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (normalizedTitle.length > 10) {
+        const existing = byNormalizedTitle.get(normalizedTitle) || [];
+        existing.push(target);
+        byNormalizedTitle.set(normalizedTitle, existing);
+      }
+    }
+    const groups: DuplicateGroup[] = [];
+    const seenItemIds = new Set<number>();
+    for (const [doi, papers] of byDoi) {
+      if (papers.length < 2) continue;
+      if (groups.length >= limit) break;
+      const newPapers = papers.filter((p) => !seenItemIds.has(p.itemId));
+      if (newPapers.length < 2) continue;
+      groups.push({ matchReason: `Same DOI: ${doi}`, papers: newPapers });
+      for (const p of newPapers) seenItemIds.add(p.itemId);
+    }
+    for (const [, papers] of byNormalizedTitle) {
+      if (papers.length < 2) continue;
+      if (groups.length >= limit) break;
+      const newPapers = papers.filter((p) => !seenItemIds.has(p.itemId));
+      if (newPapers.length < 2) continue;
+      groups.push({ matchReason: "Same title", papers: newPapers });
+      for (const p of newPapers) seenItemIds.add(p.itemId);
+    }
+    return { totalGroups: groups.length, groups };
   }
 
   async updateArticleMetadata(params: {

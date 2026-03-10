@@ -9,6 +9,7 @@ import {
   ok,
   validateObject,
 } from "../shared";
+import { classifyRequest } from "../../model/requestClassifier";
 
 type ComparePapersStructuredInput = {
   paperContexts?: PaperContextRef[];
@@ -280,11 +281,6 @@ function buildEvidenceEntry(
   };
 }
 
-function looksLikeComparisonRequest(request: string): boolean {
-  return /\b(compare|contrast|difference|similarit|versus|vs\.?)\b/i.test(
-    request,
-  );
-}
 
 export function createComparePapersStructuredTool(
   pdfService: PdfService,
@@ -320,12 +316,10 @@ export function createComparePapersStructuredTool(
       requiresConfirmation: false,
     },
     guidance: {
-      matches: (request) =>
-        looksLikeComparisonRequest(request.userText || "") &&
-        dedupePaperContexts([
-          ...(request.selectedPaperContexts || []),
-          ...(request.pinnedPaperContexts || []),
-        ]).length >= 2,
+      matches: (request) => {
+        const intent = classifyRequest(request);
+        return intent.isComparisonQuery && intent.hasMultiplePaperContexts;
+      },
       instruction:
         "When the user asks to compare multiple papers, prefer compare_papers_structured so the evidence is organized into fixed comparison rows.",
     },

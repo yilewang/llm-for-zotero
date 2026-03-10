@@ -3,6 +3,7 @@ import type { AgentToolDefinition } from "../../types";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import {
   fail,
+  normalizePositiveInt,
   ok,
   validateObject,
   type NoteSaveTarget,
@@ -12,6 +13,8 @@ type SaveAnswerToNoteInput = {
   content: string;
   modelName?: string;
   target?: NoteSaveTarget;
+  /** Optional Zotero item ID to save the note to instead of the active item */
+  targetItemId?: number;
 };
 
 export function createSaveAnswerToNoteTool(
@@ -32,6 +35,11 @@ export function createSaveAnswerToNoteTool(
           target: {
             type: "string",
             enum: ["item", "standalone"],
+          },
+          targetItemId: {
+            type: "number",
+            description:
+              "Optional Zotero item ID to attach the note to instead of the currently active item",
           },
         },
       },
@@ -77,6 +85,7 @@ export function createSaveAnswerToNoteTool(
           args.target === "standalone" || args.target === "item"
             ? (args.target as NoteSaveTarget)
             : undefined,
+        targetItemId: normalizePositiveInt(args.targetItemId),
       });
     },
     createPendingAction: (input, context) => {
@@ -141,7 +150,11 @@ export function createSaveAnswerToNoteTool(
     },
     execute: async (input, context) => {
       const item =
-        zoteroGateway.getItem(context.request.activeItemId) || context.item;
+        (input.targetItemId
+          ? zoteroGateway.getItem(input.targetItemId)
+          : null) ||
+        zoteroGateway.getItem(context.request.activeItemId) ||
+        context.item;
       const result = await zoteroGateway.saveAnswerToNote({
         item,
         libraryID: context.request.libraryID,

@@ -62,6 +62,10 @@ export class AgentToolRegistry {
     this.tools.set(tool.spec.name, tool);
   }
 
+  unregister(name: string): boolean {
+    return this.tools.delete(name);
+  }
+
   registerResource<TValue>(resource: AgentResourceDefinition<TValue>): void {
     this.resources.set(resource.spec.name, resource);
   }

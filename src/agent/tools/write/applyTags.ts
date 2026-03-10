@@ -12,6 +12,8 @@ import {
   ok,
   validateObject,
 } from "../shared";
+import { classifyRequest } from "../../model/requestClassifier";
+import { pushUndoEntry } from "../../store/undoStore";
 
 type ApplyTagsInput = {
   assignments?: Array<{
@@ -24,16 +26,6 @@ type ApplyTagsInput = {
   libraryID?: number;
 };
 
-function isTaggingTask(userText: string): boolean {
-  const normalized = userText.trim().toLowerCase();
-  if (!normalized) return false;
-  return (
-    /\btag(?:s|ging)?\b/.test(normalized) &&
-    /\b(add|apply|assign|put|give|suggest|recommend|help|organize|categorize)\b/.test(
-      normalized,
-    )
-  );
-}
 
 function formatTagList(tags: string[]): string {
   return tags.join(", ");
@@ -256,7 +248,7 @@ export function createApplyTagsTool(
       requiresConfirmation: true,
     },
     guidance: {
-      matches: (request) => isTaggingTask(request.userText || ""),
+      matches: (request) => classifyRequest(request).isTaggingQuery,
       instruction: [
         "When the user asks to add, apply, or suggest tags for papers, use apply_tags as the write tool.",
         "If the request is broad or about papers without tags, inspect candidates first with list_untagged_papers or other paper read tools, then call apply_tags with per-paper tag assignments so the confirmation card opens with one paper per row and editable suggested tags.",
@@ -362,14 +354,28 @@ export function createApplyTagsTool(
       }
       return ok(resolved);
     },
-    execute: async (input) => {
+    execute: async (input, context) => {
       const assignments = buildDirectAssignments(input);
       if (!assignments.length) {
         throw new Error("No tag assignments were selected");
       }
-      return zoteroGateway.applyTagAssignments({
-        assignments,
-      });
+      const result = await zoteroGateway.applyTagAssignments({ assignments });
+      const undoItems = result.items
+        .filter((item) => item.status === "updated" && item.addedTags.length > 0)
+        .map((item) => ({ itemId: item.itemId, addedTags: item.addedTags }));
+      if (undoItems.length > 0) {
+        pushUndoEntry(context.request.conversationKey, {
+          id: `undo-apply-tags-${Date.now()}`,
+          toolName: "apply_tags",
+          description: `Undo tags applied to ${undoItems.length} paper${undoItems.length === 1 ? "" : "s"}`,
+          revert: async () => {
+            for (const { itemId, addedTags } of undoItems) {
+              await zoteroGateway.removeTagsFromItem({ itemId, tags: addedTags });
+            }
+          },
+        });
+      }
+      return result;
     },
   };
 }

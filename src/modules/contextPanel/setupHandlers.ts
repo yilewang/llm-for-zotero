@@ -268,6 +268,7 @@ import {
 } from "./setupHandlers/controllers/fileIntakeController";
 import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
 import { createClearConversationController } from "./setupHandlers/controllers/clearConversationController";
+import { clearAllAgentToolCaches } from "../../agent/tools";
 
 export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const resolvedInitialState = resolveInitialPanelItemState(initialItem);
@@ -4437,20 +4438,77 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       }
       return;
     }
-    let createdSummary: Awaited<ReturnType<typeof createPaperConversation>> =
-      null;
-    try {
-      createdSummary = await createPaperConversation(libraryID, paperItemID);
-    } catch (err) {
-      ztoolkit.log("LLM: Failed to create new paper conversation", err);
+
+    let targetConversationKey = 0;
+    let reuseReason: "active-draft" | "existing-draft" | null = null;
+
+    // Step 1: If the currently active conversation is already empty, reuse it.
+    const currentKey = Number(getConversationKey(item) || 0);
+    if (Number.isFinite(currentKey) && currentKey > 0) {
+      try {
+        const currentSummary = await getPaperConversation(currentKey);
+        if (currentSummary && currentSummary.userTurnCount === 0) {
+          targetConversationKey = currentKey;
+          reuseReason = "active-draft";
+        }
+      } catch (err) {
+        ztoolkit.log(
+          "LLM: Failed to inspect active paper conversation for draft reuse",
+          err,
+        );
+      }
     }
-    if (!createdSummary?.conversationKey) {
-      if (status) setStatus(status, "Failed to create paper chat", "error");
-      return;
+
+    // Step 2: Look for any other existing empty conversation for this paper.
+    if (targetConversationKey <= 0) {
+      try {
+        const summaries = await listPaperConversations(libraryID, paperItemID, 50);
+        const emptyEntry = summaries.find(
+          (s) => s.userTurnCount === 0,
+        );
+        if (emptyEntry?.conversationKey) {
+          targetConversationKey = emptyEntry.conversationKey;
+          reuseReason = "existing-draft";
+        }
+      } catch (err) {
+        ztoolkit.log(
+          "LLM: Failed to list paper conversations for draft reuse",
+          err,
+        );
+      }
     }
-    await switchPaperConversation(createdSummary.conversationKey);
+
+    // Step 3: No empty draft found — create a genuinely new conversation.
+    if (targetConversationKey <= 0) {
+      let createdSummary: Awaited<ReturnType<typeof createPaperConversation>> =
+        null;
+      try {
+        createdSummary = await createPaperConversation(libraryID, paperItemID);
+      } catch (err) {
+        ztoolkit.log("LLM: Failed to create new paper conversation", err);
+      }
+      if (!createdSummary?.conversationKey) {
+        if (status) setStatus(status, "Failed to create paper chat", "error");
+        return;
+      }
+      targetConversationKey = createdSummary.conversationKey;
+      reuseReason = null;
+    }
+
+    ztoolkit.log("LLM: + paper conversation action", {
+      libraryID,
+      paperItemID,
+      targetConversationKey,
+      action: reuseReason ? "reuse" : "create",
+      reason: reuseReason || "new",
+    });
+    await switchPaperConversation(targetConversationKey);
     if (status) {
-      setStatus(status, "Started paper chat", "ready");
+      setStatus(
+        status,
+        reuseReason ? "Reused existing new chat" : "Started new paper chat",
+        "ready",
+      );
     }
     inputBox.focus({ preventScroll: true });
   };
@@ -6886,6 +6944,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       void refreshGlobalHistoryHeader();
     },
     scheduleAttachmentGc,
+    clearAgentToolCaches: clearAllAgentToolCaches,
     setStatusMessage: status
       ? (message, level) => {
           setStatus(status, message, level);

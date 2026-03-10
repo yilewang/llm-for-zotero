@@ -165,6 +165,13 @@ export type AgentEvent =
       content: unknown;
       artifacts?: AgentToolArtifact[];
     }
+  | {
+      type: "tool_error";
+      callId: string;
+      name: string;
+      error: string;
+      round: number;
+    }
   | { type: "confirmation_required"; requestId: string; action: AgentPendingAction }
   | {
       type: "confirmation_resolved";
@@ -283,6 +290,8 @@ export type AgentRuntimeRequest = AgentRequest & {
   history?: ChatMessage[];
   authMode?: ModelProviderAuthMode;
   systemPrompt?: string;
+  /** Optional user-defined instructions injected between persona and tool guidance */
+  customInstructions?: string;
   modelProviderLabel?: string;
   libraryID?: number;
 };

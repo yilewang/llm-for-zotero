@@ -2,6 +2,7 @@ import type { AgentModelContentPart, AgentToolDefinition } from "../../types";
 import type { PdfPageService } from "../../services/pdfPageService";
 import { readAttachmentBytes } from "../../../modules/contextPanel/attachmentStorage";
 import { fail, ok, validateObject, normalizePositiveInt } from "../shared";
+import { classifyRequest } from "../../model/requestClassifier";
 
 function encodeBase64(bytes: Uint8Array): string {
   let out = "";
@@ -42,6 +43,10 @@ function getCachedCapture(conversationKey: number): CapturedPageCache | null {
   return entry;
 }
 
+export function clearCaptureReaderViewCache(conversationKey: number): void {
+  captureCache.delete(conversationKey);
+}
+
 function setCachedCapture(conversationKey: number, data: Omit<CapturedPageCache, "expiresAt">) {
   captureCache.set(conversationKey, {
     ...data,
@@ -49,27 +54,6 @@ function setCachedCapture(conversationKey: number, data: Omit<CapturedPageCache,
   });
 }
 
-function isVisualReaderQuestion(userText: string): boolean {
-  // Explicit "currently looking at / what I see" phrasing
-  if (
-    /\b(currently|looking at|this page|right now|visible|open|reader|this equation|this figure|this table|this formula|this symbol|explain this|what is this|what does this)\b/i.test(
-      userText,
-    )
-  ) {
-    return true;
-  }
-  // Named item by number: "explain equation 3", "what is Figure 2", "eq. 4"
-  if (
-    /\b(equation|eq|figure|fig|table|formula|theorem|proof|diagram|chart|plot)\s*\.?\s*\d+\b/i.test(
-      userText,
-    )
-  ) {
-    return true;
-  }
-  return /\b(equation|formula|figure|diagram|plot|table|chart|graph|theorem|proof|matrix|integral|summation|derivation|symbol)\b/i.test(
-    userText,
-  );
-}
 
 export function createCaptureReaderViewTool(
   pdfPageService: PdfPageService,
@@ -99,7 +83,7 @@ export function createCaptureReaderViewTool(
       requiresConfirmation: true,
     },
     guidance: {
-      matches: (request) => isVisualReaderQuestion(request.userText || ""),
+      matches: (request) => classifyRequest(request).isPdfVisualQuery,
       instruction: [
         "Use capture_reader_view when the user asks about a numbered equation, figure, table, or formula (e.g. 'explain equation 3', 'what is Figure 2', 'eq. 4') OR when they refer to something visible in the reader ('this equation', 'what I see', 'explain this').",
         "capture_reader_view always captures the page currently open in the PDF reader — it does NOT search for the page, which means it cannot select the wrong page. It is the reliable choice for any equation/figure/table the user is looking at.",

@@ -12,6 +12,8 @@ import {
   ok,
   validateObject,
 } from "../shared";
+import { classifyRequest } from "../../model/requestClassifier";
+import { pushUndoEntry } from "../../store/undoStore";
 
 type MoveUnfiledPapersToCollectionInput = {
   assignments?: Array<{
@@ -24,15 +26,6 @@ type MoveUnfiledPapersToCollectionInput = {
   libraryID?: number;
 };
 
-function isMoveToCollectionTask(userText: string): boolean {
-  const normalized = userText.trim().toLowerCase();
-  if (!normalized) return false;
-  return (
-    /\b(unfiled|no collection|without collection)\b/.test(normalized) &&
-    /\b(move|put|file|organize|assign|add)\b/.test(normalized) &&
-    /\b(collections?|folders?)\b/.test(normalized)
-  );
-}
 
 function describeMoveTarget(target: LibraryPaperTarget): string {
   return [target.firstCreator, target.year].filter(Boolean).join(" • ");
@@ -252,7 +245,7 @@ export function createMoveUnfiledPapersToCollectionTool(
       requiresConfirmation: true,
     },
     guidance: {
-      matches: (request) => isMoveToCollectionTask(request.userText || ""),
+      matches: (request) => classifyRequest(request).isMoveToCollectionQuery,
       instruction: [
         "When the user asks to move or organize unfiled papers into collections, use browse/list tools if needed, then call move_unfiled_papers_to_collection with per-paper assignments so the confirmation card opens with one paper per row and a suggested destination for each paper.",
         "Do not stop after listing papers and collections in chat, and do not ask the user to choose destinations in plain text.",
@@ -367,27 +360,36 @@ export function createMoveUnfiledPapersToCollectionTool(
     },
     execute: async (input, context) => {
       const assignments = buildDirectAssignments(input);
-      if (assignments.length) {
-        return zoteroGateway.moveUnfiledItemsToCollections({
-          assignments,
+      const effectiveAssignments = assignments.length
+        ? assignments
+        : (() => {
+            throw new Error("No paper-to-collection assignments were selected");
+          })();
+      const result = await zoteroGateway.moveUnfiledItemsToCollections({
+        assignments: effectiveAssignments,
+      });
+      const movedItems = result.items
+        .filter((item) => item.status === "moved" && item.targetCollectionId)
+        .map((item) => ({
+          itemId: item.itemId,
+          collectionId: item.targetCollectionId as number,
+        }));
+      if (movedItems.length > 0) {
+        pushUndoEntry(context.request.conversationKey, {
+          id: `undo-move-unfiled-${Date.now()}`,
+          toolName: "move_unfiled_papers_to_collection",
+          description: `Undo move of ${movedItems.length} paper${movedItems.length === 1 ? "" : "s"} to collections`,
+          revert: async () => {
+            for (const { itemId, collectionId } of movedItems) {
+              await zoteroGateway.removeItemFromCollection({
+                itemId,
+                collectionId,
+              });
+            }
+          },
         });
       }
-      const targets = (
-        await resolveCandidateTargets(input, context, zoteroGateway)
-      ).targets;
-      const fallbackAssignments =
-        input.targetCollectionId && targets.length
-          ? targets.map((target) => ({
-              itemId: target.itemId,
-              targetCollectionId: input.targetCollectionId as number,
-            }))
-          : [];
-      if (!fallbackAssignments.length) {
-        throw new Error("No paper-to-collection assignments were selected");
-      }
-      return zoteroGateway.moveUnfiledItemsToCollections({
-        assignments: fallbackAssignments,
-      });
+      return result;
     },
   };
 }

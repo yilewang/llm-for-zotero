@@ -15,24 +15,13 @@ import {
   ok,
   validateObject,
 } from "../shared";
+import { classifyRequest } from "../../model/requestClassifier";
 
 type AuditArticleMetadataInput = {
   itemId?: number;
   paperContext?: PaperContextRef;
 };
 
-function isMetadataAuditTask(userText: string): boolean {
-  const normalized = userText.trim().toLowerCase();
-  return (
-    /\bmetadata\b/.test(normalized) ||
-    (/\b(doi|title|abstract|journal|authors?|creator|date|pages|volume|issue|url|isbn|issn|publisher)\b/.test(
-      normalized,
-    ) &&
-      /\b(fix|edit|correct|clean|standardi[sz]e|complete|update|fill|repair)\b/.test(
-        normalized,
-      ))
-  );
-}
 
 type MetadataFieldSuggestion = {
   field: EditableArticleMetadataField | "creators";
@@ -567,7 +556,7 @@ export function createAuditArticleMetadataTool(
       requiresConfirmation: false,
     },
     guidance: {
-      matches: (request) => isMetadataAuditTask(request.userText || ""),
+      matches: (request) => classifyRequest(request).isMetadataAuditQuery,
       instruction: [
         "When the user asks to fix, clean up, standardize, or complete article metadata, do not default to a follow-up conversation.",
         "Treat metadata fixing as a full audit, not a spot edit. Review all supported metadata fields, especially creators/authors, title, venue, date, pages, DOI, URL, ISSN/ISBN, abstract, language, and extra.",

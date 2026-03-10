@@ -38,6 +38,10 @@ function setCachedFile(conversationKey: number, contextItemId?: number): void {
   });
 }
 
+export function clearPreparePdfFileCache(conversationKey: number): void {
+  fileCache.delete(conversationKey);
+}
+
 function supportsNativePdfInput(params: {
   providerProtocol?: string;
   apiBase?: string;

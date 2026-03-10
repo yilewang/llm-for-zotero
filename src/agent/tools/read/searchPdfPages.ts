@@ -6,15 +6,7 @@ import {
   requireQuestionOrPages,
   type PdfTargetArgs,
 } from "./pdfToolShared";
-
-function isPdfVisualTask(userText: string, hasScreenshots: boolean): boolean {
-  const normalized = userText.trim().toLowerCase();
-  return (
-    /\b(pdf|figure|equation|table|diagram|chart|graph|panel|page|layout)\b/.test(
-      normalized,
-    ) || hasScreenshots
-  );
-}
+import { classifyRequest } from "../../model/requestClassifier";
 
 export function createSearchPdfPagesTool(
   pdfPageService: PdfPageService,
@@ -33,12 +25,7 @@ export function createSearchPdfPagesTool(
       requiresConfirmation: false,
     },
     guidance: {
-      matches: (request) =>
-        isPdfVisualTask(
-          request.userText || "",
-          Array.isArray(request.screenshots) &&
-            request.screenshots.some((entry) => Boolean(entry)),
-        ),
+      matches: (request) => classifyRequest(request).isPdfVisualQuery,
       instruction: [
         "When the user asks about a figure, equation, table, page layout, or any PDF-specific visual detail, use the PDF tools instead of guessing from text alone.",
         "If the user names a specific numbered equation, figure, or table (e.g. 'explain equation 3', 'what is Figure 2', 'eq. 4') OR refers to something visible in the reader ('this equation', 'explain this', 'what I see'), call capture_reader_view — it captures exactly the page open in the reader, so it cannot pick the wrong page the way keyword search can. It handles its own confirmation; after the result returns, the page text and image are in the follow-up message — read them and answer directly.",

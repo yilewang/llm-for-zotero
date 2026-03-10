@@ -13,10 +13,8 @@ import type {
   AgentToolResult,
 } from "./types";
 import type { AgentModelAdapter } from "./model/adapter";
-import {
-  MAX_AGENT_ROUNDS,
-  MAX_AGENT_TOOL_CALLS_PER_ROUND,
-} from "./model/limits";
+import { resolveAgentLimits } from "./model/limits";
+import { classifyRequest } from "./model/requestClassifier";
 import { buildAgentInitialMessages } from "./model/messageBuilder";
 import {
   appendAgentRunEvent,
@@ -165,6 +163,16 @@ export class AgentRuntime {
     return this.registry.getTool(name);
   }
 
+  registerTool<TInput, TResult>(
+    tool: import("./types").AgentToolDefinition<TInput, TResult>,
+  ): void {
+    this.registry.register(tool);
+  }
+
+  unregisterTool(name: string): boolean {
+    return this.registry.unregister(name);
+  }
+
   getCapabilities(request: AgentRuntimeRequest) {
     return this.adapterFactory(request).getCapabilities(request);
   }
@@ -251,8 +259,10 @@ export class AgentRuntime {
     ) as AgentModelMessage[];
 
     let consecutiveToolErrors = 0;
-    const maxRounds = MAX_AGENT_ROUNDS;
-    const maxToolCallsPerRound = MAX_AGENT_TOOL_CALLS_PER_ROUND;
+    const intent = classifyRequest(request);
+    const { maxRounds, maxToolCallsPerRound } = resolveAgentLimits(
+      intent.isBulkOperation,
+    );
     const shouldFlushStreamBuffer = (value: string): boolean => {
       if (!value) return false;
       if (value.length >= 48) return true;
@@ -392,6 +402,21 @@ export class AgentRuntime {
           consecutiveToolErrors = 0;
         } else {
           consecutiveToolErrors += 1;
+          const rawError =
+            toolResult.content &&
+            typeof toolResult.content === "object" &&
+            "error" in toolResult.content
+              ? String((toolResult.content as { error: unknown }).error || "")
+              : "";
+          if (rawError && rawError.toLowerCase() !== "user denied action") {
+            await emit({
+              type: "tool_error",
+              callId: toolResult.callId,
+              name: toolResult.name,
+              error: rawError,
+              round,
+            });
+          }
         }
         await emit({
           type: "tool_result",

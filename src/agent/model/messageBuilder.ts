@@ -3,6 +3,7 @@ import type {
   AgentRuntimeRequest,
   AgentToolDefinition,
 } from "../types";
+import { AGENT_PERSONA_INSTRUCTIONS } from "./agentPersona";
 
 export function isMultimodalRequestSupported(
   request: AgentRuntimeRequest,
@@ -111,6 +112,19 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
   };
 }
 
+type PromptSection = {
+  /** Identifies the section in code; not emitted into the prompt text */
+  id: string;
+  lines: string[];
+};
+
+function buildSystemPrompt(sections: PromptSection[]): string {
+  return sections
+    .flatMap(({ lines }) => lines)
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function collectGuidanceInstructions(
   request: AgentRuntimeRequest,
   tools: AgentToolDefinition<any, any>[],
@@ -121,9 +135,7 @@ function collectGuidanceInstructions(
     if (!guidance) continue;
     if (!guidance.matches(request)) continue;
     const instruction = guidance.instruction.trim();
-    if (instruction) {
-      instructions.add(instruction);
-    }
+    if (instruction) instructions.add(instruction);
   }
   return Array.from(instructions);
 }
@@ -132,22 +144,29 @@ export function buildAgentInitialMessages(
   request: AgentRuntimeRequest,
   tools: AgentToolDefinition<any, any>[],
 ): AgentModelMessage[] {
-  const systemPrompt = [
-    (request.systemPrompt || "").trim(),
-    "You are the agent runtime inside a Zotero plugin.",
-    "Use tools for paper/library/document operations instead of claiming hidden access.",
-    "If a write action is needed, call the write tool and wait for confirmation.",
-    "If a write tool can collect missing choices in its confirmation UI, call that write tool directly instead of asking a follow-up chat question.",
-    "If read tools were used to plan a write action that the user asked you to perform, call the relevant write tool next instead of stopping with a chat summary.",
-    "When enough evidence has been collected, answer clearly and concisely.",
-    ...collectGuidanceInstructions(request, tools),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const sections: PromptSection[] = [
+    {
+      id: "system-override",
+      lines: [(request.systemPrompt || "").trim()],
+    },
+    {
+      id: "persona",
+      lines: AGENT_PERSONA_INSTRUCTIONS,
+    },
+    {
+      id: "custom-instructions",
+      lines: [(request.customInstructions || "").trim()],
+    },
+    {
+      id: "tool-guidance",
+      lines: collectGuidanceInstructions(request, tools),
+    },
+  ];
+
   return [
     {
       role: "system",
-      content: systemPrompt,
+      content: buildSystemPrompt(sections),
     },
     ...normalizeHistoryMessages(request),
     buildUserMessage(request),

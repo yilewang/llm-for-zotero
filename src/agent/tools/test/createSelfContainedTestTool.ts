@@ -1,5 +1,6 @@
 import type { AgentToolDefinition } from "../../types";
 import { fail, ok, validateObject } from "../shared";
+import { classifyRequest } from "../../model/requestClassifier";
 
 type SelfContainedTestToolInput = {
   content: string;
@@ -27,8 +28,7 @@ export function createSelfContainedTestTool(): AgentToolDefinition<
       requiresConfirmation: true,
     },
     guidance: {
-      matches: (request) =>
-        /\bself[- ]?contained\b|\bdemo tool\b/i.test(request.userText || ""),
+      matches: (request) => classifyRequest(request).isDemoToolQuery,
       instruction:
         "When the user asks for the self-contained demo tool, call self_contained_test_tool instead of answering directly.",
     },

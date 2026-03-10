@@ -14,6 +14,7 @@ import {
   ok,
   validateObject,
 } from "../shared";
+import { pushUndoEntry } from "../../store/undoStore";
 
 type EditArticleMetadataInput = {
   itemId?: number;
@@ -380,10 +381,27 @@ export function createEditArticleMetadataTool(
         itemId: input.itemId,
         paperContext: input.paperContext,
       });
+      const previousSnapshot = zoteroGateway.getEditableArticleMetadata(targetItem);
       const result = await zoteroGateway.updateArticleMetadata({
         item: targetItem,
         metadata: input.metadata,
       });
+      if (previousSnapshot) {
+        const { itemId, fields, creators } = previousSnapshot;
+        pushUndoEntry(context.request.conversationKey, {
+          id: `undo-edit-metadata-${Date.now()}`,
+          toolName: "edit_article_metadata",
+          description: `Undo metadata edit for "${previousSnapshot.title}"`,
+          revert: async () => {
+            const item = zoteroGateway.getItem(itemId);
+            if (!item) return;
+            await zoteroGateway.updateArticleMetadata({
+              item,
+              metadata: { ...fields, creators },
+            });
+          },
+        });
+      }
       return result;
     },
   };

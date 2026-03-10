@@ -15,14 +15,31 @@ import { createReadAttachmentTextTool } from "./read/readAttachmentText";
 import { createReadPaperFrontMatterTool } from "./read/readPaperFrontMatter";
 import { createAuditArticleMetadataTool } from "./read/auditArticleMetadata";
 import { createSearchPdfPagesTool } from "./read/searchPdfPages";
-import { createPreparePdfPagesForModelTool } from "./read/preparePdfPagesForModel";
-import { createPreparePdfFileForModelTool } from "./read/preparePdfFileForModel";
-import { createCaptureReaderViewTool } from "./read/captureReaderView";
+import {
+  createPreparePdfPagesForModelTool,
+  clearPreparePdfPagesCache,
+} from "./read/preparePdfPagesForModel";
+import {
+  createPreparePdfFileForModelTool,
+  clearPreparePdfFileCache,
+} from "./read/preparePdfFileForModel";
+import {
+  createCaptureReaderViewTool,
+  clearCaptureReaderViewCache,
+} from "./read/captureReaderView";
 import { createComparePapersStructuredTool } from "./read/comparePapersStructured";
+import { createReadPaperNotesTool } from "./read/readPaperNotes";
+import { createReadPaperAnnotationsTool } from "./read/readPaperAnnotations";
+import { createFindRelatedPapersInLibraryTool } from "./read/findRelatedPapersInLibrary";
+import { createDetectDuplicatesTool } from "./read/detectDuplicates";
+import { createLookupExternalMetadataTool } from "./read/lookupExternalMetadata";
+import { createSearchRelatedPapersOnlineTool } from "./read/searchRelatedPapersOnline";
 import { createSaveAnswerToNoteTool } from "./write/saveAnswerToNote";
 import { createApplyTagsTool } from "./write/applyTags";
 import { createEditArticleMetadataTool } from "./write/editArticleMetadata";
 import { createMoveUnfiledPapersToCollectionTool } from "./write/moveUnfiledPapersToCollection";
+import { createCreateCollectionTool } from "./write/createCollection";
+import { createUndoLastActionTool } from "./write/undoLastAction";
 import { PdfPageService } from "../services/pdfPageService";
 
 type BuiltInAgentToolDeps = {
@@ -72,7 +89,21 @@ export function createBuiltInToolRegistry(
       deps.zoteroGateway,
     ),
   );
+  registry.register(createReadPaperNotesTool(deps.zoteroGateway));
+  registry.register(createReadPaperAnnotationsTool(deps.zoteroGateway));
+  registry.register(createFindRelatedPapersInLibraryTool(deps.zoteroGateway));
+  registry.register(createDetectDuplicatesTool(deps.zoteroGateway));
+  registry.register(createLookupExternalMetadataTool());
+  registry.register(createSearchRelatedPapersOnlineTool(deps.zoteroGateway));
   registry.register(createSaveAnswerToNoteTool(deps.zoteroGateway));
   registry.register(createEditArticleMetadataTool(deps.zoteroGateway));
+  registry.register(createCreateCollectionTool(deps.zoteroGateway));
+  registry.register(createUndoLastActionTool());
   return registry;
+}
+
+export function clearAllAgentToolCaches(conversationKey: number): void {
+  clearCaptureReaderViewCache(conversationKey);
+  clearPreparePdfPagesCache(conversationKey);
+  clearPreparePdfFileCache(conversationKey);
 }

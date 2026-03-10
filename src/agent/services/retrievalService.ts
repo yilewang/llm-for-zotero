@@ -29,7 +29,22 @@ function dedupePaperContexts(
   return out;
 }
 
+type EvidenceCacheKey = string;
+
+function buildEvidenceCacheKey(
+  contextItemId: number,
+  question: string,
+): EvidenceCacheKey {
+  const normalizedQ = question.trim().toLowerCase().slice(0, 120);
+  return `${contextItemId}::${normalizedQ}`;
+}
+
 export class RetrievalService {
+  private readonly evidenceCache = new Map<
+    EvidenceCacheKey,
+    RetrievalResult[]
+  >();
+
   constructor(
     private readonly pdfService: PdfService,
     private readonly candidateBuilder = buildPaperRetrievalCandidates,
@@ -53,6 +68,15 @@ export class RetrievalService {
       : 6;
     const results: RetrievalResult[] = [];
     for (const paperContext of papers) {
+      const cacheKey = buildEvidenceCacheKey(
+        paperContext.contextItemId,
+        params.question,
+      );
+      const cached = this.evidenceCache.get(cacheKey);
+      if (cached) {
+        results.push(...cached);
+        continue;
+      }
       const pdfContext = await this.pdfService.ensurePaperContext(paperContext);
       const candidates = await this.candidateBuilder(
         paperContext,
@@ -67,19 +91,23 @@ export class RetrievalService {
           mode: "evidence",
         },
       );
-      for (const candidate of candidates) {
-        results.push({
-          paperContext,
-          chunkIndex: candidate.chunkIndex,
-          sectionLabel: candidate.sectionLabel,
-          chunkKind: candidate.chunkKind,
-          sourceLabel: formatPaperSourceLabel(paperContext),
-          text: candidate.chunkText,
-          score: candidate.evidenceScore,
-        });
-      }
+      const paperResults: RetrievalResult[] = candidates.map((candidate) => ({
+        paperContext,
+        chunkIndex: candidate.chunkIndex,
+        sectionLabel: candidate.sectionLabel,
+        chunkKind: candidate.chunkKind,
+        sourceLabel: formatPaperSourceLabel(paperContext),
+        text: candidate.chunkText,
+        score: candidate.evidenceScore,
+      }));
+      this.evidenceCache.set(cacheKey, paperResults);
+      results.push(...paperResults);
     }
     results.sort((a, b) => b.score - a.score || a.chunkIndex - b.chunkIndex);
     return results.slice(0, topK);
+  }
+
+  clearEvidenceCache(): void {
+    this.evidenceCache.clear();
   }
 }
