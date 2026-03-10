@@ -1,5 +1,6 @@
 import { AgentToolRegistry } from "./tools/registry";
 import { readAttachmentBytes } from "../modules/contextPanel/attachmentStorage";
+import { recordAgentTurn } from "./store/conversationMemory";
 import type {
   AgentModelContentPart,
   AgentConfirmationResolution,
@@ -253,6 +254,7 @@ export class AgentRuntime {
       modelName: request.model || "unknown",
       modelProviderLabel: request.modelProviderLabel,
     };
+    const toolsUsedThisTurn: string[] = [];
     const messages = buildAgentInitialMessages(
       request,
       this.registry.listToolDefinitions(),
@@ -298,6 +300,12 @@ export class AgentRuntime {
         text: finalText,
       });
       await finishAgentRun(runId, "completed", finalText);
+      recordAgentTurn(
+        request.conversationKey,
+        request.userText,
+        toolsUsedThisTurn,
+        finalText,
+      );
       return {
         kind: "completed",
         runId,
@@ -371,6 +379,7 @@ export class AgentRuntime {
           name: call.name,
           args: call.arguments,
         });
+        toolsUsedThisTurn.push(call.name);
         const execution = await this.registry.prepareExecution(call, {
           ...context,
           currentAnswerText,
@@ -469,6 +478,14 @@ export class AgentRuntime {
       text: finalText,
     });
     await finishAgentRun(runId, "failed", finalText);
+    if (currentAnswerText) {
+      recordAgentTurn(
+        request.conversationKey,
+        request.userText,
+        toolsUsedThisTurn,
+        finalText,
+      );
+    }
     return {
       kind: "completed",
       runId,

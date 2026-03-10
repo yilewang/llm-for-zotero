@@ -47,8 +47,9 @@ export function normalizeStringArray(value: unknown): string[] | null {
 }
 
 export function normalizeToolPaperContext(
-  value: Record<string, unknown>,
+  value: Record<string, unknown> | null | undefined,
 ): PaperContextRef | null {
+  if (!value || typeof value !== "object") return null;
   const itemId = normalizePositiveInt(value.itemId);
   const contextItemId = normalizePositiveInt(value.contextItemId);
   if (!itemId || !contextItemId) return null;

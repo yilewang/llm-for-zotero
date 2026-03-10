@@ -21,6 +21,7 @@ function dedupePaperContexts(
   const out: PaperContextRef[] = [];
   const seen = new Set<string>();
   for (const entry of paperContexts) {
+    if (!entry || !Number.isFinite(entry.itemId) || !Number.isFinite(entry.contextItemId)) continue;
     const key = `${entry.itemId}:${entry.contextItemId}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -35,7 +36,15 @@ function buildEvidenceCacheKey(
   contextItemId: number,
   question: string,
 ): EvidenceCacheKey {
-  const normalizedQ = question.trim().toLowerCase().slice(0, 120);
+  // Strip punctuation and normalise whitespace so minor phrasing variations
+  // (e.g. "What is the method?" vs "what is the method") share a cache entry.
+  const normalizedQ = question
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
   return `${contextItemId}::${normalizedQ}`;
 }
 

@@ -625,7 +625,7 @@ export class ZoteroGateway {
     const activeContext = this.getActivePaperContext(activeItem);
     if (activeContext) {
       const key = `${activeContext.itemId}:${activeContext.contextItemId}`;
-      if (!out.some((entry) => `${entry.itemId}:${entry.contextItemId}` === key)) {
+      if (!out.some((entry) => entry && `${entry.itemId}:${entry.contextItemId}` === key)) {
         out.unshift(activeContext);
       }
     }

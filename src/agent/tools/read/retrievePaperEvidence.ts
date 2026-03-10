@@ -65,8 +65,11 @@ export function createRetrievePaperEvidenceTool(
       return ok<Record<string, unknown>>(args);
     },
     execute: async (input, context) => {
-      const explicitPaper = validateObject<Record<string, unknown>>(input)
-        ? normalizeToolPaperContext(input.paperContext as Record<string, unknown>)
+      const rawPaperContext = validateObject<Record<string, unknown>>(input)
+        ? input.paperContext
+        : undefined;
+      const explicitPaper = validateObject<Record<string, unknown>>(rawPaperContext)
+        ? normalizeToolPaperContext(rawPaperContext)
         : null;
       const papers = explicitPaper
         ? [explicitPaper]

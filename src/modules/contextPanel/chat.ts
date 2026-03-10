@@ -124,6 +124,11 @@ import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 import { decorateAssistantCitationLinks } from "./assistantCitationLinks";
 import { getAgentRuntime } from "../../agent";
 import { getAgentRunTrace } from "../../agent/store/traceStore";
+import {
+  applyHistoryCompression,
+  scheduleLLMSummary,
+  clearConversationSummary,
+} from "./conversationSummaryCache";
 import type {
   AgentEvent,
   AgentRunEventRecord,
@@ -2966,7 +2971,9 @@ export async function sendQuestion(
   };
 
   try {
-    const llmHistory = buildLLMHistoryMessages(historyForLLM);
+    const rawLLMHistory = buildLLMHistoryMessages(historyForLLM);
+    // Apply auto-summary compression when the history grows long.
+    const llmHistory = applyHistoryCompression(conversationKey, rawLLMHistory) ?? rawLLMHistory;
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
     const contextPlan = await buildContextPlanForRequest({
       item,
@@ -3095,6 +3102,15 @@ export async function sendQuestion(
     assistantMessage.streaming = false;
     refreshChatSafely();
     await persistAssistantOnce();
+
+    // After the response is saved, kick off a background LLM summary of the
+    // older history so it is ready for the next request.
+    scheduleLLMSummary(conversationKey, rawLLMHistory, {
+      model: effectiveRequestConfig.model,
+      apiBase: effectiveRequestConfig.apiBase,
+      apiKey: effectiveRequestConfig.apiKey,
+      authMode: effectiveRequestConfig.authMode,
+    });
 
     setStatusSafely("Ready", "ready");
   } catch (err) {

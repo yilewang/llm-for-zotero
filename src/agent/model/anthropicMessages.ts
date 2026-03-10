@@ -374,6 +374,15 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
       request.model,
       request.apiBase,
     );
+    // Anthropic requires temperature === 1 when extended thinking is enabled.
+    // Any other value causes a 400 "temperature may only be set to 1" error.
+    const thinkingEnabled =
+      reasoningPayload.extra.thinking != null &&
+      typeof reasoningPayload.extra.thinking === "object" &&
+      (reasoningPayload.extra.thinking as { type?: string }).type === "enabled";
+    const effectiveTemperature = thinkingEnabled
+      ? 1
+      : normalizeTemperature(request.advanced?.temperature);
     const payload = {
       model: request.model,
       max_tokens: normalizeMaxTokens(request.advanced?.maxTokens),
@@ -385,9 +394,7 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
       ...reasoningPayload.extra,
       ...(reasoningPayload.omitTemperature
         ? {}
-        : {
-            temperature: normalizeTemperature(request.advanced?.temperature),
-          }),
+        : { temperature: effectiveTemperature }),
     };
     const url = resolveProviderTransportEndpoint({
       protocol: "anthropic_messages",

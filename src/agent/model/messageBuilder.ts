@@ -4,6 +4,7 @@ import type {
   AgentToolDefinition,
 } from "../types";
 import { AGENT_PERSONA_INSTRUCTIONS } from "./agentPersona";
+import { buildAgentMemoryBlock } from "../store/conversationMemory";
 
 export function isMultimodalRequestSupported(
   request: AgentRuntimeRequest,
@@ -32,11 +33,31 @@ export function stringifyMessageContent(
     .join("\n");
 }
 
+/**
+ * Keeps the first Q&A pair (for topic continuity) plus the most recent turns.
+ * This prevents important first-turn context from being silently dropped when
+ * the conversation grows long, while still respecting the total cap.
+ */
+function selectAgentHistoryWindow(
+  history: import("../../utils/llmClient").ChatMessage[],
+  maxTotal = 10,
+): import("../../utils/llmClient").ChatMessage[] {
+  if (history.length <= maxTotal) return history;
+  // First pair anchors the conversation topic.
+  const firstPair = history.slice(0, 2);
+  const tail = history.slice(-(maxTotal - 2));
+  // Avoid duplicating the first pair if history is very short.
+  const tailStartIndex = history.length - (maxTotal - 2);
+  if (tailStartIndex <= 2) return history.slice(-maxTotal);
+  return [...firstPair, ...tail];
+}
+
 function normalizeHistoryMessages(
   request: AgentRuntimeRequest,
 ): AgentModelMessage[] {
-  const history = Array.isArray(request.history) ? request.history.slice(-8) : [];
-  return history
+  const raw = Array.isArray(request.history) ? request.history : [];
+  const windowed = selectAgentHistoryWindow(raw, 10);
+  return windowed
     .filter((message) => message.role === "user" || message.role === "assistant")
     .map((message) => ({
       role: message.role,
@@ -140,10 +161,28 @@ function collectGuidanceInstructions(
   return Array.from(instructions);
 }
 
+function buildAutoReadInstruction(request: AgentRuntimeRequest): string {
+  const isFirstTurn = !Array.isArray(request.history) || request.history.length === 0;
+  if (!isFirstTurn) return "";
+  const hasPapers =
+    (request.selectedPaperContexts?.length ?? 0) > 0 ||
+    (request.pinnedPaperContexts?.length ?? 0) > 0;
+  if (!hasPapers) return "";
+  return (
+    "FIRST-TURN RULE: Because this is the start of the conversation and paper(s) are attached, " +
+    "your very first action MUST be to call `read_paper_front_matter` to load the title, abstract, " +
+    "and authors. Do this before answering, even if the answer seems obvious. " +
+    "This grounds your response in the actual paper content."
+  );
+}
+
 export function buildAgentInitialMessages(
   request: AgentRuntimeRequest,
   tools: AgentToolDefinition<any, any>[],
 ): AgentModelMessage[] {
+  const memoryBlock = buildAgentMemoryBlock(request.conversationKey);
+  const autoReadInstruction = buildAutoReadInstruction(request);
+
   const sections: PromptSection[] = [
     {
       id: "system-override",
@@ -160,6 +199,14 @@ export function buildAgentInitialMessages(
     {
       id: "tool-guidance",
       lines: collectGuidanceInstructions(request, tools),
+    },
+    {
+      id: "agent-memory",
+      lines: [memoryBlock],
+    },
+    {
+      id: "auto-read",
+      lines: [autoReadInstruction],
     },
   ];
 

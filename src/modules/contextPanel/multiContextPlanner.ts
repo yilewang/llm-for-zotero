@@ -21,6 +21,68 @@ import {
 } from "./pdfContext";
 import { pdfTextCache } from "./state";
 import { sanitizeText } from "./textUtils";
+
+// ── Cross-turn retrieval cache ──────────────────────────────────────────────
+// Caches chunk candidates returned by buildPaperRetrievalCandidates so that
+// follow-up questions about the same paper re-use the already-retrieved set.
+// Key: `${paperKey}::${normalizedQuestion}`
+const MAX_RETRIEVAL_CACHE_ENTRIES = 300;
+const retrievalCandidateCache = new Map<string, PaperContextCandidate[]>();
+
+function buildRetrievalCacheKey(paperKey: string, question: string): string {
+  const normQ = question
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  return `${paperKey}::${normQ}`;
+}
+
+function getCachedRetrievalCandidates(
+  paperKey: string,
+  question: string,
+): PaperContextCandidate[] | undefined {
+  return retrievalCandidateCache.get(buildRetrievalCacheKey(paperKey, question));
+}
+
+function setCachedRetrievalCandidates(
+  paperKey: string,
+  question: string,
+  candidates: PaperContextCandidate[],
+): void {
+  const key = buildRetrievalCacheKey(paperKey, question);
+  if (retrievalCandidateCache.size >= MAX_RETRIEVAL_CACHE_ENTRIES) {
+    // Evict the oldest entry (Maps preserve insertion order).
+    const first = retrievalCandidateCache.keys().next().value;
+    if (first !== undefined) retrievalCandidateCache.delete(first);
+  }
+  retrievalCandidateCache.set(key, candidates);
+}
+
+/**
+ * Builds a richer retrieval query by appending a short excerpt of the most
+ * recent assistant response.  This helps semantic search find chunks that are
+ * relevant to the evolving discussion rather than just the literal question.
+ */
+function buildEnrichedRetrievalQuery(
+  question: string,
+  history: ChatMessage[] | undefined,
+): string {
+  if (!history?.length) return question;
+  const lastAssistant = [...history]
+    .reverse()
+    .find((m) => m.role === "assistant");
+  if (!lastAssistant) return question;
+  const ctx = sanitizeText(
+    typeof lastAssistant.content === "string" ? lastAssistant.content : "",
+  )
+    .trim()
+    .slice(0, 280);
+  if (!ctx) return question;
+  return `${question}\n[Prior answer context: ${ctx}]`;
+}
 import type {
   AdvancedModelParams,
   MultiContextPlan,
@@ -440,6 +502,11 @@ export async function assembleRetrievedMultiPaperContext(params: {
 
   const allCandidates: PaperContextCandidate[] = [];
   for (const paper of papers) {
+    const cached = getCachedRetrievalCandidates(paper.paperKey, question);
+    if (cached) {
+      allCandidates.push(...cached);
+      continue;
+    }
     const candidates = await buildPaperRetrievalCandidates(
       paper.paperContext,
       paper.pdfContext,
@@ -447,6 +514,7 @@ export async function assembleRetrievedMultiPaperContext(params: {
       apiOverrides,
       { topK: RETRIEVAL_TOP_K_PER_PAPER },
     );
+    setCachedRetrievalCandidates(paper.paperKey, question, candidates);
     allCandidates.push(...candidates);
   }
 
@@ -836,9 +904,15 @@ export async function resolveMultiContextPlan(params: {
       };
     }
 
+    // Enrich the retrieval query with the last assistant response so semantic
+    // search finds chunks relevant to the evolving conversation.
+    const enrichedQuestion = buildEnrichedRetrievalQuery(
+      params.question,
+      params.history,
+    );
     const retrieved = await assembleRetrievedMultiPaperContext({
       papers: [activePaper],
-      question: params.question,
+      question: enrichedQuestion,
       contextBudgetTokens: adjustedContextBudget.contextBudgetTokens,
       minChunksByPaper: new Map<string, number>(),
       apiOverrides: {

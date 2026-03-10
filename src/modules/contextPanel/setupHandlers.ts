@@ -154,6 +154,7 @@ import {
   removeAttachmentFile,
   removeConversationAttachmentFiles,
 } from "./attachmentStorage";
+import { clearConversationSummary as clearConversationSummaryFromCache } from "./conversationSummaryCache";
 import {
   clearConversation as clearStoredConversation,
   clearConversationTitle,
@@ -3818,6 +3819,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     selectedModelCache.delete(conversationKey);
     selectedReasoningCache.delete(conversationKey);
     clearTransientComposeStateForItem(conversationKey);
+    clearConversationSummaryFromCache(conversationKey);
   };
 
   const finalizeGlobalConversationDeletion = async (
