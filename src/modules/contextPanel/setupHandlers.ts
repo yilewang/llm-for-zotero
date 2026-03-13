@@ -777,6 +777,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
   const closeSlashMenu = () => {
     slashMenuActiveIndex = -1;
+    clearAgentSlashItems();
     if (slashMenu) {
       Array.from(slashMenu.querySelectorAll(".llm-action-picker-item")).forEach(
         (el) => (el as HTMLButtonElement).removeAttribute("aria-selected"),
@@ -6252,6 +6253,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
   // ── Slash menu keyboard navigation ────────────────────────────────────────
   let slashMenuActiveIndex = -1;
+  const clearAgentSlashItems = () => {
+    if (!slashMenu) return;
+    Array.from(slashMenu.querySelectorAll("[data-slash-agent-item]")).forEach(
+      (el) => (el as Element).remove(),
+    );
+  };
   const getVisibleSlashItems = (): HTMLButtonElement[] => {
     if (!slashMenu) return [];
     const win = body.ownerDocument?.defaultView;
@@ -6270,8 +6277,21 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         idx === slashMenuActiveIndex ? "true" : "false",
       );
     });
-    if (slashMenuActiveIndex >= 0 && items[slashMenuActiveIndex]) {
-      items[slashMenuActiveIndex].scrollIntoView({ block: "nearest" });
+    if (slashMenuActiveIndex >= 0 && items[slashMenuActiveIndex] && slashMenu) {
+      const activeItem = items[slashMenuActiveIndex];
+      // Walk offsetParent chain to get offset relative to the scroll container
+      let offsetTop = 0;
+      let el: HTMLElement | null = activeItem;
+      while (el && el !== slashMenu) {
+        offsetTop += el.offsetTop;
+        el = el.offsetParent as HTMLElement | null;
+      }
+      const itemBottom = offsetTop + activeItem.offsetHeight;
+      if (offsetTop < slashMenu.scrollTop) {
+        slashMenu.scrollTop = offsetTop;
+      } else if (itemBottom > slashMenu.scrollTop + slashMenu.clientHeight) {
+        slashMenu.scrollTop = itemBottom - slashMenu.clientHeight;
+      }
     }
   };
   const openSlashMenuWithSelection = () => {
@@ -6337,55 +6357,38 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     actionPicker.style.display = "block";
   };
 
-  /** Populates the action picker based on the current `/query` token. */
+  /** Populates the slash menu (and, in agent mode, appends agent actions). */
   const scheduleActionPickerTrigger = () => {
-    if (!item || !actionPicker || !actionPickerList) {
+    if (!item) {
       closeActionPicker();
       return;
     }
-    if (getCurrentRuntimeMode() !== "agent") {
-      closeActionPicker();
-      const token = getActiveActionToken();
-      if (token && slashMenu) {
-        if (!isFloatingMenuOpen(slashMenu)) {
-          closeRetryModelMenu();
-          closeModelMenu();
-          closeReasoningMenu();
-          closeHistoryNewMenu();
-          closeHistoryMenu();
-          closeResponseMenu();
-          closePromptMenu();
-          closeExportMenu();
-          openSlashMenuWithSelection();
-        }
-      } else {
-        closeSlashMenu();
-      }
-      return;
-    }
+    closeActionPicker();
     const token = getActiveActionToken();
     if (!token) {
-      closeActionPicker();
+      closeSlashMenu();
       return;
     }
-    let allActions: ActionPickerItem[] = [];
-    try {
-      allActions = getAgentApi().listActions();
-    } catch {
-      // Agent subsystem may not be initialised yet
-      closeActionPicker();
-      return;
+    // Agent mode: render filtered agent actions into slash menu
+    if (getCurrentRuntimeMode() === "agent") {
+      const query = token.query.toLowerCase().trim();
+      renderAgentActionsInSlashMenu(query);
     }
-    const query = token.query.toLowerCase().trim();
-    actionPickerItems = query
-      ? allActions.filter(
-          (a) =>
-            a.name.toLowerCase().includes(query) ||
-            a.description.toLowerCase().includes(query),
-        )
-      : allActions;
-    actionPickerActiveIndex = 0;
-    renderActionPicker();
+    if (!isFloatingMenuOpen(slashMenu)) {
+      closeRetryModelMenu();
+      closeModelMenu();
+      closeReasoningMenu();
+      closeHistoryNewMenu();
+      closeHistoryMenu();
+      closeResponseMenu();
+      closePromptMenu();
+      closeExportMenu();
+      openSlashMenuWithSelection();
+    } else {
+      // Already open — re-render selection after agent items may have changed
+      slashMenuActiveIndex = 0;
+      updateSlashMenuSelection();
+    }
   };
 
   // ── Action HITL panel ──────────────────────────────────────────────────────
@@ -6513,27 +6516,20 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     });
   };
 
-  /** Selects an action from the picker, shows a form if needed, then runs it. */
-  const selectActionPickerItem = async (index: number): Promise<void> => {
-    const action = actionPickerItems[index];
-    if (!action) return;
-    consumeActiveActionToken();
-    closeActionPicker();
+  /** Core action execution — shared between action picker and slash menu. */
+  const executeAgentAction = async (action: ActionPickerItem): Promise<void> => {
     inputBox.focus({ preventScroll: true });
-
     const needsInput = getNeedsUserInputFields(action.name, action.inputSchema);
     let extraFields: Record<string, string> = {};
     if (needsInput.length) {
       const filled = await showActionLaunchForm(action.name, needsInput, action.inputSchema);
-      if (!filled) return; // user cancelled
+      if (!filled) return;
       extraFields = Object.fromEntries(
         Object.entries(filled).map(([k, v]) => [k, String(v)]),
       );
     }
-
     const input = buildActionInput(action.name, action.inputSchema, extraFields);
     if (status) setStatus(status, `Running: ${formatActionLabel(action.name)}…`, "ready");
-
     try {
       const agentApi = getAgentApi();
       const result = await agentApi.runAction(action.name, input, {
@@ -6561,6 +6557,73 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       ztoolkit.log("LLM: action picker run error", err);
       if (status) setStatus(status, `Error: ${String(err)}`, "error");
     }
+  };
+
+  /** Prepends filtered agent actions into the slash menu (agent mode only). */
+  const renderAgentActionsInSlashMenu = (query: string = "") => {
+    clearAgentSlashItems();
+    let allActions: ActionPickerItem[] = [];
+    try {
+      allActions = getAgentApi().listActions();
+    } catch {
+      return;
+    }
+    const filtered = query
+      ? allActions.filter(
+          (a) =>
+            a.name.toLowerCase().includes(query) ||
+            a.description.toLowerCase().includes(query),
+        )
+      : allActions;
+    const ownerDoc = body.ownerDocument;
+    const list = slashMenu?.querySelector(".llm-action-picker-list");
+    if (!ownerDoc || !list) return;
+    const firstBase = list.firstChild;
+    const mkAgentEl = (tag: string, cls: string): HTMLElement => {
+      const el = ownerDoc.createElement(tag);
+      el.className = cls;
+      el.setAttribute("data-slash-agent-item", "true");
+      return el;
+    };
+    // "Agent actions" section label
+    const agentLabel = mkAgentEl("div", "llm-slash-menu-section");
+    agentLabel.setAttribute("aria-hidden", "true");
+    agentLabel.textContent = "Agent actions";
+    list.insertBefore(agentLabel, firstBase);
+    // Agent action items
+    filtered.forEach((action) => {
+      const btn = mkAgentEl("button", "llm-action-picker-item") as HTMLButtonElement;
+      btn.type = "button";
+      const titleEl = ownerDoc.createElement("span");
+      titleEl.className = "llm-action-picker-title";
+      titleEl.textContent = formatActionLabel(action.name);
+      const descEl = ownerDoc.createElement("span");
+      descEl.className = "llm-action-picker-description";
+      descEl.textContent = action.description;
+      btn.append(titleEl, descEl);
+      btn.addEventListener("mousedown", (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        consumeActiveActionToken();
+        closeSlashMenu();
+        void executeAgentAction(action);
+      });
+      list.insertBefore(btn, firstBase);
+    });
+    // "Base actions" section label (above the static base items)
+    const baseLabel = mkAgentEl("div", "llm-slash-menu-section");
+    baseLabel.setAttribute("aria-hidden", "true");
+    baseLabel.textContent = "Base actions";
+    list.insertBefore(baseLabel, firstBase);
+  };
+
+  /** Selects an action from the (legacy) action picker by index. */
+  const selectActionPickerItem = async (index: number): Promise<void> => {
+    const action = actionPickerItems[index];
+    if (!action) return;
+    consumeActiveActionToken();
+    closeActionPicker();
+    await executeAgentAction(action);
   };
 
   function buildPaperMetaText(paper: {
@@ -8048,6 +8111,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       closeResponseMenu();
       closePromptMenu();
       closeExportMenu();
+      if (getCurrentRuntimeMode() === "agent") {
+        renderAgentActionsInSlashMenu();
+      }
       openSlashMenuWithSelection();
       uploadBtn.setAttribute("aria-expanded", "true");
     });

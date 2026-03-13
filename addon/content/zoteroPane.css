@@ -3878,9 +3878,22 @@ label.llm-search-results-item:hover {
   min-width: unset;
 }
 
-#llm-main[data-runtime-mode="agent"] #llm-slash-pdf-page-option,
-#llm-main[data-runtime-mode="agent"] #llm-slash-full-pdf-option {
-  display: none;
+.llm-slash-menu-separator {
+  height: 1px;
+  background: var(--stroke-secondary, rgba(120, 120, 120, 0.25));
+  margin: 4px 6px;
+}
+
+.llm-slash-menu-section {
+  display: flex;
+  align-items: center;
+  min-height: calc(24px * var(--llm-font-scale, 1));
+  padding: calc(4px * var(--llm-font-scale, 1)) calc(8px * var(--llm-font-scale, 1));
+  font-size: var(--llm-fs-10);
+  line-height: 1.2;
+  font-weight: 600;
+  color: var(--fill-tertiary);
+  user-select: none;
 }
 
 .llm-select-text-btn.llm-action-icon-only::before {
