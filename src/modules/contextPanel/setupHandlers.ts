@@ -42,6 +42,7 @@ import {
   pinnedSelectedTextKeys,
   pinnedImageKeys,
   pinnedFileKeys,
+  pinnedPaperKeys,
   setCancelledRequestId,
   currentAbortController,
   panelFontScalePercent,
@@ -271,6 +272,7 @@ import {
   retainPinnedSelectedTextContexts,
   togglePinnedFile,
   togglePinnedImage,
+  togglePinnedPaper,
   togglePinnedSelectedText,
 } from "./setupHandlers/controllers/pinnedContextController";
 import {
@@ -8906,6 +8908,38 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       }
       closePaperChipMenu();
       return;
+    });
+    paperPreview.addEventListener("contextmenu", (e: Event) => {
+      if (!item) return;
+      const target = e.target as Element | null;
+      if (!target) return;
+      const paperChip = target.closest(
+        ".llm-paper-context-chip",
+      ) as HTMLDivElement | null;
+      if (!paperChip || !paperPreview.contains(paperChip)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (paperChip.dataset.autoLoaded === "true") {
+        if (status) {
+          setStatus(status, "Default paper context is always pinned", "ready");
+        }
+        return;
+      }
+      const paperContext = resolvePaperContextFromChipElement(paperChip);
+      if (!paperContext) return;
+      const nextPinned = togglePinnedPaper(
+        pinnedPaperKeys,
+        item.id,
+        paperContext,
+      );
+      updatePaperPreviewPreservingScroll();
+      if (status) {
+        setStatus(
+          status,
+          nextPinned ? "Paper pinned for next sends" : "Paper unpinned",
+          "ready",
+        );
+      }
     });
     paperPreview.addEventListener("click", (e: Event) => {
       const target = e.target as Element | null;

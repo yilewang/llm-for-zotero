@@ -39,6 +39,24 @@ export type LivePdfSelectionLocateResult = {
   debugSummary?: string[];
 };
 
+export type ExactQuoteJumpQueryAttempt = {
+  query: string;
+  matchedPageIndexes: number[];
+  totalMatches: number;
+};
+
+export type ExactQuoteJumpResult = {
+  matched: boolean;
+  reason: string;
+  expectedPageIndex: number | null;
+  queryUsed?: string;
+  queries: ExactQuoteJumpQueryAttempt[];
+  debugSummary: string[];
+};
+
+const SEARCH_BOUNDARY_PUNCTUATION_RE =
+  /^[\s"'`“”‘’([{<]+|[\s"'`“”‘’)\]}>.,;:!?]+$/g;
+
 type LocatePageTextOptions = {
   queryLabel?: string;
   resolveSinglePageDuplicates?: boolean;
@@ -1240,17 +1258,40 @@ export function buildRawPrefixQueries(text: string): string[] {
   const clean = sanitizeText(text || "").trim();
   if (clean.length < 12) return [];
   const queries: string[] = [];
-  for (const charLen of [50, 30, 18]) {
-    if (clean.length <= charLen) continue;
-    // Trim to the last full word
-    const prefix = clean.slice(0, charLen).replace(/\s\S*$/, "").trim();
-    if (prefix.length >= 12 && !queries.includes(prefix)) {
-      queries.push(prefix);
+  const pushQuery = (query: string) => {
+    const normalizedQuery = sanitizeText(query || "").trim();
+    if (normalizedQuery.length < 12 || queries.includes(normalizedQuery)) return;
+    queries.push(normalizedQuery);
+  };
+  const stripped = clean.replace(SEARCH_BOUNDARY_PUNCTUATION_RE, "").trim();
+  const bases = Array.from(
+    new Set(
+      [stripped || clean, stripped === clean ? clean : ""].filter(
+        (value) => value.length >= 12,
+      ),
+    ),
+  );
+
+  for (const base of bases) {
+    // Try the whole visible phrase first when it is short enough.
+    if (base.length <= 220) {
+      pushQuery(base);
     }
-  }
-  // Also include the full text if short enough for exact matching
-  if (clean.length <= 220 && !queries.includes(clean)) {
-    queries.unshift(clean);
+
+    // Human-like fallback: search from the beginning of the quote/title.
+    for (const charLen of [50, 30, 18]) {
+      if (base.length <= charLen) continue;
+      const prefix = base.slice(0, charLen).replace(/\s\S*$/, "").trim();
+      pushQuery(prefix);
+    }
+
+    // Also search from the end of the quote/title, which often works better
+    // for titles or model outputs that add wrapper quotation marks.
+    for (const charLen of [50, 30, 18]) {
+      if (base.length <= charLen) continue;
+      const suffix = base.slice(-charLen).replace(/^\S*\s/, "").trim();
+      pushQuery(suffix);
+    }
   }
   return queries;
 }
@@ -1281,7 +1322,7 @@ async function waitForFindControllerPageMatches(
       } else {
         // _rawQuery is undefined — property doesn't exist in this build.
         // Allow a brief grace period for the find event to be processed.
-        if (Date.now() - startedAt < 100) {
+        if (Date.now() - startedAt < 250) {
           await delay(25);
           continue;
         }
@@ -1289,10 +1330,14 @@ async function waitForFindControllerPageMatches(
       }
     }
 
-    const pageMatches = Array.isArray(findController?.pageMatches)
-      ? findController.pageMatches
-      : Array.isArray(findController?._pageMatches)
-        ? findController._pageMatches
+    // Use an array-like length check instead of Array.isArray so that
+    // cross-realm arrays (created in the PDF viewer's content window) are
+    // correctly recognised in Firefox's privileged extension context.
+    const rawMatches =
+      findController?.pageMatches ?? findController?._pageMatches;
+    const pageMatches: unknown[] =
+      rawMatches != null && typeof (rawMatches as any).length === "number"
+        ? (rawMatches as unknown[])
         : [];
     if (pageMatches.length > latestMatches.length) {
       latestMatches = pageMatches;
@@ -1309,8 +1354,10 @@ async function waitForFindControllerPageMatches(
     }
 
     // Early bail-out: if the FindController has not produced any results
-    // after 600ms the search mechanism is likely non-functional.
-    if (Date.now() - startedAt > 600 && latestMatches.length === 0) {
+    // after a longer grace period, the search mechanism is likely non-functional.
+    // Zotero's embedded reader can take noticeably longer than stock PDF.js to
+    // populate pageMatches right after a page navigation.
+    if (Date.now() - startedAt > 1400 && latestMatches.length === 0) {
       return latestMatches;
     }
     await delay(50);
@@ -1327,13 +1374,16 @@ function summarizeFindControllerMatches(pageMatches: unknown[]): {
   const pageMatchCounts: number[] = [];
   let totalMatches = 0;
   for (let pageIndex = 0; pageIndex < pageMatches.length; pageIndex += 1) {
-    const matches: unknown[] = Array.isArray(pageMatches[pageIndex])
-      ? (pageMatches[pageIndex] as unknown[])
-      : [];
-    if (!matches.length) continue;
+    // Cross-realm compatible: use array-like length check instead of Array.isArray.
+    const rawEntry = pageMatches[pageIndex];
+    const matchCount =
+      rawEntry != null && typeof (rawEntry as any).length === "number"
+        ? Number((rawEntry as any).length)
+        : 0;
+    if (!matchCount) continue;
     matchedPageIndexes.push(pageIndex);
-    pageMatchCounts[pageIndex] = matches.length;
-    totalMatches += matches.length;
+    pageMatchCounts[pageIndex] = matchCount;
+    totalMatches += matchCount;
   }
   return { matchedPageIndexes, totalMatches, pageMatchCounts };
 }
@@ -1349,33 +1399,125 @@ async function searchFindControllerForQuery(
 } | null> {
   const app = getPdfViewerApplication(reader);
   const findController = app?.findController;
-  const eventBus = app?.eventBus;
   const pagesCount = getPagesCount(app);
-  if (!findController || !eventBus || pagesCount < 1) {
+  if (!findController || pagesCount < 1) {
     return null;
   }
 
-  eventBus.dispatch("find", {
-    source: { source: "llm-live-quote-locator" },
-    type: "",
-    query,
-    phraseSearch: true,
-    caseSensitive: false,
-    entireWord: false,
-    highlightAll: false,
-    findPrevious: false,
-    matchDiacritics: false,
-  });
+  // ---------------------------------------------------------------------------
+  // Strategy: literally automate Ctrl+F by setting the find bar's input value
+  // and dispatching a DOM input event.  This is exactly what happens when a
+  // user presses Ctrl+F, types a query, and the PDF viewer finds + scrolls.
+  // ---------------------------------------------------------------------------
+  const findBar = app?.findBar;
+  const findField: HTMLInputElement | null =
+    findBar?._findField ?? findBar?.findField ?? null;
 
+  let searchTriggered = false;
+
+  if (findField) {
+    try {
+      // Ensure the find bar is open (required for the search to activate).
+      if (typeof findBar?.open === "function") {
+        findBar.open();
+      }
+
+      // Set the query text — equivalent to the user typing in the search box.
+      findField.value = query;
+
+      // Dispatch an InputEvent in the *content window's* context so that
+      // Firefox's security boundaries don't swallow it.
+      const contentWin: any = findField.ownerDocument?.defaultView;
+      const EventCtor: typeof InputEvent =
+        contentWin?.InputEvent ?? contentWin?.Event ?? InputEvent;
+      findField.dispatchEvent(
+        new EventCtor("input", { bubbles: true } as EventInit),
+      );
+      searchTriggered = true;
+    } catch (err) {
+      ztoolkit.log(
+        "LLM paragraph-jump: find-bar input approach failed, will try eventBus",
+        err,
+      );
+    }
+  }
+
+  // Fallback: direct eventBus / executeCommand dispatch (may not work in all
+  // Zotero builds, but costs nothing to try).
+  if (!searchTriggered) {
+    const eventBus = app?.eventBus;
+    if (!eventBus && typeof findController.executeCommand !== "function") {
+      return null;
+    }
+    const findState = {
+      source: findBar ?? { source: "llm-live-quote-locator" },
+      type: "",
+      query,
+      phraseSearch: true,
+      caseSensitive: false,
+      entireWord: false,
+      highlightAll: true,
+      findPrevious: false,
+      matchDiacritics: false,
+    };
+    try {
+      if (typeof findBar?.open === "function") findBar.open();
+    } catch {
+      /* ignore */
+    }
+    let dispatched = false;
+    try {
+      if (typeof findController.executeCommand === "function") {
+        findController.executeCommand("find", findState);
+        dispatched = true;
+      }
+    } catch {
+      dispatched = false;
+    }
+    if (!dispatched && eventBus) {
+      eventBus.dispatch("find", findState);
+    }
+  }
+
+  // Wait for the FindController to process and populate results.
+  // Use waitForFindControllerPageMatches first (reads pageMatches array),
+  // then fall back to reading matchesCount (what the find-bar "1/1" uses).
   const pageMatches = await waitForFindControllerPageMatches(
     findController,
     pagesCount,
     query,
   );
-  return {
+  const result = {
     ...summarizeFindControllerMatches(pageMatches),
     pagesCount,
   };
+
+  // Fallback: if pageMatches reading returned 0 (cross-realm array issues or
+  // different property name in this PDF.js build), check the FindController's
+  // own matchesCount — this is the same value the find bar uses to show "1/1".
+  if (result.totalMatches === 0) {
+    const fcTotal: number =
+      (typeof findController?.matchesCount?.total === "number"
+        ? findController.matchesCount.total
+        : 0) ||
+      (typeof findController?._matchesCountTotal === "number"
+        ? findController._matchesCountTotal
+        : 0);
+    if (fcTotal > 0) {
+      const selected =
+        findController?.selected ?? findController?._selected;
+      const selectedPage =
+        typeof selected?.pageIdx === "number" ? selected.pageIdx : -1;
+      result.totalMatches = fcTotal;
+      if (selectedPage >= 0) {
+        result.matchedPageIndexes = [selectedPage];
+        result.pageMatchCounts = [];
+        result.pageMatchCounts[selectedPage] = fcTotal;
+      }
+    }
+  }
+
+  return result;
 }
 
 function buildFindControllerQuoteResult(
@@ -1919,4 +2061,117 @@ export async function locateQuoteInLivePdfReader(
       reason: `Live quote locator failed: ${message}`,
     };
   }
+}
+
+/**
+ * After navigating to the correct page, trigger PDF.js's built-in find
+ * controller to scroll to the exact paragraph/text position of the quote
+ * and highlight it — equivalent to the user typing the quote into Ctrl+F.
+ *
+ * Returns structured success/failure information so callers can surface
+ * debug details when the paragraph jump fails.
+ */
+export async function scrollToExactQuoteInReader(
+  reader: any,
+  quoteText: string,
+  options?: {
+    expectedPageIndex?: number | null;
+  },
+): Promise<ExactQuoteJumpResult> {
+  const app = getPdfViewerApplication(reader);
+  const eventBus = app?.eventBus;
+  const findController = app?.findController;
+  const expectedPageIndex =
+    options && Object.prototype.hasOwnProperty.call(options, "expectedPageIndex")
+      ? Number.isFinite(options.expectedPageIndex) &&
+        Number(options.expectedPageIndex) >= 0
+        ? Math.floor(Number(options.expectedPageIndex))
+        : null
+      : getExpectedPageIndex(reader, app);
+  if (!eventBus || !findController) {
+    return {
+      matched: false,
+      reason: "PDF.js FindController is unavailable in the current reader.",
+      expectedPageIndex,
+      queries: [],
+      debugSummary: [],
+    };
+  }
+
+  const queries = buildRawPrefixQueries(quoteText);
+  if (!queries.length) {
+    return {
+      matched: false,
+      reason: "The quote is too short to build a FindController query.",
+      expectedPageIndex,
+      queries: [],
+      debugSummary: [],
+    };
+  }
+
+  const pagesCount = getPagesCount(app);
+  if (pagesCount < 1) {
+    return {
+      matched: false,
+      reason: "The reader did not report any searchable PDF pages.",
+      expectedPageIndex,
+      queries: [],
+      debugSummary: [],
+    };
+  }
+
+  const attempts: ExactQuoteJumpQueryAttempt[] = [];
+  const debugSummary: string[] = [];
+  let matchedOtherPagesOnly = false;
+
+  for (const query of queries) {
+    const searchResult = await searchFindControllerForQuery(reader, query);
+    if (!searchResult) {
+      return {
+        matched: false,
+        reason: "FindController search could not run in the current reader.",
+        expectedPageIndex,
+        queries: attempts,
+        debugSummary,
+      };
+    }
+    const attempt: ExactQuoteJumpQueryAttempt = {
+      query,
+      matchedPageIndexes: searchResult.matchedPageIndexes,
+      totalMatches: searchResult.totalMatches,
+    };
+    attempts.push(attempt);
+    debugSummary.push(
+      `Paragraph query "${formatQuerySnippet(query)}" -> ${formatPageList(searchResult.matchedPageIndexes)}`,
+    );
+    if (searchResult.totalMatches <= 0) continue;
+    if (
+      expectedPageIndex !== null &&
+      !searchResult.matchedPageIndexes.includes(expectedPageIndex)
+    ) {
+      matchedOtherPagesOnly = true;
+      continue;
+    }
+    return {
+      matched: true,
+      reason:
+        expectedPageIndex !== null
+          ? `FindController matched the quote on target page ${expectedPageIndex + 1}.`
+          : "FindController matched the quote in the current reader.",
+      expectedPageIndex,
+      queryUsed: query,
+      queries: attempts,
+      debugSummary,
+    };
+  }
+  return {
+    matched: false,
+    reason:
+      matchedOtherPagesOnly && expectedPageIndex !== null
+        ? `FindController matched other pages, but not the target page ${expectedPageIndex + 1}.`
+        : "FindController found no match for the available quote queries.",
+    expectedPageIndex,
+    queries: attempts,
+    debugSummary,
+  };
 }

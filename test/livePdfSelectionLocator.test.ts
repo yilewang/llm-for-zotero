@@ -6,6 +6,7 @@ import {
   splitQuoteAtEllipsis,
   buildRawPrefixQueries,
   locateQuoteByRawPrefixInPages,
+  scrollToExactQuoteInReader,
 } from "../src/modules/contextPanel/livePdfSelectionLocator";
 
 describe("livePdfSelectionLocator", function () {
@@ -295,9 +296,12 @@ describe("buildRawPrefixQueries", function () {
     const quote =
       "Simulation analysis of drift mechanisms using normalized odor velocity in the olfactory bulb context.";
     const result = buildRawPrefixQueries(quote);
-    // Full text comes first (≤220 chars), then 50-char and 30-char prefixes
+    // A boundary-cleaned full phrase comes first, followed by shorter phrase queries.
     assert.isAbove(result.length, 1);
-    assert.equal(result[0], quote);
+    assert.equal(
+      result[0],
+      "Simulation analysis of drift mechanisms using normalized odor velocity in the olfactory bulb context",
+    );
     // Each prefix should be trimmed to a word boundary
     for (const q of result) {
       assert.isFalse(q.endsWith(" "), "no trailing space");
@@ -313,7 +317,10 @@ describe("buildRawPrefixQueries", function () {
   it("puts the full text first when short enough", function () {
     const quote = "A moderately long sentence that is under two hundred and twenty characters.";
     const result = buildRawPrefixQueries(quote);
-    assert.equal(result[0], quote);
+    assert.equal(
+      result[0],
+      "A moderately long sentence that is under two hundred and twenty characters",
+    );
   });
 
   it("trims prefixes to word boundaries", function () {
@@ -324,6 +331,77 @@ describe("buildRawPrefixQueries", function () {
       // Should not end with a partial word (space followed by chars at end)
       assert.match(q, /\S$/, "ends with a non-space");
     }
+  });
+
+  it("strips wrapper quotes and includes suffix-style phrase queries", function () {
+    const quote =
+      '“Pattern separation, pattern completion, and new neuronal codes within a continuous CA3 map”';
+    const result = buildRawPrefixQueries(quote);
+
+    assert.equal(
+      result[0],
+      "Pattern separation, pattern completion, and new neuronal codes within a continuous CA3 map",
+    );
+    assert.isTrue(
+      result.some((query) => query.includes("within a continuous CA3 map")),
+    );
+    assert.isFalse(result.some((query) => query.startsWith("“")));
+  });
+});
+
+describe("scrollToExactQuoteInReader", function () {
+  function createFindControllerReader(pageMatches: unknown[]) {
+    const findController = {
+      _rawQuery: "",
+      pageMatches: [] as unknown[],
+      _pendingFindMatches: new Set<unknown>(),
+      _pagesToSearch: 0,
+    };
+    const eventBus = {
+      dispatch: (_eventName: string, params: { query: string }) => {
+        findController._rawQuery = params.query;
+        findController.pageMatches = pageMatches;
+      },
+    };
+    return {
+      _window: {
+        PDFViewerApplication: {
+          pdfDocument: { numPages: 3 },
+          pagesCount: 3,
+          page: 2,
+          eventBus,
+          findController,
+        },
+      },
+    };
+  }
+
+  it("reports a matched paragraph jump when FindController hits the target page", async function () {
+    const reader = createFindControllerReader([[], [0], []]);
+    const result = await scrollToExactQuoteInReader(
+      reader,
+      "Representational drift remained stable across repeated measurements in the target region.",
+      { expectedPageIndex: 1 },
+    );
+
+    assert.isTrue(result.matched);
+    assert.equal(result.expectedPageIndex, 1);
+    assert.isString(result.queryUsed);
+    assert.isAtLeast(result.queries.length, 1);
+  });
+
+  it("reports debug information when FindController matches only other pages", async function () {
+    const reader = createFindControllerReader([[0], [], []]);
+    const result = await scrollToExactQuoteInReader(
+      reader,
+      "Representational drift remained stable across repeated measurements in the target region.",
+      { expectedPageIndex: 1 },
+    );
+
+    assert.isFalse(result.matched);
+    assert.include(result.reason, "target page 2");
+    assert.isAtLeast(result.queries.length, 1);
+    assert.isAtLeast(result.debugSummary.length, 1);
   });
 });
 

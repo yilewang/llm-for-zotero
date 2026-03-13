@@ -13,11 +13,13 @@ import {
   resolveContextSourceItem,
 } from "./contextResolution";
 import {
+  type ExactQuoteJumpResult,
   flashPageInLivePdfReader,
   type LivePdfPageText,
   locateQuoteByRawPrefixInPages,
   locateQuoteInPageTexts,
   locateQuoteInLivePdfReader,
+  scrollToExactQuoteInReader,
   splitQuoteAtEllipsis,
   stripBoundaryEllipsis,
   warmPageTextCache,
@@ -25,6 +27,12 @@ import {
 import { resolveConversationBaseItem } from "./portalScope";
 import { searchPaperCandidates } from "./paperSearch";
 import type { Message, PaperContextRef } from "./types";
+
+type CitationParagraphJumpNavigation = {
+  pageIndex: number;
+  pageLabel: string;
+  paragraphJump: ExactQuoteJumpResult;
+};
 
 export type AssistantCitationPaperCandidate = {
   paperContext: PaperContextRef;
@@ -935,24 +943,106 @@ async function navigateReaderToPage(
   }
 }
 
+function buildParagraphJumpFailureStatus(
+  pageLabel: string,
+  paragraphJump: ExactQuoteJumpResult,
+): string {
+  const reason = sanitizeText(paragraphJump.reason || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return reason
+    ? `Jumped to page ${pageLabel}. Paragraph jump failed: ${reason}`
+    : `Jumped to page ${pageLabel}. Paragraph jump failed.`;
+}
+
+function buildParagraphJumpSuccessStatus(pageLabel: string): string {
+  return `Jumped to cited source (page ${pageLabel}, paragraph matched)`;
+}
+
+function logParagraphJumpFailure(params: {
+  contextItemId: number;
+  displayCitationLabel: string;
+  quoteText: string;
+  pageIndex: number;
+  pageLabel: string;
+  paragraphJump: ExactQuoteJumpResult;
+}): void {
+  ztoolkit.log("LLM citation paragraph jump failed", {
+    contextItemId: params.contextItemId,
+    citationLabel: params.displayCitationLabel,
+    quoteTextSample: sanitizeText(params.quoteText || "").slice(0, 240),
+    quoteTextLength: sanitizeText(params.quoteText || "").length,
+    pageIndex: params.pageIndex,
+    pageLabel: params.pageLabel,
+    expectedPageIndex: params.paragraphJump.expectedPageIndex,
+    reason: params.paragraphJump.reason,
+    queryUsed: params.paragraphJump.queryUsed,
+    queries: params.paragraphJump.queries,
+    debugSummary: params.paragraphJump.debugSummary,
+  });
+}
+
+async function attemptCitationParagraphJump(params: {
+  reader: any;
+  contextItemId: number;
+  displayCitationLabel: string;
+  quoteText: string;
+  pageIndex: number;
+  pageLabel: string;
+}): Promise<ExactQuoteJumpResult> {
+  // Try the FindController first WITHOUT navigating to the page first.
+  // Navigating before the search causes Zotero's reader to take longer to
+  // populate pageMatches, making the FindController appear to return no matches.
+  // FindController searches all pages and navigates + scrolls by itself on success.
+  const paragraphJump = await scrollToExactQuoteInReader(
+    params.reader,
+    params.quoteText,
+    { expectedPageIndex: params.pageIndex },
+  );
+  if (!paragraphJump.matched) {
+    logParagraphJumpFailure({
+      contextItemId: params.contextItemId,
+      displayCitationLabel: params.displayCitationLabel,
+      quoteText: params.quoteText,
+      pageIndex: params.pageIndex,
+      pageLabel: params.pageLabel,
+      paragraphJump,
+    });
+    // FindController did not navigate; fall back to coarse page-level jump + flash.
+    const navigated = await navigateReaderToPage(
+      params.reader,
+      params.pageIndex,
+      params.pageLabel,
+    );
+    const readerForFlash = navigated
+      ? params.reader
+      : await openReaderForItem(params.contextItemId, {
+          pageIndex: params.pageIndex,
+          pageLabel: params.pageLabel,
+        });
+    await flashPageInLivePdfReader(readerForFlash || params.reader, params.pageIndex);
+  }
+  return paragraphJump;
+}
+
 async function navigateToCachedCitationPage(
   contextItemId: number,
   quoteText: string,
-): Promise<boolean> {
+  displayCitationLabel: string,
+): Promise<CitationParagraphJumpNavigation | null> {
   const cacheKey = buildCitationCacheKey(contextItemId, quoteText);
   const cached = citationPageCache.get(cacheKey);
-  if (!cached) return false;
+  if (!cached) return null;
   let targetPageIndex = Math.floor(cached.pageIndex);
   let targetPageLabel =
     typeof cached.pageLabel === "string" && cached.pageLabel.trim()
       ? cached.pageLabel.trim()
       : `${targetPageIndex + 1}`;
 
-  const reader = await openReaderForItem(contextItemId, {
-    pageIndex: targetPageIndex,
-    pageLabel: targetPageLabel,
-  });
-  if (!reader) return false;
+  // Open without a specific page so FindController is not affected by a
+  // recent navigation when it tries to scroll to the exact paragraph.
+  const reader = await openReaderForItem(contextItemId);
+  if (!reader) return null;
 
   try {
     const verified = await locateQuoteInLivePdfReader(reader, quoteText);
@@ -971,19 +1061,19 @@ async function navigateToCachedCitationPage(
     void _err;
   }
 
-  const navigated = await navigateReaderToPage(
+  const paragraphJump = await attemptCitationParagraphJump({
     reader,
-    targetPageIndex,
-    targetPageLabel,
-  );
-  const readerForFlash = navigated
-    ? reader
-    : await openReaderForItem(contextItemId, {
-        pageIndex: targetPageIndex,
-        pageLabel: targetPageLabel,
-      });
-  await flashPageInLivePdfReader(readerForFlash || reader, targetPageIndex);
-  return true;
+    contextItemId,
+    displayCitationLabel,
+    quoteText,
+    pageIndex: targetPageIndex,
+    pageLabel: targetPageLabel,
+  });
+  return {
+    pageIndex: targetPageIndex,
+    pageLabel: targetPageLabel,
+    paragraphJump,
+  };
 }
 
 function buildPageTextsFromPdfWorkerResult(result: any): LivePdfPageText[] {
@@ -1549,7 +1639,13 @@ async function resolveAndNavigateAssistantCitation(params: {
       }
       const opened = await openReaderForItem(firstCandidate.contextItemId);
       if (opened) {
-        if (status) setStatus(status, "Opened cited paper.", "ready");
+        if (status) {
+          setStatus(
+            status,
+            "Opened cited paper. Paragraph jump skipped: no quote text was available.",
+            "ready",
+          );
+        }
         return;
       }
       if (status) setStatus(status, "Could not open the cited paper.", "error");
@@ -1558,9 +1654,9 @@ async function resolveAndNavigateAssistantCitation(params: {
 
     // Fast path: if the citation carried an explicit page number (e.g.
     // "(Carrasco et al., 2026, page 41)") AND we have a high-confidence label
-    // match (rank > 0), navigate directly to that page without any PDF text
-    // search.  This is the most reliable path and prevents false-positive
-    // matches from an unrelated PDF that happens to be open (rank-0 fallback).
+    // match (rank > 0), navigate directly to that page before attempting an
+    // exact paragraph jump with FindController. This avoids false-positive
+    // full-document page searches from an unrelated active PDF.
     const explicitPageLabel = sanitizeText(
       params.button.dataset.citationPageLabel || "",
     ).trim();
@@ -1570,19 +1666,33 @@ async function resolveAndNavigateAssistantCitation(params: {
       );
       if (bestRanked) {
         const pageIndex = Math.max(0, parseInt(explicitPageLabel, 10) - 1);
-        const target = await openReaderForItem(bestRanked.contextItemId, {
-          pageIndex,
-          pageLabel: explicitPageLabel,
-        });
+        const target = await openReaderForItem(bestRanked.contextItemId);
         if (target) {
-          await flashPageInLivePdfReader(target, pageIndex);
+          const paragraphJump = await attemptCitationParagraphJump({
+            reader: target,
+            contextItemId: bestRanked.contextItemId,
+            displayCitationLabel: params.displayCitationLabel,
+            quoteText: normalizedQuoteText,
+            pageIndex,
+            pageLabel: explicitPageLabel,
+          });
           updateCitationButtonPage(
             params.button,
             params.displayCitationLabel,
             explicitPageLabel,
           );
-          if (status)
-            setStatus(status, `Jumped to page ${explicitPageLabel}`, "ready");
+          if (status) {
+            setStatus(
+              status,
+              paragraphJump.matched
+                ? buildParagraphJumpSuccessStatus(explicitPageLabel)
+                : buildParagraphJumpFailureStatus(
+                    explicitPageLabel,
+                    paragraphJump,
+                  ),
+              "ready",
+            );
+          }
           return;
         }
       }
@@ -1592,6 +1702,7 @@ async function resolveAndNavigateAssistantCitation(params: {
       const cached = await navigateToCachedCitationPage(
         candidate.contextItemId,
         normalizedQuoteText,
+        params.displayCitationLabel,
       );
       if (cached) {
         const cacheKey = buildCitationCacheKey(
@@ -1606,7 +1717,18 @@ async function resolveAndNavigateAssistantCitation(params: {
             cachedEntry.pageLabel,
           );
         }
-        if (status) setStatus(status, "Jumped to cited source", "ready");
+        if (status) {
+          setStatus(
+            status,
+            cached.paragraphJump.matched
+              ? buildParagraphJumpSuccessStatus(cached.pageLabel)
+              : buildParagraphJumpFailureStatus(
+                  cached.pageLabel,
+                  cached.paragraphJump,
+                ),
+            "ready",
+          );
+        }
         return;
       }
     }
@@ -1626,19 +1748,28 @@ async function resolveAndNavigateAssistantCitation(params: {
         if (result.status === "resolved" && result.computedPageIndex !== null) {
           const pageIndex = Math.floor(result.computedPageIndex);
           const pageLabel = `${pageIndex + 1}`;
-          await navigateReaderToPage(activeReader, pageIndex, pageLabel);
-          await flashPageInLivePdfReader(activeReader, pageIndex);
+          const paragraphJump = await attemptCitationParagraphJump({
+            reader: activeReader,
+            contextItemId: getReaderItemId(activeReader),
+            displayCitationLabel: params.displayCitationLabel,
+            quoteText: normalizedQuoteText,
+            pageIndex,
+            pageLabel,
+          });
           updateCitationButtonPage(
             params.button,
             params.displayCitationLabel,
             pageLabel,
           );
-          if (status)
+          if (status) {
             setStatus(
               status,
-              `Jumped to cited source (page ${pageLabel})`,
+              paragraphJump.matched
+                ? buildParagraphJumpSuccessStatus(pageLabel)
+                : buildParagraphJumpFailureStatus(pageLabel, paragraphJump),
               "ready",
             );
+          }
           return;
         }
         if (result.reason) lastReason = result.reason;
@@ -1668,13 +1799,14 @@ async function resolveAndNavigateAssistantCitation(params: {
           buildCitationCacheKey(candidate.contextItemId, normalizedQuoteText),
           { pageIndex, pageLabel },
         );
-        const targetReader =
-          (await openReaderForItem(candidate.contextItemId, {
-            pageIndex,
-            pageLabel,
-          })) || reader;
-        await navigateReaderToPage(targetReader, pageIndex, pageLabel);
-        await flashPageInLivePdfReader(targetReader, pageIndex);
+        const paragraphJump = await attemptCitationParagraphJump({
+          reader,
+          contextItemId: candidate.contextItemId,
+          displayCitationLabel: params.displayCitationLabel,
+          quoteText: normalizedQuoteText,
+          pageIndex,
+          pageLabel,
+        });
         updateCitationButtonPage(
           params.button,
           params.displayCitationLabel,
@@ -1683,7 +1815,9 @@ async function resolveAndNavigateAssistantCitation(params: {
         if (status) {
           setStatus(
             status,
-            `Jumped to cited source (page ${pageLabel})`,
+            paragraphJump.matched
+              ? buildParagraphJumpSuccessStatus(pageLabel)
+              : buildParagraphJumpFailureStatus(pageLabel, paragraphJump),
             "ready",
           );
         }
