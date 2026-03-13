@@ -90,6 +90,8 @@ const paperSearchLibraryLoadTasks = new Map<
   number,
   Promise<PaperSearchLibraryIndex>
 >();
+const allItemsLibraryIndexCache = new Map<number, AllItemsLibraryIndex>();
+const allItemsLibraryLoadTasks = new Map<number, Promise<AllItemsLibraryIndex>>();
 
 function normalizeText(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -395,10 +397,14 @@ export function invalidatePaperSearchCache(libraryID?: number): void {
     const normalizedLibraryID = Math.floor(libraryID);
     paperSearchLibraryIndexCache.delete(normalizedLibraryID);
     paperSearchLibraryLoadTasks.delete(normalizedLibraryID);
+    allItemsLibraryIndexCache.delete(normalizedLibraryID);
+    allItemsLibraryLoadTasks.delete(normalizedLibraryID);
     return;
   }
   paperSearchLibraryIndexCache.clear();
   paperSearchLibraryLoadTasks.clear();
+  allItemsLibraryIndexCache.clear();
+  allItemsLibraryLoadTasks.clear();
 }
 
 function buildVisibleCandidate(
@@ -837,4 +843,201 @@ export async function searchPaperCandidates(
   return rankedCandidates
     .slice(0, normalizedLimit)
     .map((entry) => entry.candidate);
+}
+
+// ── All-items index (non-PDF-filtered, includes standalone notes) ─────────────
+
+type AllItemsLibraryIndex = {
+  libraryID: number;
+  candidates: IndexedPaperCandidate[];
+};
+
+function buildIndexedItemCandidate(item: Zotero.Item): IndexedPaperCandidate | null {
+  // Standalone notes
+  if ((item as any).isNote?.() && !item.parentID) {
+    const title =
+      normalizeText(
+        (item as any).getNoteTitle?.() || item.getDisplayTitle?.() || "",
+      ) || `Note ${item.id}`;
+    return {
+      itemId: item.id,
+      title,
+      attachments: [],
+      modifiedAt: toModifiedTimestamp(item.dateModified),
+      collectionIDs: getCollectionIDs(item),
+      normalized: {
+        title: normalizePaperSearchText(title),
+        shortTitle: "",
+        citationKey: "",
+        doi: "",
+        creator: "",
+        venue: "",
+        year: "",
+      },
+    };
+  }
+  if (!item?.isRegularItem?.()) return null;
+  // All attachments (not just PDF)
+  const allAtts: Zotero.Item[] = [];
+  for (const attachmentId of item.getAttachments()) {
+    const att = Zotero.Items.get(attachmentId);
+    if (att && att.isAttachment?.()) allAtts.push(att);
+  }
+  const attachments = buildIndexedAttachments(allAtts);
+
+  const title = getItemFieldText(item, "title") || `Item ${item.id}`;
+  const citationKey = getItemFieldText(item, "citationKey") || undefined;
+  const creators = collectCreators(item);
+  const firstCreator = creators[0] || undefined;
+  const year = extractYear(getItemFieldText(item, "date")) || undefined;
+  const shortTitle = getItemFieldText(item, "shortTitle");
+  const doi = getItemFieldText(item, "DOI");
+  const venue = collectVenue(item);
+
+  return {
+    itemId: item.id,
+    title,
+    citationKey,
+    firstCreator,
+    year,
+    attachments,
+    modifiedAt: toModifiedTimestamp(item.dateModified),
+    collectionIDs: getCollectionIDs(item),
+    normalized: {
+      title: normalizePaperSearchText(title),
+      shortTitle: normalizePaperSearchText(shortTitle),
+      citationKey: normalizePaperSearchText(citationKey || ""),
+      doi: normalizePaperSearchText(doi),
+      creator: normalizePaperSearchText(creators.join(" ")),
+      venue: normalizePaperSearchText(venue),
+      year: normalizePaperSearchText(year || ""),
+    },
+  };
+}
+
+async function buildAllItemsLibraryIndex(libraryID: number): Promise<AllItemsLibraryIndex> {
+  let items: Zotero.Item[] = [];
+  try {
+    const allItems: Zotero.Item[] = await Zotero.Items.getAll(libraryID, true, false, false);
+    items = allItems.filter((item) => {
+      if ((item as any).isNote?.()) return !item.parentID;
+      if (item.isAttachment?.()) return false;
+      return item.isRegularItem?.() ?? false;
+    });
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to build all-items index", err);
+    return { libraryID, candidates: [] };
+  }
+  const candidates: IndexedPaperCandidate[] = [];
+  for (const item of items) {
+    const candidate = buildIndexedItemCandidate(item);
+    if (candidate) candidates.push(candidate);
+  }
+  return { libraryID, candidates };
+}
+
+async function getAllItemsLibraryIndex(libraryID: number): Promise<AllItemsLibraryIndex> {
+  const cached = allItemsLibraryIndexCache.get(libraryID);
+  if (cached) return cached;
+  const pending = allItemsLibraryLoadTasks.get(libraryID);
+  if (pending) return pending;
+  const loadTask = buildAllItemsLibraryIndex(libraryID)
+    .then((index) => {
+      allItemsLibraryIndexCache.set(libraryID, index);
+      return index;
+    })
+    .finally(() => {
+      allItemsLibraryLoadTasks.delete(libraryID);
+    });
+  allItemsLibraryLoadTasks.set(libraryID, loadTask);
+  return loadTask;
+}
+
+export function invalidateAllItemsSearchCache(libraryID?: number): void {
+  if (
+    typeof libraryID === "number" &&
+    Number.isFinite(libraryID) &&
+    libraryID > 0
+  ) {
+    const id = Math.floor(libraryID);
+    allItemsLibraryIndexCache.delete(id);
+    allItemsLibraryLoadTasks.delete(id);
+    return;
+  }
+  allItemsLibraryIndexCache.clear();
+  allItemsLibraryLoadTasks.clear();
+}
+
+function buildVisibleItemCandidate(
+  candidate: IndexedPaperCandidate,
+): PaperSearchGroupCandidate {
+  return {
+    itemId: candidate.itemId,
+    title: candidate.title,
+    citationKey: candidate.citationKey,
+    firstCreator: candidate.firstCreator,
+    year: candidate.year,
+    attachments: candidate.attachments.map((att) => ({
+      contextItemId: att.contextItemId,
+      title: att.title,
+      score: 0,
+    })),
+    score: 0,
+    modifiedAt: candidate.modifiedAt,
+  };
+}
+
+export async function listAllItemCandidates(
+  libraryID: number,
+  limit?: number,
+): Promise<PaperSearchGroupCandidate[]> {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return [];
+  const index = await getAllItemsLibraryIndex(Math.floor(libraryID));
+  const candidates = index.candidates
+    .map((c) => buildVisibleItemCandidate(c))
+    .sort((a, b) => {
+      const delta = b.modifiedAt - a.modifiedAt;
+      if (delta !== 0) return delta;
+      return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+    });
+  if (Number.isFinite(limit) && typeof limit === "number" && limit > 0) {
+    return candidates.slice(0, Math.floor(limit));
+  }
+  return candidates;
+}
+
+export async function searchAllItemCandidates(
+  libraryID: number,
+  query: string,
+  limit = DEFAULT_PAPER_SEARCH_LIMIT,
+): Promise<PaperSearchGroupCandidate[]> {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return [];
+  const normalizedQuery = normalizePaperSearchText(query);
+  if (!normalizedQuery) return [];
+  const normalizedLimit = Number.isFinite(limit)
+    ? Math.max(1, Math.floor(limit))
+    : DEFAULT_PAPER_SEARCH_LIMIT;
+  const queryTokens = getSearchTokens(normalizedQuery);
+  if (!queryTokens.length) return [];
+
+  const index = await getAllItemsLibraryIndex(Math.floor(libraryID));
+  const rankedCandidates: Array<{ candidate: PaperSearchGroupCandidate; matchedTokenCount: number }> = [];
+
+  for (const indexedCandidate of index.candidates) {
+    const visibleCandidate = buildVisibleItemCandidate(indexedCandidate);
+    const scored = scoreCandidate(indexedCandidate, visibleCandidate, normalizedQuery, queryTokens);
+    if (!scored) continue;
+    visibleCandidate.score = scored.score;
+    rankedCandidates.push({ candidate: visibleCandidate, matchedTokenCount: scored.matchedTokenCount });
+  }
+
+  rankedCandidates.sort((a, b) => {
+    const scoreDelta = b.candidate.score - a.candidate.score;
+    if (scoreDelta !== 0) return scoreDelta;
+    const matchedTokenDelta = b.matchedTokenCount - a.matchedTokenCount;
+    if (matchedTokenDelta !== 0) return matchedTokenDelta;
+    return b.candidate.modifiedAt - a.candidate.modifiedAt;
+  });
+
+  return rankedCandidates.slice(0, normalizedLimit).map((e) => e.candidate);
 }

@@ -28,6 +28,7 @@ const VALID_SECTIONS = new Set<ReadLibrarySection>([
   "annotations",
   "attachments",
   "collections",
+  "content",
 ]);
 
 function normalizeSections(value: unknown): ReadLibrarySection[] | null {
@@ -64,7 +65,7 @@ export function createReadLibraryTool(
     spec: {
       name: "read_library",
       description:
-        "Read structured Zotero item state for one or more papers. Use sections to fetch metadata, notes, annotations, attachments, and collection membership keyed by item ID.",
+        "Read structured Zotero item state for one or more items (papers, books, standalone notes, or any item type). Use sections to fetch metadata, notes (use 'content' or 'notes' for standalone notes), annotations, attachments (all types, not just PDFs), and collection membership keyed by item ID.",
       inputSchema: {
         type: "object",
         required: ["sections"],
@@ -88,6 +89,7 @@ export function createReadLibraryTool(
               enum: [
                 "metadata",
                 "notes",
+                "content",
                 "annotations",
                 "attachments",
                 "collections",

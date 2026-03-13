@@ -3,6 +3,7 @@ import {
   invalidatePaperSearchCache,
   listLibraryPaperCandidates,
   searchPaperCandidates,
+  searchAllItemCandidates,
   type PaperBrowseCollectionCandidate,
   type PaperSearchGroupCandidate,
 } from "../../modules/contextPanel/paperSearch";
@@ -85,6 +86,24 @@ export type LibraryPaperTarget = {
   attachments: LibraryPaperTargetAttachment[];
   tags: string[];
   collectionIds: number[];
+};
+
+export type LibraryItemTargetAttachment = {
+  contextItemId: number;
+  title: string;
+  contentType: string;
+};
+
+export type LibraryItemTarget = {
+  itemId: number;
+  itemType: string;
+  title: string;
+  firstCreator?: string;
+  year?: string;
+  attachments: LibraryItemTargetAttachment[];
+  tags: string[];
+  collectionIds: number[];
+  noteKind?: "item" | "standalone";
 };
 
 export type CollectionBrowseNode = {
@@ -338,6 +357,16 @@ function getPdfChildAttachments(item: Zotero.Item): Zotero.Item[] {
   return out;
 }
 
+function getAllChildAttachments(item: Zotero.Item): Zotero.Item[] {
+  const out: Zotero.Item[] = [];
+  if (!item?.isRegularItem?.()) return out;
+  for (const attachmentId of item.getAttachments()) {
+    const att = Zotero.Items.get(attachmentId) || null;
+    if (att && att.isAttachment?.()) out.push(att);
+  }
+  return out;
+}
+
 function resolveAttachmentTitle(
   attachment: Zotero.Item,
   index: number,
@@ -350,6 +379,25 @@ function resolveAttachmentTitle(
   );
   if (filename) return filename;
   return total > 1 ? `PDF ${index + 1}` : "PDF";
+}
+
+function resolveAnyAttachmentTitle(
+  attachment: Zotero.Item,
+  index: number,
+  total: number,
+): string {
+  const title = normalizeText(attachment.getField?.("title"));
+  if (title) return title;
+  const filename = normalizeText(
+    (attachment as unknown as { attachmentFilename?: string }).attachmentFilename,
+  );
+  if (filename) return filename;
+  const contentType = normalizeText(attachment.attachmentContentType);
+  if (contentType) {
+    const ext = contentType.split("/").pop() || contentType;
+    return total > 1 ? `${ext.toUpperCase()} ${index + 1}` : ext.toUpperCase();
+  }
+  return total > 1 ? `Attachment ${index + 1}` : "Attachment";
 }
 
 function getItemTags(item: Zotero.Item | null | undefined): string[] {
@@ -389,6 +437,50 @@ function buildPaperTargetFromItem(item: Zotero.Item): LibraryPaperTarget | null 
       normalizeText(target.getField?.("date")).match(/\b(19|20)\d{2}\b/)?.[0] ||
       undefined,
     attachments,
+    tags: getItemTags(target),
+    collectionIds: getCollectionIDs(target),
+  };
+}
+
+function buildItemTargetFromItem(item: Zotero.Item): LibraryItemTarget | null {
+  // Standalone note (no parent)
+  if ((item as any).isNote?.() && !item.parentID) {
+    const rawTitle = normalizeText(
+      (item as any).getNoteTitle?.() || item.getDisplayTitle?.() || "",
+    );
+    return {
+      itemId: item.id,
+      itemType: "note",
+      title: rawTitle || `Note ${item.id}`,
+      attachments: [],
+      tags: getItemTags(item),
+      collectionIds: getCollectionIDs(item),
+      noteKind: "standalone",
+    };
+  }
+  // Regular item (with or without PDF)
+  const target = resolveRegularItem(item);
+  if (!target) return null;
+  const allAtts = getAllChildAttachments(target);
+  return {
+    itemId: target.id,
+    itemType: getItemTypeName(target),
+    title:
+      normalizeText(target.getField?.("title")) ||
+      normalizeText(target.getDisplayTitle?.()) ||
+      `Item ${target.id}`,
+    firstCreator:
+      normalizeText(target.firstCreator) ||
+      normalizeText(target.getField?.("firstCreator")) ||
+      undefined,
+    year:
+      normalizeText(target.getField?.("date")).match(/\b(19|20)\d{2}\b/)?.[0] ||
+      undefined,
+    attachments: allAtts.map((att, index, list) => ({
+      contextItemId: att.id,
+      title: resolveAnyAttachmentTitle(att, index, list.length),
+      contentType: normalizeText(att.attachmentContentType) || "application/octet-stream",
+    })),
     tags: getItemTags(target),
     collectionIds: getCollectionIDs(target),
   };
@@ -450,6 +542,41 @@ function buildCollectionPathMap(
     resolvePath(collection.id);
   }
   return pathById;
+}
+
+async function getAllLibraryItems(libraryID: number): Promise<Zotero.Item[]> {
+  try {
+    const items: Zotero.Item[] = await Zotero.Items.getAll(libraryID, true, false, false);
+    return items.filter((item) => {
+      // Include regular items and standalone notes; exclude child attachments, annotations, child notes
+      if ((item as any).isNote?.()) return !item.parentID;
+      if (item.isAttachment?.()) return false;
+      return item.isRegularItem?.() ?? false;
+    });
+  } catch (_error) {
+    void _error;
+    return [];
+  }
+}
+
+function buildItemTargets(
+  items: Zotero.Item[],
+  options?: { itemType?: string; limit?: number },
+): LibraryItemTarget[] {
+  const normalizedLimit =
+    Number.isFinite(options?.limit) && (options?.limit as number) > 0
+      ? Math.floor(options!.limit as number)
+      : undefined;
+  const typeFilter = options?.itemType?.trim().toLowerCase();
+  const results: LibraryItemTarget[] = [];
+  for (const item of items) {
+    if (normalizedLimit && results.length >= normalizedLimit) break;
+    const target = buildItemTargetFromItem(item);
+    if (!target) continue;
+    if (typeFilter && target.itemType.toLowerCase() !== typeFilter) continue;
+    results.push(target);
+  }
+  return results;
 }
 
 export class ZoteroGateway {
@@ -530,6 +657,17 @@ export class ZoteroGateway {
           sensitivity: "base",
         }),
       );
+  }
+
+  getAllChildAttachmentInfos(itemId: number): LibraryItemTargetAttachment[] {
+    const item = this.getItem(itemId);
+    if (!item) return [];
+    const allAtts = getAllChildAttachments(item.isRegularItem?.() ? item : (this.resolveBibliographicItem(item) || item));
+    return allAtts.map((att, index, list) => ({
+      contextItemId: att.id,
+      title: resolveAnyAttachmentTitle(att, index, list.length),
+      contentType: normalizeText(att.attachmentContentType) || "application/octet-stream",
+    }));
   }
 
   async listLibraryPaperTargets(params: {
@@ -914,6 +1052,294 @@ export class ZoteroGateway {
     );
   }
 
+  // ── Universal item listing (all item types, not PDF-only) ──────────────────
+
+  async listLibraryItemTargets(params: {
+    libraryID: number;
+    limit?: number;
+    itemType?: string;
+  }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
+    const libraryID = Number.isFinite(params.libraryID) ? Math.floor(params.libraryID) : 0;
+    if (!libraryID) throw new Error("No active library available for listing items");
+    const rawItems = await getAllLibraryItems(libraryID);
+    const items = buildItemTargets(rawItems, { itemType: params.itemType, limit: params.limit });
+    return { items, totalCount: items.length };
+  }
+
+  async listCollectionItemTargets(params: {
+    libraryID: number;
+    collectionId: number;
+    limit?: number;
+    itemType?: string;
+  }): Promise<{ collection: CollectionSummary; items: LibraryItemTarget[]; totalCount: number }> {
+    const collection = this.getCollectionSummary(params.collectionId);
+    if (!collection) throw new Error("Collection not found");
+    const libraryID = Number.isFinite(params.libraryID) ? Math.floor(params.libraryID) : 0;
+    if (!libraryID) throw new Error("No active library available");
+    const rawItems = await getAllLibraryItems(libraryID);
+    const inCollection = rawItems.filter((item) => {
+      const ids = getCollectionIDs(item);
+      return ids.includes(params.collectionId);
+    });
+    const items = buildItemTargets(inCollection, { itemType: params.itemType, limit: params.limit });
+    return { collection, items, totalCount: items.length };
+  }
+
+  async listUnfiledItemTargets(params: {
+    libraryID: number;
+    limit?: number;
+    itemType?: string;
+  }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
+    const libraryID = Number.isFinite(params.libraryID) ? Math.floor(params.libraryID) : 0;
+    if (!libraryID) throw new Error("No active library available");
+    const rawItems = await getAllLibraryItems(libraryID);
+    const unfiled = rawItems.filter((item) => getCollectionIDs(item).length === 0);
+    const items = buildItemTargets(unfiled, { itemType: params.itemType, limit: params.limit });
+    return { items, totalCount: items.length };
+  }
+
+  async listUntaggedItemTargets(params: {
+    libraryID: number;
+    limit?: number;
+    itemType?: string;
+  }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
+    const libraryID = Number.isFinite(params.libraryID) ? Math.floor(params.libraryID) : 0;
+    if (!libraryID) throw new Error("No active library available");
+    const rawItems = await getAllLibraryItems(libraryID);
+    const untagged = rawItems.filter((item) => getItemTags(item).length === 0);
+    const items = buildItemTargets(untagged, { itemType: params.itemType, limit: params.limit });
+    return { items, totalCount: items.length };
+  }
+
+  async listStandaloneNotes(params: {
+    libraryID: number;
+    limit?: number;
+  }): Promise<{ notes: LibraryItemTarget[]; totalCount: number }> {
+    const libraryID = Number.isFinite(params.libraryID) ? Math.floor(params.libraryID) : 0;
+    if (!libraryID) throw new Error("No active library available");
+    const rawItems = await getAllLibraryItems(libraryID);
+    const standaloneNotes: LibraryItemTarget[] = [];
+    const normalizedLimit = Number.isFinite(params.limit) ? Math.max(1, Math.floor(params.limit as number)) : undefined;
+    for (const item of rawItems) {
+      if (normalizedLimit && standaloneNotes.length >= normalizedLimit) break;
+      if (!(item as any).isNote?.() || item.parentID) continue;
+      const target = buildItemTargetFromItem(item);
+      if (target) standaloneNotes.push(target);
+    }
+    return { notes: standaloneNotes, totalCount: standaloneNotes.length };
+  }
+
+  getStandaloneNoteContent(params: { noteId: number }): PaperNoteRecord | null {
+    const noteItem = this.getItem(params.noteId);
+    if (!noteItem || !(noteItem as any).isNote?.()) return null;
+    const html = noteItem.getNote?.() || "";
+    const text = stripHtmlContent(html);
+    if (!text.trim()) return null;
+    const rawTitle = normalizeText(
+      (noteItem as any).getNoteTitle?.() || noteItem.getDisplayTitle?.() || "",
+    ).trim();
+    return {
+      noteId: noteItem.id,
+      title: rawTitle || `Note ${noteItem.id}`,
+      noteText: text,
+      wordCount: text.split(/\s+/).filter(Boolean).length,
+    };
+  }
+
+  getAttachmentInfo(params: { attachmentId: number }): {
+    attachmentId: number;
+    parentItemId?: number;
+    title: string;
+    contentType: string;
+    filename?: string;
+    hasFile: boolean;
+    linkMode: string;
+  } | null {
+    const item = this.getItem(params.attachmentId);
+    if (!item || !item.isAttachment?.()) return null;
+    const filename = normalizeText(
+      (item as any).attachmentFilename || item.getField?.("title") || "",
+    );
+    const hasFile = !!(item as any).hasFile;
+    const rawLinkMode = (item as any).attachmentLinkMode;
+    const linkModeMap: Record<number, string> = {
+      0: "imported_file",
+      1: "imported_url",
+      2: "linked_file",
+      3: "linked_url",
+    };
+    const linkMode =
+      typeof rawLinkMode === "number"
+        ? (linkModeMap[rawLinkMode] || String(rawLinkMode))
+        : "unknown";
+    return {
+      attachmentId: item.id,
+      parentItemId: item.parentID || undefined,
+      title: normalizeText(item.getField?.("title")) || filename || `Attachment ${item.id}`,
+      contentType: normalizeText(item.attachmentContentType) || "application/octet-stream",
+      filename: filename || undefined,
+      hasFile,
+      linkMode,
+    };
+  }
+
+  async searchAllLibraryItems(params: {
+    libraryID: number;
+    query: string;
+    limit?: number;
+  }): Promise<LibraryItemTarget[]> {
+    const libraryID = Number.isFinite(params.libraryID) ? Math.floor(params.libraryID) : 0;
+    if (!libraryID || !params.query?.trim()) return [];
+    const normalizedLimit = Number.isFinite(params.limit)
+      ? Math.max(1, Math.floor(params.limit as number))
+      : 50;
+    try {
+      const search = new Zotero.Search({ libraryID });
+      search.addCondition("quicksearch-everything", "contains", params.query.trim());
+      const rawIds: number[] = await search.search();
+      // Resolve child items (notes/attachments) to their top-level parent, de-duplicate
+      const resolvedIds: number[] = [];
+      const seen = new Set<number>();
+      for (const id of rawIds) {
+        const item = Zotero.Items.get(id);
+        if (!item) continue;
+        const topId = (item.parentID as number | false | undefined) || id;
+        if (!seen.has(topId)) {
+          seen.add(topId);
+          resolvedIds.push(topId);
+        }
+      }
+      const targets: LibraryItemTarget[] = [];
+      for (const itemId of resolvedIds) {
+        if (targets.length >= normalizedLimit) break;
+        const item = this.getItem(itemId);
+        if (!item) continue;
+        const target = buildItemTargetFromItem(item);
+        if (target) targets.push(target);
+      }
+      return targets;
+    } catch (_error) {
+      void _error;
+      return [];
+    }
+  }
+
+  async searchAllNotes(params: {
+    libraryID: number;
+    query: string;
+    limit?: number;
+  }): Promise<Array<LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }>> {
+    const libraryID = Number.isFinite(params.libraryID) ? Math.floor(params.libraryID) : 0;
+    if (!libraryID) throw new Error("No active library available");
+    const query = params.query?.trim();
+    if (!query) return [];
+    const normalizedLimit = Number.isFinite(params.limit)
+      ? Math.max(1, Math.floor(params.limit as number))
+      : 200;
+    try {
+      const search = new Zotero.Search({ libraryID });
+      search.addCondition("itemType", "is", "note");
+      search.addCondition("quicksearch-everything", "contains", query);
+      const noteIds: number[] = await search.search();
+      return this._buildNoteResults(noteIds, normalizedLimit);
+    } catch (_error) {
+      void _error;
+      // Fallback: in-memory scan across all items and child notes
+      return this._searchAllNotesInMemory({ libraryID, query, limit: normalizedLimit });
+    }
+  }
+
+  private _buildNoteResults(
+    noteIds: number[],
+    limit: number,
+  ): Array<LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }> {
+    const results: Array<LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }> = [];
+    for (const noteId of noteIds) {
+      if (results.length >= limit) break;
+      const noteItem = this.getItem(noteId);
+      if (!noteItem?.isNote?.()) continue;
+      const rawTitle = normalizeText(
+        (noteItem as any).getNoteTitle?.() || noteItem.getDisplayTitle?.() || "",
+      ).trim();
+      const title = rawTitle || `Note ${noteItem.id}`;
+      if (noteItem.parentID) {
+        const parentItem = this.getItem(noteItem.parentID as number);
+        const parentTitle = parentItem
+          ? normalizeText(parentItem.getDisplayTitle?.() || "").trim() || `Item ${parentItem.id}`
+          : undefined;
+        results.push({
+          itemId: noteItem.id,
+          itemType: "note",
+          title,
+          attachments: [],
+          tags: getItemTags(noteItem),
+          collectionIds: [],
+          noteKind: "item",
+          parentItemId: noteItem.parentID as number,
+          parentItemTitle: parentTitle,
+        });
+      } else {
+        const target = buildItemTargetFromItem(noteItem);
+        if (target) results.push({ ...target, noteKind: "standalone" });
+      }
+    }
+    return results;
+  }
+
+  private async _searchAllNotesInMemory(params: {
+    libraryID: number;
+    query: string;
+    limit: number;
+  }): Promise<Array<LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }>> {
+    const queryLower = params.query.toLowerCase();
+    const rawItems = await getAllLibraryItems(params.libraryID);
+    const results: Array<LibraryItemTarget & { parentItemId?: number; parentItemTitle?: string }> = [];
+    for (const item of rawItems) {
+      if (results.length >= params.limit) break;
+      if ((item as any).isNote?.() && !item.parentID) {
+        const html = item.getNote?.() || "";
+        const text = stripHtmlContent(html);
+        const rawTitle = normalizeText(
+          (item as any).getNoteTitle?.() || item.getDisplayTitle?.() || "",
+        ).trim();
+        const title = rawTitle || `Note ${item.id}`;
+        if (!`${title} ${text}`.toLowerCase().includes(queryLower)) continue;
+        const target = buildItemTargetFromItem(item);
+        if (target) results.push({ ...target, noteKind: "standalone" });
+        continue;
+      }
+      if (!(item as any).isRegularItem?.()) continue;
+      const noteIds: number[] = (item as any).getNotes?.() || [];
+      if (!noteIds.length) continue;
+      const parentTitle =
+        normalizeText(item.getDisplayTitle?.() || "").trim() || `Item ${item.id}`;
+      for (const noteId of noteIds) {
+        if (results.length >= params.limit) break;
+        const noteItem = Zotero.Items.get(noteId);
+        if (!noteItem?.isNote?.()) continue;
+        const html = noteItem.getNote?.() || "";
+        const text = stripHtmlContent(html);
+        const rawTitle = normalizeText(
+          (noteItem as any).getNoteTitle?.() || noteItem.getDisplayTitle?.() || "",
+        ).trim();
+        const title = rawTitle || `Note ${noteItem.id}`;
+        if (!`${title} ${text}`.toLowerCase().includes(queryLower)) continue;
+        results.push({
+          itemId: noteItem.id,
+          itemType: "note",
+          title,
+          attachments: [],
+          tags: getItemTags(noteItem),
+          collectionIds: [],
+          noteKind: "item",
+          parentItemId: item.id,
+          parentItemTitle: parentTitle,
+        });
+      }
+    }
+    return results;
+  }
+
   async applyTagAssignments(params: {
     assignments: BatchTagAssignment[];
   }): Promise<{
@@ -1205,7 +1631,7 @@ export class ZoteroGateway {
         results.push({
           noteId: noteItem.id,
           title: rawTitle || `Note ${noteItem.id}`,
-          noteText: text.length > 4000 ? `${text.slice(0, 4000)}\u2026` : text,
+          noteText: text.length > 10000 ? `${text.slice(0, 10000)}\u2026` : text,
           wordCount: text.split(/\s+/).filter(Boolean).length,
         });
       }

@@ -5,7 +5,7 @@ import type {
 import type {
   CollectionSummary,
   EditableArticleMetadataSnapshot,
-  LibraryPaperTargetAttachment,
+  LibraryItemTargetAttachment,
   PaperAnnotationRecord,
   PaperNoteRecord,
   ZoteroGateway,
@@ -16,7 +16,8 @@ export type ReadLibrarySection =
   | "notes"
   | "annotations"
   | "attachments"
-  | "collections";
+  | "collections"
+  | "content";
 
 export type ReadLibraryResultEntry = {
   itemId: number;
@@ -24,7 +25,7 @@ export type ReadLibraryResultEntry = {
   metadata?: EditableArticleMetadataSnapshot | null;
   notes?: PaperNoteRecord[];
   annotations?: PaperAnnotationRecord[];
-  attachments?: LibraryPaperTargetAttachment[];
+  attachments?: LibraryItemTargetAttachment[];
   collections?: CollectionSummary[];
 };
 
@@ -66,6 +67,23 @@ export class LibraryReadService {
     const sectionSet = new Set(params.sections);
     const results: Record<string, ReadLibraryResultEntry> = {};
     for (const itemId of itemIds) {
+      const rawItem = this.zoteroGateway.getItem(itemId);
+      if (!rawItem) continue;
+
+      // Note path — handles both standalone notes and child notes attached to a paper
+      if ((rawItem as any).isNote?.()) {
+        const noteContent = sectionSet.has("notes") || sectionSet.has("content")
+          ? this.zoteroGateway.getStandaloneNoteContent({ noteId: itemId })
+          : null;
+        results[String(itemId)] = {
+          itemId,
+          title: noteContent?.title || `Note ${itemId}`,
+          notes: noteContent ? [noteContent] : undefined,
+        };
+        continue;
+      }
+
+      // Regular item path
       const item = this.zoteroGateway.resolveMetadataItem({ itemId });
       if (!item) continue;
       const metadata =
@@ -93,7 +111,10 @@ export class LibraryReadService {
               maxAnnotations: params.maxAnnotations,
             })
           : undefined,
-        attachments: sectionSet.has("attachments") ? target?.attachments || [] : undefined,
+        // For attachments, show all child attachment types (not just PDFs)
+        attachments: sectionSet.has("attachments")
+          ? this.zoteroGateway.getAllChildAttachmentInfos(itemId)
+          : undefined,
         collections: sectionSet.has("collections")
           ? collectionIds
               .map((collectionId) => this.zoteroGateway.getCollectionSummary(collectionId))

@@ -110,6 +110,10 @@ function normalizeFilters(value: unknown): QueryLibraryFilters | undefined {
       typeof value.yearTo === "number" && Number.isFinite(value.yearTo)
         ? Math.floor(value.yearTo)
         : undefined,
+    itemType:
+      typeof value.itemType === "string" && value.itemType.trim()
+        ? value.itemType.trim()
+        : undefined,
   };
 }
 
@@ -142,7 +146,7 @@ export function createQueryLibraryTool(
     spec: {
       name: "query_library",
       description:
-        "Discover Zotero papers and collections with one general query tool. Use it to search items, list/filter item sets (by author, year range, unfiled, untagged), browse the collection tree, find related papers, or detect duplicates.",
+        "Discover Zotero items and collections. Use it to search or list any item type (papers, books, notes, web pages, and more), filter by author/year/collection/itemType, browse the collection tree, find related papers, detect duplicates, or list standalone notes. By default returns all item types; use filters.hasPdf:true for PDF-backed papers only.",
       inputSchema: {
         type: "object",
         required: ["entity", "mode"],
@@ -150,7 +154,8 @@ export function createQueryLibraryTool(
         properties: {
           entity: {
             type: "string",
-            enum: ["items", "collections"],
+            enum: ["items", "collections", "notes"],
+            description: "What to query: 'items' for any library item, 'collections' for folders, 'notes' to search/list notes. With mode:'search', finds all notes (both standalone and child notes attached to papers). With mode:'list', lists standalone top-level notes only.",
           },
           mode: {
             type: "string",
@@ -188,6 +193,10 @@ export function createQueryLibraryTool(
               yearTo: {
                 type: "number",
                 description: "Include items up to this year (inclusive)",
+              },
+              itemType: {
+                type: "string",
+                description: "Filter by Zotero item type, e.g. 'book', 'note', 'webpage', 'journalArticle', 'conferencePaper'. Only used with entity:'items'.",
               },
             },
           },
@@ -273,7 +282,7 @@ export function createQueryLibraryTool(
         return fail("Expected an object");
       }
       const entity =
-        args.entity === "items" || args.entity === "collections"
+        args.entity === "items" || args.entity === "collections" || args.entity === "notes"
           ? (args.entity as QueryLibraryEntity)
           : null;
       const mode =
@@ -289,10 +298,13 @@ export function createQueryLibraryTool(
       if (entity === "collections" && !["search", "list"].includes(mode)) {
         return fail("collections only support mode:'search' or mode:'list'");
       }
-      if (entity === "items" && mode === "search") {
+      if (entity === "notes" && !["list", "search"].includes(mode)) {
+        return fail("notes only support mode:'list' or mode:'search'");
+      }
+      if ((entity === "items" || entity === "notes") && mode === "search") {
         const text = typeof args.text === "string" ? args.text.trim() : "";
         if (!text) {
-          return fail("text is required for items search");
+          return fail("text is required for search mode");
         }
       }
       if (mode === "related" && entity !== "items") {
@@ -323,6 +335,33 @@ export function createQueryLibraryTool(
       });
       if (!libraryID) {
         throw new Error("No active library available");
+      }
+      if (input.entity === "notes") {
+        if (input.mode === "search") {
+          const result = await queryService.searchNotes({
+            libraryID,
+            text: input.text || "",
+            limit: input.limit,
+          });
+          return {
+            entity: input.entity,
+            mode: input.mode,
+            results: result.results,
+            warnings: result.warnings,
+          };
+        }
+        // list mode
+        const result = await queryService.listStandaloneNotes({
+          libraryID,
+          limit: input.limit,
+        });
+        return {
+          entity: input.entity,
+          mode: input.mode,
+          totalCount: result.totalCount,
+          results: result.results,
+          warnings: result.warnings,
+        };
       }
       if (input.entity === "collections") {
         if (input.mode === "list" && input.view === "tree") {

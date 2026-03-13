@@ -10,6 +10,7 @@ import type {
 import { parsePageSelectionValue } from "../../services/pdfPageService";
 import type { RetrievalService } from "../../services/retrievalService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
+import { AttachmentReadService } from "../../services/attachmentReadService";
 import {
   fail,
   findAttachment,
@@ -35,7 +36,8 @@ type InspectPdfOperation =
   | "search_pages"
   | "render_pages"
   | "capture_active_view"
-  | "attach_file";
+  | "attach_file"
+  | "read_attachment";
 
 type InspectPdfInput = {
   operation: InspectPdfOperation;
@@ -274,11 +276,12 @@ export function createInspectPdfTool(
   retrievalService: RetrievalService,
   zoteroGateway: ZoteroGateway,
 ): AgentToolDefinition<InspectPdfInput, unknown> {
+  const attachmentReadService = new AttachmentReadService(zoteroGateway);
   return {
     spec: {
       name: "inspect_pdf",
       description:
-        "Inspect local PDFs and attached documents through one general tool. Use operations to read front matter, retrieve evidence, read chunks, locate pages, render pages, capture the active reader view, or attach a file for the model.",
+        "Inspect local PDFs and any Zotero attachments through one general tool. Use operations to read front matter, retrieve evidence, read chunks, locate pages, render pages, capture the active reader view, attach a file for the model, or read the content of any Zotero attachment (HTML snapshots, text files, images, etc.) by contextItemId.",
       inputSchema: {
         type: "object",
         required: ["operation"],
@@ -294,6 +297,7 @@ export function createInspectPdfTool(
               "render_pages",
               "capture_active_view",
               "attach_file",
+              "read_attachment",
             ],
           },
           target: {
@@ -383,7 +387,8 @@ export function createInspectPdfTool(
         args.operation === "search_pages" ||
         args.operation === "render_pages" ||
         args.operation === "capture_active_view" ||
-        args.operation === "attach_file"
+        args.operation === "attach_file" ||
+        args.operation === "read_attachment"
           ? (args.operation as InspectPdfOperation)
           : null;
       if (!operation) {
@@ -836,6 +841,22 @@ export function createInspectPdfTool(
               warnings: [],
             },
             artifacts: [prepared.artifact],
+          };
+        }
+        case "read_attachment": {
+          const contextItemId = input.target?.contextItemId;
+          if (!contextItemId) {
+            throw new Error(
+              "read_attachment requires target.contextItemId — the Zotero attachment item ID to read",
+            );
+          }
+          const result = await attachmentReadService.readAttachmentContent({
+            attachmentId: contextItemId,
+            maxChars: input.maxChars,
+          });
+          return {
+            operation: input.operation,
+            ...result,
           };
         }
       }
