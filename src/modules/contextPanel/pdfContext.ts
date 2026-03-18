@@ -720,11 +720,7 @@ function formatPaperMetadataLines(ref: PaperContextRef): string[] {
 }
 
 function formatPerPaperQuoteGuidanceLines(ref: PaperContextRef): string[] {
-  return [
-    "Answer format when quoting this paper:",
-    "> quoted text from the paper",
-    formatPaperSourceLabel(ref),
-  ];
+  return buildPaperQuoteCitationGuidance(ref);
 }
 
 export function buildFullPaperContext(

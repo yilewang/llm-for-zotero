@@ -64,45 +64,15 @@ export function resolvePaperContextDisplayMetadata(
   };
 }
 
-function extractFirstAuthorLastName(paperContext: PaperContextRef): string {
-  const metadata = resolvePaperContextDisplayMetadata(paperContext);
-  let creator = normalizeText(metadata.firstCreator || "");
-  if (!creator) return "Paper";
-  creator = creator
-    .replace(/\s+et\s+al\.?$/i, "")
-    .replace(/\s+al\.?$/i, "")
-    .replace(/[;,.]+$/g, "")
-    .trim();
-  if (!creator) return "Paper";
-  const primaryAuthor =
-    creator.split(/\s+(?:and|&)\s+/i).find((part) => part.trim()) || creator;
-  const normalizedPrimary = primaryAuthor.replace(/[;,.]+$/g, "").trim();
-  if (!normalizedPrimary) return "Paper";
-  if (normalizedPrimary.includes(",")) {
-    const commaSeparated = normalizedPrimary.split(",")[0]?.trim();
-    if (commaSeparated) return commaSeparated;
-  }
-  const parts = normalizedPrimary.split(/\s+/g).filter(Boolean);
-  if (!parts.length) return "Paper";
-  if (parts.length === 1) return parts[0];
-  const trailingToken = parts[parts.length - 1];
-  if (/^[A-Z](?:\.[A-Z])?\.?$/i.test(trailingToken)) {
-    return parts[parts.length - 2] || parts[0];
-  }
-  return trailingToken;
-}
-
 export function formatPaperCitationLabel(
   paperContext: PaperContextRef | null | undefined,
 ): string {
   if (!paperContext) return "Paper";
-  const authorLastName = extractFirstAuthorLastName(paperContext);
-  const year = resolvePaperContextDisplayMetadata(paperContext).year;
-  if (authorLastName !== "Paper") {
-    const authorYearLabel = year
-      ? `${authorLastName} et al., ${year}`
-      : `${authorLastName} et al.`;
-    return authorYearLabel;
+  const metadata = resolvePaperContextDisplayMetadata(paperContext);
+  const creator = metadata.firstCreator;
+  const year = metadata.year;
+  if (creator) {
+    return year ? `${creator}, ${year}` : creator;
   }
   const fallbackId =
     Number.isFinite(paperContext.itemId) && paperContext.itemId > 0
@@ -122,12 +92,17 @@ export function formatPaperSourceLabel(
 export function buildPaperQuoteCitationGuidance(
   paperContext?: PaperContextRef | null,
 ): string[] {
+  if (paperContext) {
+    return [
+      "Answer format when quoting this paper:",
+      "> quoted text from the paper",
+      formatPaperSourceLabel(paperContext),
+    ];
+  }
   return [
     "Paper-grounded citation format for the final answer:",
     "> quoted text from the paper",
-    paperContext
-      ? formatPaperSourceLabel(paperContext)
-      : "(Author et al., Year)",
+    "(Author, Year, page N)",
     "- Put the source label on the line immediately after the quote.",
     "- Use the matching paper metadata for the source label.",
     "- Do not cite raw chunk ids, citation keys, or invented page numbers unless they are explicitly provided.",

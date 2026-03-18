@@ -14,34 +14,6 @@ export function resolvePaperContextDisplayMetadata(paperContext: PaperContextRef
   return resolvePaperContextDisplayMetadataShared(paperContext);
 }
 
-function extractFirstAuthorLastName(paperContext: PaperContextRef): string {
-  const metadata = resolvePaperContextDisplayMetadata(paperContext);
-  let creator = sanitizeText(metadata.firstCreator || "").trim();
-  if (!creator) return "Paper";
-  creator = creator
-    .replace(/\s+et\s+al\.?$/i, "")
-    .replace(/\s+al\.?$/i, "")
-    .replace(/[;,.]+$/g, "")
-    .trim();
-  if (!creator) return "Paper";
-  const primaryAuthor =
-    creator.split(/\s+(?:and|&)\s+/i).find((part) => part.trim()) || creator;
-  const normalizedPrimary = primaryAuthor.replace(/[;,.]+$/g, "").trim();
-  if (!normalizedPrimary) return "Paper";
-  if (normalizedPrimary.includes(",")) {
-    const commaSeparated = normalizedPrimary.split(",")[0]?.trim();
-    if (commaSeparated) return commaSeparated;
-  }
-  const parts = normalizedPrimary.split(/\s+/g).filter(Boolean);
-  if (!parts.length) return "Paper";
-  if (parts.length === 1) return parts[0];
-  const trailingToken = parts[parts.length - 1];
-  if (/^[A-Z](?:\.[A-Z])?\.?$/i.test(trailingToken)) {
-    return parts[parts.length - 2] || parts[0];
-  }
-  return trailingToken;
-}
-
 function extractPaperYear(paperContext: PaperContextRef): string | null {
   return resolvePaperContextDisplayMetadata(paperContext).year || null;
 }
@@ -90,11 +62,13 @@ function resolveMultiPdfAttachmentTitle(paperContext: PaperContextRef): string {
 }
 
 export function formatPaperContextChipLabel(paperContext: PaperContextRef): string {
-  const authorLastName = extractFirstAuthorLastName(paperContext);
+  const metadata = resolvePaperContextDisplayMetadata(paperContext);
+  const creator = sanitizeText(metadata.firstCreator || "").trim();
   const year = extractPaperYear(paperContext);
-  const base = year
-    ? `📚 ${authorLastName} et al., ${year}`
-    : `📚 ${authorLastName} et al.`;
+  const label = creator
+    ? (year ? `${creator}, ${year}` : creator)
+    : "Paper";
+  const base = `📚 ${label}`;
   const attachmentTitle = resolveMultiPdfAttachmentTitle(paperContext);
   return attachmentTitle ? `${base} - ${attachmentTitle}` : base;
 }

@@ -787,7 +787,7 @@ export function getCurrentSelectionPageLocationFromReader(
   return null;
 }
 
-function getPageLabelForIndex(
+export function getPageLabelForIndex(
   reader: any,
   pageIndex: number,
 ): string | undefined {
@@ -808,6 +808,32 @@ function getPageLabelForIndex(
   }
 
   return `${normalizedPageIndex + 1}`;
+}
+
+/**
+ * Reverse lookup: resolve a page label (printed page number) to a 0-based
+ * page index using the PDF's actual page label array.  Falls back to
+ * `parseInt(label) - 1` when the PDF has no custom labels or the label is
+ * not found in the array.
+ */
+export function resolvePageIndexForLabel(
+  reader: any,
+  pageLabel: string,
+): number {
+  const clean = sanitizeText(pageLabel || "").trim();
+  if (!clean) return 0;
+
+  const app = getPdfViewerApplication(reader);
+  const labels: unknown = app?.pdfViewer?.pageLabels;
+  if (Array.isArray(labels) && labels.length > 0) {
+    const idx = labels.findIndex(
+      (entry: unknown) => String(entry || "") === clean,
+    );
+    if (idx >= 0) return idx;
+  }
+
+  const parsed = parseInt(clean, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed - 1 : 0;
 }
 
 export async function resolveCurrentSelectionPageLocationFromReader(

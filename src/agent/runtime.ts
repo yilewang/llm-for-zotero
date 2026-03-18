@@ -327,8 +327,8 @@ export class AgentRuntime {
     );
     const shouldFlushStreamBuffer = (value: string): boolean => {
       if (!value) return false;
-      if (value.length >= 48) return true;
-      return /(?:\n|[.!?]\s)$/u.test(value);
+      if (value.length >= 8) return true;
+      return /(?:\n|[.!?,:;]\s?)$/u.test(value);
     };
     const completeRun = async (
       finalText: string,
@@ -677,6 +677,22 @@ export class AgentRuntime {
       );
       if (step.kind === "final") {
         return emitFinalStep(step, stepStreamedText);
+      }
+
+      // The step returned tool_calls, not a final answer.  Any text the
+      // model streamed during this step is intermediate "thinking" text
+      // (e.g. "Let me read more of the paper...") that should appear in
+      // the agent trace but NOT in the final chat answer.  Roll it back.
+      if (stepStreamedText) {
+        currentAnswerText = currentAnswerText.slice(
+          0,
+          Math.max(0, currentAnswerText.length - stepStreamedText.length),
+        );
+        await emit({
+          type: "message_rollback",
+          length: stepStreamedText.length,
+          text: stepStreamedText,
+        });
       }
 
       const calls = step.calls.slice(0, maxToolCallsPerRound);

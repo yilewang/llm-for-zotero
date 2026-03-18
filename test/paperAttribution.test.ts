@@ -7,12 +7,12 @@ import {
 } from "../src/modules/contextPanel/paperAttribution";
 
 describe("paperAttribution", function () {
-  it("formats author-year citation labels", function () {
+  it("formats author-year citation labels using Zotero Creator field directly", function () {
     const label = formatPaperCitationLabel({
       itemId: 1,
       contextItemId: 2,
       title: "Paper",
-      firstCreator: "Alice Smith",
+      firstCreator: "Smith et al.",
       year: "2021",
     });
     assert.equal(label, "Smith et al., 2021");
@@ -23,7 +23,7 @@ describe("paperAttribution", function () {
       itemId: 1,
       contextItemId: 2,
       title: "Paper",
-      firstCreator: "Alice Smith",
+      firstCreator: "Smith et al.",
       year: "2021",
       citationKey: "smith2021alpha",
     });
@@ -35,7 +35,7 @@ describe("paperAttribution", function () {
       itemId: 1,
       contextItemId: 2,
       title: "Paper",
-      firstCreator: "Alice Smith",
+      firstCreator: "Smith et al.",
       year: "2021",
     };
     assert.equal(formatPaperSourceLabel(paper), "(Smith et al., 2021)");

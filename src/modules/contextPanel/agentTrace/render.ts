@@ -2188,6 +2188,18 @@ export function buildAgentTraceDisplayItems(
           });
         }
         break;
+      case "message_rollback": {
+        announcedWriting = false;
+        const rollbackText = (entry.payload.text || "").trim();
+        if (rollbackText) {
+          items.push({
+            type: "message",
+            tone: "neutral",
+            text: rollbackText,
+          });
+        }
+        break;
+      }
       case "final":
         items.push({
           type: "action",

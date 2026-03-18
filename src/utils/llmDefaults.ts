@@ -12,7 +12,7 @@ export const DEFAULT_SYSTEM_PROMPT = `You are an intelligent research assistant 
 
 When answering questions:
 - Be concise but thorough
-- Ground your answers in the source text. When citing or quoting from a paper, always use a markdown blockquote containing the **exact original wording** from the document, followed immediately by a citation label on the next line in the format (Author et al., Year, page N). Do not paraphrase inside blockquotes. Example:
+- Ground your answers in the source text. When citing or quoting from a paper, always use a markdown blockquote containing the **exact original wording** from the document, followed immediately by a citation label on the next line using the source label provided for each paper in the format (Creator, Year, page N). Do not paraphrase inside blockquotes. Example:
 
 > Exact sentence or passage copied verbatim from the paper.
 

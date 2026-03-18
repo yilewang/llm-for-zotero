@@ -112,10 +112,117 @@ function normalizeToolCalls(
     .filter((call): call is AgentToolCall => Boolean(call));
 }
 
+type StreamedToolCallAccumulator = {
+  id: string;
+  name: string;
+  argumentChunks: string[];
+};
+
+async function parseOpenAIChatCompletionStream(
+  body: ReadableStream<Uint8Array>,
+  onTextDelta?: (delta: string) => void | Promise<void>,
+  onReasoning?: (event: { summary?: string; details?: string }) => void | Promise<void>,
+): Promise<{ text: string; toolCalls: AgentToolCall[]; reasoningText: string }> {
+  const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let fullText = "";
+  let reasoningText = "";
+  const toolCallMap = new Map<number, StreamedToolCallAccumulator>();
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const data = trimmed.slice(5).trim();
+        if (!data || data === "[DONE]") continue;
+
+        try {
+          const parsed = JSON.parse(data);
+          const choice = parsed?.choices?.[0];
+          const delta = choice?.delta;
+          if (!delta) continue;
+
+          // Text content
+          const textDelta =
+            typeof delta.content === "string" ? delta.content : "";
+          if (textDelta) {
+            fullText += textDelta;
+            if (onTextDelta) await onTextDelta(textDelta);
+          }
+
+          // Reasoning (various provider field names)
+          const rDelta =
+            delta.reasoning_content ??
+            delta.reasoning ??
+            delta.thinking ??
+            delta.thought ??
+            "";
+          if (typeof rDelta === "string" && rDelta) {
+            reasoningText += rDelta;
+            if (onReasoning) await onReasoning({ details: rDelta });
+          }
+
+          // Streamed tool calls
+          if (Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx =
+                typeof tc.index === "number" ? tc.index : toolCallMap.size;
+              if (!toolCallMap.has(idx)) {
+                toolCallMap.set(idx, {
+                  id:
+                    tc.id?.trim() || createFallbackToolCallId("tool", idx),
+                  name: tc.function?.name?.trim() || "",
+                  argumentChunks: [],
+                });
+              }
+              const entry = toolCallMap.get(idx)!;
+              if (tc.id?.trim()) entry.id = tc.id.trim();
+              if (tc.function?.name?.trim()) entry.name = tc.function.name.trim();
+              if (typeof tc.function?.arguments === "string") {
+                entry.argumentChunks.push(tc.function.arguments);
+              }
+            }
+          }
+        } catch {
+          // skip malformed SSE lines
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const toolCalls: AgentToolCall[] = [];
+  for (const [, entry] of toolCallMap) {
+    if (!entry.name) continue;
+    toolCalls.push({
+      id: entry.id,
+      name: entry.name,
+      arguments: parseToolCallArguments(entry.argumentChunks.join("")),
+    });
+  }
+
+  return { text: fullText, toolCalls, reasoningText };
+}
+
+function isStreamingResponse(response: Response): boolean {
+  const ct = (response.headers.get("content-type") || "").toLowerCase();
+  return ct.includes("text/event-stream") || ct.includes("octet-stream");
+}
+
 export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
   getCapabilities(request: AgentRuntimeRequest): AgentModelCapabilities {
     return {
-      streaming: false,
+      streaming: true,
       toolCalls: isToolCapableApiBase(request),
       multimodal: isMultimodalRequestSupported(request),
       fileInputs: false,
@@ -155,6 +262,7 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           messages: buildMessagesPayload(params.messages),
           tools: buildOpenAIFunctionTools(params.tools),
           tool_choice: "auto",
+          stream: true,
           ...(usesMaxCompletionTokens(request.model || "")
             ? {
                 max_completion_tokens: normalizeMaxTokens(
@@ -180,6 +288,36 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
         `${response.status} ${response.statusText} - ${errorText}`,
       );
     }
+
+    // Stream path: parse SSE and deliver text deltas progressively
+    if (response.body && isStreamingResponse(response)) {
+      const result = await parseOpenAIChatCompletionStream(
+        response.body,
+        params.onTextDelta,
+        params.onReasoning,
+      );
+      if (result.toolCalls.length) {
+        return {
+          kind: "tool_calls",
+          calls: result.toolCalls,
+          assistantMessage: {
+            role: "assistant",
+            content: result.text,
+            tool_calls: result.toolCalls,
+          },
+        };
+      }
+      return {
+        kind: "final",
+        text: result.text,
+        assistantMessage: {
+          role: "assistant",
+          content: result.text,
+        },
+      };
+    }
+
+    // Fallback: non-streaming JSON response
     const data = (await response.json()) as { choices?: ChatCompletionChoice[] };
     const message = data.choices?.[0]?.message;
     const reasoningText =

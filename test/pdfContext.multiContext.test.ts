@@ -86,7 +86,7 @@ describe("pdfContext multi-context helpers", function () {
       contextItemId: 22,
       title: "Paper B",
       citationKey: "Smith2023",
-      firstCreator: "Smith",
+      firstCreator: "Smith et al.",
       year: "2023",
     };
     const context = buildPdfContext(["Main finding.", "Conclusion."]);
@@ -103,7 +103,7 @@ describe("pdfContext multi-context helpers", function () {
       itemId: 1,
       contextItemId: 11,
       title: "Paper A",
-      firstCreator: "Zheng",
+      firstCreator: "Zheng et al.",
       year: "2026",
     };
     const paperB: PaperContextRef = {
@@ -120,7 +120,7 @@ describe("pdfContext multi-context helpers", function () {
           itemId: 1,
           contextItemId: 11,
           title: "Paper A",
-          firstCreator: "Zheng",
+          firstCreator: "Zheng et al.",
           year: "2026",
           chunkIndex: 3,
           chunkText:

@@ -19,6 +19,8 @@ import {
   locateQuoteByRawPrefixInPages,
   locateQuoteInPageTexts,
   locateQuoteInLivePdfReader,
+  getPageLabelForIndex,
+  resolvePageIndexForLabel,
   scrollToExactQuoteInReader,
   splitQuoteAtEllipsis,
   stripBoundaryEllipsis,
@@ -1060,7 +1062,9 @@ async function navigateToCachedCitationPage(
       const verifiedPageIndex = Math.floor(verified.computedPageIndex);
       if (verifiedPageIndex >= 0 && verifiedPageIndex !== targetPageIndex) {
         targetPageIndex = verifiedPageIndex;
-        targetPageLabel = `${verifiedPageIndex + 1}`;
+        targetPageLabel =
+          getPageLabelForIndex(reader, verifiedPageIndex) ||
+          `${verifiedPageIndex + 1}`;
         citationPageCache.set(cacheKey, {
           pageIndex: verifiedPageIndex,
           pageLabel: targetPageLabel,
@@ -1305,7 +1309,10 @@ async function resolvePageForCitationButton(params: {
         (c) => rankCandidateForCitation(params.extractedCitation, c) > 0,
       );
       if (bestRanked) {
-        const pageIndex = Math.max(0, parseInt(eagerExplicitPage, 10) - 1);
+        const activeReader = getActiveReaderForSelectedTab();
+        const pageIndex = activeReader
+          ? resolvePageIndexForLabel(activeReader, eagerExplicitPage)
+          : Math.max(0, parseInt(eagerExplicitPage, 10) - 1);
         citationPageCache.set(
           buildCitationCacheKey(bestRanked.contextItemId, normalizedQuoteText),
           { pageIndex, pageLabel: eagerExplicitPage },
@@ -1362,7 +1369,9 @@ async function resolvePageForCitationButton(params: {
         );
         if (result.status === "resolved" && result.computedPageIndex !== null) {
           const pageIndex = Math.floor(result.computedPageIndex);
-          const pageLabel = `${pageIndex + 1}`;
+          const pageLabel =
+            getPageLabelForIndex(activeReader, pageIndex) ||
+            `${pageIndex + 1}`;
           citationPageCache.set(
             buildCitationCacheKey(
               matchingCandidate.contextItemId,
@@ -1676,9 +1685,9 @@ async function resolveAndNavigateAssistantCitation(params: {
         (c) => rankCandidateForCitation(extractedCitation, c) > 0,
       );
       if (bestRanked) {
-        const pageIndex = Math.max(0, parseInt(explicitPageLabel, 10) - 1);
         const target = await openReaderForItem(bestRanked.contextItemId);
         if (target) {
+          const pageIndex = resolvePageIndexForLabel(target, explicitPageLabel);
           const paragraphJump = await attemptCitationParagraphJump({
             reader: target,
             contextItemId: bestRanked.contextItemId,
@@ -1758,7 +1767,9 @@ async function resolveAndNavigateAssistantCitation(params: {
         );
         if (result.status === "resolved" && result.computedPageIndex !== null) {
           const pageIndex = Math.floor(result.computedPageIndex);
-          const pageLabel = `${pageIndex + 1}`;
+          const pageLabel =
+            getPageLabelForIndex(activeReader, pageIndex) ||
+            `${pageIndex + 1}`;
           const paragraphJump = await attemptCitationParagraphJump({
             reader: activeReader,
             contextItemId: getReaderItemId(activeReader),
@@ -1805,7 +1816,8 @@ async function resolveAndNavigateAssistantCitation(params: {
       );
       if (result.status === "resolved" && result.computedPageIndex !== null) {
         const pageIndex = Math.floor(result.computedPageIndex);
-        const pageLabel = `${pageIndex + 1}`;
+        const pageLabel =
+          getPageLabelForIndex(reader, pageIndex) || `${pageIndex + 1}`;
         citationPageCache.set(
           buildCitationCacheKey(candidate.contextItemId, normalizedQuoteText),
           { pageIndex, pageLabel },

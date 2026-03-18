@@ -220,6 +220,7 @@ export type AgentEvent =
       data?: unknown;
     }
   | { type: "message_delta"; text: string }
+  | { type: "message_rollback"; length: number; text: string }
   | { type: "fallback"; reason: string }
   | { type: "final"; text: string };
 

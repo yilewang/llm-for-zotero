@@ -3716,7 +3716,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           ztoolkit.log("LLM render error:", err);
           bubble.textContent = safeText;
         }
-        if (!msg.streaming && msg.runMode !== "agent") {
+        if (!msg.streaming) {
           try {
             const pairedUserMessage =
               history[index - 1]?.role === "user" ? history[index - 1] : null;

@@ -14,7 +14,7 @@ describe("textUtils selected text prompt composition", function () {
             itemId: 11,
             contextItemId: 12,
             title: "Paper",
-            firstCreator: "Jane Smith",
+            firstCreator: "Smith et al.",
             year: "2021",
           },
         ],

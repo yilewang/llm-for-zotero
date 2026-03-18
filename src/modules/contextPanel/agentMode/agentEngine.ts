@@ -492,6 +492,14 @@ export async function sendAgentTurn(
           case "message_delta":
             assistantMessage.text += deps.sanitizeText(event.text);
             break;
+          case "message_rollback":
+            if (typeof event.length === "number" && event.length > 0) {
+              assistantMessage.text = assistantMessage.text.slice(
+                0,
+                Math.max(0, assistantMessage.text.length - event.length),
+              );
+            }
+            break;
           case "final":
             if (!assistantMessage.text.trim()) {
               assistantMessage.text = deps.sanitizeText(event.text);
@@ -501,7 +509,7 @@ export async function sendAgentTurn(
           default:
             break;
         }
-        if (event.type === "message_delta") {
+        if (event.type === "message_delta" || event.type === "message_rollback") {
           queueRefresh();
           return;
         }
@@ -732,6 +740,14 @@ export async function retryAgentTurn(
           case "message_delta":
             assistantMessage.text += deps.sanitizeText(event.text);
             break;
+          case "message_rollback":
+            if (typeof event.length === "number" && event.length > 0) {
+              assistantMessage.text = assistantMessage.text.slice(
+                0,
+                Math.max(0, assistantMessage.text.length - event.length),
+              );
+            }
+            break;
           case "final":
             if (!assistantMessage.text.trim()) {
               assistantMessage.text = deps.sanitizeText(event.text);
@@ -741,7 +757,7 @@ export async function retryAgentTurn(
           default:
             break;
         }
-        if (event.type === "message_delta") {
+        if (event.type === "message_delta" || event.type === "message_rollback") {
           queueRefresh();
           return;
         }

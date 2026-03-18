@@ -2628,7 +2628,7 @@ export async function callEmbeddings(
 /**
  * Parse SSE stream response
  */
-async function parseStreamResponse(
+export async function parseStreamResponse(
   body: ReadableStream<Uint8Array>,
   onDelta: (delta: string) => void,
   onReasoning?: (event: ReasoningEvent) => void,
