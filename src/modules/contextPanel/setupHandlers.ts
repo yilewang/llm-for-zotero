@@ -102,6 +102,8 @@ import {
   removeLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
   setLockedGlobalConversationKey,
+  getFloatingPanelStatePref,
+  setFloatingPanelStatePref,
 } from "./prefHelpers";
 import {
   sendQuestion,
@@ -297,6 +299,22 @@ import { createSendFlowController } from "./setupHandlers/controllers/sendFlowCo
 import { createClearConversationController } from "./setupHandlers/controllers/clearConversationController";
 import { clearAllAgentToolCaches } from "../../agent/tools";
 
+type FloatingPanelState = {
+  enabled: boolean;
+  left: number | null;
+  top: number | null;
+  width: number;
+  height: number;
+};
+
+const floatingPanelState: FloatingPanelState = {
+  enabled: false,
+  left: null,
+  top: null,
+  width: 520,
+  height: 760,
+};
+
 export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const resolvedInitialState = resolveInitialPanelItemState(initialItem);
   let item = resolvedInitialState.item;
@@ -326,6 +344,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     actionsRow,
     actionsLeft,
     actionsRight,
+    popoutBtn,
     settingsBtn,
     exportBtn,
     clearBtn,
@@ -388,6 +407,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     status,
     chatBox,
     panelRoot,
+    floatingResizeHandle,
   } = getPanelDomRefs(body);
 
   if (!inputBox || !sendBtn) {
@@ -445,6 +465,239 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   applyPanelFontScale(panelRoot);
 
   const resolveCurrentNoteSession = () => resolveActiveNoteSession(item);
+  {
+    const savedFloatingState = getFloatingPanelStatePref();
+    floatingPanelState.enabled = savedFloatingState.enabled;
+    floatingPanelState.left = savedFloatingState.left;
+    floatingPanelState.top = savedFloatingState.top;
+    floatingPanelState.width = savedFloatingState.width;
+    floatingPanelState.height = savedFloatingState.height;
+  }
+  const persistFloatingPanelState = () => {
+    setFloatingPanelStatePref({
+      enabled: floatingPanelState.enabled,
+      left: floatingPanelState.left,
+      top: floatingPanelState.top,
+      width: floatingPanelState.width,
+      height: floatingPanelState.height,
+    });
+  };
+  const clampFloatingPanelPosition = (
+    left: number,
+    top: number,
+    width: number,
+    height: number,
+  ): { left: number; top: number } => {
+    const winWidth = Math.max(360, panelWin?.innerWidth || 1024);
+    const winHeight = Math.max(320, panelWin?.innerHeight || 768);
+    const margin = 8;
+    const maxLeft = Math.max(margin, winWidth - width - margin);
+    const maxTop = Math.max(margin, winHeight - height - margin);
+    return {
+      left: clampNumber(left, margin, maxLeft),
+      top: clampNumber(top, margin, maxTop),
+    };
+  };
+  const applyFloatingPanelState = (enabled: boolean) => {
+    floatingPanelState.enabled = enabled;
+    panelRoot.classList.toggle("llm-panel-floating", enabled);
+    if (headerTop) {
+      headerTop.classList.toggle("llm-header-floating", enabled);
+    }
+    if (popoutBtn) {
+      popoutBtn.setAttribute("aria-pressed", enabled ? "true" : "false");
+      popoutBtn.title = enabled
+        ? "Return to docked panel"
+        : "Toggle floating window";
+      popoutBtn.setAttribute(
+        "aria-label",
+        enabled ? "Return to docked panel" : "Toggle floating window",
+      );
+    }
+    if (!enabled) {
+      panelRoot.style.removeProperty("left");
+      panelRoot.style.removeProperty("top");
+      panelRoot.style.removeProperty("width");
+      panelRoot.style.removeProperty("height");
+      persistFloatingPanelState();
+      return;
+    }
+
+    const viewportWidth = Math.max(360, panelWin?.innerWidth || 1024);
+    const viewportHeight = Math.max(320, panelWin?.innerHeight || 768);
+    floatingPanelState.width = clampNumber(
+      floatingPanelState.width,
+      420,
+      Math.max(420, viewportWidth - 16),
+    );
+    floatingPanelState.height = clampNumber(
+      floatingPanelState.height,
+      520,
+      Math.max(520, viewportHeight - 16),
+    );
+    const defaultLeft = viewportWidth - floatingPanelState.width - 24;
+    const defaultTop = 24;
+    const rawLeft =
+      floatingPanelState.left === null
+        ? defaultLeft
+        : floatingPanelState.left;
+    const rawTop =
+      floatingPanelState.top === null
+        ? defaultTop
+        : floatingPanelState.top;
+    const clamped = clampFloatingPanelPosition(
+      rawLeft,
+      rawTop,
+      floatingPanelState.width,
+      floatingPanelState.height,
+    );
+    floatingPanelState.left = clamped.left;
+    floatingPanelState.top = clamped.top;
+    panelRoot.style.left = `${Math.round(clamped.left)}px`;
+    panelRoot.style.top = `${Math.round(clamped.top)}px`;
+    panelRoot.style.width = `${Math.round(floatingPanelState.width)}px`;
+    panelRoot.style.height = `${Math.round(floatingPanelState.height)}px`;
+    persistFloatingPanelState();
+  };
+  const getMenuPositionOwner = (): Element =>
+    floatingPanelState.enabled ? panelRoot : body;
+  const positionPanelMenuBelowButton = (
+    menu: HTMLDivElement,
+    button: HTMLElement,
+  ) => {
+    positionMenuBelowButton(getMenuPositionOwner(), menu, button);
+  };
+  const positionPanelMenuAtPointer = (
+    menu: HTMLDivElement,
+    clientX: number,
+    clientY: number,
+  ) => {
+    positionMenuAtPointer(getMenuPositionOwner(), menu, clientX, clientY);
+  };
+  const initFloatingPanelDrag = () => {
+    if (!headerTop || !panelWin) return;
+    headerTop.addEventListener("mousedown", (event: MouseEvent) => {
+      if (!floatingPanelState.enabled || event.button !== 0) return;
+      const targetNode = event.target as Node | null;
+      const targetElement =
+        !targetNode
+          ? null
+          : targetNode.nodeType === 1
+            ? (targetNode as Element)
+            : targetNode.parentElement;
+      if (!targetElement) return;
+      if (
+        targetElement.closest(
+          "button, input, textarea, select, option, a[href], [contenteditable='true'], [role='button'], .llm-header-actions",
+        )
+      ) {
+        return;
+      }
+      const rect = panelRoot.getBoundingClientRect();
+      const offsetX = event.clientX - rect.left;
+      const offsetY = event.clientY - rect.top;
+      let dragging = false;
+      const onMove = (moveEvent: MouseEvent) => {
+        const dx = Math.abs(moveEvent.clientX - event.clientX);
+        const dy = Math.abs(moveEvent.clientY - event.clientY);
+        if (!dragging && dx + dy < 4) return;
+        dragging = true;
+        const next = clampFloatingPanelPosition(
+          moveEvent.clientX - offsetX,
+          moveEvent.clientY - offsetY,
+          rect.width,
+          rect.height,
+        );
+        floatingPanelState.left = next.left;
+        floatingPanelState.top = next.top;
+        panelRoot.style.left = `${Math.round(next.left)}px`;
+        panelRoot.style.top = `${Math.round(next.top)}px`;
+        moveEvent.preventDefault();
+        moveEvent.stopPropagation();
+      };
+      const onUp = () => {
+        panelWin.removeEventListener("mousemove", onMove);
+        panelWin.removeEventListener("mouseup", onUp);
+        persistFloatingPanelState();
+      };
+      panelWin.addEventListener("mousemove", onMove);
+      panelWin.addEventListener("mouseup", onUp);
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  };
+  const initFloatingPanelResizeHandle = () => {
+    if (!floatingResizeHandle || !panelWin) return;
+    floatingResizeHandle.addEventListener("mousedown", (event: MouseEvent) => {
+      if (!floatingPanelState.enabled || event.button !== 0) return;
+      const panelRect = panelRoot.getBoundingClientRect();
+      const startWidth = panelRect.width;
+      const startHeight = panelRect.height;
+      const startLeft = floatingPanelState.left ?? panelRect.left;
+      const startTop = floatingPanelState.top ?? panelRect.top;
+      const startClientX = event.clientX;
+      const startClientY = event.clientY;
+      const onMove = (moveEvent: MouseEvent) => {
+        const viewportWidth = Math.max(360, panelWin.innerWidth || 1024);
+        const viewportHeight = Math.max(320, panelWin.innerHeight || 768);
+        const margin = 8;
+        const maxWidth = Math.max(420, viewportWidth - startLeft - margin);
+        const maxHeight = Math.max(520, viewportHeight - startTop - margin);
+        floatingPanelState.width = clampNumber(
+          startWidth + (moveEvent.clientX - startClientX),
+          420,
+          maxWidth,
+        );
+        floatingPanelState.height = clampNumber(
+          startHeight + (moveEvent.clientY - startClientY),
+          520,
+          maxHeight,
+        );
+        panelRoot.style.width = `${Math.round(floatingPanelState.width)}px`;
+        panelRoot.style.height = `${Math.round(floatingPanelState.height)}px`;
+        moveEvent.preventDefault();
+        moveEvent.stopPropagation();
+      };
+      const onUp = () => {
+        panelWin.removeEventListener("mousemove", onMove);
+        panelWin.removeEventListener("mouseup", onUp);
+        persistFloatingPanelState();
+      };
+      panelWin.addEventListener("mousemove", onMove);
+      panelWin.addEventListener("mouseup", onUp);
+      event.preventDefault();
+      event.stopPropagation();
+    });
+  };
+  const FloatingResizeObserverCtor = panelWin?.ResizeObserver;
+  if (FloatingResizeObserverCtor) {
+    const floatingResizeObserver = new FloatingResizeObserverCtor(() => {
+      if (!floatingPanelState.enabled) return;
+      const rect = panelRoot.getBoundingClientRect();
+      floatingPanelState.width = Math.round(rect.width);
+      floatingPanelState.height = Math.round(rect.height);
+      const clamped = clampFloatingPanelPosition(
+        floatingPanelState.left ?? rect.left,
+        floatingPanelState.top ?? rect.top,
+        floatingPanelState.width,
+        floatingPanelState.height,
+      );
+      floatingPanelState.left = clamped.left;
+      floatingPanelState.top = clamped.top;
+      panelRoot.style.left = `${Math.round(clamped.left)}px`;
+      panelRoot.style.top = `${Math.round(clamped.top)}px`;
+      persistFloatingPanelState();
+    });
+    floatingResizeObserver.observe(panelRoot);
+  }
+  panelWin?.addEventListener("resize", () => {
+    if (!floatingPanelState.enabled) return;
+    applyFloatingPanelState(true);
+  });
+  initFloatingPanelDrag();
+  initFloatingPanelResizeHandle();
+  applyFloatingPanelState(floatingPanelState.enabled);
+
   const isNoteSession = () => Boolean(resolveCurrentNoteSession());
   const isGlobalMode = () =>
     resolveDisplayConversationKind(item) === "global";
@@ -1381,7 +1634,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         closeExportMenu();
         return;
       }
-      positionMenuBelowButton(body, exportMenu, exportBtn);
+      positionPanelMenuBelowButton(exportMenu, exportBtn);
     });
   }
 
@@ -1406,6 +1659,21 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           setStatus(status, "Could not open plugin settings", "error");
         }
       }
+    });
+  }
+
+  if (popoutBtn) {
+    popoutBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      closeRetryModelMenu();
+      closeSlashMenu();
+      closeResponseMenu();
+      closePromptMenu();
+      closeHistoryNewMenu();
+      closeHistoryMenu();
+      closeExportMenu();
+      applyFloatingPanelState(!floatingPanelState.enabled);
     });
   }
 
@@ -1591,11 +1859,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         selectedImagePreviewActiveIndexCache.get(itemId);
       const normalizedActiveIndex =
         typeof currentActiveIndex === "number" &&
-        Number.isFinite(currentActiveIndex)
+          Number.isFinite(currentActiveIndex)
           ? Math.max(
-              0,
-              Math.min(retained.length - 1, Math.floor(currentActiveIndex)),
-            )
+            0,
+            Math.min(retained.length - 1, Math.floor(currentActiveIndex)),
+          )
           : 0;
       selectedImagePreviewActiveIndexCache.set(itemId, normalizedActiveIndex);
       return;
@@ -1998,11 +2266,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       }
       const readerApi = Zotero.Reader as
         | {
-            open?: (
-              itemID: number,
-              location?: _ZoteroTypes.Reader.Location,
-            ) => Promise<void | _ZoteroTypes.ReaderInstance>;
-          }
+          open?: (
+            itemID: number,
+            location?: _ZoteroTypes.Reader.Location,
+          ) => Promise<void | _ZoteroTypes.ReaderInstance>;
+        }
         | undefined;
       if (typeof readerApi?.open === "function") {
         await readerApi.open(paperContext.contextItemId);
@@ -2217,7 +2485,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         fullText:
           isPaperContextFullTextMode(
             resolvePaperContextNextSendMode(itemId, paperContext),
-        ),
+          ),
       });
     });
     selectedOtherRefs.forEach((ref, index) => {
@@ -3176,7 +3444,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         historyMenu &&
         historyMenu.style.display !== "none"
       ) {
-        positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+        positionPanelMenuBelowButton(historyMenu, historyToggleBtn);
         historyMenu.style.display = "flex";
       }
     });
@@ -3242,8 +3510,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     const searchDocumentsReady = searchActive
       ? allEntries.every((entry) =>
-          historySearchDocumentCache.has(entry.conversationKey),
-        )
+        historySearchDocumentCache.has(entry.conversationKey),
+      )
       : true;
     if (searchActive && !searchDocumentsReady) {
       const loadingRow = createElement(
@@ -3300,26 +3568,26 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         );
         const topMatchCount = searchActive
           ? section.entries.reduce(
-              (max, entry) =>
-                Math.max(
-                  max,
-                  searchResultsByKey.get(entry.conversationKey)?.matchCount ||
-                    0,
-                ),
-              0,
-            )
+            (max, entry) =>
+              Math.max(
+                max,
+                searchResultsByKey.get(entry.conversationKey)?.matchCount ||
+                0,
+              ),
+            0,
+          )
           : 0;
         const orderedEntries = searchActive
           ? [...section.entries].sort((a, b) => {
-              const matchDelta =
-                (searchResultsByKey.get(b.conversationKey)?.matchCount || 0) -
-                (searchResultsByKey.get(a.conversationKey)?.matchCount || 0);
-              if (matchDelta !== 0) return matchDelta;
-              if (b.lastActivityAt !== a.lastActivityAt) {
-                return b.lastActivityAt - a.lastActivityAt;
-              }
-              return b.conversationKey - a.conversationKey;
-            })
+            const matchDelta =
+              (searchResultsByKey.get(b.conversationKey)?.matchCount || 0) -
+              (searchResultsByKey.get(a.conversationKey)?.matchCount || 0);
+            if (matchDelta !== 0) return matchDelta;
+            if (b.lastActivityAt !== a.lastActivityAt) {
+              return b.lastActivityAt - a.lastActivityAt;
+            }
+            return b.conversationKey - a.conversationKey;
+          })
           : section.entries;
         return {
           sectionKey,
@@ -3455,10 +3723,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         const preview =
           searchResult && searchResult.previewText
             ? createElement(
-                body.ownerDocument as Document,
-                "div",
-                "llm-history-row-preview",
-              )
+              body.ownerDocument as Document,
+              "div",
+              "llm-history-row-preview",
+            )
             : null;
         if (preview && searchResult) {
           appendHistorySearchHighlightedText(
@@ -3533,7 +3801,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       historyMenu &&
       historyMenu.style.display !== "none"
     ) {
-      positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+      positionPanelMenuBelowButton(historyMenu, historyToggleBtn);
       queueHistorySectionViewportHeights();
     }
     restoreHistorySearchInputFocus();
@@ -3551,7 +3819,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       historyMenu &&
       historyMenu.style.display !== "none"
     ) {
-      positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+      positionPanelMenuBelowButton(historyMenu, historyToggleBtn);
       queueHistorySectionViewportHeights();
     }
   };
@@ -3571,7 +3839,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         historyMenu &&
         historyMenu.style.display !== "none"
       ) {
-        positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+        positionPanelMenuBelowButton(historyMenu, historyToggleBtn);
         queueHistorySectionViewportHeights();
       }
       restoreHistorySearchInputFocus();
@@ -3588,7 +3856,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         historyMenu &&
         historyMenu.style.display !== "none"
       ) {
-        positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+        positionPanelMenuBelowButton(historyMenu, historyToggleBtn);
         queueHistorySectionViewportHeights();
       }
       restoreHistorySearchInputFocus();
@@ -3601,7 +3869,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       historyMenu &&
       historyMenu.style.display !== "none"
     ) {
-      positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+      positionPanelMenuBelowButton(historyMenu, historyToggleBtn);
       queueHistorySectionViewportHeights();
     }
     restoreHistorySearchInputFocus();
@@ -3614,7 +3882,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       historyMenu &&
       historyMenu.style.display !== "none"
     ) {
-      positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+      positionPanelMenuBelowButton(historyMenu, historyToggleBtn);
       queueHistorySectionViewportHeights();
     }
     restoreHistorySearchInputFocus();
@@ -3944,8 +4212,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         activePaperConversationByPaper.get(
           buildPaperStateKey(libraryID, paperItemID),
         ) ||
-          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
-          0,
+        getLastUsedPaperConversationKey(libraryID, paperItemID) ||
+        0,
       );
       if (
         Number.isFinite(rememberedConversationKey) &&
@@ -3971,10 +4239,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       normalizedConversationKey === paperItemID
         ? paperItem
         : createPaperPortalItem(
-            paperItem,
-            normalizedConversationKey,
-            targetSummary.sessionVersion,
-          );
+          paperItem,
+          normalizedConversationKey,
+          targetSummary.sessionVersion,
+        );
     item = nextItem;
     syncConversationIdentity();
     activeEditSession = null;
@@ -4880,7 +5148,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       "aria-disabled",
       renameDisabled ? "true" : "false",
     );
-    positionMenuAtPointer(body, historyRowMenu, clientX, clientY);
+    positionPanelMenuAtPointer(historyRowMenu, clientX, clientY);
     historyRowMenu.style.display = "grid";
   };
 
@@ -5063,7 +5331,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }
         if (!historyMenu) return;
         renderGlobalHistoryMenu();
-        positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+        positionPanelMenuBelowButton(historyMenu, historyToggleBtn);
         historyMenu.style.display = "flex";
         historyToggleBtn.setAttribute("aria-expanded", "true");
         queueHistorySectionViewportHeights();
@@ -5470,18 +5738,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const wrappedTextWidth =
         normalizedMaxLines > 1
           ? (() => {
-              const segments = label
-                .split(/[\s._-]+/g)
-                .map((segment) => segment.trim())
-                .filter(Boolean);
-              const longestSegmentWidth = segments.reduce((max, segment) => {
-                return Math.max(max, measureLabelTextWidth(button, segment));
-              }, 0);
-              return Math.max(
-                textWidth / normalizedMaxLines,
-                longestSegmentWidth,
-              );
-            })()
+            const segments = label
+              .split(/[\s._-]+/g)
+              .map((segment) => segment.trim())
+              .filter(Boolean);
+            const longestSegmentWidth = segments.reduce((max, segment) => {
+              return Math.max(max, measureLabelTextWidth(button, segment));
+            }, 0);
+            return Math.max(
+              textWidth / normalizedMaxLines,
+              longestSegmentWidth,
+            );
+          })()
           : textWidth;
       const paddingWidth =
         getComputedSizePx(style, "padding-left") +
@@ -5603,12 +5871,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const leftSlotWidths = [
         uploadBtn
           ? getRenderedWidthPx(
-              uploadSlot || uploadBtn,
-              Math.max(
-                uploadBtn.scrollWidth || 0,
-                ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
-              ),
-            )
+            uploadSlot || uploadBtn,
+            Math.max(
+              uploadBtn.scrollWidth || 0,
+              ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
+            ),
+          )
           : 0,
         getContextButtonWidth(
           selectTextSlot,
@@ -5956,8 +6224,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       latestPair?.assistantMessage?.modelProviderLabel?.trim() || "";
     const matchingLegacyEntries = latestAssistantModelName
       ? groupedChoices.flatMap((group) =>
-          group.entries.filter((entry) => entry.model === latestAssistantModelName),
-        )
+        group.entries.filter((entry) => entry.model === latestAssistantModelName),
+      )
       : [];
     retryModelMenu.innerHTML = "";
     if (!groupedChoices.length) {
@@ -5971,9 +6239,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           ? entry.entryId === latestAssistantModelEntryId
           : latestAssistantModelName
             ? entry.model === latestAssistantModelName &&
-              (latestAssistantProviderLabel
-                ? entry.providerLabel === latestAssistantProviderLabel
-                : matchingLegacyEntries.length === 1)
+            (latestAssistantProviderLabel
+              ? entry.providerLabel === latestAssistantProviderLabel
+              : matchingLegacyEntries.length === 1)
             : false;
         const option = createElement(
           body.ownerDocument as Document,
@@ -6064,11 +6332,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const available = enabledLevels.length > 0;
       const resolvedReasoningLabel = available
         ? getReasoningLevelDisplayLabel(
-            selectedLevel as LLMReasoningLevel,
-            provider,
-            currentModel,
-            options,
-          )
+          selectedLevel as LLMReasoningLevel,
+          provider,
+          currentModel,
+          options,
+        )
         : "off";
       const active =
         available && isReasoningDisplayLabelActive(resolvedReasoningLabel);
@@ -6137,11 +6405,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             selectedLevel === level
               ? `\u2713 ${getReasoningLevelDisplayLabel(level, provider, currentModel, options)}`
               : getReasoningLevelDisplayLabel(
-                  level,
-                  provider,
-                  currentModel,
-                  options,
-                ),
+                level,
+                provider,
+                currentModel,
+                options,
+              ),
         },
       );
       if (optionState.enabled) {
@@ -6314,8 +6582,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     scheduleAttachmentGc,
     setStatusMessage: status
       ? (message, level) => {
-          setStatus(status, message, level);
-        }
+        setStatus(status, message, level);
+      }
       : undefined,
   });
 
@@ -6332,21 +6600,21 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   type PaperPickerMode = "browse" | "search" | "empty";
   type PaperPickerRow =
     | {
-        kind: "collection";
-        collectionId: number;
-        depth: number;
-      }
+      kind: "collection";
+      collectionId: number;
+      depth: number;
+    }
     | {
-        kind: "paper";
-        itemId: number;
-        depth: number;
-      }
+      kind: "paper";
+      itemId: number;
+      depth: number;
+    }
     | {
-        kind: "attachment";
-        itemId: number;
-        attachmentIndex: number;
-        depth: number;
-      };
+      kind: "attachment";
+      itemId: number;
+      attachmentIndex: number;
+      depth: number;
+    };
   let paperPickerMode: PaperPickerMode = "browse";
   let paperPickerEmptyMessage = "No references available.";
   let paperPickerGroups: PaperSearchGroupCandidate[] = [];
@@ -6736,10 +7004,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     const filtered = query
       ? allActions.filter(
-          (a) =>
-            a.name.toLowerCase().includes(query) ||
-            a.description.toLowerCase().includes(query),
-        )
+        (a) =>
+          a.name.toLowerCase().includes(query) ||
+          a.description.toLowerCase().includes(query),
+      )
       : allActions;
     const ownerDoc = body.ownerDocument;
     const list = slashMenu?.querySelector(".llm-action-picker-list");
@@ -7368,12 +7636,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const option = createElement(
         ownerDoc,
         "div",
-        `llm-paper-picker-item ${
-          row.kind === "attachment"
-            ? "llm-paper-picker-attachment-row"
-            : row.kind === "paper"
-              ? "llm-paper-picker-group-row"
-              : "llm-paper-picker-group-row llm-paper-picker-collection-row"
+        `llm-paper-picker-item ${row.kind === "attachment"
+          ? "llm-paper-picker-attachment-row"
+          : row.kind === "paper"
+            ? "llm-paper-picker-group-row"
+            : "llm-paper-picker-group-row llm-paper-picker-collection-row"
         }`,
       );
       option.setAttribute("role", "option");
@@ -7780,8 +8047,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     persistDraftInput: persistDraftInputForCurrentConversation,
     setStatusMessage: status
       ? (message, level) => {
-          setStatus(status, message, level);
-        }
+        setStatus(status, message, level);
+      }
       : undefined,
     editStaleStatusText: EDIT_STALE_STATUS_TEXT,
   });
@@ -7814,8 +8081,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     clearAgentToolCaches: clearAllAgentToolCaches,
     setStatusMessage: status
       ? (message, level) => {
-          setStatus(status, message, level);
-        }
+        setStatus(status, message, level);
+      }
       : undefined,
     logError: (message, err) => {
       ztoolkit.log(message, err);
@@ -8100,10 +8367,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         reset
           ? FONT_SCALE_DEFAULT_PERCENT
           : clampNumber(
-              panelFontScalePercent + (delta || 0),
-              FONT_SCALE_MIN_PERCENT,
-              FONT_SCALE_MAX_PERCENT,
-            ),
+            panelFontScalePercent + (delta || 0),
+            FONT_SCALE_MIN_PERCENT,
+            FONT_SCALE_MAX_PERCENT,
+          ),
       );
       event.preventDefault();
       event.stopPropagation();
@@ -8201,8 +8468,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (!isGlobalMode()) {
         const activeBasePaperItemID = Number(
           resolveCurrentPaperBaseItem()?.id ||
-            getPaperPortalBaseItemID(item) ||
-            0,
+          getPaperPortalBaseItemID(item) ||
+          0,
         );
         const paperMismatch =
           !resolvedPaperContext ||
@@ -8527,7 +8794,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       closeModelMenu();
       return;
     }
-    positionFloatingMenu(body, modelMenu, modelBtn);
+    positionFloatingMenu(
+      floatingPanelState.enabled ? panelRoot : body,
+      modelMenu,
+      modelBtn,
+    );
     setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, true);
   };
 
@@ -8549,7 +8820,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       closeReasoningMenu();
       return;
     }
-    positionFloatingMenu(body, reasoningMenu, reasoningBtn);
+    positionFloatingMenu(
+      floatingPanelState.enabled ? panelRoot : body,
+      reasoningMenu,
+      reasoningBtn,
+    );
     setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, true);
   };
 
@@ -8573,7 +8848,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       return;
     }
     retryMenuAnchor = anchor;
-    positionFloatingMenu(body, retryModelMenu, anchor);
+    positionFloatingMenu(
+      floatingPanelState.enabled ? panelRoot : body,
+      retryModelMenu,
+      anchor,
+    );
     setFloatingMenuOpen(retryModelMenu, RETRY_MODEL_MENU_OPEN_CLASS, true);
   };
 
@@ -9402,11 +9681,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     const readerApi = Zotero.Reader as
       | {
-          open?: (
-            itemID: number,
-            location?: _ZoteroTypes.Reader.Location,
-          ) => Promise<void | _ZoteroTypes.ReaderInstance>;
-        }
+        open?: (
+          itemID: number,
+          location?: _ZoteroTypes.Reader.Location,
+        ) => Promise<void | _ZoteroTypes.ReaderInstance>;
+      }
       | undefined;
     if (typeof readerApi?.open === "function") {
       const openedReader = await readerApi.open(targetItemId, location);
@@ -9414,12 +9693,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         openedReader ||
         ((
           Zotero.Reader as
-            | {
-                getByTabID?: (
-                  tabID: string | number,
-                ) => _ZoteroTypes.ReaderInstance;
-              }
-            | undefined
+          | {
+            getByTabID?: (
+              tabID: string | number,
+            ) => _ZoteroTypes.ReaderInstance;
+          }
+          | undefined
         )?.getByTabID &&
           (() => {
             const tabs = (
@@ -9441,11 +9720,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     const pane = Zotero.getActiveZoteroPane?.() as
       | {
-          viewPDF?: (
-            itemID: number,
-            location: _ZoteroTypes.Reader.Location,
-          ) => Promise<void>;
-        }
+        viewPDF?: (
+          itemID: number,
+          location: _ZoteroTypes.Reader.Location,
+        ) => Promise<void>;
+      }
       | undefined;
     if (typeof pane?.viewPDF === "function") {
       await pane.viewPDF(targetItemId, location);
