@@ -536,9 +536,20 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       panelRoot.style.removeProperty("top");
       panelRoot.style.removeProperty("width");
       panelRoot.style.removeProperty("height");
+
+      // Reset menu z-indexes
+      panelRoot.querySelectorAll(".llm-response-menu, .llm-model-menu, .llm-history-menu, .llm-history-row-menu, .llm-shortcut-menu").forEach((el) => {
+        (el as HTMLElement).style.removeProperty("z-index");
+      });
+
       persistFloatingPanelState();
       return;
     }
+
+    // Force high z-index on floating menus so they appear above panel content
+    panelRoot.querySelectorAll(".llm-response-menu, .llm-model-menu, .llm-history-menu, .llm-history-row-menu, .llm-shortcut-menu").forEach((el) => {
+      (el as HTMLElement).style.zIndex = "2147483647";
+    });
 
     const viewportWidth = panelWin?.innerWidth || 800;
     const viewportHeight = panelWin?.innerHeight || 600;
@@ -579,6 +590,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     menu: HTMLDivElement,
     button: HTMLElement,
   ) => {
+    // Ensure menu is on top of everything in floating mode
+    if (floatingPanelState.enabled) menu.style.zIndex = "2147483647";
     positionMenuBelowButton(getMenuPositionOwner(), menu, button);
   };
   const positionPanelMenuAtPointer = (
@@ -586,6 +599,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     clientX: number,
     clientY: number,
   ) => {
+    if (floatingPanelState.enabled) menu.style.zIndex = "2147483647";
     positionMenuAtPointer(getMenuPositionOwner(), menu, clientX, clientY);
   };
   const initFloatingPanelDrag = () => {

@@ -56,7 +56,6 @@ export function positionFloatingMenu(
   const availableHeight = Math.max(120, boundaryBottom - boundaryTop);
 
   menu.style.position = "fixed";
-  menu.style.zIndex = "2147483647";
   menu.style.display = "grid";
   menu.style.visibility = "hidden";
   menu.style.maxWidth = `${availableWidth}px`;
@@ -76,12 +75,20 @@ export function positionFloatingMenu(
   const aboveTop = anchorRect.top - gap - menuRect.height;
   let top = belowTop;
 
-  if (belowTop + menuRect.height > boundaryBottom) {
+  // For floating mode, prefer downward expansion to avoid occlusion by header/content
+  // unless there is extremely limited vertical space (< 120px).
+  const forceDown = isFloatingOwner && (boundaryBottom - belowTop > 120);
+
+  if (!forceDown && (belowTop + menuRect.height > boundaryBottom)) {
     if (aboveTop >= boundaryTop) {
       top = aboveTop;
+      menu.style.maxHeight = `${Math.max(100, aboveTop - boundaryTop)}px`;
     } else {
       top = Math.max(boundaryTop, boundaryBottom - menuRect.height);
     }
+  } else if (forceDown) {
+    // Ensure height fits in the space below
+    menu.style.maxHeight = `${Math.max(100, boundaryBottom - belowTop)}px`;
   }
 
   menu.style.left = `${Math.round(left)}px`;

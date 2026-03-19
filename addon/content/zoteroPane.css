@@ -5099,7 +5099,7 @@ label.llm-search-results-item:hover {
   resize: none;
   display: flex;
   flex-direction: column;
-  overflow: auto;
+  overflow: visible;
 }
 
 .llm-panel.llm-panel-floating .llm-compose-area {
