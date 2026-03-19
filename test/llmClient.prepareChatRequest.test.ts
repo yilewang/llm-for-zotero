@@ -42,7 +42,7 @@ describe("llmClient prepareChatRequest", function () {
     assert.isTrue(prepared.inputCap.capped);
     assert.isTrue(
       prepared.inputCap.effects.documentContextTrimmed ||
-        prepared.inputCap.effects.documentContextDropped,
+      prepared.inputCap.effects.documentContextDropped,
     );
   });
 
@@ -94,6 +94,7 @@ describe("llmClient prepareChatRequest", function () {
       model: "grok-4",
       apiBase: "https://api.x.ai/v1/responses",
       apiKey: "xai-test",
+      providerProtocol: "responses_api",
     });
 
     assert.equal(output, "OK");

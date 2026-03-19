@@ -538,7 +538,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       panelRoot.style.removeProperty("height");
 
       // Reset menu z-indexes
-      panelRoot.querySelectorAll(".llm-response-menu, .llm-model-menu, .llm-history-menu, .llm-history-row-menu, .llm-shortcut-menu").forEach((el) => {
+      panelRoot.querySelectorAll(".llm-response-menu, .llm-model-menu, .llm-history-menu, .llm-history-row-menu, .llm-shortcut-menu").forEach((el: any) => {
         (el as HTMLElement).style.removeProperty("z-index");
       });
 
@@ -547,7 +547,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
 
     // Force high z-index on floating menus so they appear above panel content
-    panelRoot.querySelectorAll(".llm-response-menu, .llm-model-menu, .llm-history-menu, .llm-history-row-menu, .llm-shortcut-menu").forEach((el) => {
+    panelRoot.querySelectorAll(".llm-response-menu, .llm-model-menu, .llm-history-menu, .llm-history-row-menu, .llm-shortcut-menu").forEach((el: any) => {
       (el as HTMLElement).style.zIndex = "2147483647";
     });
 
