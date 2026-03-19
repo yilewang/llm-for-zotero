@@ -32,8 +32,11 @@ export function positionFloatingMenu(
 
   const viewportMargin = 8;
   const gap = 6;
+  const ownerElement = owner as HTMLElement;
+  const isFloatingOwner = ownerElement.classList?.contains("llm-panel-floating");
   const ownerRect = owner.getBoundingClientRect();
-  const hasOwnerBounds = ownerRect.width > 0 && ownerRect.height > 0;
+  const hasOwnerBounds =
+    !isFloatingOwner && ownerRect.width > 0 && ownerRect.height > 0;
   const boundaryLeft = hasOwnerBounds
     ? Math.max(viewportMargin, ownerRect.left + viewportMargin)
     : viewportMargin;
@@ -45,9 +48,9 @@ export function positionFloatingMenu(
     : win.innerWidth - viewportMargin;
   const boundaryBottom = hasOwnerBounds
     ? Math.min(
-        win.innerHeight - viewportMargin,
-        ownerRect.bottom - viewportMargin,
-      )
+      win.innerHeight - viewportMargin,
+      ownerRect.bottom - viewportMargin,
+    )
     : win.innerHeight - viewportMargin;
   const availableWidth = Math.max(120, boundaryRight - boundaryLeft);
   const availableHeight = Math.max(120, boundaryBottom - boundaryTop);

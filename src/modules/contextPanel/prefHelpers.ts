@@ -48,6 +48,72 @@ export function getAgentModeEnabled(): boolean {
   return getBoolPref("enableAgentMode", false);
 }
 
+const FLOATING_PANEL_STATE_PREF_KEY = "floatingPanelState";
+
+export type FloatingPanelPrefState = {
+  enabled: boolean;
+  left: number | null;
+  top: number | null;
+  width: number;
+  height: number;
+};
+
+const DEFAULT_FLOATING_PANEL_PREF_STATE: FloatingPanelPrefState = {
+  enabled: false,
+  left: null,
+  top: null,
+  width: 520,
+  height: 760,
+};
+
+export function getFloatingPanelStatePref(): FloatingPanelPrefState {
+  const raw = getZoteroPrefs()?.get?.(
+    `${config.prefsPrefix}.${FLOATING_PANEL_STATE_PREF_KEY}`,
+    true,
+  );
+  if (typeof raw !== "string" || !raw.trim()) {
+    return { ...DEFAULT_FLOATING_PANEL_PREF_STATE };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<FloatingPanelPrefState>;
+    const left =
+      typeof parsed.left === "number" && Number.isFinite(parsed.left)
+        ? parsed.left
+        : null;
+    const top =
+      typeof parsed.top === "number" && Number.isFinite(parsed.top)
+        ? parsed.top
+        : null;
+    const width =
+      typeof parsed.width === "number" && Number.isFinite(parsed.width)
+        ? parsed.width
+        : DEFAULT_FLOATING_PANEL_PREF_STATE.width;
+    const height =
+      typeof parsed.height === "number" && Number.isFinite(parsed.height)
+        ? parsed.height
+        : DEFAULT_FLOATING_PANEL_PREF_STATE.height;
+    return {
+      enabled: Boolean(parsed.enabled),
+      left,
+      top,
+      width,
+      height,
+    };
+  } catch (_error) {
+    return { ...DEFAULT_FLOATING_PANEL_PREF_STATE };
+  }
+}
+
+export function setFloatingPanelStatePref(
+  nextState: FloatingPanelPrefState,
+): void {
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${FLOATING_PANEL_STATE_PREF_KEY}`,
+    JSON.stringify(nextState),
+    true,
+  );
+}
+
 const LAST_REASONING_LEVEL_PREF_KEY = "lastUsedReasoningLevel";
 const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
 const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";

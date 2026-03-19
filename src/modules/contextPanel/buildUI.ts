@@ -91,7 +91,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const basePaperItemId =
     hasItem && item
       ? activeNoteSession?.parentItemId ||
-        (isPaperPortalItem(item)
+      (isPaperPortalItem(item)
         ? getPaperPortalBaseItemID(item) || 0
         : item.isAttachment() && item.parentID
           ? item.parentID
@@ -230,6 +230,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
+  const popoutBtn = createElement(doc, "button", "llm-btn-icon llm-popout-btn", {
+    id: "llm-popout",
+    type: "button",
+    textContent: "⤢",
+    title: "Toggle floating window",
+  });
+  popoutBtn.setAttribute("aria-label", "Toggle floating window");
+  popoutBtn.setAttribute("aria-pressed", "false");
   const settingsBtn = createElement(doc, "button", "llm-btn-icon llm-settings-btn", {
     id: "llm-settings",
     type: "button",
@@ -249,7 +257,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     type: "button",
     textContent: "Clear",
   });
-  headerActions.append(settingsBtn, exportBtn, clearBtn);
+  headerActions.append(popoutBtn, settingsBtn, exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
   const historyMenu = createElement(doc, "div", "llm-history-menu", {
@@ -854,6 +862,16 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   composeArea.appendChild(actionsRow);
   container.appendChild(inputSection);
   container.appendChild(statusBar);
+  const floatingResizeHandle = createElement(
+    doc,
+    "div",
+    "llm-floating-resize-handle",
+    {
+      id: "llm-floating-resize-handle",
+    },
+  );
+  floatingResizeHandle.setAttribute("aria-hidden", "true");
+  container.appendChild(floatingResizeHandle);
   body.appendChild(container);
 
   // ---------- Sync visibility ----------

@@ -13,6 +13,7 @@ export type PanelDomRefs = {
   actionsRow: HTMLDivElement | null;
   actionsLeft: HTMLDivElement | null;
   actionsRight: HTMLDivElement | null;
+  popoutBtn: HTMLButtonElement | null;
   settingsBtn: HTMLButtonElement | null;
   exportBtn: HTMLButtonElement | null;
   clearBtn: HTMLButtonElement | null;
@@ -76,6 +77,7 @@ export type PanelDomRefs = {
   tokenUsageEl: HTMLElement | null;
   chatBox: HTMLDivElement | null;
   panelRoot: HTMLDivElement | null;
+  floatingResizeHandle: HTMLDivElement | null;
 };
 
 export function getPanelDomRefs(body: Element): PanelDomRefs {
@@ -112,6 +114,7 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     actionsRight: body.querySelector(
       ".llm-actions-right",
     ) as HTMLDivElement | null,
+    popoutBtn: body.querySelector("#llm-popout") as HTMLButtonElement | null,
     settingsBtn: body.querySelector("#llm-settings") as HTMLButtonElement | null,
     exportBtn: body.querySelector("#llm-export") as HTMLButtonElement | null,
     clearBtn: body.querySelector("#llm-clear") as HTMLButtonElement | null,
@@ -279,5 +282,8 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     tokenUsageEl: body.querySelector("#llm-token-usage") as HTMLElement | null,
     chatBox: body.querySelector("#llm-chat-box") as HTMLDivElement | null,
     panelRoot: body.querySelector("#llm-main") as HTMLDivElement | null,
+    floatingResizeHandle: body.querySelector(
+      "#llm-floating-resize-handle",
+    ) as HTMLDivElement | null,
   };
 }
