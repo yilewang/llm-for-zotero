@@ -1,3 +1,25 @@
+function resolveMenuBounds(element: Element): DOMRect {
+  // 1. Is the element itself the floating panel?
+  if (element.classList?.contains("llm-panel-floating")) {
+    return element.getBoundingClientRect();
+  }
+
+  // 2. Does it contain the floating panel? (Most likely case for 'body')
+  const floatingChild = element.querySelector(".llm-panel-floating");
+  if (floatingChild) {
+    return floatingChild.getBoundingClientRect();
+  }
+
+  // 3. Is it inside the floating panel? (e.g. if passed a button inside)
+  const floatingParent = element.closest(".llm-panel-floating");
+  if (floatingParent) {
+    return floatingParent.getBoundingClientRect();
+  }
+
+  // 4. Fallback: Use the element's own rect (Sidebar behavior)
+  return element.getBoundingClientRect();
+}
+
 export function positionMenuAtPointer(
   body: Element,
   menu: HTMLDivElement,
@@ -8,7 +30,7 @@ export function positionMenuAtPointer(
   if (!win) return;
 
   const viewportMargin = 8;
-  const panelRect = body.getBoundingClientRect();
+  const panelRect = resolveMenuBounds(body);
   const minLeftBound = Math.max(viewportMargin, Math.round(panelRect.left) + 2);
   const minTopBound = Math.max(viewportMargin, Math.round(panelRect.top) + 2);
   menu.style.position = "fixed";
@@ -44,7 +66,7 @@ function applyPanelBoundMenuWidth(
   menu: HTMLDivElement,
   viewportMargin: number,
 ): void {
-  const panelRect = body.getBoundingClientRect();
+  const panelRect = resolveMenuBounds(body);
   const availableWidth = Math.max(
     1,
     Math.floor(panelRect.width) - viewportMargin * 2 - 4,
@@ -68,7 +90,7 @@ export function positionMenuBelowButton(
   if (!win) return;
 
   const viewportMargin = 8;
-  const panelRect = body.getBoundingClientRect();
+  const panelRect = resolveMenuBounds(body);
   const minLeftBound = Math.max(viewportMargin, Math.round(panelRect.left) + 2);
   const minTopBound = Math.max(viewportMargin, Math.round(panelRect.top) + 2);
   const maxRightBound = Math.round(panelRect.right) - 2;
