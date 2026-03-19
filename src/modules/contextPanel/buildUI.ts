@@ -862,16 +862,21 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   composeArea.appendChild(actionsRow);
   container.appendChild(inputSection);
   container.appendChild(statusBar);
-  const floatingResizeHandle = createElement(
-    doc,
-    "div",
-    "llm-floating-resize-handle",
-    {
-      id: "llm-floating-resize-handle",
-    },
-  );
-  floatingResizeHandle.setAttribute("aria-hidden", "true");
-  container.appendChild(floatingResizeHandle);
+  
+  // Resize handles
+  const directions = ["n", "e", "s", "w", "ne", "nw", "se", "sw"];
+  directions.forEach((dir) => {
+    const handle = createElement(
+      doc,
+      "div",
+      `llm-resize-handle llm-resize-${dir}`,
+      { id: `llm-resize-${dir}` }
+    );
+    handle.setAttribute("data-resize-dir", dir);
+    handle.setAttribute("aria-hidden", "true");
+    container.appendChild(handle);
+  });
+  
   body.appendChild(container);
 
   // ---------- Sync visibility ----------

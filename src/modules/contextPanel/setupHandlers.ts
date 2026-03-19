@@ -147,9 +147,7 @@ import {
   setSelectedTextContexts,
   setSelectedTextExpandedIndex,
 } from "./contextResolution";
-import {
-  flashPageInLivePdfReader,
-} from "./livePdfSelectionLocator";
+import { flashPageInLivePdfReader } from "./livePdfSelectionLocator";
 import {
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromItem,
@@ -316,6 +314,21 @@ const floatingPanelState: FloatingPanelState = {
 };
 
 export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
+  // Cleanup any stale floating panels from previous renders/selections
+  try {
+    const doc = body.ownerDocument;
+    const win = doc?.defaultView;
+    if (win) {
+      const mainWin = (win as any).top || win;
+      const stalePanels = mainWin.document.body.querySelectorAll(
+        ".llm-panel-floating",
+      );
+      stalePanels.forEach((p: Element) => p.remove());
+    }
+  } catch (e) {
+    // Ignore cleanup errors
+  }
+
   const resolvedInitialState = resolveInitialPanelItemState(initialItem);
   let item = resolvedInitialState.item;
   let basePaperItem = resolvedInitialState.basePaperItem;
@@ -407,7 +420,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     status,
     chatBox,
     panelRoot,
-    floatingResizeHandle,
+    floatingResizeHandles,
   } = getPanelDomRefs(body);
 
   if (!inputBox || !sendBtn) {
@@ -488,8 +501,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     width: number,
     height: number,
   ): { left: number; top: number } => {
-    const winWidth = Math.max(360, panelWin?.innerWidth || 1024);
-    const winHeight = Math.max(320, panelWin?.innerHeight || 768);
+    const mainWindow = (panelWin as any).top || panelWin;
+    const winWidth = Math.max(360, mainWindow?.innerWidth || 1024);
+    const winHeight = Math.max(320, mainWindow?.innerHeight || 768);
     const margin = 8;
     const maxLeft = Math.max(margin, winWidth - width - margin);
     const maxTop = Math.max(margin, winHeight - height - margin);
@@ -514,7 +528,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         enabled ? "Return to docked panel" : "Toggle floating window",
       );
     }
+
     if (!enabled) {
+      panelRoot.style.removeProperty("position");
+      panelRoot.style.removeProperty("z-index");
       panelRoot.style.removeProperty("left");
       panelRoot.style.removeProperty("top");
       panelRoot.style.removeProperty("width");
@@ -523,8 +540,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       return;
     }
 
-    const viewportWidth = Math.max(360, panelWin?.innerWidth || 1024);
-    const viewportHeight = Math.max(320, panelWin?.innerHeight || 768);
+    const viewportWidth = panelWin?.innerWidth || 800;
+    const viewportHeight = panelWin?.innerHeight || 600;
+
     floatingPanelState.width = clampNumber(
       floatingPanelState.width,
       420,
@@ -532,19 +550,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     );
     floatingPanelState.height = clampNumber(
       floatingPanelState.height,
-      520,
-      Math.max(520, viewportHeight - 16),
+      580,
+      Math.max(580, viewportHeight - 16),
     );
     const defaultLeft = viewportWidth - floatingPanelState.width - 24;
     const defaultTop = 24;
     const rawLeft =
-      floatingPanelState.left === null
-        ? defaultLeft
-        : floatingPanelState.left;
+      floatingPanelState.left === null ? defaultLeft : floatingPanelState.left;
     const rawTop =
-      floatingPanelState.top === null
-        ? defaultTop
-        : floatingPanelState.top;
+      floatingPanelState.top === null ? defaultTop : floatingPanelState.top;
     const clamped = clampFloatingPanelPosition(
       rawLeft,
       rawTop,
@@ -576,15 +590,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
   const initFloatingPanelDrag = () => {
     if (!headerTop || !panelWin) return;
+    const mainWindow = (panelWin as any).top || panelWin;
     headerTop.addEventListener("mousedown", (event: MouseEvent) => {
       if (!floatingPanelState.enabled || event.button !== 0) return;
       const targetNode = event.target as Node | null;
-      const targetElement =
-        !targetNode
-          ? null
-          : targetNode.nodeType === 1
-            ? (targetNode as Element)
-            : targetNode.parentElement;
+      const targetElement = !targetNode
+        ? null
+        : targetNode.nodeType === 1
+          ? (targetNode as Element)
+          : targetNode.parentElement;
       if (!targetElement) return;
       if (
         targetElement.closest(
@@ -616,63 +630,105 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         moveEvent.stopPropagation();
       };
       const onUp = () => {
-        panelWin.removeEventListener("mousemove", onMove);
-        panelWin.removeEventListener("mouseup", onUp);
+        mainWindow.removeEventListener("mousemove", onMove);
+        mainWindow.removeEventListener("mouseup", onUp);
         persistFloatingPanelState();
       };
-      panelWin.addEventListener("mousemove", onMove);
-      panelWin.addEventListener("mouseup", onUp);
+      mainWindow.addEventListener("mousemove", onMove);
+      mainWindow.addEventListener("mouseup", onUp);
       event.preventDefault();
       event.stopPropagation();
     });
   };
+  let isResizing = false;
   const initFloatingPanelResizeHandle = () => {
-    if (!floatingResizeHandle || !panelWin) return;
-    floatingResizeHandle.addEventListener("mousedown", (event: MouseEvent) => {
-      if (!floatingPanelState.enabled || event.button !== 0) return;
-      const panelRect = panelRoot.getBoundingClientRect();
-      const startWidth = panelRect.width;
-      const startHeight = panelRect.height;
-      const startLeft = floatingPanelState.left ?? panelRect.left;
-      const startTop = floatingPanelState.top ?? panelRect.top;
-      const startClientX = event.clientX;
-      const startClientY = event.clientY;
-      const onMove = (moveEvent: MouseEvent) => {
-        const viewportWidth = Math.max(360, panelWin.innerWidth || 1024);
-        const viewportHeight = Math.max(320, panelWin.innerHeight || 768);
-        const margin = 8;
-        const maxWidth = Math.max(420, viewportWidth - startLeft - margin);
-        const maxHeight = Math.max(520, viewportHeight - startTop - margin);
-        floatingPanelState.width = clampNumber(
-          startWidth + (moveEvent.clientX - startClientX),
-          420,
-          maxWidth,
-        );
-        floatingPanelState.height = clampNumber(
-          startHeight + (moveEvent.clientY - startClientY),
-          520,
-          maxHeight,
-        );
-        panelRoot.style.width = `${Math.round(floatingPanelState.width)}px`;
-        panelRoot.style.height = `${Math.round(floatingPanelState.height)}px`;
-        moveEvent.preventDefault();
-        moveEvent.stopPropagation();
-      };
-      const onUp = () => {
-        panelWin.removeEventListener("mousemove", onMove);
-        panelWin.removeEventListener("mouseup", onUp);
-        persistFloatingPanelState();
-      };
-      panelWin.addEventListener("mousemove", onMove);
-      panelWin.addEventListener("mouseup", onUp);
-      event.preventDefault();
-      event.stopPropagation();
+    if (!floatingResizeHandles.length || !panelWin) return;
+
+    // We iterate over all handles
+    floatingResizeHandles.forEach((handle) => {
+      handle.addEventListener("pointerdown", (event: PointerEvent) => {
+        if (!floatingPanelState.enabled || event.button !== 0) return;
+        isResizing = true;
+        const dir = handle.dataset.resizeDir || "se"; // leave default as SE
+
+        handle.setPointerCapture(event.pointerId);
+
+        const rect = panelRoot.getBoundingClientRect();
+        const startClientX = event.clientX;
+        const startClientY = event.clientY;
+        const startWidth = rect.width;
+        const startHeight = rect.height;
+        // Important: use current visual left/top from style or rect if fixed
+        const startLeft = rect.left;
+        const startTop = rect.top;
+
+        const onMove = (moveEvent: PointerEvent) => {
+          const dx = moveEvent.clientX - startClientX;
+          const dy = moveEvent.clientY - startClientY;
+
+          let newWidth = startWidth;
+          let newHeight = startHeight;
+          let newLeft = startLeft;
+          let newTop = startTop;
+
+          // Apply resize deltas
+          if (dir.includes("e")) newWidth = startWidth + dx;
+          else if (dir.includes("w")) {
+            newWidth = startWidth - dx;
+            newLeft = startLeft + dx;
+          }
+          if (dir.includes("s")) newHeight = startHeight + dy;
+          else if (dir.includes("n")) {
+            newHeight = startHeight - dy;
+            newTop = startTop + dy;
+          }
+
+          // Min size constraints
+          if (newWidth < 420) {
+            newWidth = 420;
+            // If dragging West, we must lock left to (original_right - 420)
+            if (dir.includes("w")) newLeft = (startLeft + startWidth) - 420;
+          }
+          if (newHeight < 580) {
+            newHeight = 580;
+            // If dragging North, lock top to (original_bottom - 580)
+            if (dir.includes("n")) newTop = (startTop + startHeight) - 580;
+          }
+
+          // Update state & styles
+          floatingPanelState.width = Math.round(newWidth);
+          floatingPanelState.height = Math.round(newHeight);
+          floatingPanelState.left = Math.round(newLeft);
+          floatingPanelState.top = Math.round(newTop);
+
+          panelRoot.style.width = `${floatingPanelState.width}px`;
+          panelRoot.style.height = `${floatingPanelState.height}px`;
+          panelRoot.style.left = `${floatingPanelState.left}px`;
+          panelRoot.style.top = `${floatingPanelState.top}px`;
+
+          moveEvent.preventDefault();
+          moveEvent.stopPropagation();
+        };
+
+        const onUp = (upEvent: PointerEvent) => {
+          isResizing = false;
+          handle.releasePointerCapture(upEvent.pointerId);
+          handle.removeEventListener("pointermove", onMove);
+          handle.removeEventListener("pointerup", onUp);
+          persistFloatingPanelState();
+        };
+
+        handle.addEventListener("pointermove", onMove);
+        handle.addEventListener("pointerup", onUp);
+        event.preventDefault();
+        event.stopPropagation();
+      });
     });
   };
   const FloatingResizeObserverCtor = panelWin?.ResizeObserver;
   if (FloatingResizeObserverCtor) {
     const floatingResizeObserver = new FloatingResizeObserverCtor(() => {
-      if (!floatingPanelState.enabled) return;
+      if (!floatingPanelState.enabled || isResizing) return;
       const rect = panelRoot.getBoundingClientRect();
       floatingPanelState.width = Math.round(rect.width);
       floatingPanelState.height = Math.round(rect.height);
@@ -699,10 +755,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   applyFloatingPanelState(floatingPanelState.enabled);
 
   const isNoteSession = () => Boolean(resolveCurrentNoteSession());
-  const isGlobalMode = () =>
-    resolveDisplayConversationKind(item) === "global";
-  const isPaperMode = () =>
-    resolveDisplayConversationKind(item) === "paper";
+  const isGlobalMode = () => resolveDisplayConversationKind(item) === "global";
+  const isPaperMode = () => resolveDisplayConversationKind(item) === "paper";
   const getCurrentLibraryID = (): number => {
     const fromItem =
       item && Number.isFinite(item.libraryID) && item.libraryID > 0
@@ -861,8 +915,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     if (modeChipBtn) {
       const currentLabel = noteSession
-        ? (mode === "global" ? "Open note" : "Paper note")
-        : (mode === "global" ? "Open chat" : "Paper chat");
+        ? mode === "global"
+          ? "Open note"
+          : "Paper note"
+        : mode === "global"
+          ? "Open chat"
+          : "Paper chat";
       modeChipBtn.textContent = currentLabel;
       modeChipBtn.title = noteSession
         ? currentLabel
@@ -1716,7 +1774,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     itemId: number,
     paperContext: PaperContextRef,
   ): PaperContextSendMode | null => {
-    return paperContextModeOverrides.get(itemId)?.get(buildPaperKey(paperContext)) || null;
+    return (
+      paperContextModeOverrides.get(itemId)?.get(buildPaperKey(paperContext)) ||
+      null
+    );
   };
 
   const setPaperModeOverride = (
@@ -1745,7 +1806,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (!fullTextPaperContexts.length) return;
     let overrides = paperContextModeOverrides.get(itemId);
     for (const paperContext of fullTextPaperContexts) {
-      if (resolvePaperContextNextSendMode(itemId, paperContext) !== "full-next") {
+      if (
+        resolvePaperContextNextSendMode(itemId, paperContext) !== "full-next"
+      ) {
         continue;
       }
       if (!overrides) {
@@ -1786,7 +1849,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   ): PaperContextRef[] => {
     const selectedPapers =
       selectedPaperContexts ||
-      normalizePaperContextEntries(selectedPaperContextCache.get(currentItem.id) || []);
+      normalizePaperContextEntries(
+        selectedPaperContextCache.get(currentItem.id) || [],
+      );
     const autoLoadedPaperContext = isGlobalPortalItem(currentItem)
       ? null
       : resolveAutoLoadedPaperContext();
@@ -1794,11 +1859,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       ...(autoLoadedPaperContext ? [autoLoadedPaperContext] : []),
       ...selectedPapers,
     ]);
-    return effectivePapers.filter(
-      (paperContext) =>
-        isPaperContextFullTextMode(
-          resolvePaperContextNextSendMode(currentItem.id, paperContext),
-        ),
+    return effectivePapers.filter((paperContext) =>
+      isPaperContextFullTextMode(
+        resolvePaperContextNextSendMode(currentItem.id, paperContext),
+      ),
     );
   };
 
@@ -1988,9 +2052,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (win) {
       win.clearTimeout(paperChipMenuHideTimer);
     } else {
-      clearTimeout(paperChipMenuHideTimer as unknown as ReturnType<
-        typeof setTimeout
-      >);
+      clearTimeout(
+        paperChipMenuHideTimer as unknown as ReturnType<typeof setTimeout>,
+      );
     }
     paperChipMenuHideTimer = null;
   };
@@ -2006,7 +2070,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const buildPaperChipAttachmentText = (
     paperContext: PaperContextRef,
   ): string => {
-    const attachmentTitle = sanitizeText(paperContext.attachmentTitle || "").trim();
+    const attachmentTitle = sanitizeText(
+      paperContext.attachmentTitle || "",
+    ).trim();
     const paperTitle = sanitizeText(paperContext.title || "").trim();
     if (!attachmentTitle || attachmentTitle === paperTitle) return "";
     return attachmentTitle;
@@ -2077,7 +2143,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (paperChipMenu?.isConnected) return paperChipMenu;
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc) return null;
-    const menu = createElement(ownerDoc, "div", "llm-model-menu llm-paper-chip-menu");
+    const menu = createElement(
+      ownerDoc,
+      "div",
+      "llm-model-menu llm-paper-chip-menu",
+    );
     menu.style.display = "none";
     menu.addEventListener("mouseenter", () => {
       clearPaperChipMenuHideTimer();
@@ -2131,7 +2201,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const viewportMargin = 8;
     const gap = 6;
     const panelRect = body.getBoundingClientRect();
-    const minLeftBound = Math.max(viewportMargin, Math.round(panelRect.left) + 2);
+    const minLeftBound = Math.max(
+      viewportMargin,
+      Math.round(panelRect.left) + 2,
+    );
     const minTopBound = Math.max(viewportMargin, Math.round(panelRect.top) + 2);
     const maxRightBound = Math.round(panelRect.right) - 2;
     const maxBottomBound = Math.round(panelRect.bottom) - 2;
@@ -2248,13 +2321,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const focusPaperContextInActiveTab = async (
     paperContext: PaperContextRef,
   ): Promise<boolean> => {
-    const tabs = (Zotero as unknown as {
-      Tabs?: {
-        selectedType?: string;
-        getTabIDByItemID?: (itemID: number) => string;
-        select?: (id: string, reopening?: boolean, options?: unknown) => void;
-      };
-    }).Tabs;
+    const tabs = (
+      Zotero as unknown as {
+        Tabs?: {
+          selectedType?: string;
+          getTabIDByItemID?: (itemID: number) => string;
+          select?: (id: string, reopening?: boolean, options?: unknown) => void;
+        };
+      }
+    ).Tabs;
     const selectedType = String(tabs?.selectedType || "").toLowerCase();
     if (selectedType.includes("reader")) {
       const existingReaderTabId =
@@ -2472,20 +2547,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (autoLoadedPaperContext) {
       appendPaperChip(ownerDoc, paperPreviewList, autoLoadedPaperContext, {
         autoLoaded: true,
-        fullText:
-          isPaperContextFullTextMode(
-            resolvePaperContextNextSendMode(itemId, autoLoadedPaperContext),
-          ),
+        fullText: isPaperContextFullTextMode(
+          resolvePaperContextNextSendMode(itemId, autoLoadedPaperContext),
+        ),
       });
     }
     selectedPapers.forEach((paperContext, index) => {
       appendPaperChip(ownerDoc, paperPreviewList, paperContext, {
         removable: true,
         removableIndex: index,
-        fullText:
-          isPaperContextFullTextMode(
-            resolvePaperContextNextSendMode(itemId, paperContext),
-          ),
+        fullText: isPaperContextFullTextMode(
+          resolvePaperContextNextSendMode(itemId, paperContext),
+        ),
       });
     });
     selectedOtherRefs.forEach((ref, index) => {
@@ -5081,10 +5154,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     // Step 2: Look for any other existing empty conversation for this paper.
     if (targetConversationKey <= 0) {
       try {
-        const summaries = await listPaperConversations(libraryID, paperItemID, 50);
-        const emptyEntry = summaries.find(
-          (s) => s.userTurnCount === 0,
+        const summaries = await listPaperConversations(
+          libraryID,
+          paperItemID,
+          50,
         );
+        const emptyEntry = summaries.find((s) => s.userTurnCount === 0);
         if (emptyEntry?.conversationKey) {
           targetConversationKey = emptyEntry.conversationKey;
           reuseReason = "existing-draft";
@@ -6224,7 +6299,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       latestPair?.assistantMessage?.modelProviderLabel?.trim() || "";
     const matchingLegacyEntries = latestAssistantModelName
       ? groupedChoices.flatMap((group) =>
-        group.entries.filter((entry) => entry.model === latestAssistantModelName),
+        group.entries.filter(
+          (entry) => entry.model === latestAssistantModelName,
+        ),
       )
       : [];
     retryModelMenu.innerHTML = "";
@@ -6663,8 +6740,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         : inputBox.value.length;
     return parseAtSearchToken(inputBox.value, caretEnd);
   };
-  const getActiveSlashToken = (): ActiveSlashToken | null =>
-    getActiveAtToken();
+  const getActiveSlashToken = (): ActiveSlashToken | null => getActiveAtToken();
   const getActiveActionToken = (): ActiveSlashToken | null => {
     const caretEnd =
       typeof inputBox.selectionStart === "number"
@@ -6741,7 +6817,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
 
   // ── Action picker ─────────────────────────────────────────────────────────
-  type ActionPickerItem = { name: string; description: string; inputSchema: object };
+  type ActionPickerItem = {
+    name: string;
+    description: string;
+    inputSchema: object;
+  };
   let actionPickerItems: ActionPickerItem[] = [];
   let actionPickerActiveIndex = 0;
   const isActionPickerOpen = () =>
@@ -6770,16 +6850,34 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       return;
     }
     actionPickerItems.forEach((action, idx) => {
-      const option = createElement(ownerDoc, "div", "llm-action-picker-item", {});
+      const option = createElement(
+        ownerDoc,
+        "div",
+        "llm-action-picker-item",
+        {},
+      );
       option.setAttribute("role", "option");
-      option.setAttribute("aria-selected", idx === actionPickerActiveIndex ? "true" : "false");
+      option.setAttribute(
+        "aria-selected",
+        idx === actionPickerActiveIndex ? "true" : "false",
+      );
       option.tabIndex = -1;
-      const titleEl = createElement(ownerDoc, "div", "llm-action-picker-title", {
-        textContent: formatActionLabel(action.name),
-      });
-      const descEl = createElement(ownerDoc, "div", "llm-action-picker-description", {
-        textContent: action.description,
-      });
+      const titleEl = createElement(
+        ownerDoc,
+        "div",
+        "llm-action-picker-title",
+        {
+          textContent: formatActionLabel(action.name),
+        },
+      );
+      const descEl = createElement(
+        ownerDoc,
+        "div",
+        "llm-action-picker-description",
+        {
+          textContent: action.description,
+        },
+      );
       option.append(titleEl, descEl);
       option.addEventListener("mousedown", (e: Event) => {
         e.preventDefault();
@@ -6834,7 +6932,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     chatBox?.querySelector(".llm-action-inline-card")?.remove();
   };
 
-  const showActionHitlCard = (requestId: string, action: AgentPendingAction): Promise<AgentConfirmationResolution> => {
+  const showActionHitlCard = (
+    requestId: string,
+    action: AgentPendingAction,
+  ): Promise<AgentConfirmationResolution> => {
     return new Promise((resolve) => {
       getAgentApi().registerPendingConfirmation(requestId, (resolution) => {
         closeActionHitlPanel();
@@ -6859,7 +6960,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
    * `itemId` is auto-filled from the current item. All other required fields
    * need user input.
    */
-  const getNeedsUserInputFields = (actionName: string, schema: object): string[] => {
+  const getNeedsUserInputFields = (
+    actionName: string,
+    schema: object,
+  ): string[] => {
     const s = schema as { required?: string[] };
     if (!s.required?.length) return [];
     const autoFillable = new Set(["itemId"]);
@@ -6869,7 +6973,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   /**
    * Resolves the initial input for an action. Auto-fills `itemId` from context.
    */
-  const buildActionInput = (actionName: string, schema: object, extraFields: Record<string, string>): Record<string, unknown> => {
+  const buildActionInput = (
+    actionName: string,
+    schema: object,
+    extraFields: Record<string, string>,
+  ): Record<string, unknown> => {
     const input: Record<string, unknown> = { ...extraFields };
     const s = schema as { required?: string[] };
     if (s.required?.includes("itemId") && item) {
@@ -6894,36 +7002,71 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         resolve(null);
         return;
       }
-      const props = (schema as { properties?: Record<string, { description?: string }> }).properties || {};
+      const props =
+        (schema as { properties?: Record<string, { description?: string }> })
+          .properties || {};
       chatBox.querySelector(".llm-action-inline-card")?.remove();
       const wrapper = ownerDoc.createElement("div");
       wrapper.className = "llm-action-inline-card";
       const form = createElement(ownerDoc, "div", "llm-action-launch-form", {});
-      const header = createElement(ownerDoc, "div", "llm-action-launch-form-header", {
-        textContent: formatActionLabel(actionName),
-      });
+      const header = createElement(
+        ownerDoc,
+        "div",
+        "llm-action-launch-form-header",
+        {
+          textContent: formatActionLabel(actionName),
+        },
+      );
       form.appendChild(header);
-      const fieldEls: Array<{ name: string; input: HTMLInputElement | HTMLTextAreaElement }> = [];
+      const fieldEls: Array<{
+        name: string;
+        input: HTMLInputElement | HTMLTextAreaElement;
+      }> = [];
       for (const fieldName of requiredFields) {
-        const label = createElement(ownerDoc, "label", "llm-action-launch-form-label", {
-          textContent: props[fieldName]?.description ?? fieldName,
-        });
-        const input = createElement(ownerDoc, "textarea", "llm-action-launch-form-input llm-input", {
-          placeholder: fieldName,
-        }) as HTMLTextAreaElement;
+        const label = createElement(
+          ownerDoc,
+          "label",
+          "llm-action-launch-form-label",
+          {
+            textContent: props[fieldName]?.description ?? fieldName,
+          },
+        );
+        const input = createElement(
+          ownerDoc,
+          "textarea",
+          "llm-action-launch-form-input llm-input",
+          {
+            placeholder: fieldName,
+          },
+        ) as HTMLTextAreaElement;
         input.rows = 2;
         form.append(label, input);
         fieldEls.push({ name: fieldName, input });
       }
-      const btns = createElement(ownerDoc, "div", "llm-action-launch-form-btns", {});
-      const runBtn = createElement(ownerDoc, "button", "llm-action-launch-form-run-btn", {
-        textContent: "Run",
-        type: "button",
-      }) as HTMLButtonElement;
-      const cancelBtn2 = createElement(ownerDoc, "button", "llm-action-launch-form-cancel-btn", {
-        textContent: "Cancel",
-        type: "button",
-      }) as HTMLButtonElement;
+      const btns = createElement(
+        ownerDoc,
+        "div",
+        "llm-action-launch-form-btns",
+        {},
+      );
+      const runBtn = createElement(
+        ownerDoc,
+        "button",
+        "llm-action-launch-form-run-btn",
+        {
+          textContent: "Run",
+          type: "button",
+        },
+      ) as HTMLButtonElement;
+      const cancelBtn2 = createElement(
+        ownerDoc,
+        "button",
+        "llm-action-launch-form-cancel-btn",
+        {
+          textContent: "Cancel",
+          type: "button",
+        },
+      ) as HTMLButtonElement;
       btns.append(runBtn, cancelBtn2);
       form.appendChild(btns);
       wrapper.appendChild(form);
@@ -6951,26 +7094,41 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
 
   /** Core action execution — shared between action picker and slash menu. */
-  const executeAgentAction = async (action: ActionPickerItem): Promise<void> => {
+  const executeAgentAction = async (
+    action: ActionPickerItem,
+  ): Promise<void> => {
     inputBox.focus({ preventScroll: true });
     const needsInput = getNeedsUserInputFields(action.name, action.inputSchema);
     let extraFields: Record<string, string> = {};
     if (needsInput.length) {
-      const filled = await showActionLaunchForm(action.name, needsInput, action.inputSchema);
+      const filled = await showActionLaunchForm(
+        action.name,
+        needsInput,
+        action.inputSchema,
+      );
       if (!filled) return;
       extraFields = Object.fromEntries(
         Object.entries(filled).map(([k, v]) => [k, String(v)]),
       );
     }
-    const input = buildActionInput(action.name, action.inputSchema, extraFields);
-    if (status) setStatus(status, `Running: ${formatActionLabel(action.name)}…`, "ready");
+    const input = buildActionInput(
+      action.name,
+      action.inputSchema,
+      extraFields,
+    );
+    if (status)
+      setStatus(status, `Running: ${formatActionLabel(action.name)}…`, "ready");
     try {
       const agentApi = getAgentApi();
       const result = await agentApi.runAction(action.name, input, {
         confirmationMode: "native_ui",
         onProgress: (event) => {
           if (event.type === "step_start" && status) {
-            setStatus(status, `${event.step} (${event.index}/${event.total})`, "ready");
+            setStatus(
+              status,
+              `${event.step} (${event.index}/${event.total})`,
+              "ready",
+            );
           } else if (event.type === "step_done" && event.summary && status) {
             setStatus(status, event.summary, "ready");
           }
@@ -7026,7 +7184,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     list.insertBefore(agentLabel, firstBase);
     // Agent action items
     filtered.forEach((action) => {
-      const btn = mkAgentEl("button", "llm-action-picker-item") as HTMLButtonElement;
+      const btn = mkAgentEl(
+        "button",
+        "llm-action-picker-item",
+      ) as HTMLButtonElement;
       btn.type = "button";
       const titleEl = ownerDoc.createElement("span");
       titleEl.className = "llm-action-picker-title";
@@ -7081,13 +7242,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (contentType.startsWith("image/")) return "figure";
     return "other";
   }
-  function resolvePickerKindIcon(kind: "pdf" | "note" | "figure" | "other"): string {
+  function resolvePickerKindIcon(
+    kind: "pdf" | "note" | "figure" | "other",
+  ): string {
     if (kind === "pdf") return "📚";
     if (kind === "note") return "📝";
     if (kind === "figure") return "🖼";
     return "📎";
   }
-  function resolvePickerKindLabel(kind: "pdf" | "note" | "figure" | "other"): string {
+  function resolvePickerKindLabel(
+    kind: "pdf" | "note" | "figure" | "other",
+  ): string {
     if (kind === "pdf") return "PDF";
     if (kind === "note") return "Note";
     if (kind === "figure") return "Figure";
@@ -7406,14 +7571,21 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const upsertOtherRefContext = (ref: OtherContextRef): boolean => {
     if (!item) return false;
     const existing = selectedOtherRefContextCache.get(item.id) || [];
-    const duplicate = existing.some((e) => e.contextItemId === ref.contextItemId);
+    const duplicate = existing.some(
+      (e) => e.contextItemId === ref.contextItemId,
+    );
     if (duplicate) {
       if (status) setStatus(status, "File already selected", "warning");
       return false;
     }
     selectedOtherRefContextCache.set(item.id, [...existing, ref]);
     updatePaperPreviewPreservingScroll();
-    if (status) setStatus(status, `${ref.refKind === "figure" ? "Figure" : "File"} context added.`, "ready");
+    if (status)
+      setStatus(
+        status,
+        `${ref.refKind === "figure" ? "Figure" : "File"} context added.`,
+        "ready",
+      );
     return true;
   };
   const consumeActiveAtToken = (): boolean => {
@@ -7427,8 +7599,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     inputBox.setSelectionRange(nextCaret, nextCaret);
     return true;
   };
-  const consumeActiveSlashToken = (): boolean =>
-    consumeActiveAtToken();
+  const consumeActiveSlashToken = (): boolean => consumeActiveAtToken();
   const consumeActiveActionToken = (): boolean => {
     const token = getActiveActionToken();
     if (!token) return false;
@@ -7473,9 +7644,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     } else {
       upsertOtherRefContext({
         contextItemId: selectedAttachment.contextItemId,
-        parentItemId: selectedGroup.itemId !== selectedAttachment.contextItemId
-          ? selectedGroup.itemId
-          : undefined,
+        parentItemId:
+          selectedGroup.itemId !== selectedAttachment.contextItemId
+            ? selectedGroup.itemId
+            : undefined,
         title: selectedAttachment.title || selectedGroup.title,
         contentType: contentType || "application/octet-stream",
         refKind: kind === "figure" ? "figure" : "other",
@@ -8122,10 +8294,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         getSelectedModelInfo().currentModel ||
         ""
       ).trim();
-      const selectedImages = (selectedImageCache.get(currentItem.id) || []).slice(
-        0,
-        MAX_SELECTED_IMAGES,
-      );
+      const selectedImages = (
+        selectedImageCache.get(currentItem.id) || []
+      ).slice(0, MAX_SELECTED_IMAGES);
       const images = isScreenshotUnsupportedModel(activeModelName)
         ? []
         : selectedImages;
@@ -8703,13 +8874,22 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       closeSlashMenu();
       const attachment = getActiveContextAttachmentFromTabs();
       if (!attachment) {
-        if (status) setStatus(status, "No PDF open — open a PDF in the reader first", "error");
+        if (status)
+          setStatus(
+            status,
+            "No PDF open — open a PDF in the reader first",
+            "error",
+          );
         return;
       }
       const filePath =
-        typeof (attachment as { getFilePath?: () => string | undefined }).getFilePath === "function"
-          ? (attachment as { getFilePath: () => string | undefined }).getFilePath()
-          : (attachment as unknown as { attachmentPath?: string }).attachmentPath;
+        typeof (attachment as { getFilePath?: () => string | undefined })
+          .getFilePath === "function"
+          ? (
+            attachment as { getFilePath: () => string | undefined }
+          ).getFilePath()
+          : (attachment as unknown as { attachmentPath?: string })
+            .attachmentPath;
       if (!filePath) {
         if (status) setStatus(status, "Could not locate the PDF file", "error");
         return;
@@ -8718,7 +8898,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       try {
         const bytes = await readAttachmentBytes(filePath);
         if (bytes.byteLength > MAX_UPLOAD_PDF_SIZE_BYTES) {
-          if (status) setStatus(status, `PDF too large (max ${Math.round(MAX_UPLOAD_PDF_SIZE_BYTES / 1024 / 1024)} MB)`, "error");
+          if (status)
+            setStatus(
+              status,
+              `PDF too large (max ${Math.round(MAX_UPLOAD_PDF_SIZE_BYTES / 1024 / 1024)} MB)`,
+              "error",
+            );
           return;
         }
         const fileName = filePath.split(/[\\/]/).pop() || "document.pdf";
@@ -8741,12 +8926,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       closeSlashMenu();
       const { currentModel } = getSelectedModelInfo();
       if (isScreenshotUnsupportedModel(currentModel)) {
-        if (status) setStatus(status, getScreenshotDisabledHint(currentModel), "error");
+        if (status)
+          setStatus(status, getScreenshotDisabledHint(currentModel), "error");
         return;
       }
       const currentImages = selectedImageCache.get(item.id) || [];
       if (currentImages.length >= MAX_SELECTED_IMAGES) {
-        if (status) setStatus(status, `Maximum ${MAX_SELECTED_IMAGES} images allowed`, "error");
+        if (status)
+          setStatus(
+            status,
+            `Maximum ${MAX_SELECTED_IMAGES} images allowed`,
+            "error",
+          );
         return;
       }
       if (status) setStatus(status, "Capturing PDF page...", "sending");
@@ -8756,20 +8947,38 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           const win =
             body.ownerDocument?.defaultView ||
             (Zotero.getMainWindow?.() as Window | null);
-          const optimized = win ? await optimizeImageDataUrl(win, dataUrl) : dataUrl;
+          const optimized = win
+            ? await optimizeImageDataUrl(win, dataUrl)
+            : dataUrl;
           const existingImages = selectedImageCache.get(item.id) || [];
-          const nextImages = [...existingImages, optimized].slice(0, MAX_SELECTED_IMAGES);
+          const nextImages = [...existingImages, optimized].slice(
+            0,
+            MAX_SELECTED_IMAGES,
+          );
           selectedImageCache.set(item.id, nextImages);
           const expandedBefore = selectedImagePreviewExpandedCache.get(item.id);
           selectedImagePreviewExpandedCache.set(
             item.id,
             typeof expandedBefore === "boolean" ? expandedBefore : false,
           );
-          selectedImagePreviewActiveIndexCache.set(item.id, nextImages.length - 1);
+          selectedImagePreviewActiveIndexCache.set(
+            item.id,
+            nextImages.length - 1,
+          );
           updateImagePreviewPreservingScroll();
-          if (status) setStatus(status, `Page captured (${nextImages.length}/${MAX_SELECTED_IMAGES})`, "ready");
+          if (status)
+            setStatus(
+              status,
+              `Page captured (${nextImages.length}/${MAX_SELECTED_IMAGES})`,
+              "ready",
+            );
         } else {
-          if (status) setStatus(status, "No PDF page found — open a PDF in the reader first", "error");
+          if (status)
+            setStatus(
+              status,
+              "No PDF page found — open a PDF in the reader first",
+              "error",
+            );
           updateImagePreviewPreservingScroll();
         }
       } catch (err) {
@@ -9009,7 +9218,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   }
   const dismissPaperChipOnOutsidePointerDown = (e: PointerEvent) => {
     if (typeof e.button === "number" && e.button !== 0) return;
-    if (!paperChipMenuSticky || !paperChipMenu || paperChipMenu.style.display === "none")
+    if (
+      !paperChipMenuSticky ||
+      !paperChipMenu ||
+      paperChipMenu.style.display === "none"
+    )
       return;
     const target = e.target as Node | null;
     if (target && paperChipMenu.contains(target)) return;
@@ -9436,7 +9649,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (otherClearBtn) {
         e.preventDefault();
         e.stopPropagation();
-        const index = Number.parseInt(otherClearBtn.dataset.otherRefIndex || "", 10);
+        const index = Number.parseInt(
+          otherClearBtn.dataset.otherRefIndex || "",
+          10,
+        );
         const others = selectedOtherRefContextCache.get(item.id) || [];
         if (Number.isFinite(index) && index >= 0 && index < others.length) {
           const next = others.filter((_, i) => i !== index);
@@ -9446,7 +9662,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             selectedOtherRefContextCache.delete(item.id);
           }
           updatePaperPreviewPreservingScroll();
-          if (status) setStatus(status, `File context removed (${next.length})`, "ready");
+          if (status)
+            setStatus(status, `File context removed (${next.length})`, "ready");
         }
         return;
       }
@@ -9474,7 +9691,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       }
       const removedPaper = selectedPapers[index];
       if (removedPaper) {
-        paperContextModeOverrides.get(item.id)?.delete(buildPaperKey(removedPaper));
+        paperContextModeOverrides
+          .get(item.id)
+          ?.delete(buildPaperKey(removedPaper));
       }
       const nextPapers = selectedPapers.filter((_, i) => i !== index);
       if (nextPapers.length) {
@@ -9542,7 +9761,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         const paperChipForCard = cardRow.closest(
           ".llm-paper-context-chip",
         ) as HTMLDivElement | null;
-        if (!paperChipForCard || !paperPreview.contains(paperChipForCard)) return;
+        if (!paperChipForCard || !paperPreview.contains(paperChipForCard))
+          return;
         e.preventDefault();
         e.stopPropagation();
         const paperContextForCard =
@@ -9555,10 +9775,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             }
           })
           .catch((err) => {
-            ztoolkit.log(
-              "LLM: Failed to focus paper context from card",
-              err,
-            );
+            ztoolkit.log("LLM: Failed to focus paper context from card", err);
             if (status) {
               setStatus(status, "Could not focus this paper", "error");
             }
@@ -9580,7 +9797,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const isAlreadyExpanded =
         typeof currentExpandedId === "number" &&
         currentExpandedId === paperContext.contextItemId;
-      const nextExpandedId = isAlreadyExpanded ? false : paperContext.contextItemId;
+      const nextExpandedId = isAlreadyExpanded
+        ? false
+        : paperContext.contextItemId;
       selectedPaperPreviewExpandedCache.set(item.id, nextExpandedId);
 
       // Toggle expanded class directly on the chip — no full re-render, no blink.
@@ -9741,9 +9960,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   if (selectedContextList) {
     selectedContextList.addEventListener("mouseover", (e: Event) => {
       const target = e.target as Element | null;
-      const noteChip = target?.closest("[data-note-chip='true']") as
-        | HTMLDivElement
-        | null;
+      const noteChip = target?.closest(
+        "[data-note-chip='true']",
+      ) as HTMLDivElement | null;
       if (!noteChip) {
         return;
       }
@@ -9755,9 +9974,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     });
     selectedContextList.addEventListener("focusin", (e: Event) => {
       const target = e.target as Element | null;
-      const noteChip = target?.closest("[data-note-chip='true']") as
-        | HTMLDivElement
-        | null;
+      const noteChip = target?.closest(
+        "[data-note-chip='true']",
+      ) as HTMLDivElement | null;
       if (!noteChip) {
         return;
       }
@@ -9771,9 +9990,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (!item) return;
       const target = e.target as Element | null;
       if (!target) return;
-      const noteChip = target.closest("[data-note-chip='true']") as
-        | HTMLDivElement
-        | null;
+      const noteChip = target.closest(
+        "[data-note-chip='true']",
+      ) as HTMLDivElement | null;
       const noteChipKind = noteChip?.dataset.noteChipKind || "";
       const noteMetaBtn = target.closest(
         ".llm-note-context-meta",
@@ -9907,9 +10126,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (!item) return;
       const target = e.target as Element | null;
       if (!target) return;
-      const noteChip = target.closest("[data-note-chip='true']") as
-        | HTMLDivElement
-        | null;
+      const noteChip = target.closest(
+        "[data-note-chip='true']",
+      ) as HTMLDivElement | null;
       if (noteChip?.dataset.noteChipKind === "active") {
         e.preventDefault();
         e.stopPropagation();
@@ -10021,7 +10240,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const paperPinned =
       typeof selectedPaperPreviewExpandedCache.get(item.id) === "number";
     const filePinned = selectedFilePreviewExpandedCache.get(item.id) === true;
-    if (!textPinned && !notePinned && !figurePinned && !paperPinned && !filePinned)
+    if (
+      !textPinned &&
+      !notePinned &&
+      !figurePinned &&
+      !paperPinned &&
+      !filePinned
+    )
       return;
 
     setSelectedTextExpandedIndex(textContextKey, null);

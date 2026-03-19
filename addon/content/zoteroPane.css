@@ -5133,22 +5133,23 @@ label.llm-search-results-item:hover {
   z-index: 2147483601;
 }
 
-.llm-floating-resize-handle {
+.llm-resize-handle {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 14px;
-  height: 14px;
-  cursor: nwse-resize;
   z-index: 2147483602;
-  border-bottom-right-radius: 8px;
-  background:
-    linear-gradient(135deg, transparent 0 48%, rgba(0, 0, 0, 0.35) 48% 54%, transparent 54% 64%, rgba(0, 0, 0, 0.35) 64% 70%, transparent 70%);
   opacity: 0;
   pointer-events: none;
 }
 
-.llm-panel.llm-panel-floating .llm-floating-resize-handle {
-  opacity: 0.85;
+.llm-panel.llm-panel-floating .llm-resize-handle {
   pointer-events: auto;
 }
+
+.llm-resize-n { top: -4px; left: 8px; right: 8px; height: 8px; cursor: ns-resize; }
+.llm-resize-s { bottom: -4px; left: 8px; right: 8px; height: 8px; cursor: ns-resize; }
+.llm-resize-e { top: 8px; bottom: 8px; right: -4px; width: 8px; cursor: ew-resize; }
+.llm-resize-w { top: 8px; bottom: 8px; left: -4px; width: 8px; cursor: ew-resize; }
+
+.llm-resize-ne { top: -4px; right: -4px; width: 12px; height: 12px; cursor: nesw-resize; }
+.llm-resize-nw { top: -4px; left: -4px; width: 12px; height: 12px; cursor: nwse-resize; }
+.llm-resize-se { bottom: -4px; right: -4px; width: 12px; height: 12px; cursor: nwse-resize; }
+.llm-resize-sw { bottom: -4px; left: -4px; width: 12px; height: 12px; cursor: nesw-resize; }

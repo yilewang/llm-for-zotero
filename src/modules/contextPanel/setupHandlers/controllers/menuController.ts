@@ -56,6 +56,7 @@ export function positionFloatingMenu(
   const availableHeight = Math.max(120, boundaryBottom - boundaryTop);
 
   menu.style.position = "fixed";
+  menu.style.zIndex = "2147483647";
   menu.style.display = "grid";
   menu.style.visibility = "hidden";
   menu.style.maxWidth = `${availableWidth}px`;
