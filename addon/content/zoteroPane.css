@@ -5051,10 +5051,9 @@ label.llm-search-results-item:hover {
   max-height: calc(100vh - 16px);
   min-height: 560px;
   border-radius: 8px;
-  border: 1px solid rgba(0, 0, 0, 0.65);
-  box-shadow:
-    0 0 0 1px rgba(0, 0, 0, 0.45),
-    0 10px 26px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
   z-index: 2147483000;
   resize: none;
   overflow: hidden;
@@ -5067,6 +5066,14 @@ label.llm-search-results-item:hover {
   isolation: isolate;
   display: flex;
   flex-direction: column;
+}
+
+.llm-panel.llm-panel-floating:focus,
+.llm-panel.llm-panel-floating:focus-within {
+  border-color: rgba(0, 0, 0, 0.65);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 10px 26px rgba(0, 0, 0, 0.3) !important;
 }
 
 .llm-panel.llm-panel-floating .llm-header-top.llm-header-floating {
