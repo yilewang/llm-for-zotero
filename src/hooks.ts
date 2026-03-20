@@ -18,6 +18,7 @@ import {
 import { runLegacyMigrations } from "./utils/migrations";
 import { createZToolkit } from "./utils/ztoolkit";
 import { getAgentApi, initAgentSubsystem } from "./agent";
+import { pauseBatchProcessing } from "./modules/mineruBatchProcessor";
 
 async function onStartup() {
   await Promise.all([
@@ -103,6 +104,7 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 function onShutdown(): void {
   ztoolkit.unregisterAll();
   addon.data.dialog?.window?.close();
+  pauseBatchProcessing();
   // Remove addon object
   addon.data.alive = false;
   // @ts-expect-error - Plugin instance is not typed

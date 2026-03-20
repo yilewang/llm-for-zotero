@@ -3500,25 +3500,6 @@ label.llm-search-results-item:hover {
   line-height: 1.2;
 }
 
-.llm-paper-picker-badge-mineru {
-  background: color-mix(in srgb, #10b981 18%, transparent);
-  color: #059669;
-}
-
-.llm-paper-picker-badge-mineru-progress {
-  background: color-mix(in srgb, #f59e0b 16%, transparent);
-  color: #b45309;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.llm-paper-picker-badge-mineru-failed {
-  background: color-mix(in srgb, #ef4444 14%, transparent);
-  color: #dc2626;
-}
-
 .llm-paper-picker-group-chevron {
   flex: 0 0 auto;
   display: inline-block;

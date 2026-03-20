@@ -15,6 +15,13 @@ export type MinerUResult = {
 
 export type MinerUProgressCallback = (stage: string) => void;
 
+export class MineruRateLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MineruRateLimitError";
+  }
+}
+
 type IOUtilsLike = {
   read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
 };
@@ -415,7 +422,15 @@ async function parsePdfViaUpload(
     }),
   );
 
+  if (batchResult.status === 429) {
+    throw new MineruRateLimitError("MinerU daily quota exceeded (HTTP 429)");
+  }
   if (batchResult.status < 200 || batchResult.status >= 300) {
+    const respMsg = typeof (batchResult.data as { msg?: string })?.msg === "string"
+      ? (batchResult.data as { msg: string }).msg : "";
+    if (/rate.?limit|quota|exceeded|limit.*reached/i.test(respMsg)) {
+      throw new MineruRateLimitError(`MinerU rate limit: ${respMsg}`);
+    }
     report(`Batch request failed: HTTP ${batchResult.status}`);
     return null;
   }
@@ -512,6 +527,7 @@ export async function parsePdfWithMineruCloud(
   try {
     return await parsePdfViaUpload(pdfPath, apiKey, report);
   } catch (e) {
+    if (e instanceof MineruRateLimitError) throw e;
     report(`Error: ${(e as Error).message}`);
     return null;
   }

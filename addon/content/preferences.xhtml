@@ -13,128 +13,75 @@
   </linkset>
   <groupbox>
     <html:div
-      style="display: flex; flex-direction: column; gap: 18px; padding: 10px"
+      style="display: flex; flex-direction: column; padding: 10px"
     >
+      <!-- ═══ Tab bar ═══ -->
       <html:div
-        id="__addonRef__-model-sections"
+        id="__addonRef__-pref-tab-bar"
+        style="
+          display: flex;
+          gap: 4px;
+          margin-bottom: 18px;
+          padding: 3px;
+          background: color-mix(in srgb, currentColor 6%, transparent);
+          border-radius: 8px;
+        "
+      >
+        <html:button data-pref-tab="models" type="button" style="
+          flex: 1; padding: 6px 0; font-size: 12px; font-weight: 500;
+          border: none; border-radius: 6px; background: transparent;
+          color: var(--fill-secondary, #888); cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+        ">AI Providers</html:button>
+        <html:button data-pref-tab="customization" type="button" style="
+          flex: 1; padding: 6px 0; font-size: 12px; font-weight: 500;
+          border: none; border-radius: 6px; background: transparent;
+          color: var(--fill-secondary, #888); cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+        ">Customization</html:button>
+        <html:button data-pref-tab="agent" type="button" style="
+          flex: 1; padding: 6px 0; font-size: 12px; font-weight: 500;
+          border: none; border-radius: 6px; background: transparent;
+          color: var(--fill-secondary, #888); cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+        ">Agent</html:button>
+        <html:button data-pref-tab="mineru" type="button" style="
+          flex: 1; padding: 6px 0; font-size: 12px; font-weight: 500;
+          border: none; border-radius: 6px; background: transparent;
+          color: var(--fill-secondary, #888); cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+        ">MinerU</html:button>
+      </html:div>
+
+      <!-- ═══ Tab 1: AI Providers ═══ -->
+      <html:div
+        id="__addonRef__-pref-panel-models"
+        data-pref-panel="models"
         style="display: flex; flex-direction: column; gap: 18px"
-      ></html:div>
-
-      <html:div style="display: flex; flex-direction: column; gap: 4px">
-        <html:label
-          for="__addonRef__-system-prompt"
-          style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 4px;"
-        >
-          Custom System Prompt (Optional)
-        </html:label>
-        <html:textarea
-          id="__addonRef__-system-prompt"
-          rows="4"
-          placeholder="Custom instructions for the AI assistant..."
-          style="
-            width: 100%;
-            padding: 6px 10px;
-            font-size: 13px;
-            border: 1px solid var(--stroke-secondary, #c8c8c8);
-            border-radius: 6px;
-            box-sizing: border-box;
-            resize: vertical;
-            background: Field;
-            color: FieldText;
-          "
-        ></html:textarea>
-        <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 3px; display: block;">
-          Override the default system prompt (leave empty to use default)
-        </html:span>
+      >
+        <html:div
+          id="__addonRef__-model-sections"
+          style="display: flex; flex-direction: column; gap: 18px"
+        ></html:div>
       </html:div>
 
-      <html:div style="display: flex; flex-direction: column; gap: 4px">
-        <html:label
-          style="
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            font-weight: 600;
-            font-size: 12px;
-            color: var(--fill-primary, inherit);
-          "
-        >
-          <html:input
-            id="__addonRef__-popup-add-text-enabled"
-            type="checkbox"
-          ></html:input>
-          Show "Add Text" in reader selection popup
-        </html:label>
-        <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
-          Disable this if you prefer not to show the Add Text option in Zotero's
-          text selection popup menu.
-        </html:span>
-      </html:div>
-
-      <html:div style="display: flex; flex-direction: column; gap: 4px">
-        <html:label
-          style="
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            font-weight: 600;
-            font-size: 12px;
-            color: var(--fill-primary, inherit);
-          "
-        >
-          <html:input
-            id="__addonRef__-enable-agent-mode"
-            type="checkbox"
-          ></html:input>
-          Enable Agent Mode (Beta)
-        </html:label>
-        <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
-          Shows the "Agent (beta)" toggle in the context bar, enabling the
-          agentic multi-step assistant. Off by default — enable only if you want
-          to experiment with the beta feature.
-        </html:span>
-      </html:div>
-
-      <html:hr style="border: none; border-top: 1px solid var(--stroke-secondary, #c8c8c8); margin: 8px 0;" />
-
-      <html:div style="display: flex; flex-direction: column; gap: 8px">
-        <html:div style="display: flex; flex-direction: column; gap: 2px;">
-          <html:span style="font-size: 14px; font-weight: 800; color: var(--fill-primary, inherit);">
-            MinerU PDF Parsing
-          </html:span>
-          <html:span style="font-size: 11.5px; color: var(--fill-secondary, #888);">
-            Use MinerU cloud API for high-quality PDF extraction with preserved math, tables, and figures.
-          </html:span>
-        </html:div>
-
-        <html:label
-          style="
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            font-weight: 600;
-            font-size: 12px;
-            color: var(--fill-primary, inherit);
-          "
-        >
-          <html:input
-            id="__addonRef__-mineru-enabled"
-            type="checkbox"
-          ></html:input>
-          Enable MinerU PDF Parsing
-        </html:label>
-
+      <!-- ═══ Tab 2: Customization ═══ -->
+      <html:div
+        id="__addonRef__-pref-panel-customization"
+        data-pref-panel="customization"
+        style="display: none; flex-direction: column; gap: 18px"
+      >
         <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:label
-            for="__addonRef__-mineru-api-key"
+            for="__addonRef__-system-prompt"
             style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 4px;"
           >
-            API Key
+            Custom System Prompt (Optional)
           </html:label>
-          <html:input
-            id="__addonRef__-mineru-api-key"
-            type="password"
-            placeholder="Enter your mineru.net API key"
+          <html:textarea
+            id="__addonRef__-system-prompt"
+            rows="4"
+            placeholder="Custom instructions for the AI assistant..."
             style="
               width: 100%;
               padding: 6px 10px;
@@ -142,40 +89,229 @@
               border: 1px solid var(--stroke-secondary, #c8c8c8);
               border-radius: 6px;
               box-sizing: border-box;
+              resize: vertical;
               background: Field;
               color: FieldText;
             "
-          ></html:input>
+          ></html:textarea>
+          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 3px; display: block;">
+            Override the default system prompt (leave empty to use default)
+          </html:span>
         </html:div>
 
-        <html:div style="display: flex; align-items: center; gap: 8px;">
-          <html:button
-            id="__addonRef__-mineru-test"
-            type="button"
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:label
             style="
-              padding: 4px 10px;
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              font-weight: 600;
               font-size: 12px;
-              font-weight: 500;
-              white-space: nowrap;
-              background: transparent;
-              color: var(--color-accent, #2563eb);
-              border: 1px solid var(--color-accent, #2563eb);
-              border-radius: 5px;
-              cursor: pointer;
+              color: var(--fill-primary, inherit);
             "
           >
-            Test Connection
-          </html:button>
-          <html:span
-            id="__addonRef__-mineru-test-status"
-            style="font-size: 11.5px; display: none;"
-          ></html:span>
+            <html:input
+              id="__addonRef__-popup-add-text-enabled"
+              type="checkbox"
+            ></html:input>
+            Show "Add Text" in reader selection popup
+          </html:label>
+          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
+            Disable this if you prefer not to show the Add Text option in Zotero's
+            text selection popup menu.
+          </html:span>
         </html:div>
-
-        <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
-          Get your API key from mineru.net. MinerU provides structured markdown with LaTeX math, HTML tables, and figure references.
-        </html:span>
       </html:div>
+
+      <!-- ═══ Tab 3: Agent ═══ -->
+      <html:div
+        id="__addonRef__-pref-panel-agent"
+        data-pref-panel="agent"
+        style="display: none; flex-direction: column; gap: 18px"
+      >
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:label
+            style="
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              font-weight: 600;
+              font-size: 12px;
+              color: var(--fill-primary, inherit);
+            "
+          >
+            <html:input
+              id="__addonRef__-enable-agent-mode"
+              type="checkbox"
+            ></html:input>
+            Enable Agent Mode (Beta)
+          </html:label>
+          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
+            Shows the "Agent (beta)" toggle in the context bar, enabling the
+            agentic multi-step assistant. Off by default — enable only if you want
+            to experiment with the beta feature.
+          </html:span>
+        </html:div>
+      </html:div>
+
+      <!-- ═══ Tab 4: MinerU ═══ -->
+      <html:div
+        id="__addonRef__-pref-panel-mineru"
+        data-pref-panel="mineru"
+        style="display: none; flex-direction: column; gap: 18px"
+      >
+        <html:div style="display: flex; flex-direction: column; gap: 8px">
+          <html:div style="display: flex; flex-direction: column; gap: 2px;">
+            <html:span style="font-size: 14px; font-weight: 800; color: var(--fill-primary, inherit);">
+              MinerU PDF Parsing
+            </html:span>
+            <html:span style="font-size: 11.5px; color: var(--fill-secondary, #888);">
+              Use MinerU cloud API for high-quality PDF extraction with preserved math, tables, and figures.
+            </html:span>
+          </html:div>
+
+          <html:label
+            style="
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              font-weight: 600;
+              font-size: 12px;
+              color: var(--fill-primary, inherit);
+            "
+          >
+            <html:input
+              id="__addonRef__-mineru-enabled"
+              type="checkbox"
+            ></html:input>
+            Enable MinerU PDF Parsing
+          </html:label>
+
+          <html:div
+            id="__addonRef__-mineru-sub-settings"
+            style="display: none; flex-direction: column; gap: 8px;"
+          >
+            <html:div style="display: flex; flex-direction: column; gap: 4px">
+              <html:label
+                for="__addonRef__-mineru-api-key"
+                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 4px;"
+              >
+                API Key
+              </html:label>
+              <html:input
+                id="__addonRef__-mineru-api-key"
+                type="password"
+                placeholder="Enter your mineru.net API key"
+                style="
+                  width: 100%;
+                  padding: 6px 10px;
+                  font-size: 13px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 6px;
+                  box-sizing: border-box;
+                  background: Field;
+                  color: FieldText;
+                "
+              ></html:input>
+            </html:div>
+
+            <html:div style="display: flex; align-items: center; gap: 8px;">
+              <html:button
+                id="__addonRef__-mineru-test"
+                type="button"
+                style="
+                  padding: 4px 10px;
+                  font-size: 12px;
+                  font-weight: 500;
+                  white-space: nowrap;
+                  background: transparent;
+                  color: var(--color-accent, #2563eb);
+                  border: 1px solid var(--color-accent, #2563eb);
+                  border-radius: 5px;
+                  cursor: pointer;
+                "
+              >
+                Test Connection
+              </html:button>
+              <html:span
+                id="__addonRef__-mineru-test-status"
+                style="font-size: 11.5px; display: none;"
+              ></html:span>
+            </html:div>
+
+              <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
+              Get your API key from mineru.net. MinerU provides structured markdown with LaTeX math, HTML tables, and figure references.
+            </html:span>
+          </html:div>
+
+          <!-- ── Embedded MinerU manager ── -->
+          <html:div style="margin-top: 8px; border-top: 1px solid var(--stroke-secondary, rgba(128,128,128,0.25)); padding-top: 12px;">
+            <html:div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+              <html:span style="font-size: 13px; font-weight: 700;">Manage Files</html:span>
+              <html:progress
+                id="__addonRef__-mineru-mgr-progress"
+                value="0" max="100"
+                style="flex: 1; height: 5px; min-width: 60px;"
+              ></html:progress>
+              <html:span
+                id="__addonRef__-mineru-mgr-progress-label"
+                style="font-size: 11px; white-space: nowrap; color: var(--fill-secondary, #888);"
+              >0 / 0</html:span>
+            </html:div>
+            <html:div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
+              <html:button id="__addonRef__-mineru-mgr-start-btn" type="button" style="
+                padding: 3px 10px; font-size: 11px; font-weight: 600;
+                border: 1px solid var(--color-accent, #2563eb); border-radius: 4px;
+                background: var(--color-accent, #2563eb); color: #fff; cursor: pointer;
+              ">Start All</html:button>
+              <html:button id="__addonRef__-mineru-mgr-delete-btn" type="button" style="
+                padding: 3px 10px; font-size: 11px; font-weight: 500;
+                border: 1px solid #dc2626; border-radius: 4px;
+                background: transparent; color: #dc2626; cursor: pointer;
+              ">Delete All</html:button>
+              <html:span id="__addonRef__-mineru-mgr-error"
+                style="font-size: 10px; color: #dc2626; display: none; margin-left: 2px;"
+              ></html:span>
+            </html:div>
+            <!-- Two-panel: sidebar + items -->
+            <html:div style="display: flex; border: 1px solid var(--stroke-secondary, rgba(128,128,128,0.25)); border-radius: 6px; height: 340px; overflow: hidden;">
+              <html:div id="__addonRef__-mineru-mgr-sidebar" style="
+                width: 180px; border-right: 1px solid rgba(128,128,128,0.2);
+                overflow-y: auto; padding: 4px 0; flex-shrink: 0; font-size: 12px;
+              "></html:div>
+              <html:div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
+                <html:div id="__addonRef__-mineru-mgr-col-headers" style="
+                  display: flex; align-items: center; gap: 6px;
+                  padding: 3px 8px; font-size: 10px; font-weight: 600; color: #888;
+                  border-bottom: 1px solid rgba(128,128,128,0.2); flex-shrink: 0; user-select: none;
+                ">
+                  <html:span style="width: 8px;"></html:span>
+                  <html:span data-sort-key="title" style="flex: 1; min-width: 0; cursor: pointer;">Title</html:span>
+                  <html:span data-sort-key="firstCreator" style="flex: 0 0 90px; cursor: pointer;">Author</html:span>
+                  <html:span data-sort-key="year" style="flex: 0 0 34px; text-align: right; cursor: pointer;">Year</html:span>
+                  <html:span data-sort-key="dateAdded" style="flex: 0 0 64px; text-align: right; cursor: pointer;">Added</html:span>
+                </html:div>
+                <html:div id="__addonRef__-mineru-mgr-items-list" style="
+                  flex: 1; overflow-y: auto; min-height: 0;
+                "></html:div>
+              </html:div>
+            </html:div>
+            <!-- Context menu -->
+            <html:div id="__addonRef__-mineru-mgr-context-menu" style="
+              display: none; position: fixed;
+              background: Field; border: 1px solid rgba(128,128,128,0.3);
+              border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+              padding: 4px 0; z-index: 999; min-width: 170px;
+            ">
+              <html:div id="__addonRef__-mineru-mgr-ctx-process" style="padding: 4px 12px; font-size: 11.5px; cursor: pointer;">Process This Item</html:div>
+              <html:div id="__addonRef__-mineru-mgr-ctx-show-folder" style="padding: 4px 12px; font-size: 11.5px; cursor: pointer;">Show in File Manager</html:div>
+              <html:div style="border-top: 1px solid rgba(128,128,128,0.2); margin: 2px 0;"></html:div>
+              <html:div id="__addonRef__-mineru-mgr-ctx-delete" style="padding: 4px 12px; font-size: 11.5px; cursor: pointer; color: #dc2626;">Delete MinerU Cache</html:div>
+            </html:div>
+          </html:div>
+        </html:div>
+      </html:div>
+
     </html:div>
   </groupbox>
 </vbox>

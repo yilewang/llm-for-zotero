@@ -38,6 +38,7 @@ import {
   setMineruApiKey,
 } from "../utils/mineruConfig";
 import { testMineruConnection } from "../utils/mineruClient";
+import { registerMineruManagerScript } from "./mineruManagerScript";
 
 type PrefKey = "systemPrompt";
 
@@ -396,6 +397,47 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
   const doc = _window.document;
   await new Promise((resolve) => setTimeout(resolve, 100));
+
+  // ── Tab bar switching ───────────────────────────────────────────
+  const tabBar = doc.querySelector(`#${config.addonRef}-pref-tab-bar`) as HTMLElement | null;
+  if (tabBar) {
+    const switchTab = (tabId: string) => {
+      // Hide all panels
+      const panels = doc.querySelectorAll("[data-pref-panel]");
+      for (let i = 0; i < panels.length; i++) {
+        (panels[i] as HTMLElement).style.display = "none";
+      }
+      // Show target panel
+      const target = doc.querySelector(`[data-pref-panel="${tabId}"]`) as HTMLElement | null;
+      if (target) target.style.display = "flex";
+      // Update tab button styles
+      const tabs = tabBar.querySelectorAll("[data-pref-tab]");
+      for (let i = 0; i < tabs.length; i++) {
+        const btn = tabs[i] as HTMLElement;
+        if (btn.getAttribute("data-pref-tab") === tabId) {
+          btn.style.color = "FieldText";
+          btn.style.background = "Field";
+          btn.style.fontWeight = "600";
+          btn.style.boxShadow = "0 1px 3px rgba(0,0,0,0.12)";
+        } else {
+          btn.style.color = "var(--fill-secondary, #888)";
+          btn.style.background = "transparent";
+          btn.style.fontWeight = "500";
+          btn.style.boxShadow = "none";
+        }
+      }
+    };
+    // Wire click handlers
+    const tabBtns = tabBar.querySelectorAll("[data-pref-tab]");
+    for (let i = 0; i < tabBtns.length; i++) {
+      const btn = tabBtns[i] as HTMLElement;
+      btn.addEventListener("click", () => {
+        switchTab(btn.getAttribute("data-pref-tab") || "models");
+      });
+    }
+    // Activate first tab
+    switchTab("models");
+  }
 
   const modelSections = doc.querySelector(
     `#${config.addonRef}-model-sections`,
@@ -1015,6 +1057,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const mineruEnabledInput = doc.querySelector(
     `#${config.addonRef}-mineru-enabled`,
   ) as HTMLInputElement | null;
+  const mineruSubSettings = doc.querySelector(
+    `#${config.addonRef}-mineru-sub-settings`,
+  ) as HTMLDivElement | null;
   const mineruApiKeyInput = doc.querySelector(
     `#${config.addonRef}-mineru-api-key`,
   ) as HTMLInputElement | null;
@@ -1024,11 +1069,19 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const mineruTestStatus = doc.querySelector(
     `#${config.addonRef}-mineru-test-status`,
   ) as HTMLSpanElement | null;
-
   if (mineruEnabledInput) {
     mineruEnabledInput.checked = isMineruEnabled();
+    const syncSubVisibility = () => {
+      if (mineruSubSettings) {
+        mineruSubSettings.style.display = mineruEnabledInput.checked
+          ? "flex"
+          : "none";
+      }
+    };
+    syncSubVisibility();
     mineruEnabledInput.addEventListener("change", () => {
       setMineruEnabled(mineruEnabledInput.checked);
+      syncSubVisibility();
     });
   }
 
@@ -1054,10 +1107,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       mineruTestStatus.style.color = "var(--fill-secondary, #888)";
       try {
         await testMineruConnection(apiKey);
-        mineruTestStatus.textContent = "✓ Connection successful";
+        mineruTestStatus.textContent = "\u2713 Connection successful";
         mineruTestStatus.style.color = "green";
       } catch (error) {
-        mineruTestStatus.textContent = `✗ ${(error as Error).message}`;
+        mineruTestStatus.textContent = `\u2717 ${(error as Error).message}`;
         mineruTestStatus.style.color = "red";
       } finally {
         mineruTestBtn.disabled = false;
@@ -1065,5 +1118,13 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     };
     mineruTestBtn.addEventListener("click", () => void runMineruTest());
     mineruTestBtn.addEventListener("command", () => void runMineruTest());
+  }
+
+  // ── Embedded MinerU manager ──────────────────────────────────────
+  const mineruMgrSidebar = doc.querySelector(
+    `#${config.addonRef}-mineru-mgr-sidebar`,
+  );
+  if (mineruMgrSidebar && _window) {
+    void registerMineruManagerScript(_window, config.addonRef);
   }
 }

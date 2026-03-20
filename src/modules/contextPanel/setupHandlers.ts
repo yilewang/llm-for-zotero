@@ -61,8 +61,6 @@ import {
   draftInputCache,
   activeContextPanels,
   activeContextPanelStateSync,
-  pdfTextCache,
-  mineruParsingStatus,
   inlineEditTarget,
   setInlineEditTarget,
   inlineEditCleanup,
@@ -1781,29 +1779,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }),
       );
     }
-    const cachedCtx = pdfTextCache.get(paperContext.contextItemId);
-    const mineruState = mineruParsingStatus.get(paperContext.contextItemId);
-    if (cachedCtx?.sourceType === "mineru") {
-      titleLine.appendChild(
-        createElement(ownerDoc, "span", "llm-paper-picker-badge llm-paper-picker-badge-mineru", {
-          textContent: "MinerU",
-        }),
-      );
-    } else if (mineruState?.status === "parsing") {
-      titleLine.appendChild(
-        createElement(ownerDoc, "span", "llm-paper-picker-badge llm-paper-picker-badge-mineru-progress", {
-          textContent: mineruState.message || "MinerU…",
-          title: mineruState.message,
-        }),
-      );
-    } else if (mineruState?.status === "failed") {
-      titleLine.appendChild(
-        createElement(ownerDoc, "span", "llm-paper-picker-badge llm-paper-picker-badge-mineru-failed", {
-          textContent: "MinerU failed",
-          title: mineruState.message,
-        }),
-      );
-    }
     rowMain.appendChild(titleLine);
     const metaText = buildPaperMetaText(paperContext);
     if (metaText) {
@@ -2109,29 +2084,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       },
     );
     chipHeader.append(chipLabel);
-    const chipCachedCtx = pdfTextCache.get(paperContext.contextItemId);
-    const chipMineruState = mineruParsingStatus.get(paperContext.contextItemId);
-    if (chipCachedCtx?.sourceType === "mineru") {
-      chipHeader.append(
-        createElement(ownerDoc, "span", "llm-paper-picker-badge llm-paper-picker-badge-mineru", {
-          textContent: "MinerU",
-        }),
-      );
-    } else if (chipMineruState?.status === "parsing") {
-      chipHeader.append(
-        createElement(ownerDoc, "span", "llm-paper-picker-badge llm-paper-picker-badge-mineru-progress", {
-          textContent: chipMineruState.message || "MinerU…",
-          title: chipMineruState.message,
-        }),
-      );
-    } else if (chipMineruState?.status === "failed") {
-      chipHeader.append(
-        createElement(ownerDoc, "span", "llm-paper-picker-badge llm-paper-picker-badge-mineru-failed", {
-          textContent: "MinerU failed",
-          title: chipMineruState.message,
-        }),
-      );
-    }
 
     if (removable) {
       const removeBtn = createElement(

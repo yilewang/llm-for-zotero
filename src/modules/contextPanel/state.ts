@@ -26,11 +26,6 @@ export const selectedRuntimeModeCache = new Map<number, ChatRuntimeMode>();
 
 export const pdfTextCache = new Map<number, PdfContext>();
 export const pdfTextLoadingTasks = new Map<number, Promise<void>>();
-export type MineruParsingState = {
-  status: "parsing" | "done" | "failed";
-  message: string;
-};
-export const mineruParsingStatus = new Map<number, MineruParsingState>();
 export const shortcutTextCache = new Map<string, string>();
 export const shortcutMoveModeState = new WeakMap<Element, boolean>();
 export const shortcutRenderItemState = new WeakMap<
