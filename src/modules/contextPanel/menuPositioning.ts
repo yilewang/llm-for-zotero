@@ -28,7 +28,7 @@ export function positionMenuAtPointer(
 ): void {
   const isFloating = Boolean(
     body.classList?.contains("llm-panel-floating") ||
-    body.querySelector(".llm-panel-floating") ||
+    ((body as any).__llmFloatedPanel || body).querySelector(".llm-panel-floating") ||
     body.closest(".llm-panel-floating")
   );
 
@@ -97,7 +97,7 @@ export function positionMenuBelowButton(
 ): void {
   const isFloating = Boolean(
     body.classList?.contains("llm-panel-floating") ||
-    body.querySelector(".llm-panel-floating") ||
+    ((body as any).__llmFloatedPanel || body).querySelector(".llm-panel-floating") ||
     body.closest(".llm-panel-floating")
   );
 

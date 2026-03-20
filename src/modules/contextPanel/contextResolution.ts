@@ -901,7 +901,7 @@ export function addSelectedTextContext(
   options: AddSelectedTextContextOptions = {},
 ): boolean {
   const normalizedText = normalizeSelectedText(text || "");
-  const status = body.querySelector("#llm-status") as HTMLElement | null;
+  const status = ((body as any).__llmFloatedPanel || body).querySelector("#llm-status") as HTMLElement | null;
   if (!normalizedText) {
     if (status && options.noSelectionStatusText) {
       setStatus(status, options.noSelectionStatusText, "error");
@@ -926,7 +926,7 @@ export function addSelectedTextContext(
     setStatus(status, options.successStatusText, "ready");
   }
   if (options.focusInput !== false) {
-    const inputEl = body.querySelector(
+    const inputEl = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-input",
     ) as HTMLTextAreaElement | null;
     inputEl?.focus({ preventScroll: true });
@@ -1068,16 +1068,16 @@ export function refreshNoteChipPreview(noteChip: Element): void {
 }
 
 export function applySelectedTextPreview(body: Element, itemId: number) {
-  const previewList = body.querySelector(
+  const previewList = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-selected-context-list",
   ) as HTMLDivElement | null;
-  const selectTextBtn = body.querySelector(
+  const selectTextBtn = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-select-text",
   ) as HTMLButtonElement | null;
   if (!previewList) return;
 
   const selectedContexts = getSelectedTextContextEntries(itemId);
-  const panelRoot = body.querySelector("#llm-main") as HTMLDivElement | null;
+  const panelRoot = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main") as HTMLDivElement | null;
   // Show the active-note chip whenever the panel is in note-editing mode,
   // regardless of whether the user has selected any text in the editor.
   const showActiveNoteChip = Boolean(panelRoot?.dataset.noteId);
@@ -1307,8 +1307,8 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
 }
 
 export function refreshActiveNoteChipPreview(body: Element): void {
-  const panelRoot = body.querySelector("#llm-main") as HTMLDivElement | null;
-  const previewList = body.querySelector(
+  const panelRoot = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main") as HTMLDivElement | null;
+  const previewList = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-selected-context-list",
   ) as HTMLDivElement | null;
   if (!panelRoot || !previewList) return;

@@ -452,11 +452,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       historyNewBtn.disabled = true;
       historyNewBtn.setAttribute("aria-disabled", "true");
     }
-    const historyMenuEl = body.querySelector(
+    const historyMenuEl = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-menu",
     ) as HTMLDivElement | null;
     if (historyMenuEl) historyMenuEl.style.display = "none";
-    const historyNewMenuEl = body.querySelector(
+    const historyNewMenuEl = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-new-menu",
     ) as HTMLDivElement | null;
     if (historyNewMenuEl) historyNewMenuEl.style.display = "none";
@@ -471,7 +471,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const ElementCtor = panelDoc.defaultView?.Element;
   const isElementNode = (value: unknown): value is Element =>
     Boolean(ElementCtor && value instanceof ElementCtor);
-  const headerTop = body.querySelector(
+  const headerTop = ((body as any).__llmFloatedPanel || body).querySelector(
     ".llm-header-top",
   ) as HTMLDivElement | null;
   panelRoot.tabIndex = 0;
