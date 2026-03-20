@@ -5039,17 +5039,17 @@ label.llm-search-results-item:hover {
 
 /* Floating Panel Styles */
 .llm-panel.llm-panel-floating {
-  --llm-floating-input-min-height: 210px;
+  --llm-floating-input-min-height: 132px;
   --llm-floating-status-min-height: 24px;
   --llm-floating-shortcuts-min-height: 28px;
   position: fixed;
   inset: auto;
   width: 520px;
   max-width: calc(100vw - 16px);
-  min-width: 420px;
+  min-width: 250px;
   height: 760px;
   max-height: calc(100vh - 16px);
-  min-height: 560px;
+  min-height: 350px;
   border-radius: 8px;
   border: 1px solid rgba(0, 0, 0, 0.3);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
@@ -5088,7 +5088,7 @@ label.llm-search-results-item:hover {
   background-color: white;
   /* Fallback opaque */
   resize: vertical;
-  min-height: 180px;
+  min-height: 80px;
   flex: 0 1 auto;
   /* Allow shrinking/growing but respect height set by resize */
 }
@@ -5116,7 +5116,7 @@ label.llm-search-results-item:hover {
 
 .llm-panel.llm-panel-floating .llm-input {
   flex: 1 1 auto;
-  min-height: 96px;
+  min-height: 56px;
   max-height: none;
   height: 100%;
   resize: none;

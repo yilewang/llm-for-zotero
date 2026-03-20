@@ -615,13 +615,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     floatingPanelState.width = clampNumber(
       floatingPanelState.width,
-      420,
-      Math.max(420, viewportWidth - 16),
+      250,
+      Math.max(250, viewportWidth - 16),
     );
     floatingPanelState.height = clampNumber(
       floatingPanelState.height,
-      580,
-      Math.max(580, viewportHeight - 16),
+      350,
+      Math.max(350, viewportHeight - 16),
     );
     const defaultLeft = viewportWidth - floatingPanelState.width - 24;
     const defaultTop = 24;
@@ -757,15 +757,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           }
 
           // Min size constraints
-          if (newWidth < 420) {
-            newWidth = 420;
-            // If dragging West, we must lock left to (original_right - 420)
-            if (dir.includes("w")) newLeft = (startLeft + startWidth) - 420;
+          if (newWidth < 250) {
+            newWidth = 250;
+            // If dragging West, we must lock left to (original_right - 250)
+            if (dir.includes("w")) newLeft = (startLeft + startWidth) - 250;
           }
-          if (newHeight < 580) {
-            newHeight = 580;
-            // If dragging North, lock top to (original_bottom - 580)
-            if (dir.includes("n")) newTop = (startTop + startHeight) - 580;
+          if (newHeight < 350) {
+            newHeight = 350;
+            // If dragging North, lock top to (original_bottom - 350)
+            if (dir.includes("n")) newTop = (startTop + startHeight) - 350;
           }
 
           // Update state & styles
