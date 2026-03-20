@@ -70,6 +70,14 @@ export function syncGlobalLockVisibility(currentBody: Element) {
 }
 
 function buildUI(body: Element, item?: Zotero.Item | null) {
+  // Check for and remove any previously floated panels
+  if ((body as any).__llmFloatedPanel) {
+    if ((body as any).__llmFloatedPanel.parentNode) {
+      (body as any).__llmFloatedPanel.parentNode.removeChild((body as any).__llmFloatedPanel);
+    }
+    delete (body as any).__llmFloatedPanel;
+  }
+
   // Clear this section body before rebuilding.
   if (typeof (body as any).replaceChildren === "function") {
     (body as any).replaceChildren();

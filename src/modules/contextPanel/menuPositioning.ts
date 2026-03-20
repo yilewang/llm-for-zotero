@@ -26,7 +26,16 @@ export function positionMenuAtPointer(
   clientX: number,
   clientY: number,
 ): void {
-  const win = body.ownerDocument?.defaultView;
+  const isFloating = Boolean(
+    body.classList?.contains("llm-panel-floating") ||
+    body.querySelector(".llm-panel-floating") ||
+    body.closest(".llm-panel-floating")
+  );
+
+  const win = isFloating
+    ? (Zotero.getMainWindow() as Window)
+    : body.ownerDocument?.defaultView;
+
   if (!win) return;
 
   const viewportMargin = 8;
@@ -86,7 +95,16 @@ export function positionMenuBelowButton(
   menu: HTMLDivElement,
   button: HTMLElement,
 ): void {
-  const win = body.ownerDocument?.defaultView;
+  const isFloating = Boolean(
+    body.classList?.contains("llm-panel-floating") ||
+    body.querySelector(".llm-panel-floating") ||
+    body.closest(".llm-panel-floating")
+  );
+
+  const win = isFloating
+    ? (Zotero.getMainWindow() as Window)
+    : body.ownerDocument?.defaultView;
+
   if (!win) return;
 
   const viewportMargin = 8;

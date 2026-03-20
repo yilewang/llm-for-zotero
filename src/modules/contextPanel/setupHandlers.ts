@@ -514,10 +514,69 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
   const applyFloatingPanelState = (enabled: boolean) => {
     floatingPanelState.enabled = enabled;
-    panelRoot.classList.toggle("llm-panel-floating", enabled);
-    if (headerTop) {
-      headerTop.classList.toggle("llm-header-floating", enabled);
+
+    // Store original position if first time
+    if (!(panelRoot as any).__llmOriginalParent) {
+      (panelRoot as any).__llmOriginalParent = panelRoot.parentNode;
+      (panelRoot as any).__llmOriginalNextSibling = panelRoot.nextSibling;
     }
+
+    if (enabled) {
+      panelRoot.classList.add("llm-panel-floating");
+      if (headerTop) {
+        headerTop.classList.add("llm-header-floating");
+      }
+
+      const mainWindow = Zotero.getMainWindow();
+      if (mainWindow && mainWindow.document && mainWindow.document.documentElement) {
+        // Ensure Stylesheets exist in Main Window
+        const styleId = `${config.addonRef}-floating-styles`;
+        if (!mainWindow.document.getElementById(styleId)) {
+          const link = mainWindow.document.createElement("link") as HTMLLinkElement;
+          link.id = styleId;
+          link.rel = "stylesheet";
+          link.type = "text/css";
+          link.href = `chrome://${config.addonRef}/content/zoteroPane.css`;
+          mainWindow.document.documentElement.appendChild(link);
+
+          // Also inject KaTeX styles for floating panel
+          const katexId = `${config.addonRef}-katex-styles`;
+          if (!mainWindow.document.getElementById(katexId)) {
+            const katexLink = mainWindow.document.createElement("link") as HTMLLinkElement;
+            katexLink.id = katexId;
+            katexLink.rel = "stylesheet";
+            katexLink.type = "text/css";
+            katexLink.href = `chrome://${config.addonRef}/content/vendor/katex/katex.min.css`;
+            mainWindow.document.documentElement.appendChild(katexLink);
+          }
+        }
+
+        // Move to topmost document to escape IFrames / splitters clipping
+        // Depending on Zotero 7's architecture, documentElement is safely absolute.
+        if (panelRoot.parentNode !== mainWindow.document.documentElement) {
+          mainWindow.document.documentElement.appendChild(panelRoot);
+          (body as any).__llmFloatedPanel = panelRoot;
+        }
+      }
+    } else {
+      panelRoot.classList.remove("llm-panel-floating");
+      if (headerTop) {
+        headerTop.classList.remove("llm-header-floating");
+      }
+
+      // Restore to original parent inside the sidebar pane
+      const originalParent = (panelRoot as any).__llmOriginalParent;
+      if (originalParent && panelRoot.parentNode !== originalParent) {
+        const nextSibling = (panelRoot as any).__llmOriginalNextSibling;
+        if (nextSibling && nextSibling.parentNode === originalParent) {
+          originalParent.insertBefore(panelRoot, nextSibling);
+        } else {
+          originalParent.appendChild(panelRoot);
+        }
+      }
+      delete (body as any).__llmFloatedPanel;
+    }
+
     if (popoutBtn) {
       popoutBtn.setAttribute("aria-pressed", enabled ? "true" : "false");
       popoutBtn.title = enabled
@@ -763,6 +822,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   panelWin?.addEventListener("resize", () => {
     if (!floatingPanelState.enabled) return;
     applyFloatingPanelState(true);
+  });
+
+  panelWin?.addEventListener("unload", () => {
+    if ((body as any).__llmFloatedPanel) {
+      if ((body as any).__llmFloatedPanel.parentNode) {
+        (body as any).__llmFloatedPanel.parentNode.removeChild((body as any).__llmFloatedPanel);
+      }
+      delete (body as any).__llmFloatedPanel;
+    }
   });
   initFloatingPanelDrag();
   initFloatingPanelResizeHandle();
@@ -2201,7 +2269,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           }
         });
     });
-    body.appendChild(menu);
+    panelRoot.appendChild(menu);
     paperChipMenu = menu;
     return menu;
   };

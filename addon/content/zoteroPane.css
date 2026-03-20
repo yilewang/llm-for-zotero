@@ -5144,12 +5144,66 @@ label.llm-search-results-item:hover {
   pointer-events: auto;
 }
 
-.llm-resize-n { top: -4px; left: 8px; right: 8px; height: 8px; cursor: ns-resize; }
-.llm-resize-s { bottom: -4px; left: 8px; right: 8px; height: 8px; cursor: ns-resize; }
-.llm-resize-e { top: 8px; bottom: 8px; right: -4px; width: 8px; cursor: ew-resize; }
-.llm-resize-w { top: 8px; bottom: 8px; left: -4px; width: 8px; cursor: ew-resize; }
+.llm-resize-n {
+  top: -4px;
+  left: 8px;
+  right: 8px;
+  height: 8px;
+  cursor: ns-resize;
+}
 
-.llm-resize-ne { top: -4px; right: -4px; width: 12px; height: 12px; cursor: nesw-resize; }
-.llm-resize-nw { top: -4px; left: -4px; width: 12px; height: 12px; cursor: nwse-resize; }
-.llm-resize-se { bottom: -4px; right: -4px; width: 12px; height: 12px; cursor: nwse-resize; }
-.llm-resize-sw { bottom: -4px; left: -4px; width: 12px; height: 12px; cursor: nesw-resize; }
+.llm-resize-s {
+  bottom: -4px;
+  left: 8px;
+  right: 8px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.llm-resize-e {
+  top: 8px;
+  bottom: 8px;
+  right: -4px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.llm-resize-w {
+  top: 8px;
+  bottom: 8px;
+  left: -4px;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.llm-resize-ne {
+  top: -4px;
+  right: -4px;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+}
+
+.llm-resize-nw {
+  top: -4px;
+  left: -4px;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+}
+
+.llm-resize-se {
+  bottom: -4px;
+  right: -4px;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+}
+
+.llm-resize-sw {
+  bottom: -4px;
+  left: -4px;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+}
