@@ -34,6 +34,7 @@ export async function registerMineruManagerScript(
 
   const progressEl = $("progress") as HTMLProgressElement | null;
   const progressLabel = $("progress-label") as HTMLSpanElement | null;
+  const statusEl = $("status") as HTMLDivElement | null;
   const startBtn = $("start-btn") as HTMLButtonElement | null;
   const deleteBtn = $("delete-btn") as HTMLButtonElement | null;
   const errorSpan = $("error") as HTMLSpanElement | null;
@@ -456,6 +457,10 @@ export async function registerMineruManagerScript(
       updateProgressBar();
     }
     updateButtons();
+    if (statusEl) {
+      statusEl.textContent = s.statusMessage || "";
+      statusEl.title = s.statusMessage || "";
+    }
     if (errorSpan) {
       if (s.error) { errorSpan.style.display = "inline"; errorSpan.textContent = s.error; }
       else { errorSpan.style.display = "none"; errorSpan.textContent = ""; }
@@ -467,6 +472,9 @@ export async function registerMineruManagerScript(
         const attId = Number(el.getAttribute("data-attachment-id"));
         if (s.currentItemId && attId === s.currentItemId) {
           el.style.background = "color-mix(in srgb, #f59e0b 15%, transparent)";
+          // Also set dot to yellow
+          const dot = dotElements.get(attId);
+          if (dot) dot.style.background = "#f59e0b";
         } else if (!selectedIds.has(attId)) {
           el.style.background = "";
         }
@@ -487,6 +495,20 @@ export async function registerMineruManagerScript(
       lastSeenCurrentId = null;
     }
   });
+
+  // Poll-based dot updater: check every 500ms if there's an active item
+  // and set its dot to yellow. This works around timing issues where the
+  // batch state listener fires but the DOM hasn't repainted yet.
+  const dotPollInterval = win.setInterval(() => {
+    const s = getMineruBatchState();
+    if (s.currentItemId) {
+      const dot = dotElements.get(s.currentItemId);
+      if (dot && dot.style.background !== "rgb(245, 158, 11)") {
+        dot.style.background = "#f59e0b";
+      }
+    }
+  }, 500);
+  win.addEventListener("unload", () => clearInterval(dotPollInterval));
 
   // ── Button handlers ────────────────────────────────────────────────────────
   if (startBtn) {

@@ -239,8 +239,10 @@ export async function writeMineruCacheFiles(
   const itemDir = getMineruItemDir(id);
   await ensureDir(itemDir);
 
-  // Write all extracted files from ZIP
+  // Write all extracted files from ZIP, skipping PDFs (the original
+  // PDF is included in the MinerU ZIP but we already have it in Zotero)
   for (const file of files) {
+    if (/\.pdf$/i.test(file.relativePath)) continue;
     // Split relative path into individual components so PathUtils.join
     // doesn't reject segments containing '/'.
     const parts = file.relativePath.split(/[\\/]+/).filter(Boolean);

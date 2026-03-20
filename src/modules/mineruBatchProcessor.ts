@@ -17,6 +17,7 @@ export type MineruBatchState = {
   paused: boolean;
   currentItemId: number | null;
   currentItemTitle: string;
+  statusMessage: string;
   processedCount: number;
   totalCount: number;
   error: string | null;
@@ -36,6 +37,7 @@ let state: MineruBatchState = {
   paused: false,
   currentItemId: null,
   currentItemTitle: "",
+  statusMessage: "",
   processedCount: 0,
   totalCount: 0,
   error: null,
@@ -81,13 +83,13 @@ async function buildQueue(): Promise<void> {
   const libraryID = Zotero.Libraries.userLibraryID;
   const allItems: Zotero.Item[] = await Zotero.Items.getAll(libraryID, true, false, false);
 
-  // Filter to regular items with at least one PDF attachment
+  // Filter to regular items — include ALL PDF attachments per item
   const candidates: { item: Zotero.Item; pdfAtt: Zotero.Item }[] = [];
   for (const item of allItems) {
     if (!item.isRegularItem?.()) continue;
     const pdfs = getPdfAttachments(item);
-    if (pdfs.length > 0) {
-      candidates.push({ item, pdfAtt: pdfs[0] });
+    for (const pdfAtt of pdfs) {
+      candidates.push({ item, pdfAtt });
     }
   }
 
@@ -103,13 +105,19 @@ async function buildQueue(): Promise<void> {
   let processed = 0;
   for (const { item, pdfAtt } of candidates) {
     const cached = await hasCachedMineruMd(pdfAtt.id);
+    const parentTitle = item.getField("title") || `Item ${item.id}`;
+    // Count PDFs for this parent to decide whether to show attachment name
+    const siblingPdfs = getPdfAttachments(item);
+    const title = siblingPdfs.length > 1
+      ? `${parentTitle} [${pdfAtt.getField?.("title") || `PDF ${pdfAtt.id}`}]`
+      : parentTitle;
     if (cached) {
       processed++;
     } else {
       queue.push({
         parentItemId: item.id,
         attachmentId: pdfAtt.id,
-        title: item.getField("title") || `Item ${item.id}`,
+        title,
       });
     }
   }
@@ -134,6 +142,7 @@ async function processNext(): Promise<void> {
   const entry = queue.shift()!;
   state.currentItemId = entry.attachmentId;
   state.currentItemTitle = entry.title;
+  state.statusMessage = `Starting: ${entry.title}`;
   state.error = null;
   notify();
 
@@ -162,13 +171,17 @@ async function processNext(): Promise<void> {
       state.error = "No API key configured";
       state.currentItemId = null;
       state.currentItemTitle = "";
+      state.statusMessage = "";
       // Put entry back
       queue.unshift(entry);
       notify();
       return;
     }
 
-    const result = await parsePdfWithMineruCloud(pdfPath as string, apiKey);
+    const result = await parsePdfWithMineruCloud(pdfPath as string, apiKey, (stage) => {
+      state.statusMessage = stage;
+      notify();
+    });
     if (result?.mdContent) {
       await writeMineruCacheFiles(entry.attachmentId, result.mdContent, result.files);
       state.processedCount++;
@@ -197,6 +210,7 @@ async function processNext(): Promise<void> {
 function scheduleNext(): void {
   state.currentItemId = null;
   state.currentItemTitle = "";
+  state.statusMessage = "";
   notify();
   setTimeout(() => void processNext(), 500);
 }
@@ -355,24 +369,32 @@ export async function getMineruItemList(): Promise<MineruItemEntry[]> {
     if (!item.isRegularItem?.()) continue;
     const pdfs = getPdfAttachments(item);
     if (pdfs.length === 0) continue;
-    const pdfAtt = pdfs[0];
-    const cached = await hasCachedMineruMd(pdfAtt.id);
     let collectionIds: number[] = [];
     try {
       collectionIds = (item.getCollections?.() || [])
         .map((id: unknown) => Number(id))
         .filter((id: number) => Number.isFinite(id) && id > 0);
     } catch { /* ignore */ }
-    results.push({
-      parentItemId: item.id,
-      attachmentId: pdfAtt.id,
-      title: item.getField("title") || `Item ${item.id}`,
-      firstCreator: item.getField("firstCreator") || "",
-      year: item.getField("year") || "",
-      dateAdded: item.getField("dateAdded") || "",
-      cached,
-      collectionIds,
-    });
+    const parentTitle = item.getField("title") || `Item ${item.id}`;
+    const firstCreator = item.getField("firstCreator") || "";
+    const year = item.getField("year") || "";
+    const dateAdded = item.getField("dateAdded") || "";
+    for (const pdfAtt of pdfs) {
+      const cached = await hasCachedMineruMd(pdfAtt.id);
+      const title = pdfs.length > 1
+        ? `${parentTitle} [${pdfAtt.getField?.("title") || `PDF ${pdfAtt.id}`}]`
+        : parentTitle;
+      results.push({
+        parentItemId: item.id,
+        attachmentId: pdfAtt.id,
+        title,
+        firstCreator,
+        year,
+        dateAdded,
+        cached,
+        collectionIds,
+      });
+    }
   }
 
   // Sort newest-first
