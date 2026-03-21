@@ -50,6 +50,7 @@ interface TextBlock {
  * unlike the paste handler which can transform KaTeX/MathML on the fly.
  */
 let zoteroNoteMode = false;
+let activeImageResolver: ((src: string) => string | null) | null = null;
 
 // =============================================================================
 // Constants
@@ -795,7 +796,24 @@ function renderInline(text: string): string {
     "$1<em>$2</em>",
   );
 
-  // 10. Links [text](url)
+  // 10. Images ![alt](src) — resolved via callback if available
+  if (activeImageResolver) {
+    const resolver = activeImageResolver;
+    result = result.replace(
+      /!\[([^\]]*)\]\(([^)]+)\)/g,
+      (_match, alt: string, src: string) => {
+        const resolved = resolver(src.trim());
+        if (resolved) {
+          return protect(
+            `<img src="${escapeHtml(resolved)}" alt="${escapeHtml(alt)}" class="llm-chat-inline-figure" style="max-width:100%; border-radius:4px; margin:4px 0;" />`,
+          );
+        }
+        return _match;
+      },
+    );
+  }
+
+  // 11. Links [text](url)
   result = result.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,
     '<a href="$2" target="_blank" rel="noopener">$1</a>',
@@ -826,27 +844,37 @@ function renderInline(text: string): string {
  * - Failed blocks show as escaped text
  * - Incomplete delimiters are left as raw text
  */
-export function renderMarkdown(text: string): string {
+export function renderMarkdown(
+  text: string,
+  options?: { resolveImage?: (src: string) => string | null },
+): string {
   // Handle empty input
   if (!text || !text.trim()) {
     return "";
   }
 
-  // Split into blocks
-  const blocks = splitIntoBlocks(text);
+  const prevResolver = activeImageResolver;
+  if (options?.resolveImage) activeImageResolver = options.resolveImage;
 
-  // Render each block independently (errors isolated)
-  const renderedBlocks = blocks.map((block) => {
-    try {
-      return renderBlock(block);
-    } catch (err) {
-      // Graceful fallback: show raw text
-      console.warn("Markdown block render error:", err);
-      return `<div class="render-fallback">${escapeHtml(block.raw)}</div>`;
-    }
-  });
+  try {
+    // Split into blocks
+    const blocks = splitIntoBlocks(text);
 
-  return renderedBlocks.join("\n");
+    // Render each block independently (errors isolated)
+    const renderedBlocks = blocks.map((block) => {
+      try {
+        return renderBlock(block);
+      } catch (err) {
+        // Graceful fallback: show raw text
+        console.warn("Markdown block render error:", err);
+        return `<div class="render-fallback">${escapeHtml(block.raw)}</div>`;
+      }
+    });
+
+    return renderedBlocks.join("\n");
+  } finally {
+    activeImageResolver = prevResolver;
+  }
 }
 
 /**

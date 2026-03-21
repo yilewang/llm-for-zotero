@@ -75,6 +75,7 @@ import {
   setInlineEditInputSection,
   setInlineEditSavedDraft,
   selectedRuntimeModeCache,
+  pdfTextCache,
 } from "./state";
 import {
   agentRunTraceCache,
@@ -110,6 +111,7 @@ import {
   setLastReasoningExpanded,
 } from "./prefHelpers";
 import { resolveMultiContextPlan } from "./multiContextPlanner";
+import { resolveContextImages, buildImageResolver } from "./mineruImages";
 import {
   formatPaperCitationLabel,
   resolvePaperContextRefFromAttachment,
@@ -1223,6 +1225,7 @@ async function buildContextPlanForRequest(params: {
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   recentPaperContexts: PaperContextRef[];
+  mineruImages: string[];
 }> {
   const contextSource = resolveContextSourceItem(params.item);
   params.setStatusSafely(contextSource.statusText, "sending");
@@ -1275,6 +1278,23 @@ async function buildContextPlanForRequest(params: {
   ).trim();
   const planContext = sanitizeText(plan.contextText || "").trim();
   const combinedContext = [noteContext, planContext].filter(Boolean).join("\n\n");
+
+  // Extract MinerU figure images from the context (if applicable)
+  let mineruImages: string[] = [];
+  if (planContext && activeContextItem) {
+    const pdfCtx = pdfTextCache.get(activeContextItem.id);
+    if (pdfCtx?.sourceType === "mineru") {
+      try {
+        mineruImages = await resolveContextImages({
+          contextText: planContext,
+          attachmentId: activeContextItem.id,
+        });
+      } catch {
+        /* ignore — figures are best-effort */
+      }
+    }
+  }
+
   return {
     combinedContext,
     strategy: plan.strategy,
@@ -1282,6 +1302,7 @@ async function buildContextPlanForRequest(params: {
     paperContexts: params.paperContexts,
     fullTextPaperContexts: params.fullTextPaperContexts,
     recentPaperContexts: params.recentPaperContexts,
+    mineruImages,
   };
 }
 
@@ -2033,12 +2054,13 @@ export async function retryLatestAssistantResponse(
       return;
     }
 
+    const allImages = [...(screenshotImages || []), ...contextPlan.mineruImages];
     const requestParams = {
       prompt: question,
       context: combinedContext,
       history: llmHistory,
       signal: currentAbortController?.signal,
-      images: screenshotImages,
+      images: allImages.length ? allImages : undefined,
       attachments: fileAttachments,
       model: effectiveRequestConfig.model,
       apiBase: effectiveRequestConfig.apiBase,
@@ -2799,12 +2821,13 @@ export async function sendQuestion(
       return;
     }
 
+    const allSendImages = [...(images || []), ...contextPlan.mineruImages];
     const requestParams = {
       prompt: question,
       context: combinedContext,
       history: llmHistory,
       signal: currentAbortController?.signal,
-      images,
+      images: allSendImages.length ? allSendImages : undefined,
       attachments: requestFileAttachments,
       model: effectiveRequestConfig.model,
       apiBase: effectiveRequestConfig.apiBase,
@@ -3711,7 +3734,14 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         const safeText = sanitizeText(msg.text);
         if (msg.streaming) bubble.classList.add("streaming");
         try {
-          bubble.innerHTML = renderMarkdown(safeText);
+          // Build image resolver for MinerU figures (if applicable)
+          const contextSource = resolveContextSourceItem(item);
+          const ctxItem = contextSource.contextItem;
+          const pdfCtx = ctxItem ? pdfTextCache.get(ctxItem.id) : null;
+          const resolveImage = pdfCtx?.sourceType === "mineru" && ctxItem
+            ? buildImageResolver(ctxItem.id)
+            : undefined;
+          bubble.innerHTML = renderMarkdown(safeText, { resolveImage });
         } catch (err) {
           ztoolkit.log("LLM render error:", err);
           bubble.textContent = safeText;

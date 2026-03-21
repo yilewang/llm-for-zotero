@@ -65,8 +65,10 @@ async function cachePDFText(item: Zotero.Item) {
     }
 
     if (pdfText) {
-      const chunks = splitIntoChunks(pdfText, CHUNK_TARGET_LENGTH);
-      const chunkMeta = buildChunkMetadata(chunks);
+      const chunks = sourceType === "mineru"
+        ? splitMarkdownIntoChunks(pdfText, CHUNK_TARGET_LENGTH)
+        : splitIntoChunks(pdfText, CHUNK_TARGET_LENGTH);
+      const chunkMeta = buildChunkMetadata(chunks, sourceType);
       const { chunkStats, docFreq, avgChunkLength } = buildChunkIndex(chunks);
       pdfTextCache.set(item.id, {
         title,
@@ -199,6 +201,93 @@ export function invalidateCachedContextText(itemId: number): void {
   });
 }
 
+// ── Markdown-aware chunking (MinerU only) ─────────────────────────────────────
+
+function splitMarkdownIntoChunks(
+  text: string,
+  targetLength: number,
+): string[] {
+  if (!text) return [];
+  const normalized = text.replace(/\r\n?/g, "\n").trim();
+  if (!normalized) return [];
+
+  // Phase 1: Split into sections by heading boundaries
+  const lines = normalized.split("\n");
+  const sections: string[] = [];
+  let currentSection = "";
+
+  for (const line of lines) {
+    if (/^#{1,4}\s+/.test(line) && currentSection.trim()) {
+      // New heading — flush previous section
+      sections.push(currentSection.trim());
+      currentSection = line + "\n";
+    } else {
+      currentSection += line + "\n";
+    }
+  }
+  if (currentSection.trim()) {
+    sections.push(currentSection.trim());
+  }
+
+  if (sections.length === 0) return [];
+
+  // Phase 2: Accumulate small sections, split large ones
+  const chunks: string[] = [];
+  let accumulator = "";
+
+  const flushAccumulator = () => {
+    if (accumulator.trim()) {
+      chunks.push(accumulator.trim());
+    }
+    accumulator = "";
+  };
+
+  for (const section of sections) {
+    if (section.length > targetLength) {
+      // Large section: flush accumulator, then split internally by paragraphs
+      flushAccumulator();
+      const paragraphs = section.split(/\n\s*\n/);
+      let subChunk = "";
+      for (const para of paragraphs) {
+        const p = para.trim();
+        if (!p) continue;
+        if (p.length > targetLength) {
+          // Oversized paragraph: flush and slice with overlap
+          if (subChunk.trim()) { chunks.push(subChunk.trim()); subChunk = ""; }
+          let start = 0;
+          while (start < p.length) {
+            const end = Math.min(start + targetLength, p.length);
+            const slice = p.slice(start, end).trim();
+            if (slice) chunks.push(slice);
+            if (end === p.length) break;
+            start = Math.max(0, end - CHUNK_OVERLAP);
+          }
+        } else if (subChunk.length + p.length + 2 <= targetLength) {
+          subChunk = subChunk ? `${subChunk}\n\n${p}` : p;
+        } else {
+          if (subChunk.trim()) chunks.push(subChunk.trim());
+          subChunk = p;
+        }
+      }
+      if (subChunk.trim()) chunks.push(subChunk.trim());
+    } else if (accumulator.length + section.length + 2 <= targetLength) {
+      // Small enough to accumulate
+      accumulator = accumulator
+        ? `${accumulator}\n\n${section}`
+        : section;
+    } else {
+      // Would exceed budget — flush and start new
+      flushAccumulator();
+      accumulator = section;
+    }
+  }
+  flushAccumulator();
+
+  return chunks;
+}
+
+// ── Plain-text chunking (PDFWorker, notes) ────────────────────────────────────
+
 function splitIntoChunks(text: string, targetLength: number): string[] {
   if (!text) return [];
   const normalized = text.replace(/\r\n?/g, "\n").trim();
@@ -313,6 +402,63 @@ function normalizeEvidenceText(value: string): string {
 function sanitizePdfText(value: string): string {
   return (value || "").replace(/\r\n?/g, "\n").trim();
 }
+
+// ── Markdown heading detection (MinerU only) ─────────────────────────────────
+
+const MARKDOWN_HEADING_MAP: Record<string, { label: string; kind: PdfChunkKind }> = {
+  abstract: { label: "Abstract", kind: "abstract" },
+  introduction: { label: "Introduction", kind: "introduction" },
+  "related work": { label: "Related Work", kind: "introduction" },
+  "literature review": { label: "Related Work", kind: "introduction" },
+  background: { label: "Introduction", kind: "introduction" },
+  method: { label: "Methods", kind: "methods" },
+  methods: { label: "Methods", kind: "methods" },
+  methodology: { label: "Methods", kind: "methods" },
+  "materials and methods": { label: "Methods", kind: "methods" },
+  "experimental setup": { label: "Methods", kind: "methods" },
+  "experimental methods": { label: "Methods", kind: "methods" },
+  result: { label: "Results", kind: "results" },
+  results: { label: "Results", kind: "results" },
+  "results and discussion": { label: "Results", kind: "results" },
+  experiments: { label: "Results", kind: "results" },
+  discussion: { label: "Discussion", kind: "discussion" },
+  conclusion: { label: "Conclusion", kind: "conclusion" },
+  conclusions: { label: "Conclusion", kind: "conclusion" },
+  "concluding remarks": { label: "Conclusion", kind: "conclusion" },
+  summary: { label: "Conclusion", kind: "conclusion" },
+  appendix: { label: "Appendix", kind: "appendix" },
+  "supplementary materials": { label: "Appendix", kind: "appendix" },
+  "supplementary material": { label: "Appendix", kind: "appendix" },
+  references: { label: "References", kind: "references" },
+  bibliography: { label: "References", kind: "references" },
+  "works cited": { label: "References", kind: "references" },
+};
+
+function matchMarkdownSectionHeading(
+  chunkText: string,
+): SectionHeadingMatch | undefined {
+  const lines = sanitizePdfText(chunkText)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  for (const line of lines) {
+    // Match: # Title, ## Title, ### Title (with optional numbering after #)
+    const md = line.match(
+      /^#{1,4}\s+(?:\d+(?:\.\d+)*\s*)?(.+?)\s*$/,
+    );
+    if (md) {
+      const heading = md[1].replace(/[:.;\-–—]+$/, "").trim().toLowerCase();
+      const match = MARKDOWN_HEADING_MAP[heading];
+      if (match) return match;
+    }
+    // Stop scanning if we hit a long line or sentence
+    if (line.length > 100 || /[.!?]/.test(line)) break;
+  }
+  return undefined;
+}
+
+// ── Plain-text heading detection (original PDFWorker path) ────────────────────
 
 function matchSectionHeading(
   chunkText: string,
@@ -491,11 +637,16 @@ function getSupportLevelLabel(chunkKind: PdfChunkKind | undefined): string {
   }
 }
 
-export function buildChunkMetadata(chunks: string[]): PdfChunkMeta[] {
+export function buildChunkMetadata(
+  chunks: string[],
+  sourceType?: "mineru" | "zotero-worker",
+): PdfChunkMeta[] {
   const chunkMeta: PdfChunkMeta[] = [];
   let activeSection: SectionHeadingMatch | undefined;
   for (const [chunkIndex, chunkText] of chunks.entries()) {
-    const explicitSection = matchSectionHeading(chunkText);
+    const explicitSection = sourceType === "mineru"
+      ? (matchMarkdownSectionHeading(chunkText) || matchSectionHeading(chunkText))
+      : matchSectionHeading(chunkText);
     if (explicitSection) {
       activeSection = explicitSection;
     }
@@ -935,7 +1086,7 @@ export async function buildPaperRetrievalCandidates(
     Array.isArray(pdfContext.chunkMeta) &&
     pdfContext.chunkMeta.length === chunks.length
       ? pdfContext.chunkMeta
-      : buildChunkMetadata(chunks);
+      : buildChunkMetadata(chunks, pdfContext.sourceType);
 
   const topK = Number.isFinite(options?.topK)
     ? Math.max(1, Math.floor(options?.topK as number))

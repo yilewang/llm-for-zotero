@@ -267,6 +267,34 @@ export async function writeMineruCacheFiles(
   }
 }
 
+const EXT_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+};
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+export async function readMineruImageAsBase64(
+  attachmentId: number,
+  relativePath: string,
+): Promise<string | null> {
+  const parts = relativePath.split(/[\\/]+/).filter(Boolean);
+  const filePath = joinPath(getMineruItemDir(attachmentId), ...parts);
+  const bytes = await readFileBytes(filePath);
+  if (!bytes || bytes.length === 0) return null;
+  const ext = (relativePath.match(/\.(\w+)$/)?.[1] || "png").toLowerCase();
+  const mime = EXT_MIME[ext] || "image/png";
+  return `data:${mime};base64,${toBase64(bytes)}`;
+}
+
 export async function invalidateMineruMd(id: number): Promise<void> {
   // Remove the directory-based cache
   await removePath(getMineruItemDir(id));
