@@ -2249,6 +2249,375 @@ export class ZoteroGateway {
     }
   }
 
+  // ── Merge duplicates ──────────────────────────────────────────────
+
+  /**
+   * Merge duplicate items.  Keeps the `masterItemId` as the surviving item,
+   * moves all child notes, attachments, and tags from `otherItemIds` into it,
+   * then trashes the other items.
+   */
+  async mergeItems(params: {
+    masterItemId: number;
+    otherItemIds: number[];
+  }): Promise<{
+    mergedCount: number;
+    masterItemId: number;
+    masterTitle: string;
+    trashedIds: number[];
+  }> {
+    const masterItem = this.getItem(params.masterItemId);
+    if (!masterItem) throw new Error(`Master item ${params.masterItemId} not found`);
+    const masterTitle = String(masterItem.getField?.("title") || `Item ${params.masterItemId}`);
+    const trashedIds: number[] = [];
+    const touchedLibraryIDs = new Set<number>();
+
+    for (const otherId of params.otherItemIds) {
+      if (otherId === params.masterItemId) continue;
+      const otherItem = this.getItem(otherId);
+      if (!otherItem) continue;
+
+      // Move child attachments to master
+      for (const attachmentId of otherItem.getAttachments?.() ?? []) {
+        const att = this.getItem(attachmentId);
+        if (att) {
+          att.parentID = params.masterItemId;
+          await att.saveTx();
+        }
+      }
+
+      // Move child notes to master
+      for (const noteId of otherItem.getNotes?.() ?? []) {
+        const note = this.getItem(noteId);
+        if (note) {
+          note.parentID = params.masterItemId;
+          await note.saveTx();
+        }
+      }
+
+      // Copy tags from other → master
+      for (const tag of otherItem.getTags?.() ?? []) {
+        if (tag && typeof tag === "object" && "tag" in tag) {
+          masterItem.addTag(String(tag.tag));
+        }
+      }
+
+      // Copy collections from other → master
+      for (const collectionId of otherItem.getCollections?.() ?? []) {
+        masterItem.addToCollection(collectionId);
+      }
+
+      // Copy "related" links
+      for (const relatedKey of otherItem.relatedItems ?? []) {
+        if (relatedKey) {
+          const relatedItem = (Zotero.Items as any).getByLibraryAndKey?.(
+            otherItem.libraryID,
+            relatedKey,
+          );
+          if (relatedItem) masterItem.addRelatedItem(relatedItem);
+        }
+      }
+
+      // Trash the duplicate
+      otherItem.deleted = true;
+      await otherItem.saveTx();
+      trashedIds.push(otherId);
+      touchedLibraryIDs.add(Number(otherItem.libraryID));
+    }
+
+    await masterItem.saveTx();
+    touchedLibraryIDs.add(Number(masterItem.libraryID));
+    for (const libraryID of touchedLibraryIDs) {
+      invalidatePaperSearchCache(libraryID);
+    }
+
+    return {
+      mergedCount: trashedIds.length,
+      masterItemId: params.masterItemId,
+      masterTitle,
+      trashedIds,
+    };
+  }
+
+  // ── Attachment management ──────────────────────────────────────────
+
+  /**
+   * Delete an attachment (moves to trash).
+   */
+  async deleteAttachment(params: { attachmentId: number }): Promise<{
+    attachmentId: number;
+    title: string;
+    status: "deleted" | "not_found";
+  }> {
+    const item = this.getItem(params.attachmentId);
+    if (!item || !item.isAttachment?.()) {
+      return { attachmentId: params.attachmentId, title: "", status: "not_found" };
+    }
+    const title = String(
+      (item as unknown as { attachmentFilename?: string }).attachmentFilename ||
+        item.getField?.("title") ||
+        `Attachment ${params.attachmentId}`,
+    );
+    item.deleted = true;
+    await item.saveTx();
+    return { attachmentId: params.attachmentId, title, status: "deleted" };
+  }
+
+  /**
+   * Rename an attachment's filename on disk.
+   */
+  async renameAttachment(params: {
+    attachmentId: number;
+    newName: string;
+  }): Promise<{
+    attachmentId: number;
+    previousName: string;
+    newName: string;
+    status: "renamed" | "not_found" | "error";
+    reason?: string;
+  }> {
+    const item = this.getItem(params.attachmentId);
+    if (!item || !item.isAttachment?.()) {
+      return {
+        attachmentId: params.attachmentId,
+        previousName: "",
+        newName: params.newName,
+        status: "not_found",
+      };
+    }
+    const previousName = String(
+      (item as unknown as { attachmentFilename?: string }).attachmentFilename ||
+        item.getField?.("title") ||
+        "",
+    );
+    try {
+      // Zotero.Attachments.renameAttachmentFile(item, newName)
+      const Attachments = (Zotero as any).Attachments;
+      if (Attachments?.renameAttachmentFile) {
+        await Attachments.renameAttachmentFile(item, params.newName);
+      } else {
+        // Fallback: update the title field
+        item.setField("title", params.newName);
+        await item.saveTx();
+      }
+      return {
+        attachmentId: params.attachmentId,
+        previousName,
+        newName: params.newName,
+        status: "renamed",
+      };
+    } catch (error) {
+      return {
+        attachmentId: params.attachmentId,
+        previousName,
+        newName: params.newName,
+        status: "error",
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  /**
+   * Re-link a linked-file attachment to a new file path.
+   */
+  async relinkAttachment(params: {
+    attachmentId: number;
+    newPath: string;
+  }): Promise<{
+    attachmentId: number;
+    previousPath: string;
+    newPath: string;
+    status: "relinked" | "not_found" | "not_linked_file" | "error";
+    reason?: string;
+  }> {
+    const item = this.getItem(params.attachmentId);
+    if (!item || !item.isAttachment?.()) {
+      return {
+        attachmentId: params.attachmentId,
+        previousPath: "",
+        newPath: params.newPath,
+        status: "not_found",
+      };
+    }
+    const rawLinkMode = (item as any).attachmentLinkMode;
+    // linkMode 2 = linked_file
+    if (rawLinkMode !== 2) {
+      return {
+        attachmentId: params.attachmentId,
+        previousPath: "",
+        newPath: params.newPath,
+        status: "not_linked_file",
+        reason: "Only linked-file attachments can be re-linked",
+      };
+    }
+    const previousPath = String(
+      await (item as any).getFilePathAsync?.() || "",
+    );
+    try {
+      (item as any).attachmentPath = params.newPath;
+      await item.saveTx();
+      return {
+        attachmentId: params.attachmentId,
+        previousPath,
+        newPath: params.newPath,
+        status: "relinked",
+      };
+    } catch (error) {
+      return {
+        attachmentId: params.attachmentId,
+        previousPath,
+        newPath: params.newPath,
+        status: "error",
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  // ── Import local files ──────────────────────────────────────────
+
+  /**
+   * Import local files (PDFs, etc.) into the Zotero library.
+   * Uses Zotero.Attachments.importFromFile to create items with attached files.
+   * For PDFs, Zotero automatically attempts to retrieve metadata.
+   */
+  async importLocalFiles(params: {
+    filePaths: string[];
+    libraryID?: number;
+    targetCollectionId?: number;
+  }): Promise<{
+    succeeded: number;
+    failed: number;
+    items: Array<{
+      filePath: string;
+      status: "imported" | "error" | "not_found";
+      itemId?: number;
+      title?: string;
+      reason?: string;
+    }>;
+  }> {
+    const targetLibraryID =
+      params.libraryID ??
+      (Zotero as unknown as { Libraries?: { userLibraryID?: number } })
+        .Libraries?.userLibraryID ??
+      1;
+    const targetCollection = params.targetCollectionId
+      ? this.getCollection(params.targetCollectionId)
+      : null;
+
+    let succeeded = 0;
+    let failed = 0;
+    const items: Array<{
+      filePath: string;
+      status: "imported" | "error" | "not_found";
+      itemId?: number;
+      title?: string;
+      reason?: string;
+    }> = [];
+
+    const Attachments = (Zotero as any).Attachments;
+
+    for (const filePath of params.filePaths) {
+      try {
+        // Check file exists
+        const fileExists = await (async () => {
+          try {
+            const IOUtils = (globalThis as any).IOUtils;
+            if (IOUtils?.exists) return await IOUtils.exists(filePath);
+            const OSFile = (globalThis as any).OS?.File;
+            if (OSFile?.exists) return await OSFile.exists(filePath);
+            return true; // assume exists if we can't check
+          } catch {
+            return false;
+          }
+        })();
+
+        if (!fileExists) {
+          items.push({ filePath, status: "not_found", reason: "File not found" });
+          failed++;
+          continue;
+        }
+
+        // Create a nsIFile reference
+        let nsFile: any;
+        const Components = (globalThis as any).Components;
+        if (Components?.classes) {
+          nsFile = Components.classes["@mozilla.org/file/local;1"]
+            .createInstance(Components.interfaces.nsIFile);
+          nsFile.initWithPath(filePath);
+        }
+
+        let attachmentItem: any;
+
+        if (Attachments?.importFromFile && nsFile) {
+          // Primary: Zotero.Attachments.importFromFile({ file, libraryID })
+          attachmentItem = await Attachments.importFromFile({
+            file: nsFile,
+            libraryID: targetLibraryID,
+          });
+        } else if (Attachments?.importFromFile) {
+          // Try with path string
+          attachmentItem = await Attachments.importFromFile({
+            file: filePath,
+            libraryID: targetLibraryID,
+          });
+        } else {
+          items.push({
+            filePath,
+            status: "error",
+            reason: "Zotero.Attachments.importFromFile is not available",
+          });
+          failed++;
+          continue;
+        }
+
+        if (!attachmentItem) {
+          items.push({ filePath, status: "error", reason: "Import returned no item" });
+          failed++;
+          continue;
+        }
+
+        const itemId = Number(attachmentItem.id);
+        const title = String(
+          attachmentItem.getField?.("title") ||
+          (attachmentItem as any).attachmentFilename ||
+          filePath.split("/").pop() || filePath,
+        );
+
+        // If there's a parent item (Zotero auto-created from metadata retrieval),
+        // use that for collection assignment
+        const parentId = attachmentItem.parentID;
+        const targetItem = parentId
+          ? this.getItem(parentId) || attachmentItem
+          : attachmentItem;
+
+        if (targetCollection && targetItem.isRegularItem?.()) {
+          targetItem.addToCollection(targetCollection.id);
+          await targetItem.saveTx();
+        }
+
+        items.push({
+          filePath,
+          status: "imported",
+          itemId: parentId || itemId,
+          title,
+        });
+        succeeded++;
+      } catch (error) {
+        items.push({
+          filePath,
+          status: "error",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        failed++;
+      }
+    }
+
+    if (succeeded > 0) {
+      invalidatePaperSearchCache(targetLibraryID);
+    }
+
+    return { succeeded, failed, items };
+  }
+
   /**
    * Fetch canonical metadata for a paper by identifier (DOI, arXiv ID, or ISBN)
    * using Zotero's built-in Translate.Search engine — the same engine that powers

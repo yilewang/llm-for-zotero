@@ -191,7 +191,13 @@ function collectGuidanceInstructions(
     const instruction = guidance.instruction.trim();
     if (instruction) instructions.add(instruction);
   }
-  return Array.from(instructions);
+  if (!instructions.size) return [];
+  return [
+    "The following tool guidance is provided because the user's message may be relevant to these capabilities. " +
+      "Use your judgement: only invoke a tool if it directly addresses what the user is asking for. " +
+      "Do NOT invoke a tool just because its guidance appears here — the user's actual intent takes priority.",
+    ...instructions,
+  ];
 }
 
 function buildAutoReadInstruction(request: AgentRuntimeRequest): string {

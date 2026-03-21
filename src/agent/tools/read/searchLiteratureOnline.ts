@@ -90,7 +90,7 @@ export function createSearchLiteratureOnlineTool(
           request.userText,
         ),
       instruction:
-        "For live paper discovery requests, call search_literature_online and let the review card present the result. Do not stop with an empty chat answer before using the tool." +
+        "When the user explicitly asks to discover, find, or search for papers online, call search_literature_online and let the review card present the result. Do not use this tool for questions about the content of papers already in context (e.g. counting references, summarizing, explaining)." +
         "\n\nSource selection:" +
         "\n• recommendations, references, citations modes → always use source:'openalex' (only OpenAlex supports these)." +
         "\n• search mode → source:'openalex' (default, broadest coverage), source:'arxiv' (preprints, CS/ML/physics), or source:'europepmc' (biomedical/life sciences)." +

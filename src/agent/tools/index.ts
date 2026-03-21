@@ -18,6 +18,11 @@ import { createUpdateMetadataTool } from "./write/updateMetadata";
 import { createManageCollectionsTool } from "./write/manageCollections";
 import { createImportIdentifiersTool } from "./write/importIdentifiers";
 import { createTrashItemsTool } from "./write/trashItems";
+import { createMergeItemsTool } from "./write/mergeItems";
+import { createManageAttachmentsTool } from "./write/manageAttachments";
+import { createRunCommandTool } from "./write/runCommand";
+import { createImportLocalFilesTool } from "./write/importLocalFiles";
+import { createFileIOTool } from "./write/fileIO";
 import { PdfPageService } from "../services/pdfPageService";
 
 type BuiltInAgentToolDeps = {
@@ -48,7 +53,12 @@ export function createBuiltInToolRegistry(
   registry.register(createManageCollectionsTool(deps.zoteroGateway));
   registry.register(createImportIdentifiersTool(deps.zoteroGateway));
   registry.register(createTrashItemsTool(deps.zoteroGateway));
+  registry.register(createMergeItemsTool(deps.zoteroGateway));
+  registry.register(createManageAttachmentsTool(deps.zoteroGateway));
   registry.register(createEditCurrentNoteTool(deps.zoteroGateway));
+  registry.register(createRunCommandTool());
+  registry.register(createImportLocalFilesTool(deps.zoteroGateway));
+  registry.register(createFileIOTool());
   registry.register(createUndoLastActionTool());
   return registry;
 }

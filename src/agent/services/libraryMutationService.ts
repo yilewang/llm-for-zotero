@@ -87,6 +87,41 @@ export type TrashItemsOperation = {
   itemIds: number[];
 };
 
+export type MergeItemsOperation = {
+  id?: string;
+  type: "merge_items";
+  masterItemId: number;
+  otherItemIds: number[];
+};
+
+export type DeleteAttachmentOperation = {
+  id?: string;
+  type: "delete_attachment";
+  attachmentId: number;
+};
+
+export type RenameAttachmentOperation = {
+  id?: string;
+  type: "rename_attachment";
+  attachmentId: number;
+  newName: string;
+};
+
+export type RelinkAttachmentOperation = {
+  id?: string;
+  type: "relink_attachment";
+  attachmentId: number;
+  newPath: string;
+};
+
+export type ImportLocalFilesOperation = {
+  id?: string;
+  type: "import_local_files";
+  filePaths: string[];
+  libraryID?: number;
+  targetCollectionId?: number;
+};
+
 export type ImportIdentifiersOperation = {
   id?: string;
   type: "import_identifiers";
@@ -105,7 +140,12 @@ export type LibraryMutationOperation =
   | DeleteCollectionOperation
   | SaveNoteOperation
   | ImportIdentifiersOperation
-  | TrashItemsOperation;
+  | TrashItemsOperation
+  | MergeItemsOperation
+  | DeleteAttachmentOperation
+  | RenameAttachmentOperation
+  | RelinkAttachmentOperation
+  | ImportLocalFilesOperation;
 
 export type LibraryMutationUndo = {
   toolName: string;
@@ -505,6 +545,114 @@ export class LibraryMutationService {
                         .filter((item) => item.status === "trashed")
                         .map((item) => item.itemId),
                     });
+                  },
+                }
+              : null,
+        };
+      }
+      case "merge_items": {
+        const result = await this.zoteroGateway.mergeItems({
+          masterItemId: operation.masterItemId,
+          otherItemIds: operation.otherItemIds,
+        });
+        return {
+          result: {
+            operation: operation.type,
+            operationId: operation.id,
+            result,
+          },
+          undo:
+            result.mergedCount > 0
+              ? {
+                  toolName: "merge_items",
+                  description: `Restore ${result.mergedCount} merged item${
+                    result.mergedCount === 1 ? "" : "s"
+                  }`,
+                  revert: async () => {
+                    await this.zoteroGateway.restoreItems({
+                      itemIds: result.trashedIds,
+                    });
+                  },
+                }
+              : null,
+        };
+      }
+      case "delete_attachment": {
+        const result = await this.zoteroGateway.deleteAttachment({
+          attachmentId: operation.attachmentId,
+        });
+        return {
+          result: {
+            operation: operation.type,
+            operationId: operation.id,
+            result,
+          },
+          undo:
+            result.status === "deleted"
+              ? {
+                  toolName: "manage_attachments",
+                  description: `Restore deleted attachment: ${result.title}`,
+                  revert: async () => {
+                    await this.zoteroGateway.restoreItems({
+                      itemIds: [operation.attachmentId],
+                    });
+                  },
+                }
+              : null,
+        };
+      }
+      case "rename_attachment": {
+        const result = await this.zoteroGateway.renameAttachment({
+          attachmentId: operation.attachmentId,
+          newName: operation.newName,
+        });
+        return {
+          result: {
+            operation: operation.type,
+            operationId: operation.id,
+            result,
+          },
+        };
+      }
+      case "relink_attachment": {
+        const result = await this.zoteroGateway.relinkAttachment({
+          attachmentId: operation.attachmentId,
+          newPath: operation.newPath,
+        });
+        return {
+          result: {
+            operation: operation.type,
+            operationId: operation.id,
+            result,
+          },
+        };
+      }
+      case "import_local_files": {
+        const result = await this.zoteroGateway.importLocalFiles({
+          filePaths: operation.filePaths,
+          libraryID: operation.libraryID,
+          targetCollectionId: operation.targetCollectionId,
+        });
+        return {
+          result: {
+            operation: operation.type,
+            operationId: operation.id,
+            result,
+          },
+          undo:
+            result.succeeded > 0
+              ? {
+                  toolName: "import_local_files",
+                  description: `Trash ${result.succeeded} imported item${
+                    result.succeeded === 1 ? "" : "s"
+                  }`,
+                  revert: async () => {
+                    const importedIds = result.items
+                      .filter((i) => i.status === "imported" && i.itemId)
+                      .map((i) => i.itemId!);
+                    if (importedIds.length) {
+                      await this.zoteroGateway.trashItems({ itemIds: importedIds });
+                    }
                   },
                 }
               : null,
