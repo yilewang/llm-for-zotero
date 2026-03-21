@@ -26,6 +26,7 @@ Documentation:
 
 - **Agent Mode (beta)** — LLM-for-Zotero can now act as an autonomous agent inside your Zotero library. See [Agent Mode](#agent-mode-beta) for details.
 - **Codex auth** — ChatGPT Plus subscribers can use their Codex quota to access Codex models (e.g. `gpt-5.4`) without an API key. See [Codex Auth Setup](#codex-auth-setup-chatgpt-plus-subscribers).
+- **MinerU PDF parsing** — High-fidelity PDF extraction that preserves tables, equations, and figures. See [MinerU PDF Parsing](#mineru-pdf-parsing).
 - **Renamed** — The plugin has been renamed from its earlier name to `llm-for-zotero`. See the [release notes](https://github.com/yilewang/llm-for-zotero/releases) for full history.
 
 ---
@@ -38,6 +39,7 @@ Documentation:
 - [Features](#features)
 - [Agent Mode (beta)](#agent-mode-beta)
 - [Codex Auth Setup](#codex-auth-setup-chatgpt-plus-subscribers)
+- [MinerU PDF Parsing](#mineru-pdf-parsing)
 - [FAQ](#faq)
 - [Contributing](#contributing)
 - [Star History](#star-history)
@@ -285,6 +287,34 @@ _Special thanks to [@jianghao-zhang](https://github.com/jianghao-zhang) for cont
 - Embeddings are not supported in codex auth mode yet.
 - Local PDF/reference text grounding and screenshot/image inputs are supported.
 - The Responses `/files` upload + `file_id` attachment flow is not supported yet.
+
+---
+
+## MinerU PDF Parsing
+
+**MinerU** is an advanced PDF parsing engine that extracts high-fidelity Markdown from PDFs — preserving tables, equations, figures, and complex layouts that standard text extraction often mangles. When enabled, the plugin sends your PDF to the MinerU API for parsing and caches the result locally. All subsequent interactions with that paper use the MinerU-parsed content, giving the LLM much richer and more accurate context.
+
+<p align="center">
+  <img src="./assets/minerU.png" alt="Screenshot showing MinerU PDF parsing results in the plugin" width="1024" />
+</p>
+
+### How to enable MinerU
+
+1. Open Zotero → `Preferences` → `llm-for-zotero` tab.
+2. Find the **MinerU** section and check **Enable MinerU**.
+3. (Optional) Enter your own MinerU API key — see below.
+4. Open any PDF and start chatting. The plugin will automatically parse the PDF with MinerU on first use and cache the result for future conversations.
+
+### Using your own API key
+
+The plugin provides a shared community proxy so MinerU works out of the box without an API key. However, the shared quota is limited. For heavier usage, you can apply for your own key:
+
+1. Go to [mineru.net](https://mineru.net) and create an account.
+2. Navigate to your account settings and generate an API key.
+3. In Zotero → `Preferences` → `llm-for-zotero` → **MinerU** section, paste your API key.
+4. Click **Test Connection** to verify.
+
+When a personal API key is provided, the plugin calls the MinerU API directly (`https://mineru.net/api/v4`). Without a key, it uses the community proxy.
 
 ---
 
