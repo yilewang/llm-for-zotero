@@ -1482,14 +1482,54 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           });
 
           if (mainWin.document.documentElement) {
+            const skipAttrs = ["hidechrome", "chromemargin", "drawintitlebar", "drawtitle", "windowtype", "sizemode", "width", "height", "screenx", "screeny"];
             for (let attr of mainWin.document.documentElement.attributes) {
-              floatingWin.document.documentElement.setAttribute(attr.name, attr.value);
+              if (!skipAttrs.includes(attr.name.toLowerCase())) {
+                floatingWin.document.documentElement.setAttribute(attr.name, attr.value);
+              }
             }
           }
           if (mainWin.document.body) {
+            const skipBodyAttrs = ["width", "height"];
             for (let attr of mainWin.document.body.attributes) {
-              floatingWin.document.body.setAttribute(attr.name, attr.value);
+              if (!skipBodyAttrs.includes(attr.name.toLowerCase())) {
+                floatingWin.document.body.setAttribute(attr.name, attr.value);
+              }
             }
+          }
+
+          try {
+            let cssVars = "";
+            if (mainWin.document.documentElement) {
+              const computedStyle = mainWin.getComputedStyle(mainWin.document.documentElement);
+              if (computedStyle) {
+                for (let i = 0; i < computedStyle.length; i++) {
+                  const prop = computedStyle[i];
+                  if (prop.startsWith("--")) {
+                    cssVars += `${prop}: ${computedStyle.getPropertyValue(prop)};\n`;
+                  }
+                }
+              }
+            }
+            
+            let bodyCssVars = "";
+            if (mainWin.document.body) {
+              const computedBody = mainWin.getComputedStyle(mainWin.document.body);
+              if (computedBody) {
+                for (let i = 0; i < computedBody.length; i++) {
+                  const prop = computedBody[i];
+                  if (prop.startsWith("--")) {
+                    bodyCssVars += `${prop}: ${computedBody.getPropertyValue(prop)};\n`;
+                  }
+                }
+              }
+            }
+
+            const varStyle = floatingWin.document.createElement("style");
+            varStyle.textContent = `:root {\n${cssVars}\n}\nbody {\n${bodyCssVars}\n}`;
+            floatingWin.document.head.appendChild(varStyle);
+          } catch (e) {
+            console.error("Failed to copy CSS variables", e);
           }
 
           floatingWin.document.documentElement.className = mainWin.document.documentElement?.className || "";
