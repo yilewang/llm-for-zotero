@@ -360,6 +360,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     actionsLeft,
     actionsRight,
     popoutBtn,
+    lockBtn,
     settingsBtn,
     exportBtn,
     clearBtn,
@@ -1464,25 +1465,86 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
              newLink.href = link.href;
              floatingWin.document.head.appendChild(newLink);
           });
-          
-          floatingWin.document.body.style.backgroundColor = "var(--zotero-pane-background-color, #fff)";
+
+          floatingWin.document.documentElement.className = mainWin.document.documentElement?.className || "";
+          floatingWin.document.body.className = mainWin.document.body?.className || "";
+          floatingWin.document.body.style.backgroundColor = "var(--material-sidepane, var(--zotero-pane-background-color, #fff))";
           floatingWin.document.body.style.display = "flex";
           floatingWin.document.body.style.flexDirection = "column";
+          floatingWin.document.body.style.height = "100vh";
+          floatingWin.document.body.style.margin = "0";
           floatingWin.document.body.setAttribute("data-theme", mainWin.document.documentElement?.getAttribute("data-theme") || "light");
 
           const container = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main");
           if (container) {
-             floatingWin.document.body.appendChild(container);
-             (body as any).__llmFloatedPanel = floatingWin.document.body;
+            container.classList.add("llm-panel-os-window");
+            floatingWin.document.body.replaceChildren(container);
+            (body as any).__llmFloatedPanel = floatingWin.document.body;
+            if (lockBtn) lockBtn.style.display = "flex";
+            if (popoutBtn) popoutBtn.style.display = "none";
           }
         }, 150);
       } else {
         floatingWin.focus();
         const container = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main");
         if (container) {
-           floatingWin.document.body.appendChild(container);
-           (body as any).__llmFloatedPanel = floatingWin.document.body;
+          container.classList.add("llm-panel-os-window");
+          floatingWin.document.body.replaceChildren(container);
+          (body as any).__llmFloatedPanel = floatingWin.document.body;
+          floatingWin.__llmLocked = false;
+          if (lockBtn) {
+            lockBtn.style.display = "flex";
+            lockBtn.style.opacity = "0.5";
+            lockBtn.setAttribute("aria-pressed", "false");
+          }
+          if (popoutBtn) popoutBtn.style.display = "none";
         }
+      }
+    });
+  }
+
+  if (lockBtn) {
+    lockBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+
+      if (floatingWin) {
+        const isLocked = floatingWin.__llmLocked;
+        if (isLocked) {
+          floatingWin.__llmLocked = false;
+          lockBtn.style.opacity = "0.5";
+          lockBtn.setAttribute("title", "Lock session to this floating window");
+          lockBtn.setAttribute("aria-pressed", "false");
+        } else {
+          floatingWin.__llmLocked = true;
+          lockBtn.style.opacity = "1.0";
+          lockBtn.setAttribute("title", "Session locked (will not change on tab switch)");
+          lockBtn.setAttribute("aria-pressed", "true");
+        }
+      }
+    });
+
+    // Check visibility on load (if window already open)
+    setTimeout(() => {
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (floatingWin && !floatingWin.closed) {
+        if (lockBtn) lockBtn.style.display = "flex";
+        if (popoutBtn) popoutBtn.style.display = "none";
+        if (floatingWin.__llmLocked) {
+          lockBtn.style.opacity = "1.0";
+          lockBtn.setAttribute("aria-pressed", "true");
+        } else {
+          lockBtn.style.opacity = "0.5";
+          lockBtn.setAttribute("aria-pressed", "false");
+        }
+      } else {
+        if (lockBtn) lockBtn.style.display = "none";
+        if (popoutBtn) popoutBtn.style.display = "flex";
       }
     });
   }

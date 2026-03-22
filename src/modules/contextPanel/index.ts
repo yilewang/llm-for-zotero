@@ -217,6 +217,7 @@ export function registerReaderContextPanel() {
            if (floatingWin && !floatingWin.closed && !floatingWin.__llmLocked) {
                const container = body.querySelector("#llm-main");
                if (container) {
+                   container.classList.add("llm-panel-os-window");
                    floatingWin.document.body.replaceChildren(container);
                    (body as any).__llmFloatedPanel = floatingWin.document.body;
                    // Sync lock/popout button state
@@ -299,9 +300,9 @@ export function registerReaderSelectionTracking() {
       const fromParams = normalizeSelectedText(
         (event.params as unknown as { text?: string; selectedText?: string })
           ?.text ||
-          (event.params as unknown as { text?: string; selectedText?: string })
-            ?.selectedText ||
-          "",
+        (event.params as unknown as { text?: string; selectedText?: string })
+          ?.selectedText ||
+        "",
       );
       if (fromParams) return fromParams;
       const fromAnnotation = normalizeSelectedText(
@@ -402,12 +403,12 @@ export function registerReaderSelectionTracking() {
           const readerGlobalConversationKey =
             readerModeLock === "global" && normalizedReaderLibraryID > 0
               ? Math.floor(
-                  Number(
-                    activeGlobalConversationByLibrary.get(
-                      normalizedReaderLibraryID,
-                    ) || 0,
-                  ),
-                )
+                Number(
+                  activeGlobalConversationByLibrary.get(
+                    normalizedReaderLibraryID,
+                  ) || 0,
+                ),
+              )
               : 0;
           const readerPaperContext = resolveReaderPopupPaperContext(
             item,
@@ -922,8 +923,8 @@ function refreshTrackedNoteEditingSelection(
 
   const nextSelectionText = noteItem
     ? collectAccessibleDocuments(win.document).reduce((found, doc) => {
-        return found || getEditableSelectionFromDocument(doc);
-      }, "")
+      return found || getEditableSelectionFromDocument(doc);
+    }, "")
     : "";
 
   if (
