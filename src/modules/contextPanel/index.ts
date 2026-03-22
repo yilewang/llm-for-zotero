@@ -209,6 +209,26 @@ export function registerReaderContextPanel() {
       } else {
         buildUI(body, resolvedItem);
         activeContextPanelRawItems.set(body, item || null);
+
+        // Auto-hijack to floating window if not locked
+        const mainWin = Zotero.getMainWindow();
+        if (mainWin) {
+           const floatingWin = (mainWin as any).__llmFloatingWindow;
+           if (floatingWin && !floatingWin.closed && !floatingWin.__llmLocked) {
+               const container = body.querySelector("#llm-main");
+               if (container) {
+                   floatingWin.document.body.replaceChildren(container);
+                   (body as any).__llmFloatedPanel = floatingWin.document.body;
+                   // Sync lock/popout button state
+                   setTimeout(() => {
+                      const lBtn = floatingWin.document.body.querySelector("#llm-lock");
+                      const pBtn = floatingWin.document.body.querySelector("#llm-popout");
+                      if (lBtn) (lBtn as HTMLElement).style.display = "flex";
+                      if (pBtn) (pBtn as HTMLElement).style.display = "none";
+                   }, 0);
+               }
+           }
+        }
       }
 
       if (resolvedItem) {

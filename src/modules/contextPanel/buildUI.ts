@@ -239,7 +239,15 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
   popoutBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 0 24 24" width="16" fill="currentColor"><path d="M0 0h24v24H0z" fill="none"/><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>`;
   popoutBtn.setAttribute("aria-label", "Toggle floating window");
-  popoutBtn.setAttribute("aria-pressed", "false");
+
+  const lockBtn = createElement(doc, "button", "llm-btn-icon llm-lock-btn", {
+    id: "llm-lock",
+    type: "button",
+    title: "Lock session to this floating window",
+  });
+  lockBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 0 24 24" width="16" fill="currentColor"><path d="M0 0h24v24H0z" fill="none"/><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>`;
+  lockBtn.setAttribute("aria-label", "Lock session");
+  lockBtn.style.display = "none"; // hidden by default until popped out
 
   const settingsBtn = createElement(doc, "button", "llm-btn-icon llm-settings-btn", {
     id: "llm-settings",
@@ -260,7 +268,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     type: "button",
     textContent: t("Clear"),
   });
-  headerActions.append(popoutBtn, settingsBtn, exportBtn, clearBtn);
+  headerActions.append(popoutBtn, lockBtn, settingsBtn, exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
   const historyMenu = createElement(doc, "div", "llm-history-menu", {

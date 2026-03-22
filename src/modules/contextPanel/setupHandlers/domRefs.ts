@@ -14,6 +14,7 @@ export type PanelDomRefs = {
   actionsLeft: HTMLDivElement | null;
   actionsRight: HTMLDivElement | null;
   popoutBtn: HTMLButtonElement | null;
+  lockBtn: HTMLButtonElement | null;
   settingsBtn: HTMLButtonElement | null;
   exportBtn: HTMLButtonElement | null;
   clearBtn: HTMLButtonElement | null;
@@ -42,6 +43,7 @@ export type PanelDomRefs = {
   slashUploadOption: HTMLButtonElement | null;
   slashReferenceOption: HTMLButtonElement | null;
   slashPdfPageOption: HTMLButtonElement | null;
+  slashFullPdfOption: HTMLButtonElement | null;
   imagePreview: HTMLDivElement | null;
   selectedContextList: HTMLDivElement | null;
   previewStrip: HTMLDivElement | null;
@@ -113,6 +115,7 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
       ".llm-actions-right",
     ) as HTMLDivElement | null,
     popoutBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-popout") as HTMLButtonElement | null,
+    lockBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-lock") as HTMLButtonElement | null,
     settingsBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-settings") as HTMLButtonElement | null,
     exportBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-export") as HTMLButtonElement | null,
     clearBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-clear") as HTMLButtonElement | null,
