@@ -213,44 +213,45 @@ export function registerReaderContextPanel() {
         // Auto-hijack to floating window if not locked
         const mainWin = Zotero.getMainWindow();
         if (mainWin) {
-           const floatingWin = (mainWin as any).__llmFloatingWindow;
-           if (floatingWin && !floatingWin.closed && !floatingWin.__llmLocked) {
-               const container = body.querySelector("#llm-main");
-               if (container) {
-                   container.classList.add("llm-panel-os-window");
-                   floatingWin.document.body.replaceChildren(container);
-                   (body as any).__llmFloatedPanel = floatingWin.document.body;
-                   // Sync lock/popout button state
-                   setTimeout(() => {
-                      const lBtn = floatingWin.document.body.querySelector("#llm-lock");
-                      const pBtn = floatingWin.document.body.querySelector("#llm-popout");
-                      if (lBtn) (lBtn as HTMLElement).style.display = "flex";
-                      if (pBtn) (pBtn as HTMLElement).style.display = "none";
-                   }, 0);
-               }
-           }
+          const floatingWin = (mainWin as any).__llmFloatingWindow;
+          if (floatingWin && !floatingWin.closed && !floatingWin.__llmLocked) {
+            const container = body.querySelector("#llm-main");
+            if (container) {
+              container.classList.add("llm-panel-os-window");
+              floatingWin.document.body.replaceChildren(container);
+              (mainWin as any).__llmFloatedPanelHostBody = body;
+              (body as any).__llmFloatedPanel = floatingWin.document.body;
+              // Sync lock/popout button state
+              setTimeout(() => {
+                const lBtn = floatingWin.document.body.querySelector("#llm-lock");
+                const pBtn = floatingWin.document.body.querySelector("#llm-popout");
+                if (lBtn) (lBtn as HTMLElement).style.display = "flex";
+                if (pBtn) (pBtn as HTMLElement).style.display = "none";
+              }, 0);
+            }
+          }
         }
       }
 
       if (resolvedItem) {
-        await ensureConversationLoaded(resolvedItem);
-      }
+      await ensureConversationLoaded(resolvedItem);
+    }
       // Bail if a newer render has started while we were awaiting.
-      if (renderGeneration !== thisGeneration) return;
-      await renderShortcuts(body, resolvedItem);
-      if (renderGeneration !== thisGeneration) return;
-      if (!syncAlreadyRendered) {
-        setupHandlers(body, item);
-      }
-      refreshChat(body, resolvedItem);
-      // Defer content extraction so the panel becomes interactive sooner.
-      const activeContextItem = getActiveContextAttachmentFromTabs();
-      if (activeContextItem) {
-        void ensurePDFTextCached(activeContextItem);
-      } else if (item && (item as any).isNote?.()) {
-        void ensureNoteTextCached(item);
-      }
-    },
+      if(renderGeneration !== thisGeneration) return;
+  await renderShortcuts(body, resolvedItem);
+  if (renderGeneration !== thisGeneration) return;
+  if (!syncAlreadyRendered) {
+    setupHandlers(body, item);
+  }
+  refreshChat(body, resolvedItem);
+  // Defer content extraction so the panel becomes interactive sooner.
+  const activeContextItem = getActiveContextAttachmentFromTabs();
+  if (activeContextItem) {
+    void ensurePDFTextCached(activeContextItem);
+  } else if (item && (item as any).isNote?.()) {
+    void ensureNoteTextCached(item);
+  }
+},
   });
 }
 

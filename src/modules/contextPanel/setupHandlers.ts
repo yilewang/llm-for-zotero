@@ -1460,11 +1460,37 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           floatingWin.document.title = "AI Assistant";
           const styleLinks = mainWin.document.querySelectorAll("link[rel='stylesheet'], link[rel='localization']");
           styleLinks.forEach((link: any) => {
-             const newLink = floatingWin.document.createElement("link");
-             newLink.rel = link.rel;
-             newLink.href = link.href;
-             floatingWin.document.head.appendChild(newLink);
+            const newLink = floatingWin.document.createElement("link");
+            newLink.rel = link.rel;
+            newLink.href = link.href;
+            if (link.type) newLink.type = link.type;
+            if (link.media) newLink.media = link.media;
+            floatingWin.document.head.appendChild(newLink);
           });
+          const styleTags = mainWin.document.querySelectorAll("style");
+          styleTags.forEach((style: any) => {
+            floatingWin.document.head.appendChild(style.cloneNode(true));
+          });
+          const pluginLinks = mainWin.document.documentElement?.querySelectorAll("link[rel='stylesheet']") || [];
+          pluginLinks.forEach((link: any) => {
+            if (!floatingWin.document.querySelector(`link[href="${link.href}"]`)) {
+              const newLink = floatingWin.document.createElement("link");
+              newLink.rel = link.rel;
+              newLink.href = link.href;
+              floatingWin.document.head.appendChild(newLink);
+            }
+          });
+
+          if (mainWin.document.documentElement) {
+            for (let attr of mainWin.document.documentElement.attributes) {
+              floatingWin.document.documentElement.setAttribute(attr.name, attr.value);
+            }
+          }
+          if (mainWin.document.body) {
+            for (let attr of mainWin.document.body.attributes) {
+              floatingWin.document.body.setAttribute(attr.name, attr.value);
+            }
+          }
 
           floatingWin.document.documentElement.className = mainWin.document.documentElement?.className || "";
           floatingWin.document.body.className = mainWin.document.body?.className || "";
@@ -1479,10 +1505,30 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           if (container) {
             container.classList.add("llm-panel-os-window");
             floatingWin.document.body.replaceChildren(container);
+            (mainWin as any).__llmFloatedPanelHostBody = body;
             (body as any).__llmFloatedPanel = floatingWin.document.body;
             if (lockBtn) lockBtn.style.display = "flex";
             if (popoutBtn) popoutBtn.style.display = "none";
           }
+
+          floatingWin.addEventListener("unload", () => {
+            if ((mainWin as any).__llmFloatingWindow === floatingWin) {
+              (mainWin as any).__llmFloatingWindow = null;
+            }
+            const containerNode = floatingWin.document.body.querySelector("#llm-main");
+            if (containerNode) {
+              containerNode.classList.remove("llm-panel-os-window");
+              const hostBody = (mainWin as any).__llmFloatedPanelHostBody || body;
+              if (hostBody) {
+                hostBody.replaceChildren(containerNode);
+                (hostBody as any).__llmFloatedPanel = null;
+                const localLockBtn = hostBody.querySelector("#llm-lock");
+                const localPopoutBtn = hostBody.querySelector("#llm-popout");
+                if (localLockBtn) (localLockBtn as HTMLElement).style.display = "none";
+                if (localPopoutBtn) (localPopoutBtn as HTMLElement).style.display = "flex";
+              }
+            }
+          });
         }, 150);
       } else {
         floatingWin.focus();
@@ -1490,6 +1536,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         if (container) {
           container.classList.add("llm-panel-os-window");
           floatingWin.document.body.replaceChildren(container);
+          (mainWin as any).__llmFloatedPanelHostBody = body;
           (body as any).__llmFloatedPanel = floatingWin.document.body;
           floatingWin.__llmLocked = false;
           if (lockBtn) {
@@ -2143,11 +2190,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       }
       const readerApi = Zotero.Reader as
         | {
-            open?: (
-              itemID: number,
-              location?: _ZoteroTypes.Reader.Location,
-            ) => Promise<void | _ZoteroTypes.ReaderInstance>;
-          }
+          open?: (
+            itemID: number,
+            location?: _ZoteroTypes.Reader.Location,
+          ) => Promise<void | _ZoteroTypes.ReaderInstance>;
+        }
         | undefined;
       if (typeof readerApi?.open === "function") {
         await readerApi.open(paperContext.contextItemId);
@@ -2370,7 +2417,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         fullText:
           isPaperContextFullTextMode(
             resolvePaperContextNextSendMode(itemId, paperContext),
-        ),
+          ),
         contentSourceMode: resolvePaperContentSourceMode(itemId, paperContext),
       });
     });
@@ -3410,8 +3457,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     const searchDocumentsReady = searchActive
       ? allEntries.every((entry) =>
-          historySearchDocumentCache.has(entry.conversationKey),
-        )
+        historySearchDocumentCache.has(entry.conversationKey),
+      )
       : true;
     if (searchActive && !searchDocumentsReady) {
       const loadingRow = createElement(
@@ -3468,26 +3515,26 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         );
         const topMatchCount = searchActive
           ? section.entries.reduce(
-              (max, entry) =>
-                Math.max(
-                  max,
-                  searchResultsByKey.get(entry.conversationKey)?.matchCount ||
-                    0,
-                ),
-              0,
-            )
+            (max, entry) =>
+              Math.max(
+                max,
+                searchResultsByKey.get(entry.conversationKey)?.matchCount ||
+                0,
+              ),
+            0,
+          )
           : 0;
         const orderedEntries = searchActive
           ? [...section.entries].sort((a, b) => {
-              const matchDelta =
-                (searchResultsByKey.get(b.conversationKey)?.matchCount || 0) -
-                (searchResultsByKey.get(a.conversationKey)?.matchCount || 0);
-              if (matchDelta !== 0) return matchDelta;
-              if (b.lastActivityAt !== a.lastActivityAt) {
-                return b.lastActivityAt - a.lastActivityAt;
-              }
-              return b.conversationKey - a.conversationKey;
-            })
+            const matchDelta =
+              (searchResultsByKey.get(b.conversationKey)?.matchCount || 0) -
+              (searchResultsByKey.get(a.conversationKey)?.matchCount || 0);
+            if (matchDelta !== 0) return matchDelta;
+            if (b.lastActivityAt !== a.lastActivityAt) {
+              return b.lastActivityAt - a.lastActivityAt;
+            }
+            return b.conversationKey - a.conversationKey;
+          })
           : section.entries;
         return {
           sectionKey,
@@ -3623,10 +3670,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         const preview =
           searchResult && searchResult.previewText
             ? createElement(
-                body.ownerDocument as Document,
-                "div",
-                "llm-history-row-preview",
-              )
+              body.ownerDocument as Document,
+              "div",
+              "llm-history-row-preview",
+            )
             : null;
         if (preview && searchResult) {
           appendHistorySearchHighlightedText(
@@ -4112,8 +4159,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         activePaperConversationByPaper.get(
           buildPaperStateKey(libraryID, paperItemID),
         ) ||
-          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
-          0,
+        getLastUsedPaperConversationKey(libraryID, paperItemID) ||
+        0,
       );
       if (
         Number.isFinite(rememberedConversationKey) &&
@@ -4139,10 +4186,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       normalizedConversationKey === paperItemID
         ? paperItem
         : createPaperPortalItem(
-            paperItem,
-            normalizedConversationKey,
-            targetSummary.sessionVersion,
-          );
+          paperItem,
+          normalizedConversationKey,
+          targetSummary.sessionVersion,
+        );
     item = nextItem;
     syncConversationIdentity();
     activeEditSession = null;
@@ -5680,18 +5727,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const wrappedTextWidth =
         normalizedMaxLines > 1
           ? (() => {
-              const segments = label
-                .split(/[\s._-]+/g)
-                .map((segment) => segment.trim())
-                .filter(Boolean);
-              const longestSegmentWidth = segments.reduce((max, segment) => {
-                return Math.max(max, measureLabelTextWidth(button, segment));
-              }, 0);
-              return Math.max(
-                textWidth / normalizedMaxLines,
-                longestSegmentWidth,
-              );
-            })()
+            const segments = label
+              .split(/[\s._-]+/g)
+              .map((segment) => segment.trim())
+              .filter(Boolean);
+            const longestSegmentWidth = segments.reduce((max, segment) => {
+              return Math.max(max, measureLabelTextWidth(button, segment));
+            }, 0);
+            return Math.max(
+              textWidth / normalizedMaxLines,
+              longestSegmentWidth,
+            );
+          })()
           : textWidth;
       const paddingWidth =
         getComputedSizePx(style, "padding-left") +
@@ -5813,12 +5860,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const leftSlotWidths = [
         uploadBtn
           ? getRenderedWidthPx(
-              uploadSlot || uploadBtn,
-              Math.max(
-                uploadBtn.scrollWidth || 0,
-                ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
-              ),
-            )
+            uploadSlot || uploadBtn,
+            Math.max(
+              uploadBtn.scrollWidth || 0,
+              ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
+            ),
+          )
           : 0,
         getContextButtonWidth(
           selectTextSlot,
@@ -6166,8 +6213,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       latestPair?.assistantMessage?.modelProviderLabel?.trim() || "";
     const matchingLegacyEntries = latestAssistantModelName
       ? groupedChoices.flatMap((group) =>
-          group.entries.filter((entry) => entry.model === latestAssistantModelName),
-        )
+        group.entries.filter((entry) => entry.model === latestAssistantModelName),
+      )
       : [];
     retryModelMenu.innerHTML = "";
     if (!groupedChoices.length) {
@@ -6181,9 +6228,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           ? entry.entryId === latestAssistantModelEntryId
           : latestAssistantModelName
             ? entry.model === latestAssistantModelName &&
-              (latestAssistantProviderLabel
-                ? entry.providerLabel === latestAssistantProviderLabel
-                : matchingLegacyEntries.length === 1)
+            (latestAssistantProviderLabel
+              ? entry.providerLabel === latestAssistantProviderLabel
+              : matchingLegacyEntries.length === 1)
             : false;
         const option = createElement(
           body.ownerDocument as Document,
@@ -6274,11 +6321,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const available = enabledLevels.length > 0;
       const resolvedReasoningLabel = available
         ? getReasoningLevelDisplayLabel(
-            selectedLevel as LLMReasoningLevel,
-            provider,
-            currentModel,
-            options,
-          )
+          selectedLevel as LLMReasoningLevel,
+          provider,
+          currentModel,
+          options,
+        )
         : "off";
       const active =
         available && isReasoningDisplayLabelActive(resolvedReasoningLabel);
@@ -6347,11 +6394,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             selectedLevel === level
               ? `\u2713 ${getReasoningLevelDisplayLabel(level, provider, currentModel, options)}`
               : getReasoningLevelDisplayLabel(
-                  level,
-                  provider,
-                  currentModel,
-                  options,
-                ),
+                level,
+                provider,
+                currentModel,
+                options,
+              ),
         },
       );
       if (optionState.enabled) {
@@ -6530,8 +6577,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     scheduleAttachmentGc,
     setStatusMessage: status
       ? (message, level) => {
-          setStatus(status, message, level);
-        }
+        setStatus(status, message, level);
+      }
       : undefined,
   });
 
@@ -6548,21 +6595,21 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   type PaperPickerMode = "browse" | "search" | "empty";
   type PaperPickerRow =
     | {
-        kind: "collection";
-        collectionId: number;
-        depth: number;
-      }
+      kind: "collection";
+      collectionId: number;
+      depth: number;
+    }
     | {
-        kind: "paper";
-        itemId: number;
-        depth: number;
-      }
+      kind: "paper";
+      itemId: number;
+      depth: number;
+    }
     | {
-        kind: "attachment";
-        itemId: number;
-        attachmentIndex: number;
-        depth: number;
-      };
+      kind: "attachment";
+      itemId: number;
+      attachmentIndex: number;
+      depth: number;
+    };
   let paperPickerMode: PaperPickerMode = "browse";
   let paperPickerEmptyMessage = "No references available.";
   let paperPickerGroups: PaperSearchGroupCandidate[] = [];
@@ -6952,10 +6999,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     const filtered = query
       ? allActions.filter(
-          (a) =>
-            a.name.toLowerCase().includes(query) ||
-            a.description.toLowerCase().includes(query),
-        )
+        (a) =>
+          a.name.toLowerCase().includes(query) ||
+          a.description.toLowerCase().includes(query),
+      )
       : allActions;
     const ownerDoc = body.ownerDocument;
     const list = slashMenu?.querySelector(".llm-action-picker-list");
@@ -7622,12 +7669,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const option = createElement(
         ownerDoc,
         "div",
-        `llm-paper-picker-item ${
-          row.kind === "attachment"
-            ? "llm-paper-picker-attachment-row"
-            : row.kind === "paper"
-              ? "llm-paper-picker-group-row"
-              : "llm-paper-picker-group-row llm-paper-picker-collection-row"
+        `llm-paper-picker-item ${row.kind === "attachment"
+          ? "llm-paper-picker-attachment-row"
+          : row.kind === "paper"
+            ? "llm-paper-picker-group-row"
+            : "llm-paper-picker-group-row llm-paper-picker-collection-row"
         }`,
       );
       option.setAttribute("role", "option");
@@ -8157,8 +8203,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     },
     setStatusMessage: status
       ? (message, level) => {
-          setStatus(status, message, level);
-        }
+        setStatus(status, message, level);
+      }
       : undefined,
     editStaleStatusText: EDIT_STALE_STATUS_TEXT,
   });
@@ -8191,8 +8237,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     clearAgentToolCaches: clearAllAgentToolCaches,
     setStatusMessage: status
       ? (message, level) => {
-          setStatus(status, message, level);
-        }
+        setStatus(status, message, level);
+      }
       : undefined,
     logError: (message, err) => {
       ztoolkit.log(message, err);
@@ -8541,10 +8587,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         reset
           ? FONT_SCALE_DEFAULT_PERCENT
           : clampNumber(
-              panelFontScalePercent + (delta || 0),
-              FONT_SCALE_MIN_PERCENT,
-              FONT_SCALE_MAX_PERCENT,
-            ),
+            panelFontScalePercent + (delta || 0),
+            FONT_SCALE_MIN_PERCENT,
+            FONT_SCALE_MAX_PERCENT,
+          ),
       );
       event.preventDefault();
       event.stopPropagation();
@@ -9904,11 +9950,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     const readerApi = Zotero.Reader as
       | {
-          open?: (
-            itemID: number,
-            location?: _ZoteroTypes.Reader.Location,
-          ) => Promise<void | _ZoteroTypes.ReaderInstance>;
-        }
+        open?: (
+          itemID: number,
+          location?: _ZoteroTypes.Reader.Location,
+        ) => Promise<void | _ZoteroTypes.ReaderInstance>;
+      }
       | undefined;
     if (typeof readerApi?.open === "function") {
       const openedReader = await readerApi.open(targetItemId, location);
@@ -9916,12 +9962,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         openedReader ||
         ((
           Zotero.Reader as
-            | {
-                getByTabID?: (
-                  tabID: string | number,
-                ) => _ZoteroTypes.ReaderInstance;
-              }
-            | undefined
+          | {
+            getByTabID?: (
+              tabID: string | number,
+            ) => _ZoteroTypes.ReaderInstance;
+          }
+          | undefined
         )?.getByTabID &&
           (() => {
             const tabs = (
@@ -9951,11 +9997,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     const pane = Zotero.getActiveZoteroPane?.() as
       | {
-          viewPDF?: (
-            itemID: number,
-            location: _ZoteroTypes.Reader.Location,
-          ) => Promise<void>;
-        }
+        viewPDF?: (
+          itemID: number,
+          location: _ZoteroTypes.Reader.Location,
+        ) => Promise<void>;
+      }
       | undefined;
     if (typeof pane?.viewPDF === "function") {
       await pane.viewPDF(targetItemId, location);
