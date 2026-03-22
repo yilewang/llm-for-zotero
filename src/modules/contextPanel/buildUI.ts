@@ -231,6 +231,16 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
+  
+  const popoutBtn = createElement(doc, "button", "llm-btn-icon llm-popout-btn", {
+    id: "llm-popout",
+    type: "button",
+    title: "Toggle floating window",
+  });
+  popoutBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 0 24 24" width="16" fill="currentColor"><path d="M0 0h24v24H0z" fill="none"/><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>`;
+  popoutBtn.setAttribute("aria-label", "Toggle floating window");
+  popoutBtn.setAttribute("aria-pressed", "false");
+
   const settingsBtn = createElement(doc, "button", "llm-btn-icon llm-settings-btn", {
     id: "llm-settings",
     type: "button",
@@ -250,7 +260,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     type: "button",
     textContent: t("Clear"),
   });
-  headerActions.append(settingsBtn, exportBtn, clearBtn);
+  headerActions.append(popoutBtn, settingsBtn, exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
   const historyMenu = createElement(doc, "div", "llm-history-menu", {
