@@ -92,7 +92,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const basePaperItemId =
     hasItem && item
       ? activeNoteSession?.parentItemId ||
-        (isPaperPortalItem(item)
+      (isPaperPortalItem(item)
         ? getPaperPortalBaseItemID(item) || 0
         : item.isAttachment() && item.parentID
           ? item.parentID
@@ -231,7 +231,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
-  
+
   const popoutBtn = createElement(doc, "button", "llm-btn-icon llm-popout-btn", {
     id: "llm-popout",
     type: "button",

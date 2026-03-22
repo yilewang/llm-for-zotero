@@ -47,25 +47,25 @@ export async function renderShortcuts(
   item?: Zotero.Item | null,
 ) {
   shortcutRenderItemState.set(body, item);
-  const container = body.querySelector(
+  const container = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-shortcuts",
   ) as HTMLDivElement | null;
-  const menu = body.querySelector(
+  const menu = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-shortcut-menu",
   ) as HTMLDivElement | null;
-  const menuEdit = body.querySelector(
+  const menuEdit = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-shortcut-menu-edit",
   ) as HTMLButtonElement | null;
-  const menuDelete = body.querySelector(
+  const menuDelete = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-shortcut-menu-delete",
   ) as HTMLButtonElement | null;
-  const menuAdd = body.querySelector(
+  const menuAdd = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-shortcut-menu-add",
   ) as HTMLButtonElement | null;
-  const menuMove = body.querySelector(
+  const menuMove = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-shortcut-menu-move",
   ) as HTMLButtonElement | null;
-  const menuReset = body.querySelector(
+  const menuReset = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-shortcut-menu-reset",
   ) as HTMLButtonElement | null;
   if (!container) return;
@@ -187,7 +187,7 @@ export async function renderShortcuts(
 
     const prompt = updated.prompt.trim();
     if (!prompt) {
-      const status = body.querySelector("#llm-status") as HTMLElement | null;
+      const status = ((body as any).__llmFloatedPanel || body).querySelector("#llm-status") as HTMLElement | null;
       if (status) setStatus(status, "Shortcut prompt cannot be empty", "error");
       return;
     }
@@ -201,7 +201,7 @@ export async function renderShortcuts(
       visibleBuiltinCount + currentCustomShortcuts.length >=
       MAX_EDITABLE_SHORTCUTS
     ) {
-      const status = body.querySelector("#llm-status") as HTMLElement | null;
+      const status = ((body as any).__llmFloatedPanel || body).querySelector("#llm-status") as HTMLElement | null;
       if (status) {
         setStatus(
           status,
@@ -380,10 +380,10 @@ export async function renderShortcuts(
     if (!shortcutId || moveMode || !item) return;
     const nextPrompt = (btn.dataset.prompt || "").trim();
     if (!nextPrompt) return;
-    const inputBox = body.querySelector(
+    const inputBox = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-input",
     ) as HTMLTextAreaElement | null;
-    const sendBtn = body.querySelector("#llm-send") as HTMLButtonElement | null;
+    const sendBtn = ((body as any).__llmFloatedPanel || body).querySelector("#llm-send") as HTMLButtonElement | null;
     if (!inputBox || !sendBtn) return;
     inputBox.value = nextPrompt;
     sendBtn.click();
@@ -526,7 +526,7 @@ export async function renderShortcuts(
       }
       const nextPrompt = updated.prompt.trim();
       if (!nextPrompt) {
-        const status = body.querySelector("#llm-status") as HTMLElement | null;
+        const status = ((body as any).__llmFloatedPanel || body).querySelector("#llm-status") as HTMLElement | null;
         if (status)
           setStatus(status, "Shortcut prompt cannot be empty", "error");
         menu.style.display = "none";

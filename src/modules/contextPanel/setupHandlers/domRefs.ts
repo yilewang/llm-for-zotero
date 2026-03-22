@@ -13,6 +13,7 @@ export type PanelDomRefs = {
   actionsRow: HTMLDivElement | null;
   actionsLeft: HTMLDivElement | null;
   actionsRight: HTMLDivElement | null;
+  popoutBtn: HTMLButtonElement | null;
   settingsBtn: HTMLButtonElement | null;
   exportBtn: HTMLButtonElement | null;
   clearBtn: HTMLButtonElement | null;
@@ -79,201 +80,205 @@ export type PanelDomRefs = {
 
 export function getPanelDomRefs(body: Element): PanelDomRefs {
   return {
-    inputBox: body.querySelector("#llm-input") as HTMLTextAreaElement | null,
-    inputSection: body.querySelector(
+    inputBox: ((body as any).__llmFloatedPanel || body).querySelector("#llm-input") as HTMLTextAreaElement | null,
+    inputSection: ((body as any).__llmFloatedPanel || body).querySelector(
       ".llm-input-section",
     ) as HTMLDivElement | null,
-    sendBtn: body.querySelector("#llm-send") as HTMLButtonElement | null,
-    cancelBtn: body.querySelector("#llm-cancel") as HTMLButtonElement | null,
-    modelBtn: body.querySelector(
+    sendBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-send") as HTMLButtonElement | null,
+    cancelBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-cancel") as HTMLButtonElement | null,
+    modelBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-model-toggle",
     ) as HTMLButtonElement | null,
-    modelSlot: body.querySelector(
+    modelSlot: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-model-dropdown",
     ) as HTMLDivElement | null,
-    modelMenu: body.querySelector("#llm-model-menu") as HTMLDivElement | null,
-    reasoningBtn: body.querySelector(
+    modelMenu: ((body as any).__llmFloatedPanel || body).querySelector("#llm-model-menu") as HTMLDivElement | null,
+    reasoningBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-reasoning-toggle",
     ) as HTMLButtonElement | null,
-    runtimeModeBtn: body.querySelector(
+    runtimeModeBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-runtime-mode-toggle",
     ) as HTMLButtonElement | null,
-    reasoningSlot: body.querySelector(
+    reasoningSlot: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-reasoning-dropdown",
     ) as HTMLDivElement | null,
-    reasoningMenu: body.querySelector(
+    reasoningMenu: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-reasoning-menu",
     ) as HTMLDivElement | null,
-    actionsRow: body.querySelector(".llm-actions") as HTMLDivElement | null,
-    actionsLeft: body.querySelector(
+    actionsRow: ((body as any).__llmFloatedPanel || body).querySelector(".llm-actions") as HTMLDivElement | null,
+    actionsLeft: ((body as any).__llmFloatedPanel || body).querySelector(
       ".llm-actions-left",
     ) as HTMLDivElement | null,
-    actionsRight: body.querySelector(
+    actionsRight: ((body as any).__llmFloatedPanel || body).querySelector(
       ".llm-actions-right",
     ) as HTMLDivElement | null,
-    settingsBtn: body.querySelector("#llm-settings") as HTMLButtonElement | null,
-    exportBtn: body.querySelector("#llm-export") as HTMLButtonElement | null,
-    clearBtn: body.querySelector("#llm-clear") as HTMLButtonElement | null,
-    titleStatic: body.querySelector(
+    popoutBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-popout") as HTMLButtonElement | null,
+    settingsBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-settings") as HTMLButtonElement | null,
+    exportBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-export") as HTMLButtonElement | null,
+    clearBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-clear") as HTMLButtonElement | null,
+    titleStatic: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-title-static",
     ) as HTMLDivElement | null,
-    historyBar: body.querySelector("#llm-history-bar") as HTMLDivElement | null,
-    historyNewBtn: body.querySelector(
+    historyBar: ((body as any).__llmFloatedPanel || body).querySelector("#llm-history-bar") as HTMLDivElement | null,
+    historyNewBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-new",
     ) as HTMLButtonElement | null,
-    historyNewMenu: body.querySelector(
+    historyNewMenu: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-new-menu",
     ) as HTMLDivElement | null,
-    historyNewOpenBtn: body.querySelector(
+    historyNewOpenBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-new-open",
     ) as HTMLButtonElement | null,
-    historyNewPaperBtn: body.querySelector(
+    historyNewPaperBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-new-paper",
     ) as HTMLButtonElement | null,
-    historyToggleBtn: body.querySelector(
+    historyToggleBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-toggle",
     ) as HTMLButtonElement | null,
-    historyModeIndicator: body.querySelector(
+    historyModeIndicator: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-toggle",
     ) as HTMLButtonElement | null,
-    modeCapsule: body.querySelector(
+    modeCapsule: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-mode-capsule",
     ) as HTMLElement | null,
-    modeChipBtn: body.querySelector(
+    modeChipBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-mode-chip",
     ) as HTMLButtonElement | null,
-    modeLockBtn: body.querySelector(
+    modeLockBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-mode-lock",
     ) as HTMLElement | null,
-    historyMenu: body.querySelector(
+    historyMenu: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-menu",
     ) as HTMLDivElement | null,
-    historyRowMenu: body.querySelector(
+    historyRowMenu: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-row-menu",
     ) as HTMLDivElement | null,
-    historyRowRenameBtn: body.querySelector(
+    historyRowRenameBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-row-rename",
     ) as HTMLButtonElement | null,
-    historyUndo: body.querySelector(
+    historyUndo: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-undo",
     ) as HTMLDivElement | null,
-    historyUndoText: body.querySelector(
+    historyUndoText: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-undo-text",
     ) as HTMLSpanElement | null,
-    historyUndoBtn: body.querySelector(
+    historyUndoBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-undo-btn",
     ) as HTMLButtonElement | null,
-    selectTextBtn: body.querySelector(
+    selectTextBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-select-text",
     ) as HTMLButtonElement | null,
-    screenshotBtn: body.querySelector(
+    screenshotBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-screenshot",
     ) as HTMLButtonElement | null,
-    uploadBtn: body.querySelector(
+    uploadBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-upload-file",
     ) as HTMLButtonElement | null,
-    uploadInput: body.querySelector(
+    uploadInput: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-upload-input",
     ) as HTMLInputElement | null,
-    slashMenu: body.querySelector("#llm-slash-menu") as HTMLDivElement | null,
-    slashUploadOption: body.querySelector(
+    slashMenu: ((body as any).__llmFloatedPanel || body).querySelector("#llm-slash-menu") as HTMLDivElement | null,
+    slashUploadOption: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-slash-upload-option",
     ) as HTMLButtonElement | null,
-    slashReferenceOption: body.querySelector(
+    slashReferenceOption: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-slash-reference-option",
     ) as HTMLButtonElement | null,
-    slashPdfPageOption: body.querySelector(
+    slashPdfPageOption: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-slash-pdf-page-option",
     ) as HTMLButtonElement | null,
-    imagePreview: body.querySelector(
+    slashFullPdfOption: ((body as any).__llmFloatedPanel || body).querySelector(
+      "#llm-slash-full-pdf-option",
+    ) as HTMLButtonElement | null,
+    imagePreview: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-image-preview",
     ) as HTMLDivElement | null,
-    selectedContextList: body.querySelector(
+    selectedContextList: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-selected-context-list",
     ) as HTMLDivElement | null,
-    previewStrip: body.querySelector(
+    previewStrip: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-image-preview-strip",
     ) as HTMLDivElement | null,
-    previewExpanded: body.querySelector(
+    previewExpanded: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-image-preview-expanded",
     ) as HTMLDivElement | null,
-    previewSelected: body.querySelector(
+    previewSelected: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-image-preview-selected",
     ) as HTMLDivElement | null,
-    previewSelectedImg: body.querySelector(
+    previewSelectedImg: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-image-preview-selected-img",
     ) as HTMLImageElement | null,
-    previewMeta: body.querySelector(
+    previewMeta: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-image-preview-meta",
     ) as HTMLButtonElement | null,
-    removeImgBtn: body.querySelector(
+    removeImgBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-remove-img",
     ) as HTMLButtonElement | null,
-    filePreview: body.querySelector(
+    filePreview: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-file-context-preview",
     ) as HTMLDivElement | null,
-    filePreviewMeta: body.querySelector(
+    filePreviewMeta: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-file-context-meta",
     ) as HTMLButtonElement | null,
-    filePreviewExpanded: body.querySelector(
+    filePreviewExpanded: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-file-context-expanded",
     ) as HTMLDivElement | null,
-    filePreviewList: body.querySelector(
+    filePreviewList: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-file-context-list",
     ) as HTMLDivElement | null,
-    filePreviewClear: body.querySelector(
+    filePreviewClear: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-file-context-clear",
     ) as HTMLButtonElement | null,
-    paperPreview: body.querySelector(
+    paperPreview: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-paper-context-preview",
     ) as HTMLDivElement | null,
-    paperPreviewList: body.querySelector(
+    paperPreviewList: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-paper-context-list",
     ) as HTMLDivElement | null,
-    paperPicker: body.querySelector(
+    paperPicker: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-paper-picker",
     ) as HTMLDivElement | null,
-    paperPickerList: body.querySelector(
+    paperPickerList: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-paper-picker-list",
     ) as HTMLDivElement | null,
-    actionPicker: body.querySelector(
+    actionPicker: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-action-picker",
     ) as HTMLDivElement | null,
-    actionPickerList: body.querySelector(
+    actionPickerList: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-action-picker-list",
     ) as HTMLDivElement | null,
-    actionHitlPanel: body.querySelector(
+    actionHitlPanel: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-action-hitl-panel",
     ) as HTMLDivElement | null,
-    responseMenu: body.querySelector(
+    responseMenu: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-response-menu",
     ) as HTMLDivElement | null,
-    responseMenuCopyBtn: body.querySelector(
+    responseMenuCopyBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-response-menu-copy",
     ) as HTMLButtonElement | null,
-    responseMenuNoteBtn: body.querySelector(
+    responseMenuNoteBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-response-menu-note",
     ) as HTMLButtonElement | null,
-    responseMenuDeleteBtn: body.querySelector(
+    responseMenuDeleteBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-response-menu-delete",
     ) as HTMLButtonElement | null,
-    promptMenu: body.querySelector("#llm-prompt-menu") as HTMLDivElement | null,
-    promptMenuDeleteBtn: body.querySelector(
+    promptMenu: ((body as any).__llmFloatedPanel || body).querySelector("#llm-prompt-menu") as HTMLDivElement | null,
+    promptMenuDeleteBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-prompt-menu-delete",
     ) as HTMLButtonElement | null,
-    exportMenu: body.querySelector("#llm-export-menu") as HTMLDivElement | null,
-    exportMenuCopyBtn: body.querySelector(
+    exportMenu: ((body as any).__llmFloatedPanel || body).querySelector("#llm-export-menu") as HTMLDivElement | null,
+    exportMenuCopyBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-export-copy",
     ) as HTMLButtonElement | null,
-    exportMenuNoteBtn: body.querySelector(
+    exportMenuNoteBtn: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-export-note",
     ) as HTMLButtonElement | null,
-    retryModelMenu: body.querySelector(
+    retryModelMenu: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-retry-model-menu",
     ) as HTMLDivElement | null,
-    status: body.querySelector("#llm-status") as HTMLElement | null,
-    tokenUsageEl: body.querySelector("#llm-token-usage") as HTMLElement | null,
-    chatBox: body.querySelector("#llm-chat-box") as HTMLDivElement | null,
-    panelRoot: body.querySelector("#llm-main") as HTMLDivElement | null,
+    status: ((body as any).__llmFloatedPanel || body).querySelector("#llm-status") as HTMLElement | null,
+    tokenUsageEl: ((body as any).__llmFloatedPanel || body).querySelector("#llm-token-usage") as HTMLElement | null,
+    chatBox: ((body as any).__llmFloatedPanel || body).querySelector("#llm-chat-box") as HTMLDivElement | null,
+    panelRoot: ((body as any).__llmFloatedPanel || body).querySelector("#llm-main") as HTMLDivElement | null,
   };
 }

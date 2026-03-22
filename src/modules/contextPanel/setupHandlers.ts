@@ -359,6 +359,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     actionsRow,
     actionsLeft,
     actionsRight,
+    popoutBtn,
     settingsBtn,
     exportBtn,
     clearBtn,
@@ -470,11 +471,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       historyNewBtn.disabled = true;
       historyNewBtn.setAttribute("aria-disabled", "true");
     }
-    const historyMenuEl = body.querySelector(
+    const historyMenuEl = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-menu",
     ) as HTMLDivElement | null;
     if (historyMenuEl) historyMenuEl.style.display = "none";
-    const historyNewMenuEl = body.querySelector(
+    const historyNewMenuEl = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-new-menu",
     ) as HTMLDivElement | null;
     if (historyNewMenuEl) historyNewMenuEl.style.display = "none";
@@ -489,7 +490,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const ElementCtor = panelDoc.defaultView?.Element;
   const isElementNode = (value: unknown): value is Element =>
     Boolean(ElementCtor && value instanceof ElementCtor);
-  const headerTop = body.querySelector(
+  const headerTop = ((body as any).__llmFloatedPanel || body).querySelector(
     ".llm-header-top",
   ) as HTMLDivElement | null;
   panelRoot.tabIndex = 0;
@@ -1435,6 +1436,54 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         return;
       }
       positionMenuBelowButton(body, exportMenu, exportBtn);
+    });
+  }
+
+  if (popoutBtn) {
+    popoutBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+
+      if (!floatingWin || floatingWin.closed) {
+        floatingWin = mainWin.open(
+          "about:blank",
+          "LLMFloatingWindow",
+          "chrome,titlebar,toolbar=0,centerscreen,resizable,dependent=yes,alwaysRaised=yes,width=450,height=700"
+        );
+        (mainWin as any).__llmFloatingWindow = floatingWin;
+
+        setTimeout(() => {
+          floatingWin.document.title = "AI Assistant";
+          const styleLinks = mainWin.document.querySelectorAll("link[rel='stylesheet'], link[rel='localization']");
+          styleLinks.forEach((link: any) => {
+             const newLink = floatingWin.document.createElement("link");
+             newLink.rel = link.rel;
+             newLink.href = link.href;
+             floatingWin.document.head.appendChild(newLink);
+          });
+          
+          floatingWin.document.body.style.backgroundColor = "var(--zotero-pane-background-color, #fff)";
+          floatingWin.document.body.style.display = "flex";
+          floatingWin.document.body.style.flexDirection = "column";
+          floatingWin.document.body.setAttribute("data-theme", mainWin.document.documentElement?.getAttribute("data-theme") || "light");
+
+          const container = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main");
+          if (container) {
+             floatingWin.document.body.appendChild(container);
+             (body as any).__llmFloatedPanel = floatingWin.document.body;
+          }
+        }, 150);
+      } else {
+        floatingWin.focus();
+        const container = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main");
+        if (container) {
+           floatingWin.document.body.appendChild(container);
+           (body as any).__llmFloatedPanel = floatingWin.document.body;
+        }
+      }
     });
   }
 
