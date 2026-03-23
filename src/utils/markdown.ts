@@ -537,7 +537,14 @@ function splitTextBlocks(text: string): TextBlock[] {
       !/^>/.test(lines[i].trim()) &&
       !/^---+$/.test(lines[i].trim()) &&
       !/^\$\$/.test(lines[i].trim()) &&
-      !/^\\\[/.test(lines[i].trim())
+      !/^\\\[/.test(lines[i].trim()) &&
+      // Break before a table: current line has | and next line is a divider row
+      !(
+        lines[i].trim().includes("|") &&
+        i + 1 < lines.length &&
+        /^[\s|:-]+$/.test(lines[i + 1]?.trim() || "") &&
+        (lines[i + 1]?.trim() || "").includes("-")
+      )
     ) {
       paraLines.push(lines[i]);
       i++;

@@ -1,5 +1,5 @@
 import type { ChatMessage, ReasoningConfig } from "../../utils/llmClient";
-import { estimateAvailableContextBudget } from "../../utils/llmClient";
+import { callLLM, estimateAvailableContextBudget } from "../../utils/llmClient";
 import { estimateTextTokens } from "../../utils/modelInputCap";
 import {
   PAPER_FOLLOWUP_RETRIEVAL_MAX_CHUNKS,
@@ -87,6 +87,49 @@ function buildEnrichedRetrievalQuery(
   if (!ctx) return question;
   return `${question}\n[Prior answer context: ${ctx}]`;
 }
+
+/**
+ * Uses a lightweight LLM call to rewrite the user's question into a
+ * retrieval-optimized query with relevant academic keywords and synonyms.
+ * Falls back to the original question on any failure.
+ */
+async function rewriteQueryForRetrieval(params: {
+  question: string;
+  paperTitles: string[];
+  model: string;
+  apiBase?: string;
+  apiKey?: string;
+}): Promise<string> {
+  const { question, paperTitles, model, apiBase, apiKey } = params;
+  if (!question.trim()) return question;
+
+  try {
+    const rewritten = await callLLM({
+      prompt: question,
+      context: [
+        "Rewrite the following question into a search query optimized for finding relevant passages in academic papers.",
+        "Output ONLY the rewritten query — no explanation, no quotes.",
+        "Expand vague terms into specific academic keywords and synonyms.",
+        "Include likely section names (abstract, results, methods, discussion, conclusion) if relevant.",
+        paperTitles.length
+          ? `Papers in context: ${paperTitles.join("; ")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      model,
+      apiBase,
+      apiKey,
+      maxTokens: Math.max(100, estimateTextTokens(question) * 3),
+      temperature: 0,
+    });
+    return rewritten?.trim() || question;
+  } catch (err) {
+    ztoolkit.log("LLM query rewrite failed, using original:", err);
+    return question;
+  }
+}
+
 import type {
   AdvancedModelParams,
   MultiContextPlan,
@@ -722,6 +765,17 @@ export async function resolveMultiContextPlan(params: {
     ),
   };
 
+  // Rewrite the user's question into a retrieval-optimized query using a
+  // lightweight LLM call.  Falls back to the original on any failure.
+  const paperTitles = papers.map((p) => p.paperContext.title).filter(Boolean);
+  const rewrittenQuestion = await rewriteQueryForRetrieval({
+    question: params.question,
+    paperTitles,
+    model: params.model,
+    apiBase: params.apiBase,
+    apiKey: params.apiKey,
+  });
+
   if (!papers.length) {
     return {
       mode: "retrieval",
@@ -765,7 +819,7 @@ export async function resolveMultiContextPlan(params: {
         );
         if (remainingTokens > 0) {
           const enrichedQuestion = buildEnrichedRetrievalQuery(
-            params.question,
+            rewrittenQuestion,
             params.history,
           );
           extraRetrieved = await assembleRetrievedMultiPaperContext({
@@ -802,7 +856,7 @@ export async function resolveMultiContextPlan(params: {
     // Enrich the retrieval query with the last assistant response so semantic
     // search finds chunks relevant to the evolving conversation.
     const enrichedQuestion = buildEnrichedRetrievalQuery(
-      params.question,
+      rewrittenQuestion,
       params.history,
     );
     // Include all papers (active + @-referenced) in retrieval, not just the
@@ -863,7 +917,7 @@ export async function resolveMultiContextPlan(params: {
       if (remainingTokens >= 1024 && unpinned.length) {
         extraUnpinned = await assembleRetrievedMultiPaperContext({
           papers: unpinned,
-          question: params.question,
+          question: rewrittenQuestion,
           contextBudgetTokens: remainingTokens,
           minChunksByPaper: new Map<string, number>(),
           apiOverrides: {
@@ -926,7 +980,7 @@ export async function resolveMultiContextPlan(params: {
       ) {
         extraRetrieved = await assembleRetrievedMultiPaperContext({
           papers: retrievalCompanionPapers,
-          question: params.question,
+          question: rewrittenQuestion,
           contextBudgetTokens: remainingTokens,
           minChunksByPaper: buildMinChunkMapForRetrievedPapers(
             retrievalCompanionPapers,
@@ -975,7 +1029,7 @@ export async function resolveMultiContextPlan(params: {
 
   const retrieved = await assembleRetrievedMultiPaperContext({
     papers: retrievalPapers,
-    question: params.question,
+    question: rewrittenQuestion,
     contextBudgetTokens: adjustedContextBudget.contextBudgetTokens,
     minChunksByPaper: buildMinChunkMapForRetrievedPapers(retrievalPapers),
     apiOverrides: {
