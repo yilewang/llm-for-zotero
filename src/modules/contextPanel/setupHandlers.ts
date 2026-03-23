@@ -295,6 +295,8 @@ import {
   createFileIntakeController,
   extractFilesFromClipboard,
   isFileDragEvent,
+  isZoteroItemDragEvent,
+  parseZoteroItemDragData,
 } from "./setupHandlers/controllers/fileIntakeController";
 import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
 import { createClearConversationController } from "./setupHandlers/controllers/clearConversationController";
@@ -7187,6 +7189,42 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (status) setStatus(status, t("Note context added as text."), "ready");
     return true;
   };
+  const addZoteroItemsAsPaperContext = (
+    zoteroItems: Zotero.Item[],
+  ): void => {
+    if (!item) return;
+    let added = 0;
+    let skipped = 0;
+    for (const zi of zoteroItems) {
+      if ((zi as any).isNote?.()) {
+        if (upsertNoteTextContext(zi.id)) added++;
+        else skipped++;
+        continue;
+      }
+      const ref = resolvePaperContextRefFromItem(zi);
+      if (!ref) {
+        skipped++;
+        continue;
+      }
+      if (upsertPaperContext(ref)) added++;
+      else skipped++;
+    }
+    if (status && zoteroItems.length > 1) {
+      if (added > 0 && skipped > 0) {
+        setStatus(
+          status,
+          `Added ${added} paper(s), ${skipped} skipped`,
+          "warning",
+        );
+      } else if (added > 0) {
+        setStatus(
+          status,
+          `Added ${added} paper(s) as context`,
+          "ready",
+        );
+      }
+    }
+  };
   const upsertOtherRefContext = (ref: OtherContextRef): boolean => {
     if (!item) return false;
     const existing = selectedOtherRefContextCache.get(item.id) || [];
@@ -7699,9 +7737,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   if (inputSection && inputBox) {
     let fileDragDepth = 0;
 
+    const isDragRelevant = (dragEvent: DragEvent): boolean =>
+      isFileDragEvent(dragEvent) || isZoteroItemDragEvent(dragEvent);
+
     inputSection.addEventListener("dragenter", (e: Event) => {
       const dragEvent = e as DragEvent;
-      if (!isFileDragEvent(dragEvent)) return;
+      if (!isDragRelevant(dragEvent)) return;
       dragEvent.preventDefault();
       dragEvent.stopPropagation();
       fileDragDepth += 1;
@@ -7710,7 +7751,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     inputSection.addEventListener("dragover", (e: Event) => {
       const dragEvent = e as DragEvent;
-      if (!isFileDragEvent(dragEvent)) return;
+      if (!isDragRelevant(dragEvent)) return;
       dragEvent.preventDefault();
       dragEvent.stopPropagation();
       if (dragEvent.dataTransfer) {
@@ -7723,7 +7764,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     inputSection.addEventListener("dragleave", (e: Event) => {
       const dragEvent = e as DragEvent;
-      if (!isFileDragEvent(dragEvent)) return;
+      if (!isDragRelevant(dragEvent)) return;
       dragEvent.preventDefault();
       dragEvent.stopPropagation();
       fileDragDepth = Math.max(0, fileDragDepth - 1);
@@ -7734,11 +7775,27 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     inputSection.addEventListener("drop", (e: Event) => {
       const dragEvent = e as DragEvent;
-      if (!isFileDragEvent(dragEvent)) return;
+      if (!isDragRelevant(dragEvent)) return;
       dragEvent.preventDefault();
       dragEvent.stopPropagation();
       fileDragDepth = 0;
       setInputDropActive(false);
+
+      // Handle Zotero library item drops
+      if (isZoteroItemDragEvent(dragEvent)) {
+        const data = dragEvent.dataTransfer?.getData("zotero/item");
+        const itemIds = parseZoteroItemDragData(data);
+        const zoteroItems = itemIds
+          .map((id) => Zotero.Items.get(id))
+          .filter((zi): zi is Zotero.Item => Boolean(zi));
+        if (zoteroItems.length) {
+          addZoteroItemsAsPaperContext(zoteroItems);
+        }
+        inputBox.focus({ preventScroll: true });
+        return;
+      }
+
+      // Handle file drops (existing logic)
       const files = dragEvent.dataTransfer?.files
         ? Array.from(dragEvent.dataTransfer.files)
         : [];

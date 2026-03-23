@@ -134,6 +134,23 @@ export function isFileDragEvent(event: DragEvent): boolean {
   return types.includes("Files");
 }
 
+export function isZoteroItemDragEvent(event: DragEvent): boolean {
+  const dt = event.dataTransfer;
+  if (!dt) return false;
+  const types = Array.from(dt.types || []);
+  return types.includes("zotero/item");
+}
+
+export function parseZoteroItemDragData(
+  data: string | undefined,
+): number[] {
+  if (!data) return [];
+  return data
+    .split(/[\n,]/)
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
 export function extractFilesFromClipboard(event: ClipboardEvent): File[] {
   const clipboardData = event.clipboardData;
   if (!clipboardData) return [];
