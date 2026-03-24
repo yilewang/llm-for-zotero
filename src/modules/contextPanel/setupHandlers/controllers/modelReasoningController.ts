@@ -21,10 +21,10 @@ export function getModelPdfSupport(
   if (/reasoner|text-only|embedding/.test(m)) return "none";
   // Only first-party APIs support native PDF file upload
   const proto = (providerProtocol || "").trim().toLowerCase();
-  if (proto === "anthropic") return "native";
-  if (proto === "gemini-native") return "native";
-  if (proto === "openai" && /gpt-4o|gpt-5|o[1-9]|chatgpt/.test(m)) return "native";
-  // OpenAI-compatible and unknown protocols: fall back to vision (page images)
+  if (proto === "anthropic_messages") return "native";
+  if (proto === "gemini_native") return "native";
+  if (proto === "responses_api" && /gpt-4o|gpt-5|o[1-9]|chatgpt/.test(m)) return "native";
+  // OpenAI-compatible (openai_chat_compat), codex, and unknown: fall back to vision
   return "vision";
 }
 

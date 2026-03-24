@@ -1536,9 +1536,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     paperContext: PaperContextRef,
   ): PaperContentSourceMode => {
     const explicit = getPaperContentSourceOverride(itemId, paperContext);
-    if (explicit) return explicit;
-    // Default: MinerU if available, otherwise Text
-    return isPaperContextMineru(paperContext) ? "mineru" : "text";
+    return explicit || (isPaperContextMineru(paperContext) ? "mineru" : "text");
   };
 
   const getNextContentSourceMode = (
@@ -2367,7 +2365,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     )
       return;
     const itemId = item.id;
-    const files = selectedFileAttachmentCache.get(itemId) || [];
+    const allFiles = selectedFileAttachmentCache.get(itemId) || [];
+    // Exclude PDF-paper attachments from file preview — they're shown under the paper chip instead
+    const files = allFiles.filter(
+      (f) => !(typeof f.id === "string" && (f.id.startsWith("pdf-paper-") || f.id.startsWith("pdf-page-"))),
+    );
     prunePinnedFileKeys(pinnedFileKeys, itemId, files);
     if (!files.length) {
       filePreview.style.display = "none";

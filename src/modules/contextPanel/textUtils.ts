@@ -252,6 +252,7 @@ export function resolvePromptText(
 }
 
 type FileContextAttachment = {
+  id?: string;
   name: string;
   mimeType?: string;
   sizeBytes: number;
@@ -266,6 +267,8 @@ export function buildModelPromptWithFileContext(
   const textBlocks: string[] = [];
   const metaBlocks: string[] = [];
   for (const attachment of fileAttachments) {
+    // PDF-paper attachments are sent as binary file_ref — skip text metadata
+    if (typeof attachment.id === "string" && (attachment.id.startsWith("pdf-paper-") || attachment.id.startsWith("pdf-page-"))) continue;
     metaBlocks.push(
       `- ${attachment.name} (${attachment.mimeType || "application/octet-stream"}, ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB)`,
     );

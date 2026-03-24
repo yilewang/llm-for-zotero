@@ -141,6 +141,9 @@ type SendFlowControllerDeps = {
     fullTextPaperContexts?: PaperContextRef[],
     attachments?: ChatAttachment[],
     runtimeMode?: "chat" | "agent",
+    agentRunId?: string,
+    skipAgentDispatch?: boolean,
+    pdfModePaperKeys?: Set<string>,
   ) => Promise<void>;
   retainPinnedImageState: (itemId: number) => void;
   retainPaperState: (itemId: number) => void;
@@ -215,8 +218,11 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           "error",
         );
       } else if (pdfSupport === "vision") {
+        deps.setStatusMessage?.(`Rendering PDF pages as images for ${earlyModelName}...`, "ready");
         pdfAttachments = await deps.renderPdfPagesAsImages(pdfModePaperContexts);
+        deps.setStatusMessage?.(`Sending ${pdfAttachments.length} page image(s)...`, "ready");
       } else {
+        deps.setStatusMessage?.(`Sending native PDF to ${earlyModelName}...`, "ready");
         pdfAttachments = await deps.resolvePdfPaperAttachments(pdfModePaperContexts);
       }
     }
@@ -421,6 +427,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       fullTextPaperContexts,
       selectedFiles.length ? selectedFiles : undefined,
       runtimeMode,
+      undefined, // agentRunId
+      false, // skipAgentDispatch
+      pdfModeKeySet.size > 0 ? pdfModeKeySet : undefined,
     );
     if (hasPaperComposeState) {
       deps.consumePaperModeState(item.id);

@@ -1218,6 +1218,7 @@ async function buildContextPlanForRequest(params: {
   recentPaperContexts: PaperContextRef[];
   history: ChatMessage[];
   effectiveRequestConfig: EffectiveRequestConfig;
+  pdfModePaperKeys?: Set<string>;
   setStatusSafely: (
     text: string,
     kind: Parameters<typeof setStatus>[2],
@@ -1233,7 +1234,16 @@ async function buildContextPlanForRequest(params: {
 }> {
   const contextSource = resolveContextSourceItem(params.item);
   params.setStatusSafely(contextSource.statusText, "sending");
-  const activeContextItem = contextSource.contextItem;
+  const rawActiveContextItem = contextSource.contextItem;
+  // If the active paper is in PDF mode (sent as file attachment),
+  // exclude it from the text retrieval pipeline entirely.
+  const activeContextItemInPdfMode = (() => {
+    if (!rawActiveContextItem || !params.pdfModePaperKeys?.size) return false;
+    const autoLoaded = resolveAutoLoadedPaperContextForItem(params.item);
+    if (!autoLoaded) return false;
+    return params.pdfModePaperKeys.has(`${autoLoaded.itemId}:${autoLoaded.contextItemId}`);
+  })();
+  const activeContextItem = activeContextItemInPdfMode ? null : rawActiveContextItem;
   const conversationMode: "open" | "paper" =
     resolveDisplayConversationKind(params.item) === "global"
       ? "open"
@@ -1245,7 +1255,10 @@ async function buildContextPlanForRequest(params: {
     conversationMode,
     question: params.question,
     contextPrefix: "",
-    paperContexts: params.paperContexts,
+    // Exclude PDF-mode papers from the text retrieval pipeline
+    paperContexts: params.pdfModePaperKeys?.size
+      ? params.paperContexts.filter((p) => !params.pdfModePaperKeys!.has(`${p.itemId}:${p.contextItemId}`))
+      : params.paperContexts,
     fullTextPaperContexts: params.fullTextPaperContexts,
     historyPaperContexts: params.recentPaperContexts,
     history: params.history,
@@ -1606,6 +1619,30 @@ function normalizeEditablePaperContexts(
   return normalizePaperContexts(paperContexts);
 }
 
+/**
+ * Derive paper keys that are being sent as PDF file attachments (native or page images).
+ * These papers should be excluded from the text retrieval pipeline to avoid double-processing.
+ */
+function derivePdfModePaperKeys(
+  attachments: ChatAttachment[] | undefined,
+  item: Zotero.Item,
+): Set<string> {
+  const keys = new Set<string>();
+  if (!Array.isArray(attachments)) return keys;
+  for (const a of attachments) {
+    if (typeof a?.id !== "string") continue;
+    const m = a.id.match(/^pdf-(?:paper|page)-(\d+)-/);
+    if (!m) continue;
+    const contextItemId = Number(m[1]);
+    if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
+    const autoLoaded = resolveAutoLoadedPaperContextForItem(item);
+    if (autoLoaded && autoLoaded.contextItemId === contextItemId) {
+      keys.add(`${autoLoaded.itemId}:${autoLoaded.contextItemId}`);
+    }
+  }
+  return keys;
+}
+
 function normalizeEditableFullTextPaperContexts(
   fullTextPaperContexts?: PaperContextRef[],
 ): PaperContextRef[] {
@@ -1616,6 +1653,7 @@ function includeAutoLoadedPaperContext(
   item: Zotero.Item,
   paperContexts?: PaperContextRef[],
   fullTextPaperContexts?: PaperContextRef[],
+  excludePaperKeys?: Set<string>,
 ): {
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
@@ -1640,18 +1678,24 @@ function includeAutoLoadedPaperContext(
       fullTextPaperContexts: normalizedFullTextPaperContexts,
     };
   }
+  // Always include auto-loaded paper in paperContexts (for display in chat history).
+  // Only add to fullTextPaperContexts if NOT in PDF mode.
+  const autoKey = `${autoLoadedPaperContext.itemId}:${autoLoadedPaperContext.contextItemId}`;
+  const isExcludedFromTextPipeline = excludePaperKeys?.has(autoKey) === true;
   return {
     paperContexts: normalizePaperContexts([
       autoLoadedPaperContext,
       ...normalizedPaperContexts,
     ]),
     fullTextPaperContexts:
-      fullTextPaperContexts === undefined
-        ? normalizePaperContexts([
-            autoLoadedPaperContext,
-            ...normalizedFullTextPaperContexts,
-          ])
-        : normalizedFullTextPaperContexts,
+      isExcludedFromTextPipeline
+        ? normalizedFullTextPaperContexts
+        : fullTextPaperContexts === undefined
+          ? normalizePaperContexts([
+              autoLoadedPaperContext,
+              ...normalizedFullTextPaperContexts,
+            ])
+          : normalizedFullTextPaperContexts,
   };
 }
 
@@ -1800,6 +1844,7 @@ export async function editLatestUserMessageAndRetry(
   const normalizedPaperContexts = normalizeEditablePaperContexts(paperContexts);
   const normalizedFullTextPaperContexts =
     normalizeEditableFullTextPaperContexts(fullTextPaperContexts);
+  const pdfExcludeKeys = derivePdfModePaperKeys(attachments, item);
   const {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
@@ -1807,6 +1852,7 @@ export async function editLatestUserMessageAndRetry(
     item,
     normalizedPaperContexts,
     normalizedFullTextPaperContexts,
+    pdfExcludeKeys.size > 0 ? pdfExcludeKeys : undefined,
   );
   const attachmentsForMessage = normalizeEditableAttachments(attachments);
   const updatedTimestamp = Date.now();
@@ -2007,6 +2053,7 @@ export async function retryLatestAssistantResponse(
   try {
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
+    const retryPdfKeys = derivePdfModePaperKeys(retryPair.userMessage.attachments, item);
     const contextPlan = await buildContextPlanForRequest({
       item,
       question,
@@ -2017,6 +2064,7 @@ export async function retryLatestAssistantResponse(
       recentPaperContexts,
       history: llmHistory,
       effectiveRequestConfig,
+      pdfModePaperKeys: retryPdfKeys.size > 0 ? retryPdfKeys : undefined,
       setStatusSafely,
     });
     const combinedContext = contextPlan.combinedContext;
@@ -2300,6 +2348,7 @@ export async function editUserTurnAndRetry(
   const normalizedPaperContexts = normalizeEditablePaperContexts(paperContexts);
   const normalizedFullTextPaperContexts =
     normalizeEditableFullTextPaperContexts(fullTextPaperContexts);
+  const pdfExcludeKeysEdit = derivePdfModePaperKeys(attachments, item);
   const {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
@@ -2307,6 +2356,7 @@ export async function editUserTurnAndRetry(
     item,
     normalizedPaperContexts,
     normalizedFullTextPaperContexts,
+    pdfExcludeKeysEdit.size > 0 ? pdfExcludeKeysEdit : undefined,
   );
   const attachmentsForMessage = normalizeEditableAttachments(attachments);
   userMsg.selectedText = selectedTextForMessage || undefined;
@@ -2575,6 +2625,8 @@ export async function sendQuestion(
   runtimeMode: ChatRuntimeMode = "chat",
   agentRunId?: string,
   skipAgentDispatch = false,
+  /** Paper keys (itemId:contextItemId) sent as PDF file attachments — excluded from text pipeline. */
+  pdfModePaperKeys?: Set<string>,
 ) {
   if (runtimeMode === "agent" && !skipAgentDispatch) {
     await sendAgentQuestion(
@@ -2654,6 +2706,7 @@ export async function sendQuestion(
     item,
     normalizedPaperContexts,
     normalizedFullTextPaperContexts,
+    pdfModePaperKeys && pdfModePaperKeys.size > 0 ? pdfModePaperKeys : undefined,
   );
   const screenshotImagesForMessage = Array.isArray(images)
     ? images
@@ -2783,6 +2836,7 @@ export async function sendQuestion(
       recentPaperContexts,
       history: llmHistory,
       effectiveRequestConfig,
+      pdfModePaperKeys,
       setStatusSafely,
     });
     const combinedContext = contextPlan.combinedContext;
