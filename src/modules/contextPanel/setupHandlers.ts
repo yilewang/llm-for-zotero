@@ -8125,14 +8125,71 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         currentItem,
         selectedPaperContexts,
       );
-      const selectedFiles =
-        selectedFileAttachmentCache.get(currentItem.id) || [];
       const selectedProfile = getSelectedProfile();
       const activeModelName = (
         selectedProfile?.model ||
         getSelectedModelInfo().currentModel ||
         ""
       ).trim();
+      // Resolve PDF-mode papers to file attachments (same logic as sendFlowController)
+      const pdfSupport = getModelPdfSupport(activeModelName, selectedProfile?.providerProtocol);
+      const pdfAttachments: import("./types").ChatAttachment[] = [];
+      if (pdfModePapers.length) {
+        if (pdfSupport === "vision") {
+          const { renderAllPdfPages } = await import("../../agent/services/pdfPageService");
+          for (const pc of pdfModePapers) {
+            try {
+              const pages = await renderAllPdfPages(pc.contextItemId, { maxPages: 20 });
+              for (const page of pages) {
+                pdfAttachments.push({
+                  id: `pdf-page-${pc.contextItemId}-${page.pageIndex}-${Date.now()}`,
+                  name: `${pc.title || "PDF"} - page ${page.pageIndex + 1}.png`,
+                  mimeType: "image/png",
+                  sizeBytes: 0,
+                  category: "image",
+                  storedPath: page.storedPath,
+                  contentHash: page.contentHash,
+                });
+              }
+            } catch (err) {
+              ztoolkit.log("LLM: Failed to render PDF pages for edit", pc.contextItemId, err);
+            }
+          }
+        } else if (pdfSupport === "native") {
+          for (const pc of pdfModePapers) {
+            try {
+              const attachment = Zotero.Items.get(pc.contextItemId);
+              if (!attachment?.isAttachment?.() || attachment.attachmentContentType !== "application/pdf") continue;
+              const filePath = await (async () => {
+                const asyncPath = await (attachment as unknown as { getFilePathAsync?: () => Promise<string | false> }).getFilePathAsync?.();
+                if (asyncPath) return asyncPath as string;
+                if (typeof (attachment as { getFilePath?: () => string | undefined }).getFilePath === "function") return (attachment as { getFilePath: () => string | undefined }).getFilePath();
+                return (attachment as unknown as { attachmentPath?: string }).attachmentPath;
+              })();
+              if (!filePath) continue;
+              const bytes = await readAttachmentBytes(filePath);
+              if (bytes.byteLength > MAX_UPLOAD_PDF_SIZE_BYTES) continue;
+              const fileName = filePath.split(/[\\/]/).pop() || "document.pdf";
+              const persisted = await persistAttachmentBlob(fileName, new Uint8Array(bytes));
+              pdfAttachments.push({
+                id: `pdf-paper-${pc.contextItemId}-${Date.now()}`,
+                name: fileName,
+                mimeType: "application/pdf",
+                sizeBytes: bytes.byteLength,
+                category: "pdf",
+                storedPath: persisted.storedPath,
+                contentHash: persisted.contentHash,
+              });
+            } catch (err) {
+              ztoolkit.log("LLM: Failed to resolve PDF paper for edit", pc.contextItemId, err);
+            }
+          }
+        }
+      }
+      const selectedFiles = [
+        ...(selectedFileAttachmentCache.get(currentItem.id) || []),
+        ...pdfAttachments,
+      ];
       const selectedImages = (selectedImageCache.get(currentItem.id) || []).slice(
         0,
         MAX_SELECTED_IMAGES,
