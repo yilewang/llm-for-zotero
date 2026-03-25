@@ -11,6 +11,7 @@ import type {
   PaperContextSendMode,
   PaperContentSourceMode,
 } from "./types";
+import { TTLMap } from "./contexts/ttlMap";
 // =============================================================================
 // Module State
 // =============================================================================
@@ -25,7 +26,8 @@ export const selectedReasoningCache = new Map<
 >();
 export const selectedRuntimeModeCache = new Map<number, ChatRuntimeMode>();
 
-export const pdfTextCache = new Map<number, PdfContext>();
+// 30-minute TTL, max 20 entries — PDF text can be re-extracted on demand.
+export const pdfTextCache = new TTLMap<number, PdfContext>(30 * 60 * 1000, 20);
 export const pdfTextLoadingTasks = new Map<number, Promise<void>>();
 export const shortcutTextCache = new Map<string, string>();
 export const shortcutMoveModeState = new WeakMap<Element, boolean>();
@@ -94,8 +96,9 @@ export function setPromptMenuTarget(value: typeof promptMenuTarget) {
   promptMenuTarget = value;
 }
 
-// Screenshot selection state (per item)
-export const selectedImageCache = new Map<number, string[]>();
+// Screenshot selection state (per item) — capped to prevent memory growth
+// from accumulated base64 image data (24-hour TTL, max 30 items).
+export const selectedImageCache = new TTLMap<number, string[]>(24 * 60 * 60 * 1000, 30);
 export const selectedFileAttachmentCache = new Map<number, ChatAttachment[]>();
 export const selectedFilePreviewExpandedCache = new Map<number, boolean>();
 export const selectedPaperContextCache = new Map<number, PaperContextRef[]>();
@@ -110,7 +113,8 @@ export const activeConversationModeByLibrary = new Map<
   number,
   "paper" | "global"
 >();
-export const draftInputCache = new Map<number, string>();
+// Draft text per conversation — capped to prevent unbounded growth (24h TTL, max 100).
+export const draftInputCache = new TTLMap<number, string>(24 * 60 * 60 * 1000, 100);
 export const selectedTextCache = new Map<number, SelectedTextContext[]>();
 export const selectedTextPreviewExpandedCache = new Map<number, number>();
 export const selectedNotePreviewExpandedCache = new Map<number, boolean>();
@@ -120,7 +124,8 @@ export const pinnedSelectedTextKeys = new Map<number, Set<string>>();
 export const pinnedImageKeys = new Map<number, Set<string>>();
 export const pinnedFileKeys = new Map<number, Set<string>>();
 export const pinnedPaperKeys = new Map<number, Set<string>>();
-export const recentReaderSelectionCache = new Map<number, string>();
+// Recent reader text selections — capped (5-min TTL, max 50).
+export const recentReaderSelectionCache = new TTLMap<number, string>(5 * 60 * 1000, 50);
 
 export const activePaperConversationByPaper = new Map<string, number>();
 
@@ -171,4 +176,54 @@ export function setInlineEditInputSection(
 }
 export function setInlineEditSavedDraft(text: string): void {
   inlineEditSavedDraft = text;
+}
+
+/**
+ * Release all module-level state.  Called on plugin shutdown to prevent
+ * memory leaks across hot-reloads.
+ */
+export function clearAllState(): void {
+  // Disconnect any ResizeObservers stored on panel bodies before clearing.
+  for (const [panelBody] of activeContextPanels) {
+    const obs = (panelBody as any).__llmResizeObservers as ResizeObserver[] | undefined;
+    if (obs) {
+      for (const o of obs) o.disconnect();
+      delete (panelBody as any).__llmResizeObservers;
+    }
+  }
+
+  chatHistory.clear();
+  loadedConversationKeys.clear();
+  loadingConversationTasks.clear();
+  selectedModelCache.clear();
+  selectedReasoningCache.clear();
+  selectedRuntimeModeCache.clear();
+  pdfTextCache.clear();
+  pdfTextLoadingTasks.clear();
+  shortcutTextCache.clear();
+  activeContextPanels.clear();
+  activeContextPanelRawItems.clear();
+  activeContextPanelStateSync.clear();
+  selectedImageCache.clear();
+  selectedFileAttachmentCache.clear();
+  selectedFilePreviewExpandedCache.clear();
+  selectedPaperContextCache.clear();
+  selectedOtherRefContextCache.clear();
+  paperContextModeOverrides.clear();
+  paperContentSourceOverrides.clear();
+  selectedPaperPreviewExpandedCache.clear();
+  activeGlobalConversationByLibrary.clear();
+  activeConversationModeByLibrary.clear();
+  draftInputCache.clear();
+  selectedTextCache.clear();
+  selectedTextPreviewExpandedCache.clear();
+  selectedNotePreviewExpandedCache.clear();
+  selectedImagePreviewExpandedCache.clear();
+  selectedImagePreviewActiveIndexCache.clear();
+  pinnedSelectedTextKeys.clear();
+  pinnedImageKeys.clear();
+  pinnedFileKeys.clear();
+  pinnedPaperKeys.clear();
+  recentReaderSelectionCache.clear();
+  activePaperConversationByPaper.clear();
 }

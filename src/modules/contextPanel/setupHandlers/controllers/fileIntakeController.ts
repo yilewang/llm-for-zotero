@@ -16,7 +16,7 @@ type FileIntakeControllerDeps = {
     fileName: string,
     bytes: Uint8Array,
   ) => Promise<{ storedPath: string; contentHash: string }>;
-  selectedImageCache: Map<number, string[]>;
+  selectedImageCache: { get(key: number): string[] | undefined; set(key: number, value: string[]): unknown; delete(key: number): boolean };
   selectedFileAttachmentCache: Map<number, ChatAttachment[]>;
   updateImagePreview: () => void;
   updateFilePreview: () => void;

@@ -327,6 +327,9 @@ import { createSendFlowController } from "./setupHandlers/controllers/sendFlowCo
 import { createClearConversationController } from "./setupHandlers/controllers/clearConversationController";
 import { clearAllAgentToolCaches } from "../../agent/tools";
 
+/** Monotonic counter incremented every time setupHandlers rebuilds a panel. */
+let setupHandlersGeneration = 0;
+
 export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const resolvedInitialState = resolveInitialPanelItemState(initialItem);
   let item = resolvedInitialState.item;
@@ -428,7 +431,26 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     ztoolkit.log("LLM: Could not find panel root");
     return;
   }
+
+  // Guard: skip re-wiring if handlers were already attached to this exact
+  // panelRoot element.  buildUI() creates a fresh panelRoot each time, so
+  // the stamp is only present when setupHandlers is called twice on the
+  // same DOM tree without an intervening rebuild.
+  const thisGen = String(++setupHandlersGeneration);
+  if (panelRoot.dataset.handlersAttached) {
+    return;
+  }
+  panelRoot.dataset.handlersAttached = thisGen;
+
   activeContextPanels.set(body, () => item);
+
+  // Disconnect previous ResizeObservers to prevent accumulation across
+  // successive setupHandlers calls (each call creates fresh observers).
+  const prevObservers = (body as any).__llmResizeObservers as ResizeObserver[] | undefined;
+  if (prevObservers) {
+    for (const obs of prevObservers) obs.disconnect();
+    delete (body as any).__llmResizeObservers;
+  }
 
   // buildUI() wipes body.textContent whenever onAsyncRender fires (item
   // navigation), which destroys the cancel/send button DOM mid-stream.
@@ -3133,27 +3155,32 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const sectionViewports = Array.from(
       historyMenu.querySelectorAll(".llm-history-menu-section-viewport"),
     ) as HTMLDivElement[];
+
+    // --- Read pass: measure everything before writing any styles. ---
+    // This avoids layout thrashing (interleaved reads + writes force the
+    // browser to recalculate layout on every iteration).
+    const measurements: Array<{ viewport: HTMLDivElement; maxHeight: string }> = [];
     for (const sectionViewport of sectionViewports) {
       const shouldLimit =
         sectionViewport.dataset.scrollLimited === "true" &&
         !sectionViewport.hidden &&
         sectionViewport.style.display !== "none";
       if (!shouldLimit) {
-        sectionViewport.style.maxHeight = "";
+        measurements.push({ viewport: sectionViewport, maxHeight: "" });
         continue;
       }
       const sectionRows = sectionViewport.querySelector(
         ".llm-history-menu-section-rows",
       ) as HTMLDivElement | null;
       if (!sectionRows) {
-        sectionViewport.style.maxHeight = "";
+        measurements.push({ viewport: sectionViewport, maxHeight: "" });
         continue;
       }
       const rowElements = Array.from(sectionRows.children).filter((child) =>
         child.classList.contains("llm-history-menu-row"),
       ) as HTMLDivElement[];
       if (!rowElements.length) {
-        sectionViewport.style.maxHeight = "";
+        measurements.push({ viewport: sectionViewport, maxHeight: "" });
         continue;
       }
       const computedRowsStyle =
@@ -3175,12 +3202,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         if (measuredHeight > 0) visibleHeight += measuredHeight;
       }
       if (visibleHeight <= 0) {
-        sectionViewport.style.maxHeight = "";
+        measurements.push({ viewport: sectionViewport, maxHeight: "" });
         continue;
       }
       visibleHeight +=
         rowGap * Math.max(0, HISTORY_SECTION_VISIBLE_ROW_COUNT - 1);
-      sectionViewport.style.maxHeight = `${Math.ceil(visibleHeight)}px`;
+      measurements.push({ viewport: sectionViewport, maxHeight: `${Math.ceil(visibleHeight)}px` });
+    }
+
+    // --- Write pass: apply all maxHeight values at once. ---
+    for (const { viewport, maxHeight } of measurements) {
+      viewport.style.maxHeight = maxHeight;
     }
   };
 
@@ -5055,6 +5087,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const resolved = resolveInitialPanelItemState(rawItem);
       buildUI(otherBody as Element, resolved.item);
       activeContextPanels.set(otherBody, () => resolved.item);
+      // buildUI creates fresh DOM elements, so handlers must be re-attached.
+      // The P4 handlersAttached guard prevents truly redundant calls.
       setupHandlers(otherBody as Element, rawItem);
       void (async () => {
         try {
@@ -6274,6 +6308,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   });
   const ResizeObserverCtor = body.ownerDocument?.defaultView?.ResizeObserver;
   if (ResizeObserverCtor && panelRoot && modelBtn) {
+    const newObservers: ResizeObserver[] = [];
     const ro = new ResizeObserverCtor(() => {
       // Wrap layout mutations in scroll guard so that flex-driven
       // resize of .llm-messages doesn't corrupt the scroll snapshot.
@@ -6287,6 +6322,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         "relative",
       );
     });
+    newObservers.push(ro);
     ro.observe(panelRoot);
     if (actionsRow) ro.observe(actionsRow);
     if (actionsLeft) ro.observe(actionsLeft);
@@ -6338,8 +6374,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }
         chatBoxViewportState = current;
       });
+      newObservers.push(chatBoxResizeObserver);
       chatBoxResizeObserver.observe(chatBox);
     }
+    // Store observers on body so they can be disconnected on next
+    // setupHandlers call (prevents accumulation across tab switches).
+    (body as any).__llmResizeObservers = newObservers;
   }
 
   const getSelectedProfile = () => {

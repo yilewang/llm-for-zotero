@@ -18,8 +18,9 @@ import {
 } from "./utils/attachmentRefStore";
 import { runLegacyMigrations } from "./utils/migrations";
 import { createZToolkit } from "./utils/ztoolkit";
-import { getAgentApi, initAgentSubsystem } from "./agent";
+import { getAgentApi, initAgentSubsystem, shutdownAgentSubsystem } from "./agent";
 import { pauseBatchProcessing } from "./modules/mineruBatchProcessor";
+import { clearAllState } from "./modules/contextPanel/state";
 
 async function onStartup() {
   await Promise.all([
@@ -107,6 +108,8 @@ function onShutdown(): void {
   ztoolkit.unregisterAll();
   addon.data.dialog?.window?.close();
   pauseBatchProcessing();
+  shutdownAgentSubsystem();
+  clearAllState();
   // Remove addon object
   addon.data.alive = false;
   // @ts-expect-error - Plugin instance is not typed
@@ -117,6 +120,8 @@ function onShutdown(): void {
  * This function is just an example of dispatcher for Notify events.
  * Any operations should be placed in a function to keep this funcion clear.
  */
+let paperSearchInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
+
 async function onNotify(
   event: string,
   type: string,
@@ -135,7 +140,13 @@ async function onNotify(
       "refresh",
     ].includes(event);
   if (shouldInvalidatePaperSearch) {
-    invalidatePaperSearchCache();
+    // Debounce: during bulk operations (import, sync) this fires hundreds
+    // of times — coalesce into a single invalidation after 500ms of quiet.
+    if (paperSearchInvalidateTimer !== null) clearTimeout(paperSearchInvalidateTimer);
+    paperSearchInvalidateTimer = setTimeout(() => {
+      paperSearchInvalidateTimer = null;
+      invalidatePaperSearchCache();
+    }, 500);
   }
   // You can add your code to the corresponding notify type
   ztoolkit.log("notify", event, type, ids, extraData);

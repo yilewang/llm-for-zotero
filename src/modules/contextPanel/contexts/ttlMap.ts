@@ -23,11 +23,12 @@ export class TTLMap<K, V> {
     return entry.value;
   }
 
-  set(key: K, value: V): void {
+  set(key: K, value: V): this {
     this.data.set(key, { value, expiresAt: Date.now() + this.ttlMs });
     if (this.data.size > this.maxEntries) {
       this.prune();
     }
+    return this;
   }
 
   has(key: K): boolean {

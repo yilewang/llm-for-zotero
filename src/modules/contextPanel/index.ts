@@ -169,6 +169,8 @@ export function registerReaderContextPanel() {
           // Attach handlers synchronously so buttons (lock, send, etc.) are
           // immediately interactive — don't gate on ensureConversationLoaded.
           setupHandlers(body, item);
+          // Flag: onAsyncRender can skip the duplicate buildUI + setupHandlers.
+          (body as any).__llmSyncRendered = true;
           // Defer conversation loading and chat rendering
           void (async () => {
             try {
@@ -197,9 +199,18 @@ export function registerReaderContextPanel() {
       const resolvedItem = resolvedInitialState.item;
       const basePaperItem = resolvedInitialState.basePaperItem;
 
-      buildUI(body, resolvedItem);
-      activeContextPanelRawItems.set(body, item || null);
-      
+      // If onRender already did the synchronous buildUI + setupHandlers for
+      // this render cycle, skip the duplicate work.  We still run the
+      // async-only steps: ensureConversationLoaded (properly awaited),
+      // renderShortcuts, refreshChat (after data ready), and content caching.
+      const syncAlreadyRendered = (body as any).__llmSyncRendered === true;
+      if (syncAlreadyRendered) {
+        delete (body as any).__llmSyncRendered;
+      } else {
+        buildUI(body, resolvedItem);
+        activeContextPanelRawItems.set(body, item || null);
+      }
+
       if (resolvedItem) {
         await ensureConversationLoaded(resolvedItem);
       }
@@ -207,7 +218,9 @@ export function registerReaderContextPanel() {
       if (renderGeneration !== thisGeneration) return;
       await renderShortcuts(body, resolvedItem);
       if (renderGeneration !== thisGeneration) return;
-      setupHandlers(body, item); // setupHandlers will re-resolve its own state from item
+      if (!syncAlreadyRendered) {
+        setupHandlers(body, item);
+      }
       refreshChat(body, resolvedItem);
       // Defer content extraction so the panel becomes interactive sooner.
       const activeContextItem = getActiveContextAttachmentFromTabs();
@@ -727,30 +740,23 @@ export function registerReaderSelectionTracking() {
             sentinel = fallback;
           }
 
-          let wasConnected = false;
-          let checks = 0;
-          const maxChecks = 600;
-
-          const watchSentinel = () => {
-            if (++checks > maxChecks) return;
-            if (sentinel.isConnected) {
-              wasConnected = true;
-              setTimeout(watchSentinel, 500);
-              return;
-            }
-            if (!wasConnected && checks <= 6) {
-              setTimeout(watchSentinel, 200);
-              return;
-            }
-            if (wasConnected) {
-              for (const key of keys) {
-                if (recentReaderSelectionCache.get(key) === selectedText) {
-                  recentReaderSelectionCache.delete(key);
+          // Use MutationObserver to detect when the sentinel is removed from
+          // the DOM (popup dismissed), instead of polling with recursive
+          // setTimeout (which could accumulate up to 600 timer callbacks).
+          const parentEl = sentinel.parentNode;
+          if (parentEl) {
+            const observer = new MutationObserver(() => {
+              if (!sentinel.isConnected) {
+                observer.disconnect();
+                for (const key of keys) {
+                  if (recentReaderSelectionCache.get(key) === selectedText) {
+                    recentReaderSelectionCache.delete(key);
+                  }
                 }
               }
-            }
-          };
-          setTimeout(watchSentinel, 100);
+            });
+            observer.observe(parentEl, { childList: true });
+          }
         } catch (_err) {
           ztoolkit.log("LLM: selection popup sentinel failed", _err);
         }
@@ -879,11 +885,21 @@ function refreshTrackedNoteEditingSelection(
 ): void {
   const tracker = win.__llmNoteEditingSelectionTracking;
   if (!tracker) return;
+
+  // Fast path: skip expensive iframe traversal when no note tab is active.
+  // getActiveNoteItemFromWindow traverses Zotero tabs and items; only proceed
+  // to the heavier collectAccessibleDocuments when a note is actually open.
   const noteItem = getActiveNoteItemFromWindow(win);
   const nextNoteId =
     noteItem && Number.isFinite(noteItem.id) && noteItem.id > 0
       ? Math.floor(noteItem.id)
       : 0;
+
+  if (nextNoteId === 0 && tracker.lastNoteId === 0) {
+    // No note was active before and none is active now — nothing to do.
+    return;
+  }
+
   const nextSelectionText = noteItem
     ? collectAccessibleDocuments(win.document).reduce((found, doc) => {
         return found || getEditableSelectionFromDocument(doc);
@@ -936,25 +952,36 @@ export function registerNoteEditingSelectionTracking(
   const refresh = () => {
     refreshTrackedNoteEditingSelection(trackedWindow);
   };
-  const intervalId = win.setInterval(refresh, 250);
+  // Debounced version for event-driven calls (selectionchange, mouseup,
+  // keyup) — prevents the expensive iframe traversal from firing dozens
+  // of times per second during rapid typing or drag-selecting.
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const debouncedRefresh = () => {
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(refresh, 150);
+  };
+  // Interval reduced from 250ms → 1000ms.  The event listeners handle
+  // real-time changes; this interval is only a fallback safety net.
+  const intervalId = win.setInterval(refresh, 1000);
   trackedWindow.__llmNoteEditingSelectionTracking = {
     intervalId,
     refresh,
     lastNoteId: 0,
     lastSelectionText: "",
   };
-  win.document.addEventListener("selectionchange", refresh, true);
-  win.document.addEventListener("mouseup", refresh, true);
-  win.document.addEventListener("keyup", refresh, true);
+  win.document.addEventListener("selectionchange", debouncedRefresh, true);
+  win.document.addEventListener("mouseup", debouncedRefresh, true);
+  win.document.addEventListener("keyup", debouncedRefresh, true);
   win.addEventListener(
     "unload",
     () => {
       const tracker = trackedWindow.__llmNoteEditingSelectionTracking;
       if (!tracker) return;
       win.clearInterval(tracker.intervalId);
-      win.document.removeEventListener("selectionchange", tracker.refresh, true);
-      win.document.removeEventListener("mouseup", tracker.refresh, true);
-      win.document.removeEventListener("keyup", tracker.refresh, true);
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      win.document.removeEventListener("selectionchange", debouncedRefresh, true);
+      win.document.removeEventListener("mouseup", debouncedRefresh, true);
+      win.document.removeEventListener("keyup", debouncedRefresh, true);
       delete trackedWindow.__llmNoteEditingSelectionTracking;
     },
     { once: true },
