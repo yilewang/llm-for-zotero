@@ -96,6 +96,103 @@ export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
   setReaderContextPanelRegistered(true);
+
+  // Poll for tab changes to update unlocked floating window automatically
+  const mainWin = Zotero.getMainWindow();
+  if (mainWin) {
+    let lastTabId = mainWin.Zotero_Tabs?.selectedID;
+    mainWin.setInterval(() => {
+      const floatWin = (mainWin as any).__llmFloatingWindow;
+      if (!floatWin || floatWin.closed || floatWin.__llmLocked) {
+        lastTabId = mainWin.Zotero_Tabs?.selectedID;
+        return;
+      }
+      const currentTabId = mainWin.Zotero_Tabs?.selectedID;
+      if (currentTabId !== undefined && currentTabId !== lastTabId) {
+        lastTabId = currentTabId;
+        // Tab changed! Auto-sync unlocked floating window.
+        setTimeout(() => {
+          const checkFloatWin = (mainWin as any).__llmFloatingWindow;
+          if (!checkFloatWin || checkFloatWin.closed || checkFloatWin.__llmLocked) return;
+
+          const oldHostBody = (mainWin as any).__llmFloatedPanelHostBody;
+          const oldContainer = checkFloatWin.document.body.querySelector("#llm-main");
+          if (oldContainer && oldHostBody && typeof oldHostBody.replaceChildren === 'function') {
+            oldContainer.classList.remove("llm-panel-os-window");
+            oldHostBody.replaceChildren(oldContainer);
+            if (oldHostBody.__llmFloatedPanel) oldHostBody.__llmFloatedPanel = null;
+            ["#llm-lock", "#llm-minimize", "#llm-maximize", "#llm-close"].forEach((id: string) => {
+              const el = oldHostBody.querySelector(id);
+              if (el) (el as HTMLElement).style.display = "none";
+            });
+            const pBtn = oldHostBody.querySelector("#llm-popout");
+            if (pBtn) (pBtn as HTMLElement).style.display = "flex";
+            
+            if (oldHostBody instanceof (oldHostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
+                (oldHostBody as HTMLElement).style.display = 'none';
+                void (oldHostBody as HTMLElement).offsetHeight;
+                (oldHostBody as HTMLElement).style.display = '';
+            }
+          }
+
+          // Build new UI via a synthetic body for floatWin
+          const contextRes = require('./contextResolution');
+          if (contextRes.getActiveReaderForSelectedTab) contextRes.getActiveReaderForSelectedTab(); 
+          const getTabsState = contextRes.getZoteroTabsState;
+          if (!getTabsState) return;
+          const tabs = getTabsState();
+          const activeTab = Array.isArray(tabs?._tabs) ? tabs._tabs.find((t: any) => `${t?.id || ""}` === `${currentTabId}`) : null;
+          
+          let newItem = null;
+          if (activeTab?.data?.groupID !== undefined && activeTab?.data?.itemID !== undefined) {
+             newItem = Zotero.Items.get(activeTab.data.itemID) || null;
+          } else {
+             const activeReader = contextRes.getActiveReaderForSelectedTab ? contextRes.getActiveReaderForSelectedTab() : null;
+             if (activeReader && activeReader.itemID) {
+               newItem = Zotero.Items.get(activeReader.itemID) || null;
+             }
+          }
+
+          const resolvedInitialState = resolveInitialPanelItemState(newItem);
+          const resolvedItem = resolvedInitialState.item;
+
+          const fakeBody = mainWin.document.createElement("div");
+          buildUI(fakeBody, resolvedItem);
+
+          const container = fakeBody.querySelector("#llm-main");
+          if (container) {
+            container.classList.add("llm-panel-os-window");
+            checkFloatWin.document.body.replaceChildren(container);
+            (mainWin as any).__llmFloatedPanelHostBody = fakeBody;
+            (fakeBody as any).__llmFloatedPanel = checkFloatWin.document.body;
+            
+            setTimeout(() => {
+              const lBtn = checkFloatWin.document.body.querySelector("#llm-lock");
+              const pBtn2 = checkFloatWin.document.body.querySelector("#llm-popout");
+              if (lBtn) {
+                (lBtn as HTMLElement).style.display = "flex";
+                (lBtn as HTMLElement).style.opacity = "0.5";
+                lBtn.setAttribute("title", "Sync mode (unlocked): tracks Zotero's active tab");
+                lBtn.setAttribute("aria-pressed", "false");
+              }
+              if (pBtn2) (pBtn2 as HTMLElement).style.display = "none";
+              
+              if (resolvedItem) {
+                 ensureConversationLoaded(resolvedItem).then(() => {
+                    renderShortcuts(fakeBody, resolvedItem);
+                    setupHandlers(fakeBody, resolvedItem);
+                    refreshChat(fakeBody, resolvedItem);
+                 });
+              } else {
+                 setupHandlers(fakeBody, null);
+                 refreshChat(fakeBody, null);
+              }
+            }, 0);
+          }
+        }, 150);
+      }
+    }, 400);
+  }
   // Generation counter: incremented on every onAsyncRender call so stale
   // (superseded) renders can bail out at each await point.
   let renderGeneration = 0;

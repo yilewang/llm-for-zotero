@@ -1475,7 +1475,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         let bounds: { x?: number; y?: number; width?: number; height?: number } | null = null;
         try {
           if (boundsStr) bounds = JSON.parse(boundsStr);
-        } catch (e) {}
+        } catch (e) { }
 
         if (bounds && bounds.width && bounds.height) {
           features += `,width=${bounds.width},height=${bounds.height},left=${bounds.x || 0},top=${bounds.y || 0}`;
@@ -1488,16 +1488,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           "LLMFloatingWindow",
           features
         );
-        
+
         floatingWin.addEventListener('beforeunload', () => {
           if (floatingWin.windowState !== floatingWin.STATE_MAXIMIZED && floatingWin.windowState !== floatingWin.STATE_MINIMIZED && !floatingWin.closed) {
-             const newBounds = {
-               x: floatingWin.screenX,
-               y: floatingWin.screenY,
-               width: floatingWin.outerWidth,
-               height: floatingWin.outerHeight
-             };
-             Zotero.Prefs.set(`${config.prefsPrefix}.floatingWindowBounds`, JSON.stringify(newBounds), true);
+            const newBounds = {
+              x: floatingWin.screenX,
+              y: floatingWin.screenY,
+              width: floatingWin.outerWidth,
+              height: floatingWin.outerHeight
+            };
+            Zotero.Prefs.set(`${config.prefsPrefix}.floatingWindowBounds`, JSON.stringify(newBounds), true);
           }
         });
         (mainWin as any).__llmFloatingWindow = floatingWin;
@@ -1506,7 +1506,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           let fDoc = floatingWin.document;
           const dismissTrigger = (ev: Event) => {
             ztoolkit.log("LLM: fDoc dismissTrigger fired, event type: " + ev.type + ", target: " + (ev.target ? (ev.target as Element).tagName : "null") + ", class: " + (ev.target ? (ev.target as Element).className : "null"));
-            
+
             // Because cross-document UI events and strict document separation handles "empty space clicks"
             // occasionally weirdly, we will inline the menu dismissal directly into fDoc's dismiss handler.
             // This runs in the actual same JS context of the floated window.
@@ -1524,19 +1524,19 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             ] as HTMLElement[];
 
             for (const menu of menus) {
-               if (menu.style.display !== "none") {
-                 let target = ev.target as Node;
-                 if (menu === target || (typeof menu.contains === 'function' && menu.contains(target))) continue;
-                 
-                 // Fallback closes
-                 const toggleBtn = fDoc.querySelector(`[aria-controls="${menu.id}"]`) || menu.closest("#llm-main")?.querySelector(`#${menu.id.replace("-menu", "-toggle")}`);
-                 if (toggleBtn && (toggleBtn === target || (typeof toggleBtn.contains === 'function' && toggleBtn.contains(target)))) continue;
-                 
-                 menu.style.display = "none";
-                 if (menu.id === "llm-model-menu") menu.classList.remove("llm-model-menu-open");
-                 if (menu.id === "llm-reasoning-menu") menu.classList.remove("llm-reasoning-menu-open");
-                 if (menu.id === "llm-retry-model-menu") menu.classList.remove("llm-retry-model-menu-open");
-               }
+              if (menu.style.display !== "none") {
+                let target = ev.target as Node;
+                if (menu === target || (typeof menu.contains === 'function' && menu.contains(target))) continue;
+
+                // Fallback closes
+                const toggleBtn = fDoc.querySelector(`[aria-controls="${menu.id}"]`) || menu.closest("#llm-main")?.querySelector(`#${menu.id.replace("-menu", "-toggle")}`);
+                if (toggleBtn && (toggleBtn === target || (typeof toggleBtn.contains === 'function' && toggleBtn.contains(target)))) continue;
+
+                menu.style.display = "none";
+                if (menu.id === "llm-model-menu") menu.classList.remove("llm-model-menu-open");
+                if (menu.id === "llm-reasoning-menu") menu.classList.remove("llm-reasoning-menu-open");
+                if (menu.id === "llm-retry-model-menu") menu.classList.remove("llm-retry-model-menu-open");
+              }
             }
 
             const customEv = new CustomEvent("llm-menu-dismiss-trigger", { bubbles: true, composed: true });
@@ -1675,7 +1675,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
               if (hostBody) {
                 hostBody.replaceChildren(containerNode);
                 (hostBody as any).__llmFloatedPanel = null;
-                
+
                 // Force a reflow to ensure it paints in the Zotero right sidebar after being moved across documents
                 if (hostBody instanceof (hostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
                   (hostBody as HTMLElement).style.display = 'none';
@@ -1774,7 +1774,32 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }, 150);
       } else {
         floatingWin.focus();
-        const container = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main");
+        
+        // BUG 2 FIX: Ensure we return the previous tab's container to its original host so it isn't orphaned
+        const oldContainer = floatingWin.document.body.querySelector("#llm-main");
+        const oldHostBody = (mainWin as any).__llmFloatedPanelHostBody;
+        const targetContainer = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main");
+
+        if (oldContainer && oldHostBody && oldHostBody !== body && oldContainer !== targetContainer) {
+            oldContainer.classList.remove("llm-panel-os-window");
+            oldHostBody.replaceChildren(oldContainer);
+            if (oldHostBody.__llmFloatedPanel) oldHostBody.__llmFloatedPanel = null;
+            ["#llm-lock", "#llm-minimize", "#llm-maximize", "#llm-close"].forEach(id => {
+              const el = oldHostBody.querySelector(id);
+              if (el) (el as HTMLElement).style.display = "none";
+            });
+            const pBtn = oldHostBody.querySelector("#llm-popout");
+            if (pBtn) (pBtn as HTMLElement).style.display = "flex";
+            
+            // Force a reflow
+            if (oldHostBody instanceof (oldHostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
+                (oldHostBody as HTMLElement).style.display = 'none';
+                void (oldHostBody as HTMLElement).offsetHeight;
+                (oldHostBody as HTMLElement).style.display = '';
+            }
+        }
+
+        const container = targetContainer;
         if (container) {
           container.classList.add("llm-panel-os-window");
           floatingWin.document.body.replaceChildren(container);
@@ -1842,7 +1867,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         } else {
           lockBtn.style.opacity = "0.5";
           lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
-            lockBtn.setAttribute("aria-pressed", "false");
+          lockBtn.setAttribute("aria-pressed", "false");
         }
       } else {
         if (lockBtn) lockBtn.style.display = "none";
@@ -9755,7 +9780,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   ) {
     const handleDocumentDismiss = (e: Event) => {
       ztoolkit.log("LLM: handleDocumentDismiss fired " + e.type + ", target: " + (e.target ? (e.target as Element).tagName : "null") + ", isCustom: " + (e.type === "llm-menu-dismiss-trigger"));
-      
+
       const me = e as MouseEvent;
       const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
       const button = ((e as any).button !== undefined ? (e as any).button : me.button) as number;
