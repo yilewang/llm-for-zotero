@@ -186,7 +186,7 @@ function getZoteroTabsStateWithSource(): {
   return { tabs: null, source: "none" };
 }
 
-function getZoteroTabsState(): ZoteroTabsState | null {
+export function getZoteroTabsState(): ZoteroTabsState | null {
   return getZoteroTabsStateWithSource().tabs;
 }
 

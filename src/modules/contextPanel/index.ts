@@ -56,6 +56,7 @@ import {
   appendSelectedTextContextForItem,
   applySelectedTextPreview,
   syncSelectedTextContextForSource,
+  getZoteroTabsState,
 } from "./contextResolution";
 import { ensurePDFTextCached, ensureNoteTextCached } from "./pdfContext";
 import { resolveCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
@@ -136,18 +137,15 @@ export function registerReaderContextPanel() {
           }
 
           // Build new UI via a synthetic body for floatWin
-          const contextRes = require('./contextResolution');
-          if (contextRes.getActiveReaderForSelectedTab) contextRes.getActiveReaderForSelectedTab(); 
-          const getTabsState = contextRes.getZoteroTabsState;
-          if (!getTabsState) return;
-          const tabs = getTabsState();
+          getActiveReaderForSelectedTab(); 
+          const tabs = getZoteroTabsState();
           const activeTab = Array.isArray(tabs?._tabs) ? tabs._tabs.find((t: any) => `${t?.id || ""}` === `${currentTabId}`) : null;
           
           let newItem = null;
           if (activeTab?.data?.groupID !== undefined && activeTab?.data?.itemID !== undefined) {
              newItem = Zotero.Items.get(activeTab.data.itemID) || null;
           } else {
-             const activeReader = contextRes.getActiveReaderForSelectedTab ? contextRes.getActiveReaderForSelectedTab() : null;
+             const activeReader = getActiveReaderForSelectedTab();
              if (activeReader && activeReader.itemID) {
                newItem = Zotero.Items.get(activeReader.itemID) || null;
              }

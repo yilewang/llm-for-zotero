@@ -1774,29 +1774,29 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }, 150);
       } else {
         floatingWin.focus();
-        
+
         // BUG 2 FIX: Ensure we return the previous tab's container to its original host so it isn't orphaned
         const oldContainer = floatingWin.document.body.querySelector("#llm-main");
         const oldHostBody = (mainWin as any).__llmFloatedPanelHostBody;
         const targetContainer = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main");
 
         if (oldContainer && oldHostBody && oldHostBody !== body && oldContainer !== targetContainer) {
-            oldContainer.classList.remove("llm-panel-os-window");
-            oldHostBody.replaceChildren(oldContainer);
-            if (oldHostBody.__llmFloatedPanel) oldHostBody.__llmFloatedPanel = null;
-            ["#llm-lock", "#llm-minimize", "#llm-maximize", "#llm-close"].forEach(id => {
-              const el = oldHostBody.querySelector(id);
-              if (el) (el as HTMLElement).style.display = "none";
-            });
-            const pBtn = oldHostBody.querySelector("#llm-popout");
-            if (pBtn) (pBtn as HTMLElement).style.display = "flex";
-            
-            // Force a reflow
-            if (oldHostBody instanceof (oldHostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
-                (oldHostBody as HTMLElement).style.display = 'none';
-                void (oldHostBody as HTMLElement).offsetHeight;
-                (oldHostBody as HTMLElement).style.display = '';
-            }
+          oldContainer.classList.remove("llm-panel-os-window");
+          oldHostBody.replaceChildren(oldContainer);
+          if (oldHostBody.__llmFloatedPanel) oldHostBody.__llmFloatedPanel = null;
+          ["#llm-lock", "#llm-minimize", "#llm-maximize", "#llm-close"].forEach(id => {
+            const el = oldHostBody.querySelector(id);
+            if (el) (el as HTMLElement).style.display = "none";
+          });
+          const pBtn = oldHostBody.querySelector("#llm-popout");
+          if (pBtn) (pBtn as HTMLElement).style.display = "flex";
+
+          // Force a reflow
+          if (oldHostBody instanceof (oldHostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
+            (oldHostBody as HTMLElement).style.display = 'none';
+            void (oldHostBody as HTMLElement).offsetHeight;
+            (oldHostBody as HTMLElement).style.display = '';
+          }
         }
 
         const container = targetContainer;
