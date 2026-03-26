@@ -1210,17 +1210,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       // Stop propagation for both pointer and mouse events so that the
       // document-level dismiss handler cannot race with button clicks.
       responseMenu.addEventListener("pointerdown", (e: Event) => {
-      e.stopPropagation();
-    });
-    responseMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
-      e.stopPropagation();
-    });
+        e.stopPropagation();
+      });
+      responseMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+        e.stopPropagation();
+      });
       responseMenu.addEventListener("mousedown", (e: Event) => {
-      e.stopPropagation();
-    });
-    responseMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
-      e.stopPropagation();
-    });
+        e.stopPropagation();
+      });
+      responseMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+        e.stopPropagation();
+      });
       responseMenu.addEventListener("contextmenu", (e: Event) => {
         e.preventDefault();
         e.stopPropagation();
@@ -1330,17 +1330,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (!promptMenu.dataset.listenerAttached) {
       promptMenu.dataset.listenerAttached = "true";
       promptMenu.addEventListener("pointerdown", (e: Event) => {
-      e.stopPropagation();
-    });
-    promptMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
-      e.stopPropagation();
-    });
+        e.stopPropagation();
+      });
+      promptMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+        e.stopPropagation();
+      });
       promptMenu.addEventListener("mousedown", (e: Event) => {
-      e.stopPropagation();
-    });
-    promptMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
-      e.stopPropagation();
-    });
+        e.stopPropagation();
+      });
+      promptMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+        e.stopPropagation();
+      });
       promptMenu.addEventListener("contextmenu", (e: Event) => {
         e.preventDefault();
         e.stopPropagation();
@@ -1375,17 +1375,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (!exportMenu.dataset.listenerAttached) {
       exportMenu.dataset.listenerAttached = "true";
       exportMenu.addEventListener("pointerdown", (e: Event) => {
-      e.stopPropagation();
-    });
-    exportMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
-      e.stopPropagation();
-    });
+        e.stopPropagation();
+      });
+      exportMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+        e.stopPropagation();
+      });
       exportMenu.addEventListener("mousedown", (e: Event) => {
-      e.stopPropagation();
-    });
-    exportMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
-      e.stopPropagation();
-    });
+        e.stopPropagation();
+      });
+      exportMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+        e.stopPropagation();
+      });
       exportMenu.addEventListener("contextmenu", (e: Event) => {
         e.preventDefault();
         e.stopPropagation();
@@ -1479,12 +1479,14 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
         setTimeout(() => {
           let fDoc = floatingWin.document;
-          fDoc.addEventListener("mousedown", (ev: Event) => {
+          const dismissTrigger = (ev: Event) => {
             const customEv = new CustomEvent("llm-menu-dismiss-trigger");
             (customEv as any).__llmTarget = ev.target;
             (customEv as any).button = (ev as MouseEvent).button;
             if (body.ownerDocument) body.ownerDocument.dispatchEvent(customEv);
-          });
+          };
+          fDoc.addEventListener("pointerdown", dismissTrigger, true);
+          fDoc.addEventListener("mousedown", dismissTrigger, true);
           floatingWin.document.title = "AI Assistant";
           const styleLinks = mainWin.document.querySelectorAll("link[rel='stylesheet'], link[rel='localization']");
           styleLinks.forEach((link: any) => {
@@ -9682,37 +9684,37 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
       const button = ((e as any).button !== undefined ? (e as any).button : me.button) as number;
       const modelMenus = Array.from(
-        doc.querySelectorAll("#llm-model-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-model-menu")),
       ) as HTMLDivElement[];
       const reasoningMenus = Array.from(
-        doc.querySelectorAll("#llm-reasoning-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-reasoning-menu")),
       ) as HTMLDivElement[];
       const retryButtonTarget = isElementNode(target)
         ? (target.closest(".llm-retry-latest") as HTMLButtonElement | null)
         : null;
       const retryModelMenus = Array.from(
-        doc.querySelectorAll("#llm-retry-model-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-retry-model-menu")),
       ) as HTMLDivElement[];
       const responseMenus = Array.from(
-        doc.querySelectorAll("#llm-response-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-response-menu")),
       ) as HTMLDivElement[];
       const promptMenus = Array.from(
-        doc.querySelectorAll("#llm-prompt-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-prompt-menu")),
       ) as HTMLDivElement[];
       const exportMenus = Array.from(
-        doc.querySelectorAll("#llm-export-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-export-menu")),
       ) as HTMLDivElement[];
       const slashMenus = Array.from(
-        doc.querySelectorAll("#llm-slash-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-slash-menu")),
       ) as HTMLDivElement[];
       const historyMenus = Array.from(
-        doc.querySelectorAll("#llm-history-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-history-menu")),
       ) as HTMLDivElement[];
       const historyNewMenus = Array.from(
-        doc.querySelectorAll("#llm-history-new-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-history-new-menu")),
       ) as HTMLDivElement[];
       const historyRowMenus = Array.from(
-        doc.querySelectorAll("#llm-history-row-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-history-row-menu")),
       ) as HTMLDivElement[];
       for (const modelMenuEl of modelMenus) {
         if (!isFloatingMenuOpen(modelMenuEl)) continue;
