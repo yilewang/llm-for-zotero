@@ -69,6 +69,20 @@ import { resolveInitialPanelItemState, resolveActiveLibraryID } from "./portalSc
 import { getLockedGlobalConversationKey } from "./prefHelpers";
 import { getEditableSelectionFromDocument } from "./noteSelection";
 
+function isPanelActive(body: Element): boolean {
+  if (body.isConnected) return true;
+  if ((body as any).__llmFloatedPanel) return true;
+  return false;
+}
+
+function getPanelElement<T extends Element>(body: Element, selector: string): T | null {
+  let el = body.querySelector(selector) as T | null;
+  if (!el && (body as any).__llmFloatedPanel) {
+    el = (body as any).__llmFloatedPanel.querySelector(selector) as T | null;
+  }
+  return el;
+}
+
 // =============================================================================
 // Public API
 // =============================================================================
@@ -514,14 +528,12 @@ export function registerReaderSelectionTracking() {
             panelRecords.push({ body, root });
           };
           for (const [panelBody] of activeContextPanels.entries()) {
-            if (!(panelBody as Element).isConnected) {
+            if (!isPanelActive(panelBody as Element)) {
               activeContextPanels.delete(panelBody);
               activeContextPanelStateSync.delete(panelBody);
               continue;
             }
-            const root = panelBody.querySelector(
-              "#llm-main",
-            ) as HTMLDivElement | null;
+            const root = getPanelElement<HTMLDivElement>(panelBody as Element, "#llm-main");
             pushPanelRecord(panelBody, root);
           }
           const docs = new Set<Document>();
@@ -759,14 +771,12 @@ export function registerReaderSelectionTracking() {
             activeBody,
             syncPanelState,
           ] of activeContextPanelStateSync) {
-            if (!(activeBody as Element).isConnected) {
+            if (!isPanelActive(activeBody as Element)) {
               activeContextPanels.delete(activeBody);
               activeContextPanelStateSync.delete(activeBody);
               continue;
             }
-            const activeRoot = activeBody.querySelector(
-              "#llm-main",
-            ) as HTMLDivElement | null;
+            const activeRoot = getPanelElement<HTMLDivElement>(activeBody as Element, "#llm-main");
             const activeConversationKey = activeRoot
               ? Number(activeRoot.dataset.itemId || 0)
               : 0;
@@ -782,10 +792,8 @@ export function registerReaderSelectionTracking() {
           if (!refreshedPanels) {
             // Search all registered panel bodies for a matching conversation
             for (const [activeBody] of activeContextPanels) {
-              if (!(activeBody as Element).isConnected) continue;
-              const activeRoot = (activeBody as Element).querySelector(
-                "#llm-main",
-              ) as HTMLDivElement | null;
+              if (!isPanelActive(activeBody as Element)) continue;
+              const activeRoot = getPanelElement<HTMLDivElement>(activeBody as Element, "#llm-main");
               if (Number(activeRoot?.dataset?.itemId || 0) === conversationKey) {
                 applySelectedTextPreview(activeBody as Element, conversationKey);
                 refreshedPanels += 1;
@@ -793,9 +801,7 @@ export function registerReaderSelectionTracking() {
               }
             }
           }
-          const status = panelBody.querySelector(
-            "#llm-status",
-          ) as HTMLElement | null;
+          const status = getPanelElement<HTMLElement>(panelBody, "#llm-status");
           if (status) {
             setStatus(
               status,
@@ -804,9 +810,7 @@ export function registerReaderSelectionTracking() {
             );
           }
           if (added) {
-            const inputEl = panelBody.querySelector(
-              "#llm-input",
-            ) as HTMLTextAreaElement | null;
+            const inputEl = getPanelElement<HTMLTextAreaElement>(panelBody, "#llm-input");
             inputEl?.focus({ preventScroll: true });
           }
         } catch (err) {
@@ -1047,14 +1051,12 @@ function getActiveNoteItemFromWindow(
 
 function refreshPanelsForConversationKey(conversationKey: number): void {
   for (const [activeBody, syncPanelState] of activeContextPanelStateSync) {
-    if (!(activeBody as Element).isConnected) {
+    if (!isPanelActive(activeBody as Element)) {
       activeContextPanels.delete(activeBody);
       activeContextPanelStateSync.delete(activeBody);
       continue;
     }
-    const activeRoot = activeBody.querySelector(
-      "#llm-main",
-    ) as HTMLDivElement | null;
+    const activeRoot = getPanelElement<HTMLDivElement>(activeBody as Element, "#llm-main");
     const activeConversationKey = activeRoot
       ? Number(activeRoot.dataset.itemId || 0)
       : 0;
