@@ -1470,11 +1470,36 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       let floatingWin = (mainWin as any).__llmFloatingWindow;
 
       if (!floatingWin || floatingWin.closed) {
+        let features = "chrome,resizable,alwaysRaised=yes,dependent=yes";
+        let boundsStr = Zotero.Prefs.get(`${config.prefsPrefix}.floatingWindowBounds`, true) as string;
+        let bounds: { x?: number; y?: number; width?: number; height?: number } | null = null;
+        try {
+          if (boundsStr) bounds = JSON.parse(boundsStr);
+        } catch (e) {}
+
+        if (bounds && bounds.width && bounds.height) {
+          features += `,width=${bounds.width},height=${bounds.height},left=${bounds.x || 0},top=${bounds.y || 0}`;
+        } else {
+          features += ",centerscreen,width=450,height=700";
+        }
+
         floatingWin = mainWin.open(
           "about:blank",
           "LLMFloatingWindow",
-          "chrome,centerscreen,resizable,alwaysRaised=yes,dependent=yes,width=450,height=700"
+          features
         );
+        
+        floatingWin.addEventListener('beforeunload', () => {
+          if (floatingWin.windowState !== floatingWin.STATE_MAXIMIZED && floatingWin.windowState !== floatingWin.STATE_MINIMIZED && !floatingWin.closed) {
+             const newBounds = {
+               x: floatingWin.screenX,
+               y: floatingWin.screenY,
+               width: floatingWin.outerWidth,
+               height: floatingWin.outerHeight
+             };
+             Zotero.Prefs.set(`${config.prefsPrefix}.floatingWindowBounds`, JSON.stringify(newBounds), true);
+          }
+        });
         (mainWin as any).__llmFloatingWindow = floatingWin;
 
         setTimeout(() => {
