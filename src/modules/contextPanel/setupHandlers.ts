@@ -1210,11 +1210,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       // Stop propagation for both pointer and mouse events so that the
       // document-level dismiss handler cannot race with button clicks.
       responseMenu.addEventListener("pointerdown", (e: Event) => {
-        e.stopPropagation();
-      });
+      e.stopPropagation();
+    });
+    responseMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
       responseMenu.addEventListener("mousedown", (e: Event) => {
-        e.stopPropagation();
-      });
+      e.stopPropagation();
+    });
+    responseMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
       responseMenu.addEventListener("contextmenu", (e: Event) => {
         e.preventDefault();
         e.stopPropagation();
@@ -1324,11 +1330,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (!promptMenu.dataset.listenerAttached) {
       promptMenu.dataset.listenerAttached = "true";
       promptMenu.addEventListener("pointerdown", (e: Event) => {
-        e.stopPropagation();
-      });
+      e.stopPropagation();
+    });
+    promptMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
       promptMenu.addEventListener("mousedown", (e: Event) => {
-        e.stopPropagation();
-      });
+      e.stopPropagation();
+    });
+    promptMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
       promptMenu.addEventListener("contextmenu", (e: Event) => {
         e.preventDefault();
         e.stopPropagation();
@@ -1363,11 +1375,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (!exportMenu.dataset.listenerAttached) {
       exportMenu.dataset.listenerAttached = "true";
       exportMenu.addEventListener("pointerdown", (e: Event) => {
-        e.stopPropagation();
-      });
+      e.stopPropagation();
+    });
+    exportMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
       exportMenu.addEventListener("mousedown", (e: Event) => {
-        e.stopPropagation();
-      });
+      e.stopPropagation();
+    });
+    exportMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
       exportMenu.addEventListener("contextmenu", (e: Event) => {
         e.preventDefault();
         e.stopPropagation();
@@ -1838,6 +1856,25 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     let startMouseY = 0;
     let startWinX = 0;
     let startWinY = 0;
+
+    dragHeaderTop.addEventListener("dblclick", (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement;
+      if (target.closest("button, input, select, a, [contenteditable]")) return;
+
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (floatingWin && !floatingWin.closed) {
+        if (typeof floatingWin.maximize === "function") {
+          if (floatingWin.windowState === floatingWin.STATE_MAXIMIZED) {
+            floatingWin.restore();
+          } else {
+            floatingWin.maximize();
+          }
+        }
+      }
+    });
 
     dragHeaderTop.addEventListener("mousedown", (e: MouseEvent) => {
       let mainWin = Zotero.getMainWindow();
@@ -9328,7 +9365,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     modelMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    modelMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     modelMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    modelMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -9337,7 +9380,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     reasoningMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    reasoningMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     reasoningMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    reasoningMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -9346,7 +9395,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     retryModelMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    retryModelMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     retryModelMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    retryModelMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -9355,7 +9410,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     slashMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    slashMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     slashMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    slashMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -9364,7 +9425,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     historyMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    historyMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     historyMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    historyMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -9373,7 +9440,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     historyNewMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    historyNewMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     historyNewMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    historyNewMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -9382,7 +9455,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     historyRowMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    historyRowMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     historyRowMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    historyRowMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
     historyRowMenu.addEventListener("contextmenu", (e: Event) => {
@@ -9392,7 +9471,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   }
 
   const bodyWithRetryMenuDismiss = body as Element & {
-    __llmRetryMenuDismissHandler?: (event: PointerEvent) => void;
+    __llmRetryMenuDismissHandler?: (event: Event) => void;
   };
   if (bodyWithRetryMenuDismiss.__llmRetryMenuDismissHandler) {
     panelDoc.removeEventListener(
@@ -9400,11 +9479,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       bodyWithRetryMenuDismiss.__llmRetryMenuDismissHandler,
       true,
     );
+    panelDoc.removeEventListener(
+      "llm-menu-dismiss-trigger",
+      bodyWithRetryMenuDismiss.__llmRetryMenuDismissHandler,
+      true,
+    );
   }
-  const dismissRetryMenuOnOutsidePointerDown = (e: PointerEvent) => {
-    if (typeof e.button === "number" && e.button !== 0) return;
+  const dismissRetryMenuOnOutsidePointerDown = (e: Event) => {
+    const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
+    const button = ((e as any).button !== undefined ? (e as any).button : (e as PointerEvent).button);
+    if (typeof button === "number" && button !== 0) return;
     if (!retryModelMenu || !isFloatingMenuOpen(retryModelMenu)) return;
-    const target = e.target as Node | null;
     if (target && retryModelMenu.contains(target)) return;
     closeRetryModelMenu();
   };
@@ -9413,11 +9498,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     dismissRetryMenuOnOutsidePointerDown,
     true,
   );
+  panelDoc.addEventListener(
+    "llm-menu-dismiss-trigger",
+    dismissRetryMenuOnOutsidePointerDown,
+    true,
+  );
   bodyWithRetryMenuDismiss.__llmRetryMenuDismissHandler =
     dismissRetryMenuOnOutsidePointerDown;
 
   const bodyWithPromptMenuDismiss = body as Element & {
-    __llmPromptMenuDismissHandler?: (event: PointerEvent) => void;
+    __llmPromptMenuDismissHandler?: (event: Event) => void;
   };
   if (bodyWithPromptMenuDismiss.__llmPromptMenuDismissHandler) {
     panelDoc.removeEventListener(
@@ -9425,10 +9515,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       bodyWithPromptMenuDismiss.__llmPromptMenuDismissHandler,
       true,
     );
+    panelDoc.removeEventListener(
+      "llm-menu-dismiss-trigger",
+      bodyWithPromptMenuDismiss.__llmPromptMenuDismissHandler,
+      true,
+    );
   }
-  const dismissPromptMenuOnOutsidePointerDown = (e: PointerEvent) => {
+  const dismissPromptMenuOnOutsidePointerDown = (e: Event) => {
+    const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
     if (!promptMenu || promptMenu.style.display === "none") return;
-    const target = e.target as Node | null;
     if (target && promptMenu.contains(target)) return;
     closePromptMenu();
   };
@@ -9437,11 +9532,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     dismissPromptMenuOnOutsidePointerDown,
     true,
   );
+  panelDoc.addEventListener(
+    "llm-menu-dismiss-trigger",
+    dismissPromptMenuOnOutsidePointerDown,
+    true,
+  );
   bodyWithPromptMenuDismiss.__llmPromptMenuDismissHandler =
     dismissPromptMenuOnOutsidePointerDown;
 
   const bodyWithPaperPickerDismiss = body as Element & {
-    __llmPaperPickerDismissHandler?: (event: PointerEvent) => void;
+    __llmPaperPickerDismissHandler?: (event: Event) => void;
   };
   if (bodyWithPaperPickerDismiss.__llmPaperPickerDismissHandler) {
     panelDoc.removeEventListener(
@@ -9449,10 +9549,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       bodyWithPaperPickerDismiss.__llmPaperPickerDismissHandler,
       true,
     );
+    panelDoc.removeEventListener(
+      "llm-menu-dismiss-trigger",
+      bodyWithPaperPickerDismiss.__llmPaperPickerDismissHandler,
+      true,
+    );
   }
-  const dismissPaperPickerOnOutsidePointerDown = (e: PointerEvent) => {
+  const dismissPaperPickerOnOutsidePointerDown = (e: Event) => {
+    const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
     if (!isPaperPickerOpen()) return;
-    const target = e.target as Node | null;
     if (target && paperPicker?.contains(target)) return;
     if (target && inputBox.contains(target)) return;
     closePaperPicker();
@@ -9462,11 +9567,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     dismissPaperPickerOnOutsidePointerDown,
     true,
   );
+  panelDoc.addEventListener(
+    "llm-menu-dismiss-trigger",
+    dismissPaperPickerOnOutsidePointerDown,
+    true,
+  );
   bodyWithPaperPickerDismiss.__llmPaperPickerDismissHandler =
     dismissPaperPickerOnOutsidePointerDown;
 
   const bodyWithPaperChipDismiss = body as Element & {
-    __llmPaperChipDismissHandler?: (event: PointerEvent) => void;
+    __llmPaperChipDismissHandler?: (event: Event) => void;
   };
   if (bodyWithPaperChipDismiss.__llmPaperChipDismissHandler) {
     panelDoc.removeEventListener(
@@ -9474,18 +9584,29 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       bodyWithPaperChipDismiss.__llmPaperChipDismissHandler,
       true,
     );
+    panelDoc.removeEventListener(
+      "llm-menu-dismiss-trigger",
+      bodyWithPaperChipDismiss.__llmPaperChipDismissHandler,
+      true,
+    );
   }
-  const dismissPaperChipOnOutsidePointerDown = (e: PointerEvent) => {
-    if (typeof e.button === "number" && e.button !== 0) return;
+  const dismissPaperChipOnOutsidePointerDown = (e: Event) => {
+    const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
+    const button = ((e as any).button !== undefined ? (e as any).button : (e as PointerEvent).button);
+    if (typeof button === "number" && button !== 0) return;
     if (!paperChipMenuSticky || !paperChipMenu || paperChipMenu.style.display === "none")
       return;
-    const target = e.target as Node | null;
     if (target && paperChipMenu.contains(target)) return;
     if (target && paperChipMenuAnchor?.contains(target)) return;
     closePaperChipMenu();
   };
   panelDoc.addEventListener(
     "pointerdown",
+    dismissPaperChipOnOutsidePointerDown,
+    true,
+  );
+  panelDoc.addEventListener(
+    "llm-menu-dismiss-trigger",
     dismissPaperChipOnOutsidePointerDown,
     true,
   );
@@ -9556,15 +9677,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     !(doc as unknown as { __llmModelMenuDismiss?: boolean })
       .__llmModelMenuDismiss
   ) {
-    doc.addEventListener("mousedown", (e: Event) => {
+    const handleDocumentDismiss = (e: Event) => {
       const me = e as MouseEvent;
+      const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
+      const button = ((e as any).button !== undefined ? (e as any).button : me.button) as number;
       const modelMenus = Array.from(
         doc.querySelectorAll("#llm-model-menu"),
       ) as HTMLDivElement[];
       const reasoningMenus = Array.from(
         doc.querySelectorAll("#llm-reasoning-menu"),
       ) as HTMLDivElement[];
-      const target = e.target as Node | null;
       const retryButtonTarget = isElementNode(target)
         ? (target.closest(".llm-retry-latest") as HTMLButtonElement | null)
         : null;
@@ -9643,7 +9765,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           retryMenuAnchor = null;
         }
       }
-      if (me.button === 0) {
+      if (button === 0) {
         let responseMenuClosed = false;
         for (const responseMenuEl of responseMenus) {
           if (responseMenuEl.style.display === "none") continue;
@@ -9723,7 +9845,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           break;
         }
       }
-    });
+    };
+    doc.addEventListener("mousedown", handleDocumentDismiss);
+    doc.addEventListener("llm-menu-dismiss-trigger", handleDocumentDismiss as EventListener);
     (
       doc as unknown as { __llmModelMenuDismiss?: boolean }
     ).__llmModelMenuDismiss = true;
@@ -10517,7 +10641,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   }
 
   const bodyWithPinnedDismiss = body as Element & {
-    __llmPinnedContextDismissHandler?: (event: MouseEvent) => void;
+    __llmPinnedContextDismissHandler?: (event: Event) => void;
   };
   if (bodyWithPinnedDismiss.__llmPinnedContextDismissHandler) {
     body.removeEventListener(
@@ -10525,11 +10649,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       bodyWithPinnedDismiss.__llmPinnedContextDismissHandler,
       true,
     );
+    body.removeEventListener(
+      "llm-menu-dismiss-trigger",
+      bodyWithPinnedDismiss.__llmPinnedContextDismissHandler,
+      true,
+    );
   }
-  const dismissPinnedContextPanels = (e: MouseEvent) => {
-    if (e.button !== 0) return;
+  const dismissPinnedContextPanels = (e: Event) => {
+    const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
+    const button = ((e as any).button !== undefined ? (e as any).button : (e as MouseEvent).button);
+    if (button !== 0) return;
     if (!item) return;
-    const target = e.target as Node | null;
     const clickedInsideTextPanel = Boolean(
       selectedContextList && target && selectedContextList.contains(target),
     );
@@ -10577,6 +10707,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     updateImagePreviewPreservingScroll();
   };
   body.addEventListener("mousedown", dismissPinnedContextPanels, true);
+  body.addEventListener("llm-menu-dismiss-trigger", dismissPinnedContextPanels, true);
   bodyWithPinnedDismiss.__llmPinnedContextDismissHandler =
     dismissPinnedContextPanels;
 
