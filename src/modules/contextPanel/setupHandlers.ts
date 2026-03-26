@@ -1480,10 +1480,44 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         setTimeout(() => {
           let fDoc = floatingWin.document;
           const dismissTrigger = (ev: Event) => {
-            const customEv = new CustomEvent("llm-menu-dismiss-trigger");
+            ztoolkit.log("LLM: fDoc dismissTrigger fired, event type: " + ev.type + ", target: " + (ev.target ? (ev.target as Element).tagName : "null") + ", class: " + (ev.target ? (ev.target as Element).className : "null"));
+            
+            // Because cross-document UI events and strict document separation handles "empty space clicks"
+            // occasionally weirdly, we will inline the menu dismissal directly into fDoc's dismiss handler.
+            // This runs in the actual same JS context of the floated window.
+            const menus = [
+              ...Array.from(fDoc.querySelectorAll("#llm-model-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-reasoning-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-retry-model-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-response-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-prompt-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-export-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-slash-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-history-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-history-new-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-history-row-menu"))
+            ] as HTMLElement[];
+
+            for (const menu of menus) {
+               if (menu.style.display !== "none") {
+                 let target = ev.target as Node;
+                 if (menu === target || (typeof menu.contains === 'function' && menu.contains(target))) continue;
+                 
+                 // Fallback closes
+                 const toggleBtn = fDoc.querySelector(`[aria-controls="${menu.id}"]`) || menu.closest("#llm-main")?.querySelector(`#${menu.id.replace("-menu", "-toggle")}`);
+                 if (toggleBtn && (toggleBtn === target || (typeof toggleBtn.contains === 'function' && toggleBtn.contains(target)))) continue;
+                 
+                 menu.style.display = "none";
+                 if (menu.id === "llm-model-menu") menu.classList.remove("llm-model-menu-open");
+                 if (menu.id === "llm-reasoning-menu") menu.classList.remove("llm-reasoning-menu-open");
+                 if (menu.id === "llm-retry-model-menu") menu.classList.remove("llm-retry-model-menu-open");
+               }
+            }
+
+            const customEv = new CustomEvent("llm-menu-dismiss-trigger", { bubbles: true, composed: true });
             (customEv as any).__llmTarget = ev.target;
             (customEv as any).button = (ev as MouseEvent).button;
-            if (body.ownerDocument) body.ownerDocument.dispatchEvent(customEv);
+            body.dispatchEvent(customEv);
           };
           fDoc.addEventListener("pointerdown", dismissTrigger, true);
           fDoc.addEventListener("mousedown", dismissTrigger, true);
@@ -9680,6 +9714,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       .__llmModelMenuDismiss
   ) {
     const handleDocumentDismiss = (e: Event) => {
+      ztoolkit.log("LLM: handleDocumentDismiss fired " + e.type + ", target: " + (e.target ? (e.target as Element).tagName : "null") + ", isCustom: " + (e.type === "llm-menu-dismiss-trigger"));
+      
       const me = e as MouseEvent;
       const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
       const button = ((e as any).button !== undefined ? (e as any).button : me.button) as number;
@@ -9689,6 +9725,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const reasoningMenus = Array.from(
         (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-reasoning-menu")),
       ) as HTMLDivElement[];
+      ztoolkit.log("LLM: handleDocumentDismiss target: " + (target ? (target as Element).tagName : "null") + ", modelMenus: " + modelMenus.length + ", button: " + button);
       const retryButtonTarget = isElementNode(target)
         ? (target.closest(".llm-retry-latest") as HTMLButtonElement | null)
         : null;
@@ -9848,8 +9885,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }
       }
     };
-    doc.addEventListener("mousedown", handleDocumentDismiss);
-    doc.addEventListener("llm-menu-dismiss-trigger", handleDocumentDismiss as EventListener);
+    doc.addEventListener("mousedown", handleDocumentDismiss, true);
+    doc.addEventListener("llm-menu-dismiss-trigger", handleDocumentDismiss as EventListener, true);
     (
       doc as unknown as { __llmModelMenuDismiss?: boolean }
     ).__llmModelMenuDismiss = true;
