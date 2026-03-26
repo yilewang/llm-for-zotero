@@ -4,11 +4,12 @@ export function positionMenuAtPointer(
   clientX: number,
   clientY: number,
 ): void {
-  const win = body.ownerDocument?.defaultView;
+  const container = menu.closest("#llm-main") || body;
+  const win = container.ownerDocument?.defaultView;
   if (!win) return;
 
   const viewportMargin = 8;
-  const panelRect = body.getBoundingClientRect();
+  const panelRect = container.getBoundingClientRect();
   const minLeftBound = Math.max(viewportMargin, Math.round(panelRect.left) + 2);
   const minTopBound = Math.max(viewportMargin, Math.round(panelRect.top) + 2);
   menu.style.position = "fixed";
@@ -40,11 +41,11 @@ export function positionMenuAtPointer(
 }
 
 function applyPanelBoundMenuWidth(
-  body: Element,
+  container: Element,
   menu: HTMLDivElement,
   viewportMargin: number,
 ): void {
-  const panelRect = body.getBoundingClientRect();
+  const panelRect = container.getBoundingClientRect();
   const availableWidth = Math.max(
     1,
     Math.floor(panelRect.width) - viewportMargin * 2 - 4,
@@ -64,11 +65,12 @@ export function positionMenuBelowButton(
   menu: HTMLDivElement,
   button: HTMLElement,
 ): void {
-  const win = body.ownerDocument?.defaultView;
+  const container = menu.closest("#llm-main") || body;
+  const win = container.ownerDocument?.defaultView;
   if (!win) return;
 
   const viewportMargin = 8;
-  const panelRect = body.getBoundingClientRect();
+  const panelRect = container.getBoundingClientRect();
   const minLeftBound = Math.max(viewportMargin, Math.round(panelRect.left) + 2);
   const minTopBound = Math.max(viewportMargin, Math.round(panelRect.top) + 2);
   const maxRightBound = Math.round(panelRect.right) - 2;
@@ -79,7 +81,7 @@ export function positionMenuBelowButton(
   menu.style.visibility = "hidden";
   menu.style.maxHeight = `${Math.max(120, Math.floor(panelRect.height) - viewportMargin * 2)}px`;
   menu.style.overflowY = "auto";
-  applyPanelBoundMenuWidth(body, menu, viewportMargin);
+  applyPanelBoundMenuWidth(container, menu, viewportMargin);
 
   const menuRect = menu.getBoundingClientRect();
   const maxLeft = Math.max(

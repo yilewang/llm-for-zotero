@@ -5190,7 +5190,7 @@ label.llm-search-results-item:hover {
   z-index: 2147483000;
   resize: none;
   overflow: hidden;
-  -moz-window-dragging: no-drag;
+  /* -moz-window-dragging */: no-drag;
   contain: none;
   /* Ensure opaque background */
   background-color: var(--material-sidepane, #e0e0e0);

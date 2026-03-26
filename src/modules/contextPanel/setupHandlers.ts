@@ -1455,11 +1455,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         floatingWin = mainWin.open(
           "about:blank",
           "LLMFloatingWindow",
-          "chrome,centerscreen,resizable,dependent=yes,alwaysRaised=yes,width=450,height=700"
+          "chrome,centerscreen,resizable,alwaysRaised=yes,dependent=yes,width=450,height=700"
         );
         (mainWin as any).__llmFloatingWindow = floatingWin;
 
         setTimeout(() => {
+          let fDoc = floatingWin.document;
+          fDoc.addEventListener("mousedown", (ev: Event) => {
+            const customEv = new CustomEvent("llm-menu-dismiss-trigger");
+            (customEv as any).__llmTarget = ev.target;
+            (customEv as any).button = (ev as MouseEvent).button;
+            if (body.ownerDocument) body.ownerDocument.dispatchEvent(customEv);
+          });
           floatingWin.document.title = "AI Assistant";
           const styleLinks = mainWin.document.querySelectorAll("link[rel='stylesheet'], link[rel='localization']");
           styleLinks.forEach((link: any) => {
@@ -1557,6 +1564,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             (body as any).__llmFloatedPanel = floatingWin.document.body;
             if (lockBtn) lockBtn.style.display = "flex";
             if (popoutBtn) popoutBtn.style.display = "none";
+            if (minBtn) minBtn.style.display = "flex";
+            if (maxBtn) maxBtn.style.display = "flex";
             if (closeBtn) closeBtn.style.display = "flex";
           }
 
@@ -1566,6 +1575,22 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             }
             const containerNode = floatingWin.document.body.querySelector("#llm-main");
             if (containerNode) {
+              const allMenus = containerNode.querySelectorAll(
+                "#llm-model-menu, #llm-reasoning-menu, #llm-retry-model-menu, #llm-response-menu, #llm-prompt-menu, #llm-export-menu, .llm-slash-menu, #llm-history-menu, #llm-history-new-menu, #llm-history-row-menu"
+              );
+              allMenus.forEach((m: Element) => {
+                (m as HTMLElement).style.display = "none";
+                m.classList.remove(
+                  "llm-model-menu-open",
+                  "llm-reasoning-menu-open",
+                  "llm-slash-menu-open",
+                  "llm-history-menu-open"
+                );
+              });
+              containerNode.querySelectorAll("[aria-expanded='true']").forEach((btn: Element) => {
+                btn.setAttribute("aria-expanded", "false");
+              });
+
               containerNode.classList.remove("llm-panel-os-window");
               const hostBody = (mainWin as any).__llmFloatedPanelHostBody || body;
               if (hostBody) {
@@ -1584,6 +1609,81 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
               }
             }
           });
+
+          // Delay setting ALWAYS ON TOP (zLevel) until the layout is complete
+          // This avoids the window blanking issue on Windows with XPCOM.
+          setTimeout(() => {
+            try {
+              if (floatingWin && !floatingWin.closed) {
+                if (floatingWin.document && floatingWin.document.documentElement) {
+                  floatingWin.document.documentElement.setAttribute("alwaysontop", "true");
+                }
+                (floatingWin as any).alwaysOnTop = true;
+
+                const Components = (mainWin as any).Components;
+                let Services = (mainWin as any).Services;
+                if (!Services && Components && Components.utils) {
+                  try { Services = Components.utils.import("resource://gre/modules/Services.jsm").Services; } catch (e) { }
+                }
+
+                let targetWin = floatingWin;
+                if (Services && Services.wm) {
+                  let outerId = null;
+                  try {
+                    const winUtils = floatingWin.windowUtils || floatingWin.QueryInterface(Components.interfaces.nsIInterfaceRequestor).getInterface(Components.interfaces.nsIDOMWindowUtils);
+                    if (winUtils) outerId = winUtils.outerWindowID;
+                  } catch (e) { }
+
+                  let enumerator = Services.wm.getEnumerator(null);
+                  while (enumerator.hasMoreElements()) {
+                    let win = enumerator.getNext();
+                    let match = false;
+                    try {
+                      if (outerId && win.windowUtils && win.windowUtils.outerWindowID === outerId) {
+                        match = true;
+                      } else if (win.document && win.document.title === "AI Assistant") {
+                        match = true;
+                      }
+                    } catch (e) { }
+
+                    if (match) {
+                      win.document.documentElement.setAttribute("alwaysontop", "true");
+                      targetWin = win;
+                      break;
+                    }
+                  }
+                }
+
+                if (Components && Components.interfaces) {
+                  const applyZLevel = (winObj: any) => {
+                    try {
+                      if (!winObj || !winObj.QueryInterface) return false;
+                      const ifaceReq = winObj.QueryInterface(Components.interfaces.nsIInterfaceRequestor);
+                      const webNav = ifaceReq.getInterface(Components.interfaces.nsIWebNavigation);
+                      const docShell = webNav.QueryInterface(Components.interfaces.nsIDocShellTreeItem);
+                      const treeOwner = docShell.treeOwner;
+                      const ownerIfaceReq = treeOwner.QueryInterface(Components.interfaces.nsIInterfaceRequestor);
+                      const hasAppWin = "nsIAppWindow" in Components.interfaces;
+                      const appWindowIface = hasAppWin ? Components.interfaces.nsIAppWindow : Components.interfaces.nsIXULWindow;
+                      const appWin = ownerIfaceReq.getInterface(appWindowIface);
+                      if (appWin) {
+                        const raisedZ = hasAppWin ? Components.interfaces.nsIAppWindow.raisedZ : Components.interfaces.nsIXULWindow.raisedZ;
+                        appWin.zLevel = raisedZ || 5;
+                        return true;
+                      }
+                    } catch (e) { return false; }
+                    return false;
+                  };
+
+                  if (!applyZLevel(targetWin)) {
+                    applyZLevel(floatingWin);
+                  }
+                }
+              }
+            } catch (err) {
+              console.error("Failed to set window always on top", err);
+            }
+          }, 800);
         }, 150);
       } else {
         floatingWin.focus();
@@ -1684,11 +1784,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       let floatingWin = (mainWin as any).__llmFloatingWindow;
       if (floatingWin && !floatingWin.closed) {
         if (typeof floatingWin.maximize === 'function') {
-           if (floatingWin.windowState === floatingWin.STATE_MAXIMIZED) {
-               floatingWin.restore();
-           } else {
-               floatingWin.maximize();
-           }
+          if (floatingWin.windowState === floatingWin.STATE_MAXIMIZED) {
+            floatingWin.restore();
+          } else {
+            floatingWin.maximize();
+          }
         }
       }
     });
@@ -1733,48 +1833,48 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
   const dragHeaderTop = panelRoot.querySelector(".llm-header-top") as HTMLElement | null;
   if (dragHeaderTop) {
-     let isDragging = false;
-     let startMouseX = 0;
-     let startMouseY = 0;
-     let startWinX = 0;
-     let startWinY = 0;
+    let isDragging = false;
+    let startMouseX = 0;
+    let startMouseY = 0;
+    let startWinX = 0;
+    let startWinY = 0;
 
-     dragHeaderTop.addEventListener("mousedown", (e: MouseEvent) => {
-         let mainWin = Zotero.getMainWindow();
-         if (!mainWin) return;
-         let floatingWin = (mainWin as any).__llmFloatingWindow;
-         if (!floatingWin || floatingWin.closed || e.button !== 0) return;
+    dragHeaderTop.addEventListener("mousedown", (e: MouseEvent) => {
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (!floatingWin || floatingWin.closed || e.button !== 0) return;
 
-         const target = e.target as HTMLElement;
-         if (target.closest("button, input, select, a, [contenteditable]")) return;
+      const target = e.target as HTMLElement;
+      if (target.closest("button, input, select, a, [contenteditable]")) return;
 
-         isDragging = true;
-         startMouseX = e.screenX;
-         startMouseY = e.screenY;
-         startWinX = floatingWin.screenX;
-         startWinY = floatingWin.screenY;
-     });
-     panelRoot.addEventListener("mousemove", (e: Event) => {
-         const me = e as MouseEvent;
-         if (!isDragging) return;
-         let mainWin = Zotero.getMainWindow();
-         if (!mainWin) return;
-         let floatingWin = (mainWin as any).__llmFloatingWindow;
-         if (!floatingWin || floatingWin.closed) return;
+      isDragging = true;
+      startMouseX = e.screenX;
+      startMouseY = e.screenY;
+      startWinX = floatingWin.screenX;
+      startWinY = floatingWin.screenY;
+    });
+    panelRoot.addEventListener("mousemove", (e: Event) => {
+      const me = e as MouseEvent;
+      if (!isDragging) return;
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (!floatingWin || floatingWin.closed) return;
 
-         let dx = me.screenX - startMouseX;
-         let dy = me.screenY - startMouseY;
-         floatingWin.moveTo(startWinX + dx, startWinY + dy);
-     });
-     panelRoot.addEventListener("mouseup", () => {
-         isDragging = false;
-     });
-     panelRoot.addEventListener("mouseleave", (e: Event) => {
-        const me = e as MouseEvent;
-        if (me.relatedTarget === null) {
-            isDragging = false;
-        }
-     });
+      let dx = me.screenX - startMouseX;
+      let dy = me.screenY - startMouseY;
+      floatingWin.moveTo(startWinX + dx, startWinY + dy);
+    });
+    panelRoot.addEventListener("mouseup", () => {
+      isDragging = false;
+    });
+    panelRoot.addEventListener("mouseleave", (e: Event) => {
+      const me = e as MouseEvent;
+      if (me.relatedTarget === null) {
+        isDragging = false;
+      }
+    });
   }
 
   // Clicking non-interactive panel area gives keyboard focus to the panel.
