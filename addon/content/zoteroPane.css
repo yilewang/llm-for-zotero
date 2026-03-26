@@ -5347,6 +5347,7 @@ label.llm-search-results-item:hover {
   height: 12px;
   cursor: nesw-resize;
 }
+
 /* Independent OS Window Constraints */
 .llm-panel-os-window {
   --llm-floating-input-min-height: 132px;
@@ -5363,7 +5364,8 @@ label.llm-search-results-item:hover {
   max-height: calc(100% - var(--llm-floating-input-min-height) - var(--llm-floating-status-min-height) - var(--llm-floating-shortcuts-min-height));
   background: color-mix(in srgb, var(--material-sidepane, #f2f2f2) 84%, var(--material-background, #fff) 16%);
   background-image: linear-gradient(var(--material-sidepane, #f2f2f2), var(--material-sidepane, #f2f2f2));
-  background-color: var(--material-background, #fff); /* Fallback */
+  background-color: var(--material-background, #fff);
+  /* Fallback */
   resize: vertical;
   min-height: 80px;
   flex: 0 1 auto;
