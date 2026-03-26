@@ -364,6 +364,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     settingsBtn,
     exportBtn,
     clearBtn,
+    minBtn,
+    maxBtn,
     closeBtn,
     titleStatic,
     historyBar,
@@ -1573,6 +1575,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
                 const localPopoutBtn = hostBody.querySelector("#llm-popout");
                 if (localLockBtn) (localLockBtn as HTMLElement).style.display = "none";
                 if (localPopoutBtn) (localPopoutBtn as HTMLElement).style.display = "flex";
+                const localMinBtn = hostBody.querySelector("#llm-minimize");
+                if (localMinBtn) (localMinBtn as HTMLElement).style.display = "none";
+                const localMaxBtn = hostBody.querySelector("#llm-maximize");
+                if (localMaxBtn) (localMaxBtn as HTMLElement).style.display = "none";
                 const localCloseBtn = hostBody.querySelector("#llm-close");
                 if (localCloseBtn) (localCloseBtn as HTMLElement).style.display = "none";
               }
@@ -1594,6 +1600,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             lockBtn.setAttribute("aria-pressed", "false");
           }
           if (popoutBtn) popoutBtn.style.display = "none";
+          if (minBtn) minBtn.style.display = "flex";
+          if (maxBtn) maxBtn.style.display = "flex";
           if (closeBtn) closeBtn.style.display = "flex";
         }
       }
@@ -1632,6 +1640,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (floatingWin && !floatingWin.closed) {
         if (lockBtn) lockBtn.style.display = "flex";
         if (popoutBtn) popoutBtn.style.display = "none";
+        if (minBtn) minBtn.style.display = "flex";
+        if (maxBtn) maxBtn.style.display = "flex";
         if (closeBtn) closeBtn.style.display = "flex";
         if (floatingWin.__llmLocked) {
           lockBtn.style.opacity = "1.0";
@@ -1643,7 +1653,43 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       } else {
         if (lockBtn) lockBtn.style.display = "none";
         if (popoutBtn) popoutBtn.style.display = "flex";
+        if (minBtn) minBtn.style.display = "none";
+        if (maxBtn) maxBtn.style.display = "none";
         if (closeBtn) closeBtn.style.display = "none";
+      }
+    });
+  }
+
+  if (minBtn) {
+    minBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (floatingWin && !floatingWin.closed) {
+        if (typeof floatingWin.minimize === 'function') {
+          floatingWin.minimize();
+        }
+      }
+    });
+  }
+
+  if (maxBtn) {
+    maxBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (floatingWin && !floatingWin.closed) {
+        if (typeof floatingWin.maximize === 'function') {
+           if (floatingWin.windowState === floatingWin.STATE_MAXIMIZED) {
+               floatingWin.restore();
+           } else {
+               floatingWin.maximize();
+           }
+        }
       }
     });
   }
@@ -1683,6 +1729,52 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }
       }
     });
+  }
+
+  const dragHeaderTop = panelRoot.querySelector(".llm-header-top") as HTMLElement | null;
+  if (dragHeaderTop) {
+     let isDragging = false;
+     let startMouseX = 0;
+     let startMouseY = 0;
+     let startWinX = 0;
+     let startWinY = 0;
+
+     dragHeaderTop.addEventListener("mousedown", (e: MouseEvent) => {
+         let mainWin = Zotero.getMainWindow();
+         if (!mainWin) return;
+         let floatingWin = (mainWin as any).__llmFloatingWindow;
+         if (!floatingWin || floatingWin.closed || e.button !== 0) return;
+
+         const target = e.target as HTMLElement;
+         if (target.closest("button, input, select, a, [contenteditable]")) return;
+
+         isDragging = true;
+         startMouseX = e.screenX;
+         startMouseY = e.screenY;
+         startWinX = floatingWin.screenX;
+         startWinY = floatingWin.screenY;
+     });
+     panelRoot.addEventListener("mousemove", (e: Event) => {
+         const me = e as MouseEvent;
+         if (!isDragging) return;
+         let mainWin = Zotero.getMainWindow();
+         if (!mainWin) return;
+         let floatingWin = (mainWin as any).__llmFloatingWindow;
+         if (!floatingWin || floatingWin.closed) return;
+
+         let dx = me.screenX - startMouseX;
+         let dy = me.screenY - startMouseY;
+         floatingWin.moveTo(startWinX + dx, startWinY + dy);
+     });
+     panelRoot.addEventListener("mouseup", () => {
+         isDragging = false;
+     });
+     panelRoot.addEventListener("mouseleave", (e: Event) => {
+        const me = e as MouseEvent;
+        if (me.relatedTarget === null) {
+            isDragging = false;
+        }
+     });
   }
 
   // Clicking non-interactive panel area gives keyboard focus to the panel.

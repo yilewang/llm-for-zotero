@@ -18,6 +18,8 @@ export type PanelDomRefs = {
   settingsBtn: HTMLButtonElement | null;
   exportBtn: HTMLButtonElement | null;
   clearBtn: HTMLButtonElement | null;
+  minBtn: HTMLButtonElement | null;
+  maxBtn: HTMLButtonElement | null;
   closeBtn: HTMLButtonElement | null;
   titleStatic: HTMLDivElement | null;
   historyBar: HTMLDivElement | null;
@@ -120,6 +122,8 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     settingsBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-settings") as HTMLButtonElement | null,
     exportBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-export") as HTMLButtonElement | null,
     clearBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-clear") as HTMLButtonElement | null,
+    minBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-minimize") as HTMLButtonElement | null,
+    maxBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-maximize") as HTMLButtonElement | null,
     closeBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-close") as HTMLButtonElement | null,
     titleStatic: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-title-static",

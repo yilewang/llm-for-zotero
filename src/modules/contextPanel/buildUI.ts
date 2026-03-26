@@ -268,6 +268,23 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     type: "button",
     textContent: t("Clear"),
   });
+  
+  const minBtn = createElement(doc, "button", "llm-btn-icon llm-min-btn", {
+    id: "llm-minimize",
+    type: "button",
+    title: "Minimize window",
+  });
+  minBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 0 24 24" width="16" fill="currentColor"><path d="M0 0h24v24H0z" fill="none"/><path d="M6 19h12v2H6z"/></svg>`;
+  minBtn.style.display = "none";
+
+  const maxBtn = createElement(doc, "button", "llm-btn-icon llm-max-btn", {
+    id: "llm-maximize",
+    type: "button",
+    title: "Toggle maximize",
+  });
+  maxBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 0 24 24" width="16" fill="currentColor"><path d="M0 0h24v24H0z" fill="none"/><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>`;
+  maxBtn.style.display = "none";
+
   const closeBtn = createElement(doc, "button", "llm-btn-icon llm-close-btn", {
     id: "llm-close",
     type: "button",
@@ -276,7 +293,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   closeBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="16" viewBox="0 0 24 24" width="16" fill="currentColor"><path d="M0 0h24v24H0z" fill="none"/><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`;
   closeBtn.setAttribute("aria-label", "Close window");
   closeBtn.style.display = "none"; // hidden by default until popped out
-  headerActions.append(popoutBtn, lockBtn, settingsBtn, exportBtn, clearBtn, closeBtn);
+  headerActions.append(popoutBtn, lockBtn, settingsBtn, exportBtn, clearBtn, minBtn, maxBtn, closeBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
   const historyMenu = createElement(doc, "div", "llm-history-menu", {
