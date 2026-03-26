@@ -1675,6 +1675,14 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
               if (hostBody) {
                 hostBody.replaceChildren(containerNode);
                 (hostBody as any).__llmFloatedPanel = null;
+                
+                // Force a reflow to ensure it paints in the Zotero right sidebar after being moved across documents
+                if (hostBody instanceof (hostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
+                  (hostBody as HTMLElement).style.display = 'none';
+                  void (hostBody as HTMLElement).offsetHeight;
+                  (hostBody as HTMLElement).style.display = '';
+                }
+
                 const localLockBtn = hostBody.querySelector("#llm-lock");
                 const localPopoutBtn = hostBody.querySelector("#llm-popout");
                 if (localLockBtn) (localLockBtn as HTMLElement).style.display = "none";
@@ -1801,13 +1809,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         if (isLocked) {
           floatingWin.__llmLocked = false;
           lockBtn.style.opacity = "0.5";
-          lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
-          lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
-            lockBtn.setAttribute("aria-pressed", "false");
+          lockBtn.setAttribute("title", "Sync mode (unlocked): tracks Zotero's active tab");
+          lockBtn.setAttribute("aria-pressed", "false");
+
+          // Note: if user unlocks, we should ideally sync immediately to the currently active tab if possible.
+          // The easiest way is to let Zotero re-render context panel, but for now just updating text is fine, 
+          // because a simple tool button click shouldn't jarringly swap content until they actually switch tabs,
+          // OR we could trigger a refresh.
         } else {
           floatingWin.__llmLocked = true;
           lockBtn.style.opacity = "1.0";
-          lockBtn.setAttribute("title", "Sync mode (locked): tracks Zotero's active tab");
+          lockBtn.setAttribute("title", "Independent mode (locked to this session): stays on current session when switching tabs");
           lockBtn.setAttribute("aria-pressed", "true");
         }
       }
