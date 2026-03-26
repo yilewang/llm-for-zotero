@@ -1776,6 +1776,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           if (lockBtn) {
             lockBtn.style.display = "flex";
             lockBtn.style.opacity = "0.5";
+            lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
             lockBtn.setAttribute("aria-pressed", "false");
           }
           if (popoutBtn) popoutBtn.style.display = "none";
@@ -1800,12 +1801,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         if (isLocked) {
           floatingWin.__llmLocked = false;
           lockBtn.style.opacity = "0.5";
-          lockBtn.setAttribute("title", "Lock session to this floating window");
-          lockBtn.setAttribute("aria-pressed", "false");
+          lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
+          lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
+            lockBtn.setAttribute("aria-pressed", "false");
         } else {
           floatingWin.__llmLocked = true;
           lockBtn.style.opacity = "1.0";
-          lockBtn.setAttribute("title", "Session locked (will not change on tab switch)");
+          lockBtn.setAttribute("title", "Sync mode (locked): tracks Zotero's active tab");
           lockBtn.setAttribute("aria-pressed", "true");
         }
       }
@@ -1827,7 +1829,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           lockBtn.setAttribute("aria-pressed", "true");
         } else {
           lockBtn.style.opacity = "0.5";
-          lockBtn.setAttribute("aria-pressed", "false");
+          lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
+            lockBtn.setAttribute("aria-pressed", "false");
         }
       } else {
         if (lockBtn) lockBtn.style.display = "none";

@@ -210,11 +210,27 @@ export function registerReaderContextPanel() {
         buildUI(body, resolvedItem);
         activeContextPanelRawItems.set(body, item || null);
 
-        // Auto-hijack to floating window if not locked
+        // Auto-hijack to floating window if locked (user requested reversed logic)
         const mainWin = Zotero.getMainWindow();
         if (mainWin) {
           const floatingWin = (mainWin as any).__llmFloatingWindow;
-          if (floatingWin && !floatingWin.closed && !floatingWin.__llmLocked) {
+          if (floatingWin && !floatingWin.closed && floatingWin.__llmLocked) {
+            // Put back any existing float window content to its original host so it isn't orphaned or destroyed
+            const oldContainer = floatingWin.document.body.querySelector("#llm-main");
+            const oldHostBody = (mainWin as any).__llmFloatedPanelHostBody;
+            if (oldContainer && oldHostBody && oldHostBody !== body) {
+              oldContainer.classList.remove("llm-panel-os-window");
+              oldHostBody.replaceChildren(oldContainer);
+              if (oldHostBody.__llmFloatedPanel) oldHostBody.__llmFloatedPanel = null;
+              // hide floating-only buttons in the returned original tab
+              ["#llm-lock", "#llm-minimize", "#llm-maximize", "#llm-close"].forEach(id => {
+                const el = oldHostBody.querySelector(id);
+                if (el) (el as HTMLElement).style.display = "none";
+              });
+              const pBtn = oldHostBody.querySelector("#llm-popout");
+              if (pBtn) (pBtn as HTMLElement).style.display = "flex";
+            }
+
             const container = body.querySelector("#llm-main");
             if (container) {
               container.classList.add("llm-panel-os-window");
@@ -225,7 +241,19 @@ export function registerReaderContextPanel() {
               setTimeout(() => {
                 const lBtn = floatingWin.document.body.querySelector("#llm-lock");
                 const pBtn = floatingWin.document.body.querySelector("#llm-popout");
-                if (lBtn) (lBtn as HTMLElement).style.display = "flex";
+                if (lBtn) {
+                  const lBtnEl = lBtn as HTMLElement;
+                  lBtnEl.style.display = "flex";
+                  if (floatingWin.__llmLocked) {
+                    lBtnEl.style.opacity = "1.0";
+                    lBtnEl.setAttribute("title", "Sync mode (locked): tracks Zotero's active tab");
+                    lBtnEl.setAttribute("aria-pressed", "true");
+                  } else {
+                    lBtnEl.style.opacity = "0.5";
+                    lBtnEl.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
+                    lBtnEl.setAttribute("aria-pressed", "false");
+                  }
+                }
                 if (pBtn) (pBtn as HTMLElement).style.display = "none";
               }, 0);
             }
