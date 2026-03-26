@@ -46,6 +46,10 @@ describe("sendFlowController", function () {
       getItem: () => item,
       closeSlashMenu: () => undefined,
       closePaperPicker: () => undefined,
+      autoLockGlobalChat: () => undefined,
+      autoUnlockGlobalChat: () => undefined,
+      getPdfModePaperContexts: () => [],
+      getModelPdfSupport: () => false,
       getSelectedTextContextEntries: () => selectedTextContexts,
       getSelectedPaperContexts: () => [selectedPaper],
       getFullTextPaperContexts: () => [selectedPaper],
@@ -77,51 +81,15 @@ describe("sendFlowController", function () {
         setActiveEditSessionCalls += 1;
       },
       getLatestEditablePair: async () => null,
-      editLatestUserMessageAndRetry: async (
-        _body: Element,
-        _item: Zotero.Item,
-        _displayQuestion: string,
-        _selectedTexts?: string[],
-        _selectedTextSources?: unknown,
-        _selectedTextPaperContexts?: unknown,
-        _screenshotImages?: string[],
-        _paperContexts?: PaperContextRef[],
-        _fullTextPaperContexts?: PaperContextRef[],
-        _attachments?: ChatAttachment[],
-        targetRuntimeMode?: "chat" | "agent",
-        _expected?: unknown,
-        _model?: string,
-        _apiBase?: string,
-        _apiKey?: string,
-        _reasoning?: unknown,
-        _advanced?: unknown,
-      ) => {
+      editLatestUserMessageAndRetry: async (opts: any) => {
         editCalled += 1;
-        lastEditRuntimeMode = targetRuntimeMode || "";
+        lastEditRuntimeMode = opts.targetRuntimeMode || "";
         return "ok" as const;
       },
-      sendQuestion: async (
-        _body: Element,
-        _item: Zotero.Item,
-        _question: string,
-        _screenshotImages?: string[],
-        _model?: string,
-        _apiBase?: string,
-        _apiKey?: string,
-        _reasoning?: unknown,
-        _advanced?: unknown,
-        _displayQuestion?: string,
-        _selectedTexts?: string[],
-        _selectedTextSources?: unknown,
-        _selectedTextPaperContexts?: unknown,
-        _paperContexts?: PaperContextRef[],
-        _fullTextPaperContexts?: PaperContextRef[],
-        _attachments?: ChatAttachment[],
-        runtimeMode?: "chat" | "agent",
-      ) => {
+      sendQuestion: async (opts: any) => {
         sendCalled += 1;
-        lastSentQuestion = _question;
-        lastRuntimeMode = runtimeMode || "";
+        lastSentQuestion = opts.question;
+        lastRuntimeMode = opts.runtimeMode || "";
       },
       retainPinnedImageState: () => {
         retainImageCalled += 1;

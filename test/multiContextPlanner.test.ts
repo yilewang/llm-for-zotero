@@ -43,7 +43,7 @@ function buildPdfContext(title: string, chunks: string[]): PdfContext {
   });
   const avgChunkLength = chunkStats.length
     ? chunkStats.reduce((sum, chunk) => sum + chunk.length, 0) /
-      chunkStats.length
+    chunkStats.length
     : 0;
   return {
     title,
@@ -153,12 +153,12 @@ describe("multiContextPlanner", function () {
           return zoteroItems.get(id) || null;
         },
       },
+      llm: { log: () => undefined },
     } as unknown as typeof Zotero;
   });
 
   after(function () {
-    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
-      originalZotero;
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = originalZotero;
   });
 
   afterEach(function () {

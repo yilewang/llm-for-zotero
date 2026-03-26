@@ -353,49 +353,49 @@ export function registerReaderContextPanel() {
               }, 0);
             }
           } else if (floatingWin && !floatingWin.closed && floatingWin.__llmLocked) {
-          // Locked to Independent Mode. Show placeholder.
-          const doc = body.ownerDocument;
-          const container = body.querySelector("#llm-main");
-          if (container && doc) {
-            const div = doc.createElement("div");
-            div.className = "llm-placeholder";
-            div.style.padding = "24px 16px";
-            div.style.textAlign = "center";
-            div.style.color = "var(--fill-quaternary, #888)";
-            div.style.display = "flex";
-            div.style.flexDirection = "column";
-            div.style.alignItems = "center";
-            div.style.justifyContent = "center";
-            div.style.height = "100%";
-            div.innerHTML = `<div style="margin-bottom: 24px;">
+            // Locked to Independent Mode. Show placeholder.
+            const doc = body.ownerDocument;
+            const container = body.querySelector("#llm-main");
+            if (container && doc) {
+              const div = doc.createElement("div");
+              div.className = "llm-placeholder";
+              div.style.padding = "24px 16px";
+              div.style.textAlign = "center";
+              div.style.color = "var(--fill-quaternary, #888)";
+              div.style.display = "flex";
+              div.style.flexDirection = "column";
+              div.style.alignItems = "center";
+              div.style.justifyContent = "center";
+              div.style.height = "100%";
+              div.innerHTML = `<div style="margin-bottom: 24px;">
                <div style="font-size: 2em; margin-bottom: 12px; opacity: 0.6;">🔒</div>
                <div style="margin-bottom: 8px; font-size: 1.1em; font-weight: 500;">AI Assistant is in Independent Mode</div>
                <div style="font-size: 0.9em; opacity: 0.8; margin-bottom: 24px; max-width: 250px; line-height: 1.4;">The floating window will not sync to this tab until you switch it to Sync Mode.</div>
                <button id="llm-fw-bring-back" class="llm-shortcut-btn llm-action-btn llm-action-btn-secondary" style="margin: 0 auto; padding: 6px 16px;">Close Window & Sync Here</button>
              </div>`;
-            body.replaceChildren(div);
+              body.replaceChildren(div);
 
-            const btn = body.querySelector("#llm-fw-bring-back");
-            if (btn) {
-              btn.addEventListener("click", () => {
-                floatingWin.__llmLocked = false;
-                floatingWin.close();
+              const btn = body.querySelector("#llm-fw-bring-back");
+              if (btn) {
+                btn.addEventListener("click", () => {
+                  floatingWin.__llmLocked = false;
+                  floatingWin.close();
 
-                // Re-render UI after closing the float window
-                setTimeout(() => {
-                  body.innerHTML = '';
-                  if (resolvedItem) {
-                    buildUI(body, resolvedItem);
-                    setupHandlers(body, resolvedItem);
-                    refreshChat(body, resolvedItem);
-                  }
-                }, 100);
-              });
+                  // Re-render UI after closing the float window
+                  setTimeout(() => {
+                    body.innerHTML = '';
+                    if (resolvedItem) {
+                      buildUI(body, resolvedItem);
+                      setupHandlers(body, resolvedItem);
+                      refreshChat(body, resolvedItem);
+                    }
+                  }, 100);
+                });
+              }
             }
+            return; // Stop building normal UI duplicate
           }
-          return; // Stop building normal UI duplicate
         }
-      }
       }
 
       if (resolvedItem) {

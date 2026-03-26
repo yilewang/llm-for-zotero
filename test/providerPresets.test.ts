@@ -84,7 +84,7 @@ describe("providerPresets", function () {
     );
     assert.equal(
       getProviderPreset("kimi").defaultApiBase,
-      "https://api.moonshot.cn/v1",
+      "https://api.moonshot.ai/v1",
     );
   });
 
