@@ -1452,7 +1452,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         floatingWin = mainWin.open(
           "about:blank",
           "LLMFloatingWindow",
-          "chrome,titlebar,toolbar=0,centerscreen,resizable,dependent=yes,alwaysRaised=yes,width=450,height=700"
+          "popup=yes,titlebar=yes,centerscreen,resizable,dependent=yes,alwaysRaised=yes,width=450,height=700"
         );
         (mainWin as any).__llmFloatingWindow = floatingWin;
 
@@ -1499,36 +1499,43 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           }
 
           try {
-            const varStyle = floatingWin.document.createElement("style");
-            let extraCSS = `
-            :root, body {
-              font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol" !important;
-              font-size: 13px !important;
-            }
-            `;
-            const docSheets = Array.from(mainWin.document.styleSheets);
-            for (const sheet of docSheets) {
-              try {
-                const rules = (sheet as any).cssRules;
-                if (rules) {
-                  for (let i = 0; i < rules.length; i++) {
-                    extraCSS += rules[i].cssText + "\n";
+            let cssVars = "";
+            if (mainWin.document.documentElement) {
+              const computedStyle = mainWin.getComputedStyle(mainWin.document.documentElement);
+              if (computedStyle) {
+                for (let i = 0; i < computedStyle.length; i++) {
+                  const prop = computedStyle[i];
+                  if (prop.startsWith("--")) {
+                    cssVars += `${prop}: ${computedStyle.getPropertyValue(prop)};\n`;
                   }
                 }
-              } catch (e) {
-                // ignore cross-origin errors
               }
             }
-            varStyle.textContent = extraCSS;
+
+            let bodyCssVars = "";
+            if (mainWin.document.body) {
+              const computedBody = mainWin.getComputedStyle(mainWin.document.body);
+              if (computedBody) {
+                for (let i = 0; i < computedBody.length; i++) {
+                  const prop = computedBody[i];
+                  if (prop.startsWith("--")) {
+                    bodyCssVars += `${prop}: ${computedBody.getPropertyValue(prop)};\n`;
+                  }
+                }
+              }
+            }
+
+            const varStyle = floatingWin.document.createElement("style");
+            varStyle.textContent = `:root {\n${cssVars}\n}\nbody {\n${bodyCssVars}\n  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol" !important;\n  font-size: 13px !important;\n}`;
             floatingWin.document.head.appendChild(varStyle);
           } catch (e) {
-            console.error("Failed to copy CSS stylesheets", e);
+            console.error("Failed to copy CSS variables", e);
           }
 
           let rootClass = mainWin.document.documentElement?.className || "";
           rootClass = rootClass.replace(/custom-titlebar/g, "").replace(/in-vbox-linux/g, "").trim();
           floatingWin.document.documentElement.className = rootClass;
-          
+
           let bodyClass = mainWin.document.body?.className || "";
           bodyClass = bodyClass.replace(/custom-titlebar/g, "").trim();
           floatingWin.document.body.className = bodyClass;
