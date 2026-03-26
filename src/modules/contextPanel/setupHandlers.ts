@@ -364,6 +364,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     settingsBtn,
     exportBtn,
     clearBtn,
+    closeBtn,
     titleStatic,
     historyBar,
     historyNewBtn,
@@ -1452,7 +1453,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         floatingWin = mainWin.open(
           "about:blank",
           "LLMFloatingWindow",
-          "chrome,titlebar=yes,centerscreen,resizable,dependent=yes,alwaysRaised=yes,width=450,height=700"
+          "dialog=no,centerscreen,resizable,dependent=yes,alwaysRaised=yes,width=450,height=700"
         );
         (mainWin as any).__llmFloatingWindow = floatingWin;
 
@@ -1554,6 +1555,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             (body as any).__llmFloatedPanel = floatingWin.document.body;
             if (lockBtn) lockBtn.style.display = "flex";
             if (popoutBtn) popoutBtn.style.display = "none";
+            if (closeBtn) closeBtn.style.display = "flex";
           }
 
           floatingWin.addEventListener("unload", () => {
@@ -1571,6 +1573,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
                 const localPopoutBtn = hostBody.querySelector("#llm-popout");
                 if (localLockBtn) (localLockBtn as HTMLElement).style.display = "none";
                 if (localPopoutBtn) (localPopoutBtn as HTMLElement).style.display = "flex";
+                const localCloseBtn = hostBody.querySelector("#llm-close");
+                if (localCloseBtn) (localCloseBtn as HTMLElement).style.display = "none";
               }
             }
           });
@@ -1590,6 +1594,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             lockBtn.setAttribute("aria-pressed", "false");
           }
           if (popoutBtn) popoutBtn.style.display = "none";
+          if (closeBtn) closeBtn.style.display = "flex";
         }
       }
     });
@@ -1627,6 +1632,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (floatingWin && !floatingWin.closed) {
         if (lockBtn) lockBtn.style.display = "flex";
         if (popoutBtn) popoutBtn.style.display = "none";
+        if (closeBtn) closeBtn.style.display = "flex";
         if (floatingWin.__llmLocked) {
           lockBtn.style.opacity = "1.0";
           lockBtn.setAttribute("aria-pressed", "true");
@@ -1637,6 +1643,20 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       } else {
         if (lockBtn) lockBtn.style.display = "none";
         if (popoutBtn) popoutBtn.style.display = "flex";
+        if (closeBtn) closeBtn.style.display = "none";
+      }
+    });
+  }
+
+  if (closeBtn) {
+    closeBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (floatingWin && !floatingWin.closed) {
+        floatingWin.close();
       }
     });
   }
