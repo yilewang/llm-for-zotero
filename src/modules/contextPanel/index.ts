@@ -128,27 +128,27 @@ export function registerReaderContextPanel() {
             });
             const pBtn = oldHostBody.querySelector("#llm-popout");
             if (pBtn) (pBtn as HTMLElement).style.display = "flex";
-            
+
             if (oldHostBody instanceof (oldHostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
-                (oldHostBody as HTMLElement).style.display = 'none';
-                void (oldHostBody as HTMLElement).offsetHeight;
-                (oldHostBody as HTMLElement).style.display = '';
+              (oldHostBody as HTMLElement).style.display = 'none';
+              void (oldHostBody as HTMLElement).offsetHeight;
+              (oldHostBody as HTMLElement).style.display = '';
             }
           }
 
           // Build new UI via a synthetic body for floatWin
-          getActiveReaderForSelectedTab(); 
+          getActiveReaderForSelectedTab();
           const tabs = getZoteroTabsState();
           const activeTab = Array.isArray(tabs?._tabs) ? tabs._tabs.find((t: any) => `${t?.id || ""}` === `${currentTabId}`) : null;
-          
+
           let newItem = null;
           if (activeTab?.data?.groupID !== undefined && activeTab?.data?.itemID !== undefined) {
-             newItem = Zotero.Items.get(activeTab.data.itemID) || null;
+            newItem = Zotero.Items.get(activeTab.data.itemID) || null;
           } else {
-             const activeReader = getActiveReaderForSelectedTab();
-             if (activeReader && activeReader.itemID) {
-               newItem = Zotero.Items.get(activeReader.itemID) || null;
-             }
+            const activeReader = getActiveReaderForSelectedTab();
+            if (activeReader && activeReader.itemID) {
+              newItem = Zotero.Items.get(activeReader.itemID) || null;
+            }
           }
 
           const resolvedInitialState = resolveInitialPanelItemState(newItem);
@@ -163,7 +163,7 @@ export function registerReaderContextPanel() {
             checkFloatWin.document.body.replaceChildren(container);
             (mainWin as any).__llmFloatedPanelHostBody = fakeBody;
             (fakeBody as any).__llmFloatedPanel = checkFloatWin.document.body;
-            
+
             setTimeout(() => {
               const lBtn = checkFloatWin.document.body.querySelector("#llm-lock");
               const pBtn2 = checkFloatWin.document.body.querySelector("#llm-popout");
@@ -174,16 +174,16 @@ export function registerReaderContextPanel() {
                 lBtn.setAttribute("aria-pressed", "false");
               }
               if (pBtn2) (pBtn2 as HTMLElement).style.display = "none";
-              
+
               if (resolvedItem) {
-                 ensureConversationLoaded(resolvedItem).then(() => {
-                    renderShortcuts(fakeBody, resolvedItem);
-                    setupHandlers(fakeBody, resolvedItem);
-                    refreshChat(fakeBody, resolvedItem);
-                 });
+                ensureConversationLoaded(resolvedItem).then(() => {
+                  renderShortcuts(fakeBody, resolvedItem);
+                  setupHandlers(fakeBody, resolvedItem);
+                  refreshChat(fakeBody, resolvedItem);
+                });
               } else {
-                 setupHandlers(fakeBody, null);
-                 refreshChat(fakeBody, null);
+                setupHandlers(fakeBody, null);
+                refreshChat(fakeBody, null);
               }
             }, 0);
           }

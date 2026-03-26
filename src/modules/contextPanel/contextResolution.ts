@@ -629,7 +629,7 @@ function syncNoteBackedSelectedTextContexts(
     if (
       entry.text === snapshot.text &&
       buildNoteContextIdentityKey(entry.noteContext) ===
-        buildNoteContextIdentityKey(nextNoteContext) &&
+      buildNoteContextIdentityKey(nextNoteContext) &&
       entry.noteContext.noteItemId === nextNoteContext.noteItemId &&
       entry.noteContext.parentItemId === nextNoteContext.parentItemId &&
       entry.noteContext.parentItemKey === nextNoteContext.parentItemKey &&
@@ -742,7 +742,7 @@ function areSelectedTextContextsEquivalent(
     left.source === right.source &&
     leftPaperKey === rightPaperKey &&
     buildNoteContextIdentityKey(left.noteContext) ===
-      buildNoteContextIdentityKey(right.noteContext) &&
+    buildNoteContextIdentityKey(right.noteContext) &&
     (left.contextItemId || 0) === (right.contextItemId || 0) &&
     (left.pageIndex ?? -1) === (right.pageIndex ?? -1) &&
     (left.pageLabel || "") === (right.pageLabel || "")
@@ -1252,9 +1252,9 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
         ? isExpanded
           ? "Collapse editing focus"
           : "Expand editing focus"
-      : isExpanded
-        ? "Collapse text context"
-        : "Expand text context";
+        : isExpanded
+          ? "Collapse text context"
+          : "Expand text context";
     previewMeta.setAttribute(
       "aria-expanded",
       isJumpablePdfContext ? "false" : isExpanded ? "true" : "false",
