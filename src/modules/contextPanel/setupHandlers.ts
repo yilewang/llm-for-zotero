@@ -1453,7 +1453,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         floatingWin = mainWin.open(
           "about:blank",
           "LLMFloatingWindow",
-          "dialog=no,centerscreen,resizable,dependent=yes,alwaysRaised=yes,width=450,height=700"
+          "chrome,centerscreen,resizable,dependent=yes,alwaysRaised=yes,width=450,height=700"
         );
         (mainWin as any).__llmFloatingWindow = floatingWin;
 
