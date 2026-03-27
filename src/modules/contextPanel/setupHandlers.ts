@@ -387,6 +387,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     slashUploadOption,
     slashReferenceOption,
     slashPdfPageOption,
+    slashPdfMultiplePagesOption,
     imagePreview,
     selectedContextList,
     previewStrip,
@@ -8848,6 +8849,109 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }
       } catch (err) {
         ztoolkit.log("PDF page capture error:", err);
+        if (status) setStatus(status, t("PDF page capture failed"), "error");
+        updateImagePreviewPreservingScroll();
+      }
+    });
+  }
+
+  if (slashPdfMultiplePagesOption) {
+    slashPdfMultiplePagesOption.addEventListener("click", async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!item) return;
+      consumeActiveActionToken();
+      closeSlashMenu();
+      const { currentModel } = getSelectedModelInfo();
+      if (isScreenshotUnsupportedModel(currentModel)) {
+        if (status) setStatus(status, getScreenshotDisabledHint(currentModel), "error");
+        return;
+      }
+      const currentImages = selectedImageCache.get(item.id) || [];
+      const remaining = MAX_SELECTED_IMAGES - currentImages.length;
+      if (remaining <= 0) {
+        if (status) setStatus(status, `Maximum ${MAX_SELECTED_IMAGES} images allowed`, "error");
+        return;
+      }
+      // Get page count from the active PDF
+      const { getPdfPageCount, parsePageRanges, capturePdfPages } = await import("./pdfPageCapture");
+      const totalPages = getPdfPageCount();
+      if (totalPages <= 0) {
+        if (status) setStatus(status, t("No PDF page found — open a PDF in the reader first"), "error");
+        return;
+      }
+      // Prompt user for page ranges via ztoolkit dialog
+      const win =
+        body.ownerDocument?.defaultView ||
+        (Zotero.getMainWindow?.() as Window | null);
+      if (!win) return;
+      const dialogData: Record<string, unknown> = {
+        pageRangeValue: `1-${Math.min(totalPages, remaining)}`,
+        loadCallback: () => { return; },
+        unloadCallback: () => { return; },
+      };
+      const pageDialog = new ztoolkit.Dialog(2, 1)
+        .addCell(0, 0, {
+          tag: "label",
+          namespace: "html",
+          properties: { innerHTML: `${t("Enter page numbers or ranges (e.g. 1-5, 8, 12):")} (1-${totalPages})` },
+          styles: { display: "block", marginBottom: "8px" },
+        })
+        .addCell(1, 0, {
+          tag: "input",
+          namespace: "html",
+          id: "llm-pdf-page-range-input",
+          attributes: {
+            "data-bind": "pageRangeValue",
+            "data-prop": "value",
+            type: "text",
+          },
+          styles: { width: "300px" },
+        }, false)
+        .addButton("OK", "ok")
+        .addButton("Cancel", "cancel")
+        .setDialogData(dialogData)
+        .open(t("Select PDF pages"));
+      addon.data.dialog = pageDialog;
+      await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock.promise;
+      addon.data.dialog = undefined;
+      if ((dialogData as { _lastButtonId?: string })._lastButtonId !== "ok") return;
+      const rawInput = String((dialogData as { pageRangeValue?: string }).pageRangeValue || "").trim();
+      if (!rawInput) return;
+      const pageNumbers = parsePageRanges(rawInput, totalPages).slice(0, remaining);
+      if (!pageNumbers.length) {
+        if (status) setStatus(status, "No valid pages selected", "error");
+        return;
+      }
+      if (status) setStatus(status, t("Capturing PDF pages..."), "sending");
+      try {
+        const dataUrls = await capturePdfPages(pageNumbers, {
+          onProgress: (current, total) => {
+            if (status) setStatus(status, `${t("Capturing PDF pages...")} ${current}/${total}`, "sending");
+          },
+        });
+        if (dataUrls.length > 0) {
+          const optimized: string[] = [];
+          for (const dataUrl of dataUrls) {
+            optimized.push(win ? await optimizeImageDataUrl(win, dataUrl) : dataUrl);
+          }
+          const existingImages = selectedImageCache.get(item.id) || [];
+          const nextImages = [...existingImages, ...optimized].slice(0, MAX_SELECTED_IMAGES);
+          selectedImageCache.set(item.id, nextImages);
+          const expandedBefore = selectedImagePreviewExpandedCache.get(item.id);
+          selectedImagePreviewExpandedCache.set(
+            item.id,
+            typeof expandedBefore === "boolean" ? expandedBefore : true,
+          );
+          selectedImagePreviewActiveIndexCache.set(item.id, nextImages.length - 1);
+          updateImagePreviewPreservingScroll();
+          if (status) setStatus(status, `${dataUrls.length} pages captured`, "ready");
+        } else {
+          if (status) setStatus(status, t("PDF page capture failed"), "error");
+          updateImagePreviewPreservingScroll();
+        }
+      } catch (err) {
+        ztoolkit.log("PDF multiple pages capture error:", err);
         if (status) setStatus(status, t("PDF page capture failed"), "error");
         updateImagePreviewPreservingScroll();
       }

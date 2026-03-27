@@ -480,7 +480,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     t("Send current PDF page"),
     t("Capture the visible page as an image"),
   );
-  slashList.append(slashUploadBtn, slashReferenceBtn, slashPdfPageBtn);
+  const slashPdfMultiplePagesBtn = makeSlashItem(
+    "llm-slash-pdf-multiple-pages-option",
+    t("Send multiple PDF pages"),
+    t("Select pages from the open PDF"),
+  );
+  slashList.append(slashUploadBtn, slashReferenceBtn, slashPdfPageBtn, slashPdfMultiplePagesBtn);
   slashMenu.append(slashList);
   // slashMenu is appended to composeArea below (after composeArea is created)
 

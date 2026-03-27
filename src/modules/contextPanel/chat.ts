@@ -3197,7 +3197,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       let hasContextBadge = false;
 
       const screenshotImages = Array.isArray(msg.screenshotImages)
-        ? msg.screenshotImages.filter((entry) => Boolean(entry))
+        ? msg.screenshotImages.filter(
+            (entry) => Boolean(entry) && !entry.startsWith("data:application/pdf"),
+          )
         : [];
       let screenshotExpanded: HTMLDivElement | null = null;
       let papersExpanded: HTMLDivElement | null = null;
