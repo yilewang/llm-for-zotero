@@ -1,4 +1,5 @@
 import { createElement } from "../../utils/domHelpers";
+import { buildUI } from "./buildUI";
 import { t } from "../../utils/i18n";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
 import {
@@ -359,9 +360,14 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     actionsRow,
     actionsLeft,
     actionsRight,
+    popoutBtn,
+    lockBtn,
     settingsBtn,
     exportBtn,
     clearBtn,
+    minBtn,
+    maxBtn,
+    closeBtn,
     titleStatic,
     historyBar,
     historyNewBtn,
@@ -470,11 +476,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       historyNewBtn.disabled = true;
       historyNewBtn.setAttribute("aria-disabled", "true");
     }
-    const historyMenuEl = body.querySelector(
+    const historyMenuEl = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-menu",
     ) as HTMLDivElement | null;
     if (historyMenuEl) historyMenuEl.style.display = "none";
-    const historyNewMenuEl = body.querySelector(
+    const historyNewMenuEl = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-new-menu",
     ) as HTMLDivElement | null;
     if (historyNewMenuEl) historyNewMenuEl.style.display = "none";
@@ -489,7 +495,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const ElementCtor = panelDoc.defaultView?.Element;
   const isElementNode = (value: unknown): value is Element =>
     Boolean(ElementCtor && value instanceof ElementCtor);
-  const headerTop = body.querySelector(
+  const headerTop = ((body as any).__llmFloatedPanel || body).querySelector(
     ".llm-header-top",
   ) as HTMLDivElement | null;
   panelRoot.tabIndex = 0;
@@ -1207,7 +1213,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       responseMenu.addEventListener("pointerdown", (e: Event) => {
         e.stopPropagation();
       });
+      responseMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+        e.stopPropagation();
+      });
       responseMenu.addEventListener("mousedown", (e: Event) => {
+        e.stopPropagation();
+      });
+      responseMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
         e.stopPropagation();
       });
       responseMenu.addEventListener("contextmenu", (e: Event) => {
@@ -1321,7 +1333,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       promptMenu.addEventListener("pointerdown", (e: Event) => {
         e.stopPropagation();
       });
+      promptMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+        e.stopPropagation();
+      });
       promptMenu.addEventListener("mousedown", (e: Event) => {
+        e.stopPropagation();
+      });
+      promptMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
         e.stopPropagation();
       });
       promptMenu.addEventListener("contextmenu", (e: Event) => {
@@ -1360,7 +1378,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       exportMenu.addEventListener("pointerdown", (e: Event) => {
         e.stopPropagation();
       });
+      exportMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+        e.stopPropagation();
+      });
       exportMenu.addEventListener("mousedown", (e: Event) => {
+        e.stopPropagation();
+      });
+      exportMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
         e.stopPropagation();
       });
       exportMenu.addEventListener("contextmenu", (e: Event) => {
@@ -1438,6 +1462,465 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     });
   }
 
+  if (popoutBtn) {
+    popoutBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+
+      if (!floatingWin || floatingWin.closed) {
+        let features = "chrome,resizable,alwaysRaised=yes,dependent=yes";
+        let boundsStr = Zotero.Prefs.get(`${config.prefsPrefix}.floatingWindowBounds`, true) as string;
+        let bounds: { x?: number; y?: number; width?: number; height?: number } | null = null;
+        try {
+          if (boundsStr) bounds = JSON.parse(boundsStr);
+        } catch (e) { }
+
+        if (bounds && bounds.width && bounds.height) {
+          features += `,width=${bounds.width},height=${bounds.height},left=${bounds.x || 0},top=${bounds.y || 0}`;
+        } else {
+          features += ",centerscreen,width=450,height=700";
+        }
+
+        floatingWin = mainWin.open(
+          "about:blank",
+          "LLMFloatingWindow",
+          features
+        );
+
+        floatingWin.addEventListener('beforeunload', () => {
+          if (floatingWin.windowState !== floatingWin.STATE_MAXIMIZED && floatingWin.windowState !== floatingWin.STATE_MINIMIZED && !floatingWin.closed) {
+            const newBounds = {
+              x: floatingWin.screenX,
+              y: floatingWin.screenY,
+              width: floatingWin.outerWidth,
+              height: floatingWin.outerHeight
+            };
+            Zotero.Prefs.set(`${config.prefsPrefix}.floatingWindowBounds`, JSON.stringify(newBounds), true);
+          }
+        });
+        (mainWin as any).__llmFloatingWindow = floatingWin;
+
+        setTimeout(() => {
+          let fDoc = floatingWin.document;
+          const dismissTrigger = (ev: Event) => {
+            ztoolkit.log("LLM: fDoc dismissTrigger fired, event type: " + ev.type + ", target: " + (ev.target ? (ev.target as Element).tagName : "null") + ", class: " + (ev.target ? (ev.target as Element).className : "null"));
+
+            // Because cross-document UI events and strict document separation handles "empty space clicks"
+            // occasionally weirdly, we will inline the menu dismissal directly into fDoc's dismiss handler.
+            // This runs in the actual same JS context of the floated window.
+            const menus = [
+              ...Array.from(fDoc.querySelectorAll("#llm-model-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-reasoning-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-retry-model-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-response-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-prompt-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-export-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-slash-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-history-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-history-new-menu")),
+              ...Array.from(fDoc.querySelectorAll("#llm-history-row-menu"))
+            ] as HTMLElement[];
+
+            for (const menu of menus) {
+              if (menu.style.display !== "none") {
+                let target = ev.target as Node;
+                if (menu === target || (typeof menu.contains === 'function' && menu.contains(target))) continue;
+
+                // Fallback closes
+                const toggleBtn = fDoc.querySelector(`[aria-controls="${menu.id}"]`) || menu.closest("#llm-main")?.querySelector(`#${menu.id.replace("-menu", "-toggle")}`);
+                if (toggleBtn && (toggleBtn === target || (typeof toggleBtn.contains === 'function' && toggleBtn.contains(target)))) continue;
+
+                menu.style.display = "none";
+                if (menu.id === "llm-model-menu") menu.classList.remove("llm-model-menu-open");
+                if (menu.id === "llm-reasoning-menu") menu.classList.remove("llm-reasoning-menu-open");
+                if (menu.id === "llm-retry-model-menu") menu.classList.remove("llm-retry-model-menu-open");
+              }
+            }
+
+            const customEv = new CustomEvent("llm-menu-dismiss-trigger", { bubbles: true, composed: true });
+            (customEv as any).__llmTarget = ev.target;
+            (customEv as any).button = (ev as MouseEvent).button;
+            body.dispatchEvent(customEv);
+          };
+          fDoc.addEventListener("pointerdown", dismissTrigger, true);
+          fDoc.addEventListener("mousedown", dismissTrigger, true);
+          floatingWin.document.title = "AI Assistant";
+          const styleLinks = mainWin.document.querySelectorAll("link[rel='stylesheet'], link[rel='localization']");
+          styleLinks.forEach((link: any) => {
+            const newLink = floatingWin.document.createElement("link");
+            newLink.rel = link.rel;
+            newLink.href = link.href;
+            if (link.type) newLink.type = link.type;
+            if (link.media) newLink.media = link.media;
+            floatingWin.document.head.appendChild(newLink);
+          });
+          const styleTags = mainWin.document.querySelectorAll("style");
+          styleTags.forEach((style: any) => {
+            floatingWin.document.head.appendChild(style.cloneNode(true));
+          });
+          const pluginLinks = mainWin.document.documentElement?.querySelectorAll("link[rel='stylesheet']") || [];
+          pluginLinks.forEach((link: any) => {
+            if (!floatingWin.document.querySelector(`link[href="${link.href}"]`)) {
+              const newLink = floatingWin.document.createElement("link");
+              newLink.rel = link.rel;
+              newLink.href = link.href;
+              floatingWin.document.head.appendChild(newLink);
+            }
+          });
+
+          if (mainWin.document.documentElement) {
+            const skipAttrs = ["hidechrome", "chromemargin", "drawintitlebar", "drawtitle", "windowtype", "sizemode", "width", "height", "screenx", "screeny"];
+            for (let attr of mainWin.document.documentElement.attributes) {
+              if (!skipAttrs.includes(attr.name.toLowerCase())) {
+                floatingWin.document.documentElement.setAttribute(attr.name, attr.value);
+              }
+            }
+          }
+          if (mainWin.document.body) {
+            const skipBodyAttrs = ["width", "height"];
+            for (let attr of mainWin.document.body.attributes) {
+              if (!skipBodyAttrs.includes(attr.name.toLowerCase())) {
+                floatingWin.document.body.setAttribute(attr.name, attr.value);
+              }
+            }
+          }
+
+          try {
+            let cssVars = "";
+            if (mainWin.document.documentElement) {
+              const computedStyle = mainWin.getComputedStyle(mainWin.document.documentElement);
+              if (computedStyle) {
+                for (let i = 0; i < computedStyle.length; i++) {
+                  const prop = computedStyle[i];
+                  if (prop.startsWith("--")) {
+                    cssVars += `${prop}: ${computedStyle.getPropertyValue(prop)};\n`;
+                  }
+                }
+              }
+            }
+
+            let bodyCssVars = "";
+            if (mainWin.document.body) {
+              const computedBody = mainWin.getComputedStyle(mainWin.document.body);
+              if (computedBody) {
+                for (let i = 0; i < computedBody.length; i++) {
+                  const prop = computedBody[i];
+                  if (prop.startsWith("--")) {
+                    bodyCssVars += `${prop}: ${computedBody.getPropertyValue(prop)};\n`;
+                  }
+                }
+              }
+            }
+
+            const varStyle = floatingWin.document.createElement("style");
+            varStyle.textContent = `:root {\n${cssVars}\n}\nbody {\n${bodyCssVars}\n  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol" !important;\n  font-size: 13px !important;\n}`;
+            floatingWin.document.head.appendChild(varStyle);
+          } catch (e) {
+            console.error("Failed to copy CSS variables", e);
+          }
+
+          let rootClass = mainWin.document.documentElement?.className || "";
+          rootClass = rootClass.replace(/custom-titlebar/g, "").replace(/in-vbox-linux/g, "").trim();
+          floatingWin.document.documentElement.className = rootClass;
+
+          let bodyClass = mainWin.document.body?.className || "";
+          bodyClass = bodyClass.replace(/custom-titlebar/g, "").trim();
+          floatingWin.document.body.className = bodyClass;
+          floatingWin.document.body.style.backgroundColor = "var(--material-sidepane, var(--zotero-pane-background-color, #fff))";
+          floatingWin.document.body.style.display = "flex";
+          floatingWin.document.body.style.flexDirection = "column";
+          floatingWin.document.body.style.height = "100vh";
+          floatingWin.document.body.style.margin = "0";
+          floatingWin.document.body.setAttribute("data-theme", mainWin.document.documentElement?.getAttribute("data-theme") || "light");
+
+          const fakeBody = mainWin.document.createElement("div");
+          buildUI(fakeBody, item);
+          activeContextPanels.set(fakeBody, () => item);
+          activeContextPanelRawItems.set(fakeBody, item || null);
+          const container = fakeBody.querySelector("#llm-main");
+          if (container) {
+            container.classList.add("llm-panel-os-window");
+            floatingWin.document.body.replaceChildren(container);
+            (mainWin as any).__llmFloatedPanelHostBody = fakeBody;
+            (fakeBody as any).__llmFloatedPanel = floatingWin.document.body;
+
+            setTimeout(() => {
+              const lBtn = floatingWin.document.body.querySelector("#llm-lock") as HTMLElement;
+              const pBtn2 = floatingWin.document.body.querySelector("#llm-popout") as HTMLElement;
+              const minBtn = floatingWin.document.body.querySelector("#llm-minimize") as HTMLElement;
+              const maxBtn = floatingWin.document.body.querySelector("#llm-maximize") as HTMLElement;
+              const closeBtn = floatingWin.document.body.querySelector("#llm-close") as HTMLElement;
+
+              if (lBtn) {
+                lBtn.style.display = "flex";
+                lBtn.style.opacity = "0.5";
+                lBtn.setAttribute("title", "Sync mode (unlocked): tracks Zotero's active tab");
+                lBtn.setAttribute("aria-pressed", "false");
+              }
+              if (pBtn2) pBtn2.style.display = "none";
+              if (minBtn) minBtn.style.display = "flex";
+              if (maxBtn) maxBtn.style.display = "flex";
+              if (closeBtn) closeBtn.style.display = "flex";
+
+              import("./chat").then(({ ensureConversationLoaded, refreshChat }) => {
+                if (item) {
+                   ensureConversationLoaded(item).then(() => {
+                      import("./shortcuts").then(({ renderShortcuts }) => {
+                         renderShortcuts(fakeBody, item);
+                         setupHandlers(fakeBody, item);
+                         refreshChat(fakeBody, item);
+                      });
+                   });
+                } else {
+                   setupHandlers(fakeBody, null);
+                   refreshChat(fakeBody, null);
+                }
+              });
+            }, 0);
+          }
+
+          floatingWin.addEventListener("unload", () => {
+            if ((mainWin as any).__llmFloatingWindow === floatingWin) {
+              (mainWin as any).__llmFloatingWindow = null;
+            }
+            const hostBody = (mainWin as any).__llmFloatedPanelHostBody;
+            if (hostBody) {
+              hostBody.__llmFloatedPanel = null;
+            }
+          });
+
+          // Delay setting ALWAYS ON TOP (zLevel) until the layout is complete
+          // This avoids the window blanking issue on Windows with XPCOM.
+          setTimeout(() => {
+            try {
+              if (floatingWin && !floatingWin.closed) {
+                if (floatingWin.document && floatingWin.document.documentElement) {
+                  floatingWin.document.documentElement.setAttribute("alwaysontop", "true");
+                }
+                (floatingWin as any).alwaysOnTop = true;
+
+                const Components = (mainWin as any).Components;
+                let Services = (mainWin as any).Services;
+                if (!Services && Components && Components.utils) {
+                  try { Services = Components.utils.import("resource://gre/modules/Services.jsm").Services; } catch (e) { }
+                }
+
+                let targetWin = floatingWin;
+                if (Services && Services.wm) {
+                  let outerId = null;
+                  try {
+                    const winUtils = floatingWin.windowUtils || floatingWin.QueryInterface(Components.interfaces.nsIInterfaceRequestor).getInterface(Components.interfaces.nsIDOMWindowUtils);
+                    if (winUtils) outerId = winUtils.outerWindowID;
+                  } catch (e) { }
+
+                  let enumerator = Services.wm.getEnumerator(null);
+                  while (enumerator.hasMoreElements()) {
+                    let win = enumerator.getNext();
+                    let match = false;
+                    try {
+                      if (outerId && win.windowUtils && win.windowUtils.outerWindowID === outerId) {
+                        match = true;
+                      } else if (win.document && win.document.title === "AI Assistant") {
+                        match = true;
+                      }
+                    } catch (e) { }
+
+                    if (match) {
+                      win.document.documentElement.setAttribute("alwaysontop", "true");
+                      targetWin = win;
+                      break;
+                    }
+                  }
+                }
+
+                if (Components && Components.interfaces) {
+                  const applyZLevel = (winObj: any) => {
+                    try {
+                      if (!winObj || !winObj.QueryInterface) return false;
+                      const ifaceReq = winObj.QueryInterface(Components.interfaces.nsIInterfaceRequestor);
+                      const webNav = ifaceReq.getInterface(Components.interfaces.nsIWebNavigation);
+                      const docShell = webNav.QueryInterface(Components.interfaces.nsIDocShellTreeItem);
+                      const treeOwner = docShell.treeOwner;
+                      const ownerIfaceReq = treeOwner.QueryInterface(Components.interfaces.nsIInterfaceRequestor);
+                      const hasAppWin = "nsIAppWindow" in Components.interfaces;
+                      const appWindowIface = hasAppWin ? Components.interfaces.nsIAppWindow : Components.interfaces.nsIXULWindow;
+                      const appWin = ownerIfaceReq.getInterface(appWindowIface);
+                      if (appWin) {
+                        const raisedZ = hasAppWin ? Components.interfaces.nsIAppWindow.raisedZ : Components.interfaces.nsIXULWindow.raisedZ;
+                        appWin.zLevel = raisedZ || 5;
+                        return true;
+                      }
+                    } catch (e) { return false; }
+                    return false;
+                  };
+
+                  if (!applyZLevel(targetWin)) {
+                    applyZLevel(floatingWin);
+                  }
+                }
+              }
+            } catch (err) {
+              console.error("Failed to set window always on top", err);
+            }
+          }, 800);
+        }, 150);
+      } else {
+        floatingWin.focus();
+
+        // BUG 2 FIX: Ensure we return the previous tab's container to its original host so it isn't orphaned
+        const oldContainer = floatingWin.document.body.querySelector("#llm-main");
+        const oldHostBody = (mainWin as any).__llmFloatedPanelHostBody;
+        const targetContainer = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main");
+
+        if (oldContainer && oldHostBody && oldHostBody !== body && oldContainer !== targetContainer) {
+          oldContainer.classList.remove("llm-panel-os-window");
+          oldHostBody.replaceChildren(oldContainer);
+          if (oldHostBody.__llmFloatedPanel) oldHostBody.__llmFloatedPanel = null;
+          ["#llm-lock", "#llm-minimize", "#llm-maximize", "#llm-close"].forEach(id => {
+            const el = oldHostBody.querySelector(id);
+            if (el) (el as HTMLElement).style.display = "none";
+          });
+          const pBtn = oldHostBody.querySelector("#llm-popout");
+          if (pBtn) (pBtn as HTMLElement).style.display = "flex";
+
+          // Force a reflow
+          if (oldHostBody instanceof (oldHostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
+            (oldHostBody as HTMLElement).style.display = 'none';
+            void (oldHostBody as HTMLElement).offsetHeight;
+            (oldHostBody as HTMLElement).style.display = '';
+          }
+        }
+
+        const container = targetContainer;
+        if (container) {
+          container.classList.add("llm-panel-os-window");
+          floatingWin.document.body.replaceChildren(container);
+          (mainWin as any).__llmFloatedPanelHostBody = body;
+          (body as any).__llmFloatedPanel = floatingWin.document.body;
+          floatingWin.__llmLocked = false;
+          if (lockBtn) {
+            lockBtn.style.display = "flex";
+            lockBtn.style.opacity = "0.5";
+            lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
+            lockBtn.setAttribute("aria-pressed", "false");
+          }
+          if (popoutBtn) popoutBtn.style.display = "none";
+          if (minBtn) minBtn.style.display = "flex";
+          if (maxBtn) maxBtn.style.display = "flex";
+          if (closeBtn) closeBtn.style.display = "flex";
+        }
+      }
+    });
+  }
+
+  if (lockBtn) {
+    lockBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+
+      if (floatingWin) {
+        const isLocked = floatingWin.__llmLocked;
+        if (isLocked) {
+          floatingWin.__llmLocked = false;
+          lockBtn.style.opacity = "0.5";
+          lockBtn.setAttribute("title", "Sync mode (unlocked): tracks Zotero's active tab");
+          lockBtn.setAttribute("aria-pressed", "false");
+
+          // Note: if user unlocks, we should ideally sync immediately to the currently active tab if possible.
+          // The easiest way is to let Zotero re-render context panel, but for now just updating text is fine, 
+          // because a simple tool button click shouldn't jarringly swap content until they actually switch tabs,
+          // OR we could trigger a refresh.
+        } else {
+          floatingWin.__llmLocked = true;
+          lockBtn.style.opacity = "1.0";
+          lockBtn.setAttribute("title", "Independent mode (locked to this session): stays on current session when switching tabs");
+          lockBtn.setAttribute("aria-pressed", "true");
+        }
+      }
+    });
+
+    // Check visibility on load (if window already open)
+    setTimeout(() => {
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (floatingWin && !floatingWin.closed) {
+        if (lockBtn) lockBtn.style.display = "flex";
+        if (popoutBtn) popoutBtn.style.display = "none";
+        if (minBtn) minBtn.style.display = "flex";
+        if (maxBtn) maxBtn.style.display = "flex";
+        if (closeBtn) closeBtn.style.display = "flex";
+        if (floatingWin.__llmLocked) {
+          lockBtn.style.opacity = "1.0";
+          lockBtn.setAttribute("aria-pressed", "true");
+        } else {
+          lockBtn.style.opacity = "0.5";
+          lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
+          lockBtn.setAttribute("aria-pressed", "false");
+        }
+      } else {
+        if (lockBtn) lockBtn.style.display = "none";
+        if (popoutBtn) popoutBtn.style.display = "flex";
+        if (minBtn) minBtn.style.display = "none";
+        if (maxBtn) maxBtn.style.display = "none";
+        if (closeBtn) closeBtn.style.display = "none";
+      }
+    });
+  }
+
+  if (minBtn) {
+    minBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (floatingWin && !floatingWin.closed) {
+        if (typeof floatingWin.minimize === 'function') {
+          floatingWin.minimize();
+        }
+      }
+    });
+  }
+
+  if (maxBtn) {
+    maxBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (floatingWin && !floatingWin.closed) {
+        if (typeof floatingWin.maximize === 'function') {
+          if (floatingWin.windowState === floatingWin.STATE_MAXIMIZED) {
+            floatingWin.restore();
+          } else {
+            floatingWin.maximize();
+          }
+        }
+      }
+    });
+  }
+
+  if (closeBtn) {
+    closeBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (floatingWin && !floatingWin.closed) {
+        floatingWin.close();
+      }
+    });
+  }
+
   if (settingsBtn) {
     settingsBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
@@ -1458,6 +1941,71 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         if (status) {
           setStatus(status, t("Could not open plugin settings"), "error");
         }
+      }
+    });
+  }
+
+  const dragHeaderTop = panelRoot.querySelector(".llm-header-top") as HTMLElement | null;
+  if (dragHeaderTop) {
+    let isDragging = false;
+    let startMouseX = 0;
+    let startMouseY = 0;
+    let startWinX = 0;
+    let startWinY = 0;
+
+    dragHeaderTop.addEventListener("dblclick", (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement;
+      if (target.closest("button, input, select, a, [contenteditable]")) return;
+
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (floatingWin && !floatingWin.closed) {
+        if (typeof floatingWin.maximize === "function") {
+          if (floatingWin.windowState === floatingWin.STATE_MAXIMIZED) {
+            floatingWin.restore();
+          } else {
+            floatingWin.maximize();
+          }
+        }
+      }
+    });
+
+    dragHeaderTop.addEventListener("mousedown", (e: MouseEvent) => {
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (!floatingWin || floatingWin.closed || e.button !== 0) return;
+
+      const target = e.target as HTMLElement;
+      if (target.closest("button, input, select, a, [contenteditable]")) return;
+
+      isDragging = true;
+      startMouseX = e.screenX;
+      startMouseY = e.screenY;
+      startWinX = floatingWin.screenX;
+      startWinY = floatingWin.screenY;
+    });
+    panelRoot.addEventListener("mousemove", (e: Event) => {
+      const me = e as MouseEvent;
+      if (!isDragging) return;
+      let mainWin = Zotero.getMainWindow();
+      if (!mainWin) return;
+      let floatingWin = (mainWin as any).__llmFloatingWindow;
+      if (!floatingWin || floatingWin.closed) return;
+
+      let dx = me.screenX - startMouseX;
+      let dy = me.screenY - startMouseY;
+      floatingWin.moveTo(startWinX + dx, startWinY + dy);
+    });
+    panelRoot.addEventListener("mouseup", () => {
+      isDragging = false;
+    });
+    panelRoot.addEventListener("mouseleave", (e: Event) => {
+      const me = e as MouseEvent;
+      if (me.relatedTarget === null) {
+        isDragging = false;
       }
     });
   }
@@ -2032,11 +2580,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       }
       const readerApi = Zotero.Reader as
         | {
-            open?: (
-              itemID: number,
-              location?: _ZoteroTypes.Reader.Location,
-            ) => Promise<void | _ZoteroTypes.ReaderInstance>;
-          }
+          open?: (
+            itemID: number,
+            location?: _ZoteroTypes.Reader.Location,
+          ) => Promise<void | _ZoteroTypes.ReaderInstance>;
+        }
         | undefined;
       if (typeof readerApi?.open === "function") {
         await readerApi.open(paperContext.contextItemId);
@@ -2259,7 +2807,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         fullText:
           isPaperContextFullTextMode(
             resolvePaperContextNextSendMode(itemId, paperContext),
-        ),
+          ),
         contentSourceMode: resolvePaperContentSourceMode(itemId, paperContext),
       });
     });
@@ -3299,8 +3847,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     const searchDocumentsReady = searchActive
       ? allEntries.every((entry) =>
-          historySearchDocumentCache.has(entry.conversationKey),
-        )
+        historySearchDocumentCache.has(entry.conversationKey),
+      )
       : true;
     if (searchActive && !searchDocumentsReady) {
       const loadingRow = createElement(
@@ -3357,26 +3905,26 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         );
         const topMatchCount = searchActive
           ? section.entries.reduce(
-              (max, entry) =>
-                Math.max(
-                  max,
-                  searchResultsByKey.get(entry.conversationKey)?.matchCount ||
-                    0,
-                ),
-              0,
-            )
+            (max, entry) =>
+              Math.max(
+                max,
+                searchResultsByKey.get(entry.conversationKey)?.matchCount ||
+                0,
+              ),
+            0,
+          )
           : 0;
         const orderedEntries = searchActive
           ? [...section.entries].sort((a, b) => {
-              const matchDelta =
-                (searchResultsByKey.get(b.conversationKey)?.matchCount || 0) -
-                (searchResultsByKey.get(a.conversationKey)?.matchCount || 0);
-              if (matchDelta !== 0) return matchDelta;
-              if (b.lastActivityAt !== a.lastActivityAt) {
-                return b.lastActivityAt - a.lastActivityAt;
-              }
-              return b.conversationKey - a.conversationKey;
-            })
+            const matchDelta =
+              (searchResultsByKey.get(b.conversationKey)?.matchCount || 0) -
+              (searchResultsByKey.get(a.conversationKey)?.matchCount || 0);
+            if (matchDelta !== 0) return matchDelta;
+            if (b.lastActivityAt !== a.lastActivityAt) {
+              return b.lastActivityAt - a.lastActivityAt;
+            }
+            return b.conversationKey - a.conversationKey;
+          })
           : section.entries;
         return {
           sectionKey,
@@ -3512,10 +4060,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         const preview =
           searchResult && searchResult.previewText
             ? createElement(
-                body.ownerDocument as Document,
-                "div",
-                "llm-history-row-preview",
-              )
+              body.ownerDocument as Document,
+              "div",
+              "llm-history-row-preview",
+            )
             : null;
         if (preview && searchResult) {
           appendHistorySearchHighlightedText(
@@ -4001,8 +4549,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         activePaperConversationByPaper.get(
           buildPaperStateKey(libraryID, paperItemID),
         ) ||
-          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
-          0,
+        getLastUsedPaperConversationKey(libraryID, paperItemID) ||
+        0,
       );
       if (
         Number.isFinite(rememberedConversationKey) &&
@@ -4028,10 +4576,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       normalizedConversationKey === paperItemID
         ? paperItem
         : createPaperPortalItem(
-            paperItem,
-            normalizedConversationKey,
-            targetSummary.sessionVersion,
-          );
+          paperItem,
+          normalizedConversationKey,
+          targetSummary.sessionVersion,
+        );
     item = nextItem;
     syncConversationIdentity();
     activeEditSession = null;
@@ -5569,18 +6117,18 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const wrappedTextWidth =
         normalizedMaxLines > 1
           ? (() => {
-              const segments = label
-                .split(/[\s._-]+/g)
-                .map((segment) => segment.trim())
-                .filter(Boolean);
-              const longestSegmentWidth = segments.reduce((max, segment) => {
-                return Math.max(max, measureLabelTextWidth(button, segment));
-              }, 0);
-              return Math.max(
-                textWidth / normalizedMaxLines,
-                longestSegmentWidth,
-              );
-            })()
+            const segments = label
+              .split(/[\s._-]+/g)
+              .map((segment) => segment.trim())
+              .filter(Boolean);
+            const longestSegmentWidth = segments.reduce((max, segment) => {
+              return Math.max(max, measureLabelTextWidth(button, segment));
+            }, 0);
+            return Math.max(
+              textWidth / normalizedMaxLines,
+              longestSegmentWidth,
+            );
+          })()
           : textWidth;
       const paddingWidth =
         getComputedSizePx(style, "padding-left") +
@@ -5702,12 +6250,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const leftSlotWidths = [
         uploadBtn
           ? getRenderedWidthPx(
-              uploadSlot || uploadBtn,
-              Math.max(
-                uploadBtn.scrollWidth || 0,
-                ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
-              ),
-            )
+            uploadSlot || uploadBtn,
+            Math.max(
+              uploadBtn.scrollWidth || 0,
+              ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
+            ),
+          )
           : 0,
         getContextButtonWidth(
           selectTextSlot,
@@ -6055,8 +6603,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       latestPair?.assistantMessage?.modelProviderLabel?.trim() || "";
     const matchingLegacyEntries = latestAssistantModelName
       ? groupedChoices.flatMap((group) =>
-          group.entries.filter((entry) => entry.model === latestAssistantModelName),
-        )
+        group.entries.filter((entry) => entry.model === latestAssistantModelName),
+      )
       : [];
     retryModelMenu.innerHTML = "";
     if (!groupedChoices.length) {
@@ -6070,9 +6618,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           ? entry.entryId === latestAssistantModelEntryId
           : latestAssistantModelName
             ? entry.model === latestAssistantModelName &&
-              (latestAssistantProviderLabel
-                ? entry.providerLabel === latestAssistantProviderLabel
-                : matchingLegacyEntries.length === 1)
+            (latestAssistantProviderLabel
+              ? entry.providerLabel === latestAssistantProviderLabel
+              : matchingLegacyEntries.length === 1)
             : false;
         const option = createElement(
           body.ownerDocument as Document,
@@ -6163,11 +6711,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const available = enabledLevels.length > 0;
       const resolvedReasoningLabel = available
         ? getReasoningLevelDisplayLabel(
-            selectedLevel as LLMReasoningLevel,
-            provider,
-            currentModel,
-            options,
-          )
+          selectedLevel as LLMReasoningLevel,
+          provider,
+          currentModel,
+          options,
+        )
         : "off";
       const active =
         available && isReasoningDisplayLabelActive(resolvedReasoningLabel);
@@ -6236,11 +6784,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             selectedLevel === level
               ? `\u2713 ${getReasoningLevelDisplayLabel(level, provider, currentModel, options)}`
               : getReasoningLevelDisplayLabel(
-                  level,
-                  provider,
-                  currentModel,
-                  options,
-                ),
+                level,
+                provider,
+                currentModel,
+                options,
+              ),
         },
       );
       if (optionState.enabled) {
@@ -6419,8 +6967,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     scheduleAttachmentGc,
     setStatusMessage: status
       ? (message, level) => {
-          setStatus(status, message, level);
-        }
+        setStatus(status, message, level);
+      }
       : undefined,
   });
 
@@ -6437,21 +6985,21 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   type PaperPickerMode = "browse" | "search" | "empty";
   type PaperPickerRow =
     | {
-        kind: "collection";
-        collectionId: number;
-        depth: number;
-      }
+      kind: "collection";
+      collectionId: number;
+      depth: number;
+    }
     | {
-        kind: "paper";
-        itemId: number;
-        depth: number;
-      }
+      kind: "paper";
+      itemId: number;
+      depth: number;
+    }
     | {
-        kind: "attachment";
-        itemId: number;
-        attachmentIndex: number;
-        depth: number;
-      };
+      kind: "attachment";
+      itemId: number;
+      attachmentIndex: number;
+      depth: number;
+    };
   let paperPickerMode: PaperPickerMode = "browse";
   let paperPickerEmptyMessage = "No references available.";
   let paperPickerGroups: PaperSearchGroupCandidate[] = [];
@@ -6841,10 +7389,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     const filtered = query
       ? allActions.filter(
-          (a) =>
-            a.name.toLowerCase().includes(query) ||
-            a.description.toLowerCase().includes(query),
-        )
+        (a) =>
+          a.name.toLowerCase().includes(query) ||
+          a.description.toLowerCase().includes(query),
+      )
       : allActions;
     const ownerDoc = body.ownerDocument;
     const list = slashMenu?.querySelector(".llm-action-picker-list");
@@ -7511,12 +8059,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const option = createElement(
         ownerDoc,
         "div",
-        `llm-paper-picker-item ${
-          row.kind === "attachment"
-            ? "llm-paper-picker-attachment-row"
-            : row.kind === "paper"
-              ? "llm-paper-picker-group-row"
-              : "llm-paper-picker-group-row llm-paper-picker-collection-row"
+        `llm-paper-picker-item ${row.kind === "attachment"
+          ? "llm-paper-picker-attachment-row"
+          : row.kind === "paper"
+            ? "llm-paper-picker-group-row"
+            : "llm-paper-picker-group-row llm-paper-picker-collection-row"
         }`,
       );
       option.setAttribute("role", "option");
@@ -8046,8 +8593,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     },
     setStatusMessage: status
       ? (message, level) => {
-          setStatus(status, message, level);
-        }
+        setStatus(status, message, level);
+      }
       : undefined,
     editStaleStatusText: EDIT_STALE_STATUS_TEXT,
   });
@@ -8080,8 +8627,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     clearAgentToolCaches: clearAllAgentToolCaches,
     setStatusMessage: status
       ? (message, level) => {
-          setStatus(status, message, level);
-        }
+        setStatus(status, message, level);
+      }
       : undefined,
     logError: (message, err) => {
       ztoolkit.log(message, err);
@@ -8430,10 +8977,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         reset
           ? FONT_SCALE_DEFAULT_PERCENT
           : clampNumber(
-              panelFontScalePercent + (delta || 0),
-              FONT_SCALE_MIN_PERCENT,
-              FONT_SCALE_MAX_PERCENT,
-            ),
+            panelFontScalePercent + (delta || 0),
+            FONT_SCALE_MIN_PERCENT,
+            FONT_SCALE_MAX_PERCENT,
+          ),
       );
       event.preventDefault();
       event.stopPropagation();
@@ -8914,7 +9461,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     modelMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    modelMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     modelMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    modelMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -8923,7 +9476,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     reasoningMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    reasoningMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     reasoningMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    reasoningMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -8932,7 +9491,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     retryModelMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    retryModelMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     retryModelMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    retryModelMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -8941,7 +9506,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     slashMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    slashMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     slashMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    slashMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -8950,7 +9521,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     historyMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    historyMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     historyMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    historyMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -8959,7 +9536,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     historyNewMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    historyNewMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     historyNewMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    historyNewMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
   }
@@ -8968,7 +9551,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     historyRowMenu.addEventListener("pointerdown", (e: Event) => {
       e.stopPropagation();
     });
+    historyRowMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
+      e.stopPropagation();
+    });
     historyRowMenu.addEventListener("mousedown", (e: Event) => {
+      e.stopPropagation();
+    });
+    historyRowMenu.addEventListener("llm-menu-dismiss-trigger", (e: Event) => {
       e.stopPropagation();
     });
     historyRowMenu.addEventListener("contextmenu", (e: Event) => {
@@ -8978,7 +9567,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   }
 
   const bodyWithRetryMenuDismiss = body as Element & {
-    __llmRetryMenuDismissHandler?: (event: PointerEvent) => void;
+    __llmRetryMenuDismissHandler?: (event: Event) => void;
   };
   if (bodyWithRetryMenuDismiss.__llmRetryMenuDismissHandler) {
     panelDoc.removeEventListener(
@@ -8986,11 +9575,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       bodyWithRetryMenuDismiss.__llmRetryMenuDismissHandler,
       true,
     );
+    panelDoc.removeEventListener(
+      "llm-menu-dismiss-trigger",
+      bodyWithRetryMenuDismiss.__llmRetryMenuDismissHandler,
+      true,
+    );
   }
-  const dismissRetryMenuOnOutsidePointerDown = (e: PointerEvent) => {
-    if (typeof e.button === "number" && e.button !== 0) return;
+  const dismissRetryMenuOnOutsidePointerDown = (e: Event) => {
+    const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
+    const button = ((e as any).button !== undefined ? (e as any).button : (e as PointerEvent).button);
+    if (typeof button === "number" && button !== 0) return;
     if (!retryModelMenu || !isFloatingMenuOpen(retryModelMenu)) return;
-    const target = e.target as Node | null;
     if (target && retryModelMenu.contains(target)) return;
     closeRetryModelMenu();
   };
@@ -8999,11 +9594,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     dismissRetryMenuOnOutsidePointerDown,
     true,
   );
+  panelDoc.addEventListener(
+    "llm-menu-dismiss-trigger",
+    dismissRetryMenuOnOutsidePointerDown,
+    true,
+  );
   bodyWithRetryMenuDismiss.__llmRetryMenuDismissHandler =
     dismissRetryMenuOnOutsidePointerDown;
 
   const bodyWithPromptMenuDismiss = body as Element & {
-    __llmPromptMenuDismissHandler?: (event: PointerEvent) => void;
+    __llmPromptMenuDismissHandler?: (event: Event) => void;
   };
   if (bodyWithPromptMenuDismiss.__llmPromptMenuDismissHandler) {
     panelDoc.removeEventListener(
@@ -9011,10 +9611,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       bodyWithPromptMenuDismiss.__llmPromptMenuDismissHandler,
       true,
     );
+    panelDoc.removeEventListener(
+      "llm-menu-dismiss-trigger",
+      bodyWithPromptMenuDismiss.__llmPromptMenuDismissHandler,
+      true,
+    );
   }
-  const dismissPromptMenuOnOutsidePointerDown = (e: PointerEvent) => {
+  const dismissPromptMenuOnOutsidePointerDown = (e: Event) => {
+    const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
     if (!promptMenu || promptMenu.style.display === "none") return;
-    const target = e.target as Node | null;
     if (target && promptMenu.contains(target)) return;
     closePromptMenu();
   };
@@ -9023,11 +9628,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     dismissPromptMenuOnOutsidePointerDown,
     true,
   );
+  panelDoc.addEventListener(
+    "llm-menu-dismiss-trigger",
+    dismissPromptMenuOnOutsidePointerDown,
+    true,
+  );
   bodyWithPromptMenuDismiss.__llmPromptMenuDismissHandler =
     dismissPromptMenuOnOutsidePointerDown;
 
   const bodyWithPaperPickerDismiss = body as Element & {
-    __llmPaperPickerDismissHandler?: (event: PointerEvent) => void;
+    __llmPaperPickerDismissHandler?: (event: Event) => void;
   };
   if (bodyWithPaperPickerDismiss.__llmPaperPickerDismissHandler) {
     panelDoc.removeEventListener(
@@ -9035,10 +9645,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       bodyWithPaperPickerDismiss.__llmPaperPickerDismissHandler,
       true,
     );
+    panelDoc.removeEventListener(
+      "llm-menu-dismiss-trigger",
+      bodyWithPaperPickerDismiss.__llmPaperPickerDismissHandler,
+      true,
+    );
   }
-  const dismissPaperPickerOnOutsidePointerDown = (e: PointerEvent) => {
+  const dismissPaperPickerOnOutsidePointerDown = (e: Event) => {
+    const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
     if (!isPaperPickerOpen()) return;
-    const target = e.target as Node | null;
     if (target && paperPicker?.contains(target)) return;
     if (target && inputBox.contains(target)) return;
     closePaperPicker();
@@ -9048,11 +9663,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     dismissPaperPickerOnOutsidePointerDown,
     true,
   );
+  panelDoc.addEventListener(
+    "llm-menu-dismiss-trigger",
+    dismissPaperPickerOnOutsidePointerDown,
+    true,
+  );
   bodyWithPaperPickerDismiss.__llmPaperPickerDismissHandler =
     dismissPaperPickerOnOutsidePointerDown;
 
   const bodyWithPaperChipDismiss = body as Element & {
-    __llmPaperChipDismissHandler?: (event: PointerEvent) => void;
+    __llmPaperChipDismissHandler?: (event: Event) => void;
   };
   if (bodyWithPaperChipDismiss.__llmPaperChipDismissHandler) {
     panelDoc.removeEventListener(
@@ -9060,18 +9680,29 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       bodyWithPaperChipDismiss.__llmPaperChipDismissHandler,
       true,
     );
+    panelDoc.removeEventListener(
+      "llm-menu-dismiss-trigger",
+      bodyWithPaperChipDismiss.__llmPaperChipDismissHandler,
+      true,
+    );
   }
-  const dismissPaperChipOnOutsidePointerDown = (e: PointerEvent) => {
-    if (typeof e.button === "number" && e.button !== 0) return;
+  const dismissPaperChipOnOutsidePointerDown = (e: Event) => {
+    const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
+    const button = ((e as any).button !== undefined ? (e as any).button : (e as PointerEvent).button);
+    if (typeof button === "number" && button !== 0) return;
     if (!paperChipMenuSticky || !paperChipMenu || paperChipMenu.style.display === "none")
       return;
-    const target = e.target as Node | null;
     if (target && paperChipMenu.contains(target)) return;
     if (target && paperChipMenuAnchor?.contains(target)) return;
     closePaperChipMenu();
   };
   panelDoc.addEventListener(
     "pointerdown",
+    dismissPaperChipOnOutsidePointerDown,
+    true,
+  );
+  panelDoc.addEventListener(
+    "llm-menu-dismiss-trigger",
     dismissPaperChipOnOutsidePointerDown,
     true,
   );
@@ -9142,41 +9773,45 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     !(doc as unknown as { __llmModelMenuDismiss?: boolean })
       .__llmModelMenuDismiss
   ) {
-    doc.addEventListener("mousedown", (e: Event) => {
+    const handleDocumentDismiss = (e: Event) => {
+      ztoolkit.log("LLM: handleDocumentDismiss fired " + e.type + ", target: " + (e.target ? (e.target as Element).tagName : "null") + ", isCustom: " + (e.type === "llm-menu-dismiss-trigger"));
+
       const me = e as MouseEvent;
+      const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
+      const button = ((e as any).button !== undefined ? (e as any).button : me.button) as number;
       const modelMenus = Array.from(
-        doc.querySelectorAll("#llm-model-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-model-menu")),
       ) as HTMLDivElement[];
       const reasoningMenus = Array.from(
-        doc.querySelectorAll("#llm-reasoning-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-reasoning-menu")),
       ) as HTMLDivElement[];
-      const target = e.target as Node | null;
+      ztoolkit.log("LLM: handleDocumentDismiss target: " + (target ? (target as Element).tagName : "null") + ", modelMenus: " + modelMenus.length + ", button: " + button);
       const retryButtonTarget = isElementNode(target)
         ? (target.closest(".llm-retry-latest") as HTMLButtonElement | null)
         : null;
       const retryModelMenus = Array.from(
-        doc.querySelectorAll("#llm-retry-model-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-retry-model-menu")),
       ) as HTMLDivElement[];
       const responseMenus = Array.from(
-        doc.querySelectorAll("#llm-response-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-response-menu")),
       ) as HTMLDivElement[];
       const promptMenus = Array.from(
-        doc.querySelectorAll("#llm-prompt-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-prompt-menu")),
       ) as HTMLDivElement[];
       const exportMenus = Array.from(
-        doc.querySelectorAll("#llm-export-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-export-menu")),
       ) as HTMLDivElement[];
       const slashMenus = Array.from(
-        doc.querySelectorAll("#llm-slash-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-slash-menu")),
       ) as HTMLDivElement[];
       const historyMenus = Array.from(
-        doc.querySelectorAll("#llm-history-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-history-menu")),
       ) as HTMLDivElement[];
       const historyNewMenus = Array.from(
-        doc.querySelectorAll("#llm-history-new-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-history-new-menu")),
       ) as HTMLDivElement[];
       const historyRowMenus = Array.from(
-        doc.querySelectorAll("#llm-history-row-menu"),
+        (((body as any).__llmFloatedPanel || doc).querySelectorAll("#llm-history-row-menu")),
       ) as HTMLDivElement[];
       for (const modelMenuEl of modelMenus) {
         if (!isFloatingMenuOpen(modelMenuEl)) continue;
@@ -9229,7 +9864,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           retryMenuAnchor = null;
         }
       }
-      if (me.button === 0) {
+      if (button === 0) {
         let responseMenuClosed = false;
         for (const responseMenuEl of responseMenus) {
           if (responseMenuEl.style.display === "none") continue;
@@ -9309,7 +9944,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           break;
         }
       }
-    });
+    };
+    doc.addEventListener("mousedown", handleDocumentDismiss, true);
+    doc.addEventListener("llm-menu-dismiss-trigger", handleDocumentDismiss as EventListener, true);
     (
       doc as unknown as { __llmModelMenuDismiss?: boolean }
     ).__llmModelMenuDismiss = true;
@@ -9793,11 +10430,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     const readerApi = Zotero.Reader as
       | {
-          open?: (
-            itemID: number,
-            location?: _ZoteroTypes.Reader.Location,
-          ) => Promise<void | _ZoteroTypes.ReaderInstance>;
-        }
+        open?: (
+          itemID: number,
+          location?: _ZoteroTypes.Reader.Location,
+        ) => Promise<void | _ZoteroTypes.ReaderInstance>;
+      }
       | undefined;
     if (typeof readerApi?.open === "function") {
       const openedReader = await readerApi.open(targetItemId, location);
@@ -9805,12 +10442,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         openedReader ||
         ((
           Zotero.Reader as
-            | {
-                getByTabID?: (
-                  tabID: string | number,
-                ) => _ZoteroTypes.ReaderInstance;
-              }
-            | undefined
+          | {
+            getByTabID?: (
+              tabID: string | number,
+            ) => _ZoteroTypes.ReaderInstance;
+          }
+          | undefined
         )?.getByTabID &&
           (() => {
             const tabs = (
@@ -9840,11 +10477,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     const pane = Zotero.getActiveZoteroPane?.() as
       | {
-          viewPDF?: (
-            itemID: number,
-            location: _ZoteroTypes.Reader.Location,
-          ) => Promise<void>;
-        }
+        viewPDF?: (
+          itemID: number,
+          location: _ZoteroTypes.Reader.Location,
+        ) => Promise<void>;
+      }
       | undefined;
     if (typeof pane?.viewPDF === "function") {
       await pane.viewPDF(targetItemId, location);
@@ -10103,7 +10740,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   }
 
   const bodyWithPinnedDismiss = body as Element & {
-    __llmPinnedContextDismissHandler?: (event: MouseEvent) => void;
+    __llmPinnedContextDismissHandler?: (event: Event) => void;
   };
   if (bodyWithPinnedDismiss.__llmPinnedContextDismissHandler) {
     body.removeEventListener(
@@ -10111,11 +10748,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       bodyWithPinnedDismiss.__llmPinnedContextDismissHandler,
       true,
     );
+    body.removeEventListener(
+      "llm-menu-dismiss-trigger",
+      bodyWithPinnedDismiss.__llmPinnedContextDismissHandler,
+      true,
+    );
   }
-  const dismissPinnedContextPanels = (e: MouseEvent) => {
-    if (e.button !== 0) return;
+  const dismissPinnedContextPanels = (e: Event) => {
+    const target = (((e as any).__llmTarget as Node | null) || e.target) as Node | null;
+    const button = ((e as any).button !== undefined ? (e as any).button : (e as MouseEvent).button);
+    if (button !== 0) return;
     if (!item) return;
-    const target = e.target as Node | null;
     const clickedInsideTextPanel = Boolean(
       selectedContextList && target && selectedContextList.contains(target),
     );
@@ -10163,6 +10806,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     updateImagePreviewPreservingScroll();
   };
   body.addEventListener("mousedown", dismissPinnedContextPanels, true);
+  body.addEventListener("llm-menu-dismiss-trigger", dismissPinnedContextPanels, true);
   bodyWithPinnedDismiss.__llmPinnedContextDismissHandler =
     dismissPinnedContextPanels;
 

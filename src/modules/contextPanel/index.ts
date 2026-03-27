@@ -56,6 +56,7 @@ import {
   appendSelectedTextContextForItem,
   applySelectedTextPreview,
   syncSelectedTextContextForSource,
+  getZoteroTabsState,
 } from "./contextResolution";
 import { ensurePDFTextCached, ensureNoteTextCached } from "./pdfContext";
 import { resolveCurrentSelectionPageLocationFromReader } from "./livePdfSelectionLocator";
@@ -67,6 +68,20 @@ import { resolveReaderPopupPaperContext } from "./readerPopup";
 import { resolveInitialPanelItemState, resolveActiveLibraryID } from "./portalScope";
 import { getLockedGlobalConversationKey } from "./prefHelpers";
 import { getEditableSelectionFromDocument } from "./noteSelection";
+
+function isPanelActive(body: Element): boolean {
+  if (body.isConnected) return true;
+  if ((body as any).__llmFloatedPanel) return true;
+  return false;
+}
+
+function getPanelElement<T extends Element>(body: Element, selector: string): T | null {
+  let el = body.querySelector(selector) as T | null;
+  if (!el && (body as any).__llmFloatedPanel) {
+    el = (body as any).__llmFloatedPanel.querySelector(selector) as T | null;
+  }
+  return el;
+}
 
 // =============================================================================
 // Public API
@@ -96,6 +111,85 @@ export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
   setReaderContextPanelRegistered(true);
+
+  // Poll for tab changes to update unlocked floating window automatically
+  const mainWin = Zotero.getMainWindow();
+  if (mainWin) {
+    let lastTabId = mainWin.Zotero_Tabs?.selectedID;
+    mainWin.setInterval(() => {
+      const floatWin = (mainWin as any).__llmFloatingWindow;
+      if (!floatWin || floatWin.closed || floatWin.__llmLocked) {
+        lastTabId = mainWin.Zotero_Tabs?.selectedID;
+        return;
+      }
+      const currentTabId = mainWin.Zotero_Tabs?.selectedID;
+      if (currentTabId !== undefined && currentTabId !== lastTabId) {
+        lastTabId = currentTabId;
+        // Tab changed! Auto-sync unlocked floating window.
+        setTimeout(() => {
+          const checkFloatWin = (mainWin as any).__llmFloatingWindow;
+          if (!checkFloatWin || checkFloatWin.closed || checkFloatWin.__llmLocked) return;
+
+          const oldHostBody = (mainWin as any).__llmFloatedPanelHostBody;
+          if (oldHostBody) oldHostBody.__llmFloatedPanel = null;
+
+          // Build new UI via a synthetic body for floatWin
+          getActiveReaderForSelectedTab();
+          const tabs = getZoteroTabsState();
+          const activeTab = Array.isArray(tabs?._tabs) ? tabs._tabs.find((t: any) => `${t?.id || ""}` === `${currentTabId}`) : null;
+
+          let newItem = null;
+          if (activeTab?.data?.groupID !== undefined && activeTab?.data?.itemID !== undefined) {
+            newItem = Zotero.Items.get(activeTab.data.itemID) || null;
+          } else {
+            const activeReader = getActiveReaderForSelectedTab();
+            if (activeReader && activeReader.itemID) {
+              newItem = Zotero.Items.get(activeReader.itemID) || null;
+            }
+          }
+
+          const resolvedInitialState = resolveInitialPanelItemState(newItem);
+          const resolvedItem = resolvedInitialState.item;
+
+          const fakeBody = mainWin.document.createElement("div");
+          buildUI(fakeBody, resolvedItem);
+          activeContextPanels.set(fakeBody, () => resolvedItem);
+          activeContextPanelRawItems.set(fakeBody, newItem || null);
+
+          const container = fakeBody.querySelector("#llm-main");
+          if (container) {
+            container.classList.add("llm-panel-os-window");
+            checkFloatWin.document.body.replaceChildren(container);
+            (mainWin as any).__llmFloatedPanelHostBody = fakeBody;
+            (fakeBody as any).__llmFloatedPanel = checkFloatWin.document.body;
+
+            setTimeout(() => {
+              const lBtn = checkFloatWin.document.body.querySelector("#llm-lock");
+              const pBtn2 = checkFloatWin.document.body.querySelector("#llm-popout");
+              if (lBtn) {
+                (lBtn as HTMLElement).style.display = "flex";
+                (lBtn as HTMLElement).style.opacity = "0.5";
+                lBtn.setAttribute("title", "Sync mode (unlocked): tracks Zotero's active tab");
+                lBtn.setAttribute("aria-pressed", "false");
+              }
+              if (pBtn2) (pBtn2 as HTMLElement).style.display = "none";
+
+              if (resolvedItem) {
+                ensureConversationLoaded(resolvedItem).then(() => {
+                  renderShortcuts(fakeBody, resolvedItem);
+                  setupHandlers(fakeBody, resolvedItem);
+                  refreshChat(fakeBody, resolvedItem);
+                });
+              } else {
+                setupHandlers(fakeBody, null);
+                refreshChat(fakeBody, null);
+              }
+            }, 0);
+          }
+        }, 150);
+      }
+    }, 400);
+  }
   // Generation counter: incremented on every onAsyncRender call so stale
   // (superseded) renders can bail out at each await point.
   let renderGeneration = 0;
@@ -209,6 +303,7 @@ export function registerReaderContextPanel() {
       } else {
         buildUI(body, resolvedItem);
         activeContextPanelRawItems.set(body, item || null);
+
       }
 
       if (resolvedItem) {
@@ -279,9 +374,9 @@ export function registerReaderSelectionTracking() {
       const fromParams = normalizeSelectedText(
         (event.params as unknown as { text?: string; selectedText?: string })
           ?.text ||
-          (event.params as unknown as { text?: string; selectedText?: string })
-            ?.selectedText ||
-          "",
+        (event.params as unknown as { text?: string; selectedText?: string })
+          ?.selectedText ||
+        "",
       );
       if (fromParams) return fromParams;
       const fromAnnotation = normalizeSelectedText(
@@ -327,14 +422,12 @@ export function registerReaderSelectionTracking() {
             panelRecords.push({ body, root });
           };
           for (const [panelBody] of activeContextPanels.entries()) {
-            if (!(panelBody as Element).isConnected) {
+            if (!isPanelActive(panelBody as Element)) {
               activeContextPanels.delete(panelBody);
               activeContextPanelStateSync.delete(panelBody);
               continue;
             }
-            const root = panelBody.querySelector(
-              "#llm-main",
-            ) as HTMLDivElement | null;
+            const root = getPanelElement<HTMLDivElement>(panelBody as Element, "#llm-main");
             pushPanelRecord(panelBody, root);
           }
           const docs = new Set<Document>();
@@ -382,12 +475,12 @@ export function registerReaderSelectionTracking() {
           const readerGlobalConversationKey =
             readerModeLock === "global" && normalizedReaderLibraryID > 0
               ? Math.floor(
-                  Number(
-                    activeGlobalConversationByLibrary.get(
-                      normalizedReaderLibraryID,
-                    ) || 0,
-                  ),
-                )
+                Number(
+                  activeGlobalConversationByLibrary.get(
+                    normalizedReaderLibraryID,
+                  ) || 0,
+                ),
+              )
               : 0;
           const readerPaperContext = resolveReaderPopupPaperContext(
             item,
@@ -496,23 +589,28 @@ export function registerReaderSelectionTracking() {
           // 9) same doc
           // 10) focused panel
           const scoreState = (state: (typeof rankedStates)[number]) => {
+            let base = 0;
             if (state.sameDoc && state.visible && state.hasActiveFocus)
-              return 8;
-            if (state.visible && state.hasActiveFocus) return 7;
-            if (state.sameDoc && state.visible && state.matchesLockedGlobal)
-              return 6.5;
-            if (state.sameDoc && state.visible && state.matchesReaderPaper)
-              return 6;
-            if (state.visible && state.sameConversationMode) return 5.5;
-            if (state.sameDoc && state.visible) return 5;
-            if (state.visible && state.matchesLockedGlobal) return 4.5;
-            if (state.visible && state.matchesReaderPaper) return 4;
-            if (state.visible) return 3;
-            if (state.matchesReaderPaper) return 2.5;
-            if (state.sameDoc) return 2;
-            if (state.matchesLockedGlobal) return 1.5;
-            if (state.hasActiveFocus) return 1;
-            return 0;
+              base = 8;
+            else if (state.visible && state.hasActiveFocus) base = 7;
+            else if (state.sameDoc && state.visible && state.matchesLockedGlobal)
+              base = 6.5;
+            else if (state.sameDoc && state.visible && state.matchesReaderPaper)
+              base = 6;
+            else if (state.visible && state.sameConversationMode) base = 5.5;
+            else if (state.sameDoc && state.visible) base = 5;
+            else if (state.visible && state.matchesLockedGlobal) base = 4.5;
+            else if (state.visible && state.matchesReaderPaper) base = 4;
+            else if (state.visible) base = 3;
+            else if (state.matchesReaderPaper) base = 2.5;
+            else if (state.sameDoc) base = 2;
+            else if (state.matchesLockedGlobal) base = 1.5;
+            else if (state.hasActiveFocus) base = 1;
+            
+            if (state.root.classList.contains("llm-panel-os-window")) {
+               base += 100;
+            }
+            return base;
           };
           let bestState = rankedStates[0];
           let bestScore = scoreState(bestState);
@@ -572,14 +670,12 @@ export function registerReaderSelectionTracking() {
             activeBody,
             syncPanelState,
           ] of activeContextPanelStateSync) {
-            if (!(activeBody as Element).isConnected) {
+            if (!isPanelActive(activeBody as Element)) {
               activeContextPanels.delete(activeBody);
               activeContextPanelStateSync.delete(activeBody);
               continue;
             }
-            const activeRoot = activeBody.querySelector(
-              "#llm-main",
-            ) as HTMLDivElement | null;
+            const activeRoot = getPanelElement<HTMLDivElement>(activeBody as Element, "#llm-main");
             const activeConversationKey = activeRoot
               ? Number(activeRoot.dataset.itemId || 0)
               : 0;
@@ -595,10 +691,8 @@ export function registerReaderSelectionTracking() {
           if (!refreshedPanels) {
             // Search all registered panel bodies for a matching conversation
             for (const [activeBody] of activeContextPanels) {
-              if (!(activeBody as Element).isConnected) continue;
-              const activeRoot = (activeBody as Element).querySelector(
-                "#llm-main",
-              ) as HTMLDivElement | null;
+              if (!isPanelActive(activeBody as Element)) continue;
+              const activeRoot = getPanelElement<HTMLDivElement>(activeBody as Element, "#llm-main");
               if (Number(activeRoot?.dataset?.itemId || 0) === conversationKey) {
                 applySelectedTextPreview(activeBody as Element, conversationKey);
                 refreshedPanels += 1;
@@ -606,9 +700,7 @@ export function registerReaderSelectionTracking() {
               }
             }
           }
-          const status = panelBody.querySelector(
-            "#llm-status",
-          ) as HTMLElement | null;
+          const status = getPanelElement<HTMLElement>(panelBody, "#llm-status");
           if (status) {
             setStatus(
               status,
@@ -617,9 +709,7 @@ export function registerReaderSelectionTracking() {
             );
           }
           if (added) {
-            const inputEl = panelBody.querySelector(
-              "#llm-input",
-            ) as HTMLTextAreaElement | null;
+            const inputEl = getPanelElement<HTMLTextAreaElement>(panelBody, "#llm-input");
             inputEl?.focus({ preventScroll: true });
           }
         } catch (err) {
@@ -860,14 +950,12 @@ function getActiveNoteItemFromWindow(
 
 function refreshPanelsForConversationKey(conversationKey: number): void {
   for (const [activeBody, syncPanelState] of activeContextPanelStateSync) {
-    if (!(activeBody as Element).isConnected) {
+    if (!isPanelActive(activeBody as Element)) {
       activeContextPanels.delete(activeBody);
       activeContextPanelStateSync.delete(activeBody);
       continue;
     }
-    const activeRoot = activeBody.querySelector(
-      "#llm-main",
-    ) as HTMLDivElement | null;
+    const activeRoot = getPanelElement<HTMLDivElement>(activeBody as Element, "#llm-main");
     const activeConversationKey = activeRoot
       ? Number(activeRoot.dataset.itemId || 0)
       : 0;
@@ -902,8 +990,8 @@ function refreshTrackedNoteEditingSelection(
 
   const nextSelectionText = noteItem
     ? collectAccessibleDocuments(win.document).reduce((found, doc) => {
-        return found || getEditableSelectionFromDocument(doc);
-      }, "")
+      return found || getEditableSelectionFromDocument(doc);
+    }, "")
     : "";
 
   if (

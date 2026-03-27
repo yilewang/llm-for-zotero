@@ -177,7 +177,7 @@ function isReasoningExpandedByDefault(): boolean {
 }
 
 function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
-  const historyNewBtn = body.querySelector(
+  const historyNewBtn = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-history-new",
   ) as HTMLButtonElement | null;
   if (historyNewBtn) {
@@ -187,7 +187,7 @@ function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
       historyNewBtn.setAttribute("aria-expanded", "false");
     }
   }
-  const historyToggleBtn = body.querySelector(
+  const historyToggleBtn = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-history-toggle",
   ) as HTMLButtonElement | null;
   if (historyToggleBtn) {
@@ -198,13 +198,13 @@ function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
     }
   }
   if (disabled) {
-    const historyNewMenu = body.querySelector(
+    const historyNewMenu = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-new-menu",
     ) as HTMLDivElement | null;
     if (historyNewMenu) {
       historyNewMenu.style.display = "none";
     }
-    const historyMenu = body.querySelector(
+    const historyMenu = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-menu",
     ) as HTMLDivElement | null;
     if (historyMenu) {
@@ -429,7 +429,7 @@ function getUserBubbleElement(wrapper: HTMLElement): HTMLDivElement | null {
 }
 
 export function syncUserContextAlignmentWidths(body: Element): void {
-  const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
+  const chatBox = ((body as any).__llmFloatedPanel || body).querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
   const wrappers = Array.from(
     chatBox.querySelectorAll(
@@ -1057,12 +1057,12 @@ export type PanelRequestUI = {
 
 function getPanelRequestUI(body: Element): PanelRequestUI {
   return {
-    inputBox: body.querySelector("#llm-input") as HTMLTextAreaElement | null,
-    chatBox: body.querySelector("#llm-chat-box") as HTMLDivElement | null,
-    sendBtn: body.querySelector("#llm-send") as HTMLButtonElement | null,
-    cancelBtn: body.querySelector("#llm-cancel") as HTMLButtonElement | null,
-    status: body.querySelector("#llm-status") as HTMLElement | null,
-    tokenUsageEl: body.querySelector("#llm-token-usage") as HTMLElement | null,
+    inputBox: ((body as any).__llmFloatedPanel || body).querySelector("#llm-input") as HTMLTextAreaElement | null,
+    chatBox: ((body as any).__llmFloatedPanel || body).querySelector("#llm-chat-box") as HTMLDivElement | null,
+    sendBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-send") as HTMLButtonElement | null,
+    cancelBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-cancel") as HTMLButtonElement | null,
+    status: ((body as any).__llmFloatedPanel || body).querySelector("#llm-status") as HTMLElement | null,
+    tokenUsageEl: ((body as any).__llmFloatedPanel || body).querySelector("#llm-token-usage") as HTMLElement | null,
   };
 }
 
@@ -2983,7 +2983,7 @@ function buildInlineEditWidget(
   const isFirstEntry = !inlineEditInputSectionEl;
   let inputSectionEl = inlineEditInputSectionEl;
   if (isFirstEntry) {
-    inputSectionEl = body.querySelector(
+    inputSectionEl = ((body as any).__llmFloatedPanel || body).querySelector(
       ".llm-input-section",
     ) as HTMLElement | null;
     if (inputSectionEl) {
@@ -2997,7 +2997,7 @@ function buildInlineEditWidget(
 
   // The real input <textarea>
   const inputBoxEl =
-    (body.querySelector("#llm-input") as HTMLTextAreaElement | null) ??
+    (((body as any).__llmFloatedPanel || body).querySelector("#llm-input") as HTMLTextAreaElement | null) ??
     (inputSectionEl?.querySelector("#llm-input") as HTMLTextAreaElement | null);
 
   // On first entry: save draft and pre-fill with the user message
@@ -3098,7 +3098,7 @@ function buildInlineEditWidget(
 }
 
 export function refreshChat(body: Element, item?: Zotero.Item | null) {
-  const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
+  const chatBox = ((body as any).__llmFloatedPanel || body).querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
   const doc = body.ownerDocument!;
   setPromptMenuTarget(null);
@@ -3110,7 +3110,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         <div class="llm-welcome-text">Select an item or open a PDF to start.</div>
       </div>
     `;
-    const tokenUsageEl = body.querySelector(
+    const tokenUsageEl = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-token-usage",
     ) as HTMLElement | null;
     if (tokenUsageEl) tokenUsageEl.style.display = "none";
@@ -3119,10 +3119,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
   const conversationKey = getConversationKey(item);
   // Sync token counter for this conversation
-  const tokenUsageEl = body.querySelector(
+  const tokenUsageEl = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-token-usage",
   ) as HTMLElement | null;
-  const panelRoot = body.querySelector("#llm-main") as HTMLDivElement | null;
+  const panelRoot = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main") as HTMLDivElement | null;
   const isGlobalConversation =
     isGlobalPortalItem(item) ||
     panelRoot?.dataset.conversationKind === "global";
@@ -3711,16 +3711,16 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           if (typeof me.stopImmediatePropagation === "function") {
             me.stopImmediatePropagation();
           }
-          const promptMenu = body.querySelector(
+          const promptMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-prompt-menu",
           ) as HTMLDivElement | null;
-          const responseMenu = body.querySelector(
+          const responseMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-response-menu",
           ) as HTMLDivElement | null;
-          const exportMenu = body.querySelector(
+          const exportMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-export-menu",
           ) as HTMLDivElement | null;
-          const retryModelMenu = body.querySelector(
+          const retryModelMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-retry-model-menu",
           ) as HTMLDivElement | null;
           const promptMenuDeleteBtn = promptMenu?.querySelector(
@@ -3821,16 +3821,16 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           if (typeof me.stopImmediatePropagation === "function") {
             me.stopImmediatePropagation();
           }
-          const responseMenu = body.querySelector(
+          const responseMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-response-menu",
           ) as HTMLDivElement | null;
-          const exportMenu = body.querySelector(
+          const exportMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-export-menu",
           ) as HTMLDivElement | null;
-          const promptMenu = body.querySelector(
+          const promptMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-prompt-menu",
           ) as HTMLDivElement | null;
-          const retryModelMenu = body.querySelector(
+          const retryModelMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-retry-model-menu",
           ) as HTMLDivElement | null;
           const responseMenuDeleteBtn = responseMenu?.querySelector(
@@ -4056,7 +4056,7 @@ export function refreshConversationPanels(
   const conversationKey = getConversationKey(primaryItem);
   const refreshedPanels = new Set<Element>();
   const refreshOne = (body: Element, item: Zotero.Item) => {
-    const chatBox = body.querySelector(
+    const chatBox = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-chat-box",
     ) as HTMLDivElement | null;
     if (includeChat && !chatBox) return;
