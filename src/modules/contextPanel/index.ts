@@ -131,24 +131,7 @@ export function registerReaderContextPanel() {
           if (!checkFloatWin || checkFloatWin.closed || checkFloatWin.__llmLocked) return;
 
           const oldHostBody = (mainWin as any).__llmFloatedPanelHostBody;
-          const oldContainer = checkFloatWin.document.body.querySelector("#llm-main");
-          if (oldContainer && oldHostBody && typeof oldHostBody.replaceChildren === 'function') {
-            oldContainer.classList.remove("llm-panel-os-window");
-            oldHostBody.replaceChildren(oldContainer);
-            if (oldHostBody.__llmFloatedPanel) oldHostBody.__llmFloatedPanel = null;
-            ["#llm-lock", "#llm-minimize", "#llm-maximize", "#llm-close"].forEach((id: string) => {
-              const el = oldHostBody.querySelector(id);
-              if (el) (el as HTMLElement).style.display = "none";
-            });
-            const pBtn = oldHostBody.querySelector("#llm-popout");
-            if (pBtn) (pBtn as HTMLElement).style.display = "flex";
-
-            if (oldHostBody instanceof (oldHostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
-              (oldHostBody as HTMLElement).style.display = 'none';
-              void (oldHostBody as HTMLElement).offsetHeight;
-              (oldHostBody as HTMLElement).style.display = '';
-            }
-          }
+          if (oldHostBody) oldHostBody.__llmFloatedPanel = null;
 
           // Build new UI via a synthetic body for floatWin
           getActiveReaderForSelectedTab();
@@ -170,6 +153,8 @@ export function registerReaderContextPanel() {
 
           const fakeBody = mainWin.document.createElement("div");
           buildUI(fakeBody, resolvedItem);
+          activeContextPanels.set(fakeBody, () => resolvedItem);
+          activeContextPanelRawItems.set(fakeBody, newItem || null);
 
           const container = fakeBody.querySelector("#llm-main");
           if (container) {
@@ -319,97 +304,6 @@ export function registerReaderContextPanel() {
         buildUI(body, resolvedItem);
         activeContextPanelRawItems.set(body, item || null);
 
-        // Auto-hijack to floating window if NOT locked (so it tracks active tab)
-        const mainWin = Zotero.getMainWindow();
-        if (mainWin) {
-          const floatingWin = (mainWin as any).__llmFloatingWindow;
-          if (floatingWin && !floatingWin.closed && !floatingWin.__llmLocked) {
-            // Put back any existing float window content to its original host so it isn't orphaned or destroyed
-            const oldContainer = floatingWin.document.body.querySelector('#llm-main');
-            const oldHostBody = (mainWin as any).__llmFloatedPanelHostBody;
-            if (oldContainer && oldHostBody && oldHostBody !== body) {
-              oldContainer.classList.remove('llm-panel-os-window');
-              oldHostBody.replaceChildren(oldContainer);
-              if (oldHostBody.__llmFloatedPanel) oldHostBody.__llmFloatedPanel = null;
-              // hide floating-only buttons in the returned original tab
-              ['#llm-lock', '#llm-minimize', '#llm-maximize', '#llm-close'].forEach(id => {
-                const el = oldHostBody.querySelector(id);
-                if (el) (el as HTMLElement).style.display = 'none';
-              });
-              const pBtn = oldHostBody.querySelector('#llm-popout');
-              if (pBtn) (pBtn as HTMLElement).style.display = 'flex';
-            }
-
-            const container = body.querySelector('#llm-main');
-            if (container) {
-              container.classList.add('llm-panel-os-window');
-              floatingWin.document.body.replaceChildren(container);
-              (mainWin as any).__llmFloatedPanelHostBody = body;
-              (body as any).__llmFloatedPanel = floatingWin.document.body;
-              // Sync lock/popout button state
-              setTimeout(() => {
-                const lBtn = floatingWin.document.body.querySelector('#llm-lock');
-                const pBtn = floatingWin.document.body.querySelector('#llm-popout');
-                if (lBtn) {
-                  const lBtnEl = lBtn as HTMLElement;
-                  lBtnEl.style.display = 'flex';
-                  if (floatingWin.__llmLocked) {
-                    lBtnEl.style.opacity = '1.0';
-                    lBtnEl.setAttribute('title', 'Independent mode (locked to this session): stays on current session when switching tabs');
-                    lBtnEl.setAttribute('aria-pressed', 'true');
-                  } else {
-                    lBtnEl.style.opacity = '0.5';
-                    lBtnEl.setAttribute('title', 'Sync mode (unlocked): tracks Zotero\'s active tab');
-                    lBtnEl.setAttribute('aria-pressed', 'false');
-                  }
-                }
-                if (pBtn) (pBtn as HTMLElement).style.display = "none";
-              }, 0);
-            }
-          } else if (floatingWin && !floatingWin.closed && floatingWin.__llmLocked) {
-            // Locked to Independent Mode. Show placeholder.
-            const doc = body.ownerDocument;
-            const container = body.querySelector("#llm-main");
-            if (container && doc) {
-              const div = doc.createElement("div");
-              div.className = "llm-placeholder";
-              div.style.padding = "24px 16px";
-              div.style.textAlign = "center";
-              div.style.color = "var(--fill-quaternary, #888)";
-              div.style.display = "flex";
-              div.style.flexDirection = "column";
-              div.style.alignItems = "center";
-              div.style.justifyContent = "center";
-              div.style.height = "100%";
-              div.innerHTML = `<div style="margin-bottom: 24px;">
-               <div style="font-size: 2em; margin-bottom: 12px; opacity: 0.6;">🔒</div>
-               <div style="margin-bottom: 8px; font-size: 1.1em; font-weight: 500;">AI Assistant is in Independent Mode</div>
-               <div style="font-size: 0.9em; opacity: 0.8; margin-bottom: 24px; max-width: 250px; line-height: 1.4;">The floating window will not sync to this tab until you switch it to Sync Mode.</div>
-               <button id="llm-fw-bring-back" class="llm-shortcut-btn llm-action-btn llm-action-btn-secondary" style="margin: 0 auto; padding: 6px 16px;">Close Window & Sync Here</button>
-             </div>`;
-              body.replaceChildren(div);
-
-              const btn = body.querySelector("#llm-fw-bring-back");
-              if (btn) {
-                btn.addEventListener("click", () => {
-                  floatingWin.__llmLocked = false;
-                  floatingWin.close();
-
-                  // Re-render UI after closing the float window
-                  setTimeout(() => {
-                    body.innerHTML = '';
-                    if (resolvedItem) {
-                      buildUI(body, resolvedItem);
-                      setupHandlers(body, resolvedItem);
-                      refreshChat(body, resolvedItem);
-                    }
-                  }, 100);
-                });
-              }
-            }
-            return; // Stop building normal UI duplicate
-          }
-        }
       }
 
       if (resolvedItem) {
@@ -695,23 +589,28 @@ export function registerReaderSelectionTracking() {
           // 9) same doc
           // 10) focused panel
           const scoreState = (state: (typeof rankedStates)[number]) => {
+            let base = 0;
             if (state.sameDoc && state.visible && state.hasActiveFocus)
-              return 8;
-            if (state.visible && state.hasActiveFocus) return 7;
-            if (state.sameDoc && state.visible && state.matchesLockedGlobal)
-              return 6.5;
-            if (state.sameDoc && state.visible && state.matchesReaderPaper)
-              return 6;
-            if (state.visible && state.sameConversationMode) return 5.5;
-            if (state.sameDoc && state.visible) return 5;
-            if (state.visible && state.matchesLockedGlobal) return 4.5;
-            if (state.visible && state.matchesReaderPaper) return 4;
-            if (state.visible) return 3;
-            if (state.matchesReaderPaper) return 2.5;
-            if (state.sameDoc) return 2;
-            if (state.matchesLockedGlobal) return 1.5;
-            if (state.hasActiveFocus) return 1;
-            return 0;
+              base = 8;
+            else if (state.visible && state.hasActiveFocus) base = 7;
+            else if (state.sameDoc && state.visible && state.matchesLockedGlobal)
+              base = 6.5;
+            else if (state.sameDoc && state.visible && state.matchesReaderPaper)
+              base = 6;
+            else if (state.visible && state.sameConversationMode) base = 5.5;
+            else if (state.sameDoc && state.visible) base = 5;
+            else if (state.visible && state.matchesLockedGlobal) base = 4.5;
+            else if (state.visible && state.matchesReaderPaper) base = 4;
+            else if (state.visible) base = 3;
+            else if (state.matchesReaderPaper) base = 2.5;
+            else if (state.sameDoc) base = 2;
+            else if (state.matchesLockedGlobal) base = 1.5;
+            else if (state.hasActiveFocus) base = 1;
+            
+            if (state.root.classList.contains("llm-panel-os-window")) {
+               base += 100;
+            }
+            return base;
           };
           let bestState = rankedStates[0];
           let bestScore = scoreState(bestState);

@@ -1,4 +1,5 @@
 import { createElement } from "../../utils/domHelpers";
+import { buildUI } from "./buildUI";
 import { t } from "../../utils/i18n";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
 import {
@@ -1635,65 +1636,59 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           floatingWin.document.body.style.margin = "0";
           floatingWin.document.body.setAttribute("data-theme", mainWin.document.documentElement?.getAttribute("data-theme") || "light");
 
-          const container = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main");
+          const fakeBody = mainWin.document.createElement("div");
+          buildUI(fakeBody, item);
+          activeContextPanels.set(fakeBody, () => item);
+          activeContextPanelRawItems.set(fakeBody, item || null);
+          const container = fakeBody.querySelector("#llm-main");
           if (container) {
             container.classList.add("llm-panel-os-window");
             floatingWin.document.body.replaceChildren(container);
-            (mainWin as any).__llmFloatedPanelHostBody = body;
-            (body as any).__llmFloatedPanel = floatingWin.document.body;
-            if (lockBtn) lockBtn.style.display = "flex";
-            if (popoutBtn) popoutBtn.style.display = "none";
-            if (minBtn) minBtn.style.display = "flex";
-            if (maxBtn) maxBtn.style.display = "flex";
-            if (closeBtn) closeBtn.style.display = "flex";
+            (mainWin as any).__llmFloatedPanelHostBody = fakeBody;
+            (fakeBody as any).__llmFloatedPanel = floatingWin.document.body;
+
+            setTimeout(() => {
+              const lBtn = floatingWin.document.body.querySelector("#llm-lock") as HTMLElement;
+              const pBtn2 = floatingWin.document.body.querySelector("#llm-popout") as HTMLElement;
+              const minBtn = floatingWin.document.body.querySelector("#llm-minimize") as HTMLElement;
+              const maxBtn = floatingWin.document.body.querySelector("#llm-maximize") as HTMLElement;
+              const closeBtn = floatingWin.document.body.querySelector("#llm-close") as HTMLElement;
+
+              if (lBtn) {
+                lBtn.style.display = "flex";
+                lBtn.style.opacity = "0.5";
+                lBtn.setAttribute("title", "Sync mode (unlocked): tracks Zotero's active tab");
+                lBtn.setAttribute("aria-pressed", "false");
+              }
+              if (pBtn2) pBtn2.style.display = "none";
+              if (minBtn) minBtn.style.display = "flex";
+              if (maxBtn) maxBtn.style.display = "flex";
+              if (closeBtn) closeBtn.style.display = "flex";
+
+              import("./chat").then(({ ensureConversationLoaded, refreshChat }) => {
+                if (item) {
+                   ensureConversationLoaded(item).then(() => {
+                      import("./shortcuts").then(({ renderShortcuts }) => {
+                         renderShortcuts(fakeBody, item);
+                         setupHandlers(fakeBody, item);
+                         refreshChat(fakeBody, item);
+                      });
+                   });
+                } else {
+                   setupHandlers(fakeBody, null);
+                   refreshChat(fakeBody, null);
+                }
+              });
+            }, 0);
           }
 
           floatingWin.addEventListener("unload", () => {
             if ((mainWin as any).__llmFloatingWindow === floatingWin) {
               (mainWin as any).__llmFloatingWindow = null;
             }
-            const containerNode = floatingWin.document.body.querySelector("#llm-main");
-            if (containerNode) {
-              const allMenus = containerNode.querySelectorAll(
-                "#llm-model-menu, #llm-reasoning-menu, #llm-retry-model-menu, #llm-response-menu, #llm-prompt-menu, #llm-export-menu, .llm-slash-menu, #llm-history-menu, #llm-history-new-menu, #llm-history-row-menu"
-              );
-              allMenus.forEach((m: Element) => {
-                (m as HTMLElement).style.display = "none";
-                m.classList.remove(
-                  "llm-model-menu-open",
-                  "llm-reasoning-menu-open",
-                  "llm-slash-menu-open",
-                  "llm-history-menu-open"
-                );
-              });
-              containerNode.querySelectorAll("[aria-expanded='true']").forEach((btn: Element) => {
-                btn.setAttribute("aria-expanded", "false");
-              });
-
-              containerNode.classList.remove("llm-panel-os-window");
-              const hostBody = (mainWin as any).__llmFloatedPanelHostBody || body;
-              if (hostBody) {
-                hostBody.replaceChildren(containerNode);
-                (hostBody as any).__llmFloatedPanel = null;
-
-                // Force a reflow to ensure it paints in the Zotero right sidebar after being moved across documents
-                if (hostBody instanceof (hostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
-                  (hostBody as HTMLElement).style.display = 'none';
-                  void (hostBody as HTMLElement).offsetHeight;
-                  (hostBody as HTMLElement).style.display = '';
-                }
-
-                const localLockBtn = hostBody.querySelector("#llm-lock");
-                const localPopoutBtn = hostBody.querySelector("#llm-popout");
-                if (localLockBtn) (localLockBtn as HTMLElement).style.display = "none";
-                if (localPopoutBtn) (localPopoutBtn as HTMLElement).style.display = "flex";
-                const localMinBtn = hostBody.querySelector("#llm-minimize");
-                if (localMinBtn) (localMinBtn as HTMLElement).style.display = "none";
-                const localMaxBtn = hostBody.querySelector("#llm-maximize");
-                if (localMaxBtn) (localMaxBtn as HTMLElement).style.display = "none";
-                const localCloseBtn = hostBody.querySelector("#llm-close");
-                if (localCloseBtn) (localCloseBtn as HTMLElement).style.display = "none";
-              }
+            const hostBody = (mainWin as any).__llmFloatedPanelHostBody;
+            if (hostBody) {
+              hostBody.__llmFloatedPanel = null;
             }
           });
 
