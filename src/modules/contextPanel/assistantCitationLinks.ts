@@ -108,25 +108,25 @@ function isCitationControlCharCode(code: number): boolean {
 function stripCitationControlChars(value: string): string {
   const source = String(value || "");
   if (!source) return "";
-  let out = "";
+  const chars: string[] = [];
   for (let index = 0; index < source.length; index += 1) {
     const code = source.charCodeAt(index);
     if (isCitationControlCharCode(code)) continue;
-    out += source[index];
+    chars.push(source[index]);
   }
-  return out;
+  return chars.join("");
 }
 
 function buildCitationMatchBuffer(source: string): CitationMatchBuffer {
   const cleanToOriginalIndex: number[] = [];
-  let cleanText = "";
+  const chars: string[] = [];
   for (let index = 0; index < source.length; index += 1) {
     const code = source.charCodeAt(index);
     if (isCitationControlCharCode(code)) continue;
     cleanToOriginalIndex.push(index);
-    cleanText += source[index];
+    chars.push(source[index]);
   }
-  return { cleanText, cleanToOriginalIndex };
+  return { cleanText: chars.join(""), cleanToOriginalIndex };
 }
 
 function mapCleanRangeToSourceRange(

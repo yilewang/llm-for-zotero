@@ -57,6 +57,13 @@ import {
 } from "./providerTransport";
 import { parseDataUrl } from "../agent/model/shared";
 import {
+  buildPdfPartForChat,
+  buildPdfPartForResponses,
+  resolvePdfTransport,
+  shouldUploadPdfBeforeRequest,
+  type ProviderRequestLike,
+} from "../providers/pdfTransport";
+import {
   applyModelInputTokenCap,
   estimateConversationTokens,
   getModelInputTokenLimit,
@@ -76,6 +83,16 @@ export type ImageContent = {
   };
 };
 
+export type FileRefContent = {
+  type: "file_ref";
+  file_ref: {
+    name: string;
+    mimeType: string;
+    storedPath: string;
+    contentHash?: string;
+  };
+};
+
 /** Text content */
 export type TextContent = {
   type: "text";
@@ -83,7 +100,7 @@ export type TextContent = {
 };
 
 /** Message content can be string or array of content parts (for vision) */
-export type MessageContent = string | (TextContent | ImageContent)[];
+export type MessageContent = string | (TextContent | ImageContent | FileRefContent)[];
 
 export type ChatMessage = {
   role: "user" | "assistant" | "system";
@@ -988,6 +1005,41 @@ async function readLocalFileBytes(path: string): Promise<Uint8Array> {
   );
 }
 
+function encodeBytesBase64(bytes: Uint8Array): string {
+  const parts: string[] = [];
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(
+      index,
+      Math.min(bytes.length, index + chunkSize),
+    );
+    let s = "";
+    for (let j = 0; j < chunk.length; j++) {
+      s += String.fromCharCode(chunk[j]);
+    }
+    parts.push(s);
+  }
+  const btoaFn = (
+    globalThis as typeof globalThis & { btoa?: (value: string) => string }
+  ).btoa;
+  if (typeof btoaFn !== "function") {
+    throw new Error("btoa is unavailable");
+  }
+  return btoaFn(parts.join(""));
+}
+
+function buildDataUrl(mimeType: string, base64: string): string {
+  return `data:${mimeType || "application/octet-stream"};base64,${base64}`;
+}
+
+async function readLocalFileAsDataUrl(params: {
+  storedPath: string;
+  mimeType: string;
+}): Promise<string> {
+  const bytes = await readLocalFileBytes(params.storedPath);
+  return buildDataUrl(params.mimeType, encodeBytesBase64(bytes));
+}
+
 function createAbortError(): Error {
   const err = new Error("Aborted");
   (err as { name?: string }).name = "AbortError";
@@ -1037,6 +1089,14 @@ function normalizeUploadableAttachments(
     });
   }
   return out;
+}
+
+function isPdfAttachment(
+  attachment: Pick<ChatFileAttachment, "name" | "mimeType">,
+): boolean {
+  const mimeType = (attachment.mimeType || "").trim().toLowerCase();
+  const name = (attachment.name || "").trim().toLowerCase();
+  return mimeType === "application/pdf" || name.endsWith(".pdf");
 }
 
 function extractUploadedFileId(data: unknown): string {
@@ -1232,25 +1292,31 @@ export async function uploadFilesForResponses(params: {
 }): Promise<string[]> {
   const uploadable = normalizeUploadableAttachments(params.attachments);
   if (!uploadable.length) return [];
-  const fileIds: string[] = [];
-  const seen = new Set<string>();
-  for (const attachment of uploadable) {
-    throwIfAborted(params.signal);
-    try {
-      const fileId = await uploadAttachmentForResponses({
+  throwIfAborted(params.signal);
+  const results = await Promise.allSettled(
+    uploadable.map((attachment) =>
+      uploadAttachmentForResponses({
         apiBase: params.apiBase,
         apiKey: params.apiKey,
         attachment,
         signal: params.signal,
-      });
-      if (!fileId || seen.has(fileId)) continue;
-      seen.add(fileId);
-      fileIds.push(fileId);
-    } catch (err) {
+      }),
+    ),
+  );
+  const fileIds: string[] = [];
+  const seen = new Set<string>();
+  for (const [i, result] of results.entries()) {
+    if (result.status === "fulfilled") {
+      const fileId = result.value;
+      if (fileId && !seen.has(fileId)) {
+        seen.add(fileId);
+        fileIds.push(fileId);
+      }
+    } else {
       ztoolkit.log(
         "LLM: Failed to upload attachment to Responses API",
-        attachment.name,
-        err,
+        uploadable[i].name,
+        result.reason,
       );
     }
   }
@@ -1296,10 +1362,23 @@ function buildMessages(
   if (typeof params.image === "string" && params.image.trim()) {
     imageUrls.push(params.image.trim());
   }
+  const attachmentParts: FileRefContent[] = normalizeUploadableAttachments(
+    params.attachments,
+  )
+    .filter((attachment) => isPdfAttachment(attachment))
+    .map((attachment) => ({
+      type: "file_ref",
+      file_ref: {
+        name: attachment.name,
+        mimeType: attachment.mimeType || "application/octet-stream",
+        storedPath: attachment.storedPath || "",
+        contentHash: attachment.contentHash,
+      },
+    }));
 
-  // Build user message - with image(s) if provided (vision API format)
-  if (imageUrls.length) {
-    const contentParts: (TextContent | ImageContent)[] = [
+  // Build user message with image/file parts when provided.
+  if (imageUrls.length || attachmentParts.length) {
+    const contentParts: (TextContent | ImageContent | FileRefContent)[] = [
       { type: "text", text: params.prompt },
     ];
     for (const url of imageUrls) {
@@ -1311,6 +1390,7 @@ function buildMessages(
         },
       });
     }
+    contentParts.push(...attachmentParts);
     messages.push({
       role: "user",
       content: contentParts,
@@ -1715,7 +1795,9 @@ function resolveGeminiReasoningOption(
 function stringifyContent(content: MessageContent): string {
   if (typeof content === "string") return content;
   return content
-    .map((part) => (part.type === "text" ? part.text : ""))
+    .map((part) =>
+      part.type === "text" ? part.text : part.type === "file_ref" ? "[file]" : "",
+    )
     .filter(Boolean)
     .join("\n");
 }
@@ -1738,12 +1820,22 @@ function mergeSystemMessagesForChatPayload(
   ];
 }
 
-function buildResponsesInput(
+async function buildResponsesInput(
   messages: ChatMessage[],
-  responseFileIds?: string[],
-  options?: { preserveSystemMessages?: boolean },
+  options: {
+    preserveSystemMessages?: boolean;
+    resolveFilePart: (
+      part: FileRefContent["file_ref"],
+    ) => Promise<
+      Array<
+        | { type: "input_text"; text: string }
+        | { type: "input_file"; file_id: string }
+        | { type: "input_file"; filename: string; file_data: string }
+      >
+    >;
+  },
 ) {
-  const preserveSystemMessages = options?.preserveSystemMessages === true;
+  const preserveSystemMessages = options.preserveSystemMessages === true;
   const instructionsParts: string[] = [];
   const input: Array<{
     type: "message";
@@ -1754,46 +1846,18 @@ function buildResponsesInput(
           | { type: "input_text"; text: string }
           | { type: "input_image"; image_url: string; detail?: string }
           | { type: "input_file"; file_id: string }
+          | { type: "input_file"; filename: string; file_data: string }
         >;
   }> = [];
-  const normalizedFileIds = Array.isArray(responseFileIds)
-    ? responseFileIds
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-    : [];
 
-  for (let index = 0; index < messages.length; index++) {
-    const message = messages[index];
+  for (const message of messages) {
     if (message.role === "system" && !preserveSystemMessages) {
       const text = stringifyContent(message.content);
       if (text) instructionsParts.push(text);
       continue;
     }
-    const appendFilesToMessage =
-      message.role === "user" &&
-      index === messages.length - 1 &&
-      normalizedFileIds.length > 0;
 
     if (typeof message.content === "string") {
-      if (appendFilesToMessage) {
-        const contentParts: Array<
-          | { type: "input_text"; text: string }
-          | { type: "input_file"; file_id: string }
-        > = [{ type: "input_text", text: message.content }];
-        for (const fileId of normalizedFileIds) {
-          contentParts.push({
-            type: "input_file",
-            file_id: fileId,
-          });
-        }
-        input.push({
-          type: "message",
-          role: message.role,
-          content: contentParts,
-        });
-        continue;
-      }
       input.push({
         type: "message",
         role: message.role,
@@ -1806,23 +1870,23 @@ function buildResponsesInput(
       | { type: "input_text"; text: string }
       | { type: "input_image"; image_url: string; detail?: string }
       | { type: "input_file"; file_id: string }
-    > = message.content.map((part) => {
+      | { type: "input_file"; filename: string; file_data: string }
+    > = [];
+    for (const part of message.content) {
       if (part.type === "text") {
-        return { type: "input_text" as const, text: part.text };
+        contentParts.push({ type: "input_text" as const, text: part.text });
+        continue;
       }
-      return {
-        type: "input_image" as const,
-        image_url: part.image_url.url,
-        detail: part.image_url.detail,
-      };
-    });
-    if (appendFilesToMessage) {
-      for (const fileId of normalizedFileIds) {
+      if (part.type === "image_url") {
         contentParts.push({
-          type: "input_file",
-          file_id: fileId,
+          type: "input_image" as const,
+          image_url: part.image_url.url,
+          detail: part.image_url.detail,
         });
+        continue;
       }
+      const resolved = await options.resolveFilePart(part.file_ref);
+      contentParts.push(...resolved);
     }
 
     input.push({
@@ -1840,9 +1904,98 @@ function buildResponsesInput(
   };
 }
 
+async function buildChatCompletionMessages(params: {
+  messages: ChatMessage[];
+  request: ProviderRequestLike;
+}): Promise<
+  Array<{
+    role: "system" | "user" | "assistant";
+    content:
+      | string
+      | Array<
+          | { type: "text"; text: string }
+          | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } }
+          | { type: "file"; file: { filename: string; file_data: string } }
+        >;
+  }>
+> {
+  const normalized = mergeSystemMessagesForChatPayload(params.messages);
+  const output: Array<{
+    role: "system" | "user" | "assistant";
+    content:
+      | string
+      | Array<
+          | { type: "text"; text: string }
+          | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } }
+          | { type: "file"; file: { filename: string; file_data: string } }
+        >;
+  }> = [];
+  for (const message of normalized) {
+    if (typeof message.content === "string") {
+      output.push({
+        role: message.role,
+        content: message.content,
+      });
+      continue;
+    }
+    const contentParts: Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } }
+      | { type: "file"; file: { filename: string; file_data: string } }
+    > = [];
+    for (const part of message.content) {
+      if (part.type === "text") {
+        contentParts.push({ type: "text", text: part.text });
+        continue;
+      }
+      if (part.type === "image_url") {
+        contentParts.push({
+          type: "image_url",
+          image_url: {
+            url: part.image_url.url,
+            detail: part.image_url.detail,
+          },
+        });
+        continue;
+      }
+      if (!isPdfAttachment({
+        name: part.file_ref.name,
+        mimeType: part.file_ref.mimeType,
+      })) {
+        contentParts.push({
+          type: "text",
+          text: `[Attached file: ${part.file_ref.name}]`,
+        });
+        continue;
+      }
+      const dataUrl = await readLocalFileAsDataUrl({
+        storedPath: part.file_ref.storedPath,
+        mimeType: part.file_ref.mimeType,
+      });
+      contentParts.push(
+        ...buildPdfPartForChat({
+          request: params.request,
+          filename: part.file_ref.name,
+          dataUrl,
+        }),
+      );
+    }
+    output.push({
+      role: message.role,
+      content: contentParts,
+    });
+  }
+  return output;
+}
+
 function emptyReasoningPayload() {
   return { extra: {}, omitTemperature: false } as const;
 }
+
+const reasoningPayloadCache = new Map<
+  string,
+  { extra: Record<string, unknown>; omitTemperature: boolean }
+>();
 
 export function buildReasoningPayload(
   reasoning: ReasoningConfig | undefined,
@@ -1853,6 +2006,20 @@ export function buildReasoningPayload(
   if (!reasoning) {
     return emptyReasoningPayload();
   }
+  const cacheKey = `${reasoning.provider}|${reasoning.level}|${useResponses}|${modelName ?? ""}|${apiBase ?? ""}`;
+  const cached = reasoningPayloadCache.get(cacheKey);
+  if (cached) return cached;
+  const result = computeReasoningPayload(reasoning, useResponses, modelName, apiBase);
+  reasoningPayloadCache.set(cacheKey, result);
+  return result;
+}
+
+function computeReasoningPayload(
+  reasoning: ReasoningConfig,
+  useResponses: boolean,
+  modelName?: string,
+  apiBase?: string,
+): { extra: Record<string, unknown>; omitTemperature: boolean } {
   if (!supportsReasoningForModel(reasoning.provider, modelName)) {
     return emptyReasoningPayload();
   }
@@ -1988,36 +2155,65 @@ export function buildReasoningPayload(
   return emptyReasoningPayload();
 }
 
-function buildAnthropicMessagesPayload(params: {
+async function buildAnthropicMessagesPayload(params: {
   model: string;
   messages: ChatMessage[];
   effectiveMaxTokens: number;
   effectiveTemperature: number;
   stream: boolean;
-}): Record<string, unknown> {
+}): Promise<Record<string, unknown>> {
   const systemParts = params.messages
     .filter((m) => m.role === "system")
     .map((m) => (typeof m.content === "string" ? m.content : m.content.map((c) => ("text" in c ? c.text : "")).join("")))
     .filter(Boolean);
-  const nonSystemMessages = params.messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({
-      role: m.role as "user" | "assistant",
-      content:
-        typeof m.content === "string"
-          ? [{ type: "text", text: m.content }]
-          : m.content.map((c) =>
-              c.type === "image_url"
-                ? (() => {
-                    const parsed = parseDataUrl((c as { image_url: { url: string } }).image_url.url);
+  const nonSystemMessages = await Promise.all(
+    params.messages
+      .filter((m) => m.role !== "system")
+      .map(async (m) => ({
+        role: m.role as "user" | "assistant",
+        content:
+          typeof m.content === "string"
+            ? [{ type: "text", text: m.content }]
+            : await Promise.all(
+                m.content.map(async (c) => {
+                  if (c.type === "image_url") {
+                    const parsed = parseDataUrl(c.image_url.url);
                     return {
                       type: "image",
-                      source: { type: "base64", media_type: parsed?.mimeType || "image/jpeg", data: parsed?.data || "" },
+                      source: {
+                        type: "base64",
+                        media_type: parsed?.mimeType || "image/jpeg",
+                        data: parsed?.data || "",
+                      },
                     };
-                  })()
-                : { type: "text", text: (c as { text: string }).text },
-            ),
-    }));
+                  }
+                  if (c.type === "file_ref") {
+                    if (c.file_ref.mimeType === "application/pdf") {
+                      const parsed = parseDataUrl(
+                        await readLocalFileAsDataUrl({
+                          storedPath: c.file_ref.storedPath,
+                          mimeType: c.file_ref.mimeType,
+                        }),
+                      );
+                      return {
+                        type: "document",
+                        source: {
+                          type: "base64",
+                          media_type: parsed?.mimeType || "application/pdf",
+                          data: parsed?.data || "",
+                        },
+                      };
+                    }
+                    return {
+                      type: "text",
+                      text: `[Attached file: ${c.file_ref.name}]`,
+                    };
+                  }
+                  return { type: "text", text: c.text };
+                }),
+              ),
+      })),
+  );
   const payload: Record<string, unknown> = {
     model: params.model,
     max_tokens: params.effectiveMaxTokens,
@@ -2087,31 +2283,58 @@ async function parseAnthropicStreamResponse(
   return fullText;
 }
 
-function buildGeminiNativePayload(params: {
+async function buildGeminiNativePayload(params: {
   messages: ChatMessage[];
   effectiveMaxTokens: number;
   effectiveTemperature: number;
-}): Record<string, unknown> {
+}): Promise<Record<string, unknown>> {
   const systemParts = params.messages
     .filter((m) => m.role === "system")
     .map((m) => ({ text: typeof m.content === "string" ? m.content : m.content.map((c) => ("text" in c ? c.text : "")).join("") }))
     .filter((p) => p.text);
-  const contents = params.messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts:
-        typeof m.content === "string"
-          ? [{ text: m.content }]
-          : m.content.map((c) =>
-              c.type === "image_url"
-                ? (() => {
-                    const parsed = parseDataUrl((c as { image_url: { url: string } }).image_url.url);
-                    return { inline_data: { mime_type: parsed?.mimeType || "image/jpeg", data: parsed?.data || "" } };
-                  })()
-                : { text: (c as { text: string }).text },
-            ),
-    }));
+  const contents = await Promise.all(
+    params.messages
+      .filter((m) => m.role !== "system")
+      .map(async (m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts:
+          typeof m.content === "string"
+            ? [{ text: m.content }]
+            : await Promise.all(
+                m.content.map(async (c) => {
+                  if (c.type === "image_url") {
+                    const parsed = parseDataUrl(c.image_url.url);
+                    return {
+                      inline_data: {
+                        mime_type: parsed?.mimeType || "image/jpeg",
+                        data: parsed?.data || "",
+                      },
+                    };
+                  }
+                  if (c.type === "file_ref") {
+                    if (c.file_ref.mimeType === "application/pdf") {
+                      const parsed = parseDataUrl(
+                        await readLocalFileAsDataUrl({
+                          storedPath: c.file_ref.storedPath,
+                          mimeType: c.file_ref.mimeType,
+                        }),
+                      );
+                      return {
+                        inline_data: {
+                          mime_type: parsed?.mimeType || "application/pdf",
+                          data: parsed?.data || "",
+                        },
+                      };
+                    }
+                    return {
+                      text: `[Attached file: ${c.file_ref.name}]`,
+                    };
+                  }
+                  return { text: c.text };
+                }),
+              ),
+      })),
+  );
   const payload: Record<string, unknown> = {
     contents,
     generationConfig: {
@@ -2185,34 +2408,111 @@ function createChatPayloadBuilder(params: {
   model: string;
   messages: ChatMessage[];
   useResponses: boolean;
-  responseFileIds?: string[];
+  providerProtocol: ProviderProtocol;
   authMode: ModelProviderAuthMode;
   apiBase: string;
   effectiveTemperature: number;
   effectiveMaxTokens: number;
   stream: boolean;
+  apiKey: string;
+  signal?: AbortSignal;
 }) {
   const {
     model,
     messages,
     useResponses,
-    responseFileIds,
+    providerProtocol,
     authMode,
     apiBase,
     effectiveTemperature,
     effectiveMaxTokens,
     stream,
+    apiKey,
+    signal,
   } = params;
-  return (reasoningOverride: ReasoningConfig | undefined) => {
+  return async (reasoningOverride: ReasoningConfig | undefined) => {
     const isCodexAuth = authMode === "codex_auth";
+    const requestLike: ProviderRequestLike = {
+      model,
+      protocol: providerProtocol,
+      authMode,
+      apiBase,
+    };
     const responsesInput = useResponses
-      ? buildResponsesInput(messages, responseFileIds, {
+      ? await buildResponsesInput(messages, {
           preserveSystemMessages: isGrokApiBase(apiBase),
+          resolveFilePart: async (part) => {
+            if (
+              !isPdfAttachment({
+                name: part.name,
+                mimeType: part.mimeType,
+              })
+            ) {
+              if (shouldUploadPdfBeforeRequest(requestLike)) {
+                const fileIds = await uploadFilesForResponses({
+                  apiBase,
+                  apiKey,
+                  attachments: [
+                    {
+                      name: part.name,
+                      mimeType: part.mimeType,
+                      storedPath: part.storedPath,
+                      contentHash: part.contentHash,
+                    },
+                  ],
+                  signal,
+                });
+                return buildPdfPartForResponses({
+                  request: requestLike,
+                  filename: part.name,
+                  fileIds,
+                });
+              }
+              return [
+                {
+                  type: "input_text" as const,
+                  text: `[Attached file: ${part.name}]`,
+                },
+              ];
+            }
+            if (shouldUploadPdfBeforeRequest(requestLike)) {
+              const fileIds = await uploadFilesForResponses({
+                apiBase,
+                apiKey,
+                attachments: [
+                  {
+                    name: part.name,
+                    mimeType: part.mimeType,
+                    storedPath: part.storedPath,
+                    contentHash: part.contentHash,
+                  },
+                ],
+                signal,
+              });
+              return buildPdfPartForResponses({
+                request: requestLike,
+                filename: part.name,
+                fileIds,
+              });
+            }
+            const dataUrl = await readLocalFileAsDataUrl({
+              storedPath: part.storedPath,
+              mimeType: part.mimeType,
+            });
+            return buildPdfPartForResponses({
+              request: requestLike,
+              filename: part.name,
+              dataUrl,
+            });
+          },
         })
       : null;
     const chatMessages = useResponses
       ? messages
-      : mergeSystemMessagesForChatPayload(messages);
+      : await buildChatCompletionMessages({
+          messages,
+          request: requestLike,
+        });
     if (useResponses && isCodexAuth && responsesInput) {
       const codexReasoningEffort =
         reasoningOverride &&
@@ -2561,7 +2861,7 @@ export async function postWithReasoningFallback(params: {
   initialReasoning: ReasoningConfig | undefined;
   buildPayload: (
     reasoningOverride: ReasoningConfig | undefined,
-  ) => Record<string, unknown>;
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   signal?: AbortSignal;
   headers?: Record<string, string>;
 }) {
@@ -2576,7 +2876,7 @@ export async function postWithReasoningFallback(params: {
   ]);
 
   while (retries <= maxRetries) {
-    const payload = params.buildPayload(reasoningSelection);
+    const payload = await params.buildPayload(reasoningSelection);
     try {
       return await postWithTemperatureFallback({
         url: params.url,
@@ -2692,8 +2992,8 @@ async function callNativeProtocol(params: {
   const headers = buildProviderTransportHeaders({ protocol, apiKey });
   const body =
     protocol === "anthropic_messages"
-      ? buildAnthropicMessagesPayload({ model, messages, effectiveMaxTokens, effectiveTemperature, stream: isStreaming })
-      : buildGeminiNativePayload({ messages, effectiveMaxTokens, effectiveTemperature });
+      ? await buildAnthropicMessagesPayload({ model, messages, effectiveMaxTokens, effectiveTemperature, stream: isStreaming })
+      : await buildGeminiNativePayload({ messages, effectiveMaxTokens, effectiveTemperature });
   const res = await getFetch()(url, { method: "POST", headers, body: JSON.stringify(body), signal });
   if (!res.ok) {
     throw new Error(`${res.status} (${url}) - ${await res.text()}`);
@@ -2755,14 +3055,6 @@ export async function callLLM(params: ChatParams): Promise<string> {
     });
   }
   const useResponses = providerProtocol === "responses_api" || providerProtocol === "codex_responses";
-  const responseFileIds = useResponses
-    ? await uploadFilesForResponses({
-        apiBase,
-        apiKey: auth.token,
-        attachments: params.attachments,
-        signal: params.signal,
-      })
-    : [];
   const effectiveTemperature = normalizeTemperature(params.temperature);
   const effectiveMaxTokens = normalizeMaxTokens(params.maxTokens);
 
@@ -2772,12 +3064,14 @@ export async function callLLM(params: ChatParams): Promise<string> {
     model,
     messages,
     useResponses,
-    responseFileIds,
+    providerProtocol,
     authMode,
     apiBase,
     effectiveTemperature,
     effectiveMaxTokens,
     stream: false,
+    apiKey: auth.token,
+    signal: params.signal,
   });
   const res = await postWithReasoningFallback({
     url,
@@ -2846,14 +3140,6 @@ export async function callLLMStream(
     );
   }
   const useResponses = providerProtocol === "responses_api" || providerProtocol === "codex_responses";
-  const responseFileIds = useResponses
-    ? await uploadFilesForResponses({
-        apiBase,
-        apiKey: auth.token,
-        attachments: params.attachments,
-        signal: params.signal,
-      })
-    : [];
   const effectiveTemperature = normalizeTemperature(params.temperature);
   const effectiveMaxTokens = normalizeMaxTokens(params.maxTokens);
 
@@ -2863,12 +3149,14 @@ export async function callLLMStream(
     model,
     messages,
     useResponses,
-    responseFileIds,
+    providerProtocol,
     authMode,
     apiBase,
     effectiveTemperature,
     effectiveMaxTokens,
     stream: true,
+    apiKey: auth.token,
+    signal: params.signal,
   });
   const res = await postWithReasoningFallback({
     url,

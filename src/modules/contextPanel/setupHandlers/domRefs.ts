@@ -78,7 +78,21 @@ export type PanelDomRefs = {
   panelRoot: HTMLDivElement | null;
 };
 
+const domRefsCache = new WeakMap<Element, PanelDomRefs>();
+
+export function invalidatePanelDomRefs(body: Element): void {
+  domRefsCache.delete(body);
+}
+
 export function getPanelDomRefs(body: Element): PanelDomRefs {
+  const cached = domRefsCache.get(body);
+  if (cached) return cached;
+  const refs = buildPanelDomRefs(body);
+  domRefsCache.set(body, refs);
+  return refs;
+}
+
+function buildPanelDomRefs(body: Element): PanelDomRefs {
   return {
     inputBox: body.querySelector("#llm-input") as HTMLTextAreaElement | null,
     inputSection: body.querySelector(

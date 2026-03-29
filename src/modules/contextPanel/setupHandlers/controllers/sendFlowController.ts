@@ -1,4 +1,5 @@
 import { MAX_SELECTED_IMAGES } from "../../constants";
+import type { PdfSupport } from "../../../../providers";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
 import type {
   AdvancedModelParams,
@@ -11,6 +12,7 @@ import type {
 import type { SelectedTextSource } from "../../types";
 import type { EditLatestTurnMarker, EditLatestTurnResult } from "../../chat";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../../../utils/llmClient";
+import { preparePdfComposeInputs } from "./pdfComposePreparation";
 
 type StatusLevel = "ready" | "warning" | "error";
 
@@ -59,7 +61,12 @@ type SendFlowControllerDeps = {
   renderPdfPagesAsImages: (
     paperContexts: PaperContextRef[],
   ) => Promise<string[]>;
-  getModelPdfSupport: (modelName: string, providerProtocol?: string, authMode?: string, apiBase?: string) => "native" | "upload" | "image_url" | "vision" | "none";
+  getModelPdfSupport: (
+    modelName: string,
+    providerProtocol?: string,
+    authMode?: string,
+    apiBase?: string,
+  ) => PdfSupport;
   uploadPdfForProvider: (params: {
     apiBase: string;
     apiKey: string;
@@ -67,7 +74,6 @@ type SendFlowControllerDeps = {
     fileName: string;
   }) => Promise<{ systemMessageContent: string; label: string } | null>;
   resolvePdfBytes: (paperContext: PaperContextRef) => Promise<Uint8Array>;
-  encodeBytesBase64: (bytes: Uint8Array) => string;
   getSelectedFiles: (itemId: number) => ChatAttachment[];
   getSelectedImages: (itemId: number) => string[];
   resolvePromptText: (
@@ -189,69 +195,23 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     let pdfPageImageDataUrls: string[] = [];
     let pdfUploadSystemMessages: string[] = [];
     if (pdfModePaperContexts.length) {
-      if (pdfSupport === "none") {
-        deps.setStatusMessage?.(
-          "This model does not support PDF or image input. PDF papers were skipped.",
-          "error",
-        );
-      } else if (pdfSupport === "upload" && earlyProfile?.apiBase && earlyProfile?.apiKey) {
-        // Qwen/Kimi: upload PDF to provider, inject file reference as system message
-        deps.inputBox.disabled = true;
-        deps.setStatusMessage?.(`Uploading PDF to ${earlyModelName}...`, "ready");
-        for (const pc of pdfModePaperContexts) {
-          try {
-            const result = await deps.uploadPdfForProvider({
-              apiBase: earlyProfile.apiBase,
-              apiKey: earlyProfile.apiKey,
-              pdfBytes: await deps.resolvePdfBytes(pc),
-              fileName: (() => {
-                const raw = pc.attachmentTitle || pc.title || "document";
-                return /\.pdf$/i.test(raw) ? raw : `${raw}.pdf`;
-              })(),
-            });
-            if (result) {
-              pdfUploadSystemMessages.push(result.systemMessageContent);
-              deps.setStatusMessage?.(`${result.label}`, "ready");
-            }
-          } catch (err) {
-            ztoolkit.log("LLM: PDF upload failed for", pc.contextItemId, err);
-            deps.setStatusMessage?.("PDF upload failed. Falling back to text mode.", "error");
-          }
-        }
-      } else if (pdfSupport === "image_url") {
-        // Tier 3 (third-party) / Tier 5 (codex): encode full PDF as base64
-        // data URI and send as image_url — relay services pass this through.
-        deps.inputBox.disabled = true;
-        deps.setStatusMessage?.(`Encoding PDF for ${earlyModelName}...`, "ready");
-        for (const pc of pdfModePaperContexts) {
-          try {
-            const pdfBytes = await deps.resolvePdfBytes(pc);
-            const base64 = deps.encodeBytesBase64(pdfBytes);
-            pdfPageImageDataUrls.push(`data:application/pdf;base64,${base64}`);
-          } catch (err) {
-            ztoolkit.log("LLM: PDF base64 encoding failed for", pc.contextItemId, err);
-            // Fall back to vision (render pages as images) for this paper
-            const fallback = await deps.renderPdfPagesAsImages([pc]);
-            pdfPageImageDataUrls.push(...fallback);
-          }
-        }
-        deps.setStatusMessage?.(`Sending ${pdfPageImageDataUrls.length} PDF(s)...`, "ready");
-      } else if (pdfSupport === "vision") {
-        if (deps.isScreenshotUnsupportedModel(earlyModelName)) {
-          deps.setStatusMessage?.(
-            "This model does not support image input. PDF pages will be sent as text.",
-            "warning",
-          );
-        } else {
-          deps.inputBox.disabled = true;
-          deps.setStatusMessage?.(`Rendering PDF pages as images for ${earlyModelName}...`, "ready");
-          pdfPageImageDataUrls = await deps.renderPdfPagesAsImages(pdfModePaperContexts);
-          deps.setStatusMessage?.(`Sending ${pdfPageImageDataUrls.length} page image(s)...`, "ready");
-        }
-      } else {
-        deps.setStatusMessage?.(`Sending native PDF to ${earlyModelName}...`, "ready");
-        pdfFileAttachments = await deps.resolvePdfPaperAttachments(pdfModePaperContexts);
-      }
+      deps.inputBox.disabled = true;
+      const preparedPdfInputs = await preparePdfComposeInputs({
+        paperContexts: pdfModePaperContexts,
+        pdfSupport,
+        modelName: earlyModelName,
+        apiBase: earlyProfile?.apiBase,
+        apiKey: earlyProfile?.apiKey,
+        resolvePdfPaperAttachments: deps.resolvePdfPaperAttachments,
+        renderPdfPagesAsImages: deps.renderPdfPagesAsImages,
+        uploadPdfForProvider: deps.uploadPdfForProvider,
+        resolvePdfBytes: deps.resolvePdfBytes,
+        isScreenshotUnsupportedModel: deps.isScreenshotUnsupportedModel,
+        onStatus: deps.setStatusMessage,
+      });
+      pdfFileAttachments = preparedPdfInputs.attachments;
+      pdfPageImageDataUrls = preparedPdfInputs.images;
+      pdfUploadSystemMessages = preparedPdfInputs.pdfUploadSystemMessages;
       deps.inputBox.disabled = false;
     }
     const selectedFiles = [

@@ -18,9 +18,14 @@ export function matches(params: ProviderParams): boolean {
   );
 }
 
-export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
-  tier: "server_upload",
-  label: "Server-side upload",
-  pdf: "upload",
-  images: true,
-};
+export function resolve(
+  params: ProviderParams,
+): Omit<ProviderCapabilities, "multimodal" | "fileInputs"> {
+  const proto = (params.protocol || "").toLowerCase();
+  return {
+    providerFamily: "kimi_qwen",
+    label: "Kimi / Qwen",
+    pdf: proto === "openai_chat_compat" ? "provider_upload" : "error",
+    images: true,
+  };
+}

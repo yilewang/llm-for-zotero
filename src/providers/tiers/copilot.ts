@@ -13,9 +13,17 @@ export function matches(params: ProviderParams): boolean {
   return (params.authMode || "").toLowerCase() === "copilot_auth";
 }
 
-export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
-  tier: "copilot",
-  label: "GitHub Copilot",
-  pdf: "none",
-  images: true,
-};
+export function resolve(
+  params: ProviderParams,
+): Omit<ProviderCapabilities, "multimodal" | "fileInputs"> {
+  const proto = (params.protocol || "").toLowerCase();
+  return {
+    providerFamily: "copilot",
+    label: "GitHub Copilot",
+    pdf:
+      proto === "openai_chat_compat" || proto === "responses_api"
+        ? "none"
+        : "error",
+    images: true,
+  };
+}

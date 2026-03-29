@@ -7,6 +7,7 @@ import {
   buildProviderTransportHeaders,
   resolveProviderTransportEndpoint,
 } from "../../utils/providerTransport";
+import { resolveProviderCapabilities } from "../../providers";
 import type {
   AgentModelCapabilities,
   AgentModelMessage,
@@ -419,11 +420,17 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
   private systemPrompt: string | undefined;
 
   getCapabilities(request: AgentRuntimeRequest): AgentModelCapabilities {
+    const capabilities = resolveProviderCapabilities({
+      model: request.model || "",
+      protocol: "anthropic_messages",
+      authMode: request.authMode,
+      apiBase: request.apiBase,
+    });
     return {
       streaming: true,
       toolCalls: true,
-      multimodal: isMultimodalRequestSupported(request),
-      fileInputs: false,
+      multimodal: capabilities.multimodal,
+      fileInputs: capabilities.fileInputs,
       reasoning: true,
     };
   }
@@ -442,10 +449,10 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
     const continuation = await buildAnthropicContinuationMessages(
       getToolContinuationMessages(params.messages),
     );
-    const messages =
-      continuation.length && this.conversationMessages
-        ? [...this.conversationMessages, ...continuation]
-        : this.conversationMessages || initial.messages;
+    if (continuation.length && this.conversationMessages) {
+      this.conversationMessages.push(...continuation);
+    }
+    const messages = this.conversationMessages || initial.messages;
     const reasoningPayload = buildReasoningPayload(
       request.reasoning,
       false,
@@ -501,10 +508,8 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
       : normalizeAnthropicResponse(
           (await response.json()) as AnthropicResponse,
         );
-    this.conversationMessages = [
-      ...messages,
-      buildAssistantConversationMessage(normalized),
-    ];
+    messages.push(buildAssistantConversationMessage(normalized));
+    this.conversationMessages = messages;
     if (normalized.toolCalls.length) {
       return {
         kind: "tool_calls",

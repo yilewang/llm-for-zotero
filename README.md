@@ -74,7 +74,30 @@ Open `Preferences` → navigate to the `llm-for-zotero` tab.
   <img src="./assets/model_setting.gif" alt="Animation showing provider and model configuration" width="1024" />
 </p>
 
-The plugin natively supports multiple provider protocols: `responses_api`, `openai_chat_compat`, `anthropic_messages`, `gemini_native`, and more.
+The plugin supports multiple provider protocols: `responses_api`, `openai_chat_compat`, `anthropic_messages`, `gemini_native`, and `codex_responses`.
+
+### PDF capability matrix
+
+PDF handling is resolved from two runtime variables: provider family and protocol.
+
+| Provider family | `responses_api` | `openai_chat_compat` | `gemini_native` | `anthropic_messages` | `codex_responses` |
+| --- | --- | --- | --- | --- | --- |
+| `native_openai` | Upload to `/v1/files`, then send `file_id` | Inline chat `file.file_data` | Invalid | Invalid | Invalid |
+| `native_gemini` | Invalid | Invalid | Native inline PDF | Invalid | Invalid |
+| `native_anthropic` | Invalid | Invalid | Invalid | Native inline PDF | Invalid |
+| `kimi_qwen` | Invalid | Provider-specific upload/extract flow | Invalid | Invalid | Invalid |
+| `third_party` | Inline `input_file.file_data` | Inline chat `file.file_data` | Invalid | Invalid | Invalid |
+| `codex` | Invalid | Invalid | Invalid | Invalid | Render PDF pages as images |
+| `copilot` | No direct PDF mode | No direct PDF mode | Invalid | Invalid | Invalid |
+
+Simple rule:
+
+- Native OpenAI `responses_api` uploads first and then sends `file_id`.
+- Third-party `responses_api` sends inline `input_file.file_data`.
+- Third-party `openai_chat_compat` sends inline chat `type: "file"`.
+- Kimi/Qwen keeps its provider-specific upload flow.
+- Codex uses rendered page images.
+- The plugin does not send PDFs as `image_url: data:application/pdf;base64,...`.
 
 ### Supported Models (examples)
 

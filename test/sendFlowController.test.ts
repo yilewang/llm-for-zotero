@@ -38,6 +38,7 @@ describe("sendFlowController", function () {
     let setActiveEditSessionCalls = 0;
     let lastSentQuestion = "";
     let lastRuntimeMode = "";
+    let lastSendOptions: any = null;
     let lastEditRuntimeMode = "";
     let lastEditPdfUploadSystemMessages: string[] | undefined;
 
@@ -93,6 +94,7 @@ describe("sendFlowController", function () {
       },
       sendQuestion: async (opts: any) => {
         sendCalled += 1;
+        lastSendOptions = opts;
         lastSentQuestion = opts.question;
         lastRuntimeMode = opts.runtimeMode || "";
       },
@@ -147,6 +149,7 @@ describe("sendFlowController", function () {
       getLastSend: () => ({
         lastSentQuestion,
         lastRuntimeMode,
+        lastSendOptions,
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
       getLastEditPdfUploadSystemMessages: () => lastEditPdfUploadSystemMessages,
@@ -237,7 +240,7 @@ describe("sendFlowController", function () {
         authMode: "api_key",
         providerProtocol: "openai_chat_compat",
       }),
-      getModelPdfSupport: () => "upload" as const,
+      getModelPdfSupport: () => "provider_upload" as const,
       resolvePdfBytes: async () => new Uint8Array([1, 2, 3]),
       uploadPdfForProvider: async () => ({
         systemMessageContent: "uploaded pdf context",
@@ -262,6 +265,50 @@ describe("sendFlowController", function () {
     assert.deepEqual(getLastEditPdfUploadSystemMessages(), [
       "uploaded pdf context",
     ]);
+  });
+
+  it("keeps inline third-party PDF mode as file attachments", async function () {
+    const pdfAttachment: ChatAttachment = {
+      id: "pdf-paper-1",
+      name: "paper.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 100,
+      category: "pdf",
+      storedPath: "/tmp/paper.pdf",
+    };
+    const { controller, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      getModelPdfSupport: () => "inline_base64_pdf" as const,
+      resolvePdfPaperAttachments: async () => [pdfAttachment],
+    });
+
+    await controller.doSend();
+
+    const { lastSendOptions } = getLastSend();
+    assert.deepEqual(lastSendOptions.attachments, [pdfAttachment]);
+    assert.deepEqual(lastSendOptions.images, []);
+  });
+
+  it("renders codex PDF mode as page images", async function () {
+    const { controller, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      getModelPdfSupport: () => "vision_pages" as const,
+      renderPdfPagesAsImages: async () => ["data:image/png;base64,PDFPAGE"],
+    });
+
+    await controller.doSend();
+
+    const { lastSendOptions } = getLastSend();
+    assert.deepEqual(lastSendOptions.attachments, undefined);
+    assert.deepEqual(lastSendOptions.images, ["data:image/png;base64,PDFPAGE"]);
   });
 
   it("persists the cleared draft before preview sync in normal send flow", async function () {

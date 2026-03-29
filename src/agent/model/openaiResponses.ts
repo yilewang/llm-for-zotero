@@ -7,6 +7,11 @@ import {
 } from "../../utils/llmClient";
 import { normalizeMaxTokens, normalizeTemperature } from "../../utils/normalization";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
+import { resolveProviderCapabilities } from "../../providers";
+import {
+  buildPdfPartForResponses,
+  shouldUploadPdfBeforeRequest,
+} from "../../providers/pdfTransport";
 import type {
   AgentModelCapabilities,
   AgentModelContentPart,
@@ -14,6 +19,7 @@ import type {
   AgentRuntimeRequest,
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
+import { readFileRefAsBase64 } from "./shared";
 import {
   buildResponsesContinuationInput,
   buildResponsesInitialInput,
@@ -24,39 +30,76 @@ import {
 } from "./responsesShared";
 import { buildResponsesFunctionTools, getToolContinuationMessages } from "./shared";
 
-async function uploadFilePart(
+function isPdfFilePart(
+  part: Extract<AgentModelContentPart, { type: "file_ref" }>,
+): boolean {
+  const mimeType = (part.file_ref.mimeType || "").trim().toLowerCase();
+  const name = (part.file_ref.name || "").trim().toLowerCase();
+  return mimeType === "application/pdf" || name.endsWith(".pdf");
+}
+
+async function resolveFilePart(
   part: Extract<AgentModelContentPart, { type: "file_ref" }>,
   request: AgentRuntimeRequest,
   signal?: AbortSignal,
 ) {
-  const fileIds = await uploadFilesForResponses({
-    apiBase: request.apiBase || "",
-    apiKey: request.apiKey || "",
-    attachments: [
+  const requestLike = {
+    model: request.model || "",
+    protocol: "responses_api" as const,
+    authMode: request.authMode,
+    apiBase: request.apiBase,
+  };
+  if (shouldUploadPdfBeforeRequest(requestLike)) {
+    const fileIds = await uploadFilesForResponses({
+      apiBase: request.apiBase || "",
+      apiKey: request.apiKey || "",
+      attachments: [
+        {
+          name: part.file_ref.name,
+          mimeType: part.file_ref.mimeType,
+          storedPath: part.file_ref.storedPath,
+          contentHash: part.file_ref.contentHash,
+        } satisfies ChatFileAttachment,
+      ],
+      signal,
+    });
+    return buildPdfPartForResponses({
+      request: requestLike,
+      filename: part.file_ref.name,
+      fileIds,
+    });
+  }
+  if (!isPdfFilePart(part)) {
+    return [
       {
-        name: part.file_ref.name,
-        mimeType: part.file_ref.mimeType,
-        storedPath: part.file_ref.storedPath,
-        contentHash: part.file_ref.contentHash,
-      } satisfies ChatFileAttachment,
-    ],
-    signal,
+        type: "input_text" as const,
+        text: `[Attached file: ${part.file_ref.name}]`,
+      },
+    ];
+  }
+  const base64 = await readFileRefAsBase64(part.file_ref.storedPath);
+  return buildPdfPartForResponses({
+    request: requestLike,
+    filename: part.file_ref.name,
+    dataUrl: `data:${part.file_ref.mimeType || "application/pdf"};base64,${base64}`,
   });
-  return fileIds.map((fileId) => ({
-    type: "input_file" as const,
-    file_id: fileId,
-  }));
 }
 
 export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
   private conversationItems: unknown[] | null = null;
 
-  getCapabilities(_request: AgentRuntimeRequest): AgentModelCapabilities {
+  getCapabilities(request: AgentRuntimeRequest): AgentModelCapabilities {
+    const capabilities = resolveProviderCapabilities({
+      model: request.model || "",
+      protocol: "responses_api",
+      authMode: request.authMode,
+      apiBase: request.apiBase,
+    });
     return {
       streaming: true,
       toolCalls: true,
-      multimodal: true,
-      fileInputs: true,
+      multimodal: capabilities.multimodal,
+      fileInputs: capabilities.fileInputs,
       reasoning: true,
     };
   }
@@ -74,7 +117,7 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
     });
     const initialInput = await buildResponsesInitialInput(params.messages, {
       resolveFilePart: async (part, signal) =>
-        uploadFilePart(part, request, signal),
+        resolveFilePart(part, request, signal),
       signal: params.signal,
     });
     const instructions =
@@ -85,14 +128,15 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
           getToolContinuationMessages(params.messages),
           {
             resolveFilePart: async (part, signal) =>
-              uploadFilePart(part, request, signal),
+              resolveFilePart(part, request, signal),
             signal: params.signal,
           },
         )
       : [];
-    const inputItems = this.conversationItems
-      ? [...this.conversationItems, ...followupInput]
-      : initialInput.input;
+    if (this.conversationItems && followupInput.length) {
+      this.conversationItems.push(...followupInput);
+    }
+    const inputItems = this.conversationItems || initialInput.input;
     const url = resolveProviderTransportEndpoint({
       protocol: "responses_api",
       apiBase: request.apiBase || "",
@@ -141,7 +185,8 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
             (await response.json()) as ResponsesPayload,
           ),
     );
-    this.conversationItems = [...inputItems, ...normalized.outputItems];
+    inputItems.push(...normalized.outputItems);
+    this.conversationItems = inputItems;
     if (normalized.toolCalls.length) {
       return {
         kind: "tool_calls",

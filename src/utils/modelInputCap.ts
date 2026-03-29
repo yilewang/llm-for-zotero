@@ -22,7 +22,17 @@ type ImagePart = {
   };
 };
 
-export type InputCapMessageContent = string | (TextPart | ImagePart)[];
+type FileRefPart = {
+  type: "file_ref";
+  file_ref: {
+    name: string;
+    mimeType: string;
+    storedPath: string;
+    contentHash?: string;
+  };
+};
+
+export type InputCapMessageContent = string | (TextPart | ImagePart | FileRefPart)[];
 
 export type InputCapMessage = {
   role: "user" | "assistant" | "system";
@@ -38,6 +48,7 @@ export const DEFAULT_MODEL_INPUT_TOKEN_LIMIT = DEFAULT_INPUT_TOKEN_CAP;
 export const TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4;
 
 const IMAGE_PART_ESTIMATED_TOKENS = 1_024;
+const FILE_PART_ESTIMATED_TOKENS = 1_024;
 const MESSAGE_OVERHEAD_ESTIMATED_TOKENS = 4;
 const TOKEN_SAFETY_RATIO = 0.9;
 const MIN_CONTEXT_CHARS = 256;
@@ -123,6 +134,17 @@ function cloneMessageContent(
     if (part.type === "text") {
       return { type: "text" as const, text: part.text };
     }
+    if (part.type === "file_ref") {
+      return {
+        type: "file_ref" as const,
+        file_ref: {
+          name: part.file_ref.name,
+          mimeType: part.file_ref.mimeType,
+          storedPath: part.file_ref.storedPath,
+          contentHash: part.file_ref.contentHash,
+        },
+      };
+    }
     return {
       type: "image_url" as const,
       image_url: {
@@ -169,8 +191,10 @@ function estimateContentTokens(content: InputCapMessageContent): number {
   for (const part of content) {
     if (part.type === "text") {
       total += estimateTextTokens(part.text);
-    } else {
+    } else if (part.type === "image_url") {
       total += IMAGE_PART_ESTIMATED_TOKENS;
+    } else {
+      total += FILE_PART_ESTIMATED_TOKENS;
     }
   }
   return total;
@@ -246,7 +270,10 @@ function trimUserMessage(
   }
 
   for (let i = contentParts.length - 1; i >= 0; i--) {
-    if (contentParts[i].type === "image_url") {
+    if (
+      contentParts[i].type === "image_url" ||
+      contentParts[i].type === "file_ref"
+    ) {
       contentParts.splice(i, 1);
       if (!contentParts.length) {
         contentParts.push({
@@ -323,6 +350,10 @@ export type InputCapEffects = {
   historyDropped: boolean;
 };
 
+function estimateMessageTokens(message: InputCapMessage): number {
+  return MESSAGE_OVERHEAD_ESTIMATED_TOKENS + estimateContentTokens(message.content);
+}
+
 export function applyModelInputTokenCap(
   messages: InputCapMessage[],
   modelName: string,
@@ -334,8 +365,7 @@ export function applyModelInputTokenCap(
     modelLimitTokens,
   );
   const softLimitTokens = Math.max(1, Math.floor(limitTokens * TOKEN_SAFETY_RATIO));
-  let working = cloneMessages(messages);
-  const estimatedBeforeTokens = estimateConversationTokens(working);
+  const estimatedBeforeTokens = estimateConversationTokens(messages);
   let estimatedAfterTokens = estimatedBeforeTokens;
   const effects: InputCapEffects = {
     documentContextTrimmed: false,
@@ -346,7 +376,7 @@ export function applyModelInputTokenCap(
 
   if (estimatedAfterTokens <= softLimitTokens) {
     return {
-      messages: working,
+      messages,
       capped: false,
       limitTokens,
       softLimitTokens,
@@ -356,6 +386,7 @@ export function applyModelInputTokenCap(
     };
   }
 
+  let working = cloneMessages(messages);
   let lastUserIndex = findLastUserIndex(working);
 
   for (
@@ -366,12 +397,13 @@ export function applyModelInputTokenCap(
       i++;
       continue;
     }
+    const removedTokens = estimateMessageTokens(working[i]);
     working.splice(i, 1);
+    estimatedAfterTokens -= removedTokens;
     effects.historyDropped = true;
     if (lastUserIndex >= 0 && i < lastUserIndex) {
       lastUserIndex -= 1;
     }
-    estimatedAfterTokens = estimateConversationTokens(working);
   }
 
   let contextTrimGuard = 0;
@@ -380,17 +412,20 @@ export function applyModelInputTokenCap(
     const contextIndex = findContextMessageIndex(working);
     if (contextIndex < 0) break;
     const overflow = estimatedAfterTokens - softLimitTokens;
+    const tokensBefore = estimateMessageTokens(working[contextIndex]);
     const changed = trimContextMessage(working[contextIndex], overflow);
     if (!changed) {
       working.splice(contextIndex, 1);
+      estimatedAfterTokens -= tokensBefore;
       effects.documentContextDropped = true;
       if (lastUserIndex >= 0 && contextIndex < lastUserIndex) {
         lastUserIndex -= 1;
       }
     } else {
+      const tokensAfter = estimateMessageTokens(working[contextIndex]);
+      estimatedAfterTokens -= tokensBefore - tokensAfter;
       effects.documentContextTrimmed = true;
     }
-    estimatedAfterTokens = estimateConversationTokens(working);
   }
 
   let userTrimGuard = 0;
@@ -401,10 +436,12 @@ export function applyModelInputTokenCap(
   ) {
     userTrimGuard += 1;
     const overflow = estimatedAfterTokens - softLimitTokens;
+    const tokensBefore = estimateMessageTokens(working[lastUserIndex]);
     const changed = trimUserMessage(working[lastUserIndex], overflow);
     if (!changed) break;
+    const tokensAfter = estimateMessageTokens(working[lastUserIndex]);
+    estimatedAfterTokens -= tokensBefore - tokensAfter;
     effects.promptTrimmed = true;
-    estimatedAfterTokens = estimateConversationTokens(working);
   }
 
   if (estimatedAfterTokens > softLimitTokens) {
@@ -423,10 +460,12 @@ export function applyModelInputTokenCap(
     ) {
       fallbackGuard += 1;
       const overflow = estimatedAfterTokens - softLimitTokens;
+      const tokensBefore = estimateMessageTokens(working[fallbackUserIndex]);
       const changed = trimUserMessage(working[fallbackUserIndex], overflow);
       if (!changed) break;
+      const tokensAfter = estimateMessageTokens(working[fallbackUserIndex]);
+      estimatedAfterTokens -= tokensBefore - tokensAfter;
       effects.promptTrimmed = true;
-      estimatedAfterTokens = estimateConversationTokens(working);
     }
   }
 

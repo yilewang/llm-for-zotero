@@ -4,6 +4,7 @@ import {
   buildProviderTransportHeaders,
   resolveProviderTransportEndpoint,
 } from "../../utils/providerTransport";
+import { resolveProviderCapabilities } from "../../providers";
 import type {
   AgentModelCapabilities,
   AgentModelMessage,
@@ -498,11 +499,17 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
   private systemInstruction: { parts: Array<{ text: string }> } | undefined;
 
   getCapabilities(request: AgentRuntimeRequest): AgentModelCapabilities {
+    const capabilities = resolveProviderCapabilities({
+      model: request.model || "",
+      protocol: "gemini_native",
+      authMode: request.authMode,
+      apiBase: request.apiBase,
+    });
     return {
       streaming: true,
       toolCalls: true,
-      multimodal: isMultimodalRequestSupported(request),
-      fileInputs: false,
+      multimodal: capabilities.multimodal,
+      fileInputs: capabilities.fileInputs,
       reasoning: true,
     };
   }
@@ -521,10 +528,10 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
     const continuation = await buildGeminiContinuationMessages(
       getToolContinuationMessages(params.messages),
     );
-    const contents =
-      continuation.length && this.conversationMessages
-        ? [...this.conversationMessages, ...continuation]
-        : this.conversationMessages || initial.contents;
+    if (continuation.length && this.conversationMessages) {
+      this.conversationMessages.push(...continuation);
+    }
+    const contents = this.conversationMessages || initial.contents;
 
     const payload = {
       ...(this.systemInstruction
@@ -582,10 +589,8 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
         (await fallbackResponse.json()) as GeminiResponse,
       );
     }
-    this.conversationMessages = [
-      ...contents,
-      buildAssistantConversationMessage(normalized),
-    ];
+    contents.push(buildAssistantConversationMessage(normalized));
+    this.conversationMessages = contents;
     if (normalized.toolCalls.length) {
       return {
         kind: "tool_calls",

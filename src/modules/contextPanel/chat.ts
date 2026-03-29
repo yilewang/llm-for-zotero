@@ -450,15 +450,18 @@ export function syncUserContextAlignmentWidths(body: Element): void {
       ".llm-message-wrapper.user.llm-user-context-aligned",
     ),
   ) as HTMLDivElement[];
+  // Batch all reads first, then all writes, to avoid layout thrashing.
+  const measurements: Array<{ wrapper: HTMLDivElement; width: number }> = [];
   for (const wrapper of wrappers) {
     const bubble = getUserBubbleElement(wrapper);
-    if (!bubble) {
-      wrapper.style.removeProperty("--llm-user-bubble-width");
-      continue;
-    }
-    const bubbleWidth = Math.round(bubble.getBoundingClientRect().width);
-    if (bubbleWidth > 0) {
-      wrapper.style.setProperty("--llm-user-bubble-width", `${bubbleWidth}px`);
+    measurements.push({
+      wrapper,
+      width: bubble ? Math.round(bubble.getBoundingClientRect().width) : 0,
+    });
+  }
+  for (const { wrapper, width } of measurements) {
+    if (width > 0) {
+      wrapper.style.setProperty("--llm-user-bubble-width", `${width}px`);
     } else {
       wrapper.style.removeProperty("--llm-user-bubble-width");
     }
@@ -3166,6 +3169,51 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
   if (history.length === 0) {
     chatBox.innerHTML = getWelcomeHtml();
     return;
+  }
+
+  // ── Incremental streaming update ──────────────────────────────────────
+  // During streaming, only the last assistant bubble changes. If the DOM
+  // already has the right number of children and the last message is
+  // streaming, update only that bubble's innerHTML to avoid rebuilding
+  // the entire chat DOM on every streaming chunk.
+  const existingChildren = chatBox.children;
+  const lastMsg = history[history.length - 1];
+  if (
+    lastMsg?.streaming &&
+    lastMsg.role === "assistant" &&
+    existingChildren.length === history.length &&
+    existingChildren.length > 0
+  ) {
+    const lastWrapper = existingChildren[existingChildren.length - 1] as HTMLDivElement;
+    if (lastWrapper?.classList.contains("assistant")) {
+      const lastBubble = lastWrapper.querySelector(
+        ".llm-bubble.assistant",
+      ) as HTMLDivElement | null;
+      if (lastBubble) {
+        const safeText = sanitizeText(lastMsg.text);
+        if (safeText) {
+          try {
+            const contextSource = resolveContextSourceItem(item);
+            const ctxItem = contextSource.contextItem;
+            const pdfCtx = ctxItem ? pdfTextCache.get(ctxItem.id) : null;
+            const resolveImage = pdfCtx?.sourceType === "mineru" && ctxItem
+              ? buildImageResolver(ctxItem.id)
+              : undefined;
+            lastBubble.innerHTML = renderMarkdown(safeText, { resolveImage });
+          } catch (err) {
+            ztoolkit.log("LLM streaming render error:", err);
+            lastBubble.textContent = safeText;
+          }
+          lastBubble.classList.add("streaming");
+        }
+        applyChatScrollSnapshot(chatBox, baselineSnapshot);
+        persistChatScrollSnapshotByKey(conversationKey, chatBox);
+        if (baselineSnapshot.mode === "followBottom") {
+          scheduleFollowBottomStabilization(body, conversationKey, chatBox);
+        }
+        return;
+      }
+    }
   }
 
   chatBox.innerHTML = "";

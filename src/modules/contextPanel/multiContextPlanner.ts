@@ -226,8 +226,11 @@ function normalizeScores(values: number[]): number[] {
   return values.map((value) => (value - min) / (max - min));
 }
 
+const DIVERSITY_TOKEN_RE = /[a-z0-9]{3,}/g;
+
 function tokenizeForDiversity(text: string): Set<string> {
-  const tokens = (text.toLowerCase().match(/[a-z0-9]{3,}/g) || []).slice(
+  DIVERSITY_TOKEN_RE.lastIndex = 0;
+  const tokens = (text.toLowerCase().match(DIVERSITY_TOKEN_RE) || []).slice(
     0,
     256,
   );

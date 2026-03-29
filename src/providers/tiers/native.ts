@@ -1,4 +1,5 @@
 import type { ProviderCapabilities, ProviderParams } from "../types";
+import { detectProviderPreset } from "../../utils/providerPresets";
 
 /**
  * Tier 1 — Native API providers.
@@ -10,17 +11,58 @@ import type { ProviderCapabilities, ProviderParams } from "../types";
 
 export function matches(params: ProviderParams): boolean {
   const proto = (params.protocol || "").toLowerCase();
-  const m = (params.model || "").toLowerCase();
+  const preset = detectProviderPreset(params.apiBase || "");
   return (
     proto === "anthropic_messages" ||
     proto === "gemini_native" ||
-    (proto === "responses_api" && /gpt-4o|gpt-5|o[1-9]|chatgpt/.test(m))
+    preset === "openai" ||
+    preset === "gemini" ||
+    preset === "anthropic"
   );
 }
 
-export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
-  tier: "native",
-  label: "Native API",
-  pdf: "native",
-  images: true,
-};
+function resolveFamily(params: ProviderParams) {
+  const proto = (params.protocol || "").toLowerCase();
+  const preset = detectProviderPreset(params.apiBase || "");
+  if (proto === "gemini_native" || preset === "gemini") {
+    return "native_gemini" as const;
+  }
+  if (proto === "anthropic_messages" || preset === "anthropic") {
+    return "native_anthropic" as const;
+  }
+  return "native_openai" as const;
+}
+
+export function resolve(
+  params: ProviderParams,
+): Omit<ProviderCapabilities, "multimodal" | "fileInputs"> {
+  const proto = (params.protocol || "").toLowerCase();
+  const family = resolveFamily(params);
+  if (family === "native_openai") {
+    return {
+      providerFamily: family,
+      label: "Native OpenAI",
+      pdf:
+        proto === "responses_api"
+          ? "file_upload"
+          : proto === "openai_chat_compat"
+            ? "inline_base64_pdf"
+            : "error",
+      images: true,
+    };
+  }
+  if (family === "native_gemini") {
+    return {
+      providerFamily: family,
+      label: "Native Gemini",
+      pdf: proto === "gemini_native" ? "native_inline_pdf" : "error",
+      images: true,
+    };
+  }
+  return {
+    providerFamily: family,
+    label: "Native Anthropic",
+    pdf: proto === "anthropic_messages" ? "native_inline_pdf" : "error",
+    images: true,
+  };
+}

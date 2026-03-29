@@ -6,6 +6,8 @@ import {
 } from "../../utils/llmClient";
 import { normalizeMaxTokens, normalizeTemperature } from "../../utils/normalization";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
+import { buildPdfPartForChat } from "../../providers/pdfTransport";
+import { resolveProviderCapabilities } from "../../providers";
 import type {
   AgentModelCapabilities,
   AgentModelMessage,
@@ -45,7 +47,10 @@ function isToolCapableApiBase(request: AgentRuntimeRequest): boolean {
   return true;
 }
 
-async function buildMessagesPayload(messages: AgentModelMessage[]) {
+async function buildMessagesPayload(
+  messages: AgentModelMessage[],
+  request: AgentRuntimeRequest,
+) {
   const result = [];
   for (const message of messages) {
     if (message.role === "tool") {
@@ -67,8 +72,23 @@ async function buildMessagesPayload(messages: AgentModelMessage[]) {
         switch (rp.type) {
           case "text": parts.push({ type: "text", text: rp.text }); break;
           case "image": parts.push({ type: "image_url", image_url: { url: `data:${rp.mimeType};base64,${rp.base64}` } }); break;
-          case "pdf": parts.push({ type: "image_url", image_url: { url: `data:application/pdf;base64,${rp.base64}` } }); break;
-          // file_placeholder: silently dropped (no provider support)
+          case "pdf":
+            parts.push(
+              ...buildPdfPartForChat({
+                request: {
+                  model: request.model || "",
+                  protocol: "openai_chat_compat",
+                  authMode: request.authMode,
+                  apiBase: request.apiBase,
+                },
+                filename: rp.filename || "document.pdf",
+                dataUrl: `data:application/pdf;base64,${rp.base64}`,
+              }),
+            );
+            break;
+          case "file_placeholder":
+            parts.push({ type: "text", text: `[Attached file: ${rp.name}]` });
+            break;
         }
       }
       content = parts;
@@ -229,11 +249,17 @@ function isStreamingResponse(response: Response): boolean {
 
 export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
   getCapabilities(request: AgentRuntimeRequest): AgentModelCapabilities {
+    const capabilities = resolveProviderCapabilities({
+      model: request.model || "",
+      protocol: "openai_chat_compat",
+      authMode: request.authMode,
+      apiBase: request.apiBase,
+    });
     return {
       streaming: true,
       toolCalls: isToolCapableApiBase(request),
-      multimodal: isMultimodalRequestSupported(request),
-      fileInputs: false,
+      multimodal: capabilities.multimodal,
+      fileInputs: capabilities.fileInputs,
       reasoning: true,
     };
   }
@@ -254,7 +280,7 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
       apiBase: request.apiBase || "",
       authMode: request.authMode,
     });
-    const resolvedMessages = await buildMessagesPayload(params.messages);
+    const resolvedMessages = await buildMessagesPayload(params.messages, request);
     const response = await postWithReasoningFallback({
       url,
       auth,

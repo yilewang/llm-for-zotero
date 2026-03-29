@@ -324,6 +324,7 @@ import {
   parseZoteroItemDragData,
 } from "./setupHandlers/controllers/fileIntakeController";
 import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
+import { preparePdfComposeInputs } from "./setupHandlers/controllers/pdfComposePreparation";
 import { createClearConversationController } from "./setupHandlers/controllers/clearConversationController";
 import { clearAllAgentToolCaches } from "../../agent/tools";
 
@@ -7988,14 +7989,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (!filePath) throw new Error("Could not locate PDF file");
       return readAttachmentBytes(filePath);
     },
-    encodeBytesBase64: (bytes: Uint8Array) => {
-      let binaryStr = "";
-      const chunkSize = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        binaryStr += String.fromCharCode(...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)));
-      }
-      return btoa(binaryStr);
-    },
     getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],
     getSelectedImages: (itemId) => selectedImageCache.get(itemId) || [],
     resolvePromptText,
@@ -8135,149 +8128,21 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         getSelectedModelInfo().currentModel ||
         ""
       ).trim();
-      // Resolve PDF-mode papers with the same provider-capability rules as
-      // the normal send flow so edit+retry preserves multimodal context.
       const pdfSupport = getModelPdfSupport(
         activeModelName,
         selectedProfile?.providerProtocol,
         selectedProfile?.authMode,
         selectedProfile?.apiBase,
       );
-      const pdfAttachments: import("./types").ChatAttachment[] = [];
-      const pdfPageImageDataUrls: string[] = [];
-      const pdfUploadSystemMessages: string[] = [];
-      if (pdfModePapers.length) {
-        if (
-          pdfSupport === "upload" &&
-          selectedProfile?.apiBase &&
-          selectedProfile?.apiKey
-        ) {
-          const { detectPdfUploadProvider, uploadPdfForProvider } =
-            await import("../../utils/pdfUploadPreprocessor");
-          const provider = detectPdfUploadProvider(selectedProfile.apiBase);
-          for (const pc of pdfModePapers) {
-            try {
-              const attachment = Zotero.Items.get(pc.contextItemId);
-              if (
-                !attachment?.isAttachment?.() ||
-                attachment.attachmentContentType !== "application/pdf"
-              ) {
-                continue;
-              }
-              const filePath = await (async () => {
-                const asyncPath = await (
-                  attachment as unknown as {
-                    getFilePathAsync?: () => Promise<string | false>;
-                  }
-                ).getFilePathAsync?.();
-                if (asyncPath) return asyncPath as string;
-                if (
-                  typeof (attachment as { getFilePath?: () => string | undefined })
-                    .getFilePath === "function"
-                ) {
-                  return (
-                    attachment as { getFilePath: () => string | undefined }
-                  ).getFilePath();
-                }
-                return (attachment as unknown as { attachmentPath?: string })
-                  .attachmentPath;
-              })();
-              if (!filePath) continue;
-              const bytes = await readAttachmentBytes(filePath);
-              const result = await uploadPdfForProvider({
-                provider,
-                apiBase: selectedProfile.apiBase,
-                apiKey: selectedProfile.apiKey,
-                pdfBytes: bytes,
-                fileName: (() => {
-                  const raw = pc.attachmentTitle || pc.title || "document";
-                  return /\.pdf$/i.test(raw) ? raw : `${raw}.pdf`;
-                })(),
-              });
-              if (result) {
-                pdfUploadSystemMessages.push(result.systemMessageContent);
-              }
-            } catch (err) {
-              ztoolkit.log(
-                "LLM: Failed to upload PDF paper for edit",
-                pc.contextItemId,
-                err,
-              );
-            }
-          }
-        } else if (pdfSupport === "image_url") {
-          for (const pc of pdfModePapers) {
-            try {
-              const attachment = Zotero.Items.get(pc.contextItemId);
-              if (
-                !attachment?.isAttachment?.() ||
-                attachment.attachmentContentType !== "application/pdf"
-              ) {
-                continue;
-              }
-              const filePath = await (async () => {
-                const asyncPath = await (
-                  attachment as unknown as {
-                    getFilePathAsync?: () => Promise<string | false>;
-                  }
-                ).getFilePathAsync?.();
-                if (asyncPath) return asyncPath as string;
-                if (
-                  typeof (attachment as { getFilePath?: () => string | undefined })
-                    .getFilePath === "function"
-                ) {
-                  return (
-                    attachment as { getFilePath: () => string | undefined }
-                  ).getFilePath();
-                }
-                return (attachment as unknown as { attachmentPath?: string })
-                  .attachmentPath;
-              })();
-              if (!filePath) continue;
-              const bytes = await readAttachmentBytes(filePath);
-              let binaryStr = "";
-              const chunkSize = 0x8000;
-              for (let i = 0; i < bytes.length; i += chunkSize) {
-                binaryStr += String.fromCharCode(
-                  ...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)),
-                );
-              }
-              pdfPageImageDataUrls.push(
-                `data:application/pdf;base64,${btoa(binaryStr)}`,
-              );
-            } catch (err) {
-              ztoolkit.log(
-                "LLM: Failed to encode PDF paper for edit",
-                pc.contextItemId,
-                err,
-              );
-            }
-          }
-        } else if (pdfSupport === "vision") {
-          const { renderAllPdfPages } = await import("../../agent/services/pdfPageService");
-          for (const pc of pdfModePapers) {
-            try {
-              const pages = await renderAllPdfPages(pc.contextItemId);
-              for (const page of pages) {
-                const bytes = await readAttachmentBytes(page.storedPath);
-                if (bytes.byteLength <= 0) continue;
-                let binaryStr = "";
-                const chunkSize = 0x8000;
-                for (let i = 0; i < bytes.length; i += chunkSize) {
-                  binaryStr += String.fromCharCode(
-                    ...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)),
-                  );
-                }
-                pdfPageImageDataUrls.push(
-                  `data:image/png;base64,${btoa(binaryStr)}`,
-                );
-              }
-            } catch (err) {
-              ztoolkit.log("LLM: Failed to render PDF pages for edit", pc.contextItemId, err);
-            }
-          }
-        } else if (pdfSupport === "native") {
-          for (const pc of pdfModePapers) {
+      const preparedPdfInputs = await preparePdfComposeInputs({
+        paperContexts: pdfModePapers,
+        pdfSupport,
+        modelName: activeModelName,
+        apiBase: selectedProfile?.apiBase,
+        apiKey: selectedProfile?.apiKey,
+        resolvePdfPaperAttachments: async (paperContexts) => {
+          const results: import("./types").ChatAttachment[] = [];
+          for (const pc of paperContexts) {
             try {
               const attachment = Zotero.Items.get(pc.contextItemId);
               if (!attachment?.isAttachment?.() || attachment.attachmentContentType !== "application/pdf") continue;
@@ -8292,7 +8157,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
               if (bytes.byteLength > MAX_UPLOAD_PDF_SIZE_BYTES) continue;
               const fileName = filePath.split(/[\\/]/).pop() || "document.pdf";
               const persisted = await persistAttachmentBlob(fileName, new Uint8Array(bytes));
-              pdfAttachments.push({
+              results.push({
                 id: `pdf-paper-${pc.contextItemId}-${Date.now()}`,
                 name: fileName,
                 mimeType: "application/pdf",
@@ -8305,8 +8170,55 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
               ztoolkit.log("LLM: Failed to resolve PDF paper for edit", pc.contextItemId, err);
             }
           }
-        }
-      }
+          return results;
+        },
+        renderPdfPagesAsImages: async (paperContexts) => {
+          const { renderAllPdfPages } = await import("../../agent/services/pdfPageService");
+          const dataUrls: string[] = [];
+          for (const pc of paperContexts) {
+            try {
+              const pages = await renderAllPdfPages(pc.contextItemId);
+              for (const page of pages) {
+                const bytes = await readAttachmentBytes(page.storedPath);
+                if (!bytes.byteLength) continue;
+                let binaryStr = "";
+                const chunkSize = 0x8000;
+                for (let i = 0; i < bytes.length; i += chunkSize) {
+                  binaryStr += String.fromCharCode(...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)));
+                }
+                dataUrls.push(`data:image/png;base64,${btoa(binaryStr)}`);
+              }
+            } catch (err) {
+              ztoolkit.log("LLM: Failed to render PDF pages for edit", pc.contextItemId, err);
+            }
+          }
+          return dataUrls;
+        },
+        uploadPdfForProvider: async (params) => {
+          const { detectPdfUploadProvider, uploadPdfForProvider } = await import("../../utils/pdfUploadPreprocessor");
+          const provider = detectPdfUploadProvider(params.apiBase);
+          return uploadPdfForProvider({ provider, ...params });
+        },
+        resolvePdfBytes: async (pc) => {
+          const attachment = Zotero.Items.get(pc.contextItemId);
+          if (!attachment?.isAttachment?.() || attachment.attachmentContentType !== "application/pdf") {
+            throw new Error("Not a PDF attachment");
+          }
+          const filePath = await (async () => {
+            const asyncPath = await (attachment as unknown as { getFilePathAsync?: () => Promise<string | false> }).getFilePathAsync?.();
+            if (asyncPath) return asyncPath as string;
+            if (typeof (attachment as { getFilePath?: () => string | undefined }).getFilePath === "function") return (attachment as { getFilePath: () => string | undefined }).getFilePath();
+            return (attachment as unknown as { attachmentPath?: string }).attachmentPath;
+          })();
+          if (!filePath) throw new Error("Could not locate PDF file");
+          return readAttachmentBytes(filePath);
+        },
+        isScreenshotUnsupportedModel,
+      });
+      const pdfAttachments = preparedPdfInputs.attachments;
+      const inlineEditPdfImages = preparedPdfInputs.images;
+      const inlineEditPdfUploadSystemMessages =
+        preparedPdfInputs.pdfUploadSystemMessages;
       const selectedFiles = [
         ...(selectedFileAttachmentCache.get(currentItem.id) || []),
         ...pdfAttachments,
@@ -8315,10 +8227,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         0,
         MAX_SELECTED_IMAGES,
       );
-      const images = [
-        ...(isScreenshotUnsupportedModel(activeModelName) ? [] : selectedImages),
-        ...pdfPageImageDataUrls,
-      ].slice(0, MAX_SELECTED_IMAGES);
+      const images = isScreenshotUnsupportedModel(activeModelName)
+        ? []
+        : [...selectedImages, ...inlineEditPdfImages];
       const selectedReasoning = getSelectedReasoning();
       const advancedParams = getAdvancedModelParams(selectedProfile?.entryId);
       const targetRuntimeMode = getCurrentRuntimeMode();
@@ -8345,8 +8256,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           paperContexts: selectedPaperContexts,
           fullTextPaperContexts,
           attachments: selectedFiles,
-          pdfUploadSystemMessages: pdfUploadSystemMessages.length
-            ? pdfUploadSystemMessages
+          pdfUploadSystemMessages: inlineEditPdfUploadSystemMessages.length
+            ? inlineEditPdfUploadSystemMessages
             : undefined,
           targetRuntimeMode,
           model: selectedProfile?.model,

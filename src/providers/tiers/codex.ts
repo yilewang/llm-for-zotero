@@ -14,9 +14,14 @@ export function matches(params: ProviderParams): boolean {
   return auth === "codex_auth" || proto === "codex_responses";
 }
 
-export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
-  tier: "codex",
-  label: "Codex / ChatGPT",
-  pdf: "vision",
-  images: true,
-};
+export function resolve(
+  params: ProviderParams,
+): Omit<ProviderCapabilities, "multimodal" | "fileInputs"> {
+  const proto = (params.protocol || "").toLowerCase();
+  return {
+    providerFamily: "codex",
+    label: "Codex / ChatGPT",
+    pdf: proto === "codex_responses" ? "vision_pages" : "error",
+    images: true,
+  };
+}

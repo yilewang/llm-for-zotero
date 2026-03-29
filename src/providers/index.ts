@@ -2,7 +2,7 @@ export { resolveProviderCapabilities } from "./registry";
 export type {
   ProviderCapabilities,
   ProviderParams,
-  ProviderTier,
+  ProviderFamily,
   PdfSupport,
 } from "./types";
 export { isTextOnlyModel } from "./modelChecks";

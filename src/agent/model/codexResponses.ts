@@ -5,6 +5,7 @@ import {
 } from "../../utils/llmClient";
 import { normalizeTemperature } from "../../utils/normalization";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
+import { resolveProviderCapabilities } from "../../providers";
 import type {
   AgentModelCapabilities,
   AgentRuntimeRequest,
@@ -41,11 +42,17 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
   private conversationItems: unknown[] | null = null;
 
   getCapabilities(request: AgentRuntimeRequest): AgentModelCapabilities {
+    const capabilities = resolveProviderCapabilities({
+      model: request.model || "",
+      protocol: "codex_responses",
+      authMode: request.authMode,
+      apiBase: request.apiBase,
+    });
     return {
       streaming: true,
       toolCalls: isCodexAuthRequest(request),
-      multimodal: isMultimodalRequestSupported(request),
-      fileInputs: false,
+      multimodal: capabilities.multimodal,
+      fileInputs: capabilities.fileInputs,
       reasoning: true,
     };
   }
@@ -87,9 +94,10 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
           },
         )
       : [];
-    const inputItems = this.conversationItems
-      ? [...this.conversationItems, ...followupInput]
-      : initialInput.input;
+    if (this.conversationItems && followupInput.length) {
+      this.conversationItems.push(...followupInput);
+    }
+    const inputItems = this.conversationItems || initialInput.input;
     const url = resolveProviderTransportEndpoint({
       protocol: "codex_responses",
       apiBase: request.apiBase || "",
@@ -137,7 +145,8 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
           ),
     );
 
-    this.conversationItems = [...inputItems, ...normalized.outputItems];
+    inputItems.push(...normalized.outputItems);
+    this.conversationItems = inputItems;
 
     if (normalized.toolCalls.length) {
       return {

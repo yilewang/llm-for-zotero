@@ -66,11 +66,17 @@ describe("agent model factory", function () {
     );
   });
 
-  it("exposes file-input capability only on responses_api", function () {
+  it("exposes request-aware file-input capability from the provider matrix", function () {
     const responsesAdapter = createAgentModelAdapter(
       makeRequest({
         providerProtocol: "responses_api",
         apiBase: "https://api.openai.com/v1/responses",
+      }),
+    );
+    const chatCompatAdapter = createAgentModelAdapter(
+      makeRequest({
+        providerProtocol: "openai_chat_compat",
+        apiBase: "https://openrouter.ai/api/v1/chat/completions",
       }),
     );
     const anthropicAdapter = createAgentModelAdapter(
@@ -87,7 +93,30 @@ describe("agent model factory", function () {
         }),
       ).fileInputs,
     );
+    assert.isTrue(
+      chatCompatAdapter.getCapabilities(
+        makeRequest({
+          providerProtocol: "openai_chat_compat",
+          apiBase: "https://openrouter.ai/api/v1/chat/completions",
+        }),
+      ).fileInputs,
+    );
     assert.isFalse(
+      createAgentModelAdapter(
+        makeRequest({
+          authMode: "codex_auth",
+          providerProtocol: "codex_responses",
+          apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        }),
+      ).getCapabilities(
+        makeRequest({
+          authMode: "codex_auth",
+          providerProtocol: "codex_responses",
+          apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        }),
+      ).fileInputs,
+    );
+    assert.isTrue(
       anthropicAdapter.getCapabilities(
         makeRequest({
           providerProtocol: "anthropic_messages",

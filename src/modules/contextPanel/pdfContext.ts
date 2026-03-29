@@ -43,11 +43,16 @@ const HTML_ENTITY_MAP: Record<string, string> = {
   "&nbsp;": " ",
 };
 
+const HTML_NAMED_ENTITY_RE = new RegExp(
+  Object.keys(HTML_ENTITY_MAP).join("|"),
+  "g",
+);
+
 function decodeHtmlEntities(text: string): string {
-  let result = text;
-  for (const [entity, char] of Object.entries(HTML_ENTITY_MAP)) {
-    result = result.split(entity).join(char);
-  }
+  let result = text.replace(
+    HTML_NAMED_ENTITY_RE,
+    (match) => HTML_ENTITY_MAP[match],
+  );
   // Decode numeric entities: &#123; and &#x1A;
   result = result.replace(/&#(\d+);/g, (_, code) =>
     String.fromCharCode(Number(code)),
@@ -58,19 +63,21 @@ function decodeHtmlEntities(text: string): string {
   return result;
 }
 
+const TABLE_ROW_RE = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+const TABLE_CELL_RE = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+
 function htmlTableToMarkdown(tableHtml: string): string {
   // Extract rows: split by <tr> tags
-  const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  const cellPattern = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+  TABLE_ROW_RE.lastIndex = 0;
 
   const rows: string[][] = [];
   let rowMatch: RegExpExecArray | null;
-  while ((rowMatch = rowPattern.exec(tableHtml)) !== null) {
+  while ((rowMatch = TABLE_ROW_RE.exec(tableHtml)) !== null) {
     const rowHtml = rowMatch[1];
     const cells: string[] = [];
     let cellMatch: RegExpExecArray | null;
-    const cellRe = new RegExp(cellPattern.source, cellPattern.flags);
-    while ((cellMatch = cellRe.exec(rowHtml)) !== null) {
+    TABLE_CELL_RE.lastIndex = 0;
+    while ((cellMatch = TABLE_CELL_RE.exec(rowHtml)) !== null) {
       // Strip any nested HTML tags, decode entities, trim
       const cellText = decodeHtmlEntities(
         cellMatch[1].replace(/<[^>]*>/g, "").trim(),

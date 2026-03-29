@@ -18,7 +18,8 @@ import { MAX_AGENT_TOOL_CALLS_PER_ROUND } from "./limits";
 export type ResponsesInputContentPart =
   | { type: "input_text"; text: string }
   | { type: "input_image"; image_url: string; detail?: "low" | "high" | "auto" }
-  | { type: "input_file"; file_id: string };
+  | { type: "input_file"; file_id: string }
+  | { type: "input_file"; filename: string; file_data: string };
 
 export type ResponsesInputItem =
   | {

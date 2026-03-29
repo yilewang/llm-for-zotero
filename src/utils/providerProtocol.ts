@@ -37,7 +37,8 @@ export const PROVIDER_PROTOCOL_SPECS: ProviderProtocolSpec[] = [
   {
     id: "responses_api",
     label: "Responses API",
-    helperText: "Use OpenAI-style Responses APIs with tool calls and direct file input.",
+    helperText:
+      "Use OpenAI-style Responses APIs with tool calls. File input support depends on the provider family.",
     streaming: true,
     toolCalls: true,
     multimodal: true,
@@ -48,7 +49,7 @@ export const PROVIDER_PROTOCOL_SPECS: ProviderProtocolSpec[] = [
     id: "openai_chat_compat",
     label: "OpenAI-Compatible Chat",
     helperText:
-      "Use OpenAI-compatible chat/completions APIs with tool calls, but without direct file input.",
+      "Use OpenAI-compatible chat/completions APIs with tool calls. File input support depends on the provider family.",
     streaming: false,
     toolCalls: true,
     multimodal: true,
