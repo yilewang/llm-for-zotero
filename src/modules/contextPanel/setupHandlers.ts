@@ -286,6 +286,7 @@ import {
   getScreenshotDisabledHint,
   isScreenshotUnsupportedModel,
   getModelPdfSupport,
+  getProviderFamily,
 } from "./setupHandlers/controllers/modelReasoningController";
 import {
   GLOBAL_HISTORY_UNDO_WINDOW_MS,
@@ -9832,24 +9833,28 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }
         return;
       }
-      // Block PDF mode for models that don't support it (e.g., Copilot)
-      if (nextSource === "pdf") {
-        const selectedProfile = getSelectedProfile();
-        const modelName = (selectedProfile?.model || getSelectedModelInfo().currentModel || "").trim();
-        const pdfSupport = getModelPdfSupport(modelName, selectedProfile?.providerProtocol, selectedProfile?.authMode, selectedProfile?.apiBase);
-        if (pdfSupport === "none") {
-          if (status) {
-            setStatus(status, t("PDF mode is not available for this model. Use Text or MD mode."), "error");
-          }
-          return;
-        }
-      }
       setPaperContentSourceOverride(item.id, paperContext, nextSource);
       updatePaperPreviewPreservingScroll();
       if (status) {
         const modeLabel = nextSource === "text" ? "Text" : nextSource === "mineru" ? "MinerU" : "PDF";
         if (nextSource === "pdf") {
-          setStatus(status, `${t("Content source:")} ${modeLabel}. ${t("Full file will be sent. Right-click retrieval is not available.")}`, "ready");
+          const selectedProfile = getSelectedProfile();
+          const modelName = (selectedProfile?.model || getSelectedModelInfo().currentModel || "").trim();
+          const pdfSupport = getModelPdfSupport(modelName, selectedProfile?.providerProtocol, selectedProfile?.authMode, selectedProfile?.apiBase);
+          const family = getProviderFamily(modelName, selectedProfile?.providerProtocol, selectedProfile?.authMode, selectedProfile?.apiBase);
+          if (pdfSupport === "none") {
+            setStatus(status, `${t("Content source:")} ${modeLabel}. ${t("This model does not support PDF or image input. PDF content will be skipped.")}`, "error");
+          } else if (pdfSupport === "error") {
+            setStatus(status, `${t("Content source:")} ${modeLabel}. ${t("PDF mode is not supported for this provider/protocol. Consider Text or MD mode.")}`, "error");
+          } else if (family === "copilot") {
+            setStatus(status, `${t("Content source:")} ${modeLabel}. ${t("PDF pages will be rendered as images for Copilot, but may fail. Consider Text or MD mode.")}`, "error");
+          } else if (family === "codex") {
+            setStatus(status, `${t("Content source:")} ${modeLabel}. ${t("PDF pages will be rendered and sent as images.")}`, "warning");
+          } else if (family === "third_party") {
+            setStatus(status, `${t("Content source:")} ${modeLabel}. ${t("Third-party providers may not support PDF input. If it fails, try Text or MD mode.")}`, "warning");
+          } else {
+            setStatus(status, `${t("Content source:")} ${modeLabel}. ${t("Full file will be sent. Right-click retrieval is not available.")}`, "ready");
+          }
         } else {
           setStatus(status, `${t("Content source:")} ${modeLabel}`, "ready");
         }

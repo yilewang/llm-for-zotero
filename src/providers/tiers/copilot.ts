@@ -6,7 +6,8 @@ import type { ProviderCapabilities, ProviderParams } from "../types";
  * Standard image_url content parts with image MIME types work (user
  * confirmed).  However the copilot proxy rejects application/pdf MIME
  * in image_url, so the image_url PDF trick does not work here.  PDF
- * support is disabled; users should use text mode / MinerU for PDFs.
+ * pages are rendered as images and sent via vision_pages mode, but
+ * reliability is not guaranteed.
  */
 
 export function matches(params: ProviderParams): boolean {
@@ -22,7 +23,7 @@ export function resolve(
     label: "GitHub Copilot",
     pdf:
       proto === "openai_chat_compat" || proto === "responses_api"
-        ? "none"
+        ? "vision_pages"
         : "error",
     images: true,
   };

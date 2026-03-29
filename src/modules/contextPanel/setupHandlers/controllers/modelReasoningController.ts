@@ -30,6 +30,22 @@ export function getModelPdfSupport(
   }).pdf;
 }
 
+export type { ProviderFamily } from "../../../../providers/types";
+
+export function getProviderFamily(
+  modelName: string,
+  providerProtocol?: string,
+  authMode?: string,
+  apiBase?: string,
+): import("../../../../providers/types").ProviderFamily {
+  return resolveProviderCapabilities({
+    model: modelName,
+    protocol: providerProtocol,
+    authMode,
+    apiBase,
+  }).providerFamily;
+}
+
 export function getScreenshotDisabledHint(modelName: string): string {
   const label = modelName.trim() || "current model";
   return `Screenshots are disabled for ${label}`;

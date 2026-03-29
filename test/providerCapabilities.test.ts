@@ -84,7 +84,7 @@ describe("provider capabilities", function () {
       authMode: "copilot_auth",
     });
     assert.equal(copilot.providerFamily, "copilot");
-    assert.equal(copilot.pdf, "none");
+    assert.equal(copilot.pdf, "vision_pages");
     assert.isFalse(copilot.fileInputs);
   });
 });
