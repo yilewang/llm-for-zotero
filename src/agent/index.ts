@@ -1,3 +1,4 @@
+import { config } from "../../package.json";
 import { AgentRuntime } from "./runtime";
 import { createBuiltInToolRegistry } from "./tools";
 import { ZoteroGateway } from "./services/zoteroGateway";
@@ -12,6 +13,10 @@ import { initConversationMemoryStore } from "./store/conversationMemory";
 import { createAgentModelAdapter } from "./model/factory";
 import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
 import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
+import {
+  createExternalBackendBridgeRuntime,
+  type AgentRuntimeLike,
+} from "./externalBackendBridge";
 import type {
   AgentConfirmationResolution,
   AgentEvent,
@@ -20,11 +25,21 @@ import type {
 } from "./types";
 
 let runtime: AgentRuntime | null = null;
+let runtimeBridge: AgentRuntimeLike | null = null;
 let _actionRegistry: ActionRegistry | null = null;
 let _toolRegistry: ReturnType<typeof createBuiltInToolRegistry> | null = null;
 
 // Hoisted so getAgentApi() can expose them to third-party plugin authors.
 let _zoteroGateway: ZoteroGateway | null = null;
+
+function getExternalBackendBridgeUrl(): string {
+  try {
+    const value = Zotero.Prefs.get(`${config.prefsPrefix}.agentBackendBridgeUrl`, true);
+    return typeof value === "string" ? value.trim() : "";
+  } catch {
+    return "";
+  }
+}
 
 function createToolRegistry() {
   _zoteroGateway = new ZoteroGateway();
@@ -57,6 +72,11 @@ export async function initAgentSubsystem(): Promise<AgentRuntime> {
     zoteroGateway: _zoteroGateway!,
   });
 
+  runtimeBridge = createExternalBackendBridgeRuntime({
+    coreRuntime: runtime,
+    getBridgeUrl: getExternalBackendBridgeUrl,
+  });
+
   return runtime;
 }
 
@@ -64,6 +84,7 @@ export function shutdownAgentSubsystem(): void {
   unregisterMcpServer();
   _actionRegistry = null;
   _toolRegistry = null;
+  runtimeBridge = null;
   runtime = null;
   _zoteroGateway = null;
 }
@@ -72,7 +93,7 @@ export function getAgentRuntime(): AgentRuntime {
   if (!runtime) {
     throw new Error("Agent subsystem is not initialized");
   }
-  return runtime;
+  return (runtimeBridge || runtime) as unknown as AgentRuntime;
 }
 
 /**
