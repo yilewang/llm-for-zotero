@@ -17,3 +17,4 @@ logs
 
 # Ignore all contents inside a folder
 .claude/
+progress.md
