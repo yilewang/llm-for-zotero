@@ -92,10 +92,7 @@ describe("sendFlowController", function () {
       editLatestUserMessageAndRetry: async (opts: any) => {
         editCalled += 1;
         lastEditRuntimeMode = opts.targetRuntimeMode || "";
-<<<<<<< HEAD
-=======
         lastEditPdfUploadSystemMessages = opts.pdfUploadSystemMessages;
->>>>>>> upstream/main
         return "ok" as const;
       },
       sendQuestion: async (opts: any) => {
