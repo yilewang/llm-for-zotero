@@ -358,10 +358,10 @@ function buildActiveNoteContextBlock(
   if (!snapshot || !snapshot.text.trim()) {
     return snapshot
       ? [
-          "Current active Zotero note:",
-          `Title: ${snapshot.title}`,
-          "Note content is currently empty.",
-        ].join("\n")
+        "Current active Zotero note:",
+        `Title: ${snapshot.title}`,
+        "Note content is currently empty.",
+      ].join("\n")
       : "";
   }
   const parentLine = snapshot.parentItemId
@@ -748,14 +748,14 @@ function toPanelMessage(message: StoredChatMessage): Message {
     : undefined;
   const attachments = Array.isArray(message.attachments)
     ? message.attachments.filter(
-        (entry) =>
-          Boolean(entry) &&
-          typeof entry === "object" &&
-          typeof entry.id === "string" &&
-          Boolean(entry.id.trim()) &&
-          typeof entry.name === "string" &&
-          Boolean(entry.name.trim()),
-      )
+      (entry) =>
+        Boolean(entry) &&
+        typeof entry === "object" &&
+        typeof entry.id === "string" &&
+        Boolean(entry.id.trim()) &&
+        typeof entry.name === "string" &&
+        Boolean(entry.name.trim()),
+    )
     : undefined;
   const selectedTexts = normalizeSelectedTexts(
     message.selectedTexts,
@@ -1015,9 +1015,9 @@ export async function copyRenderedMarkdownToClipboard(
   if (renderedHtml) {
     const win = body.ownerDocument?.defaultView as
       | (Window & {
-          navigator?: Navigator;
-          ClipboardItem?: new (items: Record<string, Blob>) => ClipboardItem;
-        })
+        navigator?: Navigator;
+        ClipboardItem?: new (items: Record<string, Blob>) => ClipboardItem;
+      })
       | undefined;
     if (win?.navigator?.clipboard?.write && win.ClipboardItem) {
       try {
@@ -1179,11 +1179,11 @@ function resolveEffectiveRequestConfig(params: {
   const explicitEntry =
     params.model || params.apiBase || params.apiKey
       ? getAvailableModelEntries().find(
-          (entry) =>
-            entry.model === (params.model || "").trim() &&
-            entry.apiBase === (params.apiBase || "").trim() &&
-            entry.apiKey === (params.apiKey || "").trim(),
-        ) || null
+        (entry) =>
+          entry.model === (params.model || "").trim() &&
+          entry.apiBase === (params.apiBase || "").trim() &&
+          entry.apiKey === (params.apiKey || "").trim(),
+      ) || null
       : null;
   const model = (
     params.model ||
@@ -1468,14 +1468,14 @@ function reconstructRetryPayload(userMessage: Message): {
   const fileAttachments = (
     Array.isArray(userMessage.attachments)
       ? userMessage.attachments.filter(
-          (attachment) =>
-            Boolean(attachment) &&
-            typeof attachment === "object" &&
-            typeof attachment.id === "string" &&
-            attachment.id.trim() &&
-            typeof attachment.name === "string" &&
-            attachment.category !== "image",
-        )
+        (attachment) =>
+          Boolean(attachment) &&
+          typeof attachment === "object" &&
+          typeof attachment.id === "string" &&
+          attachment.id.trim() &&
+          typeof attachment.name === "string" &&
+          attachment.category !== "image",
+      )
       : []
   ) as ChatAttachment[];
   const promptText = resolvePromptText(
@@ -1485,16 +1485,16 @@ function reconstructRetryPayload(userMessage: Message): {
   );
   const composedQuestionBase = primarySelectedText
     ? buildQuestionWithSelectedTextContexts(
-        selectedTexts,
-        selectedTextSources,
-        promptText,
-        {
-          selectedTextPaperContexts,
-          includePaperAttribution: selectedTextPaperContexts.some((entry) =>
-            Boolean(entry),
-          ),
-        },
-      )
+      selectedTexts,
+      selectedTextSources,
+      promptText,
+      {
+        selectedTextPaperContexts,
+        includePaperAttribution: selectedTextPaperContexts.some((entry) =>
+          Boolean(entry),
+        ),
+      },
+    )
     : promptText;
   const question = buildModelPromptWithFileContext(
     composedQuestionBase,
@@ -1502,10 +1502,10 @@ function reconstructRetryPayload(userMessage: Message): {
   );
   const screenshotImages = Array.isArray(userMessage.screenshotImages)
     ? userMessage.screenshotImages
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, MAX_SELECTED_IMAGES)
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SELECTED_IMAGES)
     : [];
   const paperContexts = normalizePaperContexts(userMessage.paperContexts);
   const fullTextPaperContexts = normalizePaperContexts(
@@ -1578,7 +1578,7 @@ function normalizeModelFileAttachments(
       storedPath: attachment.storedPath?.trim(),
       contentHash:
         typeof attachment.contentHash === "string" &&
-        /^[a-f0-9]{64}$/i.test(attachment.contentHash.trim())
+          /^[a-f0-9]{64}$/i.test(attachment.contentHash.trim())
           ? attachment.contentHash.trim().toLowerCase()
           : undefined,
     }));
@@ -1602,15 +1602,15 @@ function normalizeEditableAttachments(
   const normalized = (
     Array.isArray(attachments)
       ? attachments.filter(
-          (attachment) =>
-            Boolean(attachment) &&
-            typeof attachment === "object" &&
-            typeof attachment.id === "string" &&
-            attachment.id.trim() &&
-            typeof attachment.name === "string" &&
-            attachment.name.trim() &&
-            attachment.category !== "image",
-        )
+        (attachment) =>
+          Boolean(attachment) &&
+          typeof attachment === "object" &&
+          typeof attachment.id === "string" &&
+          attachment.id.trim() &&
+          typeof attachment.name === "string" &&
+          attachment.name.trim() &&
+          attachment.category !== "image",
+      )
       : []
   ) as ChatAttachment[];
   return normalized.map((attachment) => ({
@@ -1634,7 +1634,7 @@ function normalizeEditableAttachments(
         : undefined,
     contentHash:
       typeof attachment.contentHash === "string" &&
-      /^[a-f0-9]{64}$/i.test(attachment.contentHash.trim())
+        /^[a-f0-9]{64}$/i.test(attachment.contentHash.trim())
         ? attachment.contentHash.trim().toLowerCase()
         : undefined,
   }));
@@ -1719,9 +1719,9 @@ function includeAutoLoadedPaperContext(
         ? normalizedFullTextPaperContexts
         : fullTextPaperContexts === undefined
           ? normalizePaperContexts([
-              autoLoadedPaperContext,
-              ...normalizedFullTextPaperContexts,
-            ])
+            autoLoadedPaperContext,
+            ...normalizedFullTextPaperContexts,
+          ])
           : normalizedFullTextPaperContexts,
   };
 }
@@ -1757,10 +1757,10 @@ function syncComposeContextForInlineEdit(
 
   const screenshotImages = Array.isArray(userMessage.screenshotImages)
     ? userMessage.screenshotImages
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, MAX_SELECTED_IMAGES)
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SELECTED_IMAGES)
     : [];
   if (screenshotImages.length) {
     selectedImageCache.set(item.id, screenshotImages);
@@ -1782,12 +1782,12 @@ function syncComposeContextForInlineEdit(
   const autoLoadedPaperContext = resolveAutoLoadedPaperContextForItem(item);
   const selectedPaperContexts = autoLoadedPaperContext
     ? paperContexts.filter(
-        (paperContext) =>
-          !(
-            paperContext.itemId === autoLoadedPaperContext.itemId &&
-            paperContext.contextItemId === autoLoadedPaperContext.contextItemId
-          ),
-      )
+      (paperContext) =>
+        !(
+          paperContext.itemId === autoLoadedPaperContext.itemId &&
+          paperContext.contextItemId === autoLoadedPaperContext.contextItemId
+        ),
+    )
     : paperContexts;
   if (selectedPaperContexts.length) {
     selectedPaperContextCache.set(item.id, selectedPaperContexts);
@@ -1852,10 +1852,10 @@ export async function editLatestUserMessageAndRetry(
   const selectedTextForMessage = selectedTextsForMessage[0] || "";
   const screenshotImagesForMessage = Array.isArray(screenshotImages)
     ? screenshotImages
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, MAX_SELECTED_IMAGES)
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SELECTED_IMAGES)
     : [];
   const normalizedPaperContexts = normalizeEditablePaperContexts(paperContexts);
   const normalizedFullTextPaperContexts =
@@ -2102,7 +2102,7 @@ export async function retryLatestAssistantResponse(
     retryPair.userMessage.fullTextPaperContexts =
       contextPlan.fullTextPaperContexts.length
         ? contextPlan.fullTextPaperContexts
-      : undefined;
+        : undefined;
     await updateStoredLatestUserMessage(conversationKey, {
       text: retryPair.userMessage.text,
       timestamp: retryPair.userMessage.timestamp,
@@ -2377,10 +2377,10 @@ export async function editUserTurnAndRetry(opts: {
   const selectedTextForMessage = selectedTextsForMessage[0] || "";
   const screenshotImagesForMessage = Array.isArray(screenshotImages)
     ? screenshotImages
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, MAX_SELECTED_IMAGES)
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SELECTED_IMAGES)
     : [];
   const normalizedPaperContexts = normalizeEditablePaperContexts(paperContexts);
   const normalizedFullTextPaperContexts =
@@ -2735,10 +2735,10 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
   );
   const screenshotImagesForMessage = Array.isArray(images)
     ? images
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, MAX_SELECTED_IMAGES)
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SELECTED_IMAGES)
     : [];
   const imageCount = screenshotImagesForMessage.length;
   const userMessageText = shownQuestion;
@@ -2881,7 +2881,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     userMessage.fullTextPaperContexts =
       contextPlan.fullTextPaperContexts.length
         ? contextPlan.fullTextPaperContexts
-      : undefined;
+        : undefined;
     await updateStoredLatestUserMessage(conversationKey, {
       text: userMessage.text,
       timestamp: userMessage.timestamp,
@@ -3250,8 +3250,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
       const screenshotImages = Array.isArray(msg.screenshotImages)
         ? msg.screenshotImages.filter(
-            (entry) => Boolean(entry) && !entry.startsWith("data:application/pdf"),
-          )
+          (entry) => Boolean(entry) && !entry.startsWith("data:application/pdf"),
+        )
         : [];
       let screenshotExpanded: HTMLDivElement | null = null;
       let papersExpanded: HTMLDivElement | null = null;
@@ -3505,14 +3505,14 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
       const fileAttachments = Array.isArray(msg.attachments)
         ? msg.attachments.filter(
-            (entry) =>
-              entry &&
-              typeof entry === "object" &&
-              entry.category !== "image" &&
-              typeof entry.name === "string" &&
-              // Exclude PDF-paper attachments (shown under paper context instead)
-              !(typeof entry.id === "string" && entry.id.startsWith("pdf-paper-")),
-          )
+          (entry) =>
+            entry &&
+            typeof entry === "object" &&
+            entry.category !== "image" &&
+            typeof entry.name === "string" &&
+            // Exclude PDF-paper attachments (shown under paper context instead)
+            !(typeof entry.id === "string" && entry.id.startsWith("pdf-paper-")),
+        )
         : [];
       hasUserContext = hasUserContext || fileAttachments.length > 0;
       if (fileAttachments.length) {
@@ -3660,8 +3660,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             selectedTextPaperContexts[contextIndex];
           const selectedTextPaperLabel =
             isGlobalConversation &&
-            selectedSource === "pdf" &&
-            selectedTextPaperContext
+              selectedSource === "pdf" &&
+              selectedTextPaperContext
               ? formatPaperCitationLabel(selectedTextPaperContext)
               : "";
           const selectedBar = doc.createElement("button") as HTMLButtonElement;
@@ -3829,16 +3829,16 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       const agentTraceEl =
         msg.runMode === "agent"
           ? renderAgentTrace({
-              doc,
-              message: msg,
-              userMessage: previousUserMessage,
-              events: getCachedAgentRunEvents(agentRunId),
-              onTraceMissing: agentRunId
-                ? () => {
-                    void ensureAgentRunTraceLoaded(agentRunId, body, item);
-                  }
-                : undefined,
-            })
+            doc,
+            message: msg,
+            userMessage: previousUserMessage,
+            events: getCachedAgentRunEvents(agentRunId),
+            onTraceMissing: agentRunId
+              ? () => {
+                void ensureAgentRunTraceLoaded(agentRunId, body, item);
+              }
+              : undefined,
+          })
           : null;
       if (hasAnswerText) {
         const safeText = sanitizeText(msg.text);
@@ -4148,7 +4148,7 @@ export function refreshConversationPanels(
   refreshOne(primaryBody, primaryItem);
 
   for (const [body, getItem] of activeContextPanels.entries()) {
-    if (!(body as Element).isConnected) {
+    if (!(body as Element).isConnected && !(body as any).__llmFloatedPanel) {
       activeContextPanels.delete(body);
       activeContextPanelStateSync.delete(body);
       continue;

@@ -712,7 +712,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const agentPrefKey = `${config.prefsPrefix}.enableAgentMode`;
     let observerId: symbol | undefined;
     const onAgentPrefChange = () => {
-      if (!(body as Element).isConnected) {
+      if (!(body as Element).isConnected && !(body as any).__llmFloatedPanel) {
         // Panel is gone – clean up the observer.
         try {
           if (observerId !== undefined)
@@ -973,7 +973,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (
       !panelWin ||
       !chatBox ||
-      !panelRoot.isConnected ||
+      (!panelRoot.isConnected && !(body as any).__llmFloatedPanel) ||
       panelRoot.getClientRects().length === 0
     ) {
       hideSelectionPopup();
@@ -1111,7 +1111,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
   const onPanelMouseUp = (e: Event) => {
     if (!panelWin) return;
-    if (!panelRoot.isConnected) {
+    if (!panelRoot.isConnected && !(body as any).__llmFloatedPanel) {
       disposeSelectionPopup();
       return;
     }
@@ -1135,7 +1135,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     panelWin.setTimeout(() => updateSelectionPopup(fallbackBubble), 0);
   };
   const onDocKeyUp = () => {
-    if (!panelRoot.isConnected) {
+    if (!panelRoot.isConnected && !(body as any).__llmFloatedPanel) {
       disposeSelectionPopup();
       return;
     }
@@ -1473,7 +1473,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       let isWinClosed = true;
       try {
         if (floatingWin && !floatingWin.closed) isWinClosed = false;
-      } catch(e) { isWinClosed = true; }
+      } catch (e) { isWinClosed = true; }
 
       if (isWinClosed) {
         let features = "chrome,resizable,alwaysRaised=yes,dependent=yes";
@@ -1497,7 +1497,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
         floatingWin.addEventListener('beforeunload', () => {
           let isWinClosed2 = true;
-          try { isWinClosed2 = floatingWin.closed; } catch(e) {}
+          try { isWinClosed2 = floatingWin.closed; } catch (e) { }
           if (floatingWin.windowState !== floatingWin.STATE_MAXIMIZED && floatingWin.windowState !== floatingWin.STATE_MINIMIZED && !isWinClosed2) {
             const newBounds = {
               x: floatingWin.screenX,
@@ -5611,7 +5611,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const syncLockStateToOtherPanels = () => {
     for (const [otherBody] of activeContextPanels) {
       if (otherBody === body) continue;
-      if (!(otherBody as Element).isConnected) {
+      if (!(otherBody as Element).isConnected && !(otherBody as any).__llmFloatedPanel) {
         activeContextPanels.delete(otherBody);
         activeContextPanelStateSync.delete(otherBody);
         continue;

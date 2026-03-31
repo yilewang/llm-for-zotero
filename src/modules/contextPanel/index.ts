@@ -71,7 +71,16 @@ import { getEditableSelectionFromDocument } from "./noteSelection";
 
 function isPanelActive(body: Element): boolean {
   if (body.isConnected) return true;
-  if ((body as any).__llmFloatedPanel) return true;
+  const floatPanel = (body as any).__llmFloatedPanel as Element | undefined | null;
+  if (floatPanel) {
+    // If the element is technically disconnected but attached to a window that is closed
+    const win = floatPanel.ownerDocument?.defaultView;
+    if (win && win.closed) {
+      (body as any).__llmFloatedPanel = null;
+      return false;
+    }
+    return true;
+  }
   return false;
 }
 
