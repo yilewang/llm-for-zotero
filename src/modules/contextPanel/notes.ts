@@ -24,11 +24,18 @@ import {
   collectAndDeleteUnreferencedBlobs,
   replaceOwnerAttachmentRefs,
 } from "../../utils/attachmentRefStore";
-import type { ChatAttachment, Message, PaperContextRef, SelectedTextSource } from "./types";
+import type {
+  ChatAttachment,
+  Message,
+  PaperContextRef,
+  SelectedTextSource,
+} from "./types";
 import {
   extractStandalonePaperSourceLabel,
   extractInlineCitationMentions,
+  formatSourceLabelWithPage,
   matchAssistantCitationCandidates,
+  lookupCachedCitationPage,
 } from "./assistantCitationLinks";
 import {
   isGlobalPortalItem,
@@ -113,7 +120,8 @@ export function normalizeNoteSourceText(contentText: string): string {
   );
   normalized = normalized.replace(
     /<pre[^>]*>([\s\S]*?)<\/pre>/gi,
-    (_match, text) => `\n\n\`\`\`\n${decodeNoteHtmlEntities(stripNoteHtml(text))}\n\`\`\`\n\n`,
+    (_match, text) =>
+      `\n\n\`\`\`\n${decodeNoteHtmlEntities(stripNoteHtml(text))}\n\`\`\`\n\n`,
   );
   normalized = normalized.replace(/<hr\s*\/?>/gi, "\n\n---\n\n");
   normalized = normalized.replace(/<br\s*\/?>/gi, "\n");
@@ -168,7 +176,8 @@ export function readNoteSnapshot(
     libraryID: Number(item?.libraryID) || 0,
     parentItemId: parentItem?.id,
     parentItemKey:
-      typeof (parentItem as any)?.key === "string" && (parentItem as any).key.trim()
+      typeof (parentItem as any)?.key === "string" &&
+      (parentItem as any).key.trim()
         ? (parentItem as any).key.trim().toUpperCase()
         : undefined,
     noteKind: parentItem ? "item" : "standalone",
@@ -253,23 +262,45 @@ function injectCitationLinksIntoNoteHtml(
   if (!html || !paperContexts?.length) return html;
 
   // --- Phase 1: blockquote-tail citations ---
-  // Pattern: `</blockquote>…<p>(Author et al., 2024[, page N])</p>`
-  // We look for <p> tags whose text content looks like a standalone citation.
+  // Pattern: `<blockquote>…</blockquote>…<p>(Author et al., 2024[, page N])</p>`
+  // Capture the blockquote content so we can look up the citation page cache
+  // (the cache is keyed by contextItemId + quote text).
   let result = html.replace(
-    /(<\/blockquote>\s*<p>)([\s\S]*?)(<\/p>)/gi,
-    (_match, prefix: string, innerText: string, suffix: string) => {
+    /(<blockquote>)([\s\S]*?)(<\/blockquote>\s*<p>)([\s\S]*?)(<\/p>)/gi,
+    (
+      _match,
+      bqOpen: string,
+      bqContent: string,
+      bqCloseAndPOpen: string,
+      innerText: string,
+      suffix: string,
+    ) => {
       const plainText = innerText.replace(/<[^>]+>/g, "").trim();
       if (!plainText) return _match;
-      const candidates = matchAssistantCitationCandidates(plainText, paperContexts);
+      const candidates = matchAssistantCitationCandidates(
+        plainText,
+        paperContexts,
+      );
       if (!candidates.length) return _match;
       const bestCandidate = candidates[0];
       const extracted = extractStandalonePaperSourceLabel(plainText);
-      const uri = buildZoteroPdfUri(
+      // Check the citation page cache for a corrected page (verified by
+      // FindController when the user clicked the citation in the chat panel).
+      const quoteText = stripNoteHtml(bqContent);
+      const cachedPage = lookupCachedCitationPage(
         bestCandidate.contextItemId,
-        extracted?.pageLabel,
+        quoteText,
       );
+      const pageLabel = cachedPage ?? extracted?.pageLabel;
+      const uri = buildZoteroPdfUri(bestCandidate.contextItemId, pageLabel);
       if (!uri) return _match;
-      return `${prefix}<a href="${escapeNoteHtml(uri)}">${innerText}</a>${suffix}`;
+      const visibleCitationText = pageLabel
+        ? formatSourceLabelWithPage(
+            extracted?.sourceLabel || plainText,
+            pageLabel,
+          )
+        : extracted?.sourceLabel || plainText;
+      return `${bqOpen}${bqContent}${bqCloseAndPOpen}<a href="${escapeNoteHtml(uri)}">${escapeNoteHtml(visibleCitationText)}</a>${suffix}`;
     },
   );
 
@@ -330,7 +361,9 @@ function injectCitationLinksIntoNoteHtml(
         const citationHtml = modifiedHtml.slice(htmlStart, htmlEnd);
         const linked = `<a href="${escapeNoteHtml(uri)}">${citationHtml}</a>`;
         modifiedHtml =
-          modifiedHtml.slice(0, htmlStart) + linked + modifiedHtml.slice(htmlEnd);
+          modifiedHtml.slice(0, htmlStart) +
+          linked +
+          modifiedHtml.slice(htmlEnd);
       }
 
       return `${prefix}${modifiedHtml}${suffix}`;
@@ -443,10 +476,14 @@ function formatSelectedTextLabel(
 ): string {
   const icon = getSelectedTextSourceIcon(source);
   if (source === "note") {
-    return total === 1 ? `${icon} Note context` : `${icon} Note context (${index + 1})`;
+    return total === 1
+      ? `${icon} Note context`
+      : `${icon} Note context (${index + 1})`;
   }
   if (source === "note-edit") {
-    return total === 1 ? `${icon} Editing focus` : `${icon} Editing focus (${index + 1})`;
+    return total === 1
+      ? `${icon} Editing focus`
+      : `${icon} Editing focus (${index + 1})`;
   }
   if (total === 1) return `${icon} Selected text`;
   return `${icon} Selected text (${index + 1})`;
@@ -652,7 +689,10 @@ export function buildChatHistoryNotePayload(messages: Message[]): {
     // For assistant messages, inject citation links using the preceding
     // user message's paper contexts so citations become clickable in the note.
     if (msg.role === "assistant" && rendered) {
-      rendered = injectCitationLinksIntoNoteHtml(rendered, lastUserPaperContexts);
+      rendered = injectCitationLinksIntoNoteHtml(
+        rendered,
+        lastUserPaperContexts,
+      );
     }
     if (msg.role === "user") {
       lastUserPaperContexts = msg.paperContexts;

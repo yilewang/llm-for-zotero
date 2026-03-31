@@ -12,7 +12,7 @@ import { parseDataUrl, readFileRefAsBase64 } from "./shared";
 
 export type ResolvedTextPart = { type: "text"; text: string };
 export type ResolvedImagePart = { type: "image"; mimeType: string; base64: string };
-export type ResolvedPdfPart = { type: "pdf"; base64: string };
+export type ResolvedPdfPart = { type: "pdf"; base64: string; filename?: string };
 export type ResolvedFilePlaceholder = { type: "file_placeholder"; name: string };
 
 export type ResolvedContentPart =
@@ -51,7 +51,7 @@ export async function resolveContentParts(
     // file_ref
     if (part.file_ref.mimeType === "application/pdf") {
       const base64 = await readFileRefAsBase64(part.file_ref.storedPath);
-      parts.push({ type: "pdf", base64 });
+      parts.push({ type: "pdf", base64, filename: part.file_ref.name });
     } else {
       parts.push({ type: "file_placeholder", name: part.file_ref.name });
     }

@@ -192,7 +192,9 @@ describe("livePdfSelectionLocator", function () {
 describe("stripBoundaryEllipsis", function () {
   it("strips leading three-dot ellipsis", function () {
     assert.equal(
-      stripBoundaryEllipsis("...Preparatory activity is thought to provide top-down signals"),
+      stripBoundaryEllipsis(
+        "...Preparatory activity is thought to provide top-down signals",
+      ),
       "Preparatory activity is thought to provide top-down signals",
     );
   });
@@ -242,7 +244,9 @@ describe("stripBoundaryEllipsis", function () {
 
 describe("splitQuoteAtEllipsis", function () {
   it("returns single-element array for quotes without internal ellipsis", function () {
-    const result = splitQuoteAtEllipsis("Preparatory activity is thought to provide top-down signals");
+    const result = splitQuoteAtEllipsis(
+      "Preparatory activity is thought to provide top-down signals",
+    );
     assert.deepEqual(result, [
       "Preparatory activity is thought to provide top-down signals",
     ]);
@@ -315,7 +319,8 @@ describe("buildRawPrefixQueries", function () {
   });
 
   it("puts the full text first when short enough", function () {
-    const quote = "A moderately long sentence that is under two hundred and twenty characters.";
+    const quote =
+      "A moderately long sentence that is under two hundred and twenty characters.";
     const result = buildRawPrefixQueries(quote);
     assert.equal(
       result[0],
@@ -335,7 +340,7 @@ describe("buildRawPrefixQueries", function () {
 
   it("strips wrapper quotes and includes suffix-style phrase queries", function () {
     const quote =
-      '“Pattern separation, pattern completion, and new neuronal codes within a continuous CA3 map”';
+      "“Pattern separation, pattern completion, and new neuronal codes within a continuous CA3 map”";
     const result = buildRawPrefixQueries(quote);
 
     assert.equal(
@@ -386,11 +391,12 @@ describe("scrollToExactQuoteInReader", function () {
 
     assert.isTrue(result.matched);
     assert.equal(result.expectedPageIndex, 1);
+    assert.equal(result.matchedPageIndex, 1);
     assert.isString(result.queryUsed);
     assert.isAtLeast(result.queries.length, 1);
   });
 
-  it("reports debug information when FindController matches only other pages", async function () {
+  it("trusts FindController when it matches a different page than the text-search hint", async function () {
     const reader = createFindControllerReader([[0], [], []]);
     const result = await scrollToExactQuoteInReader(
       reader,
@@ -398,8 +404,10 @@ describe("scrollToExactQuoteInReader", function () {
       { expectedPageIndex: 1 },
     );
 
-    assert.isFalse(result.matched);
-    assert.include(result.reason, "target page 2");
+    assert.isTrue(result.matched);
+    assert.equal(result.expectedPageIndex, 1);
+    assert.equal(result.matchedPageIndex, 0);
+    assert.include(result.reason, "page 1");
     assert.isAtLeast(result.queries.length, 1);
     assert.isAtLeast(result.debugSummary.length, 1);
   });
@@ -407,10 +415,26 @@ describe("scrollToExactQuoteInReader", function () {
 
 describe("locateQuoteByRawPrefixInPages", function () {
   const samplePages = [
-    { pageIndex: 0, pageLabel: "1", text: "Introduction to neural coding and olfactory perception in the mammalian brain." },
-    { pageIndex: 1, pageLabel: "2", text: "We found that, in the bulb, the degradation of linear classifier performance across days was numerically comparable to that reported in the cortex." },
-    { pageIndex: 2, pageLabel: "3", text: "Simulation analysis of drift mechanisms using normalized odor velocity in the olfactory bulb context." },
-    { pageIndex: 3, pageLabel: "4", text: "Discussion and conclusions about representational drift." },
+    {
+      pageIndex: 0,
+      pageLabel: "1",
+      text: "Introduction to neural coding and olfactory perception in the mammalian brain.",
+    },
+    {
+      pageIndex: 1,
+      pageLabel: "2",
+      text: "We found that, in the bulb, the degradation of linear classifier performance across days was numerically comparable to that reported in the cortex.",
+    },
+    {
+      pageIndex: 2,
+      pageLabel: "3",
+      text: "Simulation analysis of drift mechanisms using normalized odor velocity in the olfactory bulb context.",
+    },
+    {
+      pageIndex: 3,
+      pageLabel: "4",
+      text: "Discussion and conclusions about representational drift.",
+    },
   ];
 
   it("finds a quote using the first few words", function () {
@@ -433,6 +457,29 @@ describe("locateQuoteByRawPrefixInPages", function () {
     assert.isNotNull(result);
     assert.equal(result!.status, "resolved");
     assert.equal(result!.computedPageIndex, 2);
+  });
+
+  it("prefers the longest unique raw-prefix query over a shorter false match", function () {
+    const result = locateQuoteByRawPrefixInPages(
+      [
+        {
+          pageIndex: 0,
+          pageLabel: "1",
+          text: "We choose Hebbian learning, not only for its biological plausibility.",
+        },
+        {
+          pageIndex: 22,
+          pageLabel: "23",
+          text: "We choose Hebbian learning, not only for its biological plausibility, but to also allow rapid learning when entering a new environment.",
+        },
+      ],
+      "We choose Hebbian learning, not only for its biological plausibility, but to also allow rapid learning when entering a new environment.",
+      null,
+    );
+
+    assert.isNotNull(result);
+    assert.equal(result!.status, "resolved");
+    assert.equal(result!.computedPageIndex, 22);
   });
 
   it("returns null when quote is not in any page", function () {

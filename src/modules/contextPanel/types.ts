@@ -280,6 +280,7 @@ export type EditRetryOptions = {
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   attachments?: ChatAttachment[];
+  pdfUploadSystemMessages?: string[];
   targetRuntimeMode?: ChatRuntimeMode;
   expected?: { conversationKey: number; userTimestamp: number; assistantTimestamp: number };
   model?: string;

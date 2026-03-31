@@ -46,7 +46,11 @@ export type PanelDomRefs = {
   slashUploadOption: HTMLButtonElement | null;
   slashReferenceOption: HTMLButtonElement | null;
   slashPdfPageOption: HTMLButtonElement | null;
+<<<<<<< HEAD
   slashFullPdfOption: HTMLButtonElement | null;
+=======
+  slashPdfMultiplePagesOption: HTMLButtonElement | null;
+>>>>>>> upstream/main
   imagePreview: HTMLDivElement | null;
   selectedContextList: HTMLDivElement | null;
   previewStrip: HTMLDivElement | null;
@@ -196,10 +200,17 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     slashPdfPageOption: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-slash-pdf-page-option",
     ) as HTMLButtonElement | null,
+<<<<<<< HEAD
     slashFullPdfOption: ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-slash-full-pdf-option",
     ) as HTMLButtonElement | null,
     imagePreview: ((body as any).__llmFloatedPanel || body).querySelector(
+=======
+    slashPdfMultiplePagesOption: body.querySelector(
+      "#llm-slash-pdf-multiple-pages-option",
+    ) as HTMLButtonElement | null,
+    imagePreview: body.querySelector(
+>>>>>>> upstream/main
       "#llm-image-preview",
     ) as HTMLDivElement | null,
     selectedContextList: ((body as any).__llmFloatedPanel || body).querySelector(

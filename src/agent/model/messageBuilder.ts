@@ -7,16 +7,12 @@ import { AGENT_PERSONA_INSTRUCTIONS } from "./agentPersona";
 import { buildAgentMemoryBlock } from "../store/conversationMemory";
 import { AGENT_SKILLS, matchesSkill } from "../skills";
 
+import { isTextOnlyModel } from "../../providers";
+
 export function isMultimodalRequestSupported(
   request: AgentRuntimeRequest,
 ): boolean {
-  const model = (request.model || "").trim().toLowerCase();
-  if (!model) return true;
-  return !(
-    model.includes("reasoner") ||
-    model.includes("text-only") ||
-    model.includes("embedding")
-  );
+  return !isTextOnlyModel(request.model || "");
 }
 
 export function stringifyMessageContent(
@@ -118,7 +114,7 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
       "Retrieval-only paper refs:",
       ...retrievalOnlyPapers.map(
         (entry, index) =>
-          `- Retrieval paper ${index + 1}: ${entry.title} [itemId=${entry.itemId}, contextItemId=${entry.contextItemId}]`,
+          `- Retrieval paper ${index + 1}: ${entry.title} [itemId=${entry.itemId}, contextItemId=${entry.contextItemId}${entry.mineruCacheDir ? `, mineruCacheDir=${entry.mineruCacheDir}` : ""}]`,
       ),
     );
   }
@@ -130,7 +126,7 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
       "Full-text paper refs for this turn:",
       ...request.fullTextPaperContexts.map(
         (entry, index) =>
-          `- Full-text paper ${index + 1}: ${entry.title} [itemId=${entry.itemId}, contextItemId=${entry.contextItemId}]`,
+          `- Full-text paper ${index + 1}: ${entry.title} [itemId=${entry.itemId}, contextItemId=${entry.contextItemId}${entry.mineruCacheDir ? `, mineruCacheDir=${entry.mineruCacheDir}` : ""}]`,
       ),
     );
   }

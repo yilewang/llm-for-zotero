@@ -97,6 +97,7 @@ export function buildPaperQuoteCitationGuidance(
       "Answer format when quoting this paper:",
       "> quoted text from the paper",
       formatPaperSourceLabel(paperContext),
+      "- Use the EXACT source label above. Do NOT translate or romanize author names.",
     ];
   }
   return [
@@ -104,7 +105,7 @@ export function buildPaperQuoteCitationGuidance(
     "> quoted text from the paper",
     "(Author, Year, page N)",
     "- Put the source label on the line immediately after the quote.",
-    "- Use the matching paper metadata for the source label.",
+    "- Use the EXACT source label provided for each paper. Do NOT translate or romanize author names.",
     "- Do not cite raw chunk ids, citation keys, or invented page numbers unless they are explicitly provided.",
   ];
 }

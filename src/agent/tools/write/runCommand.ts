@@ -168,6 +168,29 @@ export function setCommandAutoApproved(conversationKey: number, value: boolean):
   }
 }
 
+/** Patterns that indicate a command only reads data (safe to auto-approve). */
+const READ_ONLY_COMMANDS = /^\s*(?:cat|head|tail|less|more|ls|find|file|wc|du|stat|which|type|echo|printf|grep|rg|awk|sed\s+-n|sort|uniq|diff|strings|xxd|hexdump|md5|shasum|sha256sum|tesseract|swift|node\s+-e|python3?\s+[-\/])/i;
+
+/** Patterns that indicate a command mutates state (always require confirmation). */
+const DESTRUCTIVE_COMMANDS = /(?:^|\||\;|&&)\s*(?:rm\s|rmdir\s|mv\s|cp\s|chmod\s|chown\s|sudo\s|pip\s+install|npm\s+install|brew\s+install|git\s+(?:push|reset|checkout|clean|rebase)|mkfs|dd\s)/i;
+
+/** Redirect to file (overwrite or append) — but not heredoc `<<`. */
+const REDIRECT_PATTERN = /(?:^|[^<])\s*>{1,2}\s*[^\s&]/;
+
+function isReadOnlyCommand(command: string): boolean {
+  const trimmed = command.trim();
+  // Destructive commands always need confirmation
+  if (DESTRUCTIVE_COMMANDS.test(trimmed)) return false;
+  // File redirects are writes
+  if (REDIRECT_PATTERN.test(trimmed)) return false;
+  // Known read-only commands are safe
+  if (READ_ONLY_COMMANDS.test(trimmed)) return true;
+  // Piped commands starting with a read-only command
+  const firstCommand = trimmed.split(/\s*[|;]\s*/)[0];
+  if (READ_ONLY_COMMANDS.test(firstCommand)) return true;
+  return false;
+}
+
 export function createRunCommandTool(): AgentToolDefinition<RunCommandInput, unknown> {
   return {
     spec: {
@@ -255,9 +278,12 @@ export function createRunCommandTool(): AgentToolDefinition<RunCommandInput, unk
       });
     },
 
-    shouldRequireConfirmation(_input, context) {
+    shouldRequireConfirmation(input, context) {
       // Skip confirmation if user already approved commands in this conversation
-      return !isCommandAutoApproved(context.request.conversationKey);
+      if (isCommandAutoApproved(context.request.conversationKey)) return false;
+      // Auto-approve read-only commands (analysis, inspection, listing)
+      if (isReadOnlyCommand(input.command)) return false;
+      return true;
     },
 
     createPendingAction(input) {

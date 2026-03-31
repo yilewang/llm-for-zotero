@@ -23,8 +23,11 @@
           gap: 4px;
           margin-bottom: 18px;
           padding: 3px;
-          background: color-mix(in srgb, currentColor 6%, transparent);
+          background: color-mix(in srgb, currentColor 12%, Field);
           border-radius: 8px;
+          position: sticky;
+          top: 0;
+          z-index: 100;
         "
       >
         <html:button data-pref-tab="models" type="button" style="
@@ -95,8 +98,32 @@
             "
           ></html:textarea>
           <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 3px; display: block;">
-            Override the default system prompt (leave empty to use default)
+            Add custom instructions to the default system prompt (leave empty to use default only)
           </html:span>
+          <html:details style="margin-top: 6px;">
+            <html:summary style="font-size: 11px; color: var(--fill-secondary, #888); cursor: pointer; user-select: none;">
+              View default system prompt
+            </html:summary>
+            <html:pre
+              id="__addonRef__-default-system-prompt"
+              style="
+                margin-top: 6px;
+                padding: 8px 10px;
+                font-size: 11px;
+                line-height: 1.5;
+                color: var(--fill-secondary, #666);
+                background: var(--material-background, #f5f5f5);
+                border: 1px solid var(--stroke-secondary, #ddd);
+                border-radius: 6px;
+                white-space: pre-wrap;
+                word-break: break-word;
+                user-select: text;
+                cursor: text;
+                max-height: 200px;
+                overflow-y: auto;
+              "
+            ></html:pre>
+          </html:details>
         </html:div>
 
         <html:div style="display: flex; flex-direction: column; gap: 4px">

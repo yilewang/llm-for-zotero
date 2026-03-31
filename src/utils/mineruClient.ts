@@ -113,137 +113,53 @@ async function httpJson(
 async function downloadViaCurl(url: string): Promise<Uint8Array | null> {
   // Use system curl to download binary data, bypassing Firefox ESR's TLS stack
   // which cannot connect to Alibaba Cloud OSS.
-  return new Promise((resolve) => {
-    try {
-      const Cc = (globalThis as { Components?: { classes?: Record<string, { createInstance: (iface: unknown) => unknown }> } }).Components?.classes;
-      const Ci = (globalThis as { Components?: { interfaces?: Record<string, unknown> } }).Components?.interfaces;
-      if (!Cc || !Ci) { resolve(null); return; }
+  try {
+    const Cc = (globalThis as { Components?: { classes?: Record<string, { createInstance: (iface: unknown) => unknown }> } }).Components?.classes;
+    const Ci = (globalThis as { Components?: { interfaces?: Record<string, unknown> } }).Components?.interfaces;
+    if (!Cc || !Ci) return null;
 
-      // Get temp directory to write the downloaded data to
-      const dirService = (Cc["@mozilla.org/file/directory_service;1"] as unknown as {
-        getService?: (iface: unknown) => { get?: (prop: string, iface: unknown) => { path?: string } };
-      })?.getService?.(Ci.nsIProperties as unknown);
-      const tempDir = dirService?.get?.("TmpD", Ci.nsIFile as unknown);
-      if (!tempDir?.path) {
-        ztoolkit.log("MinerU download [curl]: cannot resolve temp directory");
-        resolve(null); return;
-      }
-
-      const outPath = `${tempDir.path}${tempDir.path.includes("\\") ? "\\" : "/"}mineru_dl_${Date.now()}.bin`;
-
-      const localFile = Cc["@mozilla.org/file/local;1"]?.createInstance(Ci.nsIFile as unknown) as {
-        initWithPath?: (path: string) => void;
-        exists?: () => boolean;
-      } | undefined;
-      if (!localFile?.initWithPath) { resolve(null); return; }
-
-      const curlPath = getCurlPath();
-      if (!curlPath) { resolve(null); return; }
-      localFile.initWithPath(curlPath);
-      if (localFile.exists && !localFile.exists()) { resolve(null); return; }
-
-      const process = Cc["@mozilla.org/process/util;1"]?.createInstance(Ci.nsIProcess as unknown) as {
-        init?: (executable: unknown) => void;
-        run?: (blocking: boolean, args: string[], count: number) => void;
-        runAsync?: (args: string[], count: number, observer: unknown) => void;
-        exitValue?: number;
-      } | undefined;
-      if (!process?.init) {
-        ztoolkit.log("MinerU download [curl]: nsIProcess unavailable");
-        resolve(null); return;
-      }
-
-      process.init(localFile);
-      const args = [
-        "-s", "-f",
-        "-o", outPath,
-        "--max-time", "300",
-        "-L",
-        "--url", url,
-      ];
-
-      if (!process.runAsync) {
-        // Fallback: synchronous run (blocks main thread, but better than hanging)
-        ztoolkit.log("MinerU download [curl]: runAsync unavailable, using synchronous run");
-        try {
-          process.run?.(true, args, args.length);
-          const exitCode = process.exitValue ?? -1;
-          if (exitCode !== 0) {
-            ztoolkit.log(`MinerU download [curl]: sync run failed exit=${exitCode}`);
-            resolve(null); return;
-          }
-        } catch (runErr) {
-          ztoolkit.log(`MinerU download [curl]: sync run threw: ${(runErr as Error).message}`);
-          resolve(null); return;
-        }
-        // Read temp file after synchronous completion
-        const readTempFile = async (): Promise<Uint8Array | null> => {
-          try {
-            const io = getIOUtils();
-            if (io?.read) {
-              const data = await io.read(outPath);
-              try {
-                const ioFull = (globalThis as unknown as {
-                  IOUtils?: { remove?: (path: string) => Promise<void> };
-                }).IOUtils;
-                await ioFull?.remove?.(outPath);
-              } catch { /* ignore */ }
-              return data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
-            }
-            const osFile = getOSFile();
-            if (osFile?.read) {
-              const data = await osFile.read(outPath);
-              return data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
-            }
-          } catch { /* ignore */ }
-          return null;
-        };
-        readTempFile().then(resolve).catch(() => resolve(null));
-        return;
-      }
-
-      const observer = {
-        observe(_subject: unknown, topic: string) {
-          const exitCode = (process as { exitValue?: number }).exitValue ?? -1;
-          if (topic === "process-finished" && exitCode === 0) {
-            ztoolkit.log("MinerU download [curl]: success");
-            // Read the temp file using IOUtils or OS.File
-            const readTempFile = async (): Promise<Uint8Array | null> => {
-              try {
-                const io = getIOUtils();
-                if (io?.read) {
-                  const data = await io.read(outPath);
-                  // Clean up temp file (best effort)
-                  try {
-                    const ioFull = (globalThis as unknown as {
-                      IOUtils?: { remove?: (path: string) => Promise<void> };
-                    }).IOUtils;
-                    await ioFull?.remove?.(outPath);
-                  } catch { /* ignore */ }
-                  return data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
-                }
-                const osFile = getOSFile();
-                if (osFile?.read) {
-                  const data = await osFile.read(outPath);
-                  return data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
-                }
-              } catch { /* ignore */ }
-              return null;
-            };
-            readTempFile().then(resolve).catch(() => resolve(null));
-          } else {
-            ztoolkit.log(`MinerU download [curl]: failed topic=${topic} exit=${exitCode}`);
-            resolve(null);
-          }
-        },
-        QueryInterface: () => observer,
-      };
-      process.runAsync(args, args.length, observer);
-    } catch (e) {
-      ztoolkit.log(`MinerU download [curl] threw: ${(e as Error).message}`);
-      resolve(null);
+    const dirService = (Cc["@mozilla.org/file/directory_service;1"] as unknown as {
+      getService?: (iface: unknown) => { get?: (prop: string, iface: unknown) => { path?: string } };
+    })?.getService?.(Ci.nsIProperties as unknown);
+    const tempDir = dirService?.get?.("TmpD", Ci.nsIFile as unknown);
+    if (!tempDir?.path) {
+      ztoolkit.log("MinerU download [curl]: cannot resolve temp directory");
+      return null;
     }
-  });
+
+    const outPath = `${tempDir.path}${tempDir.path.includes("\\") ? "\\" : "/"}mineru_dl_${Date.now()}.bin`;
+    const exitCode = await runCurl(["-s", "-f", "-o", outPath, "--max-time", "300", "-L", "--url", url]);
+
+    if (exitCode !== 0) {
+      ztoolkit.log(`MinerU download [curl]: failed exit=${exitCode}`);
+      return null;
+    }
+
+    ztoolkit.log("MinerU download [curl]: success");
+    // Read the temp file using IOUtils or OS.File
+    try {
+      const io = getIOUtils();
+      if (io?.read) {
+        const data = await io.read(outPath);
+        try {
+          const ioFull = (globalThis as unknown as {
+            IOUtils?: { remove?: (path: string) => Promise<void> };
+          }).IOUtils;
+          await ioFull?.remove?.(outPath);
+        } catch { /* ignore */ }
+        return data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
+      }
+      const osFile = getOSFile();
+      if (osFile?.read) {
+        const data = await osFile.read(outPath);
+        return data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
+      }
+    } catch { /* ignore */ }
+    return null;
+  } catch (e) {
+    ztoolkit.log(`MinerU download [curl] threw: ${(e as Error).message}`);
+    return null;
+  }
 }
 
 async function httpGetBinary(url: string): Promise<Uint8Array | null> {
@@ -480,6 +396,112 @@ function getCurlPath(): string | null {
   return "/usr/bin/curl";
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getSubprocess(): any | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const CU = (globalThis as any).ChromeUtils;
+    if (CU?.importESModule) {
+      try {
+        const mod = CU.importESModule("resource://gre/modules/Subprocess.sys.mjs");
+        return mod.Subprocess || mod.default || mod;
+      } catch { /* fallback */ }
+    }
+    if (CU?.import) {
+      try {
+        const mod = CU.import("resource://gre/modules/Subprocess.jsm");
+        return mod.Subprocess || mod;
+      } catch { /* fallback */ }
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+/**
+ * Run curl with the given args. Tries Subprocess.call first (no console window
+ * on Windows), falls back to nsIProcess.
+ * Returns the process exit code, or -1 on failure/timeout.
+ */
+async function runCurl(args: string[], timeoutMs = 300000): Promise<number> {
+  const curlPath = getCurlPath();
+  if (!curlPath) return -1;
+
+  // Try Subprocess.call first — suppresses console window on Windows
+  const Subprocess = getSubprocess();
+  if (Subprocess?.call) {
+    try {
+      const proc = await Subprocess.call({
+        command: curlPath,
+        arguments: args,
+        environment: {},
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const drain = async (pipe: any) => {
+        if (!pipe?.readString) return;
+        try { while (await pipe.readString()) { /* discard */ } } catch { /* pipe closed */ }
+      };
+      const resultPromise = (async () => {
+        await Promise.all([drain(proc.stdout), drain(proc.stderr)]);
+        const { exitCode } = await proc.wait();
+        return exitCode as number;
+      })();
+      const race = await Promise.race([
+        resultPromise,
+        new Promise<"timeout">(r => setTimeout(() => r("timeout"), timeoutMs)),
+      ]);
+      if (race === "timeout") {
+        try { proc.kill(); } catch { /* ignore */ }
+        return -1;
+      }
+      return race;
+    } catch (e) {
+      ztoolkit.log(`runCurl Subprocess.call failed: ${(e as Error).message}, falling back to nsIProcess`);
+    }
+  }
+
+  // Fallback: nsIProcess (shows console on Windows, but works everywhere)
+  try {
+    const Cc = (globalThis as { Components?: { classes?: Record<string, { createInstance: (iface: unknown) => unknown }> } }).Components?.classes;
+    const Ci = (globalThis as { Components?: { interfaces?: Record<string, unknown> } }).Components?.interfaces;
+    if (!Cc || !Ci) return -1;
+
+    const localFile = Cc["@mozilla.org/file/local;1"]?.createInstance(Ci.nsIFile as unknown) as {
+      initWithPath?: (path: string) => void;
+      exists?: () => boolean;
+    } | undefined;
+    if (!localFile?.initWithPath) return -1;
+    localFile.initWithPath(curlPath);
+    if (localFile.exists && !localFile.exists()) return -1;
+
+    const process = Cc["@mozilla.org/process/util;1"]?.createInstance(Ci.nsIProcess as unknown) as {
+      init?: (executable: unknown) => void;
+      run?: (blocking: boolean, args: string[], count: number) => void;
+      runAsync?: (args: string[], count: number, observer: unknown) => void;
+      exitValue?: number;
+    } | undefined;
+    if (!process?.init) return -1;
+    process.init(localFile);
+
+    if (!process.runAsync) {
+      process.run?.(true, args, args.length);
+      return process.exitValue ?? -1;
+    }
+
+    return new Promise<number>((resolve) => {
+      const observer = {
+        observe(_subject: unknown, topic: string) {
+          resolve(topic === "process-finished" ? (process.exitValue ?? -1) : -1);
+        },
+        QueryInterface: () => observer,
+      };
+      process.runAsync!(args, args.length, observer);
+    });
+  } catch (e) {
+    ztoolkit.log(`runCurl nsIProcess fallback failed: ${(e as Error).message}`);
+    return -1;
+  }
+}
+
 async function uploadViaCurl(
   url: string,
   pdfPath: string,
@@ -494,26 +516,6 @@ async function uploadViaCurl(
   const Ci = (globalThis as { Components?: { interfaces?: Record<string, unknown> } }).Components?.interfaces;
   if (!Cc || !Ci) {
     ztoolkit.log("MinerU upload [curl]: Components unavailable");
-    return { status: 0 };
-  }
-
-  const curlPath = getCurlPath();
-  if (!curlPath) {
-    ztoolkit.log("MinerU upload [curl]: cannot determine curl path for this OS");
-    return { status: 0 };
-  }
-
-  const localFile = Cc["@mozilla.org/file/local;1"]?.createInstance(Ci.nsIFile as unknown) as {
-    initWithPath?: (path: string) => void;
-    exists?: () => boolean;
-  } | undefined;
-  if (!localFile?.initWithPath) {
-    ztoolkit.log("MinerU upload [curl]: nsIFile unavailable");
-    return { status: 0 };
-  }
-  localFile.initWithPath(curlPath);
-  if (localFile.exists && !localFile.exists()) {
-    ztoolkit.log(`MinerU upload [curl]: ${curlPath} not found`);
     return { status: 0 };
   }
 
@@ -555,72 +557,15 @@ async function uploadViaCurl(
     }
   };
 
-  const args = [
-    "-s", "-f",
-    "-T", uploadPath,
-    "--max-time", "180",
-    "--url", url,
-  ];
+  const exitCode = await runCurl(["-s", "-f", "-T", uploadPath, "--max-time", "180", "--url", url], 200000);
+  cleanupTemp();
 
-  return new Promise((resolve) => {
-    try {
-      const process = Cc["@mozilla.org/process/util;1"]?.createInstance(Ci.nsIProcess as unknown) as {
-        init?: (executable: unknown) => void;
-        run?: (blocking: boolean, args: string[], count: number) => void;
-        runAsync?: (args: string[], count: number, observer: unknown) => void;
-        exitValue?: number;
-      } | undefined;
-      if (!process?.init) {
-        ztoolkit.log("MinerU upload [curl]: nsIProcess unavailable");
-        cleanupTemp();
-        resolve({ status: 0 });
-        return;
-      }
-
-      process.init(localFile);
-
-      if (!process.runAsync) {
-        ztoolkit.log("MinerU upload [curl]: runAsync unavailable, using synchronous run");
-        try {
-          process.run?.(true, args, args.length);
-          const exitCode = process.exitValue ?? -1;
-          cleanupTemp();
-          if (exitCode === 0) {
-            ztoolkit.log("MinerU upload [curl]: sync success (exit=0)");
-            resolve({ status: 200 });
-          } else {
-            ztoolkit.log(`MinerU upload [curl]: sync failed exit=${exitCode}`);
-            resolve({ status: 0 });
-          }
-        } catch (runErr) {
-          ztoolkit.log(`MinerU upload [curl]: sync run threw: ${(runErr as Error).message}`);
-          cleanupTemp();
-          resolve({ status: 0 });
-        }
-        return;
-      }
-
-      const observer = {
-        observe(_subject: unknown, topic: string) {
-          const exitCode = (process as { exitValue?: number }).exitValue ?? -1;
-          cleanupTemp();
-          if (topic === "process-finished" && exitCode === 0) {
-            ztoolkit.log("MinerU upload [curl]: success (exit=0)");
-            resolve({ status: 200 });
-          } else {
-            ztoolkit.log(`MinerU upload [curl]: failed topic=${topic} exit=${exitCode}`);
-            resolve({ status: 0 });
-          }
-        },
-        QueryInterface: () => observer,
-      };
-      process.runAsync(args, args.length, observer);
-    } catch (e) {
-      ztoolkit.log(`MinerU upload [curl] threw: ${(e as Error).message}`);
-      cleanupTemp();
-      resolve({ status: 0 });
-    }
-  });
+  if (exitCode === 0) {
+    ztoolkit.log("MinerU upload [curl]: success (exit=0)");
+    return { status: 200 };
+  }
+  ztoolkit.log(`MinerU upload [curl]: failed exit=${exitCode}`);
+  return { status: 0 };
 }
 
 async function httpPutBinary(
@@ -855,63 +800,11 @@ export async function parsePdfWithMineruCloud(
  * Returns true if curl can reach the host.
  */
 async function testOssViaCurl(ossUrl: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    try {
-      const Cc = (globalThis as { Components?: { classes?: Record<string, { createInstance: (iface: unknown) => unknown }> } }).Components?.classes;
-      const Ci = (globalThis as { Components?: { interfaces?: Record<string, unknown> } }).Components?.interfaces;
-      if (!Cc || !Ci) { resolve(false); return; }
-
-      const localFile = Cc["@mozilla.org/file/local;1"]?.createInstance(Ci.nsIFile as unknown) as {
-        initWithPath?: (path: string) => void;
-        exists?: () => boolean;
-      } | undefined;
-      if (!localFile?.initWithPath) { resolve(false); return; }
-
-      const curlPath = getCurlPath();
-      if (!curlPath) { resolve(false); return; }
-      localFile.initWithPath(curlPath);
-      if (localFile.exists && !localFile.exists()) { resolve(false); return; }
-
-      const process = Cc["@mozilla.org/process/util;1"]?.createInstance(Ci.nsIProcess as unknown) as {
-        init?: (executable: unknown) => void;
-        run?: (blocking: boolean, args: string[], count: number) => void;
-        runAsync?: (args: string[], count: number, observer: unknown) => void;
-        exitValue?: number;
-      } | undefined;
-      if (!process?.init) { resolve(false); return; }
-
-      process.init(localFile);
-      // -s: silent, -o /dev/null: discard body, --max-time 10: timeout
-      // No -f: we want exit 0 even on 403 (proves connectivity)
-      const devNull = curlPath.includes("\\") ? "NUL" : "/dev/null";
-      const args = [
-        "-s",
-        "-o", devNull,
-        "--max-time", "10",
-        "--head",
-        "--url", ossUrl,
-      ];
-
-      if (!process.runAsync) {
-        try {
-          process.run?.(true, args, args.length);
-          resolve((process.exitValue ?? -1) === 0);
-        } catch { resolve(false); }
-        return;
-      }
-
-      const observer = {
-        observe(_subject: unknown, topic: string) {
-          const exitCode = (process as { exitValue?: number }).exitValue ?? -1;
-          resolve(topic === "process-finished" && exitCode === 0);
-        },
-        QueryInterface: () => observer,
-      };
-      process.runAsync(args, args.length, observer);
-    } catch {
-      resolve(false);
-    }
-  });
+  // -s: silent, -o /dev/null: discard body, --max-time 10: timeout
+  // No -f: we want exit 0 even on 403 (proves connectivity)
+  const devNull = (getCurlPath() || "").includes("\\") ? "NUL" : "/dev/null";
+  const exitCode = await runCurl(["-s", "-o", devNull, "--max-time", "10", "--head", "--url", ossUrl], 15000);
+  return exitCode === 0;
 }
 
 export async function testMineruConnection(apiKey: string): Promise<void> {

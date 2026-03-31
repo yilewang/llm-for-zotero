@@ -134,7 +134,7 @@ export type AgentEngineDeps = {
   buildLLMHistoryMessages: (history: Message[]) => ChatMessage[];
   buildAgentRuntimeRequest: (
     params: BuildAgentRuntimeRequestParamsShape,
-  ) => AgentRuntimeRequest;
+  ) => AgentRuntimeRequest | Promise<AgentRuntimeRequest>;
   resolveEffectiveRequestConfig: (params: {
     item: Zotero.Item;
     model?: string;
@@ -259,7 +259,7 @@ export async function sendAgentTurn(
     normalizedPaperContexts,
     normalizedFullTextPaperContexts,
   );
-  const runtimeRequest = deps.buildAgentRuntimeRequest({
+  const runtimeRequest = await deps.buildAgentRuntimeRequest({
     conversationKey,
     item,
     userText: question,
@@ -618,7 +618,7 @@ export async function retryAgentTurn(
     history.slice(0, retryPair.userIndex),
   );
 
-  const runtimeRequest = deps.buildAgentRuntimeRequest({
+  const runtimeRequest = await deps.buildAgentRuntimeRequest({
     conversationKey,
     item,
     userText: question,

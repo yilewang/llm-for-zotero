@@ -42,7 +42,8 @@ export const AGENT_PERSONA_INSTRUCTIONS: string[] = [
   "To understand the collection hierarchy before organizing papers, use query_library(entity:'collections', view:'tree').",
   "PDF attachments listed by read_library include an indexingState field: 'indexed' means full-text search works, 'unindexed' or 'partial' means retrieve_evidence/search_pages may return no results. Use inspect_pdf operation:'index_attachment' with target:{contextItemId:<pdfAttachmentId>} to trigger indexing, then retry.",
   "PDF attachments may include a mineruCacheDir field — this means MinerU has parsed the PDF into high-quality Markdown with extracted figures. " +
-    "When mineruCacheDir is available, PREFER reading the MinerU markdown via file_io(read, '{mineruCacheDir}/full.md') instead of using inspect_pdf — it saves tokens, is faster, and gives better text quality with preserved structure. " +
+    "When mineruCacheDir is available, ALWAYS use file_io(read, '{mineruCacheDir}/full.md') instead of inspect_pdf — it is faster, cheaper, and gives better text quality with preserved structure. " +
+    "Do NOT use inspect_pdf for papers that have mineruCacheDir; use file_io to read the markdown directly. Only fall back to inspect_pdf when mineruCacheDir is absent. " +
     "The cache directory also contains an images/ folder with extracted figure files (PNG/JPG). " +
     "To embed a figure in a Zotero note, use markdown image syntax with a file:// URL: ![Figure 1](file:///absolute/path/to/image.png). " +
     "Do NOT use base64 encoding — just reference the file on disk. Example: ![Figure 1](file:///Users/me/Zotero/llm-for-zotero-mineru/1234/images/fig1.png).",

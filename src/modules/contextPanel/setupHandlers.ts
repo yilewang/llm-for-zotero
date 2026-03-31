@@ -392,6 +392,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     slashUploadOption,
     slashReferenceOption,
     slashPdfPageOption,
+    slashPdfMultiplePagesOption,
     imagePreview,
     selectedContextList,
     previewStrip,
@@ -6565,6 +6566,44 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           setSelectedModelEntryForItem(item.id, entry.entryId);
           setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+
+          // Auto-correct PDF mode for models that don't support it (e.g. Copilot,
+          // non-qwen-long Qwen models).  Downgrade to text/mineru so the user
+          // doesn't end up with a broken send.
+          const newPdfSupport = getModelPdfSupport(
+            entry.model, entry.providerProtocol, entry.authMode, entry.apiBase,
+          );
+          const shouldDowngrade =
+            newPdfSupport === "none" ||
+            (newPdfSupport === "upload" &&
+              (entry.apiBase || "").toLowerCase().includes("dashscope") &&
+              !/^qwen-long(?:[.-]|$)/i.test(entry.model));
+          if (shouldDowngrade) {
+            const papers = normalizePaperContextEntries(
+              selectedPaperContextCache.get(item.id) || [],
+            );
+            let didDowngrade = false;
+            for (const pc of papers) {
+              if (resolvePaperContentSourceMode(item.id, pc) === "pdf") {
+                const mineruAvailable = isPaperContextMineru(pc);
+                setPaperContentSourceOverride(
+                  item.id, pc, mineruAvailable ? "mineru" : "text",
+                );
+                didDowngrade = true;
+              }
+            }
+            if (didDowngrade) {
+              updatePaperPreviewPreservingScroll();
+              if (status) {
+                setStatus(
+                  status,
+                  t("PDF mode is not supported by this model. Switched to Text/MD mode."),
+                  "warning",
+                );
+              }
+            }
+          }
+
           updateModelButton();
           updateReasoningButton();
         };
@@ -8521,6 +8560,14 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (!filePath) throw new Error("Could not locate PDF file");
       return readAttachmentBytes(filePath);
     },
+    encodeBytesBase64: (bytes: Uint8Array) => {
+      let binaryStr = "";
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binaryStr += String.fromCharCode(...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)));
+      }
+      return btoa(binaryStr);
+    },
     getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],
     getSelectedImages: (itemId) => selectedImageCache.get(itemId) || [],
     resolvePromptText,
@@ -8660,25 +8707,142 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         getSelectedModelInfo().currentModel ||
         ""
       ).trim();
-      // Resolve PDF-mode papers to file attachments (same logic as sendFlowController)
-      const pdfSupport = getModelPdfSupport(activeModelName, selectedProfile?.providerProtocol);
+      // Resolve PDF-mode papers with the same provider-capability rules as
+      // the normal send flow so edit+retry preserves multimodal context.
+      const pdfSupport = getModelPdfSupport(
+        activeModelName,
+        selectedProfile?.providerProtocol,
+        selectedProfile?.authMode,
+        selectedProfile?.apiBase,
+      );
       const pdfAttachments: import("./types").ChatAttachment[] = [];
+      const pdfPageImageDataUrls: string[] = [];
+      const pdfUploadSystemMessages: string[] = [];
       if (pdfModePapers.length) {
-        if (pdfSupport === "vision") {
+        if (
+          pdfSupport === "upload" &&
+          selectedProfile?.apiBase &&
+          selectedProfile?.apiKey
+        ) {
+          const { detectPdfUploadProvider, uploadPdfForProvider } =
+            await import("../../utils/pdfUploadPreprocessor");
+          const provider = detectPdfUploadProvider(selectedProfile.apiBase);
+          for (const pc of pdfModePapers) {
+            try {
+              const attachment = Zotero.Items.get(pc.contextItemId);
+              if (
+                !attachment?.isAttachment?.() ||
+                attachment.attachmentContentType !== "application/pdf"
+              ) {
+                continue;
+              }
+              const filePath = await (async () => {
+                const asyncPath = await (
+                  attachment as unknown as {
+                    getFilePathAsync?: () => Promise<string | false>;
+                  }
+                ).getFilePathAsync?.();
+                if (asyncPath) return asyncPath as string;
+                if (
+                  typeof (attachment as { getFilePath?: () => string | undefined })
+                    .getFilePath === "function"
+                ) {
+                  return (
+                    attachment as { getFilePath: () => string | undefined }
+                  ).getFilePath();
+                }
+                return (attachment as unknown as { attachmentPath?: string })
+                  .attachmentPath;
+              })();
+              if (!filePath) continue;
+              const bytes = await readAttachmentBytes(filePath);
+              const result = await uploadPdfForProvider({
+                provider,
+                apiBase: selectedProfile.apiBase,
+                apiKey: selectedProfile.apiKey,
+                pdfBytes: bytes,
+                fileName: (() => {
+                  const raw = pc.attachmentTitle || pc.title || "document";
+                  return /\.pdf$/i.test(raw) ? raw : `${raw}.pdf`;
+                })(),
+              });
+              if (result) {
+                pdfUploadSystemMessages.push(result.systemMessageContent);
+              }
+            } catch (err) {
+              ztoolkit.log(
+                "LLM: Failed to upload PDF paper for edit",
+                pc.contextItemId,
+                err,
+              );
+            }
+          }
+        } else if (pdfSupport === "image_url") {
+          for (const pc of pdfModePapers) {
+            try {
+              const attachment = Zotero.Items.get(pc.contextItemId);
+              if (
+                !attachment?.isAttachment?.() ||
+                attachment.attachmentContentType !== "application/pdf"
+              ) {
+                continue;
+              }
+              const filePath = await (async () => {
+                const asyncPath = await (
+                  attachment as unknown as {
+                    getFilePathAsync?: () => Promise<string | false>;
+                  }
+                ).getFilePathAsync?.();
+                if (asyncPath) return asyncPath as string;
+                if (
+                  typeof (attachment as { getFilePath?: () => string | undefined })
+                    .getFilePath === "function"
+                ) {
+                  return (
+                    attachment as { getFilePath: () => string | undefined }
+                  ).getFilePath();
+                }
+                return (attachment as unknown as { attachmentPath?: string })
+                  .attachmentPath;
+              })();
+              if (!filePath) continue;
+              const bytes = await readAttachmentBytes(filePath);
+              let binaryStr = "";
+              const chunkSize = 0x8000;
+              for (let i = 0; i < bytes.length; i += chunkSize) {
+                binaryStr += String.fromCharCode(
+                  ...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)),
+                );
+              }
+              pdfPageImageDataUrls.push(
+                `data:application/pdf;base64,${btoa(binaryStr)}`,
+              );
+            } catch (err) {
+              ztoolkit.log(
+                "LLM: Failed to encode PDF paper for edit",
+                pc.contextItemId,
+                err,
+              );
+            }
+          }
+        } else if (pdfSupport === "vision") {
           const { renderAllPdfPages } = await import("../../agent/services/pdfPageService");
           for (const pc of pdfModePapers) {
             try {
               const pages = await renderAllPdfPages(pc.contextItemId);
               for (const page of pages) {
-                pdfAttachments.push({
-                  id: `pdf-page-${pc.contextItemId}-${page.pageIndex}-${Date.now()}`,
-                  name: `${pc.title || "PDF"} - page ${page.pageIndex + 1}.png`,
-                  mimeType: "image/png",
-                  sizeBytes: 0,
-                  category: "image",
-                  storedPath: page.storedPath,
-                  contentHash: page.contentHash,
-                });
+                const bytes = await readAttachmentBytes(page.storedPath);
+                if (bytes.byteLength <= 0) continue;
+                let binaryStr = "";
+                const chunkSize = 0x8000;
+                for (let i = 0; i < bytes.length; i += chunkSize) {
+                  binaryStr += String.fromCharCode(
+                    ...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)),
+                  );
+                }
+                pdfPageImageDataUrls.push(
+                  `data:image/png;base64,${btoa(binaryStr)}`,
+                );
               }
             } catch (err) {
               ztoolkit.log("LLM: Failed to render PDF pages for edit", pc.contextItemId, err);
@@ -8723,9 +8887,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         0,
         MAX_SELECTED_IMAGES,
       );
-      const images = isScreenshotUnsupportedModel(activeModelName)
-        ? []
-        : selectedImages;
+      const images = [
+        ...(isScreenshotUnsupportedModel(activeModelName) ? [] : selectedImages),
+        ...pdfPageImageDataUrls,
+      ].slice(0, MAX_SELECTED_IMAGES);
       const selectedReasoning = getSelectedReasoning();
       const advancedParams = getAdvancedModelParams(selectedProfile?.entryId);
       const targetRuntimeMode = getCurrentRuntimeMode();
@@ -8752,6 +8917,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           paperContexts: selectedPaperContexts,
           fullTextPaperContexts,
           attachments: selectedFiles,
+          pdfUploadSystemMessages: pdfUploadSystemMessages.length
+            ? pdfUploadSystemMessages
+            : undefined,
           targetRuntimeMode,
           model: selectedProfile?.model,
           apiBase: selectedProfile?.apiBase,
@@ -8914,6 +9082,29 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         e.stopPropagation();
         selectPaperPickerRowAt(paperPickerActiveRowIndex);
         return;
+      }
+    }
+    // Up-arrow prompt recall: when input is empty or cursor is at position 0,
+    // recall the last user message from the current conversation.
+    if (ke.key === "ArrowUp" && !ke.shiftKey) {
+      const cursorAtStart =
+        inputBox.selectionStart === 0 && inputBox.selectionEnd === 0;
+      if (!inputBox.value.trim() || cursorAtStart) {
+        const convKey = item ? getConversationKey(item) : null;
+        const history =
+          convKey != null ? chatHistory.get(convKey) || [] : [];
+        const lastUserMsg = [...history]
+          .reverse()
+          .find((m) => m.role === "user");
+        if (lastUserMsg?.text) {
+          e.preventDefault();
+          e.stopPropagation();
+          inputBox.value = lastUserMsg.text;
+          persistDraftInputForCurrentConversation();
+          inputBox.selectionStart = inputBox.value.length;
+          inputBox.selectionEnd = inputBox.value.length;
+          return;
+        }
       }
     }
     if (ke.key === "Escape" && inlineEditTarget) {
@@ -9374,6 +9565,109 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }
       } catch (err) {
         ztoolkit.log("PDF page capture error:", err);
+        if (status) setStatus(status, t("PDF page capture failed"), "error");
+        updateImagePreviewPreservingScroll();
+      }
+    });
+  }
+
+  if (slashPdfMultiplePagesOption) {
+    slashPdfMultiplePagesOption.addEventListener("click", async (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!item) return;
+      consumeActiveActionToken();
+      closeSlashMenu();
+      const { currentModel } = getSelectedModelInfo();
+      if (isScreenshotUnsupportedModel(currentModel)) {
+        if (status) setStatus(status, getScreenshotDisabledHint(currentModel), "error");
+        return;
+      }
+      const currentImages = selectedImageCache.get(item.id) || [];
+      const remaining = MAX_SELECTED_IMAGES - currentImages.length;
+      if (remaining <= 0) {
+        if (status) setStatus(status, `Maximum ${MAX_SELECTED_IMAGES} images allowed`, "error");
+        return;
+      }
+      // Get page count from the active PDF
+      const { getPdfPageCount, parsePageRanges, capturePdfPages } = await import("./pdfPageCapture");
+      const totalPages = getPdfPageCount();
+      if (totalPages <= 0) {
+        if (status) setStatus(status, t("No PDF page found — open a PDF in the reader first"), "error");
+        return;
+      }
+      // Prompt user for page ranges via ztoolkit dialog
+      const win =
+        body.ownerDocument?.defaultView ||
+        (Zotero.getMainWindow?.() as Window | null);
+      if (!win) return;
+      const dialogData: Record<string, unknown> = {
+        pageRangeValue: `1-${Math.min(totalPages, remaining)}`,
+        loadCallback: () => { return; },
+        unloadCallback: () => { return; },
+      };
+      const pageDialog = new ztoolkit.Dialog(2, 1)
+        .addCell(0, 0, {
+          tag: "label",
+          namespace: "html",
+          properties: { innerHTML: `${t("Enter page numbers or ranges (e.g. 1-5, 8, 12):")} (1-${totalPages})` },
+          styles: { display: "block", marginBottom: "8px" },
+        })
+        .addCell(1, 0, {
+          tag: "input",
+          namespace: "html",
+          id: "llm-pdf-page-range-input",
+          attributes: {
+            "data-bind": "pageRangeValue",
+            "data-prop": "value",
+            type: "text",
+          },
+          styles: { width: "300px" },
+        }, false)
+        .addButton("OK", "ok")
+        .addButton("Cancel", "cancel")
+        .setDialogData(dialogData)
+        .open(t("Select PDF pages"));
+      addon.data.dialog = pageDialog;
+      await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock.promise;
+      addon.data.dialog = undefined;
+      if ((dialogData as { _lastButtonId?: string })._lastButtonId !== "ok") return;
+      const rawInput = String((dialogData as { pageRangeValue?: string }).pageRangeValue || "").trim();
+      if (!rawInput) return;
+      const pageNumbers = parsePageRanges(rawInput, totalPages).slice(0, remaining);
+      if (!pageNumbers.length) {
+        if (status) setStatus(status, "No valid pages selected", "error");
+        return;
+      }
+      if (status) setStatus(status, t("Capturing PDF pages..."), "sending");
+      try {
+        const dataUrls = await capturePdfPages(pageNumbers, {
+          onProgress: (current, total) => {
+            if (status) setStatus(status, `${t("Capturing PDF pages...")} ${current}/${total}`, "sending");
+          },
+        });
+        if (dataUrls.length > 0) {
+          const optimized: string[] = [];
+          for (const dataUrl of dataUrls) {
+            optimized.push(win ? await optimizeImageDataUrl(win, dataUrl) : dataUrl);
+          }
+          const existingImages = selectedImageCache.get(item.id) || [];
+          const nextImages = [...existingImages, ...optimized].slice(0, MAX_SELECTED_IMAGES);
+          selectedImageCache.set(item.id, nextImages);
+          const expandedBefore = selectedImagePreviewExpandedCache.get(item.id);
+          selectedImagePreviewExpandedCache.set(
+            item.id,
+            typeof expandedBefore === "boolean" ? expandedBefore : true,
+          );
+          selectedImagePreviewActiveIndexCache.set(item.id, nextImages.length - 1);
+          updateImagePreviewPreservingScroll();
+          if (status) setStatus(status, `${dataUrls.length} pages captured`, "ready");
+        } else {
+          if (status) setStatus(status, t("PDF page capture failed"), "error");
+          updateImagePreviewPreservingScroll();
+        }
+      } catch (err) {
+        ztoolkit.log("PDF multiple pages capture error:", err);
         if (status) setStatus(status, t("PDF page capture failed"), "error");
         updateImagePreviewPreservingScroll();
       }
@@ -10299,18 +10593,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const currentSource = resolvePaperContentSourceMode(item.id, paperContext);
       const mineruAvailable = isPaperContextMineru(paperContext);
       const nextSource = getNextContentSourceMode(currentSource, mineruAvailable);
-      // Block PDF mode in agent mode — Agent can access any PDF page on demand
+      // Warn (but allow) PDF mode in agent mode — Agent normally reads pages on demand
       if (nextSource === "pdf" && getCurrentRuntimeMode() === "agent") {
         if (status) {
-          setStatus(status, t("Agent mode reads PDF pages on demand — no need for full PDF mode."), "ready");
+          setStatus(status, t("Agent mode normally reads PDF pages on demand. Forcing full PDF mode."), "warning");
         }
-        // Skip "pdf" and advance to the next valid mode
-        const skipPdfSource = getNextContentSourceMode("pdf", mineruAvailable);
-        if (skipPdfSource !== "pdf") {
-          setPaperContentSourceOverride(item.id, paperContext, skipPdfSource);
-          updatePaperPreviewPreservingScroll();
-        }
-        return;
+        // Fall through — allow the mode change
       }
       // Block PDF mode for models that don't support it (e.g., Copilot)
       if (nextSource === "pdf") {
@@ -10322,6 +10610,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             setStatus(status, t("PDF mode is not available for this model. Use Text or MD mode."), "error");
           }
           return;
+        }
+        // Block non-qwen-long Qwen models (only qwen-long supports PDF upload on DashScope)
+        if (pdfSupport === "upload") {
+          const isQwen = (selectedProfile?.apiBase || "").toLowerCase().includes("dashscope");
+          const isQwenLong = /^qwen-long(?:[.-]|$)/i.test(modelName);
+          if (isQwen && !isQwenLong) {
+            if (status) {
+              setStatus(status, t("Only qwen-long supports PDF upload on DashScope. Use Text or MD mode."), "error");
+            }
+            return;
+          }
         }
       }
       setPaperContentSourceOverride(item.id, paperContext, nextSource);

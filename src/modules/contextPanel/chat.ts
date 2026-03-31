@@ -30,6 +30,7 @@ import {
   formatFigureCountLabel,
   formatPaperCountLabel,
 } from "./constants";
+import { hasCachedMineruMd, getMineruItemDir } from "./mineruCache";
 import type {
   Message,
   ChatRuntimeMode,
@@ -119,6 +120,7 @@ import {
   resolvePaperContextRefFromItem,
 } from "./paperAttribution";
 import { buildPaperKey } from "./pdfContext";
+import { isTextOnlyModel } from "../../providers/modelChecks";
 import {
   getActiveContextAttachmentFromTabs,
   resolveContextSourceItem,
@@ -229,11 +231,25 @@ function resolveMultimodalRetryHint(
     normalized.includes("too many tokens") ||
     normalized.includes("max_input_tokens") ||
     normalized.includes("input too long");
-  if (!looksLikeSizeOrTokenIssue) return "";
-  if (imageCount >= 8) {
-    return " Try fewer screenshots (for example 4-6) or tighter crops.";
+  if (looksLikeSizeOrTokenIssue) {
+    if (imageCount >= 8) {
+      return " Try fewer screenshots (for example 4-6) or tighter crops.";
+    }
+    return " Try fewer screenshots or tighter crops.";
   }
-  return " Try fewer screenshots or tighter crops.";
+  const looksLikeVisionRejection =
+    normalized.includes("model_not_supported") ||
+    normalized.includes("does not support") ||
+    normalized.includes("not support image") ||
+    normalized.includes("not support vision") ||
+    normalized.includes("unsupported_media_type") ||
+    normalized.includes("invalid_type") ||
+    (normalized.includes("invalid_request") && normalized.includes("image")) ||
+    (normalized.includes("400") && normalized.includes("not supported"));
+  if (looksLikeVisionRejection) {
+    return " This model may not support image/file input. Try removing attachments or switching to text mode.";
+  }
+  return "";
 }
 
 function openStoredAttachmentFromMessage(attachment: ChatAttachment): boolean {
@@ -1220,6 +1236,7 @@ async function buildContextPlanForRequest(params: {
   effectiveRequestConfig: EffectiveRequestConfig;
   pdfModePaperKeys?: Set<string>;
   pdfUploadSystemMessages?: string[];
+  signal?: AbortSignal;
   setStatusSafely: (
     text: string,
     kind: Parameters<typeof setStatus>[2],
@@ -1271,6 +1288,7 @@ async function buildContextPlanForRequest(params: {
     apiKey: params.effectiveRequestConfig.apiKey,
     providerProtocol: params.effectiveRequestConfig.providerProtocol,
     systemPrompt,
+    signal: params.signal,
   });
 
   if (plan.selectedPaperCount > 0) {
@@ -1303,9 +1321,11 @@ async function buildContextPlanForRequest(params: {
     .join("\n\n");
   const combinedContext = [noteContext, planContext, uploadedPdfContext].filter(Boolean).join("\n\n");
 
-  // Extract MinerU figure images from the context (if applicable)
+  // Extract MinerU figure images from the context (if applicable).
+  // Skip for text-only models (e.g. DeepSeek) that reject image_url content.
+  const effectiveModel = params.effectiveRequestConfig.model || "";
   let mineruImages: string[] = [];
-  if (planContext && activeContextItem) {
+  if (planContext && activeContextItem && !isTextOnlyModel(effectiveModel)) {
     const pdfCtx = pdfTextCache.get(activeContextItem.id);
     if (pdfCtx?.sourceType === "mineru") {
       try {
@@ -1792,7 +1812,8 @@ export async function editLatestUserMessageAndRetry(
   const {
     body, item, displayQuestion, selectedTexts, selectedTextSources,
     selectedTextPaperContexts, selectedTextNoteContexts, screenshotImages,
-    paperContexts, fullTextPaperContexts, attachments, targetRuntimeMode,
+    paperContexts, fullTextPaperContexts, attachments, pdfUploadSystemMessages,
+    targetRuntimeMode,
     expected, model, apiBase, apiKey, reasoning, advanced,
   } = opts;
   await ensureConversationLoaded(item);
@@ -1947,6 +1968,7 @@ export async function editLatestUserMessageAndRetry(
       apiKey,
       reasoning,
       advanced,
+      pdfUploadSystemMessages,
     );
   }
   return "ok";
@@ -1960,6 +1982,7 @@ export async function retryLatestAssistantResponse(
   apiKey?: string,
   reasoning?: LLMReasoningConfig,
   advanced?: AdvancedModelParams,
+  pdfUploadSystemMessages?: string[],
 ) {
   const ui = getPanelRequestUI(body);
 
@@ -2049,6 +2072,14 @@ export async function retryLatestAssistantResponse(
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
     const retryPdfKeys = derivePdfModePaperKeys(retryPair.userMessage.attachments, item);
+
+    // Create AbortController early so the signal is available during context
+    // planning (e.g. for the retrieval query-rewrite LLM call).
+    const AbortControllerCtor = getAbortController();
+    setCurrentAbortController(
+      AbortControllerCtor ? new AbortControllerCtor() : null,
+    );
+
     const contextPlan = await buildContextPlanForRequest({
       item,
       question,
@@ -2060,6 +2091,8 @@ export async function retryLatestAssistantResponse(
       history: llmHistory,
       effectiveRequestConfig,
       pdfModePaperKeys: retryPdfKeys.size > 0 ? retryPdfKeys : undefined,
+      pdfUploadSystemMessages,
+      signal: currentAbortController?.signal,
       setStatusSafely,
     });
     const combinedContext = contextPlan.combinedContext;
@@ -2086,14 +2119,11 @@ export async function retryLatestAssistantResponse(
       attachments: retryPair.userMessage.attachments,
     });
     if (cancelledRequestId >= thisRequestId) {
+      currentAbortController?.abort();
       await finalizeCancelledAssistant();
       return;
     }
 
-    const AbortControllerCtor = getAbortController();
-    setCurrentAbortController(
-      AbortControllerCtor ? new AbortControllerCtor() : null,
-    );
     const queueRefresh = createQueuedRefresh(refreshChatSafely);
     if (cancelledRequestId >= thisRequestId) {
       currentAbortController?.abort();
@@ -2101,7 +2131,10 @@ export async function retryLatestAssistantResponse(
       return;
     }
 
-    const allImages = [...(screenshotImages || []), ...(contextPlan.mineruImages || [])];
+    // Text-only models (e.g. DeepSeek) reject image_url content — drop all images.
+    const allImages = isTextOnlyModel(effectiveRequestConfig.model || "")
+      ? []
+      : [...(screenshotImages || []), ...(contextPlan.mineruImages || [])];
     const requestParams = {
       prompt: question,
       context: combinedContext,
@@ -2252,6 +2285,7 @@ export async function editUserTurnAndRetry(opts: {
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   attachments?: ChatAttachment[];
+  pdfUploadSystemMessages?: string[];
   targetRuntimeMode?: ChatRuntimeMode;
   model?: string;
   apiBase?: string;
@@ -2263,7 +2297,8 @@ export async function editUserTurnAndRetry(opts: {
     body, item, userTimestamp, assistantTimestamp, newText,
     selectedTexts, selectedTextSources, selectedTextPaperContexts,
     selectedTextNoteContexts, screenshotImages, paperContexts,
-    fullTextPaperContexts, attachments, targetRuntimeMode,
+    fullTextPaperContexts, attachments, pdfUploadSystemMessages,
+    targetRuntimeMode,
     model, apiBase, apiKey, reasoning, advanced,
   } = opts;
   await ensureConversationLoaded(item);
@@ -2453,6 +2488,7 @@ export async function editUserTurnAndRetry(opts: {
       resolvedApiKey,
       resolvedReasoning,
       resolvedAdvanced,
+      pdfUploadSystemMessages,
     );
   }
 }
@@ -2487,9 +2523,30 @@ function buildActiveNoteRuntimeContext(
   };
 }
 
-function buildAgentRuntimeRequest(
+async function enrichPaperContextsWithMineruCache(
+  papers: PaperContextRef[] | undefined,
+): Promise<PaperContextRef[] | undefined> {
+  if (!papers?.length) return papers;
+  const enriched: PaperContextRef[] = [];
+  for (const paper of papers) {
+    let mineruCacheDir: string | undefined;
+    try {
+      if (await hasCachedMineruMd(paper.contextItemId)) {
+        mineruCacheDir = getMineruItemDir(paper.contextItemId);
+      }
+    } catch { /* ignore */ }
+    enriched.push(mineruCacheDir ? { ...paper, mineruCacheDir } : paper);
+  }
+  return enriched;
+}
+
+async function buildAgentRuntimeRequest(
   params: BuildAgentRuntimeRequestParams,
-): AgentRuntimeRequest {
+): Promise<AgentRuntimeRequest> {
+  const [enrichedPaperContexts, enrichedFullTextPapers] = await Promise.all([
+    enrichPaperContextsWithMineruCache(params.paperContexts),
+    enrichPaperContextsWithMineruCache(params.fullTextPaperContexts),
+  ]);
   return {
     conversationKey: params.conversationKey,
     mode: "agent",
@@ -2497,8 +2554,8 @@ function buildAgentRuntimeRequest(
     activeItemId: params.item.id,
     selectedTexts: params.selectedTexts,
     selectedTextSources: params.selectedTextSources,
-    selectedPaperContexts: params.paperContexts,
-    fullTextPaperContexts: params.fullTextPaperContexts,
+    selectedPaperContexts: enrichedPaperContexts,
+    fullTextPaperContexts: enrichedFullTextPapers,
     attachments: params.attachments,
     screenshots: params.screenshots,
     model: params.effectiveRequestConfig.model,
@@ -2794,6 +2851,14 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     // Apply auto-summary compression when the history grows long.
     const llmHistory = applyHistoryCompression(conversationKey, rawLLMHistory) ?? rawLLMHistory;
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
+
+    // Create AbortController early so the signal is available during context
+    // planning (e.g. for the retrieval query-rewrite LLM call).
+    const AbortControllerCtor = getAbortController();
+    setCurrentAbortController(
+      AbortControllerCtor ? new AbortControllerCtor() : null,
+    );
+
     const contextPlan = await buildContextPlanForRequest({
       item,
       question,
@@ -2806,6 +2871,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       effectiveRequestConfig,
       pdfModePaperKeys,
       pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
+      signal: currentAbortController?.signal,
       setStatusSafely,
     });
     const combinedContext = contextPlan.combinedContext;
@@ -2832,14 +2898,11 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     });
 
     if (cancelledRequestId >= thisRequestId) {
+      currentAbortController?.abort();
       await markCancelled();
       return;
     }
 
-    const AbortControllerCtor = getAbortController();
-    setCurrentAbortController(
-      AbortControllerCtor ? new AbortControllerCtor() : null,
-    );
     const queueRefresh = createQueuedRefresh(refreshChatSafely);
 
     if (cancelledRequestId >= thisRequestId) {
@@ -2848,7 +2911,10 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       return;
     }
 
-    const allSendImages = [...(images || []), ...(contextPlan.mineruImages || [])];
+    // Text-only models (e.g. DeepSeek) reject image_url content — drop all images.
+    const allSendImages = isTextOnlyModel(effectiveRequestConfig.model || "")
+      ? []
+      : [...(images || []), ...(contextPlan.mineruImages || [])];
     const requestParams = {
       prompt: question,
       context: combinedContext,
@@ -3183,7 +3249,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       let hasContextBadge = false;
 
       const screenshotImages = Array.isArray(msg.screenshotImages)
-        ? msg.screenshotImages.filter((entry) => Boolean(entry))
+        ? msg.screenshotImages.filter(
+            (entry) => Boolean(entry) && !entry.startsWith("data:application/pdf"),
+          )
         : [];
       let screenshotExpanded: HTMLDivElement | null = null;
       let papersExpanded: HTMLDivElement | null = null;

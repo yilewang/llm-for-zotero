@@ -1,15 +1,22 @@
 import { assert } from "chai";
 import {
+  clearCachedCitationPagesForTests,
   decorateAssistantCitationLinks,
   extractInlineCitationMentions,
   extractBlockquoteTailCitation,
   extractStandalonePaperSourceLabel,
   formatSourceLabelWithPage,
+  lookupCachedCitationPage,
   matchAssistantCitationCandidates,
+  rememberCachedCitationPage,
 } from "../src/modules/contextPanel/assistantCitationLinks";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 
 describe("assistantCitationLinks", function () {
+  afterEach(function () {
+    clearCachedCitationPagesForTests();
+  });
+
   it("extracts a standalone paper source label from a citation line", function () {
     const extracted = extractStandalonePaperSourceLabel(
       " (Smith et al., 2024) ",
@@ -245,10 +252,7 @@ describe("assistantCitationLinks", function () {
 
     assert.lengthOf(mentions, 1);
     assert.equal(mentions[0]?.rawText, "(Marks & Goard)");
-    assert.equal(
-      mentions[0]?.extractedCitation.citationLabel,
-      "Marks & Goard",
-    );
+    assert.equal(mentions[0]?.extractedCitation.citationLabel, "Marks & Goard");
   });
 
   it("splits semicolon-grouped inline citations into separate mentions", function () {
@@ -419,7 +423,28 @@ describe("assistantCitationLinks", function () {
 
     assert.lengthOf(matches, 0);
   });
+});
 
+describe("citation page cache", function () {
+  afterEach(function () {
+    clearCachedCitationPagesForTests();
+  });
+
+  it("stores and returns verified page labels by attachment and quote text", function () {
+    const quote =
+      "We choose Hebbian learning, not only for its biological plausibility, but to also allow rapid learning when entering a new environment.";
+    const pageLabel = rememberCachedCitationPage(23, quote, 22, "23");
+
+    assert.equal(pageLabel, "23");
+    assert.equal(lookupCachedCitationPage(23, quote), "23");
+  });
+
+  it("does not store entries for empty quotes", function () {
+    const pageLabel = rememberCachedCitationPage(23, "   ", 22, "23");
+
+    assert.isNull(pageLabel);
+    assert.isNull(lookupCachedCitationPage(23, ""));
+  });
 });
 
 describe("formatSourceLabelWithPage", function () {

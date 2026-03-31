@@ -59,7 +59,7 @@ type SendFlowControllerDeps = {
   renderPdfPagesAsImages: (
     paperContexts: PaperContextRef[],
   ) => Promise<string[]>;
-  getModelPdfSupport: (modelName: string, providerProtocol?: string, authMode?: string, apiBase?: string) => "native" | "upload" | "vision" | "none";
+  getModelPdfSupport: (modelName: string, providerProtocol?: string, authMode?: string, apiBase?: string) => "native" | "upload" | "image_url" | "vision" | "none";
   uploadPdfForProvider: (params: {
     apiBase: string;
     apiKey: string;
@@ -67,6 +67,7 @@ type SendFlowControllerDeps = {
     fileName: string;
   }) => Promise<{ systemMessageContent: string; label: string } | null>;
   resolvePdfBytes: (paperContext: PaperContextRef) => Promise<Uint8Array>;
+  encodeBytesBase64: (bytes: Uint8Array) => string;
   getSelectedFiles: (itemId: number) => ChatAttachment[];
   getSelectedImages: (itemId: number) => string[];
   resolvePromptText: (
@@ -160,11 +161,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     );
     const primarySelectedText = selectedTexts[0] || "";
     const allSelectedPaperContexts = deps.getSelectedPaperContexts(item.id);
-    // Agent mode always uses text/MinerU pipeline — it can fetch PDF pages on demand
-    const isAgent = deps.isAgentMode();
-    const pdfModePaperContexts = isAgent
-      ? []
-      : deps.getPdfModePaperContexts(item, allSelectedPaperContexts);
+    // Agent mode uses text/MinerU pipeline by default, but if the user
+    // explicitly forced PDF mode on a paper, honour that choice.
+    const pdfModePaperContexts = deps.getPdfModePaperContexts(item, allSelectedPaperContexts);
     // Papers in PDF mode are sent as file attachments, not through the text pipeline
     const pdfModeKeySet = new Set(
       pdfModePaperContexts.map((p) => `${p.itemId}:${p.contextItemId}`),
@@ -194,34 +193,72 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           "error",
         );
       } else if (pdfSupport === "upload" && earlyProfile?.apiBase && earlyProfile?.apiKey) {
-        // Qwen/Kimi: upload PDF to provider, inject file reference as system message
-        deps.inputBox.disabled = true;
-        deps.setStatusMessage?.(`Uploading PDF to ${earlyModelName}...`, "ready");
-        for (const pc of pdfModePaperContexts) {
-          try {
-            const result = await deps.uploadPdfForProvider({
-              apiBase: earlyProfile.apiBase,
-              apiKey: earlyProfile.apiKey,
-              pdfBytes: await deps.resolvePdfBytes(pc),
-              fileName: (() => {
-                const raw = pc.attachmentTitle || pc.title || "document";
-                return /\.pdf$/i.test(raw) ? raw : `${raw}.pdf`;
-              })(),
-            });
-            if (result) {
-              pdfUploadSystemMessages.push(result.systemMessageContent);
-              deps.setStatusMessage?.(`${result.label}`, "ready");
+        // Qwen/Kimi: upload PDF to provider, inject file reference as system message.
+        // For Qwen (DashScope), only qwen-long supports PDF upload.
+        const isQwen = (earlyProfile.apiBase || "").toLowerCase().includes("dashscope");
+        const isQwenLong = /^qwen-long(?:[.-]|$)/i.test(earlyModelName);
+        if (isQwen && !isQwenLong) {
+          deps.setStatusMessage?.(
+            `Only qwen-long supports PDF upload on DashScope. Current model: ${earlyModelName}. PDF papers were skipped.`,
+            "error",
+          );
+        } else {
+          deps.inputBox.disabled = true;
+          deps.setStatusMessage?.(`Uploading PDF to ${earlyModelName}...`, "ready");
+          for (const pc of pdfModePaperContexts) {
+            try {
+              const result = await deps.uploadPdfForProvider({
+                apiBase: earlyProfile.apiBase,
+                apiKey: earlyProfile.apiKey,
+                pdfBytes: await deps.resolvePdfBytes(pc),
+                fileName: (() => {
+                  const raw = pc.attachmentTitle || pc.title || "document";
+                  return /\.pdf$/i.test(raw) ? raw : `${raw}.pdf`;
+                })(),
+              });
+              if (result) {
+                pdfUploadSystemMessages.push(result.systemMessageContent);
+                deps.setStatusMessage?.(`${result.label}`, "ready");
+              }
+            } catch (err) {
+              ztoolkit.log("LLM: PDF upload failed for", pc.contextItemId, err);
+              deps.setStatusMessage?.("PDF upload failed. Falling back to text mode.", "error");
             }
-          } catch (err) {
-            ztoolkit.log("LLM: PDF upload failed for", pc.contextItemId, err);
-            deps.setStatusMessage?.("PDF upload failed. Falling back to text mode.", "error");
           }
         }
-      } else if (pdfSupport === "vision") {
+      } else if (pdfSupport === "image_url") {
+        // Tier 3 (third-party): encode full PDF as base64 data URI and send
+        // as image_url — relay services pass this through.
         deps.inputBox.disabled = true;
-        deps.setStatusMessage?.(`Rendering PDF pages as images for ${earlyModelName}...`, "ready");
-        pdfPageImageDataUrls = await deps.renderPdfPagesAsImages(pdfModePaperContexts);
-        deps.setStatusMessage?.(`Sending ${pdfPageImageDataUrls.length} page image(s)...`, "ready");
+        deps.setStatusMessage?.(
+          `PDF upload via third-party provider may not work. Attempting base64 encoding...`,
+          "warning",
+        );
+        for (const pc of pdfModePaperContexts) {
+          try {
+            const pdfBytes = await deps.resolvePdfBytes(pc);
+            const base64 = deps.encodeBytesBase64(pdfBytes);
+            pdfPageImageDataUrls.push(`data:application/pdf;base64,${base64}`);
+          } catch (err) {
+            ztoolkit.log("LLM: PDF base64 encoding failed for", pc.contextItemId, err);
+            // Fall back to vision (render pages as images) for this paper
+            const fallback = await deps.renderPdfPagesAsImages([pc]);
+            pdfPageImageDataUrls.push(...fallback);
+          }
+        }
+        deps.setStatusMessage?.(`Sending ${pdfPageImageDataUrls.length} PDF(s)...`, "ready");
+      } else if (pdfSupport === "vision") {
+        if (deps.isScreenshotUnsupportedModel(earlyModelName)) {
+          deps.setStatusMessage?.(
+            "This model does not support image input. PDF pages will be sent as text.",
+            "warning",
+          );
+        } else {
+          deps.inputBox.disabled = true;
+          deps.setStatusMessage?.(`PDF will be sent as page images (vision mode) for ${earlyModelName}...`, "ready");
+          pdfPageImageDataUrls = await deps.renderPdfPagesAsImages(pdfModePaperContexts);
+          deps.setStatusMessage?.(`Sending ${pdfPageImageDataUrls.length} page image(s)...`, "ready");
+        }
       } else {
         deps.setStatusMessage?.(`Sending native PDF to ${earlyModelName}...`, "ready");
         pdfFileAttachments = await deps.resolvePdfPaperAttachments(pdfModePaperContexts);
@@ -351,6 +388,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         paperContexts: selectedPaperContexts,
         fullTextPaperContexts,
         attachments: selectedFiles.length ? selectedFiles : undefined,
+        pdfUploadSystemMessages: pdfUploadSystemMessages.length
+          ? pdfUploadSystemMessages
+          : undefined,
         targetRuntimeMode: runtimeMode,
         expected: activeEditSession,
         model: selectedProfile?.model,

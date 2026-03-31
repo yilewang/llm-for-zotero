@@ -67,7 +67,7 @@ async function buildMessagesPayload(messages: AgentModelMessage[]) {
         switch (rp.type) {
           case "text": parts.push({ type: "text", text: rp.text }); break;
           case "image": parts.push({ type: "image_url", image_url: { url: `data:${rp.mimeType};base64,${rp.base64}` } }); break;
-          case "pdf": parts.push({ type: "text", text: "[PDF content omitted: unsupported in OpenAI-compatible chat completions]" }); break;
+          case "pdf": parts.push({ type: "image_url", image_url: { url: `data:application/pdf;base64,${rp.base64}` } }); break;
           // file_placeholder: silently dropped (no provider support)
         }
       }

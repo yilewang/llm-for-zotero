@@ -526,20 +526,9 @@ export function createInspectPdfTool(
       }
       return ok(input);
     },
-    shouldRequireConfirmation: async (input, context) => {
-      if (input.operation === "render_pages") {
-        const cached = getCachedPrepared(context.request.conversationKey);
-        return !cached || !samePageSet(input.pages, cached.pageIndexes);
-      }
-      if (input.operation === "attach_file") {
-        return true;
-      }
-      if (input.operation === "capture_active_view") {
-        const cached = getCachedCapture(context.request.conversationKey);
-        if (!cached) return true;
-        const currentPageIndex = pdfPageService.getActivePageIndex();
-        return currentPageIndex !== cached.pageIndex;
-      }
+    shouldRequireConfirmation: async () => {
+      // All inspect_pdf operations are read-only — auto-approve to reduce
+      // friction in agent workflows (figure analysis, evidence retrieval, etc.)
       return false;
     },
     createPendingAction: async (input, context) => {

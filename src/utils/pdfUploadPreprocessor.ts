@@ -85,6 +85,28 @@ function buildMultipartBody(
 
 // ── Qwen (DashScope) ────────────────────────────────────────────────────────
 
+/**
+ * Normalize the Qwen/DashScope API base to the compatible-mode root
+ * so that `/files` is appended to the correct path regardless of which
+ * URL variant the user entered.
+ *
+ * Accepted inputs:
+ *   https://dashscope.aliyuncs.com/compatible-mode/v1
+ *   https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+ *   https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1
+ *   https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+ *
+ * All resolve to: https://dashscope{-intl}.aliyuncs.com/compatible-mode/v1
+ */
+function normalizeQwenFileUploadBase(apiBase: string): string {
+  const raw = apiBase.replace(/\/+$/, "");
+  const match = raw.match(
+    /^(https?:\/\/dashscope(?:-intl)?\.aliyuncs\.com)/i,
+  );
+  if (match) return `${match[1]}/compatible-mode/v1`;
+  return raw;
+}
+
 async function uploadPdfToQwen(
   apiBase: string,
   apiKey: string,
@@ -92,7 +114,7 @@ async function uploadPdfToQwen(
   fileName: string,
 ): Promise<UploadResult> {
   const fetchFn = getFetch();
-  const base = apiBase.replace(/\/+$/, "");
+  const base = normalizeQwenFileUploadBase(apiBase);
 
   ztoolkit.log("LLM: Qwen PDF upload starting", { base, fileName, size: pdfBytes.byteLength });
 

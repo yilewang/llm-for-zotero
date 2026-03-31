@@ -39,6 +39,8 @@ export type PaperContextRef = {
   attachmentTitle?: string;
   firstCreator?: string;
   year?: string;
+  /** Full path to MinerU parsed cache directory (contains full.md + images/). */
+  mineruCacheDir?: string;
 };
 
 /** A Zotero note (item note or standalone) selected as a reference context. */

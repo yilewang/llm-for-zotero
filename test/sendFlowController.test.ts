@@ -39,6 +39,7 @@ describe("sendFlowController", function () {
     let lastSentQuestion = "";
     let lastRuntimeMode = "";
     let lastEditRuntimeMode = "";
+    let lastEditPdfUploadSystemMessages: string[] | undefined;
 
     const deps = {
       body: {} as Element,
@@ -53,6 +54,13 @@ describe("sendFlowController", function () {
       getSelectedTextContextEntries: () => selectedTextContexts,
       getSelectedPaperContexts: () => [selectedPaper],
       getFullTextPaperContexts: () => [selectedPaper],
+      getPdfModePaperContexts: () => [],
+      resolvePdfPaperAttachments: async () => [],
+      renderPdfPagesAsImages: async () => [],
+      getModelPdfSupport: () => "none" as const,
+      uploadPdfForProvider: async () => null,
+      resolvePdfBytes: async () => new Uint8Array(),
+      encodeBytesBase64: () => "",
       getSelectedFiles: () => [selectedFile],
       getSelectedImages: () => ["data:image/png;base64,AAA"],
       resolvePromptText: () => "ask question",
@@ -84,6 +92,10 @@ describe("sendFlowController", function () {
       editLatestUserMessageAndRetry: async (opts: any) => {
         editCalled += 1;
         lastEditRuntimeMode = opts.targetRuntimeMode || "";
+<<<<<<< HEAD
+=======
+        lastEditPdfUploadSystemMessages = opts.pdfUploadSystemMessages;
+>>>>>>> upstream/main
         return "ok" as const;
       },
       sendQuestion: async (opts: any) => {
@@ -116,6 +128,8 @@ describe("sendFlowController", function () {
         persistDraftInputCalls += 1;
         draftValue = inputBox.value;
       },
+      autoLockGlobalChat: () => undefined,
+      autoUnlockGlobalChat: () => undefined,
       setStatusMessage: () => undefined,
       editStaleStatusText: "stale",
       ...overrides,
@@ -142,6 +156,7 @@ describe("sendFlowController", function () {
         lastRuntimeMode,
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
+      getLastEditPdfUploadSystemMessages: () => lastEditPdfUploadSystemMessages,
     };
   }
 
@@ -210,6 +225,50 @@ describe("sendFlowController", function () {
     await controller.doSend();
 
     assert.equal(getLastEditRuntimeMode(), "agent");
+  });
+
+  it("passes provider-uploaded PDF context through latest-turn edit retries", async function () {
+    const {
+      controller,
+      getLastEditPdfUploadSystemMessages,
+    } = createBaseDeps({
+      getSelectedFiles: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "kimi-k2.5",
+        apiBase: "https://api.moonshot.cn/v1",
+        apiKey: "test-key",
+        providerLabel: "Kimi",
+        authMode: "api_key",
+        providerProtocol: "openai_chat_compat",
+      }),
+      getModelPdfSupport: () => "upload" as const,
+      resolvePdfBytes: async () => new Uint8Array([1, 2, 3]),
+      uploadPdfForProvider: async () => ({
+        systemMessageContent: "uploaded pdf context",
+        label: "Uploaded",
+      }),
+      getActiveEditSession: () => ({
+        conversationKey: item.id,
+        userTimestamp: 10,
+        assistantTimestamp: 20,
+      }),
+      getLatestEditablePair: async () => ({
+        conversationKey: item.id,
+        pair: {
+          userMessage: { timestamp: 10 },
+          assistantMessage: { timestamp: 20, streaming: false },
+        },
+      }),
+    });
+
+    await controller.doSend();
+
+    assert.deepEqual(getLastEditPdfUploadSystemMessages(), [
+      "uploaded pdf context",
+    ]);
   });
 
   it("persists the cleared draft before preview sync in normal send flow", async function () {

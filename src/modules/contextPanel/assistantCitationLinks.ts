@@ -171,6 +171,73 @@ const citationPageLookupTasks = new Map<
   } | null>
 >();
 
+function normalizeCachedCitationPageLabel(
+  pageIndex: number,
+  pageLabel?: string,
+): string | null {
+  const normalizedPageIndex = Number.isFinite(pageIndex)
+    ? Math.floor(pageIndex)
+    : NaN;
+  if (!Number.isFinite(normalizedPageIndex) || normalizedPageIndex < 0) {
+    return null;
+  }
+  const normalizedPageLabel = sanitizeText(pageLabel || "").trim();
+  return normalizedPageLabel || `${normalizedPageIndex + 1}`;
+}
+
+export function rememberCachedCitationPage(
+  contextItemId: number,
+  quoteText: string,
+  pageIndex: number,
+  pageLabel?: string,
+): string | null {
+  const normalizedContextItemId = Number.isFinite(contextItemId)
+    ? Math.floor(contextItemId)
+    : NaN;
+  if (
+    !Number.isFinite(normalizedContextItemId) ||
+    normalizedContextItemId <= 0
+  ) {
+    return null;
+  }
+  const normalizedQuoteText = sanitizeText(quoteText || "").trim();
+  if (!normalizedQuoteText) return null;
+  const normalizedPageLabel = normalizeCachedCitationPageLabel(
+    pageIndex,
+    pageLabel,
+  );
+  if (!normalizedPageLabel) return null;
+  citationPageCache.set(
+    buildCitationCacheKey(normalizedContextItemId, normalizedQuoteText),
+    {
+      pageIndex: Math.floor(pageIndex),
+      pageLabel: normalizedPageLabel,
+    },
+  );
+  return normalizedPageLabel;
+}
+
+export function clearCachedCitationPagesForTests(): void {
+  citationPageCache.clear();
+  citationPageLookupTasks.clear();
+}
+
+/**
+ * Look up the citation page cache for a corrected page label.
+ * Used by note saving to replace the LLM's claimed page with the
+ * actual page verified by FindController.
+ */
+export function lookupCachedCitationPage(
+  contextItemId: number,
+  quoteText: string,
+): string | null {
+  const key = buildCitationCacheKey(
+    contextItemId,
+    sanitizeText(quoteText || "").trim(),
+  );
+  return citationPageCache.get(key)?.pageLabel ?? null;
+}
+
 export function formatSourceLabelWithPage(
   baseSourceLabel: string,
   pageLabel: string,
@@ -207,9 +274,7 @@ function formatCitationChipLabel(
 ): string {
   const cleanCitation = stripCitationKeyFromLabel(displayCitationLabel);
   const cleanPage = sanitizeText(pageLabel || "").trim();
-  return cleanPage
-    ? `${cleanCitation}, page ${cleanPage}`
-    : cleanCitation;
+  return cleanPage ? `${cleanCitation}, page ${cleanPage}` : cleanCitation;
 }
 
 function setCitationButtonLabel(
@@ -228,10 +293,17 @@ function setCitationButtonLabel(
     const rawText = textSpan.dataset.rawText;
     if (rawText) {
       if (pageLabel) {
-        if (rawText.endsWith(")")) {
-          textSpan.textContent = rawText.replace(/\)$/, `, page ${pageLabel})`);
+        // Strip any existing "page X" from the raw text before appending the
+        // corrected page — the LLM may have written "page 1" which we're now
+        // correcting to the actual page found by FindController.
+        const stripped = rawText.replace(/,?\s*page\s+[^,)]+/i, "").trim();
+        if (stripped.endsWith(")")) {
+          textSpan.textContent = stripped.replace(
+            /\)$/,
+            `, page ${pageLabel})`,
+          );
         } else {
-          textSpan.textContent = `${rawText}, page ${pageLabel}`;
+          textSpan.textContent = `${stripped}, page ${pageLabel}`;
         }
       } else {
         textSpan.textContent = rawText;
@@ -1025,10 +1097,6 @@ async function attemptCitationParagraphJump(params: {
   pageIndex: number;
   pageLabel: string;
 }): Promise<ExactQuoteJumpResult> {
-  // Try the FindController first WITHOUT navigating to the page first.
-  // Navigating before the search causes Zotero's reader to take longer to
-  // populate pageMatches, making the FindController appear to return no matches.
-  // FindController searches all pages and navigates + scrolls by itself on success.
   const paragraphJump = await scrollToExactQuoteInReader(
     params.reader,
     params.quoteText,
@@ -1055,9 +1123,31 @@ async function attemptCitationParagraphJump(params: {
           pageIndex: params.pageIndex,
           pageLabel: params.pageLabel,
         });
-    await flashPageInLivePdfReader(readerForFlash || params.reader, params.pageIndex);
+    await flashPageInLivePdfReader(
+      readerForFlash || params.reader,
+      params.pageIndex,
+    );
   }
   return paragraphJump;
+}
+
+/**
+ * Resolve the effective page label after a paragraph jump.  If
+ * FindController landed on a different page than the text search
+ * predicted, use FindController's result — it is authoritative.
+ */
+function resolveJumpedPageLabel(
+  reader: any,
+  paragraphJump: ExactQuoteJumpResult,
+  fallbackPageLabel: string,
+): string {
+  if (paragraphJump.matched && paragraphJump.matchedPageIndex !== undefined) {
+    return (
+      getPageLabelForIndex(reader, paragraphJump.matchedPageIndex) ||
+      `${paragraphJump.matchedPageIndex + 1}`
+    );
+  }
+  return fallbackPageLabel;
 }
 
 async function navigateToCachedCitationPage(
@@ -1074,30 +1164,12 @@ async function navigateToCachedCitationPage(
       ? cached.pageLabel.trim()
       : `${targetPageIndex + 1}`;
 
-  // Open without a specific page so FindController is not affected by a
-  // recent navigation when it tries to scroll to the exact paragraph.
   const reader = await openReaderForItem(contextItemId);
   if (!reader) return null;
 
-  try {
-    const verified = await locateQuoteInLivePdfReader(reader, quoteText);
-    if (verified.status === "resolved" && verified.computedPageIndex !== null) {
-      const verifiedPageIndex = Math.floor(verified.computedPageIndex);
-      if (verifiedPageIndex >= 0 && verifiedPageIndex !== targetPageIndex) {
-        targetPageIndex = verifiedPageIndex;
-        targetPageLabel =
-          getPageLabelForIndex(reader, verifiedPageIndex) ||
-          `${verifiedPageIndex + 1}`;
-        citationPageCache.set(cacheKey, {
-          pageIndex: verifiedPageIndex,
-          pageLabel: targetPageLabel,
-        });
-      }
-    }
-  } catch (_err) {
-    void _err;
-  }
-
+  // Skip text-search re-verification — it can return the wrong page (short
+  // prefix false-match).  FindController in attemptCitationParagraphJump is
+  // authoritative and will correct the page via matchedPageIndex.
   const paragraphJump = await attemptCitationParagraphJump({
     reader,
     contextItemId,
@@ -1184,21 +1256,29 @@ async function locateCitationPageWithPdfWorker(
       );
       if (!cleanQuote) return null;
 
-      const raw = locateQuoteByRawPrefixInPages(pages, cleanQuote, null);
-      if (raw?.status === "resolved" && raw.computedPageIndex !== null) {
-        const pageIndex = Math.floor(raw.computedPageIndex);
-        return { pageIndex, pageLabel: `${pageIndex + 1}` };
-      }
-
       const exact = locateQuoteInPageTexts(pages, cleanQuote, null);
       if (exact.status === "resolved" && exact.computedPageIndex !== null) {
         const pageIndex = Math.floor(exact.computedPageIndex);
         return { pageIndex, pageLabel: `${pageIndex + 1}` };
       }
 
+      const raw = locateQuoteByRawPrefixInPages(pages, cleanQuote, null);
+      if (raw?.status === "resolved" && raw.computedPageIndex !== null) {
+        const pageIndex = Math.floor(raw.computedPageIndex);
+        return { pageIndex, pageLabel: `${pageIndex + 1}` };
+      }
+
       const segments = splitQuoteAtEllipsis(cleanQuote);
       if (segments.length >= 2) {
         for (const segment of segments) {
+          const segmentExact = locateQuoteInPageTexts(pages, segment, null);
+          if (
+            segmentExact.status === "resolved" &&
+            segmentExact.computedPageIndex !== null
+          ) {
+            const pageIndex = Math.floor(segmentExact.computedPageIndex);
+            return { pageIndex, pageLabel: `${pageIndex + 1}` };
+          }
           const segmentRaw = locateQuoteByRawPrefixInPages(
             pages,
             segment,
@@ -1209,14 +1289,6 @@ async function locateCitationPageWithPdfWorker(
             segmentRaw.computedPageIndex !== null
           ) {
             const pageIndex = Math.floor(segmentRaw.computedPageIndex);
-            return { pageIndex, pageLabel: `${pageIndex + 1}` };
-          }
-          const segmentExact = locateQuoteInPageTexts(pages, segment, null);
-          if (
-            segmentExact.status === "resolved" &&
-            segmentExact.computedPageIndex !== null
-          ) {
-            const pageIndex = Math.floor(segmentExact.computedPageIndex);
             return { pageIndex, pageLabel: `${pageIndex + 1}` };
           }
         }
@@ -1258,6 +1330,30 @@ function updateCitationButtonPage(
   if (!button || !pageLabel) return;
   if (!button.isConnected) return;
   setCitationButtonLabel(button, displayCitationLabel, pageLabel);
+  // Direct DOM fallback: if setCitationButtonLabel didn't update the text
+  // (e.g. DOM structure mismatch), force-update the text span directly.
+  try {
+    const container = button.parentElement;
+    const textSpan = container?.querySelector(
+      ".llm-citation-text",
+    ) as HTMLElement | null;
+    if (textSpan) {
+      const current = textSpan.textContent || "";
+      if (current && !current.includes(`page ${pageLabel}`)) {
+        const stripped = current.replace(/,?\s*page\s+\S+/i, "").trim();
+        if (stripped.endsWith(")")) {
+          textSpan.textContent = stripped.replace(
+            /\)$/,
+            `, page ${pageLabel})`,
+          );
+        } else {
+          textSpan.textContent = `${stripped}, page ${pageLabel}`;
+        }
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
 
   const syncKey = sanitizeText(button.dataset.citationSyncKey || "").trim();
   if (!syncKey) return;
@@ -1320,35 +1416,6 @@ async function resolvePageForCitationButton(params: {
     );
     if (!orderedCandidates.length) return;
 
-    // Fast path: if the citation carried an explicit page number and we can
-    // match it to a high-confidence candidate, trust the number directly.
-    // This MUST run before the cache check so stale rank-0 entries (e.g.
-    // whatever PDF is currently open in the reader) cannot shadow the result.
-    const eagerExplicitPage = sanitizeText(
-      params.button.dataset.citationPageLabel || "",
-    ).trim();
-    if (eagerExplicitPage) {
-      const bestRanked = orderedCandidates.find(
-        (c) => rankCandidateForCitation(params.extractedCitation, c) > 0,
-      );
-      if (bestRanked) {
-        const activeReader = getActiveReaderForSelectedTab();
-        const pageIndex = activeReader
-          ? resolvePageIndexForLabel(activeReader, eagerExplicitPage)
-          : Math.max(0, parseInt(eagerExplicitPage, 10) - 1);
-        citationPageCache.set(
-          buildCitationCacheKey(bestRanked.contextItemId, normalizedQuoteText),
-          { pageIndex, pageLabel: eagerExplicitPage },
-        );
-        updateCitationButtonPage(
-          params.button,
-          params.displayCitationLabel,
-          eagerExplicitPage,
-        );
-        return;
-      }
-    }
-
     // No quote snippet -> nothing to resolve eagerly at page level.
     if (!normalizedQuoteText) return;
 
@@ -1393,15 +1460,12 @@ async function resolvePageForCitationButton(params: {
         if (result.status === "resolved" && result.computedPageIndex !== null) {
           const pageIndex = Math.floor(result.computedPageIndex);
           const pageLabel =
-            getPageLabelForIndex(activeReader, pageIndex) ||
-            `${pageIndex + 1}`;
-          citationPageCache.set(
-            buildCitationCacheKey(
+            rememberCachedCitationPage(
               matchingCandidate.contextItemId,
               normalizedQuoteText,
-            ),
-            { pageIndex, pageLabel },
-          );
+              pageIndex,
+              getPageLabelForIndex(activeReader, pageIndex),
+            ) || `${pageIndex + 1}`;
           updateCitationButtonPage(
             params.button,
             params.displayCitationLabel,
@@ -1423,14 +1487,17 @@ async function resolvePageForCitationButton(params: {
         normalizedQuoteText,
       );
       if (!resolved) continue;
-      citationPageCache.set(
-        buildCitationCacheKey(candidate.contextItemId, normalizedQuoteText),
-        { pageIndex: resolved.pageIndex, pageLabel: resolved.pageLabel },
-      );
+      const pageLabel =
+        rememberCachedCitationPage(
+          candidate.contextItemId,
+          normalizedQuoteText,
+          resolved.pageIndex,
+          resolved.pageLabel,
+        ) || resolved.pageLabel;
       updateCitationButtonPage(
         params.button,
         params.displayCitationLabel,
-        resolved.pageLabel,
+        pageLabel,
       );
       return;
     }
@@ -1625,12 +1692,33 @@ async function buildOrderedCitationCandidates(
     searchedCandidates,
     dynamicFallbackCandidates,
   );
+  // Track which candidates came from conversation context so they receive a
+  // ranking boost.  This handles cross-language author name mismatches (e.g.
+  // Chinese 王一乐 → LLM writes "Wang") where the correct context paper would
+  // otherwise be outranked by an unrelated library result with a matching
+  // romanized name.
+  const staticKeySet = new Set(
+    staticCandidates.map(
+      (c) =>
+        `${Math.floor(c.paperContext.itemId)}:${Math.floor(c.contextItemId)}`,
+    ),
+  );
   const activeReaderItemId = getReaderItemId(getActiveReaderForSelectedTab());
   return effectiveCandidates.slice().sort((left, right) => {
-    const rankDelta =
-      rankCandidateForCitation(extractedCitation, right) -
-      rankCandidateForCitation(extractedCitation, left);
+    const leftKey = `${Math.floor(left.paperContext.itemId)}:${Math.floor(left.contextItemId)}`;
+    const rightKey = `${Math.floor(right.paperContext.itemId)}:${Math.floor(right.contextItemId)}`;
+    const leftIsContext = staticKeySet.has(leftKey);
+    const rightIsContext = staticKeySet.has(rightKey);
+    const leftRank =
+      rankCandidateForCitation(extractedCitation, left) +
+      (leftIsContext ? 1 : 0);
+    const rightRank =
+      rankCandidateForCitation(extractedCitation, right) +
+      (rightIsContext ? 1 : 0);
+    const rankDelta = rightRank - leftRank;
     if (rankDelta !== 0) return rankDelta;
+    const contextDelta = Number(rightIsContext) - Number(leftIsContext);
+    if (contextDelta !== 0) return contextDelta;
     const activeDelta =
       Number(right.contextItemId === activeReaderItemId) -
       Number(left.contextItemId === activeReaderItemId);
@@ -1695,11 +1783,57 @@ async function resolveAndNavigateAssistantCitation(params: {
       return;
     }
 
-    // Fast path: if the citation carried an explicit page number (e.g.
-    // "(Carrasco et al., 2026, page 41)") AND we have a high-confidence label
-    // match (rank > 0), navigate directly to that page before attempting an
-    // exact paragraph jump with FindController. This avoids false-positive
-    // full-document page searches from an unrelated active PDF.
+    // Cache check — skip rank-0 candidates to avoid stale entries from
+    // whatever PDF happens to be open winning over the actual cited paper.
+    for (const candidate of orderedCandidates) {
+      if (rankCandidateForCitation(extractedCitation, candidate) === 0)
+        continue;
+      const cached = await navigateToCachedCitationPage(
+        candidate.contextItemId,
+        normalizedQuoteText,
+        params.displayCitationLabel,
+      );
+      if (cached) {
+        // Use FindController's actual page if it landed somewhere different
+        // than the cached (possibly wrong) page.
+        const reader = getActiveReaderForSelectedTab();
+        const effectiveLabel = reader
+          ? resolveJumpedPageLabel(
+              reader,
+              cached.paragraphJump,
+              cached.pageLabel,
+            )
+          : cached.pageLabel;
+        rememberCachedCitationPage(
+          candidate.contextItemId,
+          normalizedQuoteText,
+          cached.paragraphJump.matchedPageIndex ?? cached.pageIndex,
+          effectiveLabel,
+        );
+        updateCitationButtonPage(
+          params.button,
+          params.displayCitationLabel,
+          effectiveLabel,
+        );
+        if (status) {
+          setStatus(
+            status,
+            cached.paragraphJump.matched
+              ? buildParagraphJumpSuccessStatus(effectiveLabel)
+              : buildParagraphJumpFailureStatus(
+                  effectiveLabel,
+                  cached.paragraphJump,
+                ),
+            "ready",
+          );
+        }
+        return;
+      }
+    }
+
+    // Use the explicit page as a navigation hint only when we do not already
+    // have a verified cached page for this quote. The cache stores the
+    // authoritative page after eager resolution or a FindController jump.
     const explicitPageLabel = sanitizeText(
       params.button.dataset.citationPageLabel || "",
     ).trim();
@@ -1719,60 +1853,33 @@ async function resolveAndNavigateAssistantCitation(params: {
             pageIndex,
             pageLabel: explicitPageLabel,
           });
+          const jumpedLabel = resolveJumpedPageLabel(
+            target,
+            paragraphJump,
+            explicitPageLabel,
+          );
+          rememberCachedCitationPage(
+            bestRanked.contextItemId,
+            normalizedQuoteText,
+            paragraphJump.matchedPageIndex ?? pageIndex,
+            jumpedLabel,
+          );
           updateCitationButtonPage(
             params.button,
             params.displayCitationLabel,
-            explicitPageLabel,
+            jumpedLabel,
           );
           if (status) {
             setStatus(
               status,
               paragraphJump.matched
-                ? buildParagraphJumpSuccessStatus(explicitPageLabel)
-                : buildParagraphJumpFailureStatus(
-                    explicitPageLabel,
-                    paragraphJump,
-                  ),
+                ? buildParagraphJumpSuccessStatus(jumpedLabel)
+                : buildParagraphJumpFailureStatus(jumpedLabel, paragraphJump),
               "ready",
             );
           }
           return;
         }
-      }
-    }
-
-    for (const candidate of orderedCandidates) {
-      const cached = await navigateToCachedCitationPage(
-        candidate.contextItemId,
-        normalizedQuoteText,
-        params.displayCitationLabel,
-      );
-      if (cached) {
-        const cacheKey = buildCitationCacheKey(
-          candidate.contextItemId,
-          normalizedQuoteText,
-        );
-        const cachedEntry = citationPageCache.get(cacheKey);
-        if (cachedEntry?.pageLabel) {
-          updateCitationButtonPage(
-            params.button,
-            params.displayCitationLabel,
-            cachedEntry.pageLabel,
-          );
-        }
-        if (status) {
-          setStatus(
-            status,
-            cached.paragraphJump.matched
-              ? buildParagraphJumpSuccessStatus(cached.pageLabel)
-              : buildParagraphJumpFailureStatus(
-                  cached.pageLabel,
-                  cached.paragraphJump,
-                ),
-            "ready",
-          );
-        }
-        return;
       }
     }
 
@@ -1791,8 +1898,7 @@ async function resolveAndNavigateAssistantCitation(params: {
         if (result.status === "resolved" && result.computedPageIndex !== null) {
           const pageIndex = Math.floor(result.computedPageIndex);
           const pageLabel =
-            getPageLabelForIndex(activeReader, pageIndex) ||
-            `${pageIndex + 1}`;
+            getPageLabelForIndex(activeReader, pageIndex) || `${pageIndex + 1}`;
           const paragraphJump = await attemptCitationParagraphJump({
             reader: activeReader,
             contextItemId: getReaderItemId(activeReader),
@@ -1801,17 +1907,28 @@ async function resolveAndNavigateAssistantCitation(params: {
             pageIndex,
             pageLabel,
           });
+          const jumpedLabel = resolveJumpedPageLabel(
+            activeReader,
+            paragraphJump,
+            pageLabel,
+          );
+          rememberCachedCitationPage(
+            getReaderItemId(activeReader),
+            normalizedQuoteText,
+            paragraphJump.matchedPageIndex ?? pageIndex,
+            jumpedLabel,
+          );
           updateCitationButtonPage(
             params.button,
             params.displayCitationLabel,
-            pageLabel,
+            jumpedLabel,
           );
           if (status) {
             setStatus(
               status,
               paragraphJump.matched
-                ? buildParagraphJumpSuccessStatus(pageLabel)
-                : buildParagraphJumpFailureStatus(pageLabel, paragraphJump),
+                ? buildParagraphJumpSuccessStatus(jumpedLabel)
+                : buildParagraphJumpFailureStatus(jumpedLabel, paragraphJump),
               "ready",
             );
           }
@@ -1827,54 +1944,75 @@ async function resolveAndNavigateAssistantCitation(params: {
       }
     }
 
-    for (const candidate of orderedCandidates) {
-      const reader = await openReaderForItem(candidate.contextItemId);
-      if (!reader) {
-        lastReason = "Could not open the cited paper.";
-        continue;
-      }
-      const result = await locateQuoteInLivePdfReader(
-        reader,
-        normalizedQuoteText,
-      );
-      if (result.status === "resolved" && result.computedPageIndex !== null) {
-        const pageIndex = Math.floor(result.computedPageIndex);
-        const pageLabel =
-          getPageLabelForIndex(reader, pageIndex) || `${pageIndex + 1}`;
-        citationPageCache.set(
-          buildCitationCacheKey(candidate.contextItemId, normalizedQuoteText),
-          { pageIndex, pageLabel },
-        );
-        const paragraphJump = await attemptCitationParagraphJump({
-          reader,
-          contextItemId: candidate.contextItemId,
-          displayCitationLabel: params.displayCitationLabel,
-          quoteText: normalizedQuoteText,
-          pageIndex,
-          pageLabel,
-        });
-        updateCitationButtonPage(
-          params.button,
-          params.displayCitationLabel,
-          pageLabel,
-        );
-        if (status) {
-          setStatus(
-            status,
-            paragraphJump.matched
-              ? buildParagraphJumpSuccessStatus(pageLabel)
-              : buildParagraphJumpFailureStatus(pageLabel, paragraphJump),
-            "ready",
-          );
+    // Two-pass search: first try rank > 0 candidates (high confidence), then
+    // fall back to rank-0 (unrelated PDFs) only if no match is found.  This
+    // prevents the wrong paper from being opened and searched when a better
+    // candidate exists.
+    for (const pass of [1, 2] as const) {
+      for (const candidate of orderedCandidates) {
+        const rank = rankCandidateForCitation(extractedCitation, candidate);
+        if (pass === 1 && rank === 0) continue;
+        if (pass === 2 && rank !== 0) continue;
+        const reader = await openReaderForItem(candidate.contextItemId);
+        if (!reader) {
+          lastReason = "Could not open the cited paper.";
+          continue;
         }
-        return;
-      }
-      if (result.reason) {
-        lastReason = result.reason;
-      } else if (result.status === "ambiguous") {
-        lastReason = "The cited quote matched multiple pages.";
-      } else if (result.status === "not-found") {
-        lastReason = "The cited quote was not found in the paper text.";
+        const result = await locateQuoteInLivePdfReader(
+          reader,
+          normalizedQuoteText,
+        );
+        if (result.status === "resolved" && result.computedPageIndex !== null) {
+          const pageIndex = Math.floor(result.computedPageIndex);
+          const pageLabel =
+            rememberCachedCitationPage(
+              candidate.contextItemId,
+              normalizedQuoteText,
+              pageIndex,
+              getPageLabelForIndex(reader, pageIndex),
+            ) || `${pageIndex + 1}`;
+          const paragraphJump = await attemptCitationParagraphJump({
+            reader,
+            contextItemId: candidate.contextItemId,
+            displayCitationLabel: params.displayCitationLabel,
+            quoteText: normalizedQuoteText,
+            pageIndex,
+            pageLabel,
+          });
+          const jumpedLabel = resolveJumpedPageLabel(
+            reader,
+            paragraphJump,
+            pageLabel,
+          );
+          rememberCachedCitationPage(
+            candidate.contextItemId,
+            normalizedQuoteText,
+            paragraphJump.matchedPageIndex ?? pageIndex,
+            jumpedLabel,
+          );
+          updateCitationButtonPage(
+            params.button,
+            params.displayCitationLabel,
+            jumpedLabel,
+          );
+          if (status) {
+            setStatus(
+              status,
+              paragraphJump.matched
+                ? buildParagraphJumpSuccessStatus(jumpedLabel)
+                : buildParagraphJumpFailureStatus(jumpedLabel, paragraphJump),
+              "ready",
+            );
+          }
+          return;
+        }
+        if (result.reason) {
+          lastReason = result.reason;
+        } else if (result.status === "ambiguous") {
+          lastReason = "The cited quote matched multiple pages.";
+        } else if (result.status === "not-found") {
+          lastReason = "The cited quote was not found in the paper text.";
+        }
       }
     }
 
@@ -1887,6 +2025,60 @@ async function resolveAndNavigateAssistantCitation(params: {
   } finally {
     params.button.disabled = false;
     params.button.dataset.loading = "false";
+    // After any citation click, refresh all other citation buttons in the
+    // panel so their page labels reflect the latest cache (which may have
+    // been corrected by FindController during this click).
+    refreshAllCitationButtonPages(params.body, params.panelItem);
+  }
+}
+
+/**
+ * Re-resolve page labels for all citation buttons currently in the DOM.
+ * Buttons whose quote text already has a cache entry get the cached
+ * (FindController-verified) page; others are left unchanged.
+ */
+function refreshAllCitationButtonPages(
+  body: Element,
+  panelItem: Zotero.Item,
+): void {
+  try {
+    const doc = body.ownerDocument;
+    if (!doc) return;
+    const buttons = doc.querySelectorAll(
+      "button.llm-citation-icon",
+    ) as NodeListOf<HTMLButtonElement>;
+    for (const button of buttons) {
+      if (!button.isConnected) continue;
+      const syncKey = sanitizeText(button.dataset.citationSyncKey || "").trim();
+      if (!syncKey) continue;
+      // The sync key is "normalizedSourceLabel⏟normalizedQuote".
+      // Extract the quote portion to look up the cache.
+      const sepIdx = syncKey.indexOf("\u241f");
+      if (sepIdx < 0) continue;
+      const quoteKey = syncKey.slice(sepIdx + 1);
+      if (!quoteKey) continue;
+      // Try all candidates to find a cached page
+      const activeReader = getActiveReaderForSelectedTab();
+      const readerItemId = getReaderItemId(activeReader);
+      if (!readerItemId) continue;
+      const cacheKey = `${Math.floor(readerItemId)}\u241f${quoteKey}`;
+      const cached = citationPageCache.get(cacheKey);
+      if (!cached?.pageLabel) continue;
+      // Read the current display label from the button text
+      const textSpan = button
+        .closest(".llm-citation-row, .llm-citation-inline-wrap")
+        ?.querySelector(".llm-citation-text");
+      if (!textSpan) continue;
+      const currentText = sanitizeText(textSpan.textContent || "").trim();
+      if (!currentText) continue;
+      // Strip existing "page X" suffix to get the base citation label
+      const baseLabel = currentText.replace(/,\s*page\s+\S+$/i, "").trim();
+      if (baseLabel) {
+        setCitationButtonLabel(button, baseLabel, cached.pageLabel);
+      }
+    }
+  } catch {
+    // Best-effort refresh — don't crash if DOM structure is unexpected
   }
 }
 
@@ -1913,8 +2105,8 @@ function resolveMatchingCandidatesForExtractedCitation(
       candidate.normalizedCitationLabel ===
         extractedCitation.normalizedCitationLabel,
   );
-  // Fuzzy author-key fallback: 
-  // If the citation has a year (e.g. "Marks & Goard, 2021"), we fuzzy match the author 
+  // Fuzzy author-key fallback:
+  // If the citation has a year (e.g. "Marks & Goard, 2021"), we fuzzy match the author
   // but *require* the year to match exactly to prevent linking to the wrong paper.
   // If no year is present, we allow any paper matching the author.
   if (!out.length && candidates.length && !isGroupedCitation) {
@@ -2145,7 +2337,9 @@ function decorateInlineCitationNodes(params: {
       } else {
         // No match → keep original text as-is (no icon)
         frag.appendChild(
-          params.ownerDoc.createTextNode(text.slice(mention.start, mention.end)),
+          params.ownerDoc.createTextNode(
+            text.slice(mention.start, mention.end),
+          ),
         );
       }
       cursor = mention.end;
@@ -2203,7 +2397,9 @@ export function decorateAssistantCitationLinks(params: {
     let quoteText = sanitizeText(blockquote.textContent || "").trim();
     if (!quoteText) continue;
     let citationEl = getNextElementSibling(blockquote);
-    const tailMatch = extractBlockquoteTailCitation(blockquote.textContent || "");
+    const tailMatch = extractBlockquoteTailCitation(
+      blockquote.textContent || "",
+    );
 
     // Primary attempt: entire element is a standalone citation label.
     let extractedCitation = citationEl

@@ -22,15 +22,18 @@ async function readFile(
 ): Promise<string> {
   const IOUtils = (globalThis as any).IOUtils;
   if (IOUtils?.read) {
-    const bytes: Uint8Array = await IOUtils.read(filePath);
+    const data = await IOUtils.read(filePath);
+    // IOUtils.read may return ArrayBuffer instead of Uint8Array depending
+    // on the Gecko version — coerce to Uint8Array for reliable decoding.
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
     return new TextDecoder(encoding).decode(bytes);
   }
   const OSFile = (globalThis as any).OS?.File;
   if (OSFile?.read) {
     const result = await OSFile.read(filePath, { encoding });
     if (typeof result === "string") return result;
-    if (result instanceof Uint8Array) return new TextDecoder(encoding).decode(result);
-    return String(result);
+    const bytes = result instanceof Uint8Array ? result : new Uint8Array(result);
+    return new TextDecoder(encoding).decode(bytes);
   }
   throw new Error("File I/O is not available in this Zotero environment");
 }
@@ -209,7 +212,10 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
       };
     },
 
-    shouldRequireConfirmation(_input, context) {
+    shouldRequireConfirmation(input, context) {
+      // Read operations are safe — auto-approve
+      if (input.action === "read") return false;
+      // Write operations require confirmation unless user opted into auto-approve
       return !isCommandAutoApproved(context.request.conversationKey);
     },
 

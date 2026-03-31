@@ -47,7 +47,7 @@ import {
   getDefaultProviderGroup,
   type ModelProviderAuthMode,
 } from "./modelProviders";
-import { isGrokApiBase } from "./providerPresets";
+import { isGrokApiBase, providerSupportsResponsesEndpoint } from "./providerPresets";
 import type { ProviderProtocol } from "./providerProtocol";
 import {
   buildProviderTransportHeaders,
@@ -279,7 +279,9 @@ function getApiConfig(overrides?: {
     authMode,
     model,
     embeddingModel,
-    systemPrompt: customSystemPrompt || DEFAULT_SYSTEM_PROMPT,
+    systemPrompt: customSystemPrompt
+      ? `${DEFAULT_SYSTEM_PROMPT}\n\n${customSystemPrompt}`
+      : DEFAULT_SYSTEM_PROMPT,
     providerProtocol,
   };
 }
@@ -1398,7 +1400,9 @@ export function estimateAvailableContextBudget(params: {
       image: params.image,
       images: params.images,
     },
-    params.systemPrompt || DEFAULT_SYSTEM_PROMPT,
+    params.systemPrompt
+      ? `${DEFAULT_SYSTEM_PROMPT}\n\n${params.systemPrompt}`
+      : DEFAULT_SYSTEM_PROMPT,
   );
   const baseInputTokens = estimateConversationTokens(baseMessages);
   const contextBudgetTokens = Math.max(
@@ -1741,16 +1745,15 @@ function buildResponsesInput(
 ) {
   const preserveSystemMessages = options?.preserveSystemMessages === true;
   const instructionsParts: string[] = [];
+  type ResponsesContentPart =
+    | { type: "input_text"; text: string }
+    | { type: "input_image"; image_url: string; detail?: string }
+    | { type: "input_file"; file_id: string }
+    | { type: "input_file"; filename: string; file_data: string };
   const input: Array<{
     type: "message";
     role: "system" | "user" | "assistant";
-    content:
-      | string
-      | Array<
-          | { type: "input_text"; text: string }
-          | { type: "input_image"; image_url: string; detail?: string }
-          | { type: "input_file"; file_id: string }
-        >;
+    content: string | ResponsesContentPart[];
   }> = [];
   const normalizedFileIds = Array.isArray(responseFileIds)
     ? responseFileIds
@@ -1773,10 +1776,9 @@ function buildResponsesInput(
 
     if (typeof message.content === "string") {
       if (appendFilesToMessage) {
-        const contentParts: Array<
-          | { type: "input_text"; text: string }
-          | { type: "input_file"; file_id: string }
-        > = [{ type: "input_text", text: message.content }];
+        const contentParts: ResponsesContentPart[] = [
+          { type: "input_text", text: message.content },
+        ];
         for (const fileId of normalizedFileIds) {
           contentParts.push({
             type: "input_file",
@@ -1798,17 +1800,26 @@ function buildResponsesInput(
       continue;
     }
 
-    const contentParts: Array<
-      | { type: "input_text"; text: string }
-      | { type: "input_image"; image_url: string; detail?: string }
-      | { type: "input_file"; file_id: string }
-    > = message.content.map((part) => {
+    let pdfCounter = 0;
+    const contentParts: ResponsesContentPart[] = message.content.map((part) => {
       if (part.type === "text") {
         return { type: "input_text" as const, text: part.text };
       }
+      const url = part.image_url.url;
+      // PDF data URIs should be sent as inline input_file, not input_image.
+      // This enables third-party responses_api providers to receive PDFs
+      // correctly even when /v1/files upload is not available.
+      if (url.startsWith("data:application/pdf;base64,")) {
+        pdfCounter += 1;
+        return {
+          type: "input_file" as const,
+          filename: `document${pdfCounter > 1 ? `-${pdfCounter}` : ""}.pdf`,
+          file_data: url,
+        };
+      }
       return {
         type: "input_image" as const,
-        image_url: part.image_url.url,
+        image_url: url,
         detail: part.image_url.detail,
       };
     });
@@ -2751,7 +2762,10 @@ export async function callLLM(params: ChatParams): Promise<string> {
     });
   }
   const useResponses = providerProtocol === "responses_api" || providerProtocol === "codex_responses";
-  const responseFileIds = useResponses
+  // Only upload files via /v1/files for providers that actually host that endpoint.
+  // Third-party relays using responses_api get inline base64 instead (via buildResponsesInput).
+  const canUploadFiles = useResponses && providerSupportsResponsesEndpoint(apiBase);
+  const responseFileIds = canUploadFiles
     ? await uploadFilesForResponses({
         apiBase,
         apiKey: auth.token,
@@ -2842,7 +2856,10 @@ export async function callLLMStream(
     );
   }
   const useResponses = providerProtocol === "responses_api" || providerProtocol === "codex_responses";
-  const responseFileIds = useResponses
+  // Only upload files via /v1/files for providers that actually host that endpoint.
+  // Third-party relays using responses_api get inline base64 instead (via buildResponsesInput).
+  const canUploadFiles = useResponses && providerSupportsResponsesEndpoint(apiBase);
+  const responseFileIds = canUploadFiles
     ? await uploadFilesForResponses({
         apiBase,
         apiKey: auth.token,

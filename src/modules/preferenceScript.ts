@@ -2,6 +2,7 @@ import { config } from "../../package.json";
 import { t } from "../utils/i18n";
 import {
   DEFAULT_MAX_TOKENS,
+  DEFAULT_SYSTEM_PROMPT,
   DEFAULT_TEMPERATURE,
 } from "../utils/llmDefaults";
 import { HTML_NS } from "../utils/domHelpers";
@@ -429,7 +430,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const normalizeWs = (s: string): string => s.replace(/\s+/g, " ").trim();
 
   const translateTextNodes = (container: Element) => {
-    const elements = container.querySelectorAll("label, span, div");
+    const elements = container.querySelectorAll("label, span, div, summary");
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i] as HTMLElement;
       // For labels with inputs, translate the text node after the input
@@ -1428,6 +1429,13 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     systemPromptInput.addEventListener("input", () => {
       setPref("systemPrompt", systemPromptInput.value);
     });
+
+    const defaultPromptPre = doc.querySelector(
+      `#${config.addonRef}-default-system-prompt`,
+    ) as HTMLPreElement | null;
+    if (defaultPromptPre) {
+      defaultPromptPre.textContent = DEFAULT_SYSTEM_PROMPT;
+    }
   }
 
   if (popupAddTextEnabledInput) {
@@ -1500,6 +1508,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     mineruApiKeyInput.addEventListener("input", () => {
       setMineruApiKey(mineruApiKeyInput.value);
     });
+
   }
 
   if (mineruTestBtn && mineruTestStatus) {

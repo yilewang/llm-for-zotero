@@ -246,3 +246,198 @@ export async function captureCurrentPdfPage(): Promise<string | null> {
 
   return offscreen.toDataURL("image/png");
 }
+
+/**
+ * Returns the total number of pages in the active PDF, or 0 if no PDF is open.
+ */
+export function getPdfPageCount(): number {
+  const reader = getActiveReaderForSelectedTab();
+  if (!reader) return 0;
+
+  const app = getPdfViewerApplication(reader);
+  if (!app?.pdfDocument) return 0;
+
+  const pdfDocument = unwrapWrappedJsObject(
+    app.pdfDocument as { numPages?: number },
+  );
+  const rawCount = Number(
+    pdfDocument?.numPages ??
+      (app as { pdfDocument?: { numPages?: number } })?.pdfDocument?.numPages ??
+      0,
+  );
+  return Number.isFinite(rawCount) && rawCount > 0 ? Math.floor(rawCount) : 0;
+}
+
+/**
+ * Parses a page range string like "1-5, 8, 12-15" into a sorted, deduplicated
+ * array of 1-indexed page numbers, clamped to [1, maxPage].
+ */
+export function parsePageRanges(input: string, maxPage: number): number[] {
+  const pages = new Set<number>();
+  for (const part of input.split(",")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const rangeParts = trimmed.split("-").map((s) => s.trim());
+    if (rangeParts.length === 2) {
+      const start = parseInt(rangeParts[0], 10);
+      const end = parseInt(rangeParts[1], 10);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      const lo = Math.max(1, Math.min(start, end));
+      const hi = Math.min(maxPage, Math.max(start, end));
+      for (let i = lo; i <= hi; i++) pages.add(i);
+    } else {
+      const num = parseInt(trimmed, 10);
+      if (Number.isFinite(num) && num >= 1 && num <= maxPage) pages.add(num);
+    }
+  }
+  return Array.from(pages).sort((a, b) => a - b);
+}
+
+/**
+ * Navigates the reader to a specific page index (0-based).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function navigateReaderToPage(reader: any, pageIndex: number): Promise<boolean> {
+  if (typeof reader?.navigate !== "function") return false;
+  const idx = Math.max(0, Math.floor(pageIndex));
+  try {
+    await reader.navigate({ pageIndex: idx, pageLabel: `${idx + 1}` });
+    return true;
+  } catch {
+    try {
+      await reader.navigate({ pageIndex: idx });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * Captures the rendered canvas for a given page (1-indexed) as a PNG data URL.
+ * Navigates the reader to that page, waits for the canvas to render, and grabs it.
+ * Falls back to off-screen PDF.js rendering if the canvas grab fails.
+ */
+async function capturePageByNavigation(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reader: any,
+  pageNumber: number,
+): Promise<string | null> {
+  const pageIndex = pageNumber - 1;
+  await navigateReaderToPage(reader, pageIndex);
+
+  // Fast path: grab the rendered canvas
+  const rendered = await waitForRenderedPageCanvas(app, reader, pageNumber);
+  if (rendered && rendered.width > 0 && rendered.height > 0) {
+    try {
+      return rendered.toDataURL("image/png");
+    } catch {
+      // Canvas may be tainted — try copying to a temp canvas
+      const doc = rendered.ownerDocument || getReaderDocument(reader);
+      if (doc) {
+        const temp = doc.createElement("canvas") as HTMLCanvasElement;
+        temp.width = rendered.width;
+        temp.height = rendered.height;
+        const ctx = temp.getContext("2d") as CanvasRenderingContext2D | null;
+        if (ctx) {
+          ctx.drawImage(rendered, 0, 0);
+          try {
+            return temp.toDataURL("image/png");
+          } catch {
+            // fall through to PDF.js fallback
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: render off-screen via PDF.js API
+  const canvasDoc =
+    getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
+  if (!canvasDoc) return null;
+
+  const pdfDocument = unwrapWrappedJsObject(
+    app.pdfDocument as { getPage?: (n: number) => Promise<unknown> },
+  );
+  if (typeof (pdfDocument as { getPage?: unknown }).getPage !== "function") {
+    return null;
+  }
+  try {
+    const rawPage = await (
+      pdfDocument as { getPage: (n: number) => Promise<unknown> }
+    ).getPage(pageNumber);
+    const pdfPage = resolveRenderablePdfPage(rawPage);
+    if (!pdfPage) return null;
+
+    const viewport = pdfPage.getViewport({ scale: 1.8 });
+    const offscreen = canvasDoc.createElement("canvas") as HTMLCanvasElement;
+    offscreen.width = Math.max(1, Math.ceil(viewport.width));
+    offscreen.height = Math.max(1, Math.ceil(viewport.height));
+    const context = offscreen.getContext("2d") as CanvasRenderingContext2D | null;
+    if (!context) return null;
+
+    const renderTask = pdfPage.render({ canvasContext: context, viewport });
+    if (
+      renderTask &&
+      typeof renderTask === "object" &&
+      "promise" in renderTask &&
+      (renderTask as { promise: Promise<unknown> }).promise
+    ) {
+      await (renderTask as { promise: Promise<unknown> }).promise;
+    } else if (
+      renderTask &&
+      typeof (renderTask as { then?: unknown }).then === "function"
+    ) {
+      await renderTask;
+    }
+
+    return offscreen.toDataURL("image/png");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Captures specific PDF pages (1-indexed) as high-quality PNG data URLs.
+ * Navigates the reader to each page and captures the rendered canvas,
+ * then restores the original page position.
+ */
+export async function capturePdfPages(
+  pageNumbers: number[],
+  opts?: { onProgress?: (current: number, total: number) => void },
+): Promise<string[]> {
+  if (!pageNumbers.length) return [];
+
+  const reader = getActiveReaderForSelectedTab();
+  if (!reader) return [];
+
+  const app = getPdfViewerApplication(reader);
+  if (!app?.pdfDocument) return [];
+
+  // Remember original page so we can restore it after
+  const originalPageNumber = Number(
+    app?.pdfViewer?.currentPageNumber ||
+      app?.pdfViewer?.currentPageLabel ||
+      app?.page ||
+      1,
+  );
+
+  const results: string[] = [];
+  const total = pageNumbers.length;
+  try {
+    for (let idx = 0; idx < total; idx++) {
+      opts?.onProgress?.(idx + 1, total);
+      const dataUrl = await capturePageByNavigation(app, reader, pageNumbers[idx]);
+      if (dataUrl) {
+        results.push(dataUrl);
+      }
+    }
+  } finally {
+    // Restore original page position
+    const restoreIndex = Math.max(0, Math.floor(originalPageNumber) - 1);
+    await navigateReaderToPage(reader, restoreIndex);
+  }
+  return results;
+}
