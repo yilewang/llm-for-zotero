@@ -149,7 +149,6 @@ import {
   setSelectedTextContextEntries,
   setSelectedTextExpandedIndex,
 } from "./contextResolution";
-import { buildUI } from "./buildUI";
 import {
   flashPageInLivePdfReader,
   resolveCurrentSelectionPageLocationFromReader,
@@ -1470,7 +1469,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (!mainWin) return;
       let floatingWin = (mainWin as any).__llmFloatingWindow;
 
-      if (!floatingWin || floatingWin.closed) {
+      let isWinClosed = true;
+      try {
+        if (floatingWin && !floatingWin.closed) isWinClosed = false;
+      } catch(e) { isWinClosed = true; }
+
+      if (isWinClosed) {
         let features = "chrome,resizable,alwaysRaised=yes,dependent=yes";
         let boundsStr = Zotero.Prefs.get(`${config.prefsPrefix}.floatingWindowBounds`, true) as string;
         let bounds: { x?: number; y?: number; width?: number; height?: number } | null = null;
@@ -1491,7 +1495,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         );
 
         floatingWin.addEventListener('beforeunload', () => {
-          if (floatingWin.windowState !== floatingWin.STATE_MAXIMIZED && floatingWin.windowState !== floatingWin.STATE_MINIMIZED && !floatingWin.closed) {
+          let isWinClosed2 = true;
+          try { isWinClosed2 = floatingWin.closed; } catch(e) {}
+          if (floatingWin.windowState !== floatingWin.STATE_MAXIMIZED && floatingWin.windowState !== floatingWin.STATE_MINIMIZED && !isWinClosed2) {
             const newBounds = {
               x: floatingWin.screenX,
               y: floatingWin.screenY,
@@ -1667,22 +1673,23 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
               import("./chat").then(({ ensureConversationLoaded, refreshChat }) => {
                 if (item) {
-                   ensureConversationLoaded(item).then(() => {
-                      import("./shortcuts").then(({ renderShortcuts }) => {
-                         renderShortcuts(fakeBody, item);
-                         setupHandlers(fakeBody, item);
-                         refreshChat(fakeBody, item);
-                      });
-                   });
+                  ensureConversationLoaded(item).then(() => {
+                    import("./shortcuts").then(({ renderShortcuts }) => {
+                      renderShortcuts(fakeBody, item);
+                      setupHandlers(fakeBody, item);
+                      refreshChat(fakeBody, item);
+                    });
+                  });
                 } else {
-                   setupHandlers(fakeBody, null);
-                   refreshChat(fakeBody, null);
+                  setupHandlers(fakeBody, null);
+                  refreshChat(fakeBody, null);
                 }
               });
             }, 0);
           }
 
           floatingWin.addEventListener("unload", () => {
+            if (!floatingWin.closed) return;
             if ((mainWin as any).__llmFloatingWindow === floatingWin) {
               (mainWin as any).__llmFloatingWindow = null;
             }
@@ -1769,48 +1776,56 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         }, 150);
       } else {
         floatingWin.focus();
+        floatingWin.__llmLocked = false;
 
-        // BUG 2 FIX: Ensure we return the previous tab's container to its original host so it isn't orphaned
-        const oldContainer = floatingWin.document.body.querySelector("#llm-main");
         const oldHostBody = (mainWin as any).__llmFloatedPanelHostBody;
-        const targetContainer = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main");
+        if (oldHostBody) oldHostBody.__llmFloatedPanel = null;
 
-        if (oldContainer && oldHostBody && oldHostBody !== body && oldContainer !== targetContainer) {
-          oldContainer.classList.remove("llm-panel-os-window");
-          oldHostBody.replaceChildren(oldContainer);
-          if (oldHostBody.__llmFloatedPanel) oldHostBody.__llmFloatedPanel = null;
-          ["#llm-lock", "#llm-minimize", "#llm-maximize", "#llm-close"].forEach(id => {
-            const el = oldHostBody.querySelector(id);
-            if (el) (el as HTMLElement).style.display = "none";
-          });
-          const pBtn = oldHostBody.querySelector("#llm-popout");
-          if (pBtn) (pBtn as HTMLElement).style.display = "flex";
+        const fakeBody = mainWin.document.createElement("div");
+        buildUI(fakeBody, item);
+        activeContextPanels.set(fakeBody, () => item || null);
+        activeContextPanelRawItems.set(fakeBody, item || null);
 
-          // Force a reflow
-          if (oldHostBody instanceof (oldHostBody.ownerDocument?.defaultView?.HTMLElement || HTMLElement)) {
-            (oldHostBody as HTMLElement).style.display = 'none';
-            void (oldHostBody as HTMLElement).offsetHeight;
-            (oldHostBody as HTMLElement).style.display = '';
-          }
-        }
-
-        const container = targetContainer;
+        const container = fakeBody.querySelector("#llm-main");
         if (container) {
           container.classList.add("llm-panel-os-window");
           floatingWin.document.body.replaceChildren(container);
-          (mainWin as any).__llmFloatedPanelHostBody = body;
-          (body as any).__llmFloatedPanel = floatingWin.document.body;
-          floatingWin.__llmLocked = false;
-          if (lockBtn) {
-            lockBtn.style.display = "flex";
-            lockBtn.style.opacity = "0.5";
-            lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
-            lockBtn.setAttribute("aria-pressed", "false");
-          }
-          if (popoutBtn) popoutBtn.style.display = "none";
-          if (minBtn) minBtn.style.display = "flex";
-          if (maxBtn) maxBtn.style.display = "flex";
-          if (closeBtn) closeBtn.style.display = "flex";
+          (mainWin as any).__llmFloatedPanelHostBody = fakeBody;
+          (fakeBody as any).__llmFloatedPanel = floatingWin.document.body;
+
+          setTimeout(() => {
+            const lBtn = floatingWin.document.body.querySelector("#llm-lock") as HTMLElement;
+            const pBtn2 = floatingWin.document.body.querySelector("#llm-popout") as HTMLElement;
+            const minB = floatingWin.document.body.querySelector("#llm-minimize") as HTMLElement;
+            const maxB = floatingWin.document.body.querySelector("#llm-maximize") as HTMLElement;
+            const closeB = floatingWin.document.body.querySelector("#llm-close") as HTMLElement;
+
+            if (lBtn) {
+              lBtn.style.display = "flex";
+              lBtn.style.opacity = "0.5";
+              lBtn.setAttribute("title", "Sync mode (unlocked): tracks Zotero's active tab");
+              lBtn.setAttribute("aria-pressed", "false");
+            }
+            if (pBtn2) pBtn2.style.display = "none";
+            if (minB) minB.style.display = "flex";
+            if (maxB) maxB.style.display = "flex";
+            if (closeB) closeB.style.display = "flex";
+
+            import("./chat").then(({ ensureConversationLoaded, refreshChat }) => {
+              if (item) {
+                ensureConversationLoaded(item).then(() => {
+                  import("./shortcuts").then(({ renderShortcuts }) => {
+                    renderShortcuts(fakeBody, item);
+                    setupHandlers(fakeBody, item);
+                    refreshChat(fakeBody, item);
+                  });
+                });
+              } else {
+                setupHandlers(fakeBody, null);
+                refreshChat(fakeBody, null);
+              }
+            });
+          }, 0);
         }
       }
     });
@@ -1842,34 +1857,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           lockBtn.setAttribute("title", "Independent mode (locked to this session): stays on current session when switching tabs");
           lockBtn.setAttribute("aria-pressed", "true");
         }
-      }
-    });
-
-    // Check visibility on load (if window already open)
-    setTimeout(() => {
-      let mainWin = Zotero.getMainWindow();
-      if (!mainWin) return;
-      let floatingWin = (mainWin as any).__llmFloatingWindow;
-      if (floatingWin && !floatingWin.closed) {
-        if (lockBtn) lockBtn.style.display = "flex";
-        if (popoutBtn) popoutBtn.style.display = "none";
-        if (minBtn) minBtn.style.display = "flex";
-        if (maxBtn) maxBtn.style.display = "flex";
-        if (closeBtn) closeBtn.style.display = "flex";
-        if (floatingWin.__llmLocked) {
-          lockBtn.style.opacity = "1.0";
-          lockBtn.setAttribute("aria-pressed", "true");
-        } else {
-          lockBtn.style.opacity = "0.5";
-          lockBtn.setAttribute("title", "Independent mode (unlocked): stays on current session when switching tabs");
-          lockBtn.setAttribute("aria-pressed", "false");
-        }
-      } else {
-        if (lockBtn) lockBtn.style.display = "none";
-        if (popoutBtn) popoutBtn.style.display = "flex";
-        if (minBtn) minBtn.style.display = "none";
-        if (maxBtn) maxBtn.style.display = "none";
-        if (closeBtn) closeBtn.style.display = "none";
       }
     });
   }

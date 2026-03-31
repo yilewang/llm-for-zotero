@@ -166,6 +166,9 @@ export function registerReaderContextPanel() {
             setTimeout(() => {
               const lBtn = checkFloatWin.document.body.querySelector("#llm-lock");
               const pBtn2 = checkFloatWin.document.body.querySelector("#llm-popout");
+              const minB = checkFloatWin.document.body.querySelector("#llm-minimize");
+              const maxB = checkFloatWin.document.body.querySelector("#llm-maximize");
+              const closeB = checkFloatWin.document.body.querySelector("#llm-close");
               if (lBtn) {
                 (lBtn as HTMLElement).style.display = "flex";
                 (lBtn as HTMLElement).style.opacity = "0.5";
@@ -173,6 +176,9 @@ export function registerReaderContextPanel() {
                 lBtn.setAttribute("aria-pressed", "false");
               }
               if (pBtn2) (pBtn2 as HTMLElement).style.display = "none";
+              if (minB) (minB as HTMLElement).style.display = "flex";
+              if (maxB) (maxB as HTMLElement).style.display = "flex";
+              if (closeB) (closeB as HTMLElement).style.display = "flex";
 
               if (resolvedItem) {
                 ensureConversationLoaded(resolvedItem).then(() => {
@@ -519,7 +525,7 @@ export function registerReaderSelectionTracking() {
               : null;
           };
           const isVisible = (root: HTMLElement) =>
-            root.getClientRects().length > 0;
+            root.classList.contains("llm-panel-os-window") || root.getClientRects().length > 0;
           const popupTopDoc = event.doc.defaultView?.top?.document || null;
           const rootStates = panelRecords
             .map(({ body, root }) => {
@@ -606,9 +612,9 @@ export function registerReaderSelectionTracking() {
             else if (state.sameDoc) base = 2;
             else if (state.matchesLockedGlobal) base = 1.5;
             else if (state.hasActiveFocus) base = 1;
-            
+
             if (state.root.classList.contains("llm-panel-os-window")) {
-               base += 100;
+              base += 100;
             }
             return base;
           };
