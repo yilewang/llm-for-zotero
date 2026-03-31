@@ -7521,6 +7521,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     };
     const appendActions = (actions: ActionPickerItem[]) => {
       actions.forEach((action) => {
+        const source = (action as unknown as { source?: string }).source;
+        const backendToolName = (action as unknown as { backendToolName?: string }).backendToolName;
         const riskLevel = (action as unknown as { riskLevel?: string }).riskLevel;
         const riskPrefix = riskLevel === "high"
           ? "[HIGH] "
@@ -7531,7 +7533,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       btn.type = "button";
       const titleEl = ownerDoc.createElement("span");
       titleEl.className = "llm-action-picker-title";
-      titleEl.textContent = formatActionLabel(action.name);
+        titleEl.textContent =
+          source === "backend" && backendToolName
+            ? `/${backendToolName}`
+            : formatActionLabel(action.name);
       const descEl = ownerDoc.createElement("span");
       descEl.className = "llm-action-picker-description";
         descEl.textContent = `${riskPrefix}${action.description}`;

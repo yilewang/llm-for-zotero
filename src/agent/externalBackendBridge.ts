@@ -362,7 +362,7 @@ export function createExternalBackendBridgeRuntime(options: {
     listExternalActionsSync: () => {
       return cachedTools.map((tool) => ({
         name: toExternalActionName(tool.name),
-        description: `[${tool.riskLevel.toUpperCase()}] ${tool.description}`,
+        description: tool.description,
         inputSchema: tool.inputSchema,
         source: "backend" as const,
         backendToolName: tool.name,

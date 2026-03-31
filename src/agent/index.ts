@@ -206,6 +206,7 @@ export function getAgentApi() {
           description: action.description,
           inputSchema: action.inputSchema,
           source: "backend" as const,
+          backendToolName: action.backendToolName,
           riskLevel: action.riskLevel,
           requiresConfirmation: action.requiresConfirmation,
           mutability: action.mutability,
