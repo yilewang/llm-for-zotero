@@ -45,6 +45,10 @@ export default defineConfig({
 
   test: {
     waitForPlugin: `() => Zotero.${pkg.config.addonInstance}.data.initialized`,
+    esbuildOptions: {
+      loader: { ".md": "text" },
+      external: ["node:fs", "node:path", "node:os", "node:crypto"],
+    }
   },
 
   // If you need to see a more detailed log, uncomment the following line:

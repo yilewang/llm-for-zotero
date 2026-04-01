@@ -179,7 +179,7 @@ function isReasoningExpandedByDefault(): boolean {
 }
 
 function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
-  const historyNewBtn = body.querySelector(
+  const historyNewBtn = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-history-new",
   ) as HTMLButtonElement | null;
   if (historyNewBtn) {
@@ -189,7 +189,7 @@ function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
       historyNewBtn.setAttribute("aria-expanded", "false");
     }
   }
-  const historyToggleBtn = body.querySelector(
+  const historyToggleBtn = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-history-toggle",
   ) as HTMLButtonElement | null;
   if (historyToggleBtn) {
@@ -200,13 +200,13 @@ function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
     }
   }
   if (disabled) {
-    const historyNewMenu = body.querySelector(
+    const historyNewMenu = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-new-menu",
     ) as HTMLDivElement | null;
     if (historyNewMenu) {
       historyNewMenu.style.display = "none";
     }
-    const historyMenu = body.querySelector(
+    const historyMenu = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-history-menu",
     ) as HTMLDivElement | null;
     if (historyMenu) {
@@ -358,10 +358,10 @@ function buildActiveNoteContextBlock(
   if (!snapshot || !snapshot.text.trim()) {
     return snapshot
       ? [
-          "Current active Zotero note:",
-          `Title: ${snapshot.title}`,
-          "Note content is currently empty.",
-        ].join("\n")
+        "Current active Zotero note:",
+        `Title: ${snapshot.title}`,
+        "Note content is currently empty.",
+      ].join("\n")
       : "";
   }
   const parentLine = snapshot.parentItemId
@@ -445,7 +445,7 @@ function getUserBubbleElement(wrapper: HTMLElement): HTMLDivElement | null {
 }
 
 export function syncUserContextAlignmentWidths(body: Element): void {
-  const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
+  const chatBox = ((body as any).__llmFloatedPanel || body).querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
   const wrappers = Array.from(
     chatBox.querySelectorAll(
@@ -748,14 +748,14 @@ function toPanelMessage(message: StoredChatMessage): Message {
     : undefined;
   const attachments = Array.isArray(message.attachments)
     ? message.attachments.filter(
-        (entry) =>
-          Boolean(entry) &&
-          typeof entry === "object" &&
-          typeof entry.id === "string" &&
-          Boolean(entry.id.trim()) &&
-          typeof entry.name === "string" &&
-          Boolean(entry.name.trim()),
-      )
+      (entry) =>
+        Boolean(entry) &&
+        typeof entry === "object" &&
+        typeof entry.id === "string" &&
+        Boolean(entry.id.trim()) &&
+        typeof entry.name === "string" &&
+        Boolean(entry.name.trim()),
+    )
     : undefined;
   const selectedTexts = normalizeSelectedTexts(
     message.selectedTexts,
@@ -1017,9 +1017,9 @@ export async function copyRenderedMarkdownToClipboard(
   if (renderedHtml) {
     const win = body.ownerDocument?.defaultView as
       | (Window & {
-          navigator?: Navigator;
-          ClipboardItem?: new (items: Record<string, Blob>) => ClipboardItem;
-        })
+        navigator?: Navigator;
+        ClipboardItem?: new (items: Record<string, Blob>) => ClipboardItem;
+      })
       | undefined;
     if (win?.navigator?.clipboard?.write && win.ClipboardItem) {
       try {
@@ -1075,12 +1075,12 @@ export type PanelRequestUI = {
 
 function getPanelRequestUI(body: Element): PanelRequestUI {
   return {
-    inputBox: body.querySelector("#llm-input") as HTMLTextAreaElement | null,
-    chatBox: body.querySelector("#llm-chat-box") as HTMLDivElement | null,
-    sendBtn: body.querySelector("#llm-send") as HTMLButtonElement | null,
-    cancelBtn: body.querySelector("#llm-cancel") as HTMLButtonElement | null,
-    status: body.querySelector("#llm-status") as HTMLElement | null,
-    tokenUsageEl: body.querySelector("#llm-token-usage") as HTMLElement | null,
+    inputBox: ((body as any).__llmFloatedPanel || body).querySelector("#llm-input") as HTMLTextAreaElement | null,
+    chatBox: ((body as any).__llmFloatedPanel || body).querySelector("#llm-chat-box") as HTMLDivElement | null,
+    sendBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-send") as HTMLButtonElement | null,
+    cancelBtn: ((body as any).__llmFloatedPanel || body).querySelector("#llm-cancel") as HTMLButtonElement | null,
+    status: ((body as any).__llmFloatedPanel || body).querySelector("#llm-status") as HTMLElement | null,
+    tokenUsageEl: ((body as any).__llmFloatedPanel || body).querySelector("#llm-token-usage") as HTMLElement | null,
   };
 }
 
@@ -1182,11 +1182,11 @@ function resolveEffectiveRequestConfig(params: {
   const explicitEntry =
     params.model || params.apiBase || params.apiKey
       ? getAvailableModelEntries().find(
-          (entry) =>
-            entry.model === (params.model || "").trim() &&
-            entry.apiBase === (params.apiBase || "").trim() &&
-            entry.apiKey === (params.apiKey || "").trim(),
-        ) || null
+        (entry) =>
+          entry.model === (params.model || "").trim() &&
+          entry.apiBase === (params.apiBase || "").trim() &&
+          entry.apiKey === (params.apiKey || "").trim(),
+      ) || null
       : null;
   const model = (
     params.model ||
@@ -1547,14 +1547,14 @@ function reconstructRetryPayload(userMessage: Message): {
   const fileAttachments = (
     Array.isArray(userMessage.attachments)
       ? userMessage.attachments.filter(
-          (attachment) =>
-            Boolean(attachment) &&
-            typeof attachment === "object" &&
-            typeof attachment.id === "string" &&
-            attachment.id.trim() &&
-            typeof attachment.name === "string" &&
-            attachment.category !== "image",
-        )
+        (attachment) =>
+          Boolean(attachment) &&
+          typeof attachment === "object" &&
+          typeof attachment.id === "string" &&
+          attachment.id.trim() &&
+          typeof attachment.name === "string" &&
+          attachment.category !== "image",
+      )
       : []
   ) as ChatAttachment[];
   const promptText = resolvePromptText(
@@ -1564,16 +1564,16 @@ function reconstructRetryPayload(userMessage: Message): {
   );
   const composedQuestionBase = primarySelectedText
     ? buildQuestionWithSelectedTextContexts(
-        selectedTexts,
-        selectedTextSources,
-        promptText,
-        {
-          selectedTextPaperContexts,
-          includePaperAttribution: selectedTextPaperContexts.some((entry) =>
-            Boolean(entry),
-          ),
-        },
-      )
+      selectedTexts,
+      selectedTextSources,
+      promptText,
+      {
+        selectedTextPaperContexts,
+        includePaperAttribution: selectedTextPaperContexts.some((entry) =>
+          Boolean(entry),
+        ),
+      },
+    )
     : promptText;
   const question = buildModelPromptWithFileContext(
     composedQuestionBase,
@@ -1581,10 +1581,10 @@ function reconstructRetryPayload(userMessage: Message): {
   );
   const screenshotImages = Array.isArray(userMessage.screenshotImages)
     ? userMessage.screenshotImages
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, MAX_SELECTED_IMAGES)
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SELECTED_IMAGES)
     : [];
   const paperContexts = normalizePaperContexts(userMessage.paperContexts);
   const fullTextPaperContexts = normalizePaperContexts(
@@ -1657,7 +1657,7 @@ function normalizeModelFileAttachments(
       storedPath: attachment.storedPath?.trim(),
       contentHash:
         typeof attachment.contentHash === "string" &&
-        /^[a-f0-9]{64}$/i.test(attachment.contentHash.trim())
+          /^[a-f0-9]{64}$/i.test(attachment.contentHash.trim())
           ? attachment.contentHash.trim().toLowerCase()
           : undefined,
     }));
@@ -1681,15 +1681,15 @@ function normalizeEditableAttachments(
   const normalized = (
     Array.isArray(attachments)
       ? attachments.filter(
-          (attachment) =>
-            Boolean(attachment) &&
-            typeof attachment === "object" &&
-            typeof attachment.id === "string" &&
-            attachment.id.trim() &&
-            typeof attachment.name === "string" &&
-            attachment.name.trim() &&
-            attachment.category !== "image",
-        )
+        (attachment) =>
+          Boolean(attachment) &&
+          typeof attachment === "object" &&
+          typeof attachment.id === "string" &&
+          attachment.id.trim() &&
+          typeof attachment.name === "string" &&
+          attachment.name.trim() &&
+          attachment.category !== "image",
+      )
       : []
   ) as ChatAttachment[];
   return normalized.map((attachment) => ({
@@ -1713,7 +1713,7 @@ function normalizeEditableAttachments(
         : undefined,
     contentHash:
       typeof attachment.contentHash === "string" &&
-      /^[a-f0-9]{64}$/i.test(attachment.contentHash.trim())
+        /^[a-f0-9]{64}$/i.test(attachment.contentHash.trim())
         ? attachment.contentHash.trim().toLowerCase()
         : undefined,
   }));
@@ -1798,9 +1798,9 @@ function includeAutoLoadedPaperContext(
         ? normalizedFullTextPaperContexts
         : fullTextPaperContexts === undefined
           ? normalizePaperContexts([
-              autoLoadedPaperContext,
-              ...normalizedFullTextPaperContexts,
-            ])
+            autoLoadedPaperContext,
+            ...normalizedFullTextPaperContexts,
+          ])
           : normalizedFullTextPaperContexts,
   };
 }
@@ -1836,10 +1836,10 @@ function syncComposeContextForInlineEdit(
 
   const screenshotImages = Array.isArray(userMessage.screenshotImages)
     ? userMessage.screenshotImages
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, MAX_SELECTED_IMAGES)
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SELECTED_IMAGES)
     : [];
   if (screenshotImages.length) {
     selectedImageCache.set(item.id, screenshotImages);
@@ -1861,12 +1861,12 @@ function syncComposeContextForInlineEdit(
   const autoLoadedPaperContext = resolveAutoLoadedPaperContextForItem(item);
   const selectedPaperContexts = autoLoadedPaperContext
     ? paperContexts.filter(
-        (paperContext) =>
-          !(
-            paperContext.itemId === autoLoadedPaperContext.itemId &&
-            paperContext.contextItemId === autoLoadedPaperContext.contextItemId
-          ),
-      )
+      (paperContext) =>
+        !(
+          paperContext.itemId === autoLoadedPaperContext.itemId &&
+          paperContext.contextItemId === autoLoadedPaperContext.contextItemId
+        ),
+    )
     : paperContexts;
   if (selectedPaperContexts.length) {
     selectedPaperContextCache.set(item.id, selectedPaperContexts);
@@ -1931,10 +1931,10 @@ export async function editLatestUserMessageAndRetry(
   const selectedTextForMessage = selectedTextsForMessage[0] || "";
   const screenshotImagesForMessage = Array.isArray(screenshotImages)
     ? screenshotImages
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, MAX_SELECTED_IMAGES)
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SELECTED_IMAGES)
     : [];
   const normalizedPaperContexts = normalizeEditablePaperContexts(paperContexts);
   const normalizedFullTextPaperContexts =
@@ -2181,7 +2181,7 @@ export async function retryLatestAssistantResponse(
     retryPair.userMessage.fullTextPaperContexts =
       contextPlan.fullTextPaperContexts.length
         ? contextPlan.fullTextPaperContexts
-      : undefined;
+        : undefined;
     await updateStoredLatestUserMessage(conversationKey, {
       text: retryPair.userMessage.text,
       timestamp: retryPair.userMessage.timestamp,
@@ -2456,10 +2456,10 @@ export async function editUserTurnAndRetry(opts: {
   const selectedTextForMessage = selectedTextsForMessage[0] || "";
   const screenshotImagesForMessage = Array.isArray(screenshotImages)
     ? screenshotImages
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, MAX_SELECTED_IMAGES)
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SELECTED_IMAGES)
     : [];
   const normalizedPaperContexts = normalizeEditablePaperContexts(paperContexts);
   const normalizedFullTextPaperContexts =
@@ -2814,10 +2814,10 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
   );
   const screenshotImagesForMessage = Array.isArray(images)
     ? images
-        .filter((entry): entry is string => typeof entry === "string")
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-        .slice(0, MAX_SELECTED_IMAGES)
+      .filter((entry): entry is string => typeof entry === "string")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .slice(0, MAX_SELECTED_IMAGES)
     : [];
   const imageCount = screenshotImagesForMessage.length;
   const userMessageText = shownQuestion;
@@ -3062,7 +3062,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     userMessage.fullTextPaperContexts =
       contextPlan.fullTextPaperContexts.length
         ? contextPlan.fullTextPaperContexts
-      : undefined;
+        : undefined;
     await updateStoredLatestUserMessage(conversationKey, {
       text: userMessage.text,
       timestamp: userMessage.timestamp,
@@ -3230,7 +3230,7 @@ function buildInlineEditWidget(
   const isFirstEntry = !inlineEditInputSectionEl;
   let inputSectionEl = inlineEditInputSectionEl;
   if (isFirstEntry) {
-    inputSectionEl = body.querySelector(
+    inputSectionEl = ((body as any).__llmFloatedPanel || body).querySelector(
       ".llm-input-section",
     ) as HTMLElement | null;
     if (inputSectionEl) {
@@ -3244,7 +3244,7 @@ function buildInlineEditWidget(
 
   // The real input <textarea>
   const inputBoxEl =
-    (body.querySelector("#llm-input") as HTMLTextAreaElement | null) ??
+    (((body as any).__llmFloatedPanel || body).querySelector("#llm-input") as HTMLTextAreaElement | null) ??
     (inputSectionEl?.querySelector("#llm-input") as HTMLTextAreaElement | null);
 
   // On first entry: save draft and pre-fill with the user message
@@ -3345,7 +3345,7 @@ function buildInlineEditWidget(
 }
 
 export function refreshChat(body: Element, item?: Zotero.Item | null) {
-  const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
+  const chatBox = ((body as any).__llmFloatedPanel || body).querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
   const doc = body.ownerDocument!;
   setPromptMenuTarget(null);
@@ -3357,7 +3357,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         <div class="llm-welcome-text">Select an item or open a PDF to start.</div>
       </div>
     `;
-    const tokenUsageEl = body.querySelector(
+    const tokenUsageEl = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-token-usage",
     ) as HTMLElement | null;
     if (tokenUsageEl) tokenUsageEl.style.display = "none";
@@ -3366,10 +3366,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
   const conversationKey = getConversationKey(item);
   // Sync token counter for this conversation
-  const tokenUsageEl = body.querySelector(
+  const tokenUsageEl = ((body as any).__llmFloatedPanel || body).querySelector(
     "#llm-token-usage",
   ) as HTMLElement | null;
-  const panelRoot = body.querySelector("#llm-main") as HTMLDivElement | null;
+  const panelRoot = ((body as any).__llmFloatedPanel || body).querySelector("#llm-main") as HTMLDivElement | null;
   const isGlobalConversation =
     isGlobalPortalItem(item) ||
     panelRoot?.dataset.conversationKind === "global";
@@ -3438,8 +3438,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
       const screenshotImages = Array.isArray(msg.screenshotImages)
         ? msg.screenshotImages.filter(
-            (entry) => Boolean(entry) && !entry.startsWith("data:application/pdf"),
-          )
+          (entry) => Boolean(entry) && !entry.startsWith("data:application/pdf"),
+        )
         : [];
       let screenshotExpanded: HTMLDivElement | null = null;
       let papersExpanded: HTMLDivElement | null = null;
@@ -3693,14 +3693,14 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
       const fileAttachments = Array.isArray(msg.attachments)
         ? msg.attachments.filter(
-            (entry) =>
-              entry &&
-              typeof entry === "object" &&
-              entry.category !== "image" &&
-              typeof entry.name === "string" &&
-              // Exclude PDF-paper attachments (shown under paper context instead)
-              !(typeof entry.id === "string" && entry.id.startsWith("pdf-paper-")),
-          )
+          (entry) =>
+            entry &&
+            typeof entry === "object" &&
+            entry.category !== "image" &&
+            typeof entry.name === "string" &&
+            // Exclude PDF-paper attachments (shown under paper context instead)
+            !(typeof entry.id === "string" && entry.id.startsWith("pdf-paper-")),
+        )
         : [];
       hasUserContext = hasUserContext || fileAttachments.length > 0;
       if (fileAttachments.length) {
@@ -3848,8 +3848,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             selectedTextPaperContexts[contextIndex];
           const selectedTextPaperLabel =
             isGlobalConversation &&
-            selectedSource === "pdf" &&
-            selectedTextPaperContext
+              selectedSource === "pdf" &&
+              selectedTextPaperContext
               ? formatPaperCitationLabel(selectedTextPaperContext)
               : "";
           const selectedBar = doc.createElement("button") as HTMLButtonElement;
@@ -3967,16 +3967,16 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           if (typeof me.stopImmediatePropagation === "function") {
             me.stopImmediatePropagation();
           }
-          const promptMenu = body.querySelector(
+          const promptMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-prompt-menu",
           ) as HTMLDivElement | null;
-          const responseMenu = body.querySelector(
+          const responseMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-response-menu",
           ) as HTMLDivElement | null;
-          const exportMenu = body.querySelector(
+          const exportMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-export-menu",
           ) as HTMLDivElement | null;
-          const retryModelMenu = body.querySelector(
+          const retryModelMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-retry-model-menu",
           ) as HTMLDivElement | null;
           const promptMenuDeleteBtn = promptMenu?.querySelector(
@@ -4017,16 +4017,16 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       const agentTraceEl =
         msg.runMode === "agent"
           ? renderAgentTrace({
-              doc,
-              message: msg,
-              userMessage: previousUserMessage,
-              events: getCachedAgentRunEvents(agentRunId),
-              onTraceMissing: agentRunId
-                ? () => {
-                    void ensureAgentRunTraceLoaded(agentRunId, body, item);
-                  }
-                : undefined,
-            })
+            doc,
+            message: msg,
+            userMessage: previousUserMessage,
+            events: getCachedAgentRunEvents(agentRunId),
+            onTraceMissing: agentRunId
+              ? () => {
+                void ensureAgentRunTraceLoaded(agentRunId, body, item);
+              }
+              : undefined,
+          })
           : null;
       if (hasAnswerText) {
         const safeText = sanitizeText(msg.text);
@@ -4077,16 +4077,16 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           if (typeof me.stopImmediatePropagation === "function") {
             me.stopImmediatePropagation();
           }
-          const responseMenu = body.querySelector(
+          const responseMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-response-menu",
           ) as HTMLDivElement | null;
-          const exportMenu = body.querySelector(
+          const exportMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-export-menu",
           ) as HTMLDivElement | null;
-          const promptMenu = body.querySelector(
+          const promptMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-prompt-menu",
           ) as HTMLDivElement | null;
-          const retryModelMenu = body.querySelector(
+          const retryModelMenu = ((body as any).__llmFloatedPanel || body).querySelector(
             "#llm-retry-model-menu",
           ) as HTMLDivElement | null;
           const responseMenuDeleteBtn = responseMenu?.querySelector(
@@ -4366,7 +4366,7 @@ export function refreshConversationPanels(
   const conversationKey = getConversationKey(primaryItem);
   const refreshedPanels = new Set<Element>();
   const refreshOne = (body: Element, item: Zotero.Item) => {
-    const chatBox = body.querySelector(
+    const chatBox = ((body as any).__llmFloatedPanel || body).querySelector(
       "#llm-chat-box",
     ) as HTMLDivElement | null;
     if (includeChat && !chatBox) return;
@@ -4390,7 +4390,7 @@ export function refreshConversationPanels(
   refreshOne(primaryBody, primaryItem);
 
   for (const [body, getItem] of activeContextPanels.entries()) {
-    if (!(body as Element).isConnected) {
+    if (!(body as Element).isConnected && !(body as any).__llmFloatedPanel) {
       activeContextPanels.delete(body);
       activeContextPanelStateSync.delete(body);
       continue;

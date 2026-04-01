@@ -27,12 +27,13 @@ export function positionFloatingMenu(
   menu: HTMLDivElement,
   anchor: HTMLButtonElement,
 ): void {
-  const win = owner.ownerDocument?.defaultView;
+  const container = menu.closest("#llm-main") || owner;
+  const win = container.ownerDocument?.defaultView;
   if (!win) return;
 
   const viewportMargin = 8;
   const gap = 6;
-  const ownerRect = owner.getBoundingClientRect();
+  const ownerRect = container.getBoundingClientRect();
   const hasOwnerBounds = ownerRect.width > 0 && ownerRect.height > 0;
   const boundaryLeft = hasOwnerBounds
     ? Math.max(viewportMargin, ownerRect.left + viewportMargin)
