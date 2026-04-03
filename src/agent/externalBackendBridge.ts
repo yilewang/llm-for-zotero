@@ -88,7 +88,42 @@ type ContextEnvelope = {
   pinnedPaperCount: number;
   attachmentCount: number;
   screenshotCount: number;
-  selectedPaperKeys: string[];
+  selectedTexts: Array<{
+    source: string;
+    text: string;
+  }>;
+  selectedPapers: Array<{
+    itemId: number;
+    contextItemId: number;
+    title: string;
+    citationKey?: string;
+    firstCreator?: string;
+    year?: string;
+  }>;
+  fullTextPapers: Array<{
+    itemId: number;
+    contextItemId: number;
+    title: string;
+  }>;
+  pinnedPapers: Array<{
+    itemId: number;
+    contextItemId: number;
+    title: string;
+  }>;
+  attachments: Array<{
+    id: string;
+    name: string;
+    mimeType: string;
+    category: string;
+    sizeBytes: number;
+  }>;
+  activeNote?: {
+    noteId: number;
+    noteKind: string;
+    title: string;
+    parentItemId?: number;
+    preview: string;
+  };
 };
 
 function parseLine(raw: string): BridgeLine | null {
@@ -218,23 +253,96 @@ async function runExternalBridgeTurn(
   return finalOutcome;
 }
 
-function extractPaperKeys(list: unknown): string[] {
+function trimText(value: unknown, max = 360): string {
+  if (typeof value !== "string") return "";
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
+}
+
+function normalizePaperRefs(list: unknown, limit = 8): Array<{
+  itemId: number;
+  contextItemId: number;
+  title: string;
+  citationKey?: string;
+  firstCreator?: string;
+  year?: string;
+}> {
   if (!Array.isArray(list)) return [];
-  const keys: string[] = [];
+  const refs: Array<{
+    itemId: number;
+    contextItemId: number;
+    title: string;
+    citationKey?: string;
+    firstCreator?: string;
+    year?: string;
+  }> = [];
   for (const entry of list) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Record<string, unknown>;
-    const key = typeof record.paperKey === "string" ? record.paperKey.trim() : "";
-    if (key) keys.push(key);
+    const itemId = typeof record.itemId === "number" ? record.itemId : undefined;
+    const contextItemId =
+      typeof record.contextItemId === "number" ? record.contextItemId : undefined;
+    const title = trimText(record.title, 180);
+    if (!itemId || !contextItemId || !title) continue;
+    refs.push({
+      itemId,
+      contextItemId,
+      title,
+      citationKey:
+        typeof record.citationKey === "string" ? trimText(record.citationKey, 80) : undefined,
+      firstCreator:
+        typeof record.firstCreator === "string" ? trimText(record.firstCreator, 80) : undefined,
+      year: typeof record.year === "string" ? trimText(record.year, 16) : undefined,
+    });
+    if (refs.length >= limit) break;
   }
-  return Array.from(new Set(keys)).sort().slice(0, 20);
+  return refs;
 }
 
 function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
+  const selectedTexts = Array.isArray(request.selectedTexts) ? request.selectedTexts : [];
+  const selectedSources = Array.isArray(request.selectedTextSources)
+    ? request.selectedTextSources
+    : [];
+  const selectedTextRows = selectedTexts.slice(0, 6).map((text, index) => ({
+    source: typeof selectedSources[index] === "string" ? selectedSources[index] : "unknown",
+    text: trimText(text, 280),
+  })).filter((row) => row.text);
+  const selectedPapers = normalizePaperRefs(request.selectedPaperContexts, 10);
+  const fullTextPapers = normalizePaperRefs(request.fullTextPaperContexts, 8).map((paper) => ({
+    itemId: paper.itemId,
+    contextItemId: paper.contextItemId,
+    title: paper.title,
+  }));
+  const pinnedPapers = normalizePaperRefs(request.pinnedPaperContexts, 8).map((paper) => ({
+    itemId: paper.itemId,
+    contextItemId: paper.contextItemId,
+    title: paper.title,
+  }));
+  const attachments = (Array.isArray(request.attachments) ? request.attachments : [])
+    .slice(0, 10)
+    .map((attachment) => ({
+      id: attachment.id,
+      name: trimText(attachment.name, 120),
+      mimeType: attachment.mimeType,
+      category: attachment.category,
+      sizeBytes: attachment.sizeBytes,
+    }));
+  const activeNote = request.activeNoteContext
+    ? {
+        noteId: request.activeNoteContext.noteId,
+        noteKind: request.activeNoteContext.noteKind,
+        title: trimText(request.activeNoteContext.title, 120),
+        parentItemId: request.activeNoteContext.parentItemId,
+        preview: trimText(request.activeNoteContext.noteText, 420),
+      }
+    : undefined;
+
   return {
     activeItemId: request.activeItemId,
     libraryID: request.libraryID,
-    selectedTextCount: Array.isArray(request.selectedTexts) ? request.selectedTexts.length : 0,
+    selectedTextCount: selectedTexts.length,
     selectedPaperCount: Array.isArray(request.selectedPaperContexts)
       ? request.selectedPaperContexts.length
       : 0,
@@ -246,12 +354,31 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
       : 0,
     attachmentCount: Array.isArray(request.attachments) ? request.attachments.length : 0,
     screenshotCount: Array.isArray(request.screenshots) ? request.screenshots.length : 0,
-    selectedPaperKeys: extractPaperKeys(request.selectedPaperContexts),
+    selectedTexts: selectedTextRows,
+    selectedPapers,
+    fullTextPapers,
+    pinnedPapers,
+    attachments,
+    activeNote,
   };
 }
 
 function signatureForContextEnvelope(envelope: ContextEnvelope): string {
-  return JSON.stringify(envelope);
+  return JSON.stringify({
+    activeItemId: envelope.activeItemId,
+    libraryID: envelope.libraryID,
+    selectedTextCount: envelope.selectedTextCount,
+    selectedPaperCount: envelope.selectedPaperCount,
+    fullTextPaperCount: envelope.fullTextPaperCount,
+    pinnedPaperCount: envelope.pinnedPaperCount,
+    attachmentCount: envelope.attachmentCount,
+    screenshotCount: envelope.screenshotCount,
+    selectedPaperIds: envelope.selectedPapers.map((paper) => paper.contextItemId).sort(),
+    fullTextPaperIds: envelope.fullTextPapers.map((paper) => paper.contextItemId).sort(),
+    pinnedPaperIds: envelope.pinnedPapers.map((paper) => paper.contextItemId).sort(),
+    selectedTextFingerprints: envelope.selectedTexts.map((row) => row.text.slice(0, 80)),
+    activeNoteId: envelope.activeNote?.noteId,
+  });
 }
 
 async function fetchExternalTools(baseUrl: string): Promise<ExternalToolDescriptor[]> {
