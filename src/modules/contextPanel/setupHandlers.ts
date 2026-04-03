@@ -8823,6 +8823,33 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   queueBody.__llmAgentQueuedInputsController = agentQueuedInputs;
   let agentQueueDrainTimer = queueBody.__llmAgentQueueDrainTimer ?? null;
 
+  const updateAgentRunActionButtons = () => {
+    const liveRefs = getPanelDomRefs(body);
+    const liveSendBtn = liveRefs.sendBtn;
+    const liveCancelBtn = liveRefs.cancelBtn;
+    if (!liveSendBtn || !liveCancelBtn) return;
+    if (getCurrentRuntimeMode() !== "agent") {
+      if (!currentAbortController || currentAbortController.signal.aborted) {
+        liveSendBtn.textContent = t("Send");
+        liveSendBtn.title = t("Send");
+      }
+      return;
+    }
+    const running = Boolean(
+      currentAbortController && !currentAbortController.signal.aborted,
+    );
+    const queuedCount = agentQueuedInputs.size();
+    liveSendBtn.style.display = "";
+    liveSendBtn.disabled = false;
+    liveSendBtn.textContent = running
+      ? queuedCount > 0
+        ? `Queue (${queuedCount})`
+        : t("Queue")
+      : t("Send");
+    liveSendBtn.title = running ? t("Queue follow-up") : t("Send");
+    liveCancelBtn.style.display = running ? "" : "none";
+  };
+
   const renderAgentQueuedInputs = () => {
     const liveRefs = getPanelDomRefs(body);
     const liveAgentQueuePanel = liveRefs.agentQueuePanel;
@@ -8833,6 +8860,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (!isAgent || !queuedEntries.length) {
       liveAgentQueuePanel.style.display = "none";
       liveAgentQueueList.textContent = "";
+      updateAgentRunActionButtons();
       return;
     }
     liveAgentQueuePanel.style.display = "grid";
@@ -8875,6 +8903,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       row.append(text, actions);
       liveAgentQueueList.appendChild(row);
     }
+    updateAgentRunActionButtons();
   };
 
   const scheduleAgentQueueDrain = () => {
@@ -11382,6 +11411,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         historyToggleBtn.setAttribute("aria-disabled", "false");
       }
       scheduleAgentQueueDrain();
+      updateAgentRunActionButtons();
     });
   }
 
