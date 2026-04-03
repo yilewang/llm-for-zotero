@@ -126,6 +126,41 @@ type ContextEnvelope = {
   };
 };
 
+type BridgeAttachment = {
+  id: string;
+  name: string;
+  mimeType: string;
+  category: string;
+  sizeBytes: number;
+  storedPath?: string;
+  contentHash?: string;
+};
+
+type BridgeRuntimeRequest = {
+  conversationKey: number;
+  userText: string;
+  activeItemId?: number;
+  libraryID?: number;
+  model?: string;
+  apiBase?: string;
+  authMode?: string;
+  providerProtocol?: string;
+  selectedTexts?: string[];
+  selectedTextSources?: unknown[];
+  selectedPaperContexts?: unknown[];
+  fullTextPaperContexts?: unknown[];
+  pinnedPaperContexts?: unknown[];
+  attachments?: BridgeAttachment[];
+  screenshots?: string[];
+  activeNoteContext?: {
+    noteId: number;
+    title: string;
+    noteKind: string;
+    parentItemId?: number;
+    noteText?: string;
+  };
+};
+
 function parseLine(raw: string): BridgeLine | null {
   const line = raw.trim();
   if (!line) return null;
@@ -196,12 +231,14 @@ async function runExternalBridgeTurn(
   baseUrl: string,
   params: RunTurnParams & {
     contextEnvelope?: ContextEnvelope;
+    runtimeRequest?: BridgeRuntimeRequest;
   },
 ): Promise<AgentRuntimeOutcome> {
   const url = `${normalizeBaseUrl(baseUrl)}/run-turn`;
   const payload = {
     conversationKey: params.request.conversationKey,
     userText: params.request.userText,
+    runtimeRequest: params.runtimeRequest,
     metadata: {
       runType: "chat",
       activeItemId: params.request.activeItemId,
@@ -360,6 +397,72 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     pinnedPapers,
     attachments,
     activeNote,
+  };
+}
+
+function buildBridgeRuntimeRequest(
+  request: AgentRuntimeRequest,
+): BridgeRuntimeRequest {
+  const attachments = (Array.isArray(request.attachments)
+    ? request.attachments
+    : []
+  )
+    .filter((entry) => Boolean(entry))
+    .map((attachment) => ({
+      id: attachment.id,
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      category: attachment.category,
+      sizeBytes: attachment.sizeBytes,
+      storedPath:
+        typeof attachment.storedPath === "string" &&
+        attachment.storedPath.trim()
+          ? attachment.storedPath.trim()
+          : undefined,
+      contentHash:
+        typeof attachment.contentHash === "string" &&
+        attachment.contentHash.trim()
+          ? attachment.contentHash.trim()
+          : undefined,
+    }));
+
+  const screenshots = Array.isArray(request.screenshots)
+    ? request.screenshots.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : [];
+
+  return {
+    conversationKey: request.conversationKey,
+    userText: request.userText,
+    activeItemId: request.activeItemId,
+    libraryID: request.libraryID,
+    model: request.model,
+    apiBase: request.apiBase,
+    authMode: request.authMode,
+    providerProtocol: request.providerProtocol,
+    selectedTexts: Array.isArray(request.selectedTexts) ? request.selectedTexts : undefined,
+    selectedTextSources: Array.isArray(request.selectedTextSources)
+      ? request.selectedTextSources
+      : undefined,
+    selectedPaperContexts: Array.isArray(request.selectedPaperContexts)
+      ? request.selectedPaperContexts
+      : undefined,
+    fullTextPaperContexts: Array.isArray(request.fullTextPaperContexts)
+      ? request.fullTextPaperContexts
+      : undefined,
+    pinnedPaperContexts: Array.isArray(request.pinnedPaperContexts)
+      ? request.pinnedPaperContexts
+      : undefined,
+    attachments: attachments.length ? attachments : undefined,
+    screenshots: screenshots.length ? screenshots : undefined,
+    activeNoteContext: request.activeNoteContext
+      ? {
+          noteId: request.activeNoteContext.noteId,
+          title: request.activeNoteContext.title,
+          noteKind: request.activeNoteContext.noteKind,
+          parentItemId: request.activeNoteContext.parentItemId,
+          noteText: request.activeNoteContext.noteText,
+        }
+      : undefined,
   };
 }
 
@@ -623,6 +726,7 @@ export function createExternalBackendBridgeRuntime(options: {
         return coreRuntime.runTurn(params);
       }
       const contextEnvelope = buildContextEnvelope(params.request);
+      const runtimeRequest = buildBridgeRuntimeRequest(params.request);
       const currentSignature = signatureForContextEnvelope(contextEnvelope);
       const previousSignature = conversationContextSignature.get(
         params.request.conversationKey,
@@ -637,6 +741,7 @@ export function createExternalBackendBridgeRuntime(options: {
         return await runExternalBridgeTurn(bridgeUrl, {
           ...params,
           contextEnvelope,
+          runtimeRequest,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
