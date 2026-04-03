@@ -18,6 +18,7 @@ import {
 } from "../normalizers";
 import { agentReasoningExpandedCache } from "../agentState";
 import { buildTextDiffPreview } from "./diffPreview";
+import { getBoolPref, getStringPref } from "../prefHelpers";
 
 type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
 
@@ -62,6 +63,28 @@ type RenderAgentTraceParams = {
   events: AgentRunEventRecord[];
   onTraceMissing?: () => void;
 };
+
+type AgentTraceVerbosity = "compact" | "verbose" | "raw";
+type AgentRawLogVisibility = "debug_only" | "always" | "never";
+
+function getAgentTraceVerbosityPref(): AgentTraceVerbosity {
+  const value = getStringPref("agentTraceVerbosity").trim().toLowerCase();
+  if (value === "verbose" || value === "raw") return value;
+  return "compact";
+}
+
+function getAgentRawLogVisibilityPref(): AgentRawLogVisibility {
+  const value = getStringPref("agentRawLogVisibility").trim().toLowerCase();
+  if (value === "always" || value === "never") return value;
+  return "debug_only";
+}
+
+function shouldRenderRawLog(verbosity: AgentTraceVerbosity): boolean {
+  const visibility = getAgentRawLogVisibilityPref();
+  if (visibility === "never") return false;
+  if (visibility === "always") return true;
+  return verbosity === "raw";
+}
 
 function normalizeSelectedTexts(
   selectedTexts: unknown,
@@ -2041,7 +2064,7 @@ function summarizeRunForHuman(
     `key events ${keyEventCount}`,
     errorCount > 0 ? `errors ${errorCount}` : "",
   ].filter(Boolean);
-  const summaryText = summaryBits.join("，");
+  const summaryText = summaryBits.join(", ");
   if (failed) {
     return { label: `Process (failed, ${summaryText})`, running: false, failed: true };
   }
@@ -2117,6 +2140,7 @@ function compactAgentTraceEvents(
 export function buildAgentTraceDisplayItems(
   events: AgentRunEventRecord[],
   userMessage: Message | null | undefined,
+  verbosity: AgentTraceVerbosity = "compact",
 ): AgentTraceDisplayItem[] {
   const providerEventCounts = new Map<string, number>();
   for (const entry of events) {
@@ -2126,12 +2150,21 @@ export function buildAgentTraceDisplayItems(
   }
 
   const items: AgentTraceDisplayItem[] = [];
-  const compactedEvents = compactAgentTraceEvents(events);
+  const compactedEvents =
+    verbosity === "raw" ? events : compactAgentTraceEvents(events);
   const requestChips = buildAgentTraceRequestChips(userMessage);
   const requestSummary = buildAgentTraceRequestSummary(userMessage);
   const pendingActions = new Map<string, AgentPendingAction>();
-  const noisyProviderTypes = new Set(["stream_event", "system", "assistant", "user"]);
-  const genericStatusTexts = new Set(["system", "assistant", "user"]);
+  const noisyProviderTypes =
+    verbosity === "compact"
+      ? new Set(["stream_event", "system", "assistant", "user"])
+      : verbosity === "verbose"
+        ? new Set(["stream_event"])
+        : new Set<string>();
+  const genericStatusTexts =
+    verbosity === "compact"
+      ? new Set(["system", "assistant", "user"])
+      : new Set<string>();
 
   for (let index = 0; index < compactedEvents.length; index += 1) {
     const entry = compactedEvents[index];
@@ -2286,7 +2319,19 @@ export function buildAgentTraceDisplayItems(
         break;
       }
       case "message_delta":
-        // message_delta is high-frequency and usually redundant with final answer display
+        if (verbosity === "raw") {
+          const text = (entry.payload.text || "").trim();
+          if (text) {
+            items.push({
+              type: "action",
+              row: {
+                kind: "plan",
+                icon: "·",
+                text: `delta: ${truncateAgentTraceText(text, 120)}`,
+              },
+            });
+          }
+        }
         break;
       case "message_rollback": {
         const rollbackText = (entry.payload.text || "").trim();
@@ -2320,6 +2365,10 @@ export function buildAgentTraceDisplayItems(
         });
         break;
     }
+  }
+
+  if (verbosity !== "compact") {
+    return items;
   }
 
   const streamCount = providerEventCounts.get("stream_event") || 0;
@@ -2381,14 +2430,15 @@ export function renderAgentTrace({
     wrap.appendChild(list);
     return wrap;
   }
-  const processItems = buildAgentTraceDisplayItems(events, userMessage);
+  const traceVerbosity = getAgentTraceVerbosityPref();
+  const processItems = buildAgentTraceDisplayItems(events, userMessage, traceVerbosity);
   const requestChips = buildAgentTraceRequestChips(userMessage);
   const pending = getPendingConfirmation(events);
   const hasFinalResponse = events.some((entry) => entry.payload.type === "final");
   const runOverview = summarizeRunForHuman(events);
   const processDetails = doc.createElement("details") as HTMLDetailsElement;
   processDetails.className = "llm-agent-process-details";
-  processDetails.open = false;
+  processDetails.open = !getBoolPref("agentProcessCollapseByDefault", true);
   const processSummary = doc.createElement("summary");
   processSummary.className = "llm-agent-process-summary";
   processSummary.textContent = processDetails.open ? "Hide process" : `View ${runOverview.label}`;
@@ -2561,25 +2611,27 @@ export function renderAgentTrace({
   processDetails.appendChild(list);
   wrap.appendChild(processDetails);
 
-  const rawLogDetails = doc.createElement("details") as HTMLDetailsElement;
-  rawLogDetails.className = "llm-agent-rawlog-details";
-  const rawLogSummary = doc.createElement("summary");
-  rawLogSummary.className = "llm-agent-rawlog-summary";
-  rawLogSummary.textContent = "View raw log";
-  rawLogDetails.appendChild(rawLogSummary);
-  const rawLogPre = doc.createElement("pre");
-  rawLogPre.className = "llm-agent-rawlog-pre";
-  rawLogPre.textContent = JSON.stringify(
-    events.map((entry) => ({
-      seq: entry.seq,
-      type: entry.payload.type,
-      payload: entry.payload,
-    })),
-    null,
-    2,
-  );
-  rawLogDetails.appendChild(rawLogPre);
-  wrap.appendChild(rawLogDetails);
+  if (shouldRenderRawLog(traceVerbosity)) {
+    const rawLogDetails = doc.createElement("details") as HTMLDetailsElement;
+    rawLogDetails.className = "llm-agent-rawlog-details";
+    const rawLogSummary = doc.createElement("summary");
+    rawLogSummary.className = "llm-agent-rawlog-summary";
+    rawLogSummary.textContent = "View raw log";
+    rawLogDetails.appendChild(rawLogSummary);
+    const rawLogPre = doc.createElement("pre");
+    rawLogPre.className = "llm-agent-rawlog-pre";
+    rawLogPre.textContent = JSON.stringify(
+      events.map((entry) => ({
+        seq: entry.seq,
+        type: entry.payload.type,
+        payload: entry.payload,
+      })),
+      null,
+      2,
+    );
+    rawLogDetails.appendChild(rawLogPre);
+    wrap.appendChild(rawLogDetails);
+  }
 
   if (hasFinalResponse) {
     const divider = doc.createElement("div");

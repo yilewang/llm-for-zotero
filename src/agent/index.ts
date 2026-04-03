@@ -32,7 +32,28 @@ let _toolRegistry: ReturnType<typeof createBuiltInToolRegistry> | null = null;
 // Hoisted so getAgentApi() can expose them to third-party plugin authors.
 let _zoteroGateway: ZoteroGateway | null = null;
 
+type AgentBackendMode = "disabled" | "builtin" | "claude_bridge";
+
+function getAgentBackendMode(): AgentBackendMode {
+  try {
+    const enabled = Zotero.Prefs.get(`${config.prefsPrefix}.enableAgentMode`, true);
+    const isEnabled =
+      enabled === true || `${enabled || ""}`.toLowerCase() === "true";
+    if (!isEnabled) return "disabled";
+    const value = Zotero.Prefs.get(`${config.prefsPrefix}.agentBackendMode`, true);
+    if (value === "builtin" || value === "claude_bridge" || value === "disabled") {
+      return value;
+    }
+    return "builtin";
+  } catch {
+    return "builtin";
+  }
+}
+
 function getExternalBackendBridgeUrl(): string {
+  if (getAgentBackendMode() !== "claude_bridge") {
+    return "";
+  }
   try {
     const value = Zotero.Prefs.get(`${config.prefsPrefix}.agentBackendBridgeUrl`, true);
     return typeof value === "string" ? value.trim() : "";

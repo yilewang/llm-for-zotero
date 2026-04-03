@@ -203,6 +203,7 @@
             Restart Zotero to apply language change.
           </html:span>
         </html:div>
+
       </html:div>
 
       <!-- ═══ Tab 3: Agent ═══ -->
@@ -233,6 +234,181 @@
             agentic multi-step assistant. Off by default — enable only if you want
             to experiment with the beta feature.
           </html:span>
+        </html:div>
+
+        <html:div
+          style="
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 12px;
+            border: 1px solid var(--stroke-secondary, #c8c8c8);
+            border-radius: 10px;
+            background: color-mix(in srgb, FieldText 2%, Field);
+          "
+        >
+          <html:div style="display: flex; flex-direction: column; gap: 2px;">
+            <html:span style="font-size: 13px; font-weight: 700; color: var(--fill-primary, inherit);">
+              Agent Backend
+            </html:span>
+            <html:span style="font-size: 11px; color: var(--fill-secondary, #888);">
+              Choose which runtime powers Agent mode.
+            </html:span>
+          </html:div>
+
+          <html:div style="display: flex; flex-direction: column; gap: 6px;">
+            <html:label
+              for="__addonRef__-agent-backend-mode"
+              style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+            >
+              Backend Mode
+            </html:label>
+            <html:select
+              id="__addonRef__-agent-backend-mode"
+              style="
+                width: min(420px, 100%);
+                padding: 5px 8px;
+                font-size: 12px;
+                border: 1px solid var(--stroke-secondary, #c8c8c8);
+                border-radius: 6px;
+                background: Field;
+                color: FieldText;
+              "
+            >
+              <html:option value="disabled">Disabled</html:option>
+              <html:option value="builtin">Built-in (Original)</html:option>
+              <html:option value="claude_bridge">Claude Code Bridge</html:option>
+            </html:select>
+            <html:span style="font-size: 11px; color: var(--fill-secondary, #888);">
+              Disabled hides Agent mode. Built-in uses original runtime. Claude Code Bridge uses your external backend.
+            </html:span>
+          </html:div>
+
+          <html:div
+            id="__addonRef__-agent-bridge-settings"
+            style="
+              display: none;
+              flex-direction: column;
+              gap: 10px;
+              padding: 10px 12px;
+              border: 1px solid var(--stroke-secondary, #c8c8c8);
+              border-radius: 8px;
+              background: color-mix(in srgb, var(--color-accent, #2563eb) 6%, Field);
+            "
+          >
+            <html:div style="display: flex; flex-direction: column; gap: 4px;">
+              <html:label
+                for="__addonRef__-agent-bridge-url"
+                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+              >
+                Bridge URL
+              </html:label>
+              <html:input
+                id="__addonRef__-agent-bridge-url"
+                type="text"
+                placeholder="http://127.0.0.1:18787"
+                style="
+                  width: min(520px, 100%);
+                  padding: 5px 8px;
+                  font-size: 12px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 6px;
+                  background: Field;
+                  color: FieldText;
+                "
+              />
+            </html:div>
+
+            <html:div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+              <html:button
+                id="__addonRef__-open-zotero-claude-config-folder"
+                style="
+                  padding: 4px 10px;
+                  font-size: 12px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 6px;
+                  background: color-mix(in srgb, var(--color-accent, #2563eb) 10%, transparent);
+                  color: var(--fill-primary, inherit);
+                  cursor: pointer;
+                "
+              >
+                Open Zotero Claude Config Folder
+              </html:button>
+              <html:span
+                id="__addonRef__-open-zotero-claude-config-folder-status"
+                style="font-size: 11px; color: var(--fill-secondary, #888);"
+              ></html:span>
+            </html:div>
+
+            <html:div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center;">
+              <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                <html:label
+                  for="__addonRef__-agent-trace-verbosity"
+                  style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+                >
+                  Process Trace Verbosity
+                </html:label>
+                <html:select
+                  id="__addonRef__-agent-trace-verbosity"
+                  style="
+                    min-width: 160px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    background: Field;
+                    color: FieldText;
+                  "
+                >
+                  <html:option value="compact">Compact</html:option>
+                  <html:option value="verbose">Verbose</html:option>
+                  <html:option value="raw">Raw</html:option>
+                </html:select>
+              </html:div>
+
+              <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                <html:label
+                  for="__addonRef__-agent-raw-log-visibility"
+                  style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+                >
+                  Raw Log Visibility
+                </html:label>
+                <html:select
+                  id="__addonRef__-agent-raw-log-visibility"
+                  style="
+                    min-width: 180px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    background: Field;
+                    color: FieldText;
+                  "
+                >
+                  <html:option value="debug_only">Debug only</html:option>
+                  <html:option value="always">Always</html:option>
+                  <html:option value="never">Never</html:option>
+                </html:select>
+              </html:div>
+            </html:div>
+
+            <html:label
+              style="
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 600;
+                font-size: 12px;
+                color: var(--fill-primary, inherit);
+              "
+            >
+              <html:input
+                id="__addonRef__-agent-process-collapse-default"
+                type="checkbox"
+              ></html:input>
+              Collapse "View Process" by default
+            </html:label>
+          </html:div>
         </html:div>
       </html:div>
 

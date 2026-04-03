@@ -1032,8 +1032,8 @@ export function createExternalBackendBridgeRuntime(options: {
       );
       const contextStatus =
         previousSignature && previousSignature === currentSignature
-          ? "已复用上轮上下文"
-          : "检测到新上下文并更新";
+          ? "Reused previous context"
+          : "Detected updated context";
       conversationContextSignature.set(params.request.conversationKey, currentSignature);
       await params.onEvent?.({ type: "status", text: contextStatus });
       try {
@@ -1050,7 +1050,7 @@ export function createExternalBackendBridgeRuntime(options: {
         }
         await params.onEvent?.({
           type: "status",
-          text: "外部 Agent 后端不可用，已自动回退到本地模式",
+          text: "External agent backend unavailable; fell back to local runtime",
         });
         return coreRuntime.runTurn(params);
       }
