@@ -18,8 +18,13 @@ import {
 } from "./utils/attachmentRefStore";
 import { runLegacyMigrations } from "./utils/migrations";
 import { createZToolkit } from "./utils/ztoolkit";
-import { getAgentApi, initAgentSubsystem, shutdownAgentSubsystem } from "./agent";
+import {
+  getAgentApi,
+  initAgentSubsystem,
+  shutdownAgentSubsystem,
+} from "./agent";
 import { pauseBatchProcessing } from "./modules/mineruBatchProcessor";
+import { startAutoWatch, stopAutoWatch } from "./modules/mineruAutoWatch";
 import { clearAllState, initFontScale } from "./modules/contextPanel/state";
 
 async function onStartup() {
@@ -73,6 +78,13 @@ async function onStartup() {
     ztoolkit.log("LLM: Failed to register webchat relay", err);
   }
 
+  // Start MinerU auto-watch for monitored folders
+  try {
+    startAutoWatch();
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to start MinerU auto-watch", err);
+  }
+
   registerPrefsPane();
 
   await Promise.all(
@@ -123,8 +135,11 @@ function onShutdown(): void {
   try {
     const { unregisterWebChatRelay } = require("./webchat/relayServer");
     unregisterWebChatRelay();
-  } catch { /* ignore if module not loaded */ }
+  } catch {
+    /* ignore if module not loaded */
+  }
   pauseBatchProcessing();
+  stopAutoWatch();
   shutdownAgentSubsystem();
   clearAllState();
   // Remove addon object
@@ -147,19 +162,14 @@ async function onNotify(
 ) {
   const shouldInvalidatePaperSearch =
     (type === "item" || type === "file") &&
-    [
-      "add",
-      "modify",
-      "delete",
-      "move",
-      "remove",
-      "trash",
-      "refresh",
-    ].includes(event);
+    ["add", "modify", "delete", "move", "remove", "trash", "refresh"].includes(
+      event,
+    );
   if (shouldInvalidatePaperSearch) {
     // Debounce: during bulk operations (import, sync) this fires hundreds
     // of times — coalesce into a single invalidation after 500ms of quiet.
-    if (paperSearchInvalidateTimer !== null) clearTimeout(paperSearchInvalidateTimer);
+    if (paperSearchInvalidateTimer !== null)
+      clearTimeout(paperSearchInvalidateTimer);
     paperSearchInvalidateTimer = setTimeout(() => {
       paperSearchInvalidateTimer = null;
       invalidatePaperSearchCache();

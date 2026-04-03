@@ -16,11 +16,22 @@ import type {
   MineruCollectionNode,
 } from "./mineruBatchProcessor";
 import { getMineruItemDir } from "./contextPanel/mineruCache";
+import {
+  isAutoWatchCollection,
+  addAutoWatchCollection,
+  removeAutoWatchCollection,
+  getAutoWatchCollectionIds,
+} from "../utils/mineruConfig";
+import { onAutoWatchProgress, getAutoWatchStatus } from "./mineruAutoWatch";
 
 function fmtDate(d: string): string {
   if (!d) return "";
-  try { const o = new Date(d); return `${o.getFullYear()}-${String(o.getMonth()+1).padStart(2,"0")}-${String(o.getDate()).padStart(2,"0")}`; }
-  catch { return d.slice(0,10); }
+  try {
+    const o = new Date(d);
+    return `${o.getFullYear()}-${String(o.getMonth() + 1).padStart(2, "0")}-${String(o.getDate()).padStart(2, "0")}`;
+  } catch {
+    return d.slice(0, 10);
+  }
 }
 
 type SortKey = "cached" | "title" | "firstCreator" | "year" | "dateAdded";
@@ -31,7 +42,8 @@ export async function registerMineruManagerScript(
   idPrefix = "llmforzotero",
 ): Promise<void> {
   const doc = win.document;
-  const $ = (suffix: string) => doc.getElementById(`${idPrefix}-mineru-mgr-${suffix}`);
+  const $ = (suffix: string) =>
+    doc.getElementById(`${idPrefix}-mineru-mgr-${suffix}`);
 
   const progressEl = $("progress") as HTMLProgressElement | null;
   const progressLabel = $("progress-label") as HTMLSpanElement | null;
@@ -76,14 +88,20 @@ export async function registerMineruManagerScript(
 
   // ── Helpers ────────────────────────────────────────────────────────────────
   function updateProgressBar(): void {
-    if (progressEl) { progressEl.max = localTotalCount || 1; progressEl.value = localProcessedCount; }
-    if (progressLabel) { progressLabel.textContent = `${localProcessedCount} / ${localTotalCount}`; }
+    if (progressEl) {
+      progressEl.max = localTotalCount || 1;
+      progressEl.value = localProcessedCount;
+    }
+    if (progressLabel) {
+      progressLabel.textContent = `${localProcessedCount} / ${localTotalCount}`;
+    }
   }
 
   function getVisibleItems(): MineruItemEntry[] {
     let items: MineruItemEntry[];
     if (activeCollectionId === "all") items = allItems;
-    else if (activeCollectionId === "unfiled") items = allItems.filter((i) => i.collectionIds.length === 0);
+    else if (activeCollectionId === "unfiled")
+      items = allItems.filter((i) => i.collectionIds.length === 0);
     else {
       const ids = recursiveItemsMap.get(activeCollectionId as number);
       items = ids ? allItems.filter((i) => ids.has(i.attachmentId)) : [];
@@ -109,7 +127,10 @@ export async function registerMineruManagerScript(
   }
 
   function getFolderItemIds(): number[] {
-    if (activeCollectionId === "unfiled") return allItems.filter((i) => i.collectionIds.length === 0).map((i) => i.attachmentId);
+    if (activeCollectionId === "unfiled")
+      return allItems
+        .filter((i) => i.collectionIds.length === 0)
+        .map((i) => i.attachmentId);
     if (typeof activeCollectionId === "number") {
       const s = recursiveItemsMap.get(activeCollectionId);
       return s ? [...s] : [];
@@ -153,13 +174,18 @@ export async function registerMineruManagerScript(
     for (const item of allItems) {
       for (const colId of item.collectionIds) {
         let s = directItemsMap.get(colId);
-        if (!s) { s = new Set(); directItemsMap.set(colId, s); }
+        if (!s) {
+          s = new Set();
+          directItemsMap.set(colId, s);
+        }
         s.add(item.attachmentId);
       }
     }
     function recurse(node: MineruCollectionNode): Set<number> {
       const set = new Set<number>(directItemsMap.get(node.collectionId) || []);
-      for (const child of node.children) { for (const id of recurse(child)) set.add(id); }
+      for (const child of node.children) {
+        for (const id of recurse(child)) set.add(id);
+      }
       recursiveItemsMap.set(node.collectionId, set);
       return set;
     }
@@ -167,51 +193,185 @@ export async function registerMineruManagerScript(
   }
 
   // ── Sidebar ────────────────────────────────────────────────────────────────
+  let autoWatchStatusDiv: HTMLDivElement | null = null;
+
+  function updateAutoWatchStatus(): void {
+    if (!autoWatchStatusDiv) return;
+    const status = getAutoWatchStatus();
+    const watchedCount = getAutoWatchCollectionIds().size;
+
+    if (status.isProcessing) {
+      autoWatchStatusDiv.innerHTML = `⚡ <strong>Auto-parsing:</strong> ${status.currentItem} (${status.queueLength} queued)`;
+      autoWatchStatusDiv.style.background =
+        "color-mix(in srgb, #f59e0b 12%, transparent)";
+    } else if (watchedCount > 0) {
+      autoWatchStatusDiv.innerHTML = `⚡ <strong>${watchedCount} folder(s)</strong> watching for new PDFs`;
+      autoWatchStatusDiv.style.background = "transparent";
+    } else {
+      autoWatchStatusDiv.innerHTML = `💡 Click the ⚡ icon next to any folder to enable auto-parsing`;
+      autoWatchStatusDiv.style.background = "transparent";
+    }
+  }
+
   function renderSidebar(): void {
     if (!sidebar) return;
     sidebar.innerHTML = "";
-    sidebar.appendChild(createSidebarEntry(t("My Library"), "all", 0, allItems.length));
+    sidebar.appendChild(
+      createSidebarEntry(t("My Library"), "all", 0, allItems.length),
+    );
     for (const root of collectionTree) renderSidebarNode(sidebar, root, 1);
     const uc = allItems.filter((i) => i.collectionIds.length === 0).length;
-    if (uc > 0) sidebar.appendChild(createSidebarEntry(t("Unfiled Items"), "unfiled", 0, uc));
+    if (uc > 0)
+      sidebar.appendChild(
+        createSidebarEntry(t("Unfiled Items"), "unfiled", 0, uc),
+      );
+
+    autoWatchStatusDiv = doc.createElement("div");
+    autoWatchStatusDiv.style.cssText =
+      "margin-top: 8px; padding: 8px; font-size: 11px; color: var(--fill-secondary, #888); border-top: 1px solid rgba(128,128,128,0.2); line-height: 1.4; border-radius: 4px; transition: background 0.2s;";
+    sidebar.appendChild(autoWatchStatusDiv);
+    updateAutoWatchStatus();
   }
 
-  function createSidebarEntry(name: string, key: number | "all" | "unfiled", indent: number, count: number): HTMLElement {
+  function createSidebarEntry(
+    name: string,
+    key: number | "all" | "unfiled",
+    indent: number,
+    count: number,
+  ): HTMLElement {
     const row = doc.createElement("div");
-    row.style.cssText = "display: flex; align-items: center; gap: 4px; padding: 4px 8px; cursor: pointer; user-select: none; border-radius: 4px; margin: 1px 4px;";
+    row.style.cssText =
+      "display: flex; align-items: center; gap: 4px; padding: 4px 8px; cursor: pointer; user-select: none; border-radius: 4px; margin: 1px 4px;";
     row.style.paddingLeft = `${8 + indent * 14}px`;
-    if (activeCollectionId === key) row.style.background = "color-mix(in srgb, var(--color-accent, #2563eb) 15%, transparent)";
-    const icon = doc.createElement("span"); icon.style.cssText = "font-size: 12px; flex-shrink: 0;";
-    icon.textContent = key === "all" ? "\uD83D\uDCDA" : "\uD83D\uDCC1"; row.appendChild(icon);
-    const nm = doc.createElement("span"); nm.style.cssText = "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;";
-    nm.style.fontWeight = key === "all" || activeCollectionId === key ? "600" : "400"; nm.textContent = name; row.appendChild(nm);
-    const ct = doc.createElement("span"); ct.style.cssText = "font-size: 10px; color: #888; flex-shrink: 0;"; ct.textContent = String(count); row.appendChild(ct);
-    row.addEventListener("click", () => { activeCollectionId = key; selectedIds.clear(); lastClickedId = null; renderSidebar(); renderItemsList(); updateButtons(); });
+    if (activeCollectionId === key)
+      row.style.background =
+        "color-mix(in srgb, var(--color-accent, #2563eb) 15%, transparent)";
+    const icon = doc.createElement("span");
+    icon.style.cssText = "font-size: 12px; flex-shrink: 0;";
+    icon.textContent = key === "all" ? "\uD83D\uDCDA" : "\uD83D\uDCC1";
+    row.appendChild(icon);
+    const nm = doc.createElement("span");
+    nm.style.cssText =
+      "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;";
+    nm.style.fontWeight =
+      key === "all" || activeCollectionId === key ? "600" : "400";
+    nm.textContent = name;
+    row.appendChild(nm);
+    const ct = doc.createElement("span");
+    ct.style.cssText = "font-size: 10px; color: #888; flex-shrink: 0;";
+    ct.textContent = String(count);
+    row.appendChild(ct);
+    row.addEventListener("click", () => {
+      activeCollectionId = key;
+      selectedIds.clear();
+      lastClickedId = null;
+      renderSidebar();
+      renderItemsList();
+      updateButtons();
+    });
     return row;
   }
 
-  function renderSidebarNode(parent: HTMLElement, node: MineruCollectionNode, indent: number): void {
+  function createAutoWatchToggle(collectionId: number): HTMLElement {
+    const isWatched = isAutoWatchCollection(collectionId);
+    const toggle = doc.createElement("span");
+    toggle.style.cssText =
+      "font-size: 14px; flex-shrink: 0; cursor: pointer; margin-left: 2px; padding: 0 2px; border-radius: 3px; transition: transform 0.1s ease;";
+    toggle.textContent = "\u26A1";
+    if (isWatched) {
+      toggle.style.color = "#f59e0b";
+      toggle.style.background = "rgba(245, 158, 11, 0.15)";
+      toggle.style.opacity = "1";
+    } else {
+      toggle.style.color = "#9ca3af";
+      toggle.style.background = "transparent";
+      toggle.style.opacity = "0.6";
+    }
+    toggle.addEventListener("mouseenter", () => {
+      toggle.style.transform = "scale(1.15)";
+      toggle.style.opacity = "1";
+    });
+    toggle.addEventListener("mouseleave", () => {
+      toggle.style.transform = "scale(1)";
+      if (!isWatched) {
+        toggle.style.opacity = "0.6";
+      }
+    });
+    toggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (isAutoWatchCollection(collectionId)) {
+        removeAutoWatchCollection(collectionId);
+      } else {
+        addAutoWatchCollection(collectionId);
+      }
+      renderSidebar();
+    });
+    return toggle;
+  }
+
+  function renderSidebarNode(
+    parent: HTMLElement,
+    node: MineruCollectionNode,
+    indent: number,
+  ): void {
     const recSet = recursiveItemsMap.get(node.collectionId);
     const count = recSet ? recSet.size : 0;
     const hasChildren = node.children.length > 0;
     const collapsed = collapsedSidebar.has(node.collectionId);
     const row = doc.createElement("div");
-    row.style.cssText = "display: flex; align-items: center; gap: 4px; padding: 4px 8px; cursor: pointer; user-select: none; border-radius: 4px; margin: 1px 4px;";
+    row.style.cssText =
+      "display: flex; align-items: center; gap: 4px; padding: 4px 8px; cursor: pointer; user-select: none; border-radius: 4px; margin: 1px 4px;";
     row.style.paddingLeft = `${8 + indent * 14}px`;
-    if (activeCollectionId === node.collectionId) row.style.background = "color-mix(in srgb, var(--color-accent, #2563eb) 15%, transparent)";
+    if (activeCollectionId === node.collectionId)
+      row.style.background =
+        "color-mix(in srgb, var(--color-accent, #2563eb) 15%, transparent)";
     if (hasChildren) {
-      const chev = doc.createElement("span"); chev.style.cssText = "width: 10px; flex-shrink: 0; font-size: 9px; text-align: center; color: #888; font-weight: 700;";
+      const chev = doc.createElement("span");
+      chev.style.cssText =
+        "width: 10px; flex-shrink: 0; font-size: 9px; text-align: center; color: #888; font-weight: 700;";
       chev.textContent = collapsed ? "\u203A" : "\u2304";
-      chev.addEventListener("click", (e) => { e.stopPropagation(); if (collapsed) collapsedSidebar.delete(node.collectionId); else collapsedSidebar.add(node.collectionId); renderSidebar(); });
+      chev.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (collapsed) collapsedSidebar.delete(node.collectionId);
+        else collapsedSidebar.add(node.collectionId);
+        renderSidebar();
+      });
       row.appendChild(chev);
-    } else { const sp = doc.createElement("span"); sp.style.cssText = "width: 10px; flex-shrink: 0;"; row.appendChild(sp); }
-    const icon = doc.createElement("span"); icon.style.cssText = "font-size: 12px; flex-shrink: 0;"; icon.textContent = "\uD83D\uDCC1"; row.appendChild(icon);
-    const nm = doc.createElement("span"); nm.style.cssText = "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;";
-    nm.style.fontWeight = activeCollectionId === node.collectionId ? "600" : "400"; nm.textContent = node.name; row.appendChild(nm);
-    const ct = doc.createElement("span"); ct.style.cssText = "font-size: 10px; color: #888; flex-shrink: 0;"; ct.textContent = String(count); row.appendChild(ct);
-    row.addEventListener("click", () => { activeCollectionId = node.collectionId; selectedIds.clear(); lastClickedId = null; renderSidebar(); renderItemsList(); updateButtons(); });
+    } else {
+      const sp = doc.createElement("span");
+      sp.style.cssText = "width: 10px; flex-shrink: 0;";
+      row.appendChild(sp);
+    }
+    const icon = doc.createElement("span");
+    icon.style.cssText = "font-size: 12px; flex-shrink: 0;";
+    icon.textContent = "\uD83D\uDCC1";
+    row.appendChild(icon);
+    const nm = doc.createElement("span");
+    nm.style.cssText =
+      "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;";
+    nm.style.fontWeight =
+      activeCollectionId === node.collectionId ? "600" : "400";
+    nm.textContent = node.name;
+    row.appendChild(nm);
+    const ct = doc.createElement("span");
+    ct.style.cssText = "font-size: 10px; color: #888; flex-shrink: 0;";
+    ct.textContent = String(count);
+    row.appendChild(ct);
+    const toggle = createAutoWatchToggle(node.collectionId);
+    row.appendChild(toggle);
+    row.addEventListener("click", () => {
+      activeCollectionId = node.collectionId;
+      selectedIds.clear();
+      lastClickedId = null;
+      renderSidebar();
+      renderItemsList();
+      updateButtons();
+    });
     parent.appendChild(row);
-    if (hasChildren && !collapsed) { for (const child of node.children) renderSidebarNode(parent, child, indent + 1); }
+    if (hasChildren && !collapsed) {
+      for (const child of node.children)
+        renderSidebarNode(parent, child, indent + 1);
+    }
   }
 
   // ── Column header sorting ──────────────────────────────────────────────────
@@ -221,7 +381,13 @@ export async function registerMineruManagerScript(
     for (let i = 0; i < spans.length; i++) {
       const sp = spans[i] as HTMLElement;
       const key = sp.getAttribute("data-sort-key") as SortKey;
-      const label = { cached: "\u25CF", title: t("Title"), firstCreator: t("Author"), year: t("Year"), dateAdded: t("Added") }[key];
+      const label = {
+        cached: "\u25CF",
+        title: t("Title"),
+        firstCreator: t("Author"),
+        year: t("Year"),
+        dateAdded: t("Added"),
+      }[key];
       if (sortKey === key) {
         if (key === "cached") {
           sp.textContent = sortDir === "asc" ? "\u25B2" : "\u25BC";
@@ -238,11 +404,17 @@ export async function registerMineruManagerScript(
 
   if (colHeaders) {
     colHeaders.addEventListener("click", (e) => {
-      const target = (e.target as HTMLElement).closest("[data-sort-key]") as HTMLElement | null;
+      const target = (e.target as HTMLElement).closest(
+        "[data-sort-key]",
+      ) as HTMLElement | null;
       if (!target) return;
       const key = target.getAttribute("data-sort-key") as SortKey;
-      if (sortKey === key) { sortDir = sortDir === "asc" ? "desc" : "asc"; }
-      else { sortKey = key; sortDir = key === "dateAdded" ? "desc" : "asc"; }
+      if (sortKey === key) {
+        sortDir = sortDir === "asc" ? "desc" : "asc";
+      } else {
+        sortKey = key;
+        sortDir = key === "dateAdded" ? "desc" : "asc";
+      }
       renderColumnHeaders();
       renderItemsList();
     });
@@ -278,8 +450,11 @@ export async function registerMineruManagerScript(
       const row = doc.createElement("div");
       row.setAttribute("data-attachment-id", String(item.attachmentId));
       const isSelected = selectedIds.has(item.attachmentId);
-      row.style.cssText = "display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid rgba(128,128,128,0.1); cursor: default;";
-      if (isSelected) row.style.background = "color-mix(in srgb, var(--color-accent, #2563eb) 12%, transparent)";
+      row.style.cssText =
+        "display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid rgba(128,128,128,0.1); cursor: default;";
+      if (isSelected)
+        row.style.background =
+          "color-mix(in srgb, var(--color-accent, #2563eb) 12%, transparent)";
 
       // Checkbox (shown when any selection exists)
       if (hasSelection) {
@@ -300,32 +475,38 @@ export async function registerMineruManagerScript(
 
       // Status dot
       const dot = doc.createElement("span");
-      dot.style.cssText = "width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;";
+      dot.style.cssText =
+        "width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;";
       dot.style.background = item.cached ? "#10b981" : "#d1d5db";
       dotElements.set(item.attachmentId, dot);
       row.appendChild(dot);
 
       // Title
       const titleSpan = doc.createElement("span");
-      titleSpan.style.cssText = "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;";
-      titleSpan.textContent = item.title; titleSpan.title = item.title;
+      titleSpan.style.cssText =
+        "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;";
+      titleSpan.textContent = item.title;
+      titleSpan.title = item.title;
       row.appendChild(titleSpan);
 
       // Author
       const authorSpan = doc.createElement("span");
-      authorSpan.style.cssText = "flex: 0 0 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: #888;";
+      authorSpan.style.cssText =
+        "flex: 0 0 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: #888;";
       authorSpan.textContent = item.firstCreator;
       row.appendChild(authorSpan);
 
       // Year
       const yearSpan = doc.createElement("span");
-      yearSpan.style.cssText = "flex: 0 0 40px; text-align: right; font-size: 11.5px; color: #888;";
+      yearSpan.style.cssText =
+        "flex: 0 0 40px; text-align: right; font-size: 11.5px; color: #888;";
       yearSpan.textContent = item.year;
       row.appendChild(yearSpan);
 
       // Date added
       const dateSpan = doc.createElement("span");
-      dateSpan.style.cssText = "flex: 0 0 72px; text-align: right; font-size: 11px; color: #888;";
+      dateSpan.style.cssText =
+        "flex: 0 0 72px; text-align: right; font-size: 11px; color: #888;";
       dateSpan.textContent = fmtDate(item.dateAdded);
       row.appendChild(dateSpan);
 
@@ -363,8 +544,12 @@ export async function registerMineruManagerScript(
 
     if (isShift && lastClickedId !== null) {
       // Range select: from lastClickedId to attachmentId
-      const idxA = visibleItemsOrdered.findIndex((i) => i.attachmentId === lastClickedId);
-      const idxB = visibleItemsOrdered.findIndex((i) => i.attachmentId === attachmentId);
+      const idxA = visibleItemsOrdered.findIndex(
+        (i) => i.attachmentId === lastClickedId,
+      );
+      const idxB = visibleItemsOrdered.findIndex(
+        (i) => i.attachmentId === attachmentId,
+      );
       if (idxA >= 0 && idxB >= 0) {
         const from = Math.min(idxA, idxB);
         const to = Math.max(idxA, idxB);
@@ -408,8 +593,11 @@ export async function registerMineruManagerScript(
   }
 
   doc.addEventListener("mousedown", (e) => {
-    if (contextMenu && contextMenu.style.display !== "none" &&
-      !(e.target as HTMLElement)?.closest?.(`#${contextMenuId}`)) {
+    if (
+      contextMenu &&
+      contextMenu.style.display !== "none" &&
+      !(e.target as HTMLElement)?.closest?.(`#${contextMenuId}`)
+    ) {
       hideContextMenu();
     }
   });
@@ -417,20 +605,31 @@ export async function registerMineruManagerScript(
     if ((e as KeyboardEvent).key === "Escape") {
       hideContextMenu();
       if (selectedIds.size > 0) {
-        selectedIds.clear(); lastClickedId = null;
-        renderItemsList(); updateButtons();
+        selectedIds.clear();
+        lastClickedId = null;
+        renderItemsList();
+        updateButtons();
       }
     }
   });
 
   function addHover(el: HTMLElement): void {
-    el.addEventListener("mouseenter", () => { el.style.background = "color-mix(in srgb, currentColor 10%, transparent)"; });
-    el.addEventListener("mouseleave", () => { el.style.background = "transparent"; });
+    el.addEventListener("mouseenter", () => {
+      el.style.background = "color-mix(in srgb, currentColor 10%, transparent)";
+    });
+    el.addEventListener("mouseleave", () => {
+      el.style.background = "transparent";
+    });
   }
 
   if (ctxProcessBtn) {
     ctxProcessBtn.addEventListener("click", () => {
-      const ids = selectedIds.size > 0 ? [...selectedIds] : (contextMenuItemId != null ? [contextMenuItemId] : []);
+      const ids =
+        selectedIds.size > 0
+          ? [...selectedIds]
+          : contextMenuItemId != null
+            ? [contextMenuItemId]
+            : [];
       hideContextMenu();
       if (ids.length > 0) void processSelectedItems(ids);
     });
@@ -443,15 +642,40 @@ export async function registerMineruManagerScript(
         const dirPath = getMineruItemDir(contextMenuItemId);
         hideContextMenu();
         try {
-          const Cc = (globalThis as unknown as { Components?: { classes?: Record<string, { createInstance: (iface: unknown) => unknown }> } }).Components?.classes;
-          const Ci = (globalThis as unknown as { Components?: { interfaces?: Record<string, unknown> } }).Components?.interfaces;
+          const Cc = (
+            globalThis as unknown as {
+              Components?: {
+                classes?: Record<
+                  string,
+                  { createInstance: (iface: unknown) => unknown }
+                >;
+              };
+            }
+          ).Components?.classes;
+          const Ci = (
+            globalThis as unknown as {
+              Components?: { interfaces?: Record<string, unknown> };
+            }
+          ).Components?.interfaces;
           if (Cc && Ci) {
-            const f = Cc["@mozilla.org/file/local;1"]?.createInstance(Ci.nsIFile as unknown) as
-              | { initWithPath?: (p: string) => void; reveal?: () => void } | undefined;
-            if (f?.initWithPath) { f.initWithPath(dirPath); f.reveal?.(); }
+            const f = Cc["@mozilla.org/file/local;1"]?.createInstance(
+              Ci.nsIFile as unknown,
+            ) as
+              | { initWithPath?: (p: string) => void; reveal?: () => void }
+              | undefined;
+            if (f?.initWithPath) {
+              f.initWithPath(dirPath);
+              f.reveal?.();
+            }
           }
         } catch {
-          try { (Zotero as unknown as { launchFile?: (p: string) => void }).launchFile?.(dirPath); } catch { /* */ }
+          try {
+            (
+              Zotero as unknown as { launchFile?: (p: string) => void }
+            ).launchFile?.(dirPath);
+          } catch {
+            /* */
+          }
         }
       }
     });
@@ -460,7 +684,12 @@ export async function registerMineruManagerScript(
 
   if (ctxDeleteBtn) {
     ctxDeleteBtn.addEventListener("click", async () => {
-      const ids = selectedIds.size > 0 ? [...selectedIds] : (contextMenuItemId != null ? [contextMenuItemId] : []);
+      const ids =
+        selectedIds.size > 0
+          ? [...selectedIds]
+          : contextMenuItemId != null
+            ? [contextMenuItemId]
+            : [];
       hideContextMenu();
       for (const id of ids) {
         await deleteMineruCacheForItem(id);
@@ -492,9 +721,10 @@ export async function registerMineruManagerScript(
       } else if (s.failedCount > 0 && s.lastFailedMessage) {
         // Not actively processing, but there were failures — show error reason
         // Error reason goes first (actionable); count provides context
-        const msg = s.failedCount > 1
-          ? `${s.failedCount} ${t("items failed")} — ${s.lastFailedMessage}`
-          : `${t("Failed")} — ${s.lastFailedMessage}`;
+        const msg =
+          s.failedCount > 1
+            ? `${s.failedCount} ${t("items failed")} — ${s.lastFailedMessage}`
+            : `${t("Failed")} — ${s.lastFailedMessage}`;
         statusEl.textContent = msg;
         statusEl.title = msg;
         statusEl.style.color = "#dc2626";
@@ -509,8 +739,13 @@ export async function registerMineruManagerScript(
       }
     }
     if (errorSpan) {
-      if (s.error) { errorSpan.style.display = "inline"; errorSpan.textContent = s.error; }
-      else { errorSpan.style.display = "none"; errorSpan.textContent = ""; }
+      if (s.error) {
+        errorSpan.style.display = "inline";
+        errorSpan.textContent = s.error;
+      } else {
+        errorSpan.style.display = "none";
+        errorSpan.textContent = "";
+      }
     }
     if (itemsList) {
       const rows = itemsList.querySelectorAll("[data-attachment-id]");
@@ -546,7 +781,8 @@ export async function registerMineruManagerScript(
 
   // Poll-based dot updater: check every 500ms if there's an active item
   // and set its dot to yellow. Guard against duplicate intervals.
-  const existingInterval = (win as unknown as { _mineruDotPoll?: number })._mineruDotPoll;
+  const existingInterval = (win as unknown as { _mineruDotPoll?: number })
+    ._mineruDotPoll;
   if (existingInterval) win.clearInterval(existingInterval);
   const dotPollInterval = win.setInterval(() => {
     const s = getMineruBatchState();
@@ -557,7 +793,8 @@ export async function registerMineruManagerScript(
       }
     }
   }, 500);
-  (win as unknown as { _mineruDotPoll?: number })._mineruDotPoll = dotPollInterval;
+  (win as unknown as { _mineruDotPoll?: number })._mineruDotPoll =
+    dotPollInterval;
   win.addEventListener("unload", () => clearInterval(dotPollInterval));
 
   // ── Button handlers ────────────────────────────────────────────────────────
@@ -570,7 +807,8 @@ export async function registerMineruManagerScript(
       }
       if (selectedIds.size > 0) {
         const ids = [...selectedIds];
-        selectedIds.clear(); lastClickedId = null;
+        selectedIds.clear();
+        lastClickedId = null;
         void processSelectedItems(ids);
         renderItemsList();
       } else if (isSubfolder() || activeCollectionId === "unfiled") {
@@ -585,19 +823,30 @@ export async function registerMineruManagerScript(
   if (deleteBtn) {
     deleteBtn.addEventListener("click", async () => {
       if (selectedIds.size > 0) {
-        if (!win.confirm(`${t("Delete MinerU cache for")} ${selectedIds.size} ${t("selected item(s)?")}`)) return;
+        if (
+          !win.confirm(
+            `${t("Delete MinerU cache for")} ${selectedIds.size} ${t("selected item(s)?")}`,
+          )
+        )
+          return;
         for (const id of selectedIds) {
           await deleteMineruCacheForItem(id);
           const entry = allItems.find((i) => i.attachmentId === id);
           if (entry) entry.cached = false;
         }
-        selectedIds.clear(); lastClickedId = null;
+        selectedIds.clear();
+        lastClickedId = null;
         localProcessedCount = allItems.filter((i) => i.cached).length;
         updateProgressBar();
         renderItemsList();
       } else if (isSubfolder() || activeCollectionId === "unfiled") {
         const ids = getFolderItemIds();
-        if (!win.confirm(`${t("Delete MinerU cache for")} ${ids.length} ${t("item(s) in this folder?")}`)) return;
+        if (
+          !win.confirm(
+            `${t("Delete MinerU cache for")} ${ids.length} ${t("item(s) in this folder?")}`,
+          )
+        )
+          return;
         for (const id of ids) {
           await deleteMineruCacheForItem(id);
           const entry = allItems.find((i) => i.attachmentId === id);
@@ -607,7 +856,12 @@ export async function registerMineruManagerScript(
         updateProgressBar();
         renderItemsList();
       } else {
-        if (!win.confirm(t("Delete all MinerU cached files? This cannot be undone."))) return;
+        if (
+          !win.confirm(
+            t("Delete all MinerU cached files? This cannot be undone."),
+          )
+        )
+          return;
         await deleteAllMineruCache();
         await loadData();
         renderSidebar();
@@ -646,7 +900,10 @@ export async function registerMineruManagerScript(
       const prevCollectionId = activeCollectionId;
       await loadData();
       // If the previously selected collection no longer exists, reset to "all"
-      if (typeof prevCollectionId === "number" && !recursiveItemsMap.has(prevCollectionId)) {
+      if (
+        typeof prevCollectionId === "number" &&
+        !recursiveItemsMap.has(prevCollectionId)
+      ) {
         activeCollectionId = "all";
       }
       renderSidebar();
@@ -656,23 +913,31 @@ export async function registerMineruManagerScript(
 
   let notifierId: string | null = null;
   try {
-    const notifier = (Zotero as unknown as {
-      Notifier?: {
-        registerObserver?: (
-          observer: { notify: (event: string, type: string, ids: unknown[]) => void },
-          types: string[],
-          id?: string,
-        ) => string;
-        unregisterObserver?: (id: string) => void;
-      };
-    }).Notifier;
+    const notifier = (
+      Zotero as unknown as {
+        Notifier?: {
+          registerObserver?: (
+            observer: {
+              notify: (event: string, type: string, ids: unknown[]) => void;
+            },
+            types: string[],
+            id?: string,
+          ) => string;
+          unregisterObserver?: (id: string) => void;
+        };
+      }
+    ).Notifier;
     if (notifier?.registerObserver) {
       notifierId = notifier.registerObserver(
         {
           notify(event: string, type: string) {
             if (
-              (type === "item" && ["add", "modify", "delete", "trash", "remove"].includes(event)) ||
-              (type === "collection" && ["add", "modify", "delete", "remove"].includes(event))
+              (type === "item" &&
+                ["add", "modify", "delete", "trash", "remove"].includes(
+                  event,
+                )) ||
+              (type === "collection" &&
+                ["add", "modify", "delete", "remove"].includes(event))
             ) {
               debouncedRefresh();
             }
@@ -682,18 +947,29 @@ export async function registerMineruManagerScript(
         "mineruManager",
       );
     }
-  } catch { /* Notifier not available */ }
+  } catch {
+    /* Notifier not available */
+  }
+
+  const unsubscribeAutoWatch = onAutoWatchProgress(() => {
+    updateAutoWatchStatus();
+  });
 
   win.addEventListener("unload", () => {
     unsubscribe();
+    unsubscribeAutoWatch();
     if (refreshTimer) clearTimeout(refreshTimer);
     if (notifierId) {
       try {
-        const notifier = (Zotero as unknown as {
-          Notifier?: { unregisterObserver?: (id: string) => void };
-        }).Notifier;
+        const notifier = (
+          Zotero as unknown as {
+            Notifier?: { unregisterObserver?: (id: string) => void };
+          }
+        ).Notifier;
         notifier?.unregisterObserver?.(notifierId);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
   });
 
