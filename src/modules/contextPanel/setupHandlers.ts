@@ -8908,22 +8908,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const liveRefs = getPanelDomRefs(body);
       const liveInputBox = liveRefs.inputBox;
       if (!agentQueuedInputs.size() || !liveInputBox) return;
-      // Never overwrite in-progress user drafting text.
-      // If the user is typing, defer queue dispatch until the input is empty.
-      if ((liveInputBox.value || "").trim().length > 0) {
-        scheduleAgentQueueDrain();
-        return;
-      }
       const next = agentQueuedInputs.takeNextForSend();
       if (!next?.text.trim()) return;
-      liveInputBox.value = next.text;
       // Remove immediately so queued entries disappear as soon as they are sent.
       // This matches the expected UX: once dispatch starts, the item is no
       // longer considered "queued".
       agentQueuedInputs.remove(next.id);
       renderAgentQueuedInputs();
       persistDraftInputForCurrentConversation();
-      await executeSend({ fromQueue: true });
+      await executeSend({ fromQueue: true, queuedText: next.text });
       renderAgentQueuedInputs();
       if (agentQueuedInputs.size()) {
         scheduleAgentQueueDrain();
@@ -8976,7 +8969,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     });
   }
 
-  const executeSend = async (opts?: { fromQueue?: boolean }) => {
+  const executeSend = async (opts?: {
+    fromQueue?: boolean;
+    queuedText?: string;
+  }) => {
     if (
       !opts?.fromQueue &&
       getCurrentRuntimeMode() === "agent" &&
@@ -9251,7 +9247,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       return;
     }
     closeActionPicker();
-    await doSend();
+    await doSend({
+      overrideText: opts?.fromQueue ? opts?.queuedText : undefined,
+      preserveInputDraft: Boolean(opts?.fromQueue),
+    });
     persistDraftInputForCurrentConversation();
   };
 
