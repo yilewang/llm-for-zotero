@@ -628,6 +628,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const openZoteroClaudeConfigFolderStatus = doc.querySelector(
     `#${config.addonRef}-open-zotero-claude-config-folder-status`,
   ) as HTMLSpanElement | null;
+  const agentClaudeConfigSourceSelect = doc.querySelector(
+    `#${config.addonRef}-agent-claude-config-source`,
+  ) as HTMLSelectElement | null;
   const agentTraceVerbositySelect = doc.querySelector(
     `#${config.addonRef}-agent-trace-verbosity`,
   ) as HTMLSelectElement | null;
@@ -1657,6 +1660,26 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  if (agentClaudeConfigSourceSelect) {
+    const key = `${config.prefsPrefix}.agentClaudeConfigSource`;
+    const saved = (Zotero.Prefs.get(key, true) as string) || "zotero-specific";
+    const normalized =
+      saved === "user-level" || saved === "zotero-specific"
+        ? saved
+        : "zotero-specific";
+    agentClaudeConfigSourceSelect.value = normalized;
+    agentClaudeConfigSourceSelect.addEventListener("change", () => {
+      const next =
+        agentClaudeConfigSourceSelect.value === "user-level"
+          ? "user-level"
+          : "zotero-specific";
+      Zotero.Prefs.set(key, next, true);
+      if (openZoteroClaudeConfigFolderStatus) {
+        openZoteroClaudeConfigFolderStatus.textContent = "";
+      }
+    });
+  }
+
   if (agentTraceVerbositySelect) {
     const key = `${config.prefsPrefix}.agentTraceVerbosity`;
     const saved = (Zotero.Prefs.get(key, true) as string) || "compact";
@@ -1705,11 +1728,24 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   if (openZoteroClaudeConfigFolderBtn) {
     openZoteroClaudeConfigFolderBtn.addEventListener("click", async () => {
       const home = resolveHomeDirectory();
+      const sourceRaw = (Zotero.Prefs.get(
+        `${config.prefsPrefix}.agentClaudeConfigSource`,
+        true,
+      ) as string) || "zotero-specific";
+      const source =
+        sourceRaw === "user-level" || sourceRaw === "zotero-specific"
+          ? sourceRaw
+          : "zotero-specific";
       const runtimeRoot = joinPath(home, "Zotero", "agent-runtime");
-      const path = joinPath(runtimeRoot, ".claude");
+      const path =
+        source === "user-level"
+          ? joinPath(home, ".claude")
+          : joinPath(runtimeRoot, ".claude");
       try {
-        await ensureDirectory(runtimeRoot, joinPath(home, "Zotero"));
-        await ensureDirectory(path, runtimeRoot);
+        if (source !== "user-level") {
+          await ensureDirectory(runtimeRoot, joinPath(home, "Zotero"));
+        }
+        await ensureDirectory(path, source === "user-level" ? home : runtimeRoot);
       } catch {
         // best-effort
       }

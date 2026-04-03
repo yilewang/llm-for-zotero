@@ -340,6 +340,34 @@
               ></html:span>
             </html:div>
 
+            <html:div style="display: flex; flex-direction: column; gap: 4px;">
+              <html:label
+                for="__addonRef__-agent-claude-config-source"
+                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+              >
+                Claude Config Source
+              </html:label>
+              <html:select
+                id="__addonRef__-agent-claude-config-source"
+                style="
+                  min-width: 220px;
+                  width: fit-content;
+                  padding: 4px 8px;
+                  font-size: 12px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 6px;
+                  background: Field;
+                  color: FieldText;
+                "
+              >
+                <html:option value="zotero-specific">zotero-specific</html:option>
+                <html:option value="user-level">user-level</html:option>
+              </html:select>
+              <html:span style="font-size: 11px; color: var(--fill-secondary, #888);">
+                Switch active Claude settings source only. No files are copied or modified.
+              </html:span>
+            </html:div>
+
             <html:div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center;">
               <html:div style="display: flex; flex-direction: column; gap: 4px;">
                 <html:label

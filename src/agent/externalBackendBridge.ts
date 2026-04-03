@@ -1,3 +1,4 @@
+import { config } from "../../package.json";
 import type { AgentRuntime } from "./runtime";
 import type {
   ActionConfirmationMode,
@@ -188,6 +189,24 @@ type BridgeRuntimeRequest = {
     noteText?: string;
   };
 };
+
+function getClaudeConfigSourcePref(): "user-level" | "zotero-specific" {
+  try {
+    const raw = Zotero.Prefs.get(
+      `${config.prefsPrefix}.agentClaudeConfigSource`,
+      true,
+    );
+    return raw === "user-level" ? "user-level" : "zotero-specific";
+  } catch {
+    return "zotero-specific";
+  }
+}
+
+function getClaudeSettingSourcesByPref(): Array<"user" | "project" | "local"> {
+  return getClaudeConfigSourcePref() === "user-level"
+    ? ["user", "project", "local"]
+    : ["project", "local"];
+}
 
 function normalizeScopeType(value: unknown): BridgeScopeType | null {
   if (typeof value !== "string") return null;
@@ -388,6 +407,8 @@ async function runExternalBridgeTurn(
     runtimeRequest: params.runtimeRequest,
     metadata: {
       runType: "chat",
+      claudeConfigSource: getClaudeConfigSourcePref(),
+      claudeSettingSources: getClaudeSettingSourcesByPref(),
       activeItemId: params.request.activeItemId,
       libraryID: params.request.libraryID,
       contextEnvelope: params.contextEnvelope,
@@ -966,6 +987,8 @@ export function createExternalBackendBridgeRuntime(options: {
           approved,
           metadata: {
             runType: "action",
+            claudeConfigSource: getClaudeConfigSourcePref(),
+            claudeSettingSources: getClaudeSettingSourcesByPref(),
             scopeType: actionScope?.scopeType,
             scopeId: actionScope?.scopeId,
             scopeLabel: actionScope?.scopeLabel,
