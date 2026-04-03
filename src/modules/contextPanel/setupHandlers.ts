@@ -8881,15 +8881,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const actions = panelDoc.createElement("div");
       actions.className = "llm-agent-queue-actions";
 
-      const steerBtn = panelDoc.createElement("button");
-      steerBtn.className =
-        "llm-agent-queue-action-btn llm-agent-queue-steer-btn";
-      steerBtn.type = "button";
-      steerBtn.dataset.action = "steer";
-      steerBtn.dataset.queueId = String(entry.id);
-      steerBtn.textContent = "Steer";
-      steerBtn.disabled = entry.status === "sending";
-
       const deleteBtn = panelDoc.createElement("button");
       deleteBtn.className =
         "llm-agent-queue-action-btn llm-agent-queue-delete-btn";
@@ -8899,7 +8890,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       deleteBtn.textContent = "Delete";
       deleteBtn.disabled = entry.status === "sending";
 
-      actions.append(steerBtn, deleteBtn);
+      actions.append(deleteBtn);
       row.append(text, actions);
       liveAgentQueueList.appendChild(row);
     }
@@ -8981,23 +8972,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (action === "delete") {
         if (agentQueuedInputs.remove(id) && status) {
           setStatus(status, "Queued follow-up removed.", "ready");
-        }
-        renderAgentQueuedInputs();
-        return;
-      }
-      if (action === "steer") {
-        const entry = agentQueuedInputs.list().find((candidate) => candidate.id === id);
-        if (entry) {
-          agentQueuedInputs.remove(id);
-          const liveRefs = getPanelDomRefs(body);
-          if (liveRefs.inputBox) {
-            liveRefs.inputBox.value = entry.text;
-            liveRefs.inputBox.focus({ preventScroll: true });
-          }
-          persistDraftInputForCurrentConversation();
-        }
-        if (entry && status) {
-          setStatus(status, "Queued follow-up moved back to the draft box.", "ready");
         }
         renderAgentQueuedInputs();
       }
