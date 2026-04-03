@@ -7368,7 +7368,20 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (status) setStatus(status, `Running: ${formatActionLabel(action.name)}…`, "ready");
     try {
       const agentApi = getAgentApi();
+      if (!item) {
+        throw new Error("No active item for action execution");
+      }
+      const currentConversationKey = getConversationKey(item);
+      const currentLibraryID =
+        typeof item?.libraryID === "number" && Number.isFinite(item.libraryID)
+          ? Math.floor(item.libraryID)
+          : undefined;
       const result = await agentApi.runAction(action.name, input, {
+        conversationKey:
+          Number.isFinite(currentConversationKey) && currentConversationKey > 0
+            ? Math.floor(currentConversationKey)
+            : undefined,
+        libraryID: currentLibraryID,
         confirmationMode: "native_ui",
         onProgress: (event) => {
           if (event.type === "step_start" && status) {

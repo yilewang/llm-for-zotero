@@ -2628,6 +2628,64 @@ function resolveAgentScopeFromItem(item: Zotero.Item): Pick<
       scopeLabel,
     };
   }
+
+  const displayKind = resolveDisplayConversationKind(item);
+  if (displayKind === "global") {
+    try {
+      const pane = Zotero.getActiveZoteroPane?.() as
+        | {
+            getSelectedCollection?: () => unknown;
+            getSelectedTags?: () => unknown;
+          }
+        | undefined;
+      const selectedCollection = pane?.getSelectedCollection?.() as
+        | { id?: unknown; name?: unknown }
+        | null
+        | undefined;
+      const collectionId =
+        typeof selectedCollection?.id === "number" &&
+        Number.isFinite(selectedCollection.id)
+          ? Math.floor(selectedCollection.id)
+          : 0;
+      if (collectionId > 0) {
+        const collectionName =
+          typeof selectedCollection?.name === "string"
+            ? selectedCollection.name.trim()
+            : "";
+        return {
+          scopeType: "folder",
+          scopeId: `${libraryID}:${collectionId}`,
+          scopeLabel: collectionName || `Collection ${collectionId}`,
+        };
+      }
+
+      const selectedTagsRaw = pane?.getSelectedTags?.();
+      const selectedTags = Array.isArray(selectedTagsRaw)
+        ? selectedTagsRaw
+            .filter((tag): tag is string => typeof tag === "string")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+        : [];
+      if (selectedTags.length === 1) {
+        return {
+          scopeType: "tag",
+          scopeId: `${libraryID}:${selectedTags[0]}`,
+          scopeLabel: selectedTags[0],
+        };
+      }
+      if (selectedTags.length > 1) {
+        const normalized = [...selectedTags].sort((a, b) => a.localeCompare(b));
+        return {
+          scopeType: "tagset",
+          scopeId: `${libraryID}:${normalized.join("|")}`,
+          scopeLabel: normalized.join(" + "),
+        };
+      }
+    } catch {
+      // ignore and fallback to open scope
+    }
+  }
+
   return {
     scopeType: "open",
     scopeId: String(libraryID),
