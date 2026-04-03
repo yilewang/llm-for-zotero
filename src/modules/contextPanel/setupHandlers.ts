@@ -8838,15 +8838,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const running = Boolean(
       currentAbortController && !currentAbortController.signal.aborted,
     );
-    const queuedCount = agentQueuedInputs.size();
-    liveSendBtn.style.display = "";
+    liveSendBtn.style.display = running ? "none" : "";
     liveSendBtn.disabled = false;
-    liveSendBtn.textContent = running
-      ? queuedCount > 0
-        ? `Queue (${queuedCount})`
-        : t("Queue")
-      : t("Send");
-    liveSendBtn.title = running ? t("Queue follow-up") : t("Send");
+    liveSendBtn.textContent = t("Send");
+    liveSendBtn.title = t("Send");
     liveCancelBtn.style.display = running ? "" : "none";
   };
 
