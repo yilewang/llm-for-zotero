@@ -708,19 +708,10 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     id: "llm-agent-queue-panel",
   });
   agentQueuePanel.style.display = "none";
-  const agentQueueHeader = createElement(
-    doc,
-    "div",
-    "llm-agent-queue-header",
-    {
-      id: "llm-agent-queue-header",
-      textContent: t("Queued follow-ups"),
-    },
-  );
   const agentQueueList = createElement(doc, "div", "llm-agent-queue-list", {
     id: "llm-agent-queue-list",
   });
-  agentQueuePanel.append(agentQueueHeader, agentQueueList);
+  agentQueuePanel.append(agentQueueList);
   composeArea.appendChild(agentQueuePanel);
 
   const inputBox = createElement(doc, "textarea", "llm-input", {

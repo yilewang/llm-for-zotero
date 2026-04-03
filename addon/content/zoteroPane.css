@@ -4022,25 +4022,21 @@ label.llm-search-results-item:hover {
 
 .llm-agent-queue-panel {
   display: none;
-  gap: 8px;
-  border: 1px solid color-mix(in srgb, var(--stroke-secondary) 80%, transparent);
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--stroke-secondary) 86%, transparent);
   border-radius: 16px;
   background: color-mix(
     in srgb,
-    var(--material-background) 88%,
+    var(--material-background) 84%,
     var(--fill-quinary)
   );
-  padding: 12px;
+  padding: 10px 12px;
   width: 100%;
   box-sizing: border-box;
 }
 
 .llm-agent-queue-header {
-  font-size: var(--llm-fs-12);
-  color: var(--fill-primary);
-  line-height: 1.3;
-  font-weight: 600;
-  padding: 0 4px;
+  display: none;
 }
 
 .llm-agent-queue-list {
@@ -4057,9 +4053,10 @@ label.llm-search-results-item:hover {
   align-items: center;
   min-height: 54px;
   padding: 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--stroke-secondary) 78%, transparent);
+  border: 1px solid color-mix(in srgb, var(--stroke-secondary) 94%, transparent);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--material-background) 92%, var(--fill-quinary));
+  background: color-mix(in srgb, var(--material-background) 94%, var(--fill-quinary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--stroke-secondary) 36%, transparent);
   width: 100%;
   box-sizing: border-box;
 }
@@ -4068,9 +4065,10 @@ label.llm-search-results-item:hover {
   border-color: color-mix(in srgb, var(--color-accent) 45%, var(--stroke-secondary));
   background: color-mix(
     in srgb,
-    var(--material-background) 88%,
+    var(--material-background) 84%,
     var(--color-accent) 12%
   );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 48%, transparent);
 }
 
 .llm-agent-queue-text {
