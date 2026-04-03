@@ -136,6 +136,19 @@ type BridgeAttachment = {
   contentHash?: string;
 };
 
+type BridgePaperContext = {
+  itemId?: number;
+  contextItemId?: number;
+  title?: string;
+  attachmentTitle?: string;
+  citationKey?: string;
+  firstCreator?: string;
+  year?: string;
+  mineruCacheDir?: string;
+  mineruFullMdPath?: string;
+  contextFilePath?: string;
+};
+
 type BridgeRuntimeRequest = {
   conversationKey: number;
   userText: string;
@@ -147,9 +160,9 @@ type BridgeRuntimeRequest = {
   providerProtocol?: string;
   selectedTexts?: string[];
   selectedTextSources?: unknown[];
-  selectedPaperContexts?: unknown[];
-  fullTextPaperContexts?: unknown[];
-  pinnedPaperContexts?: unknown[];
+  selectedPaperContexts?: BridgePaperContext[];
+  fullTextPaperContexts?: BridgePaperContext[];
+  pinnedPaperContexts?: BridgePaperContext[];
   attachments?: BridgeAttachment[];
   screenshots?: string[];
   activeNoteContext?: {
@@ -400,9 +413,96 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
   };
 }
 
-function buildBridgeRuntimeRequest(
+async function buildBridgeRuntimeRequest(
   request: AgentRuntimeRequest,
-): BridgeRuntimeRequest {
+): Promise<BridgeRuntimeRequest> {
+  const joinPath = (base: string, segment: string): string => {
+    if (!base) return segment;
+    if (!segment) return base;
+    const normalizedBase = base.endsWith("/") ? base.slice(0, -1) : base;
+    const normalizedSegment = segment.startsWith("/")
+      ? segment.slice(1)
+      : segment;
+    return `${normalizedBase}/${normalizedSegment}`;
+  };
+
+  const resolveAttachmentAbsolutePath = async (
+    contextItemId: unknown,
+  ): Promise<string | undefined> => {
+    const normalizedId =
+      typeof contextItemId === "number" && Number.isFinite(contextItemId)
+        ? Math.floor(contextItemId)
+        : 0;
+    if (normalizedId <= 0) return undefined;
+    try {
+      const attachment = Zotero.Items.get(normalizedId);
+      if (!attachment?.isAttachment?.()) return undefined;
+      const asyncPath = await (
+        attachment as unknown as { getFilePathAsync?: () => Promise<string | false> }
+      ).getFilePathAsync?.();
+      const directPath =
+        typeof asyncPath === "string" && asyncPath.trim()
+          ? asyncPath.trim()
+          : typeof (attachment as { getFilePath?: () => string | undefined }).getFilePath ===
+              "function"
+            ? (attachment as { getFilePath: () => string | undefined }).getFilePath()
+            : (attachment as unknown as { attachmentPath?: string }).attachmentPath;
+      if (typeof directPath !== "string") return undefined;
+      const normalizedPath = directPath.trim();
+      return normalizedPath.startsWith("/") ? normalizedPath : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const enrichPaperContexts = async (
+    list: unknown,
+  ): Promise<BridgePaperContext[] | undefined> => {
+    if (!Array.isArray(list) || !list.length) return undefined;
+    const enriched: BridgePaperContext[] = [];
+    for (const raw of list) {
+      if (!raw || typeof raw !== "object") continue;
+      const paper = raw as Record<string, unknown>;
+      const mineruCacheDir =
+        typeof paper.mineruCacheDir === "string" && paper.mineruCacheDir.trim()
+          ? paper.mineruCacheDir.trim()
+          : undefined;
+      const contextFilePath = await resolveAttachmentAbsolutePath(
+        paper.contextItemId,
+      );
+      const context: BridgePaperContext = {
+        itemId:
+          typeof paper.itemId === "number" && Number.isFinite(paper.itemId)
+            ? Math.floor(paper.itemId)
+            : undefined,
+        contextItemId:
+          typeof paper.contextItemId === "number" &&
+          Number.isFinite(paper.contextItemId)
+            ? Math.floor(paper.contextItemId)
+            : undefined,
+        title: typeof paper.title === "string" ? paper.title : undefined,
+        attachmentTitle:
+          typeof paper.attachmentTitle === "string"
+            ? paper.attachmentTitle
+            : undefined,
+        citationKey:
+          typeof paper.citationKey === "string" ? paper.citationKey : undefined,
+        firstCreator:
+          typeof paper.firstCreator === "string"
+            ? paper.firstCreator
+            : undefined,
+        year: typeof paper.year === "string" ? paper.year : undefined,
+        mineruCacheDir,
+        mineruFullMdPath: mineruCacheDir
+          ? joinPath(mineruCacheDir, "full.md")
+          : undefined,
+        contextFilePath,
+      };
+      enriched.push(context);
+    }
+    return enriched.length ? enriched : undefined;
+  };
+
   const attachments = (Array.isArray(request.attachments)
     ? request.attachments
     : []
@@ -430,6 +530,13 @@ function buildBridgeRuntimeRequest(
     ? request.screenshots.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
     : [];
 
+  const [selectedPaperContexts, fullTextPaperContexts, pinnedPaperContexts] =
+    await Promise.all([
+      enrichPaperContexts(request.selectedPaperContexts),
+      enrichPaperContexts(request.fullTextPaperContexts),
+      enrichPaperContexts(request.pinnedPaperContexts),
+    ]);
+
   return {
     conversationKey: request.conversationKey,
     userText: request.userText,
@@ -443,15 +550,9 @@ function buildBridgeRuntimeRequest(
     selectedTextSources: Array.isArray(request.selectedTextSources)
       ? request.selectedTextSources
       : undefined,
-    selectedPaperContexts: Array.isArray(request.selectedPaperContexts)
-      ? request.selectedPaperContexts
-      : undefined,
-    fullTextPaperContexts: Array.isArray(request.fullTextPaperContexts)
-      ? request.fullTextPaperContexts
-      : undefined,
-    pinnedPaperContexts: Array.isArray(request.pinnedPaperContexts)
-      ? request.pinnedPaperContexts
-      : undefined,
+    selectedPaperContexts,
+    fullTextPaperContexts,
+    pinnedPaperContexts,
     attachments: attachments.length ? attachments : undefined,
     screenshots: screenshots.length ? screenshots : undefined,
     activeNoteContext: request.activeNoteContext
@@ -726,7 +827,7 @@ export function createExternalBackendBridgeRuntime(options: {
         return coreRuntime.runTurn(params);
       }
       const contextEnvelope = buildContextEnvelope(params.request);
-      const runtimeRequest = buildBridgeRuntimeRequest(params.request);
+      const runtimeRequest = await buildBridgeRuntimeRequest(params.request);
       const currentSignature = signatureForContextEnvelope(contextEnvelope);
       const previousSignature = conversationContextSignature.get(
         params.request.conversationKey,
