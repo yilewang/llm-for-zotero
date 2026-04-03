@@ -4023,75 +4023,62 @@ label.llm-search-results-item:hover {
 .llm-agent-queue-panel {
   display: none;
   gap: 8px;
-  border: 1px solid #d6dbe5;
-  border-radius: 14px;
-  background: #f2f2f2;
-  padding: 12px;
+  border: 1px solid var(--stroke-secondary);
+  border-radius: 10px;
+  background: color-mix(
+    in srgb,
+    var(--material-background) 90%,
+    var(--fill-quinary)
+  );
+  padding: 8px;
 }
 
 .llm-agent-queue-header {
-  font-size: var(--llm-fs-11);
-  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-12);
+  color: var(--fill-secondary);
   line-height: 1.3;
-  font-weight: 500;
+  font-weight: 600;
+  padding: 0 2px;
 }
 
 .llm-agent-queue-list {
   display: grid;
-  gap: 8px;
 }
 
-.llm-agent-queue-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 6px;
-  align-items: center;
-  border: 1px solid #d9dfeb;
-  border-radius: 9px;
-  padding: 6px 10px;
-  background: #e6e6e6;
+.llm-agent-queue-item.llm-file-context-item {
+  min-height: 42px;
+  padding: 6px 8px;
 }
 
 .llm-agent-queue-item.llm-agent-queue-item-sending {
-  border-style: solid;
-  border-color: var(--color-accent10, rgba(53, 132, 228, 0.38));
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--stroke-secondary));
+  background: color-mix(
+    in srgb,
+    var(--material-background) 88%,
+    var(--color-accent) 12%
+  );
 }
 
-.llm-agent-queue-text {
-  min-width: 0;
-  font-size: 16px;
-  color: #1e2430;
-  line-height: 1.35;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.llm-agent-queue-text .llm-file-context-name {
+  font-size: var(--llm-fs-12);
 }
 
-.llm-agent-queue-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.llm-agent-queue-type {
+  width: 22px;
+  min-width: 22px;
+  max-width: 22px;
+  height: 22px;
+  min-height: 22px;
+  max-height: 22px;
+  border-radius: 6px;
+  font-size: var(--llm-fs-10);
 }
 
-.llm-agent-queue-action-btn {
-  all: unset;
-  cursor: pointer;
-  box-sizing: border-box;
-  font-size: var(--llm-fs-11);
-  line-height: 1;
-  border-radius: 8px;
-  border: 1px solid #cfd7e6;
-  color: #44506a;
-  background: #f8fafc;
-  padding: 4px 8px;
-}
-
-.llm-agent-queue-action-btn:hover {
-  background: var(--fill-quaternary);
-}
-
-.llm-agent-queue-action-btn.llm-agent-queue-delete-btn {
-  color: #44506a;
+.llm-agent-queue-delete-btn.llm-file-context-remove {
+  align-self: center;
+  width: 18px;
+  height: 18px;
+  font-size: var(--llm-fs-14);
 }
 
 /* ── Action inline card (rendered inside chatBox) ───────────────────────── */

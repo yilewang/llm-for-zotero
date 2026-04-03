@@ -717,9 +717,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       textContent: t("Queued follow-ups"),
     },
   );
-  const agentQueueList = createElement(doc, "div", "llm-agent-queue-list", {
+  const agentQueueList = createElement(
+    doc,
+    "div",
+    "llm-agent-queue-list llm-file-context-list",
+    {
     id: "llm-agent-queue-list",
-  });
+    },
+  );
   agentQueuePanel.append(agentQueueHeader, agentQueueList);
   composeArea.appendChild(agentQueuePanel);
 

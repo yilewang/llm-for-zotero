@@ -8862,31 +8862,43 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     liveAgentQueueList.textContent = "";
     for (const entry of queuedEntries) {
       const row = panelDoc.createElement("div");
-      row.className = "llm-agent-queue-item";
+      row.className = "llm-agent-queue-item llm-file-context-item";
       if (entry.status === "sending") {
         row.classList.add("llm-agent-queue-item-sending");
       }
 
-      const text = panelDoc.createElement("div");
-      text.className = "llm-agent-queue-text";
-      text.textContent =
-        entry.status === "sending" ? `Sending: ${entry.text}` : entry.text;
-      text.title = entry.text;
+      const type = panelDoc.createElement("div");
+      type.className = "llm-file-context-type llm-agent-queue-type";
+      type.textContent = "Q";
 
-      const actions = panelDoc.createElement("div");
-      actions.className = "llm-agent-queue-actions";
+      const textWrap = panelDoc.createElement("div");
+      textWrap.className = "llm-file-context-text llm-agent-queue-text";
+
+      const textName = panelDoc.createElement("div");
+      textName.className = "llm-file-context-name";
+      textName.textContent =
+        entry.status === "sending" ? `Sending: ${entry.text}` : entry.text;
+      textName.title = entry.text;
+
+      const textMeta = panelDoc.createElement("div");
+      textMeta.className = "llm-file-context-meta-info";
+      textMeta.textContent =
+        entry.status === "sending" ? "Running now" : "Queued follow-up";
+      textMeta.title = textMeta.textContent;
 
       const deleteBtn = panelDoc.createElement("button");
       deleteBtn.className =
-        "llm-agent-queue-action-btn llm-agent-queue-delete-btn";
+        "llm-file-context-remove llm-agent-queue-delete-btn";
       deleteBtn.type = "button";
       deleteBtn.dataset.action = "delete";
       deleteBtn.dataset.queueId = String(entry.id);
-      deleteBtn.textContent = "Delete";
+      deleteBtn.textContent = "×";
+      deleteBtn.title = "Delete queued follow-up";
+      deleteBtn.setAttribute("aria-label", "Delete queued follow-up");
       deleteBtn.disabled = entry.status === "sending";
 
-      actions.append(deleteBtn);
-      row.append(text, actions);
+      textWrap.append(textName, textMeta);
+      row.append(type, textWrap, deleteBtn);
       liveAgentQueueList.appendChild(row);
     }
     updateAgentRunActionButtons();
@@ -8958,7 +8970,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     agentQueueList.addEventListener("click", (event: Event) => {
       const target = event.target as HTMLElement | null;
       const actionBtn = target?.closest(
-        ".llm-agent-queue-action-btn",
+        ".llm-file-context-remove",
       ) as HTMLButtonElement | null;
       if (!actionBtn) return;
       const id = Number(actionBtn.dataset.queueId || "");
