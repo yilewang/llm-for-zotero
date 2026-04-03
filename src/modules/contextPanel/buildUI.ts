@@ -520,6 +520,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     "llm-agent-toggle-indicator",
   );
   runtimeModeIndicator.setAttribute("aria-hidden", "true");
+  const runtimeModeBackendIcon = createElement(
+    doc,
+    "span",
+    "llm-agent-toggle-backend-icon",
+  );
+  runtimeModeBackendIcon.setAttribute("aria-hidden", "true");
   const runtimeModeLabel = createElement(
     doc,
     "span",
@@ -528,7 +534,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       textContent: t("Agent mode"),
     },
   );
-  runtimeModeBtn.append(runtimeModeIndicator, runtimeModeLabel);
+  runtimeModeBtn.append(runtimeModeIndicator, runtimeModeBackendIcon, runtimeModeLabel);
   contextPreviews.appendChild(runtimeModeBtn);
   const selectedContextList = createElement(
     doc,

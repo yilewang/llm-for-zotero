@@ -98,6 +98,7 @@ import {
   getAvailableModelEntries,
   getStringPref,
   getAgentModeEnabled,
+  getAgentBackendModePref,
   getSelectedModelEntryForItem,
   applyPanelFontScale,
   getAdvancedModelParamsForEntry,
@@ -541,12 +542,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     const mode = getCurrentRuntimeMode();
     const enabled = mode === "agent";
+    const backendMode = getAgentBackendModePref();
+    const isClaudeBridge = backendMode === "claude_bridge";
     const label = runtimeModeBtn.querySelector(
       ".llm-agent-toggle-label",
     ) as HTMLSpanElement | null;
     if (label) {
-      label.textContent = t("Agent (beta)");
+      label.textContent = isClaudeBridge ? "Claude Code" : t("Agent (beta)");
     }
+    runtimeModeBtn.dataset.agentBackend = backendMode;
+    runtimeModeBtn.classList.toggle("llm-agent-toggle-claude", isClaudeBridge);
     runtimeModeBtn.classList.toggle("llm-agent-toggle-enabled", enabled);
     runtimeModeBtn.dataset.mode = mode;
     runtimeModeBtn.title = enabled
@@ -721,13 +726,17 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   // Preferences window (which runs in a separate window context).
   {
     const agentPrefKey = `${config.prefsPrefix}.enableAgentMode`;
+    const agentBackendKey = `${config.prefsPrefix}.agentBackendMode`;
     let observerId: symbol | undefined;
+    let backendObserverId: symbol | undefined;
     const onAgentPrefChange = () => {
       if (!(body as Element).isConnected) {
         // Panel is gone – clean up the observer.
         try {
           if (observerId !== undefined)
             (Zotero as any).Prefs.unregisterObserver(observerId);
+          if (backendObserverId !== undefined)
+            (Zotero as any).Prefs.unregisterObserver(backendObserverId);
         } catch {
           // no-op
         }
@@ -738,6 +747,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     try {
       observerId = (Zotero as any).Prefs.registerObserver(
         agentPrefKey,
+        onAgentPrefChange,
+        true,
+      );
+      backendObserverId = (Zotero as any).Prefs.registerObserver(
+        agentBackendKey,
         onAgentPrefChange,
         true,
       );

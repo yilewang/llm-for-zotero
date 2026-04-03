@@ -55,6 +55,16 @@ export function getQueryRewriteEnabled(): boolean {
   return getBoolPref("enableQueryRewrite", false);
 }
 
+export type AgentBackendModePref = "disabled" | "builtin" | "claude_bridge";
+
+export function getAgentBackendModePref(): AgentBackendModePref {
+  const value = getStringPref("agentBackendMode").trim().toLowerCase();
+  if (value === "disabled" || value === "claude_bridge" || value === "builtin") {
+    return value;
+  }
+  return getAgentModeEnabled() ? "builtin" : "disabled";
+}
+
 const LAST_REASONING_LEVEL_PREF_KEY = "lastUsedReasoningLevel";
 const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
 const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";

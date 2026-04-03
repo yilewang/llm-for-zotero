@@ -3495,6 +3495,25 @@ label.llm-search-results-item:hover {
   min-width: 0;
 }
 
+.llm-agent-toggle-backend-icon {
+  display: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  background-image: url("icons/claudecode-color.svg");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
+}
+
+.llm-context-agent-toggle.llm-agent-toggle-claude .llm-agent-toggle-backend-icon {
+  display: inline-flex;
+}
+
+.llm-context-agent-toggle.llm-agent-toggle-claude .llm-agent-toggle-label {
+  color: #d97757;
+}
+
 .llm-agent-toggle-indicator {
   position: relative;
   display: inline-flex;

@@ -204,7 +204,7 @@ function getClaudeConfigSourcePref(): "user-level" | "zotero-specific" {
 
 function getClaudeSettingSourcesByPref(): Array<"user" | "project" | "local"> {
   return getClaudeConfigSourcePref() === "user-level"
-    ? ["user", "project", "local"]
+    ? ["user"]
     : ["project", "local"];
 }
 
