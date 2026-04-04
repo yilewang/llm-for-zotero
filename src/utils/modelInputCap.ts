@@ -88,6 +88,51 @@ const MODEL_INPUT_LIMIT_RULES: ModelInputLimitRule[] = [
   // DeepSeek
   { pattern: /^deepseek-(?:chat|reasoner)(?:[.-]|$)/, limit: 128_000 },
   { pattern: /^deepseek(?:[.-]|$)/, limit: 128_000 },
+
+  // Yi (01.AI)
+  { pattern: /^yi-(?:large|medium|light)(?:[.-]|$)/, limit: 16_384 },
+  { pattern: /^yi-vision(?:[.-]|$)/, limit: 16_384 },
+  { pattern: /^yi-large-rag(?:[.-]|$)/, limit: 16_384 },
+  { pattern: /^yi-large-turbo(?:[.-]|$)/, limit: 16_384 },
+  { pattern: /^yi(?:[.-]|$)/, limit: 16_384 },
+
+  // Hunyuan (Tencent)
+  { pattern: /^hunyuan-(?:pro|standard|lite|turbo)(?:[.-]|$)/, limit: 32_000 },
+  { pattern: /^hunyuan(?:[.-]|$)/, limit: 32_000 },
+
+  // Spark (iFlytek)
+  { pattern: /^general(?:v3|v3[.-]5|v4[.-]0)?(?:[.-]|$)/, limit: 131_072 },
+  { pattern: /^spark(?:[.-]|$)/, limit: 131_072 },
+
+  // Baichuan
+  { pattern: /^baichuan4(?:[.-]|$)/, limit: 32_768 },
+  { pattern: /^baichuan3-turbo(?:[.-]|$)/, limit: 32_768 },
+  { pattern: /^baichuan(?:[.-]|$)/, limit: 32_768 },
+
+  // StepFun
+  { pattern: /^step-1(?:[.-]|$)/, limit: 16_384 },
+  { pattern: /^step-2(?:[.-]|$)/, limit: 65_536 },
+  { pattern: /^step(?:[.-]|$)/, limit: 16_384 },
+
+  // 360AI
+  { pattern: /^360gpt(?:[.-]|$)/, limit: 16_384 },
+  { pattern: /^360(?:[.-]|$)/, limit: 16_384 },
+
+  // Common open-source models (served via OpenRouter, SiliconFlow, Together, Groq, etc.)
+  { pattern: /^llama-3(?:[.-]|$)/, limit: 131_072 },
+  { pattern: /^llama-2(?:[.-]|$)/, limit: 4_096 },
+  { pattern: /^llama(?:[.-]|$)/, limit: 131_072 },
+  { pattern: /^mixtral-8x7b(?:[.-]|$)/, limit: 32_768 },
+  { pattern: /^mixtral-8x22b(?:[.-]|$)/, limit: 65_536 },
+  { pattern: /^mixtral(?:[.-]|$)/, limit: 32_768 },
+  { pattern: /^gemma-2(?:[.-]|$)/, limit: 8_192 },
+  { pattern: /^gemma(?:[.-]|$)/, limit: 8_192 },
+  { pattern: /^phi-3(?:[.-]|$)/, limit: 128_000 },
+  { pattern: /^phi(?:[.-]|$)/, limit: 128_000 },
+  { pattern: /^internlm(?:[.-]|$)/, limit: 32_768 },
+  { pattern: /^dbrx(?:[.-]|$)/, limit: 32_768 },
+  { pattern: /^qwen2(?:[.-]|$)/, limit: 131_072 },
+  { pattern: /^qwen2\.5(?:[.-]|$)/, limit: 131_072 },
 ];
 
 function stripTrailingNotice(text: string, notice: string): string {

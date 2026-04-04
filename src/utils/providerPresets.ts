@@ -10,7 +10,20 @@ export type SupportedProviderPresetId =
   | "grok"
   | "qwen"
   | "kimi"
-  | "copilot";
+  | "copilot"
+  // Domestic (China)
+  | "siliconflow"
+  | "spark"
+  | "hunyuan"
+  | "baichuan"
+  | "stepfun"
+  | "yi"
+  // International
+  | "openrouter"
+  | "together"
+  | "groq"
+  | "mistral"
+  | "fireworks";
 
 export type ProviderPresetId = SupportedProviderPresetId | "customized";
 
@@ -113,6 +126,17 @@ const QWEN_PATHS = [
 ];
 const KIMI_PATHS = ["/", "/v1", "/v1/chat/completions"];
 const COPILOT_PATHS = ["/", "/chat/completions", "/models"];
+const SILICONFLOW_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const SPARK_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const HUNYUAN_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const BAICHUAN_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const STEPFUN_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const YI_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const OPENROUTER_PATHS = ["/", "/api/v1", "/api/v1/chat/completions"];
+const TOGETHER_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const GROQ_PATHS = ["/", "/openai/v1", "/openai/v1/chat/completions"];
+const MISTRAL_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const FIREWORKS_PATHS = ["/", "/inference/v1", "/inference/v1/chat/completions"];
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
@@ -227,6 +251,140 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     matches: makeHostAndPathMatcher(
       ["api.githubcopilot.com"],
       COPILOT_PATHS,
+    ),
+  },
+  // --- Domestic (China) ---
+  {
+    id: "siliconflow",
+    label: "SiliconFlow",
+    defaultApiBase: "https://api.siliconflow.cn/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses SiliconFlow's official API (aggregates open-source models).",
+    matches: makeHostAndPathMatcher(
+      ["api.siliconflow.cn", "api.siliconflow.com"],
+      SILICONFLOW_PATHS,
+    ),
+  },
+  {
+    id: "spark",
+    label: "Spark",
+    defaultApiBase: "https://spark-api-open.xf-yun.com/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses iFlytek Spark's OpenAI-compatible API.",
+    matches: makeHostAndPathMatcher(
+      ["spark-api-open.xf-yun.com"],
+      SPARK_PATHS,
+    ),
+  },
+  {
+    id: "hunyuan",
+    label: "Hunyuan",
+    defaultApiBase: "https://api.hunyuan.cloud.tencent.com/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses Tencent Hunyuan's official API.",
+    matches: makeHostAndPathMatcher(
+      ["api.hunyuan.cloud.tencent.com", "hunyuan.cloud.tencent.com"],
+      HUNYUAN_PATHS,
+    ),
+  },
+  {
+    id: "baichuan",
+    label: "Baichuan",
+    defaultApiBase: "https://api.baichuan-ai.com/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses Baichuan AI's official API.",
+    matches: makeHostAndPathMatcher(
+      ["api.baichuan-ai.com"],
+      BAICHUAN_PATHS,
+    ),
+  },
+  {
+    id: "stepfun",
+    label: "StepFun",
+    defaultApiBase: "https://api.stepfun.com/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses StepFun's official API.",
+    matches: makeHostAndPathMatcher(
+      ["api.stepfun.com"],
+      STEPFUN_PATHS,
+    ),
+  },
+  {
+    id: "yi",
+    label: "Yi",
+    defaultApiBase: "https://api.lingyiwanwu.com/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses 01.AI (Yi) official API.",
+    matches: makeHostAndPathMatcher(
+      ["api.lingyiwanwu.com"],
+      YI_PATHS,
+    ),
+  },
+  // --- International ---
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    defaultApiBase: "https://openrouter.ai/api/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses OpenRouter's API (aggregates many model providers).",
+    matches: makeHostAndPathMatcher(
+      ["openrouter.ai"],
+      OPENROUTER_PATHS,
+    ),
+  },
+  {
+    id: "together",
+    label: "Together.ai",
+    defaultApiBase: "https://api.together.xyz/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses Together.ai's API (open-source models).",
+    matches: makeHostAndPathMatcher(
+      ["api.together.xyz"],
+      TOGETHER_PATHS,
+    ),
+  },
+  {
+    id: "groq",
+    label: "Groq",
+    defaultApiBase: "https://api.groq.com/openai/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses Groq's ultra-fast inference API.",
+    matches: makeHostAndPathMatcher(
+      ["api.groq.com"],
+      GROQ_PATHS,
+    ),
+  },
+  {
+    id: "mistral",
+    label: "Mistral",
+    defaultApiBase: "https://api.mistral.ai/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses Mistral AI's official API.",
+    matches: makeHostAndPathMatcher(
+      ["api.mistral.ai"],
+      MISTRAL_PATHS,
+    ),
+  },
+  {
+    id: "fireworks",
+    label: "Fireworks AI",
+    defaultApiBase: "https://api.fireworks.ai/inference/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses Fireworks AI's inference API.",
+    matches: makeHostAndPathMatcher(
+      ["api.fireworks.ai"],
+      FIREWORKS_PATHS,
     ),
   },
 ];
