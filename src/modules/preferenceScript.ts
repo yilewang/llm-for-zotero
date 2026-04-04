@@ -1,5 +1,6 @@
 import { config } from "../../package.json";
 import { t } from "../utils/i18n";
+import { WEBCHAT_TARGETS } from "../webchat/types";
 import {
   DEFAULT_MAX_TOKENS,
   DEFAULT_SYSTEM_PROMPT,
@@ -645,7 +646,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         if (nextAuthMode === "webchat") {
           group.providerProtocol = "web_sync";
           // Set default webchat model to chatgpt.com (user can change it)
-          if (!group.models[0]?.model || !["chatgpt.com", "chat.deepseek.com"].includes(group.models[0].model)) {
+          const webchatModelNames: string[] = WEBCHAT_TARGETS.map((wt) => wt.modelName);
+          if (!group.models[0]?.model || !webchatModelNames.includes(group.models[0].model)) {
             group.models = [{ ...group.models[0], model: "chatgpt.com" }];
           }
         } else if (nextAuthMode === "codex_auth") {
@@ -667,11 +669,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       });
       const authModeHelperText =
         group.authMode === "webchat"
-          ? t("Relay questions to ChatGPT or DeepSeek via the Sync for Zotero browser extension. "
+          ? t(`Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(" / ")} via the Sync for Zotero browser extension. `
             + "Download extension: github.com/yilewang/sync-for-zotero → Releases. "
             + "Unzip, open chrome://extensions, enable Developer Mode, click \"Load unpacked\", select the extension folder. "
-            + "Keep a ChatGPT or DeepSeek tab open while using WebChat mode. "
-            + "Model name: chatgpt.com or chat.deepseek.com.")
+            + "Keep the corresponding chat tab open while using WebChat mode.")
           : group.authMode === "copilot_auth"
             ? t(COPILOT_API_HELPER_TEXT)
             : t("codex auth reuses local `codex login` credentials from ~/.codex/auth.json");
@@ -1114,9 +1115,29 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
       const addModelBtn = iconBtn(doc, "+", t("Add model"));
       addModelBtn.style.color = "var(--color-accent, #2563eb)";
-      // [webchat] Hide add model button — webchat only has one fixed model
       if (group.authMode === "webchat") {
+        // [webchat] Replace "+" with a "Fetch Models" button that adds all webchat targets
         addModelBtn.style.display = "none";
+        const fetchModelsBtn = el(doc, "button", OUTLINE_BTN_STYLE, t("Fetch Models")) as HTMLButtonElement;
+        fetchModelsBtn.type = "button";
+        fetchModelsBtn.style.fontSize = "11px";
+        fetchModelsBtn.style.padding = "2px 8px";
+        fetchModelsBtn.addEventListener("click", () => {
+          const allTargets = WEBCHAT_TARGETS.map((wt) => wt.modelName);
+          const existing = new Set(group.models.map((m: { model: string }) => m.model));
+          let added = false;
+          for (const target of allTargets) {
+            if (!existing.has(target)) {
+              group.models.push(createProviderModelEntry(target));
+              added = true;
+            }
+          }
+          if (added) {
+            persistGroups(groups);
+            rerender();
+          }
+        });
+        modelsHeaderRow.appendChild(fetchModelsBtn);
       }
       modelsHeaderRow.appendChild(addModelBtn);
       modelsWrap.appendChild(modelsHeaderRow);
@@ -1165,10 +1186,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
         // [webchat] Replace text input with a dropdown for webchat model selection
         if (group.authMode === "webchat") {
-          const validWebchatModels = [
-            { value: "chatgpt.com", label: "chatgpt.com (ChatGPT)" },
-            { value: "chat.deepseek.com", label: "chat.deepseek.com (DeepSeek)" },
-          ];
+          const validWebchatModels = WEBCHAT_TARGETS.map((wt) => ({
+            value: wt.modelName,
+            label: `${wt.modelName} (${wt.label})`,
+          }));
           if (!validWebchatModels.some((m) => m.value === modelEntry.model)) {
             modelEntry.model = "chatgpt.com";
           }

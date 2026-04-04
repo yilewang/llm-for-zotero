@@ -7,7 +7,8 @@
  */
 
 import { createElement } from "../utils/domHelpers";
-import { relayGetExtensionLiveness, relayGetExtensionStatus } from "./relayServer";
+import { relayGetExtensionLiveness, relayGetExtensionStatus, relayClearExtensionStatus, relaySetCommand } from "./relayServer";
+import { WEBCHAT_TARGETS } from "./types";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,7 +46,7 @@ const STEPS: PreloadStep[] = [
     label: "Chat site tab",
     check: () => relayGetExtensionStatus()?.chatTabAlive === true,
     maxAttempts: 30, // 15 seconds — needs to wait for extension's next heartbeat (every 10s) to POST status
-    failHint: "Open chatgpt.com or chat.deepseek.com in your Chrome browser.",
+    failHint: `Open the corresponding chat site (${WEBCHAT_TARGETS.map((wt) => wt.modelName).join(", ")}) in your Chrome browser.`,
   },
 ];
 
@@ -81,6 +82,12 @@ export async function showWebChatPreloadScreen(
 ): Promise<void> {
   const doc = chatShell.ownerDocument!;
   const siteName = targetLabel || "ChatGPT";
+
+  // Clear stale extension status so we wait for a fresh heartbeat
+  relayClearExtensionStatus();
+
+  // Tell the extension to open the target site tab if none is open
+  relaySetCommand({ type: "ENSURE_TAB" });
 
   // Remove any leftover preload overlay
   chatShell.querySelector(".llm-webchat-preload")?.remove();

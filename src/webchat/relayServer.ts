@@ -40,7 +40,7 @@ export function getRelayBaseUrl(): string {
 // ---------------------------------------------------------------------------
 
 interface PendingCommand {
-  type: "NEW_CHAT" | "LOAD_CHAT" | "DELETE_CHAT" | "SCRAPE_HISTORY";
+  type: "NEW_CHAT" | "LOAD_CHAT" | "DELETE_CHAT" | "SCRAPE_HISTORY" | "ENSURE_TAB";
   chatUrl?: string;
   chatId?: string;
   target?: string;
@@ -1348,7 +1348,12 @@ export function relayGetExtensionLiveness(): { lastContact: number; aliveSinceMs
   return { lastContact: lc, aliveSinceMs: lc ? Date.now() - lc : Infinity };
 }
 
-/** Get the latest extension status report (chatTabAlive, etc.). Returns null if stale (>20s). */
+/** Clear cached extension status — forces the preload screen to wait for a fresh heartbeat. */
+export function relayClearExtensionStatus(): void {
+  _store().extensionStatus = null;
+}
+
+/** Get the latest extension status report (chatTabAlive, etc.). Returns null if stale (>30s). */
 export function relayGetExtensionStatus(): ExtensionStatus | null {
   const s = _store().extensionStatus;
   if (!s || Date.now() - s.ts > 30_000) return null; // 30s staleness — heartbeat posts every 10s

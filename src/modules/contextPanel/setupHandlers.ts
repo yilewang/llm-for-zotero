@@ -6865,7 +6865,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             try {
               if (session.chatUrl) {
                 const loadUrl = new URL(session.chatUrl);
-                if (loadUrl.hostname === "chat.deepseek.com") loadModelName = "chat.deepseek.com";
+                const { WEBCHAT_TARGETS: targets } = await import("../../webchat/types");
+                const matched = targets.find((wt) => loadUrl.hostname === wt.modelName || loadUrl.hostname === `www.${wt.modelName}`);
+                if (matched) loadModelName = matched.modelName;
               }
             } catch { /* default */ }
             chatHistory.set(key, [{

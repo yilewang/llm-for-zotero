@@ -1,4 +1,5 @@
 import { isResponsesBase } from "./apiHelpers";
+import { WEBCHAT_TARGETS } from "../webchat/types";
 
 export type ProviderProtocol =
   | "codex_responses"
@@ -82,7 +83,7 @@ export const PROVIDER_PROTOCOL_SPECS: ProviderProtocolSpec[] = [
     id: "web_sync",
     label: "Web Sync (ChatGPT / DeepSeek)",
     helperText:
-      "Relay questions to ChatGPT or DeepSeek via the browser extension web-sync bridge.",
+      `Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(", ")} via the browser extension web-sync bridge.`,
     streaming: false,
     toolCalls: false,
     multimodal: true,
