@@ -20,6 +20,11 @@ export type RunTurnParams = {
   signal?: AbortSignal;
 };
 
+type ResolveExternalConfirmation = (
+  requestId: string,
+  resolution: AgentConfirmationResolution,
+) => Promise<void>;
+
 export type AgentRuntimeLike = Pick<
   AgentRuntime,
   | "listTools"
@@ -165,6 +170,16 @@ type BridgeScope = {
   scopeLabel?: string;
 };
 
+export type ExternalBridgeSessionInfo = {
+  originalConversationKey: string;
+  scopedConversationKey: string;
+  scopeType?: BridgeScopeType;
+  scopeId?: string;
+  scopeLabel?: string;
+  runtimeCwdRelative?: string;
+  cwd?: string;
+};
+
 type BridgeRuntimeRequest = {
   conversationKey: number;
   userText: string;
@@ -206,6 +221,27 @@ function getClaudeSettingSourcesByPref(): Array<"user" | "project" | "local"> {
   return getClaudeConfigSourcePref() === "user-level"
     ? ["user"]
     : ["project", "local"];
+}
+
+function getAgentPermissionModePref(): "safe" | "yolo" {
+  try {
+    const raw = Zotero.Prefs.get(
+      `${config.prefsPrefix}.agentPermissionMode`,
+      true,
+    );
+    return raw === "yolo" ? "yolo" : "safe";
+  } catch {
+    return "safe";
+  }
+}
+
+function getStringPref(key: string, fallback = ""): string {
+  try {
+    const value = Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true);
+    return typeof value === "string" ? value : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function normalizeScopeType(value: unknown): BridgeScopeType | null {
@@ -395,6 +431,11 @@ async function runExternalBridgeTurn(
     contextEnvelope?: ContextEnvelope;
     runtimeRequest?: BridgeRuntimeRequest;
     scope?: BridgeScope;
+    registerPendingConfirmation?: (
+      requestId: string,
+      resolve: (resolution: AgentConfirmationResolution) => void,
+    ) => void;
+    resolveExternalConfirmation?: ResolveExternalConfirmation;
   },
 ): Promise<AgentRuntimeOutcome> {
   const url = `${normalizeBaseUrl(baseUrl)}/run-turn`;
@@ -407,13 +448,31 @@ async function runExternalBridgeTurn(
       ? "max"
       : reasoningLevel === "high" ||
           reasoningLevel === "medium" ||
-          reasoningLevel === "low" ||
-          reasoningLevel === "default"
+          reasoningLevel === "low"
         ? reasoningLevel
+        : reasoningLevel === "default"
+          ? "auto"
         : undefined;
+  const traceVerbosity = getStringPref("agentTraceVerbosity").trim().toLowerCase();
+  const rawLogVisibility = getStringPref("agentRawLogVisibility")
+    .trim()
+    .toLowerCase();
+  const debugModeEnabled =
+    traceVerbosity === "verbose" ||
+    traceVerbosity === "raw" ||
+    rawLogVisibility === "debug_only";
+
+  const userTextRaw = params.request.userText || "";
+  const probeMatch = userTextRaw.match(/^\s*\/(?:debug-)?permission-probe\b\s*(.*)$/i);
+  const probeRequested = Boolean(probeMatch && debugModeEnabled);
+  const probeStrippedText = probeMatch?.[1]?.trim() || "";
+  const userTextForBridge = probeRequested
+    ? probeStrippedText || "Permission probe run."
+    : userTextRaw;
+
   const payload = {
     conversationKey: params.request.conversationKey,
-    userText: params.request.userText,
+    userText: userTextForBridge,
     scopeType: params.scope?.scopeType,
     scopeId: params.scope?.scopeId,
     scopeLabel: params.scope?.scopeLabel,
@@ -422,6 +481,7 @@ async function runExternalBridgeTurn(
       runType: "chat",
       claudeConfigSource: getClaudeConfigSourcePref(),
       claudeSettingSources: getClaudeSettingSourcesByPref(),
+      permissionMode: getAgentPermissionModePref(),
       model:
         typeof params.request.model === "string" &&
         params.request.model.trim().toLowerCase() !== "default"
@@ -434,6 +494,7 @@ async function runExternalBridgeTurn(
       scopeType: params.scope?.scopeType,
       scopeId: params.scope?.scopeId,
       scopeLabel: params.scope?.scopeLabel,
+      debugPermissionProbe: probeRequested,
     },
   };
 
@@ -456,6 +517,16 @@ async function runExternalBridgeTurn(
       return;
     }
     if (line.type === "event") {
+      if (
+        line.event.type === "confirmation_required" &&
+        params.registerPendingConfirmation &&
+        params.resolveExternalConfirmation
+      ) {
+        const requestId = line.event.requestId;
+        params.registerPendingConfirmation(requestId, (resolution) => {
+          void params.resolveExternalConfirmation?.(requestId, resolution);
+        });
+      }
       await params.onEvent?.(line.event);
       return;
     }
@@ -636,6 +707,25 @@ async function buildBridgeRuntimeRequest(
       typeof fallbackItemId === "number" && Number.isFinite(fallbackItemId)
         ? Math.floor(fallbackItemId)
         : 0;
+    const scoreAttachment = (attachment: Zotero.Item): number => {
+      const contentType = String(
+        (attachment as unknown as { attachmentContentType?: string })
+          .attachmentContentType || "",
+      )
+        .trim()
+        .toLowerCase();
+      const pathHint = String(
+        (attachment as unknown as { attachmentFilename?: string })
+          .attachmentFilename || "",
+      )
+        .trim()
+        .toLowerCase();
+      if (contentType === "text/markdown" || pathHint.endsWith(".md")) return 100;
+      if (contentType === "application/pdf" || pathHint.endsWith(".pdf")) return 90;
+      if (contentType === "text/html" || pathHint.endsWith(".html") || pathHint.endsWith(".htm")) return 80;
+      if (contentType.startsWith("text/")) return 70;
+      return 10;
+    };
 
     try {
       if (normalizedId > 0) {
@@ -646,15 +736,19 @@ async function buildBridgeRuntimeRequest(
         const parentItem = Zotero.Items.get(normalizedFallbackItemId);
         if (parentItem?.isRegularItem?.()) {
           const attachmentIds = parentItem.getAttachments?.() || [];
-          for (const attachmentId of attachmentIds) {
-            const attachment = Zotero.Items.get(attachmentId);
-            if (
-              attachment?.isAttachment?.() &&
-              attachment.attachmentContentType === "application/pdf"
-            ) {
-              const path = await readAttachmentPath(attachment.id);
-              if (path) return path;
-            }
+          const scoredAttachments = attachmentIds
+            .map((attachmentId) => Zotero.Items.get(attachmentId))
+            .filter((attachment): attachment is Zotero.Item =>
+              Boolean(attachment?.isAttachment?.()),
+            )
+            .map((attachment) => ({
+              attachment,
+              score: scoreAttachment(attachment),
+            }))
+            .sort((a, b) => b.score - a.score);
+          for (const { attachment } of scoredAttachments) {
+            const path = await readAttachmentPath(attachment.id);
+            if (path) return path;
           }
         }
       }
@@ -831,6 +925,64 @@ async function fetchExternalTools(baseUrl: string): Promise<ExternalToolDescript
     });
   }
   return tools;
+}
+
+async function fetchExternalCommands(baseUrl: string): Promise<ExternalSlashCommandDescriptor[]> {
+  const sources = encodeURIComponent(getClaudeSettingSourcesByPref().join(","));
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}/commands?settingSources=${sources}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`Bridge HTTP ${response.status}`);
+  }
+  const json = await response.json() as { commands?: unknown[] };
+  const rawCommands = Array.isArray(json.commands) ? json.commands : [];
+  const commands: ExternalSlashCommandDescriptor[] = [];
+  for (const raw of rawCommands) {
+    if (!raw || typeof raw !== "object") continue;
+    const command = raw as Record<string, unknown>;
+    const name = typeof command.name === "string" ? command.name.trim().replace(/^\/+/, "") : "";
+    if (!name) continue;
+    commands.push({
+      name,
+      description:
+        typeof command.description === "string" && command.description.trim()
+          ? command.description.trim()
+          : `Claude Code slash command: /${name}`,
+      argumentHint:
+        typeof command.argumentHint === "string" ? command.argumentHint.trim() : "",
+      source: command.source === "fallback" ? "fallback" : "sdk",
+    });
+  }
+  return commands;
+}
+
+export async function fetchExternalBridgeSessionInfo(params: {
+  baseUrl: string;
+  conversationKey: number;
+  scopeType?: BridgeScopeType;
+  scopeId?: string;
+  scopeLabel?: string;
+}): Promise<ExternalBridgeSessionInfo | null> {
+  const baseUrl = normalizeBaseUrl(params.baseUrl);
+  if (!baseUrl) return null;
+  const qs = new URLSearchParams();
+  qs.set("conversationKey", String(params.conversationKey));
+  if (params.scopeType) qs.set("scopeType", params.scopeType);
+  if (params.scopeId) qs.set("scopeId", params.scopeId);
+  if (params.scopeLabel) qs.set("scopeLabel", params.scopeLabel);
+  const response = await fetch(`${baseUrl}/session-info?${qs.toString()}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`Bridge HTTP ${response.status}`);
+  }
+  const json = (await response.json()) as {
+    session?: ExternalBridgeSessionInfo | null;
+  };
+  return json?.session || null;
 }
 
 async function runExternalBridgeAction(
@@ -1027,6 +1179,7 @@ export function createExternalBackendBridgeRuntime(options: {
             runType: "action",
             claudeConfigSource: getClaudeConfigSourcePref(),
             claudeSettingSources: getClaudeSettingSourcesByPref(),
+            permissionMode: getAgentPermissionModePref(),
             scopeType: actionScope?.scopeType,
             scopeId: actionScope?.scopeId,
             scopeLabel: actionScope?.scopeLabel,
@@ -1103,6 +1256,20 @@ export function createExternalBackendBridgeRuntime(options: {
           contextEnvelope,
           runtimeRequest,
           scope,
+          registerPendingConfirmation: (requestId, resolve) =>
+            coreRuntime.registerPendingConfirmation(requestId, resolve),
+          resolveExternalConfirmation: async (requestId, resolution) => {
+            await fetch(`${normalizeBaseUrl(bridgeUrl)}/resolve-confirmation`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                requestId,
+                approved: Boolean(resolution.approved),
+                actionId: resolution.actionId,
+                data: resolution.data,
+              }),
+            });
+          },
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

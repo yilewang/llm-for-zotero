@@ -258,6 +258,7 @@ import {
   type PaperSearchSlashToken,
 } from "./paperSearch";
 import { getAgentApi } from "../../agent/index";
+import { fetchExternalBridgeSessionInfo } from "../../agent/externalBackendBridge";
 import { renderPendingActionCard } from "./agentTrace/render";
 import type {
   AgentPendingAction,
@@ -376,6 +377,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     reasoningBtn,
     claudeReasoningBtn,
     runtimeModeBtn,
+    claudePermissionBtn,
+    sessionFolderBtn,
+    sessionTerminalBtn,
     reasoningSlot,
     reasoningMenu,
     claudeReasoningSlot,
@@ -554,6 +558,19 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     claudeRuntimeEffortsInFlightGlobal.clear();
   };
 
+  const getClaudePermissionModePref = (): "safe" | "yolo" => {
+    const raw = getStringPref("agentPermissionMode").trim().toLowerCase();
+    return raw === "yolo" ? "yolo" : "safe";
+  };
+
+  const setClaudePermissionModePref = (mode: "safe" | "yolo") => {
+    Zotero.Prefs.set(
+      `${config.prefsPrefix}.agentPermissionMode`,
+      mode === "yolo" ? "yolo" : "safe",
+      true,
+    );
+  };
+
   const updateRuntimeModeButton = () => {
     const liveRefs = getPanelDomRefs(body);
     const liveRuntimeModeBtn = liveRefs.runtimeModeBtn || runtimeModeBtn;
@@ -562,6 +579,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     const liveClaudeModelSlot = liveRefs.claudeModelSlot || claudeModelSlot;
     const liveClaudeReasoningSlot =
       liveRefs.claudeReasoningSlot || claudeReasoningSlot;
+    const liveClaudePermissionBtn =
+      liveRefs.claudePermissionBtn || claudePermissionBtn;
+    const liveSessionFolderBtn = liveRefs.sessionFolderBtn || sessionFolderBtn;
+    const liveSessionTerminalBtn =
+      liveRefs.sessionTerminalBtn || sessionTerminalBtn;
     const livePanelRoot = liveRefs.panelRoot || panelRoot;
     if (!liveRuntimeModeBtn) return;
     const agentFeatureEnabled = getAgentModeEnabled();
@@ -575,6 +597,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       // Force chat mode when the feature is hidden so state stays consistent.
       if (item) selectedRuntimeModeCache.set(getConversationKey(item), "chat");
       livePanelRoot.dataset.runtimeMode = "chat";
+      if (liveClaudePermissionBtn) {
+        liveClaudePermissionBtn.style.display = "none";
+      }
+      if (liveSessionFolderBtn) {
+        liveSessionFolderBtn.style.display = "none";
+      }
+      if (liveSessionTerminalBtn) {
+        liveSessionTerminalBtn.style.display = "none";
+      }
       return;
     }
     const mode = getCurrentRuntimeMode();
@@ -617,6 +648,27 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (liveClaudeReasoningSlot) {
       liveClaudeReasoningSlot.style.display = useClaudeActionButtons ? "" : "none";
       liveClaudeReasoningSlot.dataset.hiddenByRuntime = useClaudeActionButtons ? "false" : "true";
+    }
+    if (liveClaudePermissionBtn) {
+      const showPermissionBtn = isClaudeBridge && enabled;
+      liveClaudePermissionBtn.style.display = showPermissionBtn ? "" : "none";
+      if (showPermissionBtn) {
+        const permissionMode = getClaudePermissionModePref();
+        liveClaudePermissionBtn.dataset.mode = permissionMode;
+        liveClaudePermissionBtn.textContent =
+          permissionMode === "yolo" ? "YOLO" : "SAFE";
+        liveClaudePermissionBtn.setAttribute("aria-label", `Permission mode: ${permissionMode}`);
+        liveClaudePermissionBtn.title =
+          permissionMode === "yolo"
+            ? "Permission mode: yolo (allow by default)"
+            : "Permission mode: safe (ask first)";
+      }
+    }
+    if (liveSessionFolderBtn) {
+      liveSessionFolderBtn.style.display = useClaudeActionButtons ? "" : "none";
+    }
+    if (liveSessionTerminalBtn) {
+      liveSessionTerminalBtn.style.display = useClaudeActionButtons ? "" : "none";
     }
   };
   const setCurrentRuntimeMode = (mode: ChatRuntimeMode) => {
@@ -784,16 +836,20 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       __llmAgentPrefObserverId?: symbol;
       __llmAgentBackendObserverId?: symbol;
       __llmClaudeSourceObserverId?: symbol;
+      __llmClaudePermissionObserverId?: symbol;
     };
     const observerBody = body as AgentModeObserverBody;
     const agentPrefKey = `${config.prefsPrefix}.enableAgentMode`;
     const agentBackendKey = `${config.prefsPrefix}.agentBackendMode`;
     const claudeSourceKey = `${config.prefsPrefix}.agentClaudeConfigSource`;
+    const claudePermissionKey = `${config.prefsPrefix}.agentPermissionMode`;
     let observerId: symbol | undefined = observerBody.__llmAgentPrefObserverId;
     let backendObserverId: symbol | undefined =
       observerBody.__llmAgentBackendObserverId;
     let claudeSourceObserverId: symbol | undefined =
       observerBody.__llmClaudeSourceObserverId;
+    let claudePermissionObserverId: symbol | undefined =
+      observerBody.__llmClaudePermissionObserverId;
     try {
       if (observerId !== undefined)
         (Zotero as any).Prefs.unregisterObserver(observerId);
@@ -801,12 +857,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         (Zotero as any).Prefs.unregisterObserver(backendObserverId);
       if (claudeSourceObserverId !== undefined)
         (Zotero as any).Prefs.unregisterObserver(claudeSourceObserverId);
+      if (claudePermissionObserverId !== undefined)
+        (Zotero as any).Prefs.unregisterObserver(claudePermissionObserverId);
     } catch {
       // best effort cleanup only
     }
     observerBody.__llmAgentPrefObserverId = undefined;
     observerBody.__llmAgentBackendObserverId = undefined;
     observerBody.__llmClaudeSourceObserverId = undefined;
+    observerBody.__llmClaudePermissionObserverId = undefined;
     const syncRuntimeActionVisibilityNow = () => {
       updateRuntimeModeButton();
       queueMicrotask(() => {
@@ -825,9 +884,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             (Zotero as any).Prefs.unregisterObserver(backendObserverId);
           if (claudeSourceObserverId !== undefined)
             (Zotero as any).Prefs.unregisterObserver(claudeSourceObserverId);
+          if (claudePermissionObserverId !== undefined)
+            (Zotero as any).Prefs.unregisterObserver(claudePermissionObserverId);
           observerBody.__llmAgentPrefObserverId = undefined;
           observerBody.__llmAgentBackendObserverId = undefined;
           observerBody.__llmClaudeSourceObserverId = undefined;
+          observerBody.__llmClaudePermissionObserverId = undefined;
         } catch {
           // no-op
         }
@@ -864,6 +926,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         true,
       );
       observerBody.__llmClaudeSourceObserverId = claudeSourceObserverId;
+      claudePermissionObserverId = (Zotero as any).Prefs.registerObserver(
+        claudePermissionKey,
+        onAgentPrefChange,
+        true,
+      );
+      observerBody.__llmClaudePermissionObserverId = claudePermissionObserverId;
     } catch {
       // Zotero.Prefs.registerObserver not available – no live sync
     }
@@ -5534,6 +5602,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         return "medium";
       case "low":
         return "low";
+      case "auto":
       case "default":
       default:
         return "default";
@@ -5554,7 +5623,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         return "low";
       case "default":
       default:
-        return "default";
+        return "auto";
     }
   };
 
@@ -5585,20 +5654,36 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
   const getClaudeRuntimeEffortPref = (): string => {
     const raw = getStringPref("agentClaudeRuntimeEffort").trim().toLowerCase();
-    if (!raw) return "default";
-    if (raw === "low" || raw === "medium" || raw === "high" || raw === "max" || raw === "default") {
+    if (!raw) return "auto";
+    if (
+      raw === "low" ||
+      raw === "medium" ||
+      raw === "high" ||
+      raw === "max" ||
+      raw === "auto" ||
+      raw === "default"
+    ) {
+      if (raw === "default") return "auto";
       return raw;
     }
-    return "default";
+    return "auto";
   };
 
   const setClaudeRuntimeEffortPref = (value: string): void => {
     const normalized = (() => {
       const next = (value || "").trim().toLowerCase();
-      if (next === "low" || next === "medium" || next === "high" || next === "max" || next === "default") {
+      if (
+        next === "low" ||
+        next === "medium" ||
+        next === "high" ||
+        next === "max" ||
+        next === "auto" ||
+        next === "default"
+      ) {
+        if (next === "default") return "auto";
         return next;
       }
-      return "default";
+      return "auto";
     })();
     try {
       Zotero.Prefs.set(
@@ -5630,6 +5715,98 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     return "http://127.0.0.1:18787";
   };
 
+  const buildCurrentBridgeScope = (): {
+    scopeType: "paper" | "open";
+    scopeId: string;
+    scopeLabel?: string;
+  } => {
+    const libraryID = getCurrentLibraryID();
+    if (isPaperMode()) {
+      const baseItem = resolveCurrentPaperBaseItem();
+      if (baseItem?.isRegularItem?.()) {
+        const title =
+          typeof baseItem.getField === "function"
+            ? String(baseItem.getField("title") || "").trim() || undefined
+            : undefined;
+        return {
+          scopeType: "paper",
+          scopeId: `${libraryID || 0}:${Math.floor(baseItem.id)}`,
+          scopeLabel: title,
+        };
+      }
+    }
+    return {
+      scopeType: "open",
+      scopeId: String(libraryID || 0),
+      scopeLabel: "Open Chat",
+    };
+  };
+
+  const revealDirectory = (path: string): boolean => {
+    const normalized = (path || "").trim();
+    if (!normalized) return false;
+    try {
+      const file = Zotero.File.pathToFile(normalized);
+      if (file && typeof file.reveal === "function") {
+        file.reveal();
+        return true;
+      }
+      if (file && typeof file.launch === "function") {
+        file.launch();
+        return true;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  };
+
+  const openTerminalAtDirectory = async (path: string): Promise<boolean> => {
+    const normalized = (path || "").trim();
+    if (!normalized) return false;
+    try {
+      const Subprocess = ztoolkit.getGlobal("Subprocess") as
+        | {
+            call?: (args: {
+              command: string;
+              arguments?: string[];
+              stderr?: string;
+            }) => Promise<unknown>;
+          }
+        | undefined;
+      if (Subprocess && typeof Subprocess.call === "function") {
+        await Subprocess.call({
+          command: "/usr/bin/open",
+          arguments: ["-a", "Terminal", normalized],
+          stderr: "pipe",
+        });
+        return true;
+      }
+    } catch {
+      // ignore and fall through
+    }
+    return revealDirectory(normalized);
+  };
+
+  const fetchCurrentSessionInfo = async (): Promise<{
+    cwd?: string;
+    scopeType?: string;
+    scopeId?: string;
+    scopeLabel?: string;
+  } | null> => {
+    if (!item) return null;
+    const baseUrl = getBridgeBaseUrl();
+    if (!baseUrl) return null;
+    const scope = buildCurrentBridgeScope();
+    return fetchExternalBridgeSessionInfo({
+      baseUrl,
+      conversationKey: getConversationKey(item),
+      scopeType: scope.scopeType,
+      scopeId: scope.scopeId,
+      scopeLabel: scope.scopeLabel,
+    });
+  };
+
   const fetchClaudeRuntimeModels = async (): Promise<string[]> => {
     // Keep the Claude-runtime picker deterministic and aligned with Claudian UX.
     // We intentionally expose alias choices only, then let runtime map them.
@@ -5650,7 +5827,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
     const baseUrl = getBridgeBaseUrl();
     if (!baseUrl) {
-      return cached?.efforts || ["default", "low", "medium", "high"];
+      return cached?.efforts || ["auto", "low", "medium", "high"];
     }
     if (!force) {
       const inFlight = claudeRuntimeEffortsInFlight.get(normalizedModel);
@@ -5685,6 +5862,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
               .map((entry) => entry.trim().toLowerCase())
               .filter(
                 (entry) =>
+                  entry === "auto" ||
                   entry === "default" ||
                   entry === "low" ||
                   entry === "medium" ||
@@ -5693,9 +5871,14 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
               ),
           ),
         );
+        const normalizedEffortLabels = Array.from(
+          new Set(
+            efforts.map((entry) => (entry === "default" ? "auto" : entry)),
+          ),
+        );
         const normalizedEfforts = efforts.length > 0
-          ? efforts
-          : ["default", "low", "medium", "high"];
+          ? normalizedEffortLabels
+          : ["auto", "low", "medium", "high"];
         cachedClaudeRuntimeEfforts.set(normalizedModel, {
           efforts: normalizedEfforts,
           expiresAt: Date.now() + CLAUDE_EFFORTS_CACHE_TTL_MS,
@@ -5707,12 +5890,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     };
     const promise = run()
       .catch((_error) => {
-        const fallback = cached?.efforts || ["default", "low", "medium", "high"];
+        const fallback = cached?.efforts || ["auto", "low", "medium", "high"];
         cachedClaudeRuntimeEfforts.set(normalizedModel, {
           efforts: fallback,
           expiresAt: Date.now() + CLAUDE_FETCH_FAILURE_COOLDOWN_MS,
         });
-        return cached?.efforts || ["default", "low", "medium", "high"];
+        return cached?.efforts || ["auto", "low", "medium", "high"];
       })
       .finally(() => {
         claudeRuntimeEffortsInFlight.delete(normalizedModel);
@@ -6701,11 +6884,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const effortSet = cachedClaudeRuntimeEfforts.get(cacheKey);
       const efforts = effortSet?.efforts?.length
         ? effortSet.efforts
-        : ["default", "low", "medium", "high"];
+        : ["auto", "low", "medium", "high"];
       const options: ReasoningOption[] = efforts.map((effort) => ({
         level: normalizeClaudeEffortForReasoningLevel(effort),
         enabled: true,
-        label: effort,
+        label: effort === "default" ? "auto" : effort,
       }));
       const enabledLevels = options.map((option) => option.level);
       let selectedLevel = normalizeClaudeEffortForReasoningLevel(
@@ -6887,7 +7070,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       liveReasoningBtn.style.background = "";
       liveReasoningBtn.style.borderColor = "";
       liveReasoningBtn.style.color = "";
-      const reasoningHint = "Click to adjust reasoning level";
+      const reasoningHint = shouldUseClaudeRuntimeModelMenu()
+        ? "Click to adjust effort level"
+        : "Click to adjust reasoning level";
       liveReasoningBtn.dataset.reasoningLabel = reasoningLabel;
       liveReasoningBtn.dataset.reasoningHint = reasoningHint;
       if (liveClaudeReasoningBtn) {
@@ -6949,7 +7134,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
     appendDropdownInstruction(
       targetMenu,
-      t("Reasoning level"),
+      shouldUseClaudeRuntimeModelMenu()
+        ? "Effort Level"
+        : t("Reasoning level"),
       "llm-reasoning-menu-section",
     );
     if (!enabledLevels.length) {
@@ -6970,7 +7157,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           selectedReasoningCache.clear();
           selectedReasoningCache.set(item.id, "none");
           if (shouldUseClaudeRuntimeModelMenu()) {
-            setClaudeRuntimeEffortPref("default");
+            setClaudeRuntimeEffortPref("auto");
           }
           setLastUsedReasoningLevel("none");
           closeReasoningMenu();
@@ -7637,6 +7824,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
   const updateSlashMenuSelection = () => {
     const items = getVisibleSlashItems();
+    if (!items.length) {
+      slashMenuActiveIndex = -1;
+      return;
+    }
+    if (slashMenuActiveIndex < 0 || slashMenuActiveIndex >= items.length) {
+      slashMenuActiveIndex = 0;
+    }
     items.forEach((item, idx) => {
       item.setAttribute(
         "aria-selected",
@@ -7678,7 +7872,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   let actionPickerActiveIndex = 0;
   let slashActionsRefreshInFlight = false;
   let slashActionsLastRefreshAt = 0;
-  const SLASH_ACTIONS_REFRESH_COOLDOWN_MS = 10_000;
+  const SLASH_ACTIONS_REFRESH_COOLDOWN_MS = 60_000;
   const isActionPickerOpen = () =>
     Boolean(actionPicker && actionPicker.style.display !== "none");
   const closeActionPicker = () => {
@@ -7743,11 +7937,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     // Agent mode: render filtered agent actions into slash menu
     if (getCurrentRuntimeMode() === "agent") {
       const query = token.query.toLowerCase().trim();
-      renderAgentActionsInSlashMenu(query);
+      const initialSlashState = renderAgentActionsInSlashMenu(query);
       const maybeRefresh = (getAgentApi() as unknown as { refreshActions?: (force?: boolean) => Promise<void> }).refreshActions;
       const shouldRefreshNow =
         typeof maybeRefresh === "function" &&
-        !shouldUseClaudeRuntimeModelMenu() &&
+        initialSlashState.backendActionsCount === 0 &&
         !slashActionsRefreshInFlight &&
         Date.now() - slashActionsLastRefreshAt >=
           SLASH_ACTIONS_REFRESH_COOLDOWN_MS;
@@ -7760,7 +7954,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             if (!getActiveActionToken()) return;
             renderAgentActionsInSlashMenu(query);
             if (isFloatingMenuOpen(slashMenu)) {
-              slashMenuActiveIndex = 0;
               updateSlashMenuSelection();
             }
           })
@@ -7783,8 +7976,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       closeExportMenu();
       openSlashMenuWithSelection();
     } else {
-      // Already open — re-render selection after agent items may have changed
-      slashMenuActiveIndex = 0;
+      // Already open — keep current selection as much as possible.
       updateSlashMenuSelection();
     }
   };
@@ -7971,13 +8163,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   };
 
   /** Prepends filtered agent actions into the slash menu (agent mode only). */
-  const renderAgentActionsInSlashMenu = (query: string = "") => {
+  const renderAgentActionsInSlashMenu = (
+    query: string = "",
+  ): { backendActionsCount: number; totalActionsCount: number } => {
     clearAgentSlashItems();
     let allActions: ActionPickerItem[] = [];
     try {
       allActions = getAgentApi().listActions();
     } catch {
-      return;
+      return { backendActionsCount: 0, totalActionsCount: 0 };
     }
     const filtered = query
       ? allActions.filter(
@@ -7996,7 +8190,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     });
     const ownerDoc = body.ownerDocument;
     const list = slashMenu?.querySelector(".llm-action-picker-list");
-    if (!ownerDoc || !list) return;
+    if (!ownerDoc || !list) {
+      return { backendActionsCount: backendActions.length, totalActionsCount: filtered.length };
+    }
+    [slashUploadOption, slashReferenceOption, slashPdfPageOption, slashPdfMultiplePagesOption].forEach((el) => {
+      if (!el) return;
+      el.style.display = claudeSlashMode ? "none" : "";
+    });
     const firstBase = list.firstChild;
     const mkAgentEl = (tag: string, cls: string): HTMLElement => {
       const el = ownerDoc.createElement(tag);
@@ -8050,11 +8250,15 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       list.insertBefore(agentLabel, firstBase);
       appendActions(localAgentActions);
     }
+    if (claudeSlashMode) {
+      return { backendActionsCount: backendActions.length, totalActionsCount: filtered.length };
+    }
     // "Base actions" section label (above the static base items)
     const baseLabel = mkAgentEl("div", "llm-slash-menu-section");
     baseLabel.setAttribute("aria-hidden", "true");
     baseLabel.textContent = t("Base actions");
     list.insertBefore(baseLabel, firstBase);
+    return { backendActionsCount: backendActions.length, totalActionsCount: filtered.length };
   };
 
   /** Selects an action from the (legacy) action picker by index. */
@@ -10762,6 +10966,38 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
   if (chatBox) {
     chatBox.addEventListener("click", (e: Event) => {
+      const anchorTarget = (e.target as Element | null)?.closest(
+        "a[href]",
+      ) as HTMLAnchorElement | null;
+      if (anchorTarget && chatBox.contains(anchorTarget)) {
+        const href = (anchorTarget.getAttribute("href") || "").trim();
+        if (href && !href.startsWith("#")) {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            const launch = (Zotero as unknown as { launchURL?: (url: string) => void })
+              .launchURL;
+            if (typeof launch === "function") {
+              launch(href);
+              return;
+            }
+          } catch (_err) {
+            void _err;
+          }
+          try {
+            const win = Zotero.getMainWindow?.() as
+              | (Window & { open?: (url?: string, target?: string) => unknown })
+              | null;
+            if (typeof win?.open === "function") {
+              win.open(href, "_blank");
+              return;
+            }
+          } catch (_err) {
+            void _err;
+          }
+        }
+      }
+
       // Dismiss inline edit when clicking outside the edit widget
       if (inlineEditTarget) {
         const isInsideEdit = (e.target as Element | null)?.closest(
@@ -10839,6 +11075,71 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       } else {
         closeReasoningMenu();
       }
+    });
+  }
+  if (claudePermissionBtn) {
+    claudePermissionBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const current = getClaudePermissionModePref();
+      setClaudePermissionModePref(current === "yolo" ? "safe" : "yolo");
+      updateRuntimeModeButton();
+    });
+  }
+  if (sessionFolderBtn) {
+    sessionFolderBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void (async () => {
+        if (!shouldUseClaudeRuntimeModelMenu()) return;
+        try {
+          const session = await fetchCurrentSessionInfo();
+          const cwd = typeof session?.cwd === "string" ? session.cwd.trim() : "";
+          if (!cwd) {
+            if (status) setStatus(status, "Current session folder unavailable", "ready");
+            return;
+          }
+          const opened = revealDirectory(cwd);
+          if (status) {
+            setStatus(
+              status,
+              opened ? `Opened session folder: ${cwd}` : `Session folder: ${cwd}`,
+              "ready",
+            );
+          }
+        } catch (error) {
+          ztoolkit.log("LLM: Failed to open current session folder", error);
+          if (status) setStatus(status, "Failed to open session folder", "ready");
+        }
+      })();
+    });
+  }
+  if (sessionTerminalBtn) {
+    sessionTerminalBtn.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void (async () => {
+        if (!shouldUseClaudeRuntimeModelMenu()) return;
+        try {
+          const session = await fetchCurrentSessionInfo();
+          const cwd = typeof session?.cwd === "string" ? session.cwd.trim() : "";
+          if (!cwd) {
+            if (status) setStatus(status, "Current session folder unavailable", "ready");
+            return;
+          }
+          const opened = await openTerminalAtDirectory(cwd);
+          if (status) {
+            setStatus(
+              status,
+              opened ? `Opened terminal at: ${cwd}` : `Terminal open failed: ${cwd}`,
+              "ready",
+            );
+          }
+        } catch (error) {
+          ztoolkit.log("LLM: Failed to open terminal at current session folder", error);
+          if (status) setStatus(status, "Failed to open terminal", "ready");
+        }
+      })();
     });
   }
 

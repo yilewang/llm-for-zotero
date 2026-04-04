@@ -536,6 +536,54 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   runtimeModeBtn.append(runtimeModeIndicator, runtimeModeBackendIcon, runtimeModeLabel);
   contextPreviews.appendChild(runtimeModeBtn);
+  const claudePermissionBtn = createElement(
+    doc,
+    "button",
+    "llm-claude-permission-toggle",
+    {
+      id: "llm-claude-permission-toggle",
+      type: "button",
+      textContent: "safe",
+      title: "Claude Code permission mode",
+    },
+  ) as HTMLButtonElement;
+  claudePermissionBtn.style.display = "none";
+  claudePermissionBtn.setAttribute("aria-label", "Claude Code permission mode");
+  contextPreviews.appendChild(claudePermissionBtn);
+  const sessionFolderBtn = createElement(
+    doc,
+    "button",
+    "llm-session-action-btn llm-session-folder-btn",
+    {
+      id: "llm-session-folder-btn",
+      type: "button",
+      textContent: t("Session folder"),
+      title: t("Open current Claude session folder"),
+    },
+  ) as HTMLButtonElement;
+  sessionFolderBtn.style.display = "none";
+  sessionFolderBtn.setAttribute(
+    "aria-label",
+    t("Open current Claude session folder"),
+  );
+  contextPreviews.appendChild(sessionFolderBtn);
+  const sessionTerminalBtn = createElement(
+    doc,
+    "button",
+    "llm-session-action-btn llm-session-terminal-btn",
+    {
+      id: "llm-session-terminal-btn",
+      type: "button",
+      textContent: t("Terminal"),
+      title: t("Open terminal in current Claude session folder"),
+    },
+  ) as HTMLButtonElement;
+  sessionTerminalBtn.style.display = "none";
+  sessionTerminalBtn.setAttribute(
+    "aria-label",
+    t("Open terminal in current Claude session folder"),
+  );
+  contextPreviews.appendChild(sessionTerminalBtn);
   const selectedContextList = createElement(
     doc,
     "div",

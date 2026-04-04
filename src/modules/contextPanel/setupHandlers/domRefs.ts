@@ -12,6 +12,9 @@ export type PanelDomRefs = {
   reasoningBtn: HTMLButtonElement | null;
   claudeReasoningBtn: HTMLButtonElement | null;
   runtimeModeBtn: HTMLButtonElement | null;
+  claudePermissionBtn: HTMLButtonElement | null;
+  sessionFolderBtn: HTMLButtonElement | null;
+  sessionTerminalBtn: HTMLButtonElement | null;
   reasoningSlot: HTMLDivElement | null;
   reasoningMenu: HTMLDivElement | null;
   claudeReasoningSlot: HTMLDivElement | null;
@@ -118,6 +121,15 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     ) as HTMLButtonElement | null,
     runtimeModeBtn: body.querySelector(
       "#llm-runtime-mode-toggle",
+    ) as HTMLButtonElement | null,
+    claudePermissionBtn: body.querySelector(
+      "#llm-claude-permission-toggle",
+    ) as HTMLButtonElement | null,
+    sessionFolderBtn: body.querySelector(
+      "#llm-session-folder-btn",
+    ) as HTMLButtonElement | null,
+    sessionTerminalBtn: body.querySelector(
+      "#llm-session-terminal-btn",
     ) as HTMLButtonElement | null,
     reasoningSlot: body.querySelector(
       "#llm-reasoning-dropdown",

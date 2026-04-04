@@ -9,6 +9,7 @@
 import type { AgentRuntime } from "../../../agent/runtime";
 import type {
   AgentEvent,
+  AgentPendingAction,
   AgentRunEventRecord,
   AgentRuntimeRequest,
 } from "../../../agent/types";
@@ -112,6 +113,32 @@ function normalizeEffortLabel(value: unknown): string | undefined {
 
 function stripEffortSuffix(modelName: string): string {
   return modelName.replace(/\s+\(effort:\s*[^)]+\)\s*$/i, "").trim();
+}
+
+function appendAgentMessageDelta(
+  currentText: string,
+  rawDelta: string,
+  sanitizeText: (text: string) => string,
+): string {
+  const delta = sanitizeText(rawDelta || "");
+  if (!delta) return currentText;
+  if (!currentText) return delta;
+
+  // Providers may stream either incremental chunks or full snapshots.
+  // Normalize both forms to avoid repeated stacked partial output.
+  if (delta === currentText) return currentText;
+  if (delta.startsWith(currentText)) return delta;
+  if (currentText.endsWith(delta)) return currentText;
+
+  const maxOverlap = Math.min(currentText.length, delta.length);
+  let overlap = 0;
+  for (let len = maxOverlap; len > 0; len--) {
+    if (currentText.endsWith(delta.slice(0, len))) {
+      overlap = len;
+      break;
+    }
+  }
+  return currentText + delta.slice(overlap);
 }
 
 function composeClaudeModelDisplay(model: string, effort?: string): string {
@@ -266,6 +293,12 @@ export type AgentEngineDeps = {
     fallbackText?: string,
   ) => void;
   sanitizeText: (text: string) => string;
+  showPendingConfirmationCard: (
+    body: Element,
+    requestId: string,
+    action: AgentPendingAction,
+  ) => void;
+  hidePendingConfirmationCard: (body: Element) => void;
 
   // Persistence
   persistConversationMessage: (
@@ -568,11 +601,30 @@ export async function sendAgentTurn(
           case "status":
             setStatusSafely(event.text, "sending");
             break;
+          case "confirmation_required":
+            deps.showPendingConfirmationCard(
+              body,
+              event.requestId,
+              event.action,
+            );
+            setStatusSafely("Awaiting approval", "warning");
+            break;
+          case "confirmation_resolved":
+            deps.hidePendingConfirmationCard(body);
+            setStatusSafely(
+              event.approved ? "Approved; continuing…" : "Approval denied",
+              event.approved ? "sending" : "warning",
+            );
+            break;
           case "fallback":
             setStatusSafely(event.reason, "sending");
             break;
           case "message_delta":
-            assistantMessage.text += deps.sanitizeText(event.text);
+            assistantMessage.text = appendAgentMessageDelta(
+              assistantMessage.text,
+              event.text,
+              deps.sanitizeText,
+            );
             break;
           case "message_rollback":
             if (typeof event.length === "number" && event.length > 0) {
@@ -835,11 +887,30 @@ export async function retryAgentTurn(
           case "status":
             setStatusSafely(event.text, "sending");
             break;
+          case "confirmation_required":
+            deps.showPendingConfirmationCard(
+              body,
+              event.requestId,
+              event.action,
+            );
+            setStatusSafely("Awaiting approval", "warning");
+            break;
+          case "confirmation_resolved":
+            deps.hidePendingConfirmationCard(body);
+            setStatusSafely(
+              event.approved ? "Approved; continuing…" : "Approval denied",
+              event.approved ? "sending" : "warning",
+            );
+            break;
           case "fallback":
             setStatusSafely(event.reason, "sending");
             break;
           case "message_delta":
-            assistantMessage.text += deps.sanitizeText(event.text);
+            assistantMessage.text = appendAgentMessageDelta(
+              assistantMessage.text,
+              event.text,
+              deps.sanitizeText,
+            );
             break;
           case "message_rollback":
             if (typeof event.length === "number" && event.length > 0) {

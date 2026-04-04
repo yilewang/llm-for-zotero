@@ -16,7 +16,10 @@ import {
   normalizePaperContextRefs,
   normalizeSelectedTextSources,
 } from "../normalizers";
-import { agentReasoningExpandedCache } from "../agentState";
+import {
+  agentProcessExpandedCache,
+  agentReasoningExpandedCache,
+} from "../agentState";
 import { buildTextDiffPreview } from "./diffPreview";
 import { getBoolPref, getStringPref } from "../prefHelpers";
 
@@ -84,6 +87,42 @@ function shouldRenderRawLog(verbosity: AgentTraceVerbosity): boolean {
   if (visibility === "never") return false;
   if (visibility === "always") return true;
   return verbosity === "raw";
+}
+
+function isDebugPermissionUiEnabled(verbosity: AgentTraceVerbosity): boolean {
+  const visibility = getAgentRawLogVisibilityPref();
+  return (
+    verbosity === "verbose" ||
+    verbosity === "raw" ||
+    visibility === "debug_only"
+  );
+}
+
+function extractPermissionDebugRuntimeStatus(
+  events: AgentRunEventRecord[],
+): { permissionMode?: string; resolvedPermissionMode?: string } {
+  let permissionMode: string | undefined;
+  let resolvedPermissionMode: string | undefined;
+  for (const entry of events) {
+    if (entry.payload.type !== "provider_event") continue;
+    const providerType = (entry.payload.providerType || "").trim().toLowerCase();
+    if (providerType !== "runtime_config") continue;
+    const payload =
+      entry.payload.payload && typeof entry.payload.payload === "object"
+        ? (entry.payload.payload as Record<string, unknown>)
+        : null;
+    if (!payload) continue;
+    if (typeof payload.permissionMode === "string" && payload.permissionMode.trim()) {
+      permissionMode = payload.permissionMode.trim();
+    }
+    if (
+      typeof payload.resolvedPermissionMode === "string" &&
+      payload.resolvedPermissionMode.trim()
+    ) {
+      resolvedPermissionMode = payload.resolvedPermissionMode.trim();
+    }
+  }
+  return { permissionMode, resolvedPermissionMode };
 }
 
 function normalizeSelectedTexts(
@@ -2033,6 +2072,11 @@ function summarizeRunForHuman(
   let toolCalls = 0;
   let errorCount = 0;
   let keyEventCount = 0;
+  let confirmRequested = 0;
+  let confirmResolved = 0;
+  const includeConfirmationSummary = isDebugPermissionUiEnabled(
+    getAgentTraceVerbosityPref(),
+  );
   let failed = false;
   let completed = false;
   for (const entry of events) {
@@ -2046,6 +2090,8 @@ function summarizeRunForHuman(
       case "confirmation_resolved":
       case "final":
         keyEventCount += 1;
+        if (entry.payload.type === "confirmation_required") confirmRequested += 1;
+        if (entry.payload.type === "confirmation_resolved") confirmResolved += 1;
         if (entry.payload.type === "final") completed = true;
         break;
       case "tool_error":
@@ -2062,6 +2108,9 @@ function summarizeRunForHuman(
   const summaryBits = [
     `tool calls ${toolCalls}`,
     `key events ${keyEventCount}`,
+    includeConfirmationSummary
+      ? `confirm ${confirmRequested}/${confirmResolved}`
+      : "",
     errorCount > 0 ? `errors ${errorCount}` : "",
   ].filter(Boolean);
   const summaryText = summaryBits.join(", ");
@@ -2396,6 +2445,7 @@ export function renderAgentTrace({
     return wrap;
   }
   const traceVerbosity = getAgentTraceVerbosityPref();
+  const debugPermissionUi = isDebugPermissionUiEnabled(traceVerbosity);
   const processItems = buildAgentTraceDisplayItems(events, userMessage, traceVerbosity);
   const requestChips = buildAgentTraceRequestChips(userMessage);
   const pending = getPendingConfirmation(events);
@@ -2403,16 +2453,38 @@ export function renderAgentTrace({
   const runOverview = summarizeRunForHuman(events);
   const processDetails = doc.createElement("details") as HTMLDetailsElement;
   processDetails.className = "llm-agent-process-details";
-  processDetails.open = !getBoolPref("agentProcessCollapseByDefault", true);
+  const cachedProcessOpen = agentProcessExpandedCache.get(runId);
+  processDetails.open =
+    typeof cachedProcessOpen === "boolean"
+      ? cachedProcessOpen
+      : !getBoolPref("agentProcessCollapseByDefault", true);
   const processSummary = doc.createElement("summary");
   processSummary.className = "llm-agent-process-summary";
   processSummary.textContent = processDetails.open ? "Hide process" : `View ${runOverview.label}`;
   processDetails.addEventListener("toggle", () => {
+    agentProcessExpandedCache.set(runId, processDetails.open);
     processSummary.textContent = processDetails.open
       ? "Hide process"
       : `View ${runOverview.label}`;
   });
   processDetails.appendChild(processSummary);
+
+  if (debugPermissionUi) {
+    const confirmRequested = events.filter(
+      (entry) => entry.payload.type === "confirmation_required",
+    ).length;
+    const confirmResolved = events.filter(
+      (entry) => entry.payload.type === "confirmation_resolved",
+    ).length;
+    const runtimeStatus = extractPermissionDebugRuntimeStatus(events);
+    const debugLine = doc.createElement("div");
+    debugLine.className = "llm-agent-process-message llm-agent-process-message-neutral";
+    debugLine.textContent =
+      `debug permission: requested=${confirmRequested}, resolved=${confirmResolved}, ` +
+      `permission_mode=${runtimeStatus.permissionMode || "n/a"}, ` +
+      `resolvedPermissionMode=${runtimeStatus.resolvedPermissionMode || "n/a"}`;
+    list.appendChild(debugLine);
+  }
 
   if (requestChips.length) {
     const introWrap = doc.createElement("div");

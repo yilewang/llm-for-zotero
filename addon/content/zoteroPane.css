@@ -1349,6 +1349,11 @@
   white-space: pre-wrap;
 }
 
+.llm-streaming-plain-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .llm-bubble.user {
   background: var(--color-accent);
   color: white;
@@ -3371,6 +3376,45 @@ label.llm-search-results-item:hover {
   font-size: var(--llm-fs-11);
 }
 
+.llm-bubble.assistant .llm-rich-copy-block {
+  position: relative;
+}
+
+.llm-bubble.assistant .llm-rich-block-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  appearance: none;
+  -moz-appearance: none;
+  border: 1px solid var(--stroke-secondary);
+  background: color-mix(in srgb, var(--material-background) 92%, transparent);
+  color: var(--fill-secondary);
+  border-radius: 8px;
+  font-size: var(--llm-fs-10);
+  line-height: 1.1;
+  padding: 3px 7px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.llm-bubble.assistant .llm-rich-copy-block:hover > .llm-rich-block-copy-btn,
+.llm-bubble.assistant .llm-rich-block-copy-btn:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.llm-bubble.assistant .llm-rich-block-copy-btn:hover {
+  color: var(--fill-primary);
+  border-color: var(--stroke-primary);
+}
+
+.llm-bubble.assistant .llm-rich-block-copy-btn.copied {
+  color: var(--fill-primary);
+}
+
 .llm-bubble.assistant th,
 .llm-bubble.assistant td {
   border: 1px solid var(--stroke-secondary);
@@ -3415,8 +3459,8 @@ label.llm-search-results-item:hover {
 .llm-context-previews {
   display: flex;
   flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   width: 100%;
   container-type: inline-size;
   position: relative;
@@ -3433,7 +3477,7 @@ label.llm-search-results-item:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 26px;
+  min-height: 24px;
   padding: 3px 10px 3px 8px;
   border-radius: 999px;
   border: 1px solid var(--stroke-secondary);
@@ -3461,11 +3505,104 @@ label.llm-search-results-item:hover {
   cursor: default;
 }
 
+#llm-claude-permission-toggle {
+  order: -999;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: fit-content;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #aeb3bc;
+  font-size: var(--llm-fs-12);
+  line-height: 1.2;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+  box-sizing: border-box;
+  position: relative;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+#llm-claude-permission-toggle:hover {
+  color: #d2d6de;
+}
+
+#llm-claude-permission-toggle:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+#llm-claude-permission-toggle::before {
+  content: "";
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  background: url("icons/claude-safe.svg") center/contain no-repeat;
+  pointer-events: none;
+}
+
+#llm-claude-permission-toggle[data-mode="safe"] {
+  flex-direction: row;
+}
+
+#llm-claude-permission-toggle[data-mode="yolo"] {
+  flex-direction: row-reverse;
+  color: #d97757;
+}
+
+#llm-claude-permission-toggle[data-mode="yolo"]::before {
+  background-image: url("icons/claude-yolo.svg");
+}
+
+.llm-session-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke-secondary);
+  background: var(--material-background);
+  color: var(--fill-secondary);
+  font-size: var(--llm-fs-11);
+  line-height: 1.15;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.llm-session-action-btn:hover {
+  color: var(--fill-primary);
+  border-color: var(--stroke-primary);
+}
+
+.llm-session-action-btn:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.llm-session-folder-btn,
+.llm-session-terminal-btn {
+  order: -998;
+}
+
 .llm-context-previews > #llm-selected-context-list {
   display: contents;
 }
 
 .llm-context-previews > #llm-runtime-mode-toggle,
+.llm-context-previews > #llm-claude-permission-toggle,
+.llm-context-previews > #llm-session-folder-btn,
+.llm-context-previews > #llm-session-terminal-btn,
 .llm-context-previews > #llm-selected-context-list > .llm-selected-context,
 .llm-context-previews > .llm-image-preview,
 .llm-context-previews > #llm-file-context-preview,
@@ -3476,6 +3613,10 @@ label.llm-search-results-item:hover {
   margin: 0;
 }
 
+.llm-context-previews > #llm-runtime-mode-toggle {
+  margin-right: 2px;
+}
+
 .llm-context-previews
   > #llm-selected-context-list
   > .llm-note-context-chip[data-note-chip-kind="selected"] {
@@ -3483,6 +3624,9 @@ label.llm-search-results-item:hover {
 }
 
 .llm-context-previews > #llm-runtime-mode-toggle,
+.llm-context-previews > #llm-claude-permission-toggle,
+.llm-context-previews > #llm-session-folder-btn,
+.llm-context-previews > #llm-session-terminal-btn,
 .llm-context-previews
   > #llm-selected-context-list
   > .llm-selected-context.expanded,
@@ -3693,12 +3837,13 @@ label.llm-search-results-item:hover {
   display: inline-flex;
   align-items: center;
   max-width: 100%;
-  padding: 3px 4px 3px 8px;
+  min-height: 24px;
+  padding: 2px 4px 2px 8px;
   border-radius: 8px;
   background: transparent;
   color: var(--fill-secondary);
   font-size: var(--llm-fs-12);
-  line-height: 1.25;
+  line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4180,6 +4325,76 @@ label.llm-search-results-item:hover {
   border-radius: 10px;
   border: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.35));
   background: var(--material-background, #fff);
+}
+
+.llm-agent-debug-confirm-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483640;
+  background: color-mix(in srgb, #000 42%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.llm-agent-debug-confirm-modal-card {
+  min-width: min(520px, 90vw);
+  max-width: min(640px, 94vw);
+  border-radius: 12px;
+  border: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.35));
+  background: var(--material-background, #1b1b1f);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.llm-agent-debug-confirm-modal-title {
+  font-size: var(--llm-fs-14);
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--fill-primary, #f0f0f0);
+}
+
+.llm-agent-debug-confirm-modal-body {
+  font-size: var(--llm-fs-13);
+  line-height: 1.45;
+  color: var(--fill-secondary, #c8c8c8);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.llm-agent-debug-confirm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.llm-agent-debug-confirm-modal-btn {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.35));
+  font-size: var(--llm-fs-12);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.llm-agent-debug-confirm-modal-btn-deny {
+  background: color-mix(in srgb, var(--fill-quaternary, #2a2a2a) 86%, transparent);
+  color: var(--fill-primary, #f0f0f0);
+}
+
+.llm-agent-debug-confirm-modal-btn-approve {
+  background: color-mix(in srgb, #3584e4 88%, transparent);
+  color: #fff;
+}
+
+.llm-agent-debug-confirm-modal-btn:hover {
+  opacity: 0.9;
 }
 
 /* ── Action launch form ─────────────────────────────────────────────────── */

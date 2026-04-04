@@ -336,13 +336,6 @@ function revealDirectory(path: string): boolean {
   }
 }
 
-function parentPath(path: string): string {
-  const trimmed = (path || "").replace(/[\\/]+$/, "");
-  const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  if (idx <= 0) return trimmed;
-  return trimmed.slice(0, idx);
-}
-
 function resolveCodexAuthPath(): string {
   const env = getProcess()?.env;
   const codexHome = env?.CODEX_HOME?.trim();
@@ -637,6 +630,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLSpanElement | null;
   const agentClaudeConfigSourceSelect = doc.querySelector(
     `#${config.addonRef}-agent-claude-config-source`,
+  ) as HTMLSelectElement | null;
+  const agentPermissionModeSelect = doc.querySelector(
+    `#${config.addonRef}-agent-permission-mode`,
   ) as HTMLSelectElement | null;
   const agentTraceVerbositySelect = doc.querySelector(
     `#${config.addonRef}-agent-trace-verbosity`,
@@ -1687,6 +1683,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  if (agentPermissionModeSelect) {
+    const key = `${config.prefsPrefix}.agentPermissionMode`;
+    const saved = (Zotero.Prefs.get(key, true) as string) || "safe";
+    const normalized = saved === "yolo" ? "yolo" : "safe";
+    agentPermissionModeSelect.value = normalized;
+    agentPermissionModeSelect.addEventListener("change", () => {
+      const next = agentPermissionModeSelect.value === "yolo" ? "yolo" : "safe";
+      Zotero.Prefs.set(key, next, true);
+    });
+  }
+
   if (agentTraceVerbositySelect) {
     const key = `${config.prefsPrefix}.agentTraceVerbosity`;
     const saved = (Zotero.Prefs.get(key, true) as string) || "compact";
@@ -1748,19 +1755,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         source === "user-level"
           ? joinPath(home, ".claude")
           : joinPath(runtimeRoot, ".claude");
-      const targetPath =
-        source === "user-level"
-          ? joinPath(claudeDir, "settings.json")
-          : joinPath(claudeDir, "settings.local.json");
+      const targetPath = joinPath(claudeDir, "commands");
       try {
         if (source !== "user-level") {
           await ensureDirectory(runtimeRoot, joinPath(home, "Zotero"));
         }
         await ensureDirectory(claudeDir, source === "user-level" ? home : runtimeRoot);
+        await ensureDirectory(targetPath, claudeDir);
       } catch {
         // best-effort
       }
-      const opened = revealDirectory(targetPath) || revealDirectory(parentPath(targetPath));
+      const opened = revealDirectory(targetPath) || revealDirectory(claudeDir);
       if (openZoteroClaudeConfigFolderStatus) {
         openZoteroClaudeConfigFolderStatus.textContent = opened
           ? `Opened: ${targetPath}`

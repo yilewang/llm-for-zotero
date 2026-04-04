@@ -135,7 +135,7 @@ import { buildChatHistoryNotePayload, readNoteSnapshot } from "./notes";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { canEditUserPromptTurn } from "./editability";
-import { renderAgentTrace } from "./agentTrace/render";
+import { renderAgentTrace, renderPendingActionCard } from "./agentTrace/render";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 import { decorateAssistantCitationLinks } from "./assistantCitationLinks";
@@ -1060,6 +1060,67 @@ export async function copyRenderedMarkdownToClipboard(
 
   // Fallback: copy raw markdown as plain text.
   await copyTextToClipboard(body, safeText);
+}
+
+function getCopyableBlockText(block: Element): string {
+  const htmlEl = block as HTMLElement;
+  if (block.matches("pre")) {
+    return htmlEl.innerText || htmlEl.textContent || "";
+  }
+  if (block.matches("table")) {
+    const rows = Array.from(
+      block.querySelectorAll("tr"),
+    ) as HTMLTableRowElement[];
+    return rows
+      .map((row) => {
+        const cells = Array.from(
+          row.querySelectorAll("th, td"),
+        ) as HTMLElement[];
+        return cells
+          .map((cell) => sanitizeText((cell.textContent || "").trim()))
+          .join("\t");
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (block.matches(".katex-display")) {
+    return htmlEl.innerText || htmlEl.textContent || "";
+  }
+  return htmlEl.innerText || htmlEl.textContent || "";
+}
+
+function attachCopyButtonsToRichBlocks(
+  body: Element,
+  bubble: HTMLDivElement,
+): void {
+  if (!bubble.classList.contains("assistant")) return;
+  const doc = bubble.ownerDocument;
+  if (!doc) return;
+  const blocks = Array.from(
+    bubble.querySelectorAll("pre, table, .katex-display"),
+  ) as HTMLElement[];
+  for (const block of blocks) {
+    if (block.querySelector(":scope > .llm-rich-block-copy-btn")) continue;
+    block.classList.add("llm-rich-copy-block");
+    const btn = doc.createElement("button");
+    btn.type = "button";
+    btn.className = "llm-rich-block-copy-btn";
+    btn.textContent = "Copy";
+    btn.title = "Copy block";
+    btn.setAttribute("aria-label", "Copy block");
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void copyTextToClipboard(body, getCopyableBlockText(block));
+      btn.classList.add("copied");
+      btn.textContent = "Copied";
+      setTimeout(() => {
+        btn.classList.remove("copied");
+        btn.textContent = "Copy";
+      }, 900);
+    });
+    block.appendChild(btn);
+  }
 }
 
 export function getSelectedReasoningForItem(
@@ -2772,6 +2833,119 @@ async function buildAgentRuntimeRequest(
 }
 
 function buildAgentEngineDeps(): AgentEngineDeps {
+  const seenDebugConfirmationModals = new Set<string>();
+  const activeDebugConfirmationModals = new Map<string, HTMLDivElement>();
+
+  const isDebugPermissionUiEnabled = (): boolean => {
+    const verbosity = getStringPref("agentTraceVerbosity").trim().toLowerCase();
+    const rawLogVisibility = getStringPref("agentRawLogVisibility")
+      .trim()
+      .toLowerCase();
+    return (
+      verbosity === "verbose" ||
+      verbosity === "raw" ||
+      rawLogVisibility === "debug_only"
+    );
+  };
+
+  const showDebugConfirmationModal = (
+    body: Element,
+    requestId: string,
+    action: import("../../agent/types").AgentPendingAction,
+  ): void => {
+    if (!isDebugPermissionUiEnabled()) return;
+    if (seenDebugConfirmationModals.has(requestId)) return;
+    const ownerDoc = body.ownerDocument;
+    if (!ownerDoc) return;
+    seenDebugConfirmationModals.add(requestId);
+    if (activeDebugConfirmationModals.has(requestId)) return;
+
+    const title = (action.title || action.toolName || "Permission request").trim();
+    const description = (action.description || "Allow this action in current run?").trim();
+
+    const overlay = ownerDoc.createElement("div");
+    overlay.className = "llm-agent-debug-confirm-modal";
+    overlay.dataset.requestId = requestId;
+
+    const card = ownerDoc.createElement("div");
+    card.className = "llm-agent-debug-confirm-modal-card";
+
+    const titleEl = ownerDoc.createElement("div");
+    titleEl.className = "llm-agent-debug-confirm-modal-title";
+    titleEl.textContent = title;
+
+    const bodyEl = ownerDoc.createElement("div");
+    bodyEl.className = "llm-agent-debug-confirm-modal-body";
+    bodyEl.textContent = description;
+
+    const actionsEl = ownerDoc.createElement("div");
+    actionsEl.className = "llm-agent-debug-confirm-modal-actions";
+
+    const denyBtn = ownerDoc.createElement("button");
+    denyBtn.type = "button";
+    denyBtn.className =
+      "llm-agent-debug-confirm-modal-btn llm-agent-debug-confirm-modal-btn-deny";
+    denyBtn.textContent = "Deny";
+
+    const approveBtn = ownerDoc.createElement("button");
+    approveBtn.type = "button";
+    approveBtn.className =
+      "llm-agent-debug-confirm-modal-btn llm-agent-debug-confirm-modal-btn-approve";
+    approveBtn.textContent = "Approve once";
+
+    const settle = (approved: boolean): void => {
+      const node = activeDebugConfirmationModals.get(requestId);
+      if (node) {
+        node.remove();
+        activeDebugConfirmationModals.delete(requestId);
+      }
+      getAgentRuntime().resolveConfirmation(requestId, {
+        approved,
+        actionId: approved ? "approve" : "deny",
+      });
+    };
+
+    denyBtn.addEventListener("click", () => settle(false));
+    approveBtn.addEventListener("click", () => settle(true));
+
+    actionsEl.append(denyBtn, approveBtn);
+    card.append(titleEl, bodyEl, actionsEl);
+    overlay.appendChild(card);
+    body.appendChild(overlay);
+    activeDebugConfirmationModals.set(requestId, overlay);
+  };
+
+  const showPendingConfirmationCard = (
+    body: Element,
+    requestId: string,
+    action: import("../../agent/types").AgentPendingAction,
+  ): void => {
+    const ownerDoc = body.ownerDocument;
+    const { chatBox } = getPanelRequestUI(body);
+    if (!ownerDoc || !chatBox) return;
+    chatBox.querySelector(".llm-action-inline-card")?.remove();
+    const wrapper = ownerDoc.createElement("div");
+    wrapper.className = "llm-action-inline-card";
+    wrapper.appendChild(
+      renderPendingActionCard(ownerDoc, {
+        requestId,
+        action,
+      }),
+    );
+    chatBox.appendChild(wrapper);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    showDebugConfirmationModal(body, requestId, action);
+  };
+
+  const hidePendingConfirmationCard = (body: Element): void => {
+    const { chatBox } = getPanelRequestUI(body);
+    chatBox?.querySelector(".llm-action-inline-card")?.remove();
+    for (const node of activeDebugConfirmationModals.values()) {
+      node.remove();
+    }
+    activeDebugConfirmationModals.clear();
+  };
+
   return {
     chatHistory,
     agentRunTraceCache,
@@ -2804,6 +2978,8 @@ function buildAgentEngineDeps(): AgentEngineDeps {
     waitForUiStep,
     finalizeCancelledAssistantMessage,
     sanitizeText,
+    showPendingConfirmationCard,
+    hidePendingConfirmationCard,
     persistConversationMessage,
     updateStoredLatestUserMessage: updateStoredLatestUserMessage as AgentEngineDeps["updateStoredLatestUserMessage"],
     updateStoredLatestAssistantMessage: updateStoredLatestAssistantMessage as AgentEngineDeps["updateStoredLatestAssistantMessage"],
@@ -4152,38 +4328,37 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         try {
           const receiptInfo = extractAgentReceiptCounts(safeText);
           const markdownBody = receiptInfo ? receiptInfo.markdownBody : safeText;
-          if (receiptInfo) {
-            const selectedTexts = previousUserMessage
-              ? getMessageSelectedTexts(previousUserMessage)
-              : [];
-            const selectedTextSources = normalizeSelectedTextSources(
-              previousUserMessage?.selectedTextSources || [],
-              selectedTexts.length,
-            );
-            const quotedTextCount = selectedTextSources.filter(
-              (source) => source === "model",
-            ).length;
-            const receiptLine = doc.createElement("div") as HTMLDivElement;
-            receiptLine.className = "llm-agent-receipt";
-            receiptLine.textContent =
-              `CONTEXT papers=${receiptInfo.papers}, files=${receiptInfo.files}, images=${receiptInfo.images}, selected_text=${selectedTexts.length}, quoted_text=${quotedTextCount}.`;
-            bubble.appendChild(receiptLine);
-          }
-          // Build image resolver for MinerU figures (if applicable)
-          const contextSource = resolveContextSourceItem(item);
-          const ctxItem = contextSource.contextItem;
-          const pdfCtx = ctxItem ? pdfTextCache.get(ctxItem.id) : null;
-          const resolveImage = pdfCtx?.sourceType === "mineru" && ctxItem
-            ? buildImageResolver(ctxItem.id)
-            : undefined;
-          const rendered = renderMarkdown(markdownBody, { resolveImage });
-          if (receiptInfo) {
-            const answerBody = doc.createElement("div") as HTMLDivElement;
-            answerBody.className = "llm-agent-answer-body";
-            answerBody.innerHTML = rendered;
-            bubble.appendChild(answerBody);
+          // Legacy CONTEXT receipt line is intentionally removed from UI.
+          if (msg.streaming) {
+            // Streaming path: skip heavy markdown + citation decoration on each
+            // delta to keep UI responsive; final render is done once on completion.
+            if (receiptInfo) {
+              const answerBody = doc.createElement("div") as HTMLDivElement;
+              answerBody.className = "llm-agent-answer-body llm-streaming-plain-text";
+              answerBody.textContent = markdownBody;
+              bubble.appendChild(answerBody);
+            } else {
+              bubble.textContent = markdownBody;
+            }
           } else {
-            bubble.innerHTML = rendered;
+            // Build image resolver for MinerU figures (if applicable)
+            const contextSource = resolveContextSourceItem(item);
+            const ctxItem = contextSource.contextItem;
+            const pdfCtx = ctxItem ? pdfTextCache.get(ctxItem.id) : null;
+            const resolveImage = pdfCtx?.sourceType === "mineru" && ctxItem
+              ? buildImageResolver(ctxItem.id)
+              : undefined;
+            const rendered = renderMarkdown(markdownBody, { resolveImage });
+            if (receiptInfo) {
+              const answerBody = doc.createElement("div") as HTMLDivElement;
+              answerBody.className = "llm-agent-answer-body";
+              answerBody.innerHTML = rendered;
+              bubble.appendChild(answerBody);
+              attachCopyButtonsToRichBlocks(body, bubble);
+            } else {
+              bubble.innerHTML = rendered;
+              attachCopyButtonsToRichBlocks(body, bubble);
+            }
           }
         } catch (err) {
           ztoolkit.log("LLM render error:", err);
