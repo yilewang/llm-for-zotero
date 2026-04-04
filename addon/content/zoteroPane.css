@@ -3566,18 +3566,42 @@ label.llm-search-results-item:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
   min-height: 24px;
-  padding: 3px 8px;
+  padding: 0;
   border-radius: 999px;
   border: 1px solid var(--stroke-secondary);
   background: var(--material-background);
   color: var(--fill-secondary);
-  font-size: var(--llm-fs-11);
-  line-height: 1.15;
-  font-weight: 500;
   cursor: pointer;
   user-select: none;
   box-sizing: border-box;
+}
+
+.llm-session-action-btn::before {
+  content: "";
+  width: 13px;
+  height: 13px;
+  display: block;
+  pointer-events: none;
+}
+
+.llm-session-folder-btn::before {
+  background-color: currentColor;
+  mask-image: url("icons/folder-open.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/folder-open.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+.llm-session-terminal-btn::before {
+  background: url("icons/action-terminal-ghostty.svg") center/contain no-repeat;
 }
 
 .llm-session-action-btn:hover {

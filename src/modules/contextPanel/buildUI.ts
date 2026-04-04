@@ -557,7 +557,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     {
       id: "llm-session-folder-btn",
       type: "button",
-      textContent: t("Session folder"),
+      textContent: "",
       title: t("Open current Claude session folder"),
     },
   ) as HTMLButtonElement;
@@ -574,7 +574,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     {
       id: "llm-session-terminal-btn",
       type: "button",
-      textContent: t("Terminal"),
+      textContent: "",
       title: t("Open terminal in current Claude session folder"),
     },
   ) as HTMLButtonElement;
