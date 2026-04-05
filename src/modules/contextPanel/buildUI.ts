@@ -231,6 +231,38 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
+  const sessionFolderBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-session-action-btn llm-session-folder-btn",
+    {
+      id: "llm-session-folder-btn",
+      type: "button",
+      textContent: "",
+      title: t("Open current Claude session folder"),
+    },
+  ) as HTMLButtonElement;
+  sessionFolderBtn.style.display = "none";
+  sessionFolderBtn.setAttribute(
+    "aria-label",
+    t("Open current Claude session folder"),
+  );
+  const sessionTerminalBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-session-action-btn llm-session-terminal-btn",
+    {
+      id: "llm-session-terminal-btn",
+      type: "button",
+      textContent: "",
+      title: t("Open terminal in current Claude session folder"),
+    },
+  ) as HTMLButtonElement;
+  sessionTerminalBtn.style.display = "none";
+  sessionTerminalBtn.setAttribute(
+    "aria-label",
+    t("Open terminal in current Claude session folder"),
+  );
   const settingsBtn = createElement(doc, "button", "llm-btn-icon llm-settings-btn", {
     id: "llm-settings",
     type: "button",
@@ -250,7 +282,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     type: "button",
     textContent: t("Clear"),
   });
-  headerActions.append(settingsBtn, exportBtn, clearBtn);
+  headerActions.append(sessionFolderBtn, sessionTerminalBtn, settingsBtn, exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
   const historyMenu = createElement(doc, "div", "llm-history-menu", {
@@ -550,40 +582,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   claudePermissionBtn.style.display = "none";
   claudePermissionBtn.setAttribute("aria-label", "Claude Code permission mode");
   contextPreviews.appendChild(claudePermissionBtn);
-  const sessionFolderBtn = createElement(
-    doc,
-    "button",
-    "llm-session-action-btn llm-session-folder-btn",
-    {
-      id: "llm-session-folder-btn",
-      type: "button",
-      textContent: "",
-      title: t("Open current Claude session folder"),
-    },
-  ) as HTMLButtonElement;
-  sessionFolderBtn.style.display = "none";
-  sessionFolderBtn.setAttribute(
-    "aria-label",
-    t("Open current Claude session folder"),
-  );
-  contextPreviews.appendChild(sessionFolderBtn);
-  const sessionTerminalBtn = createElement(
-    doc,
-    "button",
-    "llm-session-action-btn llm-session-terminal-btn",
-    {
-      id: "llm-session-terminal-btn",
-      type: "button",
-      textContent: "",
-      title: t("Open terminal in current Claude session folder"),
-    },
-  ) as HTMLButtonElement;
-  sessionTerminalBtn.style.display = "none";
-  sessionTerminalBtn.setAttribute(
-    "aria-label",
-    t("Open terminal in current Claude session folder"),
-  );
-  contextPreviews.appendChild(sessionTerminalBtn);
   const selectedContextList = createElement(
     doc,
     "div",

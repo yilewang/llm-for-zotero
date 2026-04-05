@@ -3589,15 +3589,7 @@ label.llm-search-results-item:hover {
 }
 
 .llm-session-folder-btn::before {
-  background-color: currentColor;
-  mask-image: url("icons/folder-open.svg");
-  mask-repeat: no-repeat;
-  mask-position: center;
-  mask-size: contain;
-  -webkit-mask-image: url("icons/folder-open.svg");
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-  -webkit-mask-size: contain;
+  background: url("icons/action-folder-icons8.svg") center/contain no-repeat;
 }
 
 .llm-session-terminal-btn::before {
@@ -3614,19 +3606,12 @@ label.llm-search-results-item:hover {
   outline-offset: 1px;
 }
 
-.llm-session-folder-btn,
-.llm-session-terminal-btn {
-  order: -998;
-}
-
 .llm-context-previews > #llm-selected-context-list {
   display: contents;
 }
 
 .llm-context-previews > #llm-runtime-mode-toggle,
 .llm-context-previews > #llm-claude-permission-toggle,
-.llm-context-previews > #llm-session-folder-btn,
-.llm-context-previews > #llm-session-terminal-btn,
 .llm-context-previews > #llm-selected-context-list > .llm-selected-context,
 .llm-context-previews > .llm-image-preview,
 .llm-context-previews > #llm-file-context-preview,
@@ -3649,8 +3634,6 @@ label.llm-search-results-item:hover {
 
 .llm-context-previews > #llm-runtime-mode-toggle,
 .llm-context-previews > #llm-claude-permission-toggle,
-.llm-context-previews > #llm-session-folder-btn,
-.llm-context-previews > #llm-session-terminal-btn,
 .llm-context-previews
   > #llm-selected-context-list
   > .llm-selected-context.expanded,
@@ -3659,6 +3642,11 @@ label.llm-search-results-item:hover {
 .llm-context-previews > #llm-paper-context-preview.expanded {
   flex: 0 0 auto;
   width: fit-content;
+}
+
+.llm-header-actions > #llm-session-folder-btn,
+.llm-header-actions > #llm-session-terminal-btn {
+  opacity: 0.78;
 }
 
 .llm-compose-area {

@@ -5761,6 +5761,46 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     return false;
   };
 
+  const ensureDirectoryExists = async (path: string): Promise<boolean> => {
+    const normalized = (path || "").trim();
+    if (!normalized) return false;
+    try {
+      const IOUtils = ztoolkit.getGlobal("IOUtils") as
+        | {
+            makeDirectory?: (
+              target: string,
+              options?: { createAncestors?: boolean },
+            ) => Promise<void>;
+          }
+        | undefined;
+      if (IOUtils?.makeDirectory) {
+        await IOUtils.makeDirectory(normalized, { createAncestors: true });
+        return true;
+      }
+    } catch {
+      // continue to fallback
+    }
+    try {
+      const OS = ztoolkit.getGlobal("OS") as
+        | {
+            File?: {
+              makeDir?: (
+                target: string,
+                options?: { ignoreExisting?: boolean; from?: string },
+              ) => Promise<void>;
+            };
+          }
+        | undefined;
+      if (OS?.File?.makeDir) {
+        await OS.File.makeDir(normalized, { ignoreExisting: true });
+        return true;
+      }
+    } catch {
+      // continue to fallback
+    }
+    return true;
+  };
+
   const openTerminalAtDirectory = async (path: string): Promise<boolean> => {
     const normalized = (path || "").trim();
     if (!normalized) return false;
@@ -11099,6 +11139,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             if (status) setStatus(status, "Current session folder unavailable", "ready");
             return;
           }
+          await ensureDirectoryExists(cwd);
           const opened = revealDirectory(cwd);
           if (status) {
             setStatus(
@@ -11127,6 +11168,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             if (status) setStatus(status, "Current session folder unavailable", "ready");
             return;
           }
+          await ensureDirectoryExists(cwd);
           const opened = await openTerminalAtDirectory(cwd);
           if (status) {
             setStatus(
