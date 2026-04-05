@@ -6359,7 +6359,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         steps: [],
       };
     }
-    const command = `cd ${shellEscape(normalized)} && claude --resume ${shellEscape(sessionId)}${
+    const command = `cd ${shellEscape(normalized)} && claude --resume ${shellEscape(sessionId)} --init${
       mode === "yolo" ? " --dangerously-skip-permissions" : ""
     }`;
     const customPath = getClaudeTerminalPathPref();
