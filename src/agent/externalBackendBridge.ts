@@ -572,7 +572,18 @@ async function runExternalBridgeTurn(
                   });
                   // Re-register so the user can retry approval instead of getting stuck.
                   registerResolver();
+                  return;
                 }
+                // External bridges may not emit confirmation_resolved events.
+                // Emit one locally after a successful sync so pending-card UI
+                // advances and older pending confirmations can surface.
+                await params.onEvent?.({
+                  type: "confirmation_resolved",
+                  requestId: result.requestId,
+                  approved: Boolean(resolution.approved),
+                  actionId: resolution.actionId,
+                  data: resolution.data,
+                });
               })
               .catch(async (error) => {
                 await params.onEvent?.({
