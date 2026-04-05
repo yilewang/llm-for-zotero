@@ -5763,12 +5763,14 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (!normalized) return false;
     try {
       const file = Zotero.File.pathToFile(normalized);
-      if (file && typeof file.reveal === "function") {
-        file.reveal();
-        return true;
-      }
+      // Prefer opening the directory itself (leaf node) instead of revealing it
+      // in parent Finder window.
       if (file && typeof file.launch === "function") {
         file.launch();
+        return true;
+      }
+      if (file && typeof file.reveal === "function") {
+        file.reveal();
         return true;
       }
     } catch {
