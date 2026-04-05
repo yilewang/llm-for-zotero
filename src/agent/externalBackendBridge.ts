@@ -529,9 +529,23 @@ async function runExternalBridgeTurn(
         params.resolveExternalConfirmation
       ) {
         const requestId = line.event.requestId;
-        params.registerPendingConfirmation(requestId, (resolution) => {
-          void params.resolveExternalConfirmation?.(requestId, resolution);
-        });
+        const registerResolver = () => {
+          params.registerPendingConfirmation?.(requestId, (resolution) => {
+            void params
+              .resolveExternalConfirmation?.(requestId, resolution)
+              .catch(async (error) => {
+                await params.onEvent?.({
+                  type: "status",
+                  text: `Confirmation sync failed for ${requestId}: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                });
+                // Re-register so the user can retry approval instead of getting stuck.
+                registerResolver();
+              });
+          });
+        };
+        registerResolver();
       }
       await params.onEvent?.(line.event);
       return;
@@ -1266,7 +1280,7 @@ export function createExternalBackendBridgeRuntime(options: {
           registerPendingConfirmation: (requestId, resolve) =>
             coreRuntime.registerPendingConfirmation(requestId, resolve),
           resolveExternalConfirmation: async (requestId, resolution) => {
-            await fetch(`${normalizeBaseUrl(bridgeUrl)}/resolve-confirmation`, {
+            const response = await fetch(`${normalizeBaseUrl(bridgeUrl)}/resolve-confirmation`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -1276,6 +1290,13 @@ export function createExternalBackendBridgeRuntime(options: {
                 data: resolution.data,
               }),
             });
+            if (!response.ok) {
+              const bodyText = await response.text().catch(() => "");
+              const suffix = bodyText ? `: ${bodyText}` : "";
+              throw new Error(
+                `resolve-confirmation failed (${response.status}) for ${requestId}${suffix}`,
+              );
+            }
           },
         });
       } catch (error) {
