@@ -11445,13 +11445,16 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           }
           await ensureDirectoryExists(cwd);
           const folderToOpen = await resolvePreferredSessionFolder(cwd);
-          const opened = await openDirectory(folderToOpen);
+          const folderToOpenWithSlash = folderToOpen.endsWith("/")
+            ? folderToOpen
+            : `${folderToOpen}/`;
+          const opened = await openDirectory(folderToOpenWithSlash);
           if (status) {
             setStatus(
               status,
               opened
-                ? `Opened session folder: ${folderToOpen}`
-                : `Session folder: ${folderToOpen}`,
+                ? `Opened session folder: ${folderToOpenWithSlash}`
+                : `Session folder: ${folderToOpenWithSlash}`,
               "ready",
             );
           }
