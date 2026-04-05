@@ -5948,8 +5948,39 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       .filter(Boolean)
       .pop() || "";
 
-  const isDirectoryPath = (value: string): boolean =>
-    /\/$/.test(value.trim()) || /\.app$/i.test(value.trim());
+  const isAppBundlePath = (value: string): boolean => /\.app$/i.test(value.trim());
+
+  const isDirectoryPath = (value: string): boolean => /\/$/.test(value.trim());
+
+  const pathExists = (value: string): boolean => {
+    const normalized = (value || "").trim();
+    if (!normalized) return false;
+    try {
+      const file = Zotero.File.pathToFile(normalized);
+      return Boolean(file && typeof file.exists === "function" && file.exists());
+    } catch {
+      return false;
+    }
+  };
+
+  const resolveAppBundleExecutable = (
+    appPath: string,
+    terminalName: string,
+  ): string | null => {
+    const normalized = (appPath || "").trim();
+    if (!isAppBundlePath(normalized)) return null;
+    const base = pathBasename(normalized).replace(/\.app$/i, "");
+    const candidates = [
+      `${normalized}/Contents/MacOS/${base}`,
+      `${normalized}/Contents/MacOS/${base.toLowerCase()}`,
+      `${normalized}/Contents/MacOS/${terminalName}`,
+      `${normalized}/Contents/MacOS/${terminalName.toLowerCase()}`,
+    ];
+    for (const candidate of candidates) {
+      if (pathExists(candidate)) return candidate;
+    }
+    return null;
+  };
 
   const executeSubprocessStep = async (params: {
     step: string;
@@ -6221,26 +6252,13 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           steps,
         };
       }
-      if (isDirectoryPath(normalized)) {
-        const probe = await executeSubprocessStep({
-          step: "F",
-          command: "/usr/bin/open",
-          args: ["-a", normalized, "--args", "-e", "zsh", "-lc", command],
-        });
-        steps.push(probe);
-        return {
-          ok: probe.ok,
-          code: probe.ok ? "OK" : "F",
-          message: probe.ok
-            ? "Custom terminal launched with command"
-            : `Terminal probe F failed: ${probe.message}${probe.stderr ? ` (${probe.stderr})` : ""}`,
-          steps,
-        };
-      }
       if (terminalName.includes("wezterm")) {
+        const commandPath = isAppBundlePath(normalized)
+          ? resolveAppBundleExecutable(normalized, terminalName) || normalized
+          : normalized;
         const probe = await executeSubprocessStep({
           step: "F",
-          command: normalized,
+          command: commandPath,
           args: ["start", "--", "zsh", "-lc", command],
         });
         steps.push(probe);
@@ -6259,10 +6277,29 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         terminalName.includes("alacritty") ||
         terminalName.includes("rio")
       ) {
+        const commandPath = isAppBundlePath(normalized)
+          ? resolveAppBundleExecutable(normalized, terminalName) || normalized
+          : normalized;
         const probe = await executeSubprocessStep({
           step: "F",
-          command: normalized,
+          command: commandPath,
           args: ["-e", "zsh", "-lc", command],
+        });
+        steps.push(probe);
+        return {
+          ok: probe.ok,
+          code: probe.ok ? "OK" : "F",
+          message: probe.ok
+            ? "Custom terminal launched with command"
+            : `Terminal probe F failed: ${probe.message}${probe.stderr ? ` (${probe.stderr})` : ""}`,
+          steps,
+        };
+      }
+      if (isDirectoryPath(normalized) || isAppBundlePath(normalized)) {
+        const probe = await executeSubprocessStep({
+          step: "F",
+          command: "/usr/bin/open",
+          args: ["-a", normalized, "--args", "-e", "zsh", "-lc", command],
         });
         steps.push(probe);
         return {
@@ -6301,6 +6338,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   const openClaudeInTerminalAtDirectory = async (
     cwd: string,
     mode: "safe" | "yolo",
+    providerSessionId?: string,
   ): Promise<TerminalLaunchResult> => {
     const normalized = (cwd || "").trim();
     if (!normalized) {
@@ -6311,7 +6349,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         steps: [],
       };
     }
-    const command = `cd ${shellEscape(normalized)} && claude${
+    const resumePart =
+      typeof providerSessionId === "string" && providerSessionId.trim().length > 0
+        ? ` --resume ${shellEscape(providerSessionId.trim())}`
+        : "";
+    const command = `cd ${shellEscape(normalized)} && claude${resumePart}${
       mode === "yolo" ? " --dangerously-skip-permissions" : ""
     }`;
     const customPath = getClaudeTerminalPathPref();
@@ -6468,6 +6510,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
   const fetchCurrentSessionInfo = async (): Promise<{
     cwd?: string;
+    providerSessionId?: string;
     scopeType?: string;
     scopeId?: string;
     scopeLabel?: string;
@@ -11832,6 +11875,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
           const terminalResult = await openClaudeInTerminalAtDirectory(
             cwd,
             getClaudePermissionModePref(),
+            typeof session?.providerSessionId === "string"
+              ? session.providerSessionId
+              : undefined,
           );
           if (status) {
             setStatus(
