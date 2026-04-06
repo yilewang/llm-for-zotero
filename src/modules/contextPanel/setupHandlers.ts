@@ -8605,9 +8605,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   type ActionPickerItem = { name: string; description: string; inputSchema: object };
   let actionPickerItems: ActionPickerItem[] = [];
   let actionPickerActiveIndex = 0;
-  let slashActionsRefreshInFlight = false;
-  let slashActionsLastRefreshAt = 0;
-  const SLASH_ACTIONS_REFRESH_COOLDOWN_MS = 60_000;
+  // -- Slash commands (from adapter /commands endpoint) --
+  type SlashCommandItem = { name: string; description: string; argumentHint?: string };
+  let slashCommandItems: SlashCommandItem[] = [];
+  let slashCommandsRefreshInFlight = false;
+  let slashCommandsLastRefreshAt = 0;
+  const SLASH_COMMANDS_REFRESH_COOLDOWN_MS = 60_000;
   const isActionPickerOpen = () =>
     Boolean(actionPicker && actionPicker.style.display !== "none");
   const closeActionPicker = () => {
@@ -8669,34 +8672,39 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       closeSlashMenu();
       return;
     }
-    // Agent mode: render filtered agent actions into slash menu
+    // Agent mode: render slash commands from /commands endpoint
     if (getCurrentRuntimeMode() === "agent") {
       const query = token.query.toLowerCase().trim();
-      const initialSlashState = renderAgentActionsInSlashMenu(query);
-      const maybeRefresh = (getAgentApi() as unknown as { refreshActions?: (force?: boolean) => Promise<void> }).refreshActions;
-      const shouldRefreshNow =
-        typeof maybeRefresh === "function" &&
-        initialSlashState.backendActionsCount === 0 &&
-        !slashActionsRefreshInFlight &&
-        Date.now() - slashActionsLastRefreshAt >=
-          SLASH_ACTIONS_REFRESH_COOLDOWN_MS;
-      if (shouldRefreshNow) {
-        slashActionsRefreshInFlight = true;
-        slashActionsLastRefreshAt = Date.now();
-        void maybeRefresh(false)
+      renderAgentActionsInSlashMenu(query);
+      // Refresh slash commands from adapter /commands endpoint
+      const maybeRefreshSlashCommands = (getAgentApi() as unknown as { refreshSlashCommands?: (force?: boolean) => Promise<void> }).refreshSlashCommands;
+      const shouldRefreshSlashCommandsNow =
+        typeof maybeRefreshSlashCommands === "function" &&
+        !slashCommandsRefreshInFlight &&
+        (slashCommandItems.length === 0 ||
+          Date.now() - slashCommandsLastRefreshAt >= SLASH_COMMANDS_REFRESH_COOLDOWN_MS);
+      if (shouldRefreshSlashCommandsNow) {
+        slashCommandsRefreshInFlight = true;
+        slashCommandsLastRefreshAt = Date.now();
+        void maybeRefreshSlashCommands(false)
           .then(() => {
             if (getCurrentRuntimeMode() !== "agent") return;
             if (!getActiveActionToken()) return;
+            try {
+              slashCommandItems = (getAgentApi() as unknown as { listSlashCommands?: () => SlashCommandItem[] }).listSlashCommands?.() || [];
+            } catch {
+              slashCommandItems = [];
+            }
             renderAgentActionsInSlashMenu(query);
             if (isFloatingMenuOpen(slashMenu)) {
               updateSlashMenuSelection();
             }
           })
           .catch((error) => {
-            ztoolkit.log("LLM Agent: Failed to refresh slash actions", error);
+            ztoolkit.log("LLM Agent: Failed to refresh slash commands", error);
           })
           .finally(() => {
-            slashActionsRefreshInFlight = false;
+            slashCommandsRefreshInFlight = false;
           });
       }
     } else {
@@ -8901,44 +8909,28 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     }
   };
 
-  /** Prepends filtered agent actions into the slash menu (agent mode only). */
+  /** Prepends filtered slash commands into the slash menu (agent mode only). */
   const renderAgentActionsInSlashMenu = (
     query: string = "",
   ): { backendActionsCount: number; totalActionsCount: number } => {
     clearAgentSlashItems();
     const claudeSlashMode = shouldUseClaudeRuntimeModelMenu();
-    let allActions: ActionPickerItem[] = [];
-    try {
-      allActions = getAgentApi().listActions();
-    } catch {
-      return { backendActionsCount: 0, totalActionsCount: 0 };
-    }
-    const filtered = query
-      ? allActions.filter(
-          (a) =>
-            a.name.toLowerCase().includes(query) ||
-            a.description.toLowerCase().includes(query),
-        )
-      : allActions;
-    const backendActions = filtered.filter((action) => {
-      const source = (action as unknown as { source?: string }).source;
-      return source === "backend";
-    });
-    const localAgentActions = claudeSlashMode
-      ? []
-      : filtered.filter((action) => {
-          const source = (action as unknown as { source?: string }).source;
-          return source !== "backend";
-        });
     const ownerDoc = body.ownerDocument;
     const list = slashMenu?.querySelector(".llm-action-picker-list");
-    if (!ownerDoc || !list) {
-      return { backendActionsCount: backendActions.length, totalActionsCount: filtered.length };
-    }
     [slashUploadOption, slashReferenceOption, slashPdfPageOption, slashPdfMultiplePagesOption].forEach((el) => {
       if (!el) return;
       el.style.display = claudeSlashMode ? "none" : "";
     });
+    const filteredCmds = query
+      ? slashCommandItems.filter(
+          (cmd) =>
+            cmd.name.toLowerCase().includes(query) ||
+            cmd.description.toLowerCase().includes(query),
+        )
+      : slashCommandItems;
+    if (!ownerDoc || !list) {
+      return { backendActionsCount: filteredCmds.length, totalActionsCount: filteredCmds.length };
+    }
     const firstBase = list.firstChild;
     const mkAgentEl = (tag: string, cls: string): HTMLElement => {
       const el = ownerDoc.createElement(tag);
@@ -8946,63 +8938,51 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       el.setAttribute("data-slash-agent-item", "true");
       return el;
     };
-    const appendActions = (actions: ActionPickerItem[]) => {
-      actions.forEach((action) => {
-        const source = (action as unknown as { source?: string }).source;
-        const backendToolName = (action as unknown as { backendToolName?: string }).backendToolName;
-        const riskLevel = (action as unknown as { riskLevel?: string }).riskLevel;
-        const riskPrefix = riskLevel === "high"
-          ? "[HIGH] "
-          : riskLevel === "medium"
-          ? "[MED] "
-          : "";
-      const btn = mkAgentEl("button", "llm-action-picker-item") as HTMLButtonElement;
-      btn.type = "button";
-      const titleEl = ownerDoc.createElement("span");
-      titleEl.className = "llm-action-picker-title";
-        titleEl.textContent =
-          source === "backend" && backendToolName
-            ? `/${backendToolName}`
-            : formatActionLabel(action.name);
-      const descEl = ownerDoc.createElement("span");
-      descEl.className = "llm-action-picker-description";
-        descEl.textContent = `${riskPrefix}${action.description}`;
-      btn.append(titleEl, descEl);
-      btn.addEventListener("mousedown", (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        consumeActiveActionToken();
-        closeSlashMenu();
-        void executeAgentAction(action);
+    if (filteredCmds.length > 0) {
+      const slashLabel = mkAgentEl("div", "llm-slash-menu-section");
+      slashLabel.setAttribute("aria-hidden", "true");
+      slashLabel.textContent = "Claude Commands";
+      list.insertBefore(slashLabel, firstBase);
+      filteredCmds.forEach((cmd) => {
+        const btn = mkAgentEl("button", "llm-action-picker-item") as HTMLButtonElement;
+        btn.type = "button";
+        const titleEl = ownerDoc.createElement("span");
+        titleEl.className = "llm-action-picker-title";
+        titleEl.textContent = `/${cmd.name}`;
+        const descEl = ownerDoc.createElement("span");
+        descEl.className = "llm-action-picker-description";
+        descEl.textContent = cmd.description;
+        btn.append(titleEl, descEl);
+        btn.addEventListener("mousedown", (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+          consumeActiveActionToken();
+          closeSlashMenu();
+          // Insert slash command into input box
+          if (inputBox) {
+            const currentValue = inputBox.value;
+            const token = getActiveActionToken();
+            if (token) {
+              const beforeSlash = currentValue.slice(0, token.slashStart);
+              const afterCaret = currentValue.slice(token.caretEnd);
+              const argHint = cmd.argumentHint ? ` ${cmd.argumentHint}` : "";
+              inputBox.value = `${beforeSlash}/${cmd.name}${argHint}${afterCaret}`;
+              inputBox.focus();
+              persistDraftInputForCurrentConversation();
+            }
+          }
+        });
+        list.insertBefore(btn, firstBase);
       });
-      list.insertBefore(btn, firstBase);
-      });
-    };
-    if (backendActions.length > 0) {
-      const backendLabel = mkAgentEl("div", "llm-slash-menu-section");
-      backendLabel.setAttribute("aria-hidden", "true");
-      backendLabel.textContent = claudeSlashMode
-        ? "Claude commands"
-        : "Backend Tools (Claude Code)";
-      list.insertBefore(backendLabel, firstBase);
-      appendActions(backendActions);
     }
-    if (localAgentActions.length > 0) {
-      const agentLabel = mkAgentEl("div", "llm-slash-menu-section");
-      agentLabel.setAttribute("aria-hidden", "true");
-      agentLabel.textContent = t("Agent actions");
-      list.insertBefore(agentLabel, firstBase);
-      appendActions(localAgentActions);
+    if (!claudeSlashMode) {
+      // "Base actions" section label (above the static base items)
+      const baseLabel = mkAgentEl("div", "llm-slash-menu-section");
+      baseLabel.setAttribute("aria-hidden", "true");
+      baseLabel.textContent = t("Base actions");
+      list.insertBefore(baseLabel, firstBase);
     }
-    if (claudeSlashMode) {
-      return { backendActionsCount: backendActions.length, totalActionsCount: filtered.length };
-    }
-    // "Base actions" section label (above the static base items)
-    const baseLabel = mkAgentEl("div", "llm-slash-menu-section");
-    baseLabel.setAttribute("aria-hidden", "true");
-    baseLabel.textContent = t("Base actions");
-    list.insertBefore(baseLabel, firstBase);
-    return { backendActionsCount: backendActions.length, totalActionsCount: filtered.length };
+    return { backendActionsCount: filteredCmds.length, totalActionsCount: filteredCmds.length };
   };
 
   /** Selects an action from the (legacy) action picker by index. */
@@ -13071,5 +13051,24 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
       void clearCurrentConversation();
     });
+  }
+
+  // Proactively prefetch slash commands so they're ready before the user types "/"
+  if (getCurrentRuntimeMode() === "agent") {
+    const maybeRefreshSlashCommandsEager = (getAgentApi() as unknown as { refreshSlashCommands?: (force?: boolean) => Promise<void> }).refreshSlashCommands;
+    if (typeof maybeRefreshSlashCommandsEager === "function" && !slashCommandsRefreshInFlight) {
+      slashCommandsRefreshInFlight = true;
+      slashCommandsLastRefreshAt = Date.now();
+      void maybeRefreshSlashCommandsEager(false)
+        .then(() => {
+          try {
+            slashCommandItems = (getAgentApi() as unknown as { listSlashCommands?: () => SlashCommandItem[] }).listSlashCommands?.() || [];
+          } catch {
+            slashCommandItems = [];
+          }
+        })
+        .catch(() => { /* silent */ })
+        .finally(() => { slashCommandsRefreshInFlight = false; });
+    }
   }
 }

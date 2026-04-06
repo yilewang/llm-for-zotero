@@ -1,4 +1,5 @@
 import { config } from "../../package.json";
+import { dbg, dbgError } from "../utils/debugLogger";
 import type { AgentRuntime } from "./runtime";
 import type {
   ActionConfirmationMode,
@@ -57,6 +58,13 @@ export type AgentRuntimeLike = Pick<
     mutability: "read" | "write";
   }>;
   refreshExternalActions(force?: boolean): Promise<void>;
+  listSlashCommandsSync(): Array<{
+    name: string;
+    description: string;
+    argumentHint?: string;
+    source: "sdk" | "fallback";
+  }>;
+  refreshSlashCommands(force?: boolean): Promise<void>;
   runExternalAction(
     name: string,
     input: unknown,
@@ -1137,6 +1145,10 @@ export function createExternalBackendBridgeRuntime(options: {
   let cachedTools: ExternalToolDescriptor[] = [];
   let cacheExpiresAt = 0;
   let refreshInFlight: Promise<void> | null = null;
+  let cachedSlashCommands: ExternalSlashCommandDescriptor[] = [];
+  let slashCommandsCacheExpiresAt = 0;
+  let slashCommandsRefreshInFlight: Promise<void> | null = null;
+  const SLASH_COMMANDS_CACHE_TTL_MS = 60_000;
   const conversationContextSignature = new Map<number, string>();
   const conversationScopeByKey = new Map<number, BridgeScope>();
   const TOOL_CACHE_TTL_MS = 60_000;
@@ -1183,6 +1195,56 @@ export function createExternalBackendBridgeRuntime(options: {
     await refreshInFlight;
   };
 
+  const refreshSlashCommands = async (force = false): Promise<void> => {
+    const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
+    dbg("refreshSlashCommands called", { bridgeUrl, force });
+    if (force) {
+      dbg("refreshSlashCommands: force=true, clearing cache");
+      cachedSlashCommands = [];
+      slashCommandsCacheExpiresAt = 0;
+    }
+    if (!bridgeUrl) {
+      dbg("refreshSlashCommands: no bridgeUrl, clearing cache");
+      cachedSlashCommands = [];
+      slashCommandsCacheExpiresAt = 0;
+      return;
+    }
+    if (!force && Date.now() < slashCommandsCacheExpiresAt && cachedSlashCommands.length > 0) {
+      dbg("refreshSlashCommands: using cached", { count: cachedSlashCommands.length });
+      return;
+    }
+    if (slashCommandsRefreshInFlight) {
+      dbg("refreshSlashCommands: waiting for in-flight");
+      await slashCommandsRefreshInFlight;
+      return;
+    }
+    slashCommandsRefreshInFlight = (async () => {
+      try {
+        dbg("refreshSlashCommands: fetching from adapter", { bridgeUrl });
+        cachedSlashCommands = await fetchExternalCommands(bridgeUrl);
+        slashCommandsCacheExpiresAt = Date.now() + SLASH_COMMANDS_CACHE_TTL_MS;
+        dbg("refreshSlashCommands: fetched successfully", { count: cachedSlashCommands.length });
+      } catch (error) {
+        dbgError("refreshSlashCommands failed", error);
+        ztoolkit.log("LLM Agent: Failed to refresh slash commands", error);
+      } finally {
+        slashCommandsRefreshInFlight = null;
+      }
+    })();
+    await slashCommandsRefreshInFlight;
+  };
+
+  const listSlashCommandsSync = (): ExternalSlashCommandDescriptor[] => {
+    const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
+    const hasBridge = !!bridgeUrl;
+    const count = cachedSlashCommands.length;
+    dbg("listSlashCommandsSync called", { hasBridge, count, bridgeUrl });
+    if (!hasBridge) {
+      return [];
+    }
+    return cachedSlashCommands;
+  };
+
   return {
     listTools: () => coreRuntime.listTools(),
     getToolDefinition: (name: string) => coreRuntime.getToolDefinition(name),
@@ -1222,6 +1284,8 @@ export function createExternalBackendBridgeRuntime(options: {
       }));
     },
     refreshExternalActions,
+    listSlashCommandsSync,
+    refreshSlashCommands,
     runExternalAction: async (name, input, opts = {}) => {
       const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
       if (!bridgeUrl) {

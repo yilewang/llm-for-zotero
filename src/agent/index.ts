@@ -241,6 +241,23 @@ export function getAgentApi() {
       }
     },
 
+    listSlashCommands: () => {
+      if (!_actionRegistry) throw new Error("Agent subsystem is not initialized");
+      const externalSlashCommands = runtimeBridge?.listSlashCommandsSync?.() || [];
+      return externalSlashCommands.map((cmd) => ({
+        name: cmd.name,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        source: "backend" as const,
+      }));
+    },
+
+    refreshSlashCommands: async (force = false) => {
+      if (runtimeBridge?.refreshSlashCommands) {
+        await runtimeBridge.refreshSlashCommands(force);
+      }
+    },
+
     /**
      * Run a named action programmatically.
      *
