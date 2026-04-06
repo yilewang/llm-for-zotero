@@ -8597,6 +8597,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   let actionPickerActiveIndex = 0;
   // -- Slash commands (from adapter /commands endpoint) --
   type SlashCommandItem = { name: string; description: string; argumentHint?: string };
+  type RankedSlashCommandItem = SlashCommandItem & { _score: number; _matchSource: "name" | "description" };
   type SlashCommandsUiState = "idle" | "loading" | "ready" | "error" | "empty";
   let slashCommandItems: SlashCommandItem[] = [];
   let slashCommandsRefreshInFlight = false;
@@ -8604,6 +8605,71 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   let slashCommandsUiState: SlashCommandsUiState = "idle";
   let slashCommandsLastError = "";
   const SLASH_COMMANDS_REFRESH_COOLDOWN_MS = 60_000;
+  const scoreSlashCommandNameMatch = (name: string, query: string): number => {
+    if (!query) return 1;
+    if (!name) return 0;
+    if (name === query) return 1000;
+    if (name.startsWith(query)) return 900 - Math.min(name.length - query.length, 120);
+    const segments = name.split(/[:/_-]+/g).filter(Boolean);
+    for (let i = 0; i < segments.length; i += 1) {
+      const segment = segments[i];
+      if (segment === query) return 850 - i * 2;
+      if (segment.startsWith(query)) {
+        return 800 - i * 2 - Math.min(segment.length - query.length, 80);
+      }
+    }
+    const index = name.indexOf(query);
+    if (index >= 0) {
+      return 700 - Math.min(index * 4, 120) - Math.min(name.length - query.length, 80);
+    }
+    return 0;
+  };
+  const scoreSlashCommandDescriptionMatch = (
+    description: string,
+    query: string,
+  ): number => {
+    if (!query || !description) return 0;
+    const index = description.indexOf(query);
+    if (index < 0) return 0;
+    // Description match is intentionally much weaker than name match.
+    return 200 - Math.min(index, 120);
+  };
+  const getRankedSlashCommands = (
+    commands: SlashCommandItem[],
+    query: string,
+  ): RankedSlashCommandItem[] => {
+    if (!query) {
+      return commands.map((cmd, idx) => ({
+        ...cmd,
+        _score: 1_000_000 - idx,
+        _matchSource: "name",
+      }));
+    }
+    const ranked = commands
+      .map((cmd, idx) => {
+        const nameLower = cmd.name.toLowerCase();
+        const descLower = cmd.description.toLowerCase();
+        const nameScore = scoreSlashCommandNameMatch(nameLower, query);
+        const descriptionScore = scoreSlashCommandDescriptionMatch(descLower, query);
+        const source: "name" | "description" =
+          nameScore >= descriptionScore ? "name" : "description";
+        const score = Math.max(nameScore, descriptionScore);
+        if (score <= 0) return null;
+        return {
+          ...cmd,
+          _score: score * 1_000_000 - idx,
+          _matchSource: source,
+        };
+      })
+      .filter((entry): entry is RankedSlashCommandItem => Boolean(entry));
+
+    const hasNameMatch = ranked.some((cmd) => cmd._matchSource === "name");
+    const filtered = hasNameMatch
+      ? ranked.filter((cmd) => cmd._matchSource === "name")
+      : ranked;
+    filtered.sort((a, b) => b._score - a._score);
+    return filtered;
+  };
   const isActionPickerOpen = () =>
     Boolean(actionPicker && actionPicker.style.display !== "none");
   const closeActionPicker = () => {
@@ -8959,13 +9025,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       if (!el) return;
       el.style.display = claudeSlashMode ? "none" : "";
     });
-    const filteredCmds = query
-      ? slashCommandItems.filter(
-          (cmd) =>
-            cmd.name.toLowerCase().includes(query) ||
-            cmd.description.toLowerCase().includes(query),
-        )
-      : slashCommandItems;
+    const filteredCmds = getRankedSlashCommands(slashCommandItems, query);
     const state = opts?.state || slashCommandsUiState;
     if (!ownerDoc || !list) {
       return { backendActionsCount: filteredCmds.length, totalActionsCount: filteredCmds.length };
@@ -8992,24 +9052,61 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         descEl.className = "llm-action-picker-description";
         descEl.textContent = cmd.description;
         btn.append(titleEl, descEl);
+        const applySlashCommandSelection = () => {
+          if (!inputBox) {
+            closeSlashMenu();
+            return;
+          }
+          const currentValue = inputBox.value;
+          const token = getActiveActionToken();
+          const insertion = `/${cmd.name}${cmd.argumentHint ? ` ${cmd.argumentHint}` : ""}`;
+          const selectionStart =
+            typeof inputBox.selectionStart === "number"
+              ? inputBox.selectionStart
+              : currentValue.length;
+          const selectionEnd =
+            typeof inputBox.selectionEnd === "number"
+              ? inputBox.selectionEnd
+              : selectionStart;
+
+          let nextValue = currentValue;
+          let caretPos = selectionStart;
+          if (token) {
+            const beforeSlash = currentValue.slice(0, token.slashStart);
+            const afterCaret = currentValue.slice(token.caretEnd);
+            nextValue = `${beforeSlash}${insertion}${afterCaret}`;
+            caretPos = beforeSlash.length + insertion.length;
+          } else {
+            const before = currentValue.slice(0, selectionStart);
+            const after = currentValue.slice(selectionEnd);
+            const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+            const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
+            const content = `${needsLeadingSpace ? " " : ""}${insertion}${needsTrailingSpace ? " " : ""}`;
+            nextValue = `${before}${content}${after}`;
+            caretPos = before.length + content.length;
+          }
+
+          inputBox.value = nextValue;
+          inputBox.setSelectionRange(caretPos, caretPos);
+          persistDraftInputForCurrentConversation();
+          closeSlashMenu();
+          inputBox.focus({ preventScroll: true });
+        };
         btn.addEventListener("mousedown", (e: Event) => {
           e.preventDefault();
           e.stopPropagation();
-          consumeActiveActionToken();
-          closeSlashMenu();
-          // Insert slash command into input box
-          if (inputBox) {
-            const currentValue = inputBox.value;
-            const token = getActiveActionToken();
-            if (token) {
-              const beforeSlash = currentValue.slice(0, token.slashStart);
-              const afterCaret = currentValue.slice(token.caretEnd);
-              const argHint = cmd.argumentHint ? ` ${cmd.argumentHint}` : "";
-              inputBox.value = `${beforeSlash}/${cmd.name}${argHint}${afterCaret}`;
-              inputBox.focus();
-              persistDraftInputForCurrentConversation();
-            }
+          applySlashCommandSelection();
+        });
+        btn.addEventListener("click", (e: Event) => {
+          // Keyboard Enter / programmatic .click() path (detail=0).
+          // Mouse click is already handled in mousedown above.
+          const me = e as MouseEvent;
+          if (typeof me.detail === "number" && me.detail > 0) {
+            return;
           }
+          e.preventDefault();
+          e.stopPropagation();
+          applySlashCommandSelection();
         });
         list.insertBefore(btn, firstBase);
       });
