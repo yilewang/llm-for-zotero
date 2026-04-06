@@ -8541,6 +8541,11 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     Array.from(slashMenu.querySelectorAll("[data-slash-agent-item]")).forEach(
       (el) => (el as Element).remove(),
     );
+    // Restore static items that may have been hidden during claude_bridge agent mode
+    [slashUploadOption, slashReferenceOption, slashPdfPageOption, slashPdfMultiplePagesOption].forEach((el) => {
+      if (!el) return;
+      el.style.display = "";
+    });
   };
   const getVisibleSlashItems = (): HTMLButtonElement[] => {
     if (!slashMenu) return [];
@@ -8694,6 +8699,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             slashActionsRefreshInFlight = false;
           });
       }
+    } else {
+      // Chat mode: restore static slash items that may have been hidden during a prior
+      // claude_bridge agent session (state persists across mode switches in the DOM).
+      clearAgentSlashItems();
     }
     if (!isFloatingMenuOpen(slashMenu)) {
       closeRetryModelMenu();
@@ -8897,6 +8906,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     query: string = "",
   ): { backendActionsCount: number; totalActionsCount: number } => {
     clearAgentSlashItems();
+    const claudeSlashMode = shouldUseClaudeRuntimeModelMenu();
     let allActions: ActionPickerItem[] = [];
     try {
       allActions = getAgentApi().listActions();
@@ -8914,10 +8924,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       const source = (action as unknown as { source?: string }).source;
       return source === "backend";
     });
-    const localAgentActions = filtered.filter((action) => {
-      const source = (action as unknown as { source?: string }).source;
-      return source !== "backend";
-    });
+    const localAgentActions = claudeSlashMode
+      ? []
+      : filtered.filter((action) => {
+          const source = (action as unknown as { source?: string }).source;
+          return source !== "backend";
+        });
     const ownerDoc = body.ownerDocument;
     const list = slashMenu?.querySelector(".llm-action-picker-list");
     if (!ownerDoc || !list) {
@@ -8969,7 +8981,9 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     if (backendActions.length > 0) {
       const backendLabel = mkAgentEl("div", "llm-slash-menu-section");
       backendLabel.setAttribute("aria-hidden", "true");
-      backendLabel.textContent = "Backend Tools (Claude Code)";
+      backendLabel.textContent = claudeSlashMode
+        ? "Claude commands"
+        : "Backend Tools (Claude Code)";
       list.insertBefore(backendLabel, firstBase);
       appendActions(backendActions);
     }
@@ -11229,6 +11243,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       closeExportMenu();
       if (getCurrentRuntimeMode() === "agent") {
         renderAgentActionsInSlashMenu();
+      } else {
+        clearAgentSlashItems();
       }
       openSlashMenuWithSelection();
       uploadBtn.setAttribute("aria-expanded", "true");
