@@ -11,6 +11,46 @@
   <linkset>
     <html:link rel="localization" href="__addonRef__-preferences.ftl" />
   </linkset>
+    <html:style>
+      /* CSS-only tooltip styling */
+      [data-tooltip] {
+        position: relative;
+      }
+      [data-tooltip]:hover::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        bottom: 100%;
+        left: 0;
+        transform: none;
+        padding: 6px 10px;
+        background: rgba(0, 0, 0, 0.85);
+        color: white;
+        font-size: 11px;
+        font-weight: normal;
+        white-space: normal;
+        max-width: 280px;
+        width: max-content;
+        border-radius: 6px;
+        z-index: 10000;
+        pointer-events: none;
+        margin-bottom: 6px;
+        line-height: 1.4;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      }
+      [data-tooltip]:hover::before {
+        content: "";
+        position: absolute;
+        bottom: 100%;
+        left: 8px;
+        transform: none;
+        border: 5px solid transparent;
+        border-top-color: rgba(0, 0, 0, 0.85);
+        margin-bottom: -4px;
+        z-index: 10001;
+        pointer-events: none;
+      }
+    </html:style>
+
   <groupbox>
     <html:div
       style="display: flex; flex-direction: column; padding: 10px"
@@ -213,22 +253,41 @@
         style="display: none; flex-direction: column; gap: 18px"
       >
         <html:div style="display: flex; flex-direction: column; gap: 4px">
-          <html:label
-            style="
-              display: inline-flex;
-              align-items: center;
-              gap: 8px;
-              font-weight: 600;
-              font-size: 12px;
-              color: var(--fill-primary, inherit);
-            "
-          >
-            <html:input
-              id="__addonRef__-enable-agent-mode"
-              type="checkbox"
-            ></html:input>
-            Enable Agent Mode (Beta)
-          </html:label>
+          <html:div style="display: flex; align-items: center; gap: 6px;">
+            <html:label
+              style="
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 600;
+                font-size: 12px;
+                color: var(--fill-primary, inherit);
+              "
+            >
+              <html:input
+                id="__addonRef__-enable-agent-mode"
+                type="checkbox"
+              ></html:input>
+              Enable Agent Mode (Beta)
+            </html:label>
+            <html:span
+              data-tooltip="Shows the Agent (beta) toggle in the context bar. When enabled, the AI can perform multi-step tasks: reading papers, running calculations, making decisions, and iterating toward a goal. This is a beta feature that requires the Claude Code Bridge backend to be configured." title="Shows the Agent (beta) toggle in the context bar. When enabled, the AI can perform multi-step tasks: reading papers, running calculations, making decisions, and iterating toward a goal. This is a beta feature that requires the Claude Code Bridge backend to be configured."
+              style="
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 16px;
+                height: 16px;
+                border-radius: 50%;
+                background: var(--fill-secondary, #888);
+                color: Field;
+                font-size: 11px;
+                font-weight: 600;
+                cursor: help;
+                user-select: none;
+              "
+            >?</html:span>
+          </html:div>
           <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
             Shows the "Agent (beta)" toggle in the context bar, enabling the
             agentic multi-step assistant. Off by default — enable only if you want
@@ -257,12 +316,31 @@
           </html:div>
 
           <html:div style="display: flex; flex-direction: column; gap: 6px;">
-            <html:label
-              for="__addonRef__-agent-backend-mode"
-              style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
-            >
-              Backend Mode
-            </html:label>
+            <html:div style="display: flex; align-items: center; gap: 6px;">
+              <html:label
+                for="__addonRef__-agent-backend-mode"
+                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+              >
+                Backend Mode
+              </html:label>
+              <html:span
+                data-tooltip="Controls which AI runtime powers Agent mode. Disabled turns off Agent features. Built-in uses the plugin's original single-step assistant. Claude Code Bridge connects to an external Claude Code CLI instance for multi-step agentic capabilities." title="Controls which AI runtime powers Agent mode. Disabled turns off Agent features. Built-in uses the plugin's original single-step assistant. Claude Code Bridge connects to an external Claude Code CLI instance for multi-step agentic capabilities."
+                style="
+                  display: inline-flex;
+                  align-items: center;
+                  justify-content: center;
+                  width: 16px;
+                  height: 16px;
+                  border-radius: 50%;
+                  background: var(--fill-secondary, #888);
+                  color: Field;
+                  font-size: 11px;
+                  font-weight: 600;
+                  cursor: help;
+                  user-select: none;
+                "
+              >?</html:span>
+            </html:div>
             <html:select
               id="__addonRef__-agent-backend-mode"
               style="
@@ -297,26 +375,50 @@
             "
           >
             <html:div style="display: flex; flex-direction: column; gap: 4px;">
-              <html:label
-                for="__addonRef__-agent-bridge-url"
-                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
-              >
-                Bridge URL
-              </html:label>
+              <html:div style="display: flex; align-items: center; gap: 6px;">
+                <html:label
+                  for="__addonRef__-agent-bridge-url"
+                  style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+                >
+                  Bridge URL
+                </html:label>
+                <html:span
+                  data-tooltip="The HTTP endpoint of your Claude Code Bridge server. Default is http://127.0.0.1:19787. The bridge connects Zotero to Claude Code CLI." title="The HTTP endpoint of your Claude Code Bridge server. Default is http://127.0.0.1:19787. The bridge connects Zotero to Claude Code CLI."
+                  style="
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 50%;
+                    background: var(--fill-secondary, #888);
+                    color: Field;
+                    font-size: 11px;
+                    font-weight: 600;
+                    cursor: help;
+                    user-select: none;
+                  "
+                >?</html:span>
+              </html:div>
               <html:input
                 id="__addonRef__-agent-bridge-url"
                 type="text"
-                placeholder="http://127.0.0.1:18787"
+                placeholder="http://127.0.0.1:19787"
                 style="
-                  width: min(520px, 100%);
+                  width: 100%;
+                  max-width: 420px;
                   padding: 5px 8px;
                   font-size: 12px;
                   border: 1px solid var(--stroke-secondary, #c8c8c8);
                   border-radius: 6px;
                   background: Field;
                   color: FieldText;
+                  box-sizing: border-box;
                 "
               />
+              <html:span style="font-size: 11px; color: var(--fill-secondary, #888);">
+                HTTP endpoint of the Claude Code Bridge server that connects to your Claude Code CLI.
+              </html:span>
             </html:div>
 
             <html:div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
@@ -341,19 +443,38 @@
             </html:div>
 
             <html:div style="display: flex; flex-direction: column; gap: 6px;">
-              <html:label
-                for="__addonRef__-agent-terminal-path"
-                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
-              >
-                Default Terminal App Path
-              </html:label>
+              <html:div style="display: flex; align-items: center; gap: 6px;">
+                <html:label
+                  for="__addonRef__-agent-terminal-path"
+                  style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+                >
+                  Default Terminal App Path
+                </html:label>
+                <html:span
+                  data-tooltip="The terminal application to use when opening Claude Code sessions. Leave empty to use the system default Terminal.app. Popular alternatives: /Applications/Ghostty.app, /Applications/Warp.app, /Applications/iTerm.app" title="The terminal application to use when opening Claude Code sessions. Leave empty to use the system default Terminal.app. Popular alternatives: /Applications/Ghostty.app, /Applications/Warp.app, /Applications/iTerm.app"
+                  style="
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 50%;
+                    background: var(--fill-secondary, #888);
+                    color: Field;
+                    font-size: 11px;
+                    font-weight: 600;
+                    cursor: help;
+                    user-select: none;
+                  "
+                >?</html:span>
+              </html:div>
               <html:div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
                 <html:input
                   id="__addonRef__-agent-terminal-path"
                   type="text"
                   placeholder="/Applications/Ghostty.app (empty = system Terminal)"
                   style="
-                    width: min(520px, 100%);
+                    width: 100%; max-width: 420px; box-sizing: border-box;
                     padding: 5px 8px;
                     font-size: 12px;
                     border: 1px solid var(--stroke-secondary, #c8c8c8);
@@ -398,12 +519,31 @@
             </html:div>
 
             <html:div style="display: flex; flex-direction: column; gap: 4px;">
-              <html:label
-                for="__addonRef__-agent-claude-config-source"
-                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
-              >
-                Claude Config Source
-              </html:label>
+              <html:div style="display: flex; align-items: center; gap: 6px;">
+                <html:label
+                  for="__addonRef__-agent-claude-config-source"
+                  style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+                >
+                  Claude Config Source
+                </html:label>
+                <html:span
+                  data-tooltip="Determines which Claude settings file to use. 'zotero-specific' creates isolated settings for Zotero only. 'user-level' uses your global Claude Code settings (shared with terminal usage). Switching only changes the active source; no files are copied." title="Determines which Claude settings file to use. 'zotero-specific' creates isolated settings for Zotero only. 'user-level' uses your global Claude Code settings (shared with terminal usage). Switching only changes the active source; no files are copied."
+                  style="
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 50%;
+                    background: var(--fill-secondary, #888);
+                    color: Field;
+                    font-size: 11px;
+                    font-weight: 600;
+                    cursor: help;
+                    user-select: none;
+                  "
+                >?</html:span>
+              </html:div>
               <html:select
                 id="__addonRef__-agent-claude-config-source"
                 style="
@@ -427,12 +567,31 @@
 
             <html:div style="display: flex; flex-wrap: wrap; gap: 12px; align-items: center;">
               <html:div style="display: flex; flex-direction: column; gap: 4px;">
-                <html:label
-                  for="__addonRef__-agent-trace-verbosity"
-                  style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
-                >
-                  Process Trace Verbosity
-                </html:label>
+                <html:div style="display: flex; align-items: center; gap: 6px;">
+                  <html:label
+                    for="__addonRef__-agent-trace-verbosity"
+                    style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+                  >
+                    Process Trace Verbosity
+                  </html:label>
+                  <html:span
+                    data-tooltip="Controls how much detail is shown in the View Process panel. Compact shows only essential steps. Verbose includes tool calls and parameters. Raw displays the complete unfiltered event stream for debugging." title="Controls how much detail is shown in the View Process panel. Compact shows only essential steps. Verbose includes tool calls and parameters. Raw displays the complete unfiltered event stream for debugging."
+                    style="
+                      display: inline-flex;
+                      align-items: center;
+                      justify-content: center;
+                      width: 16px;
+                      height: 16px;
+                      border-radius: 50%;
+                      background: var(--fill-secondary, #888);
+                      color: Field;
+                      font-size: 11px;
+                      font-weight: 600;
+                      cursor: help;
+                      user-select: none;
+                    "
+                  >?</html:span>
+                </html:div>
                 <html:select
                   id="__addonRef__-agent-trace-verbosity"
                   style="
@@ -452,12 +611,31 @@
               </html:div>
 
               <html:div style="display: flex; flex-direction: column; gap: 4px;">
-                <html:label
-                  for="__addonRef__-agent-raw-log-visibility"
-                  style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
-                >
-                  Raw Log Visibility
-                </html:label>
+                <html:div style="display: flex; align-items: center; gap: 6px;">
+                  <html:label
+                    for="__addonRef__-agent-raw-log-visibility"
+                    style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+                  >
+                    Raw Log Visibility
+                  </html:label>
+                  <html:span
+                    data-tooltip="Controls when raw JSON logs from the Claude Code Bridge are shown in the View Process panel. Debug only shows them when Zotero's debug output is enabled. Always shows them regardless. Never hides them completely." title="Controls when raw JSON logs from the Claude Code Bridge are shown in the View Process panel. Debug only shows them when Zotero's debug output is enabled. Always shows them regardless. Never hides them completely."
+                    style="
+                      display: inline-flex;
+                      align-items: center;
+                      justify-content: center;
+                      width: 16px;
+                      height: 16px;
+                      border-radius: 50%;
+                      background: var(--fill-secondary, #888);
+                      color: Field;
+                      font-size: 11px;
+                      font-weight: 600;
+                      cursor: help;
+                      user-select: none;
+                    "
+                  >?</html:span>
+                </html:div>
                 <html:select
                   id="__addonRef__-agent-raw-log-visibility"
                   style="
@@ -478,6 +656,7 @@
             </html:div>
 
             <html:label
+              data-tooltip="When enabled, the View Process panel showing agent execution steps will be collapsed by default. Expand it to see detailed progress. Reduces visual clutter if you don't need to monitor every step." title="When enabled, the View Process panel showing agent execution steps will be collapsed by default. Expand it to see detailed progress. Reduces visual clutter if you don't need to monitor every step."
               style="
                 display: inline-flex;
                 align-items: center;
@@ -485,6 +664,7 @@
                 font-weight: 600;
                 font-size: 12px;
                 color: var(--fill-primary, inherit);
+                cursor: help;
               "
             >
               <html:input
@@ -492,6 +672,21 @@
                 type="checkbox"
               ></html:input>
               Collapse "View Process" by default
+              <html:span
+                style="
+                  display: inline-flex;
+                  align-items: center;
+                  justify-content: center;
+                  width: 16px;
+                  height: 16px;
+                  border-radius: 50%;
+                  background: var(--fill-secondary, #888);
+                  color: Field;
+                  font-size: 11px;
+                  font-weight: 600;
+                  user-select: none;
+                "
+              >?</html:span>
             </html:label>
           </html:div>
         </html:div>
