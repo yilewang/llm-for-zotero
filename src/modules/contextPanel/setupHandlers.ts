@@ -8597,9 +8597,12 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   let actionPickerActiveIndex = 0;
   // -- Slash commands (from adapter /commands endpoint) --
   type SlashCommandItem = { name: string; description: string; argumentHint?: string };
+  type SlashCommandsUiState = "idle" | "loading" | "ready" | "error" | "empty";
   let slashCommandItems: SlashCommandItem[] = [];
   let slashCommandsRefreshInFlight = false;
   let slashCommandsLastRefreshAt = 0;
+  let slashCommandsUiState: SlashCommandsUiState = "idle";
+  let slashCommandsLastError = "";
   const SLASH_COMMANDS_REFRESH_COOLDOWN_MS = 60_000;
   const isActionPickerOpen = () =>
     Boolean(actionPicker && actionPicker.style.display !== "none");
@@ -8648,6 +8651,80 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     actionPicker.style.display = "block";
   };
 
+  const maybeRefreshAgentSlashCommands = (
+    query: string,
+    force = false,
+  ) => {
+    const maybeRefreshSlashCommands = (
+      getAgentApi() as unknown as {
+        refreshSlashCommands?: (force?: boolean) => Promise<void>;
+      }
+    ).refreshSlashCommands;
+    const canRefresh = typeof maybeRefreshSlashCommands === "function";
+    if (!canRefresh) {
+      slashCommandsUiState = slashCommandItems.length > 0 ? "ready" : "empty";
+      renderAgentActionsInSlashMenu(query, { state: slashCommandsUiState });
+      return;
+    }
+
+    const shouldRefreshNow =
+      !slashCommandsRefreshInFlight &&
+      (force ||
+        slashCommandItems.length === 0 ||
+        Date.now() - slashCommandsLastRefreshAt >=
+          SLASH_COMMANDS_REFRESH_COOLDOWN_MS);
+    if (!shouldRefreshNow) {
+      if (slashCommandsRefreshInFlight) {
+        slashCommandsUiState = "loading";
+      } else if (slashCommandItems.length > 0) {
+        slashCommandsUiState = "ready";
+      } else if (slashCommandsUiState !== "error") {
+        slashCommandsUiState = "empty";
+      }
+      renderAgentActionsInSlashMenu(query, { state: slashCommandsUiState });
+      return;
+    }
+
+    slashCommandsRefreshInFlight = true;
+    slashCommandsLastRefreshAt = Date.now();
+    slashCommandsUiState = "loading";
+    slashCommandsLastError = "";
+    renderAgentActionsInSlashMenu(query, { state: "loading" });
+
+    void maybeRefreshSlashCommands(force)
+      .then(() => {
+        if (getCurrentRuntimeMode() !== "agent") return;
+        try {
+          slashCommandItems =
+            (
+              getAgentApi() as unknown as {
+                listSlashCommands?: () => SlashCommandItem[];
+              }
+            ).listSlashCommands?.() || [];
+        } catch {
+          slashCommandItems = [];
+        }
+        slashCommandsUiState = slashCommandItems.length > 0 ? "ready" : "empty";
+        renderAgentActionsInSlashMenu(query, { state: slashCommandsUiState });
+        if (isFloatingMenuOpen(slashMenu)) {
+          updateSlashMenuSelection();
+        }
+      })
+      .catch((error) => {
+        slashCommandsUiState = "error";
+        slashCommandsLastError =
+          error instanceof Error ? error.message : String(error);
+        ztoolkit.log("LLM Agent: Failed to refresh slash commands", error);
+        renderAgentActionsInSlashMenu(query, {
+          state: "error",
+          errorText: slashCommandsLastError,
+        });
+      })
+      .finally(() => {
+        slashCommandsRefreshInFlight = false;
+      });
+  };
+
   /** Populates the slash menu (and, in agent mode, appends agent actions). */
   const scheduleActionPickerTrigger = () => {
     if (!item) {
@@ -8665,38 +8742,8 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
     // Agent mode: render slash commands from /commands endpoint
     if (getCurrentRuntimeMode() === "agent") {
       const query = token.query.toLowerCase().trim();
-      renderAgentActionsInSlashMenu(query);
-      // Refresh slash commands from adapter /commands endpoint
-      const maybeRefreshSlashCommands = (getAgentApi() as unknown as { refreshSlashCommands?: (force?: boolean) => Promise<void> }).refreshSlashCommands;
-      const shouldRefreshSlashCommandsNow =
-        typeof maybeRefreshSlashCommands === "function" &&
-        !slashCommandsRefreshInFlight &&
-        (slashCommandItems.length === 0 ||
-          Date.now() - slashCommandsLastRefreshAt >= SLASH_COMMANDS_REFRESH_COOLDOWN_MS);
-      if (shouldRefreshSlashCommandsNow) {
-        slashCommandsRefreshInFlight = true;
-        slashCommandsLastRefreshAt = Date.now();
-        void maybeRefreshSlashCommands(false)
-          .then(() => {
-            if (getCurrentRuntimeMode() !== "agent") return;
-            if (!getActiveActionToken()) return;
-            try {
-              slashCommandItems = (getAgentApi() as unknown as { listSlashCommands?: () => SlashCommandItem[] }).listSlashCommands?.() || [];
-            } catch {
-              slashCommandItems = [];
-            }
-            renderAgentActionsInSlashMenu(query);
-            if (isFloatingMenuOpen(slashMenu)) {
-              updateSlashMenuSelection();
-            }
-          })
-          .catch((error) => {
-            ztoolkit.log("LLM Agent: Failed to refresh slash commands", error);
-          })
-          .finally(() => {
-            slashCommandsRefreshInFlight = false;
-          });
-      }
+      renderAgentActionsInSlashMenu(query, { state: slashCommandsUiState });
+      maybeRefreshAgentSlashCommands(query);
     } else {
       // Chat mode: restore static slash items that may have been hidden during a prior
       // claude_bridge agent session (state persists across mode switches in the DOM).
@@ -8902,6 +8949,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
   /** Prepends filtered slash commands into the slash menu (agent mode only). */
   const renderAgentActionsInSlashMenu = (
     query: string = "",
+    opts?: { state?: SlashCommandsUiState; errorText?: string },
   ): { backendActionsCount: number; totalActionsCount: number } => {
     clearAgentSlashItems();
     const claudeSlashMode = shouldUseClaudeRuntimeModelMenu();
@@ -8918,6 +8966,7 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
             cmd.description.toLowerCase().includes(query),
         )
       : slashCommandItems;
+    const state = opts?.state || slashCommandsUiState;
     if (!ownerDoc || !list) {
       return { backendActionsCount: filteredCmds.length, totalActionsCount: filteredCmds.length };
     }
@@ -8964,6 +9013,19 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
         });
         list.insertBefore(btn, firstBase);
       });
+    } else if (claudeSlashMode) {
+      const empty = mkAgentEl("div", "llm-action-picker-empty");
+      if (state === "loading") {
+        empty.textContent = "Loading Claude Commands...";
+      } else if (state === "error") {
+        empty.textContent = "Failed to load Claude Commands";
+        empty.title = opts?.errorText || slashCommandsLastError || "";
+      } else if (state === "empty" || state === "ready") {
+        empty.textContent = "No Claude commands available";
+      } else {
+        empty.textContent = "Type / to search Claude Commands";
+      }
+      list.insertBefore(empty, firstBase);
     }
     if (!claudeSlashMode) {
       // "Base actions" section label (above the static base items)
@@ -11212,7 +11274,10 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
       closePromptMenu();
       closeExportMenu();
       if (getCurrentRuntimeMode() === "agent") {
-        renderAgentActionsInSlashMenu();
+        const query = (getActiveActionToken()?.query || "").toLowerCase().trim();
+        slashCommandsUiState = slashCommandItems.length > 0 ? "ready" : "loading";
+        renderAgentActionsInSlashMenu(query, { state: slashCommandsUiState });
+        maybeRefreshAgentSlashCommands(query);
       } else {
         clearAgentSlashItems();
       }
@@ -13045,20 +13110,6 @@ export function setupHandlers(body: Element, initialItem?: Zotero.Item | null) {
 
   // Proactively prefetch slash commands so they're ready before the user types "/"
   if (getCurrentRuntimeMode() === "agent") {
-    const maybeRefreshSlashCommandsEager = (getAgentApi() as unknown as { refreshSlashCommands?: (force?: boolean) => Promise<void> }).refreshSlashCommands;
-    if (typeof maybeRefreshSlashCommandsEager === "function" && !slashCommandsRefreshInFlight) {
-      slashCommandsRefreshInFlight = true;
-      slashCommandsLastRefreshAt = Date.now();
-      void maybeRefreshSlashCommandsEager(false)
-        .then(() => {
-          try {
-            slashCommandItems = (getAgentApi() as unknown as { listSlashCommands?: () => SlashCommandItem[] }).listSlashCommands?.() || [];
-          } catch {
-            slashCommandItems = [];
-          }
-        })
-        .catch(() => { /* silent */ })
-        .finally(() => { slashCommandsRefreshInFlight = false; });
-    }
+    maybeRefreshAgentSlashCommands("");
   }
 }

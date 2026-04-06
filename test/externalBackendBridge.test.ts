@@ -184,6 +184,42 @@ describe("external backend bridge runtime", function () {
     }
   });
 
+  it("refreshes slash commands from /commands and exposes cached results", async function () {
+    const core = makeCoreRuntime();
+    const fetchBackup = (globalThis as any).fetch;
+    (globalThis as any).fetch = async (url: string) => {
+      if (url.includes("/commands")) {
+        return new Response(
+          JSON.stringify({
+            commands: [
+              {
+                name: "debug",
+                description: "Enable debug logging",
+                argumentHint: "[issue]",
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("{}", { status: 404 });
+    };
+
+    try {
+      const runtime = createExternalBackendBridgeRuntime({
+        coreRuntime: core as any,
+        getBridgeUrl: () => "http://127.0.0.1:9999",
+      });
+      await runtime.refreshSlashCommands(true);
+      const commands = runtime.listSlashCommandsSync();
+      assert.equal(commands.length, 1);
+      assert.equal(commands[0].name, "debug");
+      assert.equal(commands[0].argumentHint, "[issue]");
+    } finally {
+      (globalThis as any).fetch = fetchBackup;
+    }
+  });
+
   it("prefers last run scope snapshot when querying session info", async function () {
     const core = makeCoreRuntime();
     const requests: string[] = [];
