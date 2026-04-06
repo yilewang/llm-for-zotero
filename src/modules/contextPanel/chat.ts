@@ -1,5 +1,5 @@
 import { renderMarkdown, renderMarkdownForNote } from "../../utils/markdown";
-import { getWelcomeHtml, getWebChatWelcomeHtml, getStandaloneLibraryChatStartPageHtml } from "../../utils/i18n";
+import { getWelcomeHtml, getWebChatWelcomeHtml, getStandaloneLibraryChatStartPageHtml, getPaperChatStartPageHtml } from "../../utils/i18n";
 import {
   appendMessage as appendStoredMessage,
   clearConversation as clearStoredConversation,
@@ -3408,7 +3408,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         chatBox.innerHTML = getStandaloneLibraryChatStartPageHtml();
         if (panelRoot) panelRoot.dataset.startPageActive = "true";
       } else {
-        chatBox.innerHTML = getWelcomeHtml();
+        chatBox.innerHTML = getPaperChatStartPageHtml();
+        if (panelRoot) panelRoot.dataset.startPageActive = "true";
       }
     }
     return;

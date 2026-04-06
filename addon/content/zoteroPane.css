@@ -1050,39 +1050,46 @@
   padding: 5px 24px;
 }
 
-/* ---- Standalone library chat start page ---- */
+/* ---- Chat start page (shared layout for all modes) ---- */
 
-[data-standalone="true"][data-start-page-active="true"].llm-panel {
+[data-start-page-active="true"].llm-panel {
   justify-content: center;
-  align-items: center;
 }
 
-[data-standalone="true"][data-start-page-active="true"] .llm-chat-shell {
+[data-start-page-active="true"] .llm-chat-shell {
   flex: 0 0 auto;
   height: auto;
   min-height: auto;
   overflow: visible;
+  align-self: center;
 }
 
+/* Only hide header in standalone (it has its own sidebar controls).
+   In the sidepanel, the header provides the only access to history/new chat/settings. */
 [data-standalone="true"][data-start-page-active="true"] .llm-header {
   display: none;
 }
 
-[data-standalone="true"][data-start-page-active="true"] .llm-shortcuts {
+[data-start-page-active="true"] .llm-shortcuts {
   display: none;
 }
 
-[data-standalone="true"][data-start-page-active="true"] .llm-status-bar {
+[data-start-page-active="true"] .llm-status-bar {
   display: none;
 }
 
-[data-standalone="true"][data-start-page-active="true"] .llm-input-section {
+[data-start-page-active="true"] .llm-input-section {
+  align-self: center;
   max-width: 600px;
   width: 100%;
   margin: 20px auto 0;
+  padding-left: 12px;
+  padding-right: 12px;
+  box-sizing: border-box;
 }
 
 /* Start page content */
+.llm-start-page,
 .llm-standalone-start-page {
   display: flex;
   flex-direction: column;
@@ -1139,6 +1146,23 @@
 .llm-rec-reason {
   opacity: 0.7;
   font-size: 11px;
+}
+
+.llm-start-page-desc {
+  text-align: left;
+  max-width: 500px;
+  width: 100%;
+  font-size: 12px;
+  color: var(--fill-tertiary);
+  line-height: 1.7;
+}
+
+.llm-start-page-desc p {
+  margin: 0 0 8px;
+}
+
+.llm-start-page-desc strong {
+  color: var(--fill-secondary);
 }
 
 /* Transition animation: start page → chat mode */
