@@ -270,23 +270,6 @@
               ></html:input>
               Enable Agent Mode (Beta)
             </html:label>
-            <html:span
-              data-tooltip="Shows the Agent (beta) toggle in the context bar. When enabled, the AI can perform multi-step tasks: reading papers, running calculations, making decisions, and iterating toward a goal. This is a beta feature that requires the Claude Code Bridge backend to be configured." title="Shows the Agent (beta) toggle in the context bar. When enabled, the AI can perform multi-step tasks: reading papers, running calculations, making decisions, and iterating toward a goal. This is a beta feature that requires the Claude Code Bridge backend to be configured."
-              style="
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                width: 16px;
-                height: 16px;
-                border-radius: 50%;
-                background: var(--fill-secondary, #888);
-                color: Field;
-                font-size: 11px;
-                font-weight: 600;
-                cursor: help;
-                user-select: none;
-              "
-            >?</html:span>
           </html:div>
           <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
             Shows the "Agent (beta)" toggle in the context bar, enabling the
@@ -527,7 +510,7 @@
                   Claude Config Source
                 </html:label>
                 <html:span
-                  data-tooltip="Determines which Claude settings file to use. 'zotero-specific' creates isolated settings for Zotero only. 'user-level' uses your global Claude Code settings (shared with terminal usage). Switching only changes the active source; no files are copied." title="Determines which Claude settings file to use. 'zotero-specific' creates isolated settings for Zotero only. 'user-level' uses your global Claude Code settings (shared with terminal usage). Switching only changes the active source; no files are copied."
+                  data-tooltip="Controls which settings are sent to the bridge. user-level: only sends user settings. zotero-specific: only sends proj and local settings. You must configure these settings yourself in the respective Claude config files. 'zotero-specific' creates isolated settings for Zotero only. 'user-level' uses your global Claude Code settings (shared with terminal usage). Switching only changes the active source; no files are copied." title="Determines which Claude settings file to use. 'zotero-specific' creates isolated settings for Zotero only. 'user-level' uses your global Claude Code settings (shared with terminal usage). Switching only changes the active source; no files are copied."
                   style="
                     display: inline-flex;
                     align-items: center;
