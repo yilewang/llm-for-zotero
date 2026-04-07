@@ -3967,7 +3967,12 @@ export function setupHandlers(
       globalEntries.splice(0, globalEntries.length, ...dedupedGlobalEntries);
     }
 
-    const visibleEntries = [...paperEntries, ...globalEntries].filter(
+    // In the sidepanel, only show paper chat history — library chat is standalone-only
+    const isStandalonePanel = (body as HTMLElement).dataset?.standalone === "true";
+    const allEntries = isStandalonePanel
+      ? [...paperEntries, ...globalEntries]
+      : paperEntries;
+    const visibleEntries = allEntries.filter(
       (entry) => !pendingHistoryDeletionKeys.has(entry.conversationKey),
     );
     const visibleSections = [

@@ -2167,12 +2167,27 @@ function createCitationButton(params: {
   if (params.rawCitationText) {
     textSpan.dataset.rawText = params.rawCitationText;
   }
-  textSpan.textContent =
-    params.rawCitationText ||
-    formatCitationChipLabel(
-      displayCitationLabel,
-      params.extractedCitation.pageLabel,
+  // When we have matched candidates for an inline citation, derive a clean
+  // label from the paper's Zotero metadata (creator, year) instead of using
+  // the raw LLM text which may include the title.
+  let labelText: string;
+  if (params.inline && params.candidates.length > 0) {
+    const cleanLabel = formatPaperCitationLabel(
+      params.candidates[0].paperContext,
     );
+    const pageLabel = params.extractedCitation.pageLabel;
+    labelText = pageLabel
+      ? `(${cleanLabel}, page ${pageLabel})`
+      : `(${cleanLabel})`;
+  } else {
+    labelText =
+      params.rawCitationText ||
+      formatCitationChipLabel(
+        displayCitationLabel,
+        params.extractedCitation.pageLabel,
+      );
+  }
+  textSpan.textContent = labelText;
   container.appendChild(textSpan);
 
   // --- Icon button (the only clickable element) ---

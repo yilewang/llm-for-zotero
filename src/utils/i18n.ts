@@ -424,6 +424,7 @@ export function getPaperChatStartPageHtml(): string {
         <div class="llm-start-page-desc">
           <p>论文对话回答关于当前活跃论文的问题。论文将在你提问前预加载到上下文中。</p>
           <p>内联添加上下文：<strong>文本</strong>、<strong>截图</strong>或 <strong>@论文</strong>。左键点击论文标签发送 PDF；右键点击切换全文/检索模式。</p>
+          <p>使用文献库对话请点击顶部的<strong>在新窗口中打开</strong>按钮。</p>
         </div>
       </div>
     `;
@@ -435,6 +436,7 @@ export function getPaperChatStartPageHtml(): string {
       <div class="llm-start-page-desc">
         <p>Paper chat answers questions about your current active paper. The paper will be pre-loaded into context before your first question.</p>
         <p>Add context inline: <strong>text</strong>, <strong>screenshots</strong>, or <strong>@papers</strong>. Left-click a paper chip to send its PDF; right-click to toggle between full-text and retrieval mode.</p>
+        <p>For library chat, click the <strong>Open in Window</strong> button at the top.</p>
       </div>
     </div>
   `;

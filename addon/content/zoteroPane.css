@@ -3728,6 +3728,9 @@ label.llm-search-results-item:hover {
   font-weight: inherit;
   line-height: inherit;
   user-select: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
 }
 
 .llm-citation-icon {
