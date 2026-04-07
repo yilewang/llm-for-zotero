@@ -6,10 +6,19 @@ export type PanelDomRefs = {
   modelBtn: HTMLButtonElement | null;
   modelSlot: HTMLDivElement | null;
   modelMenu: HTMLDivElement | null;
+  claudeModelBtn: HTMLButtonElement | null;
+  claudeModelSlot: HTMLDivElement | null;
+  claudeModelMenu: HTMLDivElement | null;
   reasoningBtn: HTMLButtonElement | null;
+  claudeReasoningBtn: HTMLButtonElement | null;
   runtimeModeBtn: HTMLButtonElement | null;
+  claudePermissionBtn: HTMLButtonElement | null;
+  sessionFolderBtn: HTMLButtonElement | null;
+  sessionTerminalBtn: HTMLButtonElement | null;
   reasoningSlot: HTMLDivElement | null;
   reasoningMenu: HTMLDivElement | null;
+  claudeReasoningSlot: HTMLDivElement | null;
+  claudeReasoningMenu: HTMLDivElement | null;
   actionsRow: HTMLDivElement | null;
   actionsLeft: HTMLDivElement | null;
   actionsRight: HTMLDivElement | null;
@@ -62,6 +71,8 @@ export type PanelDomRefs = {
   actionPicker: HTMLDivElement | null;
   actionPickerList: HTMLDivElement | null;
   actionHitlPanel: HTMLDivElement | null;
+  agentQueuePanel: HTMLDivElement | null;
+  agentQueueList: HTMLDivElement | null;
   responseMenu: HTMLDivElement | null;
   responseMenuCopyBtn: HTMLButtonElement | null;
   responseMenuNoteBtn: HTMLButtonElement | null;
@@ -93,17 +104,44 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
       "#llm-model-dropdown",
     ) as HTMLDivElement | null,
     modelMenu: body.querySelector("#llm-model-menu") as HTMLDivElement | null,
+    claudeModelBtn: body.querySelector(
+      "#llm-claude-model-toggle",
+    ) as HTMLButtonElement | null,
+    claudeModelSlot: body.querySelector(
+      "#llm-claude-model-dropdown",
+    ) as HTMLDivElement | null,
+    claudeModelMenu: body.querySelector(
+      "#llm-claude-model-menu",
+    ) as HTMLDivElement | null,
     reasoningBtn: body.querySelector(
       "#llm-reasoning-toggle",
     ) as HTMLButtonElement | null,
+    claudeReasoningBtn: body.querySelector(
+      "#llm-claude-reasoning-toggle",
+    ) as HTMLButtonElement | null,
     runtimeModeBtn: body.querySelector(
       "#llm-runtime-mode-toggle",
+    ) as HTMLButtonElement | null,
+    claudePermissionBtn: body.querySelector(
+      "#llm-claude-permission-toggle",
+    ) as HTMLButtonElement | null,
+    sessionFolderBtn: body.querySelector(
+      "#llm-session-folder-btn",
+    ) as HTMLButtonElement | null,
+    sessionTerminalBtn: body.querySelector(
+      "#llm-session-terminal-btn",
     ) as HTMLButtonElement | null,
     reasoningSlot: body.querySelector(
       "#llm-reasoning-dropdown",
     ) as HTMLDivElement | null,
     reasoningMenu: body.querySelector(
       "#llm-reasoning-menu",
+    ) as HTMLDivElement | null,
+    claudeReasoningSlot: body.querySelector(
+      "#llm-claude-reasoning-dropdown",
+    ) as HTMLDivElement | null,
+    claudeReasoningMenu: body.querySelector(
+      "#llm-claude-reasoning-menu",
     ) as HTMLDivElement | null,
     actionsRow: body.querySelector(".llm-actions") as HTMLDivElement | null,
     actionsLeft: body.querySelector(
@@ -248,6 +286,12 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     ) as HTMLDivElement | null,
     actionHitlPanel: body.querySelector(
       "#llm-action-hitl-panel",
+    ) as HTMLDivElement | null,
+    agentQueuePanel: body.querySelector(
+      "#llm-agent-queue-panel",
+    ) as HTMLDivElement | null,
+    agentQueueList: body.querySelector(
+      "#llm-agent-queue-list",
     ) as HTMLDivElement | null,
     responseMenu: body.querySelector(
       "#llm-response-menu",

@@ -17,3 +17,8 @@ logs
 
 # Ignore all contents inside a folder
 .claude/
+progress.md
+
+# Internal dev docs (do not commit)
+docs/internal/
+docs/mockups/

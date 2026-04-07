@@ -9,6 +9,7 @@ export type ConversationHistoryEntry = {
   section: "paper" | "open";
   sectionTitle: string;
   conversationKey: number;
+  runtimeMode?: "chat" | "agent";
   title: string;
   timestampText: string;
   deletable: boolean;

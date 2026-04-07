@@ -140,9 +140,15 @@ type SendFlowControllerDeps = {
 };
 
 export function createSendFlowController(deps: SendFlowControllerDeps): {
-  doSend: () => Promise<void>;
+  doSend: (opts?: {
+    overrideText?: string;
+    preserveInputDraft?: boolean;
+  }) => Promise<void>;
 } {
-  const doSend = async () => {
+  const doSend = async (opts?: {
+    overrideText?: string;
+    preserveInputDraft?: boolean;
+  }) => {
     const item = deps.getItem();
     if (!item) return;
 
@@ -152,7 +158,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
 
     try {
     const textContextConversationKey = deps.getConversationKey(item);
-    const text = deps.inputBox.value.trim();
+    const text = (opts?.overrideText ?? deps.inputBox.value).trim();
     const selectedContexts = deps.getSelectedTextContextEntries(
       textContextConversationKey,
     );
@@ -273,17 +279,24 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       }
       deps.inputBox.disabled = false;
     }
+    const selectedImages = deps
+      .getSelectedImages(item.id)
+      .slice(0, MAX_SELECTED_IMAGES);
     const selectedFiles = [
       ...deps.getSelectedFiles(item.id),
       ...pdfFileAttachments,
     ];
     const hasPaperComposeState = allSelectedPaperContexts.length > 0 || !deps.isGlobalMode();
+    const hasImageContext =
+      !deps.isScreenshotUnsupportedModel(earlyModelName) &&
+      (selectedImages.length > 0 || pdfPageImageDataUrls.length > 0);
 
     if (
       !text &&
       !primarySelectedText &&
       !selectedPaperContexts.length &&
-      !selectedFiles.length
+      !selectedFiles.length &&
+      !hasImageContext
     ) {
       return;
     }
@@ -291,17 +304,24 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     const promptText = deps.resolvePromptText(
       text,
       primarySelectedText,
-      selectedFiles.length > 0 || selectedPaperContexts.length > 0,
+      selectedFiles.length > 0 ||
+        selectedPaperContexts.length > 0 ||
+        hasImageContext,
     );
-    if (!promptText) return;
-
     const resolvedPromptText =
       !text &&
       !primarySelectedText &&
       selectedPaperContexts.length > 0 &&
       !selectedFiles.length
         ? "Please analyze selected papers."
+        : !text &&
+            !primarySelectedText &&
+            hasImageContext &&
+            !selectedPaperContexts.length &&
+            !selectedFiles.length
+          ? "Please analyze the attached image(s)."
         : promptText;
+    if (!resolvedPromptText) return;
 
     const composedQuestionBase = primarySelectedText
       ? deps.buildQuestionWithSelectedTextContexts(
@@ -354,9 +374,6 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       deps.getCurrentModelName() ||
       ""
     ).trim();
-    const selectedImages = deps
-      .getSelectedImages(item.id)
-      .slice(0, MAX_SELECTED_IMAGES);
     const images = [
       ...(deps.isScreenshotUnsupportedModel(activeModelName) ? [] : selectedImages),
       ...pdfPageImageDataUrls,
@@ -422,7 +439,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         return;
       }
 
-      deps.inputBox.value = "";
+      if (!opts?.preserveInputDraft) {
+        deps.inputBox.value = "";
+      }
       deps.persistDraftInput();
       deps.retainPinnedImageState(item.id);
       if (hasPaperComposeState) {
@@ -445,7 +464,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       return;
     }
 
-    deps.inputBox.value = "";
+    if (!opts?.preserveInputDraft) {
+      deps.inputBox.value = "";
+    }
     deps.persistDraftInput();
     deps.retainPinnedImageState(item.id);
     if (selectedFiles.length) {

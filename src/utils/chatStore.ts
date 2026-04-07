@@ -1421,6 +1421,49 @@ export async function listGlobalConversations(
   return out;
 }
 
+export async function getConversationRuntimeModes(
+  conversationKeys: number[],
+): Promise<Map<number, "chat" | "agent">> {
+  const normalizedKeys = Array.from(
+    new Set(
+      conversationKeys
+        .map((key) => normalizeConversationKey(Number(key)))
+        .filter((key): key is number => Boolean(key)),
+    ),
+  );
+  if (!normalizedKeys.length) return new Map();
+  const placeholders = normalizedKeys.map(() => "?").join(", ");
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT conversation_key AS conversationKey,
+            MAX(CASE WHEN run_mode = 'agent' THEN 1 ELSE 0 END) AS hasAgent,
+            MAX(CASE WHEN run_mode = 'chat' THEN 1 ELSE 0 END) AS hasChat
+     FROM ${CHAT_MESSAGES_TABLE}
+     WHERE conversation_key IN (${placeholders})
+       AND run_mode IN ('chat', 'agent')
+     GROUP BY conversation_key`,
+    normalizedKeys,
+  )) as
+    | Array<{
+        conversationKey?: unknown;
+        hasAgent?: unknown;
+        hasChat?: unknown;
+      }>
+    | undefined;
+  const out = new Map<number, "chat" | "agent">();
+  for (const row of rows || []) {
+    const conversationKey = normalizeConversationKey(Number(row.conversationKey));
+    if (!conversationKey) continue;
+    if (Number(row.hasAgent) > 0) {
+      out.set(conversationKey, "agent");
+      continue;
+    }
+    if (Number(row.hasChat) > 0) {
+      out.set(conversationKey, "chat");
+    }
+  }
+  return out;
+}
+
 export async function getGlobalConversationUserTurnCount(
   conversationKey: number,
 ): Promise<number> {

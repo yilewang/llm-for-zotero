@@ -1,6 +1,7 @@
 import { getAgentRuntime } from "../../../agent";
 import { renderMarkdown } from "../../../utils/markdown";
 import type {
+  AgentConfirmationResolution,
   AgentPendingAction,
   AgentPendingField,
   AgentRunEventRecord,
@@ -16,8 +17,13 @@ import {
   normalizePaperContextRefs,
   normalizeSelectedTextSources,
 } from "../normalizers";
-import { agentReasoningExpandedCache } from "../agentState";
+import {
+  agentProcessExpandedCache,
+  agentReasoningExpandedCache,
+  type AgentTraceUiState,
+} from "../agentState";
 import { buildTextDiffPreview } from "./diffPreview";
+import { getBoolPref, getStringPref } from "../prefHelpers";
 
 type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
 
@@ -27,6 +33,9 @@ type AgentTraceSummaryRow = {
   text: string;
   /** Optional code block shown below the summary text (e.g. shell commands). */
   codeBlock?: string;
+  /** Optional raw payload shown in expandable details for fidelity/debugging. */
+  rawDetails?: string;
+  rawDetailsLabel?: string;
 };
 
 type AgentTraceDisplayItem =
@@ -56,9 +65,67 @@ type RenderAgentTraceParams = {
   doc: Document;
   message: Message;
   userMessage?: Message | null;
-  events: AgentRunEventRecord[];
+  traceState?: AgentTraceUiState | null;
   onTraceMissing?: () => void;
 };
+
+type AgentTraceVerbosity = "compact" | "verbose" | "raw";
+type AgentRawLogVisibility = "debug_only" | "always" | "never";
+
+function getAgentTraceVerbosityPref(): AgentTraceVerbosity {
+  const value = getStringPref("agentTraceVerbosity").trim().toLowerCase();
+  if (value === "verbose" || value === "raw") return value;
+  return "compact";
+}
+
+function getAgentRawLogVisibilityPref(): AgentRawLogVisibility {
+  const value = getStringPref("agentRawLogVisibility").trim().toLowerCase();
+  if (value === "always" || value === "never") return value;
+  return "debug_only";
+}
+
+function shouldRenderRawLog(verbosity: AgentTraceVerbosity): boolean {
+  const visibility = getAgentRawLogVisibilityPref();
+  if (visibility === "never") return false;
+  if (visibility === "always") return true;
+  return verbosity === "raw";
+}
+
+function isDebugPermissionUiEnabled(verbosity: AgentTraceVerbosity): boolean {
+  const visibility = getAgentRawLogVisibilityPref();
+  return (
+    verbosity === "verbose" ||
+    verbosity === "raw" ||
+    visibility === "debug_only"
+  );
+}
+
+function extractPermissionDebugRuntimeStatus(
+  events: AgentRunEventRecord[],
+): { permissionMode?: string; resolvedPermissionMode?: string } {
+  let permissionMode: string | undefined;
+  let resolvedPermissionMode: string | undefined;
+  for (const entry of events) {
+    if (entry.payload.type !== "provider_event") continue;
+    const providerType = (entry.payload.providerType || "").trim().toLowerCase();
+    if (providerType !== "runtime_config") continue;
+    const payload =
+      entry.payload.payload && typeof entry.payload.payload === "object"
+        ? (entry.payload.payload as Record<string, unknown>)
+        : null;
+    if (!payload) continue;
+    if (typeof payload.permissionMode === "string" && payload.permissionMode.trim()) {
+      permissionMode = payload.permissionMode.trim();
+    }
+    if (
+      typeof payload.resolvedPermissionMode === "string" &&
+      payload.resolvedPermissionMode.trim()
+    ) {
+      resolvedPermissionMode = payload.resolvedPermissionMode.trim();
+    }
+  }
+  return { permissionMode, resolvedPermissionMode };
+}
 
 function normalizeSelectedTexts(
   selectedTexts: unknown,
@@ -127,6 +194,15 @@ function truncateAgentTraceText(value: unknown, max = 88): string {
   const normalized = sanitizeText(raw).replace(/\s+/g, " ").trim();
   if (normalized.length <= max) return normalized;
   return `${normalized.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
+}
+
+function toPrettyJson(value: unknown): string | null {
+  if (value === undefined) return null;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function renderReviewTableField(
@@ -1141,6 +1217,11 @@ export function renderPendingActionCard(
     card.appendChild(description);
   }
 
+  const feedback = doc.createElement("div");
+  feedback.className = "llm-agent-hitl-feedback";
+  feedback.hidden = true;
+  card.appendChild(feedback);
+
   const normalizedActions = normalizePendingActions(pending.action);
   const buttonLayout = getPendingActionButtonLayout(pending.action);
   let activeActionId = normalizedActions.defaultActionId;
@@ -1456,11 +1537,10 @@ export function renderPendingActionCard(
       return hasScopedVisibility || hasScopedRequirement;
     });
   const handleExecute = () => {
-    setButtonsDisabled(true);
     const payload = Object.fromEntries(
       fieldAccessors.map((accessor) => [accessor.id, accessor.getValue()]),
     );
-    getAgentRuntime().resolveConfirmation(pending.requestId, {
+    submitResolution({
       approved: activeActionId !== normalizedActions.cancelActionId,
       actionId: activeActionId,
       data: payload,
@@ -1528,6 +1608,28 @@ export function renderPendingActionCard(
         button.disabled = true;
       }
     }
+  };
+  const showFeedback = (text: string) => {
+    feedback.hidden = false;
+    feedback.textContent = text;
+  };
+  const clearFeedback = () => {
+    feedback.hidden = true;
+    feedback.textContent = "";
+  };
+  const submitResolution = (resolution: AgentConfirmationResolution): boolean => {
+    clearFeedback();
+    setButtonsDisabled(true);
+    const accepted = getAgentRuntime().resolveConfirmation(
+      pending.requestId,
+      resolution,
+    );
+    if (!accepted) {
+      setButtonsDisabled(false);
+      showFeedback(`stale confirmation card: ${pending.requestId}`);
+      return false;
+    }
+    return true;
   };
   const isAccessorValidForAction = (
     accessor: (typeof fieldAccessors)[number],
@@ -1620,8 +1722,7 @@ export function renderPendingActionCard(
     cancelButton.textContent =
       normalizedActions.cancelAction.label || pending.action.cancelLabel || "Cancel";
     cancelButton.addEventListener("click", () => {
-      setButtonsDisabled(true);
-      getAgentRuntime().resolveConfirmation(pending.requestId, {
+      submitResolution({
         approved: false,
         actionId: normalizedActions.cancelActionId,
       });
@@ -1848,28 +1949,23 @@ function buildAgentTraceToolChips(
 function summarizeAgentTraceToolCall(
   name: string,
   args: unknown,
-  request?: AgentTraceRequestSummary,
+  _request?: AgentTraceRequestSummary,
 ): AgentTraceSummaryRow {
   const label = toolLabelFromName(name);
-  const text =
-    resolveToolPresentationSummary(
-      getToolDefinition(name)?.presentation?.summaries?.onCall,
-      { label, args, request },
-    ) || `Using ${label}`;
+  const text = `Tool call: ${label}`;
 
-  // Show code block for shell commands and file I/O
   let codeBlock: string | undefined;
   const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-  if (name === "run_command" && typeof a.command === "string") {
+  if (typeof a.command === "string") {
     codeBlock = a.command;
-  } else if (name === "file_io" && typeof a.filePath === "string") {
-    codeBlock = `${a.action || "access"} ${a.filePath}`;
+  } else {
+    codeBlock = toPrettyJson(args) || undefined;
   }
 
   return {
     kind: "tool",
     icon: "→",
-    text: codeBlock ? label : text,
+    text,
     codeBlock,
   };
 }
@@ -1970,6 +2066,8 @@ function summarizeAgentTraceToolResult(
       kind: "skip",
       icon: "!",
       text,
+      rawDetails: toPrettyJson(content) || undefined,
+      rawDetailsLabel: "tool_result payload",
     };
   }
 
@@ -1989,28 +2087,74 @@ function summarizeAgentTraceToolResult(
   return {
     kind: isEmpty ? "skip" : "ok",
     icon: isEmpty ? "-" : "✓",
-    text,
+    text: `Tool result: ${label}${isEmpty ? " (empty)" : ""}`,
+    rawDetails: toPrettyJson(content) || undefined,
+    rawDetailsLabel: "tool_result payload",
   };
 }
 
-function isGenericAgentStatusText(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  return (
-    normalized === "running agent" ||
-    /^continuing agent \(\d+\/\d+\)$/.test(normalized)
+function summarizeRunForHuman(
+  events: AgentRunEventRecord[],
+): { label: string; running: boolean; failed: boolean } {
+  let toolCalls = 0;
+  let errorCount = 0;
+  let keyEventCount = 0;
+  let confirmRequested = 0;
+  let confirmResolved = 0;
+  const includeConfirmationSummary = isDebugPermissionUiEnabled(
+    getAgentTraceVerbosityPref(),
   );
-}
+  let failed = false;
+  let completed = false;
+  for (const entry of events) {
+    switch (entry.payload.type) {
+      case "tool_call":
+        toolCalls += 1;
+        keyEventCount += 1;
+        break;
+      case "tool_result":
+      case "confirmation_required":
+      case "confirmation_resolved":
+      case "final":
+        keyEventCount += 1;
+        if (entry.payload.type === "confirmation_required") confirmRequested += 1;
+        if (entry.payload.type === "confirmation_resolved") confirmResolved += 1;
+        if (entry.payload.type === "final") completed = true;
+        break;
+      case "tool_error":
+      case "fallback":
+        keyEventCount += 1;
+        errorCount += 1;
+        failed = true;
+        break;
+      default:
+        break;
+    }
+  }
 
-function buildInitialAgentMessage(requestChips: AgentTraceChip[]): string {
-  return requestChips.length
-    ? "Checking the request against the attached context."
-    : "Checking the current request and Zotero context.";
+  const summaryBits = [
+    `tool calls ${toolCalls}`,
+    `key events ${keyEventCount}`,
+    includeConfirmationSummary
+      ? `confirm ${confirmRequested}/${confirmResolved}`
+      : "",
+    errorCount > 0 ? `errors ${errorCount}` : "",
+  ].filter(Boolean);
+  const summaryText = summaryBits.join(", ");
+  if (failed) {
+    return { label: `Process (failed, ${summaryText})`, running: false, failed: true };
+  }
+  if (completed) {
+    return { label: `Process (completed, ${summaryText})`, running: false, failed: false };
+  }
+  return { label: `Process (running, ${summaryText})`, running: true, failed: false };
 }
 
 function compactAgentTraceEvents(
   events: AgentRunEventRecord[],
 ): AgentRunEventRecord[] {
   const compact: AgentRunEventRecord[] = [];
+  const HEARTBEAT_PROVIDER_TYPES = new Set(["tool_progress", "stream_event"]);
   for (const entry of events) {
     const previous = compact[compact.length - 1];
     if (
@@ -2042,6 +2186,28 @@ function compactAgentTraceEvents(
       };
       continue;
     }
+    if (
+      entry.payload.type === "status" &&
+      previous?.payload.type === "status" &&
+      readAgentTraceText(entry.payload.text) ===
+        readAgentTraceText(previous.payload.text)
+    ) {
+      compact[compact.length - 1] = entry;
+      continue;
+    }
+    if (
+      entry.payload.type === "provider_event" &&
+      previous?.payload.type === "provider_event" &&
+      entry.payload.providerType === previous.payload.providerType &&
+      HEARTBEAT_PROVIDER_TYPES.has(entry.payload.providerType)
+    ) {
+      const prevRaw = toPrettyJson(previous.payload.payload);
+      const nextRaw = toPrettyJson(entry.payload.payload);
+      if (prevRaw && nextRaw && prevRaw === nextRaw) {
+        compact[compact.length - 1] = entry;
+        continue;
+      }
+    }
     compact.push(entry);
   }
   return compact;
@@ -2050,45 +2216,68 @@ function compactAgentTraceEvents(
 export function buildAgentTraceDisplayItems(
   events: AgentRunEventRecord[],
   userMessage: Message | null | undefined,
+  verbosity: AgentTraceVerbosity = "compact",
 ): AgentTraceDisplayItem[] {
   const items: AgentTraceDisplayItem[] = [];
-  const compactedEvents = compactAgentTraceEvents(events);
+  const compactedEvents =
+    verbosity === "raw" ? events : compactAgentTraceEvents(events);
   const requestChips = buildAgentTraceRequestChips(userMessage);
   const requestSummary = buildAgentTraceRequestSummary(userMessage);
   const pendingActions = new Map<string, AgentPendingAction>();
-  let announcedWriting = false;
-  let lastMeaningfulStatus: string | null = null;
-
-  items.push({
-    type: "message",
-    tone: "neutral",
-    text: buildInitialAgentMessage(requestChips),
-  });
-  items.push({
-    type: "action",
-    row: {
-      kind: "plan",
-      icon: "↳",
-      text: requestChips.length
-        ? "Request and attached context received"
-        : "Request received",
-    },
-    chips: requestChips,
-  });
+  const noisyProviderTypes =
+    verbosity === "compact"
+      ? new Set(["stream_event", "system", "assistant", "user"])
+      : verbosity === "verbose"
+        ? new Set(["stream_event"])
+        : new Set<string>();
+  const showProviderEvents = verbosity !== "compact";
+  const genericStatusTexts =
+    verbosity === "compact"
+      ? new Set(["system", "assistant", "user"])
+      : new Set<string>();
 
   for (let index = 0; index < compactedEvents.length; index += 1) {
     const entry = compactedEvents[index];
     switch (entry.payload.type) {
-      case "status": {
-        const statusText = readAgentTraceText(entry.payload.text);
-        if (
-          !statusText ||
-          isGenericAgentStatusText(statusText) ||
-          statusText === lastMeaningfulStatus
-        ) {
+      case "provider_event": {
+        if (!showProviderEvents) {
           break;
         }
-        lastMeaningfulStatus = statusText;
+        const providerType = readAgentTraceText(entry.payload.providerType) || "unknown";
+        if (noisyProviderTypes.has(providerType)) {
+          break;
+        }
+        const chips: AgentTraceChip[] = [];
+        const sessionId = readAgentTraceText(entry.payload.sessionId);
+        if (sessionId) {
+          chips.push({
+            icon: "#",
+            label: truncateAgentTraceText(sessionId, 18),
+            title: sessionId,
+          });
+        }
+        items.push({
+          type: "action",
+          row: {
+            kind: "plan",
+            icon: "·",
+            text: `provider_event: ${providerType}`,
+            rawDetails: toPrettyJson(entry.payload.payload) || undefined,
+            rawDetailsLabel: "provider payload",
+          },
+          chips: chips.length ? chips : undefined,
+        });
+        break;
+      }
+      case "status": {
+        const statusText =
+          readAgentTraceText(entry.payload.text) ||
+          readAgentTraceText((entry.payload as Record<string, unknown>).label) ||
+          readAgentTraceText((entry.payload as Record<string, unknown>).phase) ||
+          "status";
+        if (genericStatusTexts.has(statusText.toLowerCase())) {
+          break;
+        }
         items.push({
           type: "action",
           row: {
@@ -2203,20 +2392,21 @@ export function buildAgentTraceDisplayItems(
         break;
       }
       case "message_delta":
-        if (!announcedWriting) {
-          announcedWriting = true;
-          items.push({
-            type: "action",
-            row: {
-              kind: "plan",
-              icon: "✎",
-              text: "Drafting answer",
-            },
-          });
+        if (verbosity === "raw") {
+          const text = (entry.payload.text || "").trim();
+          if (text) {
+            items.push({
+              type: "action",
+              row: {
+                kind: "plan",
+                icon: "·",
+                text: `delta: ${truncateAgentTraceText(text, 120)}`,
+              },
+            });
+          }
         }
         break;
       case "message_rollback": {
-        announcedWriting = false;
         const rollbackText = (entry.payload.text || "").trim();
         if (rollbackText) {
           items.push({
@@ -2233,11 +2423,14 @@ export function buildAgentTraceDisplayItems(
           row: {
             kind: "done",
             icon: "✓",
-            text: "Response ready",
+            text: "final",
           },
         });
         break;
       case "fallback":
+        if (entry.payload.reason === "unmapped_provider_event") {
+          break;
+        }
         items.push({
           type: "message",
           tone: "warning",
@@ -2246,7 +2439,6 @@ export function buildAgentTraceDisplayItems(
         break;
     }
   }
-
   return items;
 }
 
@@ -2254,34 +2446,155 @@ export function renderAgentTrace({
   doc,
   message,
   userMessage,
-  events,
+  traceState,
   onTraceMissing,
 }: RenderAgentTraceParams): HTMLElement | null {
   const runId = message.agentRunId?.trim();
   if (!runId) return null;
+  const events = traceState?.events || [];
+  const traceStatus = traceState?.status || "loading";
   const wrap = doc.createElement("div");
   wrap.className = "llm-agent-activity";
   const list = doc.createElement("div");
   list.className = "llm-agent-activity-list";
 
   if (!events.length) {
-    onTraceMissing?.();
-    const loadingRow = doc.createElement("div");
-    loadingRow.className = "llm-at-row llm-at-row-plan";
-    const loadingIcon = doc.createElement("span");
-    loadingIcon.className = "llm-at-icon";
-    loadingIcon.textContent = "...";
-    const loadingText = doc.createElement("span");
-    loadingText.className = "llm-at-text llm-at-plan-text";
-    loadingText.textContent = "Loading agent activity...";
-    loadingRow.append(loadingIcon, loadingText);
-    list.appendChild(loadingRow);
-    wrap.appendChild(list);
+    if (traceStatus === "loading" && onTraceMissing) {
+      onTraceMissing();
+      const loadingRow = doc.createElement("div");
+      loadingRow.className = "llm-at-row llm-at-row-plan";
+      const loadingIcon = doc.createElement("span");
+      loadingIcon.className = "llm-at-icon";
+      loadingIcon.textContent = "...";
+      const loadingText = doc.createElement("span");
+      loadingText.className = "llm-at-text llm-at-plan-text";
+      loadingText.textContent = "Loading agent activity...";
+      loadingRow.append(loadingIcon, loadingText);
+      list.appendChild(loadingRow);
+      wrap.appendChild(list);
+      return wrap;
+    }
+    const includeConfirmationSummary = isDebugPermissionUiEnabled(
+      getAgentTraceVerbosityPref(),
+    );
+    const keyEvents = message.streaming ? 0 : 1;
+    const summaryBits = [
+      "tool calls 0",
+      `key events ${keyEvents}`,
+      includeConfirmationSummary ? "confirm 0/0" : "",
+    ].filter(Boolean);
+    const processLabel = message.streaming
+      ? `Process (running, ${summaryBits.join(", ")})`
+      : `Process (completed, ${summaryBits.join(", ")})`;
+    const processDetails = doc.createElement("details") as HTMLDetailsElement;
+    processDetails.className = "llm-agent-process-details";
+    const cachedProcessOpen = agentProcessExpandedCache.get(runId);
+    processDetails.open =
+      typeof cachedProcessOpen === "boolean"
+        ? cachedProcessOpen
+        : !getBoolPref("agentProcessCollapseByDefault", true);
+    const processSummary = doc.createElement("summary");
+    processSummary.className = "llm-agent-process-summary";
+    processSummary.textContent = processDetails.open
+      ? "Hide process"
+      : `View ${processLabel}`;
+    processDetails.addEventListener("toggle", () => {
+      agentProcessExpandedCache.set(runId, processDetails.open);
+      processSummary.textContent = processDetails.open
+        ? "Hide process"
+        : `View ${processLabel}`;
+    });
+    processDetails.appendChild(processSummary);
+    const emptyRow = doc.createElement("div");
+    emptyRow.className = "llm-at-row llm-at-row-plan";
+    const emptyIcon = doc.createElement("span");
+    emptyIcon.className = "llm-at-icon";
+    emptyIcon.textContent = "·";
+    const emptyText = doc.createElement("span");
+    emptyText.className = "llm-at-text llm-at-plan-text";
+    emptyText.textContent =
+      traceStatus === "failed"
+        ? "Agent activity unavailable. Retrying soon..."
+        : "No detailed agent activity recorded for this run.";
+    emptyRow.append(emptyIcon, emptyText);
+    list.appendChild(emptyRow);
+    processDetails.appendChild(list);
+    wrap.appendChild(processDetails);
     return wrap;
   }
-  const processItems = buildAgentTraceDisplayItems(events, userMessage);
+  const traceVerbosity = getAgentTraceVerbosityPref();
+  const debugPermissionUi = isDebugPermissionUiEnabled(traceVerbosity);
+  const processItems = buildAgentTraceDisplayItems(events, userMessage, traceVerbosity);
+  const requestChips = buildAgentTraceRequestChips(userMessage);
   const pending = getPendingConfirmation(events);
   const hasFinalResponse = events.some((entry) => entry.payload.type === "final");
+  const runOverview = summarizeRunForHuman(events);
+  const processDetails = doc.createElement("details") as HTMLDetailsElement;
+  processDetails.className = "llm-agent-process-details";
+  const cachedProcessOpen = agentProcessExpandedCache.get(runId);
+  processDetails.open =
+    typeof cachedProcessOpen === "boolean"
+      ? cachedProcessOpen
+      : !getBoolPref("agentProcessCollapseByDefault", true);
+  const processSummary = doc.createElement("summary");
+  processSummary.className = "llm-agent-process-summary";
+  processSummary.textContent = processDetails.open ? "Hide process" : `View ${runOverview.label}`;
+  processDetails.addEventListener("toggle", () => {
+    agentProcessExpandedCache.set(runId, processDetails.open);
+    processSummary.textContent = processDetails.open
+      ? "Hide process"
+      : `View ${runOverview.label}`;
+  });
+  processDetails.appendChild(processSummary);
+
+  if (debugPermissionUi) {
+    const confirmRequested = events.filter(
+      (entry) => entry.payload.type === "confirmation_required",
+    ).length;
+    const confirmResolved = events.filter(
+      (entry) => entry.payload.type === "confirmation_resolved",
+    ).length;
+    const runtimeStatus = extractPermissionDebugRuntimeStatus(events);
+    const debugLine = doc.createElement("div");
+    debugLine.className = "llm-agent-process-message llm-agent-process-message-neutral";
+    debugLine.textContent =
+      `debug permission: requested=${confirmRequested}, resolved=${confirmResolved}, ` +
+      `permission_mode=${runtimeStatus.permissionMode || "n/a"}, ` +
+      `resolvedPermissionMode=${runtimeStatus.resolvedPermissionMode || "n/a"}`;
+    list.appendChild(debugLine);
+  }
+
+  if (requestChips.length) {
+    const introWrap = doc.createElement("div");
+    introWrap.className = "llm-agent-process-action";
+    const introRow = doc.createElement("div");
+    introRow.className = "llm-at-row llm-at-row-plan";
+    const introIcon = doc.createElement("span");
+    introIcon.className = "llm-at-icon";
+    introIcon.textContent = "↳";
+    const introText = doc.createElement("span");
+    introText.className = "llm-at-text llm-at-plan-text";
+    introText.textContent = "Attached context";
+    introRow.append(introIcon, introText);
+    introWrap.appendChild(introRow);
+    const chips = doc.createElement("div");
+    chips.className = "llm-agent-process-chips";
+    for (const chip of requestChips) {
+      const chipEl = doc.createElement("div");
+      chipEl.className = "llm-agent-process-chip";
+      const chipIcon = doc.createElement("span");
+      chipIcon.className = "llm-agent-process-chip-icon";
+      chipIcon.textContent = chip.icon;
+      const chipLabel = doc.createElement("span");
+      chipLabel.className = "llm-agent-process-chip-label";
+      chipLabel.textContent = chip.label;
+      chipEl.append(chipIcon, chipLabel);
+      chips.appendChild(chipEl);
+    }
+    introWrap.appendChild(chips);
+    list.appendChild(introWrap);
+  }
+
   for (const itemEntry of processItems) {
     if (itemEntry.type === "message") {
       const messageEl = doc.createElement("div");
@@ -2374,6 +2687,19 @@ export function renderAgentTrace({
       actionWrap.appendChild(codeWrap);
     }
 
+    if (itemEntry.row.rawDetails) {
+      const details = doc.createElement("details") as HTMLDetailsElement;
+      details.className = "llm-agent-rawlog-details";
+      const summary = doc.createElement("summary");
+      summary.className = "llm-agent-rawlog-summary";
+      summary.textContent = itemEntry.row.rawDetailsLabel || "raw payload";
+      const pre = doc.createElement("pre");
+      pre.className = "llm-agent-rawlog-pre";
+      pre.textContent = itemEntry.row.rawDetails;
+      details.append(summary, pre);
+      actionWrap.appendChild(details);
+    }
+
     if (itemEntry.chips?.length) {
       const chips = doc.createElement("div");
       chips.className = "llm-agent-process-chips";
@@ -2397,7 +2723,30 @@ export function renderAgentTrace({
 
     list.appendChild(actionWrap);
   }
-  wrap.appendChild(list);
+  processDetails.appendChild(list);
+  wrap.appendChild(processDetails);
+
+  if (shouldRenderRawLog(traceVerbosity)) {
+    const rawLogDetails = doc.createElement("details") as HTMLDetailsElement;
+    rawLogDetails.className = "llm-agent-rawlog-details";
+    const rawLogSummary = doc.createElement("summary");
+    rawLogSummary.className = "llm-agent-rawlog-summary";
+    rawLogSummary.textContent = "View raw log";
+    rawLogDetails.appendChild(rawLogSummary);
+    const rawLogPre = doc.createElement("pre");
+    rawLogPre.className = "llm-agent-rawlog-pre";
+    rawLogPre.textContent = JSON.stringify(
+      events.map((entry) => ({
+        seq: entry.seq,
+        type: entry.payload.type,
+        payload: entry.payload,
+      })),
+      null,
+      2,
+    );
+    rawLogDetails.appendChild(rawLogPre);
+    wrap.appendChild(rawLogDetails);
+  }
 
   if (hasFinalResponse) {
     const divider = doc.createElement("div");

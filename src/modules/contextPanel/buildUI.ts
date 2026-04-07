@@ -231,6 +231,38 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
+  const sessionFolderBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-session-action-btn llm-session-folder-btn",
+    {
+      id: "llm-session-folder-btn",
+      type: "button",
+      textContent: "",
+      title: t("Open current Claude session folder"),
+    },
+  ) as HTMLButtonElement;
+  sessionFolderBtn.style.display = "none";
+  sessionFolderBtn.setAttribute(
+    "aria-label",
+    t("Open current Claude session folder"),
+  );
+  const sessionTerminalBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-session-action-btn llm-session-terminal-btn",
+    {
+      id: "llm-session-terminal-btn",
+      type: "button",
+      textContent: "",
+      title: t("Open terminal in current Claude session folder"),
+    },
+  ) as HTMLButtonElement;
+  sessionTerminalBtn.style.display = "none";
+  sessionTerminalBtn.setAttribute(
+    "aria-label",
+    t("Open terminal in current Claude session folder"),
+  );
   const settingsBtn = createElement(doc, "button", "llm-btn-icon llm-settings-btn", {
     id: "llm-settings",
     type: "button",
@@ -250,7 +282,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     type: "button",
     textContent: t("Clear"),
   });
-  headerActions.append(settingsBtn, exportBtn, clearBtn);
+  headerActions.append(sessionTerminalBtn, sessionFolderBtn, settingsBtn, exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
   const historyMenu = createElement(doc, "div", "llm-history-menu", {
@@ -520,6 +552,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     "llm-agent-toggle-indicator",
   );
   runtimeModeIndicator.setAttribute("aria-hidden", "true");
+  const runtimeModeBackendIcon = createElement(
+    doc,
+    "span",
+    "llm-agent-toggle-backend-icon",
+  );
+  runtimeModeBackendIcon.setAttribute("aria-hidden", "true");
   const runtimeModeLabel = createElement(
     doc,
     "span",
@@ -528,8 +566,22 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       textContent: t("Agent mode"),
     },
   );
-  runtimeModeBtn.append(runtimeModeIndicator, runtimeModeLabel);
+  runtimeModeBtn.append(runtimeModeIndicator, runtimeModeBackendIcon, runtimeModeLabel);
   contextPreviews.appendChild(runtimeModeBtn);
+  const claudePermissionBtn = createElement(
+    doc,
+    "button",
+    "llm-claude-permission-toggle",
+    {
+      id: "llm-claude-permission-toggle",
+      type: "button",
+      textContent: "safe",
+      title: "Claude Code permission mode",
+    },
+  ) as HTMLButtonElement;
+  claudePermissionBtn.style.display = "none";
+  claudePermissionBtn.setAttribute("aria-label", "Claude Code permission mode");
+  contextPreviews.appendChild(claudePermissionBtn);
   const selectedContextList = createElement(
     doc,
     "div",
@@ -704,6 +756,16 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   actionHitlPanel.style.display = "none";
   composeArea.appendChild(actionHitlPanel);
 
+  const agentQueuePanel = createElement(doc, "div", "llm-agent-queue-panel", {
+    id: "llm-agent-queue-panel",
+  });
+  agentQueuePanel.style.display = "none";
+  const agentQueueList = createElement(doc, "div", "llm-agent-queue-list", {
+    id: "llm-agent-queue-list",
+  });
+  agentQueuePanel.append(agentQueueList);
+  composeArea.appendChild(agentQueuePanel);
+
   const inputBox = createElement(doc, "textarea", "llm-input", {
     id: "llm-input",
     placeholder: hasItem
@@ -790,6 +852,24 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
 
   const {
+    slot: claudeModelDropdown,
+    button: claudeModelBtn,
+    menu: claudeModelMenu,
+  } = createActionDropdown(doc, {
+    slotId: "llm-claude-model-dropdown",
+    slotClassName: "llm-model-dropdown llm-claude-runtime-only",
+    buttonId: "llm-claude-model-toggle",
+    buttonClassName:
+      "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-model-btn",
+    buttonText: "Model: ...",
+    menuId: "llm-claude-model-menu",
+    menuClassName: "llm-model-menu",
+    disabled: !hasItem,
+  });
+  claudeModelDropdown.style.display = "none";
+  claudeModelMenu.style.display = "none";
+
+  const {
     slot: reasoningDropdown,
     button: reasoningBtn,
     menu: reasoningMenu,
@@ -804,6 +884,24 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     menuClassName: "llm-reasoning-menu",
     disabled: !hasItem,
   });
+
+  const {
+    slot: claudeReasoningDropdown,
+    button: claudeReasoningBtn,
+    menu: claudeReasoningMenu,
+  } = createActionDropdown(doc, {
+    slotId: "llm-claude-reasoning-dropdown",
+    slotClassName: "llm-reasoning-dropdown llm-claude-runtime-only",
+    buttonId: "llm-claude-reasoning-toggle",
+    buttonClassName:
+      "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-reasoning-btn",
+    buttonText: t("Reasoning"),
+    menuId: "llm-claude-reasoning-menu",
+    menuClassName: "llm-reasoning-menu",
+    disabled: !hasItem,
+  });
+  claudeReasoningDropdown.style.display = "none";
+  claudeReasoningMenu.style.display = "none";
 
   const sendBtn = createElement(
     doc,
@@ -848,7 +946,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     selectTextSlot,
     screenshotSlot,
     modelDropdown,
+    claudeModelDropdown,
     reasoningDropdown,
+    claudeReasoningDropdown,
   );
   actionsRight.append(sendSlot);
   actionsRow.append(actionsLeft, actionsRight);

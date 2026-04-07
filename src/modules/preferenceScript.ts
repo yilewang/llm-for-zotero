@@ -225,6 +225,12 @@ type OSLike = {
       homeDir?: string;
     };
   };
+  File?: {
+    makeDir?: (
+      path: string,
+      options?: { ignoreExisting?: boolean; from?: string },
+    ) => Promise<void>;
+  };
 };
 
 function getProcess(): ProcessLike | undefined {
@@ -272,6 +278,62 @@ function joinPath(...parts: string[]): string {
         : part.replace(/^[\\/]+|[\\/]+$/g, ""),
     )
     .join("/");
+}
+
+function resolveHomeDirectory(): string {
+  return (
+    getProcess()?.env?.HOME?.trim() ||
+    getProcess()?.env?.USERPROFILE?.trim() ||
+    getPathUtils()?.homeDir?.trim() ||
+    getOS()?.Constants?.Path?.homeDir?.trim() ||
+    getServices()?.dirsvc?.get?.("Home", getNsIFile())?.path?.trim() ||
+    (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim() ||
+    ""
+  );
+}
+
+async function ensureDirectory(path: string, from?: string): Promise<void> {
+  if (!path) return;
+  const os = getOS();
+  if (os?.File?.makeDir) {
+    await os.File.makeDir(path, { ignoreExisting: true, from });
+    return;
+  }
+  const io = ztoolkit.getGlobal("IOUtils") as
+    | { makeDirectory?: (target: string, options?: { createAncestors?: boolean }) => Promise<void> }
+    | undefined;
+  if (io?.makeDirectory) {
+    await io.makeDirectory(path, { createAncestors: true });
+  }
+}
+
+function revealDirectory(path: string): boolean {
+  try {
+    const classes = (globalThis as unknown as {
+      Components?: {
+        classes?: Record<string, { createInstance: (iface: unknown) => unknown }>;
+      };
+    }).Components?.classes;
+    const nsIFile = getNsIFile();
+    if (classes && nsIFile) {
+      const f = classes["@mozilla.org/file/local;1"]?.createInstance(nsIFile) as
+        | { initWithPath?: (p: string) => void; reveal?: () => void }
+        | undefined;
+      if (f?.initWithPath) {
+        f.initWithPath(path);
+        f.reveal?.();
+        return true;
+      }
+    }
+  } catch {
+    // fall through
+  }
+  try {
+    (Zotero as unknown as { launchFile?: (p: string) => void }).launchFile?.(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function resolveCodexAuthPath(): string {
@@ -550,6 +612,48 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLInputElement | null;
   const enableQueryRewriteInput = doc.querySelector(
     `#${config.addonRef}-enable-query-rewrite`,
+  ) as HTMLInputElement | null;
+  const agentBackendModeSelect = doc.querySelector(
+    `#${config.addonRef}-agent-backend-mode`,
+  ) as HTMLSelectElement | null;
+  const agentBridgeSettingsWrap = doc.querySelector(
+    `#${config.addonRef}-agent-bridge-settings`,
+  ) as HTMLDivElement | null;
+  const agentBridgeUrlInput = doc.querySelector(
+    `#${config.addonRef}-agent-bridge-url`,
+  ) as HTMLInputElement | null;
+  const openZoteroClaudeConfigFolderBtn = doc.querySelector(
+    `#${config.addonRef}-open-zotero-claude-config-folder`,
+  ) as HTMLButtonElement | null;
+  const openZoteroClaudeConfigFolderStatus = doc.querySelector(
+    `#${config.addonRef}-open-zotero-claude-config-folder-status`,
+  ) as HTMLSpanElement | null;
+  const agentTerminalPathInput = doc.querySelector(
+    `#${config.addonRef}-agent-terminal-path`,
+  ) as HTMLInputElement | null;
+  const agentTerminalPathSaveBtn = doc.querySelector(
+    `#${config.addonRef}-agent-terminal-path-save`,
+  ) as HTMLButtonElement | null;
+  const agentTerminalPathResetBtn = doc.querySelector(
+    `#${config.addonRef}-agent-terminal-path-reset`,
+  ) as HTMLButtonElement | null;
+  const agentTerminalPathStatus = doc.querySelector(
+    `#${config.addonRef}-agent-terminal-path-status`,
+  ) as HTMLSpanElement | null;
+  const agentClaudeConfigSourceSelect = doc.querySelector(
+    `#${config.addonRef}-agent-claude-config-source`,
+  ) as HTMLSelectElement | null;
+  const agentPermissionModeSelect = doc.querySelector(
+    `#${config.addonRef}-agent-permission-mode`,
+  ) as HTMLSelectElement | null;
+  const agentTraceVerbositySelect = doc.querySelector(
+    `#${config.addonRef}-agent-trace-verbosity`,
+  ) as HTMLSelectElement | null;
+  const agentRawLogVisibilitySelect = doc.querySelector(
+    `#${config.addonRef}-agent-raw-log-visibility`,
+  ) as HTMLSelectElement | null;
+  const agentProcessCollapseDefaultInput = doc.querySelector(
+    `#${config.addonRef}-agent-process-collapse-default`,
   ) as HTMLInputElement | null;
 
   if (!modelSections) return;
@@ -1511,6 +1615,207 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         enableAgentModeInput.checked,
         true,
       );
+      if (agentBackendModeSelect) {
+        if (!enableAgentModeInput.checked) {
+          agentBackendModeSelect.value = "disabled";
+          Zotero.Prefs.set(`${config.prefsPrefix}.agentBackendMode`, "disabled", true);
+          if (agentBridgeSettingsWrap) {
+            agentBridgeSettingsWrap.style.display = "none";
+          }
+        } else if (agentBackendModeSelect.value === "disabled") {
+          agentBackendModeSelect.value = "builtin";
+          Zotero.Prefs.set(`${config.prefsPrefix}.agentBackendMode`, "builtin", true);
+          if (agentBridgeSettingsWrap) {
+            agentBridgeSettingsWrap.style.display = "none";
+          }
+        }
+      }
+    });
+  }
+
+  if (agentBackendModeSelect && enableAgentModeInput) {
+    const key = `${config.prefsPrefix}.agentBackendMode`;
+    const saved = (Zotero.Prefs.get(key, true) as string) || "disabled";
+    const normalized =
+      saved === "claude_bridge" || saved === "builtin" || saved === "disabled"
+        ? saved
+        : "disabled";
+    agentBackendModeSelect.value = normalized;
+    const syncAgentBackendUi = () => {
+      const mode = agentBackendModeSelect.value;
+      if (agentBridgeSettingsWrap) {
+        agentBridgeSettingsWrap.style.display = mode === "claude_bridge" ? "flex" : "none";
+      }
+      if (mode === "disabled") {
+        enableAgentModeInput.checked = false;
+        Zotero.Prefs.set(`${config.prefsPrefix}.enableAgentMode`, false, true);
+      } else {
+        enableAgentModeInput.checked = true;
+        Zotero.Prefs.set(`${config.prefsPrefix}.enableAgentMode`, true, true);
+      }
+    };
+    syncAgentBackendUi();
+    agentBackendModeSelect.addEventListener("change", () => {
+      const mode = agentBackendModeSelect.value;
+      const next =
+        mode === "claude_bridge" || mode === "builtin" || mode === "disabled"
+          ? mode
+          : "disabled";
+      Zotero.Prefs.set(key, next, true);
+      syncAgentBackendUi();
+    });
+  }
+
+  if (agentBridgeUrlInput) {
+    const key = `${config.prefsPrefix}.agentBackendBridgeUrl`;
+    const saved = (Zotero.Prefs.get(key, true) as string) || "http://127.0.0.1:19787";
+    agentBridgeUrlInput.value = saved;
+    agentBridgeUrlInput.addEventListener("input", () => {
+      Zotero.Prefs.set(key, agentBridgeUrlInput.value.trim(), true);
+    });
+  }
+
+  if (agentTerminalPathInput) {
+    const key = `${config.prefsPrefix}.agentClaudeTerminalPath`;
+    const readCurrent = () => {
+      const saved = (Zotero.Prefs.get(key, true) as string) || "";
+      agentTerminalPathInput.value = typeof saved === "string" ? saved : "";
+    };
+    readCurrent();
+    const updateStatus = (text: string) => {
+      if (agentTerminalPathStatus) {
+        agentTerminalPathStatus.textContent = text;
+      }
+    };
+    const saveTerminalPath = () => {
+      const next = agentTerminalPathInput.value.trim();
+      Zotero.Prefs.set(key, next, true);
+      updateStatus(next ? `Saved: ${next}` : "Using system Terminal");
+    };
+    agentTerminalPathSaveBtn?.addEventListener("click", () => {
+      saveTerminalPath();
+    });
+    agentTerminalPathResetBtn?.addEventListener("click", () => {
+      Zotero.Prefs.set(key, "", true);
+      readCurrent();
+      updateStatus("Reset to system Terminal");
+    });
+    agentTerminalPathInput.addEventListener("keydown", (event: KeyboardEvent) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        saveTerminalPath();
+      }
+    });
+  }
+
+  if (agentClaudeConfigSourceSelect) {
+    const key = `${config.prefsPrefix}.agentClaudeConfigSource`;
+    const saved = (Zotero.Prefs.get(key, true) as string) || "zotero-specific";
+    const normalized =
+      saved === "user-level" || saved === "zotero-specific"
+        ? saved
+        : "zotero-specific";
+    agentClaudeConfigSourceSelect.value = normalized;
+    agentClaudeConfigSourceSelect.addEventListener("change", () => {
+      const next =
+        agentClaudeConfigSourceSelect.value === "user-level"
+          ? "user-level"
+          : "zotero-specific";
+      Zotero.Prefs.set(key, next, true);
+      if (openZoteroClaudeConfigFolderStatus) {
+        openZoteroClaudeConfigFolderStatus.textContent = "";
+      }
+    });
+  }
+
+  if (agentPermissionModeSelect) {
+    const key = `${config.prefsPrefix}.agentPermissionMode`;
+    const saved = (Zotero.Prefs.get(key, true) as string) || "safe";
+    const normalized = saved === "yolo" ? "yolo" : "safe";
+    agentPermissionModeSelect.value = normalized;
+    agentPermissionModeSelect.addEventListener("change", () => {
+      const next = agentPermissionModeSelect.value === "yolo" ? "yolo" : "safe";
+      Zotero.Prefs.set(key, next, true);
+    });
+  }
+
+  if (agentTraceVerbositySelect) {
+    const key = `${config.prefsPrefix}.agentTraceVerbosity`;
+    const saved = (Zotero.Prefs.get(key, true) as string) || "compact";
+    const normalized = saved === "verbose" || saved === "raw" ? saved : "compact";
+    agentTraceVerbositySelect.value = normalized;
+    agentTraceVerbositySelect.addEventListener("change", () => {
+      const v = agentTraceVerbositySelect.value;
+      Zotero.Prefs.set(
+        key,
+        v === "compact" || v === "verbose" || v === "raw" ? v : "compact",
+        true,
+      );
+    });
+  }
+
+  if (agentRawLogVisibilitySelect) {
+    const key = `${config.prefsPrefix}.agentRawLogVisibility`;
+    const saved = (Zotero.Prefs.get(key, true) as string) || "debug_only";
+    const normalized =
+      saved === "always" || saved === "never" || saved === "debug_only"
+        ? saved
+        : "debug_only";
+    agentRawLogVisibilitySelect.value = normalized;
+    agentRawLogVisibilitySelect.addEventListener("change", () => {
+      const v = agentRawLogVisibilitySelect.value;
+      Zotero.Prefs.set(
+        key,
+        v === "always" || v === "never" || v === "debug_only" ? v : "debug_only",
+        true,
+      );
+    });
+  }
+
+  if (agentProcessCollapseDefaultInput) {
+    const key = `${config.prefsPrefix}.agentProcessCollapseByDefault`;
+    const saved = Zotero.Prefs.get(key, true);
+    agentProcessCollapseDefaultInput.checked =
+      saved === undefined || saved === null
+        ? true
+        : saved === true || `${saved}`.toLowerCase() === "true";
+    agentProcessCollapseDefaultInput.addEventListener("change", () => {
+      Zotero.Prefs.set(key, agentProcessCollapseDefaultInput.checked, true);
+    });
+  }
+
+  if (openZoteroClaudeConfigFolderBtn) {
+    openZoteroClaudeConfigFolderBtn.addEventListener("click", async () => {
+      const home = resolveHomeDirectory();
+      const sourceRaw = (Zotero.Prefs.get(
+        `${config.prefsPrefix}.agentClaudeConfigSource`,
+        true,
+      ) as string) || "zotero-specific";
+      const source =
+        sourceRaw === "user-level" || sourceRaw === "zotero-specific"
+          ? sourceRaw
+          : "zotero-specific";
+      const runtimeRoot = joinPath(home, "Zotero", "agent-runtime");
+      const claudeDir =
+        source === "user-level"
+          ? joinPath(home, ".claude")
+          : joinPath(runtimeRoot, ".claude");
+      const targetPath = joinPath(claudeDir, "commands");
+      try {
+        if (source !== "user-level") {
+          await ensureDirectory(runtimeRoot, joinPath(home, "Zotero"));
+        }
+        await ensureDirectory(claudeDir, source === "user-level" ? home : runtimeRoot);
+        await ensureDirectory(targetPath, claudeDir);
+      } catch {
+        // best-effort
+      }
+      const opened = revealDirectory(targetPath) || revealDirectory(claudeDir);
+      if (openZoteroClaudeConfigFolderStatus) {
+        openZoteroClaudeConfigFolderStatus.textContent = opened
+          ? `Opened: ${claudeDir}`
+          : `Path: ${claudeDir}`;
+      }
     });
   }
 

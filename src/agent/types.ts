@@ -28,6 +28,9 @@ export type AgentRequest = {
   providerProtocol?: ProviderProtocol;
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
+  scopeType?: "paper" | "open" | "folder" | "tag" | "tagset" | "custom";
+  scopeId?: string;
+  scopeLabel?: string;
 };
 
 export type AgentPendingActionButton = {
@@ -188,6 +191,13 @@ export type ToolSpec = {
 };
 
 export type AgentEvent =
+  | {
+      type: "provider_event";
+      providerType: string;
+      sessionId?: string;
+      payload: Record<string, unknown>;
+      ts: number;
+    }
   | { type: "status"; text: string }
   | {
       type: "reasoning";

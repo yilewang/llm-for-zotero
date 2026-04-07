@@ -1172,6 +1172,11 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
         if (selectedSource === "note-edit") {
           return "Editing";
         }
+        if (selectedSource === "model") {
+          return selectedContexts.length > 1 && index > 0
+            ? `Quoted reply (${index + 1})`
+            : "Quoted reply";
+        }
         const pageLabel = formatSelectedTextContextPageLabel(selectedContext);
         if (selectedSource === "pdf" && pageLabel) {
           if (isGlobalConversation) {
@@ -1184,11 +1189,14 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
           }
           return pageLabel;
         }
-        return isGlobalConversation && selectedSource === "pdf"
-          ? formatPaperCitationLabel(selectedContext.paperContext)
-          : selectedContexts.length > 1 && index > 0
-            ? `Text Context (${index + 1})`
-            : "Text Context";
+        if (selectedSource === "pdf") {
+          return selectedContexts.length > 1 && index > 0
+            ? `PDF selection (${index + 1})`
+            : "PDF selection";
+        }
+        return selectedContexts.length > 1 && index > 0
+          ? `Text Context (${index + 1})`
+          : "Text Context";
       })();
 
     const previewBox = ownerDoc.createElement("div");

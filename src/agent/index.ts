@@ -1,3 +1,4 @@
+import { config } from "../../package.json";
 import { AgentRuntime } from "./runtime";
 import { createBuiltInToolRegistry } from "./tools";
 import { ZoteroGateway } from "./services/zoteroGateway";
@@ -12,6 +13,10 @@ import { initConversationMemoryStore } from "./store/conversationMemory";
 import { createAgentModelAdapter } from "./model/factory";
 import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
 import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
+import {
+  createExternalBackendBridgeRuntime,
+  type AgentRuntimeLike,
+} from "./externalBackendBridge";
 import type {
   AgentConfirmationResolution,
   AgentEvent,
@@ -20,11 +25,42 @@ import type {
 } from "./types";
 
 let runtime: AgentRuntime | null = null;
+let runtimeBridge: AgentRuntimeLike | null = null;
 let _actionRegistry: ActionRegistry | null = null;
 let _toolRegistry: ReturnType<typeof createBuiltInToolRegistry> | null = null;
 
 // Hoisted so getAgentApi() can expose them to third-party plugin authors.
 let _zoteroGateway: ZoteroGateway | null = null;
+
+type AgentBackendMode = "disabled" | "builtin" | "claude_bridge";
+
+function getAgentBackendMode(): AgentBackendMode {
+  try {
+    const enabled = Zotero.Prefs.get(`${config.prefsPrefix}.enableAgentMode`, true);
+    const isEnabled =
+      enabled === true || `${enabled || ""}`.toLowerCase() === "true";
+    if (!isEnabled) return "disabled";
+    const value = Zotero.Prefs.get(`${config.prefsPrefix}.agentBackendMode`, true);
+    if (value === "builtin" || value === "claude_bridge" || value === "disabled") {
+      return value;
+    }
+    return "builtin";
+  } catch {
+    return "builtin";
+  }
+}
+
+function getExternalBackendBridgeUrl(): string {
+  if (getAgentBackendMode() !== "claude_bridge") {
+    return "";
+  }
+  try {
+    const value = Zotero.Prefs.get(`${config.prefsPrefix}.agentBackendBridgeUrl`, true);
+    return typeof value === "string" ? value.trim() : "";
+  } catch {
+    return "";
+  }
+}
 
 function createToolRegistry() {
   _zoteroGateway = new ZoteroGateway();
@@ -57,6 +93,11 @@ export async function initAgentSubsystem(): Promise<AgentRuntime> {
     zoteroGateway: _zoteroGateway!,
   });
 
+  runtimeBridge = createExternalBackendBridgeRuntime({
+    coreRuntime: runtime,
+    getBridgeUrl: getExternalBackendBridgeUrl,
+  });
+
   return runtime;
 }
 
@@ -64,6 +105,7 @@ export function shutdownAgentSubsystem(): void {
   unregisterMcpServer();
   _actionRegistry = null;
   _toolRegistry = null;
+  runtimeBridge = null;
   runtime = null;
   _zoteroGateway = null;
 }
@@ -72,7 +114,7 @@ export function getAgentRuntime(): AgentRuntime {
   if (!runtime) {
     throw new Error("Agent subsystem is not initialized");
   }
-  return runtime;
+  return (runtimeBridge || runtime) as unknown as AgentRuntime;
 }
 
 /**
@@ -175,7 +217,45 @@ export function getAgentApi() {
      */
     listActions: () => {
       if (!_actionRegistry) throw new Error("Agent subsystem is not initialized");
-      return _actionRegistry.listActions();
+      const localActions = _actionRegistry.listActions().map((action) => ({
+        ...action,
+        source: "local" as const,
+      }));
+      const externalActions =
+        runtimeBridge?.listExternalActionsSync?.().map((action) => ({
+          name: action.name,
+          description: action.description,
+          inputSchema: action.inputSchema,
+          source: "backend" as const,
+          backendToolName: action.backendToolName,
+          riskLevel: action.riskLevel,
+          requiresConfirmation: action.requiresConfirmation,
+          mutability: action.mutability,
+        })) || [];
+      return [...externalActions, ...localActions];
+    },
+
+    refreshActions: async (force = false) => {
+      if (runtimeBridge?.refreshExternalActions) {
+        await runtimeBridge.refreshExternalActions(force);
+      }
+    },
+
+    listSlashCommands: () => {
+      if (!_actionRegistry) throw new Error("Agent subsystem is not initialized");
+      const externalSlashCommands = runtimeBridge?.listSlashCommandsSync?.() || [];
+      return externalSlashCommands.map((cmd) => ({
+        name: cmd.name,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        source: "backend" as const,
+      }));
+    },
+
+    refreshSlashCommands: async (force = false) => {
+      if (runtimeBridge?.refreshSlashCommands) {
+        await runtimeBridge.refreshSlashCommands(force);
+      }
     },
 
     /**
@@ -198,6 +278,7 @@ export function getAgentApi() {
       name: string,
       input: unknown,
       opts: {
+        conversationKey?: number;
         libraryID?: number;
         confirmationMode?: import("./actions").ActionConfirmationMode;
         onProgress?: (event: import("./actions").ActionProgressEvent) => void;
@@ -207,6 +288,9 @@ export function getAgentApi() {
         ) => Promise<import("./types").AgentConfirmationResolution>;
       } = {},
     ) => {
+      if (runtimeBridge?.runExternalAction && name.startsWith("cc_tool::")) {
+        return runtimeBridge.runExternalAction(name, input, opts);
+      }
       if (!_actionRegistry || !_toolRegistry) throw new Error("Agent subsystem is not initialized");
       if (!_zoteroGateway) throw new Error("Agent subsystem is not initialized");
       const libraryID =

@@ -82,6 +82,7 @@ import {
 import {
   agentRunTraceCache,
   agentRunTraceLoadingTasks,
+  type AgentTraceUiState,
 } from "./agentState";
 import {
   sanitizeText,
@@ -95,6 +96,7 @@ import {
   getSelectedTextSourceIcon,
   resolvePromptText,
 } from "./textUtils";
+import { getCopyableBlockText } from "./copyBlocks";
 import {
   normalizeSelectedTextNoteContexts,
   normalizeSelectedTextPaperContexts as normalizeSelectedTextPaperContextEntries,
@@ -135,7 +137,7 @@ import { buildChatHistoryNotePayload, readNoteSnapshot } from "./notes";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { canEditUserPromptTurn } from "./editability";
-import { renderAgentTrace } from "./agentTrace/render";
+import { renderAgentTrace, renderPendingActionCard } from "./agentTrace/render";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 import { decorateAssistantCitationLinks } from "./assistantCitationLinks";
@@ -148,6 +150,7 @@ import {
 } from "./conversationSummaryCache";
 import type {
   AgentRunEventRecord,
+  AgentRunRecord,
   AgentRuntimeRequest,
 } from "../../agent/types";
 import {
@@ -213,6 +216,28 @@ function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
       historyMenu.style.display = "none";
     }
   }
+}
+
+const agentRunTraceRetryTimers = new Map<string, number>();
+
+function extractAgentReceiptCounts(
+  safeText: string,
+): {
+  markdownBody: string;
+  papers: number;
+  files: number;
+  images: number;
+} | null {
+  const receiptMatch = safeText.match(
+    /^RECEIVED\s+papers=(\d+),\s*attachments=(\d+),\s*screenshots=(\d+)\.\s*/i,
+  );
+  if (!receiptMatch) return null;
+  return {
+    markdownBody: safeText.slice(receiptMatch[0].length),
+    papers: Number(receiptMatch[1] || 0),
+    files: Number(receiptMatch[2] || 0),
+    images: Number(receiptMatch[3] || 0),
+  };
 }
 
 function resolveMultimodalRetryHint(
@@ -867,20 +892,195 @@ async function ensureAgentRunTraceLoaded(
   runId: string | undefined,
   body?: Element,
   item?: Zotero.Item | null,
+  opts?: { force?: boolean },
 ): Promise<void> {
+  const TRACE_RETRY_COOLDOWN_MS = 6_000;
+  const scheduleTraceRetry = (targetRunId: string, delayMs: number) => {
+    if (!body || !item) return;
+    const ownerWin = body.ownerDocument?.defaultView;
+    if (agentRunTraceRetryTimers.has(targetRunId)) return;
+    const safeDelay = Math.max(250, Math.floor(delayMs));
+    const timerId = ownerWin
+      ? ownerWin.setTimeout(() => {
+          agentRunTraceRetryTimers.delete(targetRunId);
+          void ensureAgentRunTraceLoaded(targetRunId, body, item, { force: true });
+        }, safeDelay)
+      : ((setTimeout(() => {
+          agentRunTraceRetryTimers.delete(targetRunId);
+          void ensureAgentRunTraceLoaded(targetRunId, body, item, { force: true });
+        }, safeDelay) as unknown as number) || 0);
+    agentRunTraceRetryTimers.set(targetRunId, timerId);
+  };
+  const clearTraceRetry = (targetRunId: string) => {
+    const timerId = agentRunTraceRetryTimers.get(targetRunId);
+    if (timerId !== undefined) {
+      clearTimeout(timerId as unknown as number);
+      agentRunTraceRetryTimers.delete(targetRunId);
+    }
+  };
+  const rebuildTraceEventsFromRunRecord = (
+    run: AgentRunRecord | null,
+  ): AgentRunEventRecord[] => {
+    if (!run) return [];
+    const nowTs = Date.now();
+    const createdAt = Number.isFinite(run.createdAt)
+      ? Math.floor(run.createdAt)
+      : nowTs;
+    const completedAt = Number.isFinite(run.completedAt)
+      ? Math.floor(run.completedAt as number)
+      : createdAt;
+    const events: AgentRunEventRecord[] = [];
+    const pushEvent = (
+      payload: AgentRunEventRecord["payload"],
+      created: number,
+    ) => {
+      events.push({
+        runId: run.runId,
+        seq: events.length + 1,
+        eventType: payload.type,
+        payload,
+        createdAt: created,
+      });
+    };
+    if (run.status === "running") {
+      pushEvent(
+        {
+          type: "status",
+          text: "Agent run in progress",
+        },
+        createdAt,
+      );
+      return events;
+    }
+    if (run.status === "completed") {
+      pushEvent(
+        {
+          type: "final",
+          text:
+            (run.finalText || "").trim() ||
+            "Completed. Detailed trace unavailable.",
+        },
+        completedAt,
+      );
+      return events;
+    }
+    pushEvent(
+      {
+        type: "fallback",
+        reason:
+          run.status === "cancelled"
+            ? "Run cancelled"
+            : "Run failed. Detailed trace unavailable.",
+      },
+      completedAt,
+    );
+    return events;
+  };
+  const rebuildTraceEventsFromMessage = (
+    targetRunId: string,
+    message?: Message | null,
+  ): AgentRunEventRecord[] => {
+    const text = sanitizeText((message?.text || "").trim());
+    if (!text) return [];
+    return [
+      {
+        runId: targetRunId,
+        seq: 1,
+        eventType: "final",
+        payload: {
+          type: "final",
+          text,
+        },
+        createdAt: Number.isFinite(Number(message?.timestamp))
+          ? Math.floor(Number(message?.timestamp))
+          : Date.now(),
+      },
+    ];
+  };
   const normalizedRunId = (runId || "").trim();
-  if (!normalizedRunId || agentRunTraceCache.has(normalizedRunId)) return;
+  if (!normalizedRunId) return;
+  const cached = agentRunTraceCache.get(normalizedRunId);
+  if (!opts?.force && cached?.status === "ready") {
+    clearTraceRetry(normalizedRunId);
+    return;
+  }
+  if (
+    !opts?.force &&
+    cached?.status === "failed" &&
+    cached.lastAttemptAt &&
+    Date.now() - cached.lastAttemptAt < TRACE_RETRY_COOLDOWN_MS
+  ) {
+    const elapsed = Date.now() - cached.lastAttemptAt;
+    scheduleTraceRetry(
+      normalizedRunId,
+      TRACE_RETRY_COOLDOWN_MS - elapsed + 50,
+    );
+    return;
+  }
   const existing = agentRunTraceLoadingTasks.get(normalizedRunId);
   if (existing) {
     await existing;
     return;
   }
+  agentRunTraceCache.set(normalizedRunId, {
+    status: "loading",
+    events: cached?.events || [],
+    lastAttemptAt: Date.now(),
+  });
   const task = (async () => {
     try {
       const trace = await getAgentRunTrace(normalizedRunId);
-      agentRunTraceCache.set(normalizedRunId, trace.events);
+      const rebuiltFromRun =
+        trace.events.length > 0 ? [] : rebuildTraceEventsFromRunRecord(trace.run);
+      const fallbackMessage = (() => {
+        if (!item) return null;
+        const conversationKey = getConversationKey(item);
+        const history = chatHistory.get(conversationKey) || [];
+        for (let i = history.length - 1; i >= 0; i -= 1) {
+          const candidate = history[i];
+          if (
+            candidate?.role === "assistant" &&
+            (candidate.agentRunId || "").trim() === normalizedRunId
+          ) {
+            return candidate;
+          }
+        }
+        return null;
+      })();
+      const rebuiltFromMessage =
+        trace.events.length > 0 || rebuiltFromRun.length > 0
+          ? []
+          : rebuildTraceEventsFromMessage(normalizedRunId, fallbackMessage);
+      const events =
+        trace.events.length > 0
+          ? trace.events
+          : rebuiltFromRun.length > 0
+            ? rebuiltFromRun
+            : rebuiltFromMessage;
+      const status: AgentTraceUiState["status"] =
+        trace.events.length > 0
+          ? "ready"
+          : events.length > 0
+            ? "reconstructed"
+            : "failed";
+      agentRunTraceCache.set(normalizedRunId, {
+        status,
+        events,
+        lastAttemptAt: Date.now(),
+      });
+      if (status === "failed") {
+        scheduleTraceRetry(normalizedRunId, TRACE_RETRY_COOLDOWN_MS);
+      } else {
+        clearTraceRetry(normalizedRunId);
+      }
     } catch (err) {
       ztoolkit.log("LLM: Failed to load agent run trace", err);
+      agentRunTraceCache.set(normalizedRunId, {
+        status: "failed",
+        events: cached?.events || [],
+        lastAttemptAt: Date.now(),
+      });
+      scheduleTraceRetry(normalizedRunId, TRACE_RETRY_COOLDOWN_MS);
     } finally {
       agentRunTraceLoadingTasks.delete(normalizedRunId);
       if (body && item) {
@@ -892,10 +1092,17 @@ async function ensureAgentRunTraceLoaded(
   await task;
 }
 
-function getCachedAgentRunEvents(runId: string | undefined): AgentRunEventRecord[] {
+function getCachedAgentRunTraceState(
+  runId: string | undefined,
+): AgentTraceUiState | null {
   const normalizedRunId = (runId || "").trim();
-  if (!normalizedRunId) return [];
-  return agentRunTraceCache.get(normalizedRunId) || [];
+  if (!normalizedRunId) return null;
+  return (
+    agentRunTraceCache.get(normalizedRunId) || {
+      status: "loading",
+      events: [],
+    }
+  );
 }
 
 export function detectReasoningProvider(
@@ -930,6 +1137,9 @@ function formatDisplayModelName(
   const normalizedModel = (modelName || "").trim();
   if (!normalizedModel) return "";
   const provider = (modelProviderLabel || "").trim().toLowerCase();
+  if (provider === "claude code") {
+    return `Claude Code: ${normalizedModel}`;
+  }
   if (provider.includes("(codex auth)")) {
     return `codex/${normalizedModel}`;
   }
@@ -1037,6 +1247,40 @@ export async function copyRenderedMarkdownToClipboard(
 
   // Fallback: copy raw markdown as plain text.
   await copyTextToClipboard(body, safeText);
+}
+
+function attachCopyButtonsToRichBlocks(
+  body: Element,
+  bubble: HTMLDivElement,
+): void {
+  if (!bubble.classList.contains("assistant")) return;
+  const doc = bubble.ownerDocument;
+  if (!doc) return;
+  const blocks = Array.from(
+    bubble.querySelectorAll("pre, table, .katex-display"),
+  ) as HTMLElement[];
+  for (const block of blocks) {
+    if (block.querySelector(":scope > .llm-rich-block-copy-btn")) continue;
+    block.classList.add("llm-rich-copy-block");
+    const btn = doc.createElement("button");
+    btn.type = "button";
+    btn.className = "llm-rich-block-copy-btn";
+    btn.textContent = "Copy";
+    btn.title = "Copy block";
+    btn.setAttribute("aria-label", "Copy block");
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void copyTextToClipboard(body, getCopyableBlockText(block));
+      btn.classList.add("copied");
+      btn.textContent = "Copied";
+      setTimeout(() => {
+        btn.classList.remove("copied");
+        btn.textContent = "Copy";
+      }, 900);
+    });
+    block.appendChild(btn);
+  }
 }
 
 export function getSelectedReasoningForItem(
@@ -2602,6 +2846,98 @@ function buildActiveNoteRuntimeContext(
   };
 }
 
+export function resolveAgentScopeFromItem(item: Zotero.Item): {
+  scopeType: "paper" | "open" | "folder" | "tag" | "tagset" | "custom";
+  scopeId: string;
+  scopeLabel?: string;
+} {
+  const libraryID =
+    typeof item.libraryID === "number" && Number.isFinite(item.libraryID)
+      ? Math.floor(item.libraryID)
+      : 0;
+  let paperItemId = 0;
+  if (item.isAttachment?.() && item.parentID) {
+    paperItemId = Math.floor(item.parentID);
+  } else if (item.isRegularItem?.()) {
+    paperItemId = Math.floor(item.id);
+  }
+  if (paperItemId > 0) {
+    const paperItem = Zotero.Items.get(paperItemId);
+    const scopeLabel =
+      paperItem?.isRegularItem?.() && typeof paperItem.getField === "function"
+        ? String(paperItem.getField("title") || "").trim() || undefined
+        : undefined;
+    return {
+      scopeType: "paper",
+      scopeId: `${libraryID}:${paperItemId}`,
+      scopeLabel,
+    };
+  }
+
+  const displayKind = resolveDisplayConversationKind(item);
+  if (displayKind === "global") {
+    try {
+      const pane = Zotero.getActiveZoteroPane?.() as
+        | {
+            getSelectedCollection?: () => unknown;
+            getSelectedTags?: () => unknown;
+          }
+        | undefined;
+      const selectedCollection = pane?.getSelectedCollection?.() as
+        | { id?: unknown; name?: unknown }
+        | null
+        | undefined;
+      const collectionId =
+        typeof selectedCollection?.id === "number" &&
+        Number.isFinite(selectedCollection.id)
+          ? Math.floor(selectedCollection.id)
+          : 0;
+      if (collectionId > 0) {
+        const collectionName =
+          typeof selectedCollection?.name === "string"
+            ? selectedCollection.name.trim()
+            : "";
+        return {
+          scopeType: "folder",
+          scopeId: `${libraryID}:${collectionId}`,
+          scopeLabel: collectionName || `Collection ${collectionId}`,
+        };
+      }
+
+      const selectedTagsRaw = pane?.getSelectedTags?.();
+      const selectedTags = Array.isArray(selectedTagsRaw)
+        ? selectedTagsRaw
+            .filter((tag): tag is string => typeof tag === "string")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+        : [];
+      if (selectedTags.length === 1) {
+        return {
+          scopeType: "tag",
+          scopeId: `${libraryID}:${selectedTags[0]}`,
+          scopeLabel: selectedTags[0],
+        };
+      }
+      if (selectedTags.length > 1) {
+        const normalized = [...selectedTags].sort((a, b) => a.localeCompare(b));
+        return {
+          scopeType: "tagset",
+          scopeId: `${libraryID}:${normalized.join("|")}`,
+          scopeLabel: normalized.join(" + "),
+        };
+      }
+    } catch {
+      // ignore and fallback to open scope
+    }
+  }
+
+  return {
+    scopeType: "open",
+    scopeId: String(libraryID),
+    scopeLabel: "Open Chat",
+  };
+}
+
 async function enrichPaperContextsWithMineruCache(
   papers: PaperContextRef[] | undefined,
 ): Promise<PaperContextRef[] | undefined> {
@@ -2626,6 +2962,7 @@ async function buildAgentRuntimeRequest(
     enrichPaperContextsWithMineruCache(params.paperContexts),
     enrichPaperContextsWithMineruCache(params.fullTextPaperContexts),
   ]);
+  const scope = resolveAgentScopeFromItem(params.item);
   return {
     conversationKey: params.conversationKey,
     mode: "agent",
@@ -2650,10 +2987,131 @@ async function buildAgentRuntimeRequest(
     modelProviderLabel: params.effectiveRequestConfig.modelProviderLabel,
     libraryID: params.item.libraryID,
     activeNoteContext: buildActiveNoteRuntimeContext(params.item),
+    scopeType: scope.scopeType,
+    scopeId: scope.scopeId,
+    scopeLabel: scope.scopeLabel,
   };
 }
 
 function buildAgentEngineDeps(): AgentEngineDeps {
+  const seenDebugConfirmationModals = new Set<string>();
+  const activeDebugConfirmationModals = new Map<string, HTMLDivElement>();
+
+  const isDebugPermissionUiEnabled = (): boolean => {
+    const verbosity = getStringPref("agentTraceVerbosity").trim().toLowerCase();
+    const rawLogVisibility = getStringPref("agentRawLogVisibility")
+      .trim()
+      .toLowerCase();
+    return (
+      verbosity === "verbose" ||
+      verbosity === "raw" ||
+      rawLogVisibility === "debug_only"
+    );
+  };
+
+  const showDebugConfirmationModal = (
+    body: Element,
+    requestId: string,
+    action: import("../../agent/types").AgentPendingAction,
+  ): void => {
+    if (!isDebugPermissionUiEnabled()) return;
+    if (seenDebugConfirmationModals.has(requestId)) return;
+    const ownerDoc = body.ownerDocument;
+    if (!ownerDoc) return;
+    seenDebugConfirmationModals.add(requestId);
+    if (activeDebugConfirmationModals.has(requestId)) return;
+
+    const title = (action.title || action.toolName || "Permission request").trim();
+    const description = (action.description || "Allow this action in current run?").trim();
+
+    const overlay = ownerDoc.createElement("div");
+    overlay.className = "llm-agent-debug-confirm-modal";
+    overlay.dataset.requestId = requestId;
+
+    const card = ownerDoc.createElement("div");
+    card.className = "llm-agent-debug-confirm-modal-card";
+
+    const titleEl = ownerDoc.createElement("div");
+    titleEl.className = "llm-agent-debug-confirm-modal-title";
+    titleEl.textContent = title;
+
+    const bodyEl = ownerDoc.createElement("div");
+    bodyEl.className = "llm-agent-debug-confirm-modal-body";
+    bodyEl.textContent = description;
+
+    const actionsEl = ownerDoc.createElement("div");
+    actionsEl.className = "llm-agent-debug-confirm-modal-actions";
+
+    const denyBtn = ownerDoc.createElement("button");
+    denyBtn.type = "button";
+    denyBtn.className =
+      "llm-agent-debug-confirm-modal-btn llm-agent-debug-confirm-modal-btn-deny";
+    denyBtn.textContent = "Deny";
+
+    const approveBtn = ownerDoc.createElement("button");
+    approveBtn.type = "button";
+    approveBtn.className =
+      "llm-agent-debug-confirm-modal-btn llm-agent-debug-confirm-modal-btn-approve";
+    approveBtn.textContent = "Approve once";
+
+    const settle = (approved: boolean): void => {
+      const node = activeDebugConfirmationModals.get(requestId);
+      if (node) {
+        node.remove();
+        activeDebugConfirmationModals.delete(requestId);
+      }
+      getAgentRuntime().resolveConfirmation(requestId, {
+        approved,
+        actionId: approved ? "approve" : "deny",
+      });
+    };
+
+    denyBtn.addEventListener("click", () => settle(false));
+    approveBtn.addEventListener("click", () => settle(true));
+
+    actionsEl.append(denyBtn, approveBtn);
+    card.append(titleEl, bodyEl, actionsEl);
+    overlay.appendChild(card);
+    body.appendChild(overlay);
+    activeDebugConfirmationModals.set(requestId, overlay);
+  };
+
+  const showPendingConfirmationCard = (
+    body: Element,
+    requestId: string,
+    action: import("../../agent/types").AgentPendingAction,
+  ): void => {
+    // Keep a single confirmation surface in UI: inline card only.
+    // The debug modal caused duplicate dialogs for the same request.
+    const ENABLE_DEBUG_CONFIRM_MODAL = false;
+    const ownerDoc = body.ownerDocument;
+    const { chatBox } = getPanelRequestUI(body);
+    if (!ownerDoc || !chatBox) return;
+    chatBox.querySelector(".llm-action-inline-card")?.remove();
+    const wrapper = ownerDoc.createElement("div");
+    wrapper.className = "llm-action-inline-card";
+    wrapper.appendChild(
+      renderPendingActionCard(ownerDoc, {
+        requestId,
+        action,
+      }),
+    );
+    chatBox.appendChild(wrapper);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    if (ENABLE_DEBUG_CONFIRM_MODAL) {
+      showDebugConfirmationModal(body, requestId, action);
+    }
+  };
+
+  const hidePendingConfirmationCard = (body: Element): void => {
+    const { chatBox } = getPanelRequestUI(body);
+    chatBox?.querySelector(".llm-action-inline-card")?.remove();
+    for (const node of activeDebugConfirmationModals.values()) {
+      node.remove();
+    }
+    activeDebugConfirmationModals.clear();
+  };
+
   return {
     chatHistory,
     agentRunTraceCache,
@@ -2686,6 +3144,8 @@ function buildAgentEngineDeps(): AgentEngineDeps {
     waitForUiStep,
     finalizeCancelledAssistantMessage,
     sanitizeText,
+    showPendingConfirmationCard,
+    hidePendingConfirmationCard,
     persistConversationMessage,
     updateStoredLatestUserMessage: updateStoredLatestUserMessage as AgentEngineDeps["updateStoredLatestUserMessage"],
     updateStoredLatestAssistantMessage: updateStoredLatestAssistantMessage as AgentEngineDeps["updateStoredLatestAssistantMessage"],
@@ -4014,14 +4474,20 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           ? history[index - 1]
           : null;
       const agentRunId = msg.agentRunId?.trim();
+      const traceState = getCachedAgentRunTraceState(agentRunId);
+      const shouldRequestTraceLoad =
+        Boolean(agentRunId) &&
+        (!traceState ||
+          traceState.status === "loading" ||
+          traceState.status === "failed");
       const agentTraceEl =
         msg.runMode === "agent"
           ? renderAgentTrace({
               doc,
               message: msg,
               userMessage: previousUserMessage,
-              events: getCachedAgentRunEvents(agentRunId),
-              onTraceMissing: agentRunId
+              traceState,
+              onTraceMissing: agentRunId && shouldRequestTraceLoad
                 ? () => {
                     void ensureAgentRunTraceLoaded(agentRunId, body, item);
                   }
@@ -4032,14 +4498,40 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         const safeText = sanitizeText(msg.text);
         if (msg.streaming) bubble.classList.add("streaming");
         try {
-          // Build image resolver for MinerU figures (if applicable)
-          const contextSource = resolveContextSourceItem(item);
-          const ctxItem = contextSource.contextItem;
-          const pdfCtx = ctxItem ? pdfTextCache.get(ctxItem.id) : null;
-          const resolveImage = pdfCtx?.sourceType === "mineru" && ctxItem
-            ? buildImageResolver(ctxItem.id)
-            : undefined;
-          bubble.innerHTML = renderMarkdown(safeText, { resolveImage });
+          const receiptInfo = extractAgentReceiptCounts(safeText);
+          const markdownBody = receiptInfo ? receiptInfo.markdownBody : safeText;
+          // Legacy CONTEXT receipt line is intentionally removed from UI.
+          if (msg.streaming) {
+            // Streaming path: skip heavy markdown + citation decoration on each
+            // delta to keep UI responsive; final render is done once on completion.
+            if (receiptInfo) {
+              const answerBody = doc.createElement("div") as HTMLDivElement;
+              answerBody.className = "llm-agent-answer-body llm-streaming-plain-text";
+              answerBody.textContent = markdownBody;
+              bubble.appendChild(answerBody);
+            } else {
+              bubble.textContent = markdownBody;
+            }
+          } else {
+            // Build image resolver for MinerU figures (if applicable)
+            const contextSource = resolveContextSourceItem(item);
+            const ctxItem = contextSource.contextItem;
+            const pdfCtx = ctxItem ? pdfTextCache.get(ctxItem.id) : null;
+            const resolveImage = pdfCtx?.sourceType === "mineru" && ctxItem
+              ? buildImageResolver(ctxItem.id)
+              : undefined;
+            const rendered = renderMarkdown(markdownBody, { resolveImage });
+            if (receiptInfo) {
+              const answerBody = doc.createElement("div") as HTMLDivElement;
+              answerBody.className = "llm-agent-answer-body";
+              answerBody.innerHTML = rendered;
+              bubble.appendChild(answerBody);
+              attachCopyButtonsToRichBlocks(body, bubble);
+            } else {
+              bubble.innerHTML = rendered;
+              attachCopyButtonsToRichBlocks(body, bubble);
+            }
+          }
         } catch (err) {
           ztoolkit.log("LLM render error:", err);
           bubble.textContent = safeText;
