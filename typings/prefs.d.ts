@@ -28,6 +28,8 @@ declare namespace _ZoteroTypes {
       "maxTokensQuaternary": string;
       "enableAgentMode": boolean;
       "locale": string;
+      "mineruAutoWatchCollections": string;
+      "mineruGlobalAutoParse": boolean;
     };
   }
 }

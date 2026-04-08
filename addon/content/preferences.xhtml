@@ -270,6 +270,32 @@
             Enable MinerU PDF Parsing
           </html:label>
 
+          <html:label
+            style="
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              font-weight: 600;
+              font-size: 12px;
+              color: var(--fill-primary, inherit);
+            "
+          >
+            <html:input
+              id="__addonRef__-mineru-global-auto-parse"
+              type="checkbox"
+            ></html:input>
+            Auto-parse new PDFs
+          </html:label>
+          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: -6px; margin-left: 26px; display: block;">
+            Automatically parse new PDFs when they are added to the library.
+            <html:br />
+            <html:span style="display: inline-flex; align-items: center; gap: 4px; margin-top: 4px;">
+              <html:span style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block;"></html:span> Ready
+              <html:span style="width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; display: inline-block; margin-left: 8px;"></html:span> Processing
+              <html:span style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; margin-left: 8px;"></html:span> Failed
+            </html:span>
+          </html:span>
+
           <html:div
             id="__addonRef__-mineru-sub-settings"
             style="display: none; flex-direction: column; gap: 10px;"

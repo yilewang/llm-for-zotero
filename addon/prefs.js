@@ -19,3 +19,5 @@ pref("temperatureQuaternary", "0.3");
 pref("maxTokensQuaternary", "4096");
 pref("enableAgentMode", false);
 pref("locale", "auto");
+pref("mineruAutoWatchCollections", "");
+pref("mineruGlobalAutoParse", false);

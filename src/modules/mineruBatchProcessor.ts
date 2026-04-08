@@ -10,6 +10,11 @@ import {
   invalidateMineruMd,
   getMineruCacheDir,
 } from "./contextPanel/mineruCache";
+import {
+  setItemProcessing,
+  setItemCached,
+  setItemFailed,
+} from "./mineruProcessingStatus";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -61,8 +66,14 @@ let currentAbort: AbortController | null = null;
 
 function getAbortControllerCtor(): (new () => AbortController) | null {
   return (
-    (ztoolkit.getGlobal("AbortController") as (new () => AbortController) | undefined) ||
-    (globalThis as typeof globalThis & { AbortController?: new () => AbortController }).AbortController ||
+    (ztoolkit.getGlobal("AbortController") as
+      | (new () => AbortController)
+      | undefined) ||
+    (
+      globalThis as typeof globalThis & {
+        AbortController?: new () => AbortController;
+      }
+    ).AbortController ||
     null
   );
 }
@@ -89,7 +100,10 @@ function getPdfAttachments(item: Zotero.Item): Zotero.Item[] {
   if (!item?.isRegularItem?.()) return out;
   for (const attId of item.getAttachments()) {
     const att = Zotero.Items.get(attId);
-    if (att?.isAttachment?.() && att.attachmentContentType === "application/pdf") {
+    if (
+      att?.isAttachment?.() &&
+      att.attachmentContentType === "application/pdf"
+    ) {
       out.push(att);
     }
   }
@@ -100,7 +114,12 @@ function getPdfAttachments(item: Zotero.Item): Zotero.Item[] {
 
 async function buildQueue(): Promise<void> {
   const libraryID = Zotero.Libraries.userLibraryID;
-  const allItems: Zotero.Item[] = await Zotero.Items.getAll(libraryID, true, false, false);
+  const allItems: Zotero.Item[] = await Zotero.Items.getAll(
+    libraryID,
+    true,
+    false,
+    false,
+  );
 
   // Filter to regular items — include ALL PDF attachments per item
   const candidates: { item: Zotero.Item; pdfAtt: Zotero.Item }[] = [];
@@ -127,9 +146,10 @@ async function buildQueue(): Promise<void> {
     const parentTitle = item.getField("title") || `Item ${item.id}`;
     // Count PDFs for this parent to decide whether to show attachment name
     const siblingPdfs = getPdfAttachments(item);
-    const title = siblingPdfs.length > 1
-      ? `${parentTitle} [${pdfAtt.getField?.("title") || `PDF ${pdfAtt.id}`}]`
-      : parentTitle;
+    const title =
+      siblingPdfs.length > 1
+        ? `${parentTitle} [${pdfAtt.getField?.("title") || `PDF ${pdfAtt.id}`}]`
+        : parentTitle;
     if (cached) {
       processed++;
     } else {
@@ -166,6 +186,8 @@ async function processNext(): Promise<void> {
   state.error = null;
   notify();
 
+  setItemProcessing(entry.attachmentId);
+
   // Create an AbortController for this item so pause/stop can cancel it
   const AbortCtor = getAbortControllerCtor();
   const abort = AbortCtor ? new AbortCtor() : null;
@@ -174,7 +196,10 @@ async function processNext(): Promise<void> {
   try {
     const pdfItem = Zotero.Items.get(entry.attachmentId);
     if (!pdfItem) {
-      ztoolkit.log(`MinerU batch: item ${entry.attachmentId} not found, skipping`);
+      ztoolkit.log(
+        `MinerU batch: item ${entry.attachmentId} not found, skipping`,
+      );
+      setItemFailed(entry.attachmentId, "Item not found");
       scheduleNext();
       return;
     }
@@ -184,23 +209,39 @@ async function processNext(): Promise<void> {
     ).getFilePathAsync?.();
 
     if (!pdfPath) {
-      ztoolkit.log(`MinerU batch: no file path for ${entry.attachmentId}, skipping`);
+      ztoolkit.log(
+        `MinerU batch: no file path for ${entry.attachmentId}, skipping`,
+      );
+      setItemFailed(entry.attachmentId, "No file path");
       scheduleNext();
       return;
     }
 
     const apiKey = getMineruApiKey(); // empty string = use community proxy
-    const result = await parsePdfWithMineruCloud(pdfPath as string, apiKey, (stage) => {
-      state.statusMessage = stage;
-      notify();
-    }, abort?.signal);
+    const result = await parsePdfWithMineruCloud(
+      pdfPath as string,
+      apiKey,
+      (stage) => {
+        state.statusMessage = stage;
+        notify();
+      },
+      abort?.signal,
+    );
     if (result?.mdContent) {
-      await writeMineruCacheFiles(entry.attachmentId, result.mdContent, result.files);
+      await writeMineruCacheFiles(
+        entry.attachmentId,
+        result.mdContent,
+        result.files,
+      );
+      setItemCached(entry.attachmentId);
       state.processedCount++;
       state.lastFailedItemId = null;
     } else {
       const failReason = state.statusMessage || "No content returned";
-      ztoolkit.log(`MinerU batch: no content returned for "${entry.title}", skipping`);
+      ztoolkit.log(
+        `MinerU batch: no content returned for "${entry.title}", skipping`,
+      );
+      setItemFailed(entry.attachmentId, failReason);
       state.lastFailedItemId = entry.attachmentId;
       state.lastFailedMessage = failReason;
       state.failedCount++;
@@ -208,6 +249,7 @@ async function processNext(): Promise<void> {
   } catch (e) {
     if (e instanceof MineruCancelledError) {
       ztoolkit.log(`MinerU batch: cancelled "${entry.title}"`);
+      setItemFailed(entry.attachmentId, "Cancelled");
       // Put the item back so it can be retried on resume
       queue.unshift(entry);
       state.running = false;
@@ -226,6 +268,7 @@ async function processNext(): Promise<void> {
       state.paused = true;
       state.running = false;
       state.error = e.message || "Daily limit reached. Resume tomorrow.";
+      setItemFailed(entry.attachmentId, e.message || "Rate limited");
       state.lastFailedItemId = entry.attachmentId;
       state.lastFailedMessage = e.message || "Daily limit reached";
       state.failedCount++;
@@ -239,6 +282,7 @@ async function processNext(): Promise<void> {
     }
     const errMsg = (e as Error).message || String(e);
     ztoolkit.log(`MinerU batch: error processing "${entry.title}":`, e);
+    setItemFailed(entry.attachmentId, errMsg);
     state.lastFailedItemId = entry.attachmentId;
     state.lastFailedMessage = errMsg;
     state.failedCount++;
@@ -350,9 +394,16 @@ export async function deleteAllMineruCache(): Promise<void> {
   pauseBatchProcessing();
 
   const cacheDir = getMineruCacheDir();
-  const IOUtils = (globalThis as unknown as {
-    IOUtils?: { remove?: (p: string, opts?: { recursive?: boolean; ignoreAbsent?: boolean }) => Promise<void> };
-  }).IOUtils;
+  const IOUtils = (
+    globalThis as unknown as {
+      IOUtils?: {
+        remove?: (
+          p: string,
+          opts?: { recursive?: boolean; ignoreAbsent?: boolean },
+        ) => Promise<void>;
+      };
+    }
+  ).IOUtils;
   if (IOUtils?.remove) {
     try {
       await IOUtils.remove(cacheDir, { recursive: true, ignoreAbsent: true });
@@ -413,7 +464,12 @@ export type MineruCollectionNode = {
  */
 export async function getMineruItemList(): Promise<MineruItemEntry[]> {
   const libraryID = Zotero.Libraries.userLibraryID;
-  const allItems: Zotero.Item[] = await Zotero.Items.getAll(libraryID, true, false, false);
+  const allItems: Zotero.Item[] = await Zotero.Items.getAll(
+    libraryID,
+    true,
+    false,
+    false,
+  );
 
   const results: MineruItemEntry[] = [];
 
@@ -427,20 +483,39 @@ export async function getMineruItemList(): Promise<MineruItemEntry[]> {
         collectionIds = (item.getCollections?.() || [])
           .map((id: unknown) => Number(id))
           .filter((id: number) => Number.isFinite(id) && id > 0);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
       let parentTitle = `Item ${item.id}`;
       let firstCreator = "";
       let year = "";
       let dateAdded = "";
-      try { parentTitle = item.getField("title") || parentTitle; } catch { /* ignore */ }
-      try { firstCreator = item.getField("firstCreator") || ""; } catch { /* ignore */ }
-      try { year = item.getField("year") || ""; } catch { /* ignore */ }
-      try { dateAdded = item.getField("dateAdded") || ""; } catch { /* ignore */ }
+      try {
+        parentTitle = item.getField("title") || parentTitle;
+      } catch {
+        /* ignore */
+      }
+      try {
+        firstCreator = item.getField("firstCreator") || "";
+      } catch {
+        /* ignore */
+      }
+      try {
+        year = item.getField("year") || "";
+      } catch {
+        /* ignore */
+      }
+      try {
+        dateAdded = item.getField("dateAdded") || "";
+      } catch {
+        /* ignore */
+      }
       for (const pdfAtt of pdfs) {
         const cached = await hasCachedMineruMd(pdfAtt.id);
-        const title = pdfs.length > 1
-          ? `${parentTitle} [${pdfAtt.getField?.("title") || `PDF ${pdfAtt.id}`}]`
-          : parentTitle;
+        const title =
+          pdfs.length > 1
+            ? `${parentTitle} [${pdfAtt.getField?.("title") || `PDF ${pdfAtt.id}`}]`
+            : parentTitle;
         results.push({
           parentItemId: item.id,
           attachmentId: pdfAtt.id,
@@ -458,7 +533,9 @@ export async function getMineruItemList(): Promise<MineruItemEntry[]> {
   }
 
   // Sort newest-first
-  results.sort((a, b) => (b.dateAdded > a.dateAdded ? 1 : b.dateAdded < a.dateAdded ? -1 : 0));
+  results.sort((a, b) =>
+    b.dateAdded > a.dateAdded ? 1 : b.dateAdded < a.dateAdded ? -1 : 0,
+  );
 
   return results;
 }
@@ -480,9 +557,10 @@ export function getLibraryCollectionTree(): MineruCollectionNode[] {
     byId.set(col.id, {
       collectionId: col.id,
       name: col.name || `Collection ${col.id}`,
-      parentId: Number.isFinite(Number(col.parentID)) && Number(col.parentID) > 0
-        ? Math.floor(Number(col.parentID))
-        : 0,
+      parentId:
+        Number.isFinite(Number(col.parentID)) && Number(col.parentID) > 0
+          ? Math.floor(Number(col.parentID))
+          : 0,
       children: [],
     });
   }
