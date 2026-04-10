@@ -1391,16 +1391,11 @@
 
 /* ---- Chat start page (shared layout for all modes) ---- */
 
-[data-start-page-active="true"].llm-panel {
-  justify-content: center;
-}
-
 [data-start-page-active="true"] .llm-chat-shell {
-  flex: 0 0 auto;
-  height: auto;
-  min-height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: visible;
-  align-self: center;
 }
 
 /* Only hide header in standalone (it has its own sidebar controls).
@@ -1409,22 +1404,12 @@
   display: none;
 }
 
-[data-start-page-active="true"] .llm-shortcuts {
+[data-start-page-active="true"][data-conversation-kind="global"] .llm-shortcuts {
   display: none;
 }
 
 [data-start-page-active="true"] .llm-status-bar {
   display: none;
-}
-
-[data-start-page-active="true"] .llm-input-section {
-  align-self: center;
-  max-width: 600px;
-  width: 100%;
-  margin: 20px auto 0;
-  padding-left: 12px;
-  padding-right: 12px;
-  box-sizing: border-box;
 }
 
 /* Start page content */
