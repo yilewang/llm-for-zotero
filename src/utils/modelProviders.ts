@@ -197,6 +197,16 @@ export function deriveProviderLabel(
   if (lowerHost.includes("dashscope") || lowerHost.includes("aliyuncs.com")) {
     return "Qwen";
   }
+  if (lowerHost.includes("siliconflow")) return "SiliconFlow";
+  if (lowerHost.includes("xf-yun.com")) return "Spark";
+  if (lowerHost.includes("hunyuan") || lowerHost.includes("tencent.com")) {
+    return "Hunyuan";
+  }
+  if (lowerHost.includes("baichuan")) return "Baichuan";
+  if (lowerHost.includes("stepfun")) return "StepFun";
+  if (lowerHost.includes("lingyiwanwu")) return "Yi";
+  if (lowerHost.includes("fireworks.ai")) return "Fireworks AI";
+  if (lowerHost.includes("mistral.ai")) return "Mistral";
 
   return host;
 }
