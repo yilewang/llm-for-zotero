@@ -1583,7 +1583,7 @@
 /* Messages Area */
 .llm-chat-shell,
 .llm-input {
-  resize: none;
+  resize: vertical;
 }
 
 .llm-chat-shell {
