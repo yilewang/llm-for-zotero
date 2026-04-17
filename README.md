@@ -263,16 +263,50 @@ When enabled, the LLM becomes an autonomous agent that can read, search, and wri
 
 ### Available Tools
 
-| Tool                       | Description                                                                                |
-| -------------------------- | ------------------------------------------------------------------------------------------ |
-| `query_library`            | Search/list Zotero items, collections, related papers, and duplicates                      |
-| `read_library`             | Read metadata, notes, annotations, attachments, and collections                            |
-| `inspect_pdf`              | Read front matter, search pages, retrieve evidence, inspect the active reader view         |
-| `search_literature_online` | Search live scholarly sources or fetch external metadata                                   |
-| `mutate_library`           | Batch write operations — metadata edits, tagging, collection changes, note writes, imports |
-| `undo_last_action`         | Revert the last approved write batch                                                       |
+The agent ships with focused tools split into **read** (no confirmation needed) and **write** (route through a confirmation card with batched undo).
 
-The design philosophy is **fewer, more general tools** rather than a long list of task-specific ones. Ask the agent what it can do — it will tell you.
+#### Library & PDF reading
+
+| Tool                       | Description                                                                                                       |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `query_library`            | Discover Zotero items and collections — search/list any item type, filter by author/year/collection/itemType, browse the collection tree, find related papers, detect duplicates |
+| `read_library`             | Read structured item state for one or more items — metadata, notes, annotations, attachments, collection membership |
+| `read_paper`               | Read text content from a PDF — opening sections by default, or specific section indexes (up to 20 papers per call) |
+| `search_paper`             | Find specific evidence in papers via a question — returns ranked relevant passages (up to 10 papers per call)     |
+| `view_pdf_pages`           | Render PDF pages as images for visual analysis — by question, by page number, or capture the currently visible page |
+| `read_attachment`          | Read any Zotero attachment by ID (HTML snapshots, text files, images), or send the whole file to the model        |
+| `search_literature_online` | Search live scholarly sources (CrossRef, Semantic Scholar) for metadata, recommendations, references, citations   |
+
+#### Library writes
+
+| Tool                  | Description                                                                                  |
+| --------------------- | -------------------------------------------------------------------------------------------- |
+| `apply_tags`          | Add or remove tags on one or more papers                                                     |
+| `update_metadata`     | Update metadata fields (title, authors, DOI, etc.) on an item                                |
+| `move_to_collection`  | Add or remove papers from collections                                                        |
+| `manage_collections`  | Create or delete collections (folders)                                                       |
+| `manage_attachments`  | Delete, rename, or re-link broken attachment file paths                                      |
+| `merge_items`         | Merge duplicates — keeps the master, moves children from the others, trashes the rest        |
+| `trash_items`         | Move items to the trash                                                                      |
+| `import_identifiers`  | Import papers by DOI, ISBN, arXiv ID, or URL                                                 |
+| `import_local_files`  | Import local files (PDFs, etc.) — Zotero auto-fetches metadata for recognized PDFs           |
+| `edit_current_note`   | Edit the active Zotero note or create a new one (plain text, Markdown, or HTML)              |
+
+#### Filesystem & scripting
+
+| Tool             | Description                                                                                              |
+| ---------------- | -------------------------------------------------------------------------------------------------------- |
+| `file_io`        | Read or write files on the local filesystem — text and image, with offset/length for partial reads       |
+| `run_command`    | Run a shell command (zsh on macOS, bash on Linux, cmd.exe on Windows) — for analysis scripts and CLI tools |
+| `zotero_script`  | Execute JavaScript inside Zotero's runtime — read mode for bulk data, write mode for custom mutations    |
+
+#### Safety net
+
+| Tool               | Description                                                                                            |
+| ------------------ | ------------------------------------------------------------------------------------------------------ |
+| `undo_last_action` | Undo the most recent write action in this conversation — keeps the last 10 entries per session         |
+
+The design philosophy is **read tools are unrestricted; write tools always confirm and stay undoable**. Ask the agent what it can do — it will tell you.
 
 ### Demos
 
