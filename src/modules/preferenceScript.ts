@@ -91,6 +91,14 @@ const MAX_PROVIDER_COUNT = 10;
 const INITIAL_PROVIDER_COUNT = 4;
 const DEFAULT_CODEX_API_BASE =
   "https://chatgpt.com/backend-api/codex/responses";
+const WEBCHAT_TARGET_LABELS = WEBCHAT_TARGETS.map((wt) => wt.label).join(
+  " / ",
+);
+const WEBCHAT_AUTH_HELPER_TEXT =
+  `Relay questions to ${WEBCHAT_TARGET_LABELS} via the Sync for Zotero browser extension. ` +
+  'Download extension: github.com/yilewang/sync-for-zotero → Releases. ' +
+  'Unzip, open chrome://extensions, enable Developer Mode, click "Load unpacked", select the extension folder. ' +
+  "Keep the corresponding chat tab open while using WebChat mode.";
 
 type ProviderProfile = {
   label: string;
@@ -113,14 +121,20 @@ const PROVIDER_PROFILES: ProviderProfile[] = [
   },
 ];
 
+function translateProviderLabel(label: string): string {
+  const match = /^Provider ([A-Z])$/.exec(label);
+  if (!match) return t(label);
+  return `${t("Provider")} ${match[1]}`;
+}
+
 function getProviderProfile(index: number): ProviderProfile {
   if (index < PROVIDER_PROFILES.length) {
     const p = PROVIDER_PROFILES[index];
-    return { ...p, label: t(p.label) };
+    return { ...p, label: translateProviderLabel(p.label) };
   }
   const letter = String.fromCharCode("A".charCodeAt(0) + index);
   return {
-    label: t(`Provider ${letter}`),
+    label: `${t("Provider")} ${letter}`,
     modelPlaceholder: "",
     defaultModel: "",
   };
@@ -138,7 +152,7 @@ function getPresetSelectHelperText(presetId: ProviderPresetId): string {
   if (presetId === "customized") {
     return t(CUSTOMIZED_API_HELPER_TEXT);
   }
-  return `${getProviderPreset(presetId).helperText} ${t("Switch to Customized to edit the URL manually.")}`;
+  return `${t(getProviderPreset(presetId).helperText)} ${t("Switch to Customized to edit the URL manually.")}`;
 }
 
 function getProtocolOptions(
@@ -458,13 +472,16 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     const text = btn.textContent?.trim();
     if (text) btn.textContent = t(text);
   }
-  // Walk all labels, spans, and helper text in the preference panels
+  // Walk all labels, spans, buttons, options, and helper text in the
+  // preference panels
   // and translate their text content if it matches a known key.
   // Collapse multi-line whitespace into a single space for translation lookup
   const normalizeWs = (s: string): string => s.replace(/\s+/g, " ").trim();
 
   const translateTextNodes = (container: Element) => {
-    const elements = container.querySelectorAll("label, span, div, summary");
+    const elements = container.querySelectorAll(
+      "label, span, div, summary, button, option",
+    );
     for (let i = 0; i < elements.length; i++) {
       const el = elements[i] as HTMLElement;
       // For labels with inputs, translate the text node after the input
@@ -517,29 +534,15 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const prefPanels = doc.querySelectorAll("[data-pref-panel]");
   for (let i = 0; i < prefPanels.length; i++) {
     translateTextNodes(prefPanels[i]);
-  }
-  // Translate textarea placeholder
-  const systemPrompt = doc.querySelector(
-    `#${config.addonRef}-system-prompt`,
-  ) as HTMLTextAreaElement | null;
-  if (systemPrompt?.placeholder) {
-    systemPrompt.placeholder = t(systemPrompt.placeholder);
-  }
-  const mineruApiKeyEl = doc.querySelector(
-    `#${config.addonRef}-mineru-api-key`,
-  ) as HTMLInputElement | null;
-  if (mineruApiKeyEl?.placeholder) {
-    mineruApiKeyEl.placeholder = t(mineruApiKeyEl.placeholder);
-  }
-  // Translate language dropdown options
-  const localeSelectEl = doc.querySelector(
-    `#${config.addonRef}-locale-select`,
-  ) as HTMLSelectElement | null;
-  if (localeSelectEl) {
-    const autoOption = localeSelectEl.querySelector(
-      'option[value="auto"]',
-    ) as HTMLOptionElement | null;
-    if (autoOption) autoOption.textContent = t("Auto (follow Zotero)");
+    const placeholders = prefPanels[i].querySelectorAll(
+      "input[placeholder], textarea[placeholder]",
+    );
+    for (let j = 0; j < placeholders.length; j++) {
+      const field = placeholders[j] as HTMLInputElement | HTMLTextAreaElement;
+      if (field.placeholder) {
+        field.placeholder = t(field.placeholder);
+      }
+    }
   }
   // Translate restart hint
   const restartHint = doc.querySelector(
@@ -754,10 +757,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       });
       const authModeHelperText =
         group.authMode === "webchat"
-          ? t(`Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(" / ")} via the Sync for Zotero browser extension. `
-            + "Download extension: github.com/yilewang/sync-for-zotero → Releases. "
-            + "Unzip, open chrome://extensions, enable Developer Mode, click \"Load unpacked\", select the extension folder. "
-            + "Keep the corresponding chat tab open while using WebChat mode.")
+          ? t(WEBCHAT_AUTH_HELPER_TEXT)
           : group.authMode === "copilot_auth"
             ? t(COPILOT_API_HELPER_TEXT)
             : group.authMode === "codex_auth"
@@ -864,7 +864,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       for (const protocol of protocolOptions) {
         const option = el(doc, "option") as HTMLOptionElement;
         option.value = protocol;
-        option.textContent = getProviderProtocolSpec(protocol).label;
+        option.textContent = t(getProviderProtocolSpec(protocol).label);
         protocolSelect.appendChild(option);
       }
       protocolSelect.value = group.providerProtocol;
@@ -887,7 +887,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           doc,
           "span",
           HELPER_STYLE,
-          getProviderProtocolSpec(group.providerProtocol).helperText,
+          t(getProviderProtocolSpec(group.providerProtocol).helperText),
         ),
       );
 
@@ -1463,7 +1463,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           const input = el(doc, "input", INPUT_SM_STYLE) as HTMLInputElement;
           input.type = "text";
           input.value = value;
-          input.placeholder = placeholder;
+          input.placeholder = t(placeholder);
           fieldWrap.append(lbl, input);
           return { wrap: fieldWrap, input };
         };
@@ -1514,7 +1514,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         for (const proto of allowedProtocols) {
           const opt = el(doc, "option") as HTMLOptionElement;
           opt.value = proto;
-          opt.textContent = getProviderProtocolSpec(proto).label;
+          opt.textContent = t(getProviderProtocolSpec(proto).label);
           protocolFieldSelect.appendChild(opt);
         }
         protocolFieldSelect.value = modelEntry.providerProtocol || "";
@@ -1728,7 +1728,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       addProviderBtn.style.opacity = canAdd ? "1" : "0.4";
       addProviderBtn.style.cursor = canAdd ? "pointer" : "default";
       addProviderBtn.title = atMax
-        ? `Maximum ${MAX_PROVIDER_COUNT} providers`
+        ? t("Maximum %n providers").replace("%n", `${MAX_PROVIDER_COUNT}`)
         : hasEmpty
           ? t("Complete the empty provider first")
           : t("Add provider");
@@ -1859,16 +1859,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         notesDirTestBtn.disabled = true;
         notesDirTestStatus.style.display = "inline";
         notesDirTestStatus.style.color = "var(--fill-secondary, #888)";
-        notesDirTestStatus.textContent = "Testing...";
+        notesDirTestStatus.textContent = t("Testing…");
 
         try {
           const IOUtils = (globalThis as any).IOUtils;
           if (!IOUtils?.exists || !IOUtils?.write || !IOUtils?.remove) {
-            throw new Error("File I/O not available");
+            throw new Error(t("File I/O not available"));
           }
           const exists = await IOUtils.exists(fullPath);
           if (!exists) {
-            throw new Error(`Directory not found: ${fullPath}`);
+            throw new Error(
+              t("Directory not found: %path%").replace("%path%", fullPath),
+            );
           }
           const testFile = joinLocalPath(fullPath, ".llm-for-zotero-test");
           const bytes = new TextEncoder().encode("test");
