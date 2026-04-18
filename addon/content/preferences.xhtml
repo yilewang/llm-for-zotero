@@ -11,10 +11,22 @@
   <linkset>
     <html:link rel="localization" href="__addonRef__-preferences.ftl" />
   </linkset>
+  <html:style>
+    /* CSS-only tooltip styling */ [data-tooltip] { position: relative; }
+    [data-tooltip]:hover::after { content: attr(data-tooltip); position:
+    absolute; bottom: 100%; left: 0; transform: none; padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.85); color: white; font-size: 11px; font-weight:
+    normal; white-space: normal; max-width: 280px; width: max-content;
+    border-radius: 6px; z-index: 10000; pointer-events: none; margin-bottom:
+    6px; line-height: 1.4; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+    [data-tooltip]:hover::before { content: ""; position: absolute; bottom:
+    100%; left: 8px; transform: none; border: 5px solid transparent;
+    border-top-color: rgba(0, 0, 0, 0.85); margin-bottom: -4px; z-index: 10001;
+    pointer-events: none; }
+  </html:style>
+
   <groupbox>
-    <html:div
-      style="display: flex; flex-direction: column; padding: 10px"
-    >
+    <html:div style="display: flex; flex-direction: column; padding: 10px">
       <!-- ═══ Tab bar ═══ -->
       <html:div
         id="__addonRef__-pref-tab-bar"
@@ -30,30 +42,82 @@
           z-index: 100;
         "
       >
-        <html:button data-pref-tab="models" type="button" style="
-          flex: 1; padding: 6px 0; font-size: 12px; font-weight: 500;
-          border: none; border-radius: 6px; background: transparent;
-          color: var(--fill-secondary, #888); cursor: pointer;
-          display: flex; align-items: center; justify-content: center;
-        ">AI Providers</html:button>
-        <html:button data-pref-tab="customization" type="button" style="
-          flex: 1; padding: 6px 0; font-size: 12px; font-weight: 500;
-          border: none; border-radius: 6px; background: transparent;
-          color: var(--fill-secondary, #888); cursor: pointer;
-          display: flex; align-items: center; justify-content: center;
-        ">Customization</html:button>
-        <html:button data-pref-tab="agent" type="button" style="
-          flex: 1; padding: 6px 0; font-size: 12px; font-weight: 500;
-          border: none; border-radius: 6px; background: transparent;
-          color: var(--fill-secondary, #888); cursor: pointer;
-          display: flex; align-items: center; justify-content: center;
-        ">Agent</html:button>
-        <html:button data-pref-tab="mineru" type="button" style="
-          flex: 1; padding: 6px 0; font-size: 12px; font-weight: 500;
-          border: none; border-radius: 6px; background: transparent;
-          color: var(--fill-secondary, #888); cursor: pointer;
-          display: flex; align-items: center; justify-content: center;
-        ">MinerU</html:button>
+        <html:button
+          data-pref-tab="models"
+          type="button"
+          style="
+            flex: 1;
+            padding: 6px 0;
+            font-size: 12px;
+            font-weight: 500;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--fill-secondary, #888);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          "
+          >AI Providers</html:button
+        >
+        <html:button
+          data-pref-tab="customization"
+          type="button"
+          style="
+            flex: 1;
+            padding: 6px 0;
+            font-size: 12px;
+            font-weight: 500;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--fill-secondary, #888);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          "
+          >Customization</html:button
+        >
+        <html:button
+          data-pref-tab="agent"
+          type="button"
+          style="
+            flex: 1;
+            padding: 6px 0;
+            font-size: 12px;
+            font-weight: 500;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--fill-secondary, #888);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          "
+          >Agent</html:button
+        >
+        <html:button
+          data-pref-tab="mineru"
+          type="button"
+          style="
+            flex: 1;
+            padding: 6px 0;
+            font-size: 12px;
+            font-weight: 500;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--fill-secondary, #888);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          "
+          >MinerU</html:button
+        >
       </html:div>
 
       <!-- ═══ Tab 1: AI Providers ═══ -->
@@ -77,7 +141,13 @@
         <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:label
             for="__addonRef__-system-prompt"
-            style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 4px;"
+            style="
+              display: block;
+              font-weight: 600;
+              font-size: 12px;
+              color: var(--fill-primary, inherit);
+              margin-bottom: 4px;
+            "
           >
             Custom System Prompt (Optional)
           </html:label>
@@ -97,11 +167,26 @@
               color: FieldText;
             "
           ></html:textarea>
-          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 3px; display: block;">
-            Add custom instructions to the default system prompt (leave empty to use default only)
+          <html:span
+            style="
+              font-size: 11px;
+              color: var(--fill-secondary, #888);
+              margin-top: 3px;
+              display: block;
+            "
+          >
+            Add custom instructions to the default system prompt (leave empty to
+            use default only)
           </html:span>
-          <html:details style="margin-top: 6px;">
-            <html:summary style="font-size: 11px; color: var(--fill-secondary, #888); cursor: pointer; user-select: none;">
+          <html:details style="margin-top: 6px">
+            <html:summary
+              style="
+                font-size: 11px;
+                color: var(--fill-secondary, #888);
+                cursor: pointer;
+                user-select: none;
+              "
+            >
               View default system prompt
             </html:summary>
             <html:pre
@@ -143,9 +228,16 @@
             ></html:input>
             Show "Add Text" in reader selection popup
           </html:label>
-          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
-            Disable this if you prefer not to show the Add Text option in Zotero's
-            text selection popup menu.
+          <html:span
+            style="
+              font-size: 11px;
+              color: var(--fill-secondary, #888);
+              margin-top: 1px;
+              display: block;
+            "
+          >
+            Disable this if you prefer not to show the Add Text option in
+            Zotero's text selection popup menu.
           </html:span>
         </html:div>
 
@@ -166,14 +258,21 @@
             ></html:input>
             Semantic Search
           </html:label>
-          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
-            Uses vector embeddings for meaning-aware search. When disabled,
-            only keyword matching (BM25) is used.
+          <html:span
+            style="
+              font-size: 11px;
+              color: var(--fill-secondary, #888);
+              margin-top: 1px;
+              display: block;
+            "
+          >
+            Uses vector embeddings for meaning-aware search. When disabled, only
+            keyword matching (BM25) is used.
           </html:span>
         </html:div>
         <html:div
           id="__addonRef__-semantic-search-sub-settings"
-          style="display: none; flex-direction: column; gap: 10px;"
+          style="display: none; flex-direction: column; gap: 10px"
         >
           <!-- Card rendered dynamically by preferenceScript.ts -->
           <html:div id="__addonRef__-semantic-search-mount"></html:div>
@@ -182,7 +281,13 @@
         <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:label
             for="__addonRef__-locale-select"
-            style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+            style="
+              display: block;
+              font-weight: 600;
+              font-size: 12px;
+              color: var(--fill-primary, inherit);
+              margin-bottom: 2px;
+            "
           >
             Language
           </html:label>
@@ -204,7 +309,12 @@
           </html:select>
           <html:span
             id="__addonRef__-locale-restart-hint"
-            style="font-size: 11px; color: #f59e0b; margin-top: 2px; display: none;"
+            style="
+              font-size: 11px;
+              color: #f59e0b;
+              margin-top: 2px;
+              display: none;
+            "
           >
             Restart Zotero to apply language change.
           </html:span>
@@ -218,45 +328,673 @@
         style="display: none; flex-direction: column; gap: 18px"
       >
         <html:div style="display: flex; flex-direction: column; gap: 4px">
-          <html:label
+          <html:div style="display: flex; align-items: center; gap: 6px">
+            <html:label
+              style="
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 600;
+                font-size: 12px;
+                color: var(--fill-primary, inherit);
+              "
+            >
+              <html:input
+                id="__addonRef__-enable-agent-mode"
+                type="checkbox"
+              ></html:input>
+              Enable Agent Mode (Beta)
+            </html:label>
+          </html:div>
+          <html:span
             style="
-              display: inline-flex;
-              align-items: center;
-              gap: 8px;
-              font-weight: 600;
-              font-size: 12px;
-              color: var(--fill-primary, inherit);
+              font-size: 11px;
+              color: var(--fill-secondary, #888);
+              margin-top: 1px;
+              display: block;
             "
           >
-            <html:input
-              id="__addonRef__-enable-agent-mode"
-              type="checkbox"
-            ></html:input>
-            Enable Agent Mode (Beta)
-          </html:label>
-          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
             Shows the "Agent (beta)" toggle in the context bar, enabling the
-            agentic multi-step assistant. Off by default — enable only if you want
-            to experiment with the beta feature.
+            agentic multi-step assistant. Off by default — enable only if you
+            want to experiment with the beta feature.
           </html:span>
         </html:div>
 
-        <!-- ── Notes Directory ── -->
-        <html:div style="border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 8px; overflow: hidden; margin-top: 6px;">
-          <html:div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: Field; color: FieldText; border-bottom: 1px solid var(--stroke-secondary, #c8c8c8);">
-            <html:span style="font-weight: 700; font-size: 13px;">Notes Directory</html:span>
+        <html:div
+          style="
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 12px;
+            border: 1px solid var(--stroke-secondary, #c8c8c8);
+            border-radius: 10px;
+            background: color-mix(in srgb, FieldText 2%, Field);
+          "
+        >
+          <html:div style="display: flex; flex-direction: column; gap: 2px">
+            <html:span
+              style="
+                font-size: 13px;
+                font-weight: 700;
+                color: var(--fill-primary, inherit);
+              "
+            >
+              Agent Backend
+            </html:span>
+            <html:span
+              style="font-size: 11px; color: var(--fill-secondary, #888)"
+            >
+              Choose which runtime powers Agent mode.
+            </html:span>
           </html:div>
-          <html:div style="display: flex; flex-direction: column; gap: 12px; padding: 14px;">
-            <html:span style="font-size: 11.5px; color: var(--fill-secondary, #888); line-height: 1.5;">
-              Configure a local directory for saving notes as files.
-              Note format and templates are managed through skills — type <html:code>/</html:code> in chat to see available skills, or edit skill files directly.
+
+          <html:div style="display: flex; flex-direction: column; gap: 6px">
+            <html:div style="display: flex; align-items: center; gap: 6px">
+              <html:label
+                for="__addonRef__-agent-backend-mode"
+                style="
+                  display: block;
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                "
+              >
+                Backend Mode
+              </html:label>
+              <html:span
+                data-tooltip="Controls which AI runtime powers Agent mode. Disabled turns off Agent features. Built-in uses the plugin's original single-step assistant. Claude Code Bridge connects to an external Claude Code CLI instance for multi-step agentic capabilities."
+                title="Controls which AI runtime powers Agent mode. Disabled turns off Agent features. Built-in uses the plugin's original single-step assistant. Claude Code Bridge connects to an external Claude Code CLI instance for multi-step agentic capabilities."
+                style="
+                  display: inline-flex;
+                  align-items: center;
+                  justify-content: center;
+                  width: 16px;
+                  height: 16px;
+                  border-radius: 50%;
+                  background: var(--fill-secondary, #888);
+                  color: Field;
+                  font-size: 11px;
+                  font-weight: 600;
+                  cursor: help;
+                  user-select: none;
+                "
+                >?</html:span
+              >
+            </html:div>
+            <html:select
+              id="__addonRef__-agent-backend-mode"
+              style="
+                width: min(420px, 100%);
+                padding: 5px 8px;
+                font-size: 12px;
+                border: 1px solid var(--stroke-secondary, #c8c8c8);
+                border-radius: 6px;
+                background: Field;
+                color: FieldText;
+              "
+            >
+              <html:option value="disabled">Disabled</html:option>
+              <html:option value="builtin">Built-in (Original)</html:option>
+              <html:option value="claude_bridge"
+                >Claude Code Bridge</html:option
+              >
+            </html:select>
+            <html:span
+              style="font-size: 11px; color: var(--fill-secondary, #888)"
+            >
+              Disabled hides Agent mode. Built-in uses original runtime. Claude
+              Code Bridge uses your external backend.
+            </html:span>
+          </html:div>
+
+          <html:div
+            id="__addonRef__-agent-bridge-settings"
+            style="
+              display: none;
+              flex-direction: column;
+              gap: 10px;
+              padding: 10px 12px;
+              border: 1px solid var(--stroke-secondary, #c8c8c8);
+              border-radius: 8px;
+              background: color-mix(
+                in srgb,
+                var(--color-accent, #2563eb) 6%,
+                Field
+              );
+            "
+          >
+            <html:div style="display: flex; flex-direction: column; gap: 4px">
+              <html:div style="display: flex; align-items: center; gap: 6px">
+                <html:label
+                  for="__addonRef__-agent-bridge-url"
+                  style="
+                    display: block;
+                    font-weight: 600;
+                    font-size: 12px;
+                    color: var(--fill-primary, inherit);
+                  "
+                >
+                  Bridge URL
+                </html:label>
+                <html:span
+                  data-tooltip="The HTTP endpoint of your Claude Code Bridge server. Default is http://127.0.0.1:19787. The bridge connects Zotero to Claude Code CLI."
+                  title="The HTTP endpoint of your Claude Code Bridge server. Default is http://127.0.0.1:19787. The bridge connects Zotero to Claude Code CLI."
+                  style="
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 50%;
+                    background: var(--fill-secondary, #888);
+                    color: Field;
+                    font-size: 11px;
+                    font-weight: 600;
+                    cursor: help;
+                    user-select: none;
+                  "
+                  >?</html:span
+                >
+              </html:div>
+              <html:input
+                id="__addonRef__-agent-bridge-url"
+                type="text"
+                placeholder="http://127.0.0.1:19787"
+                style="
+                  width: 100%;
+                  max-width: 420px;
+                  padding: 5px 8px;
+                  font-size: 12px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 6px;
+                  background: Field;
+                  color: FieldText;
+                  box-sizing: border-box;
+                "
+              />
+              <html:span
+                style="font-size: 11px; color: var(--fill-secondary, #888)"
+              >
+                HTTP endpoint of the Claude Code Bridge server that connects to
+                your Claude Code CLI. Default:
+                <html:code>http://127.0.0.1:19787</html:code>. If unreachable,
+                run <html:code>launchctl stop com.toha.ccbridge</html:code> then
+                <html:code>launchctl start com.toha.ccbridge</html:code>.
+              </html:span>
+            </html:div>
+
+            <html:div style="display: flex; flex-direction: column; gap: 6px">
+              <html:label
+                style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fill-primary, inherit);"
+              >
+                <html:input
+                  id="__addonRef__-agent-bridge-autospawn"
+                  type="checkbox"
+                />
+                Auto-start bridge adapter with Zotero
+              </html:label>
+              <html:div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap">
+                <html:input
+                  id="__addonRef__-agent-bridge-adapter-path"
+                  type="text"
+                  placeholder="Path to cc-llm4zotero-adapter directory"
+                  style="
+                    flex: 1;
+                    min-width: 240px;
+                    padding: 5px 8px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    background: Field;
+                    color: FieldText;
+                    box-sizing: border-box;
+                  "
+                />
+                <html:button
+                  id="__addonRef__-agent-bridge-adapter-path-browse"
+                  style="
+                    padding: 4px 10px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    background: color-mix(in srgb, var(--color-accent, #2563eb) 10%, transparent);
+                    color: var(--fill-primary, inherit);
+                    cursor: pointer;
+                  "
+                >
+                  Browse…
+                </html:button>
+                <html:button
+                  id="__addonRef__-agent-bridge-adapter-spawn-test"
+                  style="
+                    padding: 4px 10px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    background: color-mix(in srgb, var(--color-accent, #2563eb) 10%, transparent);
+                    color: var(--fill-primary, inherit);
+                    cursor: pointer;
+                  "
+                >
+                  Test spawn
+                </html:button>
+              </html:div>
+              <html:div
+                id="__addonRef__-agent-bridge-adapter-spawn-status"
+                style="
+                  display: none;
+                  padding: 6px 10px;
+                  font-size: 11px;
+                  border-radius: 6px;
+                  word-break: break-word;
+                "
+              ></html:div>
+              <html:span style="font-size: 11px; color: var(--fill-secondary, #888)">
+                Don't have the adapter yet? Install it once:
+                <html:code>npm install -g cc-llm4zotero-adapter</html:code>,
+                then set the adapter directory to the global package location
+                (run <html:code>npm root -g</html:code> to find it, then append
+                <html:code>/cc-llm4zotero-adapter</html:code>).
+                When enabled, the plugin will run
+                <html:code>npm run serve:bridge</html:code> in the selected
+                adapter directory on startup and stop it on shutdown. If the
+                bridge port is already in use (e.g. you started it manually),
+                the plugin will skip spawning.
+              </html:span>
+            </html:div>
+
+            <html:div
+              style="
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                align-items: center;
+              "
+            >
+              <html:button
+                id="__addonRef__-open-zotero-claude-config-folder"
+                style="
+                  padding: 4px 10px;
+                  font-size: 12px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 6px;
+                  background: color-mix(
+                    in srgb,
+                    var(--color-accent, #2563eb) 10%,
+                    transparent
+                  );
+                  color: var(--fill-primary, inherit);
+                  cursor: pointer;
+                "
+              >
+                Open Zotero Claude Config Folder
+              </html:button>
+              <html:span
+                id="__addonRef__-open-zotero-claude-config-folder-status"
+                style="font-size: 11px; color: var(--fill-secondary, #888)"
+              ></html:span>
+            </html:div>
+
+            <html:div style="display: flex; flex-direction: column; gap: 6px">
+              <html:div style="display: flex; align-items: center; gap: 6px">
+                <html:label
+                  for="__addonRef__-agent-terminal-path"
+                  style="
+                    display: block;
+                    font-weight: 600;
+                    font-size: 12px;
+                    color: var(--fill-primary, inherit);
+                  "
+                >
+                  Default Terminal App Path
+                </html:label>
+                <html:span
+                  data-tooltip="The terminal application to use when opening Claude Code sessions. Leave empty to use the system default Terminal.app. Popular alternatives: /Applications/Ghostty.app, /Applications/Warp.app, /Applications/iTerm.app"
+                  title="The terminal application to use when opening Claude Code sessions. Leave empty to use the system default Terminal.app. Popular alternatives: /Applications/Ghostty.app, /Applications/Warp.app, /Applications/iTerm.app"
+                  style="
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 50%;
+                    background: var(--fill-secondary, #888);
+                    color: Field;
+                    font-size: 11px;
+                    font-weight: 600;
+                    cursor: help;
+                    user-select: none;
+                  "
+                  >?</html:span
+                >
+              </html:div>
+              <html:div
+                style="
+                  display: flex;
+                  flex-wrap: wrap;
+                  gap: 8px;
+                  align-items: center;
+                "
+              >
+                <html:input
+                  id="__addonRef__-agent-terminal-path"
+                  type="text"
+                  placeholder="/Applications/Ghostty.app (empty = system Terminal)"
+                  style="
+                    width: 100%;
+                    max-width: 420px;
+                    box-sizing: border-box;
+                    padding: 5px 8px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    background: Field;
+                    color: FieldText;
+                  "
+                />
+                <html:button
+                  id="__addonRef__-agent-terminal-path-save"
+                  style="
+                    padding: 4px 10px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    background: color-mix(
+                      in srgb,
+                      var(--color-accent, #2563eb) 10%,
+                      transparent
+                    );
+                    color: var(--fill-primary, inherit);
+                    cursor: pointer;
+                  "
+                >
+                  Save
+                </html:button>
+                <html:button
+                  id="__addonRef__-agent-terminal-path-reset"
+                  style="
+                    padding: 4px 10px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    background: transparent;
+                    color: var(--fill-primary, inherit);
+                    cursor: pointer;
+                  "
+                >
+                  Reset
+                </html:button>
+              </html:div>
+              <html:span
+                id="__addonRef__-agent-terminal-path-status"
+                style="font-size: 11px; color: var(--fill-secondary, #888)"
+              ></html:span>
+            </html:div>
+
+            <html:div style="display: flex; flex-direction: column; gap: 4px">
+              <html:div style="display: flex; align-items: center; gap: 6px">
+                <html:label
+                  for="__addonRef__-agent-claude-config-source"
+                  style="
+                    display: block;
+                    font-weight: 600;
+                    font-size: 12px;
+                    color: var(--fill-primary, inherit);
+                  "
+                >
+                  Claude Config Source
+                </html:label>
+                <html:span
+                  data-tooltip="Controls which settings are sent to the bridge. user-level: only sends user settings. zotero-specific: only sends proj and local settings. You must configure these settings yourself in the respective Claude config files. 'zotero-specific' creates isolated settings for Zotero only. 'user-level' uses your global Claude Code settings (shared with terminal usage). Switching only changes the active source; no files are copied."
+                  title="Determines which Claude settings file to use. 'zotero-specific' creates isolated settings for Zotero only. 'user-level' uses your global Claude Code settings (shared with terminal usage). Switching only changes the active source; no files are copied."
+                  style="
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 50%;
+                    background: var(--fill-secondary, #888);
+                    color: Field;
+                    font-size: 11px;
+                    font-weight: 600;
+                    cursor: help;
+                    user-select: none;
+                  "
+                  >?</html:span
+                >
+              </html:div>
+              <html:select
+                id="__addonRef__-agent-claude-config-source"
+                style="
+                  min-width: 220px;
+                  width: fit-content;
+                  padding: 4px 8px;
+                  font-size: 12px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 6px;
+                  background: Field;
+                  color: FieldText;
+                "
+              >
+                <html:option value="zotero-specific"
+                  >zotero-specific</html:option
+                >
+                <html:option value="user-level">user-level</html:option>
+              </html:select>
+              <html:span
+                style="font-size: 11px; color: var(--fill-secondary, #888)"
+              >
+                Switch active Claude settings source only. No files are copied
+                or modified.
+              </html:span>
+            </html:div>
+
+            <html:div
+              style="
+                display: flex;
+                flex-wrap: wrap;
+                gap: 12px;
+                align-items: center;
+              "
+            >
+              <html:div style="display: flex; flex-direction: column; gap: 4px">
+                <html:div style="display: flex; align-items: center; gap: 6px">
+                  <html:label
+                    for="__addonRef__-agent-trace-verbosity"
+                    style="
+                      display: block;
+                      font-weight: 600;
+                      font-size: 12px;
+                      color: var(--fill-primary, inherit);
+                    "
+                  >
+                    Process Trace Verbosity
+                  </html:label>
+                  <html:span
+                    data-tooltip="Controls how much detail is shown in the View Process panel. Compact shows only essential steps. Verbose includes tool calls and parameters. Raw displays the complete unfiltered event stream for debugging."
+                    title="Controls how much detail is shown in the View Process panel. Compact shows only essential steps. Verbose includes tool calls and parameters. Raw displays the complete unfiltered event stream for debugging."
+                    style="
+                      display: inline-flex;
+                      align-items: center;
+                      justify-content: center;
+                      width: 16px;
+                      height: 16px;
+                      border-radius: 50%;
+                      background: var(--fill-secondary, #888);
+                      color: Field;
+                      font-size: 11px;
+                      font-weight: 600;
+                      cursor: help;
+                      user-select: none;
+                    "
+                    >?</html:span
+                  >
+                </html:div>
+                <html:select
+                  id="__addonRef__-agent-trace-verbosity"
+                  style="
+                    min-width: 160px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    background: Field;
+                    color: FieldText;
+                  "
+                >
+                  <html:option value="compact">Compact</html:option>
+                  <html:option value="verbose">Verbose</html:option>
+                  <html:option value="raw">Raw</html:option>
+                </html:select>
+              </html:div>
+
+              <html:div style="display: flex; flex-direction: column; gap: 4px">
+                <html:div style="display: flex; align-items: center; gap: 6px">
+                  <html:label
+                    for="__addonRef__-agent-raw-log-visibility"
+                    style="
+                      display: block;
+                      font-weight: 600;
+                      font-size: 12px;
+                      color: var(--fill-primary, inherit);
+                    "
+                  >
+                    Raw Log Visibility
+                  </html:label>
+                  <html:span
+                    data-tooltip="Controls when raw JSON logs from the Claude Code Bridge are shown in the View Process panel. Debug only shows them when Zotero's debug output is enabled. Always shows them regardless. Never hides them completely."
+                    title="Controls when raw JSON logs from the Claude Code Bridge are shown in the View Process panel. Debug only shows them when Zotero's debug output is enabled. Always shows them regardless. Never hides them completely."
+                    style="
+                      display: inline-flex;
+                      align-items: center;
+                      justify-content: center;
+                      width: 16px;
+                      height: 16px;
+                      border-radius: 50%;
+                      background: var(--fill-secondary, #888);
+                      color: Field;
+                      font-size: 11px;
+                      font-weight: 600;
+                      cursor: help;
+                      user-select: none;
+                    "
+                    >?</html:span
+                  >
+                </html:div>
+                <html:select
+                  id="__addonRef__-agent-raw-log-visibility"
+                  style="
+                    min-width: 180px;
+                    padding: 4px 8px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    background: Field;
+                    color: FieldText;
+                  "
+                >
+                  <html:option value="debug_only">Debug only</html:option>
+                  <html:option value="always">Always</html:option>
+                  <html:option value="never">Never</html:option>
+                </html:select>
+              </html:div>
+            </html:div>
+
+            <html:label
+              data-tooltip="When enabled, the View Process panel showing agent execution steps will be collapsed by default. Expand it to see detailed progress. Reduces visual clutter if you don't need to monitor every step."
+              title="When enabled, the View Process panel showing agent execution steps will be collapsed by default. Expand it to see detailed progress. Reduces visual clutter if you don't need to monitor every step."
+              style="
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 600;
+                font-size: 12px;
+                color: var(--fill-primary, inherit);
+                cursor: help;
+              "
+            >
+              <html:input
+                id="__addonRef__-agent-process-collapse-default"
+                type="checkbox"
+              ></html:input>
+              Collapse "View Process" by default
+              <html:span
+                style="
+                  display: inline-flex;
+                  align-items: center;
+                  justify-content: center;
+                  width: 16px;
+                  height: 16px;
+                  border-radius: 50%;
+                  background: var(--fill-secondary, #888);
+                  color: Field;
+                  font-size: 11px;
+                  font-weight: 600;
+                  user-select: none;
+                "
+                >?</html:span
+              >
+            </html:label>
+          </html:div>
+        </html:div>
+
+        <!-- ── Notes Directory ── -->
+        <html:div
+          style="
+            border: 1px solid var(--stroke-secondary, #c8c8c8);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-top: 6px;
+          "
+        >
+          <html:div
+            style="
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              padding: 8px 12px;
+              background: Field;
+              color: FieldText;
+              border-bottom: 1px solid var(--stroke-secondary, #c8c8c8);
+            "
+          >
+            <html:span style="font-weight: 700; font-size: 13px"
+              >Notes Directory</html:span
+            >
+          </html:div>
+          <html:div
+            style="
+              display: flex;
+              flex-direction: column;
+              gap: 12px;
+              padding: 14px;
+            "
+          >
+            <html:span
+              style="
+                font-size: 11.5px;
+                color: var(--fill-secondary, #888);
+                line-height: 1.5;
+              "
+            >
+              Configure a local directory for saving notes as files. Note format
+              and templates are managed through skills — type
+              <html:code>/</html:code> in chat to see available skills, or edit
+              skill files directly.
             </html:span>
 
             <!-- Nickname -->
-            <html:div style="display: flex; flex-direction: column; gap: 2px;">
+            <html:div style="display: flex; flex-direction: column; gap: 2px">
               <html:label
                 for="__addonRef__-notes-dir-nickname"
-                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+                style="
+                  display: block;
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                  margin-bottom: 2px;
+                "
               >
                 Nickname
               </html:label>
@@ -275,16 +1013,29 @@
                   color: FieldText;
                 "
               ></html:input>
-              <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
-                How you refer to this directory — the agent will recognize it when you mention it
+              <html:span
+                style="
+                  font-size: 10.5px;
+                  color: var(--fill-secondary, #888);
+                  margin-top: 1px;
+                "
+              >
+                How you refer to this directory — the agent will recognize it
+                when you mention it
               </html:span>
             </html:div>
 
             <!-- Notes Directory Path -->
-            <html:div style="display: flex; flex-direction: column; gap: 2px;">
+            <html:div style="display: flex; flex-direction: column; gap: 2px">
               <html:label
                 for="__addonRef__-obsidian-vault-path"
-                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+                style="
+                  display: block;
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                  margin-bottom: 2px;
+                "
               >
                 Notes Directory Path
               </html:label>
@@ -303,16 +1054,28 @@
                   color: FieldText;
                 "
               ></html:input>
-              <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
+              <html:span
+                style="
+                  font-size: 10.5px;
+                  color: var(--fill-secondary, #888);
+                  margin-top: 1px;
+                "
+              >
                 Absolute path to the directory where notes are saved as files
               </html:span>
             </html:div>
 
             <!-- Default Folder -->
-            <html:div style="display: flex; flex-direction: column; gap: 2px;">
+            <html:div style="display: flex; flex-direction: column; gap: 2px">
               <html:label
                 for="__addonRef__-obsidian-target-folder"
-                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+                style="
+                  display: block;
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                  margin-bottom: 2px;
+                "
               >
                 Default Folder
               </html:label>
@@ -331,16 +1094,29 @@
                   color: FieldText;
                 "
               ></html:input>
-              <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
-                Default subfolder for notes (the agent can write to any folder if you specify)
+              <html:span
+                style="
+                  font-size: 10.5px;
+                  color: var(--fill-secondary, #888);
+                  margin-top: 1px;
+                "
+              >
+                Default subfolder for notes (the agent can write to any folder
+                if you specify)
               </html:span>
             </html:div>
 
             <!-- Attachments Folder -->
-            <html:div style="display: flex; flex-direction: column; gap: 2px;">
+            <html:div style="display: flex; flex-direction: column; gap: 2px">
               <html:label
                 for="__addonRef__-obsidian-attachments-folder"
-                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+                style="
+                  display: block;
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                  margin-bottom: 2px;
+                "
               >
                 Attachments Folder
               </html:label>
@@ -359,13 +1135,20 @@
                   color: FieldText;
                 "
               ></html:input>
-              <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
-                Folder for images, relative to vault root (e.g., assets, Notes/imgs)
+              <html:span
+                style="
+                  font-size: 10.5px;
+                  color: var(--fill-secondary, #888);
+                  margin-top: 1px;
+                "
+              >
+                Folder for images, relative to vault root (e.g., assets,
+                Notes/imgs)
               </html:span>
             </html:div>
 
             <!-- Test button -->
-            <html:div style="display: flex; align-items: center; gap: 8px;">
+            <html:div style="display: flex; align-items: center; gap: 8px">
               <html:button
                 id="__addonRef__-obsidian-test"
                 type="button"
@@ -385,10 +1168,9 @@
               </html:button>
               <html:span
                 id="__addonRef__-obsidian-test-status"
-                style="font-size: 11.5px; display: none;"
+                style="font-size: 11.5px; display: none"
               ></html:span>
             </html:div>
-
           </html:div>
         </html:div>
       </html:div>
@@ -400,13 +1182,26 @@
         style="display: none; flex-direction: column; gap: 18px"
       >
         <html:div style="display: flex; flex-direction: column; gap: 8px">
-          <html:div style="display: flex; flex-direction: column; gap: 2px;">
-            <html:span style="font-size: 14px; font-weight: 800; color: var(--fill-primary, inherit);">
+          <html:div style="display: flex; flex-direction: column; gap: 2px">
+            <html:span
+              style="
+                font-size: 14px;
+                font-weight: 800;
+                color: var(--fill-primary, inherit);
+              "
+            >
               MinerU PDF Parsing
             </html:span>
-            <html:span style="font-size: 11.5px; color: var(--fill-secondary, #888); line-height: 1.5;">
-              Extract high-quality structured text from PDFs with preserved math formulas, tables, and figures.
-              MinerU dramatically improves how the AI understands your papers.
+            <html:span
+              style="
+                font-size: 11.5px;
+                color: var(--fill-secondary, #888);
+                line-height: 1.5;
+              "
+            >
+              Extract high-quality structured text from PDFs with preserved math
+              formulas, tables, and figures. MinerU dramatically improves how
+              the AI understands your papers.
             </html:span>
           </html:div>
 
@@ -429,7 +1224,7 @@
 
           <html:div
             id="__addonRef__-mineru-sub-settings"
-            style="display: none; flex-direction: column; gap: 10px;"
+            style="display: none; flex-direction: column; gap: 10px"
           >
             <html:label
               style="
@@ -447,30 +1242,92 @@
               ></html:input>
               Auto-parse newly added items
             </html:label>
-            <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: -6px; margin-left: 26px; display: block;">
-              <html:span style="display: inline-flex; align-items: center; gap: 4px;">
-                <html:span style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block;"></html:span> Ready
-                <html:span style="width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; display: inline-block; margin-left: 8px;"></html:span> Processing
-                <html:span style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; margin-left: 8px;"></html:span> Failed
+            <html:span
+              style="
+                font-size: 11px;
+                color: var(--fill-secondary, #888);
+                margin-top: -6px;
+                margin-left: 26px;
+                display: block;
+              "
+            >
+              <html:span
+                style="display: inline-flex; align-items: center; gap: 4px"
+              >
+                <html:span
+                  style="
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 50%;
+                    background: #10b981;
+                    display: inline-block;
+                  "
+                ></html:span>
+                Ready
+                <html:span
+                  style="
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 50%;
+                    background: #f59e0b;
+                    display: inline-block;
+                    margin-left: 8px;
+                  "
+                ></html:span>
+                Processing
+                <html:span
+                  style="
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 50%;
+                    background: #ef4444;
+                    display: inline-block;
+                    margin-left: 8px;
+                  "
+                ></html:span>
+                Failed
               </html:span>
             </html:span>
             <!-- Info box -->
-            <html:div style="
-              background: color-mix(in srgb, var(--color-accent, #2563eb) 8%, transparent);
-              border: 1px solid color-mix(in srgb, var(--color-accent, #2563eb) 20%, transparent);
-              border-radius: 6px;
-              padding: 10px 12px;
-              font-size: 11.5px;
-              line-height: 1.6;
-              color: var(--fill-primary, inherit);
-            ">
-              <html:span style="font-weight: 600;">No API key needed to get started!</html:span>
-              You can parse up to 5 papers per day using the built-in community quota.
+            <html:div
+              style="
+                background: color-mix(
+                  in srgb,
+                  var(--color-accent, #2563eb) 8%,
+                  transparent
+                );
+                border: 1px solid
+                  color-mix(
+                    in srgb,
+                    var(--color-accent, #2563eb) 20%,
+                    transparent
+                  );
+                border-radius: 6px;
+                padding: 10px 12px;
+                font-size: 11.5px;
+                line-height: 1.6;
+                color: var(--fill-primary, inherit);
+              "
+            >
+              <html:span style="font-weight: 600"
+                >No API key needed to get started!</html:span
+              >
+              You can parse up to 5 papers per day using the built-in community
+              quota.
               <html:br />
               <html:br />
-              For unlimited parsing (2,000 pages/day), get your own free API key from
-              <html:a href="https://mineru.net" target="_blank" rel="noopener"
-                style="color: var(--color-accent, #2563eb); text-decoration: underline;">mineru.net</html:a>
+              For unlimited parsing (2,000 pages/day), get your own free API key
+              from
+              <html:a
+                href="https://mineru.net"
+                target="_blank"
+                rel="noopener"
+                style="
+                  color: var(--color-accent, #2563eb);
+                  text-decoration: underline;
+                "
+                >mineru.net</html:a
+              >
               and paste it below.
             </html:div>
 
@@ -478,7 +1335,13 @@
             <html:div style="display: flex; flex-direction: column; gap: 4px">
               <html:label
                 for="__addonRef__-mineru-api-key"
-                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+                style="
+                  display: block;
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                  margin-bottom: 2px;
+                "
               >
                 API Key (Optional)
               </html:label>
@@ -497,12 +1360,19 @@
                   color: FieldText;
                 "
               ></html:input>
-              <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
-                With your own key: unlimited parsing, direct connection to mineru.net
+              <html:span
+                style="
+                  font-size: 10.5px;
+                  color: var(--fill-secondary, #888);
+                  margin-top: 1px;
+                "
+              >
+                With your own key: unlimited parsing, direct connection to
+                mineru.net
               </html:span>
             </html:div>
 
-            <html:div style="display: flex; align-items: center; gap: 8px;">
+            <html:div style="display: flex; align-items: center; gap: 8px">
               <html:button
                 id="__addonRef__-mineru-test"
                 type="button"
@@ -522,15 +1392,28 @@
               </html:button>
               <html:span
                 id="__addonRef__-mineru-test-status"
-                style="font-size: 11.5px; display: none;"
+                style="font-size: 11.5px; display: none"
               ></html:span>
             </html:div>
 
             <!-- ── Filename Exclusion Patterns ── -->
-            <html:div style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px;">
+            <html:div
+              style="
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                margin-top: 8px;
+              "
+            >
               <html:label
                 for="__addonRef__-mineru-exclude-patterns"
-                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+                style="
+                  display: block;
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                  margin-bottom: 2px;
+                "
               >
                 Exclude PDFs by Filename
               </html:label>
@@ -549,84 +1432,242 @@
                   color: FieldText;
                 "
               ></html:input>
-              <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
-                Comma-separated patterns. PDFs with matching filenames will be skipped. Wrap in /slashes/ for regex.
+              <html:span
+                style="
+                  font-size: 10.5px;
+                  color: var(--fill-secondary, #888);
+                  margin-top: 1px;
+                "
+              >
+                Comma-separated patterns. PDFs with matching filenames will be
+                skipped. Wrap in /slashes/ for regex.
               </html:span>
             </html:div>
 
             <!-- ── Embedded MinerU manager ── -->
-          <html:div style="margin-top: 8px; border-top: 1px solid var(--stroke-secondary, rgba(128,128,128,0.25)); padding-top: 12px;">
-            <html:div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
-              <html:span style="font-size: 13px; font-weight: 700;">Manage Files</html:span>
-              <html:progress
-                id="__addonRef__-mineru-mgr-progress"
-                value="0" max="100"
-                style="flex: 1; height: 5px; min-width: 60px;"
-              ></html:progress>
-              <html:span
-                id="__addonRef__-mineru-mgr-progress-label"
-                style="font-size: 11px; white-space: nowrap; color: var(--fill-secondary, #888);"
-              >0 / 0</html:span>
-            </html:div>
             <html:div
-              id="__addonRef__-mineru-mgr-status"
-              style="font-size: 11px; color: var(--fill-secondary, #888); margin-bottom: 6px; min-height: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-            ></html:div>
-            <html:div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px;">
-              <html:button id="__addonRef__-mineru-mgr-start-btn" type="button" style="
-                padding: 3px 10px; font-size: 11px; font-weight: 600;
-                border: 1px solid var(--color-accent, #2563eb); border-radius: 4px;
-                background: var(--color-accent, #2563eb); color: #fff; cursor: pointer;
-              ">Start All</html:button>
-              <html:button id="__addonRef__-mineru-mgr-delete-btn" type="button" style="
-                padding: 3px 10px; font-size: 11px; font-weight: 500;
-                border: 1px solid #dc2626; border-radius: 4px;
-                background: transparent; color: #dc2626; cursor: pointer;
-              ">Delete All Cache</html:button>
-              <html:span id="__addonRef__-mineru-mgr-error"
-                style="font-size: 10px; color: #dc2626; display: none; margin-left: 2px;"
-              ></html:span>
-            </html:div>
-            <!-- Two-panel: sidebar + items -->
-            <html:div style="display: flex; border: 1px solid var(--stroke-secondary, rgba(128,128,128,0.25)); border-radius: 6px; height: 340px; overflow: hidden;">
-              <html:div id="__addonRef__-mineru-mgr-sidebar" style="
-                width: 180px; border-right: 1px solid rgba(128,128,128,0.2);
-                overflow-y: auto; padding: 4px 0; flex-shrink: 0; font-size: 12px;
-              "></html:div>
-              <html:div style="flex: 1; display: flex; flex-direction: column; min-width: 0;">
-                <html:div id="__addonRef__-mineru-mgr-col-headers" style="
-                  display: flex; align-items: center; gap: 8px;
-                  padding: 4px 10px; font-size: 10px; font-weight: 600; color: #888;
-                  border-bottom: 1px solid rgba(128,128,128,0.2); flex-shrink: 0; user-select: none;
-                ">
-                  <html:span data-sort-key="cached" style="width: 8px; cursor: pointer; text-align: center; flex-shrink: 0;">&#x25CF;</html:span>
-                  <html:span data-sort-key="title" style="flex: 1; min-width: 0; cursor: pointer;">Title</html:span>
-                  <html:span data-sort-key="firstCreator" style="flex: 0 0 90px; cursor: pointer;">Author</html:span>
-                  <html:span data-sort-key="year" style="flex: 0 0 34px; text-align: right; cursor: pointer;">Year</html:span>
-                  <html:span data-sort-key="dateAdded" style="flex: 0 0 64px; text-align: right; cursor: pointer;">Added</html:span>
+              style="
+                margin-top: 8px;
+                border-top: 1px solid
+                  var(--stroke-secondary, rgba(128, 128, 128, 0.25));
+                padding-top: 12px;
+              "
+            >
+              <html:div
+                style="
+                  display: flex;
+                  align-items: center;
+                  gap: 10px;
+                  margin-bottom: 8px;
+                "
+              >
+                <html:span style="font-size: 13px; font-weight: 700"
+                  >Manage Files</html:span
+                >
+                <html:progress
+                  id="__addonRef__-mineru-mgr-progress"
+                  value="0"
+                  max="100"
+                  style="flex: 1; height: 5px; min-width: 60px"
+                ></html:progress>
+                <html:span
+                  id="__addonRef__-mineru-mgr-progress-label"
+                  style="
+                    font-size: 11px;
+                    white-space: nowrap;
+                    color: var(--fill-secondary, #888);
+                  "
+                  >0 / 0</html:span
+                >
+              </html:div>
+              <html:div
+                id="__addonRef__-mineru-mgr-status"
+                style="
+                  font-size: 11px;
+                  color: var(--fill-secondary, #888);
+                  margin-bottom: 6px;
+                  min-height: 14px;
+                  overflow: hidden;
+                  text-overflow: ellipsis;
+                  white-space: nowrap;
+                "
+              ></html:div>
+              <html:div
+                style="
+                  display: flex;
+                  align-items: center;
+                  gap: 6px;
+                  margin-bottom: 8px;
+                "
+              >
+                <html:button
+                  id="__addonRef__-mineru-mgr-start-btn"
+                  type="button"
+                  style="
+                    padding: 3px 10px;
+                    font-size: 11px;
+                    font-weight: 600;
+                    border: 1px solid var(--color-accent, #2563eb);
+                    border-radius: 4px;
+                    background: var(--color-accent, #2563eb);
+                    color: #fff;
+                    cursor: pointer;
+                  "
+                  >Start All</html:button
+                >
+                <html:button
+                  id="__addonRef__-mineru-mgr-delete-btn"
+                  type="button"
+                  style="
+                    padding: 3px 10px;
+                    font-size: 11px;
+                    font-weight: 500;
+                    border: 1px solid #dc2626;
+                    border-radius: 4px;
+                    background: transparent;
+                    color: #dc2626;
+                    cursor: pointer;
+                  "
+                  >Delete All Cache</html:button
+                >
+                <html:span
+                  id="__addonRef__-mineru-mgr-error"
+                  style="
+                    font-size: 10px;
+                    color: #dc2626;
+                    display: none;
+                    margin-left: 2px;
+                  "
+                ></html:span>
+              </html:div>
+              <!-- Two-panel: sidebar + items -->
+              <html:div
+                style="
+                  display: flex;
+                  border: 1px solid
+                    var(--stroke-secondary, rgba(128, 128, 128, 0.25));
+                  border-radius: 6px;
+                  height: 340px;
+                  overflow: hidden;
+                "
+              >
+                <html:div
+                  id="__addonRef__-mineru-mgr-sidebar"
+                  style="
+                    width: 180px;
+                    border-right: 1px solid rgba(128, 128, 128, 0.2);
+                    overflow-y: auto;
+                    padding: 4px 0;
+                    flex-shrink: 0;
+                    font-size: 12px;
+                  "
+                ></html:div>
+                <html:div
+                  style="
+                    flex: 1;
+                    display: flex;
+                    flex-direction: column;
+                    min-width: 0;
+                  "
+                >
+                  <html:div
+                    id="__addonRef__-mineru-mgr-col-headers"
+                    style="
+                      display: flex;
+                      align-items: center;
+                      gap: 8px;
+                      padding: 4px 10px;
+                      font-size: 10px;
+                      font-weight: 600;
+                      color: #888;
+                      border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+                      flex-shrink: 0;
+                      user-select: none;
+                    "
+                  >
+                    <html:span
+                      data-sort-key="cached"
+                      style="
+                        width: 8px;
+                        cursor: pointer;
+                        text-align: center;
+                        flex-shrink: 0;
+                      "
+                      >&#x25CF;</html:span
+                    >
+                    <html:span
+                      data-sort-key="title"
+                      style="flex: 1; min-width: 0; cursor: pointer"
+                      >Title</html:span
+                    >
+                    <html:span
+                      data-sort-key="firstCreator"
+                      style="flex: 0 0 90px; cursor: pointer"
+                      >Author</html:span
+                    >
+                    <html:span
+                      data-sort-key="year"
+                      style="flex: 0 0 34px; text-align: right; cursor: pointer"
+                      >Year</html:span
+                    >
+                    <html:span
+                      data-sort-key="dateAdded"
+                      style="flex: 0 0 64px; text-align: right; cursor: pointer"
+                      >Added</html:span
+                    >
+                  </html:div>
+                  <html:div
+                    id="__addonRef__-mineru-mgr-items-list"
+                    style="flex: 1; overflow-y: auto; min-height: 0"
+                  ></html:div>
                 </html:div>
-                <html:div id="__addonRef__-mineru-mgr-items-list" style="
-                  flex: 1; overflow-y: auto; min-height: 0;
-                "></html:div>
+              </html:div>
+              <!-- Context menu -->
+              <html:div
+                id="__addonRef__-mineru-mgr-context-menu"
+                style="
+                  display: none;
+                  position: fixed;
+                  background: Field;
+                  border: 1px solid rgba(128, 128, 128, 0.3);
+                  border-radius: 6px;
+                  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+                  padding: 4px 0;
+                  z-index: 999;
+                  min-width: 170px;
+                "
+              >
+                <html:div
+                  id="__addonRef__-mineru-mgr-ctx-process"
+                  style="padding: 4px 12px; font-size: 11.5px; cursor: pointer"
+                  >Process This Item</html:div
+                >
+                <html:div
+                  id="__addonRef__-mineru-mgr-ctx-show-folder"
+                  style="padding: 4px 12px; font-size: 11.5px; cursor: pointer"
+                  >Show in File Manager</html:div
+                >
+                <html:div
+                  style="
+                    border-top: 1px solid rgba(128, 128, 128, 0.2);
+                    margin: 2px 0;
+                  "
+                ></html:div>
+                <html:div
+                  id="__addonRef__-mineru-mgr-ctx-delete"
+                  style="
+                    padding: 4px 12px;
+                    font-size: 11.5px;
+                    cursor: pointer;
+                    color: #dc2626;
+                  "
+                  >Delete MinerU Cache</html:div
+                >
               </html:div>
             </html:div>
-            <!-- Context menu -->
-            <html:div id="__addonRef__-mineru-mgr-context-menu" style="
-              display: none; position: fixed;
-              background: Field; border: 1px solid rgba(128,128,128,0.3);
-              border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.18);
-              padding: 4px 0; z-index: 999; min-width: 170px;
-            ">
-              <html:div id="__addonRef__-mineru-mgr-ctx-process" style="padding: 4px 12px; font-size: 11.5px; cursor: pointer;">Process This Item</html:div>
-              <html:div id="__addonRef__-mineru-mgr-ctx-show-folder" style="padding: 4px 12px; font-size: 11.5px; cursor: pointer;">Show in File Manager</html:div>
-              <html:div style="border-top: 1px solid rgba(128,128,128,0.2); margin: 2px 0;"></html:div>
-              <html:div id="__addonRef__-mineru-mgr-ctx-delete" style="padding: 4px 12px; font-size: 11.5px; cursor: pointer; color: #dc2626;">Delete MinerU Cache</html:div>
-            </html:div>
-          </html:div>
           </html:div>
         </html:div>
       </html:div>
-
     </html:div>
   </groupbox>
 </vbox>

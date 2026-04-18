@@ -728,8 +728,13 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         if (nextAuthMode === "webchat") {
           group.providerProtocol = "web_sync";
           // Set default webchat model to chatgpt.com (user can change it)
-          const webchatModelNames: string[] = WEBCHAT_TARGETS.map((wt) => wt.modelName);
-          if (!group.models[0]?.model || !webchatModelNames.includes(group.models[0].model)) {
+          const webchatModelNames: string[] = WEBCHAT_TARGETS.map(
+            (wt) => wt.modelName,
+          );
+          if (
+            !group.models[0]?.model ||
+            !webchatModelNames.includes(group.models[0].model)
+          ) {
             group.models = [{ ...group.models[0], model: "chatgpt.com" }];
           }
         } else if (nextAuthMode === "codex_auth") {
@@ -754,14 +759,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       });
       const authModeHelperText =
         group.authMode === "webchat"
-          ? t(`Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(" / ")} via the Sync for Zotero browser extension. `
-            + "Download extension: github.com/yilewang/sync-for-zotero → Releases. "
-            + "Unzip, open chrome://extensions, enable Developer Mode, click \"Load unpacked\", select the extension folder. "
-            + "Keep the corresponding chat tab open while using WebChat mode.")
+          ? t(
+              `Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(" / ")} via the Sync for Zotero browser extension. ` +
+                "Download extension: github.com/yilewang/sync-for-zotero → Releases. " +
+                'Unzip, open chrome://extensions, enable Developer Mode, click "Load unpacked", select the extension folder. ' +
+                "Keep the corresponding chat tab open while using WebChat mode.",
+            )
           : group.authMode === "copilot_auth"
             ? t(COPILOT_API_HELPER_TEXT)
             : group.authMode === "codex_auth"
-              ? t("codex auth reuses local `codex login` credentials from ~/.codex/auth.json")
+              ? t(
+                  "codex auth reuses local `codex login` credentials from ~/.codex/auth.json",
+                )
               : "";
       authModeWrap.append(
         authModeLabel,
@@ -1299,13 +1308,20 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       if (group.authMode === "webchat") {
         // [webchat] Replace "+" with a "Fetch Models" button that adds all webchat targets
         addModelBtn.style.display = "none";
-        const fetchModelsBtn = el(doc, "button", OUTLINE_BTN_STYLE, t("Fetch Models")) as HTMLButtonElement;
+        const fetchModelsBtn = el(
+          doc,
+          "button",
+          OUTLINE_BTN_STYLE,
+          t("Fetch Models"),
+        ) as HTMLButtonElement;
         fetchModelsBtn.type = "button";
         fetchModelsBtn.style.fontSize = "11px";
         fetchModelsBtn.style.padding = "2px 8px";
         fetchModelsBtn.addEventListener("click", () => {
           const allTargets = WEBCHAT_TARGETS.map((wt) => wt.modelName);
-          const existing = new Set(group.models.map((m: { model: string }) => m.model));
+          const existing = new Set(
+            group.models.map((m: { model: string }) => m.model),
+          );
           let added = false;
           for (const target of allTargets) {
             if (!existing.has(target)) {
@@ -1396,8 +1412,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             doc,
             "select",
             "flex: 1; min-width: 0; padding: 6px 10px; font-size: 13px;" +
-            " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;" +
-            " box-sizing: border-box; background: Field; color: FieldText;",
+              " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;" +
+              " box-sizing: border-box; background: Field; color: FieldText;",
           ) as HTMLSelectElement;
           for (const opt of validWebchatModels) {
             const option = doc.createElement("option");
@@ -1671,11 +1687,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
       if (group.authMode === "webchat") {
         // [webchat] Minimal layout: only auth mode + model names (webchat target selector)
-        cardBody.append(
-          authModeWrap,
-          divider,
-          modelsWrap,
-        );
+        cardBody.append(authModeWrap, divider, modelsWrap);
       } else if (group.authMode === "copilot_auth") {
         cardBody.append(
           authModeWrap,
@@ -1797,6 +1809,212 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  // ── Agent Backend Mode & Bridge URL settings ─────────────────────
+  {
+    const backendModeSelect = doc.querySelector(
+      `#${config.addonRef}-agent-backend-mode`,
+    ) as HTMLSelectElement | null;
+    const bridgeSettingsDiv = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-settings`,
+    ) as HTMLDivElement | null;
+    const bridgeUrlInput = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-url`,
+    ) as HTMLInputElement | null;
+
+    const updateBridgeVisibility = (mode: string) => {
+      if (bridgeSettingsDiv) {
+        bridgeSettingsDiv.style.display =
+          mode === "claude_bridge" ? "flex" : "none";
+      }
+    };
+
+    if (backendModeSelect) {
+      const storedMode = Zotero.Prefs.get(
+        `${config.prefsPrefix}.agentBackendMode`,
+        true,
+      );
+      const mode = typeof storedMode === "string" ? storedMode : "builtin";
+      backendModeSelect.value = mode;
+      updateBridgeVisibility(mode);
+      backendModeSelect.addEventListener("change", () => {
+        const newMode = backendModeSelect.value;
+        Zotero.Prefs.set(
+          `${config.prefsPrefix}.agentBackendMode`,
+          newMode,
+          true,
+        );
+        updateBridgeVisibility(newMode);
+      });
+    }
+
+    if (bridgeUrlInput) {
+      const storedUrl = Zotero.Prefs.get(
+        `${config.prefsPrefix}.agentBackendBridgeUrl`,
+        true,
+      );
+      bridgeUrlInput.value =
+        typeof storedUrl === "string" ? storedUrl : "";
+      bridgeUrlInput.addEventListener("input", () => {
+        Zotero.Prefs.set(
+          `${config.prefsPrefix}.agentBackendBridgeUrl`,
+          bridgeUrlInput.value.trim(),
+          true,
+        );
+      });
+    }
+
+    const autoSpawnCheckbox = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-autospawn`,
+    ) as HTMLInputElement | null;
+    const adapterPathInput = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-adapter-path`,
+    ) as HTMLInputElement | null;
+    const adapterPathBrowse = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-adapter-path-browse`,
+    ) as HTMLButtonElement | null;
+
+    if (autoSpawnCheckbox) {
+      const stored = Zotero.Prefs.get(
+        `${config.prefsPrefix}.agentBackendAutoSpawn`,
+        true,
+      );
+      autoSpawnCheckbox.checked = stored === true;
+      autoSpawnCheckbox.addEventListener("change", () => {
+        Zotero.Prefs.set(
+          `${config.prefsPrefix}.agentBackendAutoSpawn`,
+          autoSpawnCheckbox.checked,
+          true,
+        );
+      });
+    }
+
+    if (adapterPathInput) {
+      const storedPath = Zotero.Prefs.get(
+        `${config.prefsPrefix}.agentBackendAdapterPath`,
+        true,
+      );
+      adapterPathInput.value =
+        typeof storedPath === "string" ? storedPath : "";
+      adapterPathInput.addEventListener("input", () => {
+        Zotero.Prefs.set(
+          `${config.prefsPrefix}.agentBackendAdapterPath`,
+          adapterPathInput.value.trim(),
+          true,
+        );
+      });
+    }
+
+    const spawnTestBtn = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-adapter-spawn-test`,
+    ) as HTMLButtonElement | null;
+    const spawnStatusBox = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-adapter-spawn-status`,
+    ) as HTMLDivElement | null;
+    const setSpawnStatus = (
+      kind: "success" | "info" | "error",
+      text: string,
+    ) => {
+      if (!spawnStatusBox) return;
+      const palette: Record<typeof kind, { bg: string; fg: string; border: string }> = {
+        success: { bg: "#d1fae5", fg: "#065f46", border: "#34d399" },
+        info: { bg: "#dbeafe", fg: "#1e3a8a", border: "#60a5fa" },
+        error: { bg: "#fee2e2", fg: "#991b1b", border: "#f87171" },
+      };
+      const c = palette[kind];
+      spawnStatusBox.style.display = "block";
+      spawnStatusBox.style.background = c.bg;
+      spawnStatusBox.style.color = c.fg;
+      spawnStatusBox.style.border = `1px solid ${c.border}`;
+      spawnStatusBox.textContent = text;
+    };
+    if (spawnTestBtn) {
+      spawnTestBtn.addEventListener("click", async () => {
+        try {
+          const addonInstance = (
+            Zotero as unknown as Record<string, unknown>
+          )[config.addonInstance] as
+            | {
+                api?: {
+                  agent?: {
+                    spawnBridgeAdapter?: () => Promise<
+                      | { spawned: true; pid: number | null }
+                      | { spawned: false; reason: string }
+                    >;
+                    getBridgeAdapterState?: () => {
+                      spawned: boolean;
+                      pid: number | null;
+                      spawnedAt: number;
+                    };
+                  };
+                };
+              }
+            | undefined;
+          const api = addonInstance?.api?.agent;
+          if (!api?.spawnBridgeAdapter) {
+            setSpawnStatus(
+              "error",
+              "Spawn API not available. Is the agent subsystem loaded?",
+            );
+            return;
+          }
+          spawnTestBtn.disabled = true;
+          spawnTestBtn.textContent = "Spawning...";
+          setSpawnStatus("info", "Starting adapter, waiting for /healthz…");
+          const r = await api.spawnBridgeAdapter();
+          const state = api.getBridgeAdapterState?.();
+          if (r.spawned) {
+            setSpawnStatus(
+              "success",
+              `Adapter started. pid=${r.pid ?? "?"} · ${JSON.stringify(state ?? {})}`,
+            );
+          } else if (
+            /already reachable/i.test(r.reason) ||
+            /running/i.test(r.reason)
+          ) {
+            setSpawnStatus(
+              "success",
+              `Bridge is reachable. No spawn needed. (${r.reason})`,
+            );
+          } else {
+            setSpawnStatus("error", `Spawn failed: ${r.reason}`);
+          }
+        } catch (e) {
+          setSpawnStatus(
+            "error",
+            `Spawn threw: ${(e as Error)?.message || e}`,
+          );
+        } finally {
+          spawnTestBtn.disabled = false;
+          spawnTestBtn.textContent = "Test spawn";
+        }
+      });
+    }
+
+    if (adapterPathBrowse && adapterPathInput) {
+      adapterPathBrowse.addEventListener("click", async () => {
+        try {
+          const result = await new ztoolkit.FilePicker(
+            "Select cc-llm4zotero-adapter directory",
+            "folder",
+            undefined,
+            adapterPathInput.value || undefined,
+            doc.defaultView as Window | undefined,
+          ).open();
+          if (typeof result === "string" && result) {
+            adapterPathInput.value = result;
+            Zotero.Prefs.set(
+              `${config.prefsPrefix}.agentBackendAdapterPath`,
+              result,
+              true,
+            );
+          }
+        } catch (e) {
+          console.error("Adapter path picker failed", e);
+        }
+      });
+    }
+  }
+
   // ── Notes Directory settings ─────────────────────────────────────
   {
     const notesDirNicknameInput = doc.querySelector(
@@ -1887,8 +2105,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     }
   }
 
-
-
   // ── Semantic Search settings ───────────────────────────────────
   // Follows the same toggle + sub-settings pattern as MinerU.
 
@@ -1902,7 +2118,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     `#${config.addonRef}-semantic-search-mount`,
   ) as HTMLDivElement | null;
 
-  if (semanticSearchToggle && semanticSearchSubSettings && semanticSearchMount) {
+  if (
+    semanticSearchToggle &&
+    semanticSearchSubSettings &&
+    semanticSearchMount
+  ) {
     const EMBEDDING_PRESETS: Record<
       string,
       {
@@ -1915,18 +2135,37 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         apiBase: "https://api.openai.com/v1",
         defaultModel: "text-embedding-3-small",
         models: [
-          { value: "text-embedding-3-small", label: "text-embedding-3-small", pricing: "$0.02 / 1M tokens" },
-          { value: "text-embedding-3-large", label: "text-embedding-3-large", pricing: "$0.13 / 1M tokens" },
-          { value: "text-embedding-ada-002", label: "text-embedding-ada-002 (legacy)", pricing: "$0.10 / 1M tokens" },
+          {
+            value: "text-embedding-3-small",
+            label: "text-embedding-3-small",
+            pricing: "$0.02 / 1M tokens",
+          },
+          {
+            value: "text-embedding-3-large",
+            label: "text-embedding-3-large",
+            pricing: "$0.13 / 1M tokens",
+          },
+          {
+            value: "text-embedding-ada-002",
+            label: "text-embedding-ada-002 (legacy)",
+            pricing: "$0.10 / 1M tokens",
+          },
         ],
       },
       gemini: {
-        apiBase:
-          "https://generativelanguage.googleapis.com/v1beta/openai",
+        apiBase: "https://generativelanguage.googleapis.com/v1beta/openai",
         defaultModel: "gemini-embedding-001",
         models: [
-          { value: "gemini-embedding-001", label: "gemini-embedding-001", pricing: "Free tier available · $0.15 / 1M tokens" },
-          { value: "text-embedding-004", label: "text-embedding-004", pricing: "$0.10 / 1M tokens" },
+          {
+            value: "gemini-embedding-001",
+            label: "gemini-embedding-001",
+            pricing: "Free tier available · $0.15 / 1M tokens",
+          },
+          {
+            value: "text-embedding-004",
+            label: "text-embedding-004",
+            pricing: "$0.10 / 1M tokens",
+          },
         ],
       },
     };
@@ -2001,7 +2240,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       // Card header
       const cardHeader = el(doc, "div", CARD_HEADER_STYLE);
       cardHeader.appendChild(
-        el(doc, "span", "font-weight: 700; font-size: 13px;", t("Embedding Provider")),
+        el(
+          doc,
+          "span",
+          "font-weight: 700; font-size: 13px;",
+          t("Embedding Provider"),
+        ),
       );
       card.appendChild(cardHeader);
 
@@ -2060,9 +2304,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           "div",
           "display: flex; flex-direction: column;",
         );
-        apiBaseWrap.appendChild(
-          el(doc, "label", LABEL_STYLE, t("API URL")),
-        );
+        apiBaseWrap.appendChild(el(doc, "label", LABEL_STYLE, t("API URL")));
         const apiBaseInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
         apiBaseInput.type = "text";
         apiBaseInput.placeholder = "https://api.openai.com/v1";
@@ -2078,14 +2320,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           "div",
           "display: flex; flex-direction: column;",
         );
-        apiKeyWrap.appendChild(
-          el(doc, "label", LABEL_STYLE, t("API Key")),
-        );
-        const apiKeyInput = el(
-          doc,
-          "input",
-          INPUT_STYLE,
-        ) as HTMLInputElement;
+        apiKeyWrap.appendChild(el(doc, "label", LABEL_STYLE, t("API Key")));
+        const apiKeyInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
         apiKeyInput.type = "password";
         apiKeyInput.value = readEmbPref("embeddingApiKey");
         apiKeyInput.addEventListener("change", () => {
@@ -2125,14 +2361,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             "div",
             "display: flex; flex-direction: column;",
           );
-          apiKeyWrap.appendChild(
-            el(doc, "label", LABEL_STYLE, t("API Key")),
-          );
-          const apiKeyInput = el(
-            doc,
-            "input",
-            INPUT_STYLE,
-          ) as HTMLInputElement;
+          apiKeyWrap.appendChild(el(doc, "label", LABEL_STYLE, t("API Key")));
+          const apiKeyInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
           apiKeyInput.type = "password";
           apiKeyInput.placeholder = "sk-…";
           apiKeyInput.value = "";
