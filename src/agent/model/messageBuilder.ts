@@ -142,7 +142,13 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
       ),
     );
   }
-  if (Array.isArray(request.attachments) && request.attachments.length) {
+  const pdfAttachments = (request.attachments || []).filter(
+    (a) => a.category === "pdf" && typeof a.storedPath === "string" && a.storedPath.trim(),
+  );
+  const nonPdfAttachments = (request.attachments || []).filter(
+    (a) => a.category !== "pdf",
+  );
+  if (nonPdfAttachments.length) {
     contextLines.push(
       "Current uploaded attachments are available through the registered document tools.",
     );
@@ -152,7 +158,8 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
   const screenshots = Array.isArray(request.screenshots)
     ? request.screenshots.filter((entry) => Boolean(entry))
     : [];
-  if (!screenshots.length || !isMultimodalRequestSupported(request)) {
+  const hasInlineMedia = screenshots.length > 0 || pdfAttachments.length > 0;
+  if (!hasInlineMedia || !isMultimodalRequestSupported(request)) {
     return {
       role: "user",
       content: promptText,
@@ -169,6 +176,15 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
         type: "image_url" as const,
         image_url: {
           url,
+        },
+      })),
+      ...pdfAttachments.map((a) => ({
+        type: "file_ref" as const,
+        file_ref: {
+          name: a.name,
+          mimeType: a.mimeType || "application/pdf",
+          storedPath: a.storedPath as string,
+          contentHash: a.contentHash,
         },
       })),
     ],

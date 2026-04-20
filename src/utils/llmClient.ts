@@ -64,7 +64,7 @@ import {
   resolveGeminiNativeEndpoint,
   resolveProviderTransportEndpoint,
 } from "./providerTransport";
-import { parseDataUrl } from "../agent/model/shared";
+import { parseDataUrl, readFileRefAsBase64 } from "../agent/model/shared";
 import {
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
@@ -2208,6 +2208,7 @@ function buildGeminiNativePayload(params: {
   messages: ChatMessage[];
   effectiveMaxTokens: number;
   effectiveTemperature: number;
+  pdfParts?: Array<{ base64: string }>;
 }): Record<string, unknown> {
   const systemParts = params.messages
     .filter((m) => m.role === "system")
@@ -2218,7 +2219,7 @@ function buildGeminiNativePayload(params: {
           : m.content.map((c) => ("text" in c ? c.text : "")).join(""),
     }))
     .filter((p) => p.text);
-  const contents = params.messages
+  const contents: Array<{ role: string; parts: unknown[] }> = params.messages
     .filter((m) => m.role !== "system")
     .map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
@@ -2241,6 +2242,17 @@ function buildGeminiNativePayload(params: {
                 : { text: (c as { text: string }).text },
             ),
     }));
+  if (params.pdfParts?.length) {
+    let lastUserIdx = -1;
+    for (let i = contents.length - 1; i >= 0; i--) {
+      if (contents[i].role === "user") { lastUserIdx = i; break; }
+    }
+    if (lastUserIdx >= 0) {
+      for (const p of params.pdfParts) {
+        contents[lastUserIdx].parts.push({ inlineData: { mimeType: "application/pdf", data: p.base64 } });
+      }
+    }
+  }
   const payload: Record<string, unknown> = {
     contents,
     generationConfig: {
@@ -2832,6 +2844,7 @@ async function callNativeProtocol(params: {
   signal?: AbortSignal;
   onDelta?: (delta: string) => void;
   onUsage?: (usage: UsageStats) => void;
+  attachments?: ChatFileAttachment[];
 }): Promise<string> {
   const {
     protocol,
@@ -2851,6 +2864,20 @@ async function callNativeProtocol(params: {
       ? resolveAnthropicMessagesEndpoint(apiBase)
       : resolveGeminiNativeEndpoint({ apiBase, model, stream: isStreaming });
   const headers = buildProviderTransportHeaders({ protocol, apiKey });
+  const pdfParts: Array<{ base64: string }> = [];
+  if (protocol === "gemini_native" && params.attachments?.length) {
+    for (const att of params.attachments) {
+      if (!att.storedPath) continue;
+      const mime = att.mimeType || "";
+      if (mime !== "application/pdf" && !att.name?.toLowerCase().endsWith(".pdf")) continue;
+      try {
+        const base64 = await readFileRefAsBase64(att.storedPath);
+        pdfParts.push({ base64 });
+      } catch (err) {
+        ztoolkit.log("LLM: Failed to read PDF attachment for Gemini native", err);
+      }
+    }
+  }
   const body =
     protocol === "anthropic_messages"
       ? buildAnthropicMessagesPayload({
@@ -2864,6 +2891,7 @@ async function callNativeProtocol(params: {
           messages,
           effectiveMaxTokens,
           effectiveTemperature,
+          pdfParts: pdfParts.length ? pdfParts : undefined,
         });
   const res = await getFetch()(url, {
     method: "POST",
@@ -2982,6 +3010,7 @@ export async function callLLM(params: ChatParams): Promise<string> {
       effectiveMaxTokens: normalizeMaxTokens(params.maxTokens),
       effectiveTemperature: normalizeTemperature(params.temperature),
       signal: params.signal,
+      attachments: params.attachments,
     });
   }
   if (authMode === "codex_auth" || authMode === "codex_app_server") {
@@ -3110,6 +3139,7 @@ export async function callLLMStream(
       signal: params.signal,
       onDelta,
       onUsage,
+      attachments: params.attachments,
     });
   }
   if (authMode === "codex_app_server") {
