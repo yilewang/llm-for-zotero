@@ -433,6 +433,7 @@ export async function sendAgentTurn(
   historyForRun.push(assistantMessage);
   const { refreshChatSafely, setStatusSafely } =
     deps.createPanelUpdateHelpers(body, item, conversationKey, ui);
+  const queueRefresh = deps.createQueuedRefresh(refreshChatSafely);
   refreshChatSafely();
 
   let assistantPersisted = false;
@@ -520,7 +521,7 @@ export async function sendAgentTurn(
                 event.details,
               );
             }
-            refreshChatSafely();
+            queueRefresh();
             return;
           }
           case "fallback":
@@ -677,6 +678,7 @@ export async function retryAgentTurn(
     conversationKey,
     ui,
   );
+  const queueRefresh = deps.createQueuedRefresh(refreshChatSafely);
   refreshChatSafely(); // Immediately clear the old trace from view
 
   const { question, screenshotImages, paperContexts, fullTextPaperContexts } =
@@ -802,7 +804,7 @@ export async function retryAgentTurn(
                 event.details,
               );
             }
-            refreshChatSafely();
+            queueRefresh();
             return;
           }
           case "fallback":

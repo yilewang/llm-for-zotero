@@ -1,5 +1,4 @@
 import { getAgentRuntime } from "../../../agent";
-import { renderMarkdown } from "../../../utils/markdown";
 import type {
   AgentPendingAction,
   AgentPendingField,
@@ -2387,6 +2386,7 @@ export function buildAgentTraceDisplayItems(
   const pendingActions = new Map<string, AgentPendingAction>();
   let announcedWriting = false;
   let lastMeaningfulStatus: string | null = null;
+  let reasoningStep = 1;
 
   items.push({
     type: "message",
@@ -2442,6 +2442,7 @@ export function buildAgentTraceDisplayItems(
             userMessage,
           ),
         });
+        reasoningStep += 1;
         break;
       case "reasoning": {
         // Prefer details (full reasoning body) over summary (short title)
@@ -2450,7 +2451,7 @@ export function buildAgentTraceDisplayItems(
           readAgentTraceText(entry.payload.summary) ||
           undefined;
         if (!text) break;
-        const roundKey = `round:${entry.payload.round}`;
+        const roundKey = `step:${reasoningStep}`;
         const existing = findLastReasoningDisplayItem(items, roundKey);
         if (existing && existing.type === "reasoning") {
           // Accumulate delta chunks; skip if already contained (dedup)
@@ -2459,11 +2460,7 @@ export function buildAgentTraceDisplayItems(
             existing.summary = appendAgentTraceText(existing.summary, text);
           }
         } else {
-          const label =
-            readAgentTraceText(entry.payload.summary) &&
-            readAgentTraceText(entry.payload.details)
-              ? readAgentTraceText(entry.payload.summary)!
-              : `Thinking for step ${entry.payload.round}`;
+          const label = "Thinking";
           items.push({
             type: "reasoning",
             key: roundKey,
@@ -2632,22 +2629,8 @@ export function renderAgentTrace({
       const summary = doc.createElement("summary") as HTMLElement;
       summary.className = "llm-agent-reasoning-summary";
       summary.textContent = itemEntry.label;
-      const toggleReasoning = (event: Event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const next = !details.open;
-        details.open = next;
-        agentReasoningExpandedCache.set(expansionKey, next);
-      };
-      summary.addEventListener("mousedown", toggleReasoning);
-      summary.addEventListener("click", (event: Event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      });
-      summary.addEventListener("keydown", (event: KeyboardEvent) => {
-        if (event.key === "Enter" || event.key === " ") {
-          toggleReasoning(event);
-        }
+      details.addEventListener("toggle", () => {
+        agentReasoningExpandedCache.set(expansionKey, details.open);
       });
       details.appendChild(summary);
 
@@ -2661,12 +2644,7 @@ export function renderAgentTrace({
         summaryBlock.className = "llm-agent-reasoning-block";
         const text = doc.createElement("div") as HTMLDivElement;
         text.className = "llm-agent-reasoning-text";
-        try {
-          text.innerHTML = renderMarkdown(reasoningText);
-        } catch (error) {
-          ztoolkit.log("Agent reasoning render error:", error);
-          text.textContent = reasoningText;
-        }
+        text.textContent = reasoningText;
         summaryBlock.appendChild(text);
         bodyWrap.appendChild(summaryBlock);
       }

@@ -40,7 +40,55 @@ describe("agentTrace render", function () {
     assert.deepInclude(reasoningItem, {
       type: "reasoning",
       details: "Let me read the paper first.",
+      label: "Thinking",
     });
+  });
+
+  it("splits reasoning into a new thinking block after a tool call", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          details: "First thought.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "Read",
+          args: {},
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          details: "Second thought.",
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const items = buildAgentTraceDisplayItems(events, null).filter(
+      (item) => item.type === "reasoning",
+    );
+
+    assert.lengthOf(items, 2);
+    assert.deepInclude(items[0], { type: "reasoning", details: "First thought.", label: "Thinking" });
+    assert.deepInclude(items[1], { type: "reasoning", details: "Second thought.", label: "Thinking" });
   });
 
   it("uses a single primary action surface for multi-action review cards", function () {

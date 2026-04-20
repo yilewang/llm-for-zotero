@@ -3279,7 +3279,7 @@
 .llm-agent-reasoning-summary {
   cursor: pointer;
   user-select: none;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   list-style: none;
@@ -3362,6 +3362,7 @@
   line-height: 1.5;
   color: var(--fill-secondary);
   white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .llm-agent-hitl-card {

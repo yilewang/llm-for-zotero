@@ -1349,6 +1349,10 @@ export function setupHandlers(
       return;
     }
     const targetBubble = bubble || findAssistantBubbleFromSelection();
+    if (targetBubble?.closest(".llm-agent-reasoning")) {
+      hideSelectionPopup();
+      return;
+    }
     if (!targetBubble) {
       hideSelectionPopup();
       return;
@@ -1493,6 +1497,10 @@ export function setupHandlers(
     const target = e.target as Element | null;
     const targetInsidePanel = Boolean(target && panelRoot.contains(target));
     if (!targetInsidePanel && !selectionDragStartBubble) {
+      hideSelectionPopup();
+      return;
+    }
+    if (target && target.closest("summary.llm-agent-reasoning-summary")) {
       hideSelectionPopup();
       return;
     }
