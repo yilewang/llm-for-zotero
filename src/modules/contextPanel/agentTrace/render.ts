@@ -2629,8 +2629,29 @@ export function renderAgentTrace({
       const summary = doc.createElement("summary") as HTMLElement;
       summary.className = "llm-agent-reasoning-summary";
       summary.textContent = itemEntry.label;
-      details.addEventListener("toggle", () => {
-        agentReasoningExpandedCache.set(expansionKey, details.open);
+      let reasoningToggleHandled = false;
+      const toggleReasoning = (event: Event) => {
+        if (reasoningToggleHandled) return;
+        reasoningToggleHandled = true;
+        event.preventDefault();
+        event.stopPropagation();
+        const next = !details.open;
+        details.open = next;
+        agentReasoningExpandedCache.set(expansionKey, next);
+        doc.defaultView?.setTimeout(() => {
+          reasoningToggleHandled = false;
+        }, 0);
+      };
+      summary.addEventListener("pointerdown", toggleReasoning);
+      summary.addEventListener("mousedown", toggleReasoning);
+      summary.addEventListener("click", (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      summary.addEventListener("keydown", (event: KeyboardEvent) => {
+        if (event.key === "Enter" || event.key === " ") {
+          toggleReasoning(event);
+        }
       });
       details.appendChild(summary);
 
