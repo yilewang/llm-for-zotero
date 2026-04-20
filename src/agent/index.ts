@@ -18,7 +18,10 @@ import type {
   AgentRuntimeRequest,
   AgentToolDefinition,
 } from "./types";
-import { getConversationSystemPref } from "../claudeCode/prefs";
+import {
+  getConversationSystemPref,
+  isClaudeCodeModeEnabled,
+} from "../claudeCode/prefs";
 import { getClaudeCommandCatalog } from "../claudeCode/commandCatalog";
 import { getClaudeBridgeRuntime, resetClaudeBridgeRuntime } from "../claudeCode/runtime";
 
@@ -80,7 +83,7 @@ export function getCoreAgentRuntime(): AgentRuntime {
 
 export function getAgentRuntime(): AgentRuntime {
   const coreRuntime = getCoreAgentRuntime();
-  if (getConversationSystemPref() === "claude_code") {
+  if (getConversationSystemPref() === "claude_code" && isClaudeCodeModeEnabled()) {
     return getClaudeBridgeRuntime(coreRuntime) as unknown as AgentRuntime;
   }
   return coreRuntime;

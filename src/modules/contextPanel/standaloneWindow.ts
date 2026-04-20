@@ -2834,6 +2834,7 @@ export function openStandaloneChat(options?: {
       systemToggleBtn.addEventListener("click", () => {
         void switchConversationSystem(
           isClaudeConversationSystem() ? "upstream" : "claude_code",
+          { forceFresh: true },
         );
       });
       updateStandaloneSystemToggle();
