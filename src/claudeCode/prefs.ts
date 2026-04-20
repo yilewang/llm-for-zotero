@@ -63,11 +63,6 @@ export function setConversationSystemPref(system: ConversationSystem): void {
   setPref("conversationSystem", system === "claude_code" ? "claude_code" : "upstream");
 }
 
-function readLegacyAgentBackendMode(): "disabled" | "claude_bridge" {
-  const raw = getStringPref("agentBackendMode").trim().toLowerCase();
-  return raw === "claude_bridge" ? "claude_bridge" : "disabled";
-}
-
 export function isClaudeCodeModeEnabled(): boolean {
   const value = getZoteroPrefs()?.get?.(prefKey("enableClaudeCodeMode"), true);
   if (typeof value === "boolean") return value;
@@ -76,7 +71,7 @@ export function isClaudeCodeModeEnabled(): boolean {
     if (normalized === "true") return true;
     if (normalized === "false") return false;
   }
-  return readLegacyAgentBackendMode() === "claude_bridge";
+  return false;
 }
 
 export function setClaudeCodeModeEnabled(enabled: boolean): void {
