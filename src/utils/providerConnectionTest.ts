@@ -12,6 +12,7 @@ import {
 import { createAgentModelAdapter } from "../agent/model/factory";
 import type { AgentRuntimeRequest } from "../agent/types";
 import {
+  destroyCachedCodexAppServerProcess,
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
   getOrCreateCodexAppServerProcess,
@@ -235,37 +236,56 @@ export function getProviderConnectionCapabilityLabel(params: {
 export async function runCodexAppServerConnectionTest(params: {
   modelName: string;
 }): Promise<{ reply: string; capabilityLabel: string }> {
-  const proc = await getOrCreateCodexAppServerProcess("codex_app_server");
-  const reply = await proc.runTurnExclusive(async () => {
-    const threadResp = await proc.sendRequest("thread/start", {
-      model: params.modelName || undefined,
-      approvalPolicy: "never",
-    });
-    const threadId = extractCodexAppServerThreadId(threadResp);
-    if (!threadId) {
-      throw new Error("Codex app-server did not return a thread ID");
-    }
+  const processKey = `codex_app_server_connection_test_${Date.now()}_${Math.random()
+    .toString(16)
+    .slice(2)}`;
+  const proc = await getOrCreateCodexAppServerProcess(processKey);
+  try {
+    const reply = await proc.runTurnExclusive(async () => {
+      const threadResp = await proc.sendRequest("thread/start", {
+        model: params.modelName || undefined,
+        approvalPolicy: "never",
+      });
+      const threadId = extractCodexAppServerThreadId(threadResp);
+      if (!threadId) {
+        throw new Error("Codex app-server did not return a thread ID");
+      }
 
-    const turnResp = await proc.sendRequest("turn/start", {
-      threadId,
-      input: [{ type: "text", text: "Say OK" }],
-    });
-    const turnId = extractCodexAppServerTurnId(turnResp);
-    if (!turnId) {
-      throw new Error("Codex app-server did not return a turn ID");
-    }
+      const turnResp = await proc.sendRequest("turn/start", {
+        threadId,
+        input: [{ type: "text", text: "Say OK" }],
+      });
+      const turnId = extractCodexAppServerTurnId(turnResp);
+      if (!turnId) {
+        throw new Error("Codex app-server did not return a turn ID");
+      }
 
-    return waitForCodexAppServerTurnCompletion({
-      proc,
-      turnId,
-      cacheKey: "codex_app_server",
+      return waitForCodexAppServerTurnCompletion({
+        proc,
+        turnId,
+        cacheKey: processKey,
+      });
     });
-  });
 
-  const capabilityLabel = describeAgentCapabilityClass(
-    getAgentCapabilityClass({ toolCalls: false, fileInputs: false }),
-  );
-  return { reply: reply.trim() || "OK", capabilityLabel };
+    const request = {
+      conversationKey: 0,
+      mode: "agent" as const,
+      userText: "",
+      authMode: "codex_app_server" as const,
+      model: params.modelName,
+    } as AgentRuntimeRequest;
+    const capabilities =
+      createAgentModelAdapter(request).getCapabilities(request);
+    const capabilityLabel = describeAgentCapabilityClass(
+      getAgentCapabilityClass({
+        toolCalls: capabilities.toolCalls,
+        fileInputs: capabilities.fileInputs,
+      }),
+    );
+    return { reply: reply.trim() || "OK", capabilityLabel };
+  } finally {
+    destroyCachedCodexAppServerProcess(processKey);
+  }
 }
 
 export async function runProviderConnectionTest(params: {

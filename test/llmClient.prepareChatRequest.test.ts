@@ -236,7 +236,7 @@ describe("llmClient prepareChatRequest", function () {
     }
 
     const stdout = new MockStdout();
-    let lastTurnInput = "";
+    let lastTurnInput: unknown = "";
 
     try {
       if (globalThis.process?.env) {
@@ -265,7 +265,7 @@ describe("llmClient prepareChatRequest", function () {
                       const message = JSON.parse(line) as {
                         id?: number;
                         method?: string;
-                        params?: { input?: string };
+                        params?: { input?: unknown };
                       };
                       if (message.method === "initialize") {
                         stdout.push(
@@ -280,7 +280,7 @@ describe("llmClient prepareChatRequest", function () {
                         continue;
                       }
                       if (message.method === "turn/start") {
-                        lastTurnInput = message.params?.input || "";
+                        lastTurnInput = message.params?.input ?? "";
                         stdout.push(
                           `${JSON.stringify({ id: message.id, result: { id: "turn-1" } })}\n`,
                         );
@@ -307,6 +307,7 @@ describe("llmClient prepareChatRequest", function () {
       const output = await callLLMStream(
         {
           prompt: "What changed?",
+          image: "file:///C:/Users/alice/figure.png",
           history: [
             { role: "user", content: "Earlier question." },
             { role: "assistant", content: "Earlier answer." },
@@ -322,10 +323,19 @@ describe("llmClient prepareChatRequest", function () {
 
       assert.equal(output, "Hello");
       assert.deepEqual(chunks, ["Hello"]);
-      assert.include(lastTurnInput, "System:");
-      assert.include(lastTurnInput, "User:\nEarlier question.");
-      assert.include(lastTurnInput, "Assistant:\nEarlier answer.");
-      assert.include(lastTurnInput, "User:\nWhat changed?");
+      assert.isArray(lastTurnInput);
+      const input = lastTurnInput as Array<Record<string, unknown>>;
+      const textParts = input
+        .filter((part) => part.type === "text")
+        .map((part) => String(part.text || ""));
+      assert.include(textParts.join("\n\n"), "System:");
+      assert.include(textParts.join("\n\n"), "User:\nEarlier question.");
+      assert.include(textParts.join("\n\n"), "Assistant:\nEarlier answer.");
+      assert.include(textParts.join("\n\n"), "User:\nWhat changed?");
+      assert.deepInclude(input, {
+        type: "localImage",
+        path: "C:\\Users\\alice\\figure.png",
+      });
     } finally {
       if (globalThis.process?.env) {
         if (typeof originalCodexPath === "string") {

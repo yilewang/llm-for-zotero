@@ -9,9 +9,16 @@ export type CodexAppServerUserInput =
   | { type: "image"; url: string }
   | { type: "localImage"; path: string };
 
+const MAX_APP_SERVER_IMAGE_FILES = 128;
+
 type IOUtilsLike = {
   exists?: (path: string) => Promise<boolean>;
   write?: (path: string, data: Uint8Array) => Promise<unknown>;
+  getChildren?: (path: string) => Promise<string[]>;
+  remove?: (
+    path: string,
+    options?: { recursive?: boolean; ignoreAbsent?: boolean },
+  ) => Promise<void>;
   makeDirectory?: (
     path: string,
     options?: { createAncestors?: boolean; ignoreExisting?: boolean },
@@ -21,6 +28,7 @@ type IOUtilsLike = {
 type OSFileLike = {
   exists?: (path: string) => Promise<boolean>;
   writeAtomic?: (path: string, data: Uint8Array) => Promise<void>;
+  remove?: (path: string, options?: { ignoreAbsent?: boolean }) => Promise<void>;
   makeDir?: (
     path: string,
     options?: { from?: string; ignoreExisting?: boolean },
@@ -113,6 +121,30 @@ async function writeBytes(path: string, data: Uint8Array): Promise<void> {
   throw new Error("No file write API available for Codex app-server images");
 }
 
+async function listChildren(path: string): Promise<string[]> {
+  const io = getIOUtils();
+  if (io?.getChildren) {
+    try {
+      return await io.getChildren(path);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+async function removePath(path: string): Promise<void> {
+  const io = getIOUtils();
+  if (io?.remove) {
+    await io.remove(path, { ignoreAbsent: true });
+    return;
+  }
+  const osFile = getOSFile();
+  if (osFile?.remove) {
+    await osFile.remove(path, { ignoreAbsent: true });
+  }
+}
+
 function decodeBase64(base64: string): Uint8Array {
   const normalized = base64.replace(/\s+/g, "");
   const atobFn = (
@@ -172,8 +204,25 @@ async function persistDataUrlImage(url: string): Promise<string | null> {
   if (!(await pathExists(imagePath))) {
     await ensureDir(imageDir);
     await writeBytes(imagePath, bytes);
+    void prunePersistedDataUrlImages(imagePath);
   }
   return imagePath;
+}
+
+async function prunePersistedDataUrlImages(retainPath: string): Promise<void> {
+  const imageDir = getAppServerImageDir();
+  const entries = await listChildren(imageDir);
+  if (entries.length <= MAX_APP_SERVER_IMAGE_FILES) return;
+
+  const removable = entries.filter((entry) => entry !== retainPath).sort();
+  const excessCount = entries.length - MAX_APP_SERVER_IMAGE_FILES;
+  for (const entry of removable.slice(0, excessCount)) {
+    try {
+      await removePath(entry);
+    } catch {
+      /* ignore cleanup failures */
+    }
+  }
 }
 
 async function buildImageInput(url: string): Promise<CodexAppServerUserInput> {
@@ -305,6 +354,38 @@ export async function extractLatestCodexAppServerUserInput(
     return input;
   }
   return [{ type: "text", text: "" }];
+}
+
+async function buildAgentMessageInput(
+  message: Exclude<AgentModelMessage, { role: "tool" }>,
+): Promise<CodexAppServerUserInput[]> {
+  const label =
+    message.role === "system"
+      ? "System"
+      : message.role === "assistant"
+        ? "Assistant"
+        : "User";
+  const { text, imageUrls } = splitAgentContent(message.content);
+  const fallbackText = imageUrls.length
+    ? `[${imageUrls.length} image(s) attached]`
+    : "";
+  const input: CodexAppServerUserInput[] = [];
+  pushTextInput(input, text || fallbackText, label);
+  for (const url of imageUrls) {
+    input.push(await buildImageInput(url));
+  }
+  return input;
+}
+
+export async function buildCodexAppServerAgentInitialInput(
+  messages: AgentModelMessage[],
+): Promise<CodexAppServerUserInput[]> {
+  const input: CodexAppServerUserInput[] = [];
+  for (const message of messages) {
+    if (message.role === "tool") continue;
+    input.push(...(await buildAgentMessageInput(message)));
+  }
+  return input.length ? input : [{ type: "text", text: "" }];
 }
 
 export function isCodexAppServerImageInput(

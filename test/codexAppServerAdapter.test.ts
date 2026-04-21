@@ -1,5 +1,8 @@
 import { assert } from "chai";
-import { CodexAppServerAdapter } from "../src/agent/model/codexAppServer";
+import {
+  CodexAppServerAdapter,
+  shouldResetCodexAppServerThreadOnError,
+} from "../src/agent/model/codexAppServer";
 import type { AgentRuntimeRequest } from "../src/agent/types";
 
 describe("CodexAppServerAdapter", function () {
@@ -30,5 +33,28 @@ describe("CodexAppServerAdapter", function () {
     const request = makeRequest();
 
     assert.isTrue(adapter.getCapabilities(request).multimodal);
+  });
+
+  it("keeps thread state for recoverable adapter errors", function () {
+    assert.isFalse(
+      shouldResetCodexAppServerThreadOnError(
+        new Error("Turn ended with status: failed"),
+      ),
+    );
+  });
+
+  it("resets thread state when the app-server session becomes unusable", function () {
+    assert.isTrue(
+      shouldResetCodexAppServerThreadOnError(
+        new Error(
+          "Timed out waiting for codex app-server turn completion after 60000ms",
+        ),
+      ),
+    );
+    assert.isTrue(
+      shouldResetCodexAppServerThreadOnError(
+        new Error("codex app-server process closed unexpectedly"),
+      ),
+    );
   });
 });

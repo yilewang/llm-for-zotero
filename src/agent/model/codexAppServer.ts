@@ -6,13 +6,31 @@ import type {
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
 import {
+  destroyCachedCodexAppServerProcess,
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
   getOrCreateCodexAppServerProcess,
   waitForCodexAppServerTurnCompletion,
 } from "../../utils/codexAppServerProcess";
-import { extractLatestCodexAppServerUserInput } from "../../utils/codexAppServerInput";
+import {
+  buildCodexAppServerAgentInitialInput,
+  extractLatestCodexAppServerUserInput,
+} from "../../utils/codexAppServerInput";
 import { isMultimodalRequestSupported } from "./messageBuilder";
+
+export function shouldResetCodexAppServerThreadOnError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("Timed out waiting for codex app-server turn completion") ||
+    message.includes("CodexAppServerProcess destroyed") ||
+    message.includes("codex app-server process closed unexpectedly") ||
+    message.includes("Codex app-server did not return a thread ID") ||
+    message.includes("Codex app-server did not return a turn ID")
+  );
+}
 
 export class CodexAppServerAdapter implements AgentModelAdapter {
   private threadId: string | null = null;
@@ -77,7 +95,8 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
           },
         );
         try {
-          if (!this.threadId) {
+          const isFirstTurn = !this.threadId;
+          if (isFirstTurn) {
             const threadResp = await proc.sendRequest("thread/start", {
               model: request.model,
               approvalPolicy: "never",
@@ -92,9 +111,9 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
               throw new Error("Codex app-server did not return a thread ID");
             }
           }
-          const userInput = await extractLatestCodexAppServerUserInput(
-            params.messages,
-          );
+          const userInput = isFirstTurn
+            ? await buildCodexAppServerAgentInitialInput(params.messages)
+            : await extractLatestCodexAppServerUserInput(params.messages);
 
           const turnResp = await proc.sendRequest("turn/start", {
             threadId: this.threadId,
@@ -117,7 +136,10 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
         }
       });
     } catch (error) {
-      this.threadId = null;
+      if (shouldResetCodexAppServerThreadOnError(error)) {
+        this.threadId = null;
+        destroyCachedCodexAppServerProcess(this.processKey, proc);
+      }
       throw error;
     }
 

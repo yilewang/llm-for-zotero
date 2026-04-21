@@ -4,13 +4,11 @@ import {
   destroyCachedCodexAppServerProcess,
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
+  waitForCodexAppServerTurnCompletion,
 } from "../src/utils/codexAppServerProcess";
 
 function createProcess(): CodexAppServerProcess {
-  const ProcCtor = CodexAppServerProcess as unknown as {
-    new (proc: unknown): CodexAppServerProcess;
-  };
-  return new ProcCtor({
+  return CodexAppServerProcess.forTest({
     stdin: { write: () => {} },
     kill: () => {},
   });
@@ -64,10 +62,7 @@ describe("codexAppServerProcess", function () {
 
   it("destroys an explicit process when evicting a missing cache entry", function () {
     let killed = false;
-    const ProcCtor = CodexAppServerProcess as unknown as {
-      new (proc: unknown): CodexAppServerProcess;
-    };
-    const proc = new ProcCtor({
+    const proc = CodexAppServerProcess.forTest({
       stdin: { write: () => {} },
       kill: () => {
         killed = true;
@@ -81,10 +76,7 @@ describe("codexAppServerProcess", function () {
 
   it("responds to server-initiated JSON-RPC requests via registered handlers", async function () {
     const writes: string[] = [];
-    const ProcCtor = CodexAppServerProcess as unknown as {
-      new (proc: unknown): CodexAppServerProcess;
-    };
-    const proc = new ProcCtor({
+    const proc = CodexAppServerProcess.forTest({
       stdin: {
         write: (chunk: string) => {
           writes.push(chunk);
@@ -117,7 +109,7 @@ describe("codexAppServerProcess", function () {
       },
     });
 
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     assert.deepEqual(
       JSON.parse(writes[0] || "{}"),
@@ -129,5 +121,99 @@ describe("codexAppServerProcess", function () {
         },
       },
     );
+  });
+
+  it("times out when a turn never completes", async function () {
+    const proc = createProcess();
+    let caught: unknown;
+    try {
+      await waitForCodexAppServerTurnCompletion({
+        proc,
+        turnId: "turn-timeout",
+        timeoutMs: 10,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.instanceOf(caught, Error);
+    assert.match(
+      (caught as Error).message,
+      /Timed out waiting for codex app-server turn completion after 10ms/,
+    );
+  });
+
+  it("uses CODEX_PATH when spawning on Windows", async function () {
+    const originalZotero = globalThis.Zotero;
+    const originalProcess = globalThis.process;
+    const originalLoadSubprocessModule = CodexAppServerProcess.loadSubprocessModule;
+    const originalStartReadLoop = (
+      CodexAppServerProcess.prototype as unknown as {
+        startReadLoop: () => void;
+      }
+    ).startReadLoop;
+    const originalInitialize = (
+      CodexAppServerProcess.prototype as unknown as {
+        initialize: () => Promise<void>;
+      }
+    ).initialize;
+    const calls: Array<{ command: string; arguments: string[] }> = [];
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      isWin: true,
+    } as unknown;
+    (globalThis as typeof globalThis & { process?: typeof process }).process = {
+      ...originalProcess,
+      env: {
+        ...originalProcess?.env,
+        CODEX_PATH: "C:\\Tools\\Codex\\codex.exe",
+      },
+    } as typeof process;
+    CodexAppServerProcess.loadSubprocessModule = async () => ({
+      call: async (options: { command: string; arguments: string[] }) => {
+        calls.push(options);
+        return {
+          stdin: { write: () => {} },
+          kill: () => {},
+        };
+      },
+    });
+    (
+      CodexAppServerProcess.prototype as unknown as {
+        startReadLoop: () => void;
+      }
+    ).startReadLoop = () => {};
+    (
+      CodexAppServerProcess.prototype as unknown as {
+        initialize: () => Promise<void>;
+      }
+    ).initialize = async () => {};
+
+    try {
+      const proc = await CodexAppServerProcess.spawn();
+      proc.destroy();
+    } finally {
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+      (globalThis as typeof globalThis & { process?: typeof process }).process =
+        originalProcess;
+      CodexAppServerProcess.loadSubprocessModule = originalLoadSubprocessModule;
+      (
+        CodexAppServerProcess.prototype as unknown as {
+          startReadLoop: () => void;
+        }
+      ).startReadLoop = originalStartReadLoop;
+      (
+        CodexAppServerProcess.prototype as unknown as {
+          initialize: () => Promise<void>;
+        }
+      ).initialize = originalInitialize;
+    }
+
+    assert.lengthOf(calls, 1);
+    assert.match(calls[0]?.command || "", /c:\\windows\\system32\\cmd\.exe/i);
+    assert.deepEqual(calls[0]?.arguments, [
+      "/c",
+      "\"C:\\Tools\\Codex\\codex.exe\" app-server",
+    ]);
   });
 });

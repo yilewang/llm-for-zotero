@@ -1,5 +1,7 @@
 import { getRuntimePlatformInfo } from "./runtimePlatform";
 
+const DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS = 60_000;
+
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
@@ -23,7 +25,11 @@ export class CodexAppServerProcess {
     this.proc = proc;
   }
 
-  static async spawn(): Promise<CodexAppServerProcess> {
+  static forTest(proc: unknown): CodexAppServerProcess {
+    return new CodexAppServerProcess(proc);
+  }
+
+  static async loadSubprocessModule(): Promise<any> {
     const CU = (globalThis as any).ChromeUtils;
     let Subprocess: any;
     if (CU?.importESModule) {
@@ -49,19 +55,22 @@ export class CodexAppServerProcess {
         "Subprocess module not available in this Zotero environment",
       );
     }
+    return Subprocess;
+  }
 
+  static async spawn(): Promise<CodexAppServerProcess> {
+    const Subprocess = await CodexAppServerProcess.loadSubprocessModule();
     const info = getRuntimePlatformInfo();
+    const binary = await resolveCodexBinary();
 
     // On Windows, npm shims are batch scripts that can't be exec'd directly.
-    // Run via the shell instead (cmd.exe /c codex app-server), same as runCommand.ts.
-    // On macOS/Linux, resolve the absolute binary path and exec directly.
+    // Run the resolved binary through cmd.exe so CODEX_PATH and non-PATH installs work.
     let command: string;
     let args: string[];
     if (info.platform === "windows") {
       command = info.shellPath;
-      args = [info.shellFlag, "codex app-server"];
+      args = [info.shellFlag, `"${binary}" app-server`];
     } else {
-      const binary = await resolveCodexBinary();
       command = binary;
       args = ["app-server"];
     }
@@ -311,11 +320,28 @@ export function waitForCodexAppServerTurnCompletion(params: {
   onTextDelta?: (delta: string) => void | Promise<void>;
   signal?: AbortSignal;
   cacheKey?: string;
+  timeoutMs?: number;
 }): Promise<string> {
   const { proc, turnId, onTextDelta, signal, cacheKey } = params;
+  const timeoutMs = params.timeoutMs ?? DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     let accumulated = "";
     let settled = false;
+    const timeoutId =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            if (cacheKey) {
+              destroyCachedCodexAppServerProcess(cacheKey, proc);
+            }
+            settle(() =>
+              reject(
+                new Error(
+                  `Timed out waiting for codex app-server turn completion after ${timeoutMs}ms`,
+                ),
+              ),
+            );
+          }, timeoutMs)
+        : null;
     const abortHandler = () => {
       if (cacheKey) {
         destroyCachedCodexAppServerProcess(cacheKey, proc);
@@ -328,6 +354,9 @@ export function waitForCodexAppServerTurnCompletion(params: {
       settled = true;
       unsubDelta();
       unsubCompleted();
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
       signal?.removeEventListener("abort", abortHandler);
       fn();
     }
@@ -391,25 +420,11 @@ async function resolveCodexBinary(): Promise<string> {
   if (env.CODEX_PATH?.trim()) return env.CODEX_PATH.trim();
 
   // 2. Locate via `which`/`where` using shell
-  const CU = (globalThis as any).ChromeUtils;
   let Subprocess: any;
-  if (CU?.importESModule) {
-    try {
-      const mod = CU.importESModule(
-        "resource://gre/modules/Subprocess.sys.mjs",
-      );
-      Subprocess = mod.Subprocess || mod.default || mod;
-    } catch {
-      /* fallback */
-    }
-  }
-  if (!Subprocess?.call && CU?.import) {
-    try {
-      const mod = CU.import("resource://gre/modules/Subprocess.jsm");
-      Subprocess = mod.Subprocess || mod;
-    } catch {
-      /* fallback */
-    }
+  try {
+    Subprocess = await CodexAppServerProcess.loadSubprocessModule();
+  } catch {
+    Subprocess = null;
   }
 
   if (Subprocess?.call) {
@@ -499,10 +514,7 @@ export async function getOrCreateCodexAppServerProcess(
 ): Promise<CodexAppServerProcess> {
   const existing = processCache.get(cacheKey);
   if (existing) {
-    return existing.catch(() => {
-      processCache.delete(cacheKey);
-      return getOrCreateCodexAppServerProcess(cacheKey);
-    });
+    return existing;
   }
   const promise = CodexAppServerProcess.spawn();
   processCache.set(cacheKey, promise);

@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  buildCodexAppServerAgentInitialInput,
   buildCodexAppServerChatInput,
   extractLatestCodexAppServerUserInput,
   isCodexAppServerImageInput,
@@ -129,5 +130,49 @@ describe("codexAppServerInput", function () {
       text: "summarize",
     });
     assert.equal(input[1]?.type, "localImage");
+  });
+
+  it("preserves system prompt and seeded history on the first agent turn", async function () {
+    const messages: AgentModelMessage[] = [
+      {
+        role: "system",
+        content: "Follow Zotero-specific tool guidance.",
+      },
+      {
+        role: "assistant",
+        content: "I can inspect your library.",
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Summarize this figure." },
+          {
+            type: "image_url",
+            image_url: { url: "file:///C:/Users/alice/figure.png" },
+          },
+        ],
+      },
+    ];
+
+    const input = await buildCodexAppServerAgentInitialInput(messages);
+
+    assert.deepEqual(input.slice(0, 3), [
+      {
+        type: "text",
+        text: "System:\nFollow Zotero-specific tool guidance.",
+      },
+      {
+        type: "text",
+        text: "Assistant:\nI can inspect your library.",
+      },
+      {
+        type: "text",
+        text: "User:\nSummarize this figure.",
+      },
+    ]);
+    assert.deepEqual(input[3], {
+      type: "localImage",
+      path: "C:\\Users\\alice\\figure.png",
+    });
   });
 });

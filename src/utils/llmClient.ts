@@ -54,7 +54,10 @@ import {
   isGrokApiBase,
   providerSupportsResponsesEndpoint,
 } from "./providerPresets";
-import type { ProviderProtocol } from "./providerProtocol";
+import {
+  inferLegacyProviderProtocol,
+  type ProviderProtocol,
+} from "./providerProtocol";
 import {
   buildProviderTransportHeaders,
   resolveAnthropicMessagesEndpoint,
@@ -275,11 +278,20 @@ function getApiConfig(overrides?: {
   const model = (overrides?.model || modelPrimary).trim();
   const embeddingModel = getPref("embeddingModel") || DEFAULT_EMBEDDING_MODEL;
   const customSystemPrompt = getPref("systemPrompt") || "";
-  const providerProtocol: ProviderProtocol =
-    overrides?.providerProtocol ||
-    defaultEntry?.providerProtocol ||
-    defaultProviderGroup?.providerProtocol ||
-    "openai_chat_compat";
+  const providerProtocol: ProviderProtocol = (() => {
+    if (overrides?.providerProtocol) return overrides.providerProtocol;
+    // Only inherit the configured group protocol when we are actually using that
+    // group's base URL. If the caller supplied their own apiBase override, derive
+    // the protocol from that URL instead so the correct transport is selected
+    // (e.g. a Grok /v1/responses URL should use responses_api, not the
+    // openai_chat_compat default from an unrelated legacy group entry).
+    if (!overrides?.apiBase) {
+      if (defaultEntry?.providerProtocol) return defaultEntry.providerProtocol;
+      if (defaultProviderGroup?.providerProtocol)
+        return defaultProviderGroup.providerProtocol;
+    }
+    return inferLegacyProviderProtocol({ authMode, apiBase });
+  })();
 
   if (!apiBase) {
     throw new Error("API URL is missing in preferences");
