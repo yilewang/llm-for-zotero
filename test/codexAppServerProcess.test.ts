@@ -4,6 +4,7 @@ import {
   destroyCachedCodexAppServerProcess,
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
+  getOrCreateCodexAppServerProcess,
   resolveCodexAppServerReasoningParams,
   waitForCodexAppServerTurnCompletion,
 } from "../src/utils/codexAppServerProcess";
@@ -56,6 +57,18 @@ describe("codexAppServerProcess", function () {
       ),
       {
         effort: "xhigh",
+        summary: "detailed",
+      },
+    );
+    assert.deepEqual(
+      resolveCodexAppServerReasoningParams(
+        {
+          provider: "openai",
+          level: "default",
+        },
+        "gpt-5.4",
+      ),
+      {
         summary: "detailed",
       },
     );
@@ -150,6 +163,48 @@ describe("codexAppServerProcess", function () {
           success: true,
         },
       },
+    );
+  });
+
+  it("times out stalled JSON-RPC requests and marks the process unusable", async function () {
+    let killed = false;
+    const writes: string[] = [];
+    const proc = CodexAppServerProcess.forTest({
+      stdin: {
+        write: (chunk: string) => {
+          writes.push(chunk);
+        },
+      },
+      kill: () => {
+        killed = true;
+      },
+    });
+
+    let caught: unknown;
+    try {
+      await proc.sendRequest("thread/start", { model: "gpt-5.4" }, 10);
+    } catch (error) {
+      caught = error;
+    }
+
+    assert.instanceOf(caught, Error);
+    assert.match(
+      (caught as Error).message,
+      /Timed out waiting for codex app-server response to thread\/start after 10ms/,
+    );
+    assert.isTrue(killed);
+    assert.lengthOf(writes, 1);
+
+    let destroyedError: unknown;
+    try {
+      await proc.sendRequest("thread/start", { model: "gpt-5.4" });
+    } catch (error) {
+      destroyedError = error;
+    }
+    assert.instanceOf(destroyedError, Error);
+    assert.match(
+      (destroyedError as Error).message,
+      /CodexAppServerProcess destroyed/,
     );
   });
 
@@ -486,6 +541,122 @@ describe("codexAppServerProcess", function () {
         totalTokens: 5,
       },
     ]);
+  });
+
+  it("prefers cumulative token totals when both total and last usage are present", async function () {
+    const proc = createProcess();
+    const usage: Array<{
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+    }> = [];
+
+    setTimeout(() => {
+      void (proc as unknown as {
+        handleMessage: (msg: Record<string, unknown>) => void;
+      }).handleMessage({
+        method: "thread/tokenUsage/updated",
+        params: {
+          turnId: "turn-usage-total",
+          tokenUsage: {
+            last: {
+              totalTokens: 10,
+              inputTokens: 8,
+              outputTokens: 2,
+            },
+            total: {
+              totalTokens: 10,
+              inputTokens: 8,
+              outputTokens: 2,
+            },
+          },
+        },
+      });
+    }, 5);
+    setTimeout(() => {
+      void (proc as unknown as {
+        handleMessage: (msg: Record<string, unknown>) => void;
+      }).handleMessage({
+        method: "thread/tokenUsage/updated",
+        params: {
+          turnId: "turn-usage-total",
+          tokenUsage: {
+            last: {
+              totalTokens: 5,
+              inputTokens: 4,
+              outputTokens: 1,
+            },
+            total: {
+              totalTokens: 15,
+              inputTokens: 12,
+              outputTokens: 3,
+            },
+          },
+        },
+      });
+    }, 10);
+    setTimeout(() => {
+      void (proc as unknown as {
+        handleMessage: (msg: Record<string, unknown>) => void;
+      }).handleMessage({
+        method: "turn/completed",
+        params: {
+          turnId: "turn-usage-total",
+          status: "completed",
+        },
+      });
+    }, 15);
+
+    const result = await waitForCodexAppServerTurnCompletion({
+      proc,
+      turnId: "turn-usage-total",
+      onUsage: async (event) => {
+        usage.push(event);
+      },
+      timeoutMs: 50,
+    });
+
+    assert.equal(result, "");
+    assert.deepEqual(usage, [
+      {
+        promptTokens: 8,
+        completionTokens: 2,
+        totalTokens: 10,
+      },
+      {
+        promptTokens: 4,
+        completionTokens: 1,
+        totalTokens: 5,
+      },
+    ]);
+  });
+
+  it("evicts a closed cached process so the next lookup spawns a fresh instance", async function () {
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const spawned: CodexAppServerProcess[] = [];
+    CodexAppServerProcess.spawn = async () => {
+      const proc = CodexAppServerProcess.forTest({
+        stdin: { write: () => {} },
+        kill: () => {},
+      });
+      spawned.push(proc);
+      return proc;
+    };
+
+    try {
+      const first = await getOrCreateCodexAppServerProcess("evict-on-close");
+      const second = await getOrCreateCodexAppServerProcess("evict-on-close");
+      assert.strictEqual(second, first);
+
+      first.destroy();
+
+      const third = await getOrCreateCodexAppServerProcess("evict-on-close");
+      assert.notStrictEqual(third, first);
+      assert.lengthOf(spawned, 2);
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess("evict-on-close");
+    }
   });
 
   it("uses CODEX_PATH when spawning on Windows", async function () {

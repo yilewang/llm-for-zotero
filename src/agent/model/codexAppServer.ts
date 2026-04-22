@@ -26,6 +26,7 @@ export function shouldResetCodexAppServerThreadOnError(error: unknown): boolean 
   const message = error instanceof Error ? error.message : String(error);
   return (
     message.includes("Timed out waiting for codex app-server turn completion") ||
+    message.includes("Timed out waiting for codex app-server response") ||
     message.includes("CodexAppServerProcess destroyed") ||
     message.includes("codex app-server process closed unexpectedly") ||
     message.includes("Codex app-server did not return a thread ID") ||

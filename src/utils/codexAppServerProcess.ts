@@ -3,6 +3,7 @@ import { getRuntimePlatformInfo } from "./runtimePlatform";
 import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
 
 const DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS = 300_000;
+const DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 60_000;
 
 type PendingRequest = {
   resolve: (value: unknown) => void;
@@ -11,7 +12,10 @@ type PendingRequest = {
 
 type ActivityHandler = () => void;
 type NotificationHandler = (params: unknown) => void;
-type RequestHandler = (params: unknown, id: number) => unknown | Promise<unknown>;
+type RequestHandler = (
+  params: unknown,
+  id: number,
+) => unknown | Promise<unknown>;
 
 function createAbortError(): Error {
   const err = new Error("Aborted");
@@ -26,10 +30,12 @@ export class CodexAppServerProcess {
   private activityHandlers = new Set<ActivityHandler>();
   private notificationHandlers = new Map<string, Set<NotificationHandler>>();
   private requestHandlers = new Map<string, Set<RequestHandler>>();
+  private closeHandlers = new Set<() => void>();
   private readLoopPromise: Promise<void> | null = null;
   private turnQueue = Promise.resolve();
   private lineBuffer = "";
   private destroyed = false;
+  private didNotifyClose = false;
 
   private constructor(proc: unknown) {
     this.proc = proc;
@@ -129,13 +135,12 @@ export class CodexAppServerProcess {
           }
         }
       }
-      // Reject all pending requests on pipe close
-      for (const [, pending] of this.pendingRequests) {
-        pending.reject(
+      if (!this.destroyed) {
+        this.fail(
           new Error("codex app-server process closed unexpectedly"),
+          false,
         );
       }
-      this.pendingRequests.clear();
     })();
   }
 
@@ -189,8 +194,7 @@ export class CodexAppServerProcess {
               id,
               error: {
                 code: -32000,
-                message:
-                  error instanceof Error ? error.message : String(error),
+                message: error instanceof Error ? error.message : String(error),
               },
             });
           });
@@ -210,16 +214,44 @@ export class CodexAppServerProcess {
     }
   }
 
-  sendRequest(method: string, params?: unknown): Promise<unknown> {
+  sendRequest(
+    method: string,
+    params?: unknown,
+    timeoutMs = DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
+  ): Promise<unknown> {
     if (this.destroyed) {
       return Promise.reject(new Error("CodexAppServerProcess destroyed"));
     }
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
-      this.pendingRequests.set(id, { resolve, reject });
+      const pending: PendingRequest = {
+        resolve: (value) => {
+          if (timeoutId !== null) clearTimeout(timeoutId);
+          resolve(value);
+        },
+        reject: (reason) => {
+          if (timeoutId !== null) clearTimeout(timeoutId);
+          reject(reason);
+        },
+      };
+      this.pendingRequests.set(id, pending);
+      const timeoutId =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              const activePending = this.pendingRequests.get(id);
+              if (!activePending) return;
+              this.pendingRequests.delete(id);
+              const error = new Error(
+                `Timed out waiting for codex app-server response to ${method} after ${timeoutMs}ms`,
+              );
+              activePending.reject(error);
+              this.fail(error, true);
+            }, timeoutMs)
+          : null;
       try {
         this.writeRawMessage({ method, id, params });
       } catch (err) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
         this.pendingRequests.delete(id);
         reject(err);
       }
@@ -272,6 +304,17 @@ export class CodexAppServerProcess {
     };
   }
 
+  onClose(handler: () => void): () => void {
+    if (this.didNotifyClose || this.destroyed) {
+      handler();
+      return () => {};
+    }
+    this.closeHandlers.add(handler);
+    return () => {
+      this.closeHandlers.delete(handler);
+    };
+  }
+
   onRequest(method: string, handler: RequestHandler): () => void {
     let handlers = this.requestHandlers.get(method);
     if (!handlers) {
@@ -298,16 +341,34 @@ export class CodexAppServerProcess {
   }
 
   destroy(): void {
-    this.destroyed = true;
-    for (const [, pending] of this.pendingRequests) {
-      pending.reject(new Error("CodexAppServerProcess destroyed"));
+    this.fail(new Error("CodexAppServerProcess destroyed"), true);
+  }
+
+  private fail(error: Error, killProcess: boolean): void {
+    if (!this.destroyed) {
+      this.destroyed = true;
+      for (const [, pending] of this.pendingRequests) {
+        pending.reject(error);
+      }
+      this.pendingRequests.clear();
     }
-    this.pendingRequests.clear();
-    try {
-      (this.proc as any).kill();
-    } catch {
-      /* ignore */
+    if (killProcess) {
+      try {
+        (this.proc as any).kill();
+      } catch {
+        /* ignore */
+      }
     }
+    if (this.didNotifyClose) return;
+    this.didNotifyClose = true;
+    for (const handler of this.closeHandlers) {
+      try {
+        handler();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.closeHandlers.clear();
   }
 }
 
@@ -362,12 +423,11 @@ export function resolveCodexAppServerReasoningParams(
 ): { effort?: "low" | "medium" | "high" | "xhigh"; summary?: "detailed" } {
   if (!reasoning) return {};
   const effort = normalizeCodexAppServerReasoningLevel(reasoning, modelName);
-  if (!effort) return {};
   return {
-    effort,
     // OpenAI-backed app-server sessions usually expose readable reasoning only
     // through summary events, so request the richer summary mode explicitly.
     summary: "detailed",
+    ...(effort ? { effort } : {}),
   };
 }
 
@@ -415,7 +475,10 @@ function extractCodexAppServerItem(rawParams: unknown): {
     reasoning?: unknown;
   };
   return {
-    id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : undefined,
+    id:
+      typeof item.id === "string" && item.id.trim()
+        ? item.id.trim()
+        : undefined,
     type:
       typeof item.type === "string" && item.type.trim()
         ? item.type.trim().toLowerCase()
@@ -441,7 +504,8 @@ export function waitForCodexAppServerTurnCompletion(params: {
 }): Promise<string> {
   const { proc, turnId, onTextDelta, onReasoning, onUsage, signal, cacheKey } =
     params;
-  const timeoutMs = params.timeoutMs ?? DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS;
+  const timeoutMs =
+    params.timeoutMs ?? DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     let accumulated = "";
     let settled = false;
@@ -586,7 +650,10 @@ export function waitForCodexAppServerTurnCompletion(params: {
           notification.delta ?? notification.text,
         );
         if (!summary) return;
-        if (typeof notification.itemId === "string" && notification.itemId.trim()) {
+        if (
+          typeof notification.itemId === "string" &&
+          notification.itemId.trim()
+        ) {
           getReasoningState(notification.itemId.trim()).sawSummaryDelta = true;
         }
         emitReasoning({ summary });
@@ -605,7 +672,10 @@ export function waitForCodexAppServerTurnCompletion(params: {
           notification.delta ?? notification.text,
         );
         if (!details) return;
-        if (typeof notification.itemId === "string" && notification.itemId.trim()) {
+        if (
+          typeof notification.itemId === "string" &&
+          notification.itemId.trim()
+        ) {
           getReasoningState(notification.itemId.trim()).sawDetailsDelta = true;
         }
         emitReasoning({ details });
@@ -633,7 +703,8 @@ export function waitForCodexAppServerTurnCompletion(params: {
         const eventTurnId =
           typeof notification.turnId === "string" ? notification.turnId : "";
         if (eventTurnId && eventTurnId !== turnId) return;
-        const usage = notification.tokenUsage?.last || notification.tokenUsage?.total;
+        const usage =
+          notification.tokenUsage?.total || notification.tokenUsage?.last;
         if (!usage) return;
         const totalTokens =
           typeof usage.totalTokens === "number" ? usage.totalTokens : 0;
@@ -812,6 +883,13 @@ export async function getOrCreateCodexAppServerProcess(
     return existing;
   }
   const promise = CodexAppServerProcess.spawn();
+  promise.then((proc) => {
+    proc.onClose(() => {
+      if (processCache.get(cacheKey) === promise) {
+        processCache.delete(cacheKey);
+      }
+    });
+  });
   processCache.set(cacheKey, promise);
   promise.catch(() => processCache.delete(cacheKey));
   return promise;
