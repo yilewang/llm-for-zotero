@@ -69,6 +69,7 @@ import {
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
   getOrCreateCodexAppServerProcess,
+  isCodexAppServerThreadStartInstructionsUnsupportedError,
   resolveCodexAppServerTurnInputWithFallback,
   resolveCodexAppServerReasoningParams,
   waitForCodexAppServerTurnCompletion,
@@ -158,6 +159,13 @@ export type ChatParams = {
 export type ReasoningEvent = {
   summary?: string;
   details?: string;
+  /**
+   * Adapter-provided reasoning item identity. App-server emits multiple
+   * reasoning items inside one runtime round; preserving this lets the UI
+   * render them as separate legacy-like thinking steps.
+   */
+  stepId?: string;
+  stepLabel?: string;
 };
 
 export type ContextBudgetPlan = {
@@ -2245,11 +2253,16 @@ function buildGeminiNativePayload(params: {
   if (params.pdfParts?.length) {
     let lastUserIdx = -1;
     for (let i = contents.length - 1; i >= 0; i--) {
-      if (contents[i].role === "user") { lastUserIdx = i; break; }
+      if (contents[i].role === "user") {
+        lastUserIdx = i;
+        break;
+      }
     }
     if (lastUserIdx >= 0) {
       for (const p of params.pdfParts) {
-        contents[lastUserIdx].parts.push({ inlineData: { mimeType: "application/pdf", data: p.base64 } });
+        contents[lastUserIdx].parts.push({
+          inlineData: { mimeType: "application/pdf", data: p.base64 },
+        });
       }
     }
   }
@@ -2870,12 +2883,19 @@ async function callNativeProtocol(params: {
     for (const att of params.attachments) {
       if (!att.storedPath) continue;
       const mime = att.mimeType || "";
-      if (mime !== "application/pdf" && !att.name?.toLowerCase().endsWith(".pdf")) continue;
+      if (
+        mime !== "application/pdf" &&
+        !att.name?.toLowerCase().endsWith(".pdf")
+      )
+        continue;
       try {
         const base64 = await readFileRefAsBase64(att.storedPath);
         pdfParts.push({ base64 });
       } catch (err) {
-        ztoolkit.log("LLM: Failed to read PDF attachment for Gemini native", err);
+        ztoolkit.log(
+          "LLM: Failed to read PDF attachment for Gemini native",
+          err,
+        );
       }
     }
   }
@@ -2938,26 +2958,52 @@ async function callCodexAppServerChat(params: {
 }): Promise<string> {
   const proc = await getOrCreateCodexAppServerProcess("codex_app_server_chat");
   return proc.runTurnExclusive(async () => {
-    const threadResult = await proc.sendRequest("thread/start", {
+    const preparedTurn = await prepareCodexAppServerChatTurn(params.messages);
+    const threadStartParams: Record<string, unknown> = {
       model: params.model,
       ephemeral: true,
       approvalPolicy: "never",
-    });
+    };
+    if (preparedTurn.developerInstructions) {
+      threadStartParams.developerInstructions =
+        preparedTurn.developerInstructions;
+    }
+    let shouldUseLegacyInput = false;
+    let threadResult: unknown;
+    try {
+      threadResult = await proc.sendRequest("thread/start", threadStartParams);
+    } catch (error) {
+      if (
+        !preparedTurn.developerInstructions ||
+        !isCodexAppServerThreadStartInstructionsUnsupportedError(error)
+      ) {
+        throw error;
+      }
+      shouldUseLegacyInput = true;
+      const fallbackParams = { ...threadStartParams };
+      delete fallbackParams.developerInstructions;
+      ztoolkit.log(
+        "Codex app-server chat: thread/start developerInstructions unsupported; using legacy flattened input",
+      );
+      threadResult = await proc.sendRequest("thread/start", fallbackParams);
+    }
     const threadId = extractCodexAppServerThreadId(threadResult);
     if (!threadId) {
       throw new Error("Codex app-server did not return a thread ID");
     }
-    const { historyItemsToInject, turnInput } =
-      await prepareCodexAppServerChatTurn(params.messages);
-    const input = await resolveCodexAppServerTurnInputWithFallback({
-      proc,
-      threadId,
-      historyItemsToInject,
-      turnInput,
-      legacyInputFactory: () =>
-        buildLegacyCodexAppServerChatInput(params.messages),
-      logContext: "chat",
-    });
+    const input = shouldUseLegacyInput
+      ? await buildLegacyCodexAppServerChatInput(params.messages)
+      : await resolveCodexAppServerTurnInputWithFallback({
+          proc,
+          threadId,
+          historyItemsToInject: preparedTurn.historyItemsToInject,
+          turnInput: preparedTurn.turnInput,
+          legacyInputFactory: () =>
+            buildLegacyCodexAppServerChatInput(params.messages, {
+              includeSystem: !preparedTurn.developerInstructions,
+            }),
+          logContext: "chat",
+        });
     const appServerReasoning = resolveCodexAppServerReasoningParams(
       params.reasoning,
       params.model,

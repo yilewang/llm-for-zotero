@@ -11,7 +11,11 @@ export type CodexAppServerUserInput =
 
 type CodexAppServerHistoryInputPart =
   | { type: "input_text"; text: string }
-  | { type: "input_image"; image_url: string; detail?: "low" | "high" | "auto" };
+  | {
+      type: "input_image";
+      image_url: string;
+      detail?: "low" | "high" | "auto";
+    };
 
 type CodexAppServerHistoryOutputPart = { type: "output_text"; text: string };
 
@@ -28,6 +32,7 @@ export type CodexAppServerHistoryItem =
     };
 
 export type CodexAppServerPreparedTurn = {
+  developerInstructions?: string;
   historyItemsToInject: CodexAppServerHistoryItem[];
   turnInput: CodexAppServerUserInput[];
 };
@@ -51,7 +56,10 @@ type IOUtilsLike = {
 type OSFileLike = {
   exists?: (path: string) => Promise<boolean>;
   writeAtomic?: (path: string, data: Uint8Array) => Promise<void>;
-  remove?: (path: string, options?: { ignoreAbsent?: boolean }) => Promise<void>;
+  remove?: (
+    path: string,
+    options?: { ignoreAbsent?: boolean },
+  ) => Promise<void>;
   makeDir?: (
     path: string,
     options?: { from?: string; ignoreExisting?: boolean },
@@ -309,9 +317,7 @@ function splitChatContent(content: MessageContent): {
 }
 
 function pushHistoryTextPart(
-  target:
-    | CodexAppServerHistoryInputPart[]
-    | CodexAppServerHistoryOutputPart[],
+  target: CodexAppServerHistoryInputPart[] | CodexAppServerHistoryOutputPart[],
   role: "system" | "user" | "assistant",
   text: string,
 ): void {
@@ -440,6 +446,19 @@ async function buildLegacyChatMessageInput(
   return input;
 }
 
+function extractFirstChatSystemInstruction(
+  messages: readonly ChatMessage[],
+): string | undefined {
+  for (const message of messages) {
+    if (message.role !== "system") continue;
+    const { text } = splitChatContent(message.content);
+    const normalized = text.trim();
+    if (normalized) return normalized;
+    return undefined;
+  }
+  return undefined;
+}
+
 function splitAgentContent(content: AgentModelMessage["content"]): {
   text: string;
   imageUrls: string[];
@@ -467,6 +486,19 @@ function splitAgentContent(content: AgentModelMessage["content"]): {
     text: lines.join("\n\n"),
     imageUrls,
   };
+}
+
+function extractFirstAgentSystemInstruction(
+  messages: readonly AgentModelMessage[],
+): string | undefined {
+  for (const message of messages) {
+    if (message.role !== "system") continue;
+    const { text } = splitAgentContent(message.content);
+    const normalized = text.trim();
+    if (normalized) return normalized;
+    return undefined;
+  }
+  return undefined;
 }
 
 function getAgentRoleLabel(
@@ -497,9 +529,13 @@ async function buildLegacyAgentMessageInput(
 export async function prepareCodexAppServerChatTurn(
   messages: ChatMessage[],
 ): Promise<CodexAppServerPreparedTurn> {
+  const developerInstructions = extractFirstChatSystemInstruction(messages);
+  const visibleMessages = messages.filter(
+    (message) => message.role !== "system",
+  );
   let latestUserIndex = -1;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role === "user") {
+  for (let i = visibleMessages.length - 1; i >= 0; i -= 1) {
+    if (visibleMessages[i]?.role === "user") {
       latestUserIndex = i;
       break;
     }
@@ -507,7 +543,9 @@ export async function prepareCodexAppServerChatTurn(
 
   const historyItemsToInject: CodexAppServerHistoryItem[] = [];
   const historyMessages =
-    latestUserIndex >= 0 ? messages.slice(0, latestUserIndex) : messages;
+    latestUserIndex >= 0
+      ? visibleMessages.slice(0, latestUserIndex)
+      : visibleMessages;
   for (const message of historyMessages) {
     const { text, imageUrls } = splitChatContent(message.content);
     historyItemsToInject.push(
@@ -520,12 +558,13 @@ export async function prepareCodexAppServerChatTurn(
   }
 
   const latestUserMessage =
-    latestUserIndex >= 0 ? messages[latestUserIndex] : undefined;
+    latestUserIndex >= 0 ? visibleMessages[latestUserIndex] : undefined;
   const turnInput = latestUserMessage
     ? await buildTurnInput(splitChatContent(latestUserMessage.content))
     : [{ type: "text" as const, text: "" }];
 
   return {
+    developerInstructions,
     historyItemsToInject,
     turnInput,
   };
@@ -533,9 +572,12 @@ export async function prepareCodexAppServerChatTurn(
 
 export async function buildLegacyCodexAppServerChatInput(
   messages: ChatMessage[],
+  options: { includeSystem?: boolean } = {},
 ): Promise<CodexAppServerUserInput[]> {
+  const includeSystem = options.includeSystem !== false;
   const input: CodexAppServerUserInput[] = [];
   for (const message of messages) {
+    if (!includeSystem && message.role === "system") continue;
     input.push(...(await buildLegacyChatMessageInput(message)));
   }
   return input.length ? input : [{ type: "text", text: "" }];
@@ -559,10 +601,14 @@ export async function prepareCodexAppServerAgentTurn(
     (message): message is Exclude<AgentModelMessage, { role: "tool" }> =>
       message.role !== "tool",
   );
+  const developerInstructions = extractFirstAgentSystemInstruction(messages);
+  const visibleHistoryMessages = seededMessages.filter(
+    (message) => message.role !== "system",
+  );
 
   let latestUserIndex = -1;
-  for (let i = seededMessages.length - 1; i >= 0; i -= 1) {
-    if (seededMessages[i]?.role === "user") {
+  for (let i = visibleHistoryMessages.length - 1; i >= 0; i -= 1) {
+    if (visibleHistoryMessages[i]?.role === "user") {
       latestUserIndex = i;
       break;
     }
@@ -571,8 +617,8 @@ export async function prepareCodexAppServerAgentTurn(
   const historyItemsToInject: CodexAppServerHistoryItem[] = [];
   const historyMessages =
     latestUserIndex >= 0
-      ? seededMessages.slice(0, latestUserIndex)
-      : seededMessages;
+      ? visibleHistoryMessages.slice(0, latestUserIndex)
+      : visibleHistoryMessages;
   for (const message of historyMessages) {
     const { text, imageUrls } = splitAgentContent(message.content);
     historyItemsToInject.push(
@@ -585,12 +631,13 @@ export async function prepareCodexAppServerAgentTurn(
   }
 
   const latestUserMessage =
-    latestUserIndex >= 0 ? seededMessages[latestUserIndex] : undefined;
+    latestUserIndex >= 0 ? visibleHistoryMessages[latestUserIndex] : undefined;
   const turnInput = latestUserMessage
     ? await buildTurnInput(splitAgentContent(latestUserMessage.content))
     : [{ type: "text" as const, text: "" }];
 
   return {
+    developerInstructions,
     historyItemsToInject,
     turnInput,
   };
@@ -598,10 +645,13 @@ export async function prepareCodexAppServerAgentTurn(
 
 export async function buildLegacyCodexAppServerAgentInitialInput(
   messages: AgentModelMessage[],
+  options: { includeSystem?: boolean } = {},
 ): Promise<CodexAppServerUserInput[]> {
+  const includeSystem = options.includeSystem !== false;
   const input: CodexAppServerUserInput[] = [];
   for (const message of messages) {
     if (message.role === "tool") continue;
+    if (!includeSystem && message.role === "system") continue;
     input.push(...(await buildLegacyAgentMessageInput(message)));
   }
   return input.length ? input : [{ type: "text", text: "" }];

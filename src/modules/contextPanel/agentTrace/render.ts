@@ -124,6 +124,19 @@ function appendAgentTraceText(
   return `${base || ""}${chunk}`;
 }
 
+type AgentReasoningPayload = Extract<
+  AgentRunEventRecord["payload"],
+  { type: "reasoning" }
+>;
+
+function getReasoningTraceKey(payload: AgentReasoningPayload): string {
+  const stepId =
+    typeof payload.stepId === "string" && payload.stepId.trim()
+      ? payload.stepId.trim()
+      : "";
+  return stepId ? `step:${stepId}` : `round:${payload.round}`;
+}
+
 function truncateAgentTraceText(value: unknown, max = 88): string {
   const raw = readAgentTraceText(value) || `${value ?? ""}`;
   const normalized = sanitizeText(raw).replace(/\s+/g, " ").trim();
@@ -532,7 +545,8 @@ function renderAssignmentTableField(
     control.appendChild(selectLabel);
 
     const select = doc.createElement("select");
-    select.className = "llm-agent-hitl-page-input llm-agent-hitl-assignment-select";
+    select.className =
+      "llm-agent-hitl-page-input llm-agent-hitl-assignment-select";
     for (const option of field.options) {
       const optionEl = doc.createElement("option");
       optionEl.value = option.id;
@@ -780,9 +794,7 @@ function renderTagAssignmentTableField(
     rows.push({
       buttons: chipButtons,
       getTags: () =>
-        chipInputs
-          .map((input) => input.value.trim())
-          .filter(Boolean),
+        chipInputs.map((input) => input.value.trim()).filter(Boolean),
       setDisabled: (disabled) => {
         addButton.disabled = disabled;
         for (const input of chipInputs) {
@@ -809,8 +821,7 @@ function renderTagAssignmentTableField(
           row.setDisabled(disabled);
         }
       },
-      isValid: () =>
-        getAssignments().some((entry) => entry.value.length > 0),
+      isValid: () => getAssignments().some((entry) => entry.value.length > 0),
       bindValidity: (callback) => {
         listeners.push(callback);
       },
@@ -862,8 +873,9 @@ function renderResultCardList(
       openBtn.addEventListener("click", (e) => {
         e.preventDefault();
         try {
-          const launch = (Zotero as unknown as { launchURL?: (url: string) => void })
-            .launchURL;
+          const launch = (
+            Zotero as unknown as { launchURL?: (url: string) => void }
+          ).launchURL;
           if (typeof launch === "function") launch(card.href!);
         } catch {
           /* ignore */
@@ -987,7 +999,8 @@ function renderPaperResultListField(
       tab.className = "llm-search-mode-tab";
       tab.dataset.modeId = mode.id;
       tab.textContent = mode.label;
-      if (mode.id === activeModeId) tab.classList.add("llm-search-mode-tab-active");
+      if (mode.id === activeModeId)
+        tab.classList.add("llm-search-mode-tab-active");
       tab.addEventListener("click", () => {
         if (activeModeId === mode.id) return;
         activeModeId = mode.id;
@@ -1051,7 +1064,11 @@ function renderPaperResultListField(
       btn.type = "button";
       btn.className = "llm-search-sort-btn";
       btn.textContent =
-        key === "relevance" ? "Relevance" : key === "date" ? "Date" : "Citations";
+        key === "relevance"
+          ? "Relevance"
+          : key === "date"
+            ? "Date"
+            : "Citations";
       btn.addEventListener("click", () => {
         sortByMode.set(activeModeId, key);
         renderActiveMode();
@@ -1313,12 +1330,17 @@ function normalizePendingActions(action: AgentPendingAction) {
           },
         ];
   const cancelActionId =
-    action.cancelActionId && provided.some((entry) => entry.id === action.cancelActionId)
+    action.cancelActionId &&
+    provided.some((entry) => entry.id === action.cancelActionId)
       ? action.cancelActionId
-      : provided.find((entry) => entry.id === "cancel")?.id || provided[provided.length - 1]?.id;
-  const primaryActions = provided.filter((entry) => entry.id !== cancelActionId);
+      : provided.find((entry) => entry.id === "cancel")?.id ||
+        provided[provided.length - 1]?.id;
+  const primaryActions = provided.filter(
+    (entry) => entry.id !== cancelActionId,
+  );
   const defaultActionId =
-    action.defaultActionId && primaryActions.some((entry) => entry.id === action.defaultActionId)
+    action.defaultActionId &&
+    primaryActions.some((entry) => entry.id === action.defaultActionId)
       ? action.defaultActionId
       : primaryActions[0]?.id || cancelActionId;
   return {
@@ -1340,11 +1362,12 @@ function isDeferredActionField(field: AgentPendingField): boolean {
   );
 }
 
-function getPendingActionButton(
-  action: AgentPendingAction,
-  actionId: string,
-) {
-  return normalizePendingActions(action).actions.find((entry) => entry.id === actionId) || null;
+function getPendingActionButton(action: AgentPendingAction, actionId: string) {
+  return (
+    normalizePendingActions(action).actions.find(
+      (entry) => entry.id === actionId,
+    ) || null
+  );
 }
 
 function getPendingActionExecutionMode(
@@ -1363,8 +1386,10 @@ function getPendingActionExecutionMode(
       return false;
     }
     const visibleForAction =
-      !field.visibleForActionIds?.length || field.visibleForActionIds.includes(actionId);
-    const requiredForAction = field.requiredForActionIds?.includes(actionId) || false;
+      !field.visibleForActionIds?.length ||
+      field.visibleForActionIds.includes(actionId);
+    const requiredForAction =
+      field.requiredForActionIds?.includes(actionId) || false;
     return visibleForAction || requiredForAction;
   })
     ? "edit"
@@ -1391,7 +1416,10 @@ function isFieldVisibleForAction(
   field: AgentPendingField,
   actionId: string,
 ): boolean {
-  return !field.visibleForActionIds?.length || field.visibleForActionIds.includes(actionId);
+  return (
+    !field.visibleForActionIds?.length ||
+    field.visibleForActionIds.includes(actionId)
+  );
 }
 
 function isFieldRequiredForAction(
@@ -1409,8 +1437,8 @@ function getPaperResultMinSelection(
   actionId: string,
 ): number {
   return (
-    field.minSelectedByAction?.find((entry) => entry.actionId === actionId)?.min ||
-    0
+    field.minSelectedByAction?.find((entry) => entry.actionId === actionId)
+      ?.min || 0
   );
 }
 
@@ -1744,14 +1772,21 @@ export function renderPendingActionCard(
 
   const buttons: HTMLButtonElement[] = [];
   const isActionValid = (actionId: string) =>
-    fieldAccessors.every((accessor) => isAccessorValidForAction(accessor, actionId));
+    fieldAccessors.every((accessor) =>
+      isAccessorValidForAction(accessor, actionId),
+    );
   const getActionById = (actionId: string) =>
     normalizedActions.actions.find((entry) => entry.id === actionId) || null;
   const actionNeedsSeparateSubmit = (actionId: string) =>
     getPendingActionExecutionMode(pending.action, actionId) === "edit";
   const getSeparateSubmitLabel = (actionId: string) => {
     const actionButton = getActionById(actionId);
-    return actionButton?.submitLabel || actionButton?.label || pending.action.confirmLabel || "Apply";
+    return (
+      actionButton?.submitLabel ||
+      actionButton?.label ||
+      pending.action.confirmLabel ||
+      "Apply"
+    );
   };
   const getBackLabel = (actionId: string) => {
     return getActionById(actionId)?.backLabel || "Get back";
@@ -1791,7 +1826,8 @@ export function renderPendingActionCard(
       const actionButton = doc.createElement("button");
       actionButton.type = "button";
       actionButton.dataset.actionChoice = action.id;
-      actionButton.dataset.primary = action.style === "primary" ? "true" : "false";
+      actionButton.dataset.primary =
+        action.style === "primary" ? "true" : "false";
       actionButton.className =
         action.id === activeActionId
           ? "llm-agent-hitl-btn llm-agent-hitl-btn-active"
@@ -1800,7 +1836,9 @@ export function renderPendingActionCard(
             : "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
       actionButton.textContent = action.label;
       actionButton.addEventListener("click", () => {
-        const nextActionNeedsSeparateSubmit = actionNeedsSeparateSubmit(action.id);
+        const nextActionNeedsSeparateSubmit = actionNeedsSeparateSubmit(
+          action.id,
+        );
         if (activeActionId === action.id) {
           if (!nextActionNeedsSeparateSubmit && isActionValid(action.id)) {
             handleExecute();
@@ -1853,15 +1891,21 @@ export function renderPendingActionCard(
       const selectedCount = Array.isArray(accessor.getValue())
         ? (accessor.getValue() as unknown[]).length
         : 0;
-      return selectedCount >= getPaperResultMinSelection(accessor.field, actionId);
+      return (
+        selectedCount >= getPaperResultMinSelection(accessor.field, actionId)
+      );
     }
     return accessor.isValid();
   };
   const syncActionUi = () => {
     const isSeparateSubmitMode =
-      buttonLayout.hasActionChooser && actionNeedsSeparateSubmit(activeActionId);
+      buttonLayout.hasActionChooser &&
+      actionNeedsSeparateSubmit(activeActionId);
     for (const accessor of fieldAccessors) {
-      accessor.container.hidden = !isFieldVisibleForAction(accessor.field, activeActionId);
+      accessor.container.hidden = !isFieldVisibleForAction(
+        accessor.field,
+        activeActionId,
+      );
     }
     const activeAction = getActionById(activeActionId);
     if (actionChooser) {
@@ -1931,7 +1975,9 @@ export function renderPendingActionCard(
     cancelButton.dataset.kind = "cancel";
     cancelButton.className = "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
     cancelButton.textContent =
-      normalizedActions.cancelAction.label || pending.action.cancelLabel || "Cancel";
+      normalizedActions.cancelAction.label ||
+      pending.action.cancelLabel ||
+      "Cancel";
     cancelButton.addEventListener("click", () => {
       setButtonsDisabled(true);
       getAgentRuntime().resolveConfirmation(pending.requestId, {
@@ -2027,7 +2073,9 @@ function buildAgentTraceRequestSummary(
 ): AgentTraceRequestSummary {
   const selectedTexts = userMessage ? getMessageSelectedTexts(userMessage) : [];
   const paperTitles = userMessage
-    ? normalizePaperContexts(userMessage.paperContexts).map((entry) => entry.title)
+    ? normalizePaperContexts(userMessage.paperContexts).map(
+        (entry) => entry.title,
+      )
     : [];
   const fileNames = Array.isArray(userMessage?.attachments)
     ? userMessage.attachments
@@ -2172,7 +2220,8 @@ function summarizeAgentTraceToolCall(
 
   // Show code block for shell commands and file I/O
   let codeBlock: string | undefined;
-  const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+  const a =
+    args && typeof args === "object" ? (args as Record<string, unknown>) : {};
   if (name === "run_command" && typeof a.command === "string") {
     codeBlock = a.command;
   } else if (name === "file_io" && typeof a.filePath === "string") {
@@ -2184,7 +2233,7 @@ function summarizeAgentTraceToolCall(
     icon: "→",
     // For file_io, use the descriptive onCall text (e.g. "Reading paper section")
     // instead of the generic label. For other tools (run_command), keep label.
-    text: (codeBlock && name !== "file_io") ? label : text,
+    text: codeBlock && name !== "file_io" ? label : text,
     codeBlock,
   };
 }
@@ -2279,8 +2328,7 @@ function summarizeAgentTraceToolResult(
       resolveToolPresentationSummary(
         getToolDefinition(name)?.presentation?.summaries?.onError,
         { label, content, request },
-      ) ||
-      `Could not complete ${label}: ${rawError || "Tool failed"}`;
+      ) || `Could not complete ${label}: ${rawError || "Tool failed"}`;
     return {
       kind: "skip",
       icon: "!",
@@ -2344,13 +2392,16 @@ function compactAgentTraceEvents(
     if (
       entry.payload.type === "reasoning" &&
       previous?.payload.type === "reasoning" &&
-      previous.payload.round === entry.payload.round
+      getReasoningTraceKey(previous.payload) ===
+        getReasoningTraceKey(entry.payload)
     ) {
       compact[compact.length - 1] = {
         ...entry,
         payload: {
           type: "reasoning",
           round: entry.payload.round,
+          stepId: entry.payload.stepId || previous.payload.stepId,
+          stepLabel: entry.payload.stepLabel || previous.payload.stepLabel,
           summary: appendAgentTraceText(
             previous.payload.summary,
             entry.payload.summary,
@@ -2402,6 +2453,8 @@ export function buildAgentTraceDisplayItems(
   const pendingActions = new Map<string, AgentPendingAction>();
   let announcedWriting = false;
   let lastMeaningfulStatus: string | null = null;
+  const reasoningLabels = new Map<string, string>();
+  let reasoningStepCounter = 0;
 
   items.push({
     type: "message",
@@ -2465,9 +2518,9 @@ export function buildAgentTraceDisplayItems(
           readAgentTraceText(entry.payload.summary) ||
           undefined;
         if (!text) break;
-        const roundKey = `round:${entry.payload.round}`;
+        const reasoningKey = getReasoningTraceKey(entry.payload);
         const existing = items.findLast(
-          (item) => item.type === "reasoning" && item.key === roundKey,
+          (item) => item.type === "reasoning" && item.key === reasoningKey,
         );
         if (existing && existing.type === "reasoning") {
           // Accumulate delta chunks; skip if already contained (dedup)
@@ -2476,14 +2529,22 @@ export function buildAgentTraceDisplayItems(
             existing.summary = prev + text;
           }
         } else {
-          const label =
-            readAgentTraceText(entry.payload.summary) &&
-            readAgentTraceText(entry.payload.details)
-              ? readAgentTraceText(entry.payload.summary)!
-              : `Thinking for step ${entry.payload.round}`;
+          let label = readAgentTraceText(entry.payload.stepLabel) || "";
+          if (!label) {
+            label = reasoningLabels.get(reasoningKey) || "";
+          }
+          if (!label) {
+            if (entry.payload.stepId) {
+              reasoningStepCounter += 1;
+              label = `Thinking for step ${reasoningStepCounter}`;
+            } else {
+              label = `Thinking for step ${entry.payload.round}`;
+            }
+            reasoningLabels.set(reasoningKey, label);
+          }
           items.push({
             type: "reasoning",
-            key: roundKey,
+            key: reasoningKey,
             label,
             summary: text,
             details: undefined,
@@ -2506,8 +2567,9 @@ export function buildAgentTraceDisplayItems(
           if (entry.payload.ok) {
             try {
               const cards =
-                getToolDefinition(entry.payload.name)
-                  ?.presentation?.buildResultCards?.(entry.payload.content) ??
+                getToolDefinition(
+                  entry.payload.name,
+                )?.presentation?.buildResultCards?.(entry.payload.content) ??
                 null;
               if (cards && cards.length > 0) {
                 items.push({ type: "card_list", cards });
@@ -2523,7 +2585,10 @@ export function buildAgentTraceDisplayItems(
         pendingActions.set(entry.payload.requestId, entry.payload.action);
         items.push({
           type: "action",
-          row: summarizeAgentTraceConfirmationRequest(entry.payload.action, requestSummary),
+          row: summarizeAgentTraceConfirmationRequest(
+            entry.payload.action,
+            requestSummary,
+          ),
         });
         break;
       case "confirmation_resolved": {
@@ -2623,7 +2688,7 @@ export function renderAgentTrace({
     loadingRow.className = "llm-at-row llm-at-row-plan";
     const loadingIcon = doc.createElement("span");
     loadingIcon.className = "llm-at-icon";
-    loadingIcon.textContent = "...";
+    loadingIcon.textContent = "…";
     const loadingText = doc.createElement("span");
     loadingText.className = "llm-at-text llm-at-plan-text";
     loadingText.textContent = "Loading agent activity...";
@@ -2632,12 +2697,17 @@ export function renderAgentTrace({
     wrap.appendChild(list);
     return wrap;
   }
-  const { items: processItems, isInterleaved } = buildAgentTraceDisplayItems(events, userMessage);
+  const { items: processItems, isInterleaved } = buildAgentTraceDisplayItems(
+    events,
+    userMessage,
+  );
   if (isInterleaved) {
     onInterleavedText?.();
   }
   const pending = getPendingConfirmation(events);
-  const hasFinalResponse = events.some((entry) => entry.payload.type === "final");
+  const hasFinalResponse = events.some(
+    (entry) => entry.payload.type === "final",
+  );
   for (const itemEntry of processItems) {
     if (itemEntry.type === "inline_text") {
       const inlineEl = doc.createElement("div");

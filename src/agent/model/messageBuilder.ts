@@ -64,7 +64,9 @@ function normalizeHistoryMessages(
   const raw = Array.isArray(request.history) ? request.history : [];
   const windowed = selectAgentHistoryWindow(raw, 10);
   return windowed
-    .filter((message) => message.role === "user" || message.role === "assistant")
+    .filter(
+      (message) => message.role === "user" || message.role === "assistant",
+    )
     .map((message) => ({
       role: message.role,
       content: stringifyMessageContent(message.content),
@@ -99,7 +101,9 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
     if (note.parentItemId) {
       contextLines.push(`- Active note parent item ID: ${note.parentItemId}`);
     }
-    contextLines.push(`Current note content for this turn:\n"""\n${note.noteText}\n"""`);
+    contextLines.push(
+      `Current note content for this turn:\n"""\n${note.noteText}\n"""`,
+    );
     if (note.noteHtml) {
       contextLines.push(`Original note HTML:\n"""\n${note.noteHtml}\n"""`);
     }
@@ -113,9 +117,9 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
             ? "model response"
             : source === "note"
               ? "Zotero note"
-            : source === "note-edit"
-              ? "active note editing focus"
-              : "PDF reader";
+              : source === "note-edit"
+                ? "active note editing focus"
+                : "PDF reader";
         return `Selected text ${index + 1} [source=${sourceLabel}]:\n"""\n${entry}\n"""`;
       })
       .join("\n\n");
@@ -143,7 +147,10 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
     );
   }
   const pdfAttachments = (request.attachments || []).filter(
-    (a) => a.category === "pdf" && typeof a.storedPath === "string" && a.storedPath.trim(),
+    (a) =>
+      a.category === "pdf" &&
+      typeof a.storedPath === "string" &&
+      a.storedPath.trim(),
   );
   const nonPdfAttachments = (request.attachments || []).filter(
     (a) => a.category !== "pdf",
@@ -241,8 +248,8 @@ function collectGuidanceInstructions(
 function buildAutoReadInstruction(request: AgentRuntimeRequest): string {
   const fullTextPapers = request.fullTextPaperContexts || [];
   if (!fullTextPapers.length) return "";
-  const allHaveMineruCache = fullTextPapers.every(
-    (entry) => Boolean(entry.mineruCacheDir),
+  const allHaveMineruCache = fullTextPapers.every((entry) =>
+    Boolean(entry.mineruCacheDir),
   );
   if (allHaveMineruCache) {
     return (
@@ -261,6 +268,68 @@ function buildAutoReadInstruction(request: AgentRuntimeRequest): string {
   );
 }
 
+function getInScopePaperContexts(request: AgentRuntimeRequest) {
+  return [
+    ...(request.selectedPaperContexts || []),
+    ...(request.fullTextPaperContexts || []),
+    ...(request.pinnedPaperContexts || []),
+  ];
+}
+
+function buildFigureMineruInstruction(
+  request: AgentRuntimeRequest,
+  matchedSkillIds: ReadonlyArray<string>,
+): string {
+  const activeSkillIds = new Set([
+    ...matchedSkillIds,
+    ...(request.forcedSkillIds || []),
+  ]);
+  if (!activeSkillIds.has("analyze-figures")) return "";
+  const mineruPapers = getInScopePaperContexts(request).filter((entry) =>
+    Boolean(entry.mineruCacheDir),
+  );
+  if (!mineruPapers.length) return "";
+  const cacheHints = mineruPapers
+    .map((entry, index) => {
+      const label = entry.title?.trim() || `paper ${index + 1}`;
+      return `- ${label}: ${entry.mineruCacheDir}`;
+    })
+    .join("\n");
+  return (
+    "TURN RULE: This is a figure/table interpretation task and MinerU cache is available for at least one in-scope paper. " +
+    "Before using `search_paper`, `read_paper`, or `view_pdf_pages`, first inspect MinerU by calling `file_io(read, '{mineruCacheDir}/manifest.json')` for the relevant cached paper. " +
+    "Then read the relevant `full.md` offsets and any referenced image files from that cache. " +
+    "Only fall back to PDF/search tools if the manifest or cache content cannot answer the figure request.\n" +
+    `Available MinerU cache directories:\n${cacheHints}`
+  );
+}
+
+function buildWriteNoteFileInstruction(
+  request: AgentRuntimeRequest,
+  matchedSkillIds: ReadonlyArray<string>,
+): string {
+  const activeSkillIds = new Set([
+    ...matchedSkillIds,
+    ...(request.forcedSkillIds || []),
+  ]);
+  if (!activeSkillIds.has("write-note")) return "";
+  const text = request.userText || "";
+  if (/\b(zotero\s+note|current\s+zotero\s+note|active\s+note)\b/i.test(text)) {
+    return "TURN RULE: The user is asking for a Zotero note edit. Use `edit_current_note` for the Zotero note workflow rather than writing an external Markdown file.";
+  }
+  if (
+    !/\b(obsidian|vault|markdown\s+file|md\s+file|file|folder|directory|disk|export|save|write\s+(?:it|this|that)?\s*(?:to|into))\b/i.test(
+      text,
+    )
+  ) {
+    return "";
+  }
+  return (
+    'TURN RULE: The user is asking for an Obsidian/file-based note. Successful completion requires calling `file_io` with `action: "write"` and Markdown content. ' +
+    "Do not finish by placing the full note body in chat. If the notes directory is not configured or the target path cannot be resolved, give a brief setup error instead of dumping the note body."
+  );
+}
+
 function buildNotesDirectorySection(): string {
   if (!isNotesDirectoryConfigured()) return "";
   const dirPath = getNotesDirectoryPath();
@@ -270,9 +339,7 @@ function buildNotesDirectorySection(): string {
   const defaultTargetPath = targetFolder
     ? joinLocalPath(dirPath, targetFolder)
     : dirPath;
-  const lines = [
-    "Notes directory configuration (user-configured):",
-  ];
+  const lines = ["Notes directory configuration (user-configured):"];
   if (nickname) {
     lines.push(`- Nickname: ${nickname}`);
   }
@@ -309,6 +376,10 @@ export async function buildAgentInitialMessages(
 ): Promise<AgentModelMessage[]> {
   const memoryBlock = await buildAgentMemoryBlock(request.conversationKey);
   const autoReadInstruction = buildAutoReadInstruction(request);
+  const workflowParityInstructions = [
+    buildFigureMineruInstruction(request, matchedSkillIds),
+    buildWriteNoteFileInstruction(request, matchedSkillIds),
+  ].filter(Boolean);
 
   const sections: PromptSection[] = [
     {
@@ -342,6 +413,10 @@ export async function buildAgentInitialMessages(
     {
       id: "auto-read",
       lines: [autoReadInstruction],
+    },
+    {
+      id: "workflow-parity",
+      lines: workflowParityInstructions,
     },
   ];
 

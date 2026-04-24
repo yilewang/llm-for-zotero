@@ -87,6 +87,48 @@ describe("codexAppServerInput", function () {
     });
   });
 
+  it("maps chat system prompts to developer instructions", async function () {
+    const messages: ChatMessage[] = [
+      {
+        role: "system",
+        content: "Use the selected paper context.",
+      },
+      {
+        role: "assistant",
+        content: "I already inspected the abstract.",
+      },
+      {
+        role: "user",
+        content: "What changed?",
+      },
+    ];
+
+    const prepared = await prepareCodexAppServerChatTurn(messages);
+
+    assert.equal(
+      prepared.developerInstructions,
+      "Use the selected paper context.",
+    );
+    assert.deepEqual(prepared.historyItemsToInject, [
+      {
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: "I already inspected the abstract.",
+          },
+        ],
+      },
+    ]);
+    assert.deepEqual(prepared.turnInput, [
+      {
+        type: "text",
+        text: "What changed?",
+      },
+    ]);
+  });
+
   it("keeps the latest user message images in agent mode", async function () {
     const messages: AgentModelMessage[] = [
       {
@@ -135,7 +177,7 @@ describe("codexAppServerInput", function () {
     assert.equal(input[1]?.type, "localImage");
   });
 
-  it("preserves system prompt and seeded history on the first agent turn", async function () {
+  it("maps the system prompt to developer instructions and injects only seeded history", async function () {
     const messages: AgentModelMessage[] = [
       {
         role: "system",
@@ -159,17 +201,11 @@ describe("codexAppServerInput", function () {
 
     const prepared = await prepareCodexAppServerAgentTurn(messages);
 
+    assert.equal(
+      prepared.developerInstructions,
+      "Follow Zotero-specific tool guidance.",
+    );
     assert.deepEqual(prepared.historyItemsToInject, [
-      {
-        type: "message",
-        role: "system",
-        content: [
-          {
-            type: "input_text",
-            text: "Follow Zotero-specific tool guidance.",
-          },
-        ],
-      },
       {
         type: "message",
         role: "assistant",
@@ -248,6 +284,38 @@ describe("codexAppServerInput", function () {
         type: "text",
         text: "System:\nFollow Zotero-specific tool guidance.",
       },
+      {
+        type: "text",
+        text: "Assistant:\nI can inspect your library.",
+      },
+      {
+        type: "text",
+        text: "User:\nSummarize this note.",
+      },
+    ]);
+  });
+
+  it("can omit the system prompt from legacy flattened agent input when app-server instructions are supported", async function () {
+    const messages: AgentModelMessage[] = [
+      {
+        role: "system",
+        content: "Follow Zotero-specific tool guidance.",
+      },
+      {
+        role: "assistant",
+        content: "I can inspect your library.",
+      },
+      {
+        role: "user",
+        content: "Summarize this note.",
+      },
+    ];
+
+    const input = await buildLegacyCodexAppServerAgentInitialInput(messages, {
+      includeSystem: false,
+    });
+
+    assert.deepEqual(input, [
       {
         type: "text",
         text: "Assistant:\nI can inspect your library.",

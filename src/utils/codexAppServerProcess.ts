@@ -341,9 +341,7 @@ export class CodexAppServerProcess {
     return this.injectItemsSupport;
   }
 
-  setInjectItemsSupport(
-    value: CodexAppServerInjectItemsSupport,
-  ): void {
+  setInjectItemsSupport(value: CodexAppServerInjectItemsSupport): void {
     this.injectItemsSupport = value;
   }
 
@@ -395,8 +393,7 @@ export class CodexAppServerProcess {
 export function isCodexAppServerInjectItemsUnsupportedError(
   error: unknown,
 ): boolean {
-  const message =
-    error instanceof Error ? error.message : String(error || "");
+  const message = error instanceof Error ? error.message : String(error || "");
   const normalized = message.toLowerCase();
   if (!normalized.includes("thread/inject_items")) return false;
   return (
@@ -406,6 +403,29 @@ export function isCodexAppServerInjectItemsUnsupportedError(
     normalized.includes("unknown method") ||
     normalized.includes("no handler registered") ||
     normalized.includes("-32601")
+  );
+}
+
+export function isCodexAppServerThreadStartInstructionsUnsupportedError(
+  error: unknown,
+): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  const normalized = message.toLowerCase();
+  if (
+    !normalized.includes("developerinstructions") &&
+    !normalized.includes("developer instructions") &&
+    !normalized.includes("baseinstructions") &&
+    !normalized.includes("base instructions")
+  ) {
+    return false;
+  }
+  return (
+    normalized.includes("unknown field") ||
+    normalized.includes("unknown variant") ||
+    normalized.includes("expected one of") ||
+    normalized.includes("invalid request") ||
+    normalized.includes("invalid params") ||
+    normalized.includes("serde")
   );
 }
 
@@ -565,6 +585,21 @@ function extractCodexAppServerItem(rawParams: unknown): {
   };
 }
 
+function extractCodexAppServerNotificationTurnId(rawParams: unknown): string {
+  if (!rawParams || typeof rawParams !== "object") return "";
+  const typed = rawParams as {
+    turnId?: unknown;
+    turn?: { id?: unknown };
+  };
+  if (typeof typed.turnId === "string" && typed.turnId.trim()) {
+    return typed.turnId.trim();
+  }
+  if (typeof typed.turn?.id === "string" && typed.turn.id.trim()) {
+    return typed.turn.id.trim();
+  }
+  return "";
+}
+
 export function waitForCodexAppServerTurnCompletion(params: {
   proc: CodexAppServerProcess;
   turnId: string;
@@ -605,8 +640,23 @@ export function waitForCodexAppServerTurnCompletion(params: {
         typeof event.details === "string" && event.details.length > 0
           ? event.details
           : undefined;
+      const stepId =
+        typeof event.stepId === "string" && event.stepId.trim()
+          ? event.stepId.trim()
+          : undefined;
+      const stepLabel =
+        typeof event.stepLabel === "string" && event.stepLabel.trim()
+          ? event.stepLabel.trim()
+          : undefined;
       if (!summary && !details) return;
-      Promise.resolve(onReasoning?.({ summary, details })).catch(() => {
+      Promise.resolve(
+        onReasoning?.({
+          summary,
+          details,
+          ...(stepId ? { stepId } : {}),
+          ...(stepLabel ? { stepLabel } : {}),
+        }),
+      ).catch(() => {
         // Ignore downstream consumer errors so the transport can finish cleanly.
       });
     };
@@ -695,10 +745,11 @@ export function waitForCodexAppServerTurnCompletion(params: {
     });
     scheduleTimeout();
 
-    // item/agentMessage/delta has no turnId — only one turn is active at a time
     const unsubDelta = proc.onNotification(
       "item/agentMessage/delta",
       (rawParams: unknown) => {
+        const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
+        if (eventTurnId && eventTurnId !== turnId) return;
         const notification = rawParams as { delta?: string };
         const delta = notification.delta ?? "";
         if (!delta) return;
@@ -714,6 +765,8 @@ export function waitForCodexAppServerTurnCompletion(params: {
     const unsubReasoningSummary = proc.onNotification(
       "item/reasoning/summaryTextDelta",
       (rawParams: unknown) => {
+        const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
+        if (eventTurnId && eventTurnId !== turnId) return;
         const notification = rawParams as {
           itemId?: unknown;
           delta?: unknown;
@@ -723,19 +776,22 @@ export function waitForCodexAppServerTurnCompletion(params: {
           notification.delta ?? notification.text,
         );
         if (!summary) return;
-        if (
-          typeof notification.itemId === "string" &&
-          notification.itemId.trim()
-        ) {
-          getReasoningState(notification.itemId.trim()).sawSummaryDelta = true;
+        const itemId =
+          typeof notification.itemId === "string" && notification.itemId.trim()
+            ? notification.itemId.trim()
+            : undefined;
+        if (itemId) {
+          getReasoningState(itemId).sawSummaryDelta = true;
         }
-        emitReasoning({ summary });
+        emitReasoning({ summary, stepId: itemId });
       },
     );
 
     const unsubReasoningDetails = proc.onNotification(
       "item/reasoning/textDelta",
       (rawParams: unknown) => {
+        const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
+        if (eventTurnId && eventTurnId !== turnId) return;
         const notification = rawParams as {
           itemId?: unknown;
           delta?: unknown;
@@ -745,19 +801,22 @@ export function waitForCodexAppServerTurnCompletion(params: {
           notification.delta ?? notification.text,
         );
         if (!details) return;
-        if (
-          typeof notification.itemId === "string" &&
-          notification.itemId.trim()
-        ) {
-          getReasoningState(notification.itemId.trim()).sawDetailsDelta = true;
+        const itemId =
+          typeof notification.itemId === "string" && notification.itemId.trim()
+            ? notification.itemId.trim()
+            : undefined;
+        if (itemId) {
+          getReasoningState(itemId).sawDetailsDelta = true;
         }
-        emitReasoning({ details });
+        emitReasoning({ details, stepId: itemId });
       },
     );
 
     const unsubUsage = proc.onNotification(
       "thread/tokenUsage/updated",
       (rawParams: unknown) => {
+        const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
+        if (eventTurnId && eventTurnId !== turnId) return;
         const notification = rawParams as {
           turnId?: unknown;
           tokenUsage?: {
@@ -773,9 +832,6 @@ export function waitForCodexAppServerTurnCompletion(params: {
             };
           };
         };
-        const eventTurnId =
-          typeof notification.turnId === "string" ? notification.turnId : "";
-        if (eventTurnId && eventTurnId !== turnId) return;
         const usage =
           notification.tokenUsage?.total || notification.tokenUsage?.last;
         if (!usage) return;
@@ -797,14 +853,16 @@ export function waitForCodexAppServerTurnCompletion(params: {
     const unsubItemCompleted = proc.onNotification(
       "item/completed",
       (rawParams: unknown) => {
+        const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
+        if (eventTurnId && eventTurnId !== turnId) return;
         const item = extractCodexAppServerItem(rawParams);
         if (!item || item.type !== "reasoning") return;
         const state = item.id ? getReasoningState(item.id) : undefined;
         if (item.summary && !state?.sawSummaryDelta) {
-          emitReasoning({ summary: item.summary });
+          emitReasoning({ summary: item.summary, stepId: item.id });
         }
         if (item.details && !state?.sawDetailsDelta) {
-          emitReasoning({ details: item.details });
+          emitReasoning({ details: item.details, stepId: item.id });
         }
       },
     );
@@ -954,8 +1012,14 @@ export async function listNvmCodexCandidates(params: {
   nvmDir?: string;
   separator: "/";
 }): Promise<string[]> {
-  const root = params.nvmDir?.trim() || joinRuntimePath("/", params.homeDir, ".nvm");
-  const versionsDir = joinRuntimePath(params.separator, root, "versions", "node");
+  const root =
+    params.nvmDir?.trim() || joinRuntimePath("/", params.homeDir, ".nvm");
+  const versionsDir = joinRuntimePath(
+    params.separator,
+    root,
+    "versions",
+    "node",
+  );
   const versionDirs = await listChildren(versionsDir);
   return versionDirs
     .map((entry) =>
@@ -1092,7 +1156,13 @@ export async function resolveCodexBinary(): Promise<string> {
         ])
       : uniquePaths([
           homeDir
-            ? joinRuntimePath(info.pathSeparator, homeDir, ".cargo", "bin", "codex")
+            ? joinRuntimePath(
+                info.pathSeparator,
+                homeDir,
+                ".cargo",
+                "bin",
+                "codex",
+              )
             : "",
           homeDir
             ? joinRuntimePath(
@@ -1104,13 +1174,31 @@ export async function resolveCodexBinary(): Promise<string> {
               )
             : "",
           homeDir
-            ? joinRuntimePath(info.pathSeparator, homeDir, ".local", "bin", "codex")
+            ? joinRuntimePath(
+                info.pathSeparator,
+                homeDir,
+                ".local",
+                "bin",
+                "codex",
+              )
             : "",
           homeDir
-            ? joinRuntimePath(info.pathSeparator, homeDir, ".volta", "bin", "codex")
+            ? joinRuntimePath(
+                info.pathSeparator,
+                homeDir,
+                ".volta",
+                "bin",
+                "codex",
+              )
             : "",
           homeDir
-            ? joinRuntimePath(info.pathSeparator, homeDir, ".asdf", "shims", "codex")
+            ? joinRuntimePath(
+                info.pathSeparator,
+                homeDir,
+                ".asdf",
+                "shims",
+                "codex",
+              )
             : "",
           ...(info.platform === "macos" ? ["/opt/homebrew/bin/codex"] : []),
           "/usr/local/bin/codex",
@@ -1126,7 +1214,11 @@ export async function resolveCodexBinary(): Promise<string> {
           separator: "/",
         });
 
-  for (const candidate of [...prefixCandidates, ...commonCandidates, ...nvmCandidates]) {
+  for (const candidate of [
+    ...prefixCandidates,
+    ...commonCandidates,
+    ...nvmCandidates,
+  ]) {
     if (await pathExists(candidate)) return candidate;
   }
 

@@ -10,6 +10,7 @@ import {
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
   getOrCreateCodexAppServerProcess,
+  isCodexAppServerThreadStartInstructionsUnsupportedError,
   resolveCodexAppServerTurnInputWithFallback,
   resolveCodexAppServerReasoningParams,
   waitForCodexAppServerTurnCompletion,
@@ -21,13 +22,17 @@ import {
 } from "../../utils/codexAppServerInput";
 import { isMultimodalRequestSupported } from "./messageBuilder";
 
-export function shouldResetCodexAppServerThreadOnError(error: unknown): boolean {
+export function shouldResetCodexAppServerThreadOnError(
+  error: unknown,
+): boolean {
   if ((error as { name?: unknown } | null | undefined)?.name === "AbortError") {
     return true;
   }
   const message = error instanceof Error ? error.message : String(error);
   return (
-    message.includes("Timed out waiting for codex app-server turn completion") ||
+    message.includes(
+      "Timed out waiting for codex app-server turn completion",
+    ) ||
     message.includes("Timed out waiting for codex app-server response") ||
     message.includes("CodexAppServerProcess destroyed") ||
     message.includes("codex app-server process closed unexpectedly") ||
@@ -64,14 +69,36 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
     let text: string;
     try {
       text = await proc.runTurnExclusive(async () => {
+        let activeTurnId = "";
         const unregisterToolCallHandler = proc.onRequest(
           "item/tool/call",
           async (rawParams: unknown) => {
             const notification = rawParams as {
               callId?: unknown;
+              turnId?: unknown;
               tool?: unknown;
               arguments?: unknown;
             };
+            const requestTurnId =
+              typeof notification.turnId === "string" &&
+              notification.turnId.trim()
+                ? notification.turnId.trim()
+                : "";
+            if (
+              activeTurnId &&
+              requestTurnId &&
+              requestTurnId !== activeTurnId
+            ) {
+              return {
+                contentItems: [
+                  {
+                    type: "inputText" as const,
+                    text: "Ignoring stale tool call for an inactive app-server turn.",
+                  },
+                ],
+                success: false,
+              };
+            }
             const call: AgentToolCall = {
               id:
                 typeof notification.callId === "string" &&
@@ -100,8 +127,12 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
         );
         try {
           const isFirstTurn = !this.threadId;
+          const preparedTurn = isFirstTurn
+            ? await prepareCodexAppServerAgentTurn(params.messages)
+            : null;
+          let shouldUseLegacyFirstTurnInput = false;
           if (isFirstTurn) {
-            const threadResp = await proc.sendRequest("thread/start", {
+            const threadStartParams: Record<string, unknown> = {
               model: request.model,
               ephemeral: true,
               approvalPolicy: "never",
@@ -110,7 +141,35 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
                 description: tool.description,
                 inputSchema: tool.inputSchema,
               })),
-            });
+            };
+            if (preparedTurn?.developerInstructions) {
+              threadStartParams.developerInstructions =
+                preparedTurn.developerInstructions;
+            }
+            let threadResp: unknown;
+            try {
+              threadResp = await proc.sendRequest(
+                "thread/start",
+                threadStartParams,
+              );
+            } catch (error) {
+              if (
+                !preparedTurn?.developerInstructions ||
+                !isCodexAppServerThreadStartInstructionsUnsupportedError(error)
+              ) {
+                throw error;
+              }
+              shouldUseLegacyFirstTurnInput = true;
+              const fallbackParams = { ...threadStartParams };
+              delete fallbackParams.developerInstructions;
+              ztoolkit.log(
+                "Codex app-server: thread/start developerInstructions unsupported; using legacy flattened input",
+              );
+              threadResp = await proc.sendRequest(
+                "thread/start",
+                fallbackParams,
+              );
+            }
             this.threadId = extractCodexAppServerThreadId(threadResp);
             if (!this.threadId) {
               throw new Error("Codex app-server did not return a thread ID");
@@ -120,19 +179,25 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
           if (!activeThreadId) {
             throw new Error("Codex app-server thread is not initialized");
           }
-          const preparedTurn = isFirstTurn
-            ? await prepareCodexAppServerAgentTurn(params.messages)
-            : null;
           const userInput = preparedTurn
-            ? await resolveCodexAppServerTurnInputWithFallback({
-                proc,
-                threadId: activeThreadId,
-                historyItemsToInject: preparedTurn.historyItemsToInject,
-                turnInput: preparedTurn.turnInput,
-                legacyInputFactory: () =>
-                  buildLegacyCodexAppServerAgentInitialInput(params.messages),
-                logContext: "agent-first-turn",
-              })
+            ? shouldUseLegacyFirstTurnInput
+              ? await buildLegacyCodexAppServerAgentInitialInput(
+                  params.messages,
+                )
+              : await resolveCodexAppServerTurnInputWithFallback({
+                  proc,
+                  threadId: activeThreadId,
+                  historyItemsToInject: preparedTurn.historyItemsToInject,
+                  turnInput: preparedTurn.turnInput,
+                  legacyInputFactory: () =>
+                    buildLegacyCodexAppServerAgentInitialInput(
+                      params.messages,
+                      {
+                        includeSystem: !preparedTurn.developerInstructions,
+                      },
+                    ),
+                  logContext: "agent-first-turn",
+                })
             : await extractLatestCodexAppServerUserInput(params.messages);
 
           const turnResp = await proc.sendRequest("turn/start", {
@@ -148,6 +213,7 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
           if (!turnId) {
             throw new Error("Codex app-server did not return a turn ID");
           }
+          activeTurnId = turnId;
 
           return await waitForCodexAppServerTurnCompletion({
             proc,

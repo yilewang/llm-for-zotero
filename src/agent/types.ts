@@ -237,6 +237,8 @@ export type AgentEvent =
   | {
       type: "reasoning";
       round: number;
+      stepId?: string;
+      stepLabel?: string;
       summary?: string;
       details?: string;
     }
@@ -257,7 +259,11 @@ export type AgentEvent =
       error: string;
       round: number;
     }
-  | { type: "confirmation_required"; requestId: string; action: AgentPendingAction }
+  | {
+      type: "confirmation_required";
+      requestId: string;
+      action: AgentPendingAction;
+    }
   | {
       type: "confirmation_resolved";
       requestId: string;
@@ -320,7 +326,10 @@ export type AgentModelCapabilities = {
 
 export type AgentModelContentPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } }
+  | {
+      type: "image_url";
+      image_url: { url: string; detail?: "low" | "high" | "auto" };
+    }
   | {
       type: "file_ref";
       file_ref: {

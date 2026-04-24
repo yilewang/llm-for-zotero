@@ -3,7 +3,10 @@ import {
   buildAgentTraceDisplayItems,
   getPendingActionButtonLayout,
 } from "../src/modules/contextPanel/agentTrace/render";
-import type { AgentPendingAction, AgentRunEventRecord } from "../src/agent/types";
+import type {
+  AgentPendingAction,
+  AgentRunEventRecord,
+} from "../src/agent/types";
 
 describe("agentTrace render", function () {
   it("preserves whitespace when compacting reasoning deltas", function () {
@@ -33,13 +36,106 @@ describe("agentTrace render", function () {
     ];
 
     const { items } = buildAgentTraceDisplayItems(events, null);
-    const reasoningItem = items.find(
-      (item) => item.type === "reasoning",
-    );
+    const reasoningItem = items.find((item) => item.type === "reasoning");
 
     assert.deepInclude(reasoningItem, {
       type: "reasoning",
-      details: "Let me read the paper first.",
+      summary: "Let me read the paper first.",
+    });
+  });
+
+  it("renders app-server reasoning item IDs as separate thinking steps", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "reasoning-a",
+          details: "First thought.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "file_io",
+          args: { action: "read", filePath: "/tmp/manifest.json" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "reasoning-b",
+          details: "Second thought.",
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const reasoningItems = items.filter((item) => item.type === "reasoning");
+
+    assert.deepEqual(
+      reasoningItems.map((item) =>
+        item.type === "reasoning"
+          ? { label: item.label, summary: item.summary }
+          : null,
+      ),
+      [
+        { label: "Thinking for step 1", summary: "First thought." },
+        { label: "Thinking for step 2", summary: "Second thought." },
+      ],
+    );
+  });
+
+  it("compacts same app-server reasoning item IDs into one thinking step", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "reasoning-a",
+          details: "Read ",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "reasoning-a",
+          details: "manifest.",
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const reasoningItems = items.filter((item) => item.type === "reasoning");
+
+    assert.lengthOf(reasoningItems, 1);
+    assert.deepInclude(reasoningItems[0], {
+      type: "reasoning",
+      label: "Thinking for step 1",
+      summary: "Read manifest.",
     });
   });
 

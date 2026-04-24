@@ -87,9 +87,11 @@ describe("CodexAppServerAdapter", function () {
   });
 
   it("injects seeded history on the first turn and sends only live user input later", async function () {
-    const originalChromeUtils = (globalThis as typeof globalThis & {
-      ChromeUtils?: unknown;
-    }).ChromeUtils;
+    const originalChromeUtils = (
+      globalThis as typeof globalThis & {
+        ChromeUtils?: unknown;
+      }
+    ).ChromeUtils;
     const originalCodexPath = globalThis.process?.env?.CODEX_PATH;
     const stdout = new MockStdout();
     const processKey = "codex_app_server_seeded_history_test";
@@ -97,6 +99,7 @@ describe("CodexAppServerAdapter", function () {
     let injectCount = 0;
     const turnInputs: unknown[] = [];
     let injectedItems: unknown = null;
+    let threadStartParams: Record<string, unknown> | null = null;
 
     try {
       if (globalThis.process?.env) {
@@ -106,9 +109,9 @@ describe("CodexAppServerAdapter", function () {
       (
         globalThis as typeof globalThis & {
           ChromeUtils?: {
-            importESModule: (
-              path: string,
-            ) => { Subprocess: { call: () => Promise<unknown> } };
+            importESModule: (path: string) => {
+              Subprocess: { call: () => Promise<unknown> };
+            };
           };
         }
       ).ChromeUtils = {
@@ -125,7 +128,11 @@ describe("CodexAppServerAdapter", function () {
                       const message = JSON.parse(line) as {
                         id?: number;
                         method?: string;
-                        params?: { input?: unknown; items?: unknown };
+                        params?: {
+                          input?: unknown;
+                          items?: unknown;
+                          developerInstructions?: unknown;
+                        };
                       };
                       if (message.method === "initialize") {
                         stdout.push(
@@ -135,6 +142,10 @@ describe("CodexAppServerAdapter", function () {
                       }
                       if (message.method === "thread/start") {
                         threadStartCount += 1;
+                        threadStartParams = message.params as Record<
+                          string,
+                          unknown
+                        >;
                         stdout.push(
                           `${JSON.stringify({ id: message.id, result: { id: "thread-1" } })}\n`,
                         );
@@ -222,18 +233,12 @@ describe("CodexAppServerAdapter", function () {
       assert.equal(first.kind, "final");
       assert.equal(second.kind, "final");
       assert.equal(threadStartCount, 1);
+      assert.equal(
+        threadStartParams?.developerInstructions,
+        "Follow Zotero-specific tool guidance.",
+      );
       assert.equal(injectCount, 1);
       assert.deepEqual(injectedItems, [
-        {
-          type: "message",
-          role: "system",
-          content: [
-            {
-              type: "input_text",
-              text: "Follow Zotero-specific tool guidance.",
-            },
-          ],
-        },
         {
           type: "message",
           role: "assistant",
@@ -272,10 +277,12 @@ describe("CodexAppServerAdapter", function () {
     }
   });
 
-  it("falls back to legacy flattened first-turn input on older app-server binaries", async function () {
-    const originalChromeUtils = (globalThis as typeof globalThis & {
-      ChromeUtils?: unknown;
-    }).ChromeUtils;
+  it("falls back to flattened first-turn input when history injection is unsupported", async function () {
+    const originalChromeUtils = (
+      globalThis as typeof globalThis & {
+        ChromeUtils?: unknown;
+      }
+    ).ChromeUtils;
     const originalCodexPath = globalThis.process?.env?.CODEX_PATH;
     const originalToolkit = (
       globalThis as typeof globalThis & { ztoolkit?: unknown }
@@ -285,6 +292,7 @@ describe("CodexAppServerAdapter", function () {
     let threadStartCount = 0;
     let injectCount = 0;
     const turnInputs: unknown[] = [];
+    let threadStartParams: Record<string, unknown> | null = null;
 
     try {
       if (globalThis.process?.env) {
@@ -301,9 +309,9 @@ describe("CodexAppServerAdapter", function () {
       (
         globalThis as typeof globalThis & {
           ChromeUtils?: {
-            importESModule: (
-              path: string,
-            ) => { Subprocess: { call: () => Promise<unknown> } };
+            importESModule: (path: string) => {
+              Subprocess: { call: () => Promise<unknown> };
+            };
           };
         }
       ).ChromeUtils = {
@@ -320,7 +328,10 @@ describe("CodexAppServerAdapter", function () {
                       const message = JSON.parse(line) as {
                         id?: number;
                         method?: string;
-                        params?: { input?: unknown };
+                        params?: {
+                          input?: unknown;
+                          developerInstructions?: unknown;
+                        };
                       };
                       if (message.method === "initialize") {
                         stdout.push(
@@ -330,6 +341,10 @@ describe("CodexAppServerAdapter", function () {
                       }
                       if (message.method === "thread/start") {
                         threadStartCount += 1;
+                        threadStartParams = message.params as Record<
+                          string,
+                          unknown
+                        >;
                         stdout.push(
                           `${JSON.stringify({ id: message.id, result: { id: "thread-1" } })}\n`,
                         );
@@ -423,12 +438,12 @@ describe("CodexAppServerAdapter", function () {
       assert.equal(first.kind, "final");
       assert.equal(second.kind, "final");
       assert.equal(threadStartCount, 1);
+      assert.equal(
+        threadStartParams?.developerInstructions,
+        "Follow Zotero-specific tool guidance.",
+      );
       assert.equal(injectCount, 1);
       assert.deepEqual(turnInputs[0], [
-        {
-          type: "text",
-          text: "System:\nFollow Zotero-specific tool guidance.",
-        },
         {
           type: "text",
           text: "Assistant:\nI can inspect your library.",
@@ -456,16 +471,183 @@ describe("CodexAppServerAdapter", function () {
       (
         globalThis as typeof globalThis & { ChromeUtils?: unknown }
       ).ChromeUtils = originalChromeUtils;
+      (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit =
+        originalToolkit;
+    }
+  });
+
+  it("preserves the system prompt in flattened input when developer instructions are unsupported", async function () {
+    const originalChromeUtils = (
+      globalThis as typeof globalThis & {
+        ChromeUtils?: unknown;
+      }
+    ).ChromeUtils;
+    const originalCodexPath = globalThis.process?.env?.CODEX_PATH;
+    const originalToolkit = (
+      globalThis as typeof globalThis & { ztoolkit?: unknown }
+    ).ztoolkit;
+    const stdout = new MockStdout();
+    const processKey = "codex_app_server_developer_instructions_fallback_test";
+    let threadStartCount = 0;
+    let injectCount = 0;
+    const turnInputs: unknown[] = [];
+
+    try {
+      if (globalThis.process?.env) {
+        globalThis.process.env.CODEX_PATH = "/mock/codex";
+      }
       (
-        globalThis as typeof globalThis & { ztoolkit?: unknown }
-      ).ztoolkit = originalToolkit;
+        globalThis as typeof globalThis & {
+          ztoolkit?: { log: () => void };
+        }
+      ).ztoolkit = {
+        log: () => undefined,
+      };
+
+      (
+        globalThis as typeof globalThis & {
+          ChromeUtils?: {
+            importESModule: (path: string) => {
+              Subprocess: { call: () => Promise<unknown> };
+            };
+          };
+        }
+      ).ChromeUtils = {
+        importESModule: (path: string) => {
+          assert.include(path, "Subprocess");
+          return {
+            Subprocess: {
+              call: async () => ({
+                stdout,
+                stdin: {
+                  write: (chunk: string) => {
+                    for (const line of chunk.split("\n")) {
+                      if (!line.trim()) continue;
+                      const message = JSON.parse(line) as {
+                        id?: number;
+                        method?: string;
+                        params?: {
+                          input?: unknown;
+                          developerInstructions?: unknown;
+                        };
+                      };
+                      if (message.method === "initialize") {
+                        stdout.push(
+                          `${JSON.stringify({ id: message.id, result: {} })}\n`,
+                        );
+                        continue;
+                      }
+                      if (message.method === "thread/start") {
+                        threadStartCount += 1;
+                        if (message.params?.developerInstructions) {
+                          stdout.push(
+                            `${JSON.stringify({
+                              id: message.id,
+                              error: {
+                                code: -32602,
+                                message:
+                                  "Invalid params: unknown field `developerInstructions`, expected one of model, approvalPolicy",
+                              },
+                            })}\n`,
+                          );
+                        } else {
+                          stdout.push(
+                            `${JSON.stringify({ id: message.id, result: { id: "thread-1" } })}\n`,
+                          );
+                        }
+                        continue;
+                      }
+                      if (message.method === "thread/inject_items") {
+                        injectCount += 1;
+                        stdout.push(
+                          `${JSON.stringify({ id: message.id, result: {} })}\n`,
+                        );
+                        continue;
+                      }
+                      if (message.method === "turn/start") {
+                        turnInputs.push(message.params?.input ?? null);
+                        stdout.push(
+                          `${JSON.stringify({ id: message.id, result: { id: "turn-1" } })}\n`,
+                        );
+                        setTimeout(() => {
+                          stdout.push(
+                            `${JSON.stringify({ method: "item/agentMessage/delta", params: { turnId: "turn-1", delta: "Done." } })}\n`,
+                          );
+                          stdout.push(
+                            `${JSON.stringify({ method: "turn/completed", params: { turnId: "turn-1", status: "completed" } })}\n`,
+                          );
+                        }, 0);
+                      }
+                    }
+                  },
+                },
+                kill: () => undefined,
+              }),
+            },
+          };
+        },
+      };
+
+      const adapter = new CodexAppServerAdapter(processKey);
+      const step = await adapter.runStep({
+        request: makeRequest(),
+        messages: [
+          {
+            role: "system",
+            content: "Follow Zotero-specific tool guidance.",
+          },
+          {
+            role: "assistant",
+            content: "I can inspect your library.",
+          },
+          {
+            role: "user",
+            content: "Summarize this note.",
+          },
+        ],
+        tools: [],
+      });
+
+      assert.equal(step.kind, "final");
+      assert.equal(threadStartCount, 2);
+      assert.equal(injectCount, 0);
+      assert.deepEqual(turnInputs[0], [
+        {
+          type: "text",
+          text: "System:\nFollow Zotero-specific tool guidance.",
+        },
+        {
+          type: "text",
+          text: "Assistant:\nI can inspect your library.",
+        },
+        {
+          type: "text",
+          text: "User:\nSummarize this note.",
+        },
+      ]);
+    } finally {
+      destroyCachedCodexAppServerProcess(processKey);
+      if (globalThis.process?.env) {
+        if (typeof originalCodexPath === "string") {
+          globalThis.process.env.CODEX_PATH = originalCodexPath;
+        } else {
+          delete globalThis.process.env.CODEX_PATH;
+        }
+      }
+      (
+        globalThis as typeof globalThis & { ChromeUtils?: unknown }
+      ).ChromeUtils = originalChromeUtils;
+      (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit =
+        originalToolkit;
     }
   });
 
   it("forwards app-server reasoning events into the shared reasoning callback", async function () {
-    const originalChromeUtils = (globalThis as typeof globalThis & {
-      ChromeUtils?: unknown;
-    }).ChromeUtils;
+    const originalChromeUtils = (
+      globalThis as typeof globalThis & {
+        ChromeUtils?: unknown;
+      }
+    ).ChromeUtils;
     const originalCodexPath = globalThis.process?.env?.CODEX_PATH;
     const stdout = new MockStdout();
     const processKey = "codex_app_server_reasoning_test";
@@ -478,9 +660,9 @@ describe("CodexAppServerAdapter", function () {
       (
         globalThis as typeof globalThis & {
           ChromeUtils?: {
-            importESModule: (
-              path: string,
-            ) => { Subprocess: { call: () => Promise<unknown> } };
+            importESModule: (path: string) => {
+              Subprocess: { call: () => Promise<unknown> };
+            };
           };
         }
       ).ChromeUtils = {
@@ -573,9 +755,11 @@ describe("CodexAppServerAdapter", function () {
   });
 
   it("forwards app-server token deltas into the shared usage callback", async function () {
-    const originalChromeUtils = (globalThis as typeof globalThis & {
-      ChromeUtils?: unknown;
-    }).ChromeUtils;
+    const originalChromeUtils = (
+      globalThis as typeof globalThis & {
+        ChromeUtils?: unknown;
+      }
+    ).ChromeUtils;
     const originalCodexPath = globalThis.process?.env?.CODEX_PATH;
     const stdout = new MockStdout();
     const processKey = "codex_app_server_usage_test";
@@ -588,9 +772,9 @@ describe("CodexAppServerAdapter", function () {
       (
         globalThis as typeof globalThis & {
           ChromeUtils?: {
-            importESModule: (
-              path: string,
-            ) => { Subprocess: { call: () => Promise<unknown> } };
+            importESModule: (path: string) => {
+              Subprocess: { call: () => Promise<unknown> };
+            };
           };
         }
       ).ChromeUtils = {

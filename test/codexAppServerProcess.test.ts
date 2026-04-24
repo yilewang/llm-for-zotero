@@ -154,9 +154,8 @@ describe("codexAppServerProcess", function () {
       assert.equal(proc.getInjectItemsSupport(), "unsupported");
       assert.deepEqual(requests, ["thread/inject_items"]);
     } finally {
-      (
-        globalThis as typeof globalThis & { ztoolkit?: unknown }
-      ).ztoolkit = originalToolkit;
+      (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit =
+        originalToolkit;
     }
   });
 
@@ -226,9 +225,11 @@ describe("codexAppServerProcess", function () {
       };
     });
 
-    await (proc as unknown as {
-      handleMessage: (msg: Record<string, unknown>) => void;
-    }).handleMessage({
+    await (
+      proc as unknown as {
+        handleMessage: (msg: Record<string, unknown>) => void;
+      }
+    ).handleMessage({
       id: 7,
       method: "item/tool/call",
       params: {
@@ -240,16 +241,13 @@ describe("codexAppServerProcess", function () {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    assert.deepEqual(
-      JSON.parse(writes[0] || "{}"),
-      {
-        id: 7,
-        result: {
-          contentItems: [{ type: "inputText", text: "done" }],
-          success: true,
-        },
+    assert.deepEqual(JSON.parse(writes[0] || "{}"), {
+      id: 7,
+      result: {
+        contentItems: [{ type: "inputText", text: "done" }],
+        success: true,
       },
-    );
+    });
   });
 
   it("times out stalled JSON-RPC requests and marks the process unusable", async function () {
@@ -317,9 +315,11 @@ describe("codexAppServerProcess", function () {
     const proc = createProcess();
 
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         id: 9,
         method: "item/tool/call",
         params: {
@@ -330,9 +330,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 20);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "turn/completed",
         params: {
           turnId: "turn-active",
@@ -360,9 +362,11 @@ describe("codexAppServerProcess", function () {
     const reasoning: Array<{ summary?: string; details?: string }> = [];
 
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "item/reasoning/summaryTextDelta",
         params: {
           itemId: "reasoning-1",
@@ -371,9 +375,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 5);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "item/reasoning/textDelta",
         params: {
           itemId: "reasoning-1",
@@ -382,9 +388,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 10);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "item/completed",
         params: {
           item: {
@@ -397,9 +405,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 15);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "turn/completed",
         params: {
           turnId: "turn-reasoning",
@@ -432,9 +442,11 @@ describe("codexAppServerProcess", function () {
     const reasoning: Array<{ summary?: string; details?: string }> = [];
 
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "item/completed",
         params: {
           item: {
@@ -447,9 +459,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 5);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "turn/completed",
         params: {
           turnId: "turn-reasoning-final",
@@ -477,6 +491,101 @@ describe("codexAppServerProcess", function () {
     ]);
   });
 
+  it("passes reasoning item IDs through and ignores stale-turn notifications", async function () {
+    const proc = createProcess();
+    const reasoning: Array<{ summary?: string; stepId?: string }> = [];
+    const chunks: string[] = [];
+
+    setTimeout(() => {
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          turnId: "turn-stale",
+          itemId: "reasoning-stale",
+          delta: "Ignore this.",
+        },
+      });
+    }, 5);
+    setTimeout(() => {
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-stale",
+          delta: "stale",
+        },
+      });
+    }, 10);
+    setTimeout(() => {
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          turnId: "turn-active",
+          itemId: "reasoning-active",
+          delta: "Use this.",
+        },
+      });
+    }, 15);
+    setTimeout(() => {
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
+        method: "item/agentMessage/delta",
+        params: {
+          turnId: "turn-active",
+          delta: "active",
+        },
+      });
+    }, 20);
+    setTimeout(() => {
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
+        method: "turn/completed",
+        params: {
+          turnId: "turn-active",
+          status: "completed",
+        },
+      });
+    }, 25);
+
+    const result = await waitForCodexAppServerTurnCompletion({
+      proc,
+      turnId: "turn-active",
+      onTextDelta: async (delta) => {
+        chunks.push(delta);
+      },
+      onReasoning: async (event) => {
+        reasoning.push({
+          ...(event.summary ? { summary: event.summary } : {}),
+          ...(event.stepId ? { stepId: event.stepId } : {}),
+        });
+      },
+      timeoutMs: 50,
+    });
+
+    assert.equal(result, "active");
+    assert.deepEqual(chunks, ["active"]);
+    assert.deepEqual(reasoning, [
+      { summary: "Use this.", stepId: "reasoning-active" },
+    ]);
+  });
+
   it("emits token usage updates for the active turn", async function () {
     const proc = createProcess();
     const usage: Array<{
@@ -486,9 +595,11 @@ describe("codexAppServerProcess", function () {
     }> = [];
 
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "thread/tokenUsage/updated",
         params: {
           threadId: "thread-usage",
@@ -504,9 +615,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 5);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "turn/completed",
         params: {
           turnId: "turn-usage",
@@ -543,9 +656,11 @@ describe("codexAppServerProcess", function () {
     }> = [];
 
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "thread/tokenUsage/updated",
         params: {
           turnId: "turn-usage-repeat",
@@ -560,9 +675,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 5);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "thread/tokenUsage/updated",
         params: {
           turnId: "turn-usage-repeat",
@@ -577,9 +694,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 10);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "thread/tokenUsage/updated",
         params: {
           turnId: "turn-usage-repeat",
@@ -594,9 +713,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 15);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "turn/completed",
         params: {
           turnId: "turn-usage-repeat",
@@ -638,9 +759,11 @@ describe("codexAppServerProcess", function () {
     }> = [];
 
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "thread/tokenUsage/updated",
         params: {
           turnId: "turn-usage-total",
@@ -660,9 +783,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 5);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "thread/tokenUsage/updated",
         params: {
           turnId: "turn-usage-total",
@@ -682,9 +807,11 @@ describe("codexAppServerProcess", function () {
       });
     }, 10);
     setTimeout(() => {
-      void (proc as unknown as {
-        handleMessage: (msg: Record<string, unknown>) => void;
-      }).handleMessage({
+      void (
+        proc as unknown as {
+          handleMessage: (msg: Record<string, unknown>) => void;
+        }
+      ).handleMessage({
         method: "turn/completed",
         params: {
           turnId: "turn-usage-total",
@@ -748,7 +875,8 @@ describe("codexAppServerProcess", function () {
   it("uses CODEX_PATH when spawning on Windows", async function () {
     const originalZotero = globalThis.Zotero;
     const originalProcess = globalThis.process;
-    const originalLoadSubprocessModule = CodexAppServerProcess.loadSubprocessModule;
+    const originalLoadSubprocessModule =
+      CodexAppServerProcess.loadSubprocessModule;
     const originalStartReadLoop = (
       CodexAppServerProcess.prototype as unknown as {
         startReadLoop: () => void;
@@ -816,7 +944,7 @@ describe("codexAppServerProcess", function () {
     assert.match(calls[0]?.command || "", /c:\\windows\\system32\\cmd\.exe/i);
     assert.deepEqual(calls[0]?.arguments, [
       "/c",
-      "\"C:\\Tools\\Codex\\codex.exe\" app-server",
+      '"C:\\Tools\\Codex\\codex.exe" app-server',
     ]);
   });
 
