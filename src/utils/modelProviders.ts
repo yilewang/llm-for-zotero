@@ -32,7 +32,7 @@ export type ModelProviderModel = AdvancedModelConfig & {
   providerProtocol?: ProviderProtocol;
 };
 
-export type ModelProviderAuthMode = "api_key" | "codex_auth" | "copilot_auth" | "webchat"; // [webchat]
+export type ModelProviderAuthMode = "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat"; // [webchat]
 
 export type ModelProviderGroup = {
   id: string;
@@ -132,6 +132,7 @@ function normalizeApiBase(apiBase: string): string {
 
 function normalizeProviderAuthMode(value: unknown): ModelProviderAuthMode {
   if (value === "codex_auth") return "codex_auth";
+  if (value === "codex_app_server") return "codex_app_server";
   if (value === "copilot_auth") return "copilot_auth";
   if (value === "webchat") return "webchat"; // [webchat]
   return "api_key";
@@ -515,10 +516,12 @@ export function getRuntimeModelEntries(): RuntimeModelEntry[] {
       authMode === "webchat"
         ? `${baseProviderLabel} (web)`
         : authMode === "codex_auth"
-          ? `${baseProviderLabel} (codex auth)`
-          : authMode === "copilot_auth"
-            ? `${baseProviderLabel} (copilot auth)`
-            : baseProviderLabel;
+          ? `${baseProviderLabel} (codex auth, legacy)`
+          : authMode === "codex_app_server"
+            ? `${baseProviderLabel} (app server)`
+            : authMode === "copilot_auth"
+              ? `${baseProviderLabel} (copilot auth)`
+              : baseProviderLabel;
     const normalizedCounts = new Map<string, number>();
     for (const modelEntry of group.models) {
       const modelName = modelEntry.model.trim();
@@ -532,9 +535,11 @@ export function getRuntimeModelEntries(): RuntimeModelEntry[] {
           ? `web/${modelName}`
           : authMode === "codex_auth"
             ? `codex/${modelName}`
-            : authMode === "copilot_auth"
-              ? `copilot/${modelName}`
-              : modelName;
+            : authMode === "codex_app_server"
+              ? `codex-app/${modelName}`
+              : authMode === "copilot_auth"
+                ? `copilot/${modelName}`
+                : modelName;
       entries.push({
         entryId: modelEntry.id,
         groupId: group.id,

@@ -11,6 +11,13 @@ import {
 } from "./providerTransport";
 import { createAgentModelAdapter } from "../agent/model/factory";
 import type { AgentRuntimeRequest } from "../agent/types";
+import {
+  destroyCachedCodexAppServerProcess,
+  extractCodexAppServerThreadId,
+  extractCodexAppServerTurnId,
+  getOrCreateCodexAppServerProcess,
+  waitForCodexAppServerTurnCompletion,
+} from "./codexAppServerProcess";
 
 function extractTextFromCodexSSE(raw: string): string {
   const lines = raw.split(/\r?\n/);
@@ -65,7 +72,7 @@ function extractAnthropicText(data: unknown): string {
       if (!entry || typeof entry !== "object") return "";
       return (entry as { type?: unknown; text?: unknown }).type === "text" &&
         typeof (entry as { text?: unknown }).text === "string"
-        ? ((entry as { text: string }).text || "")
+        ? (entry as { text: string }).text || ""
         : "";
     })
     .join("");
@@ -76,9 +83,11 @@ function extractGeminiText(data: unknown): string {
   const candidates = (data as { candidates?: unknown }).candidates;
   if (!Array.isArray(candidates)) return "";
   const parts = (
-    candidates[0] as {
-      content?: { parts?: Array<{ text?: unknown }> };
-    } | undefined
+    candidates[0] as
+      | {
+          content?: { parts?: Array<{ text?: unknown }> };
+        }
+      | undefined
   )?.content?.parts;
   if (!Array.isArray(parts)) return "";
   return parts
@@ -214,13 +223,70 @@ export function getProviderConnectionCapabilityLabel(params: {
     authMode: params.authMode,
     providerProtocol: params.protocol,
   };
-  const capabilities = createAgentModelAdapter(request).getCapabilities(request);
+  const capabilities =
+    createAgentModelAdapter(request).getCapabilities(request);
   return describeAgentCapabilityClass(
     getAgentCapabilityClass({
       toolCalls: capabilities.toolCalls,
       fileInputs: capabilities.fileInputs,
     }),
   );
+}
+
+export async function runCodexAppServerConnectionTest(params: {
+  modelName: string;
+}): Promise<{ reply: string; capabilityLabel: string }> {
+  const processKey = `codex_app_server_connection_test_${Date.now()}_${Math.random()
+    .toString(16)
+    .slice(2)}`;
+  const proc = await getOrCreateCodexAppServerProcess(processKey);
+  try {
+    const reply = await proc.runTurnExclusive(async () => {
+      const threadResp = await proc.sendRequest("thread/start", {
+        model: params.modelName || undefined,
+        ephemeral: true,
+        approvalPolicy: "never",
+      });
+      const threadId = extractCodexAppServerThreadId(threadResp);
+      if (!threadId) {
+        throw new Error("Codex app-server did not return a thread ID");
+      }
+
+      const turnResp = await proc.sendRequest("turn/start", {
+        threadId,
+        input: [{ type: "text", text: "Say OK" }],
+      });
+      const turnId = extractCodexAppServerTurnId(turnResp);
+      if (!turnId) {
+        throw new Error("Codex app-server did not return a turn ID");
+      }
+
+      return waitForCodexAppServerTurnCompletion({
+        proc,
+        turnId,
+        cacheKey: processKey,
+      });
+    });
+
+    const request = {
+      conversationKey: 0,
+      mode: "agent" as const,
+      userText: "",
+      authMode: "codex_app_server" as const,
+      model: params.modelName,
+    } as AgentRuntimeRequest;
+    const capabilities =
+      createAgentModelAdapter(request).getCapabilities(request);
+    const capabilityLabel = describeAgentCapabilityClass(
+      getAgentCapabilityClass({
+        toolCalls: capabilities.toolCalls,
+        fileInputs: capabilities.fileInputs,
+      }),
+    );
+    return { reply: reply.trim() || "OK", capabilityLabel };
+  } finally {
+    destroyCachedCodexAppServerProcess(processKey);
+  }
 }
 
 export async function runProviderConnectionTest(params: {

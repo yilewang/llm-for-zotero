@@ -60,7 +60,7 @@ export function buildTagAssignmentField(
   return {
     type: "tag_assignment_table" as const,
     id: getTagAssignmentFieldId(operation),
-    label: "Suggested tags",
+    label: "Suggested tags to add",
     rows: assignments.map((assignment) => {
       const target = targetByItemId.get(assignment.itemId);
       const details = [target?.firstCreator || "", target?.year || ""].filter(Boolean);

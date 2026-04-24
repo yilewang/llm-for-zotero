@@ -5,10 +5,14 @@ import type {
   AdvancedModelParams,
   ActiveNoteContext,
   ChatAttachment,
+  CollectionContextRef,
   PaperContextRef,
   SelectedTextSource,
 } from "../shared/types";
-import type { ReasoningConfig as LLMReasoningConfig } from "../utils/llmClient";
+import type {
+  ReasoningConfig as LLMReasoningConfig,
+  UsageStats,
+} from "../utils/llmClient";
 
 export type AgentRequest = {
   conversationKey: number;
@@ -20,6 +24,7 @@ export type AgentRequest = {
   selectedPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
   attachments?: ChatAttachment[];
   screenshots?: string[];
   /** Skill IDs to force-activate regardless of regex matching (from slash menu selection). */
@@ -239,9 +244,12 @@ export type AgentEvent =
   | {
       type: "reasoning";
       round: number;
+      stepId?: string;
+      stepLabel?: string;
       summary?: string;
       details?: string;
     }
+  | ({ type: "usage"; round: number } & UsageStats)
   | { type: "tool_call"; callId: string; name: string; args: unknown }
   | {
       type: "tool_result";
@@ -258,7 +266,11 @@ export type AgentEvent =
       error: string;
       round: number;
     }
-  | { type: "confirmation_required"; requestId: string; action: AgentPendingAction }
+  | {
+      type: "confirmation_required";
+      requestId: string;
+      action: AgentPendingAction;
+    }
   | {
       type: "confirmation_resolved";
       requestId: string;
@@ -335,7 +347,10 @@ export type AgentModelCapabilities = {
 
 export type AgentModelContentPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } }
+  | {
+      type: "image_url";
+      image_url: { url: string; detail?: "low" | "high" | "auto" };
+    }
   | {
       type: "file_ref";
       file_ref: {

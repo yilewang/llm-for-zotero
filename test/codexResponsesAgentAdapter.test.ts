@@ -266,6 +266,44 @@ describe("CodexResponsesAgentAdapter", function () {
     assert.deepEqual(reasoning, ["Plan first."]);
   });
 
+  it("forwards completed response usage into the shared usage callback", async function () {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(
+          encoder.encode(
+            'data: {"type":"response.completed","response":{"id":"resp_usage","output_text":"Done.","usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}}\n',
+          ),
+        );
+        controller.close();
+      },
+    });
+    const usage: Array<{
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+    }> = [];
+
+    const step = await parseResponsesStepStream(
+      stream,
+      undefined,
+      undefined,
+      async (event) => {
+        usage.push(event);
+      },
+    );
+
+    assert.equal(step.responseId, "resp_usage");
+    assert.equal(step.text, "Done.");
+    assert.deepEqual(usage, [
+      {
+        promptTokens: 11,
+        completionTokens: 7,
+        totalTokens: 18,
+      },
+    ]);
+  });
+
   it("extracts final text from response.message.done events", async function () {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {

@@ -25,7 +25,10 @@ describe("sendFlowController", function () {
   ];
 
   function createBaseDeps(overrides: Record<string, unknown> = {}) {
-    const inputBox = { value: "ask question" } as HTMLTextAreaElement;
+    const inputBox = {
+      value: "ask question",
+      dataset: {},
+    } as HTMLTextAreaElement;
     let draftValue = inputBox.value;
     let sendCalled = 0;
     let editCalled = 0;
@@ -40,6 +43,7 @@ describe("sendFlowController", function () {
     let lastRuntimeMode = "";
     let lastEditRuntimeMode = "";
     let lastEditPdfUploadSystemMessages: string[] | undefined;
+    let lastStatus: { message: string; level: string } | null = null;
 
     const deps = {
       body: {} as Element,
@@ -123,7 +127,9 @@ describe("sendFlowController", function () {
       },
       autoLockGlobalChat: () => undefined,
       autoUnlockGlobalChat: () => undefined,
-      setStatusMessage: () => undefined,
+      setStatusMessage: (message: string, level: string) => {
+        lastStatus = { message, level };
+      },
       editStaleStatusText: "stale",
       ...overrides,
     };
@@ -150,6 +156,7 @@ describe("sendFlowController", function () {
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
       getLastEditPdfUploadSystemMessages: () => lastEditPdfUploadSystemMessages,
+      getLastStatus: () => lastStatus,
     };
   }
 
@@ -334,5 +341,101 @@ describe("sendFlowController", function () {
 
     assert.equal(lastSend.lastSentQuestion, "ask question");
     assert.equal(lastSend.lastRuntimeMode, "agent");
+  });
+
+  it("allows text-like pinned files in codex app server chat", async function () {
+    const { controller, getCounts, getLastStatus } = createBaseDeps({
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "gpt-5.4",
+        apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        apiKey: "",
+        providerLabel: "Codex",
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+      }),
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.isNull(getLastStatus());
+  });
+
+  it("blocks pinned PDFs in codex app server chat before sending", async function () {
+    const blockedAttachment: ChatAttachment = {
+      id: "file-2",
+      name: "paper.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 1024,
+      category: "pdf",
+    };
+    const { controller, inputBox, getCounts, getLastStatus } = createBaseDeps({
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "gpt-5.4",
+        apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        apiKey: "",
+        providerLabel: "Codex",
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+      }),
+      getSelectedFiles: () => [blockedAttachment],
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 0);
+    assert.equal(getCounts().editCalled, 0);
+    assert.equal(inputBox.value, "ask question");
+    assert.deepEqual(getLastStatus(), {
+      message:
+        "Codex App Server chat does not support pinned PDF or binary file attachments (paper.pdf). Remove them and try again.",
+      level: "error",
+    });
+  });
+
+  it("blocks pinned binary files in codex app server latest-turn edit retries", async function () {
+    const blockedAttachment: ChatAttachment = {
+      id: "file-3",
+      name: "archive.zip",
+      mimeType: "application/zip",
+      sizeBytes: 1024,
+      category: "file",
+    };
+    const { controller, getCounts, getLastStatus } = createBaseDeps({
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "gpt-5.4",
+        apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        apiKey: "",
+        providerLabel: "Codex",
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+      }),
+      getSelectedFiles: () => [blockedAttachment],
+      getActiveEditSession: () => ({
+        conversationKey: item.id,
+        userTimestamp: 10,
+        assistantTimestamp: 20,
+      }),
+      getLatestEditablePair: async () => ({
+        conversationKey: item.id,
+        pair: {
+          userMessage: { timestamp: 10 },
+          assistantMessage: { timestamp: 20, streaming: false },
+        },
+      }),
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 0);
+    assert.equal(getCounts().editCalled, 0);
+    assert.deepEqual(getLastStatus(), {
+      message:
+        "Codex App Server chat does not support pinned PDF or binary file attachments (archive.zip). Remove them and try again.",
+      level: "error",
+    });
   });
 });

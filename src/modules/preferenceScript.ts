@@ -34,7 +34,7 @@ import {
   getProviderProtocolSpec,
   type ProviderProtocol,
 } from "../utils/providerProtocol";
-import { runProviderConnectionTest } from "../utils/providerConnectionTest";
+import { runProviderConnectionTest, runCodexAppServerConnectionTest } from "../utils/providerConnectionTest";
 import {
   startCopilotDeviceFlow,
   pollCopilotDeviceAuth,
@@ -106,8 +106,16 @@ const setPref = (key: PrefKey, value: string) =>
 
 const CUSTOMIZED_API_HELPER_TEXT =
   "Choose a preset above, or switch to Customized to enter a full base URL or endpoint manually.";
-const CODEX_API_HELPER_TEXT =
-  "codex auth usually uses https://chatgpt.com/backend-api/codex/responses";
+const LEGACY_CODEX_AUTH_HELPER_TEXT =
+  "Legacy direct ChatGPT/Codex backend mode. Existing users can keep using it in this release. New users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
+const CODEX_APP_SERVER_HELPER_TEXT =
+  "Recommended official Codex integration. Runs the local `codex app-server` CLI and routes turns through it. Run `codex login` first.";
+const LEGACY_CODEX_API_HELPER_TEXT =
+  "Legacy direct backend URL. Usually uses https://chatgpt.com/backend-api/codex/responses. Existing users can keep it in this release, but new users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
+const CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT =
+  "Uses Codex responses with the local codex app-server transport.";
+const LEGACY_CODEX_AUTH_PROTOCOL_HELPER_TEXT =
+  "Uses Codex responses with the legacy direct backend transport.";
 const COPILOT_API_HELPER_TEXT =
   "GitHub Copilot uses device-based login. Click Login to authenticate via GitHub.";
 const DEFAULT_COPILOT_API_BASE = "https://api.githubcopilot.com";
@@ -178,7 +186,7 @@ function getProtocolOptions(
   presetId: ProviderPresetId,
 ): ProviderProtocol[] {
   if (authMode === "webchat") return ["web_sync"]; // [webchat]
-  if (authMode === "codex_auth") return ["codex_responses"];
+  if (authMode === "codex_auth" || authMode === "codex_app_server") return ["codex_responses"];
   if (authMode === "copilot_auth")
     return ["openai_chat_compat", "responses_api"];
   if (presetId !== "customized") {
@@ -196,7 +204,7 @@ function resolveSelectedProtocol(
   presetId: ProviderPresetId,
 ): ProviderProtocol {
   const fallback =
-    group.authMode === "codex_auth"
+    group.authMode === "codex_auth" || group.authMode === "codex_app_server"
       ? "codex_responses"
       : presetId === "customized"
         ? "openai_chat_compat"
@@ -209,6 +217,19 @@ function resolveSelectedProtocol(
     fallback,
   });
   return allowed.includes(normalized) ? normalized : allowed[0];
+}
+
+function getProtocolHelperText(
+  group: ModelProviderGroup,
+  protocol: ProviderProtocol,
+): string {
+  if (group.authMode === "codex_app_server") {
+    return t(CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT);
+  }
+  if (group.authMode === "codex_auth") {
+    return t(LEGACY_CODEX_AUTH_PROTOCOL_HELPER_TEXT);
+  }
+  return getProviderProtocolSpec(protocol).helperText;
 }
 
 // ── DOM helpers ────────────────────────────────────────────────────
@@ -278,6 +299,7 @@ function hasEmptyModel(group: ModelProviderGroup): boolean {
 function normalizeAuthMode(value: unknown): ModelProviderAuthMode {
   if (value === "webchat") return "webchat"; // [webchat]
   if (value === "codex_auth") return "codex_auth";
+  if (value === "codex_app_server") return "codex_app_server";
   if (value === "copilot_auth") return "copilot_auth";
   return "api_key";
 }
@@ -692,23 +714,31 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       const apiKeyOption = el(doc, "option") as HTMLOptionElement;
       apiKeyOption.value = "api_key";
       apiKeyOption.textContent = t("API Key");
+      apiKeyOption.selected = group.authMode === "api_key";
+      const codexAppServerOption = el(doc, "option") as HTMLOptionElement;
+      codexAppServerOption.value = "codex_app_server";
+      codexAppServerOption.textContent = t("Codex App Server");
+      codexAppServerOption.selected = group.authMode === "codex_app_server";
       const codexOption = el(doc, "option") as HTMLOptionElement;
       codexOption.value = "codex_auth";
-      codexOption.textContent = t("Codex Auth");
+      codexOption.textContent = t("Codex Auth (Legacy)");
+      codexOption.selected = group.authMode === "codex_auth";
       const copilotOption = el(doc, "option") as HTMLOptionElement;
       copilotOption.value = "copilot_auth";
       copilotOption.textContent = t("GitHub Copilot");
+      copilotOption.selected = group.authMode === "copilot_auth";
       // [webchat] Add webchat option
       const webchatOption = el(doc, "option") as HTMLOptionElement;
       webchatOption.value = "webchat";
       webchatOption.textContent = t("WebChat");
+      webchatOption.selected = group.authMode === "webchat";
       authModeSelect.append(
         apiKeyOption,
+        codexAppServerOption,
         codexOption,
         copilotOption,
         webchatOption,
       );
-      authModeSelect.value = group.authMode;
       authModeSelect.addEventListener("change", () => {
         const nextAuthMode = normalizeAuthMode(authModeSelect.value);
         group.authMode = nextAuthMode;
@@ -719,7 +749,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           if (!group.models[0]?.model || !webchatModelNames.includes(group.models[0].model)) {
             group.models = [{ ...group.models[0], model: "chatgpt.com" }];
           }
-        } else if (nextAuthMode === "codex_auth") {
+        } else if (nextAuthMode === "codex_auth" || nextAuthMode === "codex_app_server") {
           group.providerProtocol = "codex_responses";
         } else if (nextAuthMode === "copilot_auth") {
           group.providerProtocol = "openai_chat_compat";
@@ -730,7 +760,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           group.providerProtocol =
             selectedPreset?.defaultProtocol || "openai_chat_compat";
         }
-        if (nextAuthMode === "codex_auth" && !group.apiBase.trim()) {
+        if (
+          (nextAuthMode === "codex_auth" ||
+            nextAuthMode === "codex_app_server") &&
+          !group.apiBase.trim()
+        ) {
           group.apiBase = DEFAULT_CODEX_API_BASE;
         }
         if (nextAuthMode === "copilot_auth" && !group.apiBase.trim()) {
@@ -748,8 +782,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           : group.authMode === "copilot_auth"
             ? t(COPILOT_API_HELPER_TEXT)
             : group.authMode === "codex_auth"
-              ? t("codex auth reuses local `codex login` credentials from ~/.codex/auth.json")
-              : "";
+              ? t(LEGACY_CODEX_AUTH_HELPER_TEXT)
+              : group.authMode === "codex_app_server"
+                ? t(CODEX_APP_SERVER_HELPER_TEXT)
+                : "";
       authModeWrap.append(
         authModeLabel,
         authModeSelect,
@@ -757,7 +793,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
 
       const selectedPresetId: ProviderPresetId =
-        group.authMode === "codex_auth" || group.authMode === "copilot_auth"
+        group.authMode === "codex_auth" || group.authMode === "codex_app_server" || group.authMode === "copilot_auth"
           ? "customized"
           : (group.presetIdOverride ?? detectProviderPreset(group.apiBase));
       const selectedPreset =
@@ -766,6 +802,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           : getProviderPreset(selectedPresetId);
       const isCustomizedPreset =
         group.authMode !== "codex_auth" &&
+        group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth" &&
         selectedPresetId === "customized";
       group.providerProtocol = resolveSelectedProtocol(group, selectedPresetId);
@@ -778,6 +815,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
       if (
         group.authMode !== "codex_auth" &&
+        group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth"
       ) {
         const providerPresetLabel = el(
@@ -800,14 +838,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           const option = el(doc, "option") as HTMLOptionElement;
           option.value = preset.id;
           option.textContent = preset.label;
+          option.selected = preset.id === selectedPresetId;
           providerPresetSelect.appendChild(option);
         }
         const customizedOption = el(doc, "option") as HTMLOptionElement;
         customizedOption.value = "customized";
         customizedOption.textContent = t("Customized");
+        customizedOption.selected = selectedPresetId === "customized";
         providerPresetSelect.appendChild(customizedOption);
-
-        providerPresetSelect.value = selectedPresetId;
         providerPresetSelect.addEventListener("change", () => {
           const nextPresetId = normalizeProviderPresetId(
             providerPresetSelect.value,
@@ -852,9 +890,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         const option = el(doc, "option") as HTMLOptionElement;
         option.value = protocol;
         option.textContent = getProviderProtocolSpec(protocol).label;
+        option.selected = protocol === group.providerProtocol;
         protocolSelect.appendChild(option);
       }
-      protocolSelect.value = group.providerProtocol;
       protocolSelect.disabled = protocolOptions.length <= 1;
       protocolSelect.addEventListener("change", () => {
         group.providerProtocol = resolveSelectedProtocol(
@@ -874,7 +912,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           doc,
           "span",
           HELPER_STYLE,
-          getProviderProtocolSpec(group.providerProtocol).helperText,
+          getProtocolHelperText(group, group.providerProtocol),
         ),
       );
 
@@ -892,14 +930,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiUrlInput.placeholder =
         group.authMode === "codex_auth"
           ? DEFAULT_CODEX_API_BASE
-          : group.authMode === "copilot_auth"
-            ? DEFAULT_COPILOT_API_BASE
-            : selectedPreset?.defaultApiBase || "https://api.openai.com/v1";
-      apiUrlInput.value = group.apiBase;
+          : group.authMode === "codex_app_server"
+            ? "(not used — codex app-server manages transport)"
+            : group.authMode === "copilot_auth"
+              ? DEFAULT_COPILOT_API_BASE
+              : selectedPreset?.defaultApiBase || "https://api.openai.com/v1";
+      apiUrlInput.value = group.authMode === "codex_app_server" ? "" : group.apiBase;
       apiUrlInput.readOnly =
-        group.authMode !== "codex_auth" &&
+        group.authMode === "codex_app_server" ||
+        (group.authMode !== "codex_auth" &&
         group.authMode !== "copilot_auth" &&
-        !isCustomizedPreset;
+        !isCustomizedPreset);
       apiUrlInput.style.opacity = apiUrlInput.readOnly ? "0.85" : "1";
       apiUrlInput.style.cursor = apiUrlInput.readOnly ? "default" : "text";
       apiUrlInput.style.pointerEvents = apiUrlInput.readOnly ? "none" : "auto";
@@ -916,10 +957,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         "span",
         HELPER_STYLE,
         group.authMode === "codex_auth"
-          ? t(CODEX_API_HELPER_TEXT)
-          : group.authMode === "copilot_auth"
-            ? t(COPILOT_API_HELPER_TEXT)
-            : getPresetSelectHelperText(selectedPresetId),
+          ? t(LEGACY_CODEX_API_HELPER_TEXT)
+          : group.authMode === "codex_app_server"
+            ? t("Transport is handled by the codex subprocess; no API URL is needed.")
+            : group.authMode === "copilot_auth"
+              ? t(COPILOT_API_HELPER_TEXT)
+              : getPresetSelectHelperText(selectedPresetId),
       );
       apiUrlWrap.append(apiUrlLabel, apiUrlInput, apiUrlHelper);
 
@@ -944,6 +987,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiKeyWrap.append(apiKeyLabel, apiKeyInput);
       if (
         group.authMode === "codex_auth" ||
+        group.authMode === "codex_app_server" ||
         group.authMode === "copilot_auth"
       ) {
         apiKeyWrap.style.display = "none";
@@ -1594,6 +1638,15 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
                   ? DEFAULT_COPILOT_API_BASE
                   : "")
             ).replace(/\/$/, "");
+            if (authMode === "codex_app_server") {
+              const modelName = (modelEntry.model || profile.defaultModel || "").trim();
+              const result = await runCodexAppServerConnectionTest({ modelName });
+              statusLine.textContent =
+                `${t("✓ Success — model says: ")}"${result.reply}"\n` +
+                `${t("Agent capability: ")}${result.capabilityLabel}`;
+              statusLine.style.color = "green";
+              return;
+            }
             const apiKey =
               authMode === "codex_auth"
                 ? await readCodexAccessToken()
@@ -1667,6 +1720,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         cardBody.append(
           authModeWrap,
           copilotLoginWrap,
+          protocolWrap,
+          apiUrlWrap,
+          divider,
+          modelsWrap,
+        );
+      } else if (group.authMode === "codex_app_server") {
+        cardBody.append(
+          authModeWrap,
           protocolWrap,
           apiUrlWrap,
           divider,

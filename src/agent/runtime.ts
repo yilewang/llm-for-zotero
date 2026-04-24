@@ -18,11 +18,19 @@ import type {
   AgentToolResult,
 } from "./types";
 import type { AgentModelAdapter } from "./model/adapter";
+import type {
+  AgentAdapterToolCallResult,
+  AgentAdapterToolContentItem,
+} from "./model/adapter";
 import { resolveAgentLimits } from "./model/limits";
 import { classifyRequest } from "./model/requestClassifier";
 import { buildAgentInitialMessages } from "./model/messageBuilder";
 import { detectSkillIntent } from "./model/skillClassifier";
 import { getAllSkills, getMatchedSkillIds } from "./skills";
+import {
+  getNotesDirectoryNickname,
+  isNotesDirectoryConfigured,
+} from "../utils/notesDirectoryConfig";
 import {
   appendAgentRunEvent,
   createAgentRun,
@@ -58,22 +66,37 @@ async function toDataUrl(
 
 function summarizeArtifacts(artifacts: AgentToolArtifact[]): string {
   const imagePages = artifacts
-    .filter((artifact): artifact is Extract<AgentToolArtifact, { kind: "image" }> => {
-      return artifact.kind === "image";
-    })
-    .map((artifact) => artifact.pageLabel || (Number.isFinite(artifact.pageIndex) ? `${artifact.pageIndex! + 1}` : ""));
+    .filter(
+      (artifact): artifact is Extract<AgentToolArtifact, { kind: "image" }> => {
+        return artifact.kind === "image";
+      },
+    )
+    .map(
+      (artifact) =>
+        artifact.pageLabel ||
+        (Number.isFinite(artifact.pageIndex)
+          ? `${artifact.pageIndex! + 1}`
+          : ""),
+    );
   const fileTitles = artifacts
-    .filter((artifact): artifact is Extract<AgentToolArtifact, { kind: "file_ref" }> => {
-      return artifact.kind === "file_ref";
-    })
+    .filter(
+      (
+        artifact,
+      ): artifact is Extract<AgentToolArtifact, { kind: "file_ref" }> => {
+        return artifact.kind === "file_ref";
+      },
+    )
     .map((artifact) => artifact.title || artifact.name);
   const parts: string[] = [];
   if (imagePages.length) {
     parts.push(
-      `Prepared PDF page image${imagePages.length === 1 ? "" : "s"} (${imagePages
-        .filter(Boolean)
-        .map((entry) => `p${entry}`)
-        .join(", ") || `${imagePages.length} page${imagePages.length === 1 ? "" : "s"}`}) for visual inspection.`,
+      `Prepared PDF page image${imagePages.length === 1 ? "" : "s"} (${
+        imagePages
+          .filter(Boolean)
+          .map((entry) => `p${entry}`)
+          .join(", ") ||
+        `${imagePages.length} page${imagePages.length === 1 ? "" : "s"}`
+      }) for visual inspection.`,
     );
   }
   if (fileTitles.length) {
@@ -113,7 +136,11 @@ async function buildArtifactFollowupMessage(
           },
         });
       } catch (error) {
-        ztoolkit.log("LLM Agent: Failed to load image artifact", artifact, error);
+        ztoolkit.log(
+          "LLM Agent: Failed to load image artifact",
+          artifact,
+          error,
+        );
       }
       continue;
     }
@@ -149,16 +176,91 @@ type ToolWorkflowOutcome = {
   finalText?: string;
 };
 
+function stringifyToolDeliveryContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (content === null || content === undefined) {
+    return "";
+  }
+  try {
+    return JSON.stringify(content, null, 2);
+  } catch {
+    return String(content);
+  }
+}
+
+function pushAdapterTextItem(
+  target: AgentAdapterToolContentItem[],
+  text: string,
+): void {
+  if (!text) return;
+  target.push({ type: "inputText", text });
+}
+
+function pushAdapterMessageItems(
+  target: AgentAdapterToolContentItem[],
+  message: AgentModelMessage,
+): void {
+  if (typeof message.content === "string") {
+    pushAdapterTextItem(target, message.content);
+    return;
+  }
+  for (const part of message.content) {
+    if (part.type === "text") {
+      pushAdapterTextItem(target, part.text);
+      continue;
+    }
+    if (part.type === "image_url") {
+      target.push({
+        type: "inputImage",
+        imageUrl: part.image_url.url,
+      });
+      continue;
+    }
+    pushAdapterTextItem(target, `[Prepared file: ${part.file_ref.name}]`);
+  }
+}
+
+function buildAdapterToolCallResult(
+  outcome: ToolWorkflowOutcome,
+): AgentAdapterToolCallResult {
+  const contentItems: AgentAdapterToolContentItem[] = [];
+  if (outcome.delivery) {
+    pushAdapterTextItem(
+      contentItems,
+      stringifyToolDeliveryContent(outcome.delivery.content),
+    );
+    for (const followupMessage of outcome.delivery.followupMessages) {
+      pushAdapterMessageItems(contentItems, followupMessage);
+    }
+  } else if (outcome.finalText) {
+    pushAdapterTextItem(contentItems, outcome.finalText);
+  } else {
+    pushAdapterTextItem(
+      contentItems,
+      stringifyToolDeliveryContent(outcome.toolResult.content),
+    );
+  }
+  if (!contentItems.length) {
+    pushAdapterTextItem(
+      contentItems,
+      outcome.toolResult.ok ? "Tool completed successfully." : "Tool failed.",
+    );
+  }
+  return {
+    contentItems,
+    success: outcome.toolResult.ok,
+  };
+}
+
 type ExecutedToolCall = {
   toolResult: AgentToolResult;
   toolDefinition?: import("./types").AgentToolDefinition<any, any>;
   input?: unknown;
 };
 
-function buildSyntheticToolCall(
-  name: string,
-  args: unknown,
-): AgentToolCall {
+function buildSyntheticToolCall(name: string, args: unknown): AgentToolCall {
   return {
     id: `synthetic-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     name,
@@ -178,11 +280,42 @@ function isUserDeniedToolResult(result: AgentToolResult): boolean {
   return readToolError(result).toLowerCase() === "user denied action";
 }
 
+function isWriteNoteFileRequest(
+  request: AgentRuntimeRequest,
+  matchedSkills: ReadonlyArray<string>,
+): boolean {
+  const activeSkillIds = new Set([
+    ...matchedSkills,
+    ...(request.forcedSkillIds || []),
+  ]);
+  if (!activeSkillIds.has("write-note")) return false;
+  const text = request.userText || "";
+  if (/\b(zotero\s+note|current\s+zotero\s+note|active\s+note)\b/i.test(text)) {
+    return false;
+  }
+  return /\b(obsidian|vault|markdown\s+file|md\s+file|file|folder|directory|disk|export|save|write\s+(?:it|this|that)?\s*(?:to|into))\b/i.test(
+    text,
+  );
+}
+
+function isSuccessfulFileIoWrite(record: {
+  name: string;
+  ok: boolean;
+  input?: unknown;
+}): boolean {
+  if (record.name !== "file_io" || !record.ok) return false;
+  if (!record.input || typeof record.input !== "object") return false;
+  return (record.input as { action?: unknown }).action === "write";
+}
+
 export class AgentRuntime {
   private readonly registry: AgentToolRegistry;
   private readonly adapterFactory: AgentRuntimeDeps["adapterFactory"];
   private readonly now: () => number;
-  private readonly pendingConfirmations = new Map<string, PendingConfirmation>();
+  private readonly pendingConfirmations = new Map<
+    string,
+    PendingConfirmation
+  >();
 
   constructor(deps: AgentRuntimeDeps) {
     this.registry = deps.registry;
@@ -281,7 +414,8 @@ export class AgentRuntime {
     };
 
     if (!adapter.supportsTools(request)) {
-      const reason = "Agent tools unavailable for this model; used direct response instead.";
+      const reason =
+        "Agent tools unavailable for this model; used direct response instead.";
       await emit({
         type: "fallback",
         reason,
@@ -303,6 +437,11 @@ export class AgentRuntime {
       modelProviderLabel: request.modelProviderLabel,
     };
     const toolsUsedThisTurn: string[] = [];
+    const toolExecutionRecords: Array<{
+      name: string;
+      ok: boolean;
+      input?: unknown;
+    }> = [];
     // Intent/skill selection runs ONCE per user turn, before the system
     // prompt is built. The flow:
     //   1. detectSkillIntent — one LLM call against the primary model,
@@ -316,10 +455,7 @@ export class AgentRuntime {
     //      and emitted as trace events for UI visibility.
     // The resulting system prompt is reused across every model inference
     // inside the agent loop — no per-step classification cost.
-    const classifiedSkillIds = await detectSkillIntent(
-      request,
-      getAllSkills(),
-    );
+    const classifiedSkillIds = await detectSkillIntent(request, getAllSkills());
     const matchedSkills = getMatchedSkillIds(request, classifiedSkillIds);
     const messages = (await buildAgentInitialMessages(
       request,
@@ -336,6 +472,13 @@ export class AgentRuntime {
     const { maxRounds, maxToolCallsPerRound } = resolveAgentLimits(
       intent.isBulkOperation,
     );
+    const requiresFileNoteWrite = isWriteNoteFileRequest(
+      request,
+      matchedSkills,
+    );
+    let noteWriteCorrectionUsed = false;
+    const hasSuccessfulFileWrite = () =>
+      toolExecutionRecords.some((record) => isSuccessfulFileIoWrite(record));
     const shouldFlushStreamBuffer = (value: string): boolean => {
       if (!value) return false;
       if (value.length >= 8) return true;
@@ -372,7 +515,8 @@ export class AgentRuntime {
       step: Extract<AgentModelStep, { kind: "final" }>,
       stepStreamedText: string,
     ): Promise<AgentRuntimeOutcome> => {
-      const finalText = step.text || stepStreamedText || currentAnswerText || "No response.";
+      const finalText =
+        step.text || stepStreamedText || currentAnswerText || "No response.";
       if (finalText) {
         if (!stepStreamedText) {
           currentAnswerText = finalText;
@@ -419,6 +563,21 @@ export class AgentRuntime {
           text,
         });
       };
+      const rollbackStepStreamedText = async () => {
+        await flushStepDelta();
+        if (!stepStreamedText) return;
+        currentAnswerText = currentAnswerText.slice(
+          0,
+          Math.max(0, currentAnswerText.length - stepStreamedText.length),
+        );
+        await emit({
+          type: "message_rollback",
+          length: stepStreamedText.length,
+          text: stepStreamedText,
+        });
+        stepStreamedText = "";
+        stepPendingDelta = "";
+      };
       const step = await adapter.runStep({
         request,
         messages,
@@ -437,9 +596,33 @@ export class AgentRuntime {
           await emit({
             type: "reasoning",
             round,
+            stepId: reasoning.stepId,
+            stepLabel: reasoning.stepLabel,
             summary: reasoning.summary,
             details: reasoning.details,
           });
+        },
+        onUsage: async (usage) => {
+          const totalTokens = Math.max(0, usage.totalTokens || 0);
+          const promptTokens = Math.max(0, usage.promptTokens || 0);
+          const completionTokens = Math.max(0, usage.completionTokens || 0);
+          if (totalTokens <= 0 && promptTokens <= 0 && completionTokens <= 0) {
+            return;
+          }
+          await emit({
+            type: "usage",
+            round,
+            promptTokens,
+            completionTokens,
+            totalTokens,
+          });
+        },
+        onToolCall: async (call) => {
+          await rollbackStepStreamedText();
+          const outcome = await executeToolWorkflow(call, round, {
+            modelCallId: call.id,
+          });
+          return buildAdapterToolCallResult(outcome);
         },
       });
       await flushStepDelta();
@@ -450,7 +633,10 @@ export class AgentRuntime {
     };
     const requestActionResolution = async (
       action: AgentPendingAction,
-    ): Promise<{ requestId: string; resolution: AgentConfirmationResolution }> => {
+    ): Promise<{
+      requestId: string;
+      resolution: AgentConfirmationResolution;
+    }> => {
       const requestId = createConfirmationRequestId();
       const resolution = new Promise<AgentConfirmationResolution>((resolve) => {
         this.pendingConfirmations.set(requestId, { resolve });
@@ -487,12 +673,16 @@ export class AgentRuntime {
         args: call.arguments,
       });
       toolsUsedThisTurn.push(call.name);
-      const execution = await this.registry.prepareExecution(call, {
-        ...context,
-        currentAnswerText,
-      }, {
-        inheritedApproval: options.inheritedApproval,
-      });
+      const execution = await this.registry.prepareExecution(
+        call,
+        {
+          ...context,
+          currentAnswerText,
+        },
+        {
+          inheritedApproval: options.inheritedApproval,
+        },
+      );
       let executedCall: {
         toolResult: AgentToolResult;
         toolDefinition?: import("./types").AgentToolDefinition<any, any>;
@@ -516,6 +706,11 @@ export class AgentRuntime {
         };
       }
       const { toolResult } = executedCall;
+      toolExecutionRecords.push({
+        name: toolResult.name,
+        ok: toolResult.ok,
+        input: executedCall.input,
+      });
       if (toolResult.ok) {
         consecutiveToolErrors = 0;
       } else {
@@ -681,12 +876,56 @@ export class AgentRuntime {
         ),
       };
     };
+    const rollbackCommittedStreamedText = async (
+      stepStreamedText: string,
+    ): Promise<void> => {
+      if (!stepStreamedText) return;
+      currentAnswerText = currentAnswerText.slice(
+        0,
+        Math.max(0, currentAnswerText.length - stepStreamedText.length),
+      );
+      await emit({
+        type: "message_rollback",
+        length: stepStreamedText.length,
+        text: stepStreamedText,
+      });
+    };
     for (let round = 1; round <= maxRounds; round += 1) {
       const { step, stepStreamedText } = await runModelStep(
         round,
-        round === 1 ? "Running agent" : `Continuing agent (${round}/${maxRounds})`,
+        round === 1
+          ? "Running agent"
+          : `Continuing agent (${round}/${maxRounds})`,
       );
       if (step.kind === "final") {
+        if (
+          requiresFileNoteWrite &&
+          !hasSuccessfulFileWrite() &&
+          isNotesDirectoryConfigured()
+        ) {
+          await rollbackCommittedStreamedText(stepStreamedText);
+          if (!noteWriteCorrectionUsed) {
+            noteWriteCorrectionUsed = true;
+            messages.push(
+              step.assistantMessage ?? {
+                role: "assistant",
+                content: stepStreamedText,
+              },
+            );
+            messages.push({
+              role: "user",
+              content:
+                'Correction for this turn: the user\'s request requires writing a Markdown note to the configured notes directory. Call `file_io` with `action: "write"` now, using the configured notes directory/default target path and a clear `.md` filename. Do not put the note body in chat. If a write is impossible, explain the setup problem briefly.',
+            });
+            continue;
+          }
+          const nickname = getNotesDirectoryNickname().trim();
+          const targetLabel = nickname ? `${nickname} note` : "note";
+          return completeRun(
+            `I could not complete the ${targetLabel} write because the model did not call \`file_io(write, ...)\` after being corrected.`,
+            "failed",
+          );
+        }
         return emitFinalStep(step, stepStreamedText);
       }
 
@@ -694,17 +933,7 @@ export class AgentRuntime {
       // model streamed during this step is intermediate "thinking" text
       // (e.g. "Let me read more of the paper...") that should appear in
       // the agent trace but NOT in the final chat answer.  Roll it back.
-      if (stepStreamedText) {
-        currentAnswerText = currentAnswerText.slice(
-          0,
-          Math.max(0, currentAnswerText.length - stepStreamedText.length),
-        );
-        await emit({
-          type: "message_rollback",
-          length: stepStreamedText.length,
-          text: stepStreamedText,
-        });
-      }
+      await rollbackCommittedStreamedText(stepStreamedText);
 
       const calls = step.calls.slice(0, maxToolCallsPerRound);
       messages.push({
@@ -730,7 +959,10 @@ export class AgentRuntime {
           }
         }
         if (outcome.stopRun) {
-          return completeRun(outcome.finalText || currentAnswerText, "completed");
+          return completeRun(
+            outcome.finalText || currentAnswerText,
+            "completed",
+          );
         }
         if (consecutiveToolErrors >= 3) {
           const finalText =

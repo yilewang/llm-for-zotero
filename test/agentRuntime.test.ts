@@ -4,20 +4,30 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AgentRuntime } from "../src/agent/runtime";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
+import {
+  MAX_AGENT_ROUNDS,
+  MAX_AGENT_TOOL_CALLS_PER_ROUND,
+} from "../src/agent/model/limits";
 import type {
   AgentEvent,
   AgentModelCapabilities,
   AgentModelStep,
   AgentRuntimeRequest,
 } from "../src/agent/types";
-import type { AgentModelAdapter, AgentStepParams } from "../src/agent/model/adapter";
+import type {
+  AgentModelAdapter,
+  AgentStepParams,
+} from "../src/agent/model/adapter";
 
 type MockDbRow = Record<string, unknown>;
 
 function installMockDb() {
   const runs = new Map<string, MockDbRow>();
   const events: MockDbRow[] = [];
-  const originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero;
+  const prefs = new Map<string, unknown>();
+  const originalZotero = (
+    globalThis as typeof globalThis & { Zotero?: unknown }
+  ).Zotero;
   (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
     DB: {
       executeTransaction: async (fn: () => Promise<unknown>) => fn(),
@@ -54,16 +64,28 @@ function installMockDb() {
           });
           return [];
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_run_events")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_run_events")
+        ) {
           return events
             .filter((entry) => entry.runId === params[0])
             .sort((a, b) => Number(a.seq) - Number(b.seq));
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_runs")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_runs")
+        ) {
           const run = runs.get(String(params[0]));
           return run ? [run] : [];
         }
         return [];
+      },
+    },
+    Prefs: {
+      get: (key: string) => prefs.get(key),
+      set: (key: string, value: unknown) => {
+        prefs.set(key, value);
       },
     },
   };
@@ -319,7 +341,8 @@ describe("AgentRuntime", function () {
         globalThis as typeof globalThis & {
           btoa?: (value: string) => string;
         }
-      ).btoa = (value: string) => Buffer.from(value, "binary").toString("base64");
+      ).btoa = (value: string) =>
+        Buffer.from(value, "binary").toString("base64");
 
       const registry = new AgentToolRegistry();
       registry.register({
@@ -454,38 +477,38 @@ describe("AgentRuntime", function () {
         registry,
         adapterFactory: () =>
           new MockAdapter(
-            [
-              1, 2, 3, 4,
-            ].map((index) => ({
-              kind: "tool_calls" as const,
-              calls: [
-                {
-                  id: `call-${index}`,
-                  name: "read_context",
-                  arguments: {},
-                },
-              ],
-              assistantMessage: {
-                role: "assistant" as const,
-                content: "",
-                tool_calls: [
+            [1, 2, 3, 4]
+              .map((index) => ({
+                kind: "tool_calls" as const,
+                calls: [
                   {
                     id: `call-${index}`,
                     name: "read_context",
                     arguments: {},
                   },
                 ],
-              },
-            })).concat([
-              {
-                kind: "final" as const,
-                text: "Summary ready.",
                 assistantMessage: {
-                  role: "assistant",
-                  content: "Summary ready.",
+                  role: "assistant" as const,
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: `call-${index}`,
+                      name: "read_context",
+                      arguments: {},
+                    },
+                  ],
                 },
-              },
-            ]),
+              }))
+              .concat([
+                {
+                  kind: "final" as const,
+                  text: "Summary ready.",
+                  assistantMessage: {
+                    role: "assistant",
+                    content: "Summary ready.",
+                  },
+                },
+              ]),
             {
               streaming: false,
               toolCalls: true,
@@ -514,7 +537,9 @@ describe("AgentRuntime", function () {
       assert.equal(outcome.text, "Summary ready.");
       assert.isTrue(
         events.some(
-          (event) => event.type === "status" && event.text === "Continuing agent (5/8)",
+          (event) =>
+            event.type === "status" &&
+            event.text === `Continuing agent (5/${MAX_AGENT_ROUNDS})`,
         ),
       );
       assert.equal(
@@ -553,6 +578,7 @@ describe("AgentRuntime", function () {
       });
 
       let sawConsistentFollowup = false;
+      const overLimitCallCount = MAX_AGENT_TOOL_CALLS_PER_ROUND + 1;
       const runtime = new AgentRuntime({
         registry,
         adapterFactory: () => ({
@@ -570,10 +596,16 @@ describe("AgentRuntime", function () {
                   Array.isArray(message.tool_calls) &&
                   message.tool_calls.length > 0,
               );
-              if (!priorAssistant || !Array.isArray(priorAssistant.tool_calls)) {
+              if (
+                !priorAssistant ||
+                !Array.isArray(priorAssistant.tool_calls)
+              ) {
                 return {
                   kind: "tool_calls",
-                  calls: [1, 2, 3, 4, 5, 6, 7].map((index) => ({
+                  calls: Array.from(
+                    { length: overLimitCallCount },
+                    (_unused, index) => index + 1,
+                  ).map((index) => ({
                     id: `call-${index}`,
                     name: "read_context",
                     arguments: {},
@@ -581,7 +613,10 @@ describe("AgentRuntime", function () {
                   assistantMessage: {
                     role: "assistant",
                     content: "",
-                    tool_calls: [1, 2, 3, 4, 5, 6, 7].map((index) => ({
+                    tool_calls: Array.from(
+                      { length: overLimitCallCount },
+                      (_unused, index) => index + 1,
+                    ).map((index) => ({
                       id: `call-${index}`,
                       name: "read_context",
                       arguments: {},
@@ -593,10 +628,12 @@ describe("AgentRuntime", function () {
                 (message) => message.role === "tool",
               );
               sawConsistentFollowup =
-                priorAssistant.tool_calls.length === 6 &&
-                toolMessages.length === 6 &&
+                priorAssistant.tool_calls.length ===
+                  MAX_AGENT_TOOL_CALLS_PER_ROUND &&
+                toolMessages.length === MAX_AGENT_TOOL_CALLS_PER_ROUND &&
                 toolMessages.every(
-                  (message, index) => message.tool_call_id === `call-${index + 1}`,
+                  (message, index) =>
+                    message.tool_call_id === `call-${index + 1}`,
                 );
             }
             return {
@@ -678,11 +715,236 @@ describe("AgentRuntime", function () {
       assert.deepEqual(
         events
           .filter((event) => event.type === "message_delta")
-          .map((event) =>
-            event.type === "message_delta" ? event.text : "",
-          ),
+          .map((event) => (event.type === "message_delta" ? event.text : "")),
         ["Hello ", "world."],
       );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("rolls back streamed scratch text before adapter tool callbacks", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const registry = new AgentToolRegistry();
+      registry.register({
+        spec: {
+          name: "read_context",
+          description: "read",
+          inputSchema: { type: "object" },
+          mutability: "read",
+          requiresConfirmation: false,
+        },
+        validate: () => ({ ok: true, value: {} }),
+        execute: async () => ({ ok: true }),
+      });
+
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: true,
+            toolCalls: true,
+            multimodal: false,
+            fileInputs: false,
+            reasoning: true,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            await params.onTextDelta?.("Let me inspect this first.");
+            await params.onToolCall?.({
+              id: "call-1",
+              name: "read_context",
+              arguments: {},
+            });
+            await params.onTextDelta?.("Done.");
+            return {
+              kind: "final",
+              text: "Done.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Done.",
+              },
+            };
+          },
+        }),
+      });
+
+      const events: AgentEvent[] = [];
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 1,
+          mode: "agent",
+          userText: "summarize",
+          model: "gpt-5.4",
+          apiBase: "https://api.openai.com/v1/responses",
+          apiKey: "test",
+        },
+        onEvent: async (event) => {
+          events.push(event);
+        },
+      });
+
+      assert.equal(outcome.kind, "completed");
+      if (outcome.kind !== "completed") return;
+      assert.equal(outcome.text, "Done.");
+      assert.deepEqual(
+        events
+          .filter((event) =>
+            ["message_delta", "message_rollback", "tool_call"].includes(
+              event.type,
+            ),
+          )
+          .map((event) =>
+            event.type === "message_delta"
+              ? { type: event.type, text: event.text }
+              : event.type === "message_rollback"
+                ? { type: event.type, text: event.text }
+                : { type: event.type, name: event.name },
+          ),
+        [
+          { type: "message_delta", text: "Let me inspect this first." },
+          { type: "message_rollback", text: "Let me inspect this first." },
+          { type: "tool_call", name: "read_context" },
+          { type: "message_delta", text: "Done." },
+        ],
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("issues one corrective continuation when an Obsidian note request finishes without a file write", async function () {
+    const restoreDb = installMockDb();
+    try {
+      (
+        globalThis as typeof globalThis & {
+          Zotero: {
+            Prefs: {
+              set: (key: string, value: unknown, global?: boolean) => void;
+            };
+          };
+        }
+      ).Zotero.Prefs.set(
+        "extensions.zotero.llmforzotero.obsidianVaultPath",
+        "/tmp/obsidian-vault",
+        true,
+      );
+
+      const registry = new AgentToolRegistry();
+      const writes: unknown[] = [];
+      registry.register({
+        spec: {
+          name: "file_io",
+          description: "file io",
+          inputSchema: { type: "object" },
+          mutability: "write",
+          requiresConfirmation: false,
+        },
+        validate: (args: unknown) => ({ ok: true, value: args }),
+        execute: async (input) => {
+          writes.push(input);
+          return input;
+        },
+      });
+
+      let stepIndex = 0;
+      let sawCorrectivePrompt = false;
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: true,
+            toolCalls: true,
+            multimodal: false,
+            fileInputs: false,
+            reasoning: true,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            stepIndex += 1;
+            if (stepIndex === 1) {
+              return {
+                kind: "final",
+                text: "## Figure 2\nDraft body in chat.",
+                assistantMessage: {
+                  role: "assistant",
+                  content: "## Figure 2\nDraft body in chat.",
+                },
+              };
+            }
+            sawCorrectivePrompt = params.messages.some(
+              (message) =>
+                message.role === "user" &&
+                typeof message.content === "string" &&
+                message.content.includes("requires writing a Markdown note"),
+            );
+            if (stepIndex === 2) {
+              return {
+                kind: "tool_calls",
+                calls: [
+                  {
+                    id: "call-write",
+                    name: "file_io",
+                    arguments: {
+                      action: "write",
+                      filePath: "/tmp/obsidian-vault/Figure 2.md",
+                      content: "## Figure 2\nGrounded note.",
+                    },
+                  },
+                ],
+                assistantMessage: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: "call-write",
+                      name: "file_io",
+                      arguments: {
+                        action: "write",
+                        filePath: "/tmp/obsidian-vault/Figure 2.md",
+                        content: "## Figure 2\nGrounded note.",
+                      },
+                    },
+                  ],
+                },
+              };
+            }
+            return {
+              kind: "final",
+              text: "Saved.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Saved.",
+              },
+            };
+          },
+        }),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 1,
+          mode: "agent",
+          userText: "help me write an explanation of figure 2 to my obsidian",
+          forcedSkillIds: ["write-note"],
+          model: "gpt-5.4",
+          apiBase: "",
+          apiKey: "test",
+        },
+      });
+
+      assert.equal(outcome.kind, "completed");
+      if (outcome.kind !== "completed") return;
+      assert.equal(outcome.text, "Saved.");
+      assert.isTrue(sawCorrectivePrompt);
+      assert.deepEqual(writes, [
+        {
+          action: "write",
+          filePath: "/tmp/obsidian-vault/Figure 2.md",
+          content: "## Figure 2\nGrounded note.",
+        },
+      ]);
     } finally {
       restoreDb();
     }
@@ -721,7 +983,9 @@ describe("AgentRuntime", function () {
           async runStep(params: AgentStepParams): Promise<AgentModelStep> {
             stepIndex += 1;
             if (stepIndex === 1) {
-              await params.onReasoning?.({ details: "Inspecting the request." });
+              await params.onReasoning?.({
+                details: "Inspecting the request.",
+              });
               return {
                 kind: "tool_calls",
                 calls: [
@@ -786,6 +1050,92 @@ describe("AgentRuntime", function () {
         [
           { round: 1, details: "Inspecting the request." },
           { round: 2, details: "Writing the answer." },
+        ],
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("emits usage events without accumulating them inside the runtime", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const runtime = new AgentRuntime({
+        registry: new AgentToolRegistry(),
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: true,
+            toolCalls: true,
+            multimodal: false,
+            fileInputs: false,
+            reasoning: true,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            await params.onUsage?.({
+              promptTokens: 10,
+              completionTokens: 4,
+              totalTokens: 14,
+            });
+            await params.onUsage?.({
+              promptTokens: 0,
+              completionTokens: 2,
+              totalTokens: 2,
+            });
+            return {
+              kind: "final",
+              text: "Done.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Done.",
+              },
+            };
+          },
+        }),
+      });
+
+      const events: AgentEvent[] = [];
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 1,
+          mode: "agent",
+          userText: "count tokens",
+          model: "gpt-5.4",
+          apiBase: "https://api.openai.com/v1/responses",
+          apiKey: "test",
+        },
+        onEvent: async (event) => {
+          events.push(event);
+        },
+      });
+
+      assert.equal(outcome.kind, "completed");
+      assert.deepEqual(
+        events
+          .filter((event) => event.type === "usage")
+          .map((event) =>
+            event.type === "usage"
+              ? {
+                  round: event.round,
+                  promptTokens: event.promptTokens,
+                  completionTokens: event.completionTokens,
+                  totalTokens: event.totalTokens,
+                }
+              : null,
+          ),
+        [
+          {
+            round: 1,
+            promptTokens: 10,
+            completionTokens: 4,
+            totalTokens: 14,
+          },
+          {
+            round: 1,
+            promptTokens: 0,
+            completionTokens: 2,
+            totalTokens: 2,
+          },
         ],
       );
     } finally {

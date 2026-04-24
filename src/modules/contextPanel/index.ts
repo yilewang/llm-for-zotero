@@ -856,6 +856,7 @@ type MainWindowWithNoteEditingTracker = _ZoteroTypes.MainWindow & {
     intervalId: number;
     refresh: () => void;
     lastNoteId: number;
+    lastParentPaperItemId: number;
     lastSelectionText: string;
   };
 };
@@ -985,11 +986,34 @@ function refreshTrackedNoteEditingSelection(
     noteItem && Number.isFinite(noteItem.id) && noteItem.id > 0
       ? Math.floor(noteItem.id)
       : 0;
+  const nextParentPaperItemId: number = (() => {
+    if (!noteItem) return 0;
+    try {
+      const parentId = Number((noteItem as any).parentItemID ?? 0);
+      return Number.isFinite(parentId) && parentId > 0 ? Math.floor(parentId) : 0;
+    } catch { return 0; }
+  })();
 
   if (nextNoteId === 0 && tracker.lastNoteId === 0) {
     // No note was active before and none is active now — nothing to do.
     return;
   }
+
+  // When focus moves to another window (e.g. the standalone chat window),
+  // the note-editor iframe loses hasFocus() and getEditableSelectionFromDocument
+  // returns "". Guard against this: if the main window has lost focus but the
+  // same note is still active and we already had a selection, keep it so the
+  // "Editing" chip stays visible while the user types in the standalone input.
+  try {
+    if (
+      tracker.lastSelectionText &&
+      tracker.lastNoteId === nextNoteId &&
+      typeof win.document.hasFocus === "function" &&
+      !win.document.hasFocus()
+    ) {
+      return;
+    }
+  } catch { /* ignore */ }
 
   const nextSelectionText = noteItem
     ? collectAccessibleDocuments(win.document).reduce((found, doc) => {
@@ -1026,6 +1050,12 @@ function refreshTrackedNoteEditingSelection(
     ) {
       refreshPanelsForConversationKey(tracker.lastNoteId);
     }
+    // Also clear from the parent paper panel (used by standalone window).
+    if (tracker.lastParentPaperItemId > 0) {
+      if (syncSelectedTextContextForSource(tracker.lastParentPaperItemId, "", "note-edit")) {
+        refreshPanelsForConversationKey(tracker.lastParentPaperItemId);
+      }
+    }
   }
 
   if (nextNoteId > 0 && nextSelectionText) {
@@ -1038,9 +1068,17 @@ function refreshTrackedNoteEditingSelection(
     ) {
       refreshPanelsForConversationKey(nextNoteId);
     }
+    // Also sync to the parent paper panel so the standalone window (which is
+    // keyed to the parent paper item, not the note) shows the editing chip.
+    if (nextParentPaperItemId > 0) {
+      if (syncSelectedTextContextForSource(nextParentPaperItemId, nextSelectionText, "note-edit")) {
+        refreshPanelsForConversationKey(nextParentPaperItemId);
+      }
+    }
   }
 
   tracker.lastNoteId = nextNoteId;
+  tracker.lastParentPaperItemId = nextParentPaperItemId;
   tracker.lastSelectionText = nextSelectionText;
 }
 
@@ -1067,6 +1105,7 @@ export function registerNoteEditingSelectionTracking(
     intervalId,
     refresh,
     lastNoteId: 0,
+    lastParentPaperItemId: 0,
     lastSelectionText: "",
   };
   win.document.addEventListener("selectionchange", debouncedRefresh, true);

@@ -14,7 +14,7 @@ import type { ProviderCapabilities, ProviderParams } from "../types";
 export function matches(params: ProviderParams): boolean {
   const proto = (params.protocol || "").toLowerCase();
   const auth = (params.authMode || "").toLowerCase();
-  if (auth === "copilot_auth" || auth === "codex_auth") return false;
+  if (auth === "copilot_auth" || auth === "codex_auth" || auth === "codex_app_server") return false;
   return (
     proto === "openai_chat_compat" ||
     proto === "responses_api" ||

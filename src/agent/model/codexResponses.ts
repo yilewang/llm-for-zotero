@@ -131,6 +131,7 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
             response.body,
             params.onTextDelta,
             params.onReasoning,
+            params.onUsage,
           )
         : normalizeResponsesStepFromPayload(
             (await response.json()) as ResponsesPayload,

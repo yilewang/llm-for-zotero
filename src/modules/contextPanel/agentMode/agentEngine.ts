@@ -82,7 +82,12 @@ type EffectiveRequestConfigShape = {
   model: string;
   apiBase: string;
   apiKey: string;
-  authMode: "api_key" | "codex_auth" | "copilot_auth" | "webchat";
+  authMode:
+    | "api_key"
+    | "codex_auth"
+    | "codex_app_server"
+    | "copilot_auth"
+    | "webchat";
   providerProtocol?:
     | "codex_responses"
     | "responses_api"
@@ -185,7 +190,7 @@ export type AgentEngineDeps = {
     model?: string;
     apiBase?: string;
     apiKey?: string;
-    authMode?: "api_key" | "codex_auth" | "copilot_auth" | "webchat";
+    authMode?: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat";
     providerProtocol?:
       | "codex_responses"
       | "responses_api"
@@ -269,7 +274,7 @@ export async function sendAgentTurn(
     model?: string;
     apiBase?: string;
     apiKey?: string;
-    authMode?: "api_key" | "codex_auth" | "copilot_auth" | "webchat";
+    authMode?: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat";
     providerProtocol?:
       | "codex_responses"
       | "responses_api"
@@ -601,31 +606,43 @@ export async function sendAgentTurn(
           case "usage": {
             if (ui.tokenUsageEl) {
               const previous = deps.getContextUsageSnapshot?.(conversationKey);
-              const nextTokens = Math.max(0, Number(event.contextTokens) || 0);
-              const nextWindow =
-                typeof event.contextWindow === "number" && Number.isFinite(event.contextWindow)
-                  ? event.contextWindow
-                  : previous?.contextWindow;
-              const effectiveTokens =
-                nextTokens > 0
-                  ? nextTokens
-                  : event.contextWindowIsAuthoritative
-                    ? (previous?.contextTokens ?? 0)
-                    : 0;
-              deps.setContextUsageSnapshot?.(conversationKey, {
-                contextTokens: effectiveTokens,
-                contextWindow: nextWindow,
-              });
-              deps.setTokenUsage(
-                ui.tokenUsageEl,
-                effectiveTokens,
-                nextWindow,
-                body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
-              );
+              const usageEvent = event as Extract<AgentEvent, { type: "usage" }>;
+              const usageRecord = usageEvent as unknown as Record<string, unknown>;
+              const hasContextPayload = "contextTokens" in usageRecord;
+              if (hasContextPayload) {
+                const nextTokens = Math.max(0, Number(usageRecord.contextTokens) || 0);
+                const rawContextWindow = usageRecord.contextWindow;
+                const nextWindow =
+                  typeof rawContextWindow === "number" && Number.isFinite(rawContextWindow)
+                    ? rawContextWindow
+                    : previous?.contextWindow;
+                const effectiveTokens =
+                  nextTokens > 0
+                    ? nextTokens
+                    : usageRecord.contextWindowIsAuthoritative === true
+                      ? (previous?.contextTokens ?? 0)
+                      : 0;
+                deps.setContextUsageSnapshot?.(conversationKey, {
+                  contextTokens: effectiveTokens,
+                  contextWindow: nextWindow,
+                });
+                deps.setTokenUsage(
+                  ui.tokenUsageEl,
+                  effectiveTokens,
+                  nextWindow,
+                  body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+                );
+              } else if (typeof usageRecord.totalTokens === "number" && usageRecord.totalTokens > 0) {
+                const total = deps.accumulateSessionTokens(
+                  conversationKey,
+                  usageRecord.totalTokens,
+                );
+                deps.setTokenUsage(ui.tokenUsageEl, total);
+              }
             }
             break;
           }
-          case "status":
+          case "status": {
             const isCompactingStatus = /compacting context/i.test(event.text);
             if (
               !isCompactingStatus &&
@@ -646,6 +663,7 @@ export async function sendAgentTurn(
               queueRefresh();
             }
             break;
+          }
           case "reasoning": {
             if (event.summary) {
               assistantMessage.reasoningSummary = deps.appendReasoningPart(
@@ -796,7 +814,7 @@ export async function retryAgentTurn(
   model: string | undefined,
   apiBase: string | undefined,
   apiKey: string | undefined,
-  authMode: "api_key" | "codex_auth" | "copilot_auth" | "webchat" | undefined,
+  authMode: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat" | undefined,
   providerProtocol:
     | "codex_responses"
     | "responses_api"
@@ -988,31 +1006,43 @@ export async function retryAgentTurn(
           case "usage": {
             if (ui.tokenUsageEl) {
               const previous = deps.getContextUsageSnapshot?.(conversationKey);
-              const nextTokens = Math.max(0, Number(event.contextTokens) || 0);
-              const nextWindow =
-                typeof event.contextWindow === "number" && Number.isFinite(event.contextWindow)
-                  ? event.contextWindow
-                  : previous?.contextWindow;
-              const effectiveTokens =
-                nextTokens > 0
-                  ? nextTokens
-                  : event.contextWindowIsAuthoritative
-                    ? (previous?.contextTokens ?? 0)
-                    : 0;
-              deps.setContextUsageSnapshot?.(conversationKey, {
-                contextTokens: effectiveTokens,
-                contextWindow: nextWindow,
-              });
-              deps.setTokenUsage(
-                ui.tokenUsageEl,
-                effectiveTokens,
-                nextWindow,
-                body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
-              );
+              const usageEvent = event as Extract<AgentEvent, { type: "usage" }>;
+              const usageRecord = usageEvent as unknown as Record<string, unknown>;
+              const hasContextPayload = "contextTokens" in usageRecord;
+              if (hasContextPayload) {
+                const nextTokens = Math.max(0, Number(usageRecord.contextTokens) || 0);
+                const rawContextWindow = usageRecord.contextWindow;
+                const nextWindow =
+                  typeof rawContextWindow === "number" && Number.isFinite(rawContextWindow)
+                    ? rawContextWindow
+                    : previous?.contextWindow;
+                const effectiveTokens =
+                  nextTokens > 0
+                    ? nextTokens
+                    : usageRecord.contextWindowIsAuthoritative === true
+                      ? (previous?.contextTokens ?? 0)
+                      : 0;
+                deps.setContextUsageSnapshot?.(conversationKey, {
+                  contextTokens: effectiveTokens,
+                  contextWindow: nextWindow,
+                });
+                deps.setTokenUsage(
+                  ui.tokenUsageEl,
+                  effectiveTokens,
+                  nextWindow,
+                  body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+                );
+              } else if (typeof usageRecord.totalTokens === "number" && usageRecord.totalTokens > 0) {
+                const total = deps.accumulateSessionTokens(
+                  conversationKey,
+                  usageRecord.totalTokens,
+                );
+                deps.setTokenUsage(ui.tokenUsageEl, total);
+              }
             }
             break;
           }
-          case "status":
+          case "status": {
             const isCompactingStatus = /compacting context/i.test(event.text);
             if (
               !isCompactingStatus &&
@@ -1033,6 +1063,7 @@ export async function retryAgentTurn(
               queueRefresh();
             }
             break;
+          }
           case "reasoning": {
             if (event.summary) {
               assistantMessage.reasoningSummary = deps.appendReasoningPart(

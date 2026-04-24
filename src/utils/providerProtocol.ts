@@ -114,7 +114,7 @@ export function inferLegacyProviderProtocol(params: {
   authMode?: string;
   apiBase?: string;
 }): ProviderProtocol {
-  if (params.authMode === "codex_auth") {
+  if (params.authMode === "codex_auth" || params.authMode === "codex_app_server") {
     return "codex_responses";
   }
   if (params.authMode === "copilot_auth") {
@@ -142,7 +142,7 @@ export function normalizeProviderProtocolForAuthMode(params: {
   const inferred = inferLegacyProviderProtocol(params);
   const fallback = params.fallback || inferred;
   const normalized = normalizeProviderProtocol(params.protocol, fallback);
-  if (params.authMode === "codex_auth") {
+  if (params.authMode === "codex_auth" || params.authMode === "codex_app_server") {
     return "codex_responses";
   }
   if (params.authMode === "copilot_auth") {

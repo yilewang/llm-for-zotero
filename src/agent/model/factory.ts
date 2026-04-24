@@ -7,6 +7,7 @@ import { isGeminiBase } from "../../utils/apiHelpers";
 import { providerSupportsResponsesEndpoint } from "../../utils/providerPresets";
 import type { AgentModelAdapter } from "./adapter";
 import { CodexResponsesAgentAdapter } from "./codexResponses";
+import { CodexAppServerAdapter } from "./codexAppServer";
 import { OpenAIResponsesAgentAdapter } from "./openaiResponses";
 import { OpenAIChatCompatAgentAdapter } from "./openaiCompatible";
 import { AnthropicMessagesAgentAdapter } from "./anthropicMessages";
@@ -25,6 +26,9 @@ export function resolveRequestProviderProtocol(
 export function createAgentModelAdapter(
   request: AgentRuntimeRequest,
 ): AgentModelAdapter {
+  if (request.authMode === "codex_app_server") {
+    return new CodexAppServerAdapter("codex_app_server");
+  }
   const protocol = resolveRequestProviderProtocol(request);
   if (
     protocol === "openai_chat_compat" &&

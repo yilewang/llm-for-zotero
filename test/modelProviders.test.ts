@@ -246,5 +246,41 @@ describe("modelProviders", function () {
     assert.lengthOf(entries, 1);
     assert.equal(entries[0].authMode, "codex_auth");
     assert.equal(entries[0].providerProtocol, "codex_responses");
+    assert.equal(entries[0].providerLabel, "OpenAI (codex auth, legacy)");
+    assert.equal(entries[0].displayModelLabel, "codex/gpt-5.4");
+  });
+
+  it("keeps codex app server entries labeled separately", function () {
+    (
+      globalThis.Zotero.Prefs as {
+        set: (key: string, value: unknown, global?: boolean) => void;
+      }
+    ).set(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      JSON.stringify([
+        {
+          id: "provider-codex-app",
+          apiBase: "https://chatgpt.com/backend-api/codex/responses",
+          apiKey: "",
+          authMode: "codex_app_server",
+          models: [
+            { id: "m1", model: "gpt-5.4", temperature: 0.3, maxTokens: 4096 },
+          ],
+        },
+      ]),
+      true,
+    );
+    (
+      globalThis.Zotero.Prefs as {
+        set: (key: string, value: unknown, global?: boolean) => void;
+      }
+    ).set(`${config.prefsPrefix}.modelProviderGroupsMigrationVersion`, 3, true);
+
+    const entries = getRuntimeModelEntries();
+    assert.lengthOf(entries, 1);
+    assert.equal(entries[0].authMode, "codex_app_server");
+    assert.equal(entries[0].providerProtocol, "codex_responses");
+    assert.equal(entries[0].providerLabel, "OpenAI (app server)");
+    assert.equal(entries[0].displayModelLabel, "codex-app/gpt-5.4");
   });
 });

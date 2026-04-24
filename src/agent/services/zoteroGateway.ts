@@ -790,6 +790,56 @@ export class ZoteroGateway {
     return out;
   }
 
+  async listBibliographicItemTargets(params: {
+    libraryID: number;
+    limit?: number;
+  }): Promise<{
+    items: LibraryItemTarget[];
+    totalCount: number;
+  }> {
+    const libraryID = Number.isFinite(params.libraryID)
+      ? Math.floor(params.libraryID)
+      : 0;
+    if (!libraryID) {
+      throw new Error("No active library available for listing bibliographic items");
+    }
+    const rawItems = await getAllLibraryItems(libraryID);
+    const items: LibraryItemTarget[] = [];
+    for (const rawItem of rawItems) {
+      const item = this.resolveBibliographicItem(rawItem);
+      if (!item) continue;
+      const target = buildItemTargetFromItem(item);
+      if (target && !target.noteKind) {
+        items.push(target);
+      }
+    }
+    const normalizedLimit = Number.isFinite(params.limit)
+      ? Math.max(1, Math.floor(params.limit as number))
+      : undefined;
+    return {
+      items:
+        normalizedLimit && items.length > normalizedLimit
+          ? items.slice(0, normalizedLimit)
+          : items,
+      totalCount: items.length,
+    };
+  }
+
+  getBibliographicItemTargetsByItemIds(itemIds: number[]): LibraryItemTarget[] {
+    const out: LibraryItemTarget[] = [];
+    const seen = new Set<number>();
+    for (const rawItemId of itemIds) {
+      const item = this.resolveBibliographicItem(this.getItem(rawItemId));
+      if (!item || seen.has(item.id)) continue;
+      seen.add(item.id);
+      const target = buildItemTargetFromItem(item);
+      if (target && !target.noteKind) {
+        out.push(target);
+      }
+    }
+    return out;
+  }
+
   resolveBibliographicItem(
     item: Zotero.Item | null | undefined,
   ): Zotero.Item | null {

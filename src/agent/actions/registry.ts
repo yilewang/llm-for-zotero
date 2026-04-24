@@ -1,4 +1,5 @@
 import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type { PaperScopedActionProfile } from "./paperScope";
 
 export class ActionRegistry {
   private readonly actions = new Map<string, AgentAction<any, any>>();
@@ -13,6 +14,10 @@ export class ActionRegistry {
 
   getAction(name: string): AgentAction<any, any> | undefined {
     return this.actions.get(name);
+  }
+
+  getPaperScopedActionProfile(name: string): PaperScopedActionProfile | undefined {
+    return this.actions.get(name)?.paperScopeProfile;
   }
 
   listActions(mode?: "paper" | "library"): Array<{ name: string; description: string; inputSchema: object }> {

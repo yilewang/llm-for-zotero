@@ -3,7 +3,10 @@ import {
   buildAgentTraceDisplayItems,
   getPendingActionButtonLayout,
 } from "../src/modules/contextPanel/agentTrace/render";
-import type { AgentPendingAction, AgentRunEventRecord } from "../src/agent/types";
+import type {
+  AgentPendingAction,
+  AgentRunEventRecord,
+} from "../src/agent/types";
 
 describe("agentTrace render", function () {
   it("preserves whitespace when compacting reasoning deltas", function () {
@@ -32,15 +35,108 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const items = buildAgentTraceDisplayItems(events, null);
-    const reasoningItem = items.find(
-      (item) => item.type === "reasoning",
-    );
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const reasoningItem = items.find((item) => item.type === "reasoning");
 
     assert.deepInclude(reasoningItem, {
       type: "reasoning",
-      details: "Let me read the paper first.",
+      summary: "Let me read the paper first.",
       label: "Thinking",
+    });
+  });
+
+  it("renders app-server reasoning item IDs as separate thinking steps", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "reasoning-a",
+          details: "First thought.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "file_io",
+          args: { action: "read", filePath: "/tmp/manifest.json" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "reasoning-b",
+          details: "Second thought.",
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const reasoningItems = items.filter((item) => item.type === "reasoning");
+
+    assert.deepEqual(
+      reasoningItems.map((item) =>
+        item.type === "reasoning"
+          ? { label: item.label, summary: item.summary }
+          : null,
+      ),
+      [
+        { label: "Thinking for step 1", summary: "First thought." },
+        { label: "Thinking for step 2", summary: "Second thought." },
+      ],
+    );
+  });
+
+  it("compacts same app-server reasoning item IDs into one thinking step", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "reasoning-a",
+          details: "Read ",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "reasoning",
+        payload: {
+          type: "reasoning",
+          round: 1,
+          stepId: "reasoning-a",
+          details: "manifest.",
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const reasoningItems = items.filter((item) => item.type === "reasoning");
+
+    assert.lengthOf(reasoningItems, 1);
+    assert.deepInclude(reasoningItems[0], {
+      type: "reasoning",
+      label: "Thinking for step 1",
+      summary: "Read manifest.",
     });
   });
 
@@ -87,8 +183,8 @@ describe("agentTrace render", function () {
     );
 
     assert.lengthOf(items, 2);
-    assert.deepInclude(items[0], { type: "reasoning", details: "First thought.", label: "Thinking" });
-    assert.deepInclude(items[1], { type: "reasoning", details: "Second thought.", label: "Thinking" });
+    assert.deepInclude(items[0], { type: "reasoning", summary: "First thought.", label: "Thinking" });
+    assert.deepInclude(items[1], { type: "reasoning", summary: "Second thought.", label: "Thinking" });
   });
 
   it("uses a single primary action surface for multi-action review cards", function () {
@@ -210,7 +306,7 @@ describe("agentTrace render", function () {
       },
     ];
 
-    const items = buildAgentTraceDisplayItems(events, null);
+    const { items } = buildAgentTraceDisplayItems(events, null);
     const messageTexts = items
       .filter(
         (item): item is Extract<(typeof items)[number], { type: "message" }> =>
@@ -233,5 +329,84 @@ describe("agentTrace render", function () {
       "I have enough grounded information now",
     );
     assert.include(actionTexts, "Drafting answer");
+  });
+
+  it("does not mark rolled-back scratch text as interleaved", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: "Let me inspect this first.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "message_rollback",
+        payload: {
+          type: "message_rollback",
+          length: "Let me inspect this first.".length,
+          text: "Let me inspect this first.",
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "read_paper",
+          args: { operation: "front_matter" },
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items, isInterleaved } = buildAgentTraceDisplayItems(events, null);
+
+    assert.isFalse(isInterleaved);
+    assert.isFalse(items.some((item) => item.type === "inline_text"));
+  });
+
+  it("keeps visible text before a tool call marked as interleaved", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: "Working through the evidence.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "read_paper",
+          args: { operation: "front_matter" },
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { items, isInterleaved } = buildAgentTraceDisplayItems(events, null);
+    const inlineText = items.find((item) => item.type === "inline_text");
+
+    assert.isTrue(isInterleaved);
+    assert.deepEqual(inlineText, {
+      type: "inline_text",
+      text: "Working through the evidence.",
+    });
   });
 });

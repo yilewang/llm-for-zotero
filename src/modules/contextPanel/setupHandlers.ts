@@ -92,6 +92,10 @@ import {
   normalizeSelectedTextSource,
 } from "./textUtils";
 import {
+  formatActionLabel,
+  resolveActionCompletionStatusText,
+} from "./actionStatusText";
+import {
   normalizeAttachmentContentHash,
   normalizeSelectedTextPaperContexts,
 } from "./normalizers";
@@ -267,10 +271,16 @@ import {
   type PaperSearchSlashToken,
 } from "./paperSearch";
 import {
+  resolvePaperScopedCommandInput,
+  type PaperScopedActionCollectionCandidate,
+  type PaperScopedActionProfile,
+} from "./paperScopeCommand";
+import {
   getAgentApi,
   getCoreAgentRuntime,
   initAgentSubsystem,
 } from "../../agent/index";
+import type { ActionRequestContext } from "../../agent/actions";
 import { renderPendingActionCard } from "./agentTrace/render";
 import type {
   AgentPendingAction,
@@ -8260,9 +8270,6 @@ export function setupHandlers(
     actionPickerItems = [];
     actionPickerActiveIndex = 0;
   };
-  const formatActionLabel = (name: string): string =>
-    name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-
   /** Renders the action picker dropdown. */
   const renderActionPicker = () => {
     if (!actionPicker || !actionPickerList) return;
@@ -8502,6 +8509,95 @@ export function setupHandlers(
     return input;
   };
 
+  const buildActionRequestContext = (): ActionRequestContext & {
+    mode: "paper" | "library";
+  } => {
+    if (!item) {
+      return {
+        mode: "library",
+        selectedPaperContexts: [],
+        fullTextPaperContexts: [],
+        selectedCollectionContexts: [],
+      };
+    }
+    const allPaperContexts = getAllEffectivePaperContexts(item);
+    const pdfModeKeys = new Set(
+      getEffectivePdfModePaperContexts(item, allPaperContexts).map(
+        (paperContext) => buildPaperKey(paperContext),
+      ),
+    );
+    const selectedPaperContexts = allPaperContexts.filter(
+      (paperContext) => !pdfModeKeys.has(buildPaperKey(paperContext)),
+    );
+    return {
+      mode: isGlobalMode() ? "library" : "paper",
+      activeItemId: Number(resolveCurrentPaperBaseItem()?.id || 0) || undefined,
+      selectedPaperContexts,
+      fullTextPaperContexts: getEffectiveFullTextPaperContexts(
+        item,
+        selectedPaperContexts,
+      ),
+      selectedCollectionContexts: [
+        ...(selectedCollectionContextCache.get(item.id) || []),
+      ],
+    };
+  };
+
+  const getPaperScopedCollectionCandidates = (): PaperScopedActionCollectionCandidate[] => {
+    const libraryID = getCurrentLibraryID();
+    if (!libraryID) return [];
+    return getAgentApi()
+      .getZoteroGateway()
+      .listCollectionSummaries(libraryID)
+      .map((entry) => ({
+        collectionId: entry.collectionId,
+        name: entry.name,
+        path: entry.path,
+      }));
+  };
+
+  const resolvePaperScopedActionInput = async (
+    actionName: string,
+    params: string,
+    profile: PaperScopedActionProfile,
+  ): Promise<Record<string, unknown> | "scope_required" | null> => {
+    try {
+      await initAgentSubsystem();
+      const result = resolvePaperScopedCommandInput(
+        params,
+        buildActionRequestContext(),
+        profile,
+        getPaperScopedCollectionCandidates(),
+      );
+      if (result.kind === "error") {
+        if (status) setStatus(status, result.error, "error");
+        return null;
+      }
+      if (result.kind === "scope_required") {
+        return "scope_required";
+      }
+      return result.input;
+    } catch (err) {
+      ztoolkit.log(`LLM: failed to resolve /${actionName} input`, err);
+      if (status) setStatus(status, "Agent system unavailable", "error");
+      return null;
+    }
+  };
+
+  const getPaperScopedPromptOptions = (
+    profile: PaperScopedActionProfile,
+  ): {
+    firstScopeLabel?: string;
+    firstScopeInput?: Record<string, unknown>;
+    allScopeLabel?: string;
+    allScopeInput?: Record<string, unknown>;
+  } => ({
+    firstScopeLabel: profile.scopePromptOptions?.first?.label || "First 20 papers",
+    firstScopeInput: profile.scopePromptOptions?.first?.input || { scope: "all", limit: 20 },
+    allScopeLabel: profile.scopePromptOptions?.all?.label || "Whole library",
+    allScopeInput: profile.scopePromptOptions?.all?.input || { scope: "all" },
+  });
+
   /**
    * Shows an inline launch form for actions that require user-provided fields
    * when their required inputs cannot be derived from the current context.
@@ -8585,6 +8681,7 @@ export function setupHandlers(
       if (status) setStatus(status, `Error: Agent system unavailable`, "error");
       return;
     }
+    const paperScopeProfile = getAgentApi().getPaperScopedActionProfile(action.name);
     let input: Record<string, unknown>;
     if (parsedInput) {
       // Input already parsed from inline command
@@ -8610,11 +8707,31 @@ export function setupHandlers(
         );
       }
       input = buildActionInput(action.name, action.inputSchema, extraFields);
+      if (paperScopeProfile) {
+        const resolvedInput = await resolvePaperScopedActionInput(
+          action.name,
+          "",
+          paperScopeProfile,
+        );
+        if (!resolvedInput) return;
+        if (resolvedInput === "scope_required") {
+          const scopeInput = await showScopeConfirmation(
+            action.name,
+            getPaperScopedPromptOptions(paperScopeProfile),
+          );
+          if (!scopeInput) return;
+          input = { ...input, ...scopeInput };
+        } else {
+          input = { ...input, ...resolvedInput };
+        }
+      }
     }
     if (status) setStatus(status, `Running: ${formatActionLabel(action.name)}…`, "ready");
     const progressIndicator = createActionProgressIndicator(action.name);
+    let lastProgressSummary = "";
     try {
       const agentApi = getAgentApi();
+      const requestContext = buildActionRequestContext();
       const selectedProfile = getSelectedProfile();
       const actionLlmConfig = selectedProfile
         ? {
@@ -8626,6 +8743,8 @@ export function setupHandlers(
           }
         : undefined;
       const result = await agentApi.runAction(action.name, input, {
+        libraryID: getCurrentLibraryID(),
+        requestContext,
         confirmationMode: "native_ui",
         llm: actionLlmConfig,
         onProgress: (event) => {
@@ -8636,6 +8755,7 @@ export function setupHandlers(
             }
           } else if (event.type === "step_done") {
             if (event.summary) {
+              lastProgressSummary = event.summary;
               progressIndicator.setSummary(event.summary);
               if (status) setStatus(status, event.summary, "ready");
             }
@@ -8651,7 +8771,10 @@ export function setupHandlers(
         setStatus(
           status,
           result.ok
-            ? `${formatActionLabel(action.name)} complete`
+            ? resolveActionCompletionStatusText({
+                actionName: action.name,
+                lastProgressSummary,
+              })
             : `${formatActionLabel(action.name)} failed: ${result.error}`,
           result.ok ? "ready" : "error",
         );
@@ -8823,9 +8946,21 @@ export function setupHandlers(
    * Shows a HITL scope confirmation card when an action command is sent
    * with no parameters. Returns the user's chosen scope as input.
    */
-  const showScopeConfirmation = (actionName: string): Promise<Record<string, unknown> | null> => {
+  const showScopeConfirmation = (
+    actionName: string,
+    options?: {
+      firstScopeLabel?: string;
+      firstScopeInput?: Record<string, unknown>;
+      allScopeLabel?: string;
+      allScopeInput?: Record<string, unknown>;
+    },
+  ): Promise<Record<string, unknown> | null> => {
     return new Promise((resolve) => {
       const requestId = `scope-confirm-${actionName}-${Date.now()}`;
+      const firstScopeLabel = options?.firstScopeLabel || "First 20 items";
+      const firstScopeInput = options?.firstScopeInput || { limit: 20 };
+      const allScopeLabel = options?.allScopeLabel || "Whole library";
+      const allScopeInput = options?.allScopeInput || { scope: "all" };
       const card = {
         toolName: actionName,
         mode: "review" as const,
@@ -8834,8 +8969,8 @@ export function setupHandlers(
         confirmLabel: "Run",
         cancelLabel: "Cancel",
         actions: [
-          { id: "first20", label: "First 20 items", style: "primary" as const },
-          { id: "all", label: "Whole library", style: "secondary" as const },
+          { id: "first20", label: firstScopeLabel, style: "primary" as const },
+          { id: "all", label: allScopeLabel, style: "secondary" as const },
           { id: "cancel", label: "Cancel", style: "secondary" as const },
         ],
         defaultActionId: "first20",
@@ -8849,9 +8984,9 @@ export function setupHandlers(
           return;
         }
         if (resolution.actionId === "all") {
-          resolve({ scope: "all" });
+          resolve(allScopeInput);
         } else {
-          resolve({ limit: 20 });
+          resolve(firstScopeInput);
         }
       });
       const ownerDoc = body.ownerDocument;
@@ -8915,12 +9050,31 @@ export function setupHandlers(
       return;
     }
 
+    const paperScopeProfile = getAgentApi().getPaperScopedActionProfile(actionName);
+    if (paperScopeProfile) {
+      const resolvedInput = await resolvePaperScopedActionInput(
+        actionName,
+        params,
+        paperScopeProfile,
+      );
+      if (!resolvedInput) return;
+      let input =
+        resolvedInput === "scope_required"
+          ? await showScopeConfirmation(
+              actionName,
+              getPaperScopedPromptOptions(paperScopeProfile),
+            )
+          : resolvedInput;
+      if (!input) return;
+      void executeAgentAction(action, input);
+      return;
+    }
+
     let input = parseCommandParams(actionName, params);
 
     // For organize_unfiled, no scope confirmation needed (always unfiled items)
     const needsScopeConfirm = actionName !== "organize_unfiled" &&
-      actionName !== "discover_related" &&
-      actionName !== "complete_metadata";
+      actionName !== "discover_related";
 
     // If no meaningful params and action needs scope, show HITL confirmation
     if (needsScopeConfirm && !params.trim()) {
