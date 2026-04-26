@@ -7,11 +7,13 @@ import {
   getOrCreateCodexAppServerProcess,
   isCodexAppServerInjectItemsUnsupportedError,
   listNvmCodexCandidates,
+  mapWindowsPathToWslPath,
   resolveCodexAppServerBinaryPath,
   resolveCodexBinary,
   resolveCodexAppServerTurnInputWithFallback,
   resolveCodexAppServerReasoningParams,
   selectCodexLookupResult,
+  selectWindowsWslCodexLookupResult,
   waitForCodexAppServerTurnCompletion,
 } from "../src/utils/codexAppServerProcess";
 
@@ -134,6 +136,17 @@ function createSpawnStub(calls: SubprocessCallOptions[]) {
       stdin: { write: () => {} },
       kill: () => {},
     };
+  };
+}
+
+function createOneShotReader(value: string) {
+  let didRead = false;
+  return {
+    readString: async () => {
+      if (didRead) return "";
+      didRead = true;
+      return value;
+    },
   };
 }
 
@@ -1326,7 +1339,7 @@ describe("codexAppServerProcess", function () {
     );
   });
 
-  it("falls back to bare codex without fabricating C:\\Users\\User when Windows home env vars are missing", async function () {
+  it("fails Windows auto-detect without fabricating C:\\Users\\User when home env vars are missing", async function () {
     const checkedPaths: string[] = [];
 
     await withRuntimeStubs(
@@ -1340,9 +1353,60 @@ describe("codexAppServerProcess", function () {
         subprocessUnavailable: true,
       },
       async () => {
-        const binary = await resolveCodexBinary();
-        assert.equal(binary, "codex");
+        try {
+          await resolveCodexBinary();
+          assert.fail("Expected Windows codex auto-detect to fail");
+        } catch (error) {
+          assert.include(
+            error instanceof Error ? error.message : String(error),
+            "codex binary not found",
+          );
+        }
         assert.notInclude(checkedPaths.join("\n"), "C:\\Users\\User");
+      },
+    );
+  });
+
+  it("includes WSL probe diagnostics when Windows auto-detect cannot find codex", async function () {
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          USERPROFILE: "C:\\Users\\alice",
+          APPDATA: "",
+          LOCALAPPDATA: "",
+          SystemRoot: "C:\\Windows",
+        },
+        inheritEnv: false,
+        ioExists: async () => false,
+        platform: "windows",
+        subprocessCall: async (options) => {
+          if (
+            options.command === "C:\\Windows\\System32\\cmd.exe" &&
+            options.arguments[1] === "where codex"
+          ) {
+            return {
+              stdout: createOneShotReader(""),
+              wait: async () => ({ exitCode: 1 }),
+            };
+          }
+          return {
+            stdout: createOneShotReader(""),
+            stderr: createOneShotReader("codex not found in WSL\n"),
+            wait: async () => ({ exitCode: 127 }),
+          };
+        },
+      },
+      async () => {
+        try {
+          await resolveCodexBinary();
+          assert.fail("Expected Windows codex auto-detect to fail");
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          assert.include(message, "WSL probe diagnostics");
+          assert.include(message, "codex not found in WSL");
+        }
       },
     );
   });
@@ -1393,6 +1457,252 @@ describe("codexAppServerProcess", function () {
         );
       },
     );
+  });
+
+  it("selects WSL codex lookup output after shell startup noise", function () {
+    assert.equal(
+      selectWindowsWslCodexLookupResult(
+        "Loading shell profile\n/home/alice/.nvm/versions/node/v22.2.0/bin/codex\n",
+      ),
+      "/home/alice/.nvm/versions/node/v22.2.0/bin/codex",
+    );
+  });
+
+  it("maps Windows localImage paths before writing WSL turn inputs", function () {
+    const writes: string[] = [];
+    const proc = CodexAppServerProcess.forTest(
+      {
+        stdin: {
+          write: (message: string) => {
+            writes.push(message);
+          },
+        },
+        kill: () => {},
+      },
+      "",
+      mapWindowsPathToWslPath,
+    );
+
+    proc.sendNotification("turn/start", {
+      input: [{ type: "localImage", path: "C:\\Users\\alice\\image.png" }],
+    });
+
+    const payload = JSON.parse(writes[0] || "{}");
+    assert.equal(payload.params.input[0].path, "/mnt/c/Users/alice/image.png");
+  });
+
+  it("falls back to WSL codex on Windows when native lookup misses", async function () {
+    const calls: SubprocessCallOptions[] = [];
+    let didReadWslLookupStdout = false;
+
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          USERPROFILE: "C:\\Users\\alice",
+          APPDATA: "",
+          LOCALAPPDATA: "",
+          SystemRoot: "C:\\Windows",
+        },
+        inheritEnv: false,
+        ioExists: async (path) => path === "C:\\Windows\\System32\\wsl.exe",
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: async (options) => {
+          calls.push(options);
+          if (options.command === "C:\\Windows\\System32\\cmd.exe") {
+            return {
+              stdout: { readString: async () => "" },
+              wait: async () => ({ exitCode: 1 }),
+            };
+          }
+          if (
+            options.command === "C:\\Windows\\System32\\wsl.exe" &&
+            options.arguments[3]?.includes("command -v codex")
+          ) {
+            return {
+              stdout: {
+                readString: async () => {
+                  if (didReadWslLookupStdout) return "";
+                  didReadWslLookupStdout = true;
+                  return "/home/alice/.nvm/versions/node/v22.2.0/bin/codex\n";
+                },
+              },
+              wait: async () => ({ exitCode: 0 }),
+            };
+          }
+          return {
+            stdout: { readString: async () => "" },
+            stdin: { write: () => {} },
+            kill: () => {},
+          };
+        },
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn();
+        proc.destroy();
+      },
+    );
+
+    assert.deepEqual(calls[0], {
+      command: "C:\\Windows\\System32\\cmd.exe",
+      arguments: ["/c", "where codex"],
+    });
+    assert.equal(calls[1]?.command, "C:\\Windows\\System32\\wsl.exe");
+    assert.deepEqual(calls[1]?.arguments.slice(0, 3), ["-e", "bash", "-c"]);
+    assert.include(calls[1]?.arguments[3] || "", "command -v codex");
+    assert.equal(calls[2]?.command, "C:\\Windows\\System32\\wsl.exe");
+    assert.deepEqual(calls[2]?.arguments.slice(0, 3), ["-e", "bash", "-c"]);
+    assert.include(calls[2]?.arguments[3] || "", "exec $CODEX_BIN app-server");
+  });
+
+  it("can discover WSL codex through cmd.exe when direct wsl.exe lookup fails", async function () {
+    const calls: SubprocessCallOptions[] = [];
+    let didReadWslShellLookupStdout = false;
+
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          USERPROFILE: "C:\\Users\\alice",
+          APPDATA: "",
+          LOCALAPPDATA: "",
+          SystemRoot: "C:\\Windows",
+        },
+        inheritEnv: false,
+        ioExists: async () => false,
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: async (options) => {
+          calls.push(options);
+          if (
+            options.command === "C:\\Windows\\System32\\cmd.exe" &&
+            options.arguments[1] === "where codex"
+          ) {
+            return {
+              stdout: { readString: async () => "" },
+              wait: async () => ({ exitCode: 1 }),
+            };
+          }
+          if (options.command === "wsl.exe") {
+            throw new Error("wsl.exe not directly spawnable");
+          }
+          if (
+            options.command === "C:\\Windows\\System32\\cmd.exe" &&
+            options.arguments[3]?.includes("command -v codex")
+          ) {
+            return {
+              stdout: {
+                readString: async () => {
+                  if (didReadWslShellLookupStdout) return "";
+                  didReadWslShellLookupStdout = true;
+                  return "/home/alice/.local/bin/codex\n";
+                },
+              },
+              wait: async () => ({ exitCode: 0 }),
+            };
+          }
+          return {
+            stdout: { readString: async () => "" },
+            stdin: { write: () => {} },
+            kill: () => {},
+          };
+        },
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn();
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[1]?.command, "wsl.exe");
+    assert.equal(calls[2]?.command, "C:\\Windows\\System32\\cmd.exe");
+    assert.include(calls[2]?.arguments[3] || "", "command -v codex");
+    assert.equal(calls[3]?.command, "C:\\Windows\\System32\\cmd.exe");
+    assert.include(calls[3]?.arguments[3] || "", "exec $CODEX_BIN app-server");
+  });
+
+  it("runs explicit WSL codex paths through wsl.exe on Windows", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: { SystemRoot: "C:\\Windows" },
+        inheritEnv: false,
+        ioExists: async (path) => path === "C:\\Windows\\System32\\wsl.exe",
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          codexPath: "/home/alice/.local/bin/codex",
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[0]?.command, "C:\\Windows\\System32\\wsl.exe");
+    assert.deepEqual(calls[0]?.arguments.slice(0, 3), ["-e", "bash", "-c"]);
+    assert.include(
+      calls[0]?.arguments[3] || "",
+      "CODEX_BIN='/home/alice/.local/bin/codex'",
+    );
+    assert.include(calls[0]?.arguments[3] || "", "PATH=$CODEX_DIR:$PATH");
+    assert.include(calls[0]?.arguments[3] || "", "nvm.sh");
+    assert.include(calls[0]?.arguments[3] || "", "exec $CODEX_BIN app-server");
+  });
+
+  it("runs explicit wsl.exe through the Windows shell", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: { SystemRoot: "C:\\Windows" },
+        inheritEnv: false,
+        ioExists: async (path) => path === "C:\\Windows\\System32\\wsl.exe",
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          codexPath: "wsl.exe",
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[0]?.command, "C:\\Windows\\System32\\cmd.exe");
+    assert.deepEqual(calls[0]?.arguments.slice(0, 3), ["/d", "/s", "/c"]);
+    assert.include(calls[0]?.arguments[3] || "", "wsl.exe");
+    assert.include(calls[0]?.arguments[3] || "", "exec $CODEX_BIN app-server");
+  });
+
+  it("supports explicit WSL distro arguments in the codex path field", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: { SystemRoot: "C:\\Windows" },
+        inheritEnv: false,
+        ioExists: async (path) => path === "C:\\Windows\\System32\\wsl.exe",
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          codexPath: "wsl.exe -d Ubuntu-22.04",
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[0]?.command, "C:\\Windows\\System32\\cmd.exe");
+    assert.include(calls[0]?.arguments[3] || "", "wsl.exe");
+    assert.include(calls[0]?.arguments[3] || "", '"-d" "Ubuntu-22.04"');
+    assert.include(calls[0]?.arguments[3] || "", "exec $CODEX_BIN app-server");
   });
 
   it("falls back to /opt/homebrew/bin/codex on macOS when PATH lookup misses it", async function () {

@@ -451,7 +451,7 @@ _Special thanks to [@jianghao-zhang](https://github.com/jianghao-zhang) and [@bo
      ```
 
    - **macOS (Homebrew alternative):** `brew install --cask codex` (no Node.js needed).
-   - **Windows/Linux:** Install [Node.js 18+](https://nodejs.org/), then `npm install -g @openai/codex`.
+   - **Windows/Linux:** Install [Node.js 18+](https://nodejs.org/), then `npm install -g @openai/codex`. On Windows, a Codex CLI installed inside WSL is also supported; leave the path blank for auto-detection, enter `wsl.exe` to force the default distro, enter `wsl.exe -d Ubuntu-22.04` to choose a distro, or enter a WSL path such as `/home/<user>/.local/bin/codex`.
 
 2. **Log in with your ChatGPT account:**
 
@@ -459,7 +459,7 @@ _Special thanks to [@jianghao-zhang](https://github.com/jianghao-zhang) and [@bo
    codex login
    ```
 
-   A browser window opens — sign in with your ChatGPT Plus account. Credentials are saved to `~/.codex/auth.json`.
+   A browser window opens — sign in with your ChatGPT Plus account. Credentials are saved to `~/.codex/auth.json`. If you use Codex from WSL on Windows, run `codex login` inside that same WSL distro.
 
 3. **Configure the plugin** (Zotero → Preferences → `llm-for-zotero`):
    - **Recommended setup**

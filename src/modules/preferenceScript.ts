@@ -999,7 +999,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           ? t(LEGACY_CODEX_API_HELPER_TEXT)
           : group.authMode === "codex_app_server"
             ? t(
-                "Optional. Leave blank to auto-detect codex, or enter an absolute path such as C:\\nvm4w\\nodejs\\codex.cmd.",
+                "Optional. Leave blank to auto-detect Windows or WSL codex, or enter a path/launcher such as C:\\nvm4w\\nodejs\\codex.cmd, wsl.exe, wsl.exe -d Ubuntu-22.04, or /home/<user>/.local/bin/codex.",
               )
             : group.authMode === "copilot_auth"
               ? t(COPILOT_API_HELPER_TEXT)

@@ -48,6 +48,26 @@ export type CodexAppServerProcessOptions = {
   codexPath?: string;
 };
 
+type CodexLocalPathMapper = (path: string) => string;
+
+type CodexLaunchInvocation = {
+  command: string;
+  args: string[];
+  environment?: Record<string, string>;
+  inputPathMapper?: CodexLocalPathMapper;
+};
+
+type WindowsWslExecutableSpec = {
+  command: string;
+  args: string[];
+};
+
+const WINDOWS_WSL_CODEX_BINARY_PREFIX = "wsl:codex:";
+const WINDOWS_WSL_CODEX_SHELL_SELECTOR = `${WINDOWS_WSL_CODEX_BINARY_PREFIX}shell`;
+const WINDOWS_WSL_NODE_SETUP_COMMAND =
+  "NVM_DIR=${NVM_DIR:-$HOME/.nvm}; [ -s $NVM_DIR/nvm.sh ] && . $NVM_DIR/nvm.sh >/dev/null 2>&1 || true";
+const WINDOWS_WSL_CODEX_SETUP_COMMAND = `CODEX_BIN=$(command -v codex 2>/dev/null || true); if [ x$CODEX_BIN = x ]; then ${WINDOWS_WSL_NODE_SETUP_COMMAND}; CODEX_BIN=$(command -v codex 2>/dev/null || true); fi; if [ x$CODEX_BIN = x ]; then for candidate in $HOME/.local/bin/codex $HOME/.cargo/bin/codex $HOME/.npm-global/bin/codex $HOME/.volta/bin/codex $HOME/.asdf/shims/codex $HOME/.bun/bin/codex /usr/local/bin/codex /usr/bin/codex; do [ -x $candidate ] && CODEX_BIN=$candidate && break; done; fi; if [ x$CODEX_BIN = x ]; then for file in ~/.bashrc ~/.profile ~/.bash_profile ~/.zprofile ~/.zshenv; do [ -r $file ] && . $file >/dev/null 2>&1 || true; CODEX_BIN=$(command -v codex 2>/dev/null || true); [ x$CODEX_BIN != x ] && break; done; fi; if [ x$CODEX_BIN = x ] && [ -d $HOME/.nvm/versions/node ]; then CODEX_BIN=$(find $HOME/.nvm/versions/node -path '*/bin/codex' -type f 2>/dev/null | sort -V 2>/dev/null | tail -n 1); [ x$CODEX_BIN != x ] || CODEX_BIN=$(find $HOME/.nvm/versions/node -path '*/bin/codex' -type f 2>/dev/null | sort | tail -n 1); fi; if [ x$CODEX_BIN = x ]; then echo 'codex not found in WSL PATH or common install locations' >&2; exit 127; fi`;
+
 function createAbortError(): Error {
   const err = new Error("Aborted");
   (err as { name?: string }).name = "AbortError";
@@ -71,14 +91,24 @@ export class CodexAppServerProcess {
   private destroyed = false;
   private didNotifyClose = false;
   private injectItemsSupport: CodexAppServerInjectItemsSupport = "unknown";
+  private inputPathMapper: CodexLocalPathMapper | undefined;
 
-  private constructor(proc: unknown, launchDescription = "") {
+  private constructor(
+    proc: unknown,
+    launchDescription = "",
+    inputPathMapper?: CodexLocalPathMapper,
+  ) {
     this.proc = proc;
     this.launchDescription = launchDescription;
+    this.inputPathMapper = inputPathMapper;
   }
 
-  static forTest(proc: unknown, launchDescription = ""): CodexAppServerProcess {
-    return new CodexAppServerProcess(proc, launchDescription);
+  static forTest(
+    proc: unknown,
+    launchDescription = "",
+    inputPathMapper?: CodexLocalPathMapper,
+  ): CodexAppServerProcess {
+    return new CodexAppServerProcess(proc, launchDescription, inputPathMapper);
   }
 
   static async loadSubprocessModule(): Promise<any> {
@@ -120,11 +150,13 @@ export class CodexAppServerProcess {
     let command: string;
     let args: string[];
     let environment: Record<string, string> | undefined;
+    let inputPathMapper: CodexLocalPathMapper | undefined;
     if (info.platform === "windows") {
       const invocation = await buildWindowsCodexInvocation(binary, info);
       command = invocation.command;
       args = invocation.args;
       environment = invocation.environment;
+      inputPathMapper = invocation.inputPathMapper;
     } else {
       command = binary;
       args = ["app-server"];
@@ -136,9 +168,7 @@ export class CodexAppServerProcess {
         command,
         arguments: args,
         stderr: "pipe",
-        ...(environment
-          ? { environment, environmentAppend: true }
-          : {}),
+        ...(environment ? { environment, environmentAppend: true } : {}),
       });
     } catch (err) {
       throw new Error(
@@ -149,6 +179,7 @@ export class CodexAppServerProcess {
     const instance = new CodexAppServerProcess(
       proc,
       formatLaunchDescription(command, args),
+      inputPathMapper,
     );
     instance.startReadLoop();
     instance.startStderrReadLoop();
@@ -346,7 +377,11 @@ export class CodexAppServerProcess {
             }, timeoutMs)
           : null;
       try {
-        this.writeRawMessage({ method, id, params });
+        this.writeRawMessage({
+          method,
+          id,
+          params: this.prepareOutgoingParams(method, params),
+        });
       } catch (err) {
         if (timeoutId !== null) clearTimeout(timeoutId);
         this.pendingRequests.delete(id);
@@ -358,10 +393,21 @@ export class CodexAppServerProcess {
   sendNotification(method: string, params?: unknown): void {
     if (this.destroyed) return;
     try {
-      this.writeRawMessage({ method, params });
+      this.writeRawMessage({
+        method,
+        params: this.prepareOutgoingParams(method, params),
+      });
     } catch {
       /* ignore if process is gone */
     }
+  }
+
+  private prepareOutgoingParams(method: string, params: unknown): unknown {
+    if (method !== "turn/start" || !this.inputPathMapper) return params;
+    return mapCodexAppServerTurnStartLocalImagePaths(
+      params,
+      this.inputPathMapper,
+    );
   }
 
   async runTurnExclusive<T>(callback: () => Promise<T>): Promise<T> {
@@ -1074,6 +1120,45 @@ function uniquePaths(paths: string[]): string[] {
   return out;
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function mapCodexAppServerInputLocalImagePaths(
+  input: unknown,
+  mapPath: CodexLocalPathMapper,
+): unknown {
+  if (!Array.isArray(input)) return input;
+  let changed = false;
+  const mapped = input.map((item) => {
+    if (
+      !isPlainRecord(item) ||
+      item.type !== "localImage" ||
+      typeof item.path !== "string"
+    ) {
+      return item;
+    }
+    const mappedPath = mapPath(item.path);
+    if (mappedPath === item.path) return item;
+    changed = true;
+    return { ...item, path: mappedPath };
+  });
+  return changed ? mapped : input;
+}
+
+function mapCodexAppServerTurnStartLocalImagePaths(
+  params: unknown,
+  mapPath: CodexLocalPathMapper,
+): unknown {
+  if (!isPlainRecord(params)) return params;
+  const mappedInput = mapCodexAppServerInputLocalImagePaths(
+    params.input,
+    mapPath,
+  );
+  if (mappedInput === params.input) return params;
+  return { ...params, input: mappedInput };
+}
+
 async function pathExists(path: string): Promise<boolean> {
   const IOUtils = (globalThis as any).IOUtils;
   if (IOUtils?.exists) {
@@ -1092,6 +1177,40 @@ async function pathExists(path: string): Promise<boolean> {
     }
   }
   return false;
+}
+
+async function readSubprocessStdout(proc: any): Promise<string> {
+  return readSubprocessString(proc.stdout);
+}
+
+async function readSubprocessStderr(proc: any): Promise<string> {
+  return readSubprocessString(proc.stderr);
+}
+
+async function readSubprocessString(stream: any): Promise<string> {
+  let out = "";
+  try {
+    while (true) {
+      const chunk = await stream?.readString?.();
+      if (!chunk) break;
+      out += chunk;
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+async function waitForSubprocessExitCode(
+  proc: any,
+): Promise<number | undefined> {
+  try {
+    const result = await proc.wait?.();
+    const exitCode = result?.exitCode;
+    return typeof exitCode === "number" ? exitCode : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function listChildren(path: string): Promise<string[]> {
@@ -1134,6 +1253,168 @@ function buildWindowsShellCommand(binary: string): string {
     : `${binary} app-server`;
 }
 
+function quoteForCmd(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function quoteForBash(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function splitWindowsCommandLine(value: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index] || "";
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function encodeWindowsWslCodexBinary(wslPath: string): string {
+  return `${WINDOWS_WSL_CODEX_BINARY_PREFIX}${wslPath}`;
+}
+
+function decodeWindowsWslCodexBinary(binary: string): string | undefined {
+  return binary.startsWith(WINDOWS_WSL_CODEX_BINARY_PREFIX)
+    ? binary.slice(WINDOWS_WSL_CODEX_BINARY_PREFIX.length)
+    : undefined;
+}
+
+function isWindowsWslExecutableReference(path: string): boolean {
+  return /(^|[\\/])wsl(?:\.exe)?$/i.test(path.trim());
+}
+
+function parseWindowsWslExecutableSpec(
+  value: string,
+): WindowsWslExecutableSpec | null {
+  const parts = splitWindowsCommandLine(value.trim());
+  const command = parts[0] || "";
+  if (!isWindowsWslExecutableReference(command)) return null;
+  return { command, args: parts.slice(1) };
+}
+
+function isWindowsWslCodexSelector(binary: string): boolean {
+  const trimmed = binary.trim();
+  return (
+    Boolean(decodeWindowsWslCodexBinary(trimmed)) ||
+    Boolean(parseWindowsWslExecutableSpec(trimmed))
+  );
+}
+
+function isWslAbsolutePath(path: string): boolean {
+  return path.startsWith("/") && !path.startsWith("//");
+}
+
+function buildWindowsWslExecutableCandidates(): string[] {
+  const systemRoot = getRuntimeEnvValue("SystemRoot") || "C:\\Windows";
+  return uniquePaths([
+    joinRuntimePath("\\", systemRoot, "System32", "wsl.exe"),
+    joinRuntimePath("\\", systemRoot, "Sysnative", "wsl.exe"),
+    "wsl.exe",
+  ]);
+}
+
+async function resolveWindowsWslExecutablePath(
+  preferred?: string,
+): Promise<string> {
+  const trimmed = preferred?.trim();
+  if (
+    trimmed &&
+    isWindowsWslExecutableReference(trimmed) &&
+    !/^wsl(?:\.exe)?$/i.test(trimmed)
+  ) {
+    return trimmed;
+  }
+  for (const candidate of buildWindowsWslExecutableCandidates()) {
+    if (candidate === "wsl.exe" || (await pathExists(candidate))) {
+      return candidate;
+    }
+  }
+  return trimmed || "wsl.exe";
+}
+
+function buildWindowsWslCodexShellCommand(
+  codexCommand: string,
+  action: "lookup" | "launch",
+): string {
+  if (codexCommand === "codex") {
+    return action === "lookup"
+      ? `${WINDOWS_WSL_CODEX_SETUP_COMMAND}; printf '%s\\n' $CODEX_BIN`
+      : `${WINDOWS_WSL_CODEX_SETUP_COMMAND}; exec $CODEX_BIN app-server`;
+  }
+
+  const command = quoteForBash(codexCommand);
+  const explicitPathSetup = `CODEX_BIN=${command}; CODEX_DIR=\${CODEX_BIN%/*}; [ x$CODEX_DIR != x$CODEX_BIN ] && PATH=$CODEX_DIR:$PATH; ${WINDOWS_WSL_NODE_SETUP_COMMAND}`;
+  return action === "lookup"
+    ? `${explicitPathSetup}; printf '%s\\n' $CODEX_BIN`
+    : `${explicitPathSetup}; exec $CODEX_BIN app-server`;
+}
+
+function buildWindowsWslCodexInvocation(
+  wslPath: string,
+  codexCommand = "codex",
+  options: {
+    shellPath?: string;
+    shellFlag?: "-c" | "/c";
+    viaShell?: boolean;
+    wslArgs?: string[];
+  } = {},
+): CodexLaunchInvocation {
+  const command = buildWindowsWslCodexShellCommand(codexCommand, "launch");
+  const wslArgs = options.wslArgs ?? [];
+  if (options.viaShell && options.shellPath && options.shellFlag) {
+    const commandLine = [
+      quoteForCmd(wslPath),
+      ...wslArgs.map(quoteForCmd),
+      "-e",
+      "bash",
+      "-c",
+      quoteForCmd(command),
+    ].join(" ");
+    return {
+      command: options.shellPath,
+      args: ["/d", "/s", options.shellFlag, commandLine],
+      inputPathMapper: mapWindowsPathToWslPath,
+    };
+  }
+
+  return {
+    command: wslPath,
+    args: [...wslArgs, "-e", "bash", "-c", command],
+    inputPathMapper: mapWindowsPathToWslPath,
+  };
+}
+
+export function mapWindowsPathToWslPath(path: string): string {
+  const driveMatch = path.match(/^([a-zA-Z]):[\\/](.*)$/);
+  if (!driveMatch) return path;
+  const drive = driveMatch[1]?.toLowerCase();
+  const rest = (driveMatch[2] || "").replace(/\\/g, "/");
+  return `/mnt/${drive}/${rest}`;
+}
+
 function formatLaunchDescription(command: string, args: string[]): string {
   return [command, ...args].join(" ");
 }
@@ -1146,16 +1427,43 @@ function getWindowsDirectory(path: string): string {
 async function buildWindowsCodexInvocation(
   binary: string,
   info: ReturnType<typeof getRuntimePlatformInfo>,
-): Promise<{
-  command: string;
-  args: string[];
-  environment?: Record<string, string>;
-}> {
+): Promise<CodexLaunchInvocation> {
+  if (binary === WINDOWS_WSL_CODEX_SHELL_SELECTOR) {
+    return buildWindowsWslCodexInvocation("wsl.exe", "codex", {
+      shellPath: info.shellPath,
+      shellFlag: info.shellFlag,
+      viaShell: true,
+    });
+  }
+
+  if (isWindowsWslCodexSelector(binary)) {
+    const decodedBinary = decodeWindowsWslCodexBinary(binary);
+    const explicitWslSpec = parseWindowsWslExecutableSpec(binary);
+    const preferredWslPath =
+      decodedBinary && decodedBinary !== "shell"
+        ? decodedBinary
+        : (explicitWslSpec?.command ?? binary);
+    const wslPath = await resolveWindowsWslExecutablePath(preferredWslPath);
+    const shouldUseShell =
+      Boolean(explicitWslSpec?.args.length) ||
+      /^wsl(?:\.exe)?$/i.test(binary.trim());
+    return buildWindowsWslCodexInvocation(wslPath, "codex", {
+      shellPath: info.shellPath,
+      shellFlag: info.shellFlag,
+      viaShell: shouldUseShell,
+      wslArgs: explicitWslSpec?.args,
+    });
+  }
+
+  if (isWslAbsolutePath(binary)) {
+    const wslPath = await resolveWindowsWslExecutablePath();
+    return buildWindowsWslCodexInvocation(wslPath, binary);
+  }
+
   const directory = getWindowsDirectory(binary);
   if (directory && /\.cmd$/i.test(binary)) {
-    const nativeInvocation = await resolveWindowsNpmNativeCodexInvocation(
-      directory,
-    );
+    const nativeInvocation =
+      await resolveWindowsNpmNativeCodexInvocation(directory);
     if (nativeInvocation) return nativeInvocation;
 
     const nodePath = joinRuntimePath("\\", directory, "node.exe");
@@ -1361,8 +1669,161 @@ export function selectCodexLookupResult(
   return sameDirCmd || first;
 }
 
+export function selectWindowsWslCodexLookupResult(output: string): string {
+  const candidates = output
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const candidate = candidates[index] || "";
+    if (candidate === "codex" || isWslAbsolutePath(candidate)) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
+function buildWindowsWslLookupInvocations(): Array<{
+  command: string;
+  args: string[];
+  selector: string;
+}> {
+  const lookupCommand = buildWindowsWslCodexShellCommand("codex", "lookup");
+  const directInvocations = buildWindowsWslExecutableCandidates().map(
+    (wslPath) => ({
+      command: wslPath,
+      args: ["-e", "bash", "-c", lookupCommand],
+      selector: encodeWindowsWslCodexBinary(wslPath),
+    }),
+  );
+  const info = getRuntimePlatformInfo();
+  return [
+    ...directInvocations,
+    {
+      command: info.shellPath,
+      args: [
+        "/d",
+        "/s",
+        info.shellFlag,
+        `${quoteForCmd("wsl.exe")} -e bash -c ${quoteForCmd(lookupCommand)}`,
+      ],
+      selector: WINDOWS_WSL_CODEX_SHELL_SELECTOR,
+    },
+  ];
+}
+
+function normalizeDiagnosticText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function formatWindowsWslLookupDiagnostic(params: {
+  command: string;
+  args: string[];
+  exitCode?: number;
+  stdout?: string;
+  stderr?: string;
+  error?: unknown;
+}): string {
+  const details: string[] = [
+    formatLaunchDescription(params.command, params.args),
+  ];
+  if (typeof params.exitCode === "number") {
+    details.push(`exit ${params.exitCode}`);
+  }
+  const stderr = normalizeDiagnosticText(params.stderr || "");
+  const stdout = normalizeDiagnosticText(params.stdout || "");
+  if (stderr) details.push(`stderr: ${stderr.slice(0, 300)}`);
+  if (stdout) details.push(`stdout: ${stdout.slice(0, 300)}`);
+  if (params.error) {
+    details.push(
+      `error: ${
+        params.error instanceof Error
+          ? params.error.message
+          : String(params.error)
+      }`,
+    );
+  }
+  return details.join(" | ");
+}
+
+async function resolveWindowsWslCodexBinary(
+  Subprocess: any,
+  diagnostics: string[] = [],
+): Promise<string | undefined> {
+  for (const invocation of buildWindowsWslLookupInvocations()) {
+    if (
+      invocation.selector !== WINDOWS_WSL_CODEX_SHELL_SELECTOR &&
+      invocation.command !== "wsl.exe" &&
+      !(await pathExists(invocation.command))
+    ) {
+      continue;
+    }
+    try {
+      const proc = await Subprocess.call({
+        command: invocation.command,
+        arguments: invocation.args,
+        stderr: "pipe",
+      });
+      const [out, stderr] = await Promise.all([
+        readSubprocessStdout(proc),
+        readSubprocessStderr(proc),
+      ]);
+      const exitCode = await waitForSubprocessExitCode(proc);
+      const found =
+        exitCode === undefined || exitCode === 0
+          ? selectWindowsWslCodexLookupResult(out)
+          : "";
+      if (found) {
+        return invocation.selector;
+      }
+      diagnostics.push(
+        formatWindowsWslLookupDiagnostic({
+          command: invocation.command,
+          args: invocation.args,
+          exitCode,
+          stdout: out,
+          stderr,
+        }),
+      );
+    } catch (error) {
+      diagnostics.push(
+        formatWindowsWslLookupDiagnostic({
+          command: invocation.command,
+          args: invocation.args,
+          error,
+        }),
+      );
+      /* continue to the next WSL executable candidate */
+    }
+  }
+  return undefined;
+}
+
+function createCodexBinaryNotFoundError(
+  platform: "windows" | "macos" | "linux",
+  diagnostics: string[] = [],
+) {
+  const windowsHint =
+    platform === "windows"
+      ? " On Windows, native installs are auto-detected first; WSL installs require WSL to be available as `wsl.exe` and `codex login` to have been run inside the default WSL distro."
+      : "";
+  const diagnosticHint =
+    platform === "windows" && diagnostics.length
+      ? ` WSL probe diagnostics: ${diagnostics.slice(-3).join(" ; ")}`
+      : "";
+  return new Error(
+    "codex binary not found. Install Codex CLI (https://github.com/openai/codex) and ensure it is on your PATH, " +
+      "or set the CODEX_PATH environment variable to the absolute path of the codex executable." +
+      windowsHint +
+      diagnosticHint,
+  );
+}
+
 function isWindowsPathLike(path: string): boolean {
-  return /^[a-z]:[\\/]/i.test(path) || path.includes("\\") || path.includes("/");
+  return (
+    /^[a-z]:[\\/]/i.test(path) || path.includes("\\") || path.includes("/")
+  );
 }
 
 async function resolveWindowsCodexShimPath(path: string): Promise<string> {
@@ -1416,18 +1877,12 @@ export async function resolveCodexBinary(
         command: info.shellPath,
         arguments: [info.shellFlag, lookupCmd],
       });
-      let out = "";
-      try {
-        while (true) {
-          const chunk = await proc.stdout.readString();
-          if (!chunk) break;
-          out += chunk;
-        }
-      } catch {
-        /* ignore */
-      }
-      await proc.wait();
-      const found = selectCodexLookupResult(out, info.platform);
+      const out = await readSubprocessStdout(proc);
+      const exitCode = await waitForSubprocessExitCode(proc);
+      const found =
+        exitCode === undefined || exitCode === 0
+          ? selectCodexLookupResult(out, info.platform)
+          : "";
       if (found) return found;
     } catch {
       /* continue to fallback */
@@ -1525,12 +1980,20 @@ export async function resolveCodexBinary(
     if (await pathExists(candidate)) return candidate;
   }
 
-  if (info.platform === "windows") return "codex";
+  if (info.platform === "windows") {
+    if (Subprocess?.call) {
+      const diagnostics: string[] = [];
+      const wslCodex = await resolveWindowsWslCodexBinary(
+        Subprocess,
+        diagnostics,
+      );
+      if (wslCodex) return wslCodex;
+      throw createCodexBinaryNotFoundError(info.platform, diagnostics);
+    }
+    throw createCodexBinaryNotFoundError(info.platform);
+  }
 
-  throw new Error(
-    "codex binary not found. Install Codex CLI (https://github.com/openai/codex) and ensure it is on your PATH, " +
-      "or set the CODEX_PATH environment variable to the absolute path of the codex executable.",
-  );
+  throw createCodexBinaryNotFoundError(info.platform);
 }
 
 // Per-auth-mode singleton processes
