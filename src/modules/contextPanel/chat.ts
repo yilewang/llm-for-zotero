@@ -3297,7 +3297,8 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
   setRequestUIBusy(body, ui, initialConversationKey, "Preparing request...");
 
   const shownQuestion = displayQuestion || question;
-  const provisionalConversationKey = initialConversationKey;
+  await ensureConversationLoaded(item);
+  const provisionalConversationKey = getConversationKey(item);
   if (!chatHistory.has(provisionalConversationKey)) {
     chatHistory.set(provisionalConversationKey, []);
   }
@@ -3341,14 +3342,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
   optimisticHelpers.setStatusSafely("Checking the request against the attached context.", "sending");
   optimisticHelpers.refreshChatSafely();
 
-  await ensureConversationLoaded(item);
   const conversationKey = getConversationKey(item);
-  if (conversationKey !== provisionalConversationKey && !reuseAgentFallbackPlaceholder) {
-    const oldHistory = chatHistory.get(provisionalConversationKey) || [];
-    if (oldHistory.length >= 2) {
-      oldHistory.splice(Math.max(0, oldHistory.length - 2), 2);
-    }
-  }
 
   // Add user message with attached selected text / screenshots metadata
   if (!chatHistory.has(conversationKey)) {
@@ -3489,7 +3483,11 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
         : undefined,
     reasoningOpen: isReasoningExpandedByDefault(),
   };
-  history[history.length - 1] = assistantMessage;
+  if (reuseOptimisticPair) {
+    history[history.length - 1] = assistantMessage;
+  } else {
+    history.push(assistantMessage);
+  }
   if (history.length > PERSISTED_HISTORY_LIMIT) {
     history.splice(0, history.length - PERSISTED_HISTORY_LIMIT);
   }

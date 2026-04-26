@@ -10779,6 +10779,17 @@ export function setupHandlers(
         preserveInputDraft: true,
       });
     },
+    runColdSend: async (text: string) => {
+      if (item) {
+        const key = getConversationKey(item);
+        chatHistory.delete(key);
+        loadedConversationKeys.delete(key);
+      }
+      await doSend({
+        overrideText: text,
+        preserveInputDraft: true,
+      });
+    },
     switchConversationSystem: async (
       system: "upstream" | "claude_code",
       options?: { forceFresh?: boolean },
@@ -10786,6 +10797,9 @@ export function setupHandlers(
       await switchConversationSystem(system, {
         forceFresh: options?.forceFresh === true,
       });
+    },
+    setRuntimeMode: async (mode: "chat" | "agent") => {
+      setCurrentRuntimeMode(mode);
     },
     startNewConversation: async (
       scope?: "global" | "paper",
@@ -10810,6 +10824,7 @@ export function setupHandlers(
           : null,
       conversationSystem: getConversationSystem(),
       conversationKind: item ? resolveDisplayConversationKind(item) : null,
+      runtimeMode: getCurrentRuntimeMode(),
       providerLabel: getSelectedProfile()?.providerLabel || null,
       isConnected: body.isConnected,
     }),

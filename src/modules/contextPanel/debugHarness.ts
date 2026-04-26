@@ -30,22 +30,26 @@ type OSFileLike = {
 
 type HarnessConversationSystem = "upstream" | "claude_code";
 type HarnessConversationScope = "global" | "paper";
+type HarnessRuntimeMode = "chat" | "agent";
 
 type HarnessPanelInfo = {
   conversationKey: number | null;
   itemId: number | null;
   conversationSystem: HarnessConversationSystem;
   conversationKind: HarnessConversationScope | null;
+  runtimeMode: HarnessRuntimeMode;
   providerLabel: string | null;
   isConnected: boolean;
 };
 
 type HarnessEntry = {
   runSend: (text: string) => Promise<void>;
+  runColdSend: (text: string) => Promise<void>;
   switchConversationSystem: (
     system: HarnessConversationSystem,
     options?: { forceFresh?: boolean },
   ) => Promise<void>;
+  setRuntimeMode: (mode: HarnessRuntimeMode) => Promise<void>;
   startNewConversation: (
     scope?: HarnessConversationScope,
     options?: { forceFresh?: boolean },
@@ -60,7 +64,7 @@ type HarnessInspectCommand = {
 
 type HarnessSendCommand = {
   id: string;
-  action: "send";
+  action: "send" | "send_cold";
   text: string;
 };
 
@@ -69,6 +73,12 @@ type HarnessSwitchSystemCommand = {
   action: "switch_system";
   system: HarnessConversationSystem;
   forceFresh?: boolean;
+};
+
+type HarnessSetRuntimeModeCommand = {
+  id: string;
+  action: "set_runtime_mode";
+  mode: HarnessRuntimeMode;
 };
 
 type HarnessNewChatCommand = {
@@ -82,6 +92,7 @@ type HarnessCommand =
   | HarnessInspectCommand
   | HarnessSendCommand
   | HarnessSwitchSystemCommand
+  | HarnessSetRuntimeModeCommand
   | HarnessNewChatCommand;
 
 const harnessEntries = new Map<Element, HarnessEntry>();
@@ -106,6 +117,10 @@ function isHarnessConversationSystem(
 
 function isHarnessConversationScope(value: unknown): value is HarnessConversationScope {
   return value === "global" || value === "paper";
+}
+
+function isHarnessRuntimeMode(value: unknown): value is HarnessRuntimeMode {
+  return value === "chat" || value === "agent";
 }
 
 async function ensureDir(path: string): Promise<void> {
@@ -184,10 +199,16 @@ async function executeHarnessCommand(
     case "send":
       await entry.runSend(command.text);
       return;
+    case "send_cold":
+      await entry.runColdSend(command.text);
+      return;
     case "switch_system":
       await entry.switchConversationSystem(command.system, {
         forceFresh: command.forceFresh === true,
       });
+      return;
+    case "set_runtime_mode":
+      await entry.setRuntimeMode(command.mode);
       return;
     case "new_chat":
       await entry.startNewConversation(command.scope, {
@@ -214,7 +235,10 @@ async function pollHarnessCommand(): Promise<void> {
     commandInFlight = false;
     return;
   }
-  if (command.action === "send" && typeof command.text !== "string") {
+  if (
+    (command.action === "send" || command.action === "send_cold") &&
+    typeof command.text !== "string"
+  ) {
     await writeHarnessResult({
       id: command.id,
       status: "failed",
@@ -233,6 +257,19 @@ async function pollHarnessCommand(): Promise<void> {
       status: "failed",
       action: command.action,
       error: "Harness switch_system command requires system=upstream|claude_code",
+    });
+    commandInFlight = false;
+    return;
+  }
+  if (
+    command.action === "set_runtime_mode" &&
+    !isHarnessRuntimeMode(command.mode)
+  ) {
+    await writeHarnessResult({
+      id: command.id,
+      status: "failed",
+      action: command.action,
+      error: "Harness set_runtime_mode command requires mode=chat|agent",
     });
     commandInFlight = false;
     return;
@@ -299,7 +336,14 @@ export function registerPanelDebugHarness(
   harnessEntries.set(body, entry);
   void writeHarnessResult({
     status: "idle",
-    availableActions: ["inspect", "switch_system", "new_chat", "send"],
+    availableActions: [
+      "inspect",
+      "switch_system",
+      "set_runtime_mode",
+      "new_chat",
+      "send",
+      "send_cold",
+    ],
     info: entry.getInfo(),
   });
 }

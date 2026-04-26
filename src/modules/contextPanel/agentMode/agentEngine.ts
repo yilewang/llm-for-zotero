@@ -461,20 +461,22 @@ export async function sendAgentTurn(
   userMessage.fullTextPaperContexts = fullTextPaperContextsForMessage.length
     ? fullTextPaperContextsForMessage
     : undefined;
-  await deps.updateStoredLatestUserMessage(conversationKey, {
-    text: userMessage.text,
-    timestamp: userMessage.timestamp,
-    runMode: "agent",
-    selectedText: userMessage.selectedText,
-    selectedTexts: userMessage.selectedTexts,
-    selectedTextSources: userMessage.selectedTextSources,
-    selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
-    selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
-    paperContexts: userMessage.paperContexts,
-    fullTextPaperContexts: userMessage.fullTextPaperContexts,
-    screenshotImages: userMessage.screenshotImages,
-    attachments: userMessage.attachments,
-  });
+  if (!isCompactCommand) {
+    await deps.updateStoredLatestUserMessage(conversationKey, {
+      text: userMessage.text,
+      timestamp: userMessage.timestamp,
+      runMode: "agent",
+      selectedText: userMessage.selectedText,
+      selectedTexts: userMessage.selectedTexts,
+      selectedTextSources: userMessage.selectedTextSources,
+      selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
+      selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
+      paperContexts: userMessage.paperContexts,
+      fullTextPaperContexts: userMessage.fullTextPaperContexts,
+      screenshotImages: userMessage.screenshotImages,
+      attachments: userMessage.attachments,
+    });
+  }
   const runtimeRequest = await deps.buildAgentRuntimeRequest({
     conversationKey,
     item,
