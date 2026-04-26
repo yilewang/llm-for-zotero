@@ -474,6 +474,7 @@ export function openStandaloneChat(options?: {
   let currentBasePaperItem: Zotero.Item | null = initialBasePaperItem;
   let isInWebChatMode = false;
   let currentChatHooks: SetupHandlersHooks | null = null;
+  let standaloneSidebarRenderQueued = false;
   let themeObserver: {
     observe(target: Node, options: MutationObserverInit): void;
     disconnect(): void;
@@ -1110,7 +1111,7 @@ export function openStandaloneChat(options?: {
           void renderWebChatSidebar();
         } else {
           sidebarTitle.textContent = t("History");
-          void renderSidebar();
+          scheduleStandaloneSidebarRender();
         }
       };
 
@@ -1379,6 +1380,15 @@ export function openStandaloneChat(options?: {
             );
       };
 
+      const scheduleStandaloneSidebarRender = () => {
+        if (cancelled || standaloneSidebarRenderQueued) return;
+        standaloneSidebarRenderQueued = true;
+        newWin.setTimeout(() => {
+          standaloneSidebarRenderQueued = false;
+          scheduleStandaloneSidebarRender();
+        }, 0);
+      };
+
       const mountChatPanel = (nextItem: Zotero.Item) => {
         const resolvedState = resolveInitialPanelItemState(nextItem, {
           conversationSystem: resolveConversationSystemForItem(nextItem),
@@ -1420,7 +1430,7 @@ export function openStandaloneChat(options?: {
           const chatHooks: SetupHandlersHooks = {
             onConversationHistoryChanged: () => {
               if (cancelled) return;
-              void renderSidebar();
+              scheduleStandaloneSidebarRender();
             },
             onWebChatModeChanged: (isWebChat) => {
               if (cancelled) return;
@@ -1450,7 +1460,7 @@ export function openStandaloneChat(options?: {
             if (cancelled) return;
             refreshChat(contentArea, mountedItem);
             // Refresh sidebar after conversation is confirmed loaded
-            void renderSidebar();
+            scheduleStandaloneSidebarRender();
           } catch (err) {
             ztoolkit.log("LLM: standalone mount async failed", err);
           }
@@ -2961,7 +2971,7 @@ export function openStandaloneChat(options?: {
               activeGlobalConversationByLibrary.set(libraryID, conversationKey);
             }
             mountChatPanel(nextItem as Zotero.Item);
-            void renderSidebar();
+            scheduleStandaloneSidebarRender();
             updateStandaloneSystemToggle();
           };
 
@@ -3025,7 +3035,7 @@ export function openStandaloneChat(options?: {
           activeConversationKey = newKey;
           currentPaperItem = paperItem;
           mountChatPanel(freshItem as Zotero.Item);
-          void renderSidebar();
+          scheduleStandaloneSidebarRender();
           void renderShortcuts(contentArea, freshItem as Zotero.Item, "paper");
           updateStandaloneSystemToggle();
           return;
@@ -3034,7 +3044,7 @@ export function openStandaloneChat(options?: {
         const nextItem = resolved.item || nextRawItem;
         if (nextItem) {
           mountChatPanel(nextItem);
-          void renderSidebar();
+          scheduleStandaloneSidebarRender();
           const shortcutMode =
             resolveDisplayConversationKind(nextItem) === "global" ? "library" : "paper";
           void renderShortcuts(contentArea, nextItem, shortcutMode);
@@ -3156,7 +3166,7 @@ export function openStandaloneChat(options?: {
           });
           if (!item) return;
           mountChatPanel(item);
-          void renderSidebar();
+          scheduleStandaloneSidebarRender();
           return;
         }
 
@@ -3220,7 +3230,7 @@ export function openStandaloneChat(options?: {
               });
               if (item) {
                 mountChatPanel(item);
-                void renderSidebar();
+                scheduleStandaloneSidebarRender();
                 return;
               }
             }
@@ -3318,7 +3328,7 @@ export function openStandaloneChat(options?: {
         currentBasePaperItem = newBasePaper;
         currentPaperItem = resolved.item || newBasePaper;
         mountChatPanel(currentPaperItem);
-        void renderSidebar();
+        scheduleStandaloneSidebarRender();
       };
 
       // Initial mount — preserve the source panel mode/item when available
@@ -3335,7 +3345,7 @@ export function openStandaloneChat(options?: {
         "LLM: standalone renderSidebar start",
         "mode=" + standaloneMode,
       );
-      void renderSidebar();
+      scheduleStandaloneSidebarRender();
       renderStandalonePlaceholdersInEmbeddedPanels(contentArea);
     } catch (err) {
       ztoolkit.log("LLM: standalone initWindow failed", err);

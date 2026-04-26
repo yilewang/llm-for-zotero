@@ -603,10 +603,38 @@ export class AgentRuntime {
           });
         },
         onUsage: async (usage) => {
+          const usageRecord = usage as unknown as Record<string, unknown>;
           const totalTokens = Math.max(0, usage.totalTokens || 0);
           const promptTokens = Math.max(0, usage.promptTokens || 0);
           const completionTokens = Math.max(0, usage.completionTokens || 0);
-          if (totalTokens <= 0 && promptTokens <= 0 && completionTokens <= 0) {
+          const contextTokens =
+            typeof usageRecord.contextTokens === "number" && Number.isFinite(usageRecord.contextTokens)
+              ? Math.max(0, usageRecord.contextTokens)
+              : undefined;
+          const contextWindow =
+            typeof usageRecord.contextWindow === "number" && Number.isFinite(usageRecord.contextWindow)
+              ? Math.max(0, usageRecord.contextWindow)
+              : undefined;
+          const contextWindowIsAuthoritative = usageRecord.contextWindowIsAuthoritative === true;
+          const percentage =
+            typeof usageRecord.percentage === "number" && Number.isFinite(usageRecord.percentage)
+              ? Math.max(0, Math.min(100, usageRecord.percentage))
+              : undefined;
+          const sessionId =
+            typeof usageRecord.sessionId === "string" && usageRecord.sessionId.trim()
+              ? usageRecord.sessionId.trim()
+              : undefined;
+          const model =
+            typeof usageRecord.model === "string" && usageRecord.model.trim()
+              ? usageRecord.model.trim()
+              : undefined;
+          if (
+            totalTokens <= 0 &&
+            promptTokens <= 0 &&
+            completionTokens <= 0 &&
+            !(typeof contextTokens === "number" && contextTokens > 0) &&
+            !(typeof contextWindow === "number" && contextWindow > 0)
+          ) {
             return;
           }
           await emit({
@@ -615,6 +643,12 @@ export class AgentRuntime {
             promptTokens,
             completionTokens,
             totalTokens,
+            ...(typeof contextTokens === "number" ? { contextTokens } : {}),
+            ...(typeof contextWindow === "number" ? { contextWindow } : {}),
+            ...(contextWindowIsAuthoritative ? { contextWindowIsAuthoritative: true } : {}),
+            ...(typeof percentage === "number" ? { percentage } : {}),
+            ...(sessionId ? { sessionId } : {}),
+            ...(model ? { model } : {}),
           });
         },
         onToolCall: async (call) => {

@@ -468,13 +468,15 @@ function splitTextBlocks(text: string): TextBlock[] {
       continue;
     }
 
-    // Table (starts with |)
+    // Table
     if (trimmed.includes("|") && i + 1 < lines.length) {
       const nextTrimmed = lines[i + 1]?.trim() || "";
-      if (/^[\s|:-]+$/.test(nextTrimmed) && nextTrimmed.includes("-")) {
+      if (/^\|?[\s:-]+(?:\|[\s:-]+)+\|?$/.test(nextTrimmed) && nextTrimmed.includes("-")) {
         const tableLines: string[] = [line, lines[i + 1]];
         i += 2;
-        while (i < lines.length && lines[i].trim().includes("|")) {
+        while (i < lines.length) {
+          const rowTrimmed = lines[i].trim();
+          if (!rowTrimmed || !rowTrimmed.includes("|")) break;
           tableLines.push(lines[i]);
           i++;
         }
@@ -703,14 +705,34 @@ function renderTable(content: string): string {
     return `<p>${escapeHtml(content)}</p>`;
   }
 
-  const readCells = (row: string) =>
-    row
-      .split("|")
-      .map((cell) => cell.trim())
-      .filter((cell, idx, arr) => {
-        const isEdge = (idx === 0 || idx === arr.length - 1) && cell === "";
-        return !isEdge;
-      });
+  const readCells = (row: string) => {
+    const cells: string[] = [];
+    let current = "";
+    let escaped = false;
+    for (const char of row) {
+      if (escaped) {
+        current += char;
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === "|") {
+        cells.push(current.trim());
+        current = "";
+        continue;
+      }
+      current += char;
+    }
+    if (escaped) current += "\\";
+    cells.push(current.trim());
+    return cells.filter((cell, idx, arr) => {
+      const isEdge = (idx === 0 || idx === arr.length - 1) && cell === "";
+      return !isEdge;
+    });
+  };
 
   const headerCells = readCells(lines[0]);
   // Skip divider line (lines[1])

@@ -409,4 +409,83 @@ describe("agentTrace render", function () {
       text: "Working through the evidence.",
     });
   });
+
+  it("omits generic completed rows when a tool already has no specific success summary", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "unknown_tool",
+          args: {},
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "call-1",
+          name: "unknown_tool",
+          ok: true,
+          content: { ok: true },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "final",
+        payload: {
+          type: "final",
+          text: "Done",
+        },
+        createdAt: 3,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.notInclude(actionTexts, "Completed Unknown tool");
+    assert.include(actionTexts, "Response ready");
+  });
+
+  it("shows the concrete skill name instead of a generic skill label", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "Skill",
+          args: { skill: "graphwalk" },
+        },
+        createdAt: 1,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null);
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.include(actionTexts, "Using Skill: graphwalk");
+    assert.notInclude(actionTexts, "Using Skill");
+  });
 });

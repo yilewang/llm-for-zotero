@@ -1319,7 +1319,7 @@
 }
 
 .llm-standalone-sidebar-title {
-  font-size: var(--llm-fs-13);
+  font-size: var(--llm-fs-13, 13px);
   font-weight: 600;
   color: var(--fill-primary);
   white-space: nowrap;
@@ -1372,13 +1372,13 @@
 
 .llm-standalone-sidebar-empty {
   color: var(--fill-tertiary);
-  font-size: var(--llm-fs-12);
+  font-size: var(--llm-fs-12, 12px);
   padding: 16px 6px;
   text-align: center;
 }
 
 .llm-standalone-day-label {
-  font-size: var(--llm-fs-11);
+  font-size: var(--llm-fs-11, 11px);
   font-weight: 600;
   color: var(--fill-tertiary);
   text-transform: uppercase;
@@ -1396,7 +1396,7 @@
   border-radius: 6px;
   background: none;
   color: var(--fill-primary);
-  font-size: var(--llm-fs-12);
+  font-size: var(--llm-fs-12, 12px);
   text-align: left;
   cursor: pointer;
   line-height: 1.4;
@@ -1485,7 +1485,7 @@
   border-radius: 7px;
   background: none;
   color: var(--fill-secondary);
-  font-size: var(--llm-fs-12);
+  font-size: var(--llm-fs-12, 12px);
   font-weight: 500;
   cursor: pointer;
   transition:

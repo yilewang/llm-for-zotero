@@ -2670,11 +2670,15 @@ export async function retryLatestAssistantResponse(
           conversationKey,
           usage.totalTokens,
         );
+        const contextWindow =
+          resolveConversationSystemForItem(item) === "claude_code"
+            ? getContextInputWindow(effectiveRequestConfig)
+            : undefined;
+        contextUsageSnapshots.set(conversationKey, {
+          contextTokens: total,
+          contextWindow,
+        });
         if (ui.tokenUsageEl) {
-          const contextWindow =
-            isClaudeConversationSystemActive()
-              ? getContextInputWindow(effectiveRequestConfig)
-              : undefined;
           setTokenUsage(
             ui.tokenUsageEl,
             total,
@@ -3773,11 +3777,15 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
           conversationKey,
           usage.totalTokens,
         );
+        const contextWindow =
+          resolveConversationSystemForItem(item) === "claude_code"
+            ? getContextInputWindow(effectiveRequestConfig)
+            : undefined;
+        contextUsageSnapshots.set(conversationKey, {
+          contextTokens: total,
+          contextWindow,
+        });
         if (ui.tokenUsageEl) {
-          const contextWindow =
-            isClaudeConversationSystemActive()
-              ? getContextInputWindow(effectiveRequestConfig)
-              : undefined;
           setTokenUsage(
             ui.tokenUsageEl,
             total,
@@ -4040,8 +4048,11 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       (isClaudeConversationSystemActive()
         ? getContextInputWindow(resolveEffectiveRequestConfig({ item }))
         : undefined);
+    const seededTokens = getOrSeedSessionTokens(conversationKey, history);
     const contextTokens =
-      snapshot?.contextTokens ?? getOrSeedSessionTokens(conversationKey, history);
+      typeof snapshot?.contextTokens === "number" && snapshot.contextTokens > 0
+        ? snapshot.contextTokens
+        : seededTokens;
     setTokenUsage(
       tokenUsageEl,
       contextTokens,
@@ -4701,7 +4712,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         index > 0 && history[index - 1]?.role === "user"
           ? history[index - 1]
           : null;
-      const isClaudeStreamingConversation = isClaudeConversationSystemActive();
+      const isClaudeStreamingConversation = resolveConversationSystemForItem(item) === "claude_code";
       const agentRunId = msg.agentRunId?.trim();
       const cachedTraceEvents = agentRunId ? getCachedAgentRunEvents(agentRunId) : [];
       const traceEvents = cachedTraceEvents.length

@@ -166,4 +166,19 @@ describe("renderMarkdown with inline block tokens", function () {
     const html = renderMarkdown(input);
     assert.include(html, "<blockquote>");
   });
+
+  it("renders markdown tables without turning divider syntax into plain text", function () {
+    const input = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+    const html = renderMarkdown(input);
+    assert.include(html, "<table>");
+    assert.include(html, "<th>A</th>");
+    assert.include(html, "<td>2</td>");
+  });
+
+  it("keeps escaped pipes inside table cells", function () {
+    const input = "| A | B |\n| --- | --- |\n| x\\|y | z |";
+    const html = renderMarkdown(input);
+    assert.include(html, "<td>x|y</td>");
+    assert.include(html, "<td>z</td>");
+  });
 });

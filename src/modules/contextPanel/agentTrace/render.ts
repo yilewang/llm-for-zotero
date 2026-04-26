@@ -2214,16 +2214,21 @@ function summarizeAgentTraceToolCall(
   request?: AgentTraceRequestSummary,
 ): AgentTraceSummaryRow {
   const label = toolLabelFromName(name);
+  const a =
+    args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+  const skillName =
+    name === "Skill" && typeof a.skill === "string" && a.skill.trim()
+      ? a.skill.trim()
+      : null;
   const text =
     resolveToolPresentationSummary(
       getToolDefinition(name)?.presentation?.summaries?.onCall,
       { label, args, request },
-    ) || `Using ${label}`;
+    ) ||
+    (skillName ? `Using Skill: ${skillName}` : `Using ${label}`);
 
   // Show code block for shell commands and file I/O
   let codeBlock: string | undefined;
-  const a =
-    args && typeof args === "object" ? (args as Record<string, unknown>) : {};
   if (name === "run_command" && typeof a.command === "string") {
     codeBlock = a.command;
   } else if (name === "file_io" && typeof a.filePath === "string") {
@@ -2351,7 +2356,10 @@ function summarizeAgentTraceToolResult(
       getToolDefinition(name)?.presentation?.summaries?.onSuccess,
       { label, content, request },
     ) ||
-    `${isEmpty ? "No results from" : "Completed"} ${label}`;
+    (isEmpty ? `No results from ${label}` : "");
+  if (!text) {
+    return null;
+  }
   return {
     kind: isEmpty ? "skip" : "ok",
     icon: isEmpty ? "-" : "✓",
@@ -2686,16 +2694,22 @@ export function buildAgentTraceDisplayItems(
         }
         break;
       }
-      case "final":
-        items.push({
-          type: "action",
-          row: {
-            kind: "done",
-            icon: "✓",
-            text: "Response ready",
-          },
-        });
+      case "final": {
+        const alreadyCompleted = items.some(
+          (item) => item.type === "action" && item.row.kind === "done",
+        );
+        if (!alreadyCompleted) {
+          items.push({
+            type: "action",
+            row: {
+              kind: "done",
+              icon: "✓",
+              text: "Response ready",
+            },
+          });
+        }
         break;
+      }
       case "fallback":
         items.push({
           type: "message",
