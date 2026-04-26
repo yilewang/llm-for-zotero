@@ -477,6 +477,23 @@ function renderUserBubbleContent(
   }
 }
 
+function looksLikeStreamingMarkdownTable(text: string): boolean {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const line = lines[index];
+    const next = lines[index + 1];
+    if (!line.startsWith("|")) continue;
+    if (!next?.startsWith("|")) continue;
+    if (next === "|" || /^\|?[\s:-]+(?:\|[\s:-]+)*\|?$/.test(next)) {
+      return true;
+    }
+    if (line.includes("|") && next.includes("|")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function attachRenderedCopyButtons(root: ParentNode, doc: Document): void {
   const copyables = Array.from(
     root.querySelectorAll(".llm-copyable[data-llm-copy-source]"),
@@ -3124,10 +3141,6 @@ async function buildAgentRuntimeRequest(
           ? getClaudeAutoCompactThresholdPercent()
           : undefined,
       claudeHistoryLength: params.history.length,
-      claudeEstimatedContextTokens:
-        params.effectiveRequestConfig.modelProviderLabel === "Claude Code"
-          ? estimateConversationTokens(params.history)
-          : undefined,
     },
   };
 }
@@ -4043,22 +4056,31 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
   const history = chatHistory.get(conversationKey) || [];
   if (tokenUsageEl) {
     const snapshot = contextUsageSnapshots.get(conversationKey);
-    const contextWindow =
-      snapshot?.contextWindow ??
-      (isClaudeConversationSystemActive()
-        ? getContextInputWindow(resolveEffectiveRequestConfig({ item }))
-        : undefined);
-    const seededTokens = getOrSeedSessionTokens(conversationKey, history);
-    const contextTokens =
-      typeof snapshot?.contextTokens === "number" && snapshot.contextTokens > 0
-        ? snapshot.contextTokens
-        : seededTokens;
-    setTokenUsage(
-      tokenUsageEl,
-      contextTokens,
-      contextWindow,
-      body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
-    );
+    if (isClaudeConversationSystemActive()) {
+      const contextTokens =
+        typeof snapshot?.contextTokens === "number" && snapshot.contextTokens > 0
+          ? snapshot.contextTokens
+          : 0;
+      const contextWindow =
+        typeof snapshot?.contextWindow === "number" && snapshot.contextWindow > 0
+          ? snapshot.contextWindow
+          : undefined;
+      setTokenUsage(
+        tokenUsageEl,
+        contextTokens,
+        contextWindow,
+        body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+      );
+    } else {
+      const contextWindow = getContextInputWindow(resolveEffectiveRequestConfig({ item }));
+      const seededTokens = getOrSeedSessionTokens(conversationKey, history);
+      setTokenUsage(
+        tokenUsageEl,
+        seededTokens,
+        contextWindow,
+        body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+      );
+    }
   }
 
   if (history.length === 0) {
@@ -4740,6 +4762,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         if (msg.compactMarker) {
           bubble.textContent = safeText || "Conversation compacted";
           bubble.classList.add("llm-compact-marker");
+        } else if (msg.streaming && looksLikeStreamingMarkdownTable(safeText)) {
+          bubble.textContent = safeText;
         } else try {
           // Build image resolver for MinerU figures (if applicable)
           const contextSource = resolveContextSourceItem(item);

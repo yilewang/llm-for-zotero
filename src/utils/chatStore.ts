@@ -1421,7 +1421,6 @@ export async function createPaperConversation(
   const normalizedLibraryID = normalizeLibraryID(libraryID);
   const normalizedPaperItemID = normalizePaperItemID(paperItemID);
   if (!normalizedLibraryID || !normalizedPaperItemID) return null;
-  await ensurePaperV1Conversation(normalizedLibraryID, normalizedPaperItemID);
   return await Zotero.DB.executeTransaction(async () => {
     const nextVersion = await findLowestMissingPaperSessionVersion(
       normalizedPaperItemID,

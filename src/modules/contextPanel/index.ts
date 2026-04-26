@@ -81,10 +81,6 @@ import {
   retainClaudeRuntimeForBody,
   releaseClaudeRuntimeForBody,
 } from "../../claudeCode/runtimeRetention";
-import {
-  ensurePanelDebugHarnessStarted,
-  unregisterPanelDebugHarness,
-} from "./debugHarness";
 
 export { openStandaloneChat } from "./standaloneWindow";
 import {
@@ -121,7 +117,6 @@ export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
   setReaderContextPanelRegistered(true);
-  ensurePanelDebugHarnessStarted();
   // Generation counter: incremented on every onAsyncRender call so stale
   // (superseded) renders can bail out at each await point.
   let renderGeneration = 0;
@@ -390,7 +385,6 @@ export function registerReaderSelectionTracking() {
           for (const [panelBody] of activeContextPanels.entries()) {
             if (!(panelBody as Element).isConnected) {
               void releaseClaudeRuntimeForBody(panelBody as Element);
-              unregisterPanelDebugHarness(panelBody as Element);
               activeContextPanels.delete(panelBody);
               activeContextPanelRawItems.delete(panelBody);
               activeContextPanelStateSync.delete(panelBody);

@@ -240,11 +240,11 @@ export function getClaudeAutoCompactThresholdPercent(): number {
   const value = getZoteroPrefs()?.get?.(prefKey("claudeCodeAutoCompactThreshold"), true);
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 50;
-  return Math.min(80, Math.max(30, Math.round(parsed)));
+  return Math.min(80, Math.max(1, Math.round(parsed)));
 }
 
 export function setClaudeAutoCompactThresholdPercent(value: number): void {
-  const normalized = Math.min(80, Math.max(30, Math.round(value)));
+  const normalized = Math.min(80, Math.max(1, Math.round(value)));
   setPref("claudeCodeAutoCompactThreshold", normalized);
 }
 

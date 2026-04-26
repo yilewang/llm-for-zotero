@@ -53,6 +53,7 @@ import {
   setPendingRequestId,
   getPendingRequestId,
   getAbortController,
+  setAbortController,
   isRequestPending,
   panelFontScalePercent,
   setPanelFontScalePercent,
@@ -352,11 +353,6 @@ import {
   parseZoteroItemDragData,
 } from "./setupHandlers/controllers/fileIntakeController";
 import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
-import {
-  getPanelDebugHarnessPaths,
-  registerPanelDebugHarness,
-  unregisterPanelDebugHarness,
-} from "./debugHarness";
 import { createClearConversationController } from "./setupHandlers/controllers/clearConversationController";
 import { clearAllAgentToolCaches } from "../../agent/tools";
 import { renderShortcuts } from "./shortcuts";
@@ -4290,17 +4286,18 @@ export function setupHandlers(
           if (seenGlobalKeys.has(normalizedKey)) continue;
           seenGlobalKeys.add(normalizedKey);
           const lastActivity = Number(entry.updatedAt || entry.createdAt || 0);
+          const isDraft = entry.userTurnCount <= 0;
           globalEntries.push({
             kind: "global",
             section: "open",
             sectionTitle: "Library Chat",
             conversationKey: normalizedKey,
-            title: entry.title || "",
-            timestampText: entry.userTurnCount <= 0
+            title: entry.title || (isDraft ? "New Claude chat" : ""),
+            timestampText: isDraft
               ? "Draft"
               : formatGlobalHistoryTimestamp(lastActivity) || "Standalone chat",
             deletable: true,
-            isDraft: entry.userTurnCount <= 0,
+            isDraft,
             isPendingDelete: false,
             lastActivityAt: Number.isFinite(lastActivity)
               ? Math.floor(lastActivity)
@@ -4750,16 +4747,6 @@ export function setupHandlers(
         if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
         return { kind: "global", conversationKey: normalizedKey };
       }
-      const paperItem = resolveCurrentPaperBaseItem();
-      const paperItemID = Number(paperItem?.id || 0);
-      if (paperItemID > 0) {
-        const paperTarget = await resolveFallbackAfterPaperDelete(
-          libraryID,
-          paperItemID,
-          deletedConversationKey,
-        );
-        if (paperTarget) return paperTarget;
-      }
       const isEmptyDraft = async (conversationKey: number): Promise<boolean> => {
         if (!Number.isFinite(conversationKey) || conversationKey <= 0) return false;
         const normalizedKey = Math.floor(conversationKey);
@@ -4830,17 +4817,6 @@ export function setupHandlers(
       if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
       return { kind: "global", conversationKey: normalizedKey };
     }
-    const paperItem = resolveCurrentPaperBaseItem();
-    const paperItemID = Number(paperItem?.id || 0);
-    if (paperItemID > 0) {
-      const paperTarget = await resolveFallbackAfterPaperDelete(
-        libraryID,
-        paperItemID,
-        deletedConversationKey,
-      );
-      if (paperTarget) return paperTarget;
-    }
-
     const isEmptyDraft = async (conversationKey: number): Promise<boolean> => {
       if (!Number.isFinite(conversationKey) || conversationKey <= 0)
         return false;
@@ -10806,77 +10782,15 @@ export function setupHandlers(
       return ids;
     },
   });
-  const harnessPaths = getPanelDebugHarnessPaths();
-  registerPanelDebugHarness(body, {
-    runSend: async (text: string) => {
-      await doSend({
-        overrideText: text,
-        preserveInputDraft: true,
-      });
-    },
-    runColdSend: async (text: string) => {
-      if (item) {
-        const key = getConversationKey(item);
-        chatHistory.delete(key);
-        loadedConversationKeys.delete(key);
-      }
-      await doSend({
-        overrideText: text,
-        preserveInputDraft: true,
-      });
-    },
-    switchConversationSystem: async (
-      system: "upstream" | "claude_code",
-      options?: { forceFresh?: boolean },
-    ) => {
-      await switchConversationSystem(system, {
-        forceFresh: options?.forceFresh === true,
-      });
-    },
-    setClaudeModeEnabled: async (enabled: boolean) => {
-      setClaudeCodeModeEnabled(enabled);
-      if (!enabled) {
-        void releaseClaudeRuntimeForBody(body);
-      }
-    },
-    setRuntimeMode: async (mode: "chat" | "agent") => {
-      setCurrentRuntimeMode(mode);
-    },
-    startNewConversation: async (
-      scope?: "global" | "paper",
-      options?: { forceFresh?: boolean },
-    ) => {
-      const forceFresh = options?.forceFresh === true;
-      const targetScope = scope || (isGlobalMode() ? "global" : "paper");
-      if (targetScope === "global") {
-        await createAndSwitchGlobalConversation(forceFresh);
-        return;
-      }
-      await createAndSwitchPaperConversation(forceFresh);
-    },
-    getInfo: () => ({
-      conversationKey:
-        item && Number.isFinite(getConversationKey(item))
-          ? Math.floor(getConversationKey(item))
-          : null,
-      itemId:
-        item && Number.isFinite(Number(item.id)) && Number(item.id) > 0
-          ? Math.floor(Number(item.id))
-          : null,
-      conversationSystem: getConversationSystem(),
-      conversationKind: item ? resolveDisplayConversationKind(item) : null,
-      runtimeMode: getCurrentRuntimeMode(),
-      providerLabel: getSelectedProfile()?.providerLabel || null,
-      isConnected: body.isConnected,
-      isStandalone: (body as HTMLElement).dataset?.standalone === "true",
-    }),
-  });
-  ztoolkit.log("LLM: panel debug harness ready", harnessPaths);
-
   const { clearCurrentConversation } = createClearConversationController({
     getConversationKey: () => (item ? getConversationKey(item) : null),
     getCurrentItemID: () =>
       item && Number.isFinite(item.id) && item.id > 0 ? item.id : null,
+    getPendingRequestId,
+    getAbortController,
+    setCancelledRequestId,
+    setPendingRequestId,
+    setAbortController,
     clearPendingTurnDeletion: (conversationKey) => {
       if (pendingTurnDeletion?.conversationKey === conversationKey) {
         clearPendingTurnDeletion();
@@ -13552,7 +13466,6 @@ export function setupHandlers(
       if (body.isConnected) return;
       cleanupPrefObservers?.();
       unregisterClaudeQueuedInputThreadBody(registeredClaudeQueueThreadKey, body);
-      unregisterPanelDebugHarness(body);
       activeContextPanelStateSync.delete(body);
       void releaseClaudeRuntimeForBody(body);
       observer.disconnect();
