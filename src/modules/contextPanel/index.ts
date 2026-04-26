@@ -80,7 +80,10 @@ import {
   retainClaudeRuntimeForBody,
   releaseClaudeRuntimeForBody,
 } from "../../claudeCode/runtimeRetention";
-import { unregisterPanelDebugHarness } from "./debugHarness";
+import {
+  ensurePanelDebugHarnessStarted,
+  unregisterPanelDebugHarness,
+} from "./debugHarness";
 
 export { openStandaloneChat } from "./standaloneWindow";
 import {
@@ -117,6 +120,7 @@ export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
   setReaderContextPanelRegistered(true);
+  ensurePanelDebugHarnessStarted();
   // Generation counter: incremented on every onAsyncRender call so stale
   // (superseded) renders can bail out at each await point.
   let renderGeneration = 0;

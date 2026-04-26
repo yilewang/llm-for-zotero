@@ -876,6 +876,14 @@ export async function loadConversation(
         typeof row.reasoningDetails === "string"
           ? row.reasoningDetails
           : undefined,
+      contextTokens:
+        Number.isFinite(Number(row.contextTokens))
+          ? Math.floor(Number(row.contextTokens))
+          : undefined,
+      contextWindow:
+        Number.isFinite(Number(row.contextWindow))
+          ? Math.floor(Number(row.contextWindow))
+          : undefined,
     });
   }
 
@@ -967,6 +975,12 @@ export async function appendMessage(
       message.webchatCompletionReason || null,
       message.reasoningSummary || null,
       message.reasoningDetails || null,
+      Number.isFinite(Number(message.contextTokens))
+        ? Math.floor(Number(message.contextTokens))
+        : null,
+      Number.isFinite(Number(message.contextWindow))
+        ? Math.floor(Number(message.contextWindow))
+        : null,
     ],
   );
 }

@@ -351,7 +351,11 @@ import {
   parseZoteroItemDragData,
 } from "./setupHandlers/controllers/fileIntakeController";
 import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
-import { unregisterPanelDebugHarness } from "./debugHarness";
+import {
+  getPanelDebugHarnessPaths,
+  registerPanelDebugHarness,
+  unregisterPanelDebugHarness,
+} from "./debugHarness";
 import { createClearConversationController } from "./setupHandlers/controllers/clearConversationController";
 import { clearAllAgentToolCaches } from "../../agent/tools";
 import { renderShortcuts } from "./shortcuts";
@@ -5909,9 +5913,9 @@ export function setupHandlers(
 
       // Create a truly fresh session in whichever mode is currently active.
       if (isGlobalMode()) {
-        void createAndSwitchGlobalConversation(true);
+        void createAndSwitchGlobalConversation();
       } else {
-        void createAndSwitchPaperConversation(true);
+        void createAndSwitchPaperConversation();
       }
     });
   }
@@ -5922,7 +5926,7 @@ export function setupHandlers(
       e.stopPropagation();
       if (isNoteSession()) return;
       closeHistoryNewMenu();
-      void createAndSwitchGlobalConversation(true);
+      void createAndSwitchGlobalConversation();
     });
   }
 
@@ -5933,7 +5937,7 @@ export function setupHandlers(
       if (isNoteSession()) return;
       if (historyNewPaperBtn.disabled) return;
       closeHistoryNewMenu();
-      void createAndSwitchPaperConversation(true);
+      void createAndSwitchPaperConversation();
     });
   }
 
@@ -10767,6 +10771,51 @@ export function setupHandlers(
       return ids;
     },
   });
+  const harnessPaths = getPanelDebugHarnessPaths();
+  registerPanelDebugHarness(body, {
+    runSend: async (text: string) => {
+      await doSend({
+        overrideText: text,
+        preserveInputDraft: true,
+      });
+    },
+    switchConversationSystem: async (
+      system: "upstream" | "claude_code",
+      options?: { forceFresh?: boolean },
+    ) => {
+      await switchConversationSystem(system, {
+        forceFresh: options?.forceFresh === true,
+      });
+    },
+    startNewConversation: async (
+      scope?: "global" | "paper",
+      options?: { forceFresh?: boolean },
+    ) => {
+      const forceFresh = options?.forceFresh === true;
+      const targetScope = scope || (isGlobalMode() ? "global" : "paper");
+      if (targetScope === "global") {
+        await createAndSwitchGlobalConversation(forceFresh);
+        return;
+      }
+      await createAndSwitchPaperConversation(forceFresh);
+    },
+    getInfo: () => ({
+      conversationKey:
+        item && Number.isFinite(getConversationKey(item))
+          ? Math.floor(getConversationKey(item))
+          : null,
+      itemId:
+        item && Number.isFinite(Number(item.id)) && Number(item.id) > 0
+          ? Math.floor(Number(item.id))
+          : null,
+      conversationSystem: getConversationSystem(),
+      conversationKind: item ? resolveDisplayConversationKind(item) : null,
+      providerLabel: getSelectedProfile()?.providerLabel || null,
+      isConnected: body.isConnected,
+    }),
+  });
+  ztoolkit.log("LLM: panel debug harness ready", harnessPaths);
+
   const { clearCurrentConversation } = createClearConversationController({
     getConversationKey: () => (item ? getConversationKey(item) : null),
     getCurrentItemID: () =>
