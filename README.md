@@ -562,3 +562,11 @@ Contributions are welcome! Whether it's bug reports, feature requests, or pull r
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/image?repos=yilewang/llm-for-zotero&type=date&legend=top-left)](https://www.star-history.com/?repos=yilewang%2Fllm-for-zotero&type=date&legend=top-left)
+
+## 💰 Bounty Contribution
+
+- **Task:** [Bug] Significant discrepancy between UI token count and actual API usage (1130k
+- **Reward:** $18
+- **Source:** GitHub-Paid
+- **Date:** 2026-04-27
+
