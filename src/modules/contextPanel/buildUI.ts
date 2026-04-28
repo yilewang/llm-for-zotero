@@ -11,11 +11,10 @@ import {
 import type { ActionDropdownSpec } from "./types";
 import {
   getPaperPortalBaseItemID,
-  isGlobalPortalItem,
   isPaperPortalItem,
   resolveActiveNoteSession,
-  resolveConversationSystemForItem,
   resolveDisplayConversationKind,
+  resolvePreferredConversationSystem,
 } from "./portalScope";
 
 function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
@@ -95,7 +94,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       : "paper"
     : "";
   container.dataset.conversationSystem =
-    resolveConversationSystemForItem(item) || "upstream";
+    resolvePreferredConversationSystem({ item });
   container.dataset.basePaperItemId =
     basePaperItemId > 0 ? `${basePaperItemId}` : "";
   container.dataset.noteKind = activeNoteSession?.noteKind || "";

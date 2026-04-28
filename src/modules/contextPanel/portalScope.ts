@@ -393,13 +393,18 @@ export function resolveConversationSystemForItem(
   return null;
 }
 
-function resolvePreferredConversationSystem(params: {
+export function resolvePreferredConversationSystem(params: {
   item: Zotero.Item | null | undefined;
   preferredSystem?: ConversationSystem | null;
 }): ConversationSystem {
   const preferred =
     params.preferredSystem ||
     getConversationSystemPref();
+  if (resolveActiveNoteSession(params.item)) {
+    return preferred === "codex" && isCodexAppServerModeEnabled()
+      ? "codex"
+      : "upstream";
+  }
   const itemSystem = resolveConversationSystemForItem(params.item);
   if (itemSystem === "claude_code" && !isClaudeCodeModeEnabled()) {
     return "upstream";

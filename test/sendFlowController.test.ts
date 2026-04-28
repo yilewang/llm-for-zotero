@@ -47,6 +47,9 @@ describe("sendFlowController", function () {
     let setActiveEditSessionCalls = 0;
     let lastSentQuestion = "";
     let lastRuntimeMode = "";
+    let lastSentAuthMode = "";
+    let lastSentProviderProtocol = "";
+    let lastSentModelProviderLabel = "";
     let lastEditRuntimeMode = "";
     let lastEditPdfUploadSystemMessages: string[] | undefined;
     let lastSentCollectionContexts: CollectionContextRef[] | undefined;
@@ -113,6 +116,9 @@ describe("sendFlowController", function () {
         sendCalled += 1;
         lastSentQuestion = opts.question;
         lastRuntimeMode = opts.runtimeMode || "";
+        lastSentAuthMode = opts.authMode || "";
+        lastSentProviderProtocol = opts.providerProtocol || "";
+        lastSentModelProviderLabel = opts.modelProviderLabel || "";
         lastSentCollectionContexts = opts.selectedCollectionContexts;
       },
       retainPinnedImageState: () => {
@@ -168,6 +174,9 @@ describe("sendFlowController", function () {
       getLastSend: () => ({
         lastSentQuestion,
         lastRuntimeMode,
+        lastSentAuthMode,
+        lastSentProviderProtocol,
+        lastSentModelProviderLabel,
         lastSentCollectionContexts,
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
@@ -381,6 +390,38 @@ describe("sendFlowController", function () {
 
     assert.equal(lastSend.lastSentQuestion, "ask question");
     assert.equal(lastSend.lastRuntimeMode, "agent");
+  });
+
+  it("routes Codex note-mode sends through agent mode with app-server metadata", async function () {
+    const { controller, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      isAgentMode: () => true,
+      isCodexConversationSystem: () => true,
+      getSelectedProfile: () => ({
+        entryId: "codex_app_server::gpt-5.4",
+        model: "gpt-5.4",
+        apiBase: "",
+        apiKey: "",
+        providerLabel: "Codex",
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+      }),
+      resolvePromptText: (text: string) => text,
+      buildModelPromptWithFileContext: (question: string) => question,
+    });
+
+    await controller.doSend();
+    const lastSend = getLastSend();
+
+    assert.equal(lastSend.lastSentQuestion, "ask question");
+    assert.equal(lastSend.lastRuntimeMode, "agent");
+    assert.equal(lastSend.lastSentAuthMode, "codex_app_server");
+    assert.equal(lastSend.lastSentProviderProtocol, "codex_responses");
+    assert.equal(lastSend.lastSentModelProviderLabel, "Codex");
   });
 
   it("allows collection-only sends and uses the default collection prompt", async function () {

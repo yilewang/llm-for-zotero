@@ -1472,6 +1472,39 @@ export type EffectiveRequestConfig = {
   advanced: AdvancedModelParams | undefined;
 };
 
+function isCodexAppServerConversationRequest(params: {
+  item: Zotero.Item;
+  authMode?: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat";
+  providerProtocol?: ProviderProtocol;
+  modelProviderLabel?: string;
+}): boolean {
+  if (!isCodexAppServerModeEnabled()) return false;
+  if (resolveConversationSystemForItem(params.item) === "codex") return true;
+  return (
+    params.authMode === "codex_app_server" ||
+    (params.modelProviderLabel === "Codex" &&
+      params.providerProtocol === "codex_responses")
+  );
+}
+
+function resolveEffectiveConversationSystem(params: {
+  item: Zotero.Item;
+  authMode?: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat";
+  providerProtocol?: ProviderProtocol;
+  modelProviderLabel?: string;
+}): ConversationSystem {
+  const itemSystem = resolveConversationSystemForItem(params.item);
+  if (itemSystem) return itemSystem;
+  if (isCodexAppServerConversationRequest(params)) return "codex";
+  if (
+    params.modelProviderLabel === "Claude Code" &&
+    !resolveActiveNoteSession(params.item)
+  ) {
+    return "claude_code";
+  }
+  return "upstream";
+}
+
 function resolveEffectiveRequestConfig(params: {
   item: Zotero.Item;
   model?: string;
@@ -1485,8 +1518,7 @@ function resolveEffectiveRequestConfig(params: {
   advanced?: AdvancedModelParams;
 }): EffectiveRequestConfig {
   if (
-    resolveConversationSystemForItem(params.item) === "codex" &&
-    isCodexAppServerModeEnabled()
+    isCodexAppServerConversationRequest(params)
   ) {
     const model = (params.model || getCodexRuntimeModelPref()).trim() || "gpt-5.4";
     const reasoningMode = getCodexReasoningModePref();
@@ -3331,7 +3363,15 @@ async function buildAgentRuntimeRequest(
   };
 }
 
-function buildAgentEngineDeps(currentItem?: Zotero.Item): AgentEngineDeps {
+function buildAgentEngineDeps(
+  currentItem?: Zotero.Item,
+  conversationSystem?: ConversationSystem,
+): AgentEngineDeps {
+  const getEffectiveConversationSystem = (): ConversationSystem =>
+    conversationSystem ||
+    (currentItem
+      ? resolveEffectiveConversationSystem({ item: currentItem })
+      : "upstream");
   return {
     chatHistory,
     agentRunTraceCache,
@@ -3351,7 +3391,7 @@ function buildAgentEngineDeps(currentItem?: Zotero.Item): AgentEngineDeps {
     buildLLMHistoryMessages,
     buildAgentRuntimeRequest,
     resolveEffectiveRequestConfig,
-    getConversationSystem: () => resolveConversationSystemForItem(currentItem) || "upstream",
+    getConversationSystem: () => getEffectiveConversationSystem(),
     accumulateSessionTokens,
     getContextUsageSnapshot: (conversationKey: number) =>
       contextUsageSnapshots.get(conversationKey),
@@ -3383,7 +3423,7 @@ function buildAgentEngineDeps(currentItem?: Zotero.Item): AgentEngineDeps {
       updateStoredLatestAssistantMessageByConversation as AgentEngineDeps["updateStoredLatestAssistantMessage"],
     sendChatFallback: sendQuestion,
     getAgentRuntime: () =>
-      resolveConversationSystemForItem(currentItem) === "claude_code"
+      getEffectiveConversationSystem() === "claude_code"
         ? (getClaudeBridgeRuntime(
             getCoreAgentRuntime(),
           ) as unknown as ReturnType<typeof getCoreAgentRuntime>)
@@ -3412,6 +3452,12 @@ async function retryLatestAgentResponse(
   reasoning?: LLMReasoningConfig,
   advanced?: AdvancedModelParams,
 ): Promise<void> {
+  const conversationSystem = resolveEffectiveConversationSystem({
+    item,
+    authMode,
+    providerProtocol,
+    modelProviderLabel,
+  });
   await retryAgentTurn(
     body,
     item,
@@ -3424,7 +3470,7 @@ async function retryLatestAgentResponse(
     modelProviderLabel,
     reasoning,
     advanced,
-    buildAgentEngineDeps(item),
+    buildAgentEngineDeps(item, conversationSystem),
   );
 }
 
@@ -3454,8 +3500,12 @@ async function sendAgentQuestion(opts: {
   pdfModePaperKeys?: Set<string>;
   forcedSkillIds?: string[];
   pdfUploadSystemMessages?: string[];
+  conversationSystem?: ConversationSystem;
 }): Promise<void> {
-  await sendAgentTurn(opts, buildAgentEngineDeps(opts.item));
+  await sendAgentTurn(
+    opts,
+    buildAgentEngineDeps(opts.item, opts.conversationSystem),
+  );
 }
 
 export async function sendQuestion(opts: import("./types").SendQuestionOptions) {
@@ -3466,8 +3516,14 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     selectedCollectionContexts, attachments,
     runtimeMode = "chat", agentRunId, skipAgentDispatch = false, pdfModePaperKeys,
   } = opts;
+  const effectiveConversationSystem = resolveEffectiveConversationSystem({
+    item,
+    authMode: opts.authMode,
+    providerProtocol: opts.providerProtocol,
+    modelProviderLabel: opts.modelProviderLabel,
+  });
   const effectiveRuntimeMode: ChatRuntimeMode =
-    resolveConversationSystemForItem(item) === "codex" ? "agent" : runtimeMode;
+    effectiveConversationSystem === "codex" ? "agent" : runtimeMode;
   if (effectiveRuntimeMode === "agent" && !skipAgentDispatch) {
     await sendAgentQuestion({
       body,
@@ -3495,6 +3551,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       pdfModePaperKeys,
       forcedSkillIds: opts.forcedSkillIds,
       pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
+      conversationSystem: effectiveConversationSystem,
     });
     return;
   }

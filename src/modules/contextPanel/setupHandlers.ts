@@ -311,6 +311,7 @@ import {
   resolveConversationBaseItem,
   resolveInitialPanelItemState,
   resolveActiveLibraryID,
+  resolvePreferredConversationSystem,
 } from "./portalScope";
 import { getPanelDomRefs } from "./setupHandlers/domRefs";
 import {
@@ -717,18 +718,24 @@ export function setupHandlers(
     resolveDisplayConversationKind(item) === "global";
   const isPaperMode = () =>
     resolveDisplayConversationKind(item) === "paper";
-  let currentConversationSystem: ConversationSystem =
+  const initialConversationSystem: ConversationSystem =
     panelRoot.dataset.conversationSystem === "claude_code"
       ? "claude_code"
       : panelRoot.dataset.conversationSystem === "codex"
         ? "codex"
-        : resolveConversationSystemForItem(item) || "upstream";
+        : resolvePreferredConversationSystem({ item });
+  let currentConversationSystem: ConversationSystem =
+    resolvePreferredConversationSystem({
+      item,
+      preferredSystem: initialConversationSystem,
+    });
   const getConversationSystem = (): ConversationSystem => currentConversationSystem;
   const isClaudeConversationSystem = () =>
     getConversationSystem() === "claude_code";
   const isCodexConversationSystem = () => getConversationSystem() === "codex";
   const isRuntimeConversationSystem = () =>
     isClaudeConversationSystem() || isCodexConversationSystem();
+  panelRoot.dataset.conversationSystem = currentConversationSystem;
   syncQueuedFollowUpRegistration();
   const isClaudeModeAvailable = () => getClaudeCodeModeEnabled();
   const isCodexModeAvailable = () => isCodexAppServerModeEnabled();
@@ -756,6 +763,9 @@ export function setupHandlers(
   const getSelectedCodexRuntimeEntry = (): RuntimeModelEntry =>
     getCodexRuntimeModelEntries()[0]!;
   const getPreferredTargetSystem = (): ConversationSystem => {
+    if (isNoteSession()) {
+      return isCodexModeAvailable() ? "codex" : "upstream";
+    }
     const preferred = getConversationSystemPref();
     if (preferred === "codex" && isCodexModeAvailable()) return "codex";
     if (preferred === "claude_code" && isClaudeModeAvailable()) return "claude_code";
@@ -851,12 +861,14 @@ export function setupHandlers(
   };
   const updateClaudeSystemToggle = () => {
     if (!claudeSystemToggleBtn || !claudeSystemToggleIcon) return;
+    const targetSystem = getPreferredTargetSystem();
     const available =
-      (isClaudeModeAvailable() || isCodexModeAvailable()) && !isNoteSession();
+      isNoteSession()
+        ? targetSystem === "codex" || isCodexConversationSystem()
+        : isClaudeModeAvailable() || isCodexModeAvailable();
     claudeSystemToggleBtn.style.display = available ? "inline-flex" : "none";
     if (!available) return;
     const active = isRuntimeConversationSystem();
-    const targetSystem = getPreferredTargetSystem();
     const inactiveLabel = targetSystem === "codex"
       ? "Switch to Codex mode"
       : "Switch to Claude Code mode";
@@ -897,7 +909,29 @@ export function setupHandlers(
     nextSystem: ConversationSystem,
     options?: { forceFresh?: boolean },
   ) => {
-    if (!item || isNoteSession()) return;
+    if (!item) return;
+    const noteSession = resolveCurrentNoteSession();
+    if (noteSession) {
+      if (nextSystem === "claude_code") return;
+      if (nextSystem === "codex" && !isCodexModeAvailable()) return;
+      const resolvedNextSystem: ConversationSystem =
+        nextSystem === "codex" ? "codex" : "upstream";
+      if (resolvedNextSystem === getConversationSystem()) return;
+      persistDraftInputForCurrentConversation();
+      setConversationSystemPref(resolvedNextSystem);
+      currentConversationSystem = resolvedNextSystem;
+      panelRoot.dataset.conversationSystem = resolvedNextSystem;
+      syncQueuedFollowUpRegistration();
+      updateRuntimeModeButton();
+      updateClaudeSystemToggle();
+      await ensureConversationLoaded(item);
+      restoreDraftInputForCurrentConversation();
+      refreshChatPreservingScroll();
+      resetComposePreviewUI();
+      updateModelButton();
+      updateReasoningButton();
+      return;
+    }
     if (nextSystem === getConversationSystem()) return;
     const libraryID = getCurrentLibraryID();
     if (!libraryID) return;
@@ -1082,8 +1116,10 @@ export function setupHandlers(
       ? resolveDisplayConversationKind(item)
       : null;
     panelRoot.dataset.conversationKind = mode || "";
-    currentConversationSystem =
-      resolveConversationSystemForItem(item) || currentConversationSystem;
+    currentConversationSystem = resolvePreferredConversationSystem({
+      item,
+      preferredSystem: currentConversationSystem,
+    });
     panelRoot.dataset.conversationSystem = currentConversationSystem;
     syncQueuedFollowUpRegistration();
     const currentBasePaperItemID =

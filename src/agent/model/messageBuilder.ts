@@ -90,10 +90,7 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
   if (request.activeItemId) {
     contextLines.push(`- Active item ID: ${request.activeItemId}`);
   }
-  const hasActiveNoteEditingFocus = Array.isArray(request.selectedTextSources)
-    ? request.selectedTextSources.some((source) => source === "note-edit")
-    : false;
-  if (request.activeNoteContext && hasActiveNoteEditingFocus) {
+  if (request.activeNoteContext) {
     const note = request.activeNoteContext;
     contextLines.push(
       `- Active note: ${note.title} [noteId=${note.noteId}, kind=${note.noteKind}]`,

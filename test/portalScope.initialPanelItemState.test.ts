@@ -6,6 +6,7 @@ import {
   isPaperPortalItem,
   resolveActiveNoteSession,
   resolveInitialPanelItemState,
+  resolvePreferredConversationSystem,
 } from "../src/modules/contextPanel/portalScope";
 import { createClaudePaperPortalItem } from "../src/claudeCode/portal";
 import {
@@ -170,6 +171,87 @@ describe("portalScope resolveInitialPanelItemState", function () {
         showHistory: false,
       },
     });
+  });
+
+  it("allows active notes to prefer Codex when Codex app-server is enabled", function () {
+    const noteItem = {
+      id: 108,
+      libraryID: 7,
+      parentID: undefined,
+      isAttachment: () => false,
+      isRegularItem: () => false,
+      isNote: () => true,
+      getNoteTitle: () => "Standalone Note",
+    } as unknown as Zotero.Item;
+    globalThis.Zotero = {
+      ...globalThis.Zotero,
+      Prefs: {
+        get: (key: string) => {
+          if (String(key).endsWith("enableCodexAppServerMode")) return true;
+          if (String(key).endsWith("conversationSystem")) return "codex";
+          return "";
+        },
+      },
+    } as typeof Zotero;
+
+    assert.equal(
+      resolvePreferredConversationSystem({ item: noteItem }),
+      "codex",
+    );
+  });
+
+  it("does not allow active notes to enter Claude Code mode", function () {
+    const noteItem = {
+      id: 108,
+      libraryID: 7,
+      parentID: undefined,
+      isAttachment: () => false,
+      isRegularItem: () => false,
+      isNote: () => true,
+      getNoteTitle: () => "Standalone Note",
+    } as unknown as Zotero.Item;
+    globalThis.Zotero = {
+      ...globalThis.Zotero,
+      Prefs: {
+        get: (key: string) => {
+          if (String(key).endsWith("enableClaudeCodeMode")) return true;
+          if (String(key).endsWith("conversationSystem")) return "claude_code";
+          return "";
+        },
+      },
+    } as typeof Zotero;
+
+    assert.equal(
+      resolvePreferredConversationSystem({ item: noteItem }),
+      "upstream",
+    );
+  });
+
+  it("falls active notes back to upstream when Codex app-server is disabled", function () {
+    const noteItem = {
+      id: 108,
+      libraryID: 7,
+      parentID: undefined,
+      isAttachment: () => false,
+      isRegularItem: () => false,
+      isNote: () => true,
+      getNoteTitle: () => "Standalone Note",
+    } as unknown as Zotero.Item;
+    globalThis.Zotero = {
+      ...globalThis.Zotero,
+      Prefs: {
+        get: (key: string) => {
+          if (String(key).endsWith("enableCodexAppServerMode")) return false;
+          if (String(key).endsWith("conversationSystem")) return "codex";
+          return "";
+        },
+      },
+    } as typeof Zotero;
+
+    assert.equal(
+      resolvePreferredConversationSystem({ item: noteItem }),
+      "upstream",
+    );
   });
 
   it("falls back to upstream paper state when Claude mode is disabled", function () {

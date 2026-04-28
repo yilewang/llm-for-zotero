@@ -20,6 +20,8 @@ import {
   resolveDisplayConversationKind,
   resolveInitialPanelItemState,
   resolveConversationBaseItem,
+  resolveActiveNoteSession,
+  resolvePreferredConversationSystem,
   createGlobalPortalItem,
   createPaperPortalItem,
 } from "./portalScope";
@@ -423,7 +425,10 @@ export function openStandaloneChat(options?: {
   const sourceItem = options?.initialItem || null;
   const preferredConversationSystem = getConversationSystemPref();
   const sourceConversationSystem: ConversationSystem = sourceItem
-    ? resolveConversationSystemForItem(sourceItem) || "upstream"
+    ? resolvePreferredConversationSystem({
+        item: sourceItem,
+        preferredSystem: preferredConversationSystem,
+      })
     : preferredConversationSystem === "codex" && isCodexAppServerModeEnabled()
       ? "codex"
       : preferredConversationSystem === "claude_code" && getClaudeCodeModeEnabled()
@@ -433,8 +438,10 @@ export function openStandaloneChat(options?: {
     conversationSystem: sourceConversationSystem,
   });
   let currentConversationSystem: ConversationSystem =
-    resolveConversationSystemForItem(resolvedSourceState.item) ||
-    sourceConversationSystem;
+    resolvePreferredConversationSystem({
+      item: resolvedSourceState.item,
+      preferredSystem: sourceConversationSystem,
+    });
   const initialBasePaperItem =
     resolvedSourceState.basePaperItem ||
     resolveConversationBaseItem(sourceItem) ||
@@ -517,7 +524,10 @@ export function openStandaloneChat(options?: {
     initialMode === "paper"
       ? resolvedSourceState.item || initialBasePaperItem
       : null;
-  const initialMountedItem = initialPaperItem || globalPortalItem;
+  const initialNoteSession = resolveActiveNoteSession(resolvedSourceState.item);
+  const initialMountedItem = initialNoteSession
+    ? resolvedSourceState.item
+    : initialPaperItem || globalPortalItem;
 
   // Set flag BEFORE openDialog — keeps isStandaloneWindowActive() true
   // throughout the entire openDialog + load cycle so any onRender calls
@@ -732,6 +742,9 @@ export function openStandaloneChat(options?: {
       systemToggleBtn.setAttribute("aria-label", "Conversation runtime");
 
       const getPreferredRuntimeSystem = (): ConversationSystem => {
+        if (resolveActiveNoteSession(activeItem)) {
+          return isCodexAppServerModeEnabled() ? "codex" : "upstream";
+        }
         const preferred = getConversationSystemPref();
         if (preferred === "codex" && isCodexAppServerModeEnabled()) return "codex";
         if (preferred === "claude_code" && getClaudeCodeModeEnabled()) return "claude_code";
@@ -741,12 +754,14 @@ export function openStandaloneChat(options?: {
       };
 
       const updateStandaloneSystemToggle = () => {
+        const targetSystem = getPreferredRuntimeSystem();
         const enabled =
-          (getClaudeCodeModeEnabled() || isCodexAppServerModeEnabled()) &&
-          !isInWebChatMode;
+          !isInWebChatMode &&
+          (resolveActiveNoteSession(activeItem)
+            ? targetSystem === "codex" || isCodexConversationSystem()
+            : getClaudeCodeModeEnabled() || isCodexAppServerModeEnabled());
         systemToggleBtn.style.display = enabled ? "inline-flex" : "none";
         const active = isRuntimeConversationSystem();
-        const targetSystem = getPreferredRuntimeSystem();
         const iconSystem = active ? currentConversationSystem : targetSystem;
         systemToggleBtn.dataset.active = active ? "true" : "false";
         systemToggleBtn.title = active
@@ -3417,6 +3432,23 @@ export function openStandaloneChat(options?: {
         options?: { forceFresh?: boolean },
       ) => {
         const switchSeq = ++systemSwitchSeq;
+        const activeNoteItem = resolveActiveNoteSession(activeItem)
+          ? activeItem
+          : null;
+        if (activeNoteItem) {
+          if (nextSystem === "claude_code") return;
+          if (nextSystem === "codex" && !isCodexAppServerModeEnabled()) return;
+          const resolvedNextSystem: ConversationSystem =
+            nextSystem === "codex" ? "codex" : "upstream";
+          if (resolvedNextSystem === currentConversationSystem) return;
+          setConversationSystemPref(resolvedNextSystem);
+          currentConversationSystem = resolvedNextSystem;
+          activeConversationKey = getConversationKey(activeNoteItem);
+          mountChatPanel(activeNoteItem);
+          scheduleStandaloneSidebarRender();
+          updateStandaloneSystemToggle();
+          return;
+        }
         const currentSystem = currentConversationSystem;
         if (nextSystem === currentSystem) return;
         const forceFresh = options?.forceFresh === true;

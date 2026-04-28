@@ -566,15 +566,13 @@ describe("primitive agent tools", function () {
     assert.include(userText, "This sentence needs work.");
   });
 
-  it("does not include active note content in agent prompts without note-edit focus", async function () {
+  it("includes active note content in agent prompts without selected note text", async function () {
     const messages = await buildAgentInitialMessages(
       {
         conversationKey: 7,
         mode: "agent",
-        userText: "Summarize the paper",
+        userText: "Edit this note",
         activeItemId: 55,
-        selectedTexts: ["Quoted paragraph"],
-        selectedTextSources: ["pdf"],
         activeNoteContext: {
           noteId: 55,
           title: "Draft Note",
@@ -589,9 +587,9 @@ describe("primitive agent tools", function () {
     const userMessage = messages[messages.length - 1];
     const userText =
       typeof userMessage?.content === "string" ? userMessage.content : "";
-    assert.notInclude(userText, "Active note: Draft Note");
-    assert.notInclude(userText, "Current note content for this turn");
-    assert.notInclude(userText, "Current note body");
-    assert.include(userText, 'Selected text 1 [source=PDF reader]:');
+    assert.include(userText, "Active note: Draft Note");
+    assert.include(userText, "Current note content for this turn");
+    assert.include(userText, "Current note body");
+    assert.notInclude(userText, "Selected text 1");
   });
 });
