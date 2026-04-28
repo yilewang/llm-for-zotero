@@ -54,6 +54,8 @@ export interface Message {
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
+  collectionContextsExpanded?: boolean;
   paperContextsExpanded?: boolean;
   attachments?: ChatAttachment[];
   attachmentsExpanded?: boolean;
@@ -332,6 +334,7 @@ export type SendQuestionOptions = {
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
   attachments?: ChatAttachment[];
   runtimeMode?: ChatRuntimeMode;
   agentRunId?: string;
@@ -359,6 +362,7 @@ export type EditRetryOptions = {
   screenshotImages?: string[];
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
   attachments?: ChatAttachment[];
   pdfUploadSystemMessages?: string[];
   targetRuntimeMode?: ChatRuntimeMode;

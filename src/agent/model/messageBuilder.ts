@@ -146,6 +146,20 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
       ),
     );
   }
+  if (
+    Array.isArray(request.selectedCollectionContexts) &&
+    request.selectedCollectionContexts.length
+  ) {
+    contextLines.push(
+      "Selected Zotero collection scopes:",
+      ...request.selectedCollectionContexts.map(
+        (entry, index) =>
+          `- Collection ${index + 1}: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
+      ),
+      "Treat these collections as scoped candidate sets. Use query_library with filters.collectionId or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
+      "If the user explicitly asks to read or analyze the full text of every paper in a collection, plan a batch workflow: enumerate papers, read/process them in bounded batches, create compact per-paper digests with evidence, then synthesize.",
+    );
+  }
   const pdfAttachments = (request.attachments || []).filter(
     (a) =>
       a.category === "pdf" &&

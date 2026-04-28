@@ -4,6 +4,7 @@ import type {
   AdvancedModelParams,
   ChatAttachment,
   ChatRuntimeMode,
+  CollectionContextRef,
   PaperContextRef,
   SelectedTextContext,
 } from "../../types";
@@ -49,6 +50,7 @@ type SendFlowControllerDeps = {
   closePaperPicker: () => void;
   getSelectedTextContextEntries: (itemId: number) => SelectedTextContext[];
   getSelectedPaperContexts: (itemId: number) => PaperContextRef[];
+  getSelectedCollectionContexts: (itemId: number) => CollectionContextRef[];
   getFullTextPaperContexts: (
     item: Zotero.Item,
     paperContexts: PaperContextRef[],
@@ -187,6 +189,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     );
     const primarySelectedText = selectedTexts[0] || "";
     const allSelectedPaperContexts = deps.getSelectedPaperContexts(item.id);
+    const selectedCollectionContexts = deps.getSelectedCollectionContexts(item.id);
     // Agent mode uses text/MinerU pipeline by default, but if the user
     // explicitly forced PDF mode on a paper, honour that choice.
     const pdfModePaperContexts = deps.getPdfModePaperContexts(item, allSelectedPaperContexts);
@@ -299,6 +302,13 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       ...pdfFileAttachments,
     ];
     const runtimeMode: ChatRuntimeMode = deps.isAgentMode() ? "agent" : "chat";
+    if (isWebChat && selectedCollectionContexts.length) {
+      deps.setStatusMessage?.(
+        "Web chat does not support Zotero collection context. Remove the collection and try again.",
+        "error",
+      );
+      return;
+    }
     if (
       shouldApplyCodexAppServerChatAttachmentPolicy({
         authMode: earlyProfile?.authMode,
@@ -315,12 +325,16 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         return;
       }
     }
-    const hasPaperComposeState = allSelectedPaperContexts.length > 0 || !deps.isGlobalMode();
+    const hasPaperComposeState =
+      allSelectedPaperContexts.length > 0 ||
+      selectedCollectionContexts.length > 0 ||
+      !deps.isGlobalMode();
 
     if (
       !text &&
       !primarySelectedText &&
       !selectedPaperContexts.length &&
+      !selectedCollectionContexts.length &&
       !selectedFiles.length
     ) {
       return;
@@ -329,16 +343,20 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     const promptText = deps.resolvePromptText(
       text,
       primarySelectedText,
-      selectedFiles.length > 0 || selectedPaperContexts.length > 0,
+      selectedFiles.length > 0 ||
+        selectedPaperContexts.length > 0 ||
+        selectedCollectionContexts.length > 0,
     );
     if (!promptText) return;
 
     const resolvedPromptText =
       !text &&
       !primarySelectedText &&
-      selectedPaperContexts.length > 0 &&
+      selectedPaperContexts.length + selectedCollectionContexts.length > 0 &&
       !selectedFiles.length
-        ? "Please analyze selected papers."
+        ? selectedPaperContexts.length
+          ? "Please analyze selected papers."
+          : "Please analyze selected collection."
         : promptText;
 
     const composedQuestionBase = primarySelectedText
@@ -438,6 +456,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         screenshotImages: images,
         paperContexts: selectedPaperContexts,
         fullTextPaperContexts,
+        selectedCollectionContexts,
         attachments: selectedFiles.length ? selectedFiles : undefined,
         pdfUploadSystemMessages: pdfUploadSystemMessages.length
           ? pdfUploadSystemMessages
@@ -546,6 +565,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       selectedTextNoteContexts: selectedTexts.length ? selectedTextNoteContexts : undefined,
       paperContexts: selectedPaperContexts,
       fullTextPaperContexts,
+      selectedCollectionContexts,
       attachments: selectedFiles.length ? selectedFiles : undefined,
       runtimeMode,
       pdfModePaperKeys: pdfModeKeySet.size > 0 ? pdfModeKeySet : undefined,

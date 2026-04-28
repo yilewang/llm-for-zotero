@@ -114,6 +114,11 @@ function buildClassifierPrompt(
     context.push(
       `- Full-text papers marked: ${request.fullTextPaperContexts.length}`,
     );
+  if (request.selectedCollectionContexts?.length) {
+    context.push(
+      `- Selected collection scopes: ${request.selectedCollectionContexts.length}`,
+    );
+  }
 
   return [
     "You are a skill router for a Zotero research-assistant agent. Return a JSON array of skill IDs drawn from the list below.",

@@ -75,6 +75,7 @@ import type {
   ReasoningLevelSelection,
   AdvancedModelParams,
   ChatAttachment,
+  CollectionContextRef,
   NoteContextRef,
   SelectedTextContext,
   SelectedTextSource,
@@ -142,6 +143,7 @@ import {
   normalizeSelectedTextPaperContexts as normalizeSelectedTextPaperContextEntries,
   normalizeSelectedTextSources,
   normalizePaperContextRefs,
+  normalizeCollectionContextRefs,
   normalizeAttachmentContentHash,
 } from "./normalizers";
 import { positionMenuAtPointer } from "./menuPositioning";
@@ -370,6 +372,12 @@ function normalizeSelectedTextNoteContextsByIndex(
 
 function normalizePaperContexts(paperContexts: unknown): PaperContextRef[] {
   return normalizePaperContextRefs(paperContexts, { sanitizeText });
+}
+
+function normalizeCollectionContexts(
+  collectionContexts: unknown,
+): CollectionContextRef[] {
+  return normalizeCollectionContextRefs(collectionContexts, { sanitizeText });
 }
 
 function resolveAutoLoadedPaperContextForItem(
@@ -984,6 +992,9 @@ function toPanelMessage(message: StoredChatMessage): Message {
   const fullTextPaperContexts = normalizePaperContexts(
     message.fullTextPaperContexts,
   );
+  const selectedCollectionContexts = normalizeCollectionContexts(
+    message.selectedCollectionContexts,
+  );
   return {
     role: message.role,
     text: message.text,
@@ -1010,6 +1021,9 @@ function toPanelMessage(message: StoredChatMessage): Message {
     paperContexts: paperContexts.length ? paperContexts : undefined,
     fullTextPaperContexts: fullTextPaperContexts.length
       ? fullTextPaperContexts
+      : undefined,
+    selectedCollectionContexts: selectedCollectionContexts.length
+      ? selectedCollectionContexts
       : undefined,
     paperContextsExpanded: false,
     screenshotImages,
@@ -1534,6 +1548,7 @@ async function buildContextPlanForRequest(params: {
   selectedTextSources?: SelectedTextSource[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
   recentPaperContexts: PaperContextRef[];
   history: ChatMessage[];
   effectiveRequestConfig: EffectiveRequestConfig;
@@ -1581,6 +1596,7 @@ async function buildContextPlanForRequest(params: {
       ? params.paperContexts.filter((p) => !params.pdfModePaperKeys!.has(`${p.itemId}:${p.contextItemId}`))
       : params.paperContexts,
     fullTextPaperContexts: params.fullTextPaperContexts,
+    collectionContexts: params.selectedCollectionContexts,
     historyPaperContexts: params.recentPaperContexts,
     history: params.history,
     images: params.images,
@@ -1972,6 +1988,7 @@ function reconstructRetryPayload(userMessage: Message): {
   attachments: ChatAttachment[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  selectedCollectionContexts: CollectionContextRef[];
 } {
   const selectedTexts = getMessageSelectedTexts(userMessage);
   const selectedTextSources = normalizeSelectedTextSources(
@@ -2017,12 +2034,16 @@ function reconstructRetryPayload(userMessage: Message): {
   const fullTextPaperContexts = normalizePaperContexts(
     userMessage.fullTextPaperContexts || userMessage.pinnedPaperContexts,
   );
+  const selectedCollectionContexts = normalizeCollectionContexts(
+    userMessage.selectedCollectionContexts,
+  );
   return {
     question,
     screenshotImages,
     attachments: fileAttachments,
     paperContexts,
     fullTextPaperContexts,
+    selectedCollectionContexts,
   };
 }
 
@@ -2296,6 +2317,14 @@ function syncComposeContextForInlineEdit(
   } else {
     selectedPaperContextCache.delete(item.id);
   }
+  const selectedCollectionContexts = normalizeCollectionContexts(
+    userMessage.selectedCollectionContexts,
+  );
+  if (selectedCollectionContexts.length) {
+    selectedCollectionContextCache.set(item.id, selectedCollectionContexts);
+  } else {
+    selectedCollectionContextCache.delete(item.id);
+  }
   // Clear existing mode overrides for this item, then set full-next for each full-text paper
   const modePrefix = `${item.id}:`;
   for (const key of Array.from(paperContextModeOverrides.keys())) {
@@ -2314,7 +2343,8 @@ export async function editLatestUserMessageAndRetry(
   const {
     body, item, displayQuestion, selectedTexts, selectedTextSources,
     selectedTextPaperContexts, selectedTextNoteContexts, screenshotImages,
-    paperContexts, fullTextPaperContexts, attachments, pdfUploadSystemMessages,
+    paperContexts, fullTextPaperContexts, selectedCollectionContexts, attachments,
+    pdfUploadSystemMessages,
     targetRuntimeMode,
     expected, model, apiBase, apiKey, authMode, providerProtocol,
     modelEntryId, modelProviderLabel, reasoning, advanced,
@@ -2363,6 +2393,8 @@ export async function editLatestUserMessageAndRetry(
   const normalizedPaperContexts = normalizeEditablePaperContexts(paperContexts);
   const normalizedFullTextPaperContexts =
     normalizeEditableFullTextPaperContexts(fullTextPaperContexts);
+  const selectedCollectionContextsForMessage =
+    normalizeCollectionContexts(selectedCollectionContexts);
   const pdfExcludeKeys = derivePdfModePaperKeys(attachments, item);
   const {
     paperContexts: paperContextsForMessage,
@@ -2412,6 +2444,10 @@ export async function editLatestUserMessageAndRetry(
     fullTextPaperContextsForMessage.length
       ? fullTextPaperContextsForMessage
       : undefined;
+  retryPair.userMessage.selectedCollectionContexts =
+    selectedCollectionContextsForMessage.length
+      ? selectedCollectionContextsForMessage
+      : undefined;
   retryPair.userMessage.paperContextsExpanded = false;
   retryPair.userMessage.attachments = attachmentsForMessage.length
     ? attachmentsForMessage
@@ -2433,6 +2469,8 @@ export async function editLatestUserMessageAndRetry(
       screenshotImages: retryPair.userMessage.screenshotImages,
       paperContexts: retryPair.userMessage.paperContexts,
       fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
+      selectedCollectionContexts:
+        retryPair.userMessage.selectedCollectionContexts,
       attachments: retryPair.userMessage.attachments,
     });
 
@@ -2557,6 +2595,7 @@ export async function retryLatestAssistantResponse(
     attachments,
     paperContexts,
     fullTextPaperContexts,
+    selectedCollectionContexts,
   } = reconstructRetryPayload(retryPair.userMessage);
   if (!question.trim()) {
     setStatusSafely("Nothing to retry for latest turn", "error");
@@ -2636,6 +2675,7 @@ export async function retryLatestAssistantResponse(
       selectedTextSources: retryPair.userMessage.selectedTextSources,
       paperContexts,
       fullTextPaperContexts,
+      selectedCollectionContexts,
       recentPaperContexts,
       history: llmHistory,
       effectiveRequestConfig,
@@ -2645,12 +2685,6 @@ export async function retryLatestAssistantResponse(
       setStatusSafely,
     });
     let combinedContext = contextPlan.combinedContext;
-    // Append collection scope context if any collections are selected
-    const retrySelectedCollections = selectedCollectionContextCache.get(item.id) || [];
-    if (retrySelectedCollections.length > 0) {
-      const collectionNames = retrySelectedCollections.map((c) => c.name).join(", ");
-      combinedContext = `${combinedContext}\n\n[Selected Zotero collections as context scope: ${collectionNames}]`;
-    }
     retryPair.userMessage.paperContexts = contextPlan.paperContexts.length
       ? contextPlan.paperContexts
       : undefined;
@@ -2658,6 +2692,8 @@ export async function retryLatestAssistantResponse(
       contextPlan.fullTextPaperContexts.length
         ? contextPlan.fullTextPaperContexts
       : undefined;
+    retryPair.userMessage.selectedCollectionContexts =
+      selectedCollectionContexts.length ? selectedCollectionContexts : undefined;
     await updateStoredLatestUserMessageByConversation(conversationKey, {
       text: retryPair.userMessage.text,
       timestamp: retryPair.userMessage.timestamp,
@@ -2671,6 +2707,8 @@ export async function retryLatestAssistantResponse(
       screenshotImages: retryPair.userMessage.screenshotImages,
       paperContexts: retryPair.userMessage.paperContexts,
       fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
+      selectedCollectionContexts:
+        retryPair.userMessage.selectedCollectionContexts,
       attachments: retryPair.userMessage.attachments,
     });
     if (getCancelledRequestId(conversationKey) >= thisRequestId) {
@@ -2861,6 +2899,7 @@ export async function editUserTurnAndRetry(opts: {
   screenshotImages?: string[];
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
   attachments?: ChatAttachment[];
   pdfUploadSystemMessages?: string[];
   targetRuntimeMode?: ChatRuntimeMode;
@@ -2878,7 +2917,8 @@ export async function editUserTurnAndRetry(opts: {
     body, item, userTimestamp, assistantTimestamp, newText,
     selectedTexts, selectedTextSources, selectedTextPaperContexts,
     selectedTextNoteContexts, screenshotImages, paperContexts,
-    fullTextPaperContexts, attachments, pdfUploadSystemMessages,
+    fullTextPaperContexts, selectedCollectionContexts, attachments,
+    pdfUploadSystemMessages,
     targetRuntimeMode,
     model, apiBase, apiKey, authMode, providerProtocol,
     modelEntryId, modelProviderLabel, reasoning, advanced,
@@ -2981,6 +3021,8 @@ export async function editUserTurnAndRetry(opts: {
   const normalizedPaperContexts = normalizeEditablePaperContexts(paperContexts);
   const normalizedFullTextPaperContexts =
     normalizeEditableFullTextPaperContexts(fullTextPaperContexts);
+  const selectedCollectionContextsForMessage =
+    normalizeCollectionContexts(selectedCollectionContexts);
   const pdfExcludeKeysEdit = derivePdfModePaperKeys(attachments, item);
   const {
     paperContexts: paperContextsForMessage,
@@ -3024,6 +3066,9 @@ export async function editUserTurnAndRetry(opts: {
   userMsg.fullTextPaperContexts = fullTextPaperContextsForMessage.length
     ? fullTextPaperContextsForMessage
     : undefined;
+  userMsg.selectedCollectionContexts = selectedCollectionContextsForMessage.length
+    ? selectedCollectionContextsForMessage
+    : undefined;
   userMsg.paperContextsExpanded = false;
   userMsg.attachments = attachmentsForMessage.length
     ? attachmentsForMessage
@@ -3045,6 +3090,7 @@ export async function editUserTurnAndRetry(opts: {
       screenshotImages: userMsg.screenshotImages,
       paperContexts: userMsg.paperContexts,
       fullTextPaperContexts: userMsg.fullTextPaperContexts,
+      selectedCollectionContexts: userMsg.selectedCollectionContexts,
       attachments: userMsg.attachments,
     });
   } catch (err) {
@@ -3109,6 +3155,7 @@ export type BuildAgentRuntimeRequestParams = {
   selectedTextSources?: SelectedTextSource[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
   attachments: ChatAttachment[] | undefined;
   screenshots: string[] | undefined;
   forcedSkillIds?: string[];
@@ -3178,6 +3225,9 @@ async function buildAgentRuntimeRequest(
     selectedTextSources: params.selectedTextSources,
     selectedPaperContexts: enrichedPaperContexts,
     fullTextPaperContexts: enrichedFullTextPapers,
+    selectedCollectionContexts: normalizeCollectionContexts(
+      params.selectedCollectionContexts,
+    ),
     attachments: params.attachments,
     screenshots: params.screenshots,
     forcedSkillIds: params.forcedSkillIds,
@@ -3336,6 +3386,7 @@ async function sendAgentQuestion(opts: {
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
   attachments?: ChatAttachment[];
   pdfModePaperKeys?: Set<string>;
   forcedSkillIds?: string[];
@@ -3348,7 +3399,8 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
   const {
     body, item, question, images, model, apiBase, apiKey, reasoning, advanced,
     displayQuestion, selectedTexts, selectedTextSources, selectedTextPaperContexts,
-    selectedTextNoteContexts, paperContexts, fullTextPaperContexts, attachments,
+    selectedTextNoteContexts, paperContexts, fullTextPaperContexts,
+    selectedCollectionContexts, attachments,
     runtimeMode = "chat", agentRunId, skipAgentDispatch = false, pdfModePaperKeys,
   } = opts;
   const effectiveRuntimeMode: ChatRuntimeMode =
@@ -3375,6 +3427,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       selectedTextNoteContexts,
       paperContexts,
       fullTextPaperContexts,
+      selectedCollectionContexts,
       attachments,
       pdfModePaperKeys,
       forcedSkillIds: opts.forcedSkillIds,
@@ -3487,6 +3540,9 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
   const normalizedFullTextPaperContexts = normalizePaperContexts(
     fullTextPaperContexts,
   );
+  const selectedCollectionContextsForMessage = normalizeCollectionContexts(
+    selectedCollectionContexts,
+  );
   const {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
@@ -3536,6 +3592,9 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     fullTextPaperContexts: fullTextPaperContextsForMessage.length
       ? fullTextPaperContextsForMessage
       : undefined,
+    selectedCollectionContexts: selectedCollectionContextsForMessage.length
+      ? selectedCollectionContextsForMessage
+      : undefined,
     paperContextsExpanded: false,
     screenshotImages: screenshotImagesForMessage.length
       ? screenshotImagesForMessage
@@ -3561,6 +3620,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
     paperContexts: userMessage.paperContexts,
     fullTextPaperContexts: userMessage.fullTextPaperContexts,
+    selectedCollectionContexts: userMessage.selectedCollectionContexts,
     screenshotImages: userMessage.screenshotImages,
     attachments: userMessage.attachments,
   });
@@ -3752,6 +3812,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       selectedTextSources: selectedTextSourcesForMessage,
       paperContexts: paperContextsForMessage,
       fullTextPaperContexts: fullTextPaperContextsForMessage,
+      selectedCollectionContexts: selectedCollectionContextsForMessage,
       recentPaperContexts,
       history: llmHistory,
       effectiveRequestConfig,
@@ -3761,12 +3822,6 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       setStatusSafely,
     });
     let combinedContext = contextPlan.combinedContext;
-    // Append collection scope context if any collections are selected
-    const selectedCollections = selectedCollectionContextCache.get(item.id) || [];
-    if (selectedCollections.length > 0) {
-      const collectionNames = selectedCollections.map((c) => c.name).join(", ");
-      combinedContext = `${combinedContext}\n\n[Selected Zotero collections as context scope: ${collectionNames}]`;
-    }
     userMessage.paperContexts = contextPlan.paperContexts.length
       ? contextPlan.paperContexts
       : undefined;
@@ -3786,6 +3841,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       screenshotImages: userMessage.screenshotImages,
       paperContexts: userMessage.paperContexts,
       fullTextPaperContexts: userMessage.fullTextPaperContexts,
+      selectedCollectionContexts: userMessage.selectedCollectionContexts,
       attachments: userMessage.attachments,
     });
 
@@ -4241,6 +4297,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         : [];
       let screenshotExpanded: HTMLDivElement | null = null;
       let papersExpanded: HTMLDivElement | null = null;
+      let collectionsExpanded: HTMLDivElement | null = null;
       let filesExpanded: HTMLDivElement | null = null;
       const selectedTexts = getMessageSelectedTexts(msg);
       const selectedTextSources = normalizeSelectedTextSources(
@@ -4254,7 +4311,13 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         );
       const hasScreenshotContext = screenshotImages.length > 0;
       const hasSelectedTextContext = selectedTexts.length > 0;
-      hasUserContext = hasScreenshotContext || hasSelectedTextContext;
+      const selectedCollectionContexts = normalizeCollectionContexts(
+        msg.selectedCollectionContexts,
+      );
+      hasUserContext =
+        hasScreenshotContext ||
+        hasSelectedTextContext ||
+        selectedCollectionContexts.length > 0;
       if (hasScreenshotContext) {
         const screenshotBar = doc.createElement("button") as HTMLButtonElement;
         screenshotBar.type = "button";
@@ -4379,6 +4442,86 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         });
 
         contextBadgesRow.appendChild(screenshotBar);
+        hasContextBadge = true;
+      }
+
+      if (selectedCollectionContexts.length) {
+        const collectionsBar = doc.createElement("button") as HTMLButtonElement;
+        collectionsBar.type = "button";
+        collectionsBar.className = "llm-user-papers-bar llm-user-collections-bar";
+
+        const collectionsIcon = doc.createElement("span") as HTMLSpanElement;
+        collectionsIcon.className = "llm-user-papers-icon";
+        collectionsIcon.textContent = "🗂️";
+
+        const collectionsLabel = doc.createElement("span") as HTMLSpanElement;
+        collectionsLabel.className = "llm-user-papers-label";
+        collectionsLabel.textContent =
+          selectedCollectionContexts.length === 1 ? "Collection" : "Collections";
+        collectionsLabel.title = selectedCollectionContexts
+          .map((entry) => entry.name)
+          .join("\n");
+        collectionsBar.append(collectionsIcon, collectionsLabel);
+
+        const collectionsExpandedEl = doc.createElement("div") as HTMLDivElement;
+        collectionsExpandedEl.className =
+          "llm-user-papers-expanded llm-user-collections-expanded";
+        collectionsExpanded = collectionsExpandedEl;
+        const collectionsList = doc.createElement("div") as HTMLDivElement;
+        collectionsList.className =
+          "llm-user-papers-list llm-user-collections-list";
+        for (const collectionContext of selectedCollectionContexts) {
+          const collectionItem = doc.createElement("div") as HTMLDivElement;
+          collectionItem.className =
+            "llm-user-papers-item llm-user-collections-item";
+
+          const collectionTitle = doc.createElement("span") as HTMLSpanElement;
+          collectionTitle.className = "llm-user-papers-item-title";
+          collectionTitle.textContent = collectionContext.name;
+          collectionTitle.title = collectionContext.name;
+
+          const collectionMeta = doc.createElement("span") as HTMLSpanElement;
+          collectionMeta.className = "llm-user-papers-item-meta";
+          collectionMeta.textContent = `collectionId=${collectionContext.collectionId}`;
+          collectionMeta.title = collectionMeta.textContent;
+
+          collectionItem.append(collectionTitle, collectionMeta);
+          collectionsList.appendChild(collectionItem);
+        }
+        collectionsExpandedEl.appendChild(collectionsList);
+
+        const applyCollectionsState = () => {
+          const expanded = Boolean(msg.collectionContextsExpanded);
+          collectionsBar.classList.toggle("expanded", expanded);
+          collectionsBar.setAttribute("aria-expanded", expanded ? "true" : "false");
+          collectionsExpandedEl.hidden = !expanded;
+          collectionsExpandedEl.style.display = expanded ? "block" : "none";
+          collectionsBar.title = expanded ? "Collapse collections" : "Expand collections";
+        };
+        const toggleCollectionsExpanded = () => {
+          msg.collectionContextsExpanded = !msg.collectionContextsExpanded;
+          applyCollectionsState();
+        };
+        applyCollectionsState();
+        collectionsBar.addEventListener("mousedown", (e: Event) => {
+          const mouse = e as MouseEvent;
+          if (mouse.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleCollectionsExpanded();
+        });
+        collectionsBar.addEventListener("click", (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        collectionsBar.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleCollectionsExpanded();
+        });
+
+        contextBadgesRow.appendChild(collectionsBar);
         hasContextBadge = true;
       }
 
@@ -4615,6 +4758,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       }
       if (screenshotExpanded) {
         wrapper.appendChild(screenshotExpanded);
+      }
+      if (collectionsExpanded) {
+        wrapper.appendChild(collectionsExpanded);
       }
       if (papersExpanded) {
         wrapper.appendChild(papersExpanded);

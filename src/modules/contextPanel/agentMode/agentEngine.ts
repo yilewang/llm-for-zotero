@@ -68,6 +68,7 @@ function applyResolvedClaudeEffortDisplay(
 import type {
   AdvancedModelParams,
   ChatAttachment,
+  CollectionContextRef,
   NoteContextRef,
   PaperContextRef,
   SelectedTextSource,
@@ -215,6 +216,7 @@ type BuildAgentRuntimeRequestParamsShape = {
   selectedTextSources?: SelectedTextSource[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
   attachments: ChatAttachment[] | undefined;
   screenshots: string[] | undefined;
   forcedSkillIds?: string[];
@@ -233,6 +235,7 @@ type ReconstructedRetryPayload = {
   screenshotImages: string[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  selectedCollectionContexts: CollectionContextRef[];
 };
 
 // ---------------------------------------------------------------------------
@@ -399,6 +402,7 @@ export async function sendAgentTurn(
     selectedTextNoteContexts?: (NoteContextRef | undefined)[];
     paperContexts?: PaperContextRef[];
     fullTextPaperContexts?: PaperContextRef[];
+    selectedCollectionContexts?: CollectionContextRef[];
     attachments?: ChatAttachment[];
     forcedSkillIds?: string[];
   },
@@ -425,6 +429,7 @@ export async function sendAgentTurn(
     selectedTextNoteContexts,
     paperContexts,
     fullTextPaperContexts,
+    selectedCollectionContexts,
     attachments,
     forcedSkillIds,
   } = opts;
@@ -491,6 +496,9 @@ export async function sendAgentTurn(
     screenshotExpanded: false,
     screenshotActiveIndex: 0,
     attachments: attachments?.length ? attachments : undefined,
+    selectedCollectionContexts: selectedCollectionContexts?.length
+      ? selectedCollectionContexts
+      : undefined,
   };
   if (!isCompactCommand) {
     historyForRun.push(userMessage);
@@ -503,6 +511,8 @@ export async function sendAgentTurn(
       selectedTexts: userMessage.selectedTexts,
       selectedTextSources: userMessage.selectedTextSources,
       selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
+      selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
+      selectedCollectionContexts: userMessage.selectedCollectionContexts,
       screenshotImages: userMessage.screenshotImages,
       attachments: userMessage.attachments,
     });
@@ -583,6 +593,7 @@ export async function sendAgentTurn(
       selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
       paperContexts: userMessage.paperContexts,
       fullTextPaperContexts: userMessage.fullTextPaperContexts,
+      selectedCollectionContexts: userMessage.selectedCollectionContexts,
       screenshotImages: userMessage.screenshotImages,
       attachments: userMessage.attachments,
     });
@@ -595,6 +606,7 @@ export async function sendAgentTurn(
     selectedTextSources: selectedTextSourcesForMessage,
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
+    selectedCollectionContexts,
     attachments,
     screenshots: images,
     forcedSkillIds,
@@ -630,6 +642,7 @@ export async function sendAgentTurn(
         selectedTextNoteContexts,
         paperContexts,
         fullTextPaperContexts,
+        selectedCollectionContexts,
         attachments,
         runtimeMode: "agent",
         agentRunId: fallback.runId,
@@ -701,9 +714,11 @@ export async function sendAgentTurn(
             selectedTexts: userMessage.selectedTexts,
             selectedTextSources: userMessage.selectedTextSources,
             selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
+            selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
             screenshotImages: userMessage.screenshotImages,
             paperContexts: userMessage.paperContexts,
             fullTextPaperContexts: userMessage.fullTextPaperContexts,
+            selectedCollectionContexts: userMessage.selectedCollectionContexts,
             attachments: userMessage.attachments,
           });
         }
@@ -1040,8 +1055,13 @@ export async function retryAgentTurn(
     ((body as any).__llmScheduleClaudeQueueDrain as (() => void) | undefined);
   refreshChatSafely(); // Immediately clear the old trace from view
 
-  const { question, screenshotImages, paperContexts, fullTextPaperContexts } =
-    deps.reconstructRetryPayload(retryPair.userMessage);
+  const {
+    question,
+    screenshotImages,
+    paperContexts,
+    fullTextPaperContexts,
+    selectedCollectionContexts,
+  } = deps.reconstructRetryPayload(retryPair.userMessage);
   if (!question.trim()) {
     setStatusSafely("Nothing to retry for latest turn", "error");
     deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
@@ -1070,6 +1090,7 @@ export async function retryAgentTurn(
     selectedTextSources: selectedTextSourcesRaw,
     paperContexts,
     fullTextPaperContexts,
+    selectedCollectionContexts,
     attachments: retryPair.userMessage.attachments?.filter(
       (a) => a.category !== "image",
     ),
@@ -1140,8 +1161,13 @@ export async function retryAgentTurn(
           selectedTextSources: retryPair.userMessage.selectedTextSources,
           selectedTextPaperContexts:
             retryPair.userMessage.selectedTextPaperContexts,
+          selectedTextNoteContexts:
+            retryPair.userMessage.selectedTextNoteContexts,
           screenshotImages: retryPair.userMessage.screenshotImages,
           paperContexts: retryPair.userMessage.paperContexts,
+          fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
+          selectedCollectionContexts:
+            retryPair.userMessage.selectedCollectionContexts,
           attachments: retryPair.userMessage.attachments,
         });
       },

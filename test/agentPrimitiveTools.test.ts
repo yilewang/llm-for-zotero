@@ -21,6 +21,10 @@ function makeMetadataSnapshot(itemId: number, title: string) {
 }
 
 describe("primitive agent tools", function () {
+  const globalScope = globalThis as typeof globalThis & {
+    Zotero?: Record<string, unknown>;
+  };
+  const originalZotero = globalScope.Zotero;
   const baseContext: AgentToolContext = {
     request: {
       conversationKey: 42,
@@ -33,6 +37,20 @@ describe("primitive agent tools", function () {
     currentAnswerText: "",
     modelName: "gpt-5.4",
   };
+
+  before(function () {
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      Prefs: {
+        get: () => "",
+        set: () => undefined,
+      },
+    };
+  });
+
+  after(function () {
+    globalScope.Zotero = originalZotero;
+  });
 
   afterEach(function () {
     clearUndoStack(baseContext.request.conversationKey);
@@ -282,6 +300,34 @@ describe("primitive agent tools", function () {
     );
     assert.notInclude(systemText, "search_related_papers_online");
     assert.notInclude(systemText, "read_paper_front_matter");
+  });
+
+  it("adds selected collection scopes to the agent user context summary", async function () {
+    const messages = await buildAgentInitialMessages(
+      {
+        conversationKey: 3,
+        mode: "agent",
+        userText: "Compare the papers in this collection",
+        selectedCollectionContexts: [
+          {
+            collectionId: 55,
+            name: "Methods",
+            libraryID: 1,
+          },
+        ],
+      },
+      [],
+      [],
+    );
+    const userMessage = messages[messages.length - 1];
+    const userText =
+      typeof userMessage?.content === "string" ? userMessage.content : "";
+
+    assert.include(userText, "Selected Zotero collection scopes:");
+    assert.include(userText, "Methods [collectionId=55, libraryID=1]");
+    assert.include(userText, "query_library with filters.collectionId");
+    assert.include(userText, "Do not assume all full text has already been read.");
+    assert.include(userText, "plan a batch workflow");
   });
 
   it("adds direct-card guidance for write tool requests", async function () {

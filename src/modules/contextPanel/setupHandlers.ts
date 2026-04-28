@@ -11300,6 +11300,8 @@ export function setupHandlers(
     getSelectedTextContextEntries,
     getSelectedPaperContexts: (itemId) =>
       normalizePaperContextEntries(selectedPaperContextCache.get(itemId) || []),
+    getSelectedCollectionContexts: (itemId) =>
+      selectedCollectionContextCache.get(itemId) || [],
     getFullTextPaperContexts: (currentItem, selectedPaperContexts) =>
       getEffectiveFullTextPaperContexts(currentItem, selectedPaperContexts),
     getPdfModePaperContexts: (currentItem, selectedPaperContexts) =>

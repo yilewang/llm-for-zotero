@@ -75,9 +75,49 @@ describe("chatStore note contexts", function () {
       contextWindow: 200000,
     });
 
-    assert.lengthOf(capturedParams, 24);
-    assert.equal(capturedParams[22], 1234);
-    assert.equal(capturedParams[23], 200000);
+    assert.lengthOf(capturedParams, 25);
+    assert.equal(capturedParams[23], 1234);
+    assert.equal(capturedParams[24], 200000);
+  });
+
+  it("persists selectedCollectionContexts when appending a message", async function () {
+    let capturedQuery = "";
+    let capturedParams: unknown[] = [];
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string, params?: unknown[]) => {
+          capturedQuery = sql;
+          capturedParams = Array.isArray(params) ? params : [];
+          return [];
+        },
+      },
+    };
+
+    await appendMessage(42, {
+      role: "user",
+      text: "Compare this folder",
+      timestamp: 100,
+      selectedCollectionContexts: [
+        {
+          collectionId: 55,
+          name: "Methods",
+          libraryID: 1,
+        },
+      ],
+    });
+
+    assert.include(capturedQuery, "collection_contexts_json");
+    assert.equal(
+      capturedParams[13],
+      JSON.stringify([
+        {
+          collectionId: 55,
+          name: "Methods",
+          libraryID: 1,
+        },
+      ]),
+    );
   });
 
   it("loads selectedTextNoteContexts from stored chat rows", async function () {
@@ -99,6 +139,13 @@ describe("chatStore note contexts", function () {
                 title: "Context note",
               },
             ]),
+            collectionContextsJson: JSON.stringify([
+              {
+                collectionId: 55,
+                name: "Methods",
+                libraryID: 1,
+              },
+            ]),
             contextTokens: 321,
             contextWindow: 64000,
           },
@@ -118,6 +165,13 @@ describe("chatStore note contexts", function () {
         parentItemKey: undefined,
         noteKind: "standalone",
         title: "Context note",
+      },
+    ]);
+    assert.deepEqual(messages[0]?.selectedCollectionContexts, [
+      {
+        collectionId: 55,
+        name: "Methods",
+        libraryID: 1,
       },
     ]);
     assert.equal(messages[0]?.contextTokens, 321);

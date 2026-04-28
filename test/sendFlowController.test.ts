@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import type {
   ChatAttachment,
+  CollectionContextRef,
   PaperContextRef,
   SelectedTextContext,
 } from "../src/modules/contextPanel/types";
@@ -23,6 +24,11 @@ describe("sendFlowController", function () {
   const selectedTextContexts: SelectedTextContext[] = [
     { text: "selected text", source: "pdf" },
   ];
+  const selectedCollection: CollectionContextRef = {
+    collectionId: 55,
+    name: "Methods",
+    libraryID: 1,
+  };
 
   function createBaseDeps(overrides: Record<string, unknown> = {}) {
     const inputBox = {
@@ -43,6 +49,8 @@ describe("sendFlowController", function () {
     let lastRuntimeMode = "";
     let lastEditRuntimeMode = "";
     let lastEditPdfUploadSystemMessages: string[] | undefined;
+    let lastSentCollectionContexts: CollectionContextRef[] | undefined;
+    let lastEditCollectionContexts: CollectionContextRef[] | undefined;
     let lastStatus: { message: string; level: string } | null = null;
 
     const deps = {
@@ -53,6 +61,7 @@ describe("sendFlowController", function () {
       closePaperPicker: () => undefined,
       getSelectedTextContextEntries: () => selectedTextContexts,
       getSelectedPaperContexts: () => [selectedPaper],
+      getSelectedCollectionContexts: () => [],
       getFullTextPaperContexts: () => [selectedPaper],
       getPdfModePaperContexts: () => [],
       resolvePdfPaperAttachments: async () => [],
@@ -75,8 +84,12 @@ describe("sendFlowController", function () {
       ) => `${question} [files=${attachments.length}]`,
       isAgentMode: () => false,
       isGlobalMode: () => false,
+      isClaudeConversationSystem: () => false,
+      isCodexConversationSystem: () => false,
       normalizeConversationTitleSeed: (raw: unknown) => String(raw || ""),
       getConversationKey: () => item.id,
+      touchClaudeConversationTitle: async () => undefined,
+      touchCodexConversationTitle: async () => undefined,
       touchGlobalConversationTitle: async () => undefined,
       touchPaperConversationTitle: async () => undefined,
       getSelectedProfile: () => null,
@@ -93,12 +106,14 @@ describe("sendFlowController", function () {
         editCalled += 1;
         lastEditRuntimeMode = opts.targetRuntimeMode || "";
         lastEditPdfUploadSystemMessages = opts.pdfUploadSystemMessages;
+        lastEditCollectionContexts = opts.selectedCollectionContexts;
         return "ok" as const;
       },
       sendQuestion: async (opts: any) => {
         sendCalled += 1;
         lastSentQuestion = opts.question;
         lastRuntimeMode = opts.runtimeMode || "";
+        lastSentCollectionContexts = opts.selectedCollectionContexts;
       },
       retainPinnedImageState: () => {
         retainImageCalled += 1;
@@ -153,9 +168,11 @@ describe("sendFlowController", function () {
       getLastSend: () => ({
         lastSentQuestion,
         lastRuntimeMode,
+        lastSentCollectionContexts,
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
       getLastEditPdfUploadSystemMessages: () => lastEditPdfUploadSystemMessages,
+      getLastEditCollectionContexts: () => lastEditCollectionContexts,
       getLastStatus: () => lastStatus,
     };
   }
@@ -341,6 +358,89 @@ describe("sendFlowController", function () {
 
     assert.equal(lastSend.lastSentQuestion, "ask question");
     assert.equal(lastSend.lastRuntimeMode, "agent");
+  });
+
+  it("allows collection-only sends and uses the default collection prompt", async function () {
+    const { controller, inputBox, getCounts, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedPaperContexts: () => [],
+      getSelectedCollectionContexts: () => [selectedCollection],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      resolvePromptText: () => "placeholder",
+      buildModelPromptWithFileContext: (question: string) => question,
+    });
+    inputBox.value = "";
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.equal(getLastSend().lastSentQuestion, "Please analyze selected collection.");
+    assert.deepEqual(getLastSend().lastSentCollectionContexts, [
+      selectedCollection,
+    ]);
+  });
+
+  it("passes selected collections through mixed paper sends", async function () {
+    const { controller, getLastSend } = createBaseDeps({
+      getSelectedCollectionContexts: () => [selectedCollection],
+    });
+
+    await controller.doSend();
+
+    assert.equal(getLastSend().lastRuntimeMode, "chat");
+    assert.deepEqual(getLastSend().lastSentCollectionContexts, [
+      selectedCollection,
+    ]);
+  });
+
+  it("passes selected collections through latest-turn edit retries", async function () {
+    const { controller, getLastEditCollectionContexts } = createBaseDeps({
+      getSelectedCollectionContexts: () => [selectedCollection],
+      getActiveEditSession: () => ({
+        conversationKey: item.id,
+        userTimestamp: 10,
+        assistantTimestamp: 20,
+      }),
+      getLatestEditablePair: async () => ({
+        conversationKey: item.id,
+        pair: {
+          userMessage: { timestamp: 10 },
+          assistantMessage: { timestamp: 20, streaming: false },
+        },
+      }),
+    });
+
+    await controller.doSend();
+
+    assert.deepEqual(getLastEditCollectionContexts(), [selectedCollection]);
+  });
+
+  it("blocks collection context for webchat sends", async function () {
+    const { controller, inputBox, getCounts, getLastStatus } = createBaseDeps({
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "chatgpt-web",
+        apiBase: "",
+        apiKey: "",
+        providerLabel: "ChatGPT",
+        authMode: "webchat",
+        providerProtocol: "web_sync",
+      }),
+      getSelectedCollectionContexts: () => [selectedCollection],
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 0);
+    assert.equal(getCounts().editCalled, 0);
+    assert.equal(inputBox.value, "ask question");
+    assert.deepEqual(getLastStatus(), {
+      message:
+        "Web chat does not support Zotero collection context. Remove the collection and try again.",
+      level: "error",
+    });
   });
 
   it("allows text-like pinned files in codex app server chat", async function () {

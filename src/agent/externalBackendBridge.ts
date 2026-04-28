@@ -170,6 +170,7 @@ type ContextEnvelope = {
   libraryID?: number;
   selectedTextCount: number;
   selectedPaperCount: number;
+  selectedCollectionCount: number;
   fullTextPaperCount: number;
   pinnedPaperCount: number;
   attachmentCount: number;
@@ -185,6 +186,11 @@ type ContextEnvelope = {
     citationKey?: string;
     firstCreator?: string;
     year?: string;
+  }>;
+  selectedCollections: Array<{
+    collectionId: number;
+    name: string;
+    libraryID: number;
   }>;
   fullTextPapers: Array<{
     itemId: number;
@@ -233,6 +239,12 @@ type BridgePaperContext = {
   mineruCacheDir?: string;
   mineruFullMdPath?: string;
   contextFilePath?: string;
+};
+
+type BridgeCollectionContext = {
+  collectionId?: number;
+  name?: string;
+  libraryID?: number;
 };
 
 type BridgeScopeType =
@@ -304,6 +316,7 @@ type BridgeRuntimeRequest = {
   selectedPaperContexts?: BridgePaperContext[];
   fullTextPaperContexts?: BridgePaperContext[];
   pinnedPaperContexts?: BridgePaperContext[];
+  selectedCollectionContexts?: BridgeCollectionContext[];
   attachments?: BridgeAttachment[];
   screenshots?: string[];
   history?: Array<{ role: string; content: string }>;
@@ -965,6 +978,35 @@ function normalizePaperRefs(list: unknown, limit = 8): Array<{
   return refs;
 }
 
+function normalizeCollectionRefs(list: unknown, limit = 8): Array<{
+  collectionId: number;
+  name: string;
+  libraryID: number;
+}> {
+  if (!Array.isArray(list)) return [];
+  const refs: Array<{
+    collectionId: number;
+    name: string;
+    libraryID: number;
+  }> = [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const collectionId =
+      typeof record.collectionId === "number" ? Math.floor(record.collectionId) : 0;
+    const libraryID =
+      typeof record.libraryID === "number" ? Math.floor(record.libraryID) : 0;
+    if (!collectionId || !libraryID) continue;
+    refs.push({
+      collectionId,
+      libraryID,
+      name: trimText(record.name, 180) || `Collection ${collectionId}`,
+    });
+    if (refs.length >= limit) break;
+  }
+  return refs;
+}
+
 function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
   const selectedTexts = Array.isArray(request.selectedTexts) ? request.selectedTexts : [];
   const selectedSources = Array.isArray(request.selectedTextSources)
@@ -985,6 +1027,10 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     contextItemId: paper.contextItemId,
     title: paper.title,
   }));
+  const selectedCollections = normalizeCollectionRefs(
+    request.selectedCollectionContexts,
+    8,
+  );
   const attachments = (Array.isArray(request.attachments) ? request.attachments : [])
     .slice(0, 10)
     .map((attachment) => ({
@@ -1011,6 +1057,9 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     selectedPaperCount: Array.isArray(request.selectedPaperContexts)
       ? request.selectedPaperContexts.length
       : 0,
+    selectedCollectionCount: Array.isArray(request.selectedCollectionContexts)
+      ? request.selectedCollectionContexts.length
+      : 0,
     fullTextPaperCount: Array.isArray(request.fullTextPaperContexts)
       ? request.fullTextPaperContexts.length
       : 0,
@@ -1021,6 +1070,7 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     screenshotCount: Array.isArray(request.screenshots) ? request.screenshots.length : 0,
     selectedTexts: selectedTextRows,
     selectedPapers,
+    selectedCollections,
     fullTextPapers,
     pinnedPapers,
     attachments,
@@ -1224,6 +1274,10 @@ async function buildBridgeRuntimeRequest(
     selectedPaperContexts,
     fullTextPaperContexts,
     pinnedPaperContexts,
+    selectedCollectionContexts: normalizeCollectionRefs(
+      request.selectedCollectionContexts,
+      20,
+    ),
     attachments: attachments.length ? attachments : undefined,
     screenshots: screenshots.length ? screenshots : undefined,
     activeNoteContext: request.activeNoteContext
@@ -1250,11 +1304,13 @@ function signatureForContextEnvelope(envelope: ContextEnvelope): string {
     libraryID: envelope.libraryID,
     selectedTextCount: envelope.selectedTextCount,
     selectedPaperCount: envelope.selectedPaperCount,
+    selectedCollectionCount: envelope.selectedCollectionCount,
     fullTextPaperCount: envelope.fullTextPaperCount,
     pinnedPaperCount: envelope.pinnedPaperCount,
     attachmentCount: envelope.attachmentCount,
     screenshotCount: envelope.screenshotCount,
     selectedPaperIds: envelope.selectedPapers.map((paper) => paper.contextItemId).sort(),
+    selectedCollectionIds: envelope.selectedCollections.map((collection) => collection.collectionId).sort(),
     fullTextPaperIds: envelope.fullTextPapers.map((paper) => paper.contextItemId).sort(),
     pinnedPaperIds: envelope.pinnedPapers.map((paper) => paper.contextItemId).sort(),
     selectedTextFingerprints: envelope.selectedTexts.map((row) => row.text.slice(0, 80)),
