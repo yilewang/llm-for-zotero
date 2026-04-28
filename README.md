@@ -615,8 +615,13 @@ content.
 
 1. Open `Preferences` -> `llm-for-zotero`.
 2. Find the **MinerU** section and check **Enable MinerU**.
-3. Enter your MinerU API key.
-4. Open any PDF and start chatting.
+3. Keep cloud mode enabled, or check **Use local MinerU server** for local mode.
+4. For cloud mode, optionally enter your own MinerU API key — see below.
+5. For local mode, run a self-hosted `mineru-api` server and keep the default
+   base URL (`http://127.0.0.1:8000`) unless your server uses a different
+   address.
+6. Open any PDF and start chatting. The plugin will automatically parse the PDF
+   with MinerU on first use and cache the result for future conversations.
 
 MinerU can start without an API key through the built-in API, but a personal key
 is strongly recommended. The built-in API may no longer be supported after
@@ -632,6 +637,43 @@ To get a free personal key:
 When a personal key is provided, the plugin calls
 `https://mineru.net/api/v4` directly.
 
+### Using a local MinerU server
+
+Local mode sends PDFs to a self-hosted `mineru-api` server through
+`POST /file_parse` and stores the returned ZIP output in the same local cache
+format as cloud parsing. The default base URL is `http://127.0.0.1:8000`.
+
+**Prerequisites for local mode**:
+
+1. Install MinerU and run `mineru-api` (see the
+   [MinerU docs](https://github.com/opendatalab/MinerU) for installation).
+2. Make sure required models are downloaded — `mineru-api` lazy-loads on first
+   request, so the very first parse (or the first parse after switching backend)
+   can take noticeably longer than steady state.
+
+You can pick a `Backend` in the local section:
+
+- `pipeline` (default) — general-purpose, multi-language, CPU-friendly.
+- `vlm` — VLM-based, high accuracy on Chinese/English documents, requires GPU.
+- `hybrid` — newer high-accuracy hybrid pipeline, multi-language, requires
+  local compute.
+
+The first parse after starting the local server, or after changing backend, can
+be slow while MinerU loads or downloads models. `Test Connection` checks that
+the server process responds at `/health`; it does not guarantee that all models
+are warmed up.
+
+With the default `127.0.0.1` address, PDFs stay on your machine. If you change
+the base URL to a LAN or remote server, PDFs are sent to that server.
+
+**Pause / cancel limitation**: `mineru-api` exposes no cancel or DELETE endpoint
+(only `POST /file_parse`, `POST /tasks`, `GET /tasks/{id}`,
+`GET /tasks/{id}/result`, `GET /health`). When you click Pause, the plugin stops
+the queue and aborts the HTTP wait, but the parse already running on the server
+keeps executing until it finishes — the GPU/CPU will not free up sooner. If you
+need to abort immediately (for example to switch backend without waiting),
+restart the `mineru-api` process yourself.
+
 ## Privacy and Data Flow
 
 - In standard provider mode, paper content and user messages are sent to the
@@ -640,7 +682,10 @@ When a personal key is provided, the plugin calls
   configure.
 - In WebChat mode, requests are relayed through the browser extension to
   `chatgpt.com`.
-- In MinerU mode, PDFs are sent to MinerU for parsing when parsing is enabled.
+- In cloud MinerU mode, PDFs are sent to MinerU for parsing when parsing is
+  enabled.
+- In local MinerU mode, PDFs are sent to the local or remote `mineru-api` server
+  you configure.
 - Conversation history and cached paper context are stored locally by the
   plugin.
 - Agent Mode write operations are routed through reviewable actions and session
@@ -656,6 +701,7 @@ When a personal key is provided, the plugin calls
 | **Codex App Server fails**           | Run `codex login`, confirm `codex` is on `PATH`, then click **Test connection** again. |
 | **Claude Code mode hangs**           | Restart the bridge and check `curl -fsS http://127.0.0.1:19787/healthz`.               |
 | **MinerU parsing fails**             | Add a personal MinerU API key and retry **Test Connection**.                           |
+| **Local MinerU parsing hangs**       | Wait for the first model warm-up, or restart your `mineru-api` process if you need to cancel immediately. |
 
 For bugs or unclear failures, please
 [open an issue](https://github.com/yilewang/llm-for-zotero/issues).
@@ -670,8 +716,8 @@ For bugs or unclear failures, please
 - [x] File-based notes (Obsidian, Logseq, any Markdown directory)
 - [x] Claude Code integration
 - [x] Codex App Server integration
+- [x] Local MinerU support
 - [x] Customized skills
-- [ ] Local MinerU support
 - [ ] Customized parameter of MinerU parsing
 - [ ] Cross-device synchronization (MinerU cache or conversation history)
 - [ ] Agent memory system
