@@ -49,6 +49,9 @@ declare namespace _ZoteroTypes {
       "obsidianNoteTemplate": string;
       "notesDirectoryNickname": string;
       "locale": string;
+      "mineruMode": string;
+      "mineruLocalApiBase": string;
+      "mineruLocalBackend": string;
       "mineruAutoWatchCollections": string;
       "mineruGlobalAutoParse": boolean;
       "mineruExcludePatterns": string;

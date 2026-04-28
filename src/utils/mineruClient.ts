@@ -5,6 +5,16 @@ import {
   type MinerUZipFile,
   type MinerUZipInspectionResult,
 } from "./mineruZip";
+import {
+  getMineruApiKey,
+  getMineruLocalApiBase,
+  getMineruLocalBackend,
+  getMineruMode,
+  normalizeMineruLocalApiBase,
+  toMineruApiBackend,
+  type MineruLocalBackend,
+} from "./mineruConfig";
+import { t } from "./i18n";
 
 const MINERU_DIRECT_API_BASE = "https://mineru.net/api/v4";
 const MINERU_PROXY_API_BASE =
@@ -25,6 +35,8 @@ function getMineruAuthHeaders(apiKey: string): Record<string, string> {
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 60000;
+const LOCAL_PARSE_TIMEOUT_MS = 15 * 60 * 1000;
+const LOCAL_PROGRESS_INTERVAL_MS = 3000;
 
 export type MinerUExtractedFile = MinerUZipFile;
 
@@ -51,6 +63,20 @@ export class MineruCancelledError extends Error {
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new MineruCancelledError();
+}
+
+function getFetch(): typeof fetch {
+  return ztoolkit.getGlobal("fetch") as typeof fetch;
+}
+
+function getAbortControllerCtor(): typeof AbortController | undefined {
+  return (
+    (globalThis as { AbortController?: typeof AbortController })
+      .AbortController ??
+    (ztoolkit.getGlobal("AbortController") as
+      | typeof AbortController
+      | undefined)
+  );
 }
 
 /** Race a promise against an AbortSignal — rejects immediately when aborted. */
@@ -113,6 +139,18 @@ type MineruZipExtractionResult =
       message: string;
       download: BinaryDownloadResult;
       zipInspection?: MinerUZipInspectionResult;
+    };
+
+type MineruZipBytesExtractionResult =
+  | {
+      ok: true;
+      mdContent: string;
+      files: MinerUExtractedFile[];
+    }
+  | {
+      ok: false;
+      message: string;
+      zipInspection: MinerUZipInspectionResult;
     };
 
 function getIOUtils(): IOUtilsLike | undefined {
@@ -467,6 +505,27 @@ async function readPdfBytes(pdfPath: string): Promise<Uint8Array | null> {
   return null;
 }
 
+function extractMineruZipBytes(
+  zipBytes: Uint8Array,
+  report: (s: string) => void,
+): MineruZipBytesExtractionResult {
+  report(t("Extracting files…"));
+  const zipInspection = inspectMineruZipBytes(zipBytes);
+  if (!zipInspection.ok) {
+    return {
+      ok: false,
+      message: describeMineruZipInspectionFailure(zipInspection),
+      zipInspection,
+    };
+  }
+
+  return {
+    ok: true,
+    mdContent: zipInspection.mdContent,
+    files: zipInspection.files,
+  };
+}
+
 async function downloadAndExtractZip(
   zipUrl: string,
   report: (s: string) => void,
@@ -481,22 +540,264 @@ async function downloadAndExtractZip(
     };
   }
 
-  report("Extracting files…");
-  const zipInspection = inspectMineruZipBytes(downloadResult.bytes);
-  if (!zipInspection.ok) {
+  const extracted = extractMineruZipBytes(downloadResult.bytes, report);
+  if (!extracted.ok) {
     return {
       ok: false,
-      message: describeMineruZipInspectionFailure(zipInspection),
+      message: extracted.message,
       download: downloadResult,
-      zipInspection,
+      zipInspection: extracted.zipInspection,
     };
   }
 
   return {
     ok: true,
-    mdContent: zipInspection.mdContent,
-    files: zipInspection.files,
+    mdContent: extracted.mdContent,
+    files: extracted.files,
   };
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const totalLength = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+function toSafeMultipartToken(value: string): string {
+  return (value || "").replace(/[\r\n"]/g, "_").trim() || "field";
+}
+
+function buildMultipartBody(
+  fields: Array<
+    | { name: string; value: string }
+    | {
+        name: string;
+        filename: string;
+        contentType: string;
+        data: Uint8Array;
+      }
+  >,
+): { body: Uint8Array; contentType: string } {
+  const encoder = new TextEncoder();
+  const boundary = `----MinerUBoundary${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`;
+  const parts: Uint8Array[] = [];
+
+  for (const field of fields) {
+    const safeName = toSafeMultipartToken(field.name);
+    if ("data" in field) {
+      const safeFilename = toSafeMultipartToken(field.filename || "paper.pdf");
+      const safeContentType = toSafeMultipartToken(
+        field.contentType || "application/octet-stream",
+      );
+      parts.push(
+        encoder.encode(
+          `--${boundary}\r\n` +
+            `Content-Disposition: form-data; name="${safeName}"; filename="${safeFilename}"\r\n` +
+            `Content-Type: ${safeContentType}\r\n\r\n`,
+        ),
+      );
+      parts.push(field.data);
+      parts.push(encoder.encode("\r\n"));
+    } else {
+      parts.push(
+        encoder.encode(
+          `--${boundary}\r\n` +
+            `Content-Disposition: form-data; name="${safeName}"\r\n\r\n` +
+            `${field.value}\r\n`,
+        ),
+      );
+    }
+  }
+
+  parts.push(encoder.encode(`--${boundary}--\r\n`));
+  return {
+    body: concatBytes(parts),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
+function getSafePdfFileName(pdfPath: string): string {
+  const rawName = pdfPath.split(/[\\/]/).pop() || "paper.pdf";
+  return rawName.replace(/[^\x20-\x7E]/g, "_") || "paper.pdf";
+}
+
+function joinApiPath(baseUrl: string, path: string): string {
+  return `${normalizeMineruLocalApiBase(baseUrl)}${path}`;
+}
+
+function truncateResponseText(text: string, maxLength = 240): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength - 3)}...`
+    : normalized;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<Response> {
+  const AbortCtrl = getAbortControllerCtor();
+  if (!AbortCtrl) {
+    return await getFetch()(url, init);
+  }
+
+  const controller = new AbortCtrl();
+  let timedOut = false;
+  const onAbort = () => controller.abort();
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    return await getFetch()(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw new MineruCancelledError();
+    if (timedOut) throw new Error(timeoutMessage);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+function buildLocalFileParseBody(params: {
+  fileName: string;
+  pdfBytes: Uint8Array;
+  backend: MineruLocalBackend;
+}): { body: Uint8Array; contentType: string } {
+  return buildMultipartBody([
+    {
+      name: "files",
+      filename: params.fileName,
+      contentType: "application/pdf",
+      data: params.pdfBytes,
+    },
+    { name: "backend", value: toMineruApiBackend(params.backend) },
+    { name: "parse_method", value: "auto" },
+    { name: "formula_enable", value: "true" },
+    { name: "table_enable", value: "true" },
+    { name: "return_md", value: "true" },
+    { name: "return_content_list", value: "true" },
+    { name: "return_images", value: "true" },
+    { name: "response_format_zip", value: "true" },
+    { name: "return_original_file", value: "false" },
+  ]);
+}
+
+async function parsePdfViaLocalFileParse(
+  pdfPath: string,
+  baseUrl: string,
+  backend: MineruLocalBackend,
+  report: (s: string) => void,
+  signal?: AbortSignal,
+): Promise<MinerUResult> {
+  throwIfAborted(signal);
+  report(t("Reading PDF file…"));
+  const pdfBytes = await readPdfBytes(pdfPath);
+  if (!pdfBytes || !pdfBytes.length) {
+    report(t("PDF file is empty or unreadable"));
+    return null;
+  }
+
+  const fileName = getSafePdfFileName(pdfPath);
+  const sizeMB = (pdfBytes.length / (1024 * 1024)).toFixed(1);
+  const { body, contentType } = buildLocalFileParseBody({
+    fileName,
+    pdfBytes,
+    backend,
+  });
+
+  throwIfAborted(signal);
+  report(t("Uploading to local server… (%s MB)").replace("%s", sizeMB));
+  const url = joinApiPath(baseUrl, "/file_parse");
+  const startTime = Date.now();
+  const progressTimer = setInterval(() => {
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    report(t("Waiting for parser… (%ss)").replace("%s", `${elapsed}`));
+  }, LOCAL_PROGRESS_INTERVAL_MS);
+
+  let response: Response;
+  try {
+    response = await raceAbort(
+      fetchWithTimeout(
+        url,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": contentType,
+          },
+          body,
+        },
+        signal,
+        LOCAL_PARSE_TIMEOUT_MS,
+        t("Local MinerU parsing timed out"),
+      ),
+      signal,
+    );
+  } finally {
+    clearInterval(progressTimer);
+  }
+
+  const contentTypeHeader = response.headers.get("content-type");
+  if (!response.ok) {
+    let responseText = "";
+    try {
+      responseText = await raceAbort(response.text(), signal);
+    } catch {
+      /* ignore */
+    }
+    const suffix = responseText
+      ? `: ${truncateResponseText(responseText)}`
+      : "";
+    report(
+      `${t("Local parse failed: HTTP %s").replace("%s", `${response.status}`)}${suffix}`,
+    );
+    return null;
+  }
+
+  throwIfAborted(signal);
+  const zipBytes = new Uint8Array(
+    await raceAbort(response.arrayBuffer(), signal),
+  );
+  const extracted = extractMineruZipBytes(zipBytes, report);
+  if (extracted.ok) {
+    report(
+      t("Done (%s files extracted)").replace("%s", `${extracted.files.length}`),
+    );
+    return { mdContent: extracted.mdContent, files: extracted.files };
+  }
+
+  report(extracted.message);
+  logMineruZipFailure(
+    {
+      bytes: zipBytes,
+      attempts: [
+        {
+          transport: "fetch",
+          status: response.status,
+          contentType: contentTypeHeader,
+          byteLength: zipBytes.length,
+          error: extracted.message,
+        },
+      ],
+    },
+    extracted.zipInspection,
+  );
+  return null;
 }
 
 // ── Presigned URL upload workflow ──────────────────────────────────────────────
@@ -1037,6 +1338,54 @@ export async function parsePdfWithMineruCloud(
   }
 }
 
+export async function parsePdfWithMineruLocal(
+  pdfPath: string,
+  baseUrl: string,
+  backend: MineruLocalBackend,
+  onProgress?: MinerUProgressCallback,
+  signal?: AbortSignal,
+): Promise<MinerUResult> {
+  const report = (stage: string) => {
+    ztoolkit.log(`MinerU local: ${stage}`);
+    onProgress?.(stage);
+  };
+  try {
+    return await parsePdfViaLocalFileParse(
+      pdfPath,
+      baseUrl,
+      backend,
+      report,
+      signal,
+    );
+  } catch (e) {
+    if (e instanceof MineruCancelledError) throw e;
+    report(`Error: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+export async function parsePdfWithMineru(
+  pdfPath: string,
+  onProgress?: MinerUProgressCallback,
+  signal?: AbortSignal,
+): Promise<MinerUResult> {
+  if (getMineruMode() === "local") {
+    return parsePdfWithMineruLocal(
+      pdfPath,
+      getMineruLocalApiBase(),
+      getMineruLocalBackend(),
+      onProgress,
+      signal,
+    );
+  }
+  return parsePdfWithMineruCloud(
+    pdfPath,
+    getMineruApiKey(),
+    onProgress,
+    signal,
+  );
+}
+
 /**
  * Quick curl-based connectivity test to an OSS URL.
  * Uses curl without -f so even a 403 (expected) counts as success.
@@ -1131,6 +1480,27 @@ export async function testProxyConnection(): Promise<void> {
   if (result.status === 401 || result.status === 403) {
     throw new Error(
       "Proxy authentication failed — please provide your own API key",
+    );
+  }
+}
+
+export async function testMineruLocalConnection(
+  baseUrl: string,
+): Promise<void> {
+  const url = joinApiPath(baseUrl, "/health");
+  const response = await fetchWithTimeout(
+    url,
+    { method: "GET" },
+    undefined,
+    10000,
+    t("Local MinerU health check timed out"),
+  );
+  if (!response.ok) {
+    throw new Error(
+      t("Local MinerU health check failed: HTTP %s").replace(
+        "%s",
+        `${response.status}`,
+      ),
     );
   }
 }

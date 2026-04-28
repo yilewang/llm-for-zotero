@@ -499,8 +499,10 @@ _Special thanks to [@jianghao-zhang](https://github.com/jianghao-zhang) and [@bo
 
 1. Open Zotero → `Preferences` → `llm-for-zotero` tab.
 2. Find the **MinerU** section and check **Enable MinerU**.
-3. (Optional) Enter your own MinerU API key — see below.
-4. Open any PDF and start chatting. The plugin will automatically parse the PDF with MinerU on first use and cache the result for future conversations.
+3. Choose **Cloud MinerU** or **Local MinerU**.
+4. For cloud mode, optionally enter your own MinerU API key — see below.
+5. For local mode, run a self-hosted `mineru-api` server and keep the default base URL (`http://127.0.0.1:8000`) unless your server uses a different address.
+6. Open any PDF and start chatting. The plugin will automatically parse the PDF with MinerU on first use and cache the result for future conversations.
 
 ### Using your own API key
 
@@ -513,6 +515,27 @@ The plugin provides a shared community proxy so MinerU works out of the box with
 
 When a personal API key is provided, the plugin calls the MinerU API directly (`https://mineru.net/api/v4`). Without a key, it uses the community proxy.
 
+### Using a local MinerU server
+
+Local mode sends PDFs to a self-hosted `mineru-api` server through `POST /file_parse` and stores the returned ZIP output in the same local cache format as cloud parsing. The default base URL is `http://127.0.0.1:8000`.
+
+**Prerequisites for local mode**:
+
+1. Install MinerU and run `mineru-api` (see the [MinerU docs](https://github.com/opendatalab/MinerU) for installation).
+2. Make sure required models are downloaded — `mineru-api` lazy-loads on first request, so the very first parse (or the first parse after switching backend) can take noticeably longer than steady state.
+
+You can pick a `Backend` in the local section:
+
+- `pipeline` (default) — general-purpose, multi-language, CPU-friendly.
+- `vlm` — VLM-based, high accuracy on Chinese/English documents, requires GPU.
+- `hybrid` — newer high-accuracy hybrid pipeline, multi-language, requires local compute.
+
+The first parse after starting the local server, or after changing backend, can be slow while MinerU loads or downloads models. `Test Connection` checks that the server process responds at `/health`; it does not guarantee that all models are warmed up.
+
+With the default `127.0.0.1` address, PDFs stay on your machine. If you change the base URL to a LAN or remote server, PDFs are sent to that server.
+
+**Pause / cancel limitation**: `mineru-api` exposes no cancel or DELETE endpoint (only `POST /file_parse`, `POST /tasks`, `GET /tasks/{id}`, `GET /tasks/{id}/result`, `GET /health`). When you click Pause, the plugin stops the queue and aborts the HTTP wait, but the parse already running on the server keeps executing until it finishes — the GPU/CPU will not free up sooner. If you need to abort immediately (for example to switch backend without waiting), restart the `mineru-api` process yourself.
+
 ---
 
 ## Roadmap
@@ -523,7 +546,7 @@ When a personal API key is provided, the plugin calls the MinerU API directly (`
 - [x] WebChat mode (ChatGPT web sync)
 - [x] Standalone window mode ([#78](https://github.com/yilewang/llm-for-zotero/issues/78))
 - [x] File-based notes (Obsidian, Logseq, any Markdown directory)
-- [ ] Local MinerU support
+- [x] Local MinerU support
 - [x] Customized skills
 - [ ] Cross-device synchronization
 
