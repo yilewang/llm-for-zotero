@@ -129,6 +129,97 @@ describe("codexAppServerInput", function () {
     ]);
   });
 
+  it("merges additional chat system messages into developer instructions", async function () {
+    const messages: ChatMessage[] = [
+      {
+        role: "system",
+        content: "Use the selected paper context.",
+      },
+      {
+        role: "system",
+        content: "Document Context:\nFull text from Zotero text mode.",
+      },
+      {
+        role: "user",
+        content: "Summarize the paper.",
+      },
+    ];
+
+    const prepared = await prepareCodexAppServerChatTurn(messages);
+
+    assert.equal(
+      prepared.developerInstructions,
+      "Use the selected paper context.\n\nDocument Context:\nFull text from Zotero text mode.",
+    );
+    assert.deepEqual(prepared.historyItemsToInject, []);
+    assert.deepEqual(prepared.turnInput, [
+      {
+        type: "text",
+        text: "Summarize the paper.",
+      },
+    ]);
+  });
+
+  it("preserves non-system chat messages before the latest user in order", async function () {
+    const messages: ChatMessage[] = [
+      {
+        role: "system",
+        content: "Use the selected paper context.",
+      },
+      {
+        role: "system",
+        content: "Document Context:\nFull text from Zotero text mode.",
+      },
+      {
+        role: "user",
+        content: "Earlier question.",
+      },
+      {
+        role: "assistant",
+        content: "Earlier answer.",
+      },
+      {
+        role: "user",
+        content: "What changed?",
+      },
+    ];
+
+    const prepared = await prepareCodexAppServerChatTurn(messages);
+
+    assert.equal(
+      prepared.developerInstructions,
+      "Use the selected paper context.\n\nDocument Context:\nFull text from Zotero text mode.",
+    );
+    assert.deepEqual(prepared.historyItemsToInject, [
+      {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: "Earlier question.",
+          },
+        ],
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: "Earlier answer.",
+          },
+        ],
+      },
+    ]);
+    assert.deepEqual(prepared.turnInput, [
+      {
+        type: "text",
+        text: "What changed?",
+      },
+    ]);
+  });
+
   it("keeps the latest user message images in agent mode", async function () {
     const messages: AgentModelMessage[] = [
       {
