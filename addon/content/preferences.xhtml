@@ -973,8 +973,26 @@
                 <html:span style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; margin-left: 8px;"></html:span> Failed
               </html:span>
             </html:span>
+
+            <html:label
+              style="
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                font-weight: 600;
+                font-size: 12px;
+                color: var(--fill-primary, inherit);
+              "
+            >
+              <html:input
+                id="__addonRef__-mineru-local-mode"
+                type="checkbox"
+              ></html:input>
+              Use local MinerU server
+            </html:label>
+
             <!-- Info box -->
-            <html:div style="
+            <html:div id="__addonRef__-mineru-cloud-info" style="
               background: color-mix(in srgb, var(--color-accent, #2563eb) 8%, transparent);
               border: 1px solid color-mix(in srgb, var(--color-accent, #2563eb) 20%, transparent);
               border-radius: 6px;
@@ -994,7 +1012,7 @@
             </html:div>
 
             <!-- API key section -->
-            <html:div style="display: flex; flex-direction: column; gap: 4px">
+            <html:div id="__addonRef__-mineru-api-key-section" style="display: flex; flex-direction: column; gap: 4px">
               <html:label
                 for="__addonRef__-mineru-api-key"
                 style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
@@ -1018,6 +1036,68 @@
               ></html:input>
               <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
                 With your own key: direct connection to mineru.net
+              </html:span>
+            </html:div>
+
+            <html:div id="__addonRef__-mineru-local-section" style="display: none; flex-direction: column; gap: 8px">
+              <html:div style="display: flex; flex-direction: column; gap: 4px">
+                <html:label
+                  for="__addonRef__-mineru-local-api-base"
+                  style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+                >
+                  Local API Base URL
+                </html:label>
+                <html:input
+                  id="__addonRef__-mineru-local-api-base"
+                  type="text"
+                  placeholder="http://127.0.0.1:8000"
+                  style="
+                    width: 100%;
+                    padding: 6px 10px;
+                    font-size: 13px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    box-sizing: border-box;
+                    background: Field;
+                    color: FieldText;
+                  "
+                ></html:input>
+                <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
+                  Uses a self-hosted mineru-api server. Test Connection only checks that the server process is reachable.
+                </html:span>
+              </html:div>
+
+              <html:div style="display: flex; flex-direction: column; gap: 4px">
+                <html:label
+                  for="__addonRef__-mineru-local-backend"
+                  style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+                >
+                  Backend
+                </html:label>
+                <html:select
+                  id="__addonRef__-mineru-local-backend"
+                  style="
+                    width: 100%;
+                    padding: 6px 10px;
+                    font-size: 13px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    box-sizing: border-box;
+                    background: Field;
+                    color: FieldText;
+                  "
+                >
+                  <html:option value="pipeline">pipeline</html:option>
+                  <html:option value="vlm">vlm</html:option>
+                  <html:option value="hybrid">hybrid</html:option>
+                </html:select>
+                <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
+                  Switching backend triggers a cold start: the first parse afterwards may take noticeably longer while the model loads.
+                </html:span>
+              </html:div>
+
+              <html:span style="font-size: 11px; color: #f59e0b; line-height: 1.45; margin-top: 2px;">
+                Note: Pause stops the queue, but an already-running local parse keeps executing on the mineru-api server — it has no cancel endpoint. To abort immediately (e.g. to switch backend right away), restart your mineru-api process manually.
               </html:span>
             </html:div>
 
