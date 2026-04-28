@@ -243,6 +243,99 @@
 
         <html:div style="border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 8px; overflow: hidden; margin-top: 6px;">
           <html:div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: Field; color: FieldText; border-bottom: 1px solid var(--stroke-secondary, #c8c8c8);">
+            <html:span style="font-weight: 700; font-size: 13px;">Codex App Server</html:span>
+          </html:div>
+          <html:div style="display: flex; flex-direction: column; gap: 14px; padding: 14px;">
+            <html:span style="font-size: 11.5px; color: var(--fill-secondary, #888); line-height: 1.5;">
+              First-class Codex runtime integration. Run <html:code>codex login</html:code> before enabling it; Zotero keeps local tool approvals in its own confirmation cards.
+            </html:span>
+            <html:div style="display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 8px; background: color-mix(in srgb, Field 92%, var(--color-accent, #2563eb) 8%);">
+              <html:label
+                for="__addonRef__-codex-app-server-enable"
+                style="display: block; font-weight: 700; font-size: 12px; color: var(--fill-primary, inherit);"
+              >
+                Enable Codex App Server integration
+              </html:label>
+              <html:span style="font-size: 11px; color: var(--fill-secondary, #777); line-height: 1.5;">
+                When enabled, Zotero shows the Codex button in the chat header so you can switch between upstream chat and Codex.
+              </html:span>
+              <html:select
+                id="__addonRef__-codex-app-server-enable"
+                style="
+                  width: 100%;
+                  padding: 5px 8px;
+                  font-size: 12px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 6px;
+                  background: Field;
+                  color: FieldText;
+                "
+              >
+                <html:option value="disabled">Off</html:option>
+                <html:option value="enabled">On</html:option>
+              </html:select>
+            </html:div>
+
+            <html:div
+              id="__addonRef__-codex-app-server-settings"
+              style="display: none; flex-direction: column; gap: 14px;"
+            >
+              <html:div style="display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 8px; background: Field;">
+                <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                  <html:span style="font-weight: 700; font-size: 12px; color: var(--fill-primary, inherit);">Runtime defaults</html:span>
+                  <html:span style="font-size: 11px; color: var(--fill-secondary, #777); line-height: 1.5;">
+                    These values control how Codex runs inside Zotero by default.
+                  </html:span>
+                </html:div>
+
+                <html:div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; align-items: start;">
+                  <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                    <html:label for="__addonRef__-codex-app-server-model" style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
+                      Model
+                    </html:label>
+                    <html:select id="__addonRef__-codex-app-server-model" style="width: 100%; max-width: none; padding: 4px 8px; font-size: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background: Field; color: FieldText;">
+                      <html:option value="gpt-5.4">gpt-5.4</html:option>
+                      <html:option value="gpt-5.3-codex">gpt-5.3-codex</html:option>
+                      <html:option value="gpt-5.2-codex">gpt-5.2-codex</html:option>
+                    </html:select>
+                  </html:div>
+                  <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                    <html:label for="__addonRef__-codex-app-server-reasoning" style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
+                      Reasoning
+                    </html:label>
+                    <html:select id="__addonRef__-codex-app-server-reasoning" style="width: 100%; max-width: none; padding: 4px 8px; font-size: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background: Field; color: FieldText;">
+                      <html:option value="auto">Auto</html:option>
+                      <html:option value="low">Low</html:option>
+                      <html:option value="medium">Medium</html:option>
+                      <html:option value="high">High</html:option>
+                      <html:option value="xhigh">XHigh</html:option>
+                    </html:select>
+                  </html:div>
+                </html:div>
+
+                <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                  <html:label for="__addonRef__-codex-app-server-path" style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
+                    Codex executable path
+                  </html:label>
+                  <html:input id="__addonRef__-codex-app-server-path" type="text" placeholder="Optional absolute path to codex" style="width: 100%; max-width: none; padding: 5px 8px; font-size: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; box-sizing: border-box; background: Field; color: FieldText;"></html:input>
+                  <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
+                    Leave empty to find <html:code>codex</html:code> on PATH. Zotero launches <html:code>codex app-server</html:code> locally.
+                  </html:span>
+                </html:div>
+
+                <html:div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                  <html:button id="__addonRef__-codex-app-server-test" type="button" style="padding: 4px 10px; font-size: 12px; font-weight: 500; white-space: nowrap; background: transparent; color: var(--color-accent, #2563eb); border: 1px solid var(--color-accent, #2563eb); border-radius: 5px; cursor: pointer;">
+                    Test connection
+                  </html:button>
+                  <html:span id="__addonRef__-codex-app-server-status" style="font-size: 11.5px; display: none;"></html:span>
+                </html:div>
+              </html:div>
+            </html:div>
+          </html:div>
+        </html:div>
+
+        <html:div style="border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 8px; overflow: hidden; margin-top: 6px;">
+          <html:div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: Field; color: FieldText; border-bottom: 1px solid var(--stroke-secondary, #c8c8c8);">
             <html:span style="font-weight: 700; font-size: 13px;">Claude Code Integration</html:span>
           </html:div>
           <html:div style="display: flex; flex-direction: column; gap: 14px; padding: 14px;">
@@ -577,99 +670,6 @@
                   </html:div>
                 </html:div>
               </html:details>
-            </html:div>
-          </html:div>
-        </html:div>
-
-        <html:div style="border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 8px; overflow: hidden; margin-top: 6px;">
-          <html:div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: Field; color: FieldText; border-bottom: 1px solid var(--stroke-secondary, #c8c8c8);">
-            <html:span style="font-weight: 700; font-size: 13px;">Codex App Server</html:span>
-          </html:div>
-          <html:div style="display: flex; flex-direction: column; gap: 14px; padding: 14px;">
-            <html:span style="font-size: 11.5px; color: var(--fill-secondary, #888); line-height: 1.5;">
-              First-class Codex runtime integration. Run <html:code>codex login</html:code> before enabling it; Zotero keeps local tool approvals in its own confirmation cards.
-            </html:span>
-            <html:div style="display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 8px; background: color-mix(in srgb, Field 92%, var(--color-accent, #2563eb) 8%);">
-              <html:label
-                for="__addonRef__-codex-app-server-enable"
-                style="display: block; font-weight: 700; font-size: 12px; color: var(--fill-primary, inherit);"
-              >
-                Enable Codex App Server integration
-              </html:label>
-              <html:span style="font-size: 11px; color: var(--fill-secondary, #777); line-height: 1.5;">
-                When enabled, Zotero shows the Codex button in the chat header so you can switch between upstream chat and Codex.
-              </html:span>
-              <html:select
-                id="__addonRef__-codex-app-server-enable"
-                style="
-                  width: 100%;
-                  padding: 5px 8px;
-                  font-size: 12px;
-                  border: 1px solid var(--stroke-secondary, #c8c8c8);
-                  border-radius: 6px;
-                  background: Field;
-                  color: FieldText;
-                "
-              >
-                <html:option value="disabled">Off</html:option>
-                <html:option value="enabled">On</html:option>
-              </html:select>
-            </html:div>
-
-            <html:div
-              id="__addonRef__-codex-app-server-settings"
-              style="display: none; flex-direction: column; gap: 14px;"
-            >
-              <html:div style="display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 8px; background: Field;">
-                <html:div style="display: flex; flex-direction: column; gap: 4px;">
-                  <html:span style="font-weight: 700; font-size: 12px; color: var(--fill-primary, inherit);">Runtime defaults</html:span>
-                  <html:span style="font-size: 11px; color: var(--fill-secondary, #777); line-height: 1.5;">
-                    These values control how Codex runs inside Zotero by default.
-                  </html:span>
-                </html:div>
-
-                <html:div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; align-items: start;">
-                  <html:div style="display: flex; flex-direction: column; gap: 4px;">
-                    <html:label for="__addonRef__-codex-app-server-model" style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
-                      Model
-                    </html:label>
-                    <html:select id="__addonRef__-codex-app-server-model" style="width: 100%; max-width: none; padding: 4px 8px; font-size: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background: Field; color: FieldText;">
-                      <html:option value="gpt-5.4">gpt-5.4</html:option>
-                      <html:option value="gpt-5.3-codex">gpt-5.3-codex</html:option>
-                      <html:option value="gpt-5.2-codex">gpt-5.2-codex</html:option>
-                    </html:select>
-                  </html:div>
-                  <html:div style="display: flex; flex-direction: column; gap: 4px;">
-                    <html:label for="__addonRef__-codex-app-server-reasoning" style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
-                      Reasoning
-                    </html:label>
-                    <html:select id="__addonRef__-codex-app-server-reasoning" style="width: 100%; max-width: none; padding: 4px 8px; font-size: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background: Field; color: FieldText;">
-                      <html:option value="auto">Auto</html:option>
-                      <html:option value="low">Low</html:option>
-                      <html:option value="medium">Medium</html:option>
-                      <html:option value="high">High</html:option>
-                      <html:option value="xhigh">XHigh</html:option>
-                    </html:select>
-                  </html:div>
-                </html:div>
-
-                <html:div style="display: flex; flex-direction: column; gap: 4px;">
-                  <html:label for="__addonRef__-codex-app-server-path" style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
-                    Codex executable path
-                  </html:label>
-                  <html:input id="__addonRef__-codex-app-server-path" type="text" placeholder="Optional absolute path to codex" style="width: 100%; max-width: none; padding: 5px 8px; font-size: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; box-sizing: border-box; background: Field; color: FieldText;"></html:input>
-                  <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
-                    Leave empty to find <html:code>codex</html:code> on PATH. Zotero launches <html:code>codex app-server</html:code> locally.
-                  </html:span>
-                </html:div>
-
-                <html:div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                  <html:button id="__addonRef__-codex-app-server-test" type="button" style="padding: 4px 10px; font-size: 12px; font-weight: 500; white-space: nowrap; background: transparent; color: var(--color-accent, #2563eb); border: 1px solid var(--color-accent, #2563eb); border-radius: 5px; cursor: pointer;">
-                    Test connection
-                  </html:button>
-                  <html:span id="__addonRef__-codex-app-server-status" style="font-size: 11.5px; display: none;"></html:span>
-                </html:div>
-              </html:div>
             </html:div>
           </html:div>
         </html:div>

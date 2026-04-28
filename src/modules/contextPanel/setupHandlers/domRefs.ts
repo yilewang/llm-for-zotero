@@ -28,7 +28,6 @@ export type PanelDomRefs = {
   historyMenu: HTMLDivElement | null;
   modeCapsule: HTMLElement | null;
   modeChipBtn: HTMLButtonElement | null;
-  modeLockBtn: HTMLElement | null;
   historyRowMenu: HTMLDivElement | null;
   historyRowRenameBtn: HTMLButtonElement | null;
   historyUndo: HTMLDivElement | null;
@@ -150,9 +149,6 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     modeChipBtn: body.querySelector(
       "#llm-mode-chip",
     ) as HTMLButtonElement | null,
-    modeLockBtn: body.querySelector(
-      "#llm-mode-lock",
-    ) as HTMLElement | null,
     historyMenu: body.querySelector(
       "#llm-history-menu",
     ) as HTMLDivElement | null,

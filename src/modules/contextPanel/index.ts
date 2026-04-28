@@ -45,7 +45,7 @@ import {
   collectAndDeleteUnreferencedBlobs,
 } from "../../utils/attachmentRefStore";
 import { normalizeSelectedText, setStatus } from "./textUtils";
-import { buildUI, syncGlobalLockVisibility } from "./buildUI";
+import { buildUI } from "./buildUI";
 import { setupHandlers } from "./setupHandlers";
 import { ensureConversationLoaded, getConversationKey } from "./chat";
 import { renderShortcuts } from "./shortcuts";
@@ -163,7 +163,6 @@ export function registerReaderContextPanel() {
         (body as any).__llmSyncRendered = true;
         return;
       }
-      syncGlobalLockVisibility(body);
       try {
         const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
         // Treat missing panel root as needing a full render — the body may
@@ -221,7 +220,7 @@ export function registerReaderContextPanel() {
           activeContextPanels.set(body, () => resolvedState.item);
           activeContextPanelRawItems.set(body, item || null);
           void retainClaudeRuntimeForBody(body, resolvedState.item);
-          // Attach handlers synchronously so buttons (lock, send, etc.) are
+          // Attach handlers synchronously so buttons are
           // immediately interactive — don't gate on ensureConversationLoaded.
           setupHandlers(body, item);
           // Flag: onAsyncRender can skip the duplicate buildUI + setupHandlers.

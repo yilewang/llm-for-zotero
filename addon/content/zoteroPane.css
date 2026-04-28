@@ -325,7 +325,7 @@
   outline-offset: 2px;
 }
 
-/* ---- Mode chip: single pill showing current mode + lock ---- */
+/* ---- Mode chip: single pill showing current mode ---- */
 
 .llm-header-mode-controls {
   display: inline-flex;
@@ -624,71 +624,6 @@
 .llm-message-webchat-refresh:disabled {
   opacity: 0.4;
   cursor: default;
-}
-
-/* ---- Lock icon (after 'Library chat' label) ---- */
-
-.llm-mode-lock {
-  appearance: none;
-  -moz-appearance: none;
-  border: none;
-  background: transparent;
-  color: var(--fill-tertiary);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0 !important;
-  padding: 0 !important;
-  width: 16px;
-  min-width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  border-radius: 3px;
-  font-size: 0;
-  line-height: 0;
-  vertical-align: middle;
-  align-self: center;
-  transition:
-    color 0.15s,
-    background 0.15s;
-}
-
-.llm-mode-lock[data-locked="true"] {
-  color: var(--color-accent);
-}
-
-.llm-mode-lock:not([data-locked="true"]):hover {
-  color: var(--fill-secondary);
-}
-
-.llm-mode-lock:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 1px;
-}
-
-.llm-mode-lock::before {
-  content: "";
-  display: block;
-  width: 11px;
-  height: 11px;
-  background-color: currentColor;
-  mask-image: url("icons/action-mode-lock.svg");
-  mask-repeat: no-repeat;
-  mask-position: center;
-  mask-size: contain;
-  -webkit-mask-image: url("icons/action-mode-lock.svg");
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-  -webkit-mask-size: contain;
-  pointer-events: none;
-}
-
-/* Hide stale lock icons from inactive Zotero Reader tabs.
-   buildUI() marks non-current locks with [data-stale-tab].
-   !important prevents old-tab JS handlers from overriding. */
-.llm-mode-lock[data-stale-tab] {
-  display: none !important;
 }
 
 .llm-subtitle {

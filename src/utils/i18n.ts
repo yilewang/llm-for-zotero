@@ -28,7 +28,6 @@ const zhCN: Record<string, string> = {
   "Paper chat": "论文对话",
   "Switch to paper chat": "切换到论文对话",
   "Switch to library chat": "切换到文献库对话",
-  "Lock library chat as default": "锁定文献库对话为默认",
   "Settings": "设置",
   "Open plugin settings": "打开插件设置",
   "Export": "导出",

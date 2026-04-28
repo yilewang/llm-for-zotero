@@ -137,7 +137,6 @@ describe("portalScope resolveInitialPanelItemState", function () {
         showModeSwitch: false,
         showNewConversation: false,
         showHistory: false,
-        showOpenLock: false,
       },
     });
   });
@@ -169,7 +168,6 @@ describe("portalScope resolveInitialPanelItemState", function () {
         showModeSwitch: false,
         showNewConversation: false,
         showHistory: false,
-        showOpenLock: false,
       },
     });
   });

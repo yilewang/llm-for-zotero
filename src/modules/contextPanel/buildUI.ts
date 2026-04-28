@@ -38,39 +38,6 @@ function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
   return { slot, button, menu };
 }
 
-const globalRegistryKey = "__llm_mode_lock_registry";
-
-/**
- * Keeps the active panel lock button display unblocked and prunes stale
- * registry entries from disposed panel bodies.
- */
-export function syncGlobalLockVisibility(currentBody: Element) {
-  const myZotero = (globalThis as any).Zotero || globalThis;
-  if (!myZotero[globalRegistryKey]) {
-    myZotero[globalRegistryKey] = new Set<Element>();
-  }
-  const allLocks: Set<Element> = myZotero[globalRegistryKey];
-
-  try {
-    for (const el of Array.from(allLocks)) {
-      if (!el.isConnected) {
-        allLocks.delete(el);
-        continue;
-      }
-      const htmlEl = el as HTMLElement;
-      // Only normalize the currently active panel lock button.
-      // Writing sticky inline `display:none` to other panels can persist when
-      // users switch back to a previously visited tab, causing the lock icon
-      // to disappear even though lock state is still active.
-      if (currentBody.contains(el)) {
-        htmlEl.style.removeProperty("display");
-      }
-    }
-  } catch (err) {
-    ztoolkit.log(`LLM DEBUG: Error syncing lock visibility: ${err}`);
-  }
-}
-
 function buildUI(body: Element, item?: Zotero.Item | null) {
   // Clear this section body before rebuilding.
   if (typeof (body as any).replaceChildren === "function") {
@@ -187,7 +154,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     id: "llm-header-mode-controls",
   });
 
-  // Mode chip: single pill showing current mode + lock
+  // Mode chip: single pill showing current mode
   const modeSwitchWrap = createElement(doc, "div", "llm-mode-switch", {
     id: "llm-mode-capsule",
   });
@@ -204,19 +171,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
   modeChipBtn.setAttribute("aria-label", modeChipLabel);
 
-  // Lock button, right of chip (only visible in standalone open-chat mode)
-  const modeLockBtn = createElement(doc, "div", "llm-mode-lock", {
-    id: "llm-mode-lock",
-    title: t("Lock library chat as default"),
-  });
-  modeLockBtn.dataset.locked = "false";
-  modeLockBtn.setAttribute("aria-label", t("Lock library chat as default"));
-  modeLockBtn.setAttribute("role", "button");
-  modeLockBtn.setAttribute("tabindex", "0");
-  modeLockBtn.style.display =
-    isStandaloneBody && hasItem && isGlobalMode && !activeNoteSession ? "flex" : "none";
-
-  modeSwitchWrap.append(modeChipBtn, modeLockBtn);
+  modeSwitchWrap.append(modeChipBtn);
 
   const claudeToggleBtn = createElement(doc, "button", "llm-claude-system-toggle", {
     id: "llm-claude-system-toggle",
@@ -924,15 +879,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   container.appendChild(statusBar);
   body.appendChild(container);
 
-  // ---------- Sync visibility ----------
-  const myZotero = (globalThis as any).Zotero || globalThis;
-  if (!myZotero[globalRegistryKey]) {
-    myZotero[globalRegistryKey] = new Set<Element>();
-  }
-  const allLocks: Set<Element> = myZotero[globalRegistryKey];
-  allLocks.add(modeLockBtn);
-
-  syncGlobalLockVisibility(body);
 }
 
 export { buildUI };

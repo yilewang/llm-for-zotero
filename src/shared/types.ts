@@ -80,7 +80,6 @@ export type ActiveNoteSession = {
     showModeSwitch: boolean;
     showNewConversation: boolean;
     showHistory: boolean;
-    showOpenLock: boolean;
   };
 };
 

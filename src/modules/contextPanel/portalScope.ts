@@ -316,7 +316,6 @@ export function resolveActiveNoteSession(
       showModeSwitch: false,
       showNewConversation: false,
       showHistory: false,
-      showOpenLock: false,
     },
   };
 }

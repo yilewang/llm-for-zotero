@@ -164,7 +164,6 @@ import {
   setSelectedTextContextEntries,
   setSelectedTextExpandedIndex,
 } from "./contextResolution";
-import { buildUI } from "./buildUI";
 import {
   flashPageInLivePdfReader,
   resolveCurrentSelectionPageLocationFromReader,
@@ -615,7 +614,6 @@ export function setupHandlers(
     historyMenu,
     modeCapsule,
     modeChipBtn,
-    modeLockBtn,
     historyRowMenu,
     historyRowRenameBtn,
     historyUndo,
@@ -1255,33 +1253,6 @@ export function setupHandlers(
         mode === "global"
           ? t("Ask anything... Type / for actions, @ to add papers")
           : t("Ask about this paper... Type / for actions, @ to add papers");
-    }
-    // Lock button: visible only in open-chat mode; reflect lock state
-    if (modeLockBtn) {
-      if (isRuntimeConversationSystem()) {
-        modeLockBtn.style.display = "none";
-        modeLockBtn.dataset.locked = "false";
-        modeLockBtn.title = "";
-        modeLockBtn.setAttribute("aria-label", "");
-      } else {
-        modeLockBtn.style.display =
-          mode === "global" && !noteSession ? "flex" : "none";
-        const libraryID = getCurrentLibraryID();
-        const lockedKey =
-          libraryID > 0 ? getLockedGlobalConversationKey(libraryID) : null;
-        const currentKey =
-          conversationKey !== null ? Math.floor(conversationKey as number) : null;
-        const isLocked =
-          lockedKey !== null && currentKey !== null && lockedKey === currentKey;
-        modeLockBtn.dataset.locked = isLocked ? "true" : "false";
-        modeLockBtn.title = isLocked
-          ? "Unlock library chat default"
-          : "Lock library chat as default";
-        modeLockBtn.setAttribute(
-          "aria-label",
-          isLocked ? "Unlock library chat default" : "Lock library chat as default",
-        );
-      }
     }
     updateRuntimeModeButton();
     updateClaudeSystemToggle();
@@ -6546,7 +6517,7 @@ export function setupHandlers(
     });
   }
 
-  // --- Mode chip + lock button handlers ---
+  // --- Mode chip handler ---
   if (modeChipBtn) {
     modeChipBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
@@ -6591,62 +6562,6 @@ export function setupHandlers(
         ? "upstream"
         : getPreferredTargetSystem();
       void switchConversationSystem(nextSystem, { forceFresh: true });
-    });
-  }
-
-  // Sync lock state to ALL other registered panels so they switch
-  // to/from global chat immediately (not just when the user visits them).
-  const syncLockStateToOtherPanels = () => {
-    for (const [otherBody] of activeContextPanels) {
-      if (otherBody === body) continue;
-      if (!(otherBody as Element).isConnected) {
-        activeContextPanels.delete(otherBody);
-        activeContextPanelStateSync.delete(otherBody);
-        continue;
-      }
-      // Use the raw Zotero item (stored on every onRender) to re-resolve
-      // the panel state.  This correctly handles lock→unlock transitions
-      // because resolveInitialPanelItemState re-checks the lock preference.
-      const rawItem = activeContextPanelRawItems.get(otherBody as Element) || null;
-      const resolved = resolveInitialPanelItemState(rawItem);
-      buildUI(otherBody as Element, resolved.item);
-      activeContextPanels.set(otherBody, () => resolved.item);
-      // buildUI creates fresh DOM elements, so handlers must be re-attached.
-      // The P4 handlersAttached guard prevents truly redundant calls.
-      setupHandlers(otherBody as Element, rawItem);
-      void (async () => {
-        try {
-          if (resolved.item) await ensureConversationLoaded(resolved.item);
-          refreshChat(otherBody as Element, resolved.item);
-        } catch (err) {
-          ztoolkit.log("LLM: lock sync panel rebuild failed", err);
-        }
-      })();
-    }
-  };
-
-  if (modeLockBtn) {
-    modeLockBtn.addEventListener("click", (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (isClaudeConversationSystem()) return;
-      if (!item || isNoteSession() || !isGlobalMode()) return;
-      const libraryID = getCurrentLibraryID();
-      if (!libraryID) return;
-      const currentKey =
-        conversationKey !== null ? Math.floor(conversationKey as number) : null;
-      if (!currentKey) return;
-      const lockedKey = getLockedGlobalConversationKey(libraryID);
-      const isLocked = lockedKey !== null && lockedKey === currentKey;
-      // Manual lock/unlock overrides any auto-lock on this conversation
-      if (currentKey) removeAutoLockedGlobalConversationKey(currentKey);
-      if (isLocked) {
-        setLockedGlobalConversationKey(libraryID, null);
-      } else {
-        setLockedGlobalConversationKey(libraryID, currentKey);
-      }
-      syncConversationIdentity();
-      syncLockStateToOtherPanels();
     });
   }
 
