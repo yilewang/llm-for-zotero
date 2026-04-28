@@ -4,6 +4,7 @@ import {
   buildModelProviderGroupsFromLegacySlots,
   deriveProviderLabel,
   getRuntimeModelEntries,
+  migrateApiBaseForAuthModeChange,
   setModelProviderGroups,
   type LegacyModelSlot,
   type ModelProviderGroup,
@@ -282,5 +283,82 @@ describe("modelProviders", function () {
     assert.equal(entries[0].providerProtocol, "codex_responses");
     assert.equal(entries[0].providerLabel, "OpenAI (app server)");
     assert.equal(entries[0].displayModelLabel, "codex-app/gpt-5.4");
+  });
+
+  describe("migrateApiBaseForAuthModeChange", function () {
+    it("clears http(s) URLs when entering codex_app_server", function () {
+      assert.equal(
+        migrateApiBaseForAuthModeChange(
+          "codex_auth",
+          "codex_app_server",
+          "https://chatgpt.com/backend-api/codex/responses",
+        ),
+        "",
+      );
+      assert.equal(
+        migrateApiBaseForAuthModeChange(
+          "api_key",
+          "codex_app_server",
+          "  HTTP://example.com/v1  ",
+        ),
+        "",
+      );
+    });
+
+    it("preserves an existing local path when re-entering codex_app_server", function () {
+      assert.equal(
+        migrateApiBaseForAuthModeChange(
+          "codex_app_server",
+          "codex_app_server",
+          "C:\\nvm4w\\nodejs\\codex.cmd",
+        ),
+        "C:\\nvm4w\\nodejs\\codex.cmd",
+      );
+    });
+
+    it("clears local paths when leaving codex_app_server for a URL-based mode", function () {
+      assert.equal(
+        migrateApiBaseForAuthModeChange(
+          "codex_app_server",
+          "codex_auth",
+          "C:\\nvm4w\\nodejs\\codex.cmd",
+        ),
+        "",
+      );
+      assert.equal(
+        migrateApiBaseForAuthModeChange(
+          "codex_app_server",
+          "api_key",
+          "/usr/local/bin/codex",
+        ),
+        "",
+      );
+    });
+
+    it("keeps URLs when leaving codex_app_server (the user already had a URL stashed)", function () {
+      assert.equal(
+        migrateApiBaseForAuthModeChange(
+          "codex_app_server",
+          "codex_auth",
+          "https://chatgpt.com/backend-api/codex/responses",
+        ),
+        "https://chatgpt.com/backend-api/codex/responses",
+      );
+    });
+
+    it("leaves apiBase alone for non-app-server transitions", function () {
+      assert.equal(
+        migrateApiBaseForAuthModeChange(
+          "api_key",
+          "copilot_auth",
+          "https://api.openai.com/v1",
+        ),
+        "https://api.openai.com/v1",
+      );
+      assert.equal(
+        migrateApiBaseForAuthModeChange("api_key", "codex_auth", ""),
+        "",
+      );
+    });
   });
 });

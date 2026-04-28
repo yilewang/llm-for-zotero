@@ -11,6 +11,7 @@ import {
   extractCodexAppServerTurnId,
   getOrCreateCodexAppServerProcess,
   isCodexAppServerThreadStartInstructionsUnsupportedError,
+  resolveCodexAppServerBinaryPath,
   resolveCodexAppServerTurnInputWithFallback,
   resolveCodexAppServerReasoningParams,
   waitForCodexAppServerTurnCompletion,
@@ -44,6 +45,7 @@ export function shouldResetCodexAppServerThreadOnError(
 export class CodexAppServerAdapter implements AgentModelAdapter {
   private threadId: string | null = null;
   private processKey: string;
+  private codexPath: string | undefined;
 
   constructor(processKey = "default") {
     this.processKey = processKey;
@@ -65,7 +67,19 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
 
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
     const request = params.request;
-    const proc = await getOrCreateCodexAppServerProcess(this.processKey);
+    const codexPath = resolveCodexAppServerBinaryPath(request.apiBase);
+    if (this.codexPath !== codexPath) {
+      destroyCachedCodexAppServerProcess(this.processKey, undefined, {
+        codexPath: this.codexPath,
+      });
+      this.threadId = null;
+      this.codexPath = codexPath;
+    }
+    const processOptions = { codexPath };
+    const proc = await getOrCreateCodexAppServerProcess(
+      this.processKey,
+      processOptions,
+    );
     let text: string;
     try {
       text = await proc.runTurnExclusive(async () => {
@@ -223,6 +237,7 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
             onUsage: params.onUsage,
             signal: params.signal,
             cacheKey: this.processKey,
+            processOptions,
           });
         } finally {
           unregisterToolCallHandler();
@@ -231,7 +246,11 @@ export class CodexAppServerAdapter implements AgentModelAdapter {
     } catch (error) {
       if (shouldResetCodexAppServerThreadOnError(error)) {
         this.threadId = null;
-        destroyCachedCodexAppServerProcess(this.processKey, proc);
+        destroyCachedCodexAppServerProcess(
+          this.processKey,
+          proc,
+          processOptions,
+        );
       }
       throw error;
     }

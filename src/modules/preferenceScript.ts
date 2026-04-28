@@ -16,6 +16,7 @@ import {
   createEmptyProviderGroup,
   createProviderModelEntry,
   getModelProviderGroups,
+  migrateApiBaseForAuthModeChange,
   setModelProviderGroups,
   type ModelProviderAuthMode,
   type ModelProviderGroup,
@@ -34,7 +35,10 @@ import {
   getProviderProtocolSpec,
   type ProviderProtocol,
 } from "../utils/providerProtocol";
-import { runProviderConnectionTest, runCodexAppServerConnectionTest } from "../utils/providerConnectionTest";
+import {
+  runProviderConnectionTest,
+  runCodexAppServerConnectionTest,
+} from "../utils/providerConnectionTest";
 import {
   startCopilotDeviceFlow,
   pollCopilotDeviceAuth,
@@ -68,6 +72,7 @@ import {
 } from "../utils/notesDirectoryConfig";
 import { testMineruConnection } from "../utils/mineruClient";
 import { registerMineruManagerScript } from "./mineruManagerScript";
+import { getRuntimePlatformInfo } from "../utils/runtimePlatform";
 import {
   getClaudeAutoCompactThresholdPercent,
   getClaudeBridgeUrl,
@@ -122,6 +127,19 @@ const LEGACY_CODEX_API_HELPER_TEXT =
   "Legacy direct backend URL. Usually uses https://chatgpt.com/backend-api/codex/responses. Existing users can keep it in this release, but new users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
 const CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT =
   "Uses Codex responses with the local codex app-server transport.";
+const CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS =
+  "Optional. Leave blank to auto-detect (Windows or WSL). Or enter a path/launcher such as C:\\nvm4w\\nodejs\\codex.cmd, wsl.exe, wsl.exe -d Ubuntu-22.04, or a WSL path such as /home/<user>/.local/bin/codex.";
+const CODEX_APP_SERVER_PATH_HELPER_TEXT_MACOS =
+  "Optional. Leave blank to auto-detect. Or enter an absolute path such as /opt/homebrew/bin/codex or /usr/local/bin/codex.";
+const CODEX_APP_SERVER_PATH_HELPER_TEXT_LINUX =
+  "Optional. Leave blank to auto-detect. Or enter an absolute path such as /usr/local/bin/codex or ~/.local/bin/codex.";
+
+function getCodexAppServerPathHelperText(): string {
+  const platform = getRuntimePlatformInfo().platform;
+  if (platform === "windows") return CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS;
+  if (platform === "macos") return CODEX_APP_SERVER_PATH_HELPER_TEXT_MACOS;
+  return CODEX_APP_SERVER_PATH_HELPER_TEXT_LINUX;
+}
 const LEGACY_CODEX_AUTH_PROTOCOL_HELPER_TEXT =
   "Uses Codex responses with the legacy direct backend transport.";
 const COPILOT_API_HELPER_TEXT =
@@ -194,7 +212,8 @@ function getProtocolOptions(
   presetId: ProviderPresetId,
 ): ProviderProtocol[] {
   if (authMode === "webchat") return ["web_sync"]; // [webchat]
-  if (authMode === "codex_auth" || authMode === "codex_app_server") return ["codex_responses"];
+  if (authMode === "codex_auth" || authMode === "codex_app_server")
+    return ["codex_responses"];
   if (authMode === "copilot_auth")
     return ["openai_chat_compat", "responses_api"];
   if (presetId !== "customized") {
@@ -748,16 +767,30 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         webchatOption,
       );
       authModeSelect.addEventListener("change", () => {
+        const previousAuthMode = group.authMode;
         const nextAuthMode = normalizeAuthMode(authModeSelect.value);
         group.authMode = nextAuthMode;
+        group.apiBase = migrateApiBaseForAuthModeChange(
+          previousAuthMode,
+          nextAuthMode,
+          group.apiBase,
+        );
         if (nextAuthMode === "webchat") {
           group.providerProtocol = "web_sync";
           // Set default webchat model to chatgpt.com (user can change it)
-          const webchatModelNames: string[] = WEBCHAT_TARGETS.map((wt) => wt.modelName);
-          if (!group.models[0]?.model || !webchatModelNames.includes(group.models[0].model)) {
+          const webchatModelNames: string[] = WEBCHAT_TARGETS.map(
+            (wt) => wt.modelName,
+          );
+          if (
+            !group.models[0]?.model ||
+            !webchatModelNames.includes(group.models[0].model)
+          ) {
             group.models = [{ ...group.models[0], model: "chatgpt.com" }];
           }
-        } else if (nextAuthMode === "codex_auth" || nextAuthMode === "codex_app_server") {
+        } else if (
+          nextAuthMode === "codex_auth" ||
+          nextAuthMode === "codex_app_server"
+        ) {
           group.providerProtocol = "codex_responses";
         } else if (nextAuthMode === "copilot_auth") {
           group.providerProtocol = "openai_chat_compat";
@@ -768,11 +801,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           group.providerProtocol =
             selectedPreset?.defaultProtocol || "openai_chat_compat";
         }
-        if (
-          (nextAuthMode === "codex_auth" ||
-            nextAuthMode === "codex_app_server") &&
-          !group.apiBase.trim()
-        ) {
+        if (nextAuthMode === "codex_auth" && !group.apiBase.trim()) {
           group.apiBase = DEFAULT_CODEX_API_BASE;
         }
         if (nextAuthMode === "copilot_auth" && !group.apiBase.trim()) {
@@ -783,10 +812,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       });
       const authModeHelperText =
         group.authMode === "webchat"
-          ? t(`Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(" / ")} via the Sync for Zotero browser extension. `
-            + "Download extension: github.com/yilewang/sync-for-zotero → Releases. "
-            + "Unzip, open chrome://extensions, enable Developer Mode, click \"Load unpacked\", select the extension folder. "
-            + "Keep the corresponding chat tab open while using WebChat mode.")
+          ? t(
+              `Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(" / ")} via the Sync for Zotero browser extension. ` +
+                "Download extension: github.com/yilewang/sync-for-zotero → Releases. " +
+                'Unzip, open chrome://extensions, enable Developer Mode, click "Load unpacked", select the extension folder. ' +
+                "Keep the corresponding chat tab open while using WebChat mode.",
+            )
           : group.authMode === "copilot_auth"
             ? t(COPILOT_API_HELPER_TEXT)
             : group.authMode === "codex_auth"
@@ -801,7 +832,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
 
       const selectedPresetId: ProviderPresetId =
-        group.authMode === "codex_auth" || group.authMode === "codex_app_server" || group.authMode === "copilot_auth"
+        group.authMode === "codex_auth" ||
+        group.authMode === "codex_app_server" ||
+        group.authMode === "copilot_auth"
           ? "customized"
           : (group.presetIdOverride ?? detectProviderPreset(group.apiBase));
       const selectedPreset =
@@ -930,7 +963,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         "div",
         "display: flex; flex-direction: column;",
       );
-      const apiUrlLabel = el(doc, "label", LABEL_STYLE, t("API URL"));
+      const apiUrlLabel = el(
+        doc,
+        "label",
+        LABEL_STYLE,
+        group.authMode === "codex_app_server"
+          ? t("Codex CLI Path")
+          : t("API URL"),
+      );
       const apiUrlInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
       apiUrlInput.id = `${config.addonRef}-api-base-${group.id}`;
       apiUrlLabel.setAttribute("for", apiUrlInput.id);
@@ -939,16 +979,16 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         group.authMode === "codex_auth"
           ? DEFAULT_CODEX_API_BASE
           : group.authMode === "codex_app_server"
-            ? "(not used — codex app-server manages transport)"
+            ? "Optional absolute path to codex executable"
             : group.authMode === "copilot_auth"
               ? DEFAULT_COPILOT_API_BASE
               : selectedPreset?.defaultApiBase || "https://api.openai.com/v1";
-      apiUrlInput.value = group.authMode === "codex_app_server" ? "" : group.apiBase;
+      apiUrlInput.value = group.apiBase;
       apiUrlInput.readOnly =
-        group.authMode === "codex_app_server" ||
-        (group.authMode !== "codex_auth" &&
+        group.authMode !== "codex_auth" &&
+        group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth" &&
-        !isCustomizedPreset);
+        !isCustomizedPreset;
       apiUrlInput.style.opacity = apiUrlInput.readOnly ? "0.85" : "1";
       apiUrlInput.style.cursor = apiUrlInput.readOnly ? "default" : "text";
       apiUrlInput.style.pointerEvents = apiUrlInput.readOnly ? "none" : "auto";
@@ -967,7 +1007,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         group.authMode === "codex_auth"
           ? t(LEGACY_CODEX_API_HELPER_TEXT)
           : group.authMode === "codex_app_server"
-            ? t("Transport is handled by the codex subprocess; no API URL is needed.")
+            ? t(getCodexAppServerPathHelperText())
             : group.authMode === "copilot_auth"
               ? t(COPILOT_API_HELPER_TEXT)
               : getPresetSelectHelperText(selectedPresetId),
@@ -1338,13 +1378,20 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       if (group.authMode === "webchat") {
         // [webchat] Replace "+" with a "Fetch Models" button that adds all webchat targets
         addModelBtn.style.display = "none";
-        const fetchModelsBtn = el(doc, "button", OUTLINE_BTN_STYLE, t("Fetch Models")) as HTMLButtonElement;
+        const fetchModelsBtn = el(
+          doc,
+          "button",
+          OUTLINE_BTN_STYLE,
+          t("Fetch Models"),
+        ) as HTMLButtonElement;
         fetchModelsBtn.type = "button";
         fetchModelsBtn.style.fontSize = "11px";
         fetchModelsBtn.style.padding = "2px 8px";
         fetchModelsBtn.addEventListener("click", () => {
           const allTargets = WEBCHAT_TARGETS.map((wt) => wt.modelName);
-          const existing = new Set(group.models.map((m: { model: string }) => m.model));
+          const existing = new Set(
+            group.models.map((m: { model: string }) => m.model),
+          );
           let added = false;
           for (const target of allTargets) {
             if (!existing.has(target)) {
@@ -1435,8 +1482,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             doc,
             "select",
             "flex: 1; min-width: 0; padding: 6px 10px; font-size: 13px;" +
-            " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;" +
-            " box-sizing: border-box; background: Field; color: FieldText;",
+              " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;" +
+              " box-sizing: border-box; background: Field; color: FieldText;",
           ) as HTMLSelectElement;
           for (const opt of validWebchatModels) {
             const option = doc.createElement("option");
@@ -1647,8 +1694,15 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
                   : "")
             ).replace(/\/$/, "");
             if (authMode === "codex_app_server") {
-              const modelName = (modelEntry.model || profile.defaultModel || "").trim();
-              const result = await runCodexAppServerConnectionTest({ modelName });
+              const modelName = (
+                modelEntry.model ||
+                profile.defaultModel ||
+                ""
+              ).trim();
+              const result = await runCodexAppServerConnectionTest({
+                modelName,
+                codexPath: group.apiBase.trim(),
+              });
               statusLine.textContent =
                 `${t("✓ Success — model says: ")}"${result.reply}"\n` +
                 `${t("Agent capability: ")}${result.capabilityLabel}`;
@@ -1719,11 +1773,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
       if (group.authMode === "webchat") {
         // [webchat] Minimal layout: only auth mode + model names (webchat target selector)
-        cardBody.append(
-          authModeWrap,
-          divider,
-          modelsWrap,
-        );
+        cardBody.append(authModeWrap, divider, modelsWrap);
       } else if (group.authMode === "copilot_auth") {
         cardBody.append(
           authModeWrap,
@@ -2429,8 +2479,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     }
   }
 
-
-
   // ── Semantic Search settings ───────────────────────────────────
   // Follows the same toggle + sub-settings pattern as MinerU.
 
@@ -2444,7 +2492,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     `#${config.addonRef}-semantic-search-mount`,
   ) as HTMLDivElement | null;
 
-  if (semanticSearchToggle && semanticSearchSubSettings && semanticSearchMount) {
+  if (
+    semanticSearchToggle &&
+    semanticSearchSubSettings &&
+    semanticSearchMount
+  ) {
     const EMBEDDING_PRESETS: Record<
       string,
       {
@@ -2457,18 +2509,37 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         apiBase: "https://api.openai.com/v1",
         defaultModel: "text-embedding-3-small",
         models: [
-          { value: "text-embedding-3-small", label: "text-embedding-3-small", pricing: "$0.02 / 1M tokens" },
-          { value: "text-embedding-3-large", label: "text-embedding-3-large", pricing: "$0.13 / 1M tokens" },
-          { value: "text-embedding-ada-002", label: "text-embedding-ada-002 (legacy)", pricing: "$0.10 / 1M tokens" },
+          {
+            value: "text-embedding-3-small",
+            label: "text-embedding-3-small",
+            pricing: "$0.02 / 1M tokens",
+          },
+          {
+            value: "text-embedding-3-large",
+            label: "text-embedding-3-large",
+            pricing: "$0.13 / 1M tokens",
+          },
+          {
+            value: "text-embedding-ada-002",
+            label: "text-embedding-ada-002 (legacy)",
+            pricing: "$0.10 / 1M tokens",
+          },
         ],
       },
       gemini: {
-        apiBase:
-          "https://generativelanguage.googleapis.com/v1beta/openai",
+        apiBase: "https://generativelanguage.googleapis.com/v1beta/openai",
         defaultModel: "gemini-embedding-001",
         models: [
-          { value: "gemini-embedding-001", label: "gemini-embedding-001", pricing: "Free tier available · $0.15 / 1M tokens" },
-          { value: "text-embedding-004", label: "text-embedding-004", pricing: "$0.10 / 1M tokens" },
+          {
+            value: "gemini-embedding-001",
+            label: "gemini-embedding-001",
+            pricing: "Free tier available · $0.15 / 1M tokens",
+          },
+          {
+            value: "text-embedding-004",
+            label: "text-embedding-004",
+            pricing: "$0.10 / 1M tokens",
+          },
         ],
       },
     };
@@ -2543,7 +2614,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       // Card header
       const cardHeader = el(doc, "div", CARD_HEADER_STYLE);
       cardHeader.appendChild(
-        el(doc, "span", "font-weight: 700; font-size: 13px;", t("Embedding Provider")),
+        el(
+          doc,
+          "span",
+          "font-weight: 700; font-size: 13px;",
+          t("Embedding Provider"),
+        ),
       );
       card.appendChild(cardHeader);
 
@@ -2602,9 +2678,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           "div",
           "display: flex; flex-direction: column;",
         );
-        apiBaseWrap.appendChild(
-          el(doc, "label", LABEL_STYLE, t("API URL")),
-        );
+        apiBaseWrap.appendChild(el(doc, "label", LABEL_STYLE, t("API URL")));
         const apiBaseInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
         apiBaseInput.type = "text";
         apiBaseInput.placeholder = "https://api.openai.com/v1";
@@ -2620,14 +2694,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           "div",
           "display: flex; flex-direction: column;",
         );
-        apiKeyWrap.appendChild(
-          el(doc, "label", LABEL_STYLE, t("API Key")),
-        );
-        const apiKeyInput = el(
-          doc,
-          "input",
-          INPUT_STYLE,
-        ) as HTMLInputElement;
+        apiKeyWrap.appendChild(el(doc, "label", LABEL_STYLE, t("API Key")));
+        const apiKeyInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
         apiKeyInput.type = "password";
         apiKeyInput.value = readEmbPref("embeddingApiKey");
         apiKeyInput.addEventListener("change", () => {
@@ -2667,14 +2735,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             "div",
             "display: flex; flex-direction: column;",
           );
-          apiKeyWrap.appendChild(
-            el(doc, "label", LABEL_STYLE, t("API Key")),
-          );
-          const apiKeyInput = el(
-            doc,
-            "input",
-            INPUT_STYLE,
-          ) as HTMLInputElement;
+          apiKeyWrap.appendChild(el(doc, "label", LABEL_STYLE, t("API Key")));
+          const apiKeyInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
           apiKeyInput.type = "password";
           apiKeyInput.placeholder = "sk-…";
           apiKeyInput.value = "";

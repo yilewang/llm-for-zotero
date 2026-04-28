@@ -446,17 +446,17 @@ async function buildLegacyChatMessageInput(
   return input;
 }
 
-function extractFirstChatSystemInstruction(
+function extractChatDeveloperInstructions(
   messages: readonly ChatMessage[],
 ): string | undefined {
+  const instructionParts: string[] = [];
   for (const message of messages) {
     if (message.role !== "system") continue;
     const { text } = splitChatContent(message.content);
     const normalized = text.trim();
-    if (normalized) return normalized;
-    return undefined;
+    if (normalized) instructionParts.push(normalized);
   }
-  return undefined;
+  return instructionParts.length ? instructionParts.join("\n\n") : undefined;
 }
 
 function splitAgentContent(content: AgentModelMessage["content"]): {
@@ -529,7 +529,7 @@ async function buildLegacyAgentMessageInput(
 export async function prepareCodexAppServerChatTurn(
   messages: ChatMessage[],
 ): Promise<CodexAppServerPreparedTurn> {
-  const developerInstructions = extractFirstChatSystemInstruction(messages);
+  const developerInstructions = extractChatDeveloperInstructions(messages);
   const visibleMessages = messages.filter(
     (message) => message.role !== "system",
   );

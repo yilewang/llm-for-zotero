@@ -16,6 +16,7 @@ import {
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
   getOrCreateCodexAppServerProcess,
+  resolveCodexAppServerBinaryPath,
   waitForCodexAppServerTurnCompletion,
 } from "./codexAppServerProcess";
 
@@ -235,11 +236,18 @@ export function getProviderConnectionCapabilityLabel(params: {
 
 export async function runCodexAppServerConnectionTest(params: {
   modelName: string;
+  codexPath?: string;
 }): Promise<{ reply: string; capabilityLabel: string }> {
   const processKey = `codex_app_server_connection_test_${Date.now()}_${Math.random()
     .toString(16)
     .slice(2)}`;
-  const proc = await getOrCreateCodexAppServerProcess(processKey);
+  const processOptions = {
+    codexPath: resolveCodexAppServerBinaryPath(params.codexPath),
+  };
+  const proc = await getOrCreateCodexAppServerProcess(
+    processKey,
+    processOptions,
+  );
   try {
     const reply = await proc.runTurnExclusive(async () => {
       const threadResp = await proc.sendRequest("thread/start", {
@@ -265,6 +273,7 @@ export async function runCodexAppServerConnectionTest(params: {
         proc,
         turnId,
         cacheKey: processKey,
+        processOptions,
       });
     });
 
@@ -285,7 +294,7 @@ export async function runCodexAppServerConnectionTest(params: {
     );
     return { reply: reply.trim() || "OK", capabilityLabel };
   } finally {
-    destroyCachedCodexAppServerProcess(processKey);
+    destroyCachedCodexAppServerProcess(processKey, undefined, processOptions);
   }
 }
 

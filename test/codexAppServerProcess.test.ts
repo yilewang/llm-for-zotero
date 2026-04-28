@@ -7,9 +7,13 @@ import {
   getOrCreateCodexAppServerProcess,
   isCodexAppServerInjectItemsUnsupportedError,
   listNvmCodexCandidates,
+  mapWindowsPathToWslPath,
+  resolveCodexAppServerBinaryPath,
   resolveCodexBinary,
   resolveCodexAppServerTurnInputWithFallback,
   resolveCodexAppServerReasoningParams,
+  selectCodexLookupResult,
+  selectWindowsWslCodexLookupResult,
   waitForCodexAppServerTurnCompletion,
 } from "../src/utils/codexAppServerProcess";
 
@@ -18,6 +22,132 @@ function createProcess(): CodexAppServerProcess {
     stdin: { write: () => {} },
     kill: () => {},
   });
+}
+
+type SubprocessCallOptions = {
+  command: string;
+  arguments: string[];
+  stderr?: string;
+  environment?: Record<string, string>;
+  environmentAppend?: boolean;
+};
+
+type TestGlobal = typeof globalThis & {
+  IOUtils?: unknown;
+  Services?: unknown;
+  Zotero?: unknown;
+  process?: typeof process;
+};
+
+type RuntimeStubOptions = {
+  env?: Record<string, string | undefined>;
+  inheritEnv?: boolean;
+  ioExists?: (path: string) => boolean | Promise<boolean>;
+  ioGetChildren?: (path: string) => string[] | Promise<string[]>;
+  platform?: "macos" | "windows";
+  servicesEnvGet?: (key: string) => string | undefined;
+  subprocessCall?: (
+    options: SubprocessCallOptions,
+  ) => unknown | Promise<unknown>;
+  subprocessUnavailable?: boolean;
+  stubProcessLifecycle?: boolean;
+};
+
+function platformZotero(platform?: RuntimeStubOptions["platform"]): unknown {
+  if (platform === "windows") return { isWin: true };
+  if (platform === "macos") return { isMac: true };
+  return undefined;
+}
+
+async function withRuntimeStubs<T>(
+  options: RuntimeStubOptions,
+  callback: () => T | Promise<T>,
+): Promise<T> {
+  const globals = globalThis as TestGlobal;
+  const originalIOUtils = globals.IOUtils;
+  const originalProcess = globals.process;
+  const originalServices = globals.Services;
+  const originalZotero = globals.Zotero;
+  const originalLoadSubprocessModule =
+    CodexAppServerProcess.loadSubprocessModule;
+  const prototype = CodexAppServerProcess.prototype as unknown as {
+    initialize: () => Promise<void>;
+    startReadLoop: () => void;
+  };
+  const originalInitialize = prototype.initialize;
+  const originalStartReadLoop = prototype.startReadLoop;
+
+  try {
+    const zotero = platformZotero(options.platform);
+    if (zotero) globals.Zotero = zotero;
+    if (options.env) {
+      globals.process = {
+        ...originalProcess,
+        env:
+          options.inheritEnv === false
+            ? options.env
+            : { ...originalProcess?.env, ...options.env },
+      } as typeof process;
+    }
+    if (options.ioExists || options.ioGetChildren) {
+      globals.IOUtils = {
+        ...(options.ioExists ? { exists: options.ioExists } : {}),
+        ...(options.ioGetChildren
+          ? { getChildren: options.ioGetChildren }
+          : {}),
+      };
+    }
+    if (options.servicesEnvGet) {
+      globals.Services = {
+        env: { get: options.servicesEnvGet },
+      };
+    }
+    if (options.subprocessUnavailable) {
+      CodexAppServerProcess.loadSubprocessModule = async () => {
+        throw new Error("Subprocess unavailable");
+      };
+    } else if (options.subprocessCall) {
+      CodexAppServerProcess.loadSubprocessModule = async () => ({
+        call: options.subprocessCall,
+      });
+    }
+    if (options.stubProcessLifecycle) {
+      prototype.startReadLoop = () => {};
+      prototype.initialize = async () => {};
+    }
+
+    return await callback();
+  } finally {
+    globals.IOUtils = originalIOUtils;
+    globals.process = originalProcess;
+    globals.Services = originalServices;
+    globals.Zotero = originalZotero;
+    CodexAppServerProcess.loadSubprocessModule = originalLoadSubprocessModule;
+    prototype.startReadLoop = originalStartReadLoop;
+    prototype.initialize = originalInitialize;
+  }
+}
+
+function createSpawnStub(calls: SubprocessCallOptions[]) {
+  return async (options: SubprocessCallOptions) => {
+    calls.push(options);
+    return {
+      stdout: { readString: async () => "" },
+      stdin: { write: () => {} },
+      kill: () => {},
+    };
+  };
+}
+
+function createOneShotReader(value: string) {
+  let didRead = false;
+  return {
+    readString: async () => {
+      if (didRead) return "";
+      didRead = true;
+      return value;
+    },
+  };
 }
 
 describe("codexAppServerProcess", function () {
@@ -872,170 +1002,746 @@ describe("codexAppServerProcess", function () {
     }
   });
 
-  it("uses CODEX_PATH when spawning on Windows", async function () {
-    const originalZotero = globalThis.Zotero;
-    const originalProcess = globalThis.process;
-    const originalLoadSubprocessModule =
-      CodexAppServerProcess.loadSubprocessModule;
-    const originalStartReadLoop = (
-      CodexAppServerProcess.prototype as unknown as {
-        startReadLoop: () => void;
-      }
-    ).startReadLoop;
-    const originalInitialize = (
-      CodexAppServerProcess.prototype as unknown as {
-        initialize: () => Promise<void>;
-      }
-    ).initialize;
-    const calls: Array<{ command: string; arguments: string[] }> = [];
-
-    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
-      isWin: true,
-    } as unknown;
-    (globalThis as typeof globalThis & { process?: typeof process }).process = {
-      ...originalProcess,
-      env: {
-        ...originalProcess?.env,
-        CODEX_PATH: "C:\\Tools\\Codex\\codex.exe",
-      },
-    } as typeof process;
-    CodexAppServerProcess.loadSubprocessModule = async () => ({
-      call: async (options: { command: string; arguments: string[] }) => {
-        calls.push(options);
-        return {
-          stdin: { write: () => {} },
-          kill: () => {},
-        };
-      },
-    });
-    (
-      CodexAppServerProcess.prototype as unknown as {
-        startReadLoop: () => void;
-      }
-    ).startReadLoop = () => {};
-    (
-      CodexAppServerProcess.prototype as unknown as {
-        initialize: () => Promise<void>;
-      }
-    ).initialize = async () => {};
+  it("keeps cached app-server processes separate for different explicit codex paths", async function () {
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const spawned: CodexAppServerProcess[] = [];
+    const seenPaths: Array<string | undefined> = [];
+    CodexAppServerProcess.spawn = async (options = {}) => {
+      const proc = CodexAppServerProcess.forTest({
+        stdin: { write: () => {} },
+        kill: () => {},
+      });
+      spawned.push(proc);
+      seenPaths.push(options.codexPath);
+      return proc;
+    };
 
     try {
-      const proc = await CodexAppServerProcess.spawn();
-      proc.destroy();
+      const first = await getOrCreateCodexAppServerProcess("path-cache", {
+        codexPath: "C:\\Tools\\CodexA\\codex.cmd",
+      });
+      const second = await getOrCreateCodexAppServerProcess("path-cache", {
+        codexPath: "C:\\Tools\\CodexA\\codex.cmd",
+      });
+      const third = await getOrCreateCodexAppServerProcess("path-cache", {
+        codexPath: "C:\\Tools\\CodexB\\codex.cmd",
+      });
+
+      assert.strictEqual(second, first);
+      assert.notStrictEqual(third, first);
+      assert.deepEqual(seenPaths, [
+        "C:\\Tools\\CodexA\\codex.cmd",
+        "C:\\Tools\\CodexB\\codex.cmd",
+      ]);
+      assert.lengthOf(spawned, 2);
     } finally {
-      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
-        originalZotero;
-      (globalThis as typeof globalThis & { process?: typeof process }).process =
-        originalProcess;
-      CodexAppServerProcess.loadSubprocessModule = originalLoadSubprocessModule;
-      (
-        CodexAppServerProcess.prototype as unknown as {
-          startReadLoop: () => void;
-        }
-      ).startReadLoop = originalStartReadLoop;
-      (
-        CodexAppServerProcess.prototype as unknown as {
-          initialize: () => Promise<void>;
-        }
-      ).initialize = originalInitialize;
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess("path-cache", undefined, {
+        codexPath: "C:\\Tools\\CodexA\\codex.cmd",
+      });
+      destroyCachedCodexAppServerProcess("path-cache", undefined, {
+        codexPath: "C:\\Tools\\CodexB\\codex.cmd",
+      });
     }
+  });
+
+  it("uses CODEX_PATH when spawning on Windows", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: { CODEX_PATH: "C:\\Tools\\Codex\\codex.exe" },
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn();
+        proc.destroy();
+      },
+    );
 
     assert.lengthOf(calls, 1);
+    assert.equal(calls[0]?.command, "C:\\Tools\\Codex\\codex.exe");
+    assert.deepEqual(calls[0]?.arguments, ["app-server"]);
+  });
+
+  it("uses an explicit codex path before environment or PATH lookup", async function () {
+    const binary = await resolveCodexBinary("D:\\Portable\\codex.cmd");
+    assert.equal(binary, "D:\\Portable\\codex.cmd");
+  });
+
+  it("normalizes quoted explicit codex paths", function () {
+    assert.equal(
+      resolveCodexAppServerBinaryPath('"C:\\nvm4w\\nodejs\\codex.cmd"'),
+      "C:\\nvm4w\\nodejs\\codex.cmd",
+    );
+    assert.equal(
+      resolveCodexAppServerBinaryPath("'C:\\nvm4w\\nodejs\\codex.cmd'"),
+      "C:\\nvm4w\\nodejs\\codex.cmd",
+    );
+  });
+
+  it("maps Windows PowerShell and extensionless shims to the cmd shim when present", async function () {
+    await withRuntimeStubs(
+      {
+        ioExists: async (path) => path === "C:\\nvm4w\\nodejs\\codex.cmd",
+        platform: "windows",
+      },
+      async () => {
+        assert.equal(
+          await resolveCodexBinary("C:\\nvm4w\\nodejs\\codex.ps1"),
+          "C:\\nvm4w\\nodejs\\codex.cmd",
+        );
+        assert.equal(
+          await resolveCodexBinary("C:\\nvm4w\\nodejs\\codex"),
+          "C:\\nvm4w\\nodejs\\codex.cmd",
+        );
+      },
+    );
+  });
+
+  it("can invoke bare codex through the Windows shell", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({ codexPath: "codex" });
+        proc.destroy();
+      },
+    );
+
     assert.match(calls[0]?.command || "", /c:\\windows\\system32\\cmd\.exe/i);
     assert.deepEqual(calls[0]?.arguments, [
+      "/d",
+      "/s",
       "/c",
-      '"C:\\Tools\\Codex\\codex.exe" app-server',
+      "codex app-server",
     ]);
   });
 
-  it("falls back to /opt/homebrew/bin/codex on macOS when PATH lookup misses it", async function () {
-    const originalZotero = globalThis.Zotero;
-    const originalProcess = globalThis.process;
-    const originalIOUtils = (
-      globalThis as typeof globalThis & { IOUtils?: unknown }
-    ).IOUtils;
-    const originalLoadSubprocessModule =
-      CodexAppServerProcess.loadSubprocessModule;
-    const originalStartReadLoop = (
-      CodexAppServerProcess.prototype as unknown as {
-        startReadLoop: () => void;
-      }
-    ).startReadLoop;
-    const originalInitialize = (
-      CodexAppServerProcess.prototype as unknown as {
-        initialize: () => Promise<void>;
-      }
-    ).initialize;
-    const calls: Array<{ command: string; arguments: string[] }> = [];
+  it("bypasses the Windows npm cmd and node shims when the native binary is present", async function () {
+    const calls: SubprocessCallOptions[] = [];
+    const nativeRoot =
+      "C:\\nvm4w\\nodejs\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc";
 
-    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
-      isMac: true,
-    } as unknown;
-    (globalThis as typeof globalThis & { process?: typeof process }).process = {
-      ...originalProcess,
-      env: {
-        ...originalProcess?.env,
-        HOME: "/Users/alice",
-        NVM_DIR: "/Users/alice/.nvm",
-        CODEX_PATH: "",
+    await withRuntimeStubs(
+      {
+        ioExists: async (path) =>
+          path === `${nativeRoot}\\codex\\codex.exe` ||
+          path === `${nativeRoot}\\path`,
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
       },
-    } as typeof process;
-    (globalThis as typeof globalThis & { IOUtils?: unknown }).IOUtils = {
-      exists: async (path: string) => path === "/opt/homebrew/bin/codex",
-    };
-    CodexAppServerProcess.loadSubprocessModule = async () => ({
-      call: async (options: { command: string; arguments: string[] }) => {
-        calls.push(options);
-        if (
-          options.command === "/bin/zsh" &&
-          options.arguments[1] === "which codex"
-        ) {
-          return {
-            stdout: {
-              readString: async () => "",
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          codexPath: "C:\\nvm4w\\nodejs\\codex.cmd",
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[0]?.command, `${nativeRoot}\\codex\\codex.exe`);
+    assert.deepEqual(calls[0]?.arguments, ["app-server"]);
+    assert.equal(calls[0]?.stderr, "pipe");
+    assert.equal(calls[0]?.environment?.CODEX_MANAGED_BY_NPM, "1");
+    assert.include(calls[0]?.environment?.PATH || "", `${nativeRoot}\\path`);
+    assert.isTrue(calls[0]?.environmentAppend);
+  });
+
+  it("includes app-server stderr when the child closes during initialization", async function () {
+    let stderrReadCount = 0;
+    await withRuntimeStubs(
+      {
+        env: { CODEX_PATH: "C:\\Tools\\Codex\\codex.cmd" },
+        platform: "windows",
+        subprocessCall: async () => ({
+          stdout: { readString: async () => "" },
+          stderr: {
+            readString: async () => {
+              stderrReadCount += 1;
+              return stderrReadCount === 1
+                ? "Error: unable to load Codex config\n"
+                : "";
             },
-            wait: async () => ({ exitCode: 1 }),
-          };
-        }
-        return {
+          },
           stdin: { write: () => {} },
           kill: () => {},
-        };
+        }),
       },
-    });
-    (
-      CodexAppServerProcess.prototype as unknown as {
-        startReadLoop: () => void;
-      }
-    ).startReadLoop = () => {};
-    (
-      CodexAppServerProcess.prototype as unknown as {
-        initialize: () => Promise<void>;
-      }
-    ).initialize = async () => {};
+      async () => {
+        try {
+          await CodexAppServerProcess.spawn();
+          assert.fail("Expected spawn to fail during initialization");
+        } catch (error) {
+          assert.include(
+            error instanceof Error ? error.message : String(error),
+            "unable to load Codex config",
+          );
+        }
+      },
+    );
+  });
 
-    try {
-      const proc = await CodexAppServerProcess.spawn();
-      proc.destroy();
-    } finally {
-      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
-        originalZotero;
-      (globalThis as typeof globalThis & { process?: typeof process }).process =
-        originalProcess;
-      (globalThis as typeof globalThis & { IOUtils?: unknown }).IOUtils =
-        originalIOUtils;
-      CodexAppServerProcess.loadSubprocessModule = originalLoadSubprocessModule;
-      (
-        CodexAppServerProcess.prototype as unknown as {
-          startReadLoop: () => void;
+  it("includes the launched command when the child closes without diagnostics", async function () {
+    await withRuntimeStubs(
+      {
+        env: { CODEX_PATH: "C:\\Tools\\Codex\\codex.cmd" },
+        platform: "windows",
+        subprocessCall: async () => ({
+          stdout: { readString: async () => "" },
+          stderr: { readString: async () => "" },
+          stdin: { write: () => {} },
+          kill: () => {},
+        }),
+      },
+      async () => {
+        try {
+          await CodexAppServerProcess.spawn();
+          assert.fail("Expected spawn to fail during initialization");
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          assert.include(message, "with no stderr/stdout diagnostics");
+          assert.include(message, "launched:");
+          assert.include(message, "C:\\Tools\\Codex\\codex.cmd app-server");
         }
-      ).startReadLoop = originalStartReadLoop;
-      (
-        CodexAppServerProcess.prototype as unknown as {
-          initialize: () => Promise<void>;
+      },
+    );
+  });
+
+  it("includes non-json stdout diagnostics when the child closes during initialization", async function () {
+    let stdoutReadCount = 0;
+    await withRuntimeStubs(
+      {
+        env: { CODEX_PATH: "C:\\Tools\\Codex\\codex.cmd" },
+        platform: "windows",
+        subprocessCall: async () => ({
+          stdout: {
+            readString: async () => {
+              stdoutReadCount += 1;
+              return stdoutReadCount === 1
+                ? "Error: app-server startup failed\n"
+                : "";
+            },
+          },
+          stdin: { write: () => {} },
+          kill: () => {},
+        }),
+      },
+      async () => {
+        try {
+          await CodexAppServerProcess.spawn();
+          assert.fail("Expected spawn to fail during initialization");
+        } catch (error) {
+          assert.include(
+            error instanceof Error ? error.message : String(error),
+            "app-server startup failed",
+          );
         }
-      ).initialize = originalInitialize;
-    }
+      },
+    );
+  });
+
+  it("runs explicit Windows exe paths directly even when they contain spaces", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          codexPath: "C:\\Program Files\\Codex\\codex.exe",
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[0]?.command, "C:\\Program Files\\Codex\\codex.exe");
+    assert.deepEqual(calls[0]?.arguments, ["app-server"]);
+  });
+
+  it("treats URLs as non-path app-server values", function () {
+    assert.isUndefined(
+      resolveCodexAppServerBinaryPath(
+        "https://chatgpt.com/backend-api/codex/responses",
+      ),
+    );
+    assert.equal(
+      resolveCodexAppServerBinaryPath("C:\\nvm4w\\nodejs\\codex.cmd"),
+      "C:\\nvm4w\\nodejs\\codex.cmd",
+    );
+  });
+
+  it("prefers the Windows cmd shim from PATH lookup results", function () {
+    assert.equal(
+      selectCodexLookupResult(
+        "C:\\nvm4w\\nodejs\\codex\r\nC:\\nvm4w\\nodejs\\codex.cmd\r\n",
+        "windows",
+      ),
+      "C:\\nvm4w\\nodejs\\codex.cmd",
+    );
+  });
+
+  it("preserves PATH order when the first Windows match is a different install than a later cmd", function () {
+    assert.equal(
+      selectCodexLookupResult(
+        "C:\\Tools\\Codex\\codex.exe\r\nC:\\Users\\foo\\AppData\\Roaming\\npm\\codex.cmd\r\n",
+        "windows",
+      ),
+      "C:\\Tools\\Codex\\codex.exe",
+    );
+  });
+
+  it("finds codex from the Windows nvm4w symlink without relying on PATH", async function () {
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          NVM_HOME: "C:\\nvm4w",
+          NVM_SYMLINK: "C:\\nvm4w\\nodejs",
+        },
+        ioExists: async (path) => path === "C:\\nvm4w\\nodejs\\codex.cmd",
+        platform: "windows",
+        subprocessUnavailable: true,
+      },
+      async () => {
+        const binary = await resolveCodexBinary();
+        assert.equal(binary, "C:\\nvm4w\\nodejs\\codex.cmd");
+      },
+    );
+  });
+
+  it("reads Windows install hints from Services.env when process.env is unavailable", async function () {
+    await withRuntimeStubs(
+      {
+        env: {},
+        inheritEnv: false,
+        ioExists: async (path) => path === "C:\\nvm4w\\nodejs\\codex.cmd",
+        platform: "windows",
+        servicesEnvGet: (key) =>
+          key === "NVM_SYMLINK" ? "C:\\nvm4w\\nodejs" : undefined,
+        subprocessUnavailable: true,
+      },
+      async () => {
+        const binary = await resolveCodexBinary();
+        assert.equal(binary, "C:\\nvm4w\\nodejs\\codex.cmd");
+      },
+    );
+  });
+
+  it("fails Windows auto-detect without fabricating C:\\Users\\User when home env vars are missing", async function () {
+    const checkedPaths: string[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: { CODEX_PATH: "" },
+        ioExists: async (path) => {
+          checkedPaths.push(path);
+          return false;
+        },
+        platform: "windows",
+        subprocessUnavailable: true,
+      },
+      async () => {
+        try {
+          await resolveCodexBinary();
+          assert.fail("Expected Windows codex auto-detect to fail");
+        } catch (error) {
+          assert.include(
+            error instanceof Error ? error.message : String(error),
+            "codex binary not found",
+          );
+        }
+        assert.notInclude(checkedPaths.join("\n"), "C:\\Users\\User");
+      },
+    );
+  });
+
+  it("includes WSL probe diagnostics when Windows auto-detect cannot find codex", async function () {
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          USERPROFILE: "C:\\Users\\alice",
+          APPDATA: "",
+          LOCALAPPDATA: "",
+          SystemRoot: "C:\\Windows",
+        },
+        inheritEnv: false,
+        ioExists: async () => false,
+        platform: "windows",
+        subprocessCall: async (options) => {
+          if (
+            options.command === "C:\\Windows\\System32\\cmd.exe" &&
+            options.arguments[1] === "where codex"
+          ) {
+            return {
+              stdout: createOneShotReader(""),
+              wait: async () => ({ exitCode: 1 }),
+            };
+          }
+          return {
+            stdout: createOneShotReader(""),
+            stderr: createOneShotReader("codex not found in WSL\n"),
+            wait: async () => ({ exitCode: 127 }),
+          };
+        },
+      },
+      async () => {
+        try {
+          await resolveCodexBinary();
+          assert.fail("Expected Windows codex auto-detect to fail");
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          assert.include(message, "WSL probe diagnostics");
+          assert.include(message, "codex not found in WSL");
+        }
+      },
+    );
+  });
+
+  it("derives Windows AppData candidates from USERPROFILE when APPDATA / LOCALAPPDATA are missing", async function () {
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          USERPROFILE: "C:\\Users\\alice",
+          APPDATA: "",
+          LOCALAPPDATA: "",
+        },
+        inheritEnv: false,
+        ioExists: async (path) =>
+          path === "C:\\Users\\alice\\AppData\\Roaming\\npm\\codex.cmd",
+        platform: "windows",
+        subprocessUnavailable: true,
+      },
+      async () => {
+        const binary = await resolveCodexBinary();
+        assert.equal(
+          binary,
+          "C:\\Users\\alice\\AppData\\Roaming\\npm\\codex.cmd",
+        );
+      },
+    );
+
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          USERPROFILE: "C:\\Users\\alice",
+          APPDATA: "",
+          LOCALAPPDATA: "",
+        },
+        inheritEnv: false,
+        ioExists: async (path) =>
+          path === "C:\\Users\\alice\\AppData\\Local\\Volta\\bin\\codex.cmd",
+        platform: "windows",
+        subprocessUnavailable: true,
+      },
+      async () => {
+        const binary = await resolveCodexBinary();
+        assert.equal(
+          binary,
+          "C:\\Users\\alice\\AppData\\Local\\Volta\\bin\\codex.cmd",
+        );
+      },
+    );
+  });
+
+  it("selects WSL codex lookup output after shell startup noise", function () {
+    assert.equal(
+      selectWindowsWslCodexLookupResult(
+        "Loading shell profile\n/home/alice/.nvm/versions/node/v22.2.0/bin/codex\n",
+      ),
+      "/home/alice/.nvm/versions/node/v22.2.0/bin/codex",
+    );
+  });
+
+  it("maps Windows localImage paths before writing WSL turn inputs", function () {
+    const writes: string[] = [];
+    const proc = CodexAppServerProcess.forTest(
+      {
+        stdin: {
+          write: (message: string) => {
+            writes.push(message);
+          },
+        },
+        kill: () => {},
+      },
+      "",
+      mapWindowsPathToWslPath,
+    );
+
+    proc.sendNotification("turn/start", {
+      input: [{ type: "localImage", path: "C:\\Users\\alice\\image.png" }],
+    });
+
+    const payload = JSON.parse(writes[0] || "{}");
+    assert.equal(payload.params.input[0].path, "/mnt/c/Users/alice/image.png");
+  });
+
+  it("falls back to WSL codex on Windows when native lookup misses", async function () {
+    const calls: SubprocessCallOptions[] = [];
+    let didReadWslLookupStdout = false;
+
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          USERPROFILE: "C:\\Users\\alice",
+          APPDATA: "",
+          LOCALAPPDATA: "",
+          SystemRoot: "C:\\Windows",
+        },
+        inheritEnv: false,
+        ioExists: async (path) => path === "C:\\Windows\\System32\\wsl.exe",
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: async (options) => {
+          calls.push(options);
+          if (options.command === "C:\\Windows\\System32\\cmd.exe") {
+            return {
+              stdout: { readString: async () => "" },
+              wait: async () => ({ exitCode: 1 }),
+            };
+          }
+          if (
+            options.command === "C:\\Windows\\System32\\wsl.exe" &&
+            options.arguments[3]?.includes("command -v codex")
+          ) {
+            return {
+              stdout: {
+                readString: async () => {
+                  if (didReadWslLookupStdout) return "";
+                  didReadWslLookupStdout = true;
+                  return "/home/alice/.nvm/versions/node/v22.2.0/bin/codex\n";
+                },
+              },
+              wait: async () => ({ exitCode: 0 }),
+            };
+          }
+          return {
+            stdout: { readString: async () => "" },
+            stdin: { write: () => {} },
+            kill: () => {},
+          };
+        },
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn();
+        proc.destroy();
+      },
+    );
+
+    assert.deepEqual(calls[0], {
+      command: "C:\\Windows\\System32\\cmd.exe",
+      arguments: ["/c", "where codex"],
+    });
+    assert.equal(calls[1]?.command, "C:\\Windows\\System32\\wsl.exe");
+    assert.deepEqual(calls[1]?.arguments.slice(0, 3), ["-e", "bash", "-c"]);
+    assert.include(calls[1]?.arguments[3] || "", "command -v codex");
+    assert.equal(calls[2]?.command, "C:\\Windows\\System32\\wsl.exe");
+    assert.deepEqual(calls[2]?.arguments.slice(0, 3), ["-e", "bash", "-c"]);
+    assert.include(calls[2]?.arguments[3] || "", "exec $CODEX_BIN app-server");
+  });
+
+  it("can discover WSL codex through cmd.exe when direct wsl.exe lookup fails", async function () {
+    const calls: SubprocessCallOptions[] = [];
+    let didReadWslShellLookupStdout = false;
+
+    await withRuntimeStubs(
+      {
+        env: {
+          CODEX_PATH: "",
+          USERPROFILE: "C:\\Users\\alice",
+          APPDATA: "",
+          LOCALAPPDATA: "",
+          SystemRoot: "C:\\Windows",
+        },
+        inheritEnv: false,
+        ioExists: async () => false,
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: async (options) => {
+          calls.push(options);
+          if (
+            options.command === "C:\\Windows\\System32\\cmd.exe" &&
+            options.arguments[1] === "where codex"
+          ) {
+            return {
+              stdout: { readString: async () => "" },
+              wait: async () => ({ exitCode: 1 }),
+            };
+          }
+          if (options.command === "wsl.exe") {
+            throw new Error("wsl.exe not directly spawnable");
+          }
+          if (
+            options.command === "C:\\Windows\\System32\\cmd.exe" &&
+            options.arguments[3]?.includes("command -v codex")
+          ) {
+            return {
+              stdout: {
+                readString: async () => {
+                  if (didReadWslShellLookupStdout) return "";
+                  didReadWslShellLookupStdout = true;
+                  return "/home/alice/.local/bin/codex\n";
+                },
+              },
+              wait: async () => ({ exitCode: 0 }),
+            };
+          }
+          return {
+            stdout: { readString: async () => "" },
+            stdin: { write: () => {} },
+            kill: () => {},
+          };
+        },
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn();
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[1]?.command, "wsl.exe");
+    assert.equal(calls[2]?.command, "C:\\Windows\\System32\\cmd.exe");
+    assert.include(calls[2]?.arguments[3] || "", "command -v codex");
+    assert.equal(calls[3]?.command, "C:\\Windows\\System32\\cmd.exe");
+    assert.include(calls[3]?.arguments[3] || "", "exec $CODEX_BIN app-server");
+  });
+
+  it("runs explicit WSL codex paths through wsl.exe on Windows", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: { SystemRoot: "C:\\Windows" },
+        inheritEnv: false,
+        ioExists: async (path) => path === "C:\\Windows\\System32\\wsl.exe",
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          codexPath: "/home/alice/.local/bin/codex",
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[0]?.command, "C:\\Windows\\System32\\wsl.exe");
+    assert.deepEqual(calls[0]?.arguments.slice(0, 3), ["-e", "bash", "-c"]);
+    assert.include(
+      calls[0]?.arguments[3] || "",
+      "CODEX_BIN='/home/alice/.local/bin/codex'",
+    );
+    assert.include(calls[0]?.arguments[3] || "", "PATH=$CODEX_DIR:$PATH");
+    assert.include(calls[0]?.arguments[3] || "", "nvm.sh");
+    assert.include(calls[0]?.arguments[3] || "", "exec $CODEX_BIN app-server");
+  });
+
+  it("runs explicit wsl.exe through the Windows shell", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: { SystemRoot: "C:\\Windows" },
+        inheritEnv: false,
+        ioExists: async (path) => path === "C:\\Windows\\System32\\wsl.exe",
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          codexPath: "wsl.exe",
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[0]?.command, "C:\\Windows\\System32\\cmd.exe");
+    assert.deepEqual(calls[0]?.arguments.slice(0, 3), ["/d", "/s", "/c"]);
+    assert.include(calls[0]?.arguments[3] || "", "wsl.exe");
+    assert.include(calls[0]?.arguments[3] || "", "exec $CODEX_BIN app-server");
+  });
+
+  it("supports explicit WSL distro arguments in the codex path field", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: { SystemRoot: "C:\\Windows" },
+        inheritEnv: false,
+        ioExists: async (path) => path === "C:\\Windows\\System32\\wsl.exe",
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          codexPath: "wsl.exe -d Ubuntu-22.04",
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[0]?.command, "C:\\Windows\\System32\\cmd.exe");
+    assert.include(calls[0]?.arguments[3] || "", "wsl.exe");
+    assert.include(calls[0]?.arguments[3] || "", '"-d" "Ubuntu-22.04"');
+    assert.include(calls[0]?.arguments[3] || "", "exec $CODEX_BIN app-server");
+  });
+
+  it("falls back to /opt/homebrew/bin/codex on macOS when PATH lookup misses it", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: {
+          HOME: "/Users/alice",
+          NVM_DIR: "/Users/alice/.nvm",
+          CODEX_PATH: "",
+        },
+        ioExists: async (path) => path === "/opt/homebrew/bin/codex",
+        platform: "macos",
+        stubProcessLifecycle: true,
+        subprocessCall: async (options) => {
+          calls.push(options);
+          if (
+            options.command === "/bin/zsh" &&
+            options.arguments[1] === "which codex"
+          ) {
+            return {
+              stdout: {
+                readString: async () => "",
+              },
+              wait: async () => ({ exitCode: 1 }),
+            };
+          }
+          return {
+            stdin: { write: () => {} },
+            kill: () => {},
+          };
+        },
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn();
+        proc.destroy();
+      },
+    );
 
     assert.deepEqual(calls[0], {
       command: "/bin/zsh",
@@ -1046,140 +1752,79 @@ describe("codexAppServerProcess", function () {
   });
 
   it("finds codex in an npm prefix bin without relying on PATH", async function () {
-    const originalZotero = globalThis.Zotero;
-    const originalProcess = globalThis.process;
-    const originalIOUtils = (
-      globalThis as typeof globalThis & { IOUtils?: unknown }
-    ).IOUtils;
-
-    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
-      isMac: true,
-    } as unknown;
-    (globalThis as typeof globalThis & { process?: typeof process }).process = {
-      ...originalProcess,
-      env: {
-        ...originalProcess?.env,
-        HOME: "/Users/alice",
-        NPM_CONFIG_PREFIX: "/Users/alice/.npm-global",
-        CODEX_PATH: "",
+    await withRuntimeStubs(
+      {
+        env: {
+          HOME: "/Users/alice",
+          NPM_CONFIG_PREFIX: "/Users/alice/.npm-global",
+          CODEX_PATH: "",
+        },
+        ioExists: async (path) => path === "/Users/alice/.npm-global/bin/codex",
+        ioGetChildren: async () => [],
+        platform: "macos",
       },
-    } as typeof process;
-    (globalThis as typeof globalThis & { IOUtils?: unknown }).IOUtils = {
-      exists: async (path: string) =>
-        path === "/Users/alice/.npm-global/bin/codex",
-      getChildren: async () => [],
-    };
-
-    try {
-      const binary = await resolveCodexBinary();
-      assert.equal(binary, "/Users/alice/.npm-global/bin/codex");
-    } finally {
-      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
-        originalZotero;
-      (globalThis as typeof globalThis & { process?: typeof process }).process =
-        originalProcess;
-      (globalThis as typeof globalThis & { IOUtils?: unknown }).IOUtils =
-        originalIOUtils;
-    }
+      async () => {
+        const binary = await resolveCodexBinary();
+        assert.equal(binary, "/Users/alice/.npm-global/bin/codex");
+      },
+    );
   });
 
   it("finds codex in common Volta fallback locations", async function () {
-    const originalZotero = globalThis.Zotero;
-    const originalProcess = globalThis.process;
-    const originalIOUtils = (
-      globalThis as typeof globalThis & { IOUtils?: unknown }
-    ).IOUtils;
-
-    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
-      isMac: true,
-    } as unknown;
-    (globalThis as typeof globalThis & { process?: typeof process }).process = {
-      ...originalProcess,
-      env: {
-        ...originalProcess?.env,
-        HOME: "/Users/alice",
-        CODEX_PATH: "",
+    await withRuntimeStubs(
+      {
+        env: {
+          HOME: "/Users/alice",
+          CODEX_PATH: "",
+        },
+        ioExists: async (path) => path === "/Users/alice/.volta/bin/codex",
+        ioGetChildren: async () => [],
+        platform: "macos",
       },
-    } as typeof process;
-    (globalThis as typeof globalThis & { IOUtils?: unknown }).IOUtils = {
-      exists: async (path: string) => path === "/Users/alice/.volta/bin/codex",
-      getChildren: async () => [],
-    };
-
-    try {
-      const binary = await resolveCodexBinary();
-      assert.equal(binary, "/Users/alice/.volta/bin/codex");
-    } finally {
-      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
-        originalZotero;
-      (globalThis as typeof globalThis & { process?: typeof process }).process =
-        originalProcess;
-      (globalThis as typeof globalThis & { IOUtils?: unknown }).IOUtils =
-        originalIOUtils;
-    }
+      async () => {
+        const binary = await resolveCodexBinary();
+        assert.equal(binary, "/Users/alice/.volta/bin/codex");
+      },
+    );
   });
 
   it("prefers the newest nvm-installed codex binary", async function () {
-    const originalIOUtils = (
-      globalThis as typeof globalThis & { IOUtils?: unknown }
-    ).IOUtils;
-
-    (globalThis as typeof globalThis & { IOUtils?: unknown }).IOUtils = {
-      getChildren: async (path: string) =>
-        path === "/Users/alice/.nvm/versions/node"
-          ? ["v20.18.0", "v22.2.0"]
-          : [],
-    };
-
-    try {
-      const candidates = await listNvmCodexCandidates({
-        homeDir: "/Users/alice",
-        nvmDir: "/Users/alice/.nvm",
-        separator: "/",
-      });
-      assert.deepEqual(candidates, [
-        "/Users/alice/.nvm/versions/node/v22.2.0/bin/codex",
-        "/Users/alice/.nvm/versions/node/v20.18.0/bin/codex",
-      ]);
-    } finally {
-      (globalThis as typeof globalThis & { IOUtils?: unknown }).IOUtils =
-        originalIOUtils;
-    }
+    await withRuntimeStubs(
+      {
+        ioGetChildren: async (path) =>
+          path === "/Users/alice/.nvm/versions/node"
+            ? ["v20.18.0", "v22.2.0"]
+            : [],
+      },
+      async () => {
+        const candidates = await listNvmCodexCandidates({
+          homeDir: "/Users/alice",
+          nvmDir: "/Users/alice/.nvm",
+          separator: "/",
+        });
+        assert.deepEqual(candidates, [
+          "/Users/alice/.nvm/versions/node/v22.2.0/bin/codex",
+          "/Users/alice/.nvm/versions/node/v20.18.0/bin/codex",
+        ]);
+      },
+    );
   });
 
   it("falls back to the cargo install path when no other candidate exists", async function () {
-    const originalZotero = globalThis.Zotero;
-    const originalProcess = globalThis.process;
-    const originalIOUtils = (
-      globalThis as typeof globalThis & { IOUtils?: unknown }
-    ).IOUtils;
-
-    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
-      isMac: true,
-    } as unknown;
-    (globalThis as typeof globalThis & { process?: typeof process }).process = {
-      ...originalProcess,
-      env: {
-        ...originalProcess?.env,
-        HOME: "/Users/alice",
-        CODEX_PATH: "",
+    await withRuntimeStubs(
+      {
+        env: {
+          HOME: "/Users/alice",
+          CODEX_PATH: "",
+        },
+        ioExists: async (path) => path === "/Users/alice/.cargo/bin/codex",
+        ioGetChildren: async () => [],
+        platform: "macos",
       },
-    } as typeof process;
-    (globalThis as typeof globalThis & { IOUtils?: unknown }).IOUtils = {
-      exists: async (path: string) => path === "/Users/alice/.cargo/bin/codex",
-      getChildren: async () => [],
-    };
-
-    try {
-      const binary = await resolveCodexBinary();
-      assert.equal(binary, "/Users/alice/.cargo/bin/codex");
-    } finally {
-      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
-        originalZotero;
-      (globalThis as typeof globalThis & { process?: typeof process }).process =
-        originalProcess;
-      (globalThis as typeof globalThis & { IOUtils?: unknown }).IOUtils =
-        originalIOUtils;
-    }
+      async () => {
+        const binary = await resolveCodexBinary();
+        assert.equal(binary, "/Users/alice/.cargo/bin/codex");
+      },
+    );
   });
 });

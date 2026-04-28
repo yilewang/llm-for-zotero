@@ -642,6 +642,175 @@ describe("CodexAppServerAdapter", function () {
     }
   });
 
+  it("resets thread state when the resolved codex path changes between runs", async function () {
+    const originalChromeUtils = (
+      globalThis as typeof globalThis & { ChromeUtils?: unknown }
+    ).ChromeUtils;
+    const originalCodexPath = globalThis.process?.env?.CODEX_PATH;
+    const processKey = "codex_app_server_codex_path_change_test";
+    const codexPathA = "/mock/codex/a";
+    const codexPathB = "/mock/codex/b";
+
+    type SpawnRecord = {
+      command: string;
+      arguments: string[];
+      stdout: MockStdout;
+      threadStartCount: number;
+    };
+    const spawns: SpawnRecord[] = [];
+
+    try {
+      if (globalThis.process?.env) {
+        delete globalThis.process.env.CODEX_PATH;
+      }
+
+      (
+        globalThis as typeof globalThis & {
+          ChromeUtils?: {
+            importESModule: (path: string) => {
+              Subprocess: {
+                call: (options: {
+                  command: string;
+                  arguments: string[];
+                }) => Promise<unknown>;
+              };
+            };
+          };
+        }
+      ).ChromeUtils = {
+        importESModule: (path: string) => {
+          assert.include(path, "Subprocess");
+          return {
+            Subprocess: {
+              call: async (options: {
+                command: string;
+                arguments: string[];
+                }) => {
+                  const record: SpawnRecord = {
+                    command: options.command,
+                    arguments: options.arguments,
+                    stdout: new MockStdout(),
+                    threadStartCount: 0,
+                  };
+                spawns.push(record);
+                return {
+                  stdout: record.stdout,
+                  stdin: {
+                    write: (chunk: string) => {
+                      for (const line of chunk.split("\n")) {
+                        if (!line.trim()) continue;
+                        const message = JSON.parse(line) as {
+                          id?: number;
+                          method?: string;
+                        };
+                        if (message.method === "initialize") {
+                          record.stdout.push(
+                            `${JSON.stringify({ id: message.id, result: {} })}\n`,
+                          );
+                          continue;
+                        }
+                        if (message.method === "thread/start") {
+                          record.threadStartCount += 1;
+                          record.stdout.push(
+                            `${JSON.stringify({
+                              id: message.id,
+                              result: { id: `thread-${spawns.length}` },
+                            })}\n`,
+                          );
+                          continue;
+                        }
+                        if (message.method === "turn/start") {
+                          const turnId = `turn-${spawns.length}`;
+                          record.stdout.push(
+                            `${JSON.stringify({
+                              id: message.id,
+                              result: { id: turnId },
+                            })}\n`,
+                          );
+                          setTimeout(() => {
+                            record.stdout.push(
+                              `${JSON.stringify({ method: "item/agentMessage/delta", params: { turnId, delta: "OK." } })}\n`,
+                            );
+                            record.stdout.push(
+                              `${JSON.stringify({ method: "turn/completed", params: { turnId, status: "completed" } })}\n`,
+                            );
+                          }, 0);
+                        }
+                      }
+                    },
+                  },
+                  kill: () => undefined,
+                };
+              },
+            },
+          };
+        },
+      };
+
+      const adapter = new CodexAppServerAdapter(processKey);
+
+      const first = await adapter.runStep({
+        request: {
+          conversationKey: 1,
+          mode: "agent",
+          userText: "test",
+          model: "gpt-5.4",
+          apiBase: codexPathA,
+          authMode: "codex_app_server",
+        },
+        messages: [{ role: "user", content: "First." }],
+        tools: [],
+      });
+      const second = await adapter.runStep({
+        request: {
+          conversationKey: 1,
+          mode: "agent",
+          userText: "test",
+          model: "gpt-5.4",
+          apiBase: codexPathB,
+          authMode: "codex_app_server",
+        },
+        messages: [{ role: "user", content: "Second." }],
+        tools: [],
+      });
+
+      assert.equal(first.kind, "final");
+      assert.equal(second.kind, "final");
+      assert.lengthOf(spawns, 2, "expected a fresh spawn per codex path");
+      assert.include(
+        spawns[0]?.arguments.at(-1) ?? "",
+        codexPathA,
+        "first launch should target the first codex path",
+      );
+      assert.include(
+        spawns[1]?.arguments.at(-1) ?? "",
+        codexPathB,
+        "second launch should target the second codex path",
+      );
+      assert.equal(spawns[0]?.threadStartCount, 1);
+      assert.equal(
+        spawns[1]?.threadStartCount,
+        1,
+        "second runStep with a different codex path should start a new thread",
+      );
+    } finally {
+      destroyCachedCodexAppServerProcess(processKey, undefined, {
+        codexPath: codexPathA,
+      });
+      destroyCachedCodexAppServerProcess(processKey, undefined, {
+        codexPath: codexPathB,
+      });
+      if (globalThis.process?.env) {
+        if (typeof originalCodexPath === "string") {
+          globalThis.process.env.CODEX_PATH = originalCodexPath;
+        }
+      }
+      (
+        globalThis as typeof globalThis & { ChromeUtils?: unknown }
+      ).ChromeUtils = originalChromeUtils;
+    }
+  });
+
   it("forwards app-server reasoning events into the shared reasoning callback", async function () {
     const originalChromeUtils = (
       globalThis as typeof globalThis & {

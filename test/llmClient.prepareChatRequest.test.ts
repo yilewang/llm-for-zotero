@@ -376,6 +376,7 @@ describe("llmClient prepareChatRequest", function () {
     const stdout = new MockStdout();
     let lastTurnInput: unknown = "";
     let lastInjectedItems: unknown = null;
+    let lastThreadStartParams: Record<string, unknown> | null = null;
     let lastTurnParams: Record<string, unknown> | null = null;
     const reasoning: string[] = [];
     const usage: Array<{
@@ -411,7 +412,7 @@ describe("llmClient prepareChatRequest", function () {
                       const message = JSON.parse(line) as {
                         id?: number;
                         method?: string;
-                        params?: { input?: unknown };
+                        params?: Record<string, unknown> & { input?: unknown };
                       };
                       if (message.method === "initialize") {
                         stdout.push(
@@ -421,6 +422,7 @@ describe("llmClient prepareChatRequest", function () {
                       }
                       if (message.method === "thread/start") {
                         assert.equal(message.params?.ephemeral, true);
+                        lastThreadStartParams = message.params || null;
                         stdout.push(
                           `${JSON.stringify({ id: message.id, result: { id: "thread-1" } })}\n`,
                         );
@@ -525,27 +527,22 @@ describe("llmClient prepareChatRequest", function () {
       assert.equal(lastTurnParams?.model, "gpt-5.4");
       assert.equal(lastTurnParams?.effort, "high");
       assert.equal(lastTurnParams?.summary, "detailed");
+      assert.equal(
+        lastThreadStartParams?.developerInstructions,
+        (prepared.messages[0] as { content: string }).content,
+      );
       assert.isArray(lastTurnInput);
       const input = lastTurnInput as Array<Record<string, unknown>>;
       const textParts = input
         .filter((part) => part.type === "text")
         .map((part) => String(part.text || ""));
       assert.deepEqual(textParts, ["What changed?"]);
-      assert.deepInclude(input, {
+      const imagePart = input.find((part) => part.type === "localImage");
+      assert.deepEqual(imagePart, {
         type: "localImage",
-        path: "C:\\Users\\alice\\figure.png",
+        path: "/mnt/c/Users/alice/figure.png",
       });
       assert.deepEqual(lastInjectedItems, [
-        {
-          type: "message",
-          role: "system",
-          content: [
-            {
-              type: "input_text",
-              text: (prepared.messages[0] as { content: string }).content,
-            },
-          ],
-        },
         {
           type: "message",
           role: "user",
@@ -581,6 +578,7 @@ describe("llmClient prepareChatRequest", function () {
       globalThis as typeof globalThis & { ztoolkit?: unknown }
     ).ztoolkit;
     const stdout = new MockStdout();
+    const threadStartParams: Array<Record<string, unknown>> = [];
     const turnInputs: unknown[] = [];
     let injectAttemptCount = 0;
 
@@ -618,7 +616,7 @@ describe("llmClient prepareChatRequest", function () {
                       const message = JSON.parse(line) as {
                         id?: number;
                         method?: string;
-                        params?: { input?: unknown };
+                        params?: Record<string, unknown> & { input?: unknown };
                       };
                       if (message.method === "initialize") {
                         stdout.push(
@@ -627,6 +625,7 @@ describe("llmClient prepareChatRequest", function () {
                         continue;
                       }
                       if (message.method === "thread/start") {
+                        threadStartParams.push(message.params || {});
                         stdout.push(
                           `${JSON.stringify({ id: message.id, result: { id: "thread-1" } })}\n`,
                         );
@@ -673,6 +672,7 @@ describe("llmClient prepareChatRequest", function () {
 
       const firstParams = {
         prompt: "What changed?",
+        context: "Full text from Zotero text mode.",
         history: [
           { role: "user" as const, content: "Earlier question." },
           { role: "assistant" as const, content: "Earlier answer." },
@@ -683,6 +683,7 @@ describe("llmClient prepareChatRequest", function () {
       };
       const secondParams = {
         prompt: "Focus on action items.",
+        context: "Full text from Zotero text mode.",
         history: [
           { role: "user" as const, content: "Earlier question." },
           { role: "assistant" as const, content: "Earlier answer." },
@@ -700,31 +701,48 @@ describe("llmClient prepareChatRequest", function () {
       assert.equal(first, "First.");
       assert.equal(second, "Second.");
       assert.equal(injectAttemptCount, 1);
+      const extractSystemInstructions = (
+        messages: typeof firstPrepared.messages,
+      ) =>
+        messages
+          .filter((message) => message.role === "system")
+          .map((message) => String(message.content).trim())
+          .filter(Boolean)
+          .join("\n\n");
+      assert.equal(
+        threadStartParams[0]?.developerInstructions,
+        extractSystemInstructions(firstPrepared.messages),
+      );
+      assert.equal(
+        threadStartParams[1]?.developerInstructions,
+        extractSystemInstructions(secondPrepared.messages),
+      );
+      assert.include(
+        String(threadStartParams[0]?.developerInstructions || ""),
+        "Document Context:\nFull text from Zotero text mode.",
+      );
+      const flattenWithoutSystemMessages = (
+        messages: typeof firstPrepared.messages,
+      ) =>
+        messages
+          .filter((message) => message.role !== "system")
+          .map((message) => ({
+            type: "text",
+            text: `${
+              message.role === "system"
+                ? "System"
+                : message.role === "assistant"
+                  ? "Assistant"
+                  : "User"
+            }:\n${String(message.content)}`,
+          }));
       assert.deepEqual(
         turnInputs[0],
-        firstPrepared.messages.map((message) => ({
-          type: "text",
-          text: `${
-            message.role === "system"
-              ? "System"
-              : message.role === "assistant"
-                ? "Assistant"
-                : "User"
-          }:\n${String(message.content)}`,
-        })),
+        flattenWithoutSystemMessages(firstPrepared.messages),
       );
       assert.deepEqual(
         turnInputs[1],
-        secondPrepared.messages.map((message) => ({
-          type: "text",
-          text: `${
-            message.role === "system"
-              ? "System"
-              : message.role === "assistant"
-                ? "Assistant"
-                : "User"
-          }:\n${String(message.content)}`,
-        })),
+        flattenWithoutSystemMessages(secondPrepared.messages),
       );
     } finally {
       destroyCachedCodexAppServerProcess("codex_app_server_chat");

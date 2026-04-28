@@ -477,6 +477,35 @@ export function setModelProviderGroups(groups: ModelProviderGroup[]): void {
   storeModelProviderGroups(normalizeModelProviderGroups(groups));
 }
 
+// The `apiBase` field is repurposed as a local "Codex CLI Path" under
+// `codex_app_server`. When toggling between that mode and the others, drop
+// the stored value if it doesn't fit the new role so the user never sees a
+// stale URL under the path label, or a Windows path under the API URL label.
+export function migrateApiBaseForAuthModeChange(
+  previousAuthMode: ModelProviderAuthMode,
+  nextAuthMode: ModelProviderAuthMode,
+  apiBase: string,
+): string {
+  const trimmed = apiBase.trim();
+  if (!trimmed) return apiBase;
+  const looksLikeUrl = /^https?:\/\//i.test(trimmed);
+  if (
+    nextAuthMode === "codex_app_server" &&
+    previousAuthMode !== "codex_app_server" &&
+    looksLikeUrl
+  ) {
+    return "";
+  }
+  if (
+    previousAuthMode === "codex_app_server" &&
+    nextAuthMode !== "codex_app_server" &&
+    !looksLikeUrl
+  ) {
+    return "";
+  }
+  return apiBase;
+}
+
 export function createEmptyProviderGroup(): ModelProviderGroup {
   return {
     id: createId("provider"),
