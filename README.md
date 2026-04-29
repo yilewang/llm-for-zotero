@@ -30,11 +30,12 @@ Documentation:
 
 ### 📢 Recent Updates
 
+- **Codex App Server (recommended)** — ChatGPT Plus subscribers should use the new local `codex app-server` runtime for Codex models (e.g. `gpt-5.5`) without an API key. Enable it from the **Agent** tab; the older direct backend flow remains as a legacy option for current users. See [Codex Setup](#codex-setup-chatgpt-plus-subscribers). Feature contributed by [@jianghao-zhang](https://github.com/jianghao-zhang) and [@boltma](https://github.com/boltma).
+- **Claude Code Mode (experimental)** — Run Claude Code as a separate conversation system inside Zotero through the companion local bridge. This mode is still under development and does not yet support native Zotero API operations; native Zotero tool support is planned. See [Claude Code Setup](#claude-code-setup-experimental). This feature is contributed by [@jianghao-zhang](https://github.com/jianghao-zhang).
 - **Skills** — Customizable guidance files that shape how the agent handles different tasks. 8 built-in skills included, plus a portal for creating your own. See [Skills](#skills).
 - **Standalone Window Mode** — Open the LLM Assistant in its own dedicated window, separate from the Zotero reader sidebar. See [Standalone Window Mode](#standalone-window-mode).
 - **File-Based Notes** — Save research notes as Markdown files in any local directory — works with Obsidian, Logseq, or any plain markdown folder. See [File-Based Notes](#file-based-notes).
 - **Agent Mode (beta)** — LLM-for-Zotero can now act as an autonomous agent inside your Zotero library. See [Agent Mode](#agent-mode-beta) for details.
-- **Codex App Server (recommended)** — ChatGPT Plus subscribers should use the new `codex app-server` auth flow for Codex models (e.g. `gpt-5.4`) without an API key. The older direct backend flow remains available as a legacy option for current users. See [Codex Setup](#codex-setup-chatgpt-plus-subscribers). Feature contributed by [@jianghao-zhang](https://github.com/jianghao-zhang) and [@boltma](https://github.com/boltma).
 - **MinerU PDF parsing** — High-fidelity PDF extraction that preserves tables, equations, and figures. See [MinerU PDF Parsing](#mineru-pdf-parsing).
 
 ---
@@ -50,6 +51,7 @@ Documentation:
 - [Skills](#skills)
 - [WebChat Setup](#webchat-setup-chatgpt-web-sync)
 - [Codex Setup](#codex-setup-chatgpt-plus-subscribers)
+- [Claude Code Setup](#claude-code-setup-experimental)
 - [MinerU PDF Parsing](#mineru-pdf-parsing)
 - [Roadmap](#roadmap)
 - [FAQ](#faq)
@@ -95,7 +97,7 @@ The plugin natively supports multiple provider protocols: `responses_api`, `open
 | `https://api.openai.com/v1/responses`       | gpt-5.4              | default, low, medium, high, xhigh | PDF uploads supported |
 | `https://api.openai.com/v1/responses`       | gpt-5.4-pro          | medium, high, xhigh               | PDF uploads supported |
 | `https://api.deepseek.com/v1`               | deepseek-chat        | default                           |                       |
-| `https://api.deepseek.com/v1`               | deepseek-reasoner    | default                           |                       |
+| `https://api.deepseek.com/anthropic`        | deepseek-v4-flash    | default                           |                       |
 | `https://generativelanguage.googleapis.com` | gemini-3-pro-preview | low, high                         |                       |
 | `https://generativelanguage.googleapis.com` | gemini-2.5-flash     | medium                            |                       |
 | `https://generativelanguage.googleapis.com` | gemini-2.5-pro       | default, low, high                |                       |
@@ -226,12 +228,12 @@ Open `Preferences` → `llm-for-zotero` and scroll to the **Notes Directory** se
   <img src="./assets/outside_notes.png" alt="Screenshot of the Notes Directory settings panel" width="512" />
 </p>
 
-| Setting                  | Description                                                                                      | Example                |
-| ------------------------ | ------------------------------------------------------------------------------------------------ | ---------------------- |
-| **Nickname**             | How you refer to this directory in chat — the agent recognizes the name when you mention it      | `Obsidian`, `Logseq`   |
-| **Notes Directory Path** | Absolute path to the root directory where notes are saved                                        | `/Users/me/MyVault`    |
-| **Default Folder**       | Default subfolder for new notes (the agent can write to a different folder if you ask it to)     | `Logs`                 |
-| **Attachments Folder**   | Folder for copied figures and images, **relative to the directory root**                         | `Logs/imgs`            |
+| Setting                  | Description                                                                                  | Example              |
+| ------------------------ | -------------------------------------------------------------------------------------------- | -------------------- |
+| **Nickname**             | How you refer to this directory in chat — the agent recognizes the name when you mention it  | `Obsidian`, `Logseq` |
+| **Notes Directory Path** | Absolute path to the root directory where notes are saved                                    | `/Users/me/MyVault`  |
+| **Default Folder**       | Default subfolder for new notes (the agent can write to a different folder if you ask it to) | `Logs`               |
+| **Attachments Folder**   | Folder for copied figures and images, **relative to the directory root**                     | `Logs/imgs`          |
 
 Click **Test Write Access** to verify the plugin can write to your directory.
 
@@ -267,44 +269,44 @@ The agent ships with focused tools split into **read** (no confirmation needed) 
 
 #### Library & PDF reading
 
-| Tool                       | Description                                                                                                       |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Tool                       | Description                                                                                                                                                                      |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `query_library`            | Discover Zotero items and collections — search/list any item type, filter by author/year/collection/itemType, browse the collection tree, find related papers, detect duplicates |
-| `read_library`             | Read structured item state for one or more items — metadata, notes, annotations, attachments, collection membership |
-| `read_paper`               | Read text content from a PDF — opening sections by default, or specific section indexes (up to 20 papers per call) |
-| `search_paper`             | Find specific evidence in papers via a question — returns ranked relevant passages (up to 10 papers per call)     |
-| `view_pdf_pages`           | Render PDF pages as images for visual analysis — by question, by page number, or capture the currently visible page |
-| `read_attachment`          | Read any Zotero attachment by ID (HTML snapshots, text files, images), or send the whole file to the model        |
-| `search_literature_online` | Search live scholarly sources (CrossRef, Semantic Scholar) for metadata, recommendations, references, citations   |
+| `read_library`             | Read structured item state for one or more items — metadata, notes, annotations, attachments, collection membership                                                              |
+| `read_paper`               | Read text content from a PDF — opening sections by default, or specific section indexes (up to 20 papers per call)                                                               |
+| `search_paper`             | Find specific evidence in papers via a question — returns ranked relevant passages (up to 10 papers per call)                                                                    |
+| `view_pdf_pages`           | Render PDF pages as images for visual analysis — by question, by page number, or capture the currently visible page                                                              |
+| `read_attachment`          | Read any Zotero attachment by ID (HTML snapshots, text files, images), or send the whole file to the model                                                                       |
+| `search_literature_online` | Search live scholarly sources (CrossRef, Semantic Scholar) for metadata, recommendations, references, citations                                                                  |
 
 #### Library writes
 
-| Tool                  | Description                                                                                  |
-| --------------------- | -------------------------------------------------------------------------------------------- |
-| `apply_tags`          | Add or remove tags on one or more papers                                                     |
-| `update_metadata`     | Update metadata fields (title, authors, DOI, etc.) on an item                                |
-| `move_to_collection`  | Add or remove papers from collections                                                        |
-| `manage_collections`  | Create or delete collections (folders)                                                       |
-| `manage_attachments`  | Delete, rename, or re-link broken attachment file paths                                      |
-| `merge_items`         | Merge duplicates — keeps the master, moves children from the others, trashes the rest        |
-| `trash_items`         | Move items to the trash                                                                      |
-| `import_identifiers`  | Import papers by DOI, ISBN, arXiv ID, or URL                                                 |
-| `import_local_files`  | Import local files (PDFs, etc.) — Zotero auto-fetches metadata for recognized PDFs           |
-| `edit_current_note`   | Edit the active Zotero note or create a new one (plain text, Markdown, or HTML)              |
+| Tool                 | Description                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| `apply_tags`         | Add or remove tags on one or more papers                                              |
+| `update_metadata`    | Update metadata fields (title, authors, DOI, etc.) on an item                         |
+| `move_to_collection` | Add or remove papers from collections                                                 |
+| `manage_collections` | Create or delete collections (folders)                                                |
+| `manage_attachments` | Delete, rename, or re-link broken attachment file paths                               |
+| `merge_items`        | Merge duplicates — keeps the master, moves children from the others, trashes the rest |
+| `trash_items`        | Move items to the trash                                                               |
+| `import_identifiers` | Import papers by DOI, ISBN, arXiv ID, or URL                                          |
+| `import_local_files` | Import local files (PDFs, etc.) — Zotero auto-fetches metadata for recognized PDFs    |
+| `edit_current_note`  | Edit the active Zotero note or create a new one (plain text, Markdown, or HTML)       |
 
 #### Filesystem & scripting
 
-| Tool             | Description                                                                                              |
-| ---------------- | -------------------------------------------------------------------------------------------------------- |
-| `file_io`        | Read or write files on the local filesystem — text and image, with offset/length for partial reads       |
-| `run_command`    | Run a shell command (zsh on macOS, bash on Linux, cmd.exe on Windows) — for analysis scripts and CLI tools |
-| `zotero_script`  | Execute JavaScript inside Zotero's runtime — read mode for bulk data, write mode for custom mutations    |
+| Tool            | Description                                                                                                |
+| --------------- | ---------------------------------------------------------------------------------------------------------- |
+| `file_io`       | Read or write files on the local filesystem — text and image, with offset/length for partial reads         |
+| `run_command`   | Run a shell command (zsh on macOS, bash on Linux, cmd.exe on Windows) — for analysis scripts and CLI tools |
+| `zotero_script` | Execute JavaScript inside Zotero's runtime — read mode for bulk data, write mode for custom mutations      |
 
 #### Safety net
 
-| Tool               | Description                                                                                            |
-| ------------------ | ------------------------------------------------------------------------------------------------------ |
-| `undo_last_action` | Undo the most recent write action in this conversation — keeps the last 10 entries per session         |
+| Tool               | Description                                                                                    |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| `undo_last_action` | Undo the most recent write action in this conversation — keeps the last 10 entries per session |
 
 The design philosophy is **read tools are unrestricted; write tools always confirm and stay undoable**. Ask the agent what it can do — it will tell you.
 
@@ -362,16 +364,16 @@ Skills are customizable guidance files that shape how the agent approaches diffe
 
 The plugin ships with **8 built-in skills** covering common research workflows:
 
-| Skill | What it guides the agent to do |
-| --- | --- |
-| `simple-paper-qa` | Answer general questions about a paper efficiently (read once, answer immediately) |
-| `evidence-based-qa` | Find specific methods, results, or evidence with targeted retrieval |
-| `analyze-figures` | Interpret figures and tables using MinerU-extracted images |
-| `compare-papers` | Compare multiple papers using batched reads and focused retrieval |
-| `library-analysis` | Summarize or analyze your entire library without context overflow |
-| `literature-review` | Conduct a structured literature review (discover, read, synthesize) |
-| `write-note` | Write reading notes either as Zotero notes or as Markdown files in your notes directory (Obsidian, Logseq, plain folders) |
-| `import-cited-reference` | Import papers cited in the current PDF into your Zotero library |
+| Skill                    | What it guides the agent to do                                                                                            |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `simple-paper-qa`        | Answer general questions about a paper efficiently (read once, answer immediately)                                        |
+| `evidence-based-qa`      | Find specific methods, results, or evidence with targeted retrieval                                                       |
+| `analyze-figures`        | Interpret figures and tables using MinerU-extracted images                                                                |
+| `compare-papers`         | Compare multiple papers using batched reads and focused retrieval                                                         |
+| `library-analysis`       | Summarize or analyze your entire library without context overflow                                                         |
+| `literature-review`      | Conduct a structured literature review (discover, read, synthesize)                                                       |
+| `write-note`             | Write reading notes either as Zotero notes or as Markdown files in your notes directory (Obsidian, Logseq, plain folders) |
+| `import-cited-reference` | Import papers cited in the current PDF into your Zotero library                                                           |
 
 ### Creating Custom Skills
 
@@ -434,9 +436,9 @@ Skills are stored as Markdown files in `{ZoteroDataDir}/llm-for-zotero/skills/`.
 
 If you have a ChatGPT Plus subscription, you can use Codex models (e.g. `gpt-5.4`) in the plugin without a separate API key by signing in through the Codex CLI.
 
-There are now two Codex-backed modes in the plugin. New users should choose **Codex App Server**.
+There are two Codex-backed paths in the plugin. New users should choose **Codex App Server**.
 
-- **Codex App Server (Recommended)** - Spawns the local `codex app-server` CLI and talks to it over stdio. This is the official way to use Codex in third-party apps, and it is the preferred setup for new users.
+- **Codex App Server (Recommended)** - Spawns the local `codex app-server` CLI and talks to it over stdio. This is the official way to use Codex in third-party apps, and it is the preferred setup for new users. It is configured from the **Agent** tab and appears as a dedicated **Codex** button in the chat header.
 - **Codex Auth (Legacy)** - Uses the ChatGPT/Codex Responses backend directly. Existing users can keep using it in the next release, but new users should choose `Codex App Server`. This legacy mode is planned for deprecation in a future release after app-server validation.
 
 _Special thanks to [@jianghao-zhang](https://github.com/jianghao-zhang) and [@boltma](https://github.com/boltma) for contributing the Codex App Server integration._
@@ -451,7 +453,7 @@ _Special thanks to [@jianghao-zhang](https://github.com/jianghao-zhang) and [@bo
      ```
 
    - **macOS (Homebrew alternative):** `brew install --cask codex` (no Node.js needed).
-   - **Windows/Linux:** Install [Node.js 18+](https://nodejs.org/), then `npm install -g @openai/codex`. On Windows, a Codex CLI installed inside WSL is also supported; leave the path blank for auto-detection, enter `wsl.exe` to force the default distro, enter `wsl.exe -d Ubuntu-22.04` to choose a distro, or enter a WSL path such as `/home/<user>/.local/bin/codex`.
+   - **Windows/Linux:** Install [Node.js 18+](https://nodejs.org/), then `npm install -g @openai/codex`. On Windows, a Codex CLI installed inside WSL is also supported; run `codex login` inside the same WSL distro you want Zotero to use.
 
 2. **Log in with your ChatGPT account:**
 
@@ -461,20 +463,24 @@ _Special thanks to [@jianghao-zhang](https://github.com/jianghao-zhang) and [@bo
 
    A browser window opens — sign in with your ChatGPT Plus account. Credentials are saved to `~/.codex/auth.json`. If you use Codex from WSL on Windows, run `codex login` inside that same WSL distro.
 
-3. **Configure the plugin** (Zotero → Preferences → `llm-for-zotero`):
-   - **Recommended setup**
-     - **Auth Mode** → `Codex App Server`
-     - **API URL** → leave blank
-     - **Model** → a Codex model (e.g. `gpt-5.4`)
-     - Click **Test Connection** to verify.
-   - **Legacy fallback for existing users**
-     - **Auth Mode** → `Codex Auth (Legacy)`
-     - **Codex CLI Path** → leave the path blank for auto-detection, enter `wsl.exe` to force the default distro, enter `wsl.exe -d Ubuntu-22.04` to choose a distro, or enter a WSL path such as `/home/<user>/.local/bin/codex`.
-     - **Model** → a Codex model (e.g. `gpt-5.4`)
-     - Existing users can keep this configuration unchanged in the next release while `Codex App Server` is validated as the long-term replacement.
+3. **Enable Codex App Server in Zotero**:
+   - Open Zotero → `Preferences` → `llm-for-zotero` → **Agent** tab.
+   - Set **Enable Codex App Server integration** → `On`.
+   - Choose the default **Model** (e.g. `gpt-5.4`) and **Reasoning** level.
+   - Click **Test connection** to verify that Zotero can launch `codex app-server`.
+   - In the chat header, click the **Codex** button to switch into the Codex conversation system.
+
+   `Codex App Server` and `Claude Code` are mutually exclusive runtime modes in the Agent tab. Disable one before enabling the other.
+
+4. **Legacy fallback for existing users**:
+   - Open the **AI Providers** tab.
+   - Choose **Auth Mode** → `Codex Auth (Legacy)`.
+   - Keep API URL `https://chatgpt.com/backend-api/codex/responses`.
+   - Keep your Codex model name (e.g. `gpt-5.5`).
+   - Existing users can keep this configuration unchanged while `Codex App Server` is validated as the long-term replacement.
 
 <p align="center">
-  <img src="./assets/codex.png" alt="Screenshot showing recommended Codex App Server configuration in plugin settings" width="1024" />
+  <img src="./assets/codex_claude.png" alt="Screenshot showing recommended Codex App Server configuration in plugin settings" width="1024" />
 </p>
 
 ### Codex Auth (Legacy) Technical Notes
@@ -484,6 +490,109 @@ _Special thanks to [@jianghao-zhang](https://github.com/jianghao-zhang) and [@bo
 - Embeddings are not supported in this legacy direct mode yet.
 - Local PDF/reference text grounding and screenshot/image inputs are supported.
 - The Responses `/files` upload + `file_id` attachment flow is not supported yet.
+
+---
+
+## Claude Code Setup (Experimental)
+
+Claude Code mode runs Claude Code as a separate conversation system inside Zotero. It reuses the familiar sidebar and standalone-window UI, but it has its own conversation history, `paper` / `open` scope state, model/reasoning settings, permission semantics, slash commands, and project skills.
+
+> **Status:** Claude Code mode is under active development. It currently does **not** support native Zotero API operations from Claude Code. Use the built-in [Agent Mode](#agent-mode-beta) for native Zotero library tools such as reading structured item state, editing notes, tagging papers, updating metadata, or importing items. Native Zotero API support for Claude Code is planned for a later release.
+
+### Prerequisites
+
+- A working Claude Code CLI installation. Follow the official [Claude Code installation](https://code.claude.com/docs/en/installation.md), [quickstart](https://code.claude.com/docs/en/quickstart.md), and [authentication](https://code.claude.com/docs/en/authentication.md) docs.
+- The `claude` command must be on `PATH` and authenticated. Run `claude` in a terminal first; if Claude Code is not installed, not on `PATH`, or not logged in, Zotero's Claude Code mode will not work.
+- Node.js and npm for the companion bridge adapter.
+
+### 1. Install and verify Claude Code
+
+Install Claude Code using Anthropic's official instructions, then run:
+
+```bash
+claude
+```
+
+Complete any login or authentication prompts in Claude Code before continuing.
+
+### 2. Start the Zotero Claude bridge
+
+Claude Code mode depends on the companion bridge repo [`cc-llm4zotero-adapter`](https://github.com/jianghao-zhang/cc-llm4zotero-adapter). The bridge does not replace Claude Code; it connects Zotero to your local Claude Code runtime.
+
+```bash
+git clone https://github.com/jianghao-zhang/cc-llm4zotero-adapter.git
+cd cc-llm4zotero-adapter
+npm install
+npm run build
+npm run serve:bridge
+```
+
+In another terminal, check that the bridge is alive:
+
+```bash
+curl -fsS http://127.0.0.1:19787/healthz
+```
+
+For macOS users who want the bridge to run in the background, install the LaunchAgent from the adapter repo:
+
+```bash
+./scripts/install-macos-daemon.sh
+```
+
+Useful bridge daemon commands:
+
+```bash
+npm run daemon:status
+npm run daemon:start
+npm run daemon:stop
+npm run daemon:restart
+npm run daemon:uninstall
+```
+
+If Claude Code mode stops responding, restart the bridge and re-check `/healthz`. A passing `/healthz` check only proves that the adapter is running; it does not prove that the underlying `claude` CLI is installed, authenticated, or correctly configured.
+
+### 3. Enable Claude Code inside Zotero
+
+Open Zotero → `Preferences` → `llm-for-zotero` → **Agent** tab.
+
+| Setting                            | Recommended value                  |
+| ---------------------------------- | ---------------------------------- |
+| **Enable Claude Code integration** | `On`                               |
+| **Bridge URL**                     | `http://127.0.0.1:19787`           |
+| **Claude Config Source**           | `default — user + project + local` |
+| **Permission Mode**                | `safe`                             |
+| **Default Model**                  | `sonnet`                           |
+| **Default Reasoning**              | `auto`                             |
+
+Keep **Claude Config Source** on `default` unless you already understand Claude Code settings layers. In `default`, Claude Code can use your normal user settings plus Zotero-managed project and per-conversation local settings. The other options are:
+
+- `user-only` — only your machine-wide Claude settings.
+- `zotero-only` — only Zotero-managed project and local settings.
+
+After enabling the integration, click the **Claude Code** button in the chat header to enter Claude Code mode. The Claude conversation system is separate from upstream chat and the built-in agent, so switching modes opens the matching conversation history instead of mixing transcripts.
+
+### 4. Prepare Claude project skills and commands
+
+Zotero creates a Claude runtime root under your home directory, usually shaped like:
+
+```text
+~/Zotero/agent-runtime/profile-.../
+```
+
+Inside that runtime root, shared Claude project assets live in:
+
+```text
+CLAUDE.md
+.claude/settings.json
+.claude/skills/
+.claude/commands/
+```
+
+Each Claude conversation also gets its own local `.claude` folder under the runtime `scopes/` tree, so per-conversation overrides do not leak into other chats. You can add shared Claude skills manually under `.claude/skills/` or `.claude/commands/`, but the easiest path is usually to ask Claude Code to create or install the skill in the Zotero project-level Claude config.
+
+### Notes for non-Anthropic Claude Code setups
+
+The Zotero UI exposes `opus`, `sonnet`, and `haiku` as capability tiers. They do not require Anthropic-hosted models specifically. If you route Claude Code through a compatible provider layer or proxy, configure that in Claude Code itself; Zotero only selects the tier and forwards the request to the bridge.
 
 ---
 
@@ -523,9 +632,13 @@ When a personal API key is provided, the plugin calls the MinerU API directly (`
 - [x] WebChat mode (ChatGPT web sync)
 - [x] Standalone window mode ([#78](https://github.com/yilewang/llm-for-zotero/issues/78))
 - [x] File-based notes (Obsidian, Logseq, any Markdown directory)
+- [x] Claude Code integration
+- [x] Codex App Server integration
 - [ ] Local MinerU support
+- [ ] Customized parameter of MinerU parsing
 - [x] Customized skills
-- [ ] Cross-device synchronization
+- [ ] Cross-device synchronization (MinerU cache or conversation history)
+- [ ] Agent memory system
 
 ---
 
@@ -533,7 +646,7 @@ When a personal API key is provided, the plugin calls the MinerU API directly (`
 
 > **Q: Is it free to use?**
 >
-> Yes, absolutely free. You only pay for API calls if you choose a paid provider. With Codex App Server auth, ChatGPT Plus subscribers can use Codex models without a separate API key. If you find this helpful, consider leaving a ⭐ on GitHub or [buying me a coffee](https://buymeacoffee.com/yat.lok).
+> Yes, absolutely free. You only pay for API calls if you choose a paid provider. With Codex App Server, ChatGPT Plus subscribers can use Codex models without a separate API key. If you find this helpful, consider leaving a ⭐ on GitHub or [buying me a coffee](https://buymeacoffee.com/yat.lok).
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/1e945e57-4b99-4d25-b8d5-fb120e100b62" width="200" alt="Alipay donation QR code">
