@@ -1524,32 +1524,18 @@
 
 /* ---- Chat start page (shared layout for all modes) ---- */
 
-[data-start-page-active="true"] .llm-chat-shell {
-  flex: 0 0 auto;
-  height: auto;
-  min-height: auto;
-  margin-top: auto;
-  overflow: visible;
+/* Center welcome content inside the default-sized shell so .llm-chat-shell's
+   native `resize: vertical` keeps working on the start page. Shrinking the
+   shell (height: auto / overflow: visible) hides the user-agent resize grip. */
+[data-start-page-active="true"] .llm-start-page {
+  flex: 1;
+  justify-content: center;
 }
 
-/* When an action review card is present (user triggered /something from the
-   start page, so we haven't left start-page mode yet), restore chat-mode
-   sizing on the shell so the card's max-height: 100% has a real parent
-   height to bind to and its internal overflow can actually scroll. This
-   attribute is toggled by setupHandlers when a card is shown/removed —
-   JS-based rather than :has() to stay compatible across Gecko versions. */
-[data-has-action-card="true"][data-start-page-active="true"] .llm-chat-shell {
-  flex: 1 1 0;
-  height: auto;
-  min-height: 200px;
-  margin-top: 0;
-  overflow: hidden;
-}
-
-/* Hide the welcome HTML while a card is present — otherwise it shares the
-   messages flex-column with the card and the card shrinks to whatever
-   space is left. The welcome naturally comes back when the card closes
-   (attr cleared → this rule no longer matches). */
+/* Hide the welcome HTML while an action card is present — otherwise it shares
+   the messages flex-column with the card and the card shrinks to whatever
+   space is left. Attribute toggled by setupHandlers (JS-based rather than
+   :has() to stay compatible across Gecko versions). */
 [data-has-action-card="true"][data-start-page-active="true"] .llm-start-page {
   display: none;
 }

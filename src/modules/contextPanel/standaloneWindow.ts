@@ -5,7 +5,6 @@ import {
   activeContextPanelStateSync,
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
-  selectedPaperContextCache,
   selectedModelCache,
   selectedReasoningCache,
   selectedRuntimeModeCache,
@@ -71,7 +70,6 @@ import {
   loadConversationHistoryScope,
 } from "./historyLoader";
 import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
-import { resolvePaperContextRefFromItem } from "./paperAttribution";
 import {
   buildDefaultClaudeGlobalConversationKey,
 } from "../../claudeCode/constants";
@@ -3788,10 +3786,6 @@ export function openStandaloneChat(options?: {
         currentPaperItem = paperItem;
 
         if (paperItem) {
-          const paperRef = resolvePaperContextRefFromItem(paperItem);
-          if (paperRef) {
-            selectedPaperContextCache.set(paperItem.id, [paperRef]);
-          }
           const paperLibraryID = getCurrentPaperLibraryID();
           const paperId = Number(paperItem.id || 0);
           if (paperLibraryID > 0 && paperId > 0) {
