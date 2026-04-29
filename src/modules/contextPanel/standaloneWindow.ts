@@ -22,6 +22,7 @@ import {
   resolveConversationBaseItem,
   resolveActiveNoteSession,
   resolvePreferredConversationSystem,
+  resolveNoteConversationSystemSwitch,
   createGlobalPortalItem,
   createPaperPortalItem,
 } from "./portalScope";
@@ -3436,12 +3437,12 @@ export function openStandaloneChat(options?: {
           ? activeItem
           : null;
         if (activeNoteItem) {
-          if (nextSystem === "claude_code") return;
-          if (nextSystem === "codex" && !isCodexAppServerModeEnabled()) return;
-          const resolvedNextSystem: ConversationSystem =
-            nextSystem === "codex" ? "codex" : "upstream";
+          const resolvedNextSystem = resolveNoteConversationSystemSwitch({
+            nextSystem,
+            codexAvailable: isCodexAppServerModeEnabled(),
+          });
+          if (!resolvedNextSystem) return;
           if (resolvedNextSystem === currentConversationSystem) return;
-          setConversationSystemPref(resolvedNextSystem);
           currentConversationSystem = resolvedNextSystem;
           activeConversationKey = getConversationKey(activeNoteItem);
           mountChatPanel(activeNoteItem);

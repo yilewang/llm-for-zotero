@@ -312,6 +312,7 @@ import {
   resolveInitialPanelItemState,
   resolveActiveLibraryID,
   resolvePreferredConversationSystem,
+  resolveNoteConversationSystemSwitch,
 } from "./portalScope";
 import { getPanelDomRefs } from "./setupHandlers/domRefs";
 import {
@@ -368,6 +369,9 @@ import {
 } from "./setupHandlers/controllers/fileIntakeController";
 import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
 import { createClearConversationController } from "./setupHandlers/controllers/clearConversationController";
+import {
+  cancelVisiblePendingConfirmationCards,
+} from "./setupHandlers/controllers/cancelPendingConfirmationController";
 import { clearAllAgentToolCaches } from "../../agent/tools";
 import { renderShortcuts } from "./shortcuts";
 import { loadConversationHistoryScope } from "./historyLoader";
@@ -401,7 +405,6 @@ import {
 import {
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
-  getCodexBinaryPathPref,
   getLastUsedCodexConversationMode,
   getLastUsedCodexGlobalConversationKey,
   getLastUsedCodexPaperConversationKey,
@@ -746,7 +749,7 @@ export function setupHandlers(
         entryId: `codex_app_server::${model}`,
         groupId: "codex_app_server",
         model,
-        apiBase: getCodexBinaryPathPref(),
+        apiBase: "",
         apiKey: "",
         authMode: "codex_app_server",
         providerProtocol: "codex_responses",
@@ -912,13 +915,13 @@ export function setupHandlers(
     if (!item) return;
     const noteSession = resolveCurrentNoteSession();
     if (noteSession) {
-      if (nextSystem === "claude_code") return;
-      if (nextSystem === "codex" && !isCodexModeAvailable()) return;
-      const resolvedNextSystem: ConversationSystem =
-        nextSystem === "codex" ? "codex" : "upstream";
+      const resolvedNextSystem = resolveNoteConversationSystemSwitch({
+        nextSystem,
+        codexAvailable: isCodexModeAvailable(),
+      });
+      if (!resolvedNextSystem) return;
       if (resolvedNextSystem === getConversationSystem()) return;
       persistDraftInputForCurrentConversation();
-      setConversationSystemPref(resolvedNextSystem);
       currentConversationSystem = resolvedNextSystem;
       panelRoot.dataset.conversationSystem = resolvedNextSystem;
       syncQueuedFollowUpRegistration();
@@ -6543,7 +6546,7 @@ export function setupHandlers(
     claudeSystemToggleBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!item || isNoteSession()) return;
+      if (!item) return;
       const nextSystem = isRuntimeConversationSystem()
         ? "upstream"
         : getPreferredTargetSystem();
@@ -14046,6 +14049,12 @@ export function setupHandlers(
     cancelBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
+      cancelVisiblePendingConfirmationCards(
+        chatBox || body,
+        (requestId, resolution) =>
+          getAgentApi().resolveConfirmation(requestId, resolution),
+      );
+      syncHasActionCardAttr();
       const cancelConvKey = item ? getConversationKey(item) : null;
       if (cancelConvKey !== null) {
         const ctrl = getAbortController(cancelConvKey);

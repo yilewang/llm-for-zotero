@@ -409,7 +409,7 @@ describe("primitive agent tools", function () {
     assert.exists(pending);
     assert.deepEqual(
       pending?.fields.map((field) => field.type),
-      ["diff_preview", "textarea"],
+      ["diff_preview"],
     );
     assert.equal(pending?.mode, "review");
     const reviewField = pending?.fields[0] as Extract<
@@ -418,11 +418,11 @@ describe("primitive agent tools", function () {
     >;
     assert.equal(reviewField.before, "Original body");
     assert.equal(reviewField.after, "Rewritten body");
-    assert.equal(reviewField.sourceFieldId, "content");
+    assert.isUndefined(reviewField.sourceFieldId);
 
     const confirmed = tool.applyConfirmation?.(
       validated.value,
-      { content: "Approved final note text" },
+      {},
       {
         ...baseContext,
         request: noteRequest,
@@ -439,7 +439,7 @@ describe("primitive agent tools", function () {
       status: "updated",
       noteId: 55,
       title: "Draft Note",
-      noteText: "Approved final note text",
+      noteText: "Rewritten body",
     });
 
     const undoEntry = peekUndoEntry(baseContext.request.conversationKey);
@@ -507,11 +507,7 @@ describe("primitive agent tools", function () {
     assert.equal(diffField.before, "");
     assert.equal(diffField.after, "# Summary\n\n**Key point**");
     assert.equal(diffField.emptyMessage, "No note changes yet.");
-    const textareaField = pending?.fields[1] as Extract<
-      NonNullable<typeof pending>["fields"][number],
-      { type: "textarea" }
-    >;
-    assert.equal(textareaField.value, "# Summary\n\n**Key point**");
+    assert.lengthOf(pending?.fields || [], 1);
 
     const confirmed = tool.applyConfirmation?.(
       validated.value,

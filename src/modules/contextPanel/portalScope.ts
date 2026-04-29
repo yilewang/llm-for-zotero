@@ -421,6 +421,17 @@ export function resolvePreferredConversationSystem(params: {
   return itemSystem || preferred;
 }
 
+export function resolveNoteConversationSystemSwitch(params: {
+  nextSystem: ConversationSystem;
+  codexAvailable: boolean;
+}): ConversationSystem | null {
+  if (params.nextSystem === "claude_code") return null;
+  if (params.nextSystem === "codex") {
+    return params.codexAvailable ? "codex" : null;
+  }
+  return "upstream";
+}
+
 function resolvePreferredConversationMode(
   libraryID: number,
   system: ConversationSystem,

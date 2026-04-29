@@ -36,7 +36,6 @@ import {
 import { isClaudeConversationKey } from "../../claudeCode/constants";
 import { isCodexConversationKey } from "../../codexAppServer/constants";
 import {
-  getCodexBinaryPathPref,
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
   isCodexAppServerModeEnabled,
@@ -1531,7 +1530,7 @@ function resolveEffectiveRequestConfig(params: {
           });
     return {
       model,
-      apiBase: (params.apiBase ?? getCodexBinaryPathPref()).trim(),
+      apiBase: (params.apiBase ?? "").trim(),
       apiKey: "",
       authMode: "codex_app_server",
       providerProtocol: "codex_responses",

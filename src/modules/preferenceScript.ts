@@ -99,12 +99,10 @@ import {
   setClaudeBlockStreamingEnabled,
 } from "../claudeCode/prefs";
 import {
-  getCodexBinaryPathPref,
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
   isCodexAppServerModeEnabled,
   setCodexAppServerModeEnabled,
-  setCodexBinaryPathPref,
   setCodexReasoningModePref,
   setCodexRuntimeModelPref,
 } from "../codexAppServer/prefs";
@@ -654,9 +652,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const codexAppServerReasoningSelect = doc.querySelector(
     `#${config.addonRef}-codex-app-server-reasoning`,
   ) as HTMLSelectElement | null;
-  const codexAppServerPathInput = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-path`,
-  ) as HTMLInputElement | null;
   const codexAppServerTestBtn = doc.querySelector(
     `#${config.addonRef}-codex-app-server-test`,
   ) as HTMLButtonElement | null;
@@ -1974,15 +1969,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
-  if (codexAppServerPathInput) {
-    codexAppServerPathInput.value = getCodexBinaryPathPref();
-    const commitCodexPath = () => {
-      setCodexBinaryPathPref(codexAppServerPathInput.value);
-    };
-    codexAppServerPathInput.addEventListener("change", commitCodexPath);
-    codexAppServerPathInput.addEventListener("blur", commitCodexPath);
-  }
-
   if (codexAppServerTestBtn && codexAppServerStatus) {
     codexAppServerTestBtn.addEventListener("click", () => {
       void (async () => {
@@ -1993,7 +1979,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         try {
           const result = await runCodexAppServerConnectionTest({
             modelName: codexAppServerModelSelect?.value || getCodexRuntimeModelPref(),
-            codexPath: codexAppServerPathInput?.value.trim() || "",
+            codexPath: "",
           });
           codexAppServerStatus.textContent =
             `${t("✓ Success — model says: ")}"${result.reply}"`;

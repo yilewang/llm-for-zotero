@@ -6,6 +6,7 @@ import {
   isPaperPortalItem,
   resolveActiveNoteSession,
   resolveInitialPanelItemState,
+  resolveNoteConversationSystemSwitch,
   resolvePreferredConversationSystem,
 } from "../src/modules/contextPanel/portalScope";
 import { createClaudePaperPortalItem } from "../src/claudeCode/portal";
@@ -251,6 +252,35 @@ describe("portalScope resolveInitialPanelItemState", function () {
     assert.equal(
       resolvePreferredConversationSystem({ item: noteItem }),
       "upstream",
+    );
+  });
+
+  it("normalizes note-session runtime switches without allowing Claude Code", function () {
+    assert.equal(
+      resolveNoteConversationSystemSwitch({
+        nextSystem: "codex",
+        codexAvailable: true,
+      }),
+      "codex",
+    );
+    assert.isNull(
+      resolveNoteConversationSystemSwitch({
+        nextSystem: "codex",
+        codexAvailable: false,
+      }),
+    );
+    assert.equal(
+      resolveNoteConversationSystemSwitch({
+        nextSystem: "upstream",
+        codexAvailable: false,
+      }),
+      "upstream",
+    );
+    assert.isNull(
+      resolveNoteConversationSystemSwitch({
+        nextSystem: "claude_code",
+        codexAvailable: true,
+      }),
     );
   });
 

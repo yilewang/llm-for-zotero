@@ -558,7 +558,7 @@ export function createEditCurrentNoteTool(
         toolName: "edit_current_note",
         mode: "review",
         title: `Review note update`,
-        description: `Review the proposed note changes for "${input.noteTitle}" and edit the final note text before applying it.`,
+        description: `Review the proposed note changes for "${input.noteTitle}" before applying them.`,
         confirmLabel: "Apply edit",
         cancelLabel: "Cancel",
         fields: [
@@ -568,15 +568,8 @@ export function createEditCurrentNoteTool(
             label: "Note changes",
             before: snapshot.text,
             after: diffAfter,
-            sourceFieldId: "content",
             contextLines: 0,
             emptyMessage: "No note changes yet.",
-          },
-          {
-            type: "textarea",
-            id: "content",
-            label: "Final note content",
-            value: input._isHtml ? input.content : normalizedContent,
           },
         ],
       };
