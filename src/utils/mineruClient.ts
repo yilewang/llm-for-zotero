@@ -129,6 +129,12 @@ type LocalBinaryResponse = {
   contentType: string | null;
 };
 
+type LocalUploadRequest = {
+  body: BodyInit | Uint8Array;
+  contentType?: string;
+  mode: "formdata" | "manual";
+};
+
 function getIOUtils(): IOUtilsLike | undefined {
   return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
 }
@@ -160,6 +166,22 @@ function getFetch(): typeof fetch {
     (globalThis as unknown as { fetch?: typeof fetch }).fetch ||
     (ztoolkit.getGlobal("fetch") as typeof fetch)
   );
+}
+
+function getFormDataCtor(): typeof FormData | undefined {
+  const fromGlobal = (globalThis as { FormData?: typeof FormData }).FormData;
+  if (typeof fromGlobal === "function") return fromGlobal;
+  const fromToolkit = ztoolkit.getGlobal("FormData") as
+    | typeof FormData
+    | undefined;
+  return typeof fromToolkit === "function" ? fromToolkit : undefined;
+}
+
+function getBlobCtor(): typeof Blob | undefined {
+  const fromGlobal = (globalThis as { Blob?: typeof Blob }).Blob;
+  if (typeof fromGlobal === "function") return fromGlobal;
+  const fromToolkit = ztoolkit.getGlobal("Blob") as typeof Blob | undefined;
+  return typeof fromToolkit === "function" ? fromToolkit : undefined;
 }
 
 // ── HTTP helpers using Zotero.HTTP (bypasses CORS) ────────────────────────────
@@ -558,9 +580,13 @@ function createLocalFormData(
   fileName: string,
   pdfBytes: Uint8Array,
   options: MineruLocalOptions,
-): FormData {
-  const form = new FormData();
-  const blob = new Blob([new Uint8Array(pdfBytes)], {
+): FormData | null {
+  const FormDataCtor = getFormDataCtor();
+  const BlobCtor = getBlobCtor();
+  if (!FormDataCtor || !BlobCtor) return null;
+
+  const form = new FormDataCtor();
+  const blob = new BlobCtor([new Uint8Array(pdfBytes)], {
     type: "application/pdf",
   });
   form.append("files", blob, fileName);
@@ -581,15 +607,106 @@ function createLocalFormData(
   return form;
 }
 
+function safeMultipartToken(value: string): string {
+  return (value || "").replace(/[\r\n"]/g, "_").trim() || "paper.pdf";
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+function createLocalManualMultipart(
+  fileName: string,
+  pdfBytes: Uint8Array,
+  options: MineruLocalOptions,
+): { body: Uint8Array; contentType: string } {
+  const encoder = new TextEncoder();
+  const boundary = `----llmforzotero-mineru-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
+  const fields: Array<[string, string]> = [
+    ["lang_list", options.language || "ch"],
+    ["backend", options.backend || "hybrid-auto-engine"],
+    ["parse_method", options.parseMethod || "auto"],
+    ["formula_enable", String(options.formulaEnable)],
+    ["table_enable", String(options.tableEnable)],
+    ["return_md", "true"],
+    ["return_middle_json", "false"],
+    ["return_model_output", "false"],
+    ["return_content_list", "true"],
+    ["return_images", "true"],
+    ["response_format_zip", "true"],
+    ["return_original_file", "false"],
+    ["start_page_id", "0"],
+    ["end_page_id", "99999"],
+  ];
+  const parts: Uint8Array[] = [];
+  const safeFileName = safeMultipartToken(fileName);
+
+  parts.push(
+    encoder.encode(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="files"; filename="${safeFileName}"\r\n` +
+        `Content-Type: application/pdf\r\n\r\n`,
+    ),
+    new Uint8Array(pdfBytes),
+    encoder.encode("\r\n"),
+  );
+
+  for (const [name, value] of fields) {
+    parts.push(
+      encoder.encode(
+        `--${boundary}\r\n` +
+          `Content-Disposition: form-data; name="${safeMultipartToken(name)}"\r\n\r\n` +
+          `${value}\r\n`,
+      ),
+    );
+  }
+
+  parts.push(encoder.encode(`--${boundary}--\r\n`));
+  return {
+    body: concatBytes(parts),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
+function createLocalUploadRequest(
+  fileName: string,
+  pdfBytes: Uint8Array,
+  options: MineruLocalOptions,
+): LocalUploadRequest {
+  const form = createLocalFormData(fileName, pdfBytes, options);
+  if (form) return { body: form, mode: "formdata" };
+
+  const manual = createLocalManualMultipart(fileName, pdfBytes, options);
+  return {
+    body: manual.body,
+    contentType: manual.contentType,
+    mode: "manual",
+  };
+}
+
 async function postLocalFileParse(
   url: string,
-  form: FormData,
+  upload: LocalUploadRequest,
   signal?: AbortSignal,
 ): Promise<LocalBinaryResponse> {
   try {
+    const headers = upload.contentType
+      ? { "Content-Type": upload.contentType }
+      : undefined;
+    if (upload.mode === "manual") {
+      ztoolkit.log("MinerU local: using manual multipart upload fallback");
+    }
     const resp = await getFetch()(url, {
       method: "POST",
-      body: form,
+      ...(headers ? { headers } : {}),
+      body: upload.body as BodyInit,
       signal,
     });
     const contentType = resp.headers.get("content-type");
@@ -619,7 +736,10 @@ async function postLocalFileParse(
   }
 
   const xhr = await Zotero.HTTP.request("POST", url, {
-    body: form as unknown as string,
+    ...(upload.contentType
+      ? { headers: { "Content-Type": upload.contentType } }
+      : {}),
+    body: upload.body as unknown as string,
     responseType: "arraybuffer",
     successCodes: false,
     timeout: POLL_TIMEOUT_MS,
@@ -681,7 +801,7 @@ async function parsePdfViaLocalApi(
   const response = await raceAbort(
     postLocalFileParse(
       endpoint,
-      createLocalFormData(fileName, pdfBytes, options),
+      createLocalUploadRequest(fileName, pdfBytes, options),
       signal,
     ),
     signal,

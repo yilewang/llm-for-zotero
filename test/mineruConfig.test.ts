@@ -9,8 +9,6 @@ import {
   setMineruBackendMode,
   setMineruLocalBaseUrl,
   setMineruLocalFormulaEnable,
-  setMineruLocalHost,
-  setMineruLocalPort,
   setMineruLocalTableEnable,
 } from "../src/utils/mineruConfig";
 
@@ -38,17 +36,17 @@ describe("mineruConfig", function () {
       originalZotero;
   });
 
-  it("defaults local MinerU to the configured LAN service", function () {
+  it("defaults local MinerU to MinerU's FastAPI defaults", function () {
     assert.equal(getMineruBackendMode(), "cloud");
     assert.equal(getMineruLocalOptions().baseUrl, DEFAULT_MINERU_LOCAL_BASE_URL);
-    assert.equal(getMineruLocalOptions().host, "10.9.9.9");
-    assert.equal(getMineruLocalOptions().port, "1337");
+    assert.equal(getMineruLocalOptions().host, "127.0.0.1");
+    assert.equal(getMineruLocalOptions().port, "8000");
   });
 
   it("normalizes local base URLs without requiring a scheme", function () {
     assert.equal(
-      normalizeMineruLocalBaseUrl("10.9.9.9:1337/"),
-      "http://10.9.9.9:1337",
+      normalizeMineruLocalBaseUrl("127.0.0.1:8000/"),
+      "http://127.0.0.1:8000",
     );
     assert.equal(
       normalizeMineruLocalBaseUrl("https://mineru.local:9443///"),
@@ -58,8 +56,6 @@ describe("mineruConfig", function () {
 
   it("persists local backend and connection options", function () {
     setMineruBackendMode("local");
-    setMineruLocalHost("127.0.0.1");
-    setMineruLocalPort("8000");
     setMineruLocalBaseUrl("127.0.0.1:8000");
     setMineruLocalFormulaEnable(false);
     setMineruLocalTableEnable(true);
@@ -71,8 +67,6 @@ describe("mineruConfig", function () {
     assert.equal(getMineruBackendMode(), "local");
     assert.deepInclude(getMineruLocalOptions(), {
       baseUrl: "http://127.0.0.1:8000",
-      host: "127.0.0.1",
-      port: "8000",
       formulaEnable: false,
       tableEnable: true,
     });

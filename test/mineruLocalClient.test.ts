@@ -12,6 +12,8 @@ describe("mineru local client", function () {
   const originalIOUtils = globalScope.IOUtils;
   const originalZtoolkit = globalScope.ztoolkit;
   const originalFetch = globalThis.fetch;
+  const originalFormData = globalThis.FormData;
+  const originalBlob = globalThis.Blob;
 
   beforeEach(function () {
     globalScope.IOUtils = {
@@ -28,6 +30,8 @@ describe("mineru local client", function () {
     globalScope.IOUtils = originalIOUtils;
     globalScope.ztoolkit = originalZtoolkit;
     globalThis.fetch = originalFetch;
+    globalThis.FormData = originalFormData;
+    globalThis.Blob = originalBlob;
   });
 
   it("uploads to /file_parse and extracts the returned ZIP", async function () {
@@ -47,9 +51,9 @@ describe("mineru local client", function () {
     }) as typeof fetch;
 
     const options: MineruLocalOptions = {
-      baseUrl: "http://10.9.9.9:1337",
-      host: "10.9.9.9",
-      port: "1337",
+      baseUrl: "http://127.0.0.1:8000",
+      host: "127.0.0.1",
+      port: "8000",
       language: "ch",
       backend: "hybrid-auto-engine",
       parseMethod: "auto",
@@ -58,12 +62,60 @@ describe("mineru local client", function () {
     };
     const result = await parsePdfWithMineruLocal("/tmp/paper.pdf", options);
 
-    assert.equal(requestedUrl, "http://10.9.9.9:1337/file_parse");
+    assert.equal(requestedUrl, "http://127.0.0.1:8000/file_parse");
     assert.instanceOf(body, FormData);
     assert.equal(result?.mdContent, "# Parsed\nbody");
     assert.sameMembers(
       result?.files.map((file) => file.relativePath) || [],
       ["full.md", "images/fig.png"],
     );
+  });
+
+  it("falls back to manual multipart when FormData is unavailable", async function () {
+    const zipBytes = zipSync({
+      "full.md": strToU8("# Parsed\nbody"),
+    });
+    let contentType = "";
+    let body: unknown;
+    globalThis.FormData = undefined as unknown as typeof FormData;
+    globalThis.Blob = undefined as unknown as typeof Blob;
+    globalScope.ztoolkit = {
+      log: () => undefined,
+      getGlobal: (name: string) =>
+        name === "fetch" ? globalThis.fetch : undefined,
+    };
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      assert.equal(String(input), "http://127.0.0.1:8000/file_parse");
+      contentType = String(
+        (init?.headers as Record<string, string>)?.["Content-Type"] || "",
+      );
+      body = init?.body;
+      return new Response(zipBytes, {
+        status: 200,
+        headers: { "content-type": "application/zip" },
+      });
+    }) as typeof fetch;
+
+    const options: MineruLocalOptions = {
+      baseUrl: "http://127.0.0.1:8000",
+      host: "127.0.0.1",
+      port: "8000",
+      language: "ch",
+      backend: "hybrid-auto-engine",
+      parseMethod: "auto",
+      formulaEnable: true,
+      tableEnable: true,
+    };
+    const result = await parsePdfWithMineruLocal("/tmp/paper.pdf", options);
+
+    assert.match(contentType, /^multipart\/form-data; boundary=/);
+    assert.instanceOf(body, Uint8Array);
+    const bodyText = new TextDecoder().decode(body as Uint8Array);
+    assert.include(bodyText, 'name="files"; filename="paper.pdf"');
+    assert.include(bodyText, 'name="response_format_zip"');
+    assert.equal(result?.mdContent, "# Parsed\nbody");
   });
 });

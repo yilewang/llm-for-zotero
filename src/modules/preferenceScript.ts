@@ -59,8 +59,6 @@ import {
   setMineruApiKey,
   setMineruBackendMode,
   setMineruLocalBaseUrl,
-  setMineruLocalHost,
-  setMineruLocalPort,
   setMineruLocalLanguage,
   setMineruLocalBackend,
   setMineruLocalParseMethod,
@@ -3022,12 +3020,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const mineruLocalSettings = doc.querySelector(
     `#${config.addonRef}-mineru-local-settings`,
   ) as HTMLDivElement | null;
-  const mineruLocalHostInput = doc.querySelector(
-    `#${config.addonRef}-mineru-local-host`,
-  ) as HTMLInputElement | null;
-  const mineruLocalPortInput = doc.querySelector(
-    `#${config.addonRef}-mineru-local-port`,
-  ) as HTMLInputElement | null;
   const mineruLocalBaseUrlInput = doc.querySelector(
     `#${config.addonRef}-mineru-local-base-url`,
   ) as HTMLInputElement | null;
@@ -3103,30 +3095,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         mineruBackendSelect.value === "local" ? "local" : "cloud",
       );
       syncMineruBackendVisibility();
-    });
-  }
-  if (mineruLocalHostInput) {
-    mineruLocalHostInput.value = localOptions.host;
-    mineruLocalHostInput.addEventListener("change", () => {
-      const host = mineruLocalHostInput.value.trim();
-      const port = mineruLocalPortInput?.value.trim() || localOptions.port;
-      setMineruLocalHost(host);
-      setMineruLocalBaseUrl(`http://${host || localOptions.host}:${port}`);
-      if (mineruLocalBaseUrlInput) {
-        mineruLocalBaseUrlInput.value = getMineruLocalOptions().baseUrl;
-      }
-    });
-  }
-  if (mineruLocalPortInput) {
-    mineruLocalPortInput.value = localOptions.port;
-    mineruLocalPortInput.addEventListener("change", () => {
-      const host = mineruLocalHostInput?.value.trim() || localOptions.host;
-      const port = mineruLocalPortInput.value.trim();
-      setMineruLocalPort(port);
-      setMineruLocalBaseUrl(`http://${host}:${port || localOptions.port}`);
-      if (mineruLocalBaseUrlInput) {
-        mineruLocalBaseUrlInput.value = getMineruLocalOptions().baseUrl;
-      }
     });
   }
   if (mineruLocalBaseUrlInput) {

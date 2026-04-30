@@ -27,8 +27,8 @@ export type MineruLocalOptions = {
   tableEnable: boolean;
 };
 
-const DEFAULT_MINERU_LOCAL_HOST = "10.9.9.9";
-const DEFAULT_MINERU_LOCAL_PORT = "1337";
+const DEFAULT_MINERU_LOCAL_HOST = "127.0.0.1";
+const DEFAULT_MINERU_LOCAL_PORT = "8000";
 export const DEFAULT_MINERU_LOCAL_BASE_URL = `http://${DEFAULT_MINERU_LOCAL_HOST}:${DEFAULT_MINERU_LOCAL_PORT}`;
 export const DEFAULT_MINERU_LOCAL_LANGUAGE = "ch";
 export const DEFAULT_MINERU_LOCAL_BACKEND = "hybrid-auto-engine";
