@@ -218,6 +218,14 @@ function onShutdown(): void {
  */
 let paperSearchInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
 
+export function flushPaperSearchInvalidationForTests(): void {
+  if (paperSearchInvalidateTimer !== null) {
+    clearTimeout(paperSearchInvalidateTimer);
+    paperSearchInvalidateTimer = null;
+  }
+  invalidatePaperSearchCache();
+}
+
 async function onNotify(
   event: string,
   type: string,

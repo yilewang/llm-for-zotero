@@ -223,6 +223,17 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
     let fetchFailures: { mode: SearchMode; error: string }[] = [];
     let resolution: Awaited<ReturnType<typeof ctx.requestConfirmation>>;
 
+    const countUniqueDiscoveredRows = (rows: PaperRow[]): number => {
+      const keys = new Set<string>();
+      for (const row of rows) {
+        const key =
+          row.importIdentifier?.trim().toLowerCase() ||
+          `${row.title.trim().toLowerCase()}:${row.subtitle || ""}`;
+        if (key) keys.add(key);
+      }
+      return keys.size;
+    };
+
     const extractFetchResult = (
       settled: PromiseSettledResult<FetchModeResult>,
       mode: SearchMode,
@@ -251,7 +262,7 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
       ref = refResult.rows;
       cit = citResult.rows;
       allRows = [...rec, ...ref, ...cit];
-      totalDiscovered = allRows.length;
+      totalDiscovered = countUniqueDiscoveredRows(allRows);
       fetchFailures = [
         { mode: "recommendations" as const, result: recResult },
         { mode: "references" as const, result: refResult },
@@ -415,9 +426,17 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
     }
 
     const finalData = (resolution.data || {}) as Record<string, unknown>;
-    const selectedIds = Array.isArray(finalData.selectedPaperIds)
+    const rawSelectedIds = Array.isArray(finalData.selectedPaperIds)
       ? (finalData.selectedPaperIds as string[])
       : rec.map((p) => p.id);
+    const selectedIds = rawSelectedIds.map((id) => {
+      const legacyMatch = /^paper-(\d+)$/i.exec(id);
+      if (!legacyMatch) return id;
+      const legacyIndex = Number(legacyMatch[1]);
+      return Number.isFinite(legacyIndex) && legacyIndex > 0
+        ? allRows[legacyIndex - 1]?.id || id
+        : id;
+    });
 
     const selectedPapers = allRows.filter((p) => selectedIds.includes(p.id));
     const identifiers = Array.from(

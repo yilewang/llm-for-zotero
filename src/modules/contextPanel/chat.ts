@@ -178,7 +178,8 @@ import {
   resolveConversationSystemForItem,
   resolveDisplayConversationKind,
 } from "./portalScope";
-import { buildChatHistoryNotePayload, readNoteSnapshot } from "./notes";
+import { buildChatHistoryNotePayload } from "./notes";
+import { readNoteSnapshot } from "./noteSnapshot";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { canEditUserPromptTurn } from "./editability";
@@ -209,6 +210,9 @@ import {
   SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY,
   SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY,
 } from "./queuedFollowUps";
+import { getConversationKey } from "./conversationIdentity";
+
+export { getConversationKey } from "./conversationIdentity";
 
 /** Get AbortController constructor from global scope */
 function getAbortControllerCtor(): new () => AbortController {
@@ -717,13 +721,6 @@ export function syncUserContextAlignmentWidths(body: Element): void {
       wrapper.style.removeProperty("--llm-user-bubble-width");
     }
   }
-}
-
-export function getConversationKey(item: Zotero.Item): number {
-  if (item.isAttachment() && item.parentID) {
-    return item.parentID;
-  }
-  return item.id;
 }
 
 type ChatScrollMode = "followBottom" | "manual";

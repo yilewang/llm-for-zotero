@@ -92,6 +92,10 @@ export class RetrievalService {
         pdfContext,
         params.question,
         {
+          apiBase: params.apiBase,
+          apiKey: params.apiKey,
+        },
+        {
           topK: perPaperTopK,
           mode: "evidence",
         },

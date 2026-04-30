@@ -23,12 +23,13 @@
   "scripts": {
     "start": "zotero-plugin serve",
     "build": "zotero-plugin build && npm run typecheck",
+    "check:cycles": "node scripts/check-import-cycles.cjs",
     "lint:check": "prettier --check . && eslint .",
     "lint:fix": "prettier --write . && eslint . --fix",
     "release": "zotero-plugin release",
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && zotero-plugin test",
-    "test:unit": "npx tsx node_modules/mocha/bin/mocha.js 'test/**/*.test.ts'",
+    "test:unit": "npx tsx node_modules/mocha/bin/mocha.js --require ./test/register.cjs 'test/**/*.test.ts'",
     "update-deps": "npm update --save"
   },
   "dependencies": {

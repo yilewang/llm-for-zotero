@@ -1,4 +1,3 @@
-import type { ChatMessage } from "../utils/llmClient";
 import type { ModelProviderAuthMode } from "../utils/modelProviders";
 import type { ProviderProtocol } from "../utils/providerProtocol";
 import type {
@@ -10,9 +9,10 @@ import type {
   SelectedTextSource,
 } from "../shared/types";
 import type {
+  ChatMessage,
   ReasoningConfig as LLMReasoningConfig,
   UsageStats,
-} from "../utils/llmClient";
+} from "../shared/llm";
 
 export type AgentRequest = {
   conversationKey: number;

@@ -7,40 +7,58 @@ const NOTES_DIR_FOLDER_KEY = `${config.prefsPrefix}.obsidianTargetFolder`;
 const NOTES_DIR_ATTACHMENTS_KEY = `${config.prefsPrefix}.obsidianAttachmentsFolder`;
 const NOTES_DIR_NICKNAME_KEY = `${config.prefsPrefix}.notesDirectoryNickname`;
 
+type ZoteroPrefsLike = {
+  get?: (key: string, global?: boolean) => unknown;
+  set?: (key: string, value: unknown, global?: boolean) => void;
+};
+
+function getPrefs(): ZoteroPrefsLike | null {
+  return (
+    (globalThis as typeof globalThis & {
+      Zotero?: { Prefs?: ZoteroPrefsLike };
+    }).Zotero?.Prefs || null
+  );
+}
+
+function getStringPref(key: string, fallback = ""): string {
+  const value = getPrefs()?.get?.(key, true);
+  return typeof value === "string" ? value : fallback;
+}
+
+function setStringPref(key: string, value: string): void {
+  getPrefs()?.set?.(key, value, true);
+}
+
 export function getNotesDirectoryPath(): string {
-  const value = Zotero.Prefs.get(NOTES_DIR_PATH_KEY, true);
-  return typeof value === "string" ? value : "";
+  return getStringPref(NOTES_DIR_PATH_KEY);
 }
 
 export function setNotesDirectoryPath(value: string): void {
-  Zotero.Prefs.set(NOTES_DIR_PATH_KEY, value, true);
+  setStringPref(NOTES_DIR_PATH_KEY, value);
 }
 
 export function getNotesDirectoryFolder(): string {
-  const value = Zotero.Prefs.get(NOTES_DIR_FOLDER_KEY, true);
-  return typeof value === "string" ? value : "Zotero Notes";
+  return getStringPref(NOTES_DIR_FOLDER_KEY, "Zotero Notes");
 }
 
 export function setNotesDirectoryFolder(value: string): void {
-  Zotero.Prefs.set(NOTES_DIR_FOLDER_KEY, value, true);
+  setStringPref(NOTES_DIR_FOLDER_KEY, value);
 }
 
 export function getNotesDirectoryAttachmentsFolder(): string {
-  const value = Zotero.Prefs.get(NOTES_DIR_ATTACHMENTS_KEY, true);
-  return typeof value === "string" ? value : "assets";
+  return getStringPref(NOTES_DIR_ATTACHMENTS_KEY, "assets");
 }
 
 export function setNotesDirectoryAttachmentsFolder(value: string): void {
-  Zotero.Prefs.set(NOTES_DIR_ATTACHMENTS_KEY, value, true);
+  setStringPref(NOTES_DIR_ATTACHMENTS_KEY, value);
 }
 
 export function getNotesDirectoryNickname(): string {
-  const value = Zotero.Prefs.get(NOTES_DIR_NICKNAME_KEY, true);
-  return typeof value === "string" ? value : "";
+  return getStringPref(NOTES_DIR_NICKNAME_KEY);
 }
 
 export function setNotesDirectoryNickname(value: string): void {
-  Zotero.Prefs.set(NOTES_DIR_NICKNAME_KEY, value, true);
+  setStringPref(NOTES_DIR_NICKNAME_KEY, value);
 }
 
 export function isNotesDirectoryConfigured(): boolean {

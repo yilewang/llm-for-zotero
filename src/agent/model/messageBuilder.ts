@@ -7,7 +7,8 @@ import { AGENT_PERSONA_INSTRUCTIONS } from "./agentPersona";
 import { buildAgentMemoryBlock } from "../store/conversationMemory";
 import { getAllSkills } from "../skills";
 
-import { isTextOnlyModel } from "../../providers";
+import { resolveProviderCapabilities } from "../../providers";
+import type { ProviderCapabilities } from "../../providers";
 import {
   isNotesDirectoryConfigured,
   getNotesDirectoryPath,
@@ -21,7 +22,18 @@ import { buildRuntimePlatformGuidanceText } from "../../utils/runtimePlatform";
 export function isMultimodalRequestSupported(
   request: AgentRuntimeRequest,
 ): boolean {
-  return !isTextOnlyModel(request.model || "");
+  return resolveRequestProviderCapabilities(request).multimodal;
+}
+
+function resolveRequestProviderCapabilities(
+  request: AgentRuntimeRequest,
+): ProviderCapabilities {
+  return resolveProviderCapabilities({
+    model: request.model || "",
+    protocol: request.providerProtocol,
+    authMode: request.authMode,
+    apiBase: request.apiBase,
+  });
 }
 
 export function stringifyMessageContent(
@@ -381,7 +393,7 @@ function buildRuntimePlatformSection(): string {
 }
 
 function buildTextOnlyModelInstruction(request: AgentRuntimeRequest): string {
-  if (!isTextOnlyModel(request.model || "")) return "";
+  if (resolveRequestProviderCapabilities(request).multimodal) return "";
   const modelLabel = (request.model || "selected model").trim();
   return (
     `MODEL LIMITATION: ${modelLabel} is treated as text-only in this plugin. ` +

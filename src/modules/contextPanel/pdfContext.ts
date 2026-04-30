@@ -1599,7 +1599,15 @@ export async function buildPaperRetrievalCandidates(
   paperContext: PaperContextRef,
   pdfContext: PdfContext | undefined,
   question: string,
-  options?: {
+  apiOverridesOrOptions?: {
+    apiBase?: string;
+    apiKey?: string;
+    topK?: number;
+    mode?: "general" | "evidence";
+    /** Pre-computed query embedding to avoid redundant API calls in multi-paper loops. */
+    precomputedQueryEmbedding?: number[];
+  },
+  compatibilityOptions?: {
     topK?: number;
     mode?: "general" | "evidence";
     /** Pre-computed query embedding to avoid redundant API calls in multi-paper loops. */
@@ -1607,6 +1615,13 @@ export async function buildPaperRetrievalCandidates(
   },
 ): Promise<PaperContextCandidate[]> {
   if (!pdfContext) return [];
+  const options =
+    compatibilityOptions ||
+    ("topK" in (apiOverridesOrOptions || {}) ||
+    "mode" in (apiOverridesOrOptions || {}) ||
+    "precomputedQueryEmbedding" in (apiOverridesOrOptions || {})
+      ? apiOverridesOrOptions
+      : undefined);
   const { chunks, chunkStats, docFreq, avgChunkLength } = pdfContext;
   if (!chunks.length || !chunkStats.length) return [];
   const chunkMeta =

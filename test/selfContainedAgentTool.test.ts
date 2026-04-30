@@ -90,19 +90,21 @@ class InspectingAdapter implements AgentModelAdapter {
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
     const systemMessage = params.messages[0];
     this.sawGuidance =
-      systemMessage?.role === "system" &&
-      typeof systemMessage.content === "string" &&
-      systemMessage.content.includes("self_contained_test_tool");
-    this.sawFollowup = params.messages.some(
-      (message) =>
-        message.role === "user" &&
-        Array.isArray(message.content) &&
-        message.content.some(
-          (part) =>
-            part.type === "text" &&
-            part.text.includes("Self-contained follow-up:"),
-        ),
-    );
+      this.sawGuidance ||
+      (systemMessage?.role === "system" &&
+        typeof systemMessage.content === "string" &&
+        systemMessage.content.includes("self_contained_test_tool"));
+    this.sawFollowup = params.messages.some((message) => {
+      if (message.role !== "user") return false;
+      if (typeof message.content === "string") {
+        return message.content.includes("Self-contained follow-up:");
+      }
+      return message.content.some(
+        (part) =>
+          part.type === "text" &&
+          part.text.includes("Self-contained follow-up:"),
+      );
+    });
     if (!this.sawFollowup) {
       return {
         kind: "tool_calls",
