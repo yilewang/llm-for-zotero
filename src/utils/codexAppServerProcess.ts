@@ -158,8 +158,10 @@ export class CodexAppServerProcess {
       environment = invocation.environment;
       inputPathMapper = invocation.inputPathMapper;
     } else {
-      command = binary;
-      args = ["app-server"];
+      const invocation = await buildPosixCodexInvocation(binary, info);
+      command = invocation.command;
+      args = invocation.args;
+      environment = invocation.environment;
     }
 
     let proc: any;
@@ -1496,9 +1498,14 @@ function formatLaunchDescription(command: string, args: string[]): string {
   return [command, ...args].join(" ");
 }
 
-function getWindowsDirectory(path: string): string {
+function getPathDirectory(path: string): string {
   const index = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
-  return index >= 0 ? path.slice(0, index) : "";
+  if (index < 0) return "";
+  return path.slice(0, index) || "/";
+}
+
+function getWindowsDirectory(path: string): string {
+  return getPathDirectory(path);
 }
 
 async function buildWindowsCodexInvocation(
@@ -1564,6 +1571,59 @@ async function buildWindowsCodexInvocation(
   return {
     command: info.shellPath,
     args: ["/d", "/s", info.shellFlag, buildWindowsShellCommand(binary)],
+  };
+}
+
+async function buildPosixCodexInvocation(
+  binary: string,
+  info: ReturnType<typeof getRuntimePlatformInfo>,
+): Promise<CodexLaunchInvocation> {
+  const env = getCodexRuntimeEnv();
+  const homeDir = getNonEmptyEnvValue(env, "HOME") || "";
+  const prefixCandidates = uniquePaths(
+    [
+      getNonEmptyEnvValue(env, "NPM_CONFIG_PREFIX"),
+      getNonEmptyEnvValue(env, "npm_config_prefix"),
+      getNonEmptyEnvValue(env, "PREFIX"),
+    ]
+      .filter((entry): entry is string => Boolean(entry))
+      .flatMap((prefix) =>
+        buildPrefixCodexCandidates({
+          prefix,
+          platform: info.platform,
+          separator: "/",
+        }),
+      ),
+  );
+  const nvmCandidates = homeDir
+    ? await listNvmCodexCandidates({
+        homeDir,
+        nvmDir: getNonEmptyEnvValue(env, "NVM_DIR"),
+        separator: "/",
+      })
+    : [];
+  const pathEntries = uniquePaths([
+    getPathDirectory(binary),
+    ...prefixCandidates.map(getPathDirectory),
+    homeDir ? joinRuntimePath("/", homeDir, ".cargo", "bin") : "",
+    homeDir ? joinRuntimePath("/", homeDir, ".npm-global", "bin") : "",
+    homeDir ? joinRuntimePath("/", homeDir, ".local", "bin") : "",
+    homeDir ? joinRuntimePath("/", homeDir, ".volta", "bin") : "",
+    homeDir ? joinRuntimePath("/", homeDir, ".asdf", "shims") : "",
+    ...nvmCandidates.map(getPathDirectory),
+    ...(info.platform === "macos" ? ["/opt/homebrew/bin"] : []),
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+  ]);
+  const inheritedPath = getNonEmptyEnvValue(env, "PATH") || "";
+  const path = uniquePaths([...pathEntries, ...inheritedPath.split(":")]).join(
+    ":",
+  );
+  return {
+    command: binary,
+    args: ["app-server"],
+    ...(path ? { environment: { PATH: path } } : {}),
   };
 }
 

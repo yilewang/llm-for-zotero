@@ -646,9 +646,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const codexAppServerSettingsWrap = doc.querySelector(
     `#${config.addonRef}-codex-app-server-settings`,
   ) as HTMLDivElement | null;
-  const codexAppServerModelSelect = doc.querySelector(
+  const codexAppServerModelInput = doc.querySelector(
     `#${config.addonRef}-codex-app-server-model`,
-  ) as HTMLSelectElement | null;
+  ) as HTMLInputElement | null;
   const codexAppServerReasoningSelect = doc.querySelector(
     `#${config.addonRef}-codex-app-server-reasoning`,
   ) as HTMLSelectElement | null;
@@ -1953,10 +1953,16 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
-  if (codexAppServerModelSelect) {
-    codexAppServerModelSelect.value = getCodexRuntimeModelPref();
-    codexAppServerModelSelect.addEventListener("change", () => {
-      setCodexRuntimeModelPref(codexAppServerModelSelect.value);
+  if (codexAppServerModelInput) {
+    codexAppServerModelInput.value = getCodexRuntimeModelPref();
+    const commitCodexModel = () => {
+      setCodexRuntimeModelPref(codexAppServerModelInput.value);
+      codexAppServerModelInput.value = getCodexRuntimeModelPref();
+    };
+    codexAppServerModelInput.addEventListener("change", commitCodexModel);
+    codexAppServerModelInput.addEventListener("blur", commitCodexModel);
+    codexAppServerModelInput.addEventListener("input", () => {
+      setCodexRuntimeModelPref(codexAppServerModelInput.value);
     });
   }
 
@@ -1978,7 +1984,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         codexAppServerStatus.textContent = t("Testing…");
         try {
           const result = await runCodexAppServerConnectionTest({
-            modelName: codexAppServerModelSelect?.value || getCodexRuntimeModelPref(),
+            modelName:
+              codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
             codexPath: "",
           });
           codexAppServerStatus.textContent =

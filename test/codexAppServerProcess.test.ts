@@ -1825,6 +1825,60 @@ describe("codexAppServerProcess", function () {
     });
     assert.equal(calls[1]?.command, "/opt/homebrew/bin/codex");
     assert.deepEqual(calls[1]?.arguments, ["app-server"]);
+    assert.equal(calls[1]?.environmentAppend, true);
+    assert.include(calls[1]?.environment?.PATH || "", "/opt/homebrew/bin");
+  });
+
+  it("prepends the nvm codex bin directory to PATH when launching on macOS", async function () {
+    const calls: SubprocessCallOptions[] = [];
+    const codexPath = "/Users/alice/.nvm/versions/node/v24.13.0/bin/codex";
+    const codexDir = "/Users/alice/.nvm/versions/node/v24.13.0/bin";
+
+    await withRuntimeStubs(
+      {
+        env: {
+          HOME: "/Users/alice",
+          NVM_DIR: "/Users/alice/.nvm",
+          CODEX_PATH: "",
+          PATH: "/usr/bin:/bin",
+        },
+        ioExists: async (path) => path === codexPath,
+        ioGetChildren: async (path) =>
+          path === "/Users/alice/.nvm/versions/node" ? ["v24.13.0"] : [],
+        platform: "macos",
+        stubProcessLifecycle: true,
+        subprocessCall: async (options) => {
+          calls.push(options);
+          if (
+            options.command === "/bin/zsh" &&
+            options.arguments[1] === "which codex"
+          ) {
+            return {
+              stdout: {
+                readString: async () => "",
+              },
+              wait: async () => ({ exitCode: 1 }),
+            };
+          }
+          return {
+            stdin: { write: () => {} },
+            kill: () => {},
+          };
+        },
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn();
+        proc.destroy();
+      },
+    );
+
+    assert.equal(calls[1]?.command, codexPath);
+    assert.deepEqual(calls[1]?.arguments, ["app-server"]);
+    assert.equal(calls[1]?.environmentAppend, true);
+    assert.match(
+      calls[1]?.environment?.PATH || "",
+      new RegExp(`^${codexDir}:`),
+    );
   });
 
   it("finds codex in an npm prefix bin without relying on PATH", async function () {

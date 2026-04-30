@@ -2,7 +2,7 @@ declare const Zotero: any;
 
 import { config } from "../../package.json";
 import {
-  CODEX_MODEL_OPTIONS,
+  DEFAULT_CODEX_RUNTIME_MODEL,
   CODEX_REASONING_OPTIONS,
   getCodexGlobalConversationKeyRange,
   getCodexPaperConversationKeyRange,
@@ -102,15 +102,13 @@ export function setCodexAppServerModeEnabled(enabled: boolean): void {
 }
 
 export function getCodexRuntimeModelPref(): CodexRuntimeModel {
-  const raw = getStringPref("codexAppServerModel").trim().toLowerCase();
-  return CODEX_MODEL_OPTIONS.includes(raw as CodexRuntimeModel)
-    ? (raw as CodexRuntimeModel)
-    : "gpt-5.4";
+  return (
+    getStringPref("codexAppServerModel").trim() || DEFAULT_CODEX_RUNTIME_MODEL
+  );
 }
 
 export function setCodexRuntimeModelPref(model: string): void {
-  const normalized = model.trim().toLowerCase();
-  if (!CODEX_MODEL_OPTIONS.includes(normalized as CodexRuntimeModel)) return;
+  const normalized = model.trim() || DEFAULT_CODEX_RUNTIME_MODEL;
   setPref("codexAppServerModel", normalized);
 }
 

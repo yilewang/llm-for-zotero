@@ -293,17 +293,13 @@
                     <html:label for="__addonRef__-codex-app-server-model" style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
                       Model
                     </html:label>
-                    <html:select id="__addonRef__-codex-app-server-model" style="width: 100%; max-width: none; padding: 4px 8px; font-size: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background: Field; color: FieldText;">
-                      <html:option value="gpt-5.4">gpt-5.4</html:option>
-                      <html:option value="gpt-5.3-codex">gpt-5.3-codex</html:option>
-                      <html:option value="gpt-5.2-codex">gpt-5.2-codex</html:option>
-                    </html:select>
+                    <html:input id="__addonRef__-codex-app-server-model" type="text" placeholder="gpt-5.4" style="width: 100%; max-width: none; height: 28px; margin: 0; padding: 4px 8px; font-size: 12px; line-height: 18px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background: Field; color: FieldText; box-sizing: border-box;" />
                   </html:div>
                   <html:div style="display: flex; flex-direction: column; gap: 4px;">
                     <html:label for="__addonRef__-codex-app-server-reasoning" style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
                       Reasoning
                     </html:label>
-                    <html:select id="__addonRef__-codex-app-server-reasoning" style="width: 100%; max-width: none; padding: 4px 8px; font-size: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background: Field; color: FieldText;">
+                    <html:select id="__addonRef__-codex-app-server-reasoning" style="width: 100%; max-width: none; height: 28px; margin: 0; padding: 4px 8px; font-size: 12px; line-height: 18px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background: Field; color: FieldText; box-sizing: border-box;">
                       <html:option value="auto">Auto</html:option>
                       <html:option value="low">Low</html:option>
                       <html:option value="medium">Medium</html:option>
@@ -312,6 +308,9 @@
                     </html:select>
                   </html:div>
                 </html:div>
+                <html:span style="font-size: 11px; color: var(--fill-secondary, #777); line-height: 1.45; display: block;">
+                  Enter a Codex app-server model ID, for example <html:code>gpt-5.4</html:code>, <html:code>gpt-5.3-codex</html:code>, or <html:code>gpt-5.2-codex</html:code>. Use the model name accepted by your installed Codex CLI.
+                </html:span>
 
                 <html:div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                   <html:button id="__addonRef__-codex-app-server-test" type="button" style="padding: 4px 10px; font-size: 12px; font-weight: 500; white-space: nowrap; background: transparent; color: var(--color-accent, #2563eb); border: 1px solid var(--color-accent, #2563eb); border-radius: 5px; cursor: pointer;">

@@ -11,7 +11,8 @@ export const CODEX_MODEL_OPTIONS = [
   "gpt-5.3-codex",
   "gpt-5.2-codex",
 ] as const;
-export type CodexRuntimeModel = (typeof CODEX_MODEL_OPTIONS)[number];
+export const DEFAULT_CODEX_RUNTIME_MODEL = "gpt-5.4";
+export type CodexRuntimeModel = string;
 
 export const CODEX_REASONING_OPTIONS = [
   "auto",
