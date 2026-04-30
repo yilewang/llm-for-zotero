@@ -53,8 +53,19 @@ import { joinLocalPath } from "../utils/localPath";
 import {
   isMineruEnabled,
   getMineruApiKey,
+  getMineruBackendMode,
+  getMineruLocalOptions,
   setMineruEnabled,
   setMineruApiKey,
+  setMineruBackendMode,
+  setMineruLocalBaseUrl,
+  setMineruLocalHost,
+  setMineruLocalPort,
+  setMineruLocalLanguage,
+  setMineruLocalBackend,
+  setMineruLocalParseMethod,
+  setMineruLocalFormulaEnable,
+  setMineruLocalTableEnable,
   isGlobalAutoParseEnabled,
   setGlobalAutoParseEnabled,
   getMineruExcludePatterns,
@@ -70,7 +81,10 @@ import {
   getNotesDirectoryNickname,
   setNotesDirectoryNickname,
 } from "../utils/notesDirectoryConfig";
-import { testMineruConnection } from "../utils/mineruClient";
+import {
+  testMineruConnection,
+  testMineruLocalConnection,
+} from "../utils/mineruClient";
 import { registerMineruManagerScript } from "./mineruManagerScript";
 import { getRuntimePlatformInfo } from "../utils/runtimePlatform";
 import {
@@ -2999,6 +3013,39 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const mineruApiKeyInput = doc.querySelector(
     `#${config.addonRef}-mineru-api-key`,
   ) as HTMLInputElement | null;
+  const mineruBackendSelect = doc.querySelector(
+    `#${config.addonRef}-mineru-backend`,
+  ) as HTMLSelectElement | null;
+  const mineruCloudSettings = doc.querySelector(
+    `#${config.addonRef}-mineru-cloud-settings`,
+  ) as HTMLDivElement | null;
+  const mineruLocalSettings = doc.querySelector(
+    `#${config.addonRef}-mineru-local-settings`,
+  ) as HTMLDivElement | null;
+  const mineruLocalHostInput = doc.querySelector(
+    `#${config.addonRef}-mineru-local-host`,
+  ) as HTMLInputElement | null;
+  const mineruLocalPortInput = doc.querySelector(
+    `#${config.addonRef}-mineru-local-port`,
+  ) as HTMLInputElement | null;
+  const mineruLocalBaseUrlInput = doc.querySelector(
+    `#${config.addonRef}-mineru-local-base-url`,
+  ) as HTMLInputElement | null;
+  const mineruLocalBackendSelect = doc.querySelector(
+    `#${config.addonRef}-mineru-local-backend`,
+  ) as HTMLSelectElement | null;
+  const mineruLocalParseMethodSelect = doc.querySelector(
+    `#${config.addonRef}-mineru-local-parse-method`,
+  ) as HTMLSelectElement | null;
+  const mineruLocalFormulaInput = doc.querySelector(
+    `#${config.addonRef}-mineru-local-formula`,
+  ) as HTMLInputElement | null;
+  const mineruLocalTableInput = doc.querySelector(
+    `#${config.addonRef}-mineru-local-table`,
+  ) as HTMLInputElement | null;
+  const mineruLocalLanguageInput = doc.querySelector(
+    `#${config.addonRef}-mineru-local-language`,
+  ) as HTMLInputElement | null;
   const mineruTestBtn = doc.querySelector(
     `#${config.addonRef}-mineru-test`,
   ) as HTMLButtonElement | null;
@@ -3038,10 +3085,93 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  const localOptions = getMineruLocalOptions();
+  if (mineruBackendSelect) {
+    mineruBackendSelect.value = getMineruBackendMode();
+    const syncMineruBackendVisibility = () => {
+      const isLocal = mineruBackendSelect.value === "local";
+      if (mineruCloudSettings) {
+        mineruCloudSettings.style.display = isLocal ? "none" : "flex";
+      }
+      if (mineruLocalSettings) {
+        mineruLocalSettings.style.display = isLocal ? "flex" : "none";
+      }
+    };
+    syncMineruBackendVisibility();
+    mineruBackendSelect.addEventListener("change", () => {
+      setMineruBackendMode(
+        mineruBackendSelect.value === "local" ? "local" : "cloud",
+      );
+      syncMineruBackendVisibility();
+    });
+  }
+  if (mineruLocalHostInput) {
+    mineruLocalHostInput.value = localOptions.host;
+    mineruLocalHostInput.addEventListener("change", () => {
+      const host = mineruLocalHostInput.value.trim();
+      const port = mineruLocalPortInput?.value.trim() || localOptions.port;
+      setMineruLocalHost(host);
+      setMineruLocalBaseUrl(`http://${host || localOptions.host}:${port}`);
+      if (mineruLocalBaseUrlInput) {
+        mineruLocalBaseUrlInput.value = getMineruLocalOptions().baseUrl;
+      }
+    });
+  }
+  if (mineruLocalPortInput) {
+    mineruLocalPortInput.value = localOptions.port;
+    mineruLocalPortInput.addEventListener("change", () => {
+      const host = mineruLocalHostInput?.value.trim() || localOptions.host;
+      const port = mineruLocalPortInput.value.trim();
+      setMineruLocalPort(port);
+      setMineruLocalBaseUrl(`http://${host}:${port || localOptions.port}`);
+      if (mineruLocalBaseUrlInput) {
+        mineruLocalBaseUrlInput.value = getMineruLocalOptions().baseUrl;
+      }
+    });
+  }
+  if (mineruLocalBaseUrlInput) {
+    mineruLocalBaseUrlInput.value = localOptions.baseUrl;
+    mineruLocalBaseUrlInput.addEventListener("change", () => {
+      setMineruLocalBaseUrl(mineruLocalBaseUrlInput.value);
+      mineruLocalBaseUrlInput.value = getMineruLocalOptions().baseUrl;
+    });
+  }
+  if (mineruLocalBackendSelect) {
+    mineruLocalBackendSelect.value = localOptions.backend;
+    mineruLocalBackendSelect.addEventListener("change", () => {
+      setMineruLocalBackend(mineruLocalBackendSelect.value);
+    });
+  }
+  if (mineruLocalParseMethodSelect) {
+    mineruLocalParseMethodSelect.value = localOptions.parseMethod;
+    mineruLocalParseMethodSelect.addEventListener("change", () => {
+      setMineruLocalParseMethod(mineruLocalParseMethodSelect.value);
+    });
+  }
+  if (mineruLocalFormulaInput) {
+    mineruLocalFormulaInput.checked = localOptions.formulaEnable;
+    mineruLocalFormulaInput.addEventListener("change", () => {
+      setMineruLocalFormulaEnable(mineruLocalFormulaInput.checked);
+    });
+  }
+  if (mineruLocalTableInput) {
+    mineruLocalTableInput.checked = localOptions.tableEnable;
+    mineruLocalTableInput.addEventListener("change", () => {
+      setMineruLocalTableEnable(mineruLocalTableInput.checked);
+    });
+  }
+  if (mineruLocalLanguageInput) {
+    mineruLocalLanguageInput.value = localOptions.language;
+    mineruLocalLanguageInput.addEventListener("change", () => {
+      setMineruLocalLanguage(mineruLocalLanguageInput.value);
+    });
+  }
+
   if (mineruTestBtn && mineruTestStatus) {
     const runMineruTest = async () => {
+      const backend = getMineruBackendMode();
       const apiKey = getMineruApiKey().trim();
-      if (!apiKey) {
+      if (backend === "cloud" && !apiKey) {
         mineruTestStatus.style.display = "inline";
         mineruTestStatus.textContent = t("Enter an API key first");
         mineruTestStatus.style.color = "var(--fill-secondary, #888)";
@@ -3052,7 +3182,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       mineruTestStatus.textContent = t("Testing…");
       mineruTestStatus.style.color = "var(--fill-secondary, #888)";
       try {
-        await testMineruConnection(apiKey);
+        if (backend === "local") {
+          await testMineruLocalConnection(getMineruLocalOptions().baseUrl);
+        } else {
+          await testMineruConnection(apiKey);
+        }
         mineruTestStatus.textContent = t("✓ Connection successful");
         mineruTestStatus.style.color = "green";
       } catch (error) {

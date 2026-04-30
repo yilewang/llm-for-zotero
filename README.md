@@ -598,7 +598,7 @@ The Zotero UI exposes `opus`, `sonnet`, and `haiku` as capability tiers. They do
 
 ## MinerU PDF Parsing
 
-**MinerU** is an advanced PDF parsing engine that extracts high-fidelity Markdown from PDFs — preserving tables, equations, figures, and complex layouts that standard text extraction often mangles. When enabled, the plugin sends your PDF to the MinerU API for parsing and caches the result locally. All subsequent interactions with that paper use the MinerU-parsed content, giving the LLM much richer and more accurate context.
+**MinerU** is an advanced PDF parsing engine that extracts high-fidelity Markdown from PDFs — preserving tables, equations, figures, and complex layouts that standard text extraction often mangles. When enabled, the plugin sends your PDF to either the MinerU cloud API or a local MinerU FastAPI service, then caches the result locally. All subsequent interactions with that paper use the MinerU-parsed content, giving the LLM much richer and more accurate context.
 
 <p align="center">
   <img src="./assets/minerU.png" alt="Screenshot showing MinerU PDF parsing results in the plugin" width="1024" />
@@ -608,8 +608,13 @@ The Zotero UI exposes `opus`, `sonnet`, and `haiku` as capability tiers. They do
 
 1. Open Zotero → `Preferences` → `llm-for-zotero` tab.
 2. Find the **MinerU** section and check **Enable MinerU**.
-3. (Optional) Enter your own MinerU API key — see below.
-4. Open any PDF and start chatting. The plugin will automatically parse the PDF with MinerU on first use and cache the result for future conversations.
+3. Choose **Cloud API** or **Local FastAPI** as the MinerU backend.
+4. For cloud parsing, optionally enter your own MinerU API key — see below. For local parsing, enter the local host, port, or base URL for your `mineru-api` service.
+5. Open any PDF and start chatting. The plugin will automatically parse the PDF with MinerU on first use and cache the result for future conversations.
+
+### Using a local MinerU API
+
+Start MinerU's FastAPI server with `mineru-api --host 0.0.0.0 --port 8000`, then set the MinerU backend to **Local FastAPI**. The plugin posts PDFs to `/file_parse` with ZIP output enabled, so extracted Markdown, content JSON, and figures are cached the same way as cloud MinerU results.
 
 ### Using your own API key
 
@@ -634,8 +639,8 @@ When a personal API key is provided, the plugin calls the MinerU API directly (`
 - [x] File-based notes (Obsidian, Logseq, any Markdown directory)
 - [x] Claude Code integration
 - [x] Codex App Server integration
-- [ ] Local MinerU support
-- [ ] Customized parameter of MinerU parsing
+- [x] Local MinerU support
+- [x] Customized parameter of MinerU parsing
 - [x] Customized skills
 - [ ] Cross-device synchronization (MinerU cache or conversation history)
 - [ ] Agent memory system

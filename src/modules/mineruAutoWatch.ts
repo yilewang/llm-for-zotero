@@ -1,11 +1,10 @@
 import { config } from "../../package.json";
 import {
-  getMineruApiKey,
   isGlobalAutoParseEnabled,
   isFilenameExcluded,
 } from "../utils/mineruConfig";
 import {
-  parsePdfWithMineruCloud,
+  parsePdfWithMineru,
   MineruRateLimitError,
   MineruCancelledError,
 } from "../utils/mineruClient";
@@ -132,7 +131,6 @@ async function processQueue(): Promise<void> {
   isPaused = false;
   notifyProgress();
 
-  const apiKey = getMineruApiKey();
   let processedCount = 0;
   let errorCount = 0;
 
@@ -180,9 +178,8 @@ async function processQueue(): Promise<void> {
       }
 
       ztoolkit.log(`MinerU auto-parse: processing ${entry.title}`);
-      const result = await parsePdfWithMineruCloud(
+      const result = await parsePdfWithMineru(
         pdfPath as string,
-        apiKey,
         undefined,
         abort?.signal,
       );

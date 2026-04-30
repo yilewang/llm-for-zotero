@@ -2,8 +2,58 @@ import { config } from "../../package.json";
 
 const MINERU_ENABLED_KEY = `${config.prefsPrefix}.mineruEnabled`;
 const MINERU_API_KEY_KEY = `${config.prefsPrefix}.mineruApiKey`;
+const MINERU_BACKEND_KEY = `${config.prefsPrefix}.mineruBackend`;
+const MINERU_LOCAL_BASE_URL_KEY = `${config.prefsPrefix}.mineruLocalBaseUrl`;
+const MINERU_LOCAL_HOST_KEY = `${config.prefsPrefix}.mineruLocalHost`;
+const MINERU_LOCAL_PORT_KEY = `${config.prefsPrefix}.mineruLocalPort`;
+const MINERU_LOCAL_LANGUAGE_KEY = `${config.prefsPrefix}.mineruLocalLanguage`;
+const MINERU_LOCAL_BACKEND_KEY = `${config.prefsPrefix}.mineruLocalBackend`;
+const MINERU_LOCAL_PARSE_METHOD_KEY = `${config.prefsPrefix}.mineruLocalParseMethod`;
+const MINERU_LOCAL_FORMULA_KEY = `${config.prefsPrefix}.mineruLocalFormula`;
+const MINERU_LOCAL_TABLE_KEY = `${config.prefsPrefix}.mineruLocalTable`;
 const MINERU_AUTO_WATCH_KEY = `${config.prefsPrefix}.mineruAutoWatchCollections`;
 const MINERU_GLOBAL_AUTO_PARSE_KEY = `${config.prefsPrefix}.mineruGlobalAutoParse`;
+
+export type MineruBackendMode = "cloud" | "local";
+
+export type MineruLocalOptions = {
+  baseUrl: string;
+  host: string;
+  port: string;
+  language: string;
+  backend: string;
+  parseMethod: string;
+  formulaEnable: boolean;
+  tableEnable: boolean;
+};
+
+const DEFAULT_MINERU_LOCAL_HOST = "10.9.9.9";
+const DEFAULT_MINERU_LOCAL_PORT = "1337";
+export const DEFAULT_MINERU_LOCAL_BASE_URL = `http://${DEFAULT_MINERU_LOCAL_HOST}:${DEFAULT_MINERU_LOCAL_PORT}`;
+export const DEFAULT_MINERU_LOCAL_LANGUAGE = "ch";
+export const DEFAULT_MINERU_LOCAL_BACKEND = "hybrid-auto-engine";
+export const DEFAULT_MINERU_LOCAL_PARSE_METHOD = "auto";
+
+function getStringPref(key: string): string {
+  const value = Zotero.Prefs.get(key, true);
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getBooleanPref(key: string, fallback: boolean): boolean {
+  const value = Zotero.Prefs.get(key, true);
+  if (typeof value === "boolean") return value;
+  const normalized = `${value || ""}`.toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return fallback;
+}
+
+export function normalizeMineruLocalBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  if (!trimmed) return DEFAULT_MINERU_LOCAL_BASE_URL;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `http://${trimmed}`;
+}
 
 export function isMineruEnabled(): boolean {
   const value = Zotero.Prefs.get(MINERU_ENABLED_KEY, true);
@@ -21,6 +71,72 @@ export function setMineruEnabled(value: boolean): void {
 
 export function setMineruApiKey(value: string): void {
   Zotero.Prefs.set(MINERU_API_KEY_KEY, value, true);
+}
+
+export function getMineruBackendMode(): MineruBackendMode {
+  return getStringPref(MINERU_BACKEND_KEY) === "local" ? "local" : "cloud";
+}
+
+export function setMineruBackendMode(value: MineruBackendMode): void {
+  Zotero.Prefs.set(MINERU_BACKEND_KEY, value, true);
+}
+
+export function getMineruLocalOptions(): MineruLocalOptions {
+  const baseUrl = normalizeMineruLocalBaseUrl(
+    getStringPref(MINERU_LOCAL_BASE_URL_KEY),
+  );
+  const host = getStringPref(MINERU_LOCAL_HOST_KEY) || DEFAULT_MINERU_LOCAL_HOST;
+  const port = getStringPref(MINERU_LOCAL_PORT_KEY) || DEFAULT_MINERU_LOCAL_PORT;
+  return {
+    baseUrl,
+    host,
+    port,
+    language:
+      getStringPref(MINERU_LOCAL_LANGUAGE_KEY) || DEFAULT_MINERU_LOCAL_LANGUAGE,
+    backend:
+      getStringPref(MINERU_LOCAL_BACKEND_KEY) || DEFAULT_MINERU_LOCAL_BACKEND,
+    parseMethod:
+      getStringPref(MINERU_LOCAL_PARSE_METHOD_KEY) ||
+      DEFAULT_MINERU_LOCAL_PARSE_METHOD,
+    formulaEnable: getBooleanPref(MINERU_LOCAL_FORMULA_KEY, true),
+    tableEnable: getBooleanPref(MINERU_LOCAL_TABLE_KEY, true),
+  };
+}
+
+export function setMineruLocalBaseUrl(value: string): void {
+  Zotero.Prefs.set(
+    MINERU_LOCAL_BASE_URL_KEY,
+    normalizeMineruLocalBaseUrl(value),
+    true,
+  );
+}
+
+export function setMineruLocalHost(value: string): void {
+  Zotero.Prefs.set(MINERU_LOCAL_HOST_KEY, value.trim(), true);
+}
+
+export function setMineruLocalPort(value: string): void {
+  Zotero.Prefs.set(MINERU_LOCAL_PORT_KEY, value.trim(), true);
+}
+
+export function setMineruLocalLanguage(value: string): void {
+  Zotero.Prefs.set(MINERU_LOCAL_LANGUAGE_KEY, value.trim(), true);
+}
+
+export function setMineruLocalBackend(value: string): void {
+  Zotero.Prefs.set(MINERU_LOCAL_BACKEND_KEY, value.trim(), true);
+}
+
+export function setMineruLocalParseMethod(value: string): void {
+  Zotero.Prefs.set(MINERU_LOCAL_PARSE_METHOD_KEY, value.trim(), true);
+}
+
+export function setMineruLocalFormulaEnable(value: boolean): void {
+  Zotero.Prefs.set(MINERU_LOCAL_FORMULA_KEY, value, true);
+}
+
+export function setMineruLocalTableEnable(value: boolean): void {
+  Zotero.Prefs.set(MINERU_LOCAL_TABLE_KEY, value, true);
 }
 
 // ── Global Auto-Parse Configuration ──────────────────────────────────────────

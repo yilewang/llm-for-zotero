@@ -876,6 +876,164 @@
                 <html:span style="width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; margin-left: 8px;"></html:span> Failed
               </html:span>
             </html:span>
+            <html:div style="display: flex; flex-direction: column; gap: 4px;">
+              <html:label
+                for="__addonRef__-mineru-backend"
+                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+              >
+                MinerU Backend
+              </html:label>
+              <html:select
+                id="__addonRef__-mineru-backend"
+                style="
+                  width: 100%;
+                  padding: 6px 10px;
+                  font-size: 13px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 6px;
+                  box-sizing: border-box;
+                  background: Field;
+                  color: FieldText;
+                "
+              >
+                <html:option value="cloud">Cloud API</html:option>
+                <html:option value="local">Local FastAPI</html:option>
+              </html:select>
+            </html:div>
+            <html:div
+              id="__addonRef__-mineru-local-settings"
+              style="display: none; flex-direction: column; gap: 8px;"
+            >
+              <html:div style="display: grid; grid-template-columns: minmax(0, 1fr) 84px; gap: 8px;">
+                <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                  <html:label
+                    for="__addonRef__-mineru-local-host"
+                    style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+                  >
+                    Local Host
+                  </html:label>
+                  <html:input
+                    id="__addonRef__-mineru-local-host"
+                    type="text"
+                    placeholder="10.9.9.9"
+                    style="
+                      width: 100%;
+                      padding: 6px 10px;
+                      font-size: 13px;
+                      border: 1px solid var(--stroke-secondary, #c8c8c8);
+                      border-radius: 6px;
+                      box-sizing: border-box;
+                      background: Field;
+                      color: FieldText;
+                    "
+                  ></html:input>
+                </html:div>
+                <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                  <html:label
+                    for="__addonRef__-mineru-local-port"
+                    style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+                  >
+                    Port
+                  </html:label>
+                  <html:input
+                    id="__addonRef__-mineru-local-port"
+                    type="text"
+                    placeholder="1337"
+                    style="
+                      width: 100%;
+                      padding: 6px 10px;
+                      font-size: 13px;
+                      border: 1px solid var(--stroke-secondary, #c8c8c8);
+                      border-radius: 6px;
+                      box-sizing: border-box;
+                      background: Field;
+                      color: FieldText;
+                    "
+                  ></html:input>
+                </html:div>
+              </html:div>
+              <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                <html:label
+                  for="__addonRef__-mineru-local-base-url"
+                  style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+                >
+                  Local Base URL
+                </html:label>
+                <html:input
+                  id="__addonRef__-mineru-local-base-url"
+                  type="text"
+                  placeholder="http://10.9.9.9:1337"
+                  style="
+                    width: 100%;
+                    padding: 6px 10px;
+                    font-size: 13px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    box-sizing: border-box;
+                    background: Field;
+                    color: FieldText;
+                  "
+                ></html:input>
+              </html:div>
+              <html:div style="display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px;">
+                <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                  <html:label for="__addonRef__-mineru-local-backend" style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
+                    Parse Backend
+                  </html:label>
+                  <html:select id="__addonRef__-mineru-local-backend" style="
+                    width: 100%; padding: 6px 10px; font-size: 13px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;
+                    box-sizing: border-box; background: Field; color: FieldText;
+                  ">
+                    <html:option value="hybrid-auto-engine">hybrid-auto-engine</html:option>
+                    <html:option value="pipeline">pipeline</html:option>
+                    <html:option value="vlm-auto-engine">vlm-auto-engine</html:option>
+                    <html:option value="hybrid-http-client">hybrid-http-client</html:option>
+                    <html:option value="vlm-http-client">vlm-http-client</html:option>
+                  </html:select>
+                </html:div>
+                <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                  <html:label for="__addonRef__-mineru-local-parse-method" style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
+                    Parse Method
+                  </html:label>
+                  <html:select id="__addonRef__-mineru-local-parse-method" style="
+                    width: 100%; padding: 6px 10px; font-size: 13px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px;
+                    box-sizing: border-box; background: Field; color: FieldText;
+                  ">
+                    <html:option value="auto">auto</html:option>
+                    <html:option value="txt">txt</html:option>
+                    <html:option value="ocr">ocr</html:option>
+                  </html:select>
+                </html:div>
+              </html:div>
+              <html:div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px;">
+                <html:label style="display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
+                  <html:input id="__addonRef__-mineru-local-formula" type="checkbox"></html:input>
+                  Formula parsing
+                </html:label>
+                <html:label style="display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">
+                  <html:input id="__addonRef__-mineru-local-table" type="checkbox"></html:input>
+                  Table parsing
+                </html:label>
+                <html:input
+                  id="__addonRef__-mineru-local-language"
+                  type="text"
+                  placeholder="ch"
+                  style="
+                    width: 76px;
+                    padding: 5px 8px;
+                    font-size: 12px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 5px;
+                    box-sizing: border-box;
+                    background: Field;
+                    color: FieldText;
+                  "
+                ></html:input>
+              </html:div>
+            </html:div>
+            <html:div id="__addonRef__-mineru-cloud-settings" style="display: flex; flex-direction: column; gap: 10px;">
             <!-- Info box -->
             <html:div style="
               background: color-mix(in srgb, var(--color-accent, #2563eb) 8%, transparent);
@@ -922,6 +1080,7 @@
               <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
                 With your own key: unlimited parsing, direct connection to mineru.net
               </html:span>
+            </html:div>
             </html:div>
 
             <html:div style="display: flex; align-items: center; gap: 8px;">

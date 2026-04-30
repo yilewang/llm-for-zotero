@@ -1,6 +1,6 @@
-import { getMineruApiKey, isFilenameExcluded } from "../utils/mineruConfig";
+import { isFilenameExcluded } from "../utils/mineruConfig";
 import {
-  parsePdfWithMineruCloud,
+  parsePdfWithMineru,
   MineruRateLimitError,
   MineruCancelledError,
 } from "../utils/mineruClient";
@@ -222,10 +222,8 @@ async function processNext(): Promise<void> {
       return;
     }
 
-    const apiKey = getMineruApiKey(); // empty string = use community proxy
-    const result = await parsePdfWithMineruCloud(
+    const result = await parsePdfWithMineru(
       pdfPath as string,
-      apiKey,
       (stage) => {
         state.statusMessage = stage;
         notify();
