@@ -18,6 +18,12 @@ import {
 } from "../../utils/notesDirectoryConfig";
 import { joinLocalPath } from "../../utils/localPath";
 import { buildRuntimePlatformGuidanceText } from "../../utils/runtimePlatform";
+import {
+  buildPaperQuoteCitationGuidance,
+  formatPaperCitationLabel,
+  formatPaperSourceLabel,
+} from "../../modules/contextPanel/paperAttribution";
+import type { PaperContextRef } from "../../shared/types";
 
 export function isMultimodalRequestSupported(
   request: AgentRuntimeRequest,
@@ -34,6 +40,22 @@ function resolveRequestProviderCapabilities(
     authMode: request.authMode,
     apiBase: request.apiBase,
   });
+}
+
+function formatPaperRefLine(
+  prefix: string,
+  entry: PaperContextRef,
+  index: number,
+): string {
+  const metadata = [
+    `itemId=${entry.itemId}`,
+    `contextItemId=${entry.contextItemId}`,
+    `citationLabel=${formatPaperCitationLabel(entry)}`,
+    `sourceLabel=${formatPaperSourceLabel(entry)}`,
+    entry.citationKey ? `citationKey=${entry.citationKey}` : "",
+    entry.mineruCacheDir ? `mineruCacheDir=${entry.mineruCacheDir}` : "",
+  ].filter(Boolean);
+  return `- ${prefix} ${index + 1}: ${entry.title} [${metadata.join(", ")}]`;
 }
 
 export function stringifyMessageContent(
@@ -121,6 +143,7 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
     const selectedTextBlock = request.selectedTexts
       .map((entry, index) => {
         const source = request.selectedTextSources?.[index];
+        const paperContext = request.selectedTextPaperContexts?.[index];
         const sourceLabel =
           source === "model"
             ? "model response"
@@ -129,17 +152,32 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
               : source === "note-edit"
                 ? "active note editing focus"
                 : "PDF reader";
-        return `Selected text ${index + 1} [source=${sourceLabel}]:\n"""\n${entry}\n"""`;
+        const sourceMeta =
+          source === "pdf" && paperContext
+            ? `, paper=${paperContext.title}, source_label=${formatPaperSourceLabel(paperContext)}`
+            : "";
+        return `Selected text ${index + 1} [source=${sourceLabel}${sourceMeta}]:\n"""\n${entry}\n"""`;
       })
       .join("\n\n");
     contextLines.push(selectedTextBlock);
   }
+  const citationPaperRefs = [
+    ...(request.selectedTextPaperContexts || []).filter(
+      (entry): entry is PaperContextRef => Boolean(entry),
+    ),
+    ...retrievalOnlyPapers,
+    ...(request.fullTextPaperContexts || []),
+  ];
+  if (citationPaperRefs.length) {
+    contextLines.push(
+      "Citation/source label rule: for direct quotes and substantive paper-grounded claims, use the exact sourceLabel shown for the relevant paper.",
+    );
+  }
   if (retrievalOnlyPapers.length) {
     contextLines.push(
       "Retrieval-only paper refs:",
-      ...retrievalOnlyPapers.map(
-        (entry, index) =>
-          `- Retrieval paper ${index + 1}: ${entry.title} [itemId=${entry.itemId}, contextItemId=${entry.contextItemId}${entry.mineruCacheDir ? `, mineruCacheDir=${entry.mineruCacheDir}` : ""}]`,
+      ...retrievalOnlyPapers.map((entry, index) =>
+        formatPaperRefLine("Retrieval paper", entry, index),
       ),
     );
   }
@@ -149,10 +187,12 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
   ) {
     contextLines.push(
       "Full-text paper refs for this turn:",
-      ...request.fullTextPaperContexts.map(
-        (entry, index) =>
-          `- Full-text paper ${index + 1}: ${entry.title} [itemId=${entry.itemId}, contextItemId=${entry.contextItemId}${entry.mineruCacheDir ? `, mineruCacheDir=${entry.mineruCacheDir}` : ""}]`,
+      ...request.fullTextPaperContexts.map((entry, index) =>
+        formatPaperRefLine("Full-text paper", entry, index),
       ),
+      ...request.fullTextPaperContexts
+        .flatMap((entry) => buildPaperQuoteCitationGuidance(entry))
+        .filter(Boolean),
     );
   }
   if (

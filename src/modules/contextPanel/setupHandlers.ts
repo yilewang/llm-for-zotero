@@ -3492,6 +3492,9 @@ export function setupHandlers(
     fullTextPaperContexts: Array.isArray(message.fullTextPaperContexts)
       ? [...message.fullTextPaperContexts]
       : undefined,
+    citationPaperContexts: Array.isArray(message.citationPaperContexts)
+      ? [...message.citationPaperContexts]
+      : undefined,
     attachments: Array.isArray(message.attachments)
       ? message.attachments.map((attachment) => ({ ...attachment }))
       : undefined,
@@ -5733,7 +5736,7 @@ export function setupHandlers(
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (normalizedCurrentCandidate > 0) {
+      if (!forceFresh && normalizedCurrentCandidate > 0) {
         try {
           const currentSummary = await getClaudeConversationSummary(
             normalizedCurrentCandidate,
@@ -5799,7 +5802,7 @@ export function setupHandlers(
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (normalizedCurrentCandidate > 0) {
+      if (!forceFresh && normalizedCurrentCandidate > 0) {
         try {
           if (await isCodexConversationDraft(normalizedCurrentCandidate)) {
             targetConversationKey = normalizedCurrentCandidate;
@@ -5859,7 +5862,7 @@ export function setupHandlers(
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (normalizedCurrentCandidate > 0) {
+      if (!forceFresh && normalizedCurrentCandidate > 0) {
         try {
           const turnCount = await getGlobalConversationUserTurnCount(
             normalizedCurrentCandidate,
@@ -5951,7 +5954,7 @@ export function setupHandlers(
 
     if (isClaudeConversationSystem()) {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (Number.isFinite(currentKey) && currentKey > 0) {
+      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getClaudeConversationSummary(currentKey);
           if (
@@ -6006,7 +6009,7 @@ export function setupHandlers(
       }
     } else if (isCodexConversationSystem()) {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (Number.isFinite(currentKey) && currentKey > 0) {
+      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getCodexConversationSummary(currentKey);
           if (
@@ -6061,7 +6064,7 @@ export function setupHandlers(
       }
     } else {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (Number.isFinite(currentKey) && currentKey > 0) {
+      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getPaperConversation(currentKey);
           if (currentSummary && currentSummary.userTurnCount === 0) {

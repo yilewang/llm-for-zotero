@@ -58,6 +58,7 @@ import {
   isCodexPaperPortalItem,
   resolveCodexPaperPortalBaseItem,
 } from "../../codexAppServer/portal";
+import { getMessageCitationPaperContexts } from "./citationContexts";
 
 export { readNoteSnapshot, stripNoteHtml, type NoteSnapshot };
 
@@ -702,7 +703,7 @@ export function buildChatHistoryNotePayload(messages: Message[]): {
       );
     }
     if (msg.role === "user") {
-      lastUserPaperContexts = msg.paperContexts;
+      lastUserPaperContexts = getMessageCitationPaperContexts(msg);
     }
     if (!rendered && !screenshotHtml && !fileHtml) continue;
     textLines.push(`${speaker}: ${textWithContext}`);

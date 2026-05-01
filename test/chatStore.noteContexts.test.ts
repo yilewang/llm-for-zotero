@@ -75,9 +75,9 @@ describe("chatStore note contexts", function () {
       contextWindow: 200000,
     });
 
-    assert.lengthOf(capturedParams, 25);
-    assert.equal(capturedParams[23], 1234);
-    assert.equal(capturedParams[24], 200000);
+    assert.lengthOf(capturedParams, 26);
+    assert.equal(capturedParams[24], 1234);
+    assert.equal(capturedParams[25], 200000);
   });
 
   it("persists selectedCollectionContexts when appending a message", async function () {
@@ -109,7 +109,7 @@ describe("chatStore note contexts", function () {
 
     assert.include(capturedQuery, "collection_contexts_json");
     assert.equal(
-      capturedParams[13],
+      capturedParams[14],
       JSON.stringify([
         {
           collectionId: 55,

@@ -187,6 +187,10 @@ import { renderAgentTrace } from "./agentTrace/render";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 import { decorateAssistantCitationLinks } from "./assistantCitationLinks";
+import {
+  getMessageCitationPaperContexts,
+  mergeCitationPaperContexts,
+} from "./citationContexts";
 import { getCoreAgentRuntime } from "../../agent/index";
 import { getClaudeReasoningModePref } from "../../claudeCode/prefs";
 import { getAgentRunTrace } from "../../agent/store/traceStore";
@@ -451,7 +455,7 @@ function collectRecentPaperContexts(history: Message[]): PaperContextRef[] {
   for (let index = history.length - 1; index >= 0; index--) {
     const message = history[index];
     if (!message || message.role !== "user") continue;
-    const contexts = normalizePaperContexts(message.paperContexts);
+    const contexts = getMessageCitationPaperContexts(message);
     for (const context of contexts) {
       const key = `${context.itemId}:${context.contextItemId}`;
       if (seen.has(key)) continue;
@@ -666,7 +670,7 @@ function attachAssistantResponseContextMenu(params: {
       assistantTimestamp: Math.floor(message.timestamp),
       paperContexts:
         pairedUserMessage?.role === "user"
-          ? pairedUserMessage.paperContexts
+          ? getMessageCitationPaperContexts(pairedUserMessage)
           : undefined,
     });
     positionMenuAtPointer(body, responseMenu, me.clientX, me.clientY);
@@ -1762,6 +1766,7 @@ async function buildContextPlanForRequest(params: {
   assistantInstruction?: string;
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  citationPaperContexts: PaperContextRef[];
   recentPaperContexts: PaperContextRef[];
   mineruImages: string[];
 }> {
@@ -1888,6 +1893,11 @@ async function buildContextPlanForRequest(params: {
     assistantInstruction: plan.assistantInstruction,
     paperContexts: params.paperContexts,
     fullTextPaperContexts: params.fullTextPaperContexts,
+    citationPaperContexts: mergeCitationPaperContexts(
+      params.paperContexts,
+      params.fullTextPaperContexts,
+      plan.citationPaperContexts,
+    ),
     recentPaperContexts: params.recentPaperContexts,
     mineruImages,
   };
@@ -2641,6 +2651,11 @@ export async function editLatestUserMessageAndRetry(
     fullTextPaperContextsForMessage.length
       ? fullTextPaperContextsForMessage
       : undefined;
+  retryPair.userMessage.citationPaperContexts = mergeCitationPaperContexts(
+    retryPair.userMessage.selectedTextPaperContexts,
+    paperContextsForMessage,
+    fullTextPaperContextsForMessage,
+  );
   retryPair.userMessage.selectedCollectionContexts =
     selectedCollectionContextsForMessage.length
       ? selectedCollectionContextsForMessage
@@ -2666,6 +2681,7 @@ export async function editLatestUserMessageAndRetry(
       screenshotImages: retryPair.userMessage.screenshotImages,
       paperContexts: retryPair.userMessage.paperContexts,
       fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
+      citationPaperContexts: retryPair.userMessage.citationPaperContexts,
       selectedCollectionContexts:
         retryPair.userMessage.selectedCollectionContexts,
       attachments: retryPair.userMessage.attachments,
@@ -2889,6 +2905,10 @@ export async function retryLatestAssistantResponse(
       contextPlan.fullTextPaperContexts.length
         ? contextPlan.fullTextPaperContexts
       : undefined;
+    retryPair.userMessage.citationPaperContexts = mergeCitationPaperContexts(
+      retryPair.userMessage.selectedTextPaperContexts,
+      contextPlan.citationPaperContexts,
+    );
     retryPair.userMessage.selectedCollectionContexts =
       selectedCollectionContexts.length ? selectedCollectionContexts : undefined;
     await updateStoredLatestUserMessageByConversation(conversationKey, {
@@ -2904,6 +2924,7 @@ export async function retryLatestAssistantResponse(
       screenshotImages: retryPair.userMessage.screenshotImages,
       paperContexts: retryPair.userMessage.paperContexts,
       fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
+      citationPaperContexts: retryPair.userMessage.citationPaperContexts,
       selectedCollectionContexts:
         retryPair.userMessage.selectedCollectionContexts,
       attachments: retryPair.userMessage.attachments,
@@ -3293,6 +3314,7 @@ export async function editUserTurnAndRetry(opts: {
       screenshotImages: userMsg.screenshotImages,
       paperContexts: userMsg.paperContexts,
       fullTextPaperContexts: userMsg.fullTextPaperContexts,
+      citationPaperContexts: getMessageCitationPaperContexts(userMsg),
       selectedCollectionContexts: userMsg.selectedCollectionContexts,
       attachments: userMsg.attachments,
     });
@@ -3356,6 +3378,7 @@ export type BuildAgentRuntimeRequestParams = {
   userText: string;
   selectedTexts: string[];
   selectedTextSources?: SelectedTextSource[];
+  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
@@ -3426,6 +3449,7 @@ async function buildAgentRuntimeRequest(
     activeItemId: params.item.id,
     selectedTexts: params.selectedTexts,
     selectedTextSources: params.selectedTextSources,
+    selectedTextPaperContexts: params.selectedTextPaperContexts,
     selectedPaperContexts: enrichedPaperContexts,
     fullTextPaperContexts: enrichedFullTextPapers,
     selectedCollectionContexts: normalizeCollectionContexts(
@@ -3788,6 +3812,11 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     normalizedFullTextPaperContexts,
     pdfModePaperKeys && pdfModePaperKeys.size > 0 ? pdfModePaperKeys : undefined,
   );
+  const citationPaperContextsForMessage = mergeCitationPaperContexts(
+    selectedTextPaperContextsForMessage,
+    paperContextsForMessage,
+    fullTextPaperContextsForMessage,
+  );
   const screenshotImagesForMessage = Array.isArray(images)
     ? images
         .filter((entry): entry is string => typeof entry === "string")
@@ -3828,6 +3857,9 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     fullTextPaperContexts: fullTextPaperContextsForMessage.length
       ? fullTextPaperContextsForMessage
       : undefined,
+    citationPaperContexts: citationPaperContextsForMessage.length
+      ? citationPaperContextsForMessage
+      : undefined,
     selectedCollectionContexts: selectedCollectionContextsForMessage.length
       ? selectedCollectionContextsForMessage
       : undefined,
@@ -3856,6 +3888,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
     paperContexts: userMessage.paperContexts,
     fullTextPaperContexts: userMessage.fullTextPaperContexts,
+    citationPaperContexts: userMessage.citationPaperContexts,
     selectedCollectionContexts: userMessage.selectedCollectionContexts,
     screenshotImages: userMessage.screenshotImages,
     attachments: userMessage.attachments,
@@ -4065,6 +4098,10 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       contextPlan.fullTextPaperContexts.length
         ? contextPlan.fullTextPaperContexts
       : undefined;
+    userMessage.citationPaperContexts = mergeCitationPaperContexts(
+      userMessage.selectedTextPaperContexts,
+      contextPlan.citationPaperContexts,
+    );
     await updateStoredLatestUserMessageByConversation(conversationKey, {
       text: userMessage.text,
       timestamp: userMessage.timestamp,
@@ -4077,6 +4114,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       screenshotImages: userMessage.screenshotImages,
       paperContexts: userMessage.paperContexts,
       fullTextPaperContexts: userMessage.fullTextPaperContexts,
+      citationPaperContexts: userMessage.citationPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
       attachments: userMessage.attachments,
     });

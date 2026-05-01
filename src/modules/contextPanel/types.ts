@@ -53,6 +53,7 @@ export interface Message {
   screenshotImages?: string[];
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
+  citationPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   collectionContextsExpanded?: boolean;
@@ -213,6 +214,7 @@ export type MultiContextPlan = {
   usedContextTokens: number;
   selectedPaperCount: number;
   selectedChunkCount: number;
+  citationPaperContexts?: PaperContextRef[];
   assistantInstruction?: string;
 };
 

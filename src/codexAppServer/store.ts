@@ -216,6 +216,7 @@ export async function initCodexAppServerStore(): Promise<void> {
         selected_text_note_contexts_json TEXT,
         paper_contexts_json TEXT,
         full_text_paper_contexts_json TEXT,
+        citation_paper_contexts_json TEXT,
         screenshot_images TEXT,
         attachments_json TEXT,
         model_name TEXT,
@@ -258,6 +259,15 @@ export async function initCodexAppServerStore(): Promise<void> {
       await Zotero.DB.queryAsync(
         `ALTER TABLE ${CODEX_MESSAGES_TABLE}
          ADD COLUMN context_window INTEGER`,
+      );
+    }
+    const hasCitationPaperContextsJsonColumn = Boolean(
+      columns?.some((column) => column?.name === "citation_paper_contexts_json"),
+    );
+    if (!hasCitationPaperContextsJsonColumn) {
+      await Zotero.DB.queryAsync(
+        `ALTER TABLE ${CODEX_MESSAGES_TABLE}
+         ADD COLUMN citation_paper_contexts_json TEXT`,
       );
     }
     await Zotero.DB.queryAsync(
@@ -337,6 +347,9 @@ export async function appendCodexMessage(
   const fullTextPaperContexts = normalizePaperContextRefs(
     message.fullTextPaperContexts,
   );
+  const citationPaperContexts = normalizePaperContextRefs(
+    message.citationPaperContexts,
+  );
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim()))
     : [];
@@ -348,8 +361,8 @@ export async function appendCodexMessage(
 
   await Zotero.DB.queryAsync(
     `INSERT INTO ${CODEX_MESSAGES_TABLE}
-      (conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, paper_contexts_json, full_text_paper_contexts_json, screenshot_images, attachments_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, screenshot_images, attachments_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       normalizedKey,
       message.role,
@@ -368,6 +381,7 @@ export async function appendCodexMessage(
         : null,
       paperContexts.length ? JSON.stringify(paperContexts) : null,
       fullTextPaperContexts.length ? JSON.stringify(fullTextPaperContexts) : null,
+      citationPaperContexts.length ? JSON.stringify(citationPaperContexts) : null,
       screenshotImages.length ? JSON.stringify(screenshotImages) : null,
       attachments.length ? JSON.stringify(attachments) : null,
       message.modelName || null,
@@ -407,6 +421,7 @@ export async function loadCodexConversation(
             selected_text_note_contexts_json AS selectedTextNoteContextsJson,
             paper_contexts_json AS paperContextsJson,
             full_text_paper_contexts_json AS fullTextPaperContextsJson,
+            citation_paper_contexts_json AS citationPaperContextsJson,
             screenshot_images AS screenshotImages,
             attachments_json AS attachmentsJson,
             model_name AS modelName,
@@ -503,6 +518,16 @@ export async function loadCodexConversation(
         return undefined;
       }
     })();
+    const citationPaperContexts = (() => {
+      if (typeof row.citationPaperContextsJson !== "string" || !row.citationPaperContextsJson) return undefined;
+      try {
+        const parsed = JSON.parse(row.citationPaperContextsJson) as unknown;
+        const normalized = normalizePaperContextRefs(parsed);
+        return normalized.length ? normalized : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
     const screenshotImages = (() => {
       if (typeof row.screenshotImages !== "string" || !row.screenshotImages) return undefined;
       try {
@@ -547,6 +572,7 @@ export async function loadCodexConversation(
       selectedTextNoteContexts,
       paperContexts,
       fullTextPaperContexts,
+      citationPaperContexts,
       screenshotImages,
       attachments,
       modelName: typeof row.modelName === "string" ? row.modelName : undefined,
@@ -674,6 +700,7 @@ export async function updateLatestCodexUserMessage(
     | "selectedTextNoteContexts"
     | "paperContexts"
     | "fullTextPaperContexts"
+    | "citationPaperContexts"
     | "screenshotImages"
     | "attachments"
   >,
@@ -706,6 +733,7 @@ export async function updateLatestCodexUserMessage(
          selected_text_note_contexts_json = ?,
          paper_contexts_json = ?,
          full_text_paper_contexts_json = ?,
+         citation_paper_contexts_json = ?,
          screenshot_images = ?,
          attachments_json = ?
      WHERE id = (
@@ -732,6 +760,9 @@ export async function updateLatestCodexUserMessage(
       message.paperContexts?.length ? JSON.stringify(normalizePaperContextRefs(message.paperContexts)) : null,
       message.fullTextPaperContexts?.length
         ? JSON.stringify(normalizePaperContextRefs(message.fullTextPaperContexts))
+        : null,
+      message.citationPaperContexts?.length
+        ? JSON.stringify(normalizePaperContextRefs(message.citationPaperContexts))
         : null,
       message.screenshotImages?.length ? JSON.stringify(message.screenshotImages) : null,
       message.attachments?.length ? JSON.stringify(message.attachments) : null,
