@@ -7,6 +7,16 @@ export type MineruCacheFile = {
   data: Uint8Array;
 };
 
+type NormalizedMineruCacheFile = MineruCacheFile & {
+  originalRelativePath: string;
+};
+
+export type NormalizedMineruCacheFiles = {
+  mdContent: string;
+  files: NormalizedMineruCacheFile[];
+  pathMap: Map<string, string>;
+};
+
 type IOUtilsLike = {
   exists?: (path: string) => Promise<boolean>;
   read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
@@ -144,10 +154,7 @@ async function readFileBytes(path: string): Promise<Uint8Array | null> {
   return null;
 }
 
-async function writeFileBytes(
-  path: string,
-  bytes: Uint8Array,
-): Promise<void> {
+async function writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
   const io = getIOUtils();
   if (io?.write) {
     await io.write(path, bytes);
@@ -188,6 +195,417 @@ async function removePath(path: string): Promise<void> {
   }
 }
 
+// ── MinerU archive path normalization ────────────────────────────────────────
+
+const CONTENT_LIST_FILE_NAME = "content_list.json";
+const MAX_CACHE_PATH_SEGMENT_LENGTH = 80;
+const MAX_CACHE_RELATIVE_PATH_LENGTH = 160;
+
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function splitFileName(fileName: string): { stem: string; ext: string } {
+  const dotIndex = fileName.lastIndexOf(".");
+  if (dotIndex <= 0) return { stem: fileName, ext: "" };
+  return {
+    stem: fileName.slice(0, dotIndex),
+    ext: fileName.slice(dotIndex),
+  };
+}
+
+function shortenPathSegment(segment: string, sourcePath: string): string {
+  if (segment.length <= MAX_CACHE_PATH_SEGMENT_LENGTH) return segment;
+  const { stem, ext } = splitFileName(segment);
+  const hash = stableHash(sourcePath).slice(0, 8);
+  const maxStemLength = Math.max(
+    12,
+    MAX_CACHE_PATH_SEGMENT_LENGTH - ext.length - hash.length - 1,
+  );
+  return `${stem.slice(0, maxStemLength)}-${hash}${ext}`;
+}
+
+function shortenTargetParts(parts: string[], sourcePath: string): string[] {
+  let nextParts = parts.map((part) => shortenPathSegment(part, sourcePath));
+  if (nextParts.join("/").length <= MAX_CACHE_RELATIVE_PATH_LENGTH) {
+    return nextParts;
+  }
+
+  const basename = nextParts[nextParts.length - 1] || "file";
+  const firstSegment = nextParts[0] || "";
+  const bucket = /^(images?|imgs?|figures?|tables?)$/i.test(firstSegment)
+    ? firstSegment.toLowerCase()
+    : "";
+  nextParts = bucket ? [bucket, basename] : [basename];
+  if (nextParts.join("/").length <= MAX_CACHE_RELATIVE_PATH_LENGTH) {
+    return nextParts;
+  }
+
+  return [shortenPathSegment(basename, sourcePath)];
+}
+
+function normalizePathKey(value: string): string {
+  return value.trim().replace(/\\/g, "/").split("/").filter(Boolean).join("/");
+}
+
+function parseSafeArchivePath(relativePath: string): string[] | null {
+  const raw = relativePath.trim();
+  if (!raw) return null;
+  if (/^(?:[A-Za-z]:|[\\/]{2}|[\\/])/.test(raw)) return null;
+
+  const parts = raw.split(/[\\/]+/).filter(Boolean);
+  if (!parts.length) return null;
+  if (parts.some((part) => part === "." || part === "..")) return null;
+  return parts;
+}
+
+function pathStartsWith(parts: string[], prefix: string[]): boolean {
+  if (!prefix.length || prefix.length > parts.length) return false;
+  return prefix.every((part, index) => parts[index] === part);
+}
+
+function stripPrefix(parts: string[], prefix: string[]): string[] {
+  return pathStartsWith(parts, prefix) ? parts.slice(prefix.length) : parts;
+}
+
+function isMarkdownPath(parts: string[]): boolean {
+  return /\.md$/i.test(parts[parts.length - 1] || "");
+}
+
+function isPdfPath(parts: string[]): boolean {
+  return /\.pdf$/i.test(parts[parts.length - 1] || "");
+}
+
+function isContentListPath(parts: string[]): boolean {
+  const basename = parts[parts.length - 1] || "";
+  return (
+    basename === CONTENT_LIST_FILE_NAME ||
+    basename.endsWith("_content_list.json")
+  );
+}
+
+function pickMarkdownCacheFile(
+  files: MineruCacheFile[],
+): { file: MineruCacheFile; parts: string[] } | null {
+  const candidates = files
+    .map((file) => ({
+      file,
+      parts: parseSafeArchivePath(file.relativePath),
+    }))
+    .filter(
+      (entry): entry is { file: MineruCacheFile; parts: string[] } =>
+        entry.parts !== null && isMarkdownPath(entry.parts),
+    );
+
+  return (
+    candidates.find(
+      (entry) =>
+        (entry.parts[entry.parts.length - 1] || "").toLowerCase() === "full.md",
+    ) ||
+    candidates[0] ||
+    null
+  );
+}
+
+function relativeParts(fromDir: string[], toParts: string[]): string[] {
+  let common = 0;
+  while (
+    common < fromDir.length &&
+    common < toParts.length &&
+    fromDir[common] === toParts[common]
+  ) {
+    common++;
+  }
+
+  return [
+    ...Array.from({ length: fromDir.length - common }, () => ".."),
+    ...toParts.slice(common),
+  ];
+}
+
+function addPathMapVariant(
+  pathMap: Map<string, string>,
+  fromPath: string,
+  toPath: string,
+): void {
+  const normalized = normalizePathKey(fromPath);
+  if (!normalized || normalized === toPath) return;
+
+  const existing = pathMap.get(normalized);
+  if (!existing) {
+    pathMap.set(normalized, toPath);
+  } else if (existing !== toPath) {
+    pathMap.delete(normalized);
+  }
+}
+
+function addPathMapVariants(params: {
+  pathMap: Map<string, string>;
+  originalRelativePath: string;
+  originalParts: string[];
+  targetPath: string;
+  strippedParts: string[];
+  mdDirParts: string[];
+}): void {
+  const {
+    pathMap,
+    originalRelativePath,
+    originalParts,
+    targetPath,
+    strippedParts,
+    mdDirParts,
+  } = params;
+
+  addPathMapVariant(pathMap, originalRelativePath, targetPath);
+  addPathMapVariant(pathMap, originalParts.join("/"), targetPath);
+  addPathMapVariant(pathMap, strippedParts.join("/"), targetPath);
+
+  if (mdDirParts.length) {
+    addPathMapVariant(
+      pathMap,
+      relativeParts(mdDirParts, originalParts).join("/"),
+      targetPath,
+    );
+  }
+}
+
+function buildStrippedArchiveParts(
+  parts: string[],
+  mdDirParts: string[],
+): string[] {
+  let stripped = stripPrefix(parts, mdDirParts);
+  if (
+    stripped === parts &&
+    mdDirParts.length > 0 &&
+    parts[0] === mdDirParts[0]
+  ) {
+    stripped = parts.slice(1);
+  }
+  if (stripped[0]?.toLowerCase() === "auto" && stripped.length > 1) {
+    stripped = stripped.slice(1);
+  }
+  return stripped;
+}
+
+function normalizeArchiveTargetPath(params: {
+  originalParts: string[];
+  mdDirParts: string[];
+  sourcePath: string;
+}): { targetParts: string[]; strippedParts: string[] } | null {
+  const { originalParts, mdDirParts, sourcePath } = params;
+  if (isPdfPath(originalParts) || isMarkdownPath(originalParts)) return null;
+
+  const strippedParts = buildStrippedArchiveParts(originalParts, mdDirParts);
+  if (!strippedParts.length) return null;
+
+  let targetParts = isContentListPath(strippedParts)
+    ? [CONTENT_LIST_FILE_NAME]
+    : strippedParts;
+
+  targetParts = shortenTargetParts(targetParts, sourcePath);
+  if (
+    !targetParts.length ||
+    targetParts.some((part) => part === "." || part === "..")
+  ) {
+    return null;
+  }
+
+  return { targetParts, strippedParts };
+}
+
+function resolveTargetCollision(params: {
+  targetParts: string[];
+  sourcePath: string;
+  usedTargets: Map<string, string>;
+}): string {
+  const { targetParts, sourcePath, usedTargets } = params;
+  let targetPath = targetParts.join("/");
+  const existingSource = usedTargets.get(targetPath);
+  if (!existingSource || existingSource === sourcePath) {
+    usedTargets.set(targetPath, sourcePath);
+    return targetPath;
+  }
+
+  const basename = targetParts[targetParts.length - 1] || "file";
+  const { stem, ext } = splitFileName(basename);
+  const hash = stableHash(sourcePath).slice(0, 8);
+  const dedupedName = shortenPathSegment(`${stem}-${hash}${ext}`, sourcePath);
+  const dedupedParts = [...targetParts.slice(0, -1), dedupedName];
+  targetPath = dedupedParts.join("/");
+  usedTargets.set(targetPath, sourcePath);
+  return targetPath;
+}
+
+function isExternalOrAnchorPath(value: string): boolean {
+  return /^(?:[a-z][a-z0-9+.-]*:|#)/i.test(value);
+}
+
+function rewritePathValue(value: string, pathMap: Map<string, string>): string {
+  const trimmed = value.trim();
+  if (!trimmed || isExternalOrAnchorPath(trimmed)) return value;
+
+  const normalized = normalizePathKey(trimmed);
+  const mapped = pathMap.get(normalized);
+  return mapped || value;
+}
+
+function rewriteMarkdownPathRefs(
+  mdContent: string,
+  pathMap: Map<string, string>,
+): string {
+  return mdContent
+    .replace(/(!?\[[^\]]*]\()([^)]+)(\))/g, (match, prefix, target, suffix) => {
+      const trimmedTarget = String(target).trim();
+      const unwrapped =
+        trimmedTarget.startsWith("<") && trimmedTarget.endsWith(">")
+          ? trimmedTarget.slice(1, -1)
+          : trimmedTarget;
+      const rewritten = rewritePathValue(unwrapped, pathMap);
+      if (rewritten === unwrapped) return match;
+      const nextTarget =
+        trimmedTarget.startsWith("<") && trimmedTarget.endsWith(">")
+          ? `<${rewritten}>`
+          : rewritten;
+      return `${prefix}${nextTarget}${suffix}`;
+    })
+    .replace(
+      /(<img\b[^>]*\bsrc=["'])([^"']+)(["'][^>]*>)/gi,
+      (match, prefix, target, suffix) => {
+        const rewritten = rewritePathValue(String(target), pathMap);
+        return rewritten === target ? match : `${prefix}${rewritten}${suffix}`;
+      },
+    );
+}
+
+function rewriteContentListPathValues(
+  value: unknown,
+  pathMap: Map<string, string>,
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => rewriteContentListPathValues(entry, pathMap));
+  }
+  if (!value || typeof value !== "object") return value;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (
+      typeof entry === "string" &&
+      /(^|_)(?:img|image|table).*path$/i.test(key)
+    ) {
+      out[key] = rewritePathValue(entry, pathMap);
+    } else {
+      out[key] = rewriteContentListPathValues(entry, pathMap);
+    }
+  }
+  return out;
+}
+
+function rewriteContentListFile(
+  data: Uint8Array,
+  pathMap: Map<string, string>,
+): Uint8Array {
+  try {
+    const json = JSON.parse(new TextDecoder("utf-8").decode(data));
+    const rewritten = rewriteContentListPathValues(json, pathMap);
+    return new TextEncoder().encode(JSON.stringify(rewritten));
+  } catch {
+    return data;
+  }
+}
+
+export function normalizeMineruCacheFiles(
+  mdContent: string,
+  files: MineruCacheFile[],
+): NormalizedMineruCacheFiles {
+  const mdFile = pickMarkdownCacheFile(files);
+  const mdDirParts = mdFile ? mdFile.parts.slice(0, -1) : [];
+  const pathMap = new Map<string, string>();
+  const usedTargets = new Map<string, string>();
+  const normalizedFiles: NormalizedMineruCacheFile[] = [];
+
+  if (mdFile) {
+    addPathMapVariant(pathMap, mdFile.file.relativePath, "full.md");
+    addPathMapVariant(pathMap, mdFile.parts.join("/"), "full.md");
+  }
+
+  const pendingFiles: Array<{
+    data: Uint8Array;
+    originalRelativePath: string;
+    originalParts: string[];
+    targetPath: string;
+  }> = [];
+
+  for (const file of files) {
+    const originalParts = parseSafeArchivePath(file.relativePath);
+    if (!originalParts) continue;
+
+    const normalized = normalizeArchiveTargetPath({
+      originalParts,
+      mdDirParts,
+      sourcePath: file.relativePath,
+    });
+    if (!normalized) continue;
+
+    const targetPath = resolveTargetCollision({
+      targetParts: normalized.targetParts,
+      sourcePath: file.relativePath,
+      usedTargets,
+    });
+
+    addPathMapVariants({
+      pathMap,
+      originalRelativePath: file.relativePath,
+      originalParts,
+      targetPath,
+      strippedParts: normalized.strippedParts,
+      mdDirParts,
+    });
+
+    pendingFiles.push({
+      data: file.data,
+      originalRelativePath: file.relativePath,
+      originalParts,
+      targetPath,
+    });
+  }
+
+  const rewrittenMdContent = rewriteMarkdownPathRefs(mdContent, pathMap);
+
+  for (const file of pendingFiles) {
+    const data = isContentListPath(file.originalParts)
+      ? rewriteContentListFile(file.data, pathMap)
+      : file.data;
+    normalizedFiles.push({
+      relativePath: file.targetPath,
+      originalRelativePath: file.originalRelativePath,
+      data,
+    });
+  }
+
+  return {
+    mdContent: rewrittenMdContent,
+    files: normalizedFiles,
+    pathMap,
+  };
+}
+
+function formatCacheWriteError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  try {
+    const json = JSON.stringify(error);
+    if (json && json !== "{}") return json;
+  } catch {
+    /* ignore */
+  }
+  return String(error || "Unknown error");
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export async function hasCachedMineruMd(id: number): Promise<boolean> {
@@ -198,15 +616,14 @@ export async function hasCachedMineruMd(id: number): Promise<boolean> {
   return await pathExists(getLegacyMdPath(id));
 }
 
-export async function readCachedMineruMd(
-  id: number,
-): Promise<string | null> {
+export async function readCachedMineruMd(id: number): Promise<string | null> {
   // Try full.md (current canonical path)
   const bytes = await readFileBytes(getMineruMdPath(id));
   if (bytes) return new TextDecoder("utf-8").decode(bytes);
   // Try legacy _content.md
   const legacyContentBytes = await readFileBytes(getLegacyContentMdPath(id));
-  if (legacyContentBytes) return new TextDecoder("utf-8").decode(legacyContentBytes);
+  if (legacyContentBytes)
+    return new TextDecoder("utf-8").decode(legacyContentBytes);
   // Try legacy single-file cache
   const legacyBytes = await readFileBytes(getLegacyMdPath(id));
   if (legacyBytes) return new TextDecoder("utf-8").decode(legacyBytes);
@@ -220,27 +637,37 @@ export async function writeMineruCacheFiles(
 ): Promise<void> {
   const itemDir = getMineruItemDir(id);
   await ensureDir(itemDir);
+  const normalized = normalizeMineruCacheFiles(mdContent, files);
 
-  // Write all extracted files from ZIP, skipping PDFs (the original
-  // PDF is included in the MinerU ZIP but we already have it in Zotero)
-  for (const file of files) {
-    if (/\.pdf$/i.test(file.relativePath)) continue;
-    // Split relative path into individual components so PathUtils.join
-    // doesn't reject segments containing '/'.
+  for (const file of normalized.files) {
     const parts = file.relativePath.split(/[\\/]+/).filter(Boolean);
     const filePath = joinLocalPath(itemDir, ...parts);
     const parentDir = getLocalParentPath(filePath);
-    if (parentDir !== itemDir) {
-      await ensureDir(parentDir);
+    try {
+      if (parentDir !== itemDir) {
+        await ensureDir(parentDir);
+      }
+      await writeFileBytes(filePath, file.data);
+    } catch (error) {
+      throw new Error(
+        `Failed to write MinerU cache file "${file.relativePath}" from ` +
+          `"${file.originalRelativePath}": ${formatCacheWriteError(error)}`,
+      );
     }
-    await writeFileBytes(filePath, file.data);
   }
 
-  // Ensure full.md exists (the ZIP normally includes it, but write as
-  // a safety fallback in case the MinerU ZIP structure changes)
   const mdPath = getMineruMdPath(id);
-  if (!(await pathExists(mdPath))) {
-    await writeFileBytes(mdPath, new TextEncoder().encode(mdContent));
+  try {
+    await writeFileBytes(
+      mdPath,
+      new TextEncoder().encode(normalized.mdContent),
+    );
+  } catch (error) {
+    throw new Error(
+      `Failed to write MinerU cache file "full.md": ${formatCacheWriteError(
+        error,
+      )}`,
+    );
   }
 
   // Clean up legacy _content.md if it exists
@@ -274,7 +701,8 @@ const EXT_MIME: Record<string, string> = {
 
 function toBase64(bytes: Uint8Array): string {
   let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i++)
+    binary += String.fromCharCode(bytes[i]);
   return btoa(binary);
 }
 
@@ -534,7 +962,11 @@ export function buildManifest(
         prevSection.tables.push(...section.tables);
         prevSection.equationCount += section.equationCount;
       } else {
-        merged.push({ ...section, figures: [...section.figures], tables: [...section.tables] });
+        merged.push({
+          ...section,
+          figures: [...section.figures],
+          tables: [...section.tables],
+        });
       }
     }
     sections.length = 0;
@@ -584,7 +1016,10 @@ async function findContentListPath(itemDir: string): Promise<string | null> {
 
   for (const entry of entries) {
     const basename = entry.split(/[\\/]/).pop() || "";
-    if (basename.endsWith("_content_list.json")) {
+    if (
+      basename === CONTENT_LIST_FILE_NAME ||
+      basename.endsWith("_content_list.json")
+    ) {
       return entry;
     }
   }
@@ -595,7 +1030,9 @@ async function findContentListPath(itemDir: string): Promise<string | null> {
  * Build and write manifest.json for a cached paper.
  * Reads full.md and content_list.json from the cache directory.
  */
-export async function buildAndWriteManifest(id: number): Promise<MineruManifest | null> {
+export async function buildAndWriteManifest(
+  id: number,
+): Promise<MineruManifest | null> {
   const itemDir = getMineruItemDir(id);
   if (!(await pathExists(itemDir))) return null;
 
@@ -620,7 +1057,10 @@ export async function buildAndWriteManifest(id: number): Promise<MineruManifest 
 
   // Write manifest.json
   const manifestPath = getManifestPath(id);
-  await writeFileBytes(manifestPath, new TextEncoder().encode(JSON.stringify(manifest)));
+  await writeFileBytes(
+    manifestPath,
+    new TextEncoder().encode(JSON.stringify(manifest)),
+  );
 
   return manifest;
 }
@@ -643,7 +1083,9 @@ export async function readManifest(id: number): Promise<MineruManifest | null> {
  * Get or build the manifest for a cached paper.
  * Reads from disk if available, otherwise builds and writes it.
  */
-export async function ensureManifest(id: number): Promise<MineruManifest | null> {
+export async function ensureManifest(
+  id: number,
+): Promise<MineruManifest | null> {
   const existing = await readManifest(id);
   if (existing) return existing;
   return buildAndWriteManifest(id);

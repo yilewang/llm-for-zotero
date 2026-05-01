@@ -321,6 +321,7 @@ import {
   resolveShortcutMode,
 } from "./portalScope";
 import { getPanelDomRefs } from "./setupHandlers/domRefs";
+import { observeElementDisconnected } from "./setupHandlers/lifecycle";
 import {
   MODEL_MENU_OPEN_CLASS,
   REASONING_MENU_OPEN_CLASS,
@@ -344,9 +345,19 @@ import {
   type PendingHistoryDeletion,
   formatGlobalHistoryTimestamp,
   formatHistoryRowDisplayTitle,
+  groupHistoryEntriesByDay,
   normalizeConversationTitleSeed,
   normalizeHistoryTitle,
 } from "./setupHandlers/controllers/conversationHistoryController";
+import {
+  appendHistorySearchHighlightedText,
+  buildHistorySearchResults,
+  createHistorySearchDocument,
+  normalizeHistorySearchQuery,
+  tokenizeHistorySearchQuery,
+  type HistorySearchDocument,
+  type HistorySearchResult,
+} from "./setupHandlers/controllers/historySearchController";
 import {
   formatPaperContextChipLabel,
   formatPaperContextChipTitle,
@@ -2214,11 +2225,12 @@ export function setupHandlers(
   const checkAndApplyMineruChipStyle = async (contextItemId: number): Promise<void> => {
     try {
       if (mineruAvailableIds.has(contextItemId)) return; // already detected
-      const { hasCachedMineruMd } = await import("./mineruCache");
+      const { getMineruAvailabilityForAttachmentId } = await import("./mineruSync");
       const { isMineruEnabled } = await import("../../utils/mineruConfig");
       if (!isMineruEnabled()) return;
-      const hasCache = await hasCachedMineruMd(contextItemId);
-      if (!hasCache) return;
+      const availability =
+        await getMineruAvailabilityForAttachmentId(contextItemId);
+      if (availability.status === "missing") return;
       mineruAvailableIds.add(contextItemId);
       // MinerU is now available — re-render chips so the default mode flips to "mineru"
       updatePaperPreviewPreservingScroll();
@@ -3395,59 +3407,9 @@ export function setupHandlers(
     refreshConversationPanels(body, item);
   };
 
-  type HistorySearchTextCandidate = {
-    kind: "title" | "message";
-    text: string;
-    normalizedText: string;
-  };
-  type HistorySearchDocument = {
-    conversationKey: number;
-    candidates: HistorySearchTextCandidate[];
-  };
-  type HistorySearchRange = {
-    start: number;
-    end: number;
-  };
-  type HistorySearchResult = {
-    entry: ConversationHistoryEntry;
-    matchCount: number;
-    titleRanges: HistorySearchRange[];
-    previewText: string;
-    previewRanges: HistorySearchRange[];
-  };
-
   let latestConversationHistory: ConversationHistoryEntry[] = [];
   let explicitNewChatInFlight = false;
 
-  // Day-group helpers for history menu (matching standalone sidebar style)
-  const getDayGroupLabel = (ts: number): string => {
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const yesterdayStart = todayStart - 86_400_000;
-    const weekStart = todayStart - 6 * 86_400_000;
-    const monthStart = todayStart - 29 * 86_400_000;
-    if (ts >= todayStart) return t("Today");
-    if (ts >= yesterdayStart) return t("Yesterday");
-    if (ts >= weekStart) return t("Last 7 days");
-    if (ts >= monthStart) return t("Last 30 days");
-    return t("Older");
-  };
-
-  const groupEntriesByDay = (
-    entries: ConversationHistoryEntry[],
-  ): Array<{ label: string; items: ConversationHistoryEntry[] }> => {
-    const groups: Array<{ label: string; items: ConversationHistoryEntry[] }> = [];
-    let currentLabel = "";
-    for (const entry of entries) {
-      const label = getDayGroupLabel(entry.lastActivityAt);
-      if (label !== currentLabel) {
-        currentLabel = label;
-        groups.push({ label, items: [] });
-      }
-      groups[groups.length - 1].items.push(entry);
-    }
-    return groups;
-  };
   let historySearchQuery = "";
   let historySearchExpanded = false;
   let historySearchLoading = false;
@@ -3531,6 +3493,9 @@ export function setupHandlers(
     fullTextPaperContexts: Array.isArray(message.fullTextPaperContexts)
       ? [...message.fullTextPaperContexts]
       : undefined,
+    citationPaperContexts: Array.isArray(message.citationPaperContexts)
+      ? [...message.citationPaperContexts]
+      : undefined,
     attachments: Array.isArray(message.attachments)
       ? message.attachments.map((attachment) => ({ ...attachment }))
       : undefined,
@@ -3606,189 +3571,9 @@ export function setupHandlers(
     return false;
   };
 
-  const normalizeHistorySearchQuery = (value: string): string =>
-    sanitizeText(value || "")
-      .trim()
-      .toLocaleLowerCase();
-
-  const normalizeHistorySearchText = (value: unknown): string =>
-    sanitizeText(typeof value === "string" ? value : String(value || ""))
-      .replace(/\s+/g, " ")
-      .trim();
-
-  const tokenizeHistorySearchQuery = (normalizedQuery: string): string[] =>
-    Array.from(
-      new Set(
-        normalizedQuery
-          .split(/\s+/)
-          .map((token) => token.trim())
-          .filter(Boolean),
-      ),
-    );
-
-  const countHistorySearchTokenOccurrences = (
-    normalizedText: string,
-    token: string,
-  ): { count: number; firstIndex: number } => {
-    if (!normalizedText || !token) {
-      return { count: 0, firstIndex: -1 };
-    }
-    let count = 0;
-    let firstIndex = -1;
-    let cursor = 0;
-    while (cursor < normalizedText.length) {
-      const index = normalizedText.indexOf(token, cursor);
-      if (index < 0) break;
-      count += 1;
-      if (firstIndex < 0) {
-        firstIndex = index;
-      }
-      cursor = index + token.length;
-    }
-    return { count, firstIndex };
-  };
-
-  const collectHistorySearchRanges = (
-    text: string,
-    searchTokens: string[],
-  ): HistorySearchRange[] => {
-    if (!text || !searchTokens.length) return [];
-    const normalizedText = text.toLocaleLowerCase();
-    const ranges: HistorySearchRange[] = [];
-    for (const token of searchTokens) {
-      let cursor = 0;
-      while (cursor < normalizedText.length) {
-        const index = normalizedText.indexOf(token, cursor);
-        if (index < 0) break;
-        ranges.push({
-          start: index,
-          end: index + token.length,
-        });
-        cursor = index + token.length;
-      }
-    }
-    if (!ranges.length) return [];
-    ranges.sort((a, b) => {
-      if (a.start !== b.start) return a.start - b.start;
-      return a.end - b.end;
-    });
-    const merged: HistorySearchRange[] = [ranges[0]];
-    for (const range of ranges.slice(1)) {
-      const previous = merged[merged.length - 1];
-      if (range.start <= previous.end) {
-        previous.end = Math.max(previous.end, range.end);
-        continue;
-      }
-      merged.push({ ...range });
-    }
-    return merged;
-  };
-
-  const appendHistorySearchHighlightedText = (
-    container: HTMLElement,
-    text: string,
-    ranges: HistorySearchRange[],
-  ) => {
-    container.textContent = "";
-    if (!ranges.length) {
-      container.textContent = text;
-      return;
-    }
-    const ownerDoc = container.ownerDocument;
-    if (!ownerDoc) {
-      container.textContent = text;
-      return;
-    }
-    let cursor = 0;
-    for (const range of ranges) {
-      const start = Math.max(0, Math.min(text.length, range.start));
-      const end = Math.max(start, Math.min(text.length, range.end));
-      if (start > cursor) {
-        container.appendChild(
-          ownerDoc.createTextNode(text.slice(cursor, start)),
-        );
-      }
-      const mark = createElement(
-        ownerDoc,
-        "mark",
-        "llm-history-search-highlight",
-        {
-          textContent: text.slice(start, end),
-        },
-      );
-      container.appendChild(mark);
-      cursor = end;
-    }
-    if (cursor < text.length) {
-      container.appendChild(ownerDoc.createTextNode(text.slice(cursor)));
-    }
-  };
-
-  const scoreHistorySearchCandidate = (
-    candidate: HistorySearchTextCandidate,
-    searchTokens: string[],
-  ): { matchCount: number; firstIndex: number } => {
-    let matchCount = 0;
-    let firstIndex = -1;
-    for (const token of searchTokens) {
-      const occurrence = countHistorySearchTokenOccurrences(
-        candidate.normalizedText,
-        token,
-      );
-      matchCount += occurrence.count;
-      if (
-        occurrence.firstIndex >= 0 &&
-        (firstIndex < 0 || occurrence.firstIndex < firstIndex)
-      ) {
-        firstIndex = occurrence.firstIndex;
-      }
-    }
-    return { matchCount, firstIndex };
-  };
-
-  const buildHistorySearchPreview = (
-    text: string,
-    searchTokens: string[],
-  ): { previewText: string; previewRanges: HistorySearchRange[] } => {
-    const normalizedText = normalizeHistorySearchText(text);
-    if (!normalizedText) {
-      return { previewText: "", previewRanges: [] };
-    }
-    const ranges = collectHistorySearchRanges(normalizedText, searchTokens);
-    if (!ranges.length) {
-      return { previewText: "", previewRanges: [] };
-    }
-    const firstRange = ranges[0];
-    const beforeContext = 14;
-    const afterContext = 52;
-    const minimumSnippetLength = 72;
-    let start = Math.max(0, firstRange.start - beforeContext);
-    let end = Math.min(normalizedText.length, firstRange.end + afterContext);
-    if (end - start < minimumSnippetLength) {
-      const deficit = minimumSnippetLength - (end - start);
-      const shiftLeft = Math.min(start, Math.ceil(deficit / 2));
-      start -= shiftLeft;
-      end = Math.min(normalizedText.length, end + (deficit - shiftLeft));
-    }
-    const prefix = start > 0 ? "... " : "";
-    const suffix = end < normalizedText.length ? " ..." : "";
-    const snippet = normalizedText.slice(start, end);
-    const snippetRanges = ranges
-      .filter((range) => range.end > start && range.start < end)
-      .map((range) => ({
-        start: prefix.length + Math.max(0, range.start - start),
-        end: prefix.length + Math.min(end, range.end) - start,
-      }));
-    return {
-      previewText: `${prefix}${snippet}${suffix}`,
-      previewRanges: snippetRanges,
-    };
-  };
-
   const buildHistorySearchDocument = async (
     entry: ConversationHistoryEntry,
   ): Promise<HistorySearchDocument> => {
-    const titleText = normalizeHistorySearchText(entry.title);
     const messages = isClaudeConversationSystem()
       ? await loadClaudeConversation(
         entry.conversationKey,
@@ -3803,27 +3588,7 @@ export function setupHandlers(
           entry.conversationKey,
           PERSISTED_HISTORY_LIMIT,
         );
-    const candidates: HistorySearchTextCandidate[] = [];
-    if (titleText) {
-      candidates.push({
-        kind: "title",
-        text: titleText,
-        normalizedText: titleText.toLocaleLowerCase(),
-      });
-    }
-    for (const message of messages) {
-      const text = normalizeHistorySearchText(message.text);
-      if (!text) continue;
-      candidates.push({
-        kind: "message",
-        text,
-        normalizedText: text.toLocaleLowerCase(),
-      });
-    }
-    return {
-      conversationKey: entry.conversationKey,
-      candidates,
-    };
+    return createHistorySearchDocument(entry, messages);
   };
 
   const ensureHistorySearchDocument = async (
@@ -3862,66 +3627,6 @@ export function setupHandlers(
     await Promise.all(
       entries.map((entry) => ensureHistorySearchDocument(entry)),
     );
-  };
-
-  const buildHistorySearchResults = (
-    entries: ConversationHistoryEntry[],
-    normalizedQuery: string,
-  ): HistorySearchResult[] => {
-    const searchTokens = tokenizeHistorySearchQuery(normalizedQuery);
-    if (!searchTokens.length) return [];
-    const results: HistorySearchResult[] = [];
-    for (const entry of entries) {
-      const document = historySearchDocumentCache.get(entry.conversationKey);
-      if (!document) continue;
-      let matchCount = 0;
-      let bestPreviewCandidate: HistorySearchTextCandidate | null = null;
-      let bestPreviewScore = 0;
-      let bestPreviewIndex = Number.POSITIVE_INFINITY;
-      for (const candidate of document.candidates) {
-        const score = scoreHistorySearchCandidate(candidate, searchTokens);
-        if (score.matchCount <= 0) continue;
-        matchCount += score.matchCount;
-        if (
-          candidate.kind === "message" &&
-          (score.matchCount > bestPreviewScore ||
-            (score.matchCount === bestPreviewScore &&
-              score.firstIndex >= 0 &&
-              score.firstIndex < bestPreviewIndex))
-        ) {
-          bestPreviewCandidate = candidate;
-          bestPreviewScore = score.matchCount;
-          bestPreviewIndex =
-            score.firstIndex >= 0 ? score.firstIndex : bestPreviewIndex;
-        }
-      }
-      if (matchCount <= 0) continue;
-      const displayTitle = formatHistoryRowDisplayTitle(entry.title);
-      const titleRanges = collectHistorySearchRanges(
-        displayTitle,
-        searchTokens,
-      );
-      const preview = bestPreviewCandidate
-        ? buildHistorySearchPreview(bestPreviewCandidate.text, searchTokens)
-        : { previewText: "", previewRanges: [] };
-      results.push({
-        entry,
-        matchCount,
-        titleRanges,
-        previewText: preview.previewText,
-        previewRanges: preview.previewRanges,
-      });
-    }
-    results.sort((a, b) => {
-      if (b.matchCount !== a.matchCount) {
-        return b.matchCount - a.matchCount;
-      }
-      if (b.entry.lastActivityAt !== a.entry.lastActivityAt) {
-        return b.entry.lastActivityAt - a.entry.lastActivityAt;
-      }
-      return b.entry.conversationKey - a.entry.conversationKey;
-    });
-    return results;
   };
 
   const renderGlobalHistoryMenu = () => {
@@ -4000,7 +3705,11 @@ export function setupHandlers(
       return;
     }
     const rawSearchResults = searchActive
-      ? buildHistorySearchResults(allEntries, normalizedSearchQuery)
+      ? buildHistorySearchResults(
+        allEntries,
+        normalizedSearchQuery,
+        historySearchDocumentCache,
+      )
       : [];
     const searchResultsByKey = new Map<number, HistorySearchResult>();
     for (const result of rawSearchResults) {
@@ -4040,7 +3749,7 @@ export function setupHandlers(
       : [...filteredEntries].sort((a, b) => b.lastActivityAt - a.lastActivityAt);
 
     // Group by day (matching standalone sidebar style)
-    const dayGroups = groupEntriesByDay(sortedEntries);
+    const dayGroups = groupHistoryEntriesByDay(sortedEntries, { translate: t });
 
     const itemsList = createElement(
       body.ownerDocument as Document,
@@ -6028,7 +5737,7 @@ export function setupHandlers(
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (normalizedCurrentCandidate > 0) {
+      if (!forceFresh && normalizedCurrentCandidate > 0) {
         try {
           const currentSummary = await getClaudeConversationSummary(
             normalizedCurrentCandidate,
@@ -6094,7 +5803,7 @@ export function setupHandlers(
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (normalizedCurrentCandidate > 0) {
+      if (!forceFresh && normalizedCurrentCandidate > 0) {
         try {
           if (await isCodexConversationDraft(normalizedCurrentCandidate)) {
             targetConversationKey = normalizedCurrentCandidate;
@@ -6154,7 +5863,7 @@ export function setupHandlers(
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (normalizedCurrentCandidate > 0) {
+      if (!forceFresh && normalizedCurrentCandidate > 0) {
         try {
           const turnCount = await getGlobalConversationUserTurnCount(
             normalizedCurrentCandidate,
@@ -6246,7 +5955,7 @@ export function setupHandlers(
 
     if (isClaudeConversationSystem()) {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (Number.isFinite(currentKey) && currentKey > 0) {
+      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getClaudeConversationSummary(currentKey);
           if (
@@ -6301,7 +6010,7 @@ export function setupHandlers(
       }
     } else if (isCodexConversationSystem()) {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (Number.isFinite(currentKey) && currentKey > 0) {
+      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getCodexConversationSummary(currentKey);
           if (
@@ -6356,7 +6065,7 @@ export function setupHandlers(
       }
     } else {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (Number.isFinite(currentKey) && currentKey > 0) {
+      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getPaperConversation(currentKey);
           if (currentSummary && currentSummary.userTurnCount === 0) {
@@ -14199,27 +13908,26 @@ export function setupHandlers(
     });
   }
 
-  const cleanupBody = body as Element & { __llmQueuedFollowUpCleanupRegistered?: boolean };
+  const cleanupBody = body as Element & {
+    __llmQueuedFollowUpCleanupRegistered?: boolean;
+    __llmQueuedFollowUpDisconnectCleanup?: () => void;
+  };
   if (!cleanupBody.__llmQueuedFollowUpCleanupRegistered) {
     cleanupBody.__llmQueuedFollowUpCleanupRegistered = true;
-    const observer = new MutationObserver(() => {
-      if (body.isConnected) return;
-      cleanupPrefObservers?.();
-      unregisterQueuedFollowUpBody(registeredQueuedFollowUpThreadKey, body);
-      queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;
-      activeContextPanelStateSync.delete(body);
-      delete (body as any).__llmApplyResolvedClaudeEffort;
-      delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY];
-      delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];
-      delete (body as any).__llmScheduleClaudeQueueDrain;
-      delete (body as any).__llmScheduleClaudeThreadQueueDrain;
-      void releaseClaudeRuntimeForBody(body);
-      observer.disconnect();
-      cleanupBody.__llmQueuedFollowUpCleanupRegistered = false;
-    });
-    const observeRoot = body.ownerDocument;
-    if (observeRoot) {
-      observer.observe(observeRoot, { childList: true, subtree: true });
-    }
+    cleanupBody.__llmQueuedFollowUpDisconnectCleanup =
+      observeElementDisconnected(body, () => {
+        cleanupPrefObservers?.();
+        unregisterQueuedFollowUpBody(registeredQueuedFollowUpThreadKey, body);
+        queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;
+        activeContextPanelStateSync.delete(body);
+        delete (body as any).__llmApplyResolvedClaudeEffort;
+        delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY];
+        delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];
+        delete (body as any).__llmScheduleClaudeQueueDrain;
+        delete (body as any).__llmScheduleClaudeThreadQueueDrain;
+        void releaseClaudeRuntimeForBody(body);
+        delete cleanupBody.__llmQueuedFollowUpDisconnectCleanup;
+        cleanupBody.__llmQueuedFollowUpCleanupRegistered = false;
+      });
   }
 }

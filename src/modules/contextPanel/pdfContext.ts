@@ -17,8 +17,11 @@ import {
   CHUNK_TARGET_LENGTH,
   RETRIEVAL_TOP_K_PER_PAPER,
   RRF_K,
-  STOPWORDS,
 } from "./constants";
+import {
+  tokenizeRetrievalQuery,
+  tokenizeRetrievalText,
+} from "./retrievalTokenizer";
 import {
   buildPaperQuoteCitationGuidance,
   formatPaperCitationLabel,
@@ -26,8 +29,13 @@ import {
 } from "./paperAttribution";
 import { readNoteSnapshot } from "./notes";
 import { pdfTextCache, pdfTextLoadingTasks } from "./state";
-import { readCachedMineruMd, ensureManifest } from "./mineruCache";
+import {
+  buildAndWriteManifest,
+  ensureManifest,
+  readCachedMineruMd,
+} from "./mineruCache";
 import type { MineruManifest, ManifestSection } from "./mineruCache";
+import { ensureMineruRuntimeCacheForAttachment } from "./mineruSync";
 import { isMineruEnabled } from "../../utils/mineruConfig";
 import type {
   PdfContext,
@@ -121,17 +129,28 @@ function htmlTableToMarkdown(tableHtml: string): string {
 
 function convertHtmlTablesToMarkdown(mdText: string): string {
   // Match <table>...</table> blocks (possibly spanning multiple lines)
-  return mdText.replace(
-    /<table[^>]*>[\s\S]*?<\/table>/gi,
-    (tableBlock) => {
-      try {
-        const md = htmlTableToMarkdown(tableBlock);
-        return md || tableBlock; // Keep original if conversion produces nothing
-      } catch {
-        return tableBlock; // Keep original on error
-      }
-    },
-  );
+  return mdText.replace(/<table[^>]*>[\s\S]*?<\/table>/gi, (tableBlock) => {
+    try {
+      const md = htmlTableToMarkdown(tableBlock);
+      return md || tableBlock; // Keep original if conversion produces nothing
+    } catch {
+      return tableBlock; // Keep original on error
+    }
+  });
+}
+
+function formatErrorForLog(error: unknown): string {
+  if (error instanceof Error) {
+    return error.stack || error.message || String(error);
+  }
+  if (typeof error === "string") return error;
+  try {
+    const json = JSON.stringify(error);
+    if (json && json !== "{}") return json;
+  } catch {
+    /* ignore */
+  }
+  return String(error || "Unknown error");
 }
 
 async function cachePDFText(item: Zotero.Item) {
@@ -153,6 +172,13 @@ async function cachePDFText(item: Zotero.Item) {
         : null;
 
     // 1. Try MinerU disk cache (only if MinerU is enabled)
+    if (isMineruEnabled() && pdfItem) {
+      try {
+        await ensureMineruRuntimeCacheForAttachment(pdfItem);
+      } catch (error) {
+        ztoolkit.log("LLM: MinerU sync restore failed", error);
+      }
+    }
     const cachedMd = isMineruEnabled()
       ? await readCachedMineruMd(item.id)
       : null;
@@ -180,7 +206,24 @@ async function cachePDFText(item: Zotero.Item) {
       if (sourceType === "mineru") {
         try {
           manifest = await ensureManifest(item.id);
-        } catch {
+          if (
+            manifest &&
+            cachedMd &&
+            typeof manifest.totalChars === "number" &&
+            manifest.totalChars !== cachedMd.length
+          ) {
+            ztoolkit.log("LLM: MinerU manifest length mismatch; rebuilding", {
+              attachmentId: item.id,
+              manifestTotalChars: manifest.totalChars,
+              mdLength: cachedMd.length,
+            });
+            manifest = await buildAndWriteManifest(item.id);
+          }
+        } catch (e) {
+          ztoolkit.log(
+            "LLM: MinerU manifest unavailable; using markdown chunks",
+            formatErrorForLog(e),
+          );
           // Non-critical — fall back to heuristic chunking
         }
       }
@@ -193,14 +236,36 @@ async function cachePDFText(item: Zotero.Item) {
         // build metadata from the raw chunks, then convert HTML tables for LLM readability.
         // Using pdfText (post-conversion) would misalign because convertHtmlTablesToMarkdown
         // changes character counts.
-        const rawMd = cachedMd!;
-        const rawChunks = splitWithManifestSections(rawMd, manifest.sections, CHUNK_TARGET_LENGTH);
-        chunkMeta = buildChunkMetadataFromManifest(rawChunks, rawMd, manifest.sections);
-        chunks = rawChunks.map(chunk => convertHtmlTablesToMarkdown(chunk));
-        // Update chunkMeta text fields to reflect converted content
-        for (let i = 0; i < chunks.length; i++) {
-          chunkMeta[i].text = chunks[i];
-          chunkMeta[i].normalizedText = normalizeEvidenceText(chunks[i]);
+        try {
+          const rawMd = cachedMd!;
+          const rawChunks = splitWithManifestSections(
+            rawMd,
+            manifest.sections,
+            CHUNK_TARGET_LENGTH,
+          );
+          chunkMeta = buildChunkMetadataFromManifest(
+            rawChunks,
+            rawMd,
+            manifest.sections,
+          );
+          chunks = rawChunks.map((chunk) => convertHtmlTablesToMarkdown(chunk));
+          // Update chunkMeta text fields to reflect converted content
+          for (let i = 0; i < chunks.length; i++) {
+            chunkMeta[i].text = chunks[i];
+            chunkMeta[i].normalizedText = normalizeEvidenceText(chunks[i]);
+          }
+        } catch (e) {
+          ztoolkit.log(
+            "LLM: MinerU manifest chunking failed; using full markdown fallback",
+            {
+              attachmentId: item.id,
+              manifestTotalChars: manifest.totalChars,
+              mdLength: cachedMd?.length || 0,
+              error: formatErrorForLog(e),
+            },
+          );
+          chunks = splitMarkdownIntoChunks(pdfText, CHUNK_TARGET_LENGTH);
+          chunkMeta = buildChunkMetadata(chunks, sourceType);
         }
       } else if (sourceType === "mineru") {
         chunks = splitMarkdownIntoChunks(pdfText, CHUNK_TARGET_LENGTH);
@@ -231,11 +296,10 @@ async function cachePDFText(item: Zotero.Item) {
         docFreq: {},
         avgChunkLength: 0,
         fullLength: 0,
-
       });
     }
   } catch (e) {
-    ztoolkit.log("Error caching PDF:", e);
+    ztoolkit.log("Error caching PDF:", formatErrorForLog(e), e);
     pdfTextCache.set(item.id, {
       title: "",
       chunks: [],
@@ -244,7 +308,6 @@ async function cachePDFText(item: Zotero.Item) {
       docFreq: {},
       avgChunkLength: 0,
       fullLength: 0,
-
     });
   }
 }
@@ -272,7 +335,9 @@ async function cacheNoteText(item: Zotero.Item) {
   try {
     const snapshot = readNoteSnapshot(item);
     const text = snapshot?.text || "";
-    const title = sanitizePdfText(snapshot?.title || text.split("\n")[0] || "").slice(0, 120);
+    const title = sanitizePdfText(
+      snapshot?.title || text.split("\n")[0] || "",
+    ).slice(0, 120);
     if (text) {
       const chunks = splitIntoChunks(text, CHUNK_TARGET_LENGTH);
       const chunkMeta = buildChunkMetadata(chunks);
@@ -285,7 +350,6 @@ async function cacheNoteText(item: Zotero.Item) {
         docFreq,
         avgChunkLength,
         fullLength: text.length,
-
       });
     } else {
       pdfTextCache.set(item.id, {
@@ -296,7 +360,6 @@ async function cacheNoteText(item: Zotero.Item) {
         docFreq: {},
         avgChunkLength: 0,
         fullLength: 0,
-
       });
     }
   } catch (e) {
@@ -309,7 +372,6 @@ async function cacheNoteText(item: Zotero.Item) {
       docFreq: {},
       avgChunkLength: 0,
       fullLength: 0,
-
     });
   }
 }
@@ -369,10 +431,7 @@ export function invalidateCachedContextText(itemId: number): void {
 
 // ── Markdown-aware chunking (MinerU only) ─────────────────────────────────────
 
-function splitMarkdownIntoChunks(
-  text: string,
-  targetLength: number,
-): string[] {
+function splitMarkdownIntoChunks(text: string, targetLength: number): string[] {
   if (!text) return [];
   const normalized = text.replace(/\r\n?/g, "\n").trim();
   if (!normalized) return [];
@@ -419,15 +478,16 @@ function splitMarkdownIntoChunks(
         if (!p) continue;
         if (p.length > targetLength) {
           // Oversized paragraph: flush and slice with sentence-aware overlap
-          if (subChunk.trim()) { chunks.push(subChunk.trim()); subChunk = ""; }
+          if (subChunk.trim()) {
+            chunks.push(subChunk.trim());
+            subChunk = "";
+          }
           let start = 0;
           while (start < p.length) {
             const prevStart = start;
             const rawEnd = Math.min(start + targetLength, p.length);
             const end =
-              rawEnd < p.length
-                ? findSentenceBoundary(p, rawEnd, 200)
-                : rawEnd;
+              rawEnd < p.length ? findSentenceBoundary(p, rawEnd, 200) : rawEnd;
             const slice = p.slice(start, end).trim();
             if (slice) chunks.push(slice);
             if (end >= p.length) break;
@@ -446,9 +506,7 @@ function splitMarkdownIntoChunks(
       if (subChunk.trim()) chunks.push(subChunk.trim());
     } else if (accumulator.length + section.length + 2 <= targetLength) {
       // Small enough to accumulate
-      accumulator = accumulator
-        ? `${accumulator}\n\n${section}`
-        : section;
+      accumulator = accumulator ? `${accumulator}\n\n${section}` : section;
     } else {
       // Would exceed budget — flush and start new
       flushAccumulator();
@@ -522,9 +580,7 @@ function splitIntoChunks(text: string, targetLength: number): string[] {
         const prevStart = start;
         const rawEnd = Math.min(start + targetLength, p.length);
         const end =
-          rawEnd < p.length
-            ? findSentenceBoundary(p, rawEnd, 200)
-            : rawEnd;
+          rawEnd < p.length ? findSentenceBoundary(p, rawEnd, 200) : rawEnd;
         const slice = p.slice(start, end).trim();
         if (slice) chunks.push(slice);
         if (end >= p.length) break;
@@ -611,11 +667,17 @@ function buildChunkMetadataFromManifest(
     const lower = heading.toLowerCase().trim();
     if (/^abstract/.test(lower)) return "abstract";
     if (/^introduction/.test(lower)) return "introduction";
-    if (/^method/.test(lower) || /^materials?\s+and\s+method/.test(lower) || /^experimental/.test(lower)) return "methods";
+    if (
+      /^method/.test(lower) ||
+      /^materials?\s+and\s+method/.test(lower) ||
+      /^experimental/.test(lower)
+    )
+      return "methods";
     if (/^results?/.test(lower)) return "results";
     if (/^discussion/.test(lower)) return "discussion";
     if (/^conclusion/.test(lower)) return "conclusion";
-    if (/^reference/.test(lower) || /^bibliography/.test(lower)) return "references";
+    if (/^reference/.test(lower) || /^bibliography/.test(lower))
+      return "references";
     if (/^appendix/.test(lower) || /^supplement/.test(lower)) return "appendix";
     if (/^fig(?:ure)?\.?\s*\d/i.test(lower)) return "figure-caption";
     if (/^table\s*\d/i.test(lower)) return "table-caption";
@@ -728,9 +790,20 @@ function sanitizePdfText(value: string): string {
   return (value || "").replace(/\r\n?/g, "\n").trim();
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sectionLabelPatternSource(sectionLabel: string): string {
+  return escapeRegExp(sectionLabel).replace(/\s+/g, "\\s+");
+}
+
 // ── Markdown heading detection (MinerU only) ─────────────────────────────────
 
-const MARKDOWN_HEADING_MAP: Record<string, { label: string; kind: PdfChunkKind }> = {
+const MARKDOWN_HEADING_MAP: Record<
+  string,
+  { label: string; kind: PdfChunkKind }
+> = {
   abstract: { label: "Abstract", kind: "abstract" },
   introduction: { label: "Introduction", kind: "introduction" },
   "related work": { label: "Related Work", kind: "introduction" },
@@ -769,11 +842,12 @@ function matchMarkdownSectionHeading(
     .slice(0, 3);
   for (const line of lines) {
     // Match: # Title, ## Title, ### Title (with optional numbering after #)
-    const md = line.match(
-      /^#{1,4}\s+(?:\d+(?:\.\d+)*\s*)?(.+?)\s*$/,
-    );
+    const md = line.match(/^#{1,4}\s+(?:\d+(?:\.\d+)*\s*)?(.+?)\s*$/);
     if (md) {
-      const heading = md[1].replace(/[:.;\-–—]+$/, "").trim().toLowerCase();
+      const heading = md[1]
+        .replace(/[:.;\-–—]+$/, "")
+        .trim()
+        .toLowerCase();
       const match = MARKDOWN_HEADING_MAP[heading];
       if (match) return match;
     }
@@ -824,15 +898,16 @@ function trimLeadingSectionHeading(
   const trimmed = sanitizePdfText(chunkText);
   const lines = trimmed.split(/\n+/);
   const firstLine = lines[0]?.trim() || "";
+  const escapedSectionLabel = sectionLabelPatternSource(sectionLabel);
   const headingPattern = new RegExp(
-    `^(?:\\d+(?:\\.\\d+)*)?\\s*${sectionLabel.replace(/\s+/g, "\\s+")}\\b[:.\\s-]*$`,
+    `^(?:\\d+(?:\\.\\d+)*)?\\s*${escapedSectionLabel}\\b[:.\\s-]*$`,
     "i",
   );
   if (headingPattern.test(firstLine)) {
     return lines.slice(1).join(" ").trim() || trimmed;
   }
   const inlinePattern = new RegExp(
-    `^(?:\\d+(?:\\.\\d+)*)?\\s*${sectionLabel.replace(/\s+/g, "\\s+")}\\b[:.\\s-]+`,
+    `^(?:\\d+(?:\\.\\d+)*)?\\s*${escapedSectionLabel}\\b[:.\\s-]+`,
     "i",
   );
   return trimmed.replace(inlinePattern, "").trim() || trimmed;
@@ -871,7 +946,10 @@ function looksLikeTableCaption(text: string): boolean {
   return TABLE_CAPTION_PATTERN.test(sanitizePdfText(text));
 }
 
-function cleanLeadingEvidenceNoise(text: string, chunkKind: PdfChunkKind): {
+function cleanLeadingEvidenceNoise(
+  text: string,
+  chunkKind: PdfChunkKind,
+): {
   text: string;
   removedLeadingNoise: boolean;
 } {
@@ -882,17 +960,14 @@ function cleanLeadingEvidenceNoise(text: string, chunkKind: PdfChunkKind): {
   } else if (chunkKind === "table-caption") {
     cleaned = cleaned.replace(TABLE_CAPTION_PATTERN, "").trim();
   }
-  cleaned = cleaned.replace(/^[-–—:;,.()\[\]]+\s*/, "").trim();
+  cleaned = cleaned.replace(/^[-–—:;,.()[\]]+\s*/, "").trim();
   cleaned = cleaned.replace(/^(?:\d{1,3}\s+){1,3}(?=[A-Za-z])/u, "").trim();
-  cleaned = cleaned.replace(
-    /^(?:[a-z][a-z-]{1,24}\.)\s+(?=[A-Z])/u,
-    "",
-  );
+  cleaned = cleaned.replace(/^(?:[a-z][a-z-]{1,24}\.)\s+(?=[A-Z])/u, "");
   cleaned = cleaned.replace(
     /^(?:page|p)\s*\d{1,4}(?:\s+of\s+\d{1,4})?\s*/i,
     "",
   );
-  cleaned = cleaned.replace(/^[-–—:;,.()\[\]]+\s*/, "").trim();
+  cleaned = cleaned.replace(/^[-–—:;,.()[\]]+\s*/, "").trim();
   return {
     text: cleaned || original,
     removedLeadingNoise: Boolean(cleaned && cleaned !== original),
@@ -925,7 +1000,10 @@ function resolveChunkKind(params: {
   if (sectionHeading?.kind) {
     return sectionHeading.kind;
   }
-  if (looksLikeReferenceEntry(normalizedText) || looksLikeCitationList(normalizedText)) {
+  if (
+    looksLikeReferenceEntry(normalizedText) ||
+    looksLikeCitationList(normalizedText)
+  ) {
     return "references";
   }
   if (looksLikeFigureCaption(chunkText)) {
@@ -969,9 +1047,11 @@ export function buildChunkMetadata(
   const chunkMeta: PdfChunkMeta[] = [];
   let activeSection: SectionHeadingMatch | undefined;
   for (const [chunkIndex, chunkText] of chunks.entries()) {
-    const explicitSection = sourceType === "mineru"
-      ? (matchMarkdownSectionHeading(chunkText) || matchSectionHeading(chunkText))
-      : matchSectionHeading(chunkText);
+    const explicitSection =
+      sourceType === "mineru"
+        ? matchMarkdownSectionHeading(chunkText) ||
+          matchSectionHeading(chunkText)
+        : matchSectionHeading(chunkText);
     if (explicitSection) {
       activeSection = explicitSection;
     }
@@ -1037,8 +1117,7 @@ export function formatSuggestedEvidenceCitation(
 ): string {
   const citationParts = [buildCompactPaperSourceLabel(paper)];
   const sectionLabel =
-    candidate.sectionLabel ||
-    matchSectionHeading(candidate.chunkText)?.label;
+    candidate.sectionLabel || matchSectionHeading(candidate.chunkText)?.label;
   if (sectionLabel) {
     citationParts.push(sectionLabel);
   }
@@ -1055,29 +1134,7 @@ export function formatSuggestedEvidenceCitation(
 }
 
 function tokenizeText(text: string): string[] {
-  const lower = text.toLowerCase();
-
-  // Unicode-aware word tokens (Latin, Cyrillic, accented, etc.)
-  const wordTokens = (lower.match(/[\p{L}\p{N}]+/gu) || []).filter(
-    (t) => t.length >= 2 && !STOPWORDS.has(t),
-  );
-
-  // CJK character bigrams (Chinese, Japanese Kanji, Korean Hanja)
-  const cjkChars =
-    lower.match(/[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]/g) || [];
-  const cjkBigrams: string[] = [];
-  for (let i = 0; i < cjkChars.length - 1; i++) {
-    cjkBigrams.push(cjkChars[i] + cjkChars[i + 1]);
-  }
-
-  // Japanese Hiragana/Katakana bigrams
-  const kanaChars = lower.match(/[\u3040-\u309F\u30A0-\u30FF]/g) || [];
-  const kanaBigrams: string[] = [];
-  for (let i = 0; i < kanaChars.length - 1; i++) {
-    kanaBigrams.push(kanaChars[i] + kanaChars[i + 1]);
-  }
-
-  return [...wordTokens, ...cjkBigrams, ...kanaBigrams];
+  return tokenizeRetrievalText(text);
 }
 
 function buildChunkIndex(chunks: string[]): {
@@ -1109,8 +1166,7 @@ function buildChunkIndex(chunks: string[]): {
 }
 
 function tokenizeQuery(query: string): string[] {
-  const tokens = tokenizeText(query);
-  return Array.from(new Set(tokens));
+  return tokenizeRetrievalQuery(query);
 }
 
 function scoreChunkBM25(
@@ -1155,10 +1211,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-
-async function embedTexts(
-  texts: string[],
-): Promise<number[][]> {
+async function embedTexts(texts: string[]): Promise<number[][]> {
   const all: number[][] = [];
   for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
     const batch = texts.slice(i, i + EMBEDDING_BATCH_SIZE);
@@ -1218,7 +1271,12 @@ async function ensureEmbeddings(
     // Layer 2: Disk cache — check before calling the API
     if (itemId != null) {
       try {
-        const cached = await loadCachedEmbeddings(itemId, chunkHash, embeddingModel, providerKey);
+        const cached = await loadCachedEmbeddings(
+          itemId,
+          chunkHash,
+          embeddingModel,
+          providerKey,
+        );
         if (cached && cached.length === chunkCount) return cached;
       } catch {
         /* disk cache miss or read error — continue to API */
@@ -1235,10 +1293,7 @@ async function ensureEmbeddings(
             "Configure a separate embedding provider in Settings → Customization. Falling back to keyword search.",
         );
       } else {
-        ztoolkit.log(
-          "[Semantic Search] Embedding generation failed:",
-          err,
-        );
+        ztoolkit.log("[Semantic Search] Embedding generation failed:", err);
       }
       return null;
     }
@@ -1259,9 +1314,15 @@ async function ensureEmbeddings(
     // Persist to disk cache in background (fire-and-forget)
     if (itemId != null && result.length > 0) {
       const dims = result[0].length;
-      saveCachedEmbeddings(itemId, chunkHash, embeddingModel, providerKey, dims, result).catch(
-        (err) =>
-          ztoolkit.log("[Semantic Search] Embedding cache write failed:", err),
+      saveCachedEmbeddings(
+        itemId,
+        chunkHash,
+        embeddingModel,
+        providerKey,
+        dims,
+        result,
+      ).catch((err) =>
+        ztoolkit.log("[Semantic Search] Embedding cache write failed:", err),
       );
     }
     return result.length === chunkCount;
@@ -1308,7 +1369,10 @@ export function preGenerateEmbeddings(
 
   ensureEmbeddings(pdfContext, itemId).catch((err) => {
     if (typeof ztoolkit !== "undefined") {
-      ztoolkit.log("[Semantic Search] Background embedding pre-generation failed:", err);
+      ztoolkit.log(
+        "[Semantic Search] Background embedding pre-generation failed:",
+        err,
+      );
     }
   });
 }
@@ -1470,9 +1534,7 @@ function detectQueryIntent(question: string): QueryIntent {
     )
   )
     return "comparative";
-  if (
-    /\b(?:cit(?:e|ation|ed)|refer(?:ence|red)|bibliograph)\b/i.test(question)
-  )
+  if (/\b(?:cit(?:e|ation|ed)|refer(?:ence|red)|bibliograph)\b/i.test(question))
     return "citation";
   if (
     /\b(?:how many|sample size|number of|percentage|ratio|count|statistic)\b/i.test(
@@ -1599,7 +1661,15 @@ export async function buildPaperRetrievalCandidates(
   paperContext: PaperContextRef,
   pdfContext: PdfContext | undefined,
   question: string,
-  options?: {
+  apiOverridesOrOptions?: {
+    apiBase?: string;
+    apiKey?: string;
+    topK?: number;
+    mode?: "general" | "evidence";
+    /** Pre-computed query embedding to avoid redundant API calls in multi-paper loops. */
+    precomputedQueryEmbedding?: number[];
+  },
+  compatibilityOptions?: {
     topK?: number;
     mode?: "general" | "evidence";
     /** Pre-computed query embedding to avoid redundant API calls in multi-paper loops. */
@@ -1607,6 +1677,13 @@ export async function buildPaperRetrievalCandidates(
   },
 ): Promise<PaperContextCandidate[]> {
   if (!pdfContext) return [];
+  const options =
+    compatibilityOptions ||
+    ("topK" in (apiOverridesOrOptions || {}) ||
+    "mode" in (apiOverridesOrOptions || {}) ||
+    "precomputedQueryEmbedding" in (apiOverridesOrOptions || {})
+      ? apiOverridesOrOptions
+      : undefined);
   const { chunks, chunkStats, docFreq, avgChunkLength } = pdfContext;
   if (!chunks.length || !chunkStats.length) return [];
   const chunkMeta =
@@ -1645,7 +1722,8 @@ export async function buildPaperRetrievalCandidates(
       try {
         const queryEmbedding =
           options?.precomputedQueryEmbedding ||
-          (await callEmbeddings([question]))[0] || [];
+          (await callEmbeddings([question]))[0] ||
+          [];
         if (queryEmbedding.length) {
           rawEmbeddingScores = pdfContext.embeddings.map((vec) =>
             cosineSimilarity(queryEmbedding, vec),
@@ -1670,7 +1748,9 @@ export async function buildPaperRetrievalCandidates(
 
   const scored = chunkStats.map((chunk, idx) => {
     const bm25Score = bm25Scores[idx] || 0;
-    const embeddingScore = rawEmbeddingScores ? rawEmbeddingScores[idx] || 0 : 0;
+    const embeddingScore = rawEmbeddingScores
+      ? rawEmbeddingScores[idx] || 0
+      : 0;
     const hybridScore = embedRank
       ? 1 / (RRF_K + bm25Rank[idx]) + 1 / (RRF_K + embedRank[idx])
       : 1 / (RRF_K + bm25Rank[idx]);
@@ -1782,7 +1862,9 @@ export function renderEvidencePack(params: {
       lines.push("", "Evidence:");
       for (const [candidateIndex, candidate] of paperCandidates.entries()) {
         lines.push(`Evidence snippet ${candidateIndex + 1}`);
-        lines.push(`Section: ${candidate.sectionLabel || "Unlabeled body text"}`);
+        lines.push(
+          `Section: ${candidate.sectionLabel || "Unlabeled body text"}`,
+        );
         lines.push(`Source label: ${formatPaperSourceLabel(paper)}`);
         lines.push("Quoted evidence:");
         lines.push(formatMarkdownBlockquote(buildEvidenceQuoteText(candidate)));

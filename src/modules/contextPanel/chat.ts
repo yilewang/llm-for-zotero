@@ -178,7 +178,8 @@ import {
   resolveConversationSystemForItem,
   resolveDisplayConversationKind,
 } from "./portalScope";
-import { buildChatHistoryNotePayload, readNoteSnapshot } from "./notes";
+import { buildChatHistoryNotePayload } from "./notes";
+import { readNoteSnapshot } from "./noteSnapshot";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { canEditUserPromptTurn } from "./editability";
@@ -186,6 +187,10 @@ import { renderAgentTrace } from "./agentTrace/render";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 import { decorateAssistantCitationLinks } from "./assistantCitationLinks";
+import {
+  getMessageCitationPaperContexts,
+  mergeCitationPaperContexts,
+} from "./citationContexts";
 import { getCoreAgentRuntime } from "../../agent/index";
 import { getClaudeReasoningModePref } from "../../claudeCode/prefs";
 import { getAgentRunTrace } from "../../agent/store/traceStore";
@@ -209,6 +214,9 @@ import {
   SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY,
   SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY,
 } from "./queuedFollowUps";
+import { getConversationKey } from "./conversationIdentity";
+
+export { getConversationKey } from "./conversationIdentity";
 
 /** Get AbortController constructor from global scope */
 function getAbortControllerCtor(): new () => AbortController {
@@ -447,7 +455,7 @@ function collectRecentPaperContexts(history: Message[]): PaperContextRef[] {
   for (let index = history.length - 1; index >= 0; index--) {
     const message = history[index];
     if (!message || message.role !== "user") continue;
-    const contexts = normalizePaperContexts(message.paperContexts);
+    const contexts = getMessageCitationPaperContexts(message);
     for (const context of contexts) {
       const key = `${context.itemId}:${context.contextItemId}`;
       if (seen.has(key)) continue;
@@ -556,6 +564,131 @@ function attachRenderedCopyButtons(root: ParentNode, doc: Document): void {
   }
 }
 
+const ASSISTANT_RESPONSE_CONTEXT_MENU_SUPPRESS_SELECTOR = [
+  ".llm-action-inline-card",
+  ".llm-agent-hitl-card",
+  "button",
+  "input",
+  "textarea",
+  "select",
+  "option",
+  "summary",
+  "[role='button']",
+  "[contenteditable='true']",
+].join(",");
+
+export function shouldSuppressAssistantResponseContextMenu(
+  target: EventTarget | null,
+): boolean {
+  const maybeElement = target as Element | null;
+  if (!maybeElement || typeof maybeElement.closest !== "function") {
+    return false;
+  }
+  return Boolean(
+    maybeElement.closest(ASSISTANT_RESPONSE_CONTEXT_MENU_SUPPRESS_SELECTOR),
+  );
+}
+
+export function shouldAttachAssistantResponseContextMenu(
+  message: Pick<Message, "text">,
+): boolean {
+  return Boolean(sanitizeText(message.text || "").trim());
+}
+
+export function shouldDecorateInterleavedAgentTraceCitations(params: {
+  agentTraceEl: Element | null;
+  agentUsesInterleavedText: boolean;
+  streaming?: boolean;
+}): boolean {
+  return Boolean(
+    params.agentTraceEl &&
+      params.agentUsesInterleavedText &&
+      !params.streaming,
+  );
+}
+
+function attachAssistantResponseContextMenu(params: {
+  body: Element;
+  doc: Document;
+  bubble: HTMLElement;
+  item: Zotero.Item;
+  message: Message;
+  pairedUserMessage: Message | null;
+  conversationKey: number;
+}): void {
+  const {
+    body,
+    doc,
+    bubble,
+    item,
+    message,
+    pairedUserMessage,
+    conversationKey,
+  } = params;
+  if (!shouldAttachAssistantResponseContextMenu(message)) return;
+
+  bubble.addEventListener("contextmenu", (e: Event) => {
+    if (shouldSuppressAssistantResponseContextMenu(e.target)) return;
+    const me = e as MouseEvent;
+    me.preventDefault();
+    me.stopPropagation();
+    if (typeof me.stopImmediatePropagation === "function") {
+      me.stopImmediatePropagation();
+    }
+    const responseMenu = body.querySelector(
+      "#llm-response-menu",
+    ) as HTMLDivElement | null;
+    const exportMenu = body.querySelector(
+      "#llm-export-menu",
+    ) as HTMLDivElement | null;
+    const promptMenu = body.querySelector(
+      "#llm-prompt-menu",
+    ) as HTMLDivElement | null;
+    const retryModelMenu = body.querySelector(
+      "#llm-retry-model-menu",
+    ) as HTMLDivElement | null;
+    const responseMenuDeleteBtn = responseMenu?.querySelector(
+      "#llm-response-menu-delete",
+    ) as HTMLButtonElement | null;
+    const canDeleteResponseTurn = Boolean(
+      pairedUserMessage?.role === "user" && !message.streaming,
+    );
+    if (!responseMenu) return;
+    if (responseMenuDeleteBtn) {
+      responseMenuDeleteBtn.disabled = !canDeleteResponseTurn;
+    }
+    if (exportMenu) exportMenu.style.display = "none";
+    if (promptMenu) promptMenu.style.display = "none";
+    if (retryModelMenu) {
+      retryModelMenu.classList.remove("llm-model-menu-open");
+      retryModelMenu.style.display = "none";
+    }
+    setPromptMenuTarget(null);
+    // If the user has text selected within this bubble, extract just that
+    // portion. Otherwise fall back to the full raw markdown source.
+    const selectedText = getSelectedTextWithinBubble(doc, bubble);
+    const fullMarkdown = sanitizeText(message.text || "").trim();
+    const contentText = selectedText || fullMarkdown;
+    if (!contentText) return;
+    setResponseMenuTarget({
+      item,
+      contentText,
+      modelName: message.modelName?.trim() || "unknown",
+      conversationKey,
+      userTimestamp:
+        pairedUserMessage?.role === "user"
+          ? Math.floor(pairedUserMessage.timestamp)
+          : 0,
+      assistantTimestamp: Math.floor(message.timestamp),
+      paperContexts:
+        pairedUserMessage?.role === "user"
+          ? getMessageCitationPaperContexts(pairedUserMessage)
+          : undefined,
+    });
+    positionMenuAtPointer(body, responseMenu, me.clientX, me.clientY);
+  });
+}
+
 function getMessageSelectedTextExpandedIndex(
   message: Message,
   count: number,
@@ -604,13 +737,6 @@ export function syncUserContextAlignmentWidths(body: Element): void {
       wrapper.style.removeProperty("--llm-user-bubble-width");
     }
   }
-}
-
-export function getConversationKey(item: Zotero.Item): number {
-  if (item.isAttachment() && item.parentID) {
-    return item.parentID;
-  }
-  return item.id;
 }
 
 type ChatScrollMode = "followBottom" | "manual";
@@ -1652,6 +1778,7 @@ async function buildContextPlanForRequest(params: {
   assistantInstruction?: string;
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  citationPaperContexts: PaperContextRef[];
   recentPaperContexts: PaperContextRef[];
   mineruImages: string[];
 }> {
@@ -1778,6 +1905,11 @@ async function buildContextPlanForRequest(params: {
     assistantInstruction: plan.assistantInstruction,
     paperContexts: params.paperContexts,
     fullTextPaperContexts: params.fullTextPaperContexts,
+    citationPaperContexts: mergeCitationPaperContexts(
+      params.paperContexts,
+      params.fullTextPaperContexts,
+      plan.citationPaperContexts,
+    ),
     recentPaperContexts: params.recentPaperContexts,
     mineruImages,
   };
@@ -2531,6 +2663,11 @@ export async function editLatestUserMessageAndRetry(
     fullTextPaperContextsForMessage.length
       ? fullTextPaperContextsForMessage
       : undefined;
+  retryPair.userMessage.citationPaperContexts = mergeCitationPaperContexts(
+    retryPair.userMessage.selectedTextPaperContexts,
+    paperContextsForMessage,
+    fullTextPaperContextsForMessage,
+  );
   retryPair.userMessage.selectedCollectionContexts =
     selectedCollectionContextsForMessage.length
       ? selectedCollectionContextsForMessage
@@ -2556,6 +2693,7 @@ export async function editLatestUserMessageAndRetry(
       screenshotImages: retryPair.userMessage.screenshotImages,
       paperContexts: retryPair.userMessage.paperContexts,
       fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
+      citationPaperContexts: retryPair.userMessage.citationPaperContexts,
       selectedCollectionContexts:
         retryPair.userMessage.selectedCollectionContexts,
       attachments: retryPair.userMessage.attachments,
@@ -2779,6 +2917,10 @@ export async function retryLatestAssistantResponse(
       contextPlan.fullTextPaperContexts.length
         ? contextPlan.fullTextPaperContexts
       : undefined;
+    retryPair.userMessage.citationPaperContexts = mergeCitationPaperContexts(
+      retryPair.userMessage.selectedTextPaperContexts,
+      contextPlan.citationPaperContexts,
+    );
     retryPair.userMessage.selectedCollectionContexts =
       selectedCollectionContexts.length ? selectedCollectionContexts : undefined;
     await updateStoredLatestUserMessageByConversation(conversationKey, {
@@ -2794,6 +2936,7 @@ export async function retryLatestAssistantResponse(
       screenshotImages: retryPair.userMessage.screenshotImages,
       paperContexts: retryPair.userMessage.paperContexts,
       fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
+      citationPaperContexts: retryPair.userMessage.citationPaperContexts,
       selectedCollectionContexts:
         retryPair.userMessage.selectedCollectionContexts,
       attachments: retryPair.userMessage.attachments,
@@ -3183,6 +3326,7 @@ export async function editUserTurnAndRetry(opts: {
       screenshotImages: userMsg.screenshotImages,
       paperContexts: userMsg.paperContexts,
       fullTextPaperContexts: userMsg.fullTextPaperContexts,
+      citationPaperContexts: getMessageCitationPaperContexts(userMsg),
       selectedCollectionContexts: userMsg.selectedCollectionContexts,
       attachments: userMsg.attachments,
     });
@@ -3246,6 +3390,7 @@ export type BuildAgentRuntimeRequestParams = {
   userText: string;
   selectedTexts: string[];
   selectedTextSources?: SelectedTextSource[];
+  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
@@ -3316,6 +3461,7 @@ async function buildAgentRuntimeRequest(
     activeItemId: params.item.id,
     selectedTexts: params.selectedTexts,
     selectedTextSources: params.selectedTextSources,
+    selectedTextPaperContexts: params.selectedTextPaperContexts,
     selectedPaperContexts: enrichedPaperContexts,
     fullTextPaperContexts: enrichedFullTextPapers,
     selectedCollectionContexts: normalizeCollectionContexts(
@@ -3678,6 +3824,11 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     normalizedFullTextPaperContexts,
     pdfModePaperKeys && pdfModePaperKeys.size > 0 ? pdfModePaperKeys : undefined,
   );
+  const citationPaperContextsForMessage = mergeCitationPaperContexts(
+    selectedTextPaperContextsForMessage,
+    paperContextsForMessage,
+    fullTextPaperContextsForMessage,
+  );
   const screenshotImagesForMessage = Array.isArray(images)
     ? images
         .filter((entry): entry is string => typeof entry === "string")
@@ -3718,6 +3869,9 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     fullTextPaperContexts: fullTextPaperContextsForMessage.length
       ? fullTextPaperContextsForMessage
       : undefined,
+    citationPaperContexts: citationPaperContextsForMessage.length
+      ? citationPaperContextsForMessage
+      : undefined,
     selectedCollectionContexts: selectedCollectionContextsForMessage.length
       ? selectedCollectionContextsForMessage
       : undefined,
@@ -3746,6 +3900,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
     paperContexts: userMessage.paperContexts,
     fullTextPaperContexts: userMessage.fullTextPaperContexts,
+    citationPaperContexts: userMessage.citationPaperContexts,
     selectedCollectionContexts: userMessage.selectedCollectionContexts,
     screenshotImages: userMessage.screenshotImages,
     attachments: userMessage.attachments,
@@ -3955,6 +4110,10 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       contextPlan.fullTextPaperContexts.length
         ? contextPlan.fullTextPaperContexts
       : undefined;
+    userMessage.citationPaperContexts = mergeCitationPaperContexts(
+      userMessage.selectedTextPaperContexts,
+      contextPlan.citationPaperContexts,
+    );
     await updateStoredLatestUserMessageByConversation(conversationKey, {
       text: userMessage.text,
       timestamp: userMessage.timestamp,
@@ -3967,6 +4126,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       screenshotImages: userMessage.screenshotImages,
       paperContexts: userMessage.paperContexts,
       fullTextPaperContexts: userMessage.fullTextPaperContexts,
+      citationPaperContexts: userMessage.citationPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
       attachments: userMessage.attachments,
     });
@@ -5161,64 +5321,6 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             ztoolkit.log("LLM citation decoration error:", decorateErr);
           }
         }
-        bubble.addEventListener("contextmenu", (e: Event) => {
-          const me = e as MouseEvent;
-          me.preventDefault();
-          me.stopPropagation();
-          if (typeof me.stopImmediatePropagation === "function") {
-            me.stopImmediatePropagation();
-          }
-          const responseMenu = body.querySelector(
-            "#llm-response-menu",
-          ) as HTMLDivElement | null;
-          const exportMenu = body.querySelector(
-            "#llm-export-menu",
-          ) as HTMLDivElement | null;
-          const promptMenu = body.querySelector(
-            "#llm-prompt-menu",
-          ) as HTMLDivElement | null;
-          const retryModelMenu = body.querySelector(
-            "#llm-retry-model-menu",
-          ) as HTMLDivElement | null;
-          const responseMenuDeleteBtn = responseMenu?.querySelector(
-            "#llm-response-menu-delete",
-          ) as HTMLButtonElement | null;
-          const pairedUserMessage = history[index - 1];
-          const canDeleteResponseTurn = Boolean(
-            pairedUserMessage?.role === "user" && !msg.streaming,
-          );
-          if (!responseMenu || !item) return;
-          if (responseMenuDeleteBtn) {
-            responseMenuDeleteBtn.disabled = !canDeleteResponseTurn;
-          }
-          if (exportMenu) exportMenu.style.display = "none";
-          if (promptMenu) promptMenu.style.display = "none";
-          if (retryModelMenu) {
-            retryModelMenu.classList.remove("llm-model-menu-open");
-            retryModelMenu.style.display = "none";
-          }
-          setPromptMenuTarget(null);
-          // If the user has text selected within this bubble, extract
-          // just that portion (with KaTeX math properly handled).
-          // Otherwise fall back to the full raw markdown source.
-          const selectedText = getSelectedTextWithinBubble(doc, bubble);
-          const fullMarkdown = sanitizeText(msg.text || "").trim();
-          const contentText = selectedText || fullMarkdown;
-          if (!contentText) return;
-          setResponseMenuTarget({
-            item,
-            contentText,
-            modelName: msg.modelName?.trim() || "unknown",
-            conversationKey,
-            userTimestamp:
-              pairedUserMessage?.role === "user"
-                ? Math.floor(pairedUserMessage.timestamp)
-                : 0,
-            assistantTimestamp: Math.floor(msg.timestamp),
-            paperContexts: pairedUserMessage?.paperContexts,
-          });
-          positionMenuAtPointer(body, responseMenu, me.clientX, me.clientY);
-        });
       }
 
       const bubbleHeaderNodes: HTMLElement[] = [];
@@ -5341,6 +5443,40 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         bubble.insertBefore(bubbleHeaderNodes[i], bubble.firstChild);
       }
 
+      if (
+        shouldDecorateInterleavedAgentTraceCitations({
+          agentTraceEl,
+          agentUsesInterleavedText,
+          streaming: msg.streaming,
+        })
+      ) {
+        try {
+          ztoolkit.log(
+            "LLM: calling decorateAssistantCitationLinks for interleaved agent trace",
+            "msgLen =",
+            msg.text.length,
+            "bubbleHTML =",
+            String(bubble.innerHTML || "").length,
+            "hasPairedUser =",
+            Boolean(previousUserMessage),
+            "pairedPaperContexts =",
+            previousUserMessage?.paperContexts?.length ?? "none",
+          );
+          decorateAssistantCitationLinks({
+            body,
+            panelItem: item,
+            bubble,
+            assistantMessage: msg,
+            pairedUserMessage: previousUserMessage,
+          });
+        } catch (decorateErr) {
+          ztoolkit.log(
+            "LLM interleaved citation decoration error:",
+            decorateErr,
+          );
+        }
+      }
+
       if (!hasAnswerText && !(msg.streaming && isClaudeStreamingConversation)) {
         const typing = doc.createElement("div") as HTMLDivElement;
         typing.className = "llm-typing";
@@ -5348,6 +5484,16 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           '<span class="llm-typing-dot"></span><span class="llm-typing-dot"></span><span class="llm-typing-dot"></span>';
         bubble.appendChild(typing);
       }
+
+      attachAssistantResponseContextMenu({
+        body,
+        doc,
+        bubble,
+        item,
+        message: msg,
+        pairedUserMessage: previousUserMessage,
+        conversationKey,
+      });
     }
 
     const meta = doc.createElement("div") as HTMLDivElement;

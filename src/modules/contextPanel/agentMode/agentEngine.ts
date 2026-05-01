@@ -19,6 +19,7 @@ import {
   resolveConversationBaseItem,
   resolveDisplayConversationKind,
 } from "../portalScope";
+import { mergeCitationPaperContexts } from "../citationContexts";
 import { renderPendingActionCard } from "../agentTrace/render";
 
 function buildPendingAgentTraceEvents(body?: Element): AgentRunEventRecord[] {
@@ -185,6 +186,33 @@ function closeInlineConfirmationCard(
   syncInlineActionCardState(body, ui);
 }
 
+function extractPaperContextCandidatesFromToolContent(content: unknown): unknown[] {
+  const out: unknown[] = [];
+  const visit = (value: unknown, depth: number) => {
+    if (depth > 8 || !value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry, depth + 1);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    if (
+      Number.isFinite(Number(record.itemId)) &&
+      Number.isFinite(Number(record.contextItemId)) &&
+      typeof record.title === "string"
+    ) {
+      out.push(record);
+    }
+    if (record.paperContext) {
+      visit(record.paperContext, depth + 1);
+    }
+    for (const key of ["results", "papers", "items", "artifacts"]) {
+      if (record[key]) visit(record[key], depth + 1);
+    }
+  };
+  visit(content, 0);
+  return out;
+}
+
 type EffectiveRequestConfigShape = {
   model: string;
   apiBase: string;
@@ -214,6 +242,7 @@ type BuildAgentRuntimeRequestParamsShape = {
   userText: string;
   selectedTexts: string[];
   selectedTextSources?: SelectedTextSource[];
+  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
@@ -235,6 +264,7 @@ type ReconstructedRetryPayload = {
   screenshotImages: string[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  citationPaperContexts?: PaperContextRef[];
   selectedCollectionContexts: CollectionContextRef[];
 };
 
@@ -496,6 +526,9 @@ export async function sendAgentTurn(
     )
       ? selectedTextNoteContextsForMessage
       : undefined,
+    citationPaperContexts: mergeCitationPaperContexts(
+      selectedTextPaperContextsForMessage,
+    ),
     selectedTextExpandedIndex: -1,
     paperContextsExpanded: false,
     screenshotImages: screenshotImagesForMessage.length
@@ -520,6 +553,7 @@ export async function sendAgentTurn(
       selectedTextSources: userMessage.selectedTextSources,
       selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
       selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
+      citationPaperContexts: userMessage.citationPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
       screenshotImages: userMessage.screenshotImages,
       attachments: userMessage.attachments,
@@ -592,6 +626,11 @@ export async function sendAgentTurn(
   userMessage.fullTextPaperContexts = fullTextPaperContextsForMessage.length
     ? fullTextPaperContextsForMessage
     : undefined;
+  userMessage.citationPaperContexts = mergeCitationPaperContexts(
+    userMessage.selectedTextPaperContexts,
+    paperContextsForMessage,
+    fullTextPaperContextsForMessage,
+  );
   if (!isCompactCommand) {
     await deps.updateStoredLatestUserMessage(conversationKey, {
       text: userMessage.text,
@@ -604,6 +643,7 @@ export async function sendAgentTurn(
       selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
       paperContexts: userMessage.paperContexts,
       fullTextPaperContexts: userMessage.fullTextPaperContexts,
+      citationPaperContexts: userMessage.citationPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
       screenshotImages: userMessage.screenshotImages,
       attachments: userMessage.attachments,
@@ -615,6 +655,7 @@ export async function sendAgentTurn(
     userText: question,
     selectedTexts: selectedTextsForMessage,
     selectedTextSources: selectedTextSourcesForMessage,
+    selectedTextPaperContexts: selectedTextPaperContextsForMessage,
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
     selectedCollectionContexts,
@@ -729,6 +770,7 @@ export async function sendAgentTurn(
             screenshotImages: userMessage.screenshotImages,
             paperContexts: userMessage.paperContexts,
             fullTextPaperContexts: userMessage.fullTextPaperContexts,
+            citationPaperContexts: userMessage.citationPaperContexts,
             selectedCollectionContexts: userMessage.selectedCollectionContexts,
             attachments: userMessage.attachments,
           });
@@ -778,6 +820,40 @@ export async function sendAgentTurn(
                 );
                 deps.setTokenUsage(ui.tokenUsageEl, total);
               }
+            }
+            break;
+          }
+          case "tool_result": {
+            if (!event.ok) break;
+            const toolPaperContexts = deps.normalizePaperContexts([
+              ...extractPaperContextCandidatesFromToolContent(event.content),
+              ...extractPaperContextCandidatesFromToolContent(event.artifacts),
+            ]);
+            if (!toolPaperContexts.length) break;
+            const before = userMessage.citationPaperContexts?.length || 0;
+            userMessage.citationPaperContexts = mergeCitationPaperContexts(
+              userMessage.citationPaperContexts,
+              toolPaperContexts,
+            );
+            if ((userMessage.citationPaperContexts?.length || 0) === before) break;
+            if (!isCompactCommand) {
+              await deps.updateStoredLatestUserMessage(conversationKey, {
+                text: userMessage.text,
+                timestamp: userMessage.timestamp,
+                runMode: "agent",
+                agentRunId: userMessage.agentRunId,
+                selectedText: userMessage.selectedText,
+                selectedTexts: userMessage.selectedTexts,
+                selectedTextSources: userMessage.selectedTextSources,
+                selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
+                selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
+                paperContexts: userMessage.paperContexts,
+                fullTextPaperContexts: userMessage.fullTextPaperContexts,
+                citationPaperContexts: userMessage.citationPaperContexts,
+                selectedCollectionContexts: userMessage.selectedCollectionContexts,
+                screenshotImages: userMessage.screenshotImages,
+                attachments: userMessage.attachments,
+              });
             }
             break;
           }
@@ -1091,6 +1167,11 @@ export async function retryAgentTurn(
     retryPair.userMessage.selectedTextSources,
     selectedTextsRaw.length,
   );
+  const selectedTextPaperContextsRaw =
+    deps.normalizeSelectedTextPaperContextsByIndex(
+      retryPair.userMessage.selectedTextPaperContexts,
+      selectedTextsRaw.length,
+    );
 
   const historyForLLM = deps.buildLLMHistoryMessages(
     history.slice(0, retryPair.userIndex),
@@ -1102,6 +1183,7 @@ export async function retryAgentTurn(
     userText: question,
     selectedTexts: selectedTextsRaw,
     selectedTextSources: selectedTextSourcesRaw,
+    selectedTextPaperContexts: selectedTextPaperContextsRaw,
     paperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
@@ -1180,6 +1262,8 @@ export async function retryAgentTurn(
           screenshotImages: retryPair.userMessage.screenshotImages,
           paperContexts: retryPair.userMessage.paperContexts,
           fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
+          citationPaperContexts:
+            retryPair.userMessage.citationPaperContexts,
           selectedCollectionContexts:
             retryPair.userMessage.selectedCollectionContexts,
           attachments: retryPair.userMessage.attachments,
@@ -1230,6 +1314,44 @@ export async function retryAgentTurn(
                 deps.setTokenUsage(ui.tokenUsageEl, total);
               }
             }
+            break;
+          }
+          case "tool_result": {
+            if (!event.ok) break;
+            const toolPaperContexts = deps.normalizePaperContexts([
+              ...extractPaperContextCandidatesFromToolContent(event.content),
+              ...extractPaperContextCandidatesFromToolContent(event.artifacts),
+            ]);
+            if (!toolPaperContexts.length) break;
+            const before = retryPair.userMessage.citationPaperContexts?.length || 0;
+            retryPair.userMessage.citationPaperContexts =
+              mergeCitationPaperContexts(
+                retryPair.userMessage.citationPaperContexts,
+                toolPaperContexts,
+              );
+            if ((retryPair.userMessage.citationPaperContexts?.length || 0) === before) break;
+            await deps.updateStoredLatestUserMessage(conversationKey, {
+              text: retryPair.userMessage.text,
+              timestamp: retryPair.userMessage.timestamp,
+              runMode: "agent",
+              agentRunId: retryPair.userMessage.agentRunId,
+              selectedText: retryPair.userMessage.selectedText,
+              selectedTexts: retryPair.userMessage.selectedTexts,
+              selectedTextSources: retryPair.userMessage.selectedTextSources,
+              selectedTextPaperContexts:
+                retryPair.userMessage.selectedTextPaperContexts,
+              selectedTextNoteContexts:
+                retryPair.userMessage.selectedTextNoteContexts,
+              paperContexts: retryPair.userMessage.paperContexts,
+              fullTextPaperContexts:
+                retryPair.userMessage.fullTextPaperContexts,
+              citationPaperContexts:
+                retryPair.userMessage.citationPaperContexts,
+              selectedCollectionContexts:
+                retryPair.userMessage.selectedCollectionContexts,
+              screenshotImages: retryPair.userMessage.screenshotImages,
+              attachments: retryPair.userMessage.attachments,
+            });
             break;
           }
           case "status": {

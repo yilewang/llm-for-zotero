@@ -369,6 +369,7 @@ describe("action compatibility after tool refactors", function () {
           missingFields: ["abstract", "DOI/URL", "tags", "PDF"],
         },
       ],
+      metadataFixed: 0,
       noteId: undefined,
     });
   });

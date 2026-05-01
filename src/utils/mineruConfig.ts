@@ -4,6 +4,7 @@ const MINERU_ENABLED_KEY = `${config.prefsPrefix}.mineruEnabled`;
 const MINERU_API_KEY_KEY = `${config.prefsPrefix}.mineruApiKey`;
 const MINERU_AUTO_WATCH_KEY = `${config.prefsPrefix}.mineruAutoWatchCollections`;
 const MINERU_GLOBAL_AUTO_PARSE_KEY = `${config.prefsPrefix}.mineruGlobalAutoParse`;
+const MINERU_SYNC_ENABLED_KEY = `${config.prefsPrefix}.mineruSyncEnabled`;
 
 export function isMineruEnabled(): boolean {
   const value = Zotero.Prefs.get(MINERU_ENABLED_KEY, true);
@@ -32,6 +33,17 @@ export function isGlobalAutoParseEnabled(): boolean {
 
 export function setGlobalAutoParseEnabled(value: boolean): void {
   Zotero.Prefs.set(MINERU_GLOBAL_AUTO_PARSE_KEY, value, true);
+}
+
+// ── Zotero File Sync Configuration ──────────────────────────────────────────
+
+export function isMineruSyncEnabled(): boolean {
+  const value = Zotero.Prefs.get(MINERU_SYNC_ENABLED_KEY, true);
+  return value === true || `${value || ""}`.toLowerCase() === "true";
+}
+
+export function setMineruSyncEnabled(value: boolean): void {
+  Zotero.Prefs.set(MINERU_SYNC_ENABLED_KEY, value, true);
 }
 
 // ── Auto-Watch Collections Configuration ─────────────────────────────────────

@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import hooks from "../src/hooks";
+import hooks, { flushPaperSearchInvalidationForTests } from "../src/hooks";
 import {
   invalidatePaperSearchCache,
   searchPaperCandidates,
@@ -90,6 +90,7 @@ describe("hooks paper search cache invalidation", function () {
     assert.equal(getAllCount, 1);
 
     await hooks.onNotify("modify", "item", [1], {});
+    flushPaperSearchInvalidationForTests();
     await searchPaperCandidates(1, "notify");
     assert.equal(getAllCount, 2);
   });

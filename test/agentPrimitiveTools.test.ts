@@ -2,11 +2,18 @@ import { assert } from "chai";
 import { buildAgentInitialMessages } from "../src/agent/model/messageBuilder";
 import { EDITABLE_ARTICLE_METADATA_FIELDS } from "../src/agent/services/zoteroGateway";
 import { clearUndoStack, peekUndoEntry } from "../src/agent/store/undoStore";
+import { PdfService } from "../src/agent/services/pdfService";
+import { RetrievalService } from "../src/agent/services/retrievalService";
 import { createQueryLibraryTool } from "../src/agent/tools/read/queryLibrary";
 import { createReadLibraryTool } from "../src/agent/tools/read/readLibrary";
+import { createReadPaperTool } from "../src/agent/tools/read/readPaper";
+import { createSearchPaperTool } from "../src/agent/tools/read/searchPaper";
+import { createFileIOTool } from "../src/agent/tools/write/fileIO";
 import { createEditCurrentNoteTool } from "../src/agent/tools/write/editCurrentNote";
 import { createApplyTagsTool } from "../src/agent/tools/write/applyTags";
 import type { AgentToolContext } from "../src/agent/types";
+import type { PaperContextRef } from "../src/shared/types";
+import type { PdfContext } from "../src/modules/contextPanel/types";
 
 function makeMetadataSnapshot(itemId: number, title: string) {
   return {
@@ -18,6 +25,38 @@ function makeMetadataSnapshot(itemId: number, title: string) {
     ) as Record<(typeof EDITABLE_ARTICLE_METADATA_FIELDS)[number], string>,
     creators: [],
   };
+}
+
+function makePdfContext(chunks: string[]): PdfContext {
+  return {
+    title: "Citation Paper",
+    chunks,
+    chunkMeta: chunks.map((text, index) => ({
+      chunkIndex: index,
+      text,
+      normalizedText: text.toLowerCase(),
+      chunkKind: "body",
+    })),
+    chunkStats: chunks.map((chunk, index) => ({
+      index,
+      length: chunk.split(/\s+/).filter(Boolean).length,
+      tf: {},
+      uniqueTerms: [],
+    })),
+    docFreq: {},
+    avgChunkLength: chunks.length ? chunks.join(" ").split(/\s+/).length / chunks.length : 0,
+    fullLength: chunks.join("\n\n").length,
+  };
+}
+
+class FakePdfService extends PdfService {
+  constructor(private readonly context: PdfContext) {
+    super();
+  }
+
+  async ensurePaperContext(_paperContext: PaperContextRef): Promise<PdfContext> {
+    return this.context;
+  }
 }
 
 describe("primitive agent tools", function () {
@@ -328,6 +367,178 @@ describe("primitive agent tools", function () {
     assert.include(userText, "query_library with filters.collectionId");
     assert.include(userText, "Do not assume all full text has already been read.");
     assert.include(userText, "plan a batch workflow");
+  });
+
+  it("adds exact source labels to agent selected-text and paper refs", async function () {
+    const selectedPaper: PaperContextRef = {
+      itemId: 10,
+      contextItemId: 11,
+      title: "Selected Paper",
+      firstCreator: "Smith",
+      year: "2021",
+    };
+    const fullTextPaper: PaperContextRef = {
+      itemId: 20,
+      contextItemId: 21,
+      title: "Full Text Paper",
+      firstCreator: "Lee",
+      year: "2022",
+    };
+    const messages = await buildAgentInitialMessages(
+      {
+        conversationKey: 4,
+        mode: "agent",
+        userText: "Explain this quote and compare it to the full paper.",
+        selectedTexts: ["important quoted passage"],
+        selectedTextSources: ["pdf"],
+        selectedTextPaperContexts: [selectedPaper],
+        selectedPaperContexts: [selectedPaper],
+        fullTextPaperContexts: [fullTextPaper],
+      },
+      [],
+      [],
+    );
+    const userMessage = messages[messages.length - 1];
+    const userText =
+      typeof userMessage?.content === "string" ? userMessage.content : "";
+
+    assert.include(userText, "source_label=(Smith, 2021)");
+    assert.include(userText, "citationLabel=Smith, 2021");
+    assert.include(userText, "sourceLabel=(Lee, 2022)");
+    assert.include(userText, "for direct quotes and substantive paper-grounded claims");
+  });
+
+  it("file_io adds source metadata only for Codex app-server MinerU paper reads", async function () {
+    const scope = globalThis as typeof globalThis & {
+      IOUtils?: { read?: (path: string) => Promise<Uint8Array> };
+    };
+    const originalIOUtils = scope.IOUtils;
+    scope.IOUtils = {
+      read: async () => new TextEncoder().encode("Paper section text."),
+    };
+    try {
+      const paperContext: PaperContextRef = {
+        itemId: 50,
+        contextItemId: 51,
+        title: "MinerU Paper",
+        firstCreator: "Chandra et al.",
+        year: "2025",
+        mineruCacheDir: "/tmp/llm-for-zotero-mineru/51",
+      };
+      const tool = createFileIOTool();
+      const validated = tool.validate({
+        action: "read",
+        filePath: "/tmp/llm-for-zotero-mineru/51/full.md",
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+
+      const codexResult = await tool.execute(validated.value, {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          authMode: "codex_app_server",
+          fullTextPaperContexts: [paperContext],
+        },
+      });
+      const codexContent = (codexResult as { content: Record<string, unknown> }).content;
+      assert.equal(codexContent.citationLabel, "Chandra et al., 2025");
+      assert.equal(codexContent.sourceLabel, "(Chandra et al., 2025)");
+      assert.deepInclude(codexContent.paperContext as Record<string, unknown>, {
+        itemId: 50,
+        contextItemId: 51,
+      });
+      assert.include(
+        String(codexContent.citationInstruction || ""),
+        "short verbatim blockquote",
+      );
+
+      const normalResult = await tool.execute(validated.value, {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          authMode: "api_key",
+          fullTextPaperContexts: [paperContext],
+        },
+      });
+      const normalContent = (normalResult as { content: Record<string, unknown> }).content;
+      assert.notProperty(normalContent, "citationInstruction");
+      assert.notProperty(normalContent, "sourceLabel");
+    } finally {
+      scope.IOUtils = originalIOUtils;
+    }
+  });
+
+  it("read_paper returns citation and source labels", async function () {
+    const paperContext: PaperContextRef = {
+      itemId: 30,
+      contextItemId: 31,
+      title: "Citation Paper",
+      firstCreator: "Nguyen",
+      year: "2023",
+    };
+    const tool = createReadPaperTool(
+      new FakePdfService(makePdfContext(["Abstract text.", "Introduction text."])),
+      {} as never,
+    );
+    const validated = tool.validate({
+      target: { paperContext },
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const result = await tool.execute(validated.value, baseContext);
+    const first = (result as { results: Array<Record<string, unknown>> }).results[0];
+    assert.equal(first.citationLabel, "Nguyen, 2023");
+    assert.equal(first.sourceLabel, "(Nguyen, 2023)");
+  });
+
+  it("search_paper returns citation and source labels", async function () {
+    const paperContext: PaperContextRef = {
+      itemId: 40,
+      contextItemId: 41,
+      title: "Retrieval Paper",
+      firstCreator: "Rivera",
+      year: "2024",
+    };
+    const pdfService = new FakePdfService(makePdfContext(["Evidence text."]));
+    const retrievalService = new RetrievalService(
+      pdfService,
+      async () =>
+        [
+          {
+            paperKey: "40:41",
+            itemId: 40,
+            contextItemId: 41,
+            title: "Retrieval Paper",
+            firstCreator: "Rivera",
+            year: "2024",
+            chunkIndex: 0,
+            chunkText: "Evidence text.",
+            estimatedTokens: 4,
+            bm25Score: 1,
+            embeddingScore: 0,
+            hybridScore: 1,
+            evidenceScore: 1,
+          },
+        ] as never,
+    );
+    const tool = createSearchPaperTool(
+      retrievalService,
+      pdfService,
+      {} as never,
+    );
+    const validated = tool.validate({
+      target: { paperContext },
+      question: "evidence",
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const result = await tool.execute(validated.value, baseContext);
+    const first = (result as { results: Array<Record<string, unknown>> }).results[0];
+    assert.equal(first.citationLabel, "Rivera, 2024");
+    assert.equal(first.sourceLabel, "(Rivera, 2024)");
   });
 
   it("adds direct-card guidance for write tool requests", async function () {

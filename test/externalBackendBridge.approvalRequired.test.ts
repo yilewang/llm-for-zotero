@@ -18,6 +18,9 @@ describe("external bridge action approval handling", function () {
           return "";
         },
       },
+      Profile: {
+        dir: "/tmp/llm-for-zotero-test-profile",
+      },
     };
 
     globalThis.fetch = (async () => {

@@ -5,7 +5,6 @@ import {
   MineruCancelledError,
 } from "../utils/mineruClient";
 import {
-  hasCachedMineruMd,
   writeMineruCacheFiles,
   invalidateMineruMd,
   getMineruCacheDir,
@@ -16,6 +15,11 @@ import {
   setItemCached,
   setItemFailed,
 } from "./mineruProcessingStatus";
+import {
+  getMineruAvailabilityForAttachment,
+  publishMineruCachePackageForAttachment,
+  type MineruAvailabilityStatus,
+} from "./contextPanel/mineruSync";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -111,6 +115,70 @@ function getPdfAttachments(item: Zotero.Item): Zotero.Item[] {
   return out;
 }
 
+function isPdfAttachment(item: Zotero.Item | null | undefined): boolean {
+  return Boolean(
+    item?.isAttachment?.() && item.attachmentContentType === "application/pdf",
+  );
+}
+
+function getParentItemForPdf(pdfAtt: Zotero.Item): Zotero.Item | null {
+  const parentId = Number(pdfAtt.parentID);
+  if (!Number.isFinite(parentId) || parentId <= 0) return null;
+  const parentItem = Zotero.Items.get(Math.floor(parentId));
+  return parentItem?.isRegularItem?.() ? parentItem : null;
+}
+
+type MineruPdfCandidate = {
+  parentItem: Zotero.Item | null;
+  pdfAtt: Zotero.Item;
+  siblingPdfs: Zotero.Item[];
+};
+
+function collectMineruPdfCandidates(
+  allItems: Zotero.Item[],
+): MineruPdfCandidate[] {
+  const candidates: MineruPdfCandidate[] = [];
+  const seenAttachmentIds = new Set<number>();
+  const addCandidate = (
+    parentItem: Zotero.Item | null,
+    pdfAtt: Zotero.Item,
+    siblingPdfs?: Zotero.Item[],
+  ) => {
+    if (seenAttachmentIds.has(pdfAtt.id)) return;
+    seenAttachmentIds.add(pdfAtt.id);
+    candidates.push({
+      parentItem,
+      pdfAtt,
+      siblingPdfs: siblingPdfs?.length ? siblingPdfs : [pdfAtt],
+    });
+  };
+
+  for (const item of allItems) {
+    if (item.isRegularItem?.()) {
+      const pdfs = getPdfAttachments(item);
+      for (const pdfAtt of pdfs) {
+        addCandidate(item, pdfAtt, pdfs);
+      }
+      continue;
+    }
+
+    if (isPdfAttachment(item)) {
+      const parentItem = getParentItemForPdf(item);
+      addCandidate(parentItem, item, parentItem ? getPdfAttachments(parentItem) : [item]);
+    }
+  }
+
+  return candidates;
+}
+
+function getPdfAttachmentDisplayTitle(pdfAtt: Zotero.Item): string {
+  return (
+    pdfAtt.getField?.("title") ||
+    (pdfAtt as unknown as { attachmentFilename?: string }).attachmentFilename ||
+    `PDF ${pdfAtt.id}`
+  );
+}
+
 // ── Queue building ───────────────────────────────────────────────────────────
 
 async function buildQueue(): Promise<void> {
@@ -122,44 +190,40 @@ async function buildQueue(): Promise<void> {
     false,
   );
 
-  // Filter to regular items — include ALL PDF attachments per item
-  const candidates: { item: Zotero.Item; pdfAtt: Zotero.Item }[] = [];
-  for (const item of allItems) {
-    if (!item.isRegularItem?.()) continue;
-    const pdfs = getPdfAttachments(item);
-    for (const pdfAtt of pdfs) {
-      candidates.push({ item, pdfAtt });
-    }
-  }
+  const candidates = collectMineruPdfCandidates(allItems);
 
   // Sort newest-first by dateAdded
   candidates.sort((a, b) => {
-    const da = a.item.getField("dateAdded") || "";
-    const db = b.item.getField("dateAdded") || "";
+    const da =
+      a.parentItem?.getField("dateAdded") || a.pdfAtt.getField("dateAdded") || "";
+    const db =
+      b.parentItem?.getField("dateAdded") || b.pdfAtt.getField("dateAdded") || "";
     return db > da ? 1 : db < da ? -1 : 0;
   });
 
   // Build queue — skip items already cached or excluded by filename pattern
   queue = [];
   let processed = 0;
-  for (const { item, pdfAtt } of candidates) {
+  for (const { parentItem, pdfAtt, siblingPdfs } of candidates) {
     const pdfFilename =
       (pdfAtt as unknown as { attachmentFilename?: string })
         .attachmentFilename || "";
     if (isFilenameExcluded(pdfFilename)) continue;
-    const cached = await hasCachedMineruMd(pdfAtt.id);
-    const parentTitle = item.getField("title") || `Item ${item.id}`;
-    // Count PDFs for this parent to decide whether to show attachment name
-    const siblingPdfs = getPdfAttachments(item);
+    const availability = await getMineruAvailabilityForAttachment(pdfAtt);
+    const cached = availability.status !== "missing";
+    const parentTitle =
+      parentItem?.getField("title") ||
+      getPdfAttachmentDisplayTitle(pdfAtt) ||
+      `PDF ${pdfAtt.id}`;
     const title =
       siblingPdfs.length > 1
-        ? `${parentTitle} [${pdfAtt.getField?.("title") || `PDF ${pdfAtt.id}`}]`
+        ? `${parentTitle} [${getPdfAttachmentDisplayTitle(pdfAtt)}]`
         : parentTitle;
     if (cached) {
       processed++;
     } else {
       queue.push({
-        parentItemId: item.id,
+        parentItemId: parentItem?.id || pdfAtt.id,
         attachmentId: pdfAtt.id,
         title,
       });
@@ -239,6 +303,13 @@ async function processNext(): Promise<void> {
         result.files,
       );
       setItemCached(entry.attachmentId);
+      void publishMineruCachePackageForAttachment(entry.attachmentId).then(
+        (published) => {
+          if (published.status === "error") {
+            ztoolkit.log("LLM: MinerU sync package publish failed", published);
+          }
+        },
+      );
       // Flush stale in-memory text cache and disk embedding cache so the
       // next query picks up MinerU-quality chunks and re-generates embeddings.
       invalidateCachedContextText(entry.attachmentId);
@@ -461,6 +532,9 @@ export type MineruItemEntry = {
   year: string;
   dateAdded: string;
   cached: boolean;
+  localCached: boolean;
+  syncedPackage: boolean;
+  availability: MineruAvailabilityStatus;
   excluded: boolean;
   collectionIds: number[];
 };
@@ -518,65 +592,69 @@ export async function getMineruItemList(): Promise<MineruItemEntry[]> {
 
   const results: MineruItemEntry[] = [];
 
-  for (const item of allItems) {
+  for (const { parentItem, pdfAtt } of collectMineruPdfCandidates(allItems)) {
     try {
-      if (!item.isRegularItem?.()) continue;
-      const pdfs = getPdfAttachments(item);
-      if (pdfs.length === 0) continue;
       let collectionIds: number[] = [];
       try {
-        collectionIds = (item.getCollections?.() || [])
+        collectionIds = ((parentItem || pdfAtt).getCollections?.() || [])
           .map((id: unknown) => Number(id))
           .filter((id: number) => Number.isFinite(id) && id > 0);
       } catch {
         /* ignore */
       }
-      let parentTitle = `Item ${item.id}`;
+      let parentTitle =
+        parentItem ? `Item ${parentItem.id}` : getPdfAttachmentDisplayTitle(pdfAtt);
       let firstCreator = "";
       let year = "";
       let dateAdded = "";
       try {
-        parentTitle = item.getField("title") || parentTitle;
+        parentTitle =
+          parentItem?.getField("title") ||
+          getPdfAttachmentDisplayTitle(pdfAtt) ||
+          parentTitle;
       } catch {
         /* ignore */
       }
       try {
-        firstCreator = item.getField("firstCreator") || "";
+        firstCreator = parentItem?.getField("firstCreator") || "";
       } catch {
         /* ignore */
       }
       try {
-        year = item.getField("year") || "";
+        year = parentItem?.getField("year") || "";
       } catch {
         /* ignore */
       }
       try {
-        dateAdded = item.getField("dateAdded") || "";
+        dateAdded =
+          parentItem?.getField("dateAdded") || pdfAtt.getField("dateAdded") || "";
       } catch {
         /* ignore */
       }
-      for (const pdfAtt of pdfs) {
-        const cached = await hasCachedMineruMd(pdfAtt.id);
-        const pdfTitle = pdfAtt.getField?.("title") || `PDF ${pdfAtt.id}`;
-        const pdfFilename =
-          (pdfAtt as unknown as { attachmentFilename?: string })
-            .attachmentFilename || pdfTitle;
-        const excluded = isFilenameExcluded(pdfFilename);
-        results.push({
-          parentItemId: item.id,
-          attachmentId: pdfAtt.id,
-          title: parentTitle,
-          pdfTitle,
-          firstCreator,
-          year,
-          dateAdded,
-          cached,
-          excluded,
-          collectionIds,
-        });
-      }
+      const availability = await getMineruAvailabilityForAttachment(pdfAtt);
+      const cached = availability.status !== "missing";
+      const pdfTitle = getPdfAttachmentDisplayTitle(pdfAtt);
+      const pdfFilename =
+        (pdfAtt as unknown as { attachmentFilename?: string })
+          .attachmentFilename || pdfTitle;
+      const excluded = isFilenameExcluded(pdfFilename);
+      results.push({
+        parentItemId: parentItem?.id || pdfAtt.id,
+        attachmentId: pdfAtt.id,
+        title: parentTitle,
+        pdfTitle,
+        firstCreator,
+        year,
+        dateAdded,
+        cached,
+        localCached: availability.localCached,
+        syncedPackage: availability.syncedPackage,
+        availability: availability.status,
+        excluded,
+        collectionIds,
+      });
     } catch (err) {
-      ztoolkit.log("LLM MinerU: Failed to process item", item?.id, err);
+      ztoolkit.log("LLM MinerU: Failed to process item", pdfAtt?.id, err);
     }
   }
 

@@ -11,7 +11,7 @@ import type {
   CollectionContextRef,
   PaperContextRef,
 } from "../../shared/types";
-import type { PaperScopedActionProfile } from "./paperScope";
+import type { PaperScopedActionProfile } from "./paperScopeTypes";
 
 /**
  * LLM credentials that an action can use to call the model directly

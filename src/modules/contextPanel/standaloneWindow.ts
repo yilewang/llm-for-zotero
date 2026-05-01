@@ -69,6 +69,7 @@ import { chatHistory, loadedConversationKeys } from "./state";
 import {
   loadConversationHistoryScope,
 } from "./historyLoader";
+import { groupHistoryEntriesByDay } from "./setupHandlers/controllers/conversationHistoryController";
 import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
 import {
   buildDefaultClaudeGlobalConversationKey,
@@ -358,10 +359,6 @@ export function renderStandalonePlaceholder(body: Element): void {
   body.appendChild(wrap);
 }
 
-// ---------------------------------------------------------------------------
-// Day-group helpers for sidebar
-// ---------------------------------------------------------------------------
-
 type SidebarConv = {
   conversationKey: number;
   lastActivityAt: number;
@@ -370,40 +367,6 @@ type SidebarConv = {
   paperItemID?: number;
   mode?: "open" | "paper";
 };
-
-function getDayGroupLabel(ts: number): string {
-  const now = new Date();
-  const todayStart = new Date(
-    now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-  ).getTime();
-  const yesterdayStart = todayStart - 86_400_000;
-  const weekStart = todayStart - 6 * 86_400_000;
-  const monthStart = todayStart - 29 * 86_400_000;
-
-  if (ts >= todayStart) return t("Today");
-  if (ts >= yesterdayStart) return t("Yesterday");
-  if (ts >= weekStart) return t("Last 7 days");
-  if (ts >= monthStart) return t("Last 30 days");
-  return t("Older");
-}
-
-function groupByDay(
-  conversations: SidebarConv[],
-): Array<{ label: string; items: SidebarConv[] }> {
-  const groups: Array<{ label: string; items: SidebarConv[] }> = [];
-  let currentLabel = "";
-  for (const conv of conversations) {
-    const label = getDayGroupLabel(conv.lastActivityAt);
-    if (label !== currentLabel) {
-      currentLabel = label;
-      groups.push({ label, items: [] });
-    }
-    groups[groups.length - 1].items.push(conv);
-  }
-  return groups;
-}
 
 // ---------------------------------------------------------------------------
 // Standalone window
@@ -1713,7 +1676,7 @@ export function openStandaloneChat(options?: {
           return;
         }
 
-        const groups = groupByDay(conversations);
+        const groups = groupHistoryEntriesByDay(conversations, { translate: t });
         for (const group of groups) {
           const dayLabel = doc.createElementNS(
             HTML_NS,
@@ -1982,7 +1945,7 @@ export function openStandaloneChat(options?: {
           return;
         }
 
-        const groups = groupByDay(entries);
+        const groups = groupHistoryEntriesByDay(entries, { translate: t });
 
         const entryMap = new Map<number, SidebarConv>();
         for (const e of entries) entryMap.set(e.conversationKey, e);

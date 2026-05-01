@@ -28,6 +28,7 @@ import {
   resumeAutoWatch,
   onAutoWatchProgress,
 } from "./mineruAutoWatch";
+import { getMineruAvailabilityForAttachmentId } from "./contextPanel/mineruSync";
 
 /** Show a confirm dialog with a custom title using ztoolkit.Dialog. */
 async function confirmDialog(message: string): Promise<boolean> {
@@ -154,6 +155,41 @@ export async function registerMineruManagerScript(
     }
   }
 
+  function isMineruAvailable(item: MineruItemEntry): boolean {
+    return item.availability !== "missing";
+  }
+
+  function getAvailabilityTooltip(item: MineruItemEntry): string {
+    if (item.availability === "synced") {
+      return t(
+        "Synced MinerU package available; local cache will restore when needed.",
+      );
+    }
+    if (item.availability === "both") {
+      return t("Local MinerU cache and synced package available.");
+    }
+    if (item.availability === "local") {
+      return t("Local MinerU cache available.");
+    }
+    return t("No MinerU cache available.");
+  }
+
+  async function refreshEntryAvailability(attachmentId: number): Promise<void> {
+    const entry = allItems.find((i) => i.attachmentId === attachmentId);
+    if (!entry) return;
+    const availability =
+      await getMineruAvailabilityForAttachmentId(attachmentId);
+    entry.localCached = availability.localCached;
+    entry.syncedPackage = availability.syncedPackage;
+    entry.availability = availability.status;
+    entry.cached = availability.status !== "missing";
+    const dot = dotElements.get(attachmentId);
+    if (dot) {
+      dot.style.background = entry.cached ? "#10b981" : "#d1d5db";
+      dot.title = getAvailabilityTooltip(entry);
+    }
+  }
+
   function getVisibleItems(): MineruItemEntry[] {
     let items: MineruItemEntry[];
     if (activeCollectionId === "all") items = allItems;
@@ -168,8 +204,8 @@ export async function registerMineruManagerScript(
     const dir = sortDir === "asc" ? 1 : -1;
     copy.sort((a, b) => {
       if (sortKey === "cached") {
-        const va = a.cached ? 1 : 0;
-        const vb = b.cached ? 1 : 0;
+        const va = isMineruAvailable(a) ? 1 : 0;
+        const vb = isMineruAvailable(b) ? 1 : 0;
         return (va - vb) * dir;
       }
       const va = a[sortKey] || "";
@@ -185,8 +221,8 @@ export async function registerMineruManagerScript(
     const dir = sortDir === "asc" ? 1 : -1;
     groups.sort((a, b) => {
       if (sortKey === "cached") {
-        const va = a.children.every((c) => c.cached) ? 1 : 0;
-        const vb = b.children.every((c) => c.cached) ? 1 : 0;
+        const va = a.children.every(isMineruAvailable) ? 1 : 0;
+        const vb = b.children.every(isMineruAvailable) ? 1 : 0;
         return (va - vb) * dir;
       }
       const va = (a[sortKey as keyof MineruParentGroup] as string) || "";
@@ -708,7 +744,8 @@ export async function registerMineruManagerScript(
     const dot = doc.createElement("span");
     dot.style.cssText = "width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;";
     setColumnWidthStyle(dot, "cached");
-    dot.style.background = item.cached ? "#10b981" : "#d1d5db";
+    dot.style.background = isMineruAvailable(item) ? "#10b981" : "#d1d5db";
+    dot.title = getAvailabilityTooltip(item);
     dotElements.set(item.attachmentId, dot);
     row.appendChild(dot);
 
@@ -885,7 +922,9 @@ export async function registerMineruManagerScript(
         else collapsedParents.add(group.parentItemId);
         renderItemsList();
       });
-      parentDot.style.background = group.children.every((c) => c.cached) ? "#10b981" : "#d1d5db";
+      parentDot.style.background = group.children.every(isMineruAvailable)
+        ? "#10b981"
+        : "#d1d5db";
       parentDotElements.set(group.parentItemId, parentDot);
       parentRow.appendChild(parentDot);
       parentRow.appendChild(chev);
@@ -1205,12 +1244,11 @@ export async function registerMineruManagerScript(
       hideContextMenu();
       for (const id of ids) {
         await deleteMineruCacheForItem(id);
-        const dot = dotElements.get(id);
-        if (dot) dot.style.background = "#d1d5db";
-        const entry = allItems.find((i) => i.attachmentId === id);
-        if (entry) entry.cached = false;
+        await refreshEntryAvailability(id);
       }
-      localProcessedCount = allItems.filter((i) => !i.excluded && i.cached).length;
+      localProcessedCount = allItems.filter(
+        (i) => !i.excluded && isMineruAvailable(i),
+      ).length;
       updateProgressBar();
     });
     addHover(ctxDeleteBtn);
@@ -1286,7 +1324,13 @@ export async function registerMineruManagerScript(
       const dot = dotElements.get(lastSeenCurrentId);
       if (dot) dot.style.background = failed ? "#ef4444" : "#10b981";
       const entry = allItems.find((i) => i.attachmentId === lastSeenCurrentId);
-      if (entry && !failed) entry.cached = true;
+      if (entry && !failed) {
+        entry.localCached = true;
+        entry.cached = true;
+        entry.availability = entry.syncedPackage ? "both" : "local";
+        const currentDot = dotElements.get(entry.attachmentId);
+        if (currentDot) currentDot.title = getAvailabilityTooltip(entry);
+      }
       lastSeenCurrentId = null;
     }
   });
@@ -1357,12 +1401,13 @@ export async function registerMineruManagerScript(
           return;
         for (const id of selectedIds) {
           await deleteMineruCacheForItem(id);
-          const entry = allItems.find((i) => i.attachmentId === id);
-          if (entry) entry.cached = false;
+          await refreshEntryAvailability(id);
         }
         selectedIds.clear();
         lastClickedId = null;
-        localProcessedCount = allItems.filter((i) => !i.excluded && i.cached).length;
+        localProcessedCount = allItems.filter(
+          (i) => !i.excluded && isMineruAvailable(i),
+        ).length;
         updateProgressBar();
         renderItemsList();
       } else if (isSubfolder() || activeCollectionId === "unfiled") {
@@ -1375,10 +1420,11 @@ export async function registerMineruManagerScript(
           return;
         for (const id of ids) {
           await deleteMineruCacheForItem(id);
-          const entry = allItems.find((i) => i.attachmentId === id);
-          if (entry) entry.cached = false;
+          await refreshEntryAvailability(id);
         }
-        localProcessedCount = allItems.filter((i) => !i.excluded && i.cached).length;
+        localProcessedCount = allItems.filter(
+          (i) => !i.excluded && isMineruAvailable(i),
+        ).length;
         updateProgressBar();
         renderItemsList();
       } else {
@@ -1414,7 +1460,7 @@ export async function registerMineruManagerScript(
     buildCollectionMaps();
     const actionableItems = allItems.filter((i) => !i.excluded);
     localTotalCount = actionableItems.length;
-    localProcessedCount = actionableItems.filter((i) => i.cached).length;
+    localProcessedCount = actionableItems.filter(isMineruAvailable).length;
     updateProgressBar();
   }
 

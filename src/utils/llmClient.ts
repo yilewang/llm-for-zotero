@@ -30,6 +30,24 @@ import type {
   QwenReasoningProfile,
   RuntimeReasoningOption,
 } from "./reasoningProfiles";
+import type {
+  ChatMessage,
+  ImageContent,
+  MessageContent,
+  ReasoningConfig,
+  ReasoningEvent,
+  TextContent,
+  UsageStats,
+} from "../shared/llm";
+export type {
+  ChatMessage,
+  ImageContent,
+  MessageContent,
+  ReasoningConfig,
+  ReasoningEvent,
+  TextContent,
+  UsageStats,
+} from "../shared/llm";
 import {
   EMBEDDINGS_ENDPOINT,
   FILES_ENDPOINT,
@@ -64,7 +82,8 @@ import {
   resolveGeminiNativeEndpoint,
   resolveProviderTransportEndpoint,
 } from "./providerTransport";
-import { parseDataUrl, readFileRefAsBase64 } from "../agent/model/shared";
+import { parseDataUrl } from "../shared/dataUrl";
+import { readFileRefAsBase64 } from "../agent/model/shared";
 import {
   extractCodexAppServerThreadId,
   extractCodexAppServerTurnId,
@@ -91,33 +110,6 @@ import { isTextOnlyModel } from "../providers/modelChecks";
 // Types
 // =============================================================================
 
-/** Image content for vision-capable models */
-export type ImageContent = {
-  type: "image_url";
-  image_url: {
-    url: string;
-    detail?: "low" | "high" | "auto";
-  };
-};
-
-/** Text content */
-export type TextContent = {
-  type: "text";
-  text: string;
-};
-
-/** Message content can be string or array of content parts (for vision) */
-export type MessageContent = string | (TextContent | ImageContent)[];
-
-export type ChatMessage = {
-  role: "user" | "assistant" | "system";
-  content: MessageContent;
-};
-
-export type ReasoningConfig = {
-  provider: ReasoningProvider;
-  level: ReasoningLevel;
-};
 export type ChatFileAttachment = {
   name: string;
   mimeType?: string;
@@ -158,18 +150,6 @@ export type ChatParams = {
   providerProtocol?: ProviderProtocol;
 };
 
-export type ReasoningEvent = {
-  summary?: string;
-  details?: string;
-  /**
-   * Adapter-provided reasoning item identity. App-server emits multiple
-   * reasoning items inside one runtime round; preserving this lets the UI
-   * render them as separate legacy-like thinking steps.
-   */
-  stepId?: string;
-  stepLabel?: string;
-};
-
 export type ContextBudgetPlan = {
   modelLimitTokens: number;
   limitTokens: number;
@@ -178,12 +158,6 @@ export type ContextBudgetPlan = {
   outputReserveTokens: number;
   reasoningReserveTokens: number;
   contextBudgetTokens: number;
-};
-
-export type UsageStats = {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
 };
 
 export type PreparedChatRequest = {

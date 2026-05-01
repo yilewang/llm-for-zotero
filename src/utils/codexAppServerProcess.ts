@@ -1,4 +1,8 @@
-import type { ReasoningConfig, ReasoningEvent, UsageStats } from "./llmClient";
+import type {
+  ReasoningConfig,
+  ReasoningEvent,
+  UsageStats,
+} from "../shared/llm";
 import type {
   CodexAppServerHistoryItem,
   CodexAppServerUserInput,

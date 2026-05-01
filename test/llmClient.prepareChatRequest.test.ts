@@ -286,6 +286,7 @@ describe("llmClient prepareChatRequest", function () {
       if (globalThis.process?.env) {
         globalThis.process.env.CODEX_PATH = "/mock/codex";
       }
+      (globalThis.Zotero as unknown as { isWin?: boolean }).isWin = true;
 
       (
         globalThis as typeof globalThis & {
@@ -405,6 +406,7 @@ describe("llmClient prepareChatRequest", function () {
       if (globalThis.process?.env) {
         globalThis.process.env.CODEX_PATH = "/mock/codex";
       }
+      (globalThis.Zotero as unknown as { isWin?: boolean }).isWin = true;
 
       (
         globalThis as typeof globalThis & {

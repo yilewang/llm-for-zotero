@@ -57,6 +57,8 @@ import {
   setMineruApiKey,
   isGlobalAutoParseEnabled,
   setGlobalAutoParseEnabled,
+  isMineruSyncEnabled,
+  setMineruSyncEnabled,
   getMineruExcludePatterns,
   setMineruExcludePatterns,
 } from "../utils/mineruConfig";
@@ -72,6 +74,10 @@ import {
 } from "../utils/notesDirectoryConfig";
 import { testMineruConnection } from "../utils/mineruClient";
 import { registerMineruManagerScript } from "./mineruManagerScript";
+import {
+  cleanSyncedMineruPackages,
+  repairMineruSyncPackages,
+} from "./contextPanel/mineruSync";
 import { getRuntimePlatformInfo } from "../utils/runtimePlatform";
 import {
   getClaudeAutoCompactThresholdPercent,
@@ -3005,6 +3011,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const mineruTestStatus = doc.querySelector(
     `#${config.addonRef}-mineru-test-status`,
   ) as HTMLSpanElement | null;
+  const mineruSyncEnabledInput = doc.querySelector(
+    `#${config.addonRef}-mineru-sync-enabled`,
+  ) as HTMLInputElement | null;
+  const mineruSyncPrepareBtn = doc.querySelector(
+    `#${config.addonRef}-mineru-sync-prepare`,
+  ) as HTMLButtonElement | null;
+  const mineruSyncCleanBtn = doc.querySelector(
+    `#${config.addonRef}-mineru-sync-clean`,
+  ) as HTMLButtonElement | null;
+  const mineruSyncStatus = doc.querySelector(
+    `#${config.addonRef}-mineru-sync-status`,
+  ) as HTMLSpanElement | null;
   if (mineruEnabledInput) {
     mineruEnabledInput.checked = isMineruEnabled();
     const syncSubVisibility = () => {
@@ -3019,6 +3037,110 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       setMineruEnabled(mineruEnabledInput.checked);
       syncSubVisibility();
     });
+  }
+
+  if (mineruSyncEnabledInput) {
+    mineruSyncEnabledInput.checked = isMineruSyncEnabled();
+    const syncMineruSyncControls = () => {
+      if (mineruSyncPrepareBtn) {
+        mineruSyncPrepareBtn.disabled = !mineruSyncEnabledInput.checked;
+      }
+    };
+    syncMineruSyncControls();
+    mineruSyncEnabledInput.addEventListener("change", () => {
+      const enabled = mineruSyncEnabledInput.checked;
+      setMineruSyncEnabled(enabled);
+      syncMineruSyncControls();
+      if (!mineruSyncStatus) return;
+      mineruSyncStatus.style.display = "block";
+      mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
+      if (!enabled) {
+        mineruSyncStatus.textContent = t(
+          "MinerU sync disabled. Existing synced packages are kept until cleaned.",
+        );
+        return;
+      }
+      mineruSyncStatus.textContent = t(
+        "MinerU sync enabled. Existing local caches sync only when requested.",
+      );
+    });
+  }
+
+  if (mineruSyncPrepareBtn && mineruSyncStatus) {
+    mineruSyncPrepareBtn.addEventListener("click", () => {
+      if (!isMineruSyncEnabled()) {
+        mineruSyncStatus.style.display = "block";
+        mineruSyncStatus.style.color = "#b45309";
+        mineruSyncStatus.textContent = t(
+          "Enable MinerU sync before preparing packages.",
+        );
+        return;
+      }
+
+      mineruSyncPrepareBtn.disabled = true;
+      if (mineruSyncCleanBtn) mineruSyncCleanBtn.disabled = true;
+      mineruSyncStatus.style.display = "block";
+      mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
+      mineruSyncStatus.textContent = t("Syncing existing MinerU caches…");
+      void (async () => {
+        try {
+          const result = await repairMineruSyncPackages({
+            onProgress: (progress) => {
+              mineruSyncStatus.textContent =
+                t("Syncing existing MinerU caches") +
+                `: ${progress.scanned} scanned, ` +
+                `${progress.published} package(s), ` +
+                `${progress.restored} restored.`;
+            },
+          });
+          mineruSyncStatus.textContent =
+            t("Existing MinerU caches synced") +
+            `: ${result.published} package(s), ` +
+            `${result.restored} restored, ${result.upToDate} up to date, ` +
+            `${result.skipped} skipped.`;
+          mineruSyncStatus.style.color =
+            result.failed > 0 || result.diverged > 0 ? "#b45309" : "green";
+        } catch (error) {
+          mineruSyncStatus.textContent = `\u2717 ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+          mineruSyncStatus.style.color = "red";
+        } finally {
+          mineruSyncPrepareBtn.disabled = !isMineruSyncEnabled();
+          if (mineruSyncCleanBtn) mineruSyncCleanBtn.disabled = false;
+        }
+      })();
+    });
+  }
+
+  if (mineruSyncCleanBtn && mineruSyncStatus) {
+    const runMineruSyncCleanup = async () => {
+      mineruSyncCleanBtn.disabled = true;
+      mineruSyncStatus.style.display = "block";
+      mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
+      mineruSyncStatus.textContent = t("Cleaning synced MinerU packages…");
+      try {
+        const result = await cleanSyncedMineruPackages();
+        mineruSyncStatus.textContent =
+          result.failed > 0
+            ? `${t("Cleaned synced MinerU packages")}: ${result.deleted}, ${result.failed} failed.`
+            : `${t("Cleaned synced MinerU packages")}: ${result.deleted}.`;
+        mineruSyncStatus.style.color = result.failed > 0 ? "#b45309" : "green";
+      } catch (error) {
+        mineruSyncStatus.textContent = `\u2717 ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+        mineruSyncStatus.style.color = "red";
+      } finally {
+        mineruSyncCleanBtn.disabled = false;
+      }
+    };
+    mineruSyncCleanBtn.addEventListener("click", () =>
+      void runMineruSyncCleanup(),
+    );
+    mineruSyncCleanBtn.addEventListener("command", () =>
+      void runMineruSyncCleanup(),
+    );
   }
 
   const mineruGlobalAutoParseInput = doc.querySelector(

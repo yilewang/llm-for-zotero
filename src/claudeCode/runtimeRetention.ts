@@ -3,7 +3,7 @@ import type { AgentEvent } from "../agent/types";
 import { updateClaudeRuntimeRetention, buildClaudeScope } from "./runtime";
 import { CLAUDE_RUNTIME_RELEASE_GRACE_MS, isClaudeConversationKey } from "./constants";
 import { resolveConversationSystemForItem, resolveConversationBaseItem, resolveDisplayConversationKind } from "../modules/contextPanel/portalScope";
-import { getConversationKey } from "../modules/contextPanel/chat";
+import { getConversationKey } from "../modules/contextPanel/conversationIdentity";
 
 type RetentionTarget = {
   conversationKey: number;

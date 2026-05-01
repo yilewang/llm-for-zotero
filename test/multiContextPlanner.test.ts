@@ -10,6 +10,7 @@ import {
   buildChunkMetadata,
   buildPaperKey,
 } from "../src/modules/contextPanel/pdfContext";
+import { tokenizeRetrievalText } from "../src/modules/contextPanel/retrievalTokenizer";
 import { pdfTextCache } from "../src/modules/contextPanel/state";
 import type {
   ChunkStat,
@@ -18,9 +19,7 @@ import type {
 } from "../src/modules/contextPanel/types";
 
 function tokenize(text: string): string[] {
-  return (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(
-    (token) => token.length >= 3,
-  );
+  return tokenizeRetrievalText(text);
 }
 
 function buildPdfContext(title: string, chunks: string[]): PdfContext {
@@ -620,5 +619,18 @@ describe("multiContextPlanner", function () {
     assert.include(plan.contextText, "Title: Calibration Drift Paper 001");
     assert.notInclude(plan.contextText, "Title: Calibration Drift Paper 060");
     assert.isAtMost(plan.selectedPaperCount, COLLECTION_RETRIEVAL_MAX_PAPERS);
+    assert.isAtLeast(plan.citationPaperContexts?.length || 0, 1);
+    assert.isAtMost(
+      plan.citationPaperContexts?.length || 0,
+      COLLECTION_RETRIEVAL_MAX_PAPERS,
+    );
+    assert.include(
+      (plan.citationPaperContexts || []).map((paper) => paper.title),
+      "Calibration Drift Paper 001",
+    );
+    assert.notInclude(
+      (plan.citationPaperContexts || []).map((paper) => paper.title),
+      "Calibration Drift Paper 060",
+    );
   });
 });

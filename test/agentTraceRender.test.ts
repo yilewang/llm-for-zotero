@@ -3,6 +3,11 @@ import {
   buildAgentTraceDisplayItems,
   getPendingActionButtonLayout,
 } from "../src/modules/contextPanel/agentTrace/render";
+import {
+  shouldAttachAssistantResponseContextMenu,
+  shouldDecorateInterleavedAgentTraceCitations,
+  shouldSuppressAssistantResponseContextMenu,
+} from "../src/modules/contextPanel/chat";
 import type {
   AgentPendingAction,
   AgentRunEventRecord,
@@ -589,6 +594,167 @@ describe("agentTrace render", function () {
     assert.isAbove(finalIndex, toolIndex);
     assert.notInclude(messageTexts, "This paper is about working memory.");
     assert.lengthOf(doneActions, 1);
+  });
+
+  it("keeps the response menu available for Codex interleaved final text", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: "I need to read the paper first.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "read_paper",
+          args: { operation: "full_text" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: "The paper argues that context switching changes recall.",
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-1",
+        seq: 4,
+        eventType: "final",
+        payload: {
+          type: "final",
+          text: "The paper argues that context switching changes recall.",
+        },
+        createdAt: 4,
+      },
+    ];
+
+    const { isInterleaved } = buildAgentTraceDisplayItems(events, null, {
+      role: "assistant",
+      text: "The paper argues that context switching changes recall.",
+      timestamp: 1,
+      runMode: "agent",
+      modelProviderLabel: "Codex",
+    });
+
+    assert.isTrue(isInterleaved);
+    assert.isTrue(
+      shouldAttachAssistantResponseContextMenu({
+        text: "The paper argues that context switching changes recall.",
+      }),
+    );
+  });
+
+  it("decorates citations for completed interleaved agent trace text", function () {
+    const finalText =
+      "Here is the paper evidence.\n\n" +
+      "> The scaffold states can be used for content-addressable memory.\n\n" +
+      "(Chandra et al., 2025)";
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: "I need to read the paper section first.",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "file_io",
+          args: {
+            action: "read",
+            filePath: "/tmp/llm-for-zotero-mineru/51/full.md",
+          },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: finalText,
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-1",
+        seq: 4,
+        eventType: "final",
+        payload: {
+          type: "final",
+          text: finalText,
+        },
+        createdAt: 4,
+      },
+    ];
+
+    const { items, isInterleaved } = buildAgentTraceDisplayItems(
+      events,
+      null,
+      {
+        role: "assistant",
+        text: finalText,
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Codex",
+      },
+    );
+    const finalInlineText = items.find(
+      (item) => item.type === "inline_text" && item.text === finalText,
+    );
+
+    assert.isTrue(isInterleaved);
+    assert.exists(finalInlineText);
+    assert.isTrue(
+      shouldDecorateInterleavedAgentTraceCitations({
+        agentTraceEl: {} as Element,
+        agentUsesInterleavedText: isInterleaved,
+        streaming: false,
+      }),
+    );
+    assert.isFalse(
+      shouldDecorateInterleavedAgentTraceCitations({
+        agentTraceEl: {} as Element,
+        agentUsesInterleavedText: isInterleaved,
+        streaming: true,
+      }),
+    );
+  });
+
+  it("does not open the response menu from action-card controls", function () {
+    const controlTarget = {
+      closest: (selector: string) =>
+        selector.includes(".llm-agent-hitl-card") ? {} : null,
+    } as unknown as EventTarget;
+    const textTarget = {
+      closest: () => null,
+    } as unknown as EventTarget;
+
+    assert.isTrue(shouldSuppressAssistantResponseContextMenu(controlTarget));
+    assert.isFalse(shouldSuppressAssistantResponseContextMenu(textTarget));
   });
 
   it("keeps visible text before a tool call marked as interleaved", function () {
