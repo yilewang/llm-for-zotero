@@ -89,6 +89,12 @@ export type MineruSyncMigrationResult = {
   failed: number;
 };
 
+export type MineruSyncMigrationOptions = {
+  batchSize?: number;
+  yieldMs?: number;
+  onProgress?: (result: MineruSyncMigrationResult) => void;
+};
+
 export type MineruSyncCleanupResult = {
   deleted: number;
   failed: number;
@@ -814,7 +820,8 @@ async function findPackageCandidatesForSource(
     if (!titleMatched && !zipish) continue;
 
     try {
-      const shouldRead = options.loadBytes || !titleMatched;
+      const shouldRead = Boolean(options.loadBytes || options.requireReadable);
+      if (!titleMatched && !shouldRead) continue;
       const bytes = shouldRead ? await readAttachmentFileBytes(item) : null;
       const extracted = bytes ? extractPackageFiles(bytes) : null;
       const metadata = extracted?.metadata;
@@ -979,6 +986,18 @@ async function writeLocalSyncState(params: {
   );
 }
 
+function cloneMigrationResult(
+  result: MineruSyncMigrationResult,
+): MineruSyncMigrationResult {
+  return { ...result };
+}
+
+function yieldToUi(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, Math.max(0, delayMs));
+  });
+}
+
 export async function publishMineruCachePackageForAttachment(
   attachmentId: number,
 ): Promise<MineruSyncPublishResult> {
@@ -1040,7 +1059,68 @@ export async function publishMineruCachePackageForAttachment(
   }
 }
 
+export async function ensureMineruRuntimeCacheForAttachment(
+  sourceAttachment: Zotero.Item,
+): Promise<MineruSyncRestoreResult> {
+  const attachmentId = sourceAttachment.id;
+  if (!isMineruSyncEnabled()) return { status: "disabled", attachmentId };
+  if (!isPdfAttachment(sourceAttachment))
+    return { status: "not_pdf", attachmentId };
+  const sourceKey = getItemKey(sourceAttachment);
+  if (!sourceKey) return { status: "missing_key", attachmentId };
+
+  try {
+    if (await hasCachedMineruMd(attachmentId)) {
+      return { status: "already_cached", attachmentId };
+    }
+
+    const candidates = await findPackageCandidatesForSource(sourceAttachment, {
+      loadBytes: true,
+      requireReadable: false,
+    });
+    if (!candidates.length) return { status: "no_package", attachmentId };
+
+    const selected = selectBestPackageCandidate(candidates);
+    if (!selected?.extracted) {
+      return { status: "invalid_package", attachmentId };
+    }
+
+    const packageContentHash = selected.extracted.contentHash;
+
+    await removePath(getMineruItemDir(attachmentId));
+    await writeMineruCacheFiles(
+      attachmentId,
+      selected.extracted.mdContent,
+      selected.extracted.files,
+    );
+    await writeLocalSyncState({
+      attachmentId,
+      sourceAttachmentKey: sourceKey,
+      packageAttachmentId: selected.item.id,
+      cacheContentHash: packageContentHash,
+    });
+    return {
+      status: "restored",
+      attachmentId,
+      packageAttachmentId: selected.item.id,
+      packageContentHash,
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      attachmentId,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function restoreSyncedMineruCacheForAttachment(
+  sourceAttachment: Zotero.Item,
+): Promise<MineruSyncRestoreResult> {
+  return ensureMineruRuntimeCacheForAttachment(sourceAttachment);
+}
+
+export async function repairSyncedMineruCacheForAttachment(
   sourceAttachment: Zotero.Item,
 ): Promise<MineruSyncRestoreResult> {
   const attachmentId = sourceAttachment.id;
@@ -1164,7 +1244,9 @@ async function getAllLibraryPdfAttachments(): Promise<Zotero.Item[]> {
   return out;
 }
 
-export async function publishExistingMineruCaches(): Promise<MineruSyncMigrationResult> {
+export async function publishExistingMineruCaches(
+  options: MineruSyncMigrationOptions = {},
+): Promise<MineruSyncMigrationResult> {
   const result: MineruSyncMigrationResult = {
     scanned: 0,
     published: 0,
@@ -1176,34 +1258,53 @@ export async function publishExistingMineruCaches(): Promise<MineruSyncMigration
   };
   if (!isMineruSyncEnabled()) return result;
 
+  const batchSize =
+    Number.isFinite(options.batchSize) && Number(options.batchSize) > 0
+      ? Math.floor(Number(options.batchSize))
+      : 5;
+  const yieldMs =
+    Number.isFinite(options.yieldMs) && Number(options.yieldMs) >= 0
+      ? Math.floor(Number(options.yieldMs))
+      : 25;
+
   for (const item of await getAllLibraryPdfAttachments()) {
     result.scanned += 1;
     try {
-      const restored = await restoreSyncedMineruCacheForAttachment(item);
+      const restored = await repairSyncedMineruCacheForAttachment(item);
       if (restored.status === "restored") result.restored += 1;
       if (restored.diverged) result.diverged += 1;
       if (restored.status === "error") {
         result.failed += 1;
-        continue;
-      }
-
-      const published =
-        await publishMineruCachePackageForAttachment(item.id);
-      if (published.status === "published") {
-        result.published += 1;
-      } else if (published.status === "up_to_date") {
-        result.upToDate += 1;
-      } else if (published.status === "error") {
-        result.failed += 1;
       } else {
-        result.skipped += 1;
+        const published = await publishMineruCachePackageForAttachment(item.id);
+        if (published.status === "published") {
+          result.published += 1;
+        } else if (published.status === "up_to_date") {
+          result.upToDate += 1;
+        } else if (published.status === "error") {
+          result.failed += 1;
+        } else {
+          result.skipped += 1;
+        }
       }
     } catch {
       result.failed += 1;
     }
+
+    if (result.scanned % batchSize === 0) {
+      options.onProgress?.(cloneMigrationResult(result));
+      await yieldToUi(yieldMs);
+    }
   }
 
+  options.onProgress?.(cloneMigrationResult(result));
   return result;
+}
+
+export async function repairMineruSyncPackages(
+  options: MineruSyncMigrationOptions = {},
+): Promise<MineruSyncMigrationResult> {
+  return publishExistingMineruCaches(options);
 }
 
 export function startMineruSyncMigrationIfEnabled(): void {

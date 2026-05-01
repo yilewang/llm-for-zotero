@@ -76,7 +76,7 @@ import { testMineruConnection } from "../utils/mineruClient";
 import { registerMineruManagerScript } from "./mineruManagerScript";
 import {
   cleanSyncedMineruPackages,
-  publishExistingMineruCaches,
+  repairMineruSyncPackages,
 } from "./contextPanel/mineruSync";
 import { getRuntimePlatformInfo } from "../utils/runtimePlatform";
 import {
@@ -3014,6 +3014,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const mineruSyncEnabledInput = doc.querySelector(
     `#${config.addonRef}-mineru-sync-enabled`,
   ) as HTMLInputElement | null;
+  const mineruSyncPrepareBtn = doc.querySelector(
+    `#${config.addonRef}-mineru-sync-prepare`,
+  ) as HTMLButtonElement | null;
   const mineruSyncCleanBtn = doc.querySelector(
     `#${config.addonRef}-mineru-sync-clean`,
   ) as HTMLButtonElement | null;
@@ -3038,11 +3041,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
   if (mineruSyncEnabledInput) {
     mineruSyncEnabledInput.checked = isMineruSyncEnabled();
+    const syncMineruSyncControls = () => {
+      if (mineruSyncPrepareBtn) {
+        mineruSyncPrepareBtn.disabled = !mineruSyncEnabledInput.checked;
+      }
+    };
+    syncMineruSyncControls();
     mineruSyncEnabledInput.addEventListener("change", () => {
       const enabled = mineruSyncEnabledInput.checked;
       setMineruSyncEnabled(enabled);
+      syncMineruSyncControls();
       if (!mineruSyncStatus) return;
-      mineruSyncStatus.style.display = "inline";
+      mineruSyncStatus.style.display = "block";
       mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
       if (!enabled) {
         mineruSyncStatus.textContent = t(
@@ -3050,12 +3060,41 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         );
         return;
       }
-      mineruSyncStatus.textContent = t("Preparing synced MinerU packages…");
+      mineruSyncStatus.textContent = t(
+        "MinerU sync enabled. Existing local caches sync only when requested.",
+      );
+    });
+  }
+
+  if (mineruSyncPrepareBtn && mineruSyncStatus) {
+    mineruSyncPrepareBtn.addEventListener("click", () => {
+      if (!isMineruSyncEnabled()) {
+        mineruSyncStatus.style.display = "block";
+        mineruSyncStatus.style.color = "#b45309";
+        mineruSyncStatus.textContent = t(
+          "Enable MinerU sync before preparing packages.",
+        );
+        return;
+      }
+
+      mineruSyncPrepareBtn.disabled = true;
+      if (mineruSyncCleanBtn) mineruSyncCleanBtn.disabled = true;
+      mineruSyncStatus.style.display = "block";
+      mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
+      mineruSyncStatus.textContent = t("Syncing existing MinerU caches…");
       void (async () => {
         try {
-          const result = await publishExistingMineruCaches();
+          const result = await repairMineruSyncPackages({
+            onProgress: (progress) => {
+              mineruSyncStatus.textContent =
+                t("Syncing existing MinerU caches") +
+                `: ${progress.scanned} scanned, ` +
+                `${progress.published} package(s), ` +
+                `${progress.restored} restored.`;
+            },
+          });
           mineruSyncStatus.textContent =
-            t("MinerU sync prepared") +
+            t("Existing MinerU caches synced") +
             `: ${result.published} package(s), ` +
             `${result.restored} restored, ${result.upToDate} up to date, ` +
             `${result.skipped} skipped.`;
@@ -3066,6 +3105,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             error instanceof Error ? error.message : String(error)
           }`;
           mineruSyncStatus.style.color = "red";
+        } finally {
+          mineruSyncPrepareBtn.disabled = !isMineruSyncEnabled();
+          if (mineruSyncCleanBtn) mineruSyncCleanBtn.disabled = false;
         }
       })();
     });
@@ -3074,7 +3116,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   if (mineruSyncCleanBtn && mineruSyncStatus) {
     const runMineruSyncCleanup = async () => {
       mineruSyncCleanBtn.disabled = true;
-      mineruSyncStatus.style.display = "inline";
+      mineruSyncStatus.style.display = "block";
       mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
       mineruSyncStatus.textContent = t("Cleaning synced MinerU packages…");
       try {

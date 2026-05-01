@@ -67,7 +67,6 @@ import {
 } from "./constants";
 import type { ConversationSystem } from "../../shared/types";
 import { hasCachedMineruMd, getMineruItemDir } from "./mineruCache";
-import { restoreSyncedMineruCacheForAttachment } from "./mineruSync";
 import type {
   Message,
   ChatRuntimeMode,
@@ -3427,8 +3426,6 @@ async function enrichPaperContextsWithMineruCache(
   for (const paper of papers) {
     let mineruCacheDir: string | undefined;
     try {
-      const item = Zotero.Items.get(paper.contextItemId);
-      if (item) await restoreSyncedMineruCacheForAttachment(item);
       if (await hasCachedMineruMd(paper.contextItemId)) {
         mineruCacheDir = getMineruItemDir(paper.contextItemId);
       }

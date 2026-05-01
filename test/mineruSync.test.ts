@@ -8,10 +8,12 @@ import {
 import {
   buildMineruSyncPackageBytes,
   cleanSyncedMineruPackages,
+  ensureMineruRuntimeCacheForAttachment,
   getMineruAvailabilityForAttachment,
   MINERU_SYNC_ATTACHMENT_TITLE_PREFIX,
   MINERU_SYNC_METADATA_FILE,
   publishMineruCachePackageForAttachment,
+  repairSyncedMineruCacheForAttachment,
   restoreSyncedMineruCacheForAttachment,
   shouldIncludeMineruCachePackageEntry,
 } from "../src/modules/contextPanel/mineruSync";
@@ -553,6 +555,51 @@ describe("mineruSync", function () {
     );
   });
 
+  it("skips package reads when runtime cache already exists", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdf = createAttachment({
+      id: 78,
+      key: "PDFLOCALFIRST",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "local-first.pdf",
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+    setMineruSyncEnabled(true);
+
+    await writeSampleCache(pdf.id);
+    const zipBytes = await buildMineruSyncPackageBytes(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.exists(zipBytes);
+    const packageItem = attachPackage({
+      io,
+      items,
+      parent,
+      id: 79,
+      key: "PKGLOCALFIRST",
+      sourceKey: "PDFLOCALFIRST",
+      bytes: zipBytes!,
+    });
+    packageItem.getFilePathAsync = async () => {
+      throw new Error("Runtime restore should not read package bytes");
+    };
+
+    const restored = await ensureMineruRuntimeCacheForAttachment(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.equal(restored.status, "already_cached");
+    assert.equal(
+      await readCachedMineruMd(pdf.id),
+      "# Intro\n![Fig](images/fig1.png)\n# Results\ncontent",
+    );
+  });
+
   it("does not republish an unchanged synced package", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();
@@ -629,7 +676,7 @@ describe("mineruSync", function () {
     assert.isFalse(newer.deleted === true);
   });
 
-  it("restores over divergent local cache because the selected ZIP is authoritative", async function () {
+  it("leaves existing local cache untouched during runtime restore", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();
     const parent = createParent();
@@ -669,11 +716,55 @@ describe("mineruSync", function () {
     const restored = await restoreSyncedMineruCacheForAttachment(
       pdf as unknown as Zotero.Item,
     );
+    assert.equal(restored.status, "already_cached");
+    assert.equal(await readCachedMineruMd(pdf.id), "# Divergent local");
+  });
+
+  it("repairs over divergent local cache because the selected ZIP is authoritative", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdf = createAttachment({
+      id: 192,
+      key: "PDFAUTHREPAIR",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "authoritative-repair.pdf",
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+    setMineruSyncEnabled(true);
+
+    await writeMineruCacheFiles(pdf.id, "# Synced source", [
+      { relativePath: "content_list.json", data: bytes("[]") },
+    ]);
+    const zipBytes = await buildMineruSyncPackageBytes(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.exists(zipBytes);
+    attachPackage({
+      io,
+      items,
+      parent,
+      id: 193,
+      key: "PKGAUTHREPAIR",
+      sourceKey: "PDFAUTHREPAIR",
+      bytes: zipBytes!,
+    });
+
+    await writeMineruCacheFiles(pdf.id, "# Divergent local", [
+      { relativePath: "content_list.json", data: bytes("[]") },
+    ]);
+    const restored = await repairSyncedMineruCacheForAttachment(
+      pdf as unknown as Zotero.Item,
+    );
     assert.equal(restored.status, "restored");
     assert.equal(await readCachedMineruMd(pdf.id), "# Synced source");
   });
 
-  it("uses the latest synced package and prunes older duplicates during restore", async function () {
+  it("uses the latest synced package and prunes older duplicates during repair", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();
     const parent = createParent();
@@ -725,13 +816,75 @@ describe("mineruSync", function () {
     });
     await io.remove(`/tmp/zotero/llm-for-zotero-mineru/${pdf.id}`);
 
-    const restored = await restoreSyncedMineruCacheForAttachment(
+    const restored = await repairSyncedMineruCacheForAttachment(
       pdf as unknown as Zotero.Item,
     );
     assert.equal(restored.status, "restored");
     assert.equal(restored.packageAttachmentId, newer.id);
     assert.equal(await readCachedMineruMd(pdf.id), "# Newer synced");
     assert.isTrue(older.deleted);
+    assert.isFalse(newer.deleted === true);
+  });
+
+  it("uses the latest synced package without pruning during runtime restore", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdf = createAttachment({
+      id: 197,
+      key: "PDFRUNTIMELATEST",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "runtime-latest.pdf",
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+    setMineruSyncEnabled(true);
+
+    await writeMineruCacheFiles(pdf.id, "# Older synced", [
+      { relativePath: "content_list.json", data: bytes("[]") },
+    ]);
+    const olderZip = await buildMineruSyncPackageBytes(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.exists(olderZip);
+    const older = attachPackage({
+      io,
+      items,
+      parent,
+      id: 198,
+      key: "PKGRUNTIMELATEST1",
+      sourceKey: "PDFRUNTIMELATEST",
+      bytes: olderZip!,
+    });
+
+    await writeMineruCacheFiles(pdf.id, "# Newer synced", [
+      { relativePath: "content_list.json", data: bytes("[]") },
+    ]);
+    const newerZip = await buildMineruSyncPackageBytes(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.exists(newerZip);
+    const newer = attachPackage({
+      io,
+      items,
+      parent,
+      id: 199,
+      key: "PKGRUNTIMELATEST2",
+      sourceKey: "PDFRUNTIMELATEST",
+      bytes: newerZip!,
+    });
+    await io.remove(`/tmp/zotero/llm-for-zotero-mineru/${pdf.id}`);
+
+    const restored = await ensureMineruRuntimeCacheForAttachment(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.equal(restored.status, "restored");
+    assert.equal(restored.packageAttachmentId, newer.id);
+    assert.equal(await readCachedMineruMd(pdf.id), "# Newer synced");
+    assert.isFalse(older.deleted === true);
     assert.isFalse(newer.deleted === true);
   });
 });

@@ -35,7 +35,7 @@ import {
   readCachedMineruMd,
 } from "./mineruCache";
 import type { MineruManifest, ManifestSection } from "./mineruCache";
-import { restoreSyncedMineruCacheForAttachment } from "./mineruSync";
+import { ensureMineruRuntimeCacheForAttachment } from "./mineruSync";
 import { isMineruEnabled } from "../../utils/mineruConfig";
 import type {
   PdfContext,
@@ -174,7 +174,7 @@ async function cachePDFText(item: Zotero.Item) {
     // 1. Try MinerU disk cache (only if MinerU is enabled)
     if (isMineruEnabled() && pdfItem) {
       try {
-        await restoreSyncedMineruCacheForAttachment(pdfItem);
+        await ensureMineruRuntimeCacheForAttachment(pdfItem);
       } catch (error) {
         ztoolkit.log("LLM: MinerU sync restore failed", error);
       }

@@ -724,10 +724,6 @@ export class ZoteroGateway {
           const { hasCachedMineruMd, getMineruItemDir } = await import(
             "../../modules/contextPanel/mineruCache"
           );
-          const { restoreSyncedMineruCacheForAttachment } = await import(
-            "../../modules/contextPanel/mineruSync"
-          );
-          await restoreSyncedMineruCacheForAttachment(att);
           if (await hasCachedMineruMd(att.id)) {
             mineruCacheDir = getMineruItemDir(att.id);
           }

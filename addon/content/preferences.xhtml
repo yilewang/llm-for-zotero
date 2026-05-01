@@ -878,27 +878,46 @@
             <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); line-height: 1.45; margin-left: 26px;">
               Creates companion ZIP attachments for MinerU full.md, manifest.json, content_list.json, and extracted paper assets. Requires Zotero file sync or WebDAV.
             </html:span>
-            <html:div style="display: flex; align-items: center; gap: 8px; margin-left: 26px;">
-              <html:button
-                id="__addonRef__-mineru-sync-clean"
-                type="button"
-                style="
-                  padding: 4px 10px;
-                  font-size: 12px;
-                  font-weight: 500;
-                  white-space: nowrap;
-                  background: transparent;
-                  color: #dc2626;
-                  border: 1px solid #dc2626;
-                  border-radius: 5px;
-                  cursor: pointer;
-                "
-              >
-                Clean synced MinerU packages
-              </html:button>
+            <html:div style="display: flex; flex-direction: column; gap: 6px; margin-left: 26px;">
+              <html:div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <html:button
+                  id="__addonRef__-mineru-sync-prepare"
+                  type="button"
+                  style="
+                    padding: 4px 10px;
+                    font-size: 12px;
+                    font-weight: 500;
+                    white-space: nowrap;
+                    background: transparent;
+                    color: var(--fill-primary, inherit);
+                    border: 1px solid var(--stroke-secondary, rgba(128,128,128,0.45));
+                    border-radius: 5px;
+                    cursor: pointer;
+                  "
+                >
+                  Sync existing MinerU caches now
+                </html:button>
+                <html:button
+                  id="__addonRef__-mineru-sync-clean"
+                  type="button"
+                  style="
+                    padding: 4px 10px;
+                    font-size: 12px;
+                    font-weight: 500;
+                    white-space: nowrap;
+                    background: transparent;
+                    color: #dc2626;
+                    border: 1px solid #dc2626;
+                    border-radius: 5px;
+                    cursor: pointer;
+                  "
+                >
+                  Clean synced MinerU packages
+                </html:button>
+              </html:div>
               <html:span
                 id="__addonRef__-mineru-sync-status"
-                style="font-size: 11.5px; display: none; color: var(--fill-secondary, #888);"
+                style="font-size: 11.5px; display: none; color: var(--fill-secondary, #888); line-height: 1.35;"
               ></html:span>
             </html:div>
           </html:div>
