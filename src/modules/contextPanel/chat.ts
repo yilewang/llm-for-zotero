@@ -13,6 +13,7 @@ import {
 import { loadClaudeConversation } from "../../claudeCode/store";
 import {
   appendCodexMessage,
+  clearCodexConversationSessionMetadata,
   deleteCodexTurnMessages,
   loadCodexConversation,
   pruneCodexConversation,
@@ -40,6 +41,10 @@ import {
   getCodexRuntimeModelPref,
   isCodexAppServerModeEnabled,
 } from "../../codexAppServer/prefs";
+import {
+  runCodexAppServerNativeTurn,
+  type CodexNativeConversationScope,
+} from "../../codexAppServer/nativeClient";
 import {
   callLLMStream,
   ChatFileAttachment,
@@ -149,7 +154,6 @@ import {
 import { positionMenuAtPointer } from "./menuPositioning";
 import {
   getAvailableModelEntries,
-  getAdvancedModelParamsForEntry,
   getLastReasoningExpanded,
   getLastUsedReasoningLevel,
   getSelectedModelEntryForItem,
@@ -1754,6 +1758,39 @@ function resolveEffectiveRequestConfig(params: {
   };
 }
 
+function resolveCodexNativeConversationScope(params: {
+  item: Zotero.Item;
+  conversationKey: number;
+  title?: string;
+}): CodexNativeConversationScope {
+  const baseItem = resolveConversationBaseItem(params.item);
+  const displayKind = resolveDisplayConversationKind(params.item);
+  const libraryID = Math.max(
+    1,
+    Math.floor(
+      Number(
+        params.item.libraryID ||
+          baseItem?.libraryID ||
+          (Zotero as unknown as { Libraries?: { userLibraryID?: unknown } })
+            .Libraries?.userLibraryID ||
+          1,
+      ) || 1,
+    ),
+  );
+  const kind = displayKind === "paper" ? "paper" : "global";
+  const paperItemID =
+    kind === "paper"
+      ? Math.floor(Number(baseItem?.id || params.item.id || 0)) || undefined
+      : undefined;
+  return {
+    conversationKey: params.conversationKey,
+    libraryID,
+    kind,
+    paperItemID,
+    title: sanitizeText(params.title || "").slice(0, 64) || undefined,
+  };
+}
+
 async function buildContextPlanForRequest(params: {
   item: Zotero.Item;
   question: string;
@@ -2574,9 +2611,29 @@ export async function editLatestUserMessageAndRetry(
   const retryPair = findLatestRetryPair(history);
   if (!retryPair) return "missing";
   if (retryPair.assistantMessage.streaming) return "stale";
+  const retryRequestConfig = resolveEffectiveRequestConfig({
+    item,
+    model,
+    apiBase,
+    apiKey,
+    authMode,
+    providerProtocol,
+    modelEntryId,
+    modelProviderLabel,
+    reasoning,
+    advanced,
+  });
+  const retryConversationSystem = resolveEffectiveConversationSystem({
+    item,
+    authMode: retryRequestConfig.authMode,
+    providerProtocol: retryRequestConfig.providerProtocol,
+    modelProviderLabel: retryRequestConfig.modelProviderLabel,
+  });
   const retryRuntimeMode: ChatRuntimeMode =
-    targetRuntimeMode ||
-    (retryPair.assistantMessage.runMode === "agent" ? "agent" : "chat");
+    retryConversationSystem === "codex"
+      ? "chat"
+      : targetRuntimeMode ||
+        (retryPair.assistantMessage.runMode === "agent" ? "agent" : "chat");
   if (
     expected &&
     (expected.conversationKey !== conversationKey ||
@@ -2989,58 +3046,113 @@ export async function retryLatestAssistantResponse(
       inputCapEffects: preview.inputCap.effects,
     });
 
-    const answer = await callLLMStream(
-      {
-        ...requestParams,
-        systemMessages,
-      },
-      (delta) => {
-        const chunk = sanitizeText(delta);
-        if (!chunk) return;
-        streamedAnswer += chunk;
-        assistantMessage.text += chunk;
-        queueRefresh();
-      },
-      (reasoningEvent: ReasoningEvent) => {
-        if (reasoningEvent.summary) {
-          assistantMessage.reasoningSummary = appendReasoningPart(
-            assistantMessage.reasoningSummary,
-            reasoningEvent.summary,
-          );
-          streamedReasoningSummary = assistantMessage.reasoningSummary;
-        }
-        if (reasoningEvent.details) {
-          assistantMessage.reasoningDetails = appendReasoningPart(
-            assistantMessage.reasoningDetails,
-            reasoningEvent.details,
-          );
-          streamedReasoningDetails = assistantMessage.reasoningDetails;
-        }
-        queueRefresh();
-      },
-      (usage: UsageStats) => {
-        const total = accumulateSessionTokens(
-          conversationKey,
-          usage.totalTokens,
+    const handleDelta = (delta: string) => {
+      const chunk = sanitizeText(delta);
+      if (!chunk) return;
+      streamedAnswer += chunk;
+      assistantMessage.text += chunk;
+      queueRefresh();
+    };
+    const handleReasoning = (reasoningEvent: ReasoningEvent) => {
+      if (reasoningEvent.summary) {
+        assistantMessage.reasoningSummary = appendReasoningPart(
+          assistantMessage.reasoningSummary,
+          reasoningEvent.summary,
         );
-        const contextWindow =
-          resolveConversationSystemForItem(item) === "claude_code"
-            ? getContextInputWindow(effectiveRequestConfig)
-            : undefined;
-        contextUsageSnapshots.set(conversationKey, {
-          contextTokens: total,
+        streamedReasoningSummary = assistantMessage.reasoningSummary;
+      }
+      if (reasoningEvent.details) {
+        assistantMessage.reasoningDetails = appendReasoningPart(
+          assistantMessage.reasoningDetails,
+          reasoningEvent.details,
+        );
+        streamedReasoningDetails = assistantMessage.reasoningDetails;
+      }
+      queueRefresh();
+    };
+    const handleUsage = (usage: UsageStats) => {
+      const total = accumulateSessionTokens(
+        conversationKey,
+        usage.totalTokens,
+      );
+      const contextWindow =
+        resolveConversationSystemForItem(item) === "claude_code"
+          ? getContextInputWindow(effectiveRequestConfig)
+          : undefined;
+      contextUsageSnapshots.set(conversationKey, {
+        contextTokens: total,
+        contextWindow,
+      });
+      if (ui.tokenUsageEl) {
+        setTokenUsage(
+          ui.tokenUsageEl,
+          total,
           contextWindow,
-        });
-        if (ui.tokenUsageEl) {
-          setTokenUsage(
-            ui.tokenUsageEl,
-            total,
-            contextWindow,
-            body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+          body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+        );
+      }
+    };
+    const effectiveConversationSystem = resolveEffectiveConversationSystem({
+      item,
+      authMode: effectiveRequestConfig.authMode,
+      providerProtocol: effectiveRequestConfig.providerProtocol,
+      modelProviderLabel: effectiveRequestConfig.modelProviderLabel,
+    });
+    const isCodexNativeTurn =
+      effectiveConversationSystem === "codex" &&
+      effectiveRequestConfig.authMode === "codex_app_server";
+    if (isCodexNativeTurn) {
+      await clearCodexConversationSessionMetadata(conversationKey).catch(
+        (error) => {
+          ztoolkit.log(
+            "Codex app-server native: failed to clear stale retry session metadata",
+            error,
           );
-        }
-      },
-    );
+        },
+      );
+    }
+    const answer = isCodexNativeTurn
+      ? (
+          await runCodexAppServerNativeTurn({
+            scope: resolveCodexNativeConversationScope({
+              item,
+              conversationKey,
+              title: question,
+            }),
+            model: effectiveRequestConfig.model,
+            messages: prepareChatRequest({
+              ...requestParams,
+              systemMessages,
+            }).messages,
+            reasoning: effectiveRequestConfig.reasoning,
+            signal: getAbortController(conversationKey)?.signal,
+            codexPath: effectiveRequestConfig.apiBase,
+            onDelta: handleDelta,
+            onReasoning: handleReasoning,
+            onUsage: handleUsage,
+            onItemStarted: (event) => {
+              const itemType = sanitizeText(event.type || "");
+              if (itemType && itemType !== "message") {
+                setStatusSafely(`Codex: ${itemType} started`, "sending");
+              }
+            },
+            onItemCompleted: (event) => {
+              const itemType = sanitizeText(event.type || "");
+              if (itemType && itemType !== "message") {
+                setStatusSafely(`Codex: ${itemType} completed`, "sending");
+              }
+            },
+          })
+        ).text
+      : await callLLMStream(
+          {
+            ...requestParams,
+            systemMessages,
+          },
+          handleDelta,
+          handleReasoning,
+          handleUsage,
+        );
 
     if (
       getCancelledRequestId(conversationKey) >= thisRequestId ||
@@ -3182,9 +3294,29 @@ export async function editUserTurnAndRetry(opts: {
     ztoolkit.log("LLM: editUserTurnAndRetry — assistant is still streaming");
     return;
   }
+  const retryRequestConfig = resolveEffectiveRequestConfig({
+    item,
+    model,
+    apiBase,
+    apiKey,
+    authMode,
+    providerProtocol,
+    modelEntryId,
+    modelProviderLabel,
+    reasoning,
+    advanced,
+  });
+  const retryConversationSystem = resolveEffectiveConversationSystem({
+    item,
+    authMode: retryRequestConfig.authMode,
+    providerProtocol: retryRequestConfig.providerProtocol,
+    modelProviderLabel: retryRequestConfig.modelProviderLabel,
+  });
   const retryRuntimeMode: ChatRuntimeMode =
-    targetRuntimeMode ||
-    (history[assistantIndex]?.runMode === "agent" ? "agent" : "chat");
+    retryConversationSystem === "codex"
+      ? "chat"
+      : targetRuntimeMode ||
+        (history[assistantIndex]?.runMode === "agent" ? "agent" : "chat");
 
   // Collect subsequent pairs for persistence deletion
   const subsequentPairs: Array<{ userTs: number; assistantTs: number }> = [];
@@ -3334,21 +3466,6 @@ export async function editUserTurnAndRetry(opts: {
     ztoolkit.log("LLM: Failed to persist edited user message", err);
   }
 
-  // Resolve current model settings and retry
-  const profile = getSelectedModelEntryForItem(item.id);
-  const resolvedModel = model || profile?.model;
-  const resolvedApiBase = apiBase ?? profile?.apiBase;
-  const resolvedApiKey = apiKey ?? profile?.apiKey;
-  const resolvedAuthMode = opts.authMode ?? profile?.authMode;
-  const resolvedProviderProtocol = opts.providerProtocol ?? profile?.providerProtocol;
-  const resolvedModelEntryId = opts.modelEntryId ?? profile?.entryId;
-  const resolvedModelProviderLabel = opts.modelProviderLabel ?? profile?.providerLabel;
-  const resolvedReasoning =
-    reasoning ||
-    getSelectedReasoningForItem(item.id, resolvedModel || "", resolvedApiBase);
-  const resolvedAdvanced =
-    advanced || getAdvancedModelParamsForEntry(profile?.entryId);
-
   // Route agent-mode retries through the agent runtime so tools are available
   // and the old trace is properly cleared before the new run starts.
   const isAgentRetry = retryRuntimeMode === "agent";
@@ -3356,29 +3473,29 @@ export async function editUserTurnAndRetry(opts: {
     await retryLatestAgentResponse(
       body,
       item,
-      resolvedModel,
-      resolvedApiBase,
-      resolvedApiKey,
-      resolvedAuthMode,
-      resolvedProviderProtocol,
-      resolvedModelEntryId,
-      resolvedModelProviderLabel,
-      resolvedReasoning,
-      resolvedAdvanced,
+      retryRequestConfig.model,
+      retryRequestConfig.apiBase,
+      retryRequestConfig.apiKey,
+      retryRequestConfig.authMode,
+      retryRequestConfig.providerProtocol,
+      retryRequestConfig.modelEntryId,
+      retryRequestConfig.modelProviderLabel,
+      retryRequestConfig.reasoning,
+      retryRequestConfig.advanced,
     );
   } else {
     await retryLatestAssistantResponse(
       body,
       item,
-      resolvedModel,
-      resolvedApiBase,
-      resolvedApiKey,
-      resolvedAuthMode,
-      resolvedProviderProtocol,
-      resolvedModelEntryId,
-      resolvedModelProviderLabel,
-      resolvedReasoning,
-      resolvedAdvanced,
+      retryRequestConfig.model,
+      retryRequestConfig.apiBase,
+      retryRequestConfig.apiKey,
+      retryRequestConfig.authMode,
+      retryRequestConfig.providerProtocol,
+      retryRequestConfig.modelEntryId,
+      retryRequestConfig.modelProviderLabel,
+      retryRequestConfig.reasoning,
+      retryRequestConfig.advanced,
       pdfUploadSystemMessages,
     );
   }
@@ -3668,7 +3785,11 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     modelProviderLabel: opts.modelProviderLabel,
   });
   const effectiveRuntimeMode: ChatRuntimeMode =
-    effectiveConversationSystem === "codex" ? "agent" : runtimeMode;
+    effectiveConversationSystem === "claude_code"
+      ? "agent"
+      : effectiveConversationSystem === "codex"
+        ? "chat"
+        : runtimeMode;
   if (effectiveRuntimeMode === "agent" && !skipAgentDispatch) {
     await sendAgentQuestion({
       body,
@@ -3785,6 +3906,10 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     model,
     apiBase,
     apiKey,
+    authMode: opts.authMode,
+    providerProtocol: opts.providerProtocol,
+    modelEntryId: opts.modelEntryId,
+    modelProviderLabel: opts.modelProviderLabel,
     reasoning,
     advanced,
   });
@@ -4180,53 +4305,92 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       inputCapEffects: preview.inputCap.effects,
     });
 
-    const answer = await callLLMStream(
-      {
-        ...requestParams,
-        systemMessages,
-      },
-      (delta) => {
-        assistantMessage.text += sanitizeText(delta);
-        queueRefresh();
-      },
-      (reasoning: ReasoningEvent) => {
-        if (reasoning.summary) {
-          assistantMessage.reasoningSummary = appendReasoningPart(
-            assistantMessage.reasoningSummary,
-            reasoning.summary,
-          );
-        }
-        if (reasoning.details) {
-          assistantMessage.reasoningDetails = appendReasoningPart(
-            assistantMessage.reasoningDetails,
-            reasoning.details,
-          );
-        }
-        queueRefresh();
-      },
-      (usage: UsageStats) => {
-        const total = accumulateSessionTokens(
-          conversationKey,
-          usage.totalTokens,
+    const handleDelta = (delta: string) => {
+      assistantMessage.text += sanitizeText(delta);
+      queueRefresh();
+    };
+    const handleReasoning = (reasoning: ReasoningEvent) => {
+      if (reasoning.summary) {
+        assistantMessage.reasoningSummary = appendReasoningPart(
+          assistantMessage.reasoningSummary,
+          reasoning.summary,
         );
-        const contextWindow =
-          resolveConversationSystemForItem(item) === "claude_code"
-            ? getContextInputWindow(effectiveRequestConfig)
-            : undefined;
-        contextUsageSnapshots.set(conversationKey, {
-          contextTokens: total,
+      }
+      if (reasoning.details) {
+        assistantMessage.reasoningDetails = appendReasoningPart(
+          assistantMessage.reasoningDetails,
+          reasoning.details,
+        );
+      }
+      queueRefresh();
+    };
+    const handleUsage = (usage: UsageStats) => {
+      const total = accumulateSessionTokens(
+        conversationKey,
+        usage.totalTokens,
+      );
+      const contextWindow =
+        resolveConversationSystemForItem(item) === "claude_code"
+          ? getContextInputWindow(effectiveRequestConfig)
+          : undefined;
+      contextUsageSnapshots.set(conversationKey, {
+        contextTokens: total,
+        contextWindow,
+      });
+      if (ui.tokenUsageEl) {
+        setTokenUsage(
+          ui.tokenUsageEl,
+          total,
           contextWindow,
-        });
-        if (ui.tokenUsageEl) {
-          setTokenUsage(
-            ui.tokenUsageEl,
-            total,
-            contextWindow,
-            body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
-          );
-        }
-      },
-    );
+          body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+        );
+      }
+    };
+    const isCodexNativeTurn =
+      effectiveConversationSystem === "codex" &&
+      effectiveRequestConfig.authMode === "codex_app_server";
+    const answer = isCodexNativeTurn
+      ? (
+          await runCodexAppServerNativeTurn({
+            scope: resolveCodexNativeConversationScope({
+              item,
+              conversationKey,
+              title: shownQuestion,
+            }),
+            model: effectiveRequestConfig.model,
+            messages: prepareChatRequest({
+              ...requestParams,
+              systemMessages,
+            }).messages,
+            reasoning: effectiveRequestConfig.reasoning,
+            signal: getAbortController(conversationKey)?.signal,
+            codexPath: effectiveRequestConfig.apiBase,
+            onDelta: handleDelta,
+            onReasoning: handleReasoning,
+            onUsage: handleUsage,
+            onItemStarted: (event) => {
+              const itemType = sanitizeText(event.type || "");
+              if (itemType && itemType !== "message") {
+                setStatusSafely(`Codex: ${itemType} started`, "sending");
+              }
+            },
+            onItemCompleted: (event) => {
+              const itemType = sanitizeText(event.type || "");
+              if (itemType && itemType !== "message") {
+                setStatusSafely(`Codex: ${itemType} completed`, "sending");
+              }
+            },
+          })
+        ).text
+      : await callLLMStream(
+          {
+            ...requestParams,
+            systemMessages,
+          },
+          handleDelta,
+          handleReasoning,
+          handleUsage,
+        );
 
     if (
       getCancelledRequestId(conversationKey) >= thisRequestId ||
@@ -4267,14 +4431,16 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       ).catch(() => null);
     }
 
-    // After the response is saved, kick off a background LLM summary of the
-    // older history so it is ready for the next request.
-    scheduleLLMSummary(conversationKey, rawLLMHistory, {
-      model: effectiveRequestConfig.model,
-      apiBase: effectiveRequestConfig.apiBase,
-      apiKey: effectiveRequestConfig.apiKey,
-      authMode: effectiveRequestConfig.authMode,
-    });
+    // Codex app-server owns model-visible history in native mode, so avoid a
+    // background summarizer that would spin up a second app-server request.
+    if (!isCodexNativeTurn) {
+      scheduleLLMSummary(conversationKey, rawLLMHistory, {
+        model: effectiveRequestConfig.model,
+        apiBase: effectiveRequestConfig.apiBase,
+        apiKey: effectiveRequestConfig.apiKey,
+        authMode: effectiveRequestConfig.authMode,
+      });
+    }
 
     setStatusSafely("Ready", "ready");
   } catch (err) {

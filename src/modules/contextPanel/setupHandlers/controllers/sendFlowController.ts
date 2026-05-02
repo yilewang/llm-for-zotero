@@ -190,7 +190,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     const primarySelectedText = selectedTexts[0] || "";
     const allSelectedPaperContexts = deps.getSelectedPaperContexts(item.id);
     const selectedCollectionContexts = deps.getSelectedCollectionContexts(item.id);
-    // Agent mode uses text/MinerU pipeline by default, but if the user
+    const usesPluginAgentMode =
+      deps.isAgentMode() && !deps.isCodexConversationSystem();
+    // Plugin Agent mode uses text/MinerU pipeline by default, but if the user
     // explicitly forced PDF mode on a paper, honour that choice.
     const pdfModePaperContexts = deps.getPdfModePaperContexts(item, allSelectedPaperContexts);
     // Papers in PDF mode are sent as file attachments, not through the text pipeline
@@ -301,7 +303,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       ...deps.getSelectedFiles(item.id),
       ...pdfFileAttachments,
     ];
-    const runtimeMode: ChatRuntimeMode = deps.isAgentMode() ? "agent" : "chat";
+    const runtimeMode: ChatRuntimeMode = usesPluginAgentMode ? "agent" : "chat";
     if (isWebChat && selectedCollectionContexts.length) {
       deps.setStatusMessage?.(
         "Web chat does not support Zotero collection context. Remove the collection and try again.",
@@ -371,7 +373,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         )
       : resolvedPromptText;
 
-    const composedQuestion = deps.isAgentMode()
+    const composedQuestion = usesPluginAgentMode
       ? resolvedPromptText
       : deps.buildModelPromptWithFileContext(
           composedQuestionBase,

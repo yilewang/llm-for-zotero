@@ -392,7 +392,7 @@ describe("sendFlowController", function () {
     assert.equal(lastSend.lastRuntimeMode, "agent");
   });
 
-  it("routes Codex note-mode sends through agent mode with app-server metadata", async function () {
+  it("routes Codex sends through native chat mode with app-server metadata", async function () {
     const { controller, getLastSend } = createBaseDeps({
       getSelectedTextContextEntries: () => [],
       getSelectedPaperContexts: () => [],
@@ -418,7 +418,7 @@ describe("sendFlowController", function () {
     const lastSend = getLastSend();
 
     assert.equal(lastSend.lastSentQuestion, "ask question");
-    assert.equal(lastSend.lastRuntimeMode, "agent");
+    assert.equal(lastSend.lastRuntimeMode, "chat");
     assert.equal(lastSend.lastSentAuthMode, "codex_app_server");
     assert.equal(lastSend.lastSentProviderProtocol, "codex_responses");
     assert.equal(lastSend.lastSentModelProviderLabel, "Codex");

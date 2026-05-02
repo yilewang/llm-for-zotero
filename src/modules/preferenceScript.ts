@@ -137,7 +137,7 @@ const CUSTOMIZED_API_HELPER_TEXT =
 const LEGACY_CODEX_AUTH_HELPER_TEXT =
   "Legacy direct ChatGPT/Codex backend mode. Existing users can keep using it in this release. New users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
 const CODEX_APP_SERVER_HELPER_TEXT =
-  "Recommended official Codex integration. Runs the local `codex app-server` CLI and routes turns through it. Run `codex login` first.";
+  "Recommended official Codex integration. Runs the local `codex app-server` CLI as the native Codex runtime. Run `codex login` first.";
 const LEGACY_CODEX_API_HELPER_TEXT =
   "Legacy direct backend URL. Usually uses https://chatgpt.com/backend-api/codex/responses. Existing users can keep it in this release, but new users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
 const CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT =
@@ -767,7 +767,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiKeyOption.selected = group.authMode === "api_key";
       const codexAppServerOption = el(doc, "option") as HTMLOptionElement;
       codexAppServerOption.value = "codex_app_server";
-      codexAppServerOption.textContent = t("Codex App Server (moved to Agent tab)");
+      codexAppServerOption.textContent = t("Codex App Server (native runtime settings)");
       codexAppServerOption.selected = group.authMode === "codex_app_server";
       const codexOption = el(doc, "option") as HTMLOptionElement;
       codexOption.value = "codex_auth";

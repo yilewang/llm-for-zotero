@@ -43,6 +43,15 @@ type RequestHandler = (
   id: number,
 ) => unknown | Promise<unknown>;
 
+export type CodexAppServerItemEvent = {
+  id?: string;
+  type?: string;
+  role?: string;
+  status?: string;
+  summary?: string;
+  details?: string;
+};
+
 export type CodexAppServerInjectItemsSupport =
   | "unknown"
   | "supported"
@@ -486,7 +495,11 @@ export class CodexAppServerProcess {
 
   private async initialize(): Promise<void> {
     await this.sendRequest("initialize", {
-      clientInfo: { name: "llm-for-zotero", version: "1.0" },
+      clientInfo: {
+        name: "llm-for-zotero",
+        title: "LLM for Zotero",
+        version: "1.0",
+      },
       capabilities: { experimentalApi: true },
     });
     this.sendNotification("initialized");
@@ -688,6 +701,7 @@ function extractCodexAppServerItem(rawParams: unknown): {
   id?: string;
   type?: string;
   role?: string;
+  status?: string;
   summary?: string;
   details?: string;
 } | null {
@@ -703,11 +717,13 @@ function extractCodexAppServerItem(rawParams: unknown): {
     id?: unknown;
     type?: unknown;
     role?: unknown;
+    status?: unknown;
     summary?: unknown;
     content?: unknown;
     text?: unknown;
     reasoning?: unknown;
   };
+  const status = typeof item.status === "string" ? item.status.trim() : "";
   return {
     id:
       typeof item.id === "string" && item.id.trim()
@@ -721,6 +737,7 @@ function extractCodexAppServerItem(rawParams: unknown): {
       typeof item.role === "string" && item.role.trim()
         ? item.role.trim().toLowerCase()
         : undefined,
+    status: status || undefined,
     summary: normalizeCodexAppServerText(item.summary) || undefined,
     details:
       normalizeCodexAppServerText(item.content) ||
@@ -789,16 +806,34 @@ function extractCodexAppServerNotificationTurnId(rawParams: unknown): string {
 export function waitForCodexAppServerTurnCompletion(params: {
   proc: CodexAppServerProcess;
   turnId: string;
+  threadId?: string;
   onTextDelta?: (delta: string) => void | Promise<void>;
   onReasoning?: (event: ReasoningEvent) => void | Promise<void>;
   onUsage?: (usage: UsageStats) => void | Promise<void>;
+  onItemStarted?: (event: CodexAppServerItemEvent) => void | Promise<void>;
+  onItemCompleted?: (event: CodexAppServerItemEvent) => void | Promise<void>;
+  onTurnCompleted?: (event: {
+    turnId: string;
+    status?: string;
+  }) => void | Promise<void>;
   signal?: AbortSignal;
+  interruptOnAbort?: boolean;
   cacheKey?: string;
   processOptions?: CodexAppServerProcessOptions;
   timeoutMs?: number;
 }): Promise<string> {
-  const { proc, turnId, onTextDelta, onReasoning, onUsage, signal, cacheKey } =
-    params;
+  const {
+    proc,
+    turnId,
+    onTextDelta,
+    onReasoning,
+    onUsage,
+    onItemStarted,
+    onItemCompleted,
+    onTurnCompleted,
+    signal,
+    cacheKey,
+  } = params;
   const timeoutMs =
     params.timeoutMs ?? DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
@@ -917,7 +952,27 @@ export function waitForCodexAppServerTurnCompletion(params: {
       }, timeoutMs);
     };
     const abortHandler = () => {
-      if (cacheKey) {
+      if (params.interruptOnAbort && params.threadId) {
+        void proc
+          .sendRequest(
+            "turn/interrupt",
+            { threadId: params.threadId, turnId },
+            5000,
+          )
+          .catch((error) => {
+            ztoolkit.log(
+              "Codex app-server: turn/interrupt failed; destroying process",
+              error,
+            );
+            if (cacheKey) {
+              destroyCachedCodexAppServerProcess(
+                cacheKey,
+                proc,
+                params.processOptions,
+              );
+            }
+          });
+      } else if (cacheKey) {
         destroyCachedCodexAppServerProcess(
           cacheKey,
           proc,
@@ -935,6 +990,7 @@ export function waitForCodexAppServerTurnCompletion(params: {
       unsubReasoningSummary();
       unsubReasoningDetails();
       unsubUsage();
+      unsubItemStarted();
       unsubItemCompleted();
       unsubCompleted();
       if (timeoutId !== null) {
@@ -1066,6 +1122,19 @@ export function waitForCodexAppServerTurnCompletion(params: {
       },
     );
 
+    const unsubItemStarted = proc.onNotification(
+      "item/started",
+      (rawParams: unknown) => {
+        const eventTurnId = extractCodexAppServerNotificationTurnId(rawParams);
+        if (eventTurnId && eventTurnId !== turnId) return;
+        const item = extractCodexAppServerItem(rawParams);
+        if (!item) return;
+        Promise.resolve(onItemStarted?.(item)).catch(() => {
+          // Ignore downstream consumer errors so the transport can finish cleanly.
+        });
+      },
+    );
+
     const unsubItemCompleted = proc.onNotification(
       "item/completed",
       (rawParams: unknown) => {
@@ -1073,6 +1142,9 @@ export function waitForCodexAppServerTurnCompletion(params: {
         if (eventTurnId && eventTurnId !== turnId) return;
         const item = extractCodexAppServerItem(rawParams);
         if (!item) return;
+        Promise.resolve(onItemCompleted?.(item)).catch(() => {
+          // Ignore downstream consumer errors so the transport can finish cleanly.
+        });
         if (isCodexAppServerAgentMessageItem(item)) {
           const text = item.details || item.summary || "";
           if (text && item.id) {
@@ -1113,6 +1185,11 @@ export function waitForCodexAppServerTurnCompletion(params: {
             : typeof notification.status === "string"
               ? notification.status
               : undefined;
+        Promise.resolve(
+          onTurnCompleted?.({ turnId: completedTurnId, status }),
+        ).catch(() => {
+          // Ignore downstream consumer errors so the transport can finish cleanly.
+        });
         if (status === "completed") {
           settle(() => resolve(getResolvedMessageText()));
           return;

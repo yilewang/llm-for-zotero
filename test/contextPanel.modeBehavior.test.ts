@@ -131,16 +131,31 @@ describe("contextPanel mode behavior", function () {
     );
   });
 
-  it("forces Codex and Claude Code conversation systems to agent", function () {
+  it("forces Claude Code runtime conversations to agent", function () {
     assert.equal(
       resolveRuntimeModeForConversation({
         cachedMode: "chat",
         isRuntimeConversationSystem: true,
+        runtimeConversationSystem: "claude_code",
         isWebChat: true,
         agentModeEnabled: false,
         displayConversationKind: "paper",
       }),
       "agent",
+    );
+  });
+
+  it("keeps Codex runtime conversations in native chat mode", function () {
+    assert.equal(
+      resolveRuntimeModeForConversation({
+        cachedMode: "agent",
+        isRuntimeConversationSystem: true,
+        runtimeConversationSystem: "codex",
+        isWebChat: false,
+        agentModeEnabled: true,
+        displayConversationKind: "global",
+      }),
+      "chat",
     );
   });
 });

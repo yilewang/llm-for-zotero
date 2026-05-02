@@ -808,6 +808,7 @@ export function setupHandlers(
     return resolveRuntimeModeForConversation({
       cachedMode: selectedRuntimeModeCache.get(key) || null,
       isRuntimeConversationSystem: isRuntimeConversationSystem(),
+      runtimeConversationSystem: getConversationSystem(),
       isWebChat: isWebChatModeActive(),
       agentModeEnabled: getAgentModeEnabled(),
       displayConversationKind: resolveDisplayConversationKind(item),
@@ -821,6 +822,9 @@ export function setupHandlers(
     ) as HTMLSpanElement | null;
     if (isRuntimeConversationSystem()) {
       const labelText = isCodexConversationSystem() ? "Codex" : "Claude Code";
+      const staticMode: ChatRuntimeMode = isCodexConversationSystem()
+        ? "chat"
+        : "agent";
       runtimeModeBtn.style.display = "";
       const label = runtimeModeBtn.querySelector(
         ".llm-agent-toggle-label",
@@ -830,15 +834,20 @@ export function setupHandlers(
       }
       runtimeModeBtn.classList.remove("llm-agent-toggle-enabled");
       runtimeModeBtn.classList.add("llm-runtime-mode-static");
-      runtimeModeBtn.dataset.mode = "agent";
+      runtimeModeBtn.dataset.mode = staticMode;
       runtimeModeBtn.dataset.system = getConversationSystem();
-      runtimeModeBtn.title = labelText;
-      runtimeModeBtn.setAttribute("aria-label", labelText);
+      runtimeModeBtn.title = isCodexConversationSystem()
+        ? "Codex native runtime"
+        : labelText;
+      runtimeModeBtn.setAttribute(
+        "aria-label",
+        isCodexConversationSystem() ? "Codex native runtime" : labelText,
+      );
       runtimeModeBtn.setAttribute("aria-pressed", "false");
       runtimeModeBtn.setAttribute("aria-disabled", "true");
       runtimeModeBtn.disabled = true;
       if (indicator) indicator.style.display = "none";
-      panelRoot.dataset.runtimeMode = "agent";
+      panelRoot.dataset.runtimeMode = staticMode;
       return;
     }
     runtimeModeBtn.classList.remove("llm-runtime-mode-static");

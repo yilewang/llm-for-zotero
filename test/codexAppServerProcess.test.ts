@@ -487,6 +487,63 @@ describe("codexAppServerProcess", function () {
     assert.equal(result, "");
   });
 
+  it("interrupts the active turn instead of destroying the process on abort", async function () {
+    const writes: string[] = [];
+    let killed = false;
+    const proc = CodexAppServerProcess.forTest({
+      stdin: {
+        write: (chunk: string) => {
+          writes.push(chunk);
+        },
+      },
+      kill: () => {
+        killed = true;
+      },
+    });
+    const controller = new AbortController();
+
+    const waitPromise = waitForCodexAppServerTurnCompletion({
+      proc,
+      threadId: "thread-1",
+      turnId: "turn-1",
+      signal: controller.signal,
+      interruptOnAbort: true,
+      cacheKey: "interrupt-test-missing-cache-entry",
+      timeoutMs: 1000,
+    });
+
+    controller.abort();
+    const interruptRequest = JSON.parse(writes[0] || "{}") as {
+      id: number;
+      method: string;
+      params: Record<string, unknown>;
+    };
+    await (
+      proc as unknown as {
+        handleMessage: (msg: Record<string, unknown>) => void;
+      }
+    ).handleMessage({
+      id: interruptRequest.id,
+      result: {},
+    });
+
+    let caught: unknown;
+    try {
+      await waitPromise;
+    } catch (error) {
+      caught = error;
+    }
+
+    assert.equal(interruptRequest.method, "turn/interrupt");
+    assert.deepEqual(interruptRequest.params, {
+      threadId: "thread-1",
+      turnId: "turn-1",
+    });
+    assert.instanceOf(caught, Error);
+    assert.equal((caught as Error).name, "AbortError");
+    assert.isFalse(killed);
+  });
+
   it("streams reasoning summaries and details without duplicating final reasoning items", async function () {
     const proc = createProcess();
     const reasoning: Array<{ summary?: string; details?: string }> = [];
