@@ -72,6 +72,10 @@ import {
 import { groupHistoryEntriesByDay } from "./setupHandlers/controllers/conversationHistoryController";
 import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
 import {
+  findReusableStandaloneDraft,
+  isReusableStandaloneDraft,
+} from "./standaloneConversationResolution";
+import {
   buildDefaultClaudeGlobalConversationKey,
 } from "../../claudeCode/constants";
 import {
@@ -3073,15 +3077,15 @@ export function openStandaloneChat(options?: {
         if (!currentLibraryID) return 0;
         if (isClaudeConversationSystem()) {
           const currentKey = Number(activeConversationKey || 0);
-          if (Number.isFinite(currentKey) && currentKey > 0) {
+          if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
             try {
               const currentSummary = await getClaudeConversationSummary(currentKey);
-              if (
-                currentSummary &&
-                currentSummary.kind === "global" &&
-                Number(currentSummary.libraryID) === currentLibraryID &&
-                (currentSummary.userTurnCount || 0) === 0
-              ) {
+              if (isReusableStandaloneDraft({
+                forceFresh,
+                summary: currentSummary,
+                kind: "global",
+                libraryID: currentLibraryID,
+              })) {
                 return Math.floor(currentKey);
               }
             } catch (err) {
@@ -3094,9 +3098,10 @@ export function openStandaloneChat(options?: {
                 currentLibraryID,
                 50,
               );
-              const latestEmpty = summaries.find(
-                (summary) => (summary.userTurnCount || 0) === 0,
-              );
+              const latestEmpty = findReusableStandaloneDraft({
+                forceFresh,
+                summaries,
+              });
               if (latestEmpty?.conversationKey) {
                 return Math.floor(latestEmpty.conversationKey);
               }
@@ -3110,15 +3115,15 @@ export function openStandaloneChat(options?: {
         }
         if (isCodexConversationSystem()) {
           const currentKey = Number(activeConversationKey || 0);
-          if (Number.isFinite(currentKey) && currentKey > 0) {
+          if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
             try {
               const currentSummary = await getCodexConversationSummary(currentKey);
-              if (
-                currentSummary &&
-                currentSummary.kind === "global" &&
-                Number(currentSummary.libraryID) === currentLibraryID &&
-                (currentSummary.userTurnCount || 0) === 0
-              ) {
+              if (isReusableStandaloneDraft({
+                forceFresh,
+                summary: currentSummary,
+                kind: "global",
+                libraryID: currentLibraryID,
+              })) {
                 return Math.floor(currentKey);
               }
             } catch (err) {
@@ -3131,9 +3136,10 @@ export function openStandaloneChat(options?: {
                 currentLibraryID,
                 50,
               );
-              const latestEmpty = summaries.find(
-                (summary) => (summary.userTurnCount || 0) === 0,
-              );
+              const latestEmpty = findReusableStandaloneDraft({
+                forceFresh,
+                summaries,
+              });
               if (latestEmpty?.conversationKey) {
                 return Math.floor(latestEmpty.conversationKey);
               }
@@ -3146,7 +3152,7 @@ export function openStandaloneChat(options?: {
           );
         }
         const currentKey = Number(activeConversationKey || 0);
-        if (isUpstreamGlobalConversationKey(currentKey)) {
+        if (!forceFresh && isUpstreamGlobalConversationKey(currentKey)) {
           try {
             const turnCount = await getGlobalConversationUserTurnCount(currentKey);
             if (turnCount === 0) {
@@ -3182,14 +3188,14 @@ export function openStandaloneChat(options?: {
         }
         if (isClaudeConversationSystem()) {
           const currentKey = Number(activeConversationKey || 0);
-          if (Number.isFinite(currentKey) && currentKey > 0) {
+          if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
             try {
               const currentSummary = await getClaudeConversationSummary(currentKey);
-              if (
-                currentSummary &&
-                currentSummary.kind === "paper" &&
-                (currentSummary.userTurnCount || 0) === 0
-              ) {
+              if (isReusableStandaloneDraft({
+                forceFresh,
+                summary: currentSummary,
+                kind: "paper",
+              })) {
                 return { conversationKey: Math.floor(currentKey) };
               }
             } catch (err) {
@@ -3203,9 +3209,10 @@ export function openStandaloneChat(options?: {
                 paperId,
                 50,
               );
-              const emptyEntry = summaries.find(
-                (summary) => (summary.userTurnCount || 0) === 0,
-              );
+              const emptyEntry = findReusableStandaloneDraft({
+                forceFresh,
+                summaries,
+              });
               if (emptyEntry?.conversationKey) {
                 return { conversationKey: Math.floor(emptyEntry.conversationKey) };
               }
@@ -3222,14 +3229,14 @@ export function openStandaloneChat(options?: {
         }
         if (isCodexConversationSystem()) {
           const currentKey = Number(activeConversationKey || 0);
-          if (Number.isFinite(currentKey) && currentKey > 0) {
+          if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
             try {
               const currentSummary = await getCodexConversationSummary(currentKey);
-              if (
-                currentSummary &&
-                currentSummary.kind === "paper" &&
-                (currentSummary.userTurnCount || 0) === 0
-              ) {
+              if (isReusableStandaloneDraft({
+                forceFresh,
+                summary: currentSummary,
+                kind: "paper",
+              })) {
                 return { conversationKey: Math.floor(currentKey) };
               }
             } catch (err) {
@@ -3243,9 +3250,10 @@ export function openStandaloneChat(options?: {
                 paperId,
                 50,
               );
-              const emptyEntry = summaries.find(
-                (summary) => (summary.userTurnCount || 0) === 0,
-              );
+              const emptyEntry = findReusableStandaloneDraft({
+                forceFresh,
+                summaries,
+              });
               if (emptyEntry?.conversationKey) {
                 return { conversationKey: Math.floor(emptyEntry.conversationKey) };
               }
@@ -3261,7 +3269,7 @@ export function openStandaloneChat(options?: {
           };
         }
         const currentKey = Number(activeConversationKey || 0);
-        if (Number.isFinite(currentKey) && currentKey > 0) {
+        if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
           try {
             const currentSummary = await getPaperConversation(currentKey);
             if (currentSummary && currentSummary.userTurnCount === 0) {
@@ -3274,7 +3282,10 @@ export function openStandaloneChat(options?: {
         if (!forceFresh) {
           try {
             const summaries = await listPaperConversations(paperLibraryID, paperId, 50);
-            const emptyEntry = summaries.find((summary) => summary.userTurnCount === 0);
+            const emptyEntry = findReusableStandaloneDraft({
+              forceFresh,
+              summaries,
+            });
             if (emptyEntry?.conversationKey) {
               return {
                 conversationKey: Math.floor(emptyEntry.conversationKey),
