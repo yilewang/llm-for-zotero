@@ -610,19 +610,19 @@ The Zotero UI exposes `opus`, `sonnet`, and `haiku` as capability tiers. They do
 
 1. Open Zotero → `Preferences` → `llm-for-zotero` tab.
 2. Find the **MinerU** section and check **Enable MinerU**.
-3. (Optional) Enter your own MinerU API key — see below.
+3. Enter your own free MinerU API key — see below. MinerU can start without a key, but a personal key is strongly recommended.
 4. Open any PDF and start chatting. The plugin will automatically parse the PDF with MinerU on first use and cache the result for future conversations.
 
 ### Using your own API key
 
-The plugin provides a shared community proxy so MinerU works out of the box without an API key. However, the shared quota is limited. For heavier usage, you can apply for your own key:
+MinerU can start without an API key through the built-in API, but a personal key is strongly recommended. The built-in API may no longer be supported after June 1, 2026. To reduce reliance on shared plugin maintenance, get your own free key:
 
 1. Go to [mineru.net](https://mineru.net) and create an account.
 2. Navigate to your account settings and generate an API key.
 3. In Zotero → `Preferences` → `llm-for-zotero` → **MinerU** section, paste your API key.
 4. Click **Test Connection** to verify.
 
-When a personal API key is provided, the plugin calls the MinerU API directly (`https://mineru.net/api/v4`). Without a key, it uses the community proxy.
+When a personal API key is provided, the plugin calls the MinerU API directly (`https://mineru.net/api/v4`). Without a key, it uses the built-in API, which may no longer be supported after June 1, 2026.
 
 ---
 
