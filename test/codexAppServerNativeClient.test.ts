@@ -1981,35 +1981,187 @@ describe("Codex app-server native client", function () {
           ],
         },
       });
+      fakeNow += 1000;
+      const fifth = await runCodexAppServerNativeTurn({
+        ...common,
+        messages: [{ role: "user", content: "Fifth question." }],
+        skillContext: {
+          selectedCollectionContexts: [
+            {
+              collectionId: 77,
+              libraryID: 1,
+              name: "Selected Resource Collection",
+            },
+          ],
+        },
+      });
+      fakeNow += 1000;
+      const paperScope = {
+        ...common.scope,
+        kind: "paper" as const,
+        paperItemID: 123,
+        activeItemId: 123,
+        activeContextItemId: 124,
+        paperContext: {
+          itemId: 123,
+          contextItemId: 124,
+          title: "Different Active Paper",
+        },
+      };
+      const sixth = await runCodexAppServerNativeTurn({
+        ...common,
+        scope: paperScope,
+        messages: [{ role: "user", content: "Sixth question." }],
+      });
+      fakeNow += 1000;
+      const seventh = await runCodexAppServerNativeTurn({
+        ...common,
+        scope: paperScope,
+        messages: [{ role: "user", content: "Seventh question." }],
+        skillContext: {
+          selectedTexts: ["Selected PDF text", "Selected note text"],
+          selectedTextSources: ["pdf", "note"],
+        },
+      });
+      fakeNow += 1000;
+      const eighth = await runCodexAppServerNativeTurn({
+        ...common,
+        scope: paperScope,
+        messages: [{ role: "user", content: "Eighth question." }],
+        skillContext: {
+          screenshots: ["data:image/png;base64,AAAA"],
+        },
+      });
+      fakeNow += 1000;
+      const ninth = await runCodexAppServerNativeTurn({
+        ...common,
+        scope: paperScope,
+        messages: [{ role: "user", content: "Ninth question." }],
+        skillContext: {
+          attachments: [
+            {
+              id: "attachment-1",
+              name: "supplement.txt",
+              mimeType: "text/plain",
+              sizeBytes: 42,
+              category: "text",
+              contentHash: "attachment-hash-1",
+            },
+          ],
+        },
+      });
 
       assert.equal(first.threadId, "thread-reuse");
       assert.equal(second.threadId, "thread-reuse");
       assert.equal(third.threadId, "thread-reuse");
       assert.equal(fourth.threadId, "thread-reuse");
+      assert.equal(fifth.threadId, "thread-reuse");
+      assert.equal(sixth.threadId, "thread-reuse");
+      assert.equal(seventh.threadId, "thread-reuse");
+      assert.equal(eighth.threadId, "thread-reuse");
+      assert.equal(ninth.threadId, "thread-reuse");
       assert.equal(first.resumed, false);
       assert.equal(second.resumed, true);
       assert.equal(third.resumed, true);
       assert.equal(fourth.resumed, true);
+      assert.equal(fifth.resumed, true);
+      assert.equal(sixth.resumed, true);
+      assert.equal(seventh.resumed, true);
+      assert.equal(eighth.resumed, true);
+      assert.equal(ninth.resumed, true);
       assert.equal(first.diagnostics?.lifecycleState, "setup-required");
       assert.equal(first.diagnostics?.contextInjection, "full");
       assert.equal(second.diagnostics?.lifecycleState, "thin-followup");
       assert.equal(second.diagnostics?.contextInjection, "thin");
       assert.equal(third.diagnostics?.lifecycleState, "thin-followup");
-      assert.equal(fourth.diagnostics?.lifecycleState, "resources-changed");
-      assert.equal(fourth.diagnostics?.contextInjection, "full");
+      assert.equal(fourth.diagnostics?.lifecycleState, "resources-delta");
+      assert.equal(fourth.diagnostics?.contextInjection, "delta");
+      assert.deepEqual(fourth.diagnostics?.resourceDelta, {
+        added: 1,
+        removed: 0,
+        changed: 0,
+      });
+      assert.equal(fifth.diagnostics?.lifecycleState, "resources-delta");
+      assert.equal(fifth.diagnostics?.contextInjection, "delta");
+      assert.deepEqual(fifth.diagnostics?.resourceDelta, {
+        added: 1,
+        removed: 1,
+        changed: 0,
+      });
+      assert.equal(sixth.diagnostics?.lifecycleState, "resources-changed");
+      assert.equal(sixth.diagnostics?.contextInjection, "full");
+      assert.equal(seventh.diagnostics?.lifecycleState, "resources-delta");
+      assert.equal(seventh.diagnostics?.contextInjection, "delta");
+      assert.deepEqual(seventh.diagnostics?.resourceDelta, {
+        added: 2,
+        removed: 0,
+        changed: 0,
+      });
+      assert.equal(eighth.diagnostics?.lifecycleState, "resources-delta");
+      assert.equal(eighth.diagnostics?.contextInjection, "delta");
+      assert.deepEqual(eighth.diagnostics?.resourceDelta, {
+        added: 1,
+        removed: 2,
+        changed: 0,
+      });
+      assert.equal(ninth.diagnostics?.lifecycleState, "resources-delta");
+      assert.equal(ninth.diagnostics?.contextInjection, "delta");
+      assert.deepEqual(ninth.diagnostics?.resourceDelta, {
+        added: 1,
+        removed: 1,
+        changed: 0,
+      });
       assert.equal(first.diagnostics?.historyVerified, true);
       assert.isUndefined(second.diagnostics?.historyVerified);
       assert.equal(third.diagnostics?.historyVerified, true);
       assert.isUndefined(fourth.diagnostics?.historyVerified);
+      assert.isUndefined(fifth.diagnostics?.historyVerified);
+      assert.isUndefined(sixth.diagnostics?.historyVerified);
+      assert.isUndefined(seventh.diagnostics?.historyVerified);
+      assert.isUndefined(eighth.diagnostics?.historyVerified);
+      assert.isUndefined(ninth.diagnostics?.historyVerified);
       assert.notProperty(threadResumeParams[0] || {}, "developerInstructions");
       assert.notProperty(threadResumeParams[1] || {}, "developerInstructions");
+      assert.property(threadResumeParams[2] || {}, "config");
       assert.include(
         String(threadResumeParams[2]?.developerInstructions || ""),
-        "Selected Zotero paper resources available this turn",
+        "Zotero resource update for this continued native thread",
       );
       assert.include(
         String(threadResumeParams[2]?.developerInstructions || ""),
         "Selected Resource Paper",
+      );
+      assert.notInclude(
+        String(threadResumeParams[2]?.developerInstructions || ""),
+        "Zotero environment for this turn",
+      );
+      assert.include(
+        String(threadResumeParams[3]?.developerInstructions || ""),
+        "Selected Resource Collection",
+      );
+      assert.include(
+        String(threadResumeParams[4]?.developerInstructions || ""),
+        "Zotero environment for this turn",
+      );
+      assert.include(
+        String(threadResumeParams[5]?.developerInstructions || ""),
+        "Selected text",
+      );
+      assert.include(
+        String(threadResumeParams[5]?.developerInstructions || ""),
+        'source="pdf"',
+      );
+      assert.include(
+        String(threadResumeParams[5]?.developerInstructions || ""),
+        'source="note"',
+      );
+      assert.include(
+        String(threadResumeParams[6]?.developerInstructions || ""),
+        "Screenshot",
+      );
+      assert.include(
+        String(threadResumeParams[7]?.developerInstructions || ""),
+        "File attachment",
       );
       const secondTextInput = (
         (turnInputs[1] || []) as Array<Record<string, unknown>>
@@ -2019,13 +2171,29 @@ describe("Codex app-server native client", function () {
         String(secondTextInput?.text || ""),
         "Zotero environment for this turn",
       );
+      const fourthTextInput = (
+        (turnInputs[3] || []) as Array<Record<string, unknown>>
+      ).find((part) => part.type === "text");
+      assert.equal(String(fourthTextInput?.text || ""), "Fourth question.");
+      assert.notInclude(
+        String(fourthTextInput?.text || ""),
+        "Zotero resource update",
+      );
+      const fifthTextInput = (
+        (turnInputs[4] || []) as Array<Record<string, unknown>>
+      ).find((part) => part.type === "text");
+      assert.equal(String(fifthTextInput?.text || ""), "Fifth question.");
+      const seventhTextInput = (
+        (turnInputs[6] || []) as Array<Record<string, unknown>>
+      ).find((part) => part.type === "text");
+      assert.equal(String(seventhTextInput?.text || ""), "Seventh question.");
       assert.equal(
         methods.filter((method) => method === "thread/start").length,
         1,
       );
       assert.equal(
         methods.filter((method) => method === "thread/resume").length,
-        3,
+        8,
       );
       assert.equal(
         methods.filter((method) => method === "thread/read").length,
