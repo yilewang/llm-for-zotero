@@ -149,7 +149,7 @@ const LEGACY_CODEX_API_HELPER_TEXT =
 const CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT =
   "Uses Codex responses with the local codex app-server transport.";
 const CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS =
-  "Optional. Leave blank to auto-detect (Windows or WSL). Or enter a path/launcher such as C:\\nvm4w\\nodejs\\codex.cmd, wsl.exe, wsl.exe -d Ubuntu-22.04, or a WSL path such as /home/<user>/.local/bin/codex.";
+  "Optional. Leave blank to auto-detect native Windows Codex. WSL Codex is not supported because Zotero MCP uses Windows-local loopback. Or enter a native path such as C:\\nvm4w\\nodejs\\codex.cmd or C:\\Users\\<user>\\AppData\\Roaming\\npm\\codex.cmd.";
 const CODEX_APP_SERVER_PATH_HELPER_TEXT_MACOS =
   "Optional. Leave blank to auto-detect. Or enter an absolute path such as /opt/homebrew/bin/codex or /usr/local/bin/codex.";
 const CODEX_APP_SERVER_PATH_HELPER_TEXT_LINUX =
