@@ -10,6 +10,11 @@ import {
 } from "./constants";
 import type { ActionDropdownSpec } from "./types";
 import {
+  getBaseSlashMenuItems,
+  resolveSlashActionChatMode,
+  type SlashBaseMenuItem,
+} from "./slashMenuBehavior";
+import {
   getPaperPortalBaseItemID,
   isPaperPortalItem,
   resolveActiveNoteSession,
@@ -456,11 +461,17 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     t("Send multiple PDF pages"),
     t("Select pages from the open PDF"),
   );
-  if (isStandaloneBody && isGlobalMode) {
-    slashList.append(slashUploadBtn, slashReferenceBtn);
-  } else {
-    slashList.append(slashUploadBtn, slashReferenceBtn, slashPdfPageBtn, slashPdfMultiplePagesBtn);
-  }
+  const slashBaseButtons: Record<SlashBaseMenuItem, HTMLButtonElement> = {
+    upload: slashUploadBtn,
+    reference: slashReferenceBtn,
+    pdfPage: slashPdfPageBtn,
+    pdfMultiplePages: slashPdfMultiplePagesBtn,
+  };
+  slashList.append(
+    ...getBaseSlashMenuItems(
+      resolveSlashActionChatMode(displayConversationKind),
+    ).map((entry) => slashBaseButtons[entry]),
+  );
   slashMenu.append(slashList);
   // slashMenu is appended to composeArea below (after composeArea is created)
 

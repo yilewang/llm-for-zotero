@@ -191,6 +191,10 @@ import {
   isSamePaperContextRef,
   resolveRuntimeModeForConversation,
 } from "./modeBehavior";
+import {
+  resolveSlashActionChatMode,
+  shouldRenderDynamicSlashMenu,
+} from "./slashMenuBehavior";
 import { buildPaperKey } from "./pdfContext";
 import {
   getPaperModeOverride,
@@ -755,6 +759,13 @@ export function setupHandlers(
   const isCodexConversationSystem = () => getConversationSystem() === "codex";
   const isRuntimeConversationSystem = () =>
     isClaudeConversationSystem() || isCodexConversationSystem();
+  const shouldRenderDynamicSlashMenuForCurrentConversation = () =>
+    shouldRenderDynamicSlashMenu({
+      itemPresent: Boolean(item),
+      isWebChat: isWebChatModeActive(),
+      runtimeMode: getCurrentRuntimeMode(),
+      conversationSystem: getConversationSystem(),
+    });
   panelRoot.dataset.conversationSystem = currentConversationSystem;
   syncQueuedFollowUpRegistration();
   const isClaudeModeAvailable = () => getClaudeCodeModeEnabled();
@@ -8781,7 +8792,19 @@ export function setupHandlers(
     actionPicker.style.display = "block";
   };
 
-  /** Populates the slash menu (and, in agent mode, appends agent actions). */
+  /** Populates the slash menu with scoped runtime actions and skills. */
+  const renderDynamicSlashMenuSections = (query = "") => {
+    if (!shouldRenderDynamicSlashMenuForCurrentConversation()) {
+      clearAgentSlashItems();
+      slashMenu
+        ?.querySelectorAll("[data-slash-skill-item]")
+        .forEach((el: Element) => el.remove());
+      return;
+    }
+    renderAgentActionsInSlashMenu(query);
+    renderSkillsInSlashMenu(query);
+  };
+
   const scheduleActionPickerTrigger = () => {
     if (!item) {
       closeActionPicker();
@@ -8795,13 +8818,7 @@ export function setupHandlers(
       closeSlashMenu();
       return;
     }
-    // Agent mode: render agent actions first (creates section labels),
-    // then skills (inserts between agent actions and base actions)
-    if (getCurrentRuntimeMode() === "agent") {
-      const query = token.query.toLowerCase().trim();
-      renderAgentActionsInSlashMenu(query);
-      renderSkillsInSlashMenu(query);
-    }
+    renderDynamicSlashMenuSections(token.query.toLowerCase().trim());
     if (!isFloatingMenuOpen(slashMenu)) {
       closeRetryModelMenu();
       closeModelMenu();
@@ -9730,7 +9747,9 @@ export function setupHandlers(
       return;
     }
 
-    const chatMode: "paper" | "library" = isGlobalMode() ? "library" : "paper";
+    const chatMode = resolveSlashActionChatMode(
+      resolveDisplayConversationKind(item),
+    );
     let allActions: ActionPickerItem[] = [];
     try {
       allActions = getAgentApi().listActions(chatMode);
@@ -12229,9 +12248,7 @@ export function setupHandlers(
       closeResponseMenu();
       closePromptMenu();
       closeExportMenu();
-      if (getCurrentRuntimeMode() === "agent") {
-        renderAgentActionsInSlashMenu();
-      }
+      renderDynamicSlashMenuSections();
       openSlashMenuWithSelection();
       uploadBtn.setAttribute("aria-expanded", "true");
     });
