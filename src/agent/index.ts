@@ -24,6 +24,7 @@ import {
 } from "../claudeCode/prefs";
 import { getClaudeCommandCatalog } from "../claudeCode/commandCatalog";
 import { getClaudeBridgeRuntime, resetClaudeBridgeRuntime } from "../claudeCode/runtime";
+import { clearCodexZoteroMcpPreflightCache } from "../codexAppServer/mcpSetup";
 
 let runtime: AgentRuntime | null = null;
 let _actionRegistry: ActionRegistry | null = null;
@@ -66,6 +67,7 @@ export async function initAgentSubsystem(): Promise<AgentRuntime> {
 
 export function shutdownAgentSubsystem(): void {
   unregisterMcpServer();
+  clearCodexZoteroMcpPreflightCache();
   _actionRegistry = null;
   _toolRegistry = null;
   resetClaudeBridgeRuntime();

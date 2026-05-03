@@ -48,6 +48,7 @@ import {
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
   isCodexAppServerModeEnabled,
+  isCodexZoteroMcpToolsEnabled,
 } from "../../codexAppServer/prefs";
 import {
   resolveCodexNativeApprovalRequest,
@@ -2084,6 +2085,107 @@ function buildCodexNativeSkillContext(params: {
   };
 }
 
+type ContextPlanForRequest = {
+  combinedContext: string;
+  strategy: ContextAssemblyStrategy;
+  assistantInstruction?: string;
+  paperContexts: PaperContextRef[];
+  fullTextPaperContexts: PaperContextRef[];
+  citationPaperContexts: PaperContextRef[];
+  recentPaperContexts: PaperContextRef[];
+  mineruImages: string[];
+};
+
+function shouldUseCodexNativeLightContext(params: {
+  isCodexNativeTurn: boolean;
+}): boolean {
+  return params.isCodexNativeTurn && isCodexZoteroMcpToolsEnabled();
+}
+
+function buildLightCodexNativeMcpContextPlan(params: {
+  paperContexts: PaperContextRef[];
+  fullTextPaperContexts: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
+  recentPaperContexts: PaperContextRef[];
+  setStatusSafely: (
+    text: string,
+    kind: Parameters<typeof setStatus>[2],
+  ) => void;
+}): ContextPlanForRequest {
+  params.setStatusSafely("Using Zotero MCP tools for context", "sending");
+  const metadataLines: string[] = [];
+  const paperScopeLines = params.paperContexts.map((paper) =>
+    [
+      `itemId=${paper.itemId}`,
+      `contextItemId=${paper.contextItemId}`,
+      paper.title ? `title="${sanitizeText(paper.title)}"` : "",
+      paper.citationKey ? `citationKey="${sanitizeText(paper.citationKey)}"` : "",
+      paper.mineruCacheDir
+        ? `mineruCacheDir="${sanitizeText(paper.mineruCacheDir)}"`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(", "),
+  );
+  if (paperScopeLines.length) {
+    metadataLines.push(
+      "Selected Zotero paper scopes:",
+      ...paperScopeLines.map((line) => `- ${line}`),
+    );
+  }
+  const fullTextScopeLines = params.fullTextPaperContexts.map((paper) =>
+    [
+      `itemId=${paper.itemId}`,
+      `contextItemId=${paper.contextItemId}`,
+      paper.title ? `title="${sanitizeText(paper.title)}"` : "",
+      paper.mineruCacheDir
+        ? `mineruCacheDir="${sanitizeText(paper.mineruCacheDir)}"`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(", "),
+  );
+  if (fullTextScopeLines.length) {
+    metadataLines.push(
+      "User-marked full-text paper scopes:",
+      ...fullTextScopeLines.map((line) => `- ${line}`),
+    );
+  }
+  const collectionScopeLines = (params.selectedCollectionContexts || []).map(
+    (collection) =>
+      [
+        `collectionId=${collection.collectionId}`,
+        `libraryID=${collection.libraryID}`,
+        collection.name ? `name="${sanitizeText(collection.name)}"` : "",
+      ]
+        .filter(Boolean)
+        .join(", "),
+  );
+  if (collectionScopeLines.length) {
+    metadataLines.push(
+      "Selected Zotero collection scopes:",
+      ...collectionScopeLines.map((line) => `- ${line}`),
+    );
+  }
+  return {
+    combinedContext: metadataLines.join("\n"),
+    strategy: "general-retrieval",
+    assistantInstruction: [
+      "Codex native Zotero MCP mode is active.",
+      "Use Zotero MCP tools to read library, paper, PDF, and note content when needed; do not assume full paper or active-note text was preloaded in this request.",
+      "For note creation/editing/saving requests, use edit_current_note rather than returning note-ready text in chat.",
+    ].join(" "),
+    paperContexts: params.paperContexts,
+    fullTextPaperContexts: params.fullTextPaperContexts,
+    citationPaperContexts: mergeCitationPaperContexts(
+      params.paperContexts,
+      params.fullTextPaperContexts,
+    ),
+    recentPaperContexts: params.recentPaperContexts,
+    mineruImages: [],
+  };
+}
+
 async function buildContextPlanForRequest(params: {
   item: Zotero.Item;
   question: string;
@@ -2102,16 +2204,7 @@ async function buildContextPlanForRequest(params: {
     text: string,
     kind: Parameters<typeof setStatus>[2],
   ) => void;
-}): Promise<{
-  combinedContext: string;
-  strategy: ContextAssemblyStrategy;
-  assistantInstruction?: string;
-  paperContexts: PaperContextRef[];
-  fullTextPaperContexts: PaperContextRef[];
-  citationPaperContexts: PaperContextRef[];
-  recentPaperContexts: PaperContextRef[];
-  mineruImages: string[];
-}> {
+}): Promise<ContextPlanForRequest> {
   const contextSource = resolveContextSourceItem(params.item);
   params.setStatusSafely(contextSource.statusText, "sending");
   const rawActiveContextItem = contextSource.contextItem;
@@ -3584,7 +3677,7 @@ export async function editLatestUserMessageAndRetry(
     selectedCollectionContexts,
   );
   const pdfExcludeKeys = derivePdfModePaperKeys(attachments, item);
-  const {
+  let {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
   } = includeAutoLoadedPaperContext(
@@ -3593,6 +3686,21 @@ export async function editLatestUserMessageAndRetry(
     normalizedFullTextPaperContexts,
     pdfExcludeKeys.size > 0 ? pdfExcludeKeys : undefined,
   );
+  const editRetryCodexNativeMcpLightContext = shouldUseCodexNativeLightContext({
+    isCodexNativeTurn:
+      retryConversationSystem === "codex" &&
+      retryRequestConfig.authMode === "codex_app_server",
+  });
+  if (editRetryCodexNativeMcpLightContext) {
+    const [enrichedPaperContexts, enrichedFullTextPaperContexts] =
+      await Promise.all([
+        enrichPaperContextsWithMineruCache(paperContextsForMessage),
+        enrichPaperContextsWithMineruCache(fullTextPaperContextsForMessage),
+      ]);
+    paperContextsForMessage = enrichedPaperContexts || paperContextsForMessage;
+    fullTextPaperContextsForMessage =
+      enrichedFullTextPaperContexts || fullTextPaperContextsForMessage;
+  }
   const attachmentsForMessage = normalizeEditableAttachments(attachments);
   const updatedTimestamp = Date.now();
   const nextDisplayQuestion = sanitizeText(displayQuestion || "");
@@ -3806,6 +3914,18 @@ export async function retryLatestAssistantResponse(
     fullTextPaperContexts,
     selectedCollectionContexts,
   } = reconstructRetryPayload(retryPair.userMessage);
+  let retryPaperContexts = paperContexts;
+  let retryFullTextPaperContexts = fullTextPaperContexts;
+  if (shouldUseCodexNativeLightContext({ isCodexNativeTurn })) {
+    const [enrichedPaperContexts, enrichedFullTextPaperContexts] =
+      await Promise.all([
+        enrichPaperContextsWithMineruCache(retryPaperContexts),
+        enrichPaperContextsWithMineruCache(retryFullTextPaperContexts),
+      ]);
+    retryPaperContexts = enrichedPaperContexts || retryPaperContexts;
+    retryFullTextPaperContexts =
+      enrichedFullTextPaperContexts || retryFullTextPaperContexts;
+  }
   if (!question.trim()) {
     setStatusSafely("Nothing to retry for latest turn", "error");
     restoreRequestUIIdle(body, conversationKey, thisRequestId);
@@ -3880,22 +4000,30 @@ export async function retryLatestAssistantResponse(
       AbortControllerCtor ? new AbortControllerCtor() : null,
     );
 
-    const contextPlan = await buildContextPlanForRequest({
-      item,
-      question,
-      images: screenshotImages,
-      selectedTextSources: retryPair.userMessage.selectedTextSources,
-      paperContexts,
-      fullTextPaperContexts,
-      selectedCollectionContexts,
-      recentPaperContexts,
-      history: llmHistory,
-      effectiveRequestConfig,
-      pdfModePaperKeys: retryPdfKeys.size > 0 ? retryPdfKeys : undefined,
-      pdfUploadSystemMessages,
-      signal: getAbortController(conversationKey)?.signal,
-      setStatusSafely,
-    });
+    const contextPlan = shouldUseCodexNativeLightContext({ isCodexNativeTurn })
+      ? buildLightCodexNativeMcpContextPlan({
+          paperContexts: retryPaperContexts,
+          fullTextPaperContexts: retryFullTextPaperContexts,
+          selectedCollectionContexts,
+          recentPaperContexts,
+          setStatusSafely,
+        })
+      : await buildContextPlanForRequest({
+          item,
+          question,
+          images: screenshotImages,
+          selectedTextSources: retryPair.userMessage.selectedTextSources,
+          paperContexts: retryPaperContexts,
+          fullTextPaperContexts: retryFullTextPaperContexts,
+          selectedCollectionContexts,
+          recentPaperContexts,
+          history: llmHistory,
+          effectiveRequestConfig,
+          pdfModePaperKeys: retryPdfKeys.size > 0 ? retryPdfKeys : undefined,
+          pdfUploadSystemMessages,
+          signal: getAbortController(conversationKey)?.signal,
+          setStatusSafely,
+        });
     let combinedContext = contextPlan.combinedContext;
     retryPair.userMessage.paperContexts = contextPlan.paperContexts.length
       ? contextPlan.paperContexts
@@ -4027,11 +4155,13 @@ export async function retryLatestAssistantResponse(
     const answer = isCodexNativeTurn
       ? (
           await runCodexAppServerNativeTurn({
-            scope: resolveCodexNativeConversationScope({
-              item,
-              conversationKey,
-              title: question,
-            }),
+            scope: await enrichCodexNativeConversationScopeWithMineruCache(
+              resolveCodexNativeConversationScope({
+                item,
+                conversationKey,
+                title: question,
+              }),
+            ),
             model: effectiveRequestConfig.model,
             messages: prepareChatRequest({
               ...requestParams,
@@ -4419,7 +4549,7 @@ export async function editUserTurnAndRetry(opts: {
     selectedCollectionContexts,
   );
   const pdfExcludeKeysEdit = derivePdfModePaperKeys(attachments, item);
-  const {
+  let {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
   } = includeAutoLoadedPaperContext(
@@ -4592,6 +4722,16 @@ async function enrichPaperContextsWithMineruCache(
     enriched.push(mineruCacheDir ? { ...paper, mineruCacheDir } : paper);
   }
   return enriched;
+}
+
+async function enrichCodexNativeConversationScopeWithMineruCache(
+  scope: CodexNativeConversationScope,
+): Promise<CodexNativeConversationScope> {
+  if (!scope.paperContext) return scope;
+  const enriched = await enrichPaperContextsWithMineruCache([scope.paperContext]);
+  const paperContext = enriched?.[0];
+  if (!paperContext || paperContext === scope.paperContext) return scope;
+  return { ...scope, paperContext };
 }
 
 async function buildAgentRuntimeRequest(
@@ -5009,7 +5149,7 @@ export async function sendQuestion(
   const selectedCollectionContextsForMessage = normalizeCollectionContexts(
     selectedCollectionContexts,
   );
-  const {
+  let {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
   } = includeAutoLoadedPaperContext(
@@ -5020,6 +5160,16 @@ export async function sendQuestion(
       ? pdfModePaperKeys
       : undefined,
   );
+  if (shouldUseCodexNativeLightContext({ isCodexNativeTurn })) {
+    const [enrichedPaperContexts, enrichedFullTextPaperContexts] =
+      await Promise.all([
+        enrichPaperContextsWithMineruCache(paperContextsForMessage),
+        enrichPaperContextsWithMineruCache(fullTextPaperContextsForMessage),
+      ]);
+    paperContextsForMessage = enrichedPaperContexts || paperContextsForMessage;
+    fullTextPaperContextsForMessage =
+      enrichedFullTextPaperContexts || fullTextPaperContextsForMessage;
+  }
   const citationPaperContextsForMessage = mergeCitationPaperContexts(
     selectedTextPaperContextsForMessage,
     paperContextsForMessage,
@@ -5297,22 +5447,30 @@ export async function sendQuestion(
       AbortControllerCtor ? new AbortControllerCtor() : null,
     );
 
-    const contextPlan = await buildContextPlanForRequest({
-      item,
-      question,
-      images,
-      selectedTextSources: selectedTextSourcesForMessage,
-      paperContexts: paperContextsForMessage,
-      fullTextPaperContexts: fullTextPaperContextsForMessage,
-      selectedCollectionContexts: selectedCollectionContextsForMessage,
-      recentPaperContexts,
-      history: llmHistory,
-      effectiveRequestConfig,
-      pdfModePaperKeys,
-      pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
-      signal: getAbortController(conversationKey)?.signal,
-      setStatusSafely,
-    });
+    const contextPlan = shouldUseCodexNativeLightContext({ isCodexNativeTurn })
+      ? buildLightCodexNativeMcpContextPlan({
+          paperContexts: paperContextsForMessage,
+          fullTextPaperContexts: fullTextPaperContextsForMessage,
+          selectedCollectionContexts: selectedCollectionContextsForMessage,
+          recentPaperContexts,
+          setStatusSafely,
+        })
+      : await buildContextPlanForRequest({
+          item,
+          question,
+          images,
+          selectedTextSources: selectedTextSourcesForMessage,
+          paperContexts: paperContextsForMessage,
+          fullTextPaperContexts: fullTextPaperContextsForMessage,
+          selectedCollectionContexts: selectedCollectionContextsForMessage,
+          recentPaperContexts,
+          history: llmHistory,
+          effectiveRequestConfig,
+          pdfModePaperKeys,
+          pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
+          signal: getAbortController(conversationKey)?.signal,
+          setStatusSafely,
+        });
     let combinedContext = contextPlan.combinedContext;
     userMessage.paperContexts = contextPlan.paperContexts.length
       ? contextPlan.paperContexts
@@ -5434,11 +5592,13 @@ export async function sendQuestion(
     const answer = isCodexNativeTurn
       ? (
           await runCodexAppServerNativeTurn({
-            scope: resolveCodexNativeConversationScope({
-              item,
-              conversationKey,
-              title: shownQuestion,
-            }),
+            scope: await enrichCodexNativeConversationScopeWithMineruCache(
+              resolveCodexNativeConversationScope({
+                item,
+                conversationKey,
+                title: shownQuestion,
+              }),
+            ),
             model: effectiveRequestConfig.model,
             messages: prepareChatRequest({
               ...requestParams,

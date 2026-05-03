@@ -44,7 +44,6 @@ import {
   assertRequiredCodexZoteroMcpToolsReady,
   buildCodexZoteroMcpThreadConfig,
   preflightCodexZoteroMcpServer,
-  readCodexNativeMcpSetupStatus,
   type CodexNativeMcpSetupStatus,
 } from "./mcpSetup";
 import {
@@ -524,6 +523,9 @@ function formatPaperContextLine(
   if (paperContext.attachmentTitle) {
     pieces.push(`attachmentTitle="${paperContext.attachmentTitle}"`);
   }
+  if (paperContext.mineruCacheDir) {
+    pieces.push(`mineruCacheDir="${paperContext.mineruCacheDir}"`);
+  }
   return `- Active paper context: ${pieces.join(", ")}`;
 }
 
@@ -607,12 +609,13 @@ function buildZoteroEnvironmentManifest(params: {
     "- Critical: use only Zotero MCP tools for Zotero library, profile, item, PDF, and note data. If Zotero MCP tools are unavailable or fail, report the setup error. Do not inspect local Zotero profile folders, zotero.sqlite, WAL files, backups, or other filesystem copies to answer Zotero-library questions.",
     "- Codex built-in shell access is disabled. Use Zotero MCP tools such as run_command, file_io, and zotero_script only when needed.",
     "- Write workflow: use focused Zotero MCP write tools for requested changes. For Zotero note creation or editing, call edit_current_note; do not output note-ready text in chat as a substitute.",
-    "- Active-note workflow: when an active note ID is listed, edit_current_note can edit that note directly. Do not search the library to rediscover the same note before editing it.",
+    "- Note workflow: for note creation, saving, editing, appending, updating, or rewriting requests in any language, use edit_current_note. Do not rediscover the active note before editing it, and do not dump note-ready text in chat instead of applying the requested note change.",
+    "- Active-note workflow: when an active note ID is listed, edit_current_note can edit that note directly. Use the listed active note ID/scope as the target unless the user explicitly names a different note.",
     "- Review workflow: most write tools return only after the user approves or denies the Zotero review card. zotero_script runs directly; write scripts must use env.snapshot(item) or env.addUndoStep(fn) so undo_last_action can revert them.",
   );
   if (scope.kind === "paper") {
     lines.push(
-      "- Paper workflow: use read_library for metadata/notes/attachments, search_paper for targeted evidence, and read_paper/read_attachment/view_pdf_pages for deeper inspection. If a tool call omits IDs, it defaults to the active paper scope above.",
+      "- Paper workflow: if the active or selected paper context lists mineruCacheDir, read MinerU manifest.json/full.md with file_io before using raw PDF tools. Use read_paper/search_paper only when MinerU is unavailable or after MinerU lacks the needed evidence; use view_pdf_pages only for visual page inspection.",
     );
   } else {
     lines.push(
@@ -1255,27 +1258,6 @@ export async function runCodexAppServerNativeTurn(params: {
         proc,
         threadId: thread.threadId,
       });
-      if (mcpEnabled && mcpThreadConfig) {
-        try {
-          const appServerMcpStatus = await readCodexNativeMcpSetupStatus({
-            proc,
-            serverName: mcpThreadConfig.serverName,
-          });
-          if (appServerMcpStatus.connected === true) {
-            mcpStatus = appServerMcpStatus;
-          } else {
-            ztoolkit.log(
-              "Codex app-server native: per-thread MCP passed preflight but is absent from mcpServerStatus/list",
-              appServerMcpStatus,
-            );
-          }
-        } catch (error) {
-          ztoolkit.log(
-            "Codex app-server native: MCP diagnostics status lookup failed",
-            error,
-          );
-        }
-      }
       params.onDiagnostics?.(
         buildNativeDiagnostics({
           thread,

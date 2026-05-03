@@ -577,7 +577,7 @@ function decorateMcpToolDescription(
   mutability: ToolSpec["mutability"],
 ): string {
   const scopeGuidance =
-    "Zotero MCP scope: omit libraryID, activeItemId, and activeContextItemId to use the current Codex Zotero chat scope. Use query_library to discover Zotero items, read_library for structured item state, search_paper for evidence retrieval, and read_paper/read_attachment/view_pdf_pages for deeper inspection. For counting questions, prefer query_library totalCount/returnedCount/limited metadata instead of hand-counting listed results.";
+    "Zotero MCP scope: omit libraryID, activeItemId, and activeContextItemId to use the current Codex Zotero chat scope. Use query_library to discover Zotero items and read_library for structured item state. MinerU priority: when the active scope, selected paper scope, or read_library attachment result includes mineruCacheDir, read {mineruCacheDir}/manifest.json or full.md with file_io before raw PDF tools. Use search_paper/read_paper only when MinerU is unavailable or insufficient; use view_pdf_pages only for visual page inspection. For counting questions, prefer query_library totalCount/returnedCount/limited metadata instead of hand-counting listed results.";
   const writeGuidance =
     toolName === "zotero_script"
       ? "zotero_script runs directly without a review card. Write scripts must call env.snapshot(item) before mutating items, or env.addUndoStep(fn) for custom changes, so undo_last_action can revert the operation."

@@ -33,7 +33,7 @@ export function createSearchPaperTool(
       description:
         "Search for specific evidence within papers using a question. " +
         "Returns the most relevant passages ranked by relevance. " +
-        "Supports up to 10 papers per call. Automatically indexes PDFs if needed.",
+        "Supports up to 10 papers per call. Automatically indexes PDFs if needed. If mineruCacheDir is available, first use file_io on MinerU manifest.json/full.md for summaries or section reads; use search_paper only for targeted evidence that MinerU did not already answer.",
       inputSchema: {
         type: "object",
         additionalProperties: false,

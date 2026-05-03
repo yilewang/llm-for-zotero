@@ -167,7 +167,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
     spec: {
       name: "file_io",
       description:
-        "Read or write files on the local filesystem. Reads text files (Markdown, JSON, CSV, etc.) and image files (PNG, JPG, SVG — returned as visual artifacts the model can see). Supports offset/length for partial reads of large files.",
+        "Read or write files on the local filesystem. Reads text files (Markdown, JSON, CSV, etc.) and image files (PNG, JPG, SVG — returned as visual artifacts the model can see). Supports offset/length for partial reads of large files. Use this first for MinerU paper caches: read {mineruCacheDir}/manifest.json for section ranges or {mineruCacheDir}/full.md for parsed paper text.",
       inputSchema: {
         type: "object",
         additionalProperties: false,

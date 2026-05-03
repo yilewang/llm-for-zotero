@@ -8,6 +8,8 @@ import { destroyCachedCodexAppServerProcess } from "../src/utils/codexAppServerP
 import { ZOTERO_MCP_SCOPE_HEADER } from "../src/agent/mcp/server";
 import { setUserSkills } from "../src/agent/skills";
 import type { AgentSkill } from "../src/agent/skills/skillLoader";
+import { clearCodexZoteroMcpPreflightCache } from "../src/codexAppServer/mcpSetup";
+import { clearCodexNativeSkillClassifierCache } from "../src/codexAppServer/nativeSkills";
 
 describe("Codex app-server native client", function () {
   const originalChromeUtils = (
@@ -140,6 +142,8 @@ describe("Codex app-server native client", function () {
     (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero =
       originalZotero;
     setUserSkills([]);
+    clearCodexNativeSkillClassifierCache();
+    clearCodexZoteroMcpPreflightCache();
     const mockCodexPath = { codexPath: "/mock/codex" };
     destroyCachedCodexAppServerProcess(
       "native-client-test",
@@ -516,13 +520,15 @@ describe("Codex app-server native client", function () {
       "initialize",
       "thread/start",
       "thread/name/set",
-      "mcpServerStatus/list",
       "thread/inject_items",
       "turn/start",
       "thread/read",
     ]);
     assert.notInclude(methods, "config/value/write");
     assert.notInclude(methods, "config/mcpServer/reload");
+    assert.notInclude(methods, "mcpServerStatus/list");
+    assert.notInclude(methods, "skills/list");
+    assert.notInclude(methods, "plugin/list");
     assert.equal(threadStartParams?.ephemeral, false);
     assert.equal(threadStartParams?.persistExtendedHistory, true);
     assert.equal(threadStartParams?.approvalPolicy, "on-request");
@@ -1212,12 +1218,14 @@ describe("Codex app-server native client", function () {
     assert.includeMembers(methods, [
       "initialize",
       "thread/resume",
-      "mcpServerStatus/list",
       "turn/start",
       "thread/read",
     ]);
     assert.notInclude(methods, "config/value/write");
     assert.notInclude(methods, "config/mcpServer/reload");
+    assert.notInclude(methods, "mcpServerStatus/list");
+    assert.notInclude(methods, "skills/list");
+    assert.notInclude(methods, "plugin/list");
     assert.notInclude(methods, "thread/start");
     assert.isFalse(injectCalled);
     assert.equal(turnStartParams?.approvalPolicy, "on-request");

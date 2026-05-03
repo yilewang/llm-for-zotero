@@ -43,7 +43,7 @@ export function createViewPdfPagesTool(
         "Find and render PDF pages as images for visual analysis. " +
         "Provide a question to search for relevant pages, specific page " +
         "numbers to render, or set capture to true to screenshot the " +
-        "currently visible page in the reader.",
+        "currently visible page in the reader. If mineruCacheDir is available, do not use this for ordinary summaries or text Q&A; use file_io on MinerU markdown first. Use view_pdf_pages only when visual page layout/image inspection is needed.",
       inputSchema: {
         type: "object",
         additionalProperties: false,

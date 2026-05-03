@@ -2,7 +2,9 @@ import { assert } from "chai";
 import {
   assertRequiredCodexZoteroMcpToolsReady,
   buildCodexZoteroMcpThreadConfig,
+  clearCodexZoteroMcpPreflightCache,
   installOrUpdateCodexZoteroMcpConfig,
+  preflightCodexZoteroMcpServer,
   readCodexNativeMcpSetupStatus,
 } from "../src/codexAppServer/mcpSetup";
 import { getZoteroMcpAllowedToolNames } from "../src/agent/mcp/server";
@@ -12,6 +14,9 @@ describe("Codex app-server MCP setup", function () {
   const originalZotero = globalThis.Zotero;
   const originalToolkit = (globalThis as typeof globalThis & { ztoolkit?: any })
     .ztoolkit;
+  const originalFetch = (
+    globalThis as typeof globalThis & { fetch?: typeof fetch }
+  ).fetch;
   const prefStore = new Map<string, unknown>();
 
   beforeEach(function () {
@@ -35,11 +40,14 @@ describe("Codex app-server MCP setup", function () {
   });
 
   afterEach(function () {
+    clearCodexZoteroMcpPreflightCache();
     (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero =
       originalZotero;
     (
       globalThis as typeof globalThis & { ztoolkit?: typeof originalToolkit }
     ).ztoolkit = originalToolkit;
+    (globalThis as typeof globalThis & { fetch?: typeof fetch }).fetch =
+      originalFetch;
   });
 
   it("writes the Zotero MCP server config and reloads Codex MCP servers", async function () {
@@ -202,6 +210,72 @@ describe("Codex app-server MCP setup", function () {
     assert.equal(status.connected, true);
     assert.deepEqual(status.toolNames, ["query_library"]);
     assert.deepEqual(status.errors, []);
+  });
+
+  it("caches successful local MCP preflight across per-turn scope tokens", async function () {
+    const methods: string[] = [];
+    (globalThis as typeof globalThis & { fetch: typeof fetch }).fetch = (async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const payload = JSON.parse(String(init?.body || "{}")) as {
+        id?: string | number;
+        method?: string;
+      };
+      methods.push(payload.method || "");
+      if (payload.method === "initialize") {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { protocolVersion: "2025-06-18", capabilities: {} },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (payload.method === "notifications/initialized") {
+        return new Response("", { status: 202 });
+      }
+      if (payload.method === "tools/list") {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [{ name: "query_library" }, { name: "read_library" }],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("unexpected request", { status: 500 });
+    }) as typeof fetch;
+
+    const first = await preflightCodexZoteroMcpServer({
+      scopeToken: "scope-a",
+      required: true,
+    });
+    const second = await preflightCodexZoteroMcpServer({
+      scopeToken: "scope-b",
+      required: true,
+    });
+
+    assert.deepEqual(first.toolNames, ["query_library", "read_library"]);
+    assert.deepEqual(second.toolNames, ["query_library", "read_library"]);
+    assert.deepEqual(methods, [
+      "initialize",
+      "notifications/initialized",
+      "tools/list",
+    ]);
+    const config = second.config as {
+      mcp_servers?: Record<string, { http_headers?: Record<string, string> }>;
+    };
+    assert.equal(
+      config.mcp_servers?.llm_for_zotero.http_headers?.[
+        "X-LLM-For-Zotero-Scope"
+      ],
+      "scope-b",
+    );
   });
 
   it("builds profile-scoped required MCP config for native threads", function () {

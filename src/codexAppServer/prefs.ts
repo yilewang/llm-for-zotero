@@ -12,6 +12,11 @@ import {
 } from "./constants";
 import { buildCodexLibraryStateKey, buildCodexPaperStateKey } from "./state";
 
+export type CodexNativeSkillRoutingMode =
+  | "hybrid"
+  | "deterministic"
+  | "classifier";
+
 type ZoteroPrefsAPI = {
   get?: (key: string, global?: boolean) => unknown;
   set?: (key: string, value: unknown, global?: boolean) => void;
@@ -19,7 +24,8 @@ type ZoteroPrefsAPI = {
 
 function getZoteroPrefs(): ZoteroPrefsAPI | null {
   return (
-    (Zotero as unknown as { Prefs?: ZoteroPrefsAPI } | undefined)?.Prefs || null
+    (globalThis as typeof globalThis & { Zotero?: { Prefs?: ZoteroPrefsAPI } })
+      .Zotero?.Prefs || null
   );
 }
 
@@ -145,6 +151,23 @@ export function isCodexZoteroMcpToolsEnabled(): boolean {
 
 export function setCodexZoteroMcpToolsEnabled(enabled: boolean): void {
   setPref("codexAppServerZoteroMcpToolsEnabled", Boolean(enabled));
+}
+
+export function getCodexNativeSkillRoutingModePref(): CodexNativeSkillRoutingMode {
+  const raw = getStringPref("codexNativeSkillRoutingMode").trim().toLowerCase();
+  if (raw === "deterministic" || raw === "classifier" || raw === "hybrid") {
+    return raw;
+  }
+  return "hybrid";
+}
+
+export function setCodexNativeSkillRoutingModePref(
+  mode: CodexNativeSkillRoutingMode,
+): void {
+  if (mode !== "hybrid" && mode !== "deterministic" && mode !== "classifier") {
+    return;
+  }
+  setPref("codexNativeSkillRoutingMode", mode);
 }
 
 export function getLastUsedCodexConversationMode(

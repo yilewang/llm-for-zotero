@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   buildCodexNativeSkillInstructionBlock,
   buildCodexNativeSkillRequest,
+  clearCodexNativeSkillClassifierCache,
   resolveCodexNativeSkills,
 } from "../src/codexAppServer/nativeSkills";
 import { setUserSkills } from "../src/agent/skills";
@@ -25,6 +26,7 @@ function makeSkill(
 describe("Codex native skills", function () {
   afterEach(function () {
     setUserSkills([]);
+    clearCodexNativeSkillClassifierCache();
   });
 
   it("includes forced skill IDs even when classifier returns no match", async function () {
@@ -33,6 +35,7 @@ describe("Codex native skills", function () {
       makeSkill("compare-papers", /compare/i, "Compare instructions."),
     ]);
 
+    let classifierCalls = 0;
     const resolved = await resolveCodexNativeSkills({
       scope: {
         conversationKey: 1,
@@ -43,20 +46,25 @@ describe("Codex native skills", function () {
       model: "gpt-5.4",
       apiBase: "",
       skillContext: { forcedSkillIds: ["write-note"] },
-      detectSkillIntentImpl: async () => [],
+      detectSkillIntentImpl: async () => {
+        classifierCalls += 1;
+        return [];
+      },
     });
 
     assert.deepEqual(resolved.matchedSkillIds, ["write-note"]);
+    assert.equal(classifierCalls, 0);
     assert.include(resolved.instructionBlock, "Skill: write-note");
     assert.include(resolved.instructionBlock, "Write-note instructions.");
   });
 
-  it("falls back to regex matching when no classifier transport is available", async function () {
+  it("uses deterministic regex matching without a classifier call", async function () {
     setUserSkills([
       makeSkill("write-note", /note/i, "Write-note instructions."),
       makeSkill("compare-papers", /compare/i, "Compare instructions."),
     ]);
 
+    let classifierCalls = 0;
     const resolved = await resolveCodexNativeSkills({
       scope: {
         conversationKey: 1,
@@ -66,11 +74,47 @@ describe("Codex native skills", function () {
       userText: "Please compare these papers.",
       model: "",
       apiBase: "",
+      detectSkillIntentImpl: async () => {
+        classifierCalls += 1;
+        return ["write-note"];
+      },
     });
 
     assert.deepEqual(resolved.matchedSkillIds, ["compare-papers"]);
+    assert.equal(classifierCalls, 0);
     assert.include(resolved.instructionBlock, "Skill: compare-papers");
     assert.notInclude(resolved.instructionBlock, "Skill: write-note");
+  });
+
+  it("uses cached classifier fallback for ambiguous multilingual skill turns", async function () {
+    setUserSkills([
+      makeSkill("write-note", /write note/i, "Write-note instructions."),
+    ]);
+    let classifierCalls = 0;
+    const params = {
+      scope: {
+        conversationKey: 1,
+        libraryID: 7,
+        kind: "global" as const,
+        activeNoteId: 42,
+        activeNoteTitle: "Draft",
+      },
+      userText: "帮我整理一下",
+      model: "gpt-5.4",
+      apiBase: "",
+      detectSkillIntentImpl: async () => {
+        classifierCalls += 1;
+        return ["write-note"];
+      },
+    };
+
+    const first = await resolveCodexNativeSkills(params);
+    const second = await resolveCodexNativeSkills(params);
+
+    assert.deepEqual(first.matchedSkillIds, ["write-note"]);
+    assert.deepEqual(second.matchedSkillIds, ["write-note"]);
+    assert.equal(classifierCalls, 1);
+    assert.equal(second.resolutionSource, "cache");
   });
 
   it("returns no instruction block when no skills are loaded", async function () {
