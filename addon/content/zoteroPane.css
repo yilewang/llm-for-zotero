@@ -3417,6 +3417,19 @@
   color: var(--fill-primary);
 }
 
+.llm-agent-process-message-markdown {
+  font-size: var(--llm-fs-13);
+  line-height: 1.55;
+}
+
+.llm-agent-process-message-markdown > p:first-child {
+  margin-top: 0;
+}
+
+.llm-agent-process-message-markdown > p:last-child {
+  margin-bottom: 0;
+}
+
 .llm-agent-output-divider {
   height: 0;
   margin: 2px 0 0;

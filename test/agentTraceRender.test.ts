@@ -173,11 +173,17 @@ describe("agentTrace render", function () {
           item.type === "message",
       )
       .map((item) => item.text);
+    const codexProgressMessages = items.filter(
+      (item): item is Extract<(typeof items)[number], { type: "message" }> =>
+        item.type === "message" &&
+        item.text !== "Request sent to Codex.",
+    );
 
     assert.includeMembers(progressMessages, [
       "I'm searching the Zotero library.",
       "Next I'm opening the matching records.",
     ]);
+    assert.isTrue(codexProgressMessages.every((item) => item.markdown));
   });
 
   it("renders concrete Codex MCP tool activity rows", function () {

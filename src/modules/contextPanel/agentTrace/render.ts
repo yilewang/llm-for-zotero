@@ -34,6 +34,7 @@ type AgentTraceDisplayItem =
       type: "message";
       tone: "neutral" | "success" | "warning";
       text: string;
+      markdown?: boolean;
     }
   | {
       type: "action";
@@ -2793,6 +2794,7 @@ export function buildAgentTraceDisplayItems(
             type: "message",
             tone: "neutral",
             text: progressText,
+            markdown: true,
           });
         }
         break;
@@ -2894,7 +2896,16 @@ export function renderAgentTrace({
     if (itemEntry.type === "message") {
       const messageEl = doc.createElement("div");
       messageEl.className = `llm-agent-process-message llm-agent-process-message-${itemEntry.tone}`;
-      messageEl.textContent = itemEntry.text;
+      if (itemEntry.markdown) {
+        messageEl.classList.add("llm-agent-process-message-markdown");
+        try {
+          messageEl.innerHTML = renderMarkdown(itemEntry.text);
+        } catch {
+          messageEl.textContent = itemEntry.text;
+        }
+      } else {
+        messageEl.textContent = itemEntry.text;
+      }
       list.appendChild(messageEl);
       continue;
     }
