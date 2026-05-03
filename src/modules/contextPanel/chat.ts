@@ -69,10 +69,7 @@ import {
   UsageStats,
   checkEmbeddingAvailability,
 } from "../../utils/llmClient";
-import {
-  estimateConversationTokens,
-  getModelInputTokenLimit,
-} from "../../utils/modelInputCap";
+import { applyModelInputTokenCap } from "../../utils/modelInputCap";
 import { formatDisplayModelName } from "../../utils/modelDisplayLabel";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
 import {
@@ -790,24 +787,70 @@ const followBottomStabilizers = new Map<
   { rafId: number | null; timeoutId: number | null }
 >();
 
-/** Cumulative API token usage per conversation key for the current session. */
+/** Legacy cumulative API token usage per conversation key for this UI session. */
 const sessionTokenTotals = new Map<number, number>();
-const contextUsageSnapshots = new Map<
-  number,
-  { contextTokens: number; contextWindow?: number }
->();
-function getContextInputWindow(
-  effectiveRequestConfig: EffectiveRequestConfig,
-): number | undefined {
-  const advancedCap = effectiveRequestConfig.advanced?.inputTokenCap;
-  if (
-    typeof advancedCap === "number" &&
-    Number.isFinite(advancedCap) &&
-    advancedCap > 0
-  ) {
-    return advancedCap;
-  }
-  return getModelInputTokenLimit(effectiveRequestConfig.model || "");
+type ContextUsageSnapshot = {
+  contextTokens: number;
+  contextWindow?: number;
+  contextWindowIsAuthoritative?: boolean;
+  estimated?: boolean;
+  source?: "estimated" | "provider" | "persisted";
+};
+const contextUsageSnapshots = new Map<number, ContextUsageSnapshot>();
+function setContextUsageSnapshot(
+  conversationKey: number,
+  snapshot: ContextUsageSnapshot,
+): ContextUsageSnapshot {
+  const normalized: ContextUsageSnapshot = {
+    contextTokens: Math.max(0, Math.floor(Number(snapshot.contextTokens) || 0)),
+    contextWindow:
+      Number.isFinite(Number(snapshot.contextWindow)) &&
+      Number(snapshot.contextWindow) > 0
+        ? Math.floor(Number(snapshot.contextWindow))
+        : undefined,
+    contextWindowIsAuthoritative:
+      snapshot.contextWindowIsAuthoritative === true,
+    estimated: snapshot.estimated !== false,
+    source: snapshot.source || "estimated",
+  };
+  contextUsageSnapshots.set(conversationKey, normalized);
+  return normalized;
+}
+
+function renderContextUsageSnapshot(
+  body: Element,
+  tokenUsageEl: HTMLElement | null,
+  snapshot?: ContextUsageSnapshot,
+): void {
+  if (!tokenUsageEl) return;
+  setTokenUsage(
+    tokenUsageEl,
+    snapshot?.contextTokens || 0,
+    snapshot?.contextWindow,
+    body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+    { estimated: snapshot?.estimated !== false },
+  );
+}
+
+function estimateHistoryContextUsageSnapshot(
+  item: Zotero.Item,
+  history: Message[],
+): ContextUsageSnapshot | undefined {
+  if (!history.length) return undefined;
+  const effectiveRequestConfig = resolveEffectiveRequestConfig({ item });
+  const messages = buildLLMHistoryMessages(history);
+  const inputCap = applyModelInputTokenCap(
+    messages,
+    effectiveRequestConfig.model || "",
+    effectiveRequestConfig.advanced?.inputTokenCap,
+  );
+  if (inputCap.estimatedAfterTokens <= 0) return undefined;
+  return {
+    contextTokens: inputCap.estimatedAfterTokens,
+    contextWindow: inputCap.limitTokens,
+    estimated: true,
+    source: "estimated",
+  };
 }
 
 function accumulateSessionTokens(
@@ -820,34 +863,13 @@ function accumulateSessionTokens(
   return next;
 }
 
-/**
- * Seed the session token total from the existing chat history if it hasn't
- * been set yet in this Zotero session. Returns the seeded (or existing) total.
- */
-function getOrSeedSessionTokens(
-  conversationKey: number,
-  history: Message[],
-): number {
-  if (sessionTokenTotals.has(conversationKey)) {
-    return sessionTokenTotals.get(conversationKey)!;
-  }
-  if (history.length === 0) {
-    sessionTokenTotals.set(conversationKey, 0);
-    return 0;
-  }
-  const estimated = estimateConversationTokens(
-    history.map((m) => ({ role: m.role, content: m.text || "" })),
-  );
-  sessionTokenTotals.set(conversationKey, estimated);
-  return estimated;
-}
-
 export function getSessionTokenTotal(conversationKey: number): number {
   return sessionTokenTotals.get(conversationKey) ?? 0;
 }
 
 export function resetSessionTokens(conversationKey: number): void {
   sessionTokenTotals.delete(conversationKey);
+  contextUsageSnapshots.delete(conversationKey);
 }
 
 /**
@@ -1259,9 +1281,11 @@ export async function ensureConversationLoaded(
             typeof message.contextTokens === "number",
         );
       if (latestAssistantWithContext?.contextTokens) {
-        contextUsageSnapshots.set(conversationKey, {
+        setContextUsageSnapshot(conversationKey, {
           contextTokens: latestAssistantWithContext.contextTokens,
           contextWindow: latestAssistantWithContext.contextWindow,
+          estimated: true,
+          source: "persisted",
         });
       }
       chatHistory.set(conversationKey, panelMessages);
@@ -2119,7 +2143,9 @@ function buildLightCodexNativeMcpContextPlan(params: {
       `itemId=${paper.itemId}`,
       `contextItemId=${paper.contextItemId}`,
       paper.title ? `title="${sanitizeText(paper.title)}"` : "",
-      paper.citationKey ? `citationKey="${sanitizeText(paper.citationKey)}"` : "",
+      paper.citationKey
+        ? `citationKey="${sanitizeText(paper.citationKey)}"`
+        : "",
       paper.mineruCacheDir
         ? `mineruCacheDir="${sanitizeText(paper.mineruCacheDir)}"`
         : "",
@@ -4108,6 +4134,17 @@ export async function retryLatestAssistantResponse(
       assistantInstruction: contextPlan.assistantInstruction,
       inputCapEffects: preview.inputCap.effects,
     });
+    const finalPrepared = prepareChatRequest({
+      ...requestParams,
+      systemMessages,
+    });
+    const estimatedContextSnapshot = setContextUsageSnapshot(conversationKey, {
+      contextTokens: finalPrepared.inputCap.estimatedAfterTokens,
+      contextWindow: finalPrepared.inputCap.limitTokens,
+      estimated: true,
+      source: "estimated",
+    });
+    renderContextUsageSnapshot(body, ui.tokenUsageEl, estimatedContextSnapshot);
 
     const handleDelta = (delta: string) => {
       const chunk = sanitizeText(delta);
@@ -4134,23 +4171,23 @@ export async function retryLatestAssistantResponse(
       queueRefresh();
     };
     const handleUsage = (usage: UsageStats) => {
-      const total = accumulateSessionTokens(conversationKey, usage.totalTokens);
-      const contextWindow =
-        resolveConversationSystemForItem(item) === "claude_code"
-          ? getContextInputWindow(effectiveRequestConfig)
-          : undefined;
-      contextUsageSnapshots.set(conversationKey, {
-        contextTokens: total,
-        contextWindow,
+      const contextTokens =
+        typeof usage.contextTokens === "number" && usage.contextTokens > 0
+          ? usage.contextTokens
+          : 0;
+      if (contextTokens <= 0) return;
+      const snapshot = setContextUsageSnapshot(conversationKey, {
+        contextTokens,
+        contextWindow:
+          usage.contextWindow || finalPrepared.inputCap.limitTokens,
+        estimated: usage.contextWindowIsAuthoritative !== true,
+        source:
+          usage.contextWindowIsAuthoritative === true
+            ? "provider"
+            : "estimated",
+        contextWindowIsAuthoritative: usage.contextWindowIsAuthoritative,
       });
-      if (ui.tokenUsageEl) {
-        setTokenUsage(
-          ui.tokenUsageEl,
-          total,
-          contextWindow,
-          body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
-        );
-      }
+      renderContextUsageSnapshot(body, ui.tokenUsageEl, snapshot);
     };
     const answer = isCodexNativeTurn
       ? (
@@ -4163,10 +4200,7 @@ export async function retryLatestAssistantResponse(
               }),
             ),
             model: effectiveRequestConfig.model,
-            messages: prepareChatRequest({
-              ...requestParams,
-              systemMessages,
-            }).messages,
+            messages: finalPrepared.messages,
             reasoning: effectiveRequestConfig.reasoning,
             signal: getAbortController(conversationKey)?.signal,
             codexPath: effectiveRequestConfig.apiBase,
@@ -4728,7 +4762,9 @@ async function enrichCodexNativeConversationScopeWithMineruCache(
   scope: CodexNativeConversationScope,
 ): Promise<CodexNativeConversationScope> {
   if (!scope.paperContext) return scope;
-  const enriched = await enrichPaperContextsWithMineruCache([scope.paperContext]);
+  const enriched = await enrichPaperContextsWithMineruCache([
+    scope.paperContext,
+  ]);
   const paperContext = enriched?.[0];
   if (!paperContext || paperContext === scope.paperContext) return scope;
   return { ...scope, paperContext };
@@ -4832,9 +4868,9 @@ function buildAgentEngineDeps(
       contextUsageSnapshots.get(conversationKey),
     setContextUsageSnapshot: (
       conversationKey: number,
-      snapshot: { contextTokens: number; contextWindow?: number },
+      snapshot: ContextUsageSnapshot,
     ) => {
-      contextUsageSnapshots.set(conversationKey, snapshot);
+      setContextUsageSnapshot(conversationKey, snapshot);
     },
     setTokenUsage,
     normalizeSelectedTexts,
@@ -5550,6 +5586,17 @@ export async function sendQuestion(
       assistantInstruction: contextPlan.assistantInstruction,
       inputCapEffects: preview.inputCap.effects,
     });
+    const finalPrepared = prepareChatRequest({
+      ...requestParams,
+      systemMessages,
+    });
+    const estimatedContextSnapshot = setContextUsageSnapshot(conversationKey, {
+      contextTokens: finalPrepared.inputCap.estimatedAfterTokens,
+      contextWindow: finalPrepared.inputCap.limitTokens,
+      estimated: true,
+      source: "estimated",
+    });
+    renderContextUsageSnapshot(body, ui.tokenUsageEl, estimatedContextSnapshot);
 
     const handleDelta = (delta: string) => {
       assistantMessage.text += sanitizeText(delta);
@@ -5571,23 +5618,23 @@ export async function sendQuestion(
       queueRefresh();
     };
     const handleUsage = (usage: UsageStats) => {
-      const total = accumulateSessionTokens(conversationKey, usage.totalTokens);
-      const contextWindow =
-        resolveConversationSystemForItem(item) === "claude_code"
-          ? getContextInputWindow(effectiveRequestConfig)
-          : undefined;
-      contextUsageSnapshots.set(conversationKey, {
-        contextTokens: total,
-        contextWindow,
+      const contextTokens =
+        typeof usage.contextTokens === "number" && usage.contextTokens > 0
+          ? usage.contextTokens
+          : 0;
+      if (contextTokens <= 0) return;
+      const snapshot = setContextUsageSnapshot(conversationKey, {
+        contextTokens,
+        contextWindow:
+          usage.contextWindow || finalPrepared.inputCap.limitTokens,
+        estimated: usage.contextWindowIsAuthoritative !== true,
+        source:
+          usage.contextWindowIsAuthoritative === true
+            ? "provider"
+            : "estimated",
+        contextWindowIsAuthoritative: usage.contextWindowIsAuthoritative,
       });
-      if (ui.tokenUsageEl) {
-        setTokenUsage(
-          ui.tokenUsageEl,
-          total,
-          contextWindow,
-          body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
-        );
-      }
+      renderContextUsageSnapshot(body, ui.tokenUsageEl, snapshot);
     };
     const answer = isCodexNativeTurn
       ? (
@@ -5600,10 +5647,7 @@ export async function sendQuestion(
               }),
             ),
             model: effectiveRequestConfig.model,
-            messages: prepareChatRequest({
-              ...requestParams,
-              systemMessages,
-            }).messages,
+            messages: finalPrepared.messages,
             reasoning: effectiveRequestConfig.reasoning,
             signal: getAbortController(conversationKey)?.signal,
             codexPath: effectiveRequestConfig.apiBase,
@@ -5979,35 +6023,16 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
   const history = chatHistory.get(conversationKey) || [];
   if (tokenUsageEl) {
     const snapshot = contextUsageSnapshots.get(conversationKey);
-    if (isClaudeConversationSystemActive()) {
-      const contextTokens =
-        typeof snapshot?.contextTokens === "number" &&
-        snapshot.contextTokens > 0
-          ? snapshot.contextTokens
-          : 0;
-      const contextWindow =
-        typeof snapshot?.contextWindow === "number" &&
-        snapshot.contextWindow > 0
-          ? snapshot.contextWindow
-          : undefined;
-      setTokenUsage(
-        tokenUsageEl,
-        contextTokens,
-        contextWindow,
-        body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
-      );
-    } else {
-      const contextWindow = getContextInputWindow(
-        resolveEffectiveRequestConfig({ item }),
-      );
-      const seededTokens = getOrSeedSessionTokens(conversationKey, history);
-      setTokenUsage(
-        tokenUsageEl,
-        seededTokens,
-        contextWindow,
-        body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
-      );
-    }
+    const liveSnapshot =
+      snapshot && snapshot.source !== "persisted" ? snapshot : undefined;
+    const recomputedSnapshot = liveSnapshot
+      ? undefined
+      : estimateHistoryContextUsageSnapshot(item, history);
+    renderContextUsageSnapshot(
+      body,
+      tokenUsageEl,
+      liveSnapshot || recomputedSnapshot || snapshot,
+    );
   }
 
   if (history.length === 0) {

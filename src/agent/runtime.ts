@@ -33,6 +33,10 @@ import {
   isNotesDirectoryConfigured,
 } from "../utils/notesDirectoryConfig";
 import {
+  estimateContextMessagesTokens,
+  resolveContextWindowTokens,
+} from "../utils/modelInputCap";
+import {
   appendAgentRunEvent,
   createAgentRun,
   finishAgentRun,
@@ -117,10 +121,12 @@ function summarizeTextOnlyArtifacts(
   artifacts: AgentToolArtifact[],
   modelName?: string,
 ): string {
-  const imageCount = artifacts.filter((artifact) => artifact.kind === "image")
-    .length;
-  const fileCount = artifacts.filter((artifact) => artifact.kind === "file_ref")
-    .length;
+  const imageCount = artifacts.filter(
+    (artifact) => artifact.kind === "image",
+  ).length;
+  const fileCount = artifacts.filter(
+    (artifact) => artifact.kind === "file_ref",
+  ).length;
   return summarizeTextOnlyOmittedParts(imageCount, fileCount, modelName);
 }
 
@@ -660,6 +666,22 @@ export class AgentRuntime {
         stepStreamedText = "";
         stepPendingDelta = "";
       };
+      const stepContextWindow = resolveContextWindowTokens(
+        request.model || "",
+        request.advanced?.inputTokenCap,
+      );
+      const stepContextTokens = estimateContextMessagesTokens(messages);
+      if (stepContextTokens > 0 && stepContextWindow > 0) {
+        await emit({
+          type: "usage",
+          round,
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          contextTokens: stepContextTokens,
+          contextWindow: stepContextWindow,
+        });
+      }
       const step = await adapter.runStep({
         request,
         messages,
@@ -690,20 +712,27 @@ export class AgentRuntime {
           const promptTokens = Math.max(0, usage.promptTokens || 0);
           const completionTokens = Math.max(0, usage.completionTokens || 0);
           const contextTokens =
-            typeof usageRecord.contextTokens === "number" && Number.isFinite(usageRecord.contextTokens)
+            typeof usageRecord.contextTokens === "number" &&
+            Number.isFinite(usageRecord.contextTokens)
               ? Math.max(0, usageRecord.contextTokens)
               : undefined;
           const contextWindow =
-            typeof usageRecord.contextWindow === "number" && Number.isFinite(usageRecord.contextWindow)
+            typeof usageRecord.contextWindow === "number" &&
+            Number.isFinite(usageRecord.contextWindow)
               ? Math.max(0, usageRecord.contextWindow)
-              : undefined;
-          const contextWindowIsAuthoritative = usageRecord.contextWindowIsAuthoritative === true;
+              : typeof contextTokens === "number" && contextTokens > 0
+                ? stepContextWindow
+                : undefined;
+          const contextWindowIsAuthoritative =
+            usageRecord.contextWindowIsAuthoritative === true;
           const percentage =
-            typeof usageRecord.percentage === "number" && Number.isFinite(usageRecord.percentage)
+            typeof usageRecord.percentage === "number" &&
+            Number.isFinite(usageRecord.percentage)
               ? Math.max(0, Math.min(100, usageRecord.percentage))
               : undefined;
           const sessionId =
-            typeof usageRecord.sessionId === "string" && usageRecord.sessionId.trim()
+            typeof usageRecord.sessionId === "string" &&
+            usageRecord.sessionId.trim()
               ? usageRecord.sessionId.trim()
               : undefined;
           const model =
@@ -727,7 +756,9 @@ export class AgentRuntime {
             totalTokens,
             ...(typeof contextTokens === "number" ? { contextTokens } : {}),
             ...(typeof contextWindow === "number" ? { contextWindow } : {}),
-            ...(contextWindowIsAuthoritative ? { contextWindowIsAuthoritative: true } : {}),
+            ...(contextWindowIsAuthoritative
+              ? { contextWindowIsAuthoritative: true }
+              : {}),
             ...(typeof percentage === "number" ? { percentage } : {}),
             ...(sessionId ? { sessionId } : {}),
             ...(model ? { model } : {}),

@@ -989,9 +989,12 @@ describe("AgentRuntime", function () {
       assert.deepEqual(
         events
           .filter((event) =>
-            ["message_delta", "message_rollback", "tool_call", "final"].includes(
-              event.type,
-            ),
+            [
+              "message_delta",
+              "message_rollback",
+              "tool_call",
+              "final",
+            ].includes(event.type),
           )
           .map((event) =>
             event.type === "message_delta"
@@ -1320,9 +1323,20 @@ describe("AgentRuntime", function () {
       });
 
       assert.equal(outcome.kind, "completed");
+      const contextUsageEvents = events.filter(
+        (event) =>
+          event.type === "usage" &&
+          event.totalTokens === 0 &&
+          typeof event.contextTokens === "number" &&
+          event.contextTokens > 0,
+      );
+      assert.lengthOf(contextUsageEvents, 1);
+      if (contextUsageEvents[0]?.type === "usage") {
+        assert.equal(contextUsageEvents[0].contextWindow, 1050000);
+      }
       assert.deepEqual(
         events
-          .filter((event) => event.type === "usage")
+          .filter((event) => event.type === "usage" && event.totalTokens > 0)
           .map((event) =>
             event.type === "usage"
               ? {

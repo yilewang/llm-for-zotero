@@ -45,4 +45,10 @@ export type UsageStats = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** Active input/context tokens for the current model request. */
+  contextTokens?: number;
+  /** Input context window used for the current model request. */
+  contextWindow?: number;
+  /** True when contextTokens/contextWindow came from the provider/runtime. */
+  contextWindowIsAuthoritative?: boolean;
 };

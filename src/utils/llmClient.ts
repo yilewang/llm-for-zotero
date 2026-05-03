@@ -2230,6 +2230,24 @@ async function parseAnthropicStreamResponse(
             fullText += parsed.delta.text;
             onDelta(parsed.delta.text);
           }
+          if (
+            parsed.type === "message_start" &&
+            parsed.message?.usage &&
+            onUsage
+          ) {
+            const inputTokens = parsed.message.usage.input_tokens ?? 0;
+            const outputTokens = parsed.message.usage.output_tokens ?? 0;
+            const totalTokens = inputTokens + outputTokens;
+            if (inputTokens > 0 || totalTokens > 0) {
+              onUsage({
+                promptTokens: inputTokens,
+                completionTokens: outputTokens,
+                totalTokens,
+                contextTokens: inputTokens,
+                contextWindowIsAuthoritative: inputTokens > 0,
+              });
+            }
+          }
           if (parsed.type === "message_delta" && parsed.usage && onUsage) {
             const outputTokens = parsed.usage.output_tokens ?? 0;
             if (outputTokens > 0) {
@@ -2370,6 +2388,9 @@ async function parseGeminiNativeStreamResponse(
                 completionTokens:
                   parsed.usageMetadata.candidatesTokenCount ?? 0,
                 totalTokens: total,
+                contextTokens: parsed.usageMetadata.promptTokenCount ?? 0,
+                contextWindowIsAuthoritative:
+                  (parsed.usageMetadata.promptTokenCount ?? 0) > 0,
               });
             }
           }
@@ -3155,7 +3176,10 @@ export async function callLLM(params: ChatParams): Promise<string> {
       })
     : [];
   const effectiveTemperature = normalizeTemperature(params.temperature);
-  const effectiveMaxTokens = normalizeMaxTokensForModel(params.maxTokens, model);
+  const effectiveMaxTokens = normalizeMaxTokensForModel(
+    params.maxTokens,
+    model,
+  );
 
   const url = resolveProviderTransportEndpoint({
     protocol: providerProtocol,
@@ -3300,7 +3324,10 @@ export async function callLLMStream(
       })
     : [];
   const effectiveTemperature = normalizeTemperature(params.temperature);
-  const effectiveMaxTokens = normalizeMaxTokensForModel(params.maxTokens, model);
+  const effectiveMaxTokens = normalizeMaxTokensForModel(
+    params.maxTokens,
+    model,
+  );
 
   const url = resolveProviderTransportEndpoint({
     protocol: providerProtocol,
@@ -3503,6 +3530,9 @@ export async function parseStreamResponse(
                 promptTokens: parsed.usage.prompt_tokens ?? 0,
                 completionTokens: parsed.usage.completion_tokens ?? 0,
                 totalTokens,
+                contextTokens: parsed.usage.prompt_tokens ?? 0,
+                contextWindowIsAuthoritative:
+                  (parsed.usage.prompt_tokens ?? 0) > 0,
               });
             }
           }
@@ -3994,6 +4024,8 @@ async function parseResponsesStream(
                   promptTokens: u.input_tokens ?? 0,
                   completionTokens: u.output_tokens ?? 0,
                   totalTokens: total,
+                  contextTokens: u.input_tokens ?? 0,
+                  contextWindowIsAuthoritative: (u.input_tokens ?? 0) > 0,
                 });
               }
             }

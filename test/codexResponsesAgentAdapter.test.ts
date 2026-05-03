@@ -8,8 +8,9 @@ import {
 import type { AgentRuntimeRequest } from "../src/agent/types";
 
 describe("CodexResponsesAgentAdapter", function () {
-  const originalToolkit = (globalThis as typeof globalThis & { ztoolkit?: unknown })
-    .ztoolkit;
+  const originalToolkit = (
+    globalThis as typeof globalThis & { ztoolkit?: unknown }
+  ).ztoolkit;
   const adapter = new CodexResponsesAgentAdapter();
 
   function makeRequest(
@@ -203,7 +204,10 @@ describe("CodexResponsesAgentAdapter", function () {
 
     assert.equal(step.kind, "final");
     assert.isFalse(
-      Object.prototype.hasOwnProperty.call(capturedBody || {}, "max_output_tokens"),
+      Object.prototype.hasOwnProperty.call(
+        capturedBody || {},
+        "max_output_tokens",
+      ),
     );
     assert.deepEqual(capturedBody?.include, ["reasoning.encrypted_content"]);
   });
@@ -256,11 +260,15 @@ describe("CodexResponsesAgentAdapter", function () {
     });
     const reasoning: string[] = [];
 
-    const step = await parseResponsesStepStream(stream, undefined, async (event) => {
-      if (event.details) {
-        reasoning.push(event.details);
-      }
-    });
+    const step = await parseResponsesStepStream(
+      stream,
+      undefined,
+      async (event) => {
+        if (event.details) {
+          reasoning.push(event.details);
+        }
+      },
+    );
 
     assert.equal(step.text, "Final answer.");
     assert.deepEqual(reasoning, ["Plan first."]);
@@ -300,6 +308,8 @@ describe("CodexResponsesAgentAdapter", function () {
         promptTokens: 11,
         completionTokens: 7,
         totalTokens: 18,
+        contextTokens: 11,
+        contextWindowIsAuthoritative: true,
       },
     ]);
   });

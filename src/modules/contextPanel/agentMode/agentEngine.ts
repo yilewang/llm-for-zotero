@@ -14,7 +14,10 @@ import type {
   AgentRuntimeRequest,
 } from "../../../agent/types";
 import { consumePendingRetentionEvents } from "../../../claudeCode/runtimeRetention";
-import { captureClaudeSessionInfo, buildClaudeScope } from "../../../claudeCode/runtime";
+import {
+  captureClaudeSessionInfo,
+  buildClaudeScope,
+} from "../../../claudeCode/runtime";
 import {
   resolveConversationBaseItem,
   resolveDisplayConversationKind,
@@ -29,14 +32,20 @@ function buildPendingAgentTraceEvents(body?: Element): AgentRunEventRecord[] {
       runId: "pending",
       seq: 1,
       eventType: "status",
-      payload: { type: "status", text: "Checking the request against the attached context." },
+      payload: {
+        type: "status",
+        text: "Checking the request against the attached context.",
+      },
       createdAt: now,
     },
     {
       runId: "pending",
       seq: 2,
       eventType: "status",
-      payload: { type: "status", text: "Request and attached context received" },
+      payload: {
+        type: "status",
+        text: "Request and attached context received",
+      },
       createdAt: now + 1,
     },
   ];
@@ -106,7 +115,10 @@ type PanelUpdateHelpers = {
   setStatusSafely: (text: string, kind: StatusKind) => void;
 };
 
-function syncInlineActionCardState(body: Element, ui: PanelRequestUIShape): void {
+function syncInlineActionCardState(
+  body: Element,
+  ui: PanelRequestUIShape,
+): void {
   const hasCard = Boolean(ui.chatBox?.querySelector(".llm-action-inline-card"));
   const panelRoot = body as HTMLElement;
   if (hasCard) {
@@ -116,7 +128,10 @@ function syncInlineActionCardState(body: Element, ui: PanelRequestUIShape): void
   }
 }
 
-function scrollActionCardIntoView(chatBox: HTMLElement, card: HTMLElement): void {
+function scrollActionCardIntoView(
+  chatBox: HTMLElement,
+  card: HTMLElement,
+): void {
   const scroll = () => {
     try {
       card.scrollIntoView({ block: "end" });
@@ -176,8 +191,11 @@ function closeInlineConfirmationCard(
   let card: Element | null = null;
   if (requestId) {
     card =
-      (Array.from(chatBox.querySelectorAll(".llm-action-inline-card")) as HTMLElement[])
-        .find((entry) => entry.dataset.requestId === requestId) ||
+      (
+        Array.from(
+          chatBox.querySelectorAll(".llm-action-inline-card"),
+        ) as HTMLElement[]
+      ).find((entry) => entry.dataset.requestId === requestId) ||
       chatBox.querySelector(".llm-action-inline-card");
   } else {
     card = chatBox.querySelector(".llm-action-inline-card");
@@ -186,7 +204,9 @@ function closeInlineConfirmationCard(
   syncInlineActionCardState(body, ui);
 }
 
-function extractPaperContextCandidatesFromToolContent(content: unknown): unknown[] {
+function extractPaperContextCandidatesFromToolContent(
+  content: unknown,
+): unknown[] {
   const out: unknown[] = [];
   const visit = (value: unknown, depth: number) => {
     if (depth > 8 || !value || typeof value !== "object") return;
@@ -282,7 +302,10 @@ export type AgentEngineDeps = {
   // Request lifecycle (per-conversation)
   cancelledRequestId: (conversationKey: number) => number;
   currentAbortController: (conversationKey: number) => AbortController | null;
-  setCurrentAbortController: (conversationKey: number, ctrl: AbortController | null) => void;
+  setCurrentAbortController: (
+    conversationKey: number,
+    ctrl: AbortController | null,
+  ) => void;
   getAbortControllerCtor: () => new () => AbortController;
   nextRequestId: () => number;
   setPendingRequestId: (conversationKey: number, id: number) => void;
@@ -319,13 +342,31 @@ export type AgentEngineDeps = {
   ensureConversationLoaded: (item: Zotero.Item) => Promise<void>;
   getConversationSystem: () => string;
   accumulateSessionTokens: (conversationKey: number, delta: number) => number;
-  getContextUsageSnapshot: (conversationKey: number) => { contextTokens: number; contextWindow?: number } | undefined;
-  setContextUsageSnapshot: (conversationKey: number, snapshot: { contextTokens: number; contextWindow?: number }) => void;
+  getContextUsageSnapshot: (conversationKey: number) =>
+    | {
+        contextTokens: number;
+        contextWindow?: number;
+        contextWindowIsAuthoritative?: boolean;
+        estimated?: boolean;
+        source?: "estimated" | "provider" | "persisted";
+      }
+    | undefined;
+  setContextUsageSnapshot: (
+    conversationKey: number,
+    snapshot: {
+      contextTokens: number;
+      contextWindow?: number;
+      contextWindowIsAuthoritative?: boolean;
+      estimated?: boolean;
+      source?: "estimated" | "provider" | "persisted";
+    },
+  ) => void;
   setTokenUsage: (
     el: HTMLElement,
     sessionTokens: number,
     contextWindow?: number,
     gaugeEl?: HTMLElement | null,
+    options?: { estimated?: boolean },
   ) => void;
   getConversationKey: (item: Zotero.Item) => number;
   buildLLMHistoryMessages: (history: Message[]) => ChatMessage[];
@@ -337,7 +378,12 @@ export type AgentEngineDeps = {
     model?: string;
     apiBase?: string;
     apiKey?: string;
-    authMode?: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat";
+    authMode?:
+      | "api_key"
+      | "codex_auth"
+      | "codex_app_server"
+      | "copilot_auth"
+      | "webchat";
     providerProtocol?:
       | "codex_responses"
       | "responses_api"
@@ -371,7 +417,10 @@ export type AgentEngineDeps = {
     item: Zotero.Item,
     paperContexts?: PaperContextRef[],
     fullTextPaperContexts?: PaperContextRef[],
-  ) => { paperContexts: PaperContextRef[]; fullTextPaperContexts: PaperContextRef[] };
+  ) => {
+    paperContexts: PaperContextRef[];
+    fullTextPaperContexts: PaperContextRef[];
+  };
   findLatestRetryPair: (history: Message[]) => LatestRetryPairShape | null;
   reconstructRetryPayload: (userMessage: Message) => ReconstructedRetryPayload;
   isReasoningExpandedByDefault: () => boolean;
@@ -399,7 +448,9 @@ export type AgentEngineDeps = {
   ) => Promise<void>;
 
   // Chat fallback (when model does not support tool calls)
-  sendChatFallback: (opts: import("../types").SendQuestionOptions) => Promise<void>;
+  sendChatFallback: (
+    opts: import("../types").SendQuestionOptions,
+  ) => Promise<void>;
 
   // Agent runtime
   getAgentRuntime: () => AgentRuntime;
@@ -421,7 +472,12 @@ export async function sendAgentTurn(
     model?: string;
     apiBase?: string;
     apiKey?: string;
-    authMode?: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat";
+    authMode?:
+      | "api_key"
+      | "codex_auth"
+      | "codex_app_server"
+      | "copilot_auth"
+      | "webchat";
     providerProtocol?:
       | "codex_responses"
       | "responses_api"
@@ -521,8 +577,8 @@ export async function sendAgentTurn(
     )
       ? selectedTextPaperContextsForMessage
       : undefined,
-    selectedTextNoteContexts: selectedTextNoteContextsForMessage.some(
-      (entry) => Boolean(entry),
+    selectedTextNoteContexts: selectedTextNoteContextsForMessage.some((entry) =>
+      Boolean(entry),
     )
       ? selectedTextNoteContextsForMessage
       : undefined,
@@ -594,8 +650,12 @@ export async function sendAgentTurn(
     reasoningOpen: false,
   };
   historyForRun.push(assistantMessage);
-  const { refreshChatSafely, setStatusSafely } =
-    deps.createPanelUpdateHelpers(body, item, conversationKey, ui);
+  const { refreshChatSafely, setStatusSafely } = deps.createPanelUpdateHelpers(
+    body,
+    item,
+    conversationKey,
+    ui,
+  );
   const queueRefresh = deps.createQueuedRefresh(refreshChatSafely);
   const scheduleQueueDrain = () =>
     deps.scheduleQueuedInputDrain(body, {
@@ -603,15 +663,19 @@ export async function sendAgentTurn(
       conversationKey,
       webChatActive: effectiveRequestConfig.providerProtocol === "web_sync",
     });
-  setStatusSafely("Checking the request against the attached context.", "sending");
+  setStatusSafely(
+    "Checking the request against the attached context.",
+    "sending",
+  );
   refreshChatSafely();
 
   await deps.ensureConversationLoaded(item);
   const history = deps.chatHistory.get(conversationKey) || [];
   const llmHistory = deps.buildLLMHistoryMessages(history.slice(0, -2));
   const normalizedPaperContexts = deps.normalizePaperContexts(paperContexts);
-  const normalizedFullTextPaperContexts =
-    deps.normalizePaperContexts(fullTextPaperContexts);
+  const normalizedFullTextPaperContexts = deps.normalizePaperContexts(
+    fullTextPaperContexts,
+  );
   const {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
@@ -787,14 +851,24 @@ export async function sendAgentTurn(
           case "usage": {
             if (ui.tokenUsageEl) {
               const previous = deps.getContextUsageSnapshot?.(conversationKey);
-              const usageEvent = event as Extract<AgentEvent, { type: "usage" }>;
-              const usageRecord = usageEvent as unknown as Record<string, unknown>;
+              const usageEvent = event as Extract<
+                AgentEvent,
+                { type: "usage" }
+              >;
+              const usageRecord = usageEvent as unknown as Record<
+                string,
+                unknown
+              >;
               const hasContextPayload = "contextTokens" in usageRecord;
               if (hasContextPayload) {
-                const nextTokens = Math.max(0, Number(usageRecord.contextTokens) || 0);
+                const nextTokens = Math.max(
+                  0,
+                  Number(usageRecord.contextTokens) || 0,
+                );
                 const rawContextWindow = usageRecord.contextWindow;
                 const nextWindow =
-                  typeof rawContextWindow === "number" && Number.isFinite(rawContextWindow)
+                  typeof rawContextWindow === "number" &&
+                  Number.isFinite(rawContextWindow)
                     ? rawContextWindow
                     : previous?.contextWindow;
                 const effectiveTokens =
@@ -806,19 +880,34 @@ export async function sendAgentTurn(
                 deps.setContextUsageSnapshot?.(conversationKey, {
                   contextTokens: effectiveTokens,
                   contextWindow: nextWindow,
+                  contextWindowIsAuthoritative:
+                    usageRecord.contextWindowIsAuthoritative === true,
+                  estimated: usageRecord.contextWindowIsAuthoritative !== true,
+                  source:
+                    usageRecord.contextWindowIsAuthoritative === true
+                      ? "provider"
+                      : "estimated",
                 });
                 deps.setTokenUsage(
                   ui.tokenUsageEl,
                   effectiveTokens,
                   nextWindow,
-                  body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+                  body.querySelector(
+                    "#llm-claude-context-gauge",
+                  ) as HTMLElement | null,
+                  {
+                    estimated:
+                      usageRecord.contextWindowIsAuthoritative !== true,
+                  },
                 );
-              } else if (typeof usageRecord.totalTokens === "number" && usageRecord.totalTokens > 0) {
-                const total = deps.accumulateSessionTokens(
+              } else if (
+                typeof usageRecord.totalTokens === "number" &&
+                usageRecord.totalTokens > 0
+              ) {
+                deps.accumulateSessionTokens(
                   conversationKey,
                   usageRecord.totalTokens,
                 );
-                deps.setTokenUsage(ui.tokenUsageEl, total);
               }
             }
             break;
@@ -835,7 +924,8 @@ export async function sendAgentTurn(
               userMessage.citationPaperContexts,
               toolPaperContexts,
             );
-            if ((userMessage.citationPaperContexts?.length || 0) === before) break;
+            if ((userMessage.citationPaperContexts?.length || 0) === before)
+              break;
             if (!isCompactCommand) {
               await deps.updateStoredLatestUserMessage(conversationKey, {
                 text: userMessage.text,
@@ -845,12 +935,14 @@ export async function sendAgentTurn(
                 selectedText: userMessage.selectedText,
                 selectedTexts: userMessage.selectedTexts,
                 selectedTextSources: userMessage.selectedTextSources,
-                selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
+                selectedTextPaperContexts:
+                  userMessage.selectedTextPaperContexts,
                 selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
                 paperContexts: userMessage.paperContexts,
                 fullTextPaperContexts: userMessage.fullTextPaperContexts,
                 citationPaperContexts: userMessage.citationPaperContexts,
-                selectedCollectionContexts: userMessage.selectedCollectionContexts,
+                selectedCollectionContexts:
+                  userMessage.selectedCollectionContexts,
                 screenshotImages: userMessage.screenshotImages,
                 attachments: userMessage.attachments,
               });
@@ -905,27 +997,41 @@ export async function sendAgentTurn(
             showInlineConfirmationCard(body, ui, event.requestId, event.action);
             queueRefresh();
             body.ownerDocument?.defaultView?.setTimeout(() => {
-              showInlineConfirmationCard(body, ui, event.requestId, event.action);
+              showInlineConfirmationCard(
+                body,
+                ui,
+                event.requestId,
+                event.action,
+              );
             }, 90);
             setStatusSafely("Approval required", "sending");
             return;
           case "confirmation_resolved":
             closeInlineConfirmationCard(body, ui, event.requestId);
             queueRefresh();
-            setStatusSafely(event.approved ? "Approval sent" : "Action denied", "sending");
+            setStatusSafely(
+              event.approved ? "Approval sent" : "Action denied",
+              "sending",
+            );
             return;
           case "message_delta": {
-            assistantMessage.pendingFinalText =
-              `${assistantMessage.pendingFinalText || ""}${deps.sanitizeText(event.text)}`;
-            assistantMessage.text = assistantMessage.pendingFinalText || assistantMessage.text;
+            assistantMessage.pendingFinalText = `${assistantMessage.pendingFinalText || ""}${deps.sanitizeText(event.text)}`;
+            assistantMessage.text =
+              assistantMessage.pendingFinalText || assistantMessage.text;
             queueRefresh();
             return;
           }
           case "message_rollback":
             if (typeof event.length === "number" && event.length > 0) {
-              assistantMessage.pendingFinalText = (assistantMessage.pendingFinalText || "").slice(
+              assistantMessage.pendingFinalText = (
+                assistantMessage.pendingFinalText || ""
+              ).slice(
                 0,
-                Math.max(0, (assistantMessage.pendingFinalText || "").length - event.length),
+                Math.max(
+                  0,
+                  (assistantMessage.pendingFinalText || "").length -
+                    event.length,
+                ),
               );
               if (shouldSyncVisibleRollbackText(assistantMessage)) {
                 assistantMessage.text = assistantMessage.pendingFinalText || "";
@@ -936,7 +1042,9 @@ export async function sendAgentTurn(
           case "context_compacted": {
             const compactMarker: Message = {
               role: "assistant",
-              text: event.automatic ? "Context compacted automatically" : "Conversation compacted",
+              text: event.automatic
+                ? "Context compacted automatically"
+                : "Conversation compacted",
               timestamp: Date.now(),
               runMode: "agent",
               compactMarker: true,
@@ -944,7 +1052,10 @@ export async function sendAgentTurn(
               modelEntryId: assistantMessage.modelEntryId,
               modelProviderLabel: assistantMessage.modelProviderLabel,
             };
-            const insertIndex = Math.max(0, historyForRun.indexOf(assistantMessage));
+            const insertIndex = Math.max(
+              0,
+              historyForRun.indexOf(assistantMessage),
+            );
             historyForRun.splice(insertIndex, 0, compactMarker);
             await deps.persistConversationMessage(conversationKey, {
               role: "assistant",
@@ -1035,7 +1146,8 @@ export async function sendAgentTurn(
     }
     const errMsg = (err as Error).message || "Error";
     const userFacingError =
-      errMsg.includes("[ede_diagnostic]") && errMsg.includes("last_content_type=none")
+      errMsg.includes("[ede_diagnostic]") &&
+      errMsg.includes("last_content_type=none")
         ? "The model returned an empty reply. Please retry."
         : errMsg;
     assistantMessage.text = `Error: ${userFacingError}`;
@@ -1061,7 +1173,13 @@ export async function retryAgentTurn(
   model: string | undefined,
   apiBase: string | undefined,
   apiKey: string | undefined,
-  authMode: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat" | undefined,
+  authMode:
+    | "api_key"
+    | "codex_auth"
+    | "codex_app_server"
+    | "copilot_auth"
+    | "webchat"
+    | undefined,
   providerProtocol:
     | "codex_responses"
     | "responses_api"
@@ -1115,7 +1233,8 @@ export async function retryAgentTurn(
   assistantMessage.streaming = true;
   assistantMessage.modelName = effectiveRequestConfig.model;
   assistantMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
-  assistantMessage.modelProviderLabel = effectiveRequestConfig.modelProviderLabel;
+  assistantMessage.modelProviderLabel =
+    effectiveRequestConfig.modelProviderLabel;
   assistantMessage.waitingAnimationStartedAt =
     assistantMessage.modelProviderLabel === "Claude Code" ||
     assistantMessage.modelProviderLabel === "Codex"
@@ -1262,8 +1381,7 @@ export async function retryAgentTurn(
           screenshotImages: retryPair.userMessage.screenshotImages,
           paperContexts: retryPair.userMessage.paperContexts,
           fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
-          citationPaperContexts:
-            retryPair.userMessage.citationPaperContexts,
+          citationPaperContexts: retryPair.userMessage.citationPaperContexts,
           selectedCollectionContexts:
             retryPair.userMessage.selectedCollectionContexts,
           attachments: retryPair.userMessage.attachments,
@@ -1280,14 +1398,24 @@ export async function retryAgentTurn(
           case "usage": {
             if (ui.tokenUsageEl) {
               const previous = deps.getContextUsageSnapshot?.(conversationKey);
-              const usageEvent = event as Extract<AgentEvent, { type: "usage" }>;
-              const usageRecord = usageEvent as unknown as Record<string, unknown>;
+              const usageEvent = event as Extract<
+                AgentEvent,
+                { type: "usage" }
+              >;
+              const usageRecord = usageEvent as unknown as Record<
+                string,
+                unknown
+              >;
               const hasContextPayload = "contextTokens" in usageRecord;
               if (hasContextPayload) {
-                const nextTokens = Math.max(0, Number(usageRecord.contextTokens) || 0);
+                const nextTokens = Math.max(
+                  0,
+                  Number(usageRecord.contextTokens) || 0,
+                );
                 const rawContextWindow = usageRecord.contextWindow;
                 const nextWindow =
-                  typeof rawContextWindow === "number" && Number.isFinite(rawContextWindow)
+                  typeof rawContextWindow === "number" &&
+                  Number.isFinite(rawContextWindow)
                     ? rawContextWindow
                     : previous?.contextWindow;
                 const effectiveTokens =
@@ -1299,19 +1427,34 @@ export async function retryAgentTurn(
                 deps.setContextUsageSnapshot?.(conversationKey, {
                   contextTokens: effectiveTokens,
                   contextWindow: nextWindow,
+                  contextWindowIsAuthoritative:
+                    usageRecord.contextWindowIsAuthoritative === true,
+                  estimated: usageRecord.contextWindowIsAuthoritative !== true,
+                  source:
+                    usageRecord.contextWindowIsAuthoritative === true
+                      ? "provider"
+                      : "estimated",
                 });
                 deps.setTokenUsage(
                   ui.tokenUsageEl,
                   effectiveTokens,
                   nextWindow,
-                  body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
+                  body.querySelector(
+                    "#llm-claude-context-gauge",
+                  ) as HTMLElement | null,
+                  {
+                    estimated:
+                      usageRecord.contextWindowIsAuthoritative !== true,
+                  },
                 );
-              } else if (typeof usageRecord.totalTokens === "number" && usageRecord.totalTokens > 0) {
-                const total = deps.accumulateSessionTokens(
+              } else if (
+                typeof usageRecord.totalTokens === "number" &&
+                usageRecord.totalTokens > 0
+              ) {
+                deps.accumulateSessionTokens(
                   conversationKey,
                   usageRecord.totalTokens,
                 );
-                deps.setTokenUsage(ui.tokenUsageEl, total);
               }
             }
             break;
@@ -1323,13 +1466,18 @@ export async function retryAgentTurn(
               ...extractPaperContextCandidatesFromToolContent(event.artifacts),
             ]);
             if (!toolPaperContexts.length) break;
-            const before = retryPair.userMessage.citationPaperContexts?.length || 0;
+            const before =
+              retryPair.userMessage.citationPaperContexts?.length || 0;
             retryPair.userMessage.citationPaperContexts =
               mergeCitationPaperContexts(
                 retryPair.userMessage.citationPaperContexts,
                 toolPaperContexts,
               );
-            if ((retryPair.userMessage.citationPaperContexts?.length || 0) === before) break;
+            if (
+              (retryPair.userMessage.citationPaperContexts?.length || 0) ===
+              before
+            )
+              break;
             await deps.updateStoredLatestUserMessage(conversationKey, {
               text: retryPair.userMessage.text,
               timestamp: retryPair.userMessage.timestamp,
@@ -1402,27 +1550,41 @@ export async function retryAgentTurn(
             showInlineConfirmationCard(body, ui, event.requestId, event.action);
             queueRefresh();
             body.ownerDocument?.defaultView?.setTimeout(() => {
-              showInlineConfirmationCard(body, ui, event.requestId, event.action);
+              showInlineConfirmationCard(
+                body,
+                ui,
+                event.requestId,
+                event.action,
+              );
             }, 90);
             setStatusSafely("Approval required", "sending");
             return;
           case "confirmation_resolved":
             closeInlineConfirmationCard(body, ui, event.requestId);
             queueRefresh();
-            setStatusSafely(event.approved ? "Approval sent" : "Action denied", "sending");
+            setStatusSafely(
+              event.approved ? "Approval sent" : "Action denied",
+              "sending",
+            );
             return;
           case "message_delta": {
-            assistantMessage.pendingFinalText =
-              `${assistantMessage.pendingFinalText || ""}${deps.sanitizeText(event.text)}`;
-            assistantMessage.text = assistantMessage.pendingFinalText || assistantMessage.text;
+            assistantMessage.pendingFinalText = `${assistantMessage.pendingFinalText || ""}${deps.sanitizeText(event.text)}`;
+            assistantMessage.text =
+              assistantMessage.pendingFinalText || assistantMessage.text;
             queueRefresh();
             return;
           }
           case "message_rollback":
             if (typeof event.length === "number" && event.length > 0) {
-              assistantMessage.pendingFinalText = (assistantMessage.pendingFinalText || "").slice(
+              assistantMessage.pendingFinalText = (
+                assistantMessage.pendingFinalText || ""
+              ).slice(
                 0,
-                Math.max(0, (assistantMessage.pendingFinalText || "").length - event.length),
+                Math.max(
+                  0,
+                  (assistantMessage.pendingFinalText || "").length -
+                    event.length,
+                ),
               );
               if (shouldSyncVisibleRollbackText(assistantMessage)) {
                 assistantMessage.text = assistantMessage.pendingFinalText || "";
@@ -1433,7 +1595,9 @@ export async function retryAgentTurn(
           case "context_compacted": {
             const compactMarker: Message = {
               role: "assistant",
-              text: event.automatic ? "Context compacted automatically" : "Conversation compacted",
+              text: event.automatic
+                ? "Context compacted automatically"
+                : "Conversation compacted",
               timestamp: Date.now(),
               runMode: "agent",
               compactMarker: true,
@@ -1530,7 +1694,8 @@ export async function retryAgentTurn(
     }
     const errMsg = (err as Error).message || "Error";
     const userFacingError =
-      errMsg.includes("[ede_diagnostic]") && errMsg.includes("last_content_type=none")
+      errMsg.includes("[ede_diagnostic]") &&
+      errMsg.includes("last_content_type=none")
         ? "The model returned an empty reply. Please retry."
         : errMsg;
     assistantMessage.text = `Error: ${userFacingError}`;

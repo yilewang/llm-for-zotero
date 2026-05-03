@@ -4,9 +4,7 @@ import {
   parseToolCallArguments,
   stringifyUnknown,
 } from "./shared";
-import {
-  stringifyMessageContent,
-} from "./messageBuilder";
+import { stringifyMessageContent } from "./messageBuilder";
 import type { ReasoningEvent, UsageStats } from "../../utils/llmClient";
 import type {
   AgentModelContentPart,
@@ -53,11 +51,15 @@ export type ResponsesPayload = {
   output?: unknown;
 };
 
-function logEmptyResponse(message: string, payload: Record<string, unknown>): void {
-  const toolkit =
-    (globalThis as typeof globalThis & {
+function logEmptyResponse(
+  message: string,
+  payload: Record<string, unknown>,
+): void {
+  const toolkit = (
+    globalThis as typeof globalThis & {
       ztoolkit?: { log?: (...args: unknown[]) => void };
-    }).ztoolkit;
+    }
+  ).ztoolkit;
   if (typeof toolkit?.log !== "function") return;
   toolkit.log(message, payload);
 }
@@ -219,9 +221,8 @@ export async function buildResponsesContinuationInput(
     signal?: AbortSignal;
   },
 ): Promise<ResponsesInputItem[]> {
-  const { toolMessages, followupUserMessages } = groupToolContinuationMessages(
-    messages,
-  );
+  const { toolMessages, followupUserMessages } =
+    groupToolContinuationMessages(messages);
   const outputs: ResponsesInputItem[] = toolMessages.map((message) => ({
     type: "function_call_output",
     call_id: message.tool_call_id,
@@ -259,8 +260,7 @@ function extractOutputTextFromContent(content: unknown): string {
     delta?: unknown;
     content?: unknown;
   };
-  const typeValue =
-    typeof row.type === "string" ? row.type.toLowerCase() : "";
+  const typeValue = typeof row.type === "string" ? row.type.toLowerCase() : "";
   if (typeValue === "reasoning" || typeValue === "reasoning_summary") {
     return "";
   }
@@ -328,8 +328,7 @@ function extractOutputText(outputs: unknown): string {
 function getFunctionCallOutputId(item: unknown): string | null {
   if (!item || typeof item !== "object") return null;
   const row = item as ResponsesOutputItem;
-  const typeValue =
-    typeof row.type === "string" ? row.type.toLowerCase() : "";
+  const typeValue = typeof row.type === "string" ? row.type.toLowerCase() : "";
   if (typeValue !== "function_call") return null;
   if (typeof row.call_id === "string" && row.call_id.trim()) {
     return row.call_id.trim();
@@ -390,7 +389,8 @@ export function normalizeResponsesStepFromPayload(
     typeof data.id === "string" && data.id.trim() ? data.id.trim() : undefined;
   const toolCalls = extractToolCallsFromOutputs(outputs);
   const text =
-    stringifyUnknown(data.output_text).trim() || extractOutputText(outputs).trim();
+    stringifyUnknown(data.output_text).trim() ||
+    extractOutputText(outputs).trim();
   return {
     responseId,
     text,
@@ -475,7 +475,8 @@ export async function parseResponsesStepStream(
     value: unknown,
     mode: "delta" | "final",
   ): Promise<void> => {
-    const text = extractOutputTextFromContent(value) || normalizeResponsesText(value);
+    const text =
+      extractOutputTextFromContent(value) || normalizeResponsesText(value);
     if (!text) return;
     if (mode === "delta" && sawAnswerFinal) return;
     if (mode === "final" && (sawAnswerDelta || sawAnswerFinal)) return;
@@ -564,7 +565,11 @@ export async function parseResponsesStepStream(
               typeof parsed.part?.type === "string"
                 ? parsed.part.type.toLowerCase()
                 : "";
-            if (!partType || partType === "output_text" || partType === "text") {
+            if (
+              !partType ||
+              partType === "output_text" ||
+              partType === "text"
+            ) {
               await emitAnswer(
                 parsed.delta ??
                   parsed.text ??
@@ -580,7 +585,11 @@ export async function parseResponsesStepStream(
               typeof parsed.part?.type === "string"
                 ? parsed.part.type.toLowerCase()
                 : "";
-            if (!partType || partType === "output_text" || partType === "text") {
+            if (
+              !partType ||
+              partType === "output_text" ||
+              partType === "text"
+            ) {
               await emitAnswer(
                 parsed.text ??
                   parsed.delta ??
@@ -735,13 +744,15 @@ export async function parseResponsesStepStream(
               parsed.response &&
               typeof parsed.response === "object" &&
               "usage" in parsed.response
-                ? (parsed.response as {
-                    usage?: {
-                      input_tokens?: unknown;
-                      output_tokens?: unknown;
-                      total_tokens?: unknown;
-                    };
-                  }).usage
+                ? (
+                    parsed.response as {
+                      usage?: {
+                        input_tokens?: unknown;
+                        output_tokens?: unknown;
+                        total_tokens?: unknown;
+                      };
+                    }
+                  ).usage
                 : undefined;
             const totalTokens =
               typeof usage?.total_tokens === "number"
@@ -763,6 +774,12 @@ export async function parseResponsesStepStream(
                     ? usage.output_tokens
                     : 0,
                 totalTokens,
+                ...(typeof usage?.input_tokens === "number"
+                  ? {
+                      contextTokens: usage.input_tokens,
+                      contextWindowIsAuthoritative: true,
+                    }
+                  : {}),
               });
             }
           }
@@ -786,22 +803,25 @@ export async function parseResponsesStepStream(
       streamedText.trim() ||
       extractOutputText(outputItems).trim();
     if (!finalText && (outputItems.length || eventTypesSeen.size > 0)) {
-      logEmptyResponse("LLM Agent: Empty responses step after completed payload", {
-        responseId: normalized.responseId || responseId,
-        eventTypes: Array.from(eventTypesSeen),
-        outputItemTypes: outputItems
-          .map((item) =>
-            item && typeof item === "object"
-              ? (item as { type?: unknown }).type
-              : undefined,
-          )
-          .filter(Boolean),
-        hasOutputText:
-          Boolean(
-            latestPayload.output_text &&
+      logEmptyResponse(
+        "LLM Agent: Empty responses step after completed payload",
+        {
+          responseId: normalized.responseId || responseId,
+          eventTypes: Array.from(eventTypesSeen),
+          outputItemTypes: outputItems
+            .map((item) =>
+              item && typeof item === "object"
+                ? (item as { type?: unknown }).type
+                : undefined,
+            )
+            .filter(Boolean),
+          hasOutputText:
+            Boolean(
+              latestPayload.output_text &&
               normalizeResponsesText(latestPayload.output_text),
-          ) || false,
-      });
+            ) || false,
+        },
+      );
     }
     return {
       responseId: normalized.responseId || responseId,
@@ -812,15 +832,19 @@ export async function parseResponsesStepStream(
   }
 
   const toolCalls = extractToolCallsFromOutputs(streamedOutputs);
-  const finalText = streamedText.trim() || extractOutputText(streamedOutputs).trim();
+  const finalText =
+    streamedText.trim() || extractOutputText(streamedOutputs).trim();
   if (!finalText && (streamedOutputs.length || eventTypesSeen.size > 0)) {
-    logEmptyResponse("LLM Agent: Empty responses step without completed payload", {
-      responseId,
-      eventTypes: Array.from(eventTypesSeen),
-      outputItemTypes: streamedOutputs
-        .map((item) => item.type)
-        .filter(Boolean),
-    });
+    logEmptyResponse(
+      "LLM Agent: Empty responses step without completed payload",
+      {
+        responseId,
+        eventTypes: Array.from(eventTypesSeen),
+        outputItemTypes: streamedOutputs
+          .map((item) => item.type)
+          .filter(Boolean),
+      },
+    );
   }
   return {
     responseId,
