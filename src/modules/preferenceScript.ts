@@ -486,6 +486,48 @@ const ADV_ROW_STYLE =
   " background: rgba(128,128,128,0.06);" +
   " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; margin-top: 4px;";
 
+async function confirmMineruSyncPackageDeletion(
+  disableSync: boolean,
+): Promise<boolean> {
+  const dialogData: { [key: string]: unknown } = {
+    loadCallback: () => {
+      return;
+    },
+    unloadCallback: () => {
+      return;
+    },
+  };
+  const message = disableSync
+    ? t(
+        "Synced MinerU ZIP packages are Zotero attachment items. MinerU sync will be disabled, then those package attachments will be deleted. Zotero may show sync conflicts while it syncs these deletions. If that happens, choose the local/deleted version to remove already-uploaded packages from Zotero sync.",
+      )
+    : t(
+        "Synced MinerU ZIP packages are Zotero attachment items. Those package attachments will be deleted. Zotero may show sync conflicts while it syncs these deletions. If that happens, choose the local/deleted version to remove already-uploaded packages from Zotero sync.",
+      );
+
+  new ztoolkit.Dialog(1, 1)
+    .addCell(0, 0, {
+      tag: "div",
+      namespace: "html",
+      properties: { textContent: message },
+      styles: {
+        width: "420px",
+        lineHeight: "1.45",
+        whiteSpace: "pre-line",
+      },
+    })
+    .addButton(
+      t(disableSync ? "Disable sync and delete" : "Delete packages"),
+      "delete",
+    )
+    .addButton(t("Cancel"), "cancel")
+    .setDialogData(dialogData)
+    .open(t("Delete MinerU sync packages?"));
+  await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock
+    .promise;
+  return (dialogData as { _lastButtonId?: string })._lastButtonId === "delete";
+}
+
 // ── Main export ────────────────────────────────────────────────────
 
 export async function registerPrefsScripts(_window: Window | undefined | null) {
@@ -3133,13 +3175,28 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  const isMineruSyncChecked = () =>
+    mineruSyncEnabledInput
+      ? mineruSyncEnabledInput.checked
+      : isMineruSyncEnabled();
+  const updateMineruSyncCleanupLabel = () => {
+    if (!mineruSyncCleanBtn) return;
+    mineruSyncCleanBtn.textContent = t(
+      isMineruSyncChecked()
+        ? "Disable MinerU sync and delete packages"
+        : "Delete synced MinerU packages",
+    );
+  };
+  const syncMineruSyncControls = () => {
+    const enabled = isMineruSyncChecked();
+    if (mineruSyncPrepareBtn) {
+      mineruSyncPrepareBtn.disabled = !enabled;
+    }
+    updateMineruSyncCleanupLabel();
+  };
+
   if (mineruSyncEnabledInput) {
     mineruSyncEnabledInput.checked = isMineruSyncEnabled();
-    const syncMineruSyncControls = () => {
-      if (mineruSyncPrepareBtn) {
-        mineruSyncPrepareBtn.disabled = !mineruSyncEnabledInput.checked;
-      }
-    };
     syncMineruSyncControls();
     mineruSyncEnabledInput.addEventListener("change", () => {
       const enabled = mineruSyncEnabledInput.checked;
@@ -3150,7 +3207,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
       if (!enabled) {
         mineruSyncStatus.textContent = t(
-          "MinerU sync disabled. Existing synced packages are kept until cleaned.",
+          "MinerU sync disabled. Existing synced packages are kept until deleted.",
         );
         return;
       }
@@ -3158,6 +3215,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         "MinerU sync enabled. Existing local caches sync only when requested.",
       );
     });
+  } else {
+    syncMineruSyncControls();
   }
 
   if (mineruSyncPrepareBtn && mineruSyncStatus) {
@@ -3209,16 +3268,34 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
   if (mineruSyncCleanBtn && mineruSyncStatus) {
     const runMineruSyncCleanup = async () => {
+      const shouldDisableSync = isMineruSyncChecked();
+      const confirmed = await confirmMineruSyncPackageDeletion(
+        shouldDisableSync,
+      );
+      if (!confirmed) return;
+
       mineruSyncCleanBtn.disabled = true;
+      if (shouldDisableSync) {
+        setMineruSyncEnabled(false);
+        if (mineruSyncEnabledInput) {
+          mineruSyncEnabledInput.checked = false;
+        }
+        syncMineruSyncControls();
+      }
       mineruSyncStatus.style.display = "block";
       mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
-      mineruSyncStatus.textContent = t("Cleaning synced MinerU packages…");
+      mineruSyncStatus.textContent = shouldDisableSync
+        ? t("MinerU sync disabled. Deleting synced MinerU packages…")
+        : t("Deleting synced MinerU packages…");
       try {
         const result = await cleanSyncedMineruPackages();
+        const deletedPrefix = shouldDisableSync
+          ? t("MinerU sync disabled. Deleted synced MinerU packages")
+          : t("Deleted synced MinerU packages");
         mineruSyncStatus.textContent =
           result.failed > 0
-            ? `${t("Cleaned synced MinerU packages")}: ${result.deleted}, ${result.failed} failed.`
-            : `${t("Cleaned synced MinerU packages")}: ${result.deleted}.`;
+            ? `${deletedPrefix}: ${result.deleted}, ${result.failed} failed.`
+            : `${deletedPrefix}: ${result.deleted}.`;
         mineruSyncStatus.style.color = result.failed > 0 ? "#b45309" : "green";
       } catch (error) {
         mineruSyncStatus.textContent = `\u2717 ${
@@ -3227,6 +3304,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         mineruSyncStatus.style.color = "red";
       } finally {
         mineruSyncCleanBtn.disabled = false;
+        syncMineruSyncControls();
       }
     };
     mineruSyncCleanBtn.addEventListener("click", () =>
