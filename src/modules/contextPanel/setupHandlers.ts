@@ -2253,7 +2253,9 @@ export function setupHandlers(
       const { isMineruEnabled } = await import("../../utils/mineruConfig");
       if (!isMineruEnabled()) return;
       const availability =
-        await getMineruAvailabilityForAttachmentId(contextItemId);
+        await getMineruAvailabilityForAttachmentId(contextItemId, {
+          validateSyncedPackage: false,
+        });
       if (availability.status === "missing") return;
       mineruAvailableIds.add(contextItemId);
       // MinerU is now available — re-render chips so the default mode flips to "mineru"

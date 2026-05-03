@@ -591,6 +591,45 @@ describe("mineruSync", function () {
     assert.isFalse(availability.syncedPackage);
   });
 
+  it("can report title-matched synced packages without reading ZIP bytes", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdf = createAttachment({
+      id: 54,
+      key: "PDFFAST",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "fast-availability.pdf",
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+    setMineruSyncEnabled(true);
+
+    const packageItem = attachPackage({
+      io,
+      items,
+      parent,
+      id: 92,
+      key: "PKGFAST",
+      sourceKey: "PDFFAST",
+      bytes: bytes("not a zip"),
+    });
+    packageItem.getFilePathAsync = async () => {
+      throw new Error("fast availability should not read package bytes");
+    };
+
+    const availability = await getMineruAvailabilityForAttachment(
+      pdf as unknown as Zotero.Item,
+      { validateSyncedPackage: false },
+    );
+    assert.equal(availability.status, "synced");
+    assert.isFalse(availability.localCached);
+    assert.isTrue(availability.syncedPackage);
+  });
+
   it("restores a missing local cache from a matching synced package", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();

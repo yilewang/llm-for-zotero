@@ -150,8 +150,11 @@ async function processQueue(): Promise<void> {
     const entryItem = Zotero.Items.get(entry.attachmentId);
     if (
       entryItem &&
-      (await getMineruAvailabilityForAttachment(entryItem)).status !==
-        "missing"
+      (
+        await getMineruAvailabilityForAttachment(entryItem, {
+          validateSyncedPackage: false,
+        })
+      ).status !== "missing"
     ) {
       ztoolkit.log(
         `MinerU auto-parse: skipping available item ${entry.attachmentId}`,
@@ -317,7 +320,13 @@ async function handleItemNotification(
           );
           continue;
         }
-        if ((await getMineruAvailabilityForAttachment(pdf)).status !== "missing") {
+        if (
+          (
+            await getMineruAvailabilityForAttachment(pdf, {
+              validateSyncedPackage: false,
+            })
+          ).status !== "missing"
+        ) {
           ztoolkit.log(`MinerU auto-parse: PDF ${pdf.id} already available`);
           continue;
         }
@@ -336,7 +345,13 @@ async function handleItemNotification(
         );
         continue;
       }
-      if ((await getMineruAvailabilityForAttachment(item)).status !== "missing") {
+      if (
+        (
+          await getMineruAvailabilityForAttachment(item, {
+            validateSyncedPackage: false,
+          })
+        ).status !== "missing"
+      ) {
         ztoolkit.log(`MinerU auto-parse: PDF ${item.id} already available`);
         continue;
       }

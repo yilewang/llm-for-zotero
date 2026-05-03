@@ -63,7 +63,9 @@ export type MineruStatus = "cached" | "processing" | "failed" | "idle";
 export async function getMineruStatus(
   attachmentId: number,
 ): Promise<MineruStatus> {
-  const availability = await getMineruAvailabilityForAttachmentId(attachmentId);
+  const availability = await getMineruAvailabilityForAttachmentId(attachmentId, {
+    validateSyncedPackage: false,
+  });
   if (availability.status !== "missing") {
     return "cached";
   }

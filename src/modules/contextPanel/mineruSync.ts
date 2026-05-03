@@ -44,6 +44,15 @@ export type MineruAvailability = {
   attachmentId: number;
 };
 
+export type MineruAvailabilityOptions = {
+  /**
+   * When false, a correctly named package attachment is enough to mark sync
+   * availability. UI scans use this cheap path; restore/repair still validate
+   * package bytes before writing local cache files.
+   */
+  validateSyncedPackage?: boolean;
+};
+
 export type MineruSyncPublishResult = {
   status:
     | "published"
@@ -876,17 +885,20 @@ async function prunePackageCandidates(
 
 export async function hasSyncedMineruPackageForAttachment(
   sourceAttachment: Zotero.Item,
+  options: MineruAvailabilityOptions = {},
 ): Promise<boolean> {
   if (!isPdfAttachment(sourceAttachment)) return false;
+  const validateSyncedPackage = options.validateSyncedPackage !== false;
   const candidates = await findPackageCandidatesForSource(sourceAttachment, {
-    loadBytes: true,
-    requireReadable: true,
+    loadBytes: validateSyncedPackage,
+    requireReadable: validateSyncedPackage,
   });
   return candidates.length > 0;
 }
 
 export async function getMineruAvailabilityForAttachment(
   sourceAttachment: Zotero.Item,
+  options: MineruAvailabilityOptions = {},
 ): Promise<MineruAvailability> {
   const attachmentId = sourceAttachment.id;
   if (!isPdfAttachment(sourceAttachment)) {
@@ -901,7 +913,7 @@ export async function getMineruAvailabilityForAttachment(
   const [localCached, syncedPackage] = await Promise.all([
     hasCachedMineruMd(attachmentId),
     syncEnabled
-      ? hasSyncedMineruPackageForAttachment(sourceAttachment)
+      ? hasSyncedMineruPackageForAttachment(sourceAttachment, options)
       : Promise.resolve(false),
   ]);
   return {
@@ -920,6 +932,7 @@ export async function getMineruAvailabilityForAttachment(
 
 export async function getMineruAvailabilityForAttachmentId(
   attachmentId: number,
+  options: MineruAvailabilityOptions = {},
 ): Promise<MineruAvailability> {
   const item = Zotero.Items.get(attachmentId);
   if (!item) {
@@ -930,7 +943,7 @@ export async function getMineruAvailabilityForAttachmentId(
       attachmentId,
     };
   }
-  return getMineruAvailabilityForAttachment(item);
+  return getMineruAvailabilityForAttachment(item, options);
 }
 
 async function importPackageAttachment(params: {

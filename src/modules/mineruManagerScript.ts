@@ -178,7 +178,9 @@ export async function registerMineruManagerScript(
     const entry = allItems.find((i) => i.attachmentId === attachmentId);
     if (!entry) return;
     const availability =
-      await getMineruAvailabilityForAttachmentId(attachmentId);
+      await getMineruAvailabilityForAttachmentId(attachmentId, {
+        validateSyncedPackage: false,
+      });
     entry.localCached = availability.localCached;
     entry.syncedPackage = availability.syncedPackage;
     entry.availability = availability.status;
@@ -1466,10 +1468,15 @@ export async function registerMineruManagerScript(
 
   // ── Auto-refresh on library changes ────────────────────────────────────────
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-  const debouncedRefresh = () => {
-    if (refreshTimer) clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(async () => {
-      refreshTimer = null;
+  let refreshInProgress = false;
+  let refreshQueued = false;
+  async function runRefresh(): Promise<void> {
+    if (refreshInProgress) {
+      refreshQueued = true;
+      return;
+    }
+    refreshInProgress = true;
+    try {
       const prevCollectionId = activeCollectionId;
       await loadData();
       // If the previously selected collection no longer exists, reset to "all"
@@ -1481,7 +1488,25 @@ export async function registerMineruManagerScript(
       }
       renderSidebar();
       renderItemsList();
-    }, 1000);
+    } finally {
+      refreshInProgress = false;
+      if (refreshQueued) {
+        refreshQueued = false;
+        scheduleRefresh(2500);
+      }
+    }
+  }
+
+  function scheduleRefresh(delayMs = 2000): void {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(async () => {
+      refreshTimer = null;
+      await runRefresh();
+    }, delayMs);
+  }
+
+  const debouncedRefresh = () => {
+    scheduleRefresh();
   };
 
   let notifierId: string | null = null;

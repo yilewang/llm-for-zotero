@@ -209,7 +209,9 @@ async function buildQueue(): Promise<void> {
       (pdfAtt as unknown as { attachmentFilename?: string })
         .attachmentFilename || "";
     if (isFilenameExcluded(pdfFilename)) continue;
-    const availability = await getMineruAvailabilityForAttachment(pdfAtt);
+    const availability = await getMineruAvailabilityForAttachment(pdfAtt, {
+      validateSyncedPackage: false,
+    });
     const cached = availability.status !== "missing";
     const parentTitle =
       parentItem?.getField("title") ||
@@ -631,7 +633,9 @@ export async function getMineruItemList(): Promise<MineruItemEntry[]> {
       } catch {
         /* ignore */
       }
-      const availability = await getMineruAvailabilityForAttachment(pdfAtt);
+      const availability = await getMineruAvailabilityForAttachment(pdfAtt, {
+        validateSyncedPackage: false,
+      });
       const cached = availability.status !== "missing";
       const pdfTitle = getPdfAttachmentDisplayTitle(pdfAtt);
       const pdfFilename =
