@@ -1916,6 +1916,10 @@ export function setupHandlers(
             contentText,
             modelName,
             paperContexts,
+            {
+              appendToTrackedNote: true,
+              rememberCreatedNote: true,
+            },
           );
           if (status) {
             setStatus(

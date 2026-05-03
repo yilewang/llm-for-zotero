@@ -1900,6 +1900,7 @@ export class ZoteroGateway {
     content: string;
     modelName: string;
     target?: "item" | "standalone";
+    appendToTrackedNote?: boolean;
   }): Promise<"created" | "appended" | "standalone_created"> {
     if (params.target === "standalone") {
       const libraryID =
@@ -1920,6 +1921,11 @@ export class ZoteroGateway {
       params.item,
       params.content,
       params.modelName,
+      undefined,
+      {
+        appendToTrackedNote: params.appendToTrackedNote === true,
+        rememberCreatedNote: params.appendToTrackedNote === true,
+      },
     );
   }
 

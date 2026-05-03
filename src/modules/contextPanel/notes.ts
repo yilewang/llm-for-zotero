@@ -145,7 +145,9 @@ export function renderRawNoteHtml(contentText: string): string {
   }
 }
 
-function resolveParentItemForNote(item: Zotero.Item): Zotero.Item | null {
+export function resolveParentItemForNoteTarget(
+  item: Zotero.Item,
+): Zotero.Item | null {
   if (
     isGlobalPortalItem(item) ||
     isClaudeGlobalPortalItem(item) ||
@@ -736,8 +738,12 @@ export async function createNoteFromAssistantText(
   contentText: string,
   modelName: string,
   paperContexts?: PaperContextRef[],
+  options: {
+    appendToTrackedNote?: boolean;
+    rememberCreatedNote?: boolean;
+  } = {},
 ): Promise<"created" | "appended"> {
-  const parentItem = resolveParentItemForNote(item);
+  const parentItem = resolveParentItemForNoteTarget(item);
   const parentId = parentItem?.id;
   if (!parentItem || !parentId) {
     throw new Error("No parent item available for note creation");
@@ -751,29 +757,31 @@ export async function createNoteFromAssistantText(
   // ProseMirror.)
   const html = buildAssistantNoteHtml(contentText, modelName, paperContexts);
 
-  // Try to find an existing tracked note for this parent item.
-  // If one exists and is still valid, append the new content to it.
-  const existingNote = getTrackedAssistantNoteForParent(parentId);
-  if (existingNote) {
-    try {
-      const appendedHtml = appendAssistantAnswerToNoteHtml(
-        existingNote.getNote() || "",
-        html,
-      );
-      existingNote.setNote(appendedHtml);
-      await existingNote.saveTx();
-      ztoolkit.log(
-        `LLM: Appended to existing note ${existingNote.id} for parent ${parentId}`,
-      );
-      return "appended";
-    } catch (appendErr) {
-      // If appending fails (e.g. note was deleted externally), fall through
-      // to create a new note instead.
-      ztoolkit.log(
-        "LLM: Failed to append to existing note, creating new:",
-        appendErr,
-      );
-      removeAssistantNoteMapEntry(parentId);
+  if (options.appendToTrackedNote) {
+    // Try to find an existing tracked note for this parent item.
+    // If one exists and is still valid, append the new content to it.
+    const existingNote = getTrackedAssistantNoteForParent(parentId);
+    if (existingNote) {
+      try {
+        const appendedHtml = appendAssistantAnswerToNoteHtml(
+          existingNote.getNote() || "",
+          html,
+        );
+        existingNote.setNote(appendedHtml);
+        await existingNote.saveTx();
+        ztoolkit.log(
+          `LLM: Appended to existing note ${existingNote.id} for parent ${parentId}`,
+        );
+        return "appended";
+      } catch (appendErr) {
+        // If appending fails (e.g. note was deleted externally), fall through
+        // to create a new note instead.
+        ztoolkit.log(
+          "LLM: Failed to append to existing note, creating new:",
+          appendErr,
+        );
+        removeAssistantNoteMapEntry(parentId);
+      }
     }
   }
 
@@ -788,7 +796,9 @@ export async function createNoteFromAssistantText(
   const newNoteId =
     typeof saveResult === "number" && saveResult > 0 ? saveResult : note.id;
   if (newNoteId && newNoteId > 0) {
-    rememberAssistantNoteForParent(parentId, newNoteId);
+    if (options.rememberCreatedNote) {
+      rememberAssistantNoteForParent(parentId, newNoteId);
+    }
     ztoolkit.log(`LLM: Created new note ${newNoteId} for parent ${parentId}`);
   } else {
     ztoolkit.log(
@@ -822,7 +832,7 @@ export async function createNoteFromChatHistory(
   item: Zotero.Item,
   history: Message[],
 ): Promise<void> {
-  const parentItem = resolveParentItemForNote(item);
+  const parentItem = resolveParentItemForNoteTarget(item);
   const parentId = parentItem?.id;
   if (!parentItem || !parentId) {
     throw new Error("No parent item available for note creation");
