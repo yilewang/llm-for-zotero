@@ -289,6 +289,43 @@ function renderDisplayLatex(latex: string): string {
   return renderLatex(latex, true);
 }
 
+function isEscapedDelimiter(text: string, index: number): boolean {
+  let slashCount = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) {
+    slashCount++;
+  }
+  return slashCount % 2 === 1;
+}
+
+function canOpenInlineDollarMath(text: string, index: number): boolean {
+  if (text[index] !== "$") return false;
+  if (isEscapedDelimiter(text, index)) return false;
+  if (text[index + 1] === "$") return false;
+  const next = text[index + 1] || "";
+  return Boolean(next && !/\s/.test(next));
+}
+
+function canCloseInlineDollarMath(text: string, index: number): boolean {
+  if (text[index] !== "$") return false;
+  if (isEscapedDelimiter(text, index)) return false;
+  if (text[index - 1] === "$") return false;
+  const previous = text[index - 1] || "";
+  const next = text[index + 1] || "";
+  if (!previous || /\s/.test(previous)) return false;
+  // In prose, a dollar sign followed by a digit is almost always another
+  // currency amount, not the closing delimiter for math.
+  if (/\d/.test(next)) return false;
+  return true;
+}
+
+function findClosingInlineDollarMath(text: string, openIndex: number): number {
+  for (let index = openIndex + 1; index < text.length; index++) {
+    if (text[index] !== "$") continue;
+    if (canCloseInlineDollarMath(text, index)) return index;
+  }
+  return -1;
+}
+
 // =============================================================================
 // Delimiter Validation
 // =============================================================================
@@ -949,41 +986,46 @@ function renderInline(text: string): string {
   result = result.replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner) => `$${inner}$`);
   result = result.replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner) => `$$${inner}$$`);
 
-  // 2. Inline math ($...$) - only if balanced
-  if (hasBalancedInlineDelimiter(result, "$")) {
-    // Display math first ($$...$$)
-    result = result.replace(/\$\$([^$]+?)\$\$/g, (_match, math) => {
-      const copySource = `$$${math}$$`;
-      if (zoteroNoteMode) {
-        // Zotero note-editor: <span class="math">$LaTeX$</span>
-        return protect(
-          `<span class="math">$${escapeHtml(math.trim())}$</span>`,
-        );
-      }
-      const rendered = renderDisplayLatex(math.trim());
-      return protect(
-        wrapCopyable(
-          `<span class="math-display-inline">${rendered}</span>`,
-          copySource,
-          "math",
-          "inline",
-        ),
-      );
-    });
+  // 2. Inline math ($...$). Parse valid delimiter pairs instead of relying on
+  // a global "$" count so one prose currency amount cannot disable all math.
+  // Display math first ($$...$$)
+  result = result.replace(/\$\$([^$]+?)\$\$/g, (_match, math) => {
+    const copySource = `$$${math}$$`;
+    if (zoteroNoteMode) {
+      // Zotero note-editor: <span class="math">$LaTeX$</span>
+      return protect(`<span class="math">$${escapeHtml(math.trim())}$</span>`);
+    }
+    const rendered = renderDisplayLatex(math.trim());
+    return protect(
+      wrapCopyable(
+        `<span class="math-display-inline">${rendered}</span>`,
+        copySource,
+        "math",
+        "inline",
+      ),
+    );
+  });
 
-    // Inline math ($...$)
-    result = result.replace(/\$([^$\n]+?)\$/g, (_match, inner) => {
-      const trimmed = inner.trim();
-      // Skip currency-like patterns
-      if (!trimmed || /^\d+([.,]\d+)?$/.test(trimmed)) {
-        return `$${inner}$`;
-      }
-      if (zoteroNoteMode) {
-        // Zotero note-editor: <span class="math">$LaTeX$</span>
-        return protect(`<span class="math">$${escapeHtml(trimmed)}$</span>`);
-      }
+  let mathRendered = "";
+  let mathCursor = 0;
+  for (let index = 0; index < result.length; index++) {
+    if (!canOpenInlineDollarMath(result, index)) continue;
+    const closeIndex = findClosingInlineDollarMath(result, index);
+    if (closeIndex < 0) continue;
+
+    const inner = result.slice(index + 1, closeIndex);
+    const trimmed = inner.trim();
+    if (!trimmed) continue;
+
+    mathRendered += result.slice(mathCursor, index);
+    if (zoteroNoteMode) {
+      // Zotero note-editor: <span class="math">$LaTeX$</span>
+      mathRendered += protect(
+        `<span class="math">$${escapeHtml(trimmed)}$</span>`,
+      );
+    } else {
       const rendered = renderLatex(trimmed, false);
-      return protect(
+      mathRendered += protect(
         wrapCopyable(
           `<span class="math-inline">${rendered}</span>`,
           `$${inner}$`,
@@ -991,7 +1033,13 @@ function renderInline(text: string): string {
           "inline",
         ),
       );
-    });
+    }
+    mathCursor = closeIndex + 1;
+    index = closeIndex;
+  }
+  if (mathCursor > 0) {
+    mathRendered += result.slice(mathCursor);
+    result = mathRendered;
   }
 
   // 3. Inline code - only if balanced

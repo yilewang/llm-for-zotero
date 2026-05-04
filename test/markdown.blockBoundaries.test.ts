@@ -261,4 +261,44 @@ describe("renderMarkdown with inline block tokens", function () {
     const html = renderMarkdown(input);
     assert.include(html, "<p>First line<br/>Second line Third line</p>");
   });
+
+  it("renders numeric-only inline math instead of treating it as currency", function () {
+    const input =
+      "The x-axis reaches $1$ million.\n\n- $0.001$\n- $0.003$\n- $0.01$";
+    const html = renderMarkdown(input);
+    assert.include(
+      html,
+      '<annotation encoding="application/x-tex">1</annotation>',
+    );
+    assert.include(
+      html,
+      '<annotation encoding="application/x-tex">0.001</annotation>',
+    );
+    assert.include(
+      html,
+      '<annotation encoding="application/x-tex">0.003</annotation>',
+    );
+    assert.include(
+      html,
+      '<annotation encoding="application/x-tex">0.01</annotation>',
+    );
+  });
+
+  it("does not render ordinary adjacent currency amounts as math", function () {
+    const input = "The prices are $5 and $10 before tax.";
+    const html = renderMarkdown(input);
+    assert.include(html, "<p>The prices are $5 and $10 before tax.</p>");
+    assert.notInclude(html, "math-inline");
+    assert.notInclude(html, "math-error");
+  });
+
+  it("renders valid inline math when unrelated currency is present", function () {
+    const input = "$x$ costs $5 in the toy example.";
+    const html = renderMarkdown(input);
+    assert.include(
+      html,
+      '<annotation encoding="application/x-tex">x</annotation>',
+    );
+    assert.include(html, " costs $5 in the toy example.");
+  });
 });
