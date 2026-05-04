@@ -69,6 +69,20 @@ describe("normalization", function () {
         MAX_ALLOWED_TOKENS,
       );
     });
+
+    it("uses documented output limits for current Anthropic models", function () {
+      assert.equal(getModelOutputTokenLimit("claude-opus-4-7"), 128000);
+      assert.equal(
+        getModelOutputTokenLimit("anthropic.claude-opus-4-6"),
+        128000,
+      );
+      assert.equal(getModelOutputTokenLimit("claude-sonnet-4-6"), 64000);
+      assert.equal(getModelOutputTokenLimit("claude-haiku-4-5"), 64000);
+      assert.equal(
+        normalizeMaxTokensForModel(200000, "claude-opus-4-7"),
+        128000,
+      );
+    });
   });
 
   describe("normalizeInputTokenCap", function () {

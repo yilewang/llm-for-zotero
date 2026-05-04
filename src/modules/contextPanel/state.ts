@@ -1,6 +1,7 @@
 import type {
   Message,
   PdfContext,
+  ReasoningProviderKind,
   ReasoningLevelSelection,
   CustomShortcut,
   ChatAttachment,
@@ -24,6 +25,10 @@ export const selectedModelCache = new Map<number, string>();
 export const selectedReasoningCache = new Map<
   number,
   ReasoningLevelSelection
+>();
+export const selectedReasoningProviderCache = new Map<
+  number,
+  ReasoningProviderKind
 >();
 export const selectedRuntimeModeCache = new Map<number, ChatRuntimeMode>();
 
@@ -247,6 +252,7 @@ export function clearAllState(): void {
   loadingConversationTasks.clear();
   selectedModelCache.clear();
   selectedReasoningCache.clear();
+  selectedReasoningProviderCache.clear();
   selectedRuntimeModeCache.clear();
   pdfTextCache.clear();
   pdfTextLoadingTasks.clear();

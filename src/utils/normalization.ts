@@ -20,6 +20,14 @@ type ModelOutputLimitRule = {
 };
 
 const MODEL_OUTPUT_LIMIT_RULES: ModelOutputLimitRule[] = [
+  {
+    pattern: /(^|[/:.])claude-(?:opus-4-7|opus-4-6)(?:[.-]|$)/,
+    limit: 128_000,
+  },
+  {
+    pattern: /(^|[/:.])claude-(?:sonnet-4-6|haiku-4-5)(?:[.-]|$)/,
+    limit: 64_000,
+  },
   { pattern: /^deepseek-v4-(?:flash|pro)(?:[.-]|$)/, limit: 384_000 },
   { pattern: /^deepseek-(?:chat|reasoner)(?:[.-]|$)/, limit: 384_000 },
 ];

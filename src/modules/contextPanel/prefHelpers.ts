@@ -56,8 +56,9 @@ export function getClaudeCodeModeEnabled(): boolean {
   return getBoolPref("enableClaudeCodeMode", false);
 }
 
-
 const LAST_REASONING_LEVEL_PREF_KEY = "lastUsedReasoningLevel";
+const LAST_REASONING_LEVEL_BY_PROVIDER_PREF_KEY =
+  "lastUsedReasoningLevelByProvider";
 const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
 const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";
 const PANEL_FONT_SCALE_PREF_KEY = "panelFontScale";
@@ -69,6 +70,15 @@ const REASONING_LEVEL_SELECTIONS = new Set<ReasoningLevelSelection>([
   "medium",
   "high",
   "xhigh",
+]);
+const REASONING_PROVIDER_SELECTION_KEYS = new Set([
+  "openai",
+  "gemini",
+  "deepseek",
+  "kimi",
+  "qwen",
+  "grok",
+  "anthropic",
 ]);
 
 export function buildPaperStateKey(
@@ -93,6 +103,58 @@ export function setLastUsedReasoningLevel(
   getZoteroPrefs()?.set?.(
     `${config.prefsPrefix}.${LAST_REASONING_LEVEL_PREF_KEY}`,
     level,
+    true,
+  );
+}
+
+function getLastReasoningLevelByProviderMap(): Record<string, string> {
+  const raw = getStringPref(LAST_REASONING_LEVEL_BY_PROVIDER_PREF_KEY).trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [provider, level] of Object.entries(parsed)) {
+      if (
+        REASONING_PROVIDER_SELECTION_KEYS.has(provider) &&
+        typeof level === "string" &&
+        REASONING_LEVEL_SELECTIONS.has(level as ReasoningLevelSelection)
+      ) {
+        out[provider] = level;
+      }
+    }
+    return out;
+  } catch (_err) {
+    return {};
+  }
+}
+
+export function getLastUsedReasoningLevelForProvider(
+  provider: string,
+): ReasoningLevelSelection | null {
+  const normalized = provider.trim().toLowerCase();
+  if (!REASONING_PROVIDER_SELECTION_KEYS.has(normalized)) return null;
+  const level = getLastReasoningLevelByProviderMap()[normalized];
+  if (!level) return null;
+  return level as ReasoningLevelSelection;
+}
+
+export function setLastUsedReasoningLevelForProvider(
+  provider: string,
+  level: ReasoningLevelSelection,
+): void {
+  const normalized = provider.trim().toLowerCase();
+  if (
+    !REASONING_PROVIDER_SELECTION_KEYS.has(normalized) ||
+    !REASONING_LEVEL_SELECTIONS.has(level)
+  ) {
+    return;
+  }
+  const map = getLastReasoningLevelByProviderMap();
+  map[normalized] = level;
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${LAST_REASONING_LEVEL_BY_PROVIDER_PREF_KEY}`,
+    JSON.stringify(map),
     true,
   );
 }
@@ -463,7 +525,9 @@ export function getLockedGlobalConversationKey(
   const normalized = Number(raw);
   if (!Number.isFinite(normalized) || normalized <= 0) return null;
   const conversationKey = Math.floor(normalized);
-  return isUpstreamGlobalConversationKey(conversationKey) ? conversationKey : null;
+  return isUpstreamGlobalConversationKey(conversationKey)
+    ? conversationKey
+    : null;
 }
 
 /**

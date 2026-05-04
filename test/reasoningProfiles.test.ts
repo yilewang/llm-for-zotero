@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  getAnthropicReasoningProfileForModel,
   getDeepseekReasoningProfileForModel,
   getOpenAIReasoningProfileForModel,
   getReasoningDefaultLevelForModel,
@@ -43,10 +44,7 @@ describe("reasoningProfiles", function () {
     });
 
     it("limits gpt-5-pro to high reasoning only", function () {
-      const options = getRuntimeReasoningOptionsForModel(
-        "openai",
-        "gpt-5-pro",
-      );
+      const options = getRuntimeReasoningOptionsForModel("openai", "gpt-5-pro");
       assert.deepEqual(
         options.map((option) => option.level),
         ["high"],
@@ -165,6 +163,104 @@ describe("reasoningProfiles", function () {
         {
           extra: { thinking: { type: "enabled" } },
           omitTemperature: false,
+        },
+      );
+    });
+  });
+
+  describe("Anthropic profiles", function () {
+    it("classifies current Opus, Sonnet, and Haiku thinking modes", function () {
+      const opus47 = getAnthropicReasoningProfileForModel("claude-opus-4-7");
+      assert.isTrue(opus47.supportsAdaptiveThinking);
+      assert.isFalse(opus47.supportsManualThinking);
+      assert.equal(opus47.preferredMode, "adaptive");
+      assert.equal(opus47.levelToEffort.xhigh, "xhigh");
+
+      const sonnet46 =
+        getAnthropicReasoningProfileForModel("claude-sonnet-4-6");
+      assert.isTrue(sonnet46.supportsAdaptiveThinking);
+      assert.isTrue(sonnet46.supportsManualThinking);
+      assert.equal(sonnet46.preferredMode, "adaptive");
+      assert.equal(sonnet46.levelToEffort.xhigh, "max");
+
+      const haiku45 = getAnthropicReasoningProfileForModel(
+        "claude-haiku-4-5-20251001",
+      );
+      assert.isFalse(haiku45.supportsAdaptiveThinking);
+      assert.isTrue(haiku45.supportsManualThinking);
+      assert.equal(haiku45.preferredMode, "manual");
+    });
+
+    it("does not expose reasoning options for unknown Claude models", function () {
+      assert.deepEqual(
+        getRuntimeReasoningOptionsForModel("anthropic", "claude-unknown-3"),
+        [],
+      );
+    });
+
+    it("builds Anthropic payloads only for Anthropic Messages protocol", function () {
+      assert.deepEqual(
+        buildReasoningPayload(
+          { provider: "anthropic", level: "high" },
+          false,
+          "claude-sonnet-4-6",
+          "https://api.anthropic.com/v1",
+          "openai_chat_compat",
+          { maxTokens: 4096 },
+        ),
+        { extra: {}, omitTemperature: false },
+      );
+
+      assert.deepEqual(
+        buildReasoningPayload(
+          { provider: "anthropic", level: "xhigh" },
+          false,
+          "claude-sonnet-4-6",
+          "https://api.anthropic.com/v1",
+          "anthropic_messages",
+          { maxTokens: 4096 },
+        ),
+        {
+          extra: {
+            thinking: { type: "adaptive" },
+            output_config: { effort: "max" },
+          },
+          omitTemperature: true,
+        },
+      );
+
+      assert.deepEqual(
+        buildReasoningPayload(
+          { provider: "anthropic", level: "xhigh" },
+          false,
+          "claude-opus-4-7",
+          "https://api.anthropic.com/v1",
+          "anthropic_messages",
+          { maxTokens: 4096 },
+        ),
+        {
+          extra: {
+            thinking: { type: "adaptive" },
+            output_config: { effort: "xhigh" },
+          },
+          omitTemperature: true,
+        },
+      );
+
+      assert.deepEqual(
+        buildReasoningPayload(
+          { provider: "anthropic", level: "high" },
+          false,
+          "claude-haiku-4-5",
+          "https://api.anthropic.com/v1",
+          "anthropic_messages",
+          { maxTokens: 4096 },
+        ),
+        {
+          extra: {
+            thinking: { type: "enabled", budget_tokens: 3072 },
+          },
+          omitTemperature: true,
         },
       );
     });

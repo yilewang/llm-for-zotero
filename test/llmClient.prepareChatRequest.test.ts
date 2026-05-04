@@ -10,8 +10,9 @@ import {
 
 describe("llmClient prepareChatRequest", function () {
   const originalZotero = globalThis.Zotero;
-  const originalToolkit = (globalThis as typeof globalThis & { ztoolkit?: unknown })
-    .ztoolkit;
+  const originalToolkit = (
+    globalThis as typeof globalThis & { ztoolkit?: unknown }
+  ).ztoolkit;
 
   class MockStdout {
     private pending: Array<(value: string) => void> = [];
@@ -34,6 +35,45 @@ describe("llmClient prepareChatRequest", function () {
       }
       this.queue.push(value);
     }
+  }
+
+  function makeSseStream(chunks: string[]): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        const encoder = new TextEncoder();
+        for (const chunk of chunks) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+        controller.close();
+      },
+    });
+  }
+
+  function mockFetch(
+    handler: (_url: string, init?: RequestInit) => Promise<unknown>,
+  ) {
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown; log: () => void };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => (name === "fetch" ? handler : undefined),
+      log: () => undefined,
+    };
+  }
+
+  function anthropicOkStream() {
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: makeSseStream([
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ]),
+      json: async () => ({}),
+      text: async () => "",
+    };
   }
 
   beforeEach(function () {
@@ -246,10 +286,238 @@ describe("llmClient prepareChatRequest", function () {
     assert.notInclude(JSON.stringify(prepared.messages), "image_url");
   });
 
+  it("keeps Anthropic Messages thinking off by default and preserves temperature", async function () {
+    let capturedBody: Record<string, unknown> | null = null;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+        string,
+        unknown
+      >;
+      return anthropicOkStream();
+    });
+
+    const output = await callLLMStream(
+      {
+        prompt: "Say ok.",
+        model: "claude-sonnet-4-6",
+        apiBase: "https://api.anthropic.com/v1",
+        apiKey: "anthropic-test",
+        providerProtocol: "anthropic_messages",
+        temperature: 0.3,
+      },
+      () => undefined,
+    );
+
+    assert.equal(output, "OK");
+    assert.notProperty(capturedBody || {}, "thinking");
+    assert.notProperty(capturedBody || {}, "output_config");
+    assert.equal(capturedBody?.temperature, 0.3);
+  });
+
+  it("uses adaptive thinking for Sonnet 4.6 and never sends temperature", async function () {
+    let capturedBody: Record<string, unknown> | null = null;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+        string,
+        unknown
+      >;
+      return anthropicOkStream();
+    });
+
+    await callLLMStream(
+      {
+        prompt: "Think.",
+        model: "claude-sonnet-4-6",
+        apiBase: "https://api.anthropic.com/v1",
+        apiKey: "anthropic-test",
+        providerProtocol: "anthropic_messages",
+        reasoning: { provider: "anthropic", level: "xhigh" },
+        temperature: 0.3,
+        maxTokens: 4096,
+      },
+      () => undefined,
+    );
+
+    assert.deepEqual(capturedBody?.thinking, { type: "adaptive" });
+    assert.deepEqual(capturedBody?.output_config, { effort: "max" });
+    assert.notProperty(capturedBody || {}, "temperature");
+    assert.notNestedProperty(capturedBody || {}, "thinking.budget_tokens");
+  });
+
+  it("uses manual budget thinking for Haiku 4.5 with a valid budget", async function () {
+    let capturedBody: Record<string, unknown> | null = null;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+        string,
+        unknown
+      >;
+      return anthropicOkStream();
+    });
+
+    await callLLMStream(
+      {
+        prompt: "Think.",
+        model: "claude-haiku-4-5",
+        apiBase: "https://api.anthropic.com/v1",
+        apiKey: "anthropic-test",
+        providerProtocol: "anthropic_messages",
+        reasoning: { provider: "anthropic", level: "high" },
+        temperature: 0.3,
+        maxTokens: 4096,
+      },
+      () => undefined,
+    );
+
+    assert.deepEqual(capturedBody?.thinking, {
+      type: "enabled",
+      budget_tokens: 3072,
+    });
+    assert.notProperty(capturedBody || {}, "temperature");
+  });
+
+  it("never sends manual budget thinking for Opus 4.7", async function () {
+    let capturedBody: Record<string, unknown> | null = null;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+        string,
+        unknown
+      >;
+      return anthropicOkStream();
+    });
+
+    await callLLMStream(
+      {
+        prompt: "Think.",
+        model: "claude-opus-4-7",
+        apiBase: "https://api.anthropic.com/v1",
+        apiKey: "anthropic-test",
+        providerProtocol: "anthropic_messages",
+        reasoning: { provider: "anthropic", level: "xhigh" },
+        maxTokens: 4096,
+      },
+      () => undefined,
+    );
+
+    assert.deepEqual(capturedBody?.thinking, { type: "adaptive" });
+    assert.deepEqual(capturedBody?.output_config, { effort: "xhigh" });
+    assert.notNestedProperty(capturedBody || {}, "thinking.budget_tokens");
+  });
+
+  it("does not leak Anthropic thinking fields into OpenAI-compatible Claude calls", async function () {
+    let capturedBody: Record<string, unknown> | null = null;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+        string,
+        unknown
+      >;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        body: makeSseStream([
+          'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+        json: async () => ({}),
+        text: async () => "",
+      };
+    });
+
+    const output = await callLLMStream(
+      {
+        prompt: "Say ok.",
+        model: "claude-sonnet-4-6",
+        apiBase: "https://api.example.com/v1",
+        apiKey: "compat-test",
+        providerProtocol: "openai_chat_compat",
+        reasoning: { provider: "anthropic", level: "high" },
+      },
+      () => undefined,
+    );
+
+    assert.equal(output, "OK");
+    assert.notProperty(capturedBody || {}, "thinking");
+    assert.notProperty(capturedBody || {}, "output_config");
+    assert.notProperty(capturedBody || {}, "reasoning_effort");
+  });
+
+  it("downgrades Anthropic Messages reasoning after provider rejections", async function () {
+    const requestBodies: Record<string, unknown>[] = [];
+    mockFetch(async (_url, init) => {
+      requestBodies.push(
+        JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
+      );
+      if (requestBodies.length === 1) {
+        return {
+          ok: false,
+          status: 400,
+          statusText: "Bad Request",
+          text: async () => "thinking.type adaptive is not supported",
+        };
+      }
+      if (requestBodies.length === 2) {
+        return {
+          ok: false,
+          status: 400,
+          statusText: "Bad Request",
+          text: async () => "budget_tokens is not supported",
+        };
+      }
+      return anthropicOkStream();
+    });
+
+    await callLLMStream(
+      {
+        prompt: "Think.",
+        model: "claude-sonnet-4-6",
+        apiBase: "https://third-party.example/v1",
+        apiKey: "proxy-test",
+        providerProtocol: "anthropic_messages",
+        reasoning: { provider: "anthropic", level: "high" },
+        temperature: 0.3,
+        maxTokens: 4096,
+      },
+      () => undefined,
+    );
+
+    assert.deepEqual(requestBodies[0]?.thinking, { type: "adaptive" });
+    assert.deepEqual(requestBodies[1]?.thinking, {
+      type: "enabled",
+      budget_tokens: 3072,
+    });
+    assert.notProperty(requestBodies[2] || {}, "thinking");
+    assert.equal(requestBodies[2]?.temperature, 0.3);
+  });
+
+  it("fails locally when Anthropic manual thinking cannot fit under max_tokens", async function () {
+    try {
+      await callLLMStream(
+        {
+          prompt: "Think.",
+          model: "claude-haiku-4-5",
+          apiBase: "https://api.anthropic.com/v1",
+          apiKey: "anthropic-test",
+          providerProtocol: "anthropic_messages",
+          reasoning: { provider: "anthropic", level: "high" },
+          maxTokens: 1024,
+        },
+        () => undefined,
+      );
+      assert.fail("expected max_tokens validation to fail locally");
+    } catch (error) {
+      assert.include(
+        (error as Error).message,
+        "extended thinking requires max_tokens of at least 2048",
+      );
+    }
+  });
+
   it("normalizes blank codex app server apiBase values for chat requests", async function () {
-    const originalChromeUtils = (globalThis as typeof globalThis & {
-      ChromeUtils?: unknown;
-    }).ChromeUtils;
+    const originalChromeUtils = (
+      globalThis as typeof globalThis & {
+        ChromeUtils?: unknown;
+      }
+    ).ChromeUtils;
     const originalCodexPath = globalThis.process?.env?.CODEX_PATH;
     const stdout = new MockStdout();
     let startedThread = false;
@@ -291,9 +559,11 @@ describe("llmClient prepareChatRequest", function () {
       (
         globalThis as typeof globalThis & {
           ChromeUtils?: {
-            importESModule: (
-              path: string,
-            ) => { Subprocess: { call: (params: { arguments?: string[] }) => Promise<unknown> } };
+            importESModule: (path: string) => {
+              Subprocess: {
+                call: (params: { arguments?: string[] }) => Promise<unknown>;
+              };
+            };
           };
         }
       ).ChromeUtils = {
@@ -386,9 +656,11 @@ describe("llmClient prepareChatRequest", function () {
   });
 
   it("routes codex app server chat requests through the local app-server transport", async function () {
-    const originalChromeUtils = (globalThis as typeof globalThis & {
-      ChromeUtils?: unknown;
-    }).ChromeUtils;
+    const originalChromeUtils = (
+      globalThis as typeof globalThis & {
+        ChromeUtils?: unknown;
+      }
+    ).ChromeUtils;
     const originalCodexPath = globalThis.process?.env?.CODEX_PATH;
     const stdout = new MockStdout();
     let lastTurnInput: unknown = "";
@@ -411,9 +683,11 @@ describe("llmClient prepareChatRequest", function () {
       (
         globalThis as typeof globalThis & {
           ChromeUtils?: {
-            importESModule: (
-              path: string,
-            ) => { Subprocess: { call: (params: { arguments?: string[] }) => Promise<unknown> } };
+            importESModule: (path: string) => {
+              Subprocess: {
+                call: (params: { arguments?: string[] }) => Promise<unknown>;
+              };
+            };
           };
         }
       ).ChromeUtils = {
@@ -588,9 +862,11 @@ describe("llmClient prepareChatRequest", function () {
   });
 
   it("falls back to legacy flattened chat input when thread/inject_items is unsupported", async function () {
-    const originalChromeUtils = (globalThis as typeof globalThis & {
-      ChromeUtils?: unknown;
-    }).ChromeUtils;
+    const originalChromeUtils = (
+      globalThis as typeof globalThis & {
+        ChromeUtils?: unknown;
+      }
+    ).ChromeUtils;
     const originalCodexPath = globalThis.process?.env?.CODEX_PATH;
     const originalToolkit = (
       globalThis as typeof globalThis & { ztoolkit?: unknown }
@@ -615,9 +891,9 @@ describe("llmClient prepareChatRequest", function () {
       (
         globalThis as typeof globalThis & {
           ChromeUtils?: {
-            importESModule: (
-              path: string,
-            ) => { Subprocess: { call: () => Promise<unknown> } };
+            importESModule: (path: string) => {
+              Subprocess: { call: () => Promise<unknown> };
+            };
           };
         }
       ).ChromeUtils = {
@@ -774,16 +1050,17 @@ describe("llmClient prepareChatRequest", function () {
       (
         globalThis as typeof globalThis & { ChromeUtils?: unknown }
       ).ChromeUtils = originalChromeUtils;
-      (
-        globalThis as typeof globalThis & { ztoolkit?: unknown }
-      ).ztoolkit = originalToolkit;
+      (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit =
+        originalToolkit;
     }
   });
 
   it("surfaces non-compatibility inject failures instead of falling back", async function () {
-    const originalChromeUtils = (globalThis as typeof globalThis & {
-      ChromeUtils?: unknown;
-    }).ChromeUtils;
+    const originalChromeUtils = (
+      globalThis as typeof globalThis & {
+        ChromeUtils?: unknown;
+      }
+    ).ChromeUtils;
     const originalCodexPath = globalThis.process?.env?.CODEX_PATH;
     const stdout = new MockStdout();
     let injectAttemptCount = 0;
@@ -796,9 +1073,9 @@ describe("llmClient prepareChatRequest", function () {
       (
         globalThis as typeof globalThis & {
           ChromeUtils?: {
-            importESModule: (
-              path: string,
-            ) => { Subprocess: { call: () => Promise<unknown> } };
+            importESModule: (path: string) => {
+              Subprocess: { call: () => Promise<unknown> };
+            };
           };
         }
       ).ChromeUtils = {
@@ -835,7 +1112,8 @@ describe("llmClient prepareChatRequest", function () {
                             id: message.id,
                             error: {
                               code: -32000,
-                              message: "permission denied while updating thread metadata",
+                              message:
+                                "permission denied while updating thread metadata",
                             },
                           })}\n`,
                         );
@@ -921,15 +1199,27 @@ describe("llmClient prepareChatRequest", function () {
       value: unknown,
     ) => void;
     setPref("extensions.zotero.llmforzotero.embeddingProvider", "openai");
-    setPref("extensions.zotero.llmforzotero.embeddingApiBase", "https://api.openai.com/v1");
+    setPref(
+      "extensions.zotero.llmforzotero.embeddingApiBase",
+      "https://api.openai.com/v1",
+    );
     setPref("extensions.zotero.llmforzotero.embeddingApiKey", "sk-first");
-    setPref("extensions.zotero.llmforzotero.embeddingModel", "text-embedding-3-small");
+    setPref(
+      "extensions.zotero.llmforzotero.embeddingModel",
+      "text-embedding-3-small",
+    );
     const initial = getResolvedEmbeddingConfig();
 
-    setPref("extensions.zotero.llmforzotero.embeddingApiBase", "https://proxy.example/v1");
+    setPref(
+      "extensions.zotero.llmforzotero.embeddingApiBase",
+      "https://proxy.example/v1",
+    );
     const endpointChanged = getResolvedEmbeddingConfig();
 
-    setPref("extensions.zotero.llmforzotero.embeddingApiBase", "https://api.openai.com/v1");
+    setPref(
+      "extensions.zotero.llmforzotero.embeddingApiBase",
+      "https://api.openai.com/v1",
+    );
     setPref("extensions.zotero.llmforzotero.embeddingApiKey", "sk-second");
     const keyChanged = getResolvedEmbeddingConfig();
 
@@ -941,7 +1231,9 @@ describe("llmClient prepareChatRequest", function () {
     const prefsKey = "extensions.zotero.llmforzotero.modelProviderGroups";
     const versionKey =
       "extensions.zotero.llmforzotero.modelProviderGroupsMigrationVersion";
-    (globalThis.Zotero.Prefs as { set: (key: string, value: unknown) => void }).set(
+    (
+      globalThis.Zotero.Prefs as { set: (key: string, value: unknown) => void }
+    ).set(
       prefsKey,
       JSON.stringify([
         {
@@ -949,14 +1241,15 @@ describe("llmClient prepareChatRequest", function () {
           apiBase: "https://chatgpt.com/backend-api/codex/responses",
           apiKey: "",
           authMode: "codex_auth",
-          models: [{ id: "m1", model: "gpt-5.4", temperature: 0.3, maxTokens: 256 }],
+          models: [
+            { id: "m1", model: "gpt-5.4", temperature: 0.3, maxTokens: 256 },
+          ],
         },
       ]),
     );
-    (globalThis.Zotero.Prefs as { set: (key: string, value: unknown) => void }).set(
-      versionKey,
-      2,
-    );
+    (
+      globalThis.Zotero.Prefs as { set: (key: string, value: unknown) => void }
+    ).set(versionKey, 2);
 
     const authJson = JSON.stringify({
       tokens: { access_token: "old-access", refresh_token: "refresh-1" },
@@ -970,7 +1263,10 @@ describe("llmClient prepareChatRequest", function () {
           ok: true,
           status: 200,
           statusText: "OK",
-          json: async () => ({ access_token: "new-access", refresh_token: "refresh-2" }),
+          json: async () => ({
+            access_token: "new-access",
+            refresh_token: "refresh-2",
+          }),
           text: async () => "",
         };
       }

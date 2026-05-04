@@ -47,10 +47,21 @@ export type GeminiReasoningProfile = {
   levelToValue: Partial<Record<ReasoningLevel, GeminiThinkingValue>>;
   defaultLevel: ReasoningLevel;
 };
+export type AnthropicThinkingMode = "adaptive" | "manual" | "none";
+export type AnthropicAdaptiveEffort =
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 export type AnthropicReasoningProfile = {
   defaultBudgetTokens: number;
   levelToBudgetTokens: Partial<Record<ReasoningLevel, number>>;
+  levelToEffort: Partial<Record<ReasoningLevel, AnthropicAdaptiveEffort>>;
   defaultLevel: ReasoningLevel;
+  preferredMode: AnthropicThinkingMode;
+  supportsAdaptiveThinking: boolean;
+  supportsManualThinking: boolean;
 };
 export type QwenReasoningProfile = {
   defaultEnableThinking: boolean | null;
@@ -88,6 +99,10 @@ type ProviderProfile = {
   anthropic?: {
     defaultBudgetTokens: number;
     levelToBudgetTokens: Partial<Record<ReasoningLevel, number>>;
+    levelToEffort?: Partial<Record<ReasoningLevel, AnthropicAdaptiveEffort>>;
+    preferredMode: AnthropicThinkingMode;
+    supportsAdaptiveThinking: boolean;
+    supportsManualThinking: boolean;
   };
   qwen?: {
     defaultEnableThinking: boolean | null;
@@ -410,10 +425,7 @@ const DEEPSEEK_CHAT_PROFILE: ProviderProfile = {
 const KIMI_THINKING_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
-  options: [
-    option("default", "enabled"),
-    option("minimal", "disabled"),
-  ],
+  options: [option("default", "enabled"), option("minimal", "disabled")],
 };
 
 const KIMI_NON_THINKING_PROFILE: ProviderProfile = {
@@ -462,21 +474,105 @@ const QWEN_NON_THINKING_ONLY_PROFILE: ProviderProfile = {
   },
 };
 
-const ANTHROPIC_THINKING_PROFILE: ProviderProfile = {
+const ANTHROPIC_ADAPTIVE_MAX_OPTIONS: RuntimeReasoningOption[] = [
+  option("low", "low"),
+  option("medium", "medium"),
+  option("high", "high"),
+  option("xhigh", "max"),
+];
+
+const ANTHROPIC_ADAPTIVE_XHIGH_OPTIONS: RuntimeReasoningOption[] = [
+  option("low", "low"),
+  option("medium", "medium"),
+  option("high", "high"),
+  option("xhigh", "xhigh"),
+];
+
+const ANTHROPIC_MANUAL_OPTIONS: RuntimeReasoningOption[] = [
+  option("low", "1024"),
+  option("medium", "2000"),
+  option("high", "10000"),
+  option("xhigh", "32000"),
+];
+
+const ANTHROPIC_MAX_EFFORT_MAP: Partial<
+  Record<ReasoningLevel, AnthropicAdaptiveEffort>
+> = {
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "max",
+};
+
+const ANTHROPIC_XHIGH_EFFORT_MAP: Partial<
+  Record<ReasoningLevel, AnthropicAdaptiveEffort>
+> = {
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+};
+
+const ANTHROPIC_BUDGET_MAP: Partial<Record<ReasoningLevel, number>> = {
+  low: 1024,
+  medium: 2000,
+  high: 10000,
+  xhigh: 32000,
+};
+
+const ANTHROPIC_ADAPTIVE_ONLY_PROFILE: ProviderProfile = {
   supportsReasoning: true,
-  defaultLevel: "default",
-  options: [
-    option("default", "2000"),
-    option("low", "1024"),
-    option("high", "10000"),
-  ],
+  defaultLevel: "high",
+  options: ANTHROPIC_ADAPTIVE_MAX_OPTIONS,
   anthropic: {
     defaultBudgetTokens: 2000,
-    levelToBudgetTokens: {
-      default: 2000,
-      low: 1024,
-      high: 10000,
-    },
+    levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
+    levelToEffort: ANTHROPIC_MAX_EFFORT_MAP,
+    preferredMode: "adaptive",
+    supportsAdaptiveThinking: true,
+    supportsManualThinking: false,
+  },
+};
+
+const ANTHROPIC_OPUS_47_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "high",
+  options: ANTHROPIC_ADAPTIVE_XHIGH_OPTIONS,
+  anthropic: {
+    defaultBudgetTokens: 2000,
+    levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
+    levelToEffort: ANTHROPIC_XHIGH_EFFORT_MAP,
+    preferredMode: "adaptive",
+    supportsAdaptiveThinking: true,
+    supportsManualThinking: false,
+  },
+};
+
+const ANTHROPIC_ADAPTIVE_WITH_MANUAL_FALLBACK_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "high",
+  options: ANTHROPIC_ADAPTIVE_MAX_OPTIONS,
+  anthropic: {
+    defaultBudgetTokens: 2000,
+    levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
+    levelToEffort: ANTHROPIC_MAX_EFFORT_MAP,
+    preferredMode: "adaptive",
+    supportsAdaptiveThinking: true,
+    supportsManualThinking: true,
+  },
+};
+
+const ANTHROPIC_MANUAL_THINKING_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "medium",
+  options: ANTHROPIC_MANUAL_OPTIONS,
+  anthropic: {
+    defaultBudgetTokens: 2000,
+    levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
+    levelToEffort: {},
+    preferredMode: "manual",
+    supportsAdaptiveThinking: false,
+    supportsManualThinking: true,
   },
 };
 
@@ -623,11 +719,28 @@ const PROFILE_RULES: Record<
   anthropic: {
     rules: [
       {
-        match: /(^|[/:])claude(?:\b|[.-])/,
-        profile: ANTHROPIC_THINKING_PROFILE,
+        match: /(^|[/:.])claude-mythos-preview(?:\b|[.-])/,
+        profile: ANTHROPIC_ADAPTIVE_ONLY_PROFILE,
+      },
+      {
+        match: /(^|[/:.])claude-opus-4-7(?:\b|[.-])/,
+        profile: ANTHROPIC_OPUS_47_PROFILE,
+      },
+      {
+        match: /(^|[/:.])claude-(?:opus|sonnet)-4-6(?:\b|[.-])/,
+        profile: ANTHROPIC_ADAPTIVE_WITH_MANUAL_FALLBACK_PROFILE,
+      },
+      {
+        match: /(^|[/:.])claude-haiku-4-5(?:\b|[.-])/,
+        profile: ANTHROPIC_MANUAL_THINKING_PROFILE,
+      },
+      {
+        match:
+          /(^|[/:.])claude-(?:opus-(?:4-5|4-1|4)|sonnet-(?:4-5|4)|3-7-sonnet)(?:\b|[.-])/,
+        profile: ANTHROPIC_MANUAL_THINKING_PROFILE,
       },
     ],
-    fallback: ANTHROPIC_THINKING_PROFILE,
+    fallback: UNSUPPORTED_PROFILE,
   },
 };
 
@@ -713,7 +826,11 @@ export function getDeepseekReasoningProfileForModel(
 ): DeepseekReasoningProfile {
   const profile = resolveProviderProfile("deepseek", modelName);
   const deepseekProfile = profile.deepseek;
-  const defaultLevel = getResolvedDefaultLevel("deepseek", modelName, "default");
+  const defaultLevel = getResolvedDefaultLevel(
+    "deepseek",
+    modelName,
+    "default",
+  );
   return {
     defaultThinkingType: deepseekProfile?.defaultThinkingType ?? null,
     defaultReasoningEffort: deepseekProfile?.defaultReasoningEffort ?? null,
@@ -765,17 +882,18 @@ export function getAnthropicReasoningProfileForModel(
   modelName?: string,
 ): AnthropicReasoningProfile {
   const profile = resolveProviderProfile("anthropic", modelName);
-  const anthropicProfile =
-    profile.anthropic || ANTHROPIC_THINKING_PROFILE.anthropic;
-  const defaultLevel = getResolvedDefaultLevel(
-    "anthropic",
-    modelName,
-    "default",
-  );
+  const anthropicProfile = profile.anthropic;
+  const defaultLevel = getResolvedDefaultLevel("anthropic", modelName, "high");
   return {
     defaultBudgetTokens: anthropicProfile?.defaultBudgetTokens || 2000,
     levelToBudgetTokens: cloneLevelMap(anthropicProfile?.levelToBudgetTokens),
+    levelToEffort: cloneLevelMap(anthropicProfile?.levelToEffort),
     defaultLevel,
+    preferredMode: anthropicProfile?.preferredMode || "none",
+    supportsAdaptiveThinking: Boolean(
+      anthropicProfile?.supportsAdaptiveThinking,
+    ),
+    supportsManualThinking: Boolean(anthropicProfile?.supportsManualThinking),
   };
 }
 

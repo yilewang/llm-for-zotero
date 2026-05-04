@@ -26,6 +26,8 @@ import type {
   GeminiThinkingValue,
   GeminiReasoningOption,
   GeminiReasoningProfile,
+  AnthropicAdaptiveEffort,
+  AnthropicThinkingMode,
   AnthropicReasoningProfile,
   QwenReasoningProfile,
   RuntimeReasoningOption,
@@ -1676,6 +1678,8 @@ export type {
   GeminiThinkingValue,
   GeminiReasoningOption,
   GeminiReasoningProfile,
+  AnthropicAdaptiveEffort,
+  AnthropicThinkingMode,
   AnthropicReasoningProfile,
   QwenReasoningProfile,
   RuntimeReasoningOption,
@@ -1757,6 +1761,77 @@ function resolveAnthropicThinkingBudget(
   }
 
   return profile.defaultBudgetTokens;
+}
+
+function resolveAnthropicAdaptiveEffort(
+  level: ReasoningLevel,
+  profile: AnthropicReasoningProfile,
+): AnthropicAdaptiveEffort | null {
+  const direct = profile.levelToEffort[level];
+  if (direct) return direct;
+
+  const aliasLevel = getReasoningLevelAlias(level);
+  if (aliasLevel) {
+    const aliasEffort = profile.levelToEffort[aliasLevel];
+    if (aliasEffort) return aliasEffort;
+  }
+
+  const defaultEffort = profile.levelToEffort[profile.defaultLevel];
+  return defaultEffort || null;
+}
+
+function resolveAnthropicThinkingMode(params: {
+  profile: AnthropicReasoningProfile;
+  override?: AnthropicReasoningModeOverride;
+}): AnthropicReasoningModeOverride | null {
+  if (
+    params.override === "adaptive" &&
+    params.profile.supportsAdaptiveThinking
+  ) {
+    return "adaptive";
+  }
+  if (params.override === "manual" && params.profile.supportsManualThinking) {
+    return "manual";
+  }
+  if (
+    params.profile.preferredMode === "adaptive" &&
+    params.profile.supportsAdaptiveThinking
+  ) {
+    return "adaptive";
+  }
+  if (
+    params.profile.preferredMode === "manual" &&
+    params.profile.supportsManualThinking
+  ) {
+    return "manual";
+  }
+  return null;
+}
+
+function resolveAnthropicManualBudget(params: {
+  level: ReasoningLevel;
+  profile: AnthropicReasoningProfile;
+  maxTokens?: number;
+  modelName?: string;
+}): number {
+  const requested = Math.max(
+    1024,
+    Math.floor(resolveAnthropicThinkingBudget(params.level, params.profile)),
+  );
+  const maxTokens = Math.floor(Number(params.maxTokens));
+  if (!Number.isFinite(maxTokens) || maxTokens < 1) {
+    return requested;
+  }
+
+  const reservedAnswerTokens = 1024;
+  const maxBudgetTokens = maxTokens - reservedAnswerTokens;
+  if (maxBudgetTokens < 1024) {
+    const label = (params.modelName || "the selected Anthropic model").trim();
+    throw new Error(
+      `${label} extended thinking requires max_tokens of at least 2048 so budget_tokens can be less than max_tokens while leaving room for the answer. Increase max tokens or turn thinking off.`,
+    );
+  }
+  return Math.min(requested, maxBudgetTokens);
 }
 
 function resolveQwenEnableThinking(
@@ -1959,12 +2034,27 @@ function emptyReasoningPayload() {
   return { extra: {}, omitTemperature: false } as const;
 }
 
+export type AnthropicReasoningModeOverride = Exclude<
+  AnthropicThinkingMode,
+  "none"
+>;
+
+export type ReasoningPayloadOptions = {
+  maxTokens?: number;
+  anthropicModeOverride?: AnthropicReasoningModeOverride;
+};
+
+export type ReasoningSelection = ReasoningConfig & {
+  anthropicModeOverride?: AnthropicReasoningModeOverride;
+};
+
 export function buildReasoningPayload(
   reasoning: ReasoningConfig | undefined,
   useResponses: boolean,
   modelName?: string,
   apiBase?: string,
   providerProtocol?: ProviderProtocol,
+  options?: ReasoningPayloadOptions,
 ): { extra: Record<string, unknown>; omitTemperature: boolean } {
   if (!reasoning) {
     return emptyReasoningPayload();
@@ -2101,19 +2191,44 @@ export function buildReasoningPayload(
   }
 
   if (reasoning.provider === "anthropic") {
+    if (providerProtocol !== "anthropic_messages") {
+      return emptyReasoningPayload();
+    }
     const profile = getAnthropicReasoningProfile(modelName);
-    const budgetTokens = resolveAnthropicThinkingBudget(
-      reasoning.level,
+    const mode = resolveAnthropicThinkingMode({
       profile,
-    );
+      override: options?.anthropicModeOverride,
+    });
+    if (!mode) {
+      return emptyReasoningPayload();
+    }
+    if (mode === "adaptive") {
+      const effort = resolveAnthropicAdaptiveEffort(reasoning.level, profile);
+      return {
+        extra: {
+          thinking: {
+            type: "adaptive",
+          },
+          ...(effort ? { output_config: { effort } } : {}),
+        },
+        omitTemperature: true,
+      };
+    }
+
+    const budgetTokens = resolveAnthropicManualBudget({
+      level: reasoning.level,
+      profile,
+      maxTokens: options?.maxTokens,
+      modelName,
+    });
     return {
       extra: {
         thinking: {
           type: "enabled",
-          budget_tokens: Math.max(1024, Math.floor(budgetTokens)),
+          budget_tokens: budgetTokens,
         },
       },
-      omitTemperature: false,
+      omitTemperature: true,
     };
   }
 
@@ -2128,6 +2243,7 @@ function buildAnthropicMessagesPayload(params: {
   stream: boolean;
   reasoning?: ReasoningConfig;
   apiBase?: string;
+  anthropicModeOverride?: AnthropicReasoningModeOverride;
 }): Record<string, unknown> {
   const systemParts = params.messages
     .filter((m) => m.role === "system")
@@ -2173,12 +2289,16 @@ function buildAnthropicMessagesPayload(params: {
     params.model,
     params.apiBase,
     "anthropic_messages",
+    {
+      maxTokens: params.effectiveMaxTokens,
+      anthropicModeOverride: params.anthropicModeOverride,
+    },
   );
   Object.assign(payload, reasoningPayload.extra);
   if (systemParts.length > 0) {
     payload.system = systemParts.join("\n\n");
   }
-  if (params.reasoning && !reasoningPayload.omitTemperature) {
+  if (!reasoningPayload.omitTemperature) {
     payload.temperature = params.effectiveTemperature;
   }
   if (params.stream) {
@@ -2479,6 +2599,7 @@ function createChatPayloadBuilder(params: {
       model,
       apiBase,
       providerProtocol,
+      { maxTokens: effectiveMaxTokens },
     );
     const temperatureParam = reasoningPayload.omitTemperature
       ? {}
@@ -2771,14 +2892,15 @@ function isReasoningErrorMessage(errorMessage: string): boolean {
     text.includes("enable_thinking") ||
     text.includes("chat_template_kwargs") ||
     text.includes("thinking_level") ||
-    text.includes("thinking_budget")
+    text.includes("thinking_budget") ||
+    text.includes("budget_tokens")
   );
 }
 
 function getReasoningRecoverySelection(params: {
-  currentReasoning: ReasoningConfig | undefined;
+  currentReasoning: ReasoningSelection | undefined;
   modelName?: string;
-}): ReasoningConfig | undefined | null {
+}): ReasoningSelection | undefined | null {
   const { currentReasoning, modelName } = params;
   if (!currentReasoning) return null;
   const defaultLevel = getReasoningDefaultLevelForModel(
@@ -2794,14 +2916,53 @@ function getReasoningRecoverySelection(params: {
   return undefined;
 }
 
+function getReasoningSelectionKey(
+  reasoningSelection: ReasoningSelection | undefined,
+): string {
+  if (!reasoningSelection) return "none";
+  return [
+    reasoningSelection.provider,
+    reasoningSelection.level,
+    reasoningSelection.anthropicModeOverride || "",
+  ].join(":");
+}
+
+export function getAnthropicMessagesReasoningRecoverySelection(params: {
+  currentReasoning: ReasoningSelection | undefined;
+  modelName?: string;
+}): ReasoningSelection | undefined | null {
+  const { currentReasoning, modelName } = params;
+  if (!currentReasoning) return null;
+  if (currentReasoning.provider !== "anthropic") {
+    return getReasoningRecoverySelection(params);
+  }
+  const profile = getAnthropicReasoningProfile(modelName);
+  const currentMode = resolveAnthropicThinkingMode({
+    profile,
+    override: currentReasoning.anthropicModeOverride,
+  });
+  if (currentMode === "adaptive" && profile.supportsManualThinking) {
+    return {
+      provider: "anthropic",
+      level: currentReasoning.level,
+      anthropicModeOverride: "manual",
+    };
+  }
+  return undefined;
+}
+
 export async function postWithReasoningFallback(params: {
   url: string;
   auth: RequestAuthState;
   modelName?: string;
-  initialReasoning: ReasoningConfig | undefined;
+  initialReasoning: ReasoningSelection | undefined;
   buildPayload: (
-    reasoningOverride: ReasoningConfig | undefined,
+    reasoningOverride: ReasoningSelection | undefined,
   ) => Record<string, unknown>;
+  getRecoverySelection?: (params: {
+    currentReasoning: ReasoningSelection | undefined;
+    modelName?: string;
+  }) => ReasoningSelection | undefined | null;
   signal?: AbortSignal;
   headers?: Record<string, string>;
 }) {
@@ -2810,9 +2971,7 @@ export async function postWithReasoningFallback(params: {
   const maxRetries = 2;
   let lastError: unknown;
   const attemptedSelections = new Set<string>([
-    reasoningSelection
-      ? `${reasoningSelection.provider}:${reasoningSelection.level}`
-      : "none",
+    getReasoningSelectionKey(reasoningSelection),
   ]);
 
   while (retries <= maxRetries) {
@@ -2831,19 +2990,25 @@ export async function postWithReasoningFallback(params: {
       if (!isReasoningErrorMessage(message)) {
         throw err;
       }
-      const recovered = getReasoningRecoverySelection({
+      const recovered = (
+        params.getRecoverySelection || getReasoningRecoverySelection
+      )({
         currentReasoning: reasoningSelection,
         modelName: params.modelName,
       });
       if (recovered === null) {
         throw err;
       }
-      const nextKey = recovered
-        ? `${recovered.provider}:${recovered.level}`
-        : "none";
+      const nextKey = getReasoningSelectionKey(recovered);
       if (attemptedSelections.has(nextKey)) {
         throw err;
       }
+      ztoolkit.log("LLM: Retrying after reasoning payload rejection", {
+        model: params.modelName,
+        from: getReasoningSelectionKey(reasoningSelection),
+        to: nextKey,
+        error: message,
+      });
       attemptedSelections.add(nextKey);
       reasoningSelection = recovered;
       retries += 1;
@@ -2964,7 +3129,7 @@ async function callNativeProtocol(params: {
       }
     }
   }
-  const body =
+  const buildBody = (reasoningOverride: ReasoningSelection | undefined) =>
     protocol === "anthropic_messages"
       ? buildAnthropicMessagesPayload({
           model,
@@ -2972,8 +3137,9 @@ async function callNativeProtocol(params: {
           effectiveMaxTokens,
           effectiveTemperature,
           stream: isStreaming,
-          reasoning: params.reasoning,
+          reasoning: reasoningOverride,
           apiBase,
+          anthropicModeOverride: reasoningOverride?.anthropicModeOverride,
         })
       : buildGeminiNativePayload({
           messages,
@@ -2981,11 +3147,18 @@ async function callNativeProtocol(params: {
           effectiveTemperature,
           pdfParts: pdfParts.length ? pdfParts : undefined,
         });
-  const res = await getFetch()(url, {
-    method: "POST",
+  const res = await postWithReasoningFallback({
+    url,
+    auth: { mode: "api_key", token: apiKey },
     headers,
-    body: JSON.stringify(body),
+    modelName: model,
+    initialReasoning: params.reasoning,
+    buildPayload: buildBody,
     signal,
+    getRecoverySelection:
+      protocol === "anthropic_messages"
+        ? getAnthropicMessagesReasoningRecoverySelection
+        : undefined,
   });
   if (!res.ok) {
     throw new Error(`${res.status} (${url}) - ${await res.text()}`);

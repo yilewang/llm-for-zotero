@@ -7,6 +7,7 @@ import {
   activePaperConversationByPaper,
   selectedModelCache,
   selectedReasoningCache,
+  selectedReasoningProviderCache,
   selectedRuntimeModeCache,
   getPendingRequestId,
   setPendingRequestId,
@@ -2720,6 +2721,7 @@ export function openStandaloneChat(options?: {
             loadedConversationKeys.delete(key);
             selectedModelCache.delete(key);
             selectedReasoningCache.delete(key);
+            selectedReasoningProviderCache.delete(key);
             resetSessionTokens(key);
             clearConversationSummaryFromCache(key);
             if (isClaudeConversationSystem()) {

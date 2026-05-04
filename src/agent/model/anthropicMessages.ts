@@ -1,4 +1,9 @@
-import { buildReasoningPayload } from "../../utils/llmClient";
+import {
+  buildReasoningPayload,
+  getAnthropicMessagesReasoningRecoverySelection,
+  postWithReasoningFallback,
+  type ReasoningSelection,
+} from "../../utils/llmClient";
 import {
   normalizeMaxTokensForModel,
   normalizeTemperature,
@@ -22,7 +27,6 @@ import {
 } from "./messageBuilder";
 import {
   createFallbackToolCallId,
-  getFetch,
   getToolContinuationMessages,
   groupToolContinuationMessages,
 } from "./shared";
@@ -129,10 +133,28 @@ async function buildAnthropicParts(
   const resolved = await resolveContentParts(message);
   return resolved.map((part): AnthropicContentBlock => {
     switch (part.type) {
-      case "text": return { type: "text", text: part.text };
-      case "image": return { type: "image", source: { type: "base64", media_type: part.mimeType, data: part.base64 } };
-      case "pdf": return { type: "document", source: { type: "base64", media_type: "application/pdf", data: part.base64 } };
-      case "file_placeholder": return { type: "text", text: `[Prepared file: ${part.name}]` };
+      case "text":
+        return { type: "text", text: part.text };
+      case "image":
+        return {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: part.mimeType,
+            data: part.base64,
+          },
+        };
+      case "pdf":
+        return {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: part.base64,
+          },
+        };
+      case "file_placeholder":
+        return { type: "text", text: `[Prepared file: ${part.name}]` };
     }
   });
 }
@@ -498,49 +520,56 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
       continuation.length && this.conversationMessages
         ? [...this.conversationMessages, ...continuation]
         : this.conversationMessages || initial.messages;
-    const reasoningPayload = buildReasoningPayload(
-      request.reasoning,
-      false,
+    const maxTokens = normalizeMaxTokensForModel(
+      request.advanced?.maxTokens,
       request.model,
-      request.apiBase,
-      "anthropic_messages",
     );
-    // Anthropic requires temperature === 1 when extended thinking is enabled.
-    // Any other value causes a 400 "temperature may only be set to 1" error.
-    const thinkingEnabled =
-      reasoningPayload.extra.thinking != null &&
-      typeof reasoningPayload.extra.thinking === "object" &&
-      (reasoningPayload.extra.thinking as { type?: string }).type === "enabled";
-    const effectiveTemperature = thinkingEnabled
-      ? 1
-      : normalizeTemperature(request.advanced?.temperature);
-    const payload = {
-      model: request.model,
-      max_tokens: normalizeMaxTokensForModel(
-        request.advanced?.maxTokens,
+    const toolsPayload = buildAnthropicTools(params.tools);
+    const buildPayload = (
+      reasoningOverride: ReasoningSelection | undefined,
+    ) => {
+      const reasoningPayload = buildReasoningPayload(
+        reasoningOverride,
+        false,
         request.model,
-      ),
-      messages,
-      system: this.systemPrompt,
-      tools: buildAnthropicTools(params.tools),
-      tool_choice: { type: "auto" },
-      stream: true,
-      ...reasoningPayload.extra,
-      ...(reasoningPayload.omitTemperature
-        ? {}
-        : { temperature: effectiveTemperature }),
+        request.apiBase,
+        "anthropic_messages",
+        {
+          maxTokens,
+          anthropicModeOverride: reasoningOverride?.anthropicModeOverride,
+        },
+      );
+      return {
+        model: request.model,
+        max_tokens: maxTokens,
+        messages,
+        system: this.systemPrompt,
+        tools: toolsPayload,
+        tool_choice: { type: "auto" },
+        stream: true,
+        ...reasoningPayload.extra,
+        ...(reasoningPayload.omitTemperature
+          ? {}
+          : {
+              temperature: normalizeTemperature(request.advanced?.temperature),
+            }),
+      };
     };
     const url = resolveProviderTransportEndpoint({
       protocol: "anthropic_messages",
       apiBase: request.apiBase || "",
     });
-    const response = await getFetch()(url, {
-      method: "POST",
+    const response = await postWithReasoningFallback({
+      url,
+      auth: { mode: "api_key", token: request.apiKey || "" },
       headers: buildProviderTransportHeaders({
         protocol: "anthropic_messages",
         apiKey: request.apiKey || "",
       }),
-      body: JSON.stringify(payload),
+      modelName: request.model,
+      initialReasoning: request.reasoning,
+      buildPayload,
+      getRecoverySelection: getAnthropicMessagesReasoningRecoverySelection,
       signal: params.signal,
     });
     if (!response.ok) {

@@ -49,6 +49,7 @@ import {
 import {
   selectedModelCache,
   selectedReasoningCache,
+  selectedReasoningProviderCache,
   selectedRuntimeModeCache,
   selectedImageCache,
   selectedFileAttachmentCache,
@@ -129,7 +130,9 @@ import {
   getAdvancedModelParamsForEntry,
   setSelectedModelEntryForItem,
   getLastUsedReasoningLevel,
+  getLastUsedReasoningLevelForProvider,
   setLastUsedReasoningLevel,
+  setLastUsedReasoningLevelForProvider,
   getLastUsedPaperConversationKey,
   setLastUsedPaperConversationKey,
   removeLastUsedPaperConversationKey,
@@ -5000,6 +5003,7 @@ export function setupHandlers(
     loadedConversationKeys.delete(conversationKey);
     selectedModelCache.delete(conversationKey);
     selectedReasoningCache.delete(conversationKey);
+    selectedReasoningProviderCache.delete(conversationKey);
     clearTransientComposeStateForItem(conversationKey);
     clearConversationSummaryFromCache(conversationKey);
   };
@@ -7379,6 +7383,7 @@ export function setupHandlers(
             item.id,
             entry.model,
             entry.apiBase,
+            entry.providerProtocol,
           );
           const retryAdvanced = getAdvancedModelParams(entry.entryId);
           await retryLatestAssistantResponse(
@@ -7560,15 +7565,23 @@ export function setupHandlers(
       provider,
       currentModel,
       selectedProfile?.apiBase,
+      selectedProfile?.providerProtocol,
     );
     const enabledLevels = options
       .filter((option) => option.enabled)
       .map((option) => option.level);
+    const cachedProvider = selectedReasoningProviderCache.get(item.id);
+    const cachedLevel =
+      cachedProvider === provider ? selectedReasoningCache.get(item.id) : null;
     let selectedLevel =
-      selectedReasoningCache.get(item.id) ||
-      getLastUsedReasoningLevel() ||
-      "none";
-    if (enabledLevels.length > 0) {
+      cachedLevel ||
+      getLastUsedReasoningLevelForProvider(provider) ||
+      (provider === "anthropic" ? "none" : getLastUsedReasoningLevel() || "none");
+    if (provider === "anthropic") {
+      if (!enabledLevels.includes(selectedLevel as LLMReasoningLevel)) {
+        selectedLevel = "none";
+      }
+    } else if (enabledLevels.length > 0) {
       if (
         selectedLevel === "none" ||
         !enabledLevels.includes(selectedLevel as LLMReasoningLevel)
@@ -7579,6 +7592,7 @@ export function setupHandlers(
       selectedLevel = "none";
     }
     selectedReasoningCache.set(item.id, selectedLevel);
+    selectedReasoningProviderCache.set(item.id, provider);
     return { provider, currentModel, options, enabledLevels, selectedLevel };
   };
 
@@ -7723,6 +7737,8 @@ export function setupHandlers(
             if (mode === "xhigh") return "XHigh";
             return mode.charAt(0).toUpperCase() + mode.slice(1);
           })()
+          : selectedLevel === "none"
+            ? "off"
           : available
             ? getReasoningLevelDisplayLabel(
               selectedLevel as LLMReasoningLevel,
@@ -7787,6 +7803,7 @@ export function setupHandlers(
           } else {
             selectedReasoningCache.clear();
             selectedReasoningCache.set(item.id, mode.level as any);
+            selectedReasoningProviderCache.set(item.id, "unsupported");
             setLastUsedReasoningLevel(mode.level as any);
           }
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
@@ -7906,7 +7923,11 @@ export function setupHandlers(
         } else {
           selectedReasoningCache.clear();
           selectedReasoningCache.set(item.id, "none");
-          setLastUsedReasoningLevel("none");
+          selectedReasoningProviderCache.set(item.id, provider);
+          setLastUsedReasoningLevelForProvider(provider, "none");
+          if (provider !== "anthropic") {
+            setLastUsedReasoningLevel("none");
+          }
         }
         setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
         updateReasoningButton();
@@ -7915,6 +7936,32 @@ export function setupHandlers(
       offOption.addEventListener("click", applyOffSelection);
       reasoningMenu.appendChild(offOption);
       return;
+    }
+    if (provider === "anthropic") {
+      const isSelected = selectedLevel === "none";
+      const offOption = createElement(
+        body.ownerDocument as Document,
+        "button",
+        "llm-response-menu-item llm-reasoning-option",
+        {
+          type: "button",
+          textContent: isSelected ? "\u2713 Off" : "Off",
+        },
+      );
+      const applyAnthropicOffSelection = (e: Event) => {
+        if (!isPrimaryPointerEvent(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (!item) return;
+        selectedReasoningCache.set(item.id, "none");
+        selectedReasoningProviderCache.set(item.id, provider);
+        setLastUsedReasoningLevelForProvider(provider, "none");
+        setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+        updateReasoningButton();
+      };
+      offOption.addEventListener("pointerdown", applyAnthropicOffSelection);
+      offOption.addEventListener("click", applyAnthropicOffSelection);
+      reasoningMenu.appendChild(offOption);
     }
     for (const optionState of options) {
       const level = optionState.level;
@@ -7948,7 +7995,11 @@ export function setupHandlers(
           } else {
             selectedReasoningCache.clear();
             selectedReasoningCache.set(item.id, level);
-            setLastUsedReasoningLevel(level);
+            selectedReasoningProviderCache.set(item.id, provider);
+            setLastUsedReasoningLevelForProvider(provider, level);
+            if (provider !== "anthropic") {
+              setLastUsedReasoningLevel(level);
+            }
           }
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
           updateReasoningButton();
@@ -8334,6 +8385,7 @@ export function setupHandlers(
             } else {
               selectedReasoningCache.set(item.id, "none");
             }
+            selectedReasoningProviderCache.set(item.id, "unsupported");
             updateReasoningButton();
 
             refreshChatPreservingScroll();

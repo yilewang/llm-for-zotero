@@ -72,6 +72,7 @@ import {
 import { applyModelInputTokenCap } from "../../utils/modelInputCap";
 import { formatDisplayModelName } from "../../utils/modelDisplayLabel";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
+import { inferLegacyProviderProtocol } from "../../utils/providerProtocol";
 import {
   PERSISTED_HISTORY_LIMIT,
   AUTO_SCROLL_BOTTOM_THRESHOLD,
@@ -103,6 +104,7 @@ import {
   loadingConversationTasks,
   selectedModelCache,
   selectedReasoningCache,
+  selectedReasoningProviderCache,
   selectedImageCache,
   selectedFileAttachmentCache,
   selectedPaperContextCache,
@@ -162,10 +164,12 @@ import {
   getAvailableModelEntries,
   getLastReasoningExpanded,
   getLastUsedReasoningLevel,
+  getLastUsedReasoningLevelForProvider,
   getSelectedModelEntryForItem,
   getBoolPref,
   getStringPref,
   setLastReasoningExpanded,
+  setLastUsedReasoningLevelForProvider,
 } from "./prefHelpers";
 import { resolveMultiContextPlan } from "./multiContextPlanner";
 import { resolveContextImages, buildImageResolver } from "./mineruImages";
@@ -1358,7 +1362,7 @@ export function detectReasoningProvider(
   if (/(^|[/:])grok(?:\b|[.-])/.test(name)) {
     return "grok";
   }
-  if (/(^|[/:])claude(?:\b|[.-])/.test(name)) {
+  if (/(^|[/:.])claude(?:\b|[.-])/.test(name)) {
     return "anthropic";
   }
   if (name.includes("gemini")) return "gemini";
@@ -1370,8 +1374,18 @@ export function getReasoningOptions(
   provider: ReasoningProviderKind,
   modelName: string,
   apiBase?: string,
+  providerProtocol?: ProviderProtocol,
 ): ReasoningOption[] {
   if (provider === "unsupported") return [];
+  if (provider === "anthropic") {
+    const resolvedProtocol =
+      providerProtocol ||
+      inferLegacyProviderProtocol({
+        authMode: "api_key",
+        apiBase: apiBase || "",
+      });
+    if (resolvedProtocol !== "anthropic_messages") return [];
+  }
   return getRuntimeReasoningOptions(provider, modelName).map((option) => ({
     level: option.level as LLMReasoningLevel,
     enabled: option.enabled,
@@ -1470,23 +1484,41 @@ export function getSelectedReasoningForItem(
   itemId: number,
   modelName: string,
   apiBase?: string,
+  providerProtocol?: ProviderProtocol,
 ): LLMReasoningConfig | undefined {
   const provider = detectReasoningProvider(modelName);
   if (provider === "unsupported") return undefined;
-  const enabledLevels = getReasoningOptions(provider, modelName, apiBase)
+  const enabledLevels = getReasoningOptions(
+    provider,
+    modelName,
+    apiBase,
+    providerProtocol,
+  )
     .filter((option) => option.enabled)
     .map((option) => option.level);
   if (!enabledLevels.length) return undefined;
 
+  const cachedProvider = selectedReasoningProviderCache.get(itemId);
+  const cachedLevel =
+    cachedProvider === provider ? selectedReasoningCache.get(itemId) : null;
   let selectedLevel =
-    selectedReasoningCache.get(itemId) || getLastUsedReasoningLevel() || "none";
-  if (
+    cachedLevel ||
+    getLastUsedReasoningLevelForProvider(provider) ||
+    (provider === "anthropic" ? "none" : getLastUsedReasoningLevel() || "none");
+  if (provider === "anthropic") {
+    if (!enabledLevels.includes(selectedLevel as LLMReasoningLevel)) {
+      selectedLevel = "none";
+    }
+  } else if (
     selectedLevel === "none" ||
     !enabledLevels.includes(selectedLevel as LLMReasoningLevel)
   ) {
     selectedLevel = enabledLevels[0];
-    selectedReasoningCache.set(itemId, selectedLevel);
   }
+  selectedReasoningCache.set(itemId, selectedLevel);
+  selectedReasoningProviderCache.set(itemId, provider);
+  setLastUsedReasoningLevelForProvider(provider, selectedLevel);
+  if (selectedLevel === "none") return undefined;
 
   return { provider, level: selectedLevel as LLMReasoningLevel };
 }
@@ -1966,9 +1998,18 @@ function resolveEffectiveRequestConfig(params: {
           : fallbackEntry?.authMode === "copilot_auth"
             ? "copilot_auth"
             : "api_key");
+  const providerProtocol =
+    params.providerProtocol ||
+    explicitEntry?.providerProtocol ||
+    fallbackEntry?.providerProtocol;
   const reasoning =
     params.reasoning ||
-    getSelectedReasoningForItem(params.item.id, model, apiBase);
+    getSelectedReasoningForItem(
+      params.item.id,
+      model,
+      apiBase,
+      providerProtocol,
+    );
   const advanced =
     params.advanced || explicitEntry?.advanced || fallbackEntry?.advanced;
   return {
@@ -1976,10 +2017,7 @@ function resolveEffectiveRequestConfig(params: {
     apiBase,
     apiKey,
     authMode,
-    providerProtocol:
-      params.providerProtocol ||
-      explicitEntry?.providerProtocol ||
-      fallbackEntry?.providerProtocol,
+    providerProtocol,
     modelEntryId:
       params.modelEntryId || explicitEntry?.entryId || fallbackEntry?.entryId,
     modelProviderLabel:
