@@ -1,4 +1,4 @@
-# llm-for-zotero: AI Research Assistant for Zotero
+# llm-for-zotero: A Research Agent System for your Zotero Library
 
 [![zotero target version](https://img.shields.io/badge/Zotero-7-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
 [![zotero target version](https://img.shields.io/badge/Zotero-8-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
@@ -29,6 +29,30 @@ Documentation:
   <img src="./assets/demo.png" alt="Screenshot of the llm-for-zotero sidebar inside the Zotero PDF reader" width="1024" />
 </p>
 
+<p align="center">
+  <img src="./assets/demo2.png" alt="Screenshot of the llm-for-zotero sidebar inside the Zotero PDF reader" width="1024" />
+</p>
+
+## Table of Contents
+
+- [At a Glance](#at-a-glance)
+- [Quick Start](#quick-start)
+- [What's New](#whats-new)
+- [Configuration](#configuration)
+- [Demos](#demos)
+- [File-Based Notes](#file-based-notes)
+- [Agent Mode](#agent-mode-beta)
+- [Skills](#skills)
+- [WebChat Setup](#webchat-setup-chatgpt-web-sync)
+- [Codex Setup](#codex-setup-chatgpt-plus-subscribers)
+- [Claude Code Setup](#claude-code-setup-experimental)
+- [MinerU PDF Parsing](#mineru-pdf-parsing)
+- [Privacy and Data Flow](#privacy-and-data-flow)
+- [Roadmap](#roadmap)
+- [FAQ](#faq)
+- [Contributing](#contributing)
+- [Star History](#star-history)
+
 ## At a Glance
 
 - Chat with the current PDF, selected text, figures, screenshots, and uploaded
@@ -45,43 +69,6 @@ Documentation:
 <a id="installation"></a>
 <a id="usage-guide"></a>
 
-## Quick Start
-
-1. Download the latest `.xpi` file from the
-   [Releases page](https://github.com/yilewang/llm-for-zotero/releases).
-2. In Zotero, open `Tools` -> `Add-ons` -> gear icon ->
-   **Install Add-on From File**, then select the `.xpi`.
-3. Restart Zotero.
-4. Open `Preferences` -> `llm-for-zotero`, choose a provider, enter the base
-   URL, key, and model, then click **Test Connection**.
-5. Open a PDF in Zotero and click the LLM Assistant icon in the right-hand
-   toolbar.
-
-If you do not want to use a provider API key, start with
-[WebChat](#webchat-setup-chatgpt-web-sync) or
-[Codex App Server](#codex-setup-chatgpt-plus-subscribers).
-
-## Requirements
-
-- Zotero
-- A model backend: provider API key, local OpenAI-compatible model, WebChat,
-  Codex App Server, or Claude Code.
-- A Chromium-based browser for WebChat mode.
-- Node.js 18+ for npm-based Codex CLI installation and the Claude Code bridge.
-  The macOS Codex cask does not require a separate Node.js install.
-- A personal MinerU API key is recommended if you enable MinerU parsing.
-
-## Choose Your Setup
-
-| Goal                                                        | Recommended path                                                              | API key required?               |
-| ----------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------- |
-| Use OpenAI, Gemini, DeepSeek, Moonshot, or another provider | Configure an API provider in Zotero preferences                               | Yes                             |
-| Use a local model                                           | Connect any OpenAI-compatible local HTTP API                                  | Usually no                      |
-| Use ChatGPT in the browser                                  | [WebChat](#webchat-setup-chatgpt-web-sync) with the Sync for Zotero extension | No                              |
-| Use Codex models with ChatGPT Plus                          | [Codex App Server](#codex-setup-chatgpt-plus-subscribers)                     | No separate API key             |
-| Use Claude Code inside Zotero                               | [Claude Code bridge](#claude-code-setup-experimental)                         | Claude Code auth                |
-| Improve PDF extraction for tables, equations, and figures   | [MinerU PDF parsing](#mineru-pdf-parsing)                                     | Personal MinerU key recommended |
-
 ## What's New
 
 - **Codex App Server** is the recommended Codex path for ChatGPT Plus users.
@@ -97,35 +84,27 @@ If you do not want to use a provider API key, start with
 - **File-Based Notes** save Markdown notes to local folders, including Obsidian,
   Logseq, or any plain Markdown directory.
 - **MinerU PDF parsing** provides higher-fidelity extraction for tables,
-  equations, and figures.
+  equations, figures, and local `mineru-api` servers.
 
 Thanks to [@jianghao-zhang](https://github.com/jianghao-zhang) and
 [@boltma](https://github.com/boltma) for major contributions to the Codex App
 Server, Claude Code, and file upload workflows.
 
-## Table of Contents
+## Quick Start
 
-- [At a Glance](#at-a-glance)
-- [Quick Start](#quick-start)
-- [Requirements](#requirements)
-- [Choose Your Setup](#choose-your-setup)
-- [What's New](#whats-new)
-- [Configuration](#configuration)
-- [Core Features](#core-features)
-- [Standalone Window Mode](#standalone-window-mode)
-- [File-Based Notes](#file-based-notes)
-- [Agent Mode](#agent-mode-beta)
-- [Skills](#skills)
-- [WebChat Setup](#webchat-setup-chatgpt-web-sync)
-- [Codex Setup](#codex-setup-chatgpt-plus-subscribers)
-- [Claude Code Setup](#claude-code-setup-experimental)
-- [MinerU PDF Parsing](#mineru-pdf-parsing)
-- [Privacy and Data Flow](#privacy-and-data-flow)
-- [Troubleshooting](#troubleshooting)
-- [Roadmap](#roadmap)
-- [FAQ](#faq)
-- [Contributing](#contributing)
-- [Star History](#star-history)
+1. Download the latest `.xpi` file from the
+   [Releases page](https://github.com/yilewang/llm-for-zotero/releases).
+2. In Zotero, open `Tools` -> `Add-ons` -> gear icon ->
+   **Install Add-on From File**, then select the `.xpi`.
+3. Restart Zotero.
+4. Open `Preferences` -> `llm-for-zotero`, choose a provider, enter the base
+   URL, key, and model, then click **Test Connection**.
+5. Open a PDF in Zotero and click the LLM Assistant icon in the right-hand
+   toolbar.
+
+If you do not want to use a provider API key, start with
+[WebChat](#webchat-setup-chatgpt-web-sync) or
+[Codex App Server](#codex-setup-chatgpt-plus-subscribers).
 
 ## Configuration
 
@@ -147,22 +126,9 @@ multimodal model for figures and a text model for summaries. The conversation
 panel also supports model-specific reasoning levels and hyperparameters such as
 `temperature` and `max_tokens_output`.
 
-### Supported Models (examples)
-
-| API URL                                     | Model                | Reasoning Levels                  | Notes                 |
-| ------------------------------------------- | -------------------- | --------------------------------- | --------------------- |
-| `https://api.openai.com/v1/responses`       | gpt-5.4              | default, low, medium, high, xhigh | PDF uploads supported |
-| `https://api.openai.com/v1/responses`       | gpt-5.4-pro          | medium, high, xhigh               | PDF uploads supported |
-| `https://api.deepseek.com/v1`               | deepseek-chat        | default                           |                       |
-| `https://api.deepseek.com/anthropic`        | deepseek-v4-flash    | default                           |                       |
-| `https://generativelanguage.googleapis.com` | gemini-3-pro-preview | low, high                         |                       |
-| `https://generativelanguage.googleapis.com` | gemini-2.5-flash     | medium                            |                       |
-| `https://generativelanguage.googleapis.com` | gemini-2.5-pro       | default, low, high                |                       |
-| `https://api.moonshot.ai/v1`                | kimi-k2.5            | default                           |                       |
-
 <a id="features"></a>
 
-## Core Features
+## Demos
 
 ### Grounded Paper Chat
 
@@ -192,11 +158,10 @@ and ask the model to explain it.
 The selected-text pop-up can add highlighted text to chat with one click. It can
 also be disabled in settings.
 
-### Figures, Screenshots, and External Files
+### Figures and External Files
 
 Take screenshots of figures, attach up to 10 screenshots, or upload local files
-as additional context. Supported uploads include PDF, DOCX, PPTX, TXT, and
-Markdown.
+as additional context. Supported uploads include PDF, DOCX, PPTX, TXT, and Markdown.
 
 <p align="center">
   <img src="./assets/screenshot.gif" alt="Animation showing screenshot-based figure interpretation" width="1024" />
@@ -231,27 +196,6 @@ Markdown, and customize quick-action presets for repeated research tasks.
 <p align="center">
   <img src="./assets/shortcuts.gif" alt="Animation showing custom quick-action preset configuration" width="1024" />
 </p>
-
-## Standalone Window Mode
-
-<p align="center">
-  <img src="./assets/standalone_window.png" alt="Screenshot of the LLM Assistant standalone window" width="1024" />
-</p>
-
-Open the LLM Assistant in its own dedicated window, separate from the Zotero
-reader sidebar.
-
-- **Keyboard shortcut:** `Ctrl+Shift+L` on Windows/Linux, `Cmd+Shift+L` on
-  macOS.
-- **Paper chat and library chat:** Switch between paper-specific and
-  library-wide conversations with the tabs at the top.
-- **Conversation history:** Browse past conversations grouped by date in the
-  left sidebar.
-- **Same feature set:** Screenshots, file uploads, Agent Mode, and quick-action
-  presets work the same way as in the sidebar.
-
-While the standalone window is open, reader sidebar panels show options to focus
-the window or close it and return to the sidebar.
 
 ## File-Based Notes
 
@@ -303,6 +247,9 @@ plugins, and many Markdown readers.
 Agent Mode is disabled by default. Enable it in `Preferences`, then toggle
 `Agent (beta)` in the context bar.
 
+It can read and search your library, draft notes, update metadata or tags with
+confirmation, and undo recent write actions in the same session.
+
 When enabled, the LLM can act on your Zotero library with read tools, write
 tools, confirmation cards, and session undo.
 
@@ -326,18 +273,6 @@ reviewable and undoable.
   <img src="./assets/agent/multi_steps.gif" alt="Animation showing multi-step agent workflow" width="512" />
 </p>
 
-#### Read a figure directly
-
-<p align="center">
-  <img src="./assets/agent/single_figure.gif" alt="Animation showing agent reading a figure from the PDF" width="1024" />
-</p>
-
-#### Read multiple pages
-
-<p align="center">
-  <img src="./assets/agent/full_docs.gif" alt="Animation showing agent reading multiple pages at once" width="1024" />
-</p>
-
 #### Find related papers
 
 <p align="center">
@@ -357,6 +292,13 @@ reviewable and undoable.
 </p>
 
 ## Skills
+
+Skills customize Agent Mode behavior for recurring research workflows such as
+paper QA, evidence retrieval, figure analysis, paper comparison, literature
+reviews, note writing, and cited-reference import.
+
+<details>
+<summary>Built-in skills and custom skill setup</summary>
 
 <p align="center">
   <img src="./assets/skills.png" alt="Screenshot of the Skills management portal" width="512" />
@@ -385,34 +327,7 @@ To create a custom skill, open the **Standalone Window**, click the **Skills**
 icon, choose **"+ New skill"**, edit the skill file, and save. Skills are stored
 as Markdown files in `{ZoteroDataDir}/llm-for-zotero/skills/`.
 
-## WebChat Setup (ChatGPT & Deepseek Web Sync)
-
-WebChat mode sends questions to [chatgpt.com](https://chatgpt.com) and [deepseek.com](https://chat.deepseek.com) through a
-browser extension, then streams responses back into Zotero. It is useful when
-you want ChatGPT/deepseek web access without a provider API key.
-
-<p align="center">
-  <img src="./assets/webchat.jpeg" alt="Screenshot of WebChat mode connected to chatgpt.com" width="1024" />
-</p>
-
-Prerequisites:
-
-- A ChatGPT account for `chatgpt.com` WebChat or a Deepseek account for `deepseek.com` WebChat.
-- A Chromium-based browser such as Chrome.
-
-Setup:
-
-1. Download the latest `extension.zip` from
-   [sync-for-zotero releases](https://github.com/yilewang/sync-for-zotero).
-2. Unzip it.
-3. Open `chrome://extensions`, enable **Developer Mode**, choose
-   **Load unpacked**, and select the unzipped extension folder.
-4. In Zotero, open `Preferences` -> `llm-for-zotero` and set
-   **Auth Mode** -> `WebChat`.
-5. Keep a ChatGPT tab open in your browser. A green dot in Zotero means the
-   extension and ChatGPT tab are connected.
-
-⚠️: **WebChat supports PDF attachment toggles, screenshots, conversation history, and one-click exit back to regular API mode. However, I do want to mention, WebChat mode requires you to keep a browser tab open with the Sync for Zotero extension active; and they should be in the same Desktop environment (cannot be two different monitors); And it has to be paper chat, library chat is not supported in WebChat mode yet.**
+</details>
 
 ## Codex Setup (ChatGPT Plus Subscribers)
 
@@ -423,8 +338,11 @@ New users should choose **Codex App Server** from the **Agent** tab. The older
 **Codex Auth (Legacy)** path remains available for existing users, but is
 planned for future deprecation after app-server validation.
 
+<details>
+<summary>Codex App Server setup and legacy Codex Auth</summary>
+
 <p align="center">
-  <img src="./assets/codex_claude.png" alt="Screenshot showing recommended Codex App Server configuration in plugin settings" width="1024" />
+  <img src="./assets/codex_claude.png" alt="Screenshot showing recommended Codex App Server configuration in plugin settings" width="512" />
 </p>
 
 ### Codex App Server setup
@@ -475,6 +393,8 @@ Legacy notes:
 - The Responses `/files` upload plus `file_id` attachment flow is not supported
   yet.
 
+</details>
+
 ## Claude Code Setup (Experimental)
 
 Claude Code mode runs Claude Code as a separate conversation system inside
@@ -486,6 +406,9 @@ commands, and project skills.
 > Use built-in [Agent Mode](#agent-mode-beta) for native library tools such as
 > reading item state, editing notes, tagging papers, updating metadata, or
 > importing items.
+
+<details>
+<summary>Claude Code prerequisites, bridge setup, and project assets</summary>
 
 Prerequisites:
 
@@ -597,6 +520,8 @@ route Claude Code through a compatible provider layer or proxy, configure that
 in Claude Code itself; Zotero only selects the tier and forwards the request to
 the bridge.
 
+</details>
+
 ## MinerU PDF Parsing
 
 **MinerU** is an advanced PDF parsing engine that extracts high-fidelity
@@ -608,7 +533,7 @@ the result locally. Later interactions with that paper use the MinerU-parsed
 content.
 
 <p align="center">
-  <img src="./assets/minerU.png" alt="Screenshot showing MinerU PDF parsing results in the plugin" width="1024" />
+  <img src="./assets/minerU.png" alt="Screenshot showing MinerU PDF parsing results in the plugin" width="512" />
 </p>
 
 ### How to enable MinerU
@@ -638,6 +563,10 @@ When a personal key is provided, the plugin calls
 `https://mineru.net/api/v4` directly.
 
 ### Using a local MinerU server
+
+Local MinerU server support was contributed by
+[@renyong18](https://github.com/renyong18) in
+[PR #152](https://github.com/yilewang/llm-for-zotero/pull/152).
 
 Local mode sends PDFs to a self-hosted `mineru-api` server through
 `POST /file_parse` and stores the returned ZIP output in the same local cache
@@ -674,7 +603,42 @@ keeps executing until it finishes — the GPU/CPU will not free up sooner. If yo
 need to abort immediately (for example to switch backend without waiting),
 restart the `mineru-api` process yourself.
 
+<a id="webchat-setup-chatgpt-web-sync"></a>
+
+## WebChat Setup (ChatGPT & Deepseek Web Sync)
+
+WebChat mode sends questions to [chatgpt.com](https://chatgpt.com) and [deepseek.com](https://chat.deepseek.com) through a
+browser extension, then streams responses back into Zotero. It is useful when
+you want ChatGPT/deepseek web access without a provider API key.
+
+<p align="center">
+  <img src="./assets/webchat.gif" alt="Screenshot of WebChat mode connected to chatgpt.com" width="1024" />
+</p>
+
+Prerequisites:
+
+- A ChatGPT account for `chatgpt.com` WebChat or a Deepseek account for `deepseek.com` WebChat.
+- A Chromium-based browser such as Chrome.
+
+Setup:
+
+1. Download the latest `extension.zip` from
+   [sync-for-zotero releases](https://github.com/yilewang/sync-for-zotero).
+2. Unzip it.
+3. Open `chrome://extensions`, enable **Developer Mode**, choose
+   **Load unpacked**, and select the unzipped extension folder.
+4. In Zotero, open `Preferences` -> `llm-for-zotero` and set
+   **Auth Mode** -> `WebChat`.
+5. ⚠️: Keep a ChatGPT tab open in your browser. A green dot in Zotero means the extension and ChatGPT tab are connected. Make sure the tab and Zotero stay in the same monitor. No minimization or backgrounding, or the connection may drop.
+
 ## Privacy and Data Flow
+
+Data flow depends on the backend you choose. Local models and local MinerU can
+keep processing on your machine; cloud providers, WebChat, Claude Code, Codex,
+and cloud MinerU involve their respective services or companion runtimes.
+
+<details>
+<summary>Detailed backend data flow</summary>
 
 - In standard provider mode, paper content and user messages are sent to the
   model provider you configure.
@@ -691,20 +655,7 @@ restart the `mineru-api` process yourself.
 - Agent Mode write operations are routed through reviewable actions and session
   undo where supported.
 
-## Troubleshooting
-
-| Symptom                              | What to check                                                                          |
-| ------------------------------------ | -------------------------------------------------------------------------------------- |
-| **Test Connection fails**            | Confirm the base URL, API key, model name, and provider protocol.                      |
-| **The assistant cannot see a paper** | Reopen the PDF tab, then send a new message so the plugin can rebuild context.         |
-| **WebChat shows a red dot**          | Keep a ChatGPT tab open and confirm the Sync for Zotero extension is loaded.           |
-| **Codex App Server fails**           | Run `codex login`, confirm `codex` is on `PATH`, then click **Test connection** again. |
-| **Claude Code mode hangs**           | Restart the bridge and check `curl -fsS http://127.0.0.1:19787/healthz`.               |
-| **MinerU parsing fails**             | Add a personal MinerU API key and retry **Test Connection**.                           |
-| **Local MinerU parsing hangs**       | Wait for the first model warm-up, or restart your `mineru-api` process if you need to cancel immediately. |
-
-For bugs or unclear failures, please
-[open an issue](https://github.com/yilewang/llm-for-zotero/issues).
+</details>
 
 ## Roadmap
 
@@ -712,17 +663,30 @@ For bugs or unclear failures, please
 - [x] MinerU PDF parsing
 - [x] GitHub Copilot auth
 - [x] WebChat mode (ChatGPT web sync)
-- [x] Standalone window mode ([#78](https://github.com/yilewang/llm-for-zotero/issues/78))
+- [x] Standalone window mode
 - [x] File-based notes (Obsidian, Logseq, any Markdown directory)
 - [x] Claude Code integration
 - [x] Codex App Server integration
 - [x] Local MinerU support
 - [x] Customized skills
 - [ ] Customized parameter of MinerU parsing
-- [ ] Cross-device synchronization (MinerU cache or conversation history)
+- [x] Cross-device synchronization (MinerU cache)
 - [ ] Agent memory system
 
 ## FAQ
+
+> **Q: Does it require an API key to use this plugin?**
+>
+> A: It depends on the backend you choose. The plugin supports multiple backends with different requirements:
+
+| Goal                                                        | Recommended path                                                              | API key required?               |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------- |
+| Use OpenAI, Gemini, DeepSeek, Moonshot, or another provider | Configure an API provider in Zotero preferences                               | Yes                             |
+| Use a local model                                           | Connect any OpenAI-compatible local HTTP API                                  | Usually no                      |
+| Use ChatGPT in the browser                                  | [WebChat](#webchat-setup-chatgpt-web-sync) with the Sync for Zotero extension | No                              |
+| Use Codex models with ChatGPT Plus                          | [Codex App Server](#codex-setup-chatgpt-plus-subscribers)                     | No separate API key             |
+| Use Claude Code inside Zotero                               | [Claude Code bridge](#claude-code-setup-experimental)                         | Claude Code auth                |
+| Improve PDF extraction for tables, equations, and figures   | [MinerU PDF parsing](#mineru-pdf-parsing)                                     | Personal MinerU key recommended |
 
 > **Q: Is it free to use?**
 >
@@ -734,11 +698,6 @@ For bugs or unclear failures, please
 <p align="center">
   <img src="https://github.com/user-attachments/assets/1e945e57-4b99-4d25-b8d5-fb120e100b62" width="200" alt="Alipay donation QR code">
 </p>
-
-> **Q: Does it work with local models?**
->
-> Yes. As long as the local model provides an OpenAI-compatible HTTP API, you
-> can connect it by entering the base URL and key in settings.
 
 > **Q: Is my data used to train models?**
 >

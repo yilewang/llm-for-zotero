@@ -462,6 +462,8 @@ const INPUT_SM_STYLE =
   " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 5px;" +
   " box-sizing: border-box; background: Field; color: FieldText;";
 
+const PROTOCOL_SELECT_SM_STYLE = INPUT_SM_STYLE + " width: 135px;";
+
 const LABEL_STYLE =
   "display: block; font-weight: 600; font-size: 12px;" +
   " color: var(--fill-primary, inherit); margin-bottom: 4px;";
@@ -1636,7 +1638,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         const protocolFieldSelect = el(
           doc,
           "select",
-          INPUT_SM_STYLE + " width: 120px;",
+          PROTOCOL_SELECT_SM_STYLE,
         ) as HTMLSelectElement;
         const autoOption = el(doc, "option") as HTMLOptionElement;
         autoOption.value = "";
