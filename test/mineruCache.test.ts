@@ -230,6 +230,59 @@ describe("mineruCache", function () {
     assert.equal(manifest?.sections[0].figures[0].path, "images/fig1.png");
   });
 
+  it("normalizes local MinerU nested ZIP output into agent-readable cache files", async function () {
+    const io = setupMemoryIO();
+    const archiveImagePath = "paper/pipeline/images/fig1.png";
+    const imageRefPath = "images/fig1.png";
+    const mdContent = [
+      "# Intro",
+      `![Fig](${imageRefPath})`,
+      "# Results",
+      "results",
+    ].join("\n");
+
+    await writeMineruCacheFiles(51, mdContent, [
+      {
+        relativePath: "paper/pipeline/full.md",
+        data: bytes(mdContent),
+      },
+      {
+        relativePath: archiveImagePath,
+        data: bytes([1, 2, 3, 4]),
+      },
+      {
+        relativePath: "paper/pipeline/paper_content_list.json",
+        data: bytes(
+          JSON.stringify([
+            { type: "text", text_level: 1, text: "Intro", page_idx: 0 },
+            {
+              type: "image",
+              img_path: imageRefPath,
+              image_caption: ["Fig. 1 caption"],
+              page_idx: 0,
+            },
+            { type: "text", text_level: 1, text: "Results", page_idx: 1 },
+          ]),
+        ),
+      },
+    ]);
+
+    assert.equal(await readCachedMineruMd(51), mdContent);
+    assert.match(
+      await readMineruImageAsBase64(51, "images/fig1.png"),
+      /^data:image\/png;base64,/,
+    );
+    assert.includeMembers(io.writes, [
+      "/tmp/zotero/llm-for-zotero-mineru/51/full.md",
+      "/tmp/zotero/llm-for-zotero-mineru/51/images/fig1.png",
+      "/tmp/zotero/llm-for-zotero-mineru/51/content_list.json",
+      "/tmp/zotero/llm-for-zotero-mineru/51/manifest.json",
+    ]);
+
+    const manifest = await readManifest(51);
+    assert.equal(manifest?.sections[0].figures[0].path, "images/fig1.png");
+  });
+
   it("skips unsafe archive paths", function () {
     const normalized = normalizeMineruCacheFiles("# Intro", [
       { relativePath: "paper/full.md", data: bytes("# Intro") },
