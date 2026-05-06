@@ -89,6 +89,9 @@ import {
 } from "../../claudeCode/runtimeRetention";
 
 export { openStandaloneChat } from "./standaloneWindow";
+export { buildUI } from "./buildUI";
+export { setupHandlers } from "./setupHandlers";
+export { refreshChat } from "./chat";
 import {
   isStandaloneWindowActive,
   notifyStandaloneItemChanged,
