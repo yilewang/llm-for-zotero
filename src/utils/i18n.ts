@@ -314,6 +314,7 @@ const zhCN: Record<string, string> = {
   "Subfolder for copied figures and images (e.g., assets, attachments)": "用于存放复制的图片和附件的子文件夹（如 assets、attachments）",
   "Test Write Access": "测试写入权限",
   "Write access verified": "✓ 写入权限已验证",
+  "Sync existing MinerU caches now": "立即同步现有的 MinerU 缓存",
   "Enter a vault path first": "请先输入知识库路径",
   "Each provider has an auth mode, API URL, and one or more model variants.": "每个服务商有一个认证模式、API URL 和一个或多个模型变体。",
   "Choose a preset above, or switch to Customized to enter a full base URL or endpoint manually.": '选择上方的预设，或切换到"自定义"以手动输入完整的基础 URL 或端点。',
@@ -376,12 +377,171 @@ const zhCN: Record<string, string> = {
   // ── Language setting ────────────────────────────────────────────────────
   "Language": "语言",
   "Auto (follow Zotero)": "自动（跟随 Zotero）",
+  "English": "English",
+  "中文 (简体)": "中文 (简体)",
   "Restart Zotero to apply language change.": "重启 Zotero 以应用语言更改。",
+
+  // ── WebChat preload screen ─────────────────────────────────────────────
+  "Connecting to ChatGPT…": "正在连接 ChatGPT…",
+  "Connecting to WebChat…": "正在连接 WebChat…",
+  "Relay server": "中继服务器",
+  "Extension connection": "扩展连接",
+  "Chat site tab": "聊天网站标签页",
+  "Zotero relay server is not available.": "Zotero 中继服务器不可用。",
+  "Install the Sync for Zotero Chrome extension and reload the page.": "安装 Sync for Zotero Chrome 扩展并重新加载页面。",
+  "Ready! Starting webchat…": "就绪！正在启动 WebChat…",
+  "Retry": "重试",
+
+  // ── WebChat and modes ─────────────────────────────────────────────────
+  "Exit": "退出",
+  "Exit webchat and return to previous model": "退出 WebChat 并返回之前的模型",
+  "Claude Code": "Claude Code",
+  "Switch to Claude Code mode": "切换到 Claude Code 模式",
+  "Switch to WebChat mode": "切换到 WebChat 模式",
+  "Disable Codex App Server first to switch on Claude Code.": "请先禁用 Codex App Server 再切换到 Claude Code。",
+  "Disable Claude Code first to switch on Codex App Server.": "请先禁用 Claude Code 再切换到 Codex App Server。",
+  "Global defaults shared across Claude Code on this machine.": "此机器上 Claude Code 共享的全局默认设置。",
+  "Claude Code Chat": "Claude Code 聊天",
+  "Claude Code Paper Chat": "Claude Code 论文聊天",
+  "Claude Code in Zotero": "Zotero 中的 Claude Code",
+  "Claude Code project skill": "Claude Code 项目技能",
+  "Claude Code slash command: /": "Claude Code 斜杠命令：/",
+
+  // ── UI elements ───────────────────────────────────────────────────────
+  "Open in Window": "在窗口中打开",
+  "Open chat in a standalone window": "在独立窗口中打开聊天",
+  "Edit": "编辑",
+  "Delete": "删除",
+  "Add": "添加",
+  "Move": "移动",
+  "Reset": "重置",
+  "Slash commands": "斜杠命令",
+  "Model: ...": "模型：...",
+
+  // ── Chat site dynamic strings ─────────────────────────────────────────
+  "Open in your Chrome browser.": "在你的 Chrome 浏览器中打开。",
+  "Open the corresponding chat site in your Chrome browser.": "在你的 Chrome 浏览器中打开对应的聊天网站。",
+
+  // ── History menu ──────────────────────────────────────────────────────
+  "WebChat Conversations": "WebChat 对话历史",
+  "No conversations yet": "暂无对话",
+  "Relay questions to ChatGPT / DeepSeek via the Sync for Zotero browser extension. Download extension: github.com/yilewang/sync-for-zotero → Releases. Unzip, open chrome://extensions, enable Developer Mode, click \"Load unpacked\", select the extension folder. Keep the corresponding chat tab open while using WebChat mode.": "通过 Sync for Zotero 浏览器扩展将问题转发至 ChatGPT / DeepSeek。下载扩展：github.com/yilewang/sync-for-zotero → Releases。解压，打开 chrome://extensions，启用开发者模式，点击“加载已解压的扩展程序”，选择扩展文件夹。使用 WebChat 模式时，请保持对应的聊天标签页处于打开状态。",
+
+  // ── Additional preference and testing strings ──────────────────────────
+  "Semantic Search": "语义搜索",
+  "Uses vector embeddings for meaning-aware search. When disabled, only keyword matching (BM25) is used.": "使用向量嵌入进行语义感知搜索。禁用时仅使用关键词匹配（BM25）。",
+  "Claude Code Integration": "Claude Code 集成",
+  "This panel configures the embedded Claude runtime. You enter Claude Code mode from the chat header, not from settings.": "此面板配置嵌入式 Claude 运行时。你可以从聊天标题栏进入 Claude Code 模式，而不是从设置中。",
+  "Enable Claude Code integration": "启用 Claude Code 集成",
+  "When enabled, Zotero shows the Claude button in the chat header so you can switch between upstream chat and Claude Code.": "启用后，Zotero 会在聊天标题栏中显示 Claude 按钮，这样你可以在官方聊天和 Claude Code 之间切换。",
+  "Connection": "连接",
+  "Zotero sends Claude requests to this local bridge service.": "Zotero 会将 Claude 请求发送到此本地桥接服务。",
+  "Bridge URL": "桥接 URL",
+  "http://127.0.0.1:19787": "http://127.0.0.1:19787",
+  "Config source": "配置来源",
+  "Choose where Claude should load its settings from. Most users should keep `default`.": "选择 Claude 应该从哪里加载其设置。大多数用户应该保持 `default`。",
+  "Claude Config Source": "Claude 配置来源",
+  "default — user + project + local": "默认 — 用户 + 项目 + 本地",
+  "user-only — only your global Claude config": "仅用户 — 仅你的全局 Claude 配置",
+  "zotero-only — only Zotero-managed configs": "仅 Zotero — 仅 Zotero 管理的配置",
+  "Show config locations and advanced details": "显示配置位置和高级详情",
+  "`default` loads user + project + local. Priority: local > project > user.": "`default` 加载用户 + 项目 + 本地。优先级：本地 > 项目 > 用户。",
+  "`user-only` loads only your machine-wide Claude settings.": "`user-only` 仅加载你的机器级别 Claude 设置。",
+  "`zotero-only` loads only Zotero-managed shared and per-conversation settings.": "`zotero-only` 仅加载 Zotero 管理的共享和对话级设置。",
+  "Trace logs": "追踪日志",
+  "Save Claude runtime traces for debugging and copy the log directory path.": "保存 Claude 运行时追踪用于调试，并复制日志目录路径。",
+  "Enabled": "已启用",
+  "Copy path": "复制路径",
+  "Claude Code settings guide": "Claude Code 设置指南",
+  "These values control how Claude runs inside Zotero by default.": "这些值控制 Claude 在 Zotero 内部的默认运行方式。",
+  "Permission Mode": "权限模式",
+  "`safe` is recommended. `yolo` removes confirmation prompts.": "推荐 `safe`。`yolo` 移除确认提示。",
+  "safe": "安全",
+  "yolo": "不管不顾",
+  "Default Model": "默认模型",
+  "This sets the default capability tier for new Claude conversations. `haiku`, `sonnet`, and `opus` are strength tiers, so the runtime may map them to different underlying models.": "这为新的 Claude 对话设置默认能力级别。`haiku`、`sonnet` 和 `opus` 是强度级别，因此运行时可能会将它们映射到不同的底层模型。",
+  "sonnet": "sonnet",
+  "opus": "opus",
+  "haiku": "haiku",
+  "Default Reasoning": "默认推理",
+  "The reasoning effort Claude uses by default for new runs.": "Claude 为新运行默认使用的推理强度。",
+  "max": "最大",
+  "Enable block streaming": "启用块流式传输",
+  "Show Claude answers chunk by chunk while they stream, instead of waiting until the final answer is assembled.": "在流式传输时逐块显示 Claude 回答，而不是等到最终答案组装完成。",
+  "Enable auto-compact": "启用自动压缩",
+  "Automatically send `/compact` before a new Claude turn when context usage crosses the threshold below.": "当上下文使用量超过以下阈值时，在新的 Claude 回合前自动发送 `/compact`。",
+  "Advanced: Runtime CLAUDE.md instructions": "高级：运行时 CLAUDE.md 指令",
+  "This controls the text injected between `<!-- LLM-FOR-ZOTERO:CLAUDE-MANAGED-BEGIN -->` and `<!-- LLM-FOR-ZOTERO:CLAUDE-MANAGED-END -->` inside the runtime `CLAUDE.md`. Existing files are preserved. Clicking Update only refreshes that managed block.": "这控制在运行时 `CLAUDE.md` 内部 `<!-- LLM-FOR-ZOTERO:CLAUDE-MANAGED-BEGIN -->` 和 `<!-- LLM-FOR-ZOTERO:CLAUDE-MANAGED-END -->` 之间注入的文本。现有文件会保留。点击更新仅刷新那个受管理的块。",
+  "If you are not already comfortable editing Claude Code project instructions, leave this unchanged.": "如果你还不习惯于编辑 Claude Code 项目指令，请保持此不变。",
+  "Update runtime CLAUDE.md": "更新运行时 CLAUDE.md",
+  "Reset to default": "重置为默认值",
+  "Notes Directory": "笔记目录",
+  "Configure a local directory for saving notes as files. Note format and templates are managed through skills — type `/` in chat to see available skills, or edit skill files directly.": "配置一个本地目录用于将笔记保存为文件。笔记格式和模板通过技能管理 — 在聊天中输入 `/` 查看可用技能，或直接编辑技能文件。",
+  "Nickname": "昵称",
+  "e.g., Obsidian, Logseq, My Notes": "例如：Obsidian、Logseq、我的笔记",
+  "How you refer to this directory — the agent will recognize it when you mention it": "你如何称呼这个目录 — 当你提及它时，Agent 会识别它",
+  "Notes Directory Path": "笔记目录路径",
+  "/path/to/notes or C:\\path\\to\\notes": "/path/to/notes 或 C:\\path\\to\\notes",
+  "Absolute path to the directory where notes are saved as files": "笔记保存为文件的目录的绝对路径",
+  "Zotero Notes": "Zotero 笔记",
+  "assets": "assets",
+  "Folder for images, relative to vault root (e.g., assets, Notes/imgs)": "图片文件夹，相对于 vault 根目录（例如 assets、Notes/imgs）",
+  "Embedding Provider": "嵌入提供者",
+  "OpenAI": "OpenAI",
+  "Gemini": "Gemini",
+  "Custom": "自定义",
+  "OpenAI API Base": "OpenAI API 基础地址",
+  "Gemini API Key": "Gemini API 密钥",
+  "text-embedding-3-small": "text-embedding-3-small",
+  "text-embedding-3-large": "text-embedding-3-large",
+  "text-embedding-ada-002 (legacy)": "text-embedding-ada-002（旧版）",
+  "gemini-embedding-001": "gemini-embedding-001",
+  "text-embedding-004": "text-embedding-004",
+  "$0.02 / 1M tokens": "$0.02 / 百万 tokens",
+  "$0.13 / 1M tokens": "$0.13 / 百万 tokens",
+  "$0.10 / 1M tokens": "$0.10 / 百万 tokens",
+  "Free tier available · $0.15 / 1M tokens": "免费套餐可用 · $0.15 / 百万 tokens",
+  "Embedding Model": "嵌入模型",
+  "Text Input Cap": "文本输入上限",
+  "Leave blank for model default": "留空使用模型默认值",
+  "Use this embedding model for semantic search and relevance matching in your library.": "将此嵌入模型用于你库中的语义搜索和相关性匹配。",
+  "Provider A": "服务商 A",
+  "Provider B": "服务商 B",
+  "Provider C": "服务商 C",
+  "Provider D": "服务商 D",
+  "Provider E": "服务商 E",
+  "Fetch Models": "获取模型",
+  "WebChat": "WebChat",
+  "ChatGPT": "ChatGPT",
+  "DeepSeek": "DeepSeek",
+  "Use WebChat mode with the Sync for Zotero browser extension": "使用带有 Sync for Zotero 浏览器扩展的 WebChat 模式",
+  "ChatGPT WebChat mode (requires browser extension)": "ChatGPT WebChat 模式（需要浏览器扩展）",
+  "DeepSeek WebChat mode (requires browser extension)": "DeepSeek WebChat 模式（需要浏览器扩展）",
+  "Sync for Zotero Chrome extension not installed or not reachable": "未安装 Sync for Zotero Chrome 扩展或无法访问",
+  "Install Sync for Zotero Chrome extension": "安装 Sync for Zotero Chrome 扩展",
+  "Open ChatGPT in Chrome": "在 Chrome 中打开 ChatGPT",
+  "Open DeepSeek in Chrome": "在 Chrome 中打开 DeepSeek",
+
+  // ── Codex App Server strings ───────────────────────────────────────────────
+  "First-class Codex runtime integration. Run codex login before enabling it; Zotero keeps local tool approvals in its own confirmation cards.": "一流的 Codex 运行时集成。启用前请先运行 codex login；Zotero 会在自己的确认卡片中保存本地工具授权。",
+  "Enable Codex App Server integration": "启用 Codex App Server 集成",
+  "When enabled, Zotero shows the Codex button in the chat header so you can switch between upstream chat and Codex.": "启用后，Zotero 会在聊天标题栏中显示 Codex 按钮，这样你可以在官方聊天和 Codex 之间切换。",
+  "Off": "关闭",
+  "On": "开启",
+  "Runtime defaults": "运行时默认值",
+  "These values control how Codex runs inside Zotero by default.": "这些值控制 Codex 在 Zotero 内部的默认运行方式。",
+  "Model": "模型",
+  "Auto": "自动",
+  "Low": "低",
+  "Medium": "中",
+  "High": "高",
+  "XHigh": "极高",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────
 
 let currentLocale: string = "auto";
+let localeChangeListeners: Array<() => void> = [];
 
 /**
  * Initialize i18n — call once at plugin startup.
@@ -396,6 +556,38 @@ export function initI18n(): void {
   } catch {
     currentLocale = "auto";
   }
+}
+
+/**
+ * Set the locale at runtime and notify listeners.
+ */
+export function setLocale(locale: string): void {
+  currentLocale = locale;
+  try {
+    Zotero.Prefs.set(
+      "extensions.zotero.llmforzotero.locale",
+      locale,
+      true,
+    );
+  } catch {
+    // Ignore pref setting errors
+  }
+  // Notify all listeners
+  localeChangeListeners.forEach(listener => listener());
+}
+
+/**
+ * Register a listener to be called when locale changes.
+ */
+export function onLocaleChange(listener: () => void): () => void {
+  localeChangeListeners.push(listener);
+  // Return an unsubscribe function
+  return () => {
+    const index = localeChangeListeners.indexOf(listener);
+    if (index > -1) {
+      localeChangeListeners.splice(index, 1);
+    }
+  };
 }
 
 function getEffectiveLocale(): string {
