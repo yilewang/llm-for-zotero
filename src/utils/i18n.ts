@@ -653,6 +653,15 @@ const zhCN: Record<string, string> = {
   "Managed block updated": "受管理块已更新",
   "Failed to update CLAUDE.md": "更新 CLAUDE.md 失败",
   "Enter a directory path first": "请先输入目录路径",
+
+  // ── Other files missing translations ────────────────────────────────────
+  "Show in file system": "在文件系统中显示",
+  "Check for updates": "检查更新",
+  "Failed to fetch history": "获取历史失败",
+  "Failed to load selected DeepSeek conversation": "加载选中的 DeepSeek 对话失败",
+  "Failed to load selected conversation": "加载选中的对话失败",
+  "Failed to load skills": "加载技能失败",
+  "No matching history": "没有匹配的历史",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────
