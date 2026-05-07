@@ -149,13 +149,13 @@ export async function renderShortcuts(
         promptText = "";
       }
     }
-    const labelText = (labelOverrides[shortcut.id] || shortcut.label).trim();
+    const labelText = (labelOverrides[shortcut.id] || t(shortcut.label)).trim();
     editableShortcutsRaw.push({
       id: shortcut.id,
       kind: "builtin",
       prompt: promptText,
-      label: labelText || shortcut.label,
-      defaultLabel: shortcut.label,
+      label: labelText || t(shortcut.label),
+      defaultLabel: t(shortcut.label),
     });
   }
 
