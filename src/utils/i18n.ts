@@ -565,6 +565,7 @@ const zhCN: Record<string, string> = {
   "Select all": "全选",
   "Clear all": "清除全部",
   "Move to": "移动到",
+  "Cleared": "已清除",
   "Suggested tags": "建议标签",
   "Add tag": "添加标签",
   "Open ↗": "打开 ↗",
