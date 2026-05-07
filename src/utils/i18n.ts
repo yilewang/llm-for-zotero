@@ -619,6 +619,22 @@ const zhCN: Record<string, string> = {
   "Loading Claude commands…": "正在加载 Claude 命令…",
   "Skills": "技能",
   "Test failed: ": "测试失败：",
+
+  // ── standaloneWindow.ts missing translations ────────────────────────────
+  "New skill": "新技能",
+  "Checking…": "检查中…",
+  "Up to date": "已是最新",
+  "Update failed": "更新失败",
+  "Chat is open in a separate window": "聊天已在独立窗口中打开",
+  "Focus Window": "聚焦窗口",
+  "Close Window & Return Here": "关闭窗口并返回此处",
+  "Toggle sidebar": "切换侧边栏",
+  "New chat": "新对话",
+  "Search history": "搜索历史",
+  "Refresh web history": "刷新网页历史",
+  "Fetching…": "获取中…",
+  "Untitled chat": "无标题对话",
+  "Web History": "网页历史",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────
