@@ -2551,7 +2551,7 @@ export function setupHandlers(
     });
     titleLine.appendChild(title);
     const mode = options?.contentSourceMode;
-    const badgeText = mode === "mineru" ? "MD" : mode === "pdf" ? "PDF" : mode === "text" ? "Text" : null;
+    const badgeText = mode === "mineru" ? t("MD") : mode === "pdf" ? t("PDF") : mode === "text" ? t("Text") : null;
     if (badgeText) {
       titleLine.appendChild(
         createElement(ownerDoc, "span", "llm-paper-picker-badge", {
@@ -2948,7 +2948,7 @@ export function setupHandlers(
       "llm-other-ref-chip-label",
       {
         textContent: `${icon} ${ref.title}`,
-        title: `${ref.refKind === "figure" ? "Figure" : "File"}: ${ref.title}`,
+        title: `${ref.refKind === "figure" ? t("Figure") : t("File")}: ${ref.title}`,
       },
     );
     const removeBtn = createElement(
@@ -2958,11 +2958,11 @@ export function setupHandlers(
       {
         type: "button",
         textContent: "×",
-        title: `Remove ${ref.title}`,
+        title: `${t("Remove")} ${ref.title}`,
       },
     ) as HTMLButtonElement;
     removeBtn.dataset.otherRefIndex = `${removableIndex}`;
-    removeBtn.setAttribute("aria-label", `Remove ${ref.title}`);
+    removeBtn.setAttribute("aria-label", `${t("Remove")} ${ref.title}`);
     chipHeader.append(chipLabel, removeBtn);
     chip.appendChild(chipHeader);
     list.appendChild(chip);
@@ -4073,7 +4073,7 @@ export function setupHandlers(
               paperEntries.push({
                 kind: "paper",
                 section: "paper",
-                sectionTitle: "Paper Chat",
+                sectionTitle: t("Paper Chat"),
                 conversationKey: normalizedKey,
                 title: summary.title,
                 timestampText: isDraft
@@ -4131,7 +4131,7 @@ export function setupHandlers(
               paperEntries.push({
                 kind: "paper",
                 section: "paper",
-                sectionTitle: "Paper Chat",
+                sectionTitle: t("Paper Chat"),
                 conversationKey: normalizedKey,
                 title: summary.title,
                 timestampText: isDraft
@@ -4180,7 +4180,7 @@ export function setupHandlers(
               paperEntries.push({
                 kind: "paper",
                 section: "paper",
-                sectionTitle: "Paper Chat",
+                sectionTitle: t("Paper Chat"),
                 conversationKey: normalizedKey,
                 title: summary.title,
                 timestampText: isDraft
@@ -4267,7 +4267,7 @@ export function setupHandlers(
           globalEntries.push({
             kind: "global",
             section: "open",
-            sectionTitle: "Library Chat",
+            sectionTitle: t("Library Chat"),
             conversationKey: normalizedKey,
             title: entry.title || (isDraft ? "New Claude chat" : ""),
             timestampText: isDraft
@@ -4338,7 +4338,7 @@ export function setupHandlers(
           globalEntries.push({
             kind: "global",
             section: "open",
-            sectionTitle: "Library Chat",
+            sectionTitle: t("Library Chat"),
             conversationKey: normalizedKey,
             title: entry.title || (isDraft ? "New Codex chat" : ""),
             timestampText: isDraft
@@ -4398,7 +4398,7 @@ export function setupHandlers(
           globalEntries.push({
             kind: "global",
             section: "open",
-            sectionTitle: "Library Chat",
+            sectionTitle: t("Library Chat"),
             conversationKey: normalizedKey,
             title: entry.title,
             timestampText: entry.isDraft
@@ -5125,7 +5125,7 @@ export function setupHandlers(
             libraryID: Math.floor(pending.libraryID),
             kind: "global",
           }).scopeId,
-          scopeLabel: "Open Chat",
+          scopeLabel: t("Open Chat"),
         });
       } catch (err) {
         hasError = true;
@@ -7789,7 +7789,7 @@ export function setupHandlers(
           "llm-response-menu-item llm-reasoning-option",
           {
             type: "button",
-            textContent: isSelected ? `\u2713 ${mode.label}` : mode.label,
+            textContent: isSelected ? `\u2713 ${t(mode.label)}` : t(mode.label),
           },
         );
         const applyMode = (e: Event) => {
@@ -8109,12 +8109,12 @@ export function setupHandlers(
     // Clear button → "Exit" in webchat, restore "Clear" otherwise
     if (clearBtn) {
       if (isWebChat) {
-        clearBtn.textContent = "Exit";
+        clearBtn.textContent = t("Exit");
         (clearBtn as HTMLButtonElement).disabled = false;
         clearBtn.style.opacity = "";
-        clearBtn.title = "Exit webchat and return to previous model";
+        clearBtn.title = t("Exit webchat and return to previous model");
       } else {
-        clearBtn.textContent = "Clear";
+        clearBtn.textContent = t("Clear");
         clearBtn.title = "";
       }
     }
@@ -9895,10 +9895,10 @@ export function setupHandlers(
     return "📎";
   }
   function resolvePickerKindLabel(kind: "pdf" | "note" | "figure" | "other"): string {
-    if (kind === "pdf") return "PDF";
-    if (kind === "note") return "Note";
-    if (kind === "figure") return "Figure";
-    return "File";
+    if (kind === "pdf") return t("PDF");
+    if (kind === "note") return t("Note");
+    if (kind === "figure") return t("Figure");
+    return t("File");
   }
   function resolveGroupIcon(group: PaperSearchGroupCandidate): string {
     if (group.itemKind === "standalone-note") return "📝";
@@ -10295,7 +10295,7 @@ export function setupHandlers(
     }
     selectedOtherRefContextCache.set(item.id, [...existing, ref]);
     updatePaperPreviewPreservingScroll();
-    if (status) setStatus(status, `${ref.refKind === "figure" ? "Figure" : "File"} context added.`, "ready");
+    if (status) setStatus(status, t(`${ref.refKind === "figure" ? "Figure" : "File"} context added.`), "ready");
     return true;
   };
   const consumeActiveAtToken = (): boolean => {

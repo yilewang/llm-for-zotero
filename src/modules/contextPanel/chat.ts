@@ -5,6 +5,7 @@ import {
   getStandaloneLibraryChatStartPageHtml,
   getPaperChatStartPageHtml,
   getNoteEditingStartPageHtml,
+  t,
 } from "../../utils/i18n";
 import {
   appendMessage as appendStoredMessage,
@@ -5410,8 +5411,8 @@ export async function sendQuestion(
       restoreRequestUIIdle(body, conversationKey, thisRequestId);
       setStatusSafely(
         answer.runState === "incomplete"
-          ? "Captured partial response — final answer not verified"
-          : "Ready",
+          ? t("Captured partial response — final answer not verified")
+          : t("Ready"),
         answer.runState === "incomplete" ? "error" : "ready",
       );
     } catch (err) {
@@ -5424,7 +5425,7 @@ export async function sendQuestion(
         restoreRequestUIIdle(body, conversationKey, thisRequestId);
         return;
       }
-      const errMsg = (err as Error).message || "Error";
+      const errMsg = (err as Error).message || t("Error");
       const hasSnapshot = Boolean(
         sanitizeText(assistantMessage.text || "") ||
         sanitizeText(assistantMessage.reasoningDetails || ""),
@@ -5922,11 +5923,11 @@ function buildInlineEditWidget(
   header.className = "llm-inline-edit-header";
   const headerLabel = doc.createElement("span") as HTMLSpanElement;
   headerLabel.className = "llm-inline-edit-header-label";
-  headerLabel.textContent = "Editing";
+  headerLabel.textContent = t("Editing");
   const cancelBtn = doc.createElement("button") as HTMLButtonElement;
   cancelBtn.type = "button";
   cancelBtn.className = "llm-inline-edit-header-cancel";
-  cancelBtn.textContent = "Cancel";
+  cancelBtn.textContent = t("Cancel");
   cancelBtn.addEventListener("mousedown", (e: Event) => {
     (e as MouseEvent).preventDefault();
     (e as MouseEvent).stopPropagation();

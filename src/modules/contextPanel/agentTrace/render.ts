@@ -1,4 +1,5 @@
 import { getAgentRuntime } from "../../../agent";
+import { t } from "../../../utils/i18n";
 import type {
   AgentPendingAction,
   AgentPendingField,
@@ -1317,16 +1318,16 @@ function renderPaperResultListField(
 function normalizePendingActions(action: AgentPendingAction) {
   const provided =
     Array.isArray(action.actions) && action.actions.length > 0
-      ? action.actions
+      ? action.actions.map((a) => ({ ...a, label: t(a.label) }))
       : [
           {
             id: "confirm",
-            label: action.confirmLabel || "Apply",
+            label: t(action.confirmLabel || "Apply"),
             style: "primary" as const,
           },
           {
             id: "cancel",
-            label: action.cancelLabel || "Cancel",
+            label: t(action.cancelLabel || "Cancel"),
             style: "secondary" as const,
           },
         ];
@@ -1919,7 +1920,7 @@ export function renderPendingActionCard(
         (buttonLayout.hasActionChooser && !isSeparateSubmitMode);
       executeButton.textContent = isSeparateSubmitMode
         ? getSeparateSubmitLabel(activeActionId)
-        : activeAction?.label || pending.action.confirmLabel || "Apply";
+        : activeAction?.label || t(pending.action.confirmLabel || "Apply");
     }
     if (backButton) {
       backButton.hidden = !isSeparateSubmitMode;
@@ -1948,7 +1949,7 @@ export function renderPendingActionCard(
     executeButton.type = "button";
     executeButton.dataset.kind = "save";
     executeButton.className = "llm-agent-hitl-btn";
-    executeButton.textContent = pending.action.confirmLabel || "Apply";
+    executeButton.textContent = t(pending.action.confirmLabel || "Apply");
     executeButton.addEventListener("click", () => {
       handleExecute();
     });

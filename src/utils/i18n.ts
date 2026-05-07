@@ -536,6 +536,77 @@ const zhCN: Record<string, string> = {
   "Medium": "中",
   "High": "高",
   "XHigh": "极高",
+  // ── WebChat hints ────────────────────────────────────────────────────────────
+  "WebChat only requires uploading PDF once per session. If already uploaded, no need to send again.": "WebChat 每个会话只需上传一次 PDF。如果已上传，无需再次发送。",
+
+  // ── Shortcut buttons ─────────────────────────────────────────────────────────
+  "Custom Shortcut": "自定义快捷方式",
+  "Add Shortcut": "添加快捷方式",
+  "Edit Shortcut": "编辑快捷方式",
+  "Reset Shortcuts": "重置快捷方式",
+  "Reset all shortcuts to default settings?": "将所有快捷方式重置为默认设置？",
+  "Drag to reorder": "拖动重新排序",
+  "Shortcut prompt cannot be empty": "快捷方式提示词不能为空",
+  "Maximum %d editable shortcuts allowed": "最多允许 %d 个可编辑快捷方式",
+  "Label": "标签",
+  "Prompt": "提示词",
+  "Save": "保存",
+
+  // ── Button labels ────────────────────────────────────────────────────────────
+  "Starting…": "启动中...",
+  "Cancel (Esc)": "取消 (Esc)",
+  "Editing": "编辑中",
+  "Thinking": "思考中",
+  "Summary": "摘要",
+  "Details": "详情",
+  "(empty)": "(空)",
+  "Before": "之前",
+  "After": "之后",
+  "Select all": "全选",
+  "Clear all": "清除全部",
+  "Move to": "移动到",
+  "Suggested tags": "建议标签",
+  "Add tag": "添加标签",
+  "Open ↗": "打开 ↗",
+  "Sort:": "排序:",
+  "Loading…": "加载中...",
+  "Loading agent activity...": "正在加载代理活动...",
+  "No retryable response found": "未找到可重试的响应",
+
+  // ── Additional UI labels ────────────────────────────────────────────────────
+  "Apply": "应用",
+  "Remove": "移除",
+  "Open": "打开",
+  "Close": "关闭",
+  "Text": "文本",
+  "File": "文件",
+  "Note": "笔记",
+  "PDF": "PDF",
+  "MD": "MD",
+  "Text Context": "文本上下文",
+  "Instant": "即时",
+  "Standard Thinking": "标准推理",
+  "Extended Thinking": "扩展推理",
+  "Related Work": "相关工作",
+  "Open Chat": "开放对话",
+  "Paper Chat": "论文对话",
+  "Library Chat": "文献库对话",
+  "local": "本地",
+  "cloud": "云端",
+
+  // ── Status messages ────────────────────────────────────────────────────────
+  "Error": "错误",
+  "Captured partial response — final answer not verified": "已捕获部分响应 — 最终答案未验证",
+  "Figure context added.": "图片上下文已添加。",
+  "File context added.": "文件上下文已添加。",
+
+  // ── Confirmation dialogs ───────────────────────────────────────────────────
+  "Restore to default": "恢复默认",
+  "Confirm": "确认",
+  "Restore %s to the shipped default? Your customizations in this file will be lost.": "将 %s 恢复为默认版本？此文件中的自定义内容将会丢失。",
+
+  // ── Additional labels ────────────────────────────────────────────────────
+  "Draft": "草稿",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────

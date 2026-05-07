@@ -5,6 +5,7 @@ import {
   CUSTOM_SHORTCUT_ID_PREFIX,
 } from "./constants";
 import type { CustomShortcut } from "./types";
+import { t } from "../../utils/i18n";
 import {
   shortcutTextCache,
   shortcutMoveModeState,
@@ -124,17 +125,18 @@ export async function renderShortcuts(
       }
     }
     const labelText = (labelOverrides[shortcut.id] || shortcut.label).trim();
+    const translatedLabel = t(labelText || shortcut.label);
     editableShortcutsRaw.push({
       id: shortcut.id,
       kind: "builtin",
       prompt: promptText,
-      label: labelText || shortcut.label,
+      label: translatedLabel,
       defaultLabel: shortcut.label,
     });
   }
 
   for (const shortcut of visibleCustomShortcuts) {
-    const label = shortcut.label.trim() || "Custom Shortcut";
+    const label = t(shortcut.label.trim() || "Custom Shortcut");
     editableShortcutsRaw.push({
       id: shortcut.id,
       kind: "custom",
@@ -205,13 +207,13 @@ export async function renderShortcuts(
   };
 
   const addShortcut = async () => {
-    const updated = await openShortcutEditDialog("", "", "Add Shortcut");
+    const updated = await openShortcutEditDialog("", "", t("Add Shortcut"));
     if (!updated) return;
 
     const prompt = updated.prompt.trim();
     if (!prompt) {
       const status = body.querySelector("#llm-status") as HTMLElement | null;
-      if (status) setStatus(status, "Shortcut prompt cannot be empty", "error");
+      if (status) setStatus(status, t("Shortcut prompt cannot be empty"), "error");
       return;
     }
 
@@ -228,7 +230,7 @@ export async function renderShortcuts(
       if (status) {
         setStatus(
           status,
-          `Maximum ${MAX_EDITABLE_SHORTCUTS} editable shortcuts allowed`,
+          t("Maximum %d editable shortcuts allowed").replace("%d", String(MAX_EDITABLE_SHORTCUTS)),
           "error",
         );
       }
@@ -237,7 +239,7 @@ export async function renderShortcuts(
 
     const nextCustomShortcut: CustomShortcut = {
       id: createCustomShortcutId(),
-      label: updated.label.trim() || "Custom Shortcut",
+      label: updated.label.trim() || t("Custom Shortcut"),
       prompt,
     };
     const nextCustomShortcuts = [...currentCustomShortcuts, nextCustomShortcut];
@@ -354,7 +356,7 @@ export async function renderShortcuts(
       ) as HTMLSpanElement;
       handle.className = "llm-shortcut-drag-handle";
       handle.textContent = "≡";
-      handle.title = "Drag to reorder";
+      handle.title = t("Drag to reorder");
       handle.draggable = false;
       handle.addEventListener("click", (e: Event) => {
         e.preventDefault();
@@ -704,7 +706,7 @@ export async function renderShortcuts(
 export async function openShortcutEditDialog(
   initialLabel: string,
   initialPrompt: string,
-  dialogTitle = "Edit Shortcut",
+  dialogTitle = t("Edit Shortcut"),
 ): Promise<{ label: string; prompt: string } | null> {
   const dialogData: { [key: string]: any } = {
     labelValue: initialLabel || "",
@@ -727,7 +729,7 @@ export async function openShortcutEditDialog(
       tag: "label",
       namespace: "html",
       attributes: { for: "llm-shortcut-label-input" },
-      properties: { innerHTML: "Label" },
+      properties: { innerHTML: t("Label") },
     })
     .addCell(
       1,
@@ -751,7 +753,7 @@ export async function openShortcutEditDialog(
       tag: "label",
       namespace: "html",
       attributes: { for: "llm-shortcut-prompt-input" },
-      properties: { innerHTML: "Prompt" },
+      properties: { innerHTML: t("Prompt") },
     })
     .addCell(
       2,
@@ -771,8 +773,8 @@ export async function openShortcutEditDialog(
       },
       false,
     )
-    .addButton("Save", "save")
-    .addButton("Cancel", "cancel")
+    .addButton(t("Save"), "save")
+    .addButton(t("Cancel"), "cancel")
     .setDialogData(dialogData)
     .open(dialogTitle);
 
@@ -803,17 +805,17 @@ export async function openResetShortcutsDialog(): Promise<boolean> {
       tag: "div",
       namespace: "html",
       properties: {
-        innerHTML: "Reset all shortcuts to default settings?",
+        innerHTML: t("Reset all shortcuts to default settings?"),
       },
       styles: {
         width: "320px",
         lineHeight: "1.45",
       },
     })
-    .addButton("Reset", "reset")
-    .addButton("Cancel", "cancel")
+    .addButton(t("Reset"), "reset")
+    .addButton(t("Cancel"), "cancel")
     .setDialogData(dialogData)
-    .open("Reset Shortcuts");
+    .open(t("Reset Shortcuts"));
 
   addon.data.dialog = dialog;
   await dialogData.unloadLock.promise;
