@@ -80,10 +80,10 @@ export const ACTION_LAYOUT_MODEL_FULL_MAX_LINES = 3;
 export const CUSTOM_SHORTCUT_ID_PREFIX = "custom-shortcut";
 
 export const BUILTIN_SHORTCUT_FILES = [
-  { id: "summarize", label: "Summarize", file: "summarize.txt" },
-  { id: "key-points", label: "Key Points", file: "key-points.txt" },
-  { id: "methodology", label: "Methodology", file: "methodology.txt" },
-  { id: "limitations", label: "Limitations", file: "limitations.txt" },
+  { id: "summarize", label: t("Summarize"), file: "summarize.txt" },
+  { id: "key-points", label: t("Key Points"), file: "key-points.txt" },
+  { id: "methodology", label: t("Methodology"), file: "methodology.txt" },
+  { id: "limitations", label: t("Limitations"), file: "limitations.txt" },
 ] as const;
 
 
