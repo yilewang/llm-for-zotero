@@ -607,6 +607,18 @@ const zhCN: Record<string, string> = {
 
   // ── Additional labels ────────────────────────────────────────────────────
   "Draft": "草稿",
+
+  // ── setupHandlers.ts missing translations ────────────────────────────────
+  "Agent (beta)": "Agent（测试版）",
+  "Add collection as context": "添加文献集为上下文",
+  "Attachment removed": "附件已移除",
+  "Collection already selected": "文献集已选中",
+  "Collection context added.": "文献集上下文已添加",
+  "PDF mode is not supported by this model. Switched to Text/MD mode.": "此模型不支持 PDF 模式，已切换到文本/MD 模式",
+  "New chat — send a message to start": "新对话 — 发送消息开始",
+  "Loading Claude commands…": "正在加载 Claude 命令…",
+  "Skills": "技能",
+  "Test failed: ": "测试失败：",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────
