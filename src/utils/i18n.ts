@@ -635,6 +635,24 @@ const zhCN: Record<string, string> = {
   "Fetching…": "获取中…",
   "Untitled chat": "无标题对话",
   "Web History": "网页历史",
+
+  // ── preferenceScript.ts missing translations ────────────────────────────
+  "auto": "自动",
+  "Install/update Zotero MCP config": "安装/更新 Zotero MCP 配置",
+  "Using API key from your %provider% provider": "使用你 %provider% 服务商的 API 密钥",
+  "API key configured": "API 密钥已配置",
+  "Estimated cost": "预计费用",
+  "Configuring Zotero MCP tools…": "正在配置 Zotero MCP 工具…",
+  "Checking Zotero MCP setup…": "正在检查 Zotero MCP 配置…",
+  "Zotero MCP configured. Use setup if tools do not appear.": "Zotero MCP 已配置。如工具未出现请使用设置。",
+  "Zotero MCP tools enabled but not configured yet.": "Zotero MCP 工具已启用但尚未配置。",
+  "Could not read Codex MCP status: ": "无法读取 Codex MCP 状态：",
+  "Template updated locally": "模板已本地更新",
+  "Reset to default template": "重置为默认模板",
+  "Updating CLAUDE.md…": "正在更新 CLAUDE.md…",
+  "Managed block updated": "受管理块已更新",
+  "Failed to update CLAUDE.md": "更新 CLAUDE.md 失败",
+  "Enter a directory path first": "请先输入目录路径",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────
