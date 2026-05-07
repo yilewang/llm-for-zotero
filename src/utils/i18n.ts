@@ -540,6 +540,11 @@ const zhCN: Record<string, string> = {
   "WebChat only requires uploading PDF once per session. If already uploaded, no need to send again.": "WebChat 每个会话只需上传一次 PDF。如果已上传，无需再次发送。",
   "WebChat mode always uses PDF. Right-click to toggle send/skip.": "WebChat 模式始终使用 PDF。右键点击可切换发送/跳过。",
   "Next query will not attach PDF.": "下一次查询不会附加 PDF。",
+  "Codex CLI Path": "Codex CLI 路径",
+  "Copy code & open GitHub": "复制代码并打开 GitHub",
+  "Could not open PDF": "无法打开 PDF",
+  "History": "历史",
+  "Queued 1 follow-up": "已排队 1 个跟进任务",
 
   // ── Shortcut buttons ─────────────────────────────────────────────────────────
   "Custom Shortcut": "自定义快捷方式",
