@@ -1,1 +1,1 @@
-描述本文所采用的研究方法。
+Describe the methodology used in the paper.
