@@ -27,21 +27,47 @@ import {
   resetShortcutsToDefault,
 } from "./prefHelpers";
 import { setStatus } from "./textUtils";
+import { t } from "../../utils/i18n";
 
 const shortcutRenderGeneration = new WeakMap<Element, number>();
 
-export async function loadShortcutText(file: string): Promise<string> {
-  if (shortcutTextCache.has(file)) {
-    return shortcutTextCache.get(file)!;
+function getLocaleSuffix(): string {
+  const locale = (Zotero as unknown as { locale?: string }).locale || "en-US";
+  if (locale.startsWith("zh")) {
+    return ".zh-CN";
   }
-  const uri = `chrome://${config.addonRef}/content/shortcuts/${file}`;
+  return "";
+}
+
+export async function loadShortcutText(file: string): Promise<string> {
+  const localeSuffix = getLocaleSuffix();
+  const nameWithoutExt = file.replace(/\.[^.]+$/, "");
+  const ext = file.match(/\.[^.]+$/)?.[0] || ".txt";
+  
+  const localizedFile = `${nameWithoutExt}${localeSuffix}${ext}`;
+  const cacheKey = `${file}:${localeSuffix}`;
+  
+  if (shortcutTextCache.has(cacheKey)) {
+    return shortcutTextCache.get(cacheKey)!;
+  }
+  
+  const localizedUri = `chrome://${config.addonRef}/content/shortcuts/${localizedFile}`;
   const fetchFn = ztoolkit.getGlobal("fetch") as typeof fetch;
-  const res = await fetchFn(uri);
-  if (!res.ok) {
+  
+  const res = await fetchFn(localizedUri);
+  if (res.ok) {
+    const text = await res.text();
+    shortcutTextCache.set(cacheKey, text);
+    return text;
+  }
+  
+  const fallbackUri = `chrome://${config.addonRef}/content/shortcuts/${file}`;
+  const fallbackRes = await fetchFn(fallbackUri);
+  if (!fallbackRes.ok) {
     throw new Error(`Failed to load ${file}`);
   }
-  const text = await res.text();
-  shortcutTextCache.set(file, text);
+  const text = await fallbackRes.text();
+  shortcutTextCache.set(cacheKey, text);
   return text;
 }
 
