@@ -945,6 +945,242 @@ describe("agentTrace render", function () {
     });
   });
 
+  it("joins streamed interleaved text across hidden provider events", function () {
+    const sentence =
+      "Now let me find the Obsidian vault location and look for any existing note for this paper.";
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: "Now let me find",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "provider_event",
+        payload: {
+          type: "provider_event",
+          providerType: "claude_code",
+          payload: { kind: "stream_tick" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text:
+            " the Obsidian vault location and look for any existing note for this paper.",
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-1",
+        seq: 4,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "Bash",
+          args: { command: "pwd" },
+        },
+        createdAt: 4,
+      },
+    ];
+
+    const { items, isInterleaved } = buildAgentTraceDisplayItems(
+      events,
+      null,
+      {
+        role: "assistant",
+        text: sentence,
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Claude Code",
+      },
+    );
+    const inlineTexts = items
+      .filter(
+        (
+          item,
+        ): item is Extract<(typeof items)[number], { type: "inline_text" }> =>
+          item.type === "inline_text",
+      )
+      .map((item) => item.text);
+
+    assert.isTrue(isInterleaved);
+    assert.deepEqual(inlineTexts, [sentence]);
+  });
+
+  it("deduplicates full assistant replays after streamed inline chunks", function () {
+    const sentence =
+      "Now let me find the Obsidian vault location and look for any existing note for this paper.";
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: "Now let me find",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "provider_event",
+        payload: {
+          type: "provider_event",
+          providerType: "claude_code",
+          payload: { kind: "stream_tick" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text:
+            " the Obsidian vault location and look for any existing note for this paper.",
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-1",
+        seq: 4,
+        eventType: "provider_event",
+        payload: {
+          type: "provider_event",
+          providerType: "claude_code",
+          payload: { kind: "assistant_message" },
+        },
+        createdAt: 4,
+      },
+      {
+        runId: "run-1",
+        seq: 5,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: sentence,
+        },
+        createdAt: 5,
+      },
+      {
+        runId: "run-1",
+        seq: 6,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "Bash",
+          args: { command: "pwd" },
+        },
+        createdAt: 6,
+      },
+    ];
+
+    const { items, isInterleaved } = buildAgentTraceDisplayItems(
+      events,
+      null,
+      {
+        role: "assistant",
+        text: sentence,
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Claude Code",
+      },
+    );
+    const inlineTexts = items
+      .filter(
+        (
+          item,
+        ): item is Extract<(typeof items)[number], { type: "inline_text" }> =>
+          item.type === "inline_text",
+      )
+      .map((item) => item.text);
+
+    assert.isTrue(isInterleaved);
+    assert.deepEqual(inlineTexts, [sentence]);
+  });
+
+  it("keeps repeated words when a streamed continuation starts with whitespace", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: "dog",
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "provider_event",
+        payload: {
+          type: "provider_event",
+          providerType: "claude_code",
+          payload: { kind: "stream_tick" },
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "message_delta",
+        payload: {
+          type: "message_delta",
+          text: " dog",
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-1",
+        seq: 4,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-1",
+          name: "Bash",
+          args: { command: "pwd" },
+        },
+        createdAt: 4,
+      },
+    ];
+
+    const { items, isInterleaved } = buildAgentTraceDisplayItems(
+      events,
+      null,
+      {
+        role: "assistant",
+        text: "dog dog",
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Claude Code",
+      },
+    );
+    const inlineText = items.find((item) => item.type === "inline_text");
+
+    assert.isTrue(isInterleaved);
+    assert.deepEqual(inlineText, {
+      type: "inline_text",
+      text: "dog dog",
+    });
+  });
+
   it("deduplicates repeated interleaved text chunks around tool calls", function () {
     const events: AgentRunEventRecord[] = [
       {

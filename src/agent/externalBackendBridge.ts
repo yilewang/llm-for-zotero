@@ -467,6 +467,20 @@ function getAgentPermissionModePref(): "safe" | "yolo" {
   }
 }
 
+function buildAgentPermissionMetadata(): {
+  permissionMode: "safe" | "yolo";
+  allowDangerouslySkipPermissions?: true;
+} {
+  const permissionMode = getAgentPermissionModePref();
+  if (permissionMode === "yolo") {
+    return {
+      permissionMode,
+      allowDangerouslySkipPermissions: true,
+    };
+  }
+  return { permissionMode };
+}
+
 function isClaudeCodeModeEnabled(): boolean {
   try {
     const enabled = Zotero.Prefs.get(`${config.prefsPrefix}.enableClaudeCodeMode`, true);
@@ -790,7 +804,7 @@ async function runExternalBridgeTurn(
       claudeConfigSource: getClaudeConfigSourcePref(),
       claudeSettingSources: getClaudeSettingSourcesByPref(),
       settingSources: getClaudeSettingSourcesCsvByPref(),
-      permissionMode: getAgentPermissionModePref(),
+      ...buildAgentPermissionMetadata(),
       customInstruction: getClaudeCustomInstructionPref(),
       providerIdentity,
       providerIdentityStack,
@@ -1903,7 +1917,7 @@ export function createExternalBackendBridgeRuntime(options: {
             claudeConfigSource: getClaudeConfigSourcePref(),
             claudeSettingSources: getClaudeSettingSourcesByPref(),
             settingSources: getClaudeSettingSourcesCsvByPref(),
-            permissionMode: getAgentPermissionModePref(),
+            ...buildAgentPermissionMetadata(),
             providerIdentity,
             providerIdentityStack,
             scopeType: actionScope?.scopeType,

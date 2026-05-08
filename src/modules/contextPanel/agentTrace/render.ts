@@ -2529,6 +2529,70 @@ function normalizeInlineTextForDedupe(text: string): string {
   return sanitizeText(text).replace(/\s+/g, " ").trim();
 }
 
+function replaceInlineTextDedupeKey(
+  visibleInlineText: Set<string>,
+  previousText: string,
+  nextText: string,
+): void {
+  const previousKey = normalizeInlineTextForDedupe(previousText);
+  if (previousKey) visibleInlineText.delete(previousKey);
+  const nextKey = normalizeInlineTextForDedupe(nextText);
+  if (nextKey) visibleInlineText.add(nextKey);
+}
+
+function appendInterleavedInlineText(
+  items: AgentTraceDisplayItem[],
+  rawText: string,
+  visibleInlineText: Set<string>,
+): void {
+  const chunk = sanitizeText(rawText || "");
+  if (!chunk) return;
+
+  const lastItem = items[items.length - 1];
+  if (lastItem?.type === "inline_text") {
+    if (!chunk.trim()) {
+      lastItem.text += chunk;
+      return;
+    }
+
+    const previousText = lastItem.text;
+    const previousKey = normalizeInlineTextForDedupe(previousText);
+    const chunkKey = normalizeInlineTextForDedupe(chunk);
+    const chunkLooksLikeReplay = !/^\s/.test(chunk);
+
+    if (!chunkKey) return;
+    if (
+      chunkLooksLikeReplay &&
+      (chunkKey === previousKey || previousKey.endsWith(chunkKey))
+    ) {
+      return;
+    }
+
+    if (
+      chunkLooksLikeReplay &&
+      previousKey &&
+      chunkKey.startsWith(previousKey)
+    ) {
+      const nextText = chunk.trim();
+      lastItem.text = nextText;
+      replaceInlineTextDedupeKey(visibleInlineText, previousText, nextText);
+      return;
+    }
+
+    const nextText = `${previousText}${chunk}`;
+    lastItem.text = nextText;
+    replaceInlineTextDedupeKey(visibleInlineText, previousText, nextText);
+    return;
+  }
+
+  const text = chunk.trim();
+  if (!text) return;
+  const dedupeKey = normalizeInlineTextForDedupe(text);
+  if (!dedupeKey || visibleInlineText.has(dedupeKey)) return;
+  visibleInlineText.add(dedupeKey);
+  items.push({ type: "inline_text", text });
+}
+
 export function buildAgentTraceDisplayItems(
   events: AgentRunEventRecord[],
   userMessage: Message | null | undefined,
@@ -2766,12 +2830,11 @@ export function buildAgentTraceDisplayItems(
       }
       case "message_delta": {
         if (isInterleaved) {
-          const deltaText = (entry.payload.text || "").trim();
-          const dedupeKey = normalizeInlineTextForDedupe(deltaText);
-          if (deltaText && !visibleInlineText.has(dedupeKey)) {
-            visibleInlineText.add(dedupeKey);
-            items.push({ type: "inline_text", text: deltaText });
-          }
+          appendInterleavedInlineText(
+            items,
+            entry.payload.text || "",
+            visibleInlineText,
+          );
         } else {
           if (!announcedWriting) {
             announcedWriting = true;
