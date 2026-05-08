@@ -3357,7 +3357,7 @@ export function setupHandlers(
       previewStrip.innerHTML = "";
       previewSelected.style.display = "none";
       previewSelectedImg.removeAttribute("src");
-      previewSelectedImg.alt = "Selected screenshot preview";
+      previewSelectedImg.alt = t("Selected screenshot preview");
       previewMeta.textContent = formatFigureCountLabel(0);
       previewMeta.classList.remove("expanded");
       previewMeta.setAttribute("aria-expanded", "false");
@@ -3366,7 +3366,7 @@ export function setupHandlers(
       screenshotBtn.disabled = screenshotUnsupported;
       screenshotBtn.title = screenshotUnsupported
         ? screenshotDisabledHint
-        : "Select figure screenshot";
+        : t("Select figure screenshot");
     }
     applyResponsiveActionButtonsLayout();
   };

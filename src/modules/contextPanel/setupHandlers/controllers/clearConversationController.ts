@@ -1,3 +1,5 @@
+import { t } from "../../../../utils/i18n";
+
 type StatusLevel = "ready" | "warning" | "error";
 
 type ClearConversationControllerDeps = {
@@ -99,7 +101,7 @@ export function createClearConversationController(
     deps.refreshChatPreservingScroll();
     await deps.refreshGlobalHistoryHeader();
     deps.scheduleAttachmentGc();
-    deps.setStatusMessage?.("Cleared", "ready");
+    deps.setStatusMessage?.(t("Cleared"), "ready");
   };
 
   return { clearCurrentConversation };

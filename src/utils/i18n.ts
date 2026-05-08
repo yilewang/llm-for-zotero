@@ -538,6 +538,13 @@ const zhCN: Record<string, string> = {
   "XHigh": "极高",
   // ── WebChat hints ────────────────────────────────────────────────────────────
   "WebChat only requires uploading PDF once per session. If already uploaded, no need to send again.": "WebChat 每个会话只需上传一次 PDF。如果已上传，无需再次发送。",
+  "WebChat mode always uses PDF. Right-click to toggle send/skip.": "WebChat 模式始终使用 PDF。右键点击可切换发送/跳过。",
+  "Next query will not attach PDF.": "下一次查询不会附加 PDF。",
+  "Codex CLI Path": "Codex CLI 路径",
+  "Copy code & open GitHub": "复制代码并打开 GitHub",
+  "Could not open PDF": "无法打开 PDF",
+  "History": "历史",
+  "Queued 1 follow-up": "已排队 1 个跟进任务",
 
   // ── Shortcut buttons ─────────────────────────────────────────────────────────
   "Custom Shortcut": "自定义快捷方式",
@@ -565,6 +572,7 @@ const zhCN: Record<string, string> = {
   "Select all": "全选",
   "Clear all": "清除全部",
   "Move to": "移动到",
+  "Cleared": "已清除",
   "Suggested tags": "建议标签",
   "Add tag": "添加标签",
   "Open ↗": "打开 ↗",
@@ -607,6 +615,61 @@ const zhCN: Record<string, string> = {
 
   // ── Additional labels ────────────────────────────────────────────────────
   "Draft": "草稿",
+
+  // ── setupHandlers.ts missing translations ────────────────────────────────
+  "Agent (beta)": "Agent（测试版）",
+  "Add collection as context": "添加文献集为上下文",
+  "Attachment removed": "附件已移除",
+  "Collection already selected": "文献集已选中",
+  "Collection context added.": "文献集上下文已添加",
+  "PDF mode is not supported by this model. Switched to Text/MD mode.": "此模型不支持 PDF 模式，已切换到文本/MD 模式",
+  "New chat — send a message to start": "新对话 — 发送消息开始",
+  "Loading Claude commands…": "正在加载 Claude 命令…",
+  "Skills": "技能",
+  "Test failed: ": "测试失败：",
+
+  // ── standaloneWindow.ts missing translations ────────────────────────────
+  "New skill": "新技能",
+  "Checking…": "检查中…",
+  "Up to date": "已是最新",
+  "Update failed": "更新失败",
+  "Chat is open in a separate window": "聊天已在独立窗口中打开",
+  "Focus Window": "聚焦窗口",
+  "Close Window & Return Here": "关闭窗口并返回此处",
+  "Toggle sidebar": "切换侧边栏",
+  "New chat": "新对话",
+  "Search history": "搜索历史",
+  "Refresh web history": "刷新网页历史",
+  "Fetching…": "获取中…",
+  "Untitled chat": "无标题对话",
+  "Web History": "网页历史",
+
+  // ── preferenceScript.ts missing translations ────────────────────────────
+  "auto": "自动",
+  "Install/update Zotero MCP config": "安装/更新 Zotero MCP 配置",
+  "Using API key from your %provider% provider": "使用你 %provider% 服务商的 API 密钥",
+  "API key configured": "API 密钥已配置",
+  "Estimated cost": "预计费用",
+  "Configuring Zotero MCP tools…": "正在配置 Zotero MCP 工具…",
+  "Checking Zotero MCP setup…": "正在检查 Zotero MCP 配置…",
+  "Zotero MCP configured. Use setup if tools do not appear.": "Zotero MCP 已配置。如工具未出现请使用设置。",
+  "Zotero MCP tools enabled but not configured yet.": "Zotero MCP 工具已启用但尚未配置。",
+  "Could not read Codex MCP status: ": "无法读取 Codex MCP 状态：",
+  "Template updated locally": "模板已本地更新",
+  "Reset to default template": "重置为默认模板",
+  "Updating CLAUDE.md…": "正在更新 CLAUDE.md…",
+  "Managed block updated": "受管理块已更新",
+  "Failed to update CLAUDE.md": "更新 CLAUDE.md 失败",
+  "Enter a directory path first": "请先输入目录路径",
+
+  // ── Other files missing translations ────────────────────────────────────
+  "Show in file system": "在文件系统中显示",
+  "Check for updates": "检查更新",
+  "Failed to fetch history": "获取历史失败",
+  "Failed to load selected DeepSeek conversation": "加载选中的 DeepSeek 对话失败",
+  "Failed to load selected conversation": "加载选中的对话失败",
+  "Failed to load skills": "加载技能失败",
+  "No matching history": "没有匹配的历史",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────
