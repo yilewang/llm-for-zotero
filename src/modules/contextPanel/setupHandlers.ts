@@ -1,5 +1,5 @@
 import { createElement } from "../../utils/domHelpers";
-import { t } from "../../utils/i18n";
+import { t, tf } from "../../utils/i18n";
 import { getAllSkills } from "../../agent/skills";
 import type { AgentSkill } from "../../agent/skills/skillLoader";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
@@ -3331,10 +3331,10 @@ export function setupHandlers(
           updateImagePreviewPreservingScroll();
           if (status) {
             setStatus(
-              status,
-              `Screenshot removed (${nextImages.length})`,
-              "ready",
-            );
+            status,
+            tf("Screenshot removed (%d)", nextImages.length),
+            "ready",
+          );
           }
         });
         thumbItem.append(thumbBtn, removeOneBtn);

@@ -24,6 +24,7 @@ import {
 } from "../portalScope";
 import { mergeCitationPaperContexts } from "../citationContexts";
 import { renderPendingActionCard } from "../agentTrace/render";
+import { t, tf } from "../../utils/i18n";
 
 function buildPendingAgentTraceEvents(body?: Element): AgentRunEventRecord[] {
   const now = Date.now();
@@ -664,7 +665,7 @@ export async function sendAgentTurn(
       webChatActive: effectiveRequestConfig.providerProtocol === "web_sync",
     });
   setStatusSafely(
-    "Checking the request against the attached context.",
+    t("Checking the request against the attached context."),
     "sending",
   );
   refreshChatSafely();
@@ -790,7 +791,7 @@ export async function sendAgentTurn(
     deps.finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
     await persistAssistantOnce();
-    setStatusSafely("Cancelled", "ready");
+    setStatusSafely(t("Cancelled"), "ready");
   };
 
   try {
@@ -1004,13 +1005,13 @@ export async function sendAgentTurn(
                 event.action,
               );
             }, 90);
-            setStatusSafely("Approval required", "sending");
+            setStatusSafely(t("Approval required"), "sending");
             return;
           case "confirmation_resolved":
             closeInlineConfirmationCard(body, ui, event.requestId);
             queueRefresh();
             setStatusSafely(
-              event.approved ? "Approval sent" : "Action denied",
+              event.approved ? t("Approval sent") : t("Action denied"),
               "sending",
             );
             return;
@@ -1134,7 +1135,7 @@ export async function sendAgentTurn(
         }),
       ).catch(() => null);
     }
-    setStatusSafely("Ready", "ready");
+    setStatusSafely(t("Ready"), "ready");
   } catch (err) {
     const isCancelled =
       deps.cancelledRequestId(conversationKey) >= thisRequestId ||
@@ -1154,7 +1155,7 @@ export async function sendAgentTurn(
     assistantMessage.streaming = false;
     refreshChatSafely();
     await persistAssistantOnce();
-    setStatusSafely(`Error: ${userFacingError.slice(0, 40)}`, "error");
+    setStatusSafely(tf("Error: %s", userFacingError.slice(0, 40)), "error");
   } finally {
     deps.setPendingRequestId(conversationKey, 0);
     deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
@@ -1272,7 +1273,7 @@ export async function retryAgentTurn(
     selectedCollectionContexts,
   } = deps.reconstructRetryPayload(retryPair.userMessage);
   if (!question.trim()) {
-    setStatusSafely("Nothing to retry for latest turn", "error");
+    setStatusSafely(t("Nothing to retry for latest turn"), "error");
     deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
     return;
   }
@@ -1335,7 +1336,7 @@ export async function retryAgentTurn(
     deps.finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
     await persistAssistantOnce();
-    setStatusSafely("Cancelled", "ready");
+    setStatusSafely(t("Cancelled"), "ready");
   };
 
   const agentRuntime = deps.getAgentRuntime();
@@ -1557,13 +1558,13 @@ export async function retryAgentTurn(
                 event.action,
               );
             }, 90);
-            setStatusSafely("Approval required", "sending");
+            setStatusSafely(t("Approval required"), "sending");
             return;
           case "confirmation_resolved":
             closeInlineConfirmationCard(body, ui, event.requestId);
             queueRefresh();
             setStatusSafely(
-              event.approved ? "Approval sent" : "Action denied",
+              event.approved ? t("Approval sent") : t("Action denied"),
               "sending",
             );
             return;
@@ -1682,7 +1683,7 @@ export async function retryAgentTurn(
         }),
       ).catch(() => null);
     }
-    setStatusSafely("Ready", "ready");
+    setStatusSafely(t("Ready"), "ready");
   } catch (err) {
     const isCancelled =
       deps.cancelledRequestId(conversationKey) >= thisRequestId ||
@@ -1702,7 +1703,7 @@ export async function retryAgentTurn(
     assistantMessage.streaming = false;
     refreshChatSafely();
     await persistAssistantOnce();
-    setStatusSafely(`Error: ${userFacingError.slice(0, 40)}`, "error");
+    setStatusSafely(tf("Error: %s", userFacingError.slice(0, 40)), "error");
   } finally {
     deps.setPendingRequestId(conversationKey, 0);
     deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);

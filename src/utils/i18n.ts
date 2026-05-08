@@ -546,6 +546,31 @@ const zhCN: Record<string, string> = {
   "History": "历史",
   "Queued 1 follow-up": "已排队 1 个跟进任务",
 
+  // ── API request status messages ──────────────────────────────────────────────
+  "Using Codex native Zotero tools": "使用 Codex 原生 Zotero 工具",
+  "Using full paper text (first turn)": "使用完整论文文本（第一轮）",
+  "Retrieval%s (%d chunks)": "检索%s（%d个块）",
+  "Using full context (%d papers)": "使用完整上下文（%d篇论文）",
+  "Retrieval%s (%d papers, %d chunks)": "检索%s（%d篇论文，%d个块）",
+  "Nothing to retry for latest turn": "最近一轮没有可重试的内容",
+  "Codex skill activated: %s": "Codex 技能已激活：%s",
+  "Codex: %s started": "Codex：%s 已开始",
+  "Codex: %s completed": "Codex：%s 已完成",
+  "Codex: used %s": "Codex：已使用 %s",
+  "Codex: using %s": "Codex：正在使用 %s",
+  "Codex is waiting for your Zotero review": "Codex 正在等待你的 Zotero 审核",
+  "Codex is waiting for your Zotero approval": "Codex 正在等待你的 Zotero 授权",
+  "Codex approved Zotero MCP access": "Codex 已批准 Zotero MCP 访问",
+  "Codex declined unsupported MCP elicitation": "Codex 拒绝了不支持的 MCP 操作",
+  "Codex denied a built-in or untrusted approval request": "Codex 拒绝了内置或不受信任的授权请求",
+  "Retry failed: %s": "重试失败：%s",
+  "Checking the request against the attached context.": "正在检查请求与附加上下文是否匹配。",
+  "Approval required": "需要授权",
+  "Approval sent": "授权已发送",
+  "Action denied": "操作已拒绝",
+  "Error: %s": "错误：%s",
+  "Screenshot removed (%d)": "截图已移除（%d）",
+
   // ── Shortcut buttons ─────────────────────────────────────────────────────────
   "Custom Shortcut": "自定义快捷方式",
   "Add Shortcut": "添加快捷方式",
@@ -747,6 +772,15 @@ export function t(en: string): string {
     return zhCN[en] ?? en;
   }
   return en;
+}
+
+export function tf(template: string, ...args: unknown[]): string {
+  let translated = t(template);
+  let argIndex = 0;
+  translated = translated.replace(/%s/g, () => String(args[argIndex++] ?? ""));
+  translated = translated.replace(/%d/g, () => String(args[argIndex++] ?? ""));
+  translated = translated.replace(/%n/g, () => String(args[argIndex++] ?? ""));
+  return translated;
 }
 
 /**

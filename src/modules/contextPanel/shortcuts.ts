@@ -27,7 +27,7 @@ import {
   resetShortcutsToDefault,
 } from "./prefHelpers";
 import { setStatus } from "./textUtils";
-import { t } from "../../utils/i18n";
+import { t, tf } from "../../utils/i18n";
 
 const shortcutRenderGeneration = new WeakMap<Element, number>();
 
@@ -237,7 +237,7 @@ export async function renderShortcuts(
     const prompt = updated.prompt.trim();
     if (!prompt) {
       const status = body.querySelector("#llm-status") as HTMLElement | null;
-      if (status) setStatus(status, "Shortcut prompt cannot be empty", "error");
+      if (status) setStatus(status, t("Shortcut prompt cannot be empty"), "error");
       return;
     }
 
@@ -254,7 +254,7 @@ export async function renderShortcuts(
       if (status) {
         setStatus(
           status,
-          `Maximum ${MAX_EDITABLE_SHORTCUTS} editable shortcuts allowed`,
+          tf("Maximum %d editable shortcuts allowed", MAX_EDITABLE_SHORTCUTS),
           "error",
         );
       }
@@ -577,7 +577,7 @@ export async function renderShortcuts(
       if (!nextPrompt) {
         const status = body.querySelector("#llm-status") as HTMLElement | null;
         if (status)
-          setStatus(status, "Shortcut prompt cannot be empty", "error");
+          setStatus(status, t("Shortcut prompt cannot be empty"), "error");
         menu.style.display = "none";
         return;
       }
