@@ -1,14 +1,13 @@
 import type { ProviderCapabilities, ProviderParams } from "../types";
 
 /**
- * Tier 3 — Third-party OpenAI-compatible providers.
+ * Tier 3 — Third-party compatible providers.
  *
  * OpenRouter, relay/proxy services (e.g. right.codes), and any other
- * provider using /v1/chat/completions or /v1/responses endpoints that
- * are NOT hosted by a native first-party provider.  PDFs are sent as
- * data:application/pdf;base64,... inside an image_url content part —
- * relay services pass this through transparently to the underlying
- * model.
+ * provider using OpenAI/Anthropic/Gemini-compatible endpoints that are
+ * NOT hosted by a native first-party provider.  PDFs are rendered to
+ * regular page images before sending; raw PDF bytes are not sent through
+ * image_url.
  */
 
 export function matches(params: ProviderParams): boolean {
@@ -18,13 +17,15 @@ export function matches(params: ProviderParams): boolean {
   return (
     proto === "openai_chat_compat" ||
     proto === "responses_api" ||
+    proto === "anthropic_messages" ||
+    proto === "gemini_native" ||
     (!proto && !auth)
   );
 }
 
 export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
   tier: "third_party",
-  label: "Third-party (OpenAI-compatible)",
-  pdf: "image_url",
+  label: "Third-party compatible",
+  pdf: "vision",
   images: true,
 };

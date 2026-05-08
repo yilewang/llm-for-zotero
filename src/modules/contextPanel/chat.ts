@@ -3603,6 +3603,7 @@ export async function editLatestUserMessageAndRetry(
     fullTextPaperContexts,
     selectedCollectionContexts,
     attachments,
+    modelAttachments,
     pdfUploadSystemMessages,
     targetRuntimeMode,
     expected,
@@ -3812,6 +3813,7 @@ export async function editLatestUserMessageAndRetry(
       modelProviderLabel,
       reasoning,
       advanced,
+      modelAttachments,
     );
   } else {
     await retryLatestAssistantResponse(
@@ -3827,6 +3829,7 @@ export async function editLatestUserMessageAndRetry(
       reasoning,
       advanced,
       pdfUploadSystemMessages,
+      modelAttachments,
     );
   }
   return "ok";
@@ -3850,6 +3853,7 @@ export async function retryLatestAssistantResponse(
   reasoning?: LLMReasoningConfig,
   advanced?: AdvancedModelParams,
   pdfUploadSystemMessages?: string[],
+  modelAttachmentsOverride?: ChatAttachment[],
 ) {
   const ui = getPanelRequestUI(body);
 
@@ -3986,10 +3990,13 @@ export async function retryLatestAssistantResponse(
       return;
     }
   }
-  const requestFileAttachments = normalizeModelFileAttachments(attachments, {
-    authMode: effectiveRequestConfig.authMode,
-    runtimeMode: "chat",
-  });
+  const requestFileAttachments = normalizeModelFileAttachments(
+    modelAttachmentsOverride ?? attachments,
+    {
+      authMode: effectiveRequestConfig.authMode,
+      runtimeMode: "chat",
+    },
+  );
 
   try {
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
@@ -4398,6 +4405,7 @@ export async function editUserTurnAndRetry(opts: {
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   attachments?: ChatAttachment[];
+  modelAttachments?: ChatAttachment[];
   pdfUploadSystemMessages?: string[];
   targetRuntimeMode?: ChatRuntimeMode;
   model?: string;
@@ -4430,6 +4438,7 @@ export async function editUserTurnAndRetry(opts: {
     fullTextPaperContexts,
     selectedCollectionContexts,
     attachments,
+    modelAttachments,
     pdfUploadSystemMessages,
     targetRuntimeMode,
     model,
@@ -4655,6 +4664,7 @@ export async function editUserTurnAndRetry(opts: {
       retryRequestConfig.modelProviderLabel,
       retryRequestConfig.reasoning,
       retryRequestConfig.advanced,
+      modelAttachments,
     );
   } else {
     await retryLatestAssistantResponse(
@@ -4670,6 +4680,7 @@ export async function editUserTurnAndRetry(opts: {
       retryRequestConfig.reasoning,
       retryRequestConfig.advanced,
       pdfUploadSystemMessages,
+      modelAttachments,
     );
   }
 }
@@ -4908,6 +4919,7 @@ async function retryLatestAgentResponse(
   modelProviderLabel?: string,
   reasoning?: LLMReasoningConfig,
   advanced?: AdvancedModelParams,
+  modelAttachmentsOverride?: ChatAttachment[],
 ): Promise<void> {
   const conversationSystem = resolveEffectiveConversationSystem({
     item,
@@ -4927,6 +4939,7 @@ async function retryLatestAgentResponse(
     modelProviderLabel,
     reasoning,
     advanced,
+    modelAttachmentsOverride,
     buildAgentEngineDeps(item, conversationSystem),
   );
 }
@@ -4959,6 +4972,7 @@ async function sendAgentQuestion(opts: {
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   attachments?: ChatAttachment[];
+  modelAttachments?: ChatAttachment[];
   pdfModePaperKeys?: Set<string>;
   forcedSkillIds?: string[];
   pdfUploadSystemMessages?: string[];
@@ -4992,6 +5006,7 @@ export async function sendQuestion(
     fullTextPaperContexts,
     selectedCollectionContexts,
     attachments,
+    modelAttachments,
     runtimeMode = "chat",
     agentRunId,
     skipAgentDispatch = false,
@@ -5033,6 +5048,7 @@ export async function sendQuestion(
       fullTextPaperContexts,
       selectedCollectionContexts,
       attachments,
+      modelAttachments,
       pdfModePaperKeys,
       forcedSkillIds: opts.forcedSkillIds,
       pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
@@ -5139,10 +5155,13 @@ export async function sendQuestion(
   const isCodexNativeTurn =
     effectiveConversationSystem === "codex" &&
     effectiveRequestConfig.authMode === "codex_app_server";
-  const requestFileAttachments = normalizeModelFileAttachments(attachments, {
-    authMode: effectiveRequestConfig.authMode,
-    runtimeMode: effectiveRuntimeMode,
-  });
+  const requestFileAttachments = normalizeModelFileAttachments(
+    modelAttachments ?? attachments,
+    {
+      authMode: effectiveRequestConfig.authMode,
+      runtimeMode: effectiveRuntimeMode,
+    },
+  );
   const selectedTextsForMessage = normalizeSelectedTexts(selectedTexts);
   const selectedTextSourcesForMessage = normalizeSelectedTextSources(
     selectedTextSources,

@@ -66,6 +66,15 @@ function isToolCapableApiBase(request: AgentRuntimeRequest): boolean {
   return true;
 }
 
+function hasPdfFileRef(message: AgentModelMessage): boolean {
+  if (typeof message.content === "string") return false;
+  return message.content.some(
+    (part) =>
+      part.type === "file_ref" &&
+      part.file_ref.mimeType.trim().toLowerCase() === "application/pdf",
+  );
+}
+
 async function buildMessagesPayload(messages: AgentModelMessage[]) {
   const result = [];
   for (const message of messages) {
@@ -82,13 +91,27 @@ async function buildMessagesPayload(messages: AgentModelMessage[]) {
     if (typeof message.content === "string") {
       content = message.content;
     } else {
+      if (hasPdfFileRef(message)) {
+        throw new Error(
+          "OpenAI-compatible chat cannot send unresolved PDF file_ref attachments. Render the PDF to page images or use a native PDF provider.",
+        );
+      }
       const resolved = await resolveContentParts(message);
       const parts: unknown[] = [];
       for (const rp of resolved) {
         switch (rp.type) {
           case "text": parts.push({ type: "text", text: rp.text }); break;
-          case "image": parts.push({ type: "image_url", image_url: { url: `data:${rp.mimeType};base64,${rp.base64}` } }); break;
-          case "pdf": parts.push({ type: "image_url", image_url: { url: `data:application/pdf;base64,${rp.base64}` } }); break;
+          case "image":
+            if (rp.mimeType.trim().toLowerCase() === "application/pdf") {
+              throw new Error(
+                "OpenAI-compatible chat cannot send PDF content as image_url.",
+              );
+            }
+            parts.push({ type: "image_url", image_url: { url: `data:${rp.mimeType};base64,${rp.base64}` } }); break;
+          case "pdf":
+            throw new Error(
+              "OpenAI-compatible chat cannot send PDF content as image_url.",
+            );
           // file_placeholder: silently dropped (no provider support)
         }
       }

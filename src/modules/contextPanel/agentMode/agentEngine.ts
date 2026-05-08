@@ -498,6 +498,7 @@ export async function sendAgentTurn(
     fullTextPaperContexts?: PaperContextRef[];
     selectedCollectionContexts?: CollectionContextRef[];
     attachments?: ChatAttachment[];
+    modelAttachments?: ChatAttachment[];
     forcedSkillIds?: string[];
   },
   deps: AgentEngineDeps,
@@ -525,6 +526,7 @@ export async function sendAgentTurn(
     fullTextPaperContexts,
     selectedCollectionContexts,
     attachments,
+    modelAttachments,
     forcedSkillIds,
   } = opts;
   const conversationKey = deps.getConversationKey(item);
@@ -723,7 +725,7 @@ export async function sendAgentTurn(
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
     selectedCollectionContexts,
-    attachments,
+    attachments: modelAttachments ?? attachments,
     screenshots: images,
     forcedSkillIds,
     effectiveRequestConfig,
@@ -760,6 +762,7 @@ export async function sendAgentTurn(
         fullTextPaperContexts,
         selectedCollectionContexts,
         attachments,
+        modelAttachments,
         runtimeMode: "agent",
         agentRunId: fallback.runId,
         skipAgentDispatch: true,
@@ -1192,6 +1195,7 @@ export async function retryAgentTurn(
   modelProviderLabel: string | undefined,
   reasoning: LLMReasoningConfig | undefined,
   advanced: AdvancedModelParams | undefined,
+  modelAttachmentsOverride: ChatAttachment[] | undefined,
   deps: AgentEngineDeps,
 ): Promise<void> {
   const ui = deps.getPanelRequestUI(body);
@@ -1306,9 +1310,9 @@ export async function retryAgentTurn(
     paperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
-    attachments: retryPair.userMessage.attachments?.filter(
-      (a) => a.category !== "image",
-    ),
+    attachments:
+      modelAttachmentsOverride ??
+      retryPair.userMessage.attachments?.filter((a) => a.category !== "image"),
     screenshots: screenshotImages,
     effectiveRequestConfig,
     history: historyForLLM,

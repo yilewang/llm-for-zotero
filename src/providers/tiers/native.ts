@@ -14,8 +14,6 @@ import { detectProviderPreset } from "../../utils/providerPresets";
  */
 
 export function matches(params: ProviderParams): boolean {
-  const proto = (params.protocol || "").toLowerCase();
-  if (proto === "anthropic_messages" || proto === "gemini_native") return true;
   // Only match for actual first-party provider endpoints
   const preset = detectProviderPreset(params.apiBase || "");
   return (

@@ -11173,13 +11173,18 @@ export function setupHandlers(
       }
       return results;
     },
-    renderPdfPagesAsImages: async (paperContexts) => {
+    renderPdfPagesAsImages: async (paperContexts, maxImages) => {
       const { renderAllPdfPages } = await import("../../agent/services/pdfPageService");
       const dataUrls: string[] = [];
+      const limit = Math.max(0, Math.floor(maxImages ?? MAX_SELECTED_IMAGES));
       for (const pc of paperContexts) {
+        if (dataUrls.length >= limit) break;
         try {
-          const pages = await renderAllPdfPages(pc.contextItemId);
+          const pages = await renderAllPdfPages(pc.contextItemId, {
+            maxPages: Math.max(0, limit - dataUrls.length),
+          });
           for (const page of pages) {
+            if (dataUrls.length >= limit) break;
             // Read the persisted PNG and convert to data URL for the image pipeline
             const bytes = await readAttachmentBytes(page.storedPath);
             if (bytes.byteLength > 0) {
@@ -11218,14 +11223,6 @@ export function setupHandlers(
       })();
       if (!filePath) throw new Error("Could not locate PDF file");
       return readAttachmentBytes(filePath);
-    },
-    encodeBytesBase64: (bytes: Uint8Array<ArrayBufferLike>) => {
-      let binaryStr = "";
-      const chunkSize = 0x8000;
-      for (let i = 0; i < bytes.length; i += chunkSize) {
-        binaryStr += String.fromCharCode(...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)));
-      }
-      return btoa(binaryStr);
     },
     getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],
     getSelectedImages: (itemId) => selectedImageCache.get(itemId) || [],
@@ -11452,11 +11449,27 @@ export function setupHandlers(
       const pdfPageImageDataUrls: string[] = [];
       const pdfUploadSystemMessages: string[] = [];
       if (pdfModePapers.length) {
-        if (
-          pdfSupport === "upload" &&
-          selectedProfile?.apiBase &&
-          selectedProfile?.apiKey
-        ) {
+        if (pdfSupport === "none") {
+          if (status) {
+            setStatus(
+              status,
+              "This model does not support PDF or image input. Remove the PDF attachment or switch models.",
+              "error",
+            );
+          }
+          return;
+        }
+        if (pdfSupport === "upload") {
+          if (!selectedProfile?.apiBase || !selectedProfile?.apiKey) {
+            if (status) {
+              setStatus(
+                status,
+                "PDF upload requires a configured provider API key.",
+                "error",
+              );
+            }
+            return;
+          }
           const { detectPdfUploadProvider, uploadPdfForProvider } =
             await import("../../utils/pdfUploadPreprocessor");
           const provider = detectPdfUploadProvider(selectedProfile.apiBase);
@@ -11501,6 +11514,9 @@ export function setupHandlers(
               });
               if (result) {
                 pdfUploadSystemMessages.push(result.systemMessageContent);
+              } else {
+                if (status) setStatus(status, "PDF upload failed.", "error");
+                return;
               }
             } catch (err) {
               ztoolkit.log(
@@ -11508,62 +11524,28 @@ export function setupHandlers(
                 pc.contextItemId,
                 err,
               );
-            }
-          }
-        } else if (pdfSupport === "image_url") {
-          for (const pc of pdfModePapers) {
-            try {
-              const attachment = Zotero.Items.get(pc.contextItemId);
-              if (
-                !attachment?.isAttachment?.() ||
-                attachment.attachmentContentType !== "application/pdf"
-              ) {
-                continue;
-              }
-              const filePath = await (async () => {
-                const asyncPath = await (
-                  attachment as unknown as {
-                    getFilePathAsync?: () => Promise<string | false>;
-                  }
-                ).getFilePathAsync?.();
-                if (asyncPath) return asyncPath as string;
-                if (
-                  typeof (attachment as { getFilePath?: () => string | undefined })
-                    .getFilePath === "function"
-                ) {
-                  return (
-                    attachment as { getFilePath: () => string | undefined }
-                  ).getFilePath();
-                }
-                return (attachment as unknown as { attachmentPath?: string })
-                  .attachmentPath;
-              })();
-              if (!filePath) continue;
-              const bytes = await readAttachmentBytes(filePath);
-              let binaryStr = "";
-              const chunkSize = 0x8000;
-              for (let i = 0; i < bytes.length; i += chunkSize) {
-                binaryStr += String.fromCharCode(
-                  ...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)),
-                );
-              }
-              pdfPageImageDataUrls.push(
-                `data:application/pdf;base64,${btoa(binaryStr)}`,
-              );
-            } catch (err) {
-              ztoolkit.log(
-                "LLM: Failed to encode PDF paper for edit",
-                pc.contextItemId,
-                err,
-              );
+              if (status) setStatus(status, "PDF upload failed.", "error");
+              return;
             }
           }
         } else if (pdfSupport === "vision") {
+          if (status) {
+            setStatus(
+              status,
+              "This provider cannot read PDFs directly. Sending the Zotero PDF as page images.",
+              "warning",
+            );
+          }
           const { renderAllPdfPages } = await import("../../agent/services/pdfPageService");
+          let remainingPdfImages = MAX_SELECTED_IMAGES;
           for (const pc of pdfModePapers) {
+            if (remainingPdfImages <= 0) break;
             try {
-              const pages = await renderAllPdfPages(pc.contextItemId);
+              const pages = await renderAllPdfPages(pc.contextItemId, {
+                maxPages: remainingPdfImages,
+              });
               for (const page of pages) {
+                if (remainingPdfImages <= 0) break;
                 const bytes = await readAttachmentBytes(page.storedPath);
                 if (bytes.byteLength <= 0) continue;
                 let binaryStr = "";
@@ -11576,10 +11558,17 @@ export function setupHandlers(
                 pdfPageImageDataUrls.push(
                   `data:image/png;base64,${btoa(binaryStr)}`,
                 );
+                remainingPdfImages -= 1;
               }
             } catch (err) {
               ztoolkit.log("LLM: Failed to render PDF pages for edit", pc.contextItemId, err);
+              if (status) setStatus(status, "PDF page rendering failed.", "error");
+              return;
             }
+          }
+          if (!pdfPageImageDataUrls.length) {
+            if (status) setStatus(status, "PDF page rendering failed.", "error");
+            return;
           }
         } else if (pdfSupport === "native") {
           for (const pc of pdfModePapers) {
@@ -11611,11 +11600,73 @@ export function setupHandlers(
             }
           }
         }
+        if (pdfSupport !== "native") {
+          for (const pc of pdfModePapers) {
+            try {
+              const attachment = Zotero.Items.get(pc.contextItemId);
+              if (!attachment?.isAttachment?.() || attachment.attachmentContentType !== "application/pdf") continue;
+              const filePath = await (async () => {
+                const asyncPath = await (attachment as unknown as { getFilePathAsync?: () => Promise<string | false> }).getFilePathAsync?.();
+                if (asyncPath) return asyncPath as string;
+                if (typeof (attachment as { getFilePath?: () => string | undefined }).getFilePath === "function") return (attachment as { getFilePath: () => string | undefined }).getFilePath();
+                return (attachment as unknown as { attachmentPath?: string }).attachmentPath;
+              })();
+              if (!filePath) continue;
+              const bytes = await readAttachmentBytes(filePath);
+              if (bytes.byteLength > MAX_UPLOAD_PDF_SIZE_BYTES) continue;
+              const fileName = filePath.split(/[\\/]/).pop() || "document.pdf";
+              const persisted = await persistAttachmentBlob(fileName, new Uint8Array(bytes));
+              pdfAttachments.push({
+                id: `pdf-paper-${pc.contextItemId}-${Date.now()}`,
+                name: fileName,
+                mimeType: "application/pdf",
+                sizeBytes: bytes.byteLength,
+                category: "pdf",
+                storedPath: persisted.storedPath,
+                contentHash: persisted.contentHash,
+              });
+            } catch (err) {
+              ztoolkit.log("LLM: Failed to resolve PDF paper for edit display", pc.contextItemId, err);
+            }
+          }
+          if (pdfAttachments.length !== pdfModePapers.length) {
+            if (status) {
+              setStatus(
+                status,
+                "Could not resolve the selected paper PDF attachment.",
+                "error",
+              );
+            }
+            return;
+          }
+        }
+      }
+      const baseSelectedFiles = selectedFileAttachmentCache.get(currentItem.id) || [];
+      const hasDirectUploadedPdf = baseSelectedFiles.some((attachment) => {
+        const mimeType = (attachment.mimeType || "").trim().toLowerCase();
+        const name = (attachment.name || "").trim();
+        return (
+          attachment.category === "pdf" ||
+          mimeType === "application/pdf" ||
+          /\.pdf$/i.test(name)
+        );
+      });
+      if (
+        hasDirectUploadedPdf &&
+        pdfSupport === "vision" &&
+        status
+      ) {
+        setStatus(
+          status,
+          "This provider may not read uploaded PDFs directly.",
+          "warning",
+        );
       }
       const selectedFiles = [
-        ...(selectedFileAttachmentCache.get(currentItem.id) || []),
+        ...baseSelectedFiles,
         ...pdfAttachments,
       ];
+      const modelFiles = pdfSupport === "native" ? selectedFiles : baseSelectedFiles;
       const selectedImages = (selectedImageCache.get(currentItem.id) || []).slice(
         0,
         MAX_SELECTED_IMAGES,
@@ -11650,6 +11701,7 @@ export function setupHandlers(
           paperContexts: selectedPaperContexts,
           fullTextPaperContexts,
           attachments: selectedFiles,
+          modelAttachments: modelFiles,
           pdfUploadSystemMessages: pdfUploadSystemMessages.length
             ? pdfUploadSystemMessages
             : undefined,

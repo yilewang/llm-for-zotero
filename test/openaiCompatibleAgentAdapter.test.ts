@@ -237,4 +237,38 @@ describe("OpenAICompatibleAgentAdapter", function () {
 
     assert.notInclude(JSON.stringify(capturedSecondBody), "reasoning_content");
   });
+
+  it("rejects unresolved PDF file_refs instead of serializing them as image_url", async function () {
+    try {
+      await adapter.runStep({
+        request: makeRequest({
+          apiBase: "https://openrouter.ai/api/v1",
+          providerProtocol: "openai_chat_compat",
+        }),
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Read this PDF" },
+              {
+                type: "file_ref",
+                file_ref: {
+                  name: "paper.pdf",
+                  mimeType: "application/pdf",
+                  storedPath: "/tmp/paper.pdf",
+                },
+              },
+            ],
+          },
+        ],
+        tools,
+      });
+      assert.fail("Expected PDF file_ref rejection");
+    } catch (err) {
+      assert.include(
+        (err as Error).message,
+        "OpenAI-compatible chat cannot send unresolved PDF file_ref",
+      );
+    }
+  });
 });

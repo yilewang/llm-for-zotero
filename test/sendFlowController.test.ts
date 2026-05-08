@@ -50,11 +50,18 @@ describe("sendFlowController", function () {
     let lastSentAuthMode = "";
     let lastSentProviderProtocol = "";
     let lastSentModelProviderLabel = "";
+    let lastSentImages: string[] | undefined;
+    let lastSentAttachments: ChatAttachment[] | undefined;
+    let lastSentModelAttachments: ChatAttachment[] | undefined;
     let lastEditRuntimeMode = "";
+    let lastEditImages: string[] | undefined;
+    let lastEditAttachments: ChatAttachment[] | undefined;
+    let lastEditModelAttachments: ChatAttachment[] | undefined;
     let lastEditPdfUploadSystemMessages: string[] | undefined;
     let lastSentCollectionContexts: CollectionContextRef[] | undefined;
     let lastEditCollectionContexts: CollectionContextRef[] | undefined;
     let lastStatus: { message: string; level: string } | null = null;
+    const statuses: Array<{ message: string; level: string }> = [];
 
     const deps = {
       body: {} as Element,
@@ -72,7 +79,6 @@ describe("sendFlowController", function () {
       getModelPdfSupport: () => "none" as const,
       uploadPdfForProvider: async () => null,
       resolvePdfBytes: async () => new Uint8Array(),
-      encodeBytesBase64: () => "",
       getSelectedFiles: () => [selectedFile],
       getSelectedImages: () => ["data:image/png;base64,AAA"],
       resolvePromptText: () => "ask question",
@@ -108,6 +114,9 @@ describe("sendFlowController", function () {
       editLatestUserMessageAndRetry: async (opts: any) => {
         editCalled += 1;
         lastEditRuntimeMode = opts.targetRuntimeMode || "";
+        lastEditImages = opts.screenshotImages;
+        lastEditAttachments = opts.attachments;
+        lastEditModelAttachments = opts.modelAttachments;
         lastEditPdfUploadSystemMessages = opts.pdfUploadSystemMessages;
         lastEditCollectionContexts = opts.selectedCollectionContexts;
         return "ok" as const;
@@ -119,6 +128,9 @@ describe("sendFlowController", function () {
         lastSentAuthMode = opts.authMode || "";
         lastSentProviderProtocol = opts.providerProtocol || "";
         lastSentModelProviderLabel = opts.modelProviderLabel || "";
+        lastSentImages = opts.images;
+        lastSentAttachments = opts.attachments;
+        lastSentModelAttachments = opts.modelAttachments;
         lastSentCollectionContexts = opts.selectedCollectionContexts;
       },
       retainPinnedImageState: () => {
@@ -150,6 +162,7 @@ describe("sendFlowController", function () {
       autoUnlockGlobalChat: () => undefined,
       setStatusMessage: (message: string, level: string) => {
         lastStatus = { message, level };
+        statuses.push({ message, level });
       },
       editStaleStatusText: "stale",
       ...overrides,
@@ -177,12 +190,19 @@ describe("sendFlowController", function () {
         lastSentAuthMode,
         lastSentProviderProtocol,
         lastSentModelProviderLabel,
+        lastSentImages,
+        lastSentAttachments,
+        lastSentModelAttachments,
         lastSentCollectionContexts,
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
+      getLastEditImages: () => lastEditImages,
+      getLastEditAttachments: () => lastEditAttachments,
+      getLastEditModelAttachments: () => lastEditModelAttachments,
       getLastEditPdfUploadSystemMessages: () => lastEditPdfUploadSystemMessages,
       getLastEditCollectionContexts: () => lastEditCollectionContexts,
       getLastStatus: () => lastStatus,
+      getStatuses: () => statuses.slice(),
     };
   }
 
@@ -294,6 +314,16 @@ describe("sendFlowController", function () {
         providerProtocol: "openai_chat_compat",
       }),
       getModelPdfSupport: () => "upload" as const,
+      resolvePdfPaperAttachments: async () => [
+        {
+          id: "pdf-paper-34-1",
+          name: "paper.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 123,
+          category: "pdf",
+          storedPath: "/tmp/paper.pdf",
+        },
+      ],
       resolvePdfBytes: async () => new Uint8Array([1, 2, 3]),
       uploadPdfForProvider: async () => ({
         systemMessageContent: "uploaded pdf context",
@@ -318,6 +348,258 @@ describe("sendFlowController", function () {
     assert.deepEqual(getLastEditPdfUploadSystemMessages(), [
       "uploaded pdf context",
     ]);
+  });
+
+  it("renders PDF-mode paper chips to page images for third-party providers while preserving the PDF attachment", async function () {
+    const pdfAttachment: ChatAttachment = {
+      id: "pdf-paper-34-1",
+      name: "paper.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 123,
+      category: "pdf",
+      storedPath: "/tmp/paper.pdf",
+    };
+    const { controller, getCounts, getLastSend, getStatuses } = createBaseDeps({
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "third-party-vision",
+        apiBase: "https://openrouter.ai/api/v1",
+        apiKey: "test-key",
+        providerLabel: "OpenRouter",
+        authMode: "api_key",
+        providerProtocol: "openai_chat_compat",
+      }),
+      getModelPdfSupport: () => "vision" as const,
+      resolvePdfPaperAttachments: async () => [pdfAttachment],
+      renderPdfPagesAsImages: async () => ["data:image/png;base64,PAGE1"],
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.deepEqual(getLastSend().lastSentImages, [
+      "data:image/png;base64,PAGE1",
+    ]);
+    assert.deepEqual(getLastSend().lastSentAttachments, [pdfAttachment]);
+    assert.deepEqual(getLastSend().lastSentModelAttachments, []);
+    assert.deepInclude(getStatuses(), {
+      message:
+        "This provider cannot read PDFs directly. Sending the Zotero PDF as page images.",
+      level: "warning",
+    });
+    assert.notInclude(
+      JSON.stringify(getLastSend().lastSentImages),
+      "data:application/pdf",
+    );
+  });
+
+  it("sends direct uploaded PDFs on third-party providers with a warning and without page rendering", async function () {
+    const uploadedPdf: ChatAttachment = {
+      id: "upload-1",
+      name: "upload.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 456,
+      category: "pdf",
+      storedPath: "/tmp/upload.pdf",
+    };
+    let renderAttachmentCalls = 0;
+    const { controller, getCounts, getLastSend, getStatuses } = createBaseDeps({
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [uploadedPdf],
+      getSelectedImages: () => [],
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "third-party-vision",
+        apiBase: "https://openrouter.ai/api/v1",
+        apiKey: "test-key",
+        providerLabel: "OpenRouter",
+        authMode: "api_key",
+        providerProtocol: "openai_chat_compat",
+      }),
+      getModelPdfSupport: () => "vision" as const,
+      renderPdfPagesAsImages: async () => {
+        renderAttachmentCalls += 1;
+        return ["data:image/png;base64,SHOULD_NOT_RENDER"];
+      },
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.deepEqual(getLastSend().lastSentImages, []);
+    assert.deepEqual(getLastSend().lastSentAttachments, [uploadedPdf]);
+    assert.deepEqual(getLastSend().lastSentModelAttachments, [uploadedPdf]);
+    assert.equal(renderAttachmentCalls, 0);
+    assert.deepInclude(getStatuses(), {
+      message: "This provider may not read uploaded PDFs directly.",
+      level: "warning",
+    });
+  });
+
+  it("keeps direct uploaded PDFs as model attachments when PDF-mode papers render as images", async function () {
+    const uploadedPdf: ChatAttachment = {
+      id: "upload-1",
+      name: "upload.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 456,
+      category: "pdf",
+      storedPath: "/tmp/upload.pdf",
+    };
+    const paperPdf: ChatAttachment = {
+      id: "pdf-paper-34-1",
+      name: "paper.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 123,
+      category: "pdf",
+      storedPath: "/tmp/paper.pdf",
+    };
+    const { controller, getCounts, getLastSend, getStatuses } = createBaseDeps({
+      getSelectedFiles: () => [uploadedPdf],
+      getSelectedImages: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "third-party-vision",
+        apiBase: "https://openrouter.ai/api/v1",
+        apiKey: "test-key",
+        providerLabel: "OpenRouter",
+        authMode: "api_key",
+        providerProtocol: "openai_chat_compat",
+      }),
+      getModelPdfSupport: () => "vision" as const,
+      resolvePdfPaperAttachments: async () => [paperPdf],
+      renderPdfPagesAsImages: async () => ["data:image/png;base64,PAGE1"],
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.deepEqual(getLastSend().lastSentImages, [
+      "data:image/png;base64,PAGE1",
+    ]);
+    assert.deepEqual(getLastSend().lastSentAttachments, [
+      uploadedPdf,
+      paperPdf,
+    ]);
+    assert.deepEqual(getLastSend().lastSentModelAttachments, [uploadedPdf]);
+    assert.deepInclude(getStatuses(), {
+      message:
+        "This provider cannot read PDFs directly. Sending the Zotero PDF as page images.",
+      level: "warning",
+    });
+    assert.deepInclude(getStatuses(), {
+      message: "This provider may not read uploaded PDFs directly.",
+      level: "warning",
+    });
+  });
+
+  it("sends direct uploaded PDFs on official native providers without a warning", async function () {
+    const uploadedPdf: ChatAttachment = {
+      id: "upload-1",
+      name: "upload.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 456,
+      category: "pdf",
+      storedPath: "/tmp/upload.pdf",
+    };
+    const { controller, getCounts, getLastSend, getStatuses } = createBaseDeps({
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [uploadedPdf],
+      getSelectedImages: () => [],
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "gpt-4o",
+        apiBase: "https://api.openai.com/v1/responses",
+        apiKey: "test-key",
+        providerLabel: "OpenAI",
+        authMode: "api_key",
+        providerProtocol: "responses_api",
+      }),
+      getModelPdfSupport: () => "native" as const,
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.deepEqual(getLastSend().lastSentAttachments, [uploadedPdf]);
+    assert.deepEqual(getLastSend().lastSentModelAttachments, [uploadedPdf]);
+    assert.notDeepInclude(getStatuses(), {
+      message: "This provider may not read uploaded PDFs directly.",
+      level: "warning",
+    });
+  });
+
+  it("blocks PDF sends when the provider has no PDF or image support", async function () {
+    const { controller, inputBox, getCounts, getLastStatus } = createBaseDeps({
+      getSelectedFiles: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "deepseek-v4-flash",
+        apiBase: "https://api.deepseek.com/v1",
+        apiKey: "test-key",
+        providerLabel: "DeepSeek",
+        authMode: "api_key",
+        providerProtocol: "openai_chat_compat",
+      }),
+      getModelPdfSupport: () => "none" as const,
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 0);
+    assert.equal(getCounts().editCalled, 0);
+    assert.equal(inputBox.value, "ask question");
+    assert.deepEqual(getLastStatus(), {
+      message:
+        "This model does not support PDF or image input. Remove the PDF attachment or switch models.",
+      level: "error",
+    });
+  });
+
+  it("blocks PDF sends when third-party page rendering fails", async function () {
+    const pdfAttachment: ChatAttachment = {
+      id: "pdf-paper-34-1",
+      name: "paper.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 123,
+      category: "pdf",
+      storedPath: "/tmp/paper.pdf",
+    };
+    const { controller, getCounts, getLastStatus } = createBaseDeps({
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "third-party-vision",
+        apiBase: "https://openrouter.ai/api/v1",
+        apiKey: "test-key",
+        providerLabel: "OpenRouter",
+        authMode: "api_key",
+        providerProtocol: "openai_chat_compat",
+      }),
+      getModelPdfSupport: () => "vision" as const,
+      resolvePdfPaperAttachments: async () => [pdfAttachment],
+      renderPdfPagesAsImages: async () => [],
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 0);
+    assert.deepEqual(getLastStatus(), {
+      message: "PDF page rendering failed.",
+      level: "error",
+    });
   });
 
   it("persists the cleared draft before preview sync in normal send flow", async function () {

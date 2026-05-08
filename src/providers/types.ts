@@ -1,4 +1,4 @@
-export type PdfSupport = "native" | "upload" | "image_url" | "vision" | "none";
+export type PdfSupport = "native" | "upload" | "vision" | "none";
 
 export type ProviderTier =
   | "native"

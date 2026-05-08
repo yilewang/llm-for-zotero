@@ -1,5 +1,6 @@
 import { MAX_SELECTED_IMAGES } from "../../constants";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
+import type { PdfSupport } from "../../../../providers";
 import type {
   AdvancedModelParams,
   ChatAttachment,
@@ -64,8 +65,9 @@ type SendFlowControllerDeps = {
   ) => Promise<ChatAttachment[]>;
   renderPdfPagesAsImages: (
     paperContexts: PaperContextRef[],
+    maxImages?: number,
   ) => Promise<string[]>;
-  getModelPdfSupport: (modelName: string, providerProtocol?: string, authMode?: string, apiBase?: string) => "native" | "upload" | "image_url" | "vision" | "none";
+  getModelPdfSupport: (modelName: string, providerProtocol?: string, authMode?: string, apiBase?: string) => PdfSupport;
   uploadPdfForProvider: (params: {
     apiBase: string;
     apiKey: string;
@@ -73,7 +75,6 @@ type SendFlowControllerDeps = {
     fileName: string;
   }) => Promise<{ systemMessageContent: string; label: string } | null>;
   resolvePdfBytes: (paperContext: PaperContextRef) => Promise<Uint8Array<ArrayBufferLike>>;
-  encodeBytesBase64: (bytes: Uint8Array<ArrayBufferLike>) => string;
   getSelectedFiles: (itemId: number) => ChatAttachment[];
   getSelectedImages: (itemId: number) => string[];
   resolvePromptText: (
@@ -158,6 +159,25 @@ type SendFlowControllerDeps = {
   consumeWebChatForceNewChatIntent?: () => boolean;
 };
 
+function isPdfAttachment(attachment: ChatAttachment): boolean {
+  const name = typeof attachment.name === "string" ? attachment.name : "";
+  const mime =
+    typeof attachment.mimeType === "string"
+      ? attachment.mimeType.trim().toLowerCase()
+      : "";
+  return (
+    attachment.category === "pdf" ||
+    mime === "application/pdf" ||
+    /\.pdf$/i.test(name)
+  );
+}
+
+function pdfFileNameForPaper(paperContext: PaperContextRef): string {
+  const raw =
+    paperContext.attachmentTitle || paperContext.title || "document";
+  return /\.pdf$/i.test(raw) ? raw : `${raw}.pdf`;
+}
+
 export function createSendFlowController(deps: SendFlowControllerDeps): {
   doSend: (options?: { overrideText?: string; preserveInputDraft?: boolean }) => Promise<void>;
 } {
@@ -206,104 +226,204 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       item,
       selectedPaperContexts,
     );
-    // Resolve PDF-mode papers based on model capability
+    // Resolve PDFs based on model capability. The visible chip/attachment state
+    // stays unchanged; these variables are the provider-specific model inputs.
     const earlyProfile = deps.getSelectedProfile();
     const isWebChat = earlyProfile?.authMode === "webchat";
+    const runtimeMode: ChatRuntimeMode = usesPluginAgentMode ? "agent" : "chat";
+    const useCodexAttachmentPolicy = shouldApplyCodexAppServerChatAttachmentPolicy({
+      authMode: earlyProfile?.authMode,
+      runtimeMode,
+    });
     const earlyModelName = (
       earlyProfile?.model || deps.getCurrentModelName() || ""
     ).trim();
+    const selectedBaseFiles = deps.getSelectedFiles(item.id);
+    const selectedPdfFiles = selectedBaseFiles.filter(isPdfAttachment);
+    const selectedNonPdfFiles = selectedBaseFiles.filter(
+      (attachment) => !isPdfAttachment(attachment),
+    );
+    const selectedImages = deps
+      .getSelectedImages(item.id)
+      .slice(0, MAX_SELECTED_IMAGES);
+    const selectedImageCountForBudget = deps.isScreenshotUnsupportedModel(
+      earlyModelName,
+    )
+      ? 0
+      : selectedImages.length;
     const pdfSupport = deps.getModelPdfSupport(
       earlyModelName, earlyProfile?.providerProtocol, earlyProfile?.authMode, earlyProfile?.apiBase,
     );
-    let pdfFileAttachments: ChatAttachment[] = [];
+    let displayPdfPaperAttachments: ChatAttachment[] = [];
+    let modelPdfPaperAttachments: ChatAttachment[] = [];
+    let modelSelectedPdfAttachments = selectedPdfFiles;
     let pdfPageImageDataUrls: string[] = [];
     let pdfUploadSystemMessages: string[] = [];
+    const hasProviderProcessedPdfs =
+      pdfModePaperContexts.length > 0 &&
+      !isWebChat &&
+      !useCodexAttachmentPolicy;
     // [webchat] Skip provider-capability PDF processing — webchat handles PDF
     // through its own pipeline (sendPdf → relay → extension → attachPDF).
-    if (pdfModePaperContexts.length && !isWebChat) {
+    if (hasProviderProcessedPdfs) {
       if (pdfSupport === "none") {
         deps.setStatusMessage?.(
-          "This model does not support PDF or image input. PDF papers were skipped.",
+          "This model does not support PDF or image input. Remove the PDF attachment or switch models.",
           "error",
         );
-      } else if (pdfSupport === "upload" && earlyProfile?.apiBase && earlyProfile?.apiKey) {
-        // Qwen/Kimi: upload PDF to provider, inject file reference as system message.
-        // For Qwen (DashScope), only qwen-long supports PDF upload.
-        const isQwen = (earlyProfile.apiBase || "").toLowerCase().includes("dashscope");
+        return;
+      }
+
+      if (pdfModePaperContexts.length) {
+        displayPdfPaperAttachments = await deps.resolvePdfPaperAttachments(
+          pdfModePaperContexts,
+        );
+        if (displayPdfPaperAttachments.length !== pdfModePaperContexts.length) {
+          deps.setStatusMessage?.(
+            "Could not resolve the selected paper PDF attachment.",
+            "error",
+          );
+          return;
+        }
+      }
+
+      if (pdfSupport === "upload") {
+        if (!earlyProfile?.apiBase || !earlyProfile?.apiKey) {
+          deps.setStatusMessage?.(
+            "PDF upload requires a configured provider API key.",
+            "error",
+          );
+          return;
+        }
+        const isQwen = (earlyProfile.apiBase || "")
+          .toLowerCase()
+          .includes("dashscope");
         const isQwenLong = /^qwen-long(?:[.-]|$)/i.test(earlyModelName);
         if (isQwen && !isQwenLong) {
           deps.setStatusMessage?.(
-            `Only qwen-long supports PDF upload on DashScope. Current model: ${earlyModelName}. PDF papers were skipped.`,
+            `Only qwen-long supports PDF upload on DashScope. Current model: ${earlyModelName}.`,
             "error",
           );
-        } else {
-          deps.inputBox.disabled = true;
-          deps.setStatusMessage?.(`Uploading PDF to ${earlyModelName}...`, "ready");
-          for (const pc of pdfModePaperContexts) {
-            try {
-              const result = await deps.uploadPdfForProvider({
-                apiBase: earlyProfile.apiBase,
-                apiKey: earlyProfile.apiKey,
-                pdfBytes: await deps.resolvePdfBytes(pc),
-                fileName: (() => {
-                  const raw = pc.attachmentTitle || pc.title || "document";
-                  return /\.pdf$/i.test(raw) ? raw : `${raw}.pdf`;
-                })(),
-              });
-              if (result) {
-                pdfUploadSystemMessages.push(result.systemMessageContent);
-                deps.setStatusMessage?.(`${result.label}`, "ready");
-              }
-            } catch (err) {
-              ztoolkit.log("LLM: PDF upload failed for", pc.contextItemId, err);
-              deps.setStatusMessage?.("PDF upload failed. Falling back to text mode.", "error");
-            }
-          }
+          return;
         }
-      } else if (pdfSupport === "image_url") {
-        // Tier 3 (third-party): encode full PDF as base64 data URI and send
-        // as image_url — relay services pass this through.
         deps.inputBox.disabled = true;
-        deps.setStatusMessage?.(
-          `PDF upload via third-party provider may not work. Attempting base64 encoding...`,
-          "warning",
-        );
-        for (const pc of pdfModePaperContexts) {
+        deps.setStatusMessage?.(`Uploading PDF to ${earlyModelName}...`, "ready");
+        const uploadTargets: Array<{
+          label: string;
+          fileName: string;
+          bytes: () => Promise<Uint8Array<ArrayBufferLike>>;
+        }> = [
+          ...pdfModePaperContexts.map((pc) => ({
+            label: `${pc.contextItemId}`,
+            fileName: pdfFileNameForPaper(pc),
+            bytes: () => deps.resolvePdfBytes(pc),
+          })),
+        ];
+        for (const target of uploadTargets) {
           try {
-            const pdfBytes = await deps.resolvePdfBytes(pc);
-            const base64 = deps.encodeBytesBase64(pdfBytes);
-            pdfPageImageDataUrls.push(`data:application/pdf;base64,${base64}`);
+            const result = await deps.uploadPdfForProvider({
+              apiBase: earlyProfile.apiBase,
+              apiKey: earlyProfile.apiKey,
+              pdfBytes: await target.bytes(),
+              fileName: target.fileName,
+            });
+            if (!result) {
+              deps.inputBox.disabled = false;
+              deps.setStatusMessage?.("PDF upload failed.", "error");
+              return;
+            }
+            pdfUploadSystemMessages.push(result.systemMessageContent);
+            deps.setStatusMessage?.(`${result.label}`, "ready");
           } catch (err) {
-            ztoolkit.log("LLM: PDF base64 encoding failed for", pc.contextItemId, err);
-            // Fall back to vision (render pages as images) for this paper
-            const fallback = await deps.renderPdfPagesAsImages([pc]);
-            pdfPageImageDataUrls.push(...fallback);
+            ztoolkit.log("LLM: PDF upload failed for", target.label, err);
+            deps.inputBox.disabled = false;
+            deps.setStatusMessage?.("PDF upload failed.", "error");
+            return;
           }
         }
-        deps.setStatusMessage?.(`Sending ${pdfPageImageDataUrls.length} PDF(s)...`, "ready");
+        modelPdfPaperAttachments = [];
       } else if (pdfSupport === "vision") {
         if (deps.isScreenshotUnsupportedModel(earlyModelName)) {
           deps.setStatusMessage?.(
-            "This model does not support image input. PDF pages will be sent as text.",
-            "warning",
+            "This model does not support image input. Remove the PDF attachment or switch models.",
+            "error",
           );
-        } else {
-          deps.inputBox.disabled = true;
-          deps.setStatusMessage?.(`PDF will be sent as page images (vision mode) for ${earlyModelName}...`, "ready");
-          pdfPageImageDataUrls = await deps.renderPdfPagesAsImages(pdfModePaperContexts);
-          deps.setStatusMessage?.(`Sending ${pdfPageImageDataUrls.length} page image(s)...`, "ready");
+          return;
         }
+        const maxPdfImages = MAX_SELECTED_IMAGES - selectedImageCountForBudget;
+        if (maxPdfImages <= 0) {
+          deps.setStatusMessage?.(
+            `PDF page rendering needs image input capacity. Remove some screenshots or keep at most ${MAX_SELECTED_IMAGES} image inputs.`,
+            "error",
+          );
+          return;
+        }
+        deps.inputBox.disabled = true;
+        deps.setStatusMessage?.(
+          "This provider cannot read PDFs directly. Sending the Zotero PDF as page images.",
+          "warning",
+        );
+        let paperImages: string[] = [];
+        try {
+          paperImages = pdfModePaperContexts.length
+            ? await deps.renderPdfPagesAsImages(
+                pdfModePaperContexts,
+                maxPdfImages,
+              )
+            : [];
+        } catch (err) {
+          ztoolkit.log("LLM: PDF page rendering failed", err);
+          deps.inputBox.disabled = false;
+          deps.setStatusMessage?.(
+            err instanceof Error && err.message.trim()
+              ? err.message
+              : "PDF page rendering failed.",
+            "error",
+          );
+          return;
+        }
+        pdfPageImageDataUrls = paperImages.slice(
+          0,
+          maxPdfImages,
+        );
+        if (!pdfPageImageDataUrls.length) {
+          deps.inputBox.disabled = false;
+          deps.setStatusMessage?.("PDF page rendering failed.", "error");
+          return;
+        }
+        modelPdfPaperAttachments = [];
+        deps.setStatusMessage?.(
+          `Sending ${pdfPageImageDataUrls.length} PDF page image(s)...`,
+          "ready",
+        );
       } else {
         deps.setStatusMessage?.(`Sending native PDF to ${earlyModelName}...`, "ready");
-        pdfFileAttachments = await deps.resolvePdfPaperAttachments(pdfModePaperContexts);
+        modelPdfPaperAttachments = displayPdfPaperAttachments;
+        modelSelectedPdfAttachments = selectedPdfFiles;
       }
       deps.inputBox.disabled = false;
     }
+    if (
+      selectedPdfFiles.length > 0 &&
+      pdfSupport === "vision" &&
+      !isWebChat &&
+      !useCodexAttachmentPolicy
+    ) {
+      deps.setStatusMessage?.(
+        "This provider may not read uploaded PDFs directly.",
+        "warning",
+      );
+    }
     const selectedFiles = [
-      ...deps.getSelectedFiles(item.id),
-      ...pdfFileAttachments,
+      ...selectedNonPdfFiles,
+      ...selectedPdfFiles,
+      ...displayPdfPaperAttachments,
     ];
-    const runtimeMode: ChatRuntimeMode = usesPluginAgentMode ? "agent" : "chat";
+    const modelFiles = [
+      ...selectedNonPdfFiles,
+      ...modelSelectedPdfAttachments,
+      ...modelPdfPaperAttachments,
+    ];
     if (isWebChat && selectedCollectionContexts.length) {
       deps.setStatusMessage?.(
         "Web chat does not support Zotero collection context. Remove the collection and try again.",
@@ -311,12 +431,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       );
       return;
     }
-    if (
-      shouldApplyCodexAppServerChatAttachmentPolicy({
-        authMode: earlyProfile?.authMode,
-        runtimeMode,
-      })
-    ) {
+    if (useCodexAttachmentPolicy) {
       const blockedAttachments =
         getBlockedCodexAppServerChatAttachments(selectedFiles);
       if (blockedAttachments.length) {
@@ -417,9 +532,6 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       deps.getCurrentModelName() ||
       ""
     ).trim();
-    const selectedImages = deps
-      .getSelectedImages(item.id)
-      .slice(0, MAX_SELECTED_IMAGES);
     const images = [
       ...(deps.isScreenshotUnsupportedModel(activeModelName) ? [] : selectedImages),
       ...pdfPageImageDataUrls,
@@ -460,6 +572,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         fullTextPaperContexts,
         selectedCollectionContexts,
         attachments: selectedFiles.length ? selectedFiles : undefined,
+        modelAttachments: selectedFiles.length ? modelFiles : undefined,
         pdfUploadSystemMessages: pdfUploadSystemMessages.length
           ? pdfUploadSystemMessages
           : undefined,
@@ -569,6 +682,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       fullTextPaperContexts,
       selectedCollectionContexts,
       attachments: selectedFiles.length ? selectedFiles : undefined,
+      modelAttachments: selectedFiles.length ? modelFiles : undefined,
       runtimeMode,
       pdfModePaperKeys: pdfModeKeySet.size > 0 ? pdfModeKeySet : undefined,
       forcedSkillIds,

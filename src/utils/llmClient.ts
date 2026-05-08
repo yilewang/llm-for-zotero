@@ -1929,9 +1929,9 @@ function buildResponsesInput(
         return { type: "input_text" as const, text: part.text };
       }
       const url = part.image_url.url;
-      // PDF data URIs should be sent as inline input_file, not input_image.
-      // This enables third-party responses_api providers to receive PDFs
-      // correctly even when /v1/files upload is not available.
+      // Legacy PDF data URIs from older history entries should be sent as
+      // inline input_file, not input_image. New PDF delivery paths should use
+      // provider-native files, provider upload, or rendered page images.
       if (url.startsWith("data:application/pdf;base64,")) {
         pdfCounter += 1;
         return {
