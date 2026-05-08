@@ -3489,7 +3489,7 @@ export function setupHandlers(
     if (!historyUndo || !historyUndoText) return;
     const displayTitle =
       normalizeHistoryTitle(title) || normalizeHistoryTitle("Untitled chat");
-    historyUndoText.textContent = `Deleted "${displayTitle}"`;
+    historyUndoText.textContent = tf("Deleted \"%s\"", displayTitle);
     historyUndo.style.display = "flex";
   };
 

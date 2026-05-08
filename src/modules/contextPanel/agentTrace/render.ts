@@ -1,5 +1,5 @@
 import { getAgentRuntime } from "../../../agent";
-import { t } from "../../../utils/i18n";
+import { t, tf } from "../../../utils/i18n";
 import type {
   AgentPendingAction,
   AgentPendingField,
@@ -2288,11 +2288,11 @@ function summarizeAgentTraceConfirmationResolved(
     ) ||
     (approved
       ? action.mode === "review"
-        ? `Review received - selected "${selectedActionLabel}" for ${label}`
-        : `Approval received - continuing with ${label}`
+        ? tf("Review received - selected \"%s\" for %s", selectedActionLabel, label)
+        : tf("Approval received - continuing with %s", label)
       : action.mode === "review"
-        ? `Stopped ${label} after review`
-        : `Cancelled ${label}`);
+        ? tf("Stopped %s after review", label)
+        : tf("Cancelled %s", label));
   return {
     kind: approved ? "ok" : "skip",
     icon: approved ? "✓" : "-",

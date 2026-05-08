@@ -606,6 +606,11 @@ const zhCN: Record<string, string> = {
   "Loading agent activity...": "正在加载代理活动...",
   "No retryable response found": "未找到可重试的响应",
   "using first child item from %s as context": "使用 %s 的首个子附件作为上下文",
+  "Deleted \"%s\"": "已删除 \"%s\"",
+  "Review received - selected \"%s\" for %s": "已收到审核 - 为 %s 选择了 \"%s\"",
+  "Approval received - continuing with %s": "已收到授权 - 继续执行 %s",
+  "Stopped %s after review": "审核后已停止 %s",
+  "Cancelled %s": "已取消 %s",
 
   // ── Additional UI labels ────────────────────────────────────────────────────
   "Apply": "应用",
