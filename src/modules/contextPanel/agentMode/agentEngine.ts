@@ -24,7 +24,7 @@ import {
 } from "../portalScope";
 import { mergeCitationPaperContexts } from "../citationContexts";
 import { renderPendingActionCard } from "../agentTrace/render";
-import { t, tf } from "../../utils/i18n";
+import { t, tf } from "../../../utils/i18n";
 
 function buildPendingAgentTraceEvents(body?: Element): AgentRunEventRecord[] {
   const now = Date.now();

@@ -7,7 +7,6 @@ import {
   getStandaloneLibraryChatStartPageHtml,
   getPaperChatStartPageHtml,
   getNoteEditingStartPageHtml,
-  t,
 } from "../../utils/i18n";
 import {
   appendMessage as appendStoredMessage,
