@@ -2335,16 +2335,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   };
 
   const getCurrentClaudeLocalDir = (): string => {
-    const env = getProcess()?.env;
-    const home =
-      env?.HOME?.trim() ||
-      env?.USERPROFILE?.trim() ||
-      getPathUtils()?.homeDir?.trim() ||
-      getOS()?.Constants?.Path?.homeDir?.trim() ||
-      getServices()?.dirsvc?.get?.("Home", getNsIFile())?.path?.trim() ||
-      (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim() ||
-      ".";
-    const runtimeRoot = joinLocalPath(home, "Zotero", "agent-runtime", getClaudeProfileSignature());
+    const zotero = Zotero as unknown as {
+      DataDirectory?: { dir?: string };
+      Profile?: { dir?: string };
+    };
+    const dataDir = zotero.DataDirectory?.dir?.trim();
+    const runtimeRoot = dataDir
+      ? joinLocalPath(dataDir, "agent-runtime", getClaudeProfileSignature())
+      : joinLocalPath((Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim() || ".", "Zotero", "agent-runtime", getClaudeProfileSignature());
     const scopesRoot = joinLocalPath(runtimeRoot, "scopes");
     const conversationSystem = getConversationSystemPref();
     if (conversationSystem !== "claude_code") {
@@ -2380,16 +2378,16 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const renderClaudeConfigPaths = () => {
     if (!claudeConfigPathsWrap) return;
     claudeConfigPathsWrap.replaceChildren();
-    const env = getProcess()?.env;
-    const home =
-      env?.HOME?.trim() ||
-      env?.USERPROFILE?.trim() ||
-      getPathUtils()?.homeDir?.trim() ||
-      getOS()?.Constants?.Path?.homeDir?.trim() ||
-      getServices()?.dirsvc?.get?.("Home", getNsIFile())?.path?.trim() ||
-      (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim() ||
-      "";
-    const runtimeRoot = joinLocalPath(home || ".", "Zotero", "agent-runtime", getClaudeProfileSignature());
+    const zotero = Zotero as unknown as {
+      DataDirectory?: { dir?: string };
+      Profile?: { dir?: string };
+    };
+    const dataDir = zotero.DataDirectory?.dir?.trim();
+    const profileDir = zotero.Profile?.dir?.trim() || ".";
+    const home = profileDir;
+    const runtimeRoot = dataDir
+      ? joinLocalPath(dataDir, "agent-runtime", getClaudeProfileSignature())
+      : joinLocalPath(profileDir, "Zotero", "agent-runtime", getClaudeProfileSignature());
     const projectClaudeDir = joinLocalPath(runtimeRoot, ".claude");
     const localConversationDir = joinLocalPath(
       runtimeRoot,

@@ -86,20 +86,6 @@ function getNsIFile(): unknown {
   return components?.interfaces?.nsIFile;
 }
 
-function getHomeDir(): string {
-  const env = getProcess()?.env;
-  const home =
-    env?.HOME?.trim() ||
-    env?.USERPROFILE?.trim() ||
-    getPathUtils()?.homeDir?.trim() ||
-    getOS()?.Constants?.Path?.homeDir?.trim() ||
-    getServices()?.dirsvc?.get?.("Home", getNsIFile())?.path?.trim() ||
-    (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim() ||
-    "";
-  if (home) return home;
-  throw new Error("Cannot resolve home directory for Claude runtime root");
-}
-
 export function getClaudeProfileDir(): string {
   const profileDir = (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim();
   if (profileDir) return profileDir;
@@ -121,12 +107,19 @@ export function getClaudeProfileSignature(): string {
 }
 
 export function getClaudeRuntimeRootDir(): string {
-  return joinLocalPath(
-    getHomeDir(),
-    "Zotero",
-    "agent-runtime",
-    getClaudeProfileSignature(),
-  );
+  const zotero = Zotero as unknown as {
+    DataDirectory?: { dir?: string };
+    Profile?: { dir?: string };
+  };
+  const dataDir = zotero.DataDirectory?.dir?.trim();
+  if (dataDir) {
+    return joinLocalPath(dataDir, "agent-runtime", getClaudeProfileSignature());
+  }
+  const profileDir = zotero.Profile?.dir?.trim();
+  if (profileDir) {
+    return joinLocalPath(profileDir, "Zotero", "agent-runtime", getClaudeProfileSignature());
+  }
+  throw new Error("Cannot resolve Zotero data directory for Claude runtime root");
 }
 
 export function getClaudeProjectDir(): string {
