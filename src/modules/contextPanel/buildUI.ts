@@ -180,9 +180,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const claudeToggleBtn = createElement(doc, "button", "llm-claude-system-toggle", {
     id: "llm-claude-system-toggle",
     type: "button",
-    title: "Claude Code",
+    title: t("Claude Code"),
   });
-  claudeToggleBtn.setAttribute("aria-label", "Claude Code");
+  claudeToggleBtn.setAttribute("aria-label", t("Claude Code"));
   const claudeToggleIcon = createElement(doc, "span", "llm-claude-system-toggle-icon", {
     id: "llm-claude-system-toggle-icon",
   });
@@ -810,7 +810,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     buttonId: "llm-model-toggle",
     buttonClassName:
       "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-model-btn",
-    buttonText: "Model: ...",
+    buttonText: t("Model: ..."),
     menuId: "llm-model-menu",
     menuClassName: "llm-model-menu",
     disabled: !hasItem,
