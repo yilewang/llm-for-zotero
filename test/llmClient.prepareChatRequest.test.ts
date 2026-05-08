@@ -314,6 +314,112 @@ describe("llmClient prepareChatRequest", function () {
     assert.equal(capturedBody?.temperature, 0.3);
   });
 
+  it("sends PDF attachments as Anthropic Messages document blocks", async function () {
+    let capturedBody: Record<string, unknown> | null = null;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+        string,
+        unknown
+      >;
+      return anthropicOkStream();
+    });
+    const originalIOUtils = (
+      globalThis as typeof globalThis & { IOUtils?: unknown }
+    ).IOUtils;
+    (
+      globalThis as typeof globalThis & {
+        IOUtils?: { read: (path: string) => Promise<Uint8Array> };
+      }
+    ).IOUtils = {
+      read: async () => new TextEncoder().encode("%PDF test"),
+    };
+
+    try {
+      await callLLMStream(
+        {
+          prompt: "Summarize this PDF.",
+          model: "claude-sonnet-4-6",
+          apiBase: "https://api.anthropic.com/v1",
+          apiKey: "anthropic-test",
+          providerProtocol: "anthropic_messages",
+          attachments: [
+            {
+              name: "paper.pdf",
+              mimeType: "application/pdf",
+              storedPath: "/tmp/paper.pdf",
+            },
+          ],
+        },
+        () => undefined,
+      );
+    } finally {
+      (
+        globalThis as typeof globalThis & { IOUtils?: typeof originalIOUtils }
+      ).IOUtils = originalIOUtils;
+    }
+
+    const messages = capturedBody?.messages as
+      | Array<{ content?: Array<Record<string, unknown>> }>
+      | undefined;
+    const content = messages?.[messages.length - 1]?.content || [];
+    const documentBlock = content.find((part) => part.type === "document") as
+      | { source?: { type?: string; media_type?: string; data?: string } }
+      | undefined;
+    assert.equal(documentBlock?.source?.type, "base64");
+    assert.equal(documentBlock?.source?.media_type, "application/pdf");
+    assert.equal(documentBlock?.source?.data, "JVBERiB0ZXN0");
+    assert.isUndefined(
+      content.find(
+        (part) =>
+          part.type === "image" &&
+          (part.source as { media_type?: string } | undefined)?.media_type ===
+            "application/pdf",
+      ),
+    );
+  });
+
+  it("maps PDF data URLs to Anthropic Messages document blocks", async function () {
+    let capturedBody: Record<string, unknown> | null = null;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+        string,
+        unknown
+      >;
+      return anthropicOkStream();
+    });
+
+    await callLLMStream(
+      {
+        prompt: "Summarize this PDF.",
+        images: ["data:application/pdf;base64,JVBERi0x"],
+        model: "claude-sonnet-4-6",
+        apiBase: "https://api.anthropic.com/v1",
+        apiKey: "anthropic-test",
+        providerProtocol: "anthropic_messages",
+      },
+      () => undefined,
+    );
+
+    const messages = capturedBody?.messages as
+      | Array<{ content?: Array<Record<string, unknown>> }>
+      | undefined;
+    const content = messages?.[messages.length - 1]?.content || [];
+    const documentBlock = content.find((part) => part.type === "document") as
+      | { source?: { type?: string; media_type?: string; data?: string } }
+      | undefined;
+    assert.equal(documentBlock?.source?.type, "base64");
+    assert.equal(documentBlock?.source?.media_type, "application/pdf");
+    assert.equal(documentBlock?.source?.data, "JVBERi0x");
+    assert.isUndefined(
+      content.find(
+        (part) =>
+          part.type === "image" &&
+          (part.source as { media_type?: string } | undefined)?.media_type ===
+            "application/pdf",
+      ),
+    );
+  });
+
   it("uses adaptive thinking for Sonnet 4.6 and never sends temperature", async function () {
     let capturedBody: Record<string, unknown> | null = null;
     mockFetch(async (_url, init) => {

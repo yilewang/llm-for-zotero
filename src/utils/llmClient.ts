@@ -202,6 +202,10 @@ interface EmbeddingResponse {
   data?: Array<{ index?: number; embedding?: number[] }>;
 }
 
+type NativePdfPart = {
+  base64: string;
+};
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -2180,6 +2184,7 @@ function buildAnthropicMessagesPayload(params: {
   reasoning?: ReasoningConfig;
   apiBase?: string;
   anthropicModeOverride?: AnthropicReasoningModeOverride;
+  pdfParts?: NativePdfPart[];
 }): Record<string, unknown> {
   const systemParts = params.messages
     .filter((m) => m.role === "system")
@@ -2189,31 +2194,62 @@ function buildAnthropicMessagesPayload(params: {
         : m.content.map((c) => ("text" in c ? c.text : "")).join(""),
     )
     .filter(Boolean);
-  const nonSystemMessages = params.messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({
+  const nonSystemSourceMessages = params.messages.filter(
+    (m) => m.role !== "system",
+  );
+  let lastUserMessageIndex = -1;
+  for (let index = nonSystemSourceMessages.length - 1; index >= 0; index--) {
+    if (nonSystemSourceMessages[index].role === "user") {
+      lastUserMessageIndex = index;
+      break;
+    }
+  }
+  const documentBlocks = (params.pdfParts || []).map((part) => ({
+    type: "document",
+    source: {
+      type: "base64",
+      media_type: "application/pdf",
+      data: part.base64,
+    },
+  }));
+  const nonSystemMessages = nonSystemSourceMessages.map((m, index) => {
+    const content =
+      typeof m.content === "string"
+        ? [{ type: "text", text: m.content }]
+        : m.content.map((c) => {
+            if (c.type !== "image_url") {
+              return { type: "text", text: (c as { text: string }).text };
+            }
+            const parsed = parseDataUrl(
+              (c as { image_url: { url: string } }).image_url.url,
+            );
+            if (parsed?.mimeType === "application/pdf") {
+              return {
+                type: "document",
+                source: {
+                  type: "base64",
+                  media_type: "application/pdf",
+                  data: parsed.data,
+                },
+              };
+            }
+            return {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: parsed?.mimeType || "image/jpeg",
+                data: parsed?.data || "",
+              },
+            };
+          });
+    if (index === lastUserMessageIndex && documentBlocks.length) {
+      content.push(...documentBlocks);
+    }
+    return {
       role: m.role as "user" | "assistant",
-      content:
-        typeof m.content === "string"
-          ? [{ type: "text", text: m.content }]
-          : m.content.map((c) =>
-              c.type === "image_url"
-                ? (() => {
-                    const parsed = parseDataUrl(
-                      (c as { image_url: { url: string } }).image_url.url,
-                    );
-                    return {
-                      type: "image",
-                      source: {
-                        type: "base64",
-                        media_type: parsed?.mimeType || "image/jpeg",
-                        data: parsed?.data || "",
-                      },
-                    };
-                  })()
-                : { type: "text", text: (c as { text: string }).text },
-            ),
-    }));
+      content,
+    };
+  });
   const payload: Record<string, unknown> = {
     model: params.model,
     max_tokens: params.effectiveMaxTokens,
@@ -3045,7 +3081,10 @@ async function callNativeProtocol(params: {
       : resolveGeminiNativeEndpoint({ apiBase, model, stream: isStreaming });
   const headers = buildProviderTransportHeaders({ protocol, apiKey });
   const pdfParts: Array<{ base64: string }> = [];
-  if (protocol === "gemini_native" && params.attachments?.length) {
+  if (
+    (protocol === "anthropic_messages" || protocol === "gemini_native") &&
+    params.attachments?.length
+  ) {
     for (const att of params.attachments) {
       if (!att.storedPath) continue;
       const mime = att.mimeType || "";
@@ -3058,10 +3097,7 @@ async function callNativeProtocol(params: {
         const base64 = await readFileRefAsBase64(att.storedPath);
         pdfParts.push({ base64 });
       } catch (err) {
-        ztoolkit.log(
-          "LLM: Failed to read PDF attachment for Gemini native",
-          err,
-        );
+        ztoolkit.log(`LLM: Failed to read PDF attachment for ${protocol}`, err);
       }
     }
   }
@@ -3076,6 +3112,7 @@ async function callNativeProtocol(params: {
           reasoning: reasoningOverride,
           apiBase,
           anthropicModeOverride: reasoningOverride?.anthropicModeOverride,
+          pdfParts: pdfParts.length ? pdfParts : undefined,
         })
       : buildGeminiNativePayload({
           messages,
