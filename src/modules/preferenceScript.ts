@@ -109,7 +109,6 @@ import {
   setClaudeAutoCompactEnabled,
   setClaudeAutoCompactThresholdPercent,
   setClaudeBridgeUrl,
-  setClaudeCodeModeEnabled,
   setClaudeManagedInstructionTemplatePref,
   setConversationSystemPref,
   setClaudePermissionModePref,
@@ -133,6 +132,7 @@ import {
 } from "../codexAppServer/mcpSetup";
 import type { CodexReasoningMode } from "../codexAppServer/constants";
 import { getClaudeProfileSignature } from "../claudeCode/projectSkills";
+import { applyClaudeCodeModePreferenceChange } from "../claudeCode/bootstrapGate";
 import {
   getDefaultClaudeManagedInstructionBlock,
   readClaudeProjectManagedInstructionBlock,
@@ -2176,11 +2176,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     applyAgentBackendUi(isClaudeCodeModeEnabled());
     agentBackendModeSelect.addEventListener("change", () => {
       const enabled = agentBackendModeSelect.value === "claude_bridge";
-      applyAgentBackendUi(enabled);
-      setClaudeCodeModeEnabled(enabled);
-      if (!enabled && getConversationSystemPref() === "claude_code") {
-        setConversationSystemPref("upstream");
-      }
+      void applyClaudeCodeModePreferenceChange(enabled, applyAgentBackendUi);
     });
   }
 
