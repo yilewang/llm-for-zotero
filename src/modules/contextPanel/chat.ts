@@ -1,5 +1,7 @@
 import { renderMarkdown, renderMarkdownForNote } from "../../utils/markdown";
 import {
+  t,
+  tf,
   getWelcomeHtml,
   getWebChatWelcomeHtml,
   getStandaloneLibraryChatStartPageHtml,
@@ -2178,7 +2180,7 @@ function buildLightCodexNativeMcpContextPlan(params: {
     kind: Parameters<typeof setStatus>[2],
   ) => void;
 }): ContextPlanForRequest {
-  params.setStatusSafely("Using Codex native Zotero tools", "sending");
+  params.setStatusSafely(t("Using Codex native Zotero tools"), "sending");
   return {
     combinedContext: "",
     strategy: "general-retrieval",
@@ -2270,12 +2272,12 @@ async function buildContextPlanForRequest(params: {
         : "";
     const modeStatus =
       plan.strategy === "paper-first-full"
-        ? "Using full paper text (first turn)"
+        ? t("Using full paper text (first turn)")
         : plan.strategy === "paper-followup-retrieval"
-          ? `Retrieval${semanticTag} (${plan.selectedChunkCount} chunks)`
+          ? tf("Retrieval%s (%d chunks)", semanticTag, plan.selectedChunkCount)
           : plan.mode === "full"
-            ? `Using full context (${plan.selectedPaperCount} papers)`
-            : `Retrieval${semanticTag} (${plan.selectedPaperCount} papers, ${plan.selectedChunkCount} chunks)`;
+            ? tf("Using full context (%d papers)", plan.selectedPaperCount)
+            : tf("Retrieval%s (%d papers, %d chunks)", semanticTag, plan.selectedPaperCount, plan.selectedChunkCount);
     params.setStatusSafely(modeStatus, "sending");
   }
   ztoolkit.log("LLM: Multi-context plan", {
@@ -3935,7 +3937,7 @@ export async function retryLatestAssistantResponse(
       enrichedFullTextPaperContexts || retryFullTextPaperContexts;
   }
   if (!question.trim()) {
-    setStatusSafely("Nothing to retry for latest turn", "error");
+    setStatusSafely(t("Nothing to retry for latest turn"), "error");
     restoreRequestUIIdle(body, conversationKey, thisRequestId);
     return;
   }
@@ -3967,7 +3969,7 @@ export async function retryLatestAssistantResponse(
       contextTokens: latestContextSnapshot?.contextTokens,
       contextWindow: latestContextSnapshot?.contextWindow,
     });
-    setStatusSafely("Cancelled", "ready");
+    setStatusSafely(t("Cancelled"), "ready");
   };
   if (
     shouldApplyCodexAppServerChatAttachmentPolicy({
@@ -4199,7 +4201,7 @@ export async function retryLatestAssistantResponse(
             }),
             onSkillActivated: (skillId) => {
               codexActivityTrace?.noteSkillActivated(skillId);
-              setStatusSafely(`Codex skill activated: ${skillId}`, "sending");
+              setStatusSafely(tf("Codex skill activated: %s", skillId), "sending");
             },
             onDelta: handleDelta,
             onAgentMessageDelta: (event) => {
@@ -4213,7 +4215,7 @@ export async function retryLatestAssistantResponse(
               codexActivityTrace?.appendItemStatus(event, "started");
               const itemType = sanitizeText(event.type || "");
               if (itemType && !isCodexNativeAgentMessageItem(event)) {
-                setStatusSafely(`Codex: ${itemType} started`, "sending");
+                setStatusSafely(tf("Codex: %s started", itemType), "sending");
               }
             },
             onItemCompleted: (event) => {
@@ -4221,7 +4223,7 @@ export async function retryLatestAssistantResponse(
               codexActivityTrace?.appendItemStatus(event, "completed");
               const itemType = sanitizeText(event.type || "");
               if (itemType && !isCodexNativeAgentMessageItem(event)) {
-                setStatusSafely(`Codex: ${itemType} completed`, "sending");
+                setStatusSafely(tf("Codex: %s completed", itemType), "sending");
               }
             },
             onMcpToolActivity: (event) => {
@@ -4234,8 +4236,8 @@ export async function retryLatestAssistantResponse(
               if (label) {
                 setStatusSafely(
                   event.phase === "completed"
-                    ? `Codex: used ${label}`
-                    : `Codex: using ${label}`,
+                    ? tf("Codex: used %s", label)
+                    : tf("Codex: using %s", label),
                   "sending",
                 );
               }
@@ -4243,8 +4245,8 @@ export async function retryLatestAssistantResponse(
             onMcpConfirmationRequest: async ({ requestId, action }) => {
               setStatusSafely(
                 action.mode === "review"
-                  ? "Codex is waiting for your Zotero review"
-                  : "Codex is waiting for your Zotero approval",
+                  ? t("Codex is waiting for your Zotero review")
+                  : t("Codex is waiting for your Zotero approval"),
                 "sending",
               );
               codexActivityTrace?.noteMcpConfirmationRequired(
@@ -4274,15 +4276,15 @@ export async function retryLatestAssistantResponse(
             onApprovalRequest: (request) => {
               const decision = resolveCodexNativeApprovalRequest(request);
               if (decision.approved) {
-                setStatusSafely("Codex approved Zotero MCP access", "sending");
+                setStatusSafely(t("Codex approved Zotero MCP access"), "sending");
               } else if (decision.reason === "unsupported_mcp_elicitation") {
                 setStatusSafely(
-                  "Codex declined unsupported MCP elicitation",
+                  t("Codex declined unsupported MCP elicitation"),
                   "sending",
                 );
               } else {
                 setStatusSafely(
-                  "Codex denied a built-in or untrusted approval request",
+                  t("Codex denied a built-in or untrusted approval request"),
                   "error",
                 );
               }
@@ -4344,7 +4346,7 @@ export async function retryLatestAssistantResponse(
       contextWindow: latestContextSnapshot?.contextWindow,
     });
 
-    setStatusSafely("Ready", "ready");
+    setStatusSafely(t("Ready"), "ready");
   } catch (err) {
     const isCancelled =
       getCancelledRequestId(conversationKey) >= thisRequestId ||
@@ -4362,7 +4364,7 @@ export async function retryLatestAssistantResponse(
       screenshotImages.length,
     );
     setStatusSafely(
-      `Retry failed: ${`${errMsg}${retryHint}`.slice(0, 48)}`,
+      tf("Retry failed: %s", `${errMsg}${retryHint}`.slice(0, 48)),
       "error",
     );
   } finally {
@@ -5326,7 +5328,7 @@ export async function sendQuestion(
     finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
     await persistAssistantOnce();
-    setStatusSafely("Cancelled", "ready");
+    setStatusSafely(t("Cancelled"), "ready");
   };
 
   // [webchat] Dedicated pipeline — bypass context assembly, send raw PDF + question
@@ -5646,7 +5648,7 @@ export async function sendQuestion(
             }),
             onSkillActivated: (skillId) => {
               codexActivityTrace?.noteSkillActivated(skillId);
-              setStatusSafely(`Codex skill activated: ${skillId}`, "sending");
+              setStatusSafely(tf("Codex skill activated: %s", skillId), "sending");
             },
             onDelta: handleDelta,
             onAgentMessageDelta: (event) => {
@@ -5660,7 +5662,7 @@ export async function sendQuestion(
               codexActivityTrace?.appendItemStatus(event, "started");
               const itemType = sanitizeText(event.type || "");
               if (itemType && !isCodexNativeAgentMessageItem(event)) {
-                setStatusSafely(`Codex: ${itemType} started`, "sending");
+                setStatusSafely(tf("Codex: %s started", itemType), "sending");
               }
             },
             onItemCompleted: (event) => {
@@ -5668,7 +5670,7 @@ export async function sendQuestion(
               codexActivityTrace?.appendItemStatus(event, "completed");
               const itemType = sanitizeText(event.type || "");
               if (itemType && !isCodexNativeAgentMessageItem(event)) {
-                setStatusSafely(`Codex: ${itemType} completed`, "sending");
+                setStatusSafely(tf("Codex: %s completed", itemType), "sending");
               }
             },
             onMcpToolActivity: (event) => {
@@ -5681,8 +5683,8 @@ export async function sendQuestion(
               if (label) {
                 setStatusSafely(
                   event.phase === "completed"
-                    ? `Codex: used ${label}`
-                    : `Codex: using ${label}`,
+                    ? tf("Codex: used %s", label)
+                    : tf("Codex: using %s", label),
                   "sending",
                 );
               }
@@ -5690,8 +5692,8 @@ export async function sendQuestion(
             onMcpConfirmationRequest: async ({ requestId, action }) => {
               setStatusSafely(
                 action.mode === "review"
-                  ? "Codex is waiting for your Zotero review"
-                  : "Codex is waiting for your Zotero approval",
+                  ? t("Codex is waiting for your Zotero review")
+                  : t("Codex is waiting for your Zotero approval"),
                 "sending",
               );
               codexActivityTrace?.noteMcpConfirmationRequired(
@@ -5721,15 +5723,15 @@ export async function sendQuestion(
             onApprovalRequest: (request) => {
               const decision = resolveCodexNativeApprovalRequest(request);
               if (decision.approved) {
-                setStatusSafely("Codex approved Zotero MCP access", "sending");
+                setStatusSafely(t("Codex approved Zotero MCP access"), "sending");
               } else if (decision.reason === "unsupported_mcp_elicitation") {
                 setStatusSafely(
-                  "Codex declined unsupported MCP elicitation",
+                  t("Codex declined unsupported MCP elicitation"),
                   "sending",
                 );
               } else {
                 setStatusSafely(
-                  "Codex denied a built-in or untrusted approval request",
+                  t("Codex denied a built-in or untrusted approval request"),
                   "error",
                 );
               }
@@ -5802,7 +5804,7 @@ export async function sendQuestion(
       });
     }
 
-    setStatusSafely("Ready", "ready");
+    setStatusSafely(t("Ready"), "ready");
   } catch (err) {
     const isCancelled =
       getCancelledRequestId(conversationKey) >= thisRequestId ||
