@@ -605,6 +605,7 @@ const zhCN: Record<string, string> = {
   "Loading…": "加载中...",
   "Loading agent activity...": "正在加载代理活动...",
   "No retryable response found": "未找到可重试的响应",
+  "using first child item from %s as context": "使用 %s 的首个子附件作为上下文",
 
   // ── Additional UI labels ────────────────────────────────────────────────────
   "Apply": "应用",

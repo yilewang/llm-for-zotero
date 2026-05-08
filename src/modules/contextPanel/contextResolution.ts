@@ -4,7 +4,7 @@ import {
   isLikelyCorruptedSelectedText,
   setStatus,
 } from "./textUtils";
-import { t } from "../../utils/i18n";
+import { t, tf } from "../../utils/i18n";
 import {
   buildNoteContextIdentityKey,
   normalizeNoteContextRef,
@@ -396,7 +396,7 @@ export function resolveContextSourceItem(
       `Item ${parentItem.id}`;
     return {
       contextItem: firstPdfChild,
-      statusText: `using first child item from ${parentTitle} as context`,
+      statusText: tf("using first child item from %s as context", parentTitle),
     };
   }
 
