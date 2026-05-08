@@ -11107,7 +11107,7 @@ export function setupHandlers(
     if (status) {
       setStatus(
         status,
-        nextQueue.length === 1 ? t("Queued 1 follow-up") : t(`Queued ${nextQueue.length} follow-ups`),
+        nextQueue.length === 1 ? t("Queued 1 follow-up") : tf("Queued %d follow-ups", nextQueue.length),
         "ready",
       );
     }

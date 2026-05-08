@@ -545,13 +545,14 @@ const zhCN: Record<string, string> = {
   "Could not open PDF": "无法打开 PDF",
   "History": "历史",
   "Queued 1 follow-up": "已排队 1 个跟进任务",
+  "Queued %d follow-ups": "已排队 %d 个跟进任务",
 
   // ── API request status messages ──────────────────────────────────────────────
   "Using Codex native Zotero tools": "使用 Codex 原生 Zotero 工具",
   "Using full paper text (first turn)": "使用完整论文文本（第一轮）",
-  "Retrieval%s (%d chunks)": "检索%s（%d个块）",
+  "Retrieval%s (%d chunks)": "检索%s（%d个片段）",
   "Using full context (%d papers)": "使用完整上下文（%d篇论文）",
-  "Retrieval%s (%d papers, %d chunks)": "检索%s（%d篇论文，%d个块）",
+  "Retrieval%s (%d papers, %d chunks)": "检索%s（%d篇论文，%d个片段）",
   "Nothing to retry for latest turn": "最近一轮没有可重试的内容",
   "Codex skill activated: %s": "Codex 技能已激活：%s",
   "Codex: %s started": "Codex：%s 已开始",
