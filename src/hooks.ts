@@ -1,5 +1,5 @@
 import { initLocale } from "./utils/locale";
-import { initI18n } from "./utils/i18n";
+import { initI18n, onLocaleChange } from "./utils/i18n";
 import { registerPrefsScripts } from "./modules/preferenceScript";
 import { PREFERENCES_PANE_ID } from "./modules/contextPanel/constants";
 import {
@@ -30,8 +30,9 @@ import {
 } from "./agent";
 import { pauseBatchProcessing } from "./modules/mineruBatchProcessor";
 import { startAutoWatch, stopAutoWatch } from "./modules/mineruAutoWatch";
-import { clearAllState, initFontScale } from "./modules/contextPanel/state";
+import { clearAllState, initFontScale, activeContextPanels } from "./modules/contextPanel/state";
 import { clearQueuedFollowUpState } from "./modules/contextPanel/queuedFollowUps";
+import { refreshChat, buildUI, setupHandlers } from "./modules/contextPanel";
 
 async function onStartup() {
   await Promise.all([
@@ -49,6 +50,14 @@ async function onStartup() {
   initLocale();
   initI18n();
   initFontScale();
+
+  // Register locale change listener to refresh UI when language changes
+  onLocaleChange(() => {
+    // Refresh all context panels
+    refreshAllContextPanels();
+    // Refresh preferences pane if open
+    refreshPreferencesPane();
+  });
 
   try {
     await initChatStore();
@@ -275,6 +284,54 @@ function onDialogEvents(_type: string) {
 // Add your hooks here. For element click, etc.
 // Keep in mind hooks only do dispatch. Don't add code that does real jobs in hooks.
 // Otherwise the code would be hard to read and maintain.
+
+function refreshAllContextPanels() {
+  try {
+    for (const [body, syncState] of activeContextPanels.entries()) {
+      const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
+      if (!panelRoot || !panelRoot.isConnected) {
+        activeContextPanels.delete(body);
+        continue;
+      }
+      try {
+        // Get item from data attributes
+        const itemId = Number(panelRoot.dataset.itemId || 0);
+        let item: Zotero.Item | null = null;
+        if (itemId > 0) {
+          item = Zotero.Items.get(itemId) || null;
+        }
+        // Rebuild UI with new language
+        buildUI(body, item);
+        setupHandlers(body, item);
+        // Refresh chat content
+        if (itemId > 0) {
+          refreshChat(body, item);
+        }
+      } catch (err) {
+        ztoolkit.log("LLM: Failed to refresh panel on locale change", err);
+      }
+    }
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to refresh context panels on locale change", err);
+  }
+}
+
+function refreshPreferencesPane() {
+  try {
+    // Find and refresh all open preferences windows
+    for (const win of Zotero.getMainWindows()) {
+      const prefWindow = win.document.querySelector(
+        `#${addon.data.config.addonRef}-prefs`
+      ) as HTMLElement | null;
+      if (prefWindow && prefWindow.ownerDocument) {
+        // Re-register preferences scripts to refresh the UI
+        registerPrefsScripts(prefWindow.ownerDocument.defaultView);
+      }
+    }
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to refresh preferences pane on locale change", err);
+  }
+}
 
 export default {
   onStartup,
