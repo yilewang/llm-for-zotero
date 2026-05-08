@@ -4,6 +4,7 @@ import {
   isLikelyCorruptedSelectedText,
   setStatus,
 } from "./textUtils";
+import { t, tf } from "../../utils/i18n";
 import {
   buildNoteContextIdentityKey,
   normalizeNoteContextRef,
@@ -329,7 +330,7 @@ export function resolveContextSourceItem(
   if (isGlobalPortalItem(panelItem)) {
     return {
       contextItem: null,
-      statusText: "No active paper context. Type / to add papers.",
+      statusText: t("No active paper context. Type / to add papers."),
     };
   }
 
@@ -337,7 +338,7 @@ export function resolveContextSourceItem(
   if (activeNoteSession?.noteKind === "standalone") {
     return {
       contextItem: null,
-      statusText: `Using note: ${activeNoteSession.title}`,
+      statusText: tf("Using note: %s", activeNoteSession.title),
     };
   }
   if (activeNoteSession?.noteKind === "item" && activeNoteSession.parentItemId) {
@@ -346,7 +347,7 @@ export function resolveContextSourceItem(
       const label = getContextItemLabel(activeItem);
       return {
         contextItem: activeItem,
-        statusText: `Using note: ${activeNoteSession.title} with parent paper context ${label}`,
+        statusText: tf("Using note: %s with parent paper context %s", activeNoteSession.title, label),
       };
     }
     const parentItem = Zotero.Items.get(activeNoteSession.parentItemId) || null;
@@ -355,12 +356,12 @@ export function resolveContextSourceItem(
       const label = getContextItemLabel(firstPdfChild);
       return {
         contextItem: firstPdfChild,
-        statusText: `Using note: ${activeNoteSession.title} with parent paper context ${label}`,
+        statusText: tf("Using note: %s with parent paper context %s", activeNoteSession.title, label),
       };
     }
     return {
       contextItem: null,
-      statusText: `Using note: ${activeNoteSession.title}; parent item has no PDF context`,
+      statusText: tf("Using note: %s; parent item has no PDF context", activeNoteSession.title),
     };
   }
 
@@ -369,7 +370,7 @@ export function resolveContextSourceItem(
     const label = getContextItemLabel(activeItem);
     return {
       contextItem: activeItem,
-      statusText: `Using context: ${label} (active tab)`,
+      statusText: tf("Using context: %s (active tab)", label),
     };
   }
 
@@ -380,7 +381,7 @@ export function resolveContextSourceItem(
     const label = getContextItemLabel(panelItem);
     return {
       contextItem: panelItem,
-      statusText: `using the selected ${label} as context`,
+      statusText: tf("using the selected %s as context", label),
     };
   }
 
@@ -395,7 +396,7 @@ export function resolveContextSourceItem(
       `Item ${parentItem.id}`;
     return {
       contextItem: firstPdfChild,
-      statusText: `using first child item from ${parentTitle} as context`,
+      statusText: tf("using first child item from %s as context", parentTitle),
     };
   }
 
@@ -412,7 +413,7 @@ export function resolveContextSourceItem(
     : [];
   return {
     contextItem: null,
-    statusText: `No active tab PDF context (tab=${selectedTab?.selectedID ?? "?"}, type=${selectedTab?.selectedType ?? "?"}, tabType=${activeTab?.type ?? "?"}, dataKeys=${dataKeys.join("|") || "-"})`,
+    statusText: tf("No active tab PDF context (tab=%s, type=%s, tabType=%s, dataKeys=%s)", selectedTab?.selectedID ?? "?", selectedTab?.selectedType ?? "?", activeTab?.type ?? "?", dataKeys.join("|") || "-"),
   };
 }
 
@@ -961,7 +962,7 @@ function resolveNoteChipSnapshot(
   const fallbackTitle =
     fallback?.title ||
     (typeof note === "object" ? note.title : "") ||
-    (normalizedNoteId ? `Note ${normalizedNoteId}` : "Note");
+    (normalizedNoteId ? `${t("Note")} ${normalizedNoteId}` : t("Note"));
   if (!snapshot && !normalizedNoteId && !fallback?.text && !fallbackTitle) {
     return null;
   }
@@ -978,8 +979,8 @@ export function createNoteContextChip(
   options: CreateNoteChipOptions,
 ): HTMLDivElement {
   const noteLabelText = snapshot.noteId
-    ? `Note ${snapshot.noteId}`
-    : snapshot.title || "Note";
+    ? `${t("Note")} ${snapshot.noteId}`
+    : snapshot.title || t("Note");
   const noteChip = ownerDoc.createElement("div");
   noteChip.className = "llm-selected-context llm-note-context-chip";
   if (options.pinned) {
@@ -1053,9 +1054,9 @@ export function refreshNoteChipPreview(noteChip: Element): void {
   if (noteMeta) {
     noteMeta.removeAttribute("title");
     const noteLabelText = snapshot.noteId
-      ? `Note ${snapshot.noteId}`
-      : snapshot.title || "Note";
-    noteMeta.setAttribute("aria-label", `Note context: ${noteLabelText}`);
+      ? `${t("Note")} ${snapshot.noteId}`
+      : snapshot.title || t("Note");
+    noteMeta.setAttribute("aria-label", `${t("Note")} context: ${noteLabelText}`);
     const noteLabel = noteMeta.querySelector(
       ".llm-note-context-label",
     ) as HTMLSpanElement | null;
@@ -1187,8 +1188,8 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
         return isGlobalConversation && selectedSource === "pdf"
           ? formatPaperCitationLabel(selectedContext.paperContext)
           : selectedContexts.length > 1 && index > 0
-            ? `Text Context (${index + 1})`
-            : "Text Context";
+            ? `${t("Text Context")} (${index + 1})`
+            : t("Text Context");
       })();
 
     const previewBox = ownerDoc.createElement("div");

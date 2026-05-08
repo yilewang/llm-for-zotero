@@ -27,21 +27,47 @@ import {
   resetShortcutsToDefault,
 } from "./prefHelpers";
 import { setStatus } from "./textUtils";
+import { t, tf } from "../../utils/i18n";
 
 const shortcutRenderGeneration = new WeakMap<Element, number>();
 
-export async function loadShortcutText(file: string): Promise<string> {
-  if (shortcutTextCache.has(file)) {
-    return shortcutTextCache.get(file)!;
+function getLocaleSuffix(): string {
+  const locale = (Zotero as unknown as { locale?: string }).locale || "en-US";
+  if (locale.startsWith("zh")) {
+    return ".zh-CN";
   }
-  const uri = `chrome://${config.addonRef}/content/shortcuts/${file}`;
+  return "";
+}
+
+export async function loadShortcutText(file: string): Promise<string> {
+  const localeSuffix = getLocaleSuffix();
+  const nameWithoutExt = file.replace(/\.[^.]+$/, "");
+  const ext = file.match(/\.[^.]+$/)?.[0] || ".txt";
+  
+  const localizedFile = `${nameWithoutExt}${localeSuffix}${ext}`;
+  const cacheKey = `${file}:${localeSuffix}`;
+  
+  if (shortcutTextCache.has(cacheKey)) {
+    return shortcutTextCache.get(cacheKey)!;
+  }
+  
+  const localizedUri = `chrome://${config.addonRef}/content/shortcuts/${localizedFile}`;
   const fetchFn = ztoolkit.getGlobal("fetch") as typeof fetch;
-  const res = await fetchFn(uri);
-  if (!res.ok) {
+  
+  const res = await fetchFn(localizedUri);
+  if (res.ok) {
+    const text = await res.text();
+    shortcutTextCache.set(cacheKey, text);
+    return text;
+  }
+  
+  const fallbackUri = `chrome://${config.addonRef}/content/shortcuts/${file}`;
+  const fallbackRes = await fetchFn(fallbackUri);
+  if (!fallbackRes.ok) {
     throw new Error(`Failed to load ${file}`);
   }
-  const text = await res.text();
-  shortcutTextCache.set(file, text);
+  const text = await fallbackRes.text();
+  shortcutTextCache.set(cacheKey, text);
   return text;
 }
 
@@ -123,13 +149,13 @@ export async function renderShortcuts(
         promptText = "";
       }
     }
-    const labelText = (labelOverrides[shortcut.id] || shortcut.label).trim();
+    const labelText = (labelOverrides[shortcut.id] || t(shortcut.label)).trim();
     editableShortcutsRaw.push({
       id: shortcut.id,
       kind: "builtin",
       prompt: promptText,
-      label: labelText || shortcut.label,
-      defaultLabel: shortcut.label,
+      label: labelText || t(shortcut.label),
+      defaultLabel: t(shortcut.label),
     });
   }
 
@@ -211,7 +237,7 @@ export async function renderShortcuts(
     const prompt = updated.prompt.trim();
     if (!prompt) {
       const status = body.querySelector("#llm-status") as HTMLElement | null;
-      if (status) setStatus(status, "Shortcut prompt cannot be empty", "error");
+      if (status) setStatus(status, t("Shortcut prompt cannot be empty"), "error");
       return;
     }
 
@@ -228,7 +254,7 @@ export async function renderShortcuts(
       if (status) {
         setStatus(
           status,
-          `Maximum ${MAX_EDITABLE_SHORTCUTS} editable shortcuts allowed`,
+          tf("Maximum %d editable shortcuts allowed", MAX_EDITABLE_SHORTCUTS),
           "error",
         );
       }
@@ -551,7 +577,7 @@ export async function renderShortcuts(
       if (!nextPrompt) {
         const status = body.querySelector("#llm-status") as HTMLElement | null;
         if (status)
-          setStatus(status, "Shortcut prompt cannot be empty", "error");
+          setStatus(status, t("Shortcut prompt cannot be empty"), "error");
         menu.style.display = "none";
         return;
       }

@@ -2575,7 +2575,7 @@ export function openStandaloneChat(options?: {
         const confirmed =
           typeof win?.confirm === "function"
             ? win.confirm(
-                `Restore ${skillCtxFilename} to the shipped default? Your customizations in this file will be lost.`,
+                t(`Restore ${skillCtxFilename} to the shipped default? Your customizations in this file will be lost.`),
               )
             : false;
         if (!confirmed) return;

@@ -8,6 +8,7 @@ import {
   isUpstreamGlobalConversationKey,
 } from "./constants";
 import type { CustomShortcut, ReasoningLevelSelection } from "./types";
+import { t } from "../../utils/i18n";
 import { selectedModelCache, panelFontScalePercent } from "./state";
 import {
   deriveProviderLabel,
@@ -412,7 +413,7 @@ function getCustomShortcutsPref(key: string): CustomShortcut[] {
       if (!id || !prompt) continue;
       shortcuts.push({
         id,
-        label: label || "Custom Shortcut",
+        label: label || t("Custom Shortcut"),
         prompt,
       });
     }

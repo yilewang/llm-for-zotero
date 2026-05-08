@@ -7,6 +7,7 @@
  */
 
 import { createElement } from "../utils/domHelpers";
+import { t } from "../utils/i18n";
 import { relayGetExtensionLiveness, relayGetExtensionStatus, relayClearExtensionStatus } from "./relayServer";
 import { WEBCHAT_TARGETS } from "./types";
 
@@ -29,17 +30,17 @@ interface PreloadStep {
 const STEPS: PreloadStep[] = [
   {
     key: "relay",
-    label: "Relay server",
+    label: t("Relay server"),
     check: () => !!(Zotero as any).Server?.Endpoints,
     maxAttempts: 1,
-    failHint: "Zotero relay server is not available.",
+    failHint: t("Zotero relay server is not available."),
   },
   {
     key: "extension",
-    label: "Extension connection",
+    label: t("Extension connection"),
     check: () => relayGetExtensionLiveness().aliveSinceMs < EXTENSION_ALIVE_THRESHOLD_MS,
     maxAttempts: 20, // 10 seconds
-    failHint: "Install the Sync for Zotero Chrome extension and reload the page.",
+    failHint: t("Install the Sync for Zotero Chrome extension and reload the page."),
   },
 ];
 
@@ -47,7 +48,7 @@ const STEPS: PreloadStep[] = [
 function makeChatSiteStep(targetHost?: string): PreloadStep {
   return {
     key: "chatsite",
-    label: "Chat site tab",
+    label: t("Chat site tab"),
     check: () => {
       const status = relayGetExtensionStatus();
       if (!status?.chatTabAlive) return false;
@@ -106,8 +107,11 @@ export async function showWebChatPreloadScreen(
   // Build overlay DOM
   const overlay = el(doc, "div", "llm-webchat-preload");
   const content = el(doc, "div", "llm-webchat-preload-content");
+  const titleText = siteName === "ChatGPT"
+    ? t("Connecting to ChatGPT…")
+    : t("Connecting to WebChat…").replace("WebChat", siteName);
   const title = el(doc, "div", "llm-webchat-preload-title", {
-    textContent: `Connecting to ${siteName}\u2026`,
+    textContent: titleText,
   });
 
   const stepsContainer = el(doc, "div", "llm-webchat-preload-steps");
@@ -126,7 +130,7 @@ export async function showWebChatPreloadScreen(
   }
 
   const readyEl = el(doc, "div", "llm-webchat-preload-ready", {
-    textContent: "Ready! Starting webchat\u2026",
+    textContent: t("Ready! Starting webchat…"),
   });
   readyEl.style.display = "none";
 
@@ -134,7 +138,7 @@ export async function showWebChatPreloadScreen(
   errorEl.style.display = "none";
   const errorMsg = el(doc, "span", "llm-webchat-preload-error-msg");
   const retryBtn = el(doc, "button", "llm-webchat-preload-retry", {
-    textContent: "Retry",
+    textContent: t("Retry"),
     type: "button",
   });
   errorEl.append(errorMsg, retryBtn);
