@@ -1,6 +1,3 @@
-import { config } from "../../../package.json";
-import { getClaudeRuntimeRootDir } from "../../claudeCode/projectSkills";
-import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
 import type {
   AgentEvent,
   AgentRunEventRecord,
@@ -11,152 +8,6 @@ import type {
 const AGENT_RUNS_TABLE = "llm_for_zotero_agent_runs";
 const AGENT_RUN_EVENTS_TABLE = "llm_for_zotero_agent_run_events";
 const AGENT_RUN_EVENTS_INDEX = "llm_for_zotero_agent_run_events_run_idx";
-const AGENT_TRACE_EXPORT_DIR_NAME = "trace-debug";
-const AGENT_TRACE_EXPORT_PREF_KEY = `${config.prefsPrefix}.agentTraceExportEnabled`;
-
-const traceExportTimers = new Map<string, number>();
-const traceExportInFlight = new Map<string, Promise<void>>();
-
-type IOUtilsLike = {
-  write?: (path: string, data: Uint8Array<ArrayBufferLike>) => Promise<unknown>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-};
-
-type OSFileLike = {
-  writeAtomic?: (path: string, data: Uint8Array<ArrayBufferLike>) => Promise<void>;
-  makeDir?: (
-    path: string,
-    options?: { from?: string; ignoreExisting?: boolean },
-  ) => Promise<void>;
-};
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
-function isAgentTraceExportEnabled(): boolean {
-  try {
-    const raw = Zotero.Prefs.get(AGENT_TRACE_EXPORT_PREF_KEY, true);
-    return raw === true || `${raw || ""}`.toLowerCase() === "true";
-  } catch {
-    return false;
-  }
-}
-
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
-
-async function ensureDir(path: string): Promise<void> {
-  const io = getIOUtils();
-  if (io?.makeDirectory) {
-    await io.makeDirectory(path, { createAncestors: true, ignoreExisting: true });
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.makeDir) {
-    await osFile.makeDir(path, {
-      from: getLocalParentPath(path),
-      ignoreExisting: true,
-    });
-    return;
-  }
-  throw new Error("No directory API available for trace export");
-}
-
-async function writeUtf8File(path: string, content: string): Promise<void> {
-  const bytes = new TextEncoder().encode(content);
-  await ensureDir(getLocalParentPath(path));
-  const io = getIOUtils();
-  if (io?.write) {
-    await io.write(path, bytes);
-    return;
-  }
-  const osFile = getOSFile();
-  if (osFile?.writeAtomic) {
-    await osFile.writeAtomic(path, bytes);
-    return;
-  }
-  throw new Error("No file write API available for trace export");
-}
-
-function getAgentTraceExportDir(): string {
-  return joinLocalPath(getClaudeRuntimeRootDir(), ".debug", AGENT_TRACE_EXPORT_DIR_NAME);
-}
-
-export function getAgentTraceExportPath(runId: string): string {
-  const safeRunId = (runId || "unknown-run").replace(/[^a-zA-Z0-9._-]+/g, "_");
-  return joinLocalPath(getAgentTraceExportDir(), `${safeRunId}.json`);
-}
-
-function formatTraceClockTime(timestamp: number): string {
-  const date = new Date(timestamp);
-  const pad2 = (value: number) => String(Math.max(0, Math.floor(value))).padStart(2, "0");
-  const pad3 = (value: number) => String(Math.max(0, Math.floor(value))).padStart(3, "0");
-  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}.${pad3(date.getMilliseconds())}`;
-}
-
-function stringifyTracePayload(payload: unknown): string {
-  try {
-    return JSON.stringify(payload, null, 2);
-  } catch {
-    return String(payload ?? "");
-  }
-}
-
-function buildReadableTrace(events: AgentRunEventRecord[]): string {
-  if (!events.length) return "";
-  const firstTimestamp = events[0].createdAt;
-  let previousTimestamp = firstTimestamp;
-  return events
-    .map((entry) => {
-      const fromStart = Math.max(0, entry.createdAt - firstTimestamp);
-      const fromPrevious = Math.max(0, entry.createdAt - previousTimestamp);
-      previousTimestamp = entry.createdAt;
-      return [
-        `#${entry.seq} ${formatTraceClockTime(entry.createdAt)} +${fromStart}ms Δ${fromPrevious}ms ${entry.eventType}`,
-        stringifyTracePayload(entry.payload),
-      ].join("\n");
-    })
-    .join("\n\n");
-}
-
-async function exportAgentRunTrace(runId: string): Promise<void> {
-  const trace = await getAgentRunTrace(runId);
-  const payload = {
-    exportedAt: Date.now(),
-    exportPath: getAgentTraceExportPath(runId),
-    run: trace.run,
-    events: trace.events,
-    readable: buildReadableTrace(trace.events),
-  };
-  await writeUtf8File(payload.exportPath, JSON.stringify(payload, null, 2));
-}
-
-function scheduleAgentRunTraceExport(runId: string, delayMs = 250): void {
-  if (!isAgentTraceExportEnabled()) return;
-  const normalizedRunId = (runId || "").trim();
-  if (!normalizedRunId) return;
-  const existing = traceExportTimers.get(normalizedRunId);
-  if (typeof existing === "number") {
-    clearTimeout(existing);
-  }
-  const timer = setTimeout(() => {
-    traceExportTimers.delete(normalizedRunId);
-    const task = exportAgentRunTrace(normalizedRunId)
-      .catch((error) => {
-        ztoolkit.log("LLM: Failed to export agent trace", normalizedRunId, error);
-      })
-      .finally(() => {
-        traceExportInFlight.delete(normalizedRunId);
-      });
-    traceExportInFlight.set(normalizedRunId, task);
-  }, delayMs) as unknown as number;
-  traceExportTimers.set(normalizedRunId, timer);
-}
 
 export async function initAgentTraceStore(): Promise<void> {
   await Zotero.DB.executeTransaction(async () => {
@@ -205,7 +56,6 @@ export async function createAgentRun(record: AgentRunRecord): Promise<void> {
       record.finalText || null,
     ],
   );
-  scheduleAgentRunTraceExport(record.runId, 0);
 }
 
 export async function finishAgentRun(
@@ -221,7 +71,6 @@ export async function finishAgentRun(
      WHERE run_id = ?`,
     [status, Date.now(), finalText || null, runId],
   );
-  scheduleAgentRunTraceExport(runId, 0);
 }
 
 export async function appendAgentRunEvent(
@@ -235,7 +84,6 @@ export async function appendAgentRunEvent(
      VALUES (?, ?, ?, ?, ?)`,
     [runId, seq, event.type, JSON.stringify(event), Date.now()],
   );
-  scheduleAgentRunTraceExport(runId);
 }
 
 export async function listAgentRunEvents(
@@ -341,4 +189,3 @@ export async function getAgentRunTrace(runId: string): Promise<{
     events: await listAgentRunEvents(runId),
   };
 }
-

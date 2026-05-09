@@ -5,7 +5,7 @@
  *
  * Two modes:
  * - "read": gather data across many items, no confirmation needed
- * - "write": executes directly with undo instrumentation required
+ * - "write": confirmation card shows script + description, then executes with undo
  */
 import type { AgentToolDefinition, AgentToolContext } from "../../types";
 import { ok, fail, validateObject } from "../shared";
@@ -265,6 +265,38 @@ async function executeScript(params: {
   }
 }
 
+// ── Safety scan ─────────────────────────────────────────────────────────────
+
+const DANGEROUS_PATTERNS: Array<{ pattern: RegExp; warning: string }> = [
+  {
+    pattern: /\.eraseTx\s*\(/,
+    warning: "eraseTx() permanently deletes items — use trash instead",
+  },
+  {
+    pattern: /Zotero\.DB\b/,
+    warning:
+      "Direct database access (Zotero.DB) — use the Items/Collections API instead",
+  },
+  {
+    pattern: /Components\.classes/,
+    warning: "Low-level XPCOM access (Components.classes)",
+  },
+  {
+    pattern: /ChromeUtils\.import/,
+    warning: "Module import (ChromeUtils.import) — ensure this is necessary",
+  },
+  {
+    pattern: /Services\./,
+    warning: "XPCOM Services access — ensure this is necessary",
+  },
+];
+
+function scanForDangerousPatterns(script: string): string[] {
+  return DANGEROUS_PATTERNS.filter(({ pattern }) => pattern.test(script)).map(
+    ({ warning }) => warning,
+  );
+}
+
 // ── Library ID resolution ───────────────────────────────────────────────────
 
 function resolveLibraryID(context: AgentToolContext): number {
@@ -274,10 +306,6 @@ function resolveLibraryID(context: AgentToolContext): number {
   }
   return (Zotero as unknown as { Libraries: { userLibraryID: number } })
     .Libraries.userLibraryID;
-}
-
-function hasUndoInstrumentation(script: string): boolean {
-  return /\benv\s*\.\s*(?:snapshot|addUndoStep)\s*\(/.test(script);
 }
 
 // ── Guidance ────────────────────────────────────────────────────────────────
@@ -345,7 +373,7 @@ env.log(\`Total: \${count} items\`);
 3. Use \`env.log(msg)\` to report progress — this output is shown to the user
 4. The script body is an async function — top-level await is supported
 5. Do NOT use \`eraseTx()\` — use Zotero trash instead (item.deleted = true; await item.saveTx())
-6. Write straightforward code — no dry-run branching needed. The script runs directly, and undo_last_action uses snapshots/custom undo steps to revert it.`;
+6. Write straightforward code — no dry-run branching needed. The confirmation card lets the user review before execution.`;
 
 // ── Tool definition ─────────────────────────────────────────────────────────
 
@@ -359,8 +387,8 @@ export function createZoteroScriptTool(): AgentToolDefinition<
       description:
         "Execute a JavaScript script inside Zotero's runtime with full API access. " +
         "Two modes: mode:'read' for gathering data across many items (no confirmation); " +
-        "mode:'write' for mutations (runs directly with undo support; env.snapshot(item) or env.addUndoStep(fn) is required). " +
-        "The script receives the global Zotero object and an env helper (env.log, env.snapshot, env.addUndoStep, env.libraryID).",
+        "mode:'write' for mutations (user reviews script in confirmation card, then it executes with undo support). " +
+        "The script receives the global Zotero object and an env helper (env.log, env.snapshot, env.libraryID).",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -370,7 +398,7 @@ export function createZoteroScriptTool(): AgentToolDefinition<
             type: "string",
             enum: ["read", "write"],
             description:
-              "'read' for gathering/computing data, 'write' for mutations (direct execution + undo).",
+              "'read' for gathering/computing data (no confirmation), 'write' for mutations (confirmation + undo).",
           },
           script: {
             type: "string",
@@ -390,7 +418,7 @@ export function createZoteroScriptTool(): AgentToolDefinition<
         },
       },
       mutability: "write",
-      requiresConfirmation: false,
+      requiresConfirmation: true,
     },
 
     guidance: {
@@ -414,9 +442,9 @@ export function createZoteroScriptTool(): AgentToolDefinition<
             typeof a.description === "string"
               ? a.description
               : "Zotero operation";
-          return `${mode === "read" ? "Reading" : "Running"}: ${desc}`;
+          return `${mode === "read" ? "Reading" : "Preparing"}: ${desc}`;
         },
-        onPending: "Preparing Zotero script",
+        onPending: "Waiting for confirmation to run Zotero script",
         onApproved: "Executing Zotero script",
         onDenied: "Script cancelled",
         onSuccess: ({ content }) => {
@@ -450,12 +478,6 @@ export function createZoteroScriptTool(): AgentToolDefinition<
           "description is required: a human-readable summary of what the script does",
         );
       }
-      const script = args.script.trim();
-      if (mode === "write" && !hasUndoInstrumentation(script)) {
-        return fail(
-          "mode 'write' scripts must call env.snapshot(item) before mutating Zotero items, or env.addUndoStep(fn) for custom changes, so undo_last_action can revert the operation",
-        );
-      }
       const timeoutRaw =
         typeof args.timeoutMs === "number" && args.timeoutMs > 0
           ? args.timeoutMs
@@ -464,14 +486,72 @@ export function createZoteroScriptTool(): AgentToolDefinition<
 
       return ok<ZoteroScriptInput>({
         mode,
-        script,
+        script: args.script.trim(),
         description: args.description.trim(),
         timeoutMs,
       });
     },
 
-    shouldRequireConfirmation() {
-      return false;
+    shouldRequireConfirmation(input) {
+      // Read mode never needs confirmation
+      if (input.mode === "read") return false;
+      // Write mode always requires confirmation — user reviews the script
+      // before it executes.
+      return true;
+    },
+
+    createPendingAction(input) {
+      const warnings = scanForDangerousPatterns(input.script);
+
+      const fields: Array<any> = [
+        {
+          type: "text" as const,
+          id: "description",
+          label: "Description",
+          value: input.description,
+        },
+        {
+          type: "textarea" as const,
+          id: "script",
+          label: "Script",
+          value: input.script,
+          editorMode: "plain" as const,
+        },
+      ];
+
+      if (warnings.length) {
+        fields.push({
+          type: "text" as const,
+          id: "warnings",
+          label: "⚠ Warnings",
+          value: warnings.join("; "),
+        });
+      }
+
+      return {
+        toolName: "zotero_script",
+        title: "Run Zotero Script",
+        description: input.description,
+        confirmLabel: "Execute",
+        cancelLabel: "Cancel",
+        fields,
+      };
+    },
+
+    applyConfirmation(input, resolutionData) {
+      if (validateObject<Record<string, unknown>>(resolutionData)) {
+        // Allow user to edit the script in the confirmation card
+        if (
+          typeof resolutionData.script === "string" &&
+          resolutionData.script.trim()
+        ) {
+          return ok<ZoteroScriptInput>({
+            ...input,
+            script: resolutionData.script.trim(),
+          });
+        }
+      }
+      return ok(input);
     },
 
     async execute(input, context) {

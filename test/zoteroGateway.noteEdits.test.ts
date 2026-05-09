@@ -2,8 +2,9 @@ import { assert } from "chai";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 
 describe("ZoteroGateway current note edits", function () {
-  const originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown })
-    .Zotero;
+  const originalZotero = (
+    globalThis as typeof globalThis & { Zotero?: unknown }
+  ).Zotero;
 
   afterEach(function () {
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =

@@ -9,7 +9,11 @@ import {
   PAPER_CONTEXT_REF_SCHEMA,
   validateObject,
 } from "../shared";
-import { normalizeTarget, normalizeTargets, resolveDefaultTargets } from "./pdfToolUtils";
+import {
+  normalizeTarget,
+  normalizeTargets,
+  resolveDefaultTargets,
+} from "./pdfToolUtils";
 import type { PdfTarget } from "./pdfToolUtils";
 
 type SearchPaperInput = {
@@ -33,7 +37,7 @@ export function createSearchPaperTool(
       description:
         "Search for specific evidence within papers using a question. " +
         "Returns the most relevant passages ranked by relevance. " +
-        "Supports up to 10 papers per call. Automatically indexes PDFs if needed. If mineruCacheDir is available, first use file_io on MinerU manifest.json/full.md for summaries or section reads; use search_paper only for targeted evidence that MinerU did not already answer.",
+        "Supports up to 10 papers per call. Automatically indexes PDFs if needed.",
       inputSchema: {
         type: "object",
         additionalProperties: false,

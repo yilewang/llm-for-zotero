@@ -88,7 +88,14 @@ export function parseSkill(raw: string): AgentSkill {
 
   const instruction = lines.slice(frontmatterEnd).join("\n").trim();
 
-  return { id, description, version, patterns, instruction, source: "personal" };
+  return {
+    id,
+    description,
+    version,
+    patterns,
+    instruction,
+    source: "personal",
+  };
 }
 
 /**

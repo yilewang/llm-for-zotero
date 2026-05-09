@@ -193,7 +193,9 @@ async function generateLLMSummary(
       model: llmConfig.model,
       apiBase: llmConfig.apiBase,
       apiKey: llmConfig.apiKey,
-      authMode: llmConfig.authMode as Parameters<typeof callLLMStream>[0]["authMode"],
+      authMode: llmConfig.authMode as Parameters<
+        typeof callLLMStream
+      >[0]["authMode"],
       maxTokens: 400,
     },
     (delta) => {

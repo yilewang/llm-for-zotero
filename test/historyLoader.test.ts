@@ -1,10 +1,5 @@
 import { assert } from "chai";
 import { loadConversationHistoryScope } from "../src/modules/contextPanel/historyLoader";
-import {
-  createGlobalConversation,
-  getLatestEmptyGlobalConversation,
-  listGlobalConversations,
-} from "../src/utils/chatStore";
 
 describe("historyLoader", function () {
   const globalScope = globalThis as typeof globalThis & {
@@ -80,7 +75,11 @@ describe("historyLoader", function () {
       DB: {
         queryAsync: async (sql: string, params?: unknown[]) => {
           const normalizedParams = Array.isArray(params) ? params : [];
-          if (sql.includes("INSERT OR IGNORE INTO llm_for_zotero_paper_conversations")) {
+          if (
+            sql.includes(
+              "INSERT OR IGNORE INTO llm_for_zotero_paper_conversations",
+            )
+          ) {
             return [];
           }
           if (
@@ -142,87 +141,5 @@ describe("historyLoader", function () {
         paperItemID: 321,
       },
     ]);
-  });
-
-  it("creates a fresh global draft instead of reusing an older empty draft", async function () {
-    const conversations = [
-      {
-        conversationKey: 2_000_000_001,
-        libraryID: 1,
-        createdAt: 100,
-        title: "",
-      },
-    ];
-    globalScope.Zotero = {
-      ...(originalZotero || {}),
-      DB: {
-        executeTransaction: async (fn: () => Promise<number>) => fn(),
-        queryAsync: async (sql: string, params?: unknown[]) => {
-          const normalizedParams = Array.isArray(params) ? params : [];
-          if (
-            sql.includes("SELECT MAX(conversation_key)") &&
-            sql.includes("FROM llm_for_zotero_global_conversations")
-          ) {
-            return [
-              {
-                maxConversationKey: Math.max(
-                  ...conversations.map((row) => row.conversationKey),
-                ),
-              },
-            ];
-          }
-          if (
-            sql.includes("INSERT INTO llm_for_zotero_global_conversations")
-          ) {
-            conversations.push({
-              conversationKey: Number(normalizedParams[0]),
-              libraryID: Number(normalizedParams[1]),
-              createdAt: Number(normalizedParams[2]),
-              title: "",
-            });
-            return [];
-          }
-          if (
-            sql.includes("FROM llm_for_zotero_global_conversations gc") &&
-            sql.includes("HAVING SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) = 0")
-          ) {
-            return conversations
-              .filter((row) => row.libraryID === Number(normalizedParams[0]))
-              .sort((a, b) => b.createdAt - a.createdAt)
-              .slice(0, 1)
-              .map((row) => ({
-                conversationKey: row.conversationKey,
-                libraryID: row.libraryID,
-                createdAt: row.createdAt,
-                title: row.title,
-                lastActivityAt: row.createdAt,
-                userTurnCount: 0,
-              }));
-          }
-          if (sql.includes("FROM llm_for_zotero_global_conversations gc")) {
-            return conversations
-              .filter((row) => row.libraryID === Number(normalizedParams[0]))
-              .sort((a, b) => b.createdAt - a.createdAt)
-              .map((row) => ({
-                conversationKey: row.conversationKey,
-                libraryID: row.libraryID,
-                createdAt: row.createdAt,
-                title: row.title,
-                lastActivityAt: row.createdAt,
-                userTurnCount: 0,
-              }));
-          }
-          return [];
-        },
-      },
-    };
-
-    const oldDraft = await getLatestEmptyGlobalConversation(1);
-    const newKey = await createGlobalConversation(1);
-    const rows = await listGlobalConversations(1, 10, true);
-
-    assert.equal(oldDraft?.conversationKey, 2_000_000_001);
-    assert.isAbove(newKey, 2_000_000_001);
-    assert.equal(rows[0]?.conversationKey, newKey);
   });
 });

@@ -6,10 +6,19 @@ export type PanelDomRefs = {
   modelBtn: HTMLButtonElement | null;
   modelSlot: HTMLDivElement | null;
   modelMenu: HTMLDivElement | null;
+  claudeModelBtn: HTMLButtonElement | null;
+  claudeModelSlot: HTMLDivElement | null;
+  claudeModelMenu: HTMLDivElement | null;
   reasoningBtn: HTMLButtonElement | null;
+  claudeReasoningBtn: HTMLButtonElement | null;
   runtimeModeBtn: HTMLButtonElement | null;
+  claudePermissionBtn: HTMLButtonElement | null;
+  sessionFolderBtn: HTMLButtonElement | null;
+  sessionTerminalBtn: HTMLButtonElement | null;
   reasoningSlot: HTMLDivElement | null;
   reasoningMenu: HTMLDivElement | null;
+  claudeReasoningSlot: HTMLDivElement | null;
+  claudeReasoningMenu: HTMLDivElement | null;
   actionsRow: HTMLDivElement | null;
   actionsLeft: HTMLDivElement | null;
   actionsRight: HTMLDivElement | null;
@@ -28,13 +37,12 @@ export type PanelDomRefs = {
   historyMenu: HTMLDivElement | null;
   modeCapsule: HTMLElement | null;
   modeChipBtn: HTMLButtonElement | null;
+  modeLockBtn: HTMLElement | null;
   historyRowMenu: HTMLDivElement | null;
   historyRowRenameBtn: HTMLButtonElement | null;
   historyUndo: HTMLDivElement | null;
   historyUndoText: HTMLSpanElement | null;
   historyUndoBtn: HTMLButtonElement | null;
-  claudeSystemToggleBtn: HTMLButtonElement | null;
-  claudeSystemToggleIcon: HTMLSpanElement | null;
   selectTextBtn: HTMLButtonElement | null;
   screenshotBtn: HTMLButtonElement | null;
   uploadBtn: HTMLButtonElement | null;
@@ -64,9 +72,10 @@ export type PanelDomRefs = {
   actionPicker: HTMLDivElement | null;
   actionPickerList: HTMLDivElement | null;
   actionHitlPanel: HTMLDivElement | null;
+  agentQueuePanel: HTMLDivElement | null;
+  agentQueueList: HTMLDivElement | null;
   commandRow: HTMLDivElement | null;
   commandRowBadge: HTMLSpanElement | null;
-  queueBar: HTMLDivElement | null;
   responseMenu: HTMLDivElement | null;
   responseMenuCopyBtn: HTMLButtonElement | null;
   responseMenuNoteBtn: HTMLButtonElement | null;
@@ -98,17 +107,44 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
       "#llm-model-dropdown",
     ) as HTMLDivElement | null,
     modelMenu: body.querySelector("#llm-model-menu") as HTMLDivElement | null,
+    claudeModelBtn: body.querySelector(
+      "#llm-claude-model-toggle",
+    ) as HTMLButtonElement | null,
+    claudeModelSlot: body.querySelector(
+      "#llm-claude-model-dropdown",
+    ) as HTMLDivElement | null,
+    claudeModelMenu: body.querySelector(
+      "#llm-claude-model-menu",
+    ) as HTMLDivElement | null,
     reasoningBtn: body.querySelector(
       "#llm-reasoning-toggle",
     ) as HTMLButtonElement | null,
+    claudeReasoningBtn: body.querySelector(
+      "#llm-claude-reasoning-toggle",
+    ) as HTMLButtonElement | null,
     runtimeModeBtn: body.querySelector(
       "#llm-runtime-mode-toggle",
+    ) as HTMLButtonElement | null,
+    claudePermissionBtn: body.querySelector(
+      "#llm-claude-permission-toggle",
+    ) as HTMLButtonElement | null,
+    sessionFolderBtn: body.querySelector(
+      "#llm-session-folder-btn",
+    ) as HTMLButtonElement | null,
+    sessionTerminalBtn: body.querySelector(
+      "#llm-session-terminal-btn",
     ) as HTMLButtonElement | null,
     reasoningSlot: body.querySelector(
       "#llm-reasoning-dropdown",
     ) as HTMLDivElement | null,
     reasoningMenu: body.querySelector(
       "#llm-reasoning-menu",
+    ) as HTMLDivElement | null,
+    claudeReasoningSlot: body.querySelector(
+      "#llm-claude-reasoning-dropdown",
+    ) as HTMLDivElement | null,
+    claudeReasoningMenu: body.querySelector(
+      "#llm-claude-reasoning-menu",
     ) as HTMLDivElement | null,
     actionsRow: body.querySelector(".llm-actions") as HTMLDivElement | null,
     actionsLeft: body.querySelector(
@@ -118,7 +154,9 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
       ".llm-actions-right",
     ) as HTMLDivElement | null,
     popoutBtn: body.querySelector("#llm-popout") as HTMLButtonElement | null,
-    settingsBtn: body.querySelector("#llm-settings") as HTMLButtonElement | null,
+    settingsBtn: body.querySelector(
+      "#llm-settings",
+    ) as HTMLButtonElement | null,
     exportBtn: body.querySelector("#llm-export") as HTMLButtonElement | null,
     clearBtn: body.querySelector("#llm-clear") as HTMLButtonElement | null,
     titleStatic: body.querySelector(
@@ -143,12 +181,11 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     historyModeIndicator: body.querySelector(
       "#llm-history-toggle",
     ) as HTMLButtonElement | null,
-    modeCapsule: body.querySelector(
-      "#llm-mode-capsule",
-    ) as HTMLElement | null,
+    modeCapsule: body.querySelector("#llm-mode-capsule") as HTMLElement | null,
     modeChipBtn: body.querySelector(
       "#llm-mode-chip",
     ) as HTMLButtonElement | null,
+    modeLockBtn: body.querySelector("#llm-mode-lock") as HTMLElement | null,
     historyMenu: body.querySelector(
       "#llm-history-menu",
     ) as HTMLDivElement | null,
@@ -167,12 +204,6 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     historyUndoBtn: body.querySelector(
       "#llm-history-undo-btn",
     ) as HTMLButtonElement | null,
-    claudeSystemToggleBtn: body.querySelector(
-      "#llm-claude-system-toggle",
-    ) as HTMLButtonElement | null,
-    claudeSystemToggleIcon: body.querySelector(
-      "#llm-claude-system-toggle-icon",
-    ) as HTMLSpanElement | null,
     selectTextBtn: body.querySelector(
       "#llm-select-text",
     ) as HTMLButtonElement | null,
@@ -258,15 +289,16 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     actionHitlPanel: body.querySelector(
       "#llm-action-hitl-panel",
     ) as HTMLDivElement | null,
-    commandRow: body.querySelector(
-      "#llm-command-row",
+    agentQueuePanel: body.querySelector(
+      "#llm-agent-queue-panel",
     ) as HTMLDivElement | null,
+    agentQueueList: body.querySelector(
+      "#llm-agent-queue-list",
+    ) as HTMLDivElement | null,
+    commandRow: body.querySelector("#llm-command-row") as HTMLDivElement | null,
     commandRowBadge: body.querySelector(
       "#llm-command-row-badge",
     ) as HTMLSpanElement | null,
-    queueBar: body.querySelector(
-      "#llm-queued-input-bar",
-    ) as HTMLDivElement | null,
     responseMenu: body.querySelector(
       "#llm-response-menu",
     ) as HTMLDivElement | null,

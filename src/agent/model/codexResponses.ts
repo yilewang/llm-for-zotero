@@ -20,7 +20,10 @@ import {
   normalizeResponsesStepFromPayload,
   parseResponsesStepStream,
 } from "./responsesShared";
-import { buildResponsesFunctionTools, getToolContinuationMessages } from "./shared";
+import {
+  buildResponsesFunctionTools,
+  getToolContinuationMessages,
+} from "./shared";
 
 function isCodexAuthRequest(request: AgentRuntimeRequest): boolean {
   return (
@@ -105,7 +108,6 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
           true,
           request.model,
           request.apiBase,
-          "codex_responses",
         );
         return {
           model: request.model,
@@ -120,7 +122,9 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
           ...(reasoningPayload.omitTemperature
             ? {}
             : {
-                temperature: normalizeTemperature(request.advanced?.temperature),
+                temperature: normalizeTemperature(
+                  request.advanced?.temperature,
+                ),
               }),
         };
       },
@@ -132,7 +136,6 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
             response.body,
             params.onTextDelta,
             params.onReasoning,
-            params.onUsage,
           )
         : normalizeResponsesStepFromPayload(
             (await response.json()) as ResponsesPayload,

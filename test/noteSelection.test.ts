@@ -69,11 +69,7 @@ describe("noteSelection", function () {
   }
 
   it("reads the selected text from a focused textarea", function () {
-    const textarea = new FakeTextArea(
-      "Alpha beta   gamma delta",
-      6,
-      18,
-    );
+    const textarea = new FakeTextArea("Alpha beta   gamma delta", 6, 18);
     const selectedText = getEditableSelectionFromDocument(
       buildDocument(textarea),
     );

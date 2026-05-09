@@ -41,7 +41,10 @@ export function positionFloatingMenu(
     ? Math.max(viewportMargin, ownerRect.top + viewportMargin)
     : viewportMargin;
   const boundaryRight = hasOwnerBounds
-    ? Math.min(win.innerWidth - viewportMargin, ownerRect.right - viewportMargin)
+    ? Math.min(
+        win.innerWidth - viewportMargin,
+        ownerRect.right - viewportMargin,
+      )
     : win.innerWidth - viewportMargin;
   const boundaryBottom = hasOwnerBounds
     ? Math.min(

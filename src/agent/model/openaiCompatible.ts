@@ -5,7 +5,7 @@ import {
   resolveRequestAuthState,
 } from "../../utils/llmClient";
 import {
-  normalizeMaxTokensForModel,
+  normalizeMaxTokens,
   normalizeTemperature,
 } from "../../utils/normalization";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
@@ -41,24 +41,6 @@ type ChatCompletionChoice = {
   };
 };
 
-function isDeepseekChatModel(modelName?: string): boolean {
-  const normalized = (modelName || "").trim().toLowerCase();
-  if (!normalized) return false;
-  const tail = normalized.split("/").pop() || "";
-  const candidates =
-    tail && tail !== normalized ? [normalized, tail] : [normalized];
-  return candidates.some((candidate) => /^deepseek(?:$|[-.])/.test(candidate));
-}
-
-function buildDeepseekReasoningContent(
-  modelName: string | undefined,
-  reasoningText: string,
-): { reasoning_content?: string } {
-  if (!isDeepseekChatModel(modelName)) return {};
-  const trimmed = reasoningText.trim();
-  return trimmed ? { reasoning_content: trimmed } : {};
-}
-
 function isToolCapableApiBase(request: AgentRuntimeRequest): boolean {
   const apiBase = (request.apiBase || "").trim();
   if (!apiBase) return false;
@@ -86,24 +68,29 @@ async function buildMessagesPayload(messages: AgentModelMessage[]) {
       const parts: unknown[] = [];
       for (const rp of resolved) {
         switch (rp.type) {
-          case "text": parts.push({ type: "text", text: rp.text }); break;
-          case "image": parts.push({ type: "image_url", image_url: { url: `data:${rp.mimeType};base64,${rp.base64}` } }); break;
-          case "pdf": parts.push({ type: "image_url", image_url: { url: `data:application/pdf;base64,${rp.base64}` } }); break;
+          case "text":
+            parts.push({ type: "text", text: rp.text });
+            break;
+          case "image":
+            parts.push({
+              type: "image_url",
+              image_url: { url: `data:${rp.mimeType};base64,${rp.base64}` },
+            });
+            break;
+          case "pdf":
+            parts.push({
+              type: "image_url",
+              image_url: { url: `data:application/pdf;base64,${rp.base64}` },
+            });
+            break;
           // file_placeholder: silently dropped (no provider support)
         }
       }
       content = parts;
     }
-    const reasoningContent =
-      message.role === "assistant" &&
-      typeof message.reasoning_content === "string" &&
-      message.reasoning_content.trim()
-        ? { reasoning_content: message.reasoning_content }
-        : {};
     result.push({
       role: message.role,
       content,
-      ...reasoningContent,
       ...(message.role === "assistant" &&
       Array.isArray(message.tool_calls) &&
       message.tool_calls.length
@@ -157,8 +144,15 @@ type StreamedToolCallAccumulator = {
 async function parseOpenAIChatCompletionStream(
   body: ReadableStream<Uint8Array>,
   onTextDelta?: (delta: string) => void | Promise<void>,
-  onReasoning?: (event: { summary?: string; details?: string }) => void | Promise<void>,
-): Promise<{ text: string; toolCalls: AgentToolCall[]; reasoningText: string }> {
+  onReasoning?: (event: {
+    summary?: string;
+    details?: string;
+  }) => void | Promise<void>,
+): Promise<{
+  text: string;
+  toolCalls: AgentToolCall[];
+  reasoningText: string;
+}> {
   const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
@@ -214,15 +208,15 @@ async function parseOpenAIChatCompletionStream(
                 typeof tc.index === "number" ? tc.index : toolCallMap.size;
               if (!toolCallMap.has(idx)) {
                 toolCallMap.set(idx, {
-                  id:
-                    tc.id?.trim() || createFallbackToolCallId("tool", idx),
+                  id: tc.id?.trim() || createFallbackToolCallId("tool", idx),
                   name: tc.function?.name?.trim() || "",
                   argumentChunks: [],
                 });
               }
               const entry = toolCallMap.get(idx)!;
               if (tc.id?.trim()) entry.id = tc.id.trim();
-              if (tc.function?.name?.trim()) entry.name = tc.function.name.trim();
+              if (tc.function?.name?.trim())
+                entry.name = tc.function.name.trim();
               if (typeof tc.function?.arguments === "string") {
                 entry.argumentChunks.push(tc.function.arguments);
               }
@@ -294,7 +288,6 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           false,
           request.model,
           request.apiBase,
-          "openai_chat_compat",
         );
         return {
           model: request.model,
@@ -304,22 +297,20 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           stream: true,
           ...(usesMaxCompletionTokens(request.model || "")
             ? {
-                max_completion_tokens: normalizeMaxTokensForModel(
+                max_completion_tokens: normalizeMaxTokens(
                   request.advanced?.maxTokens,
-                  request.model,
                 ),
               }
             : {
-                max_tokens: normalizeMaxTokensForModel(
-                  request.advanced?.maxTokens,
-                  request.model,
-                ),
+                max_tokens: normalizeMaxTokens(request.advanced?.maxTokens),
               }),
           ...reasoningPayload.extra,
           ...(reasoningPayload.omitTemperature
             ? {}
             : {
-                temperature: normalizeTemperature(request.advanced?.temperature),
+                temperature: normalizeTemperature(
+                  request.advanced?.temperature,
+                ),
               }),
         };
       },
@@ -346,10 +337,6 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           assistantMessage: {
             role: "assistant",
             content: result.text,
-            ...buildDeepseekReasoningContent(
-              request.model,
-              result.reasoningText,
-            ),
             tool_calls: result.toolCalls,
           },
         };
@@ -365,7 +352,9 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
     }
 
     // Fallback: non-streaming JSON response
-    const data = (await response.json()) as { choices?: ChatCompletionChoice[] };
+    const data = (await response.json()) as {
+      choices?: ChatCompletionChoice[];
+    };
     const message = data.choices?.[0]?.message;
     const reasoningText =
       message?.reasoning_content ||
@@ -383,7 +372,6 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
         assistantMessage: {
           role: "assistant",
           content: typeof message?.content === "string" ? message.content : "",
-          ...buildDeepseekReasoningContent(request.model, reasoningText),
           tool_calls: toolCalls,
         },
       };

@@ -33,8 +33,7 @@ export function retainPinnedImageState(
   );
   if (retained.length) {
     selectedImageCache.set(itemId, retained);
-    const currentActiveIndex =
-      selectedImagePreviewActiveIndexCache.get(itemId);
+    const currentActiveIndex = selectedImagePreviewActiveIndexCache.get(itemId);
     const normalizedActiveIndex =
       typeof currentActiveIndex === "number" &&
       Number.isFinite(currentActiveIndex)

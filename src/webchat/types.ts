@@ -19,8 +19,18 @@ export type WebChatTargetEntry = {
  * To add a new site, add an entry here + adapter in the extension.
  */
 export const WEBCHAT_TARGETS = [
-  { id: "chatgpt", label: "ChatGPT", defaultHost: "http://127.0.0.1:23119/llm-for-zotero/webchat", modelName: "chatgpt.com" },
-  { id: "deepseek", label: "DeepSeek", defaultHost: "http://127.0.0.1:23119/llm-for-zotero/webchat", modelName: "chat.deepseek.com" },
+  {
+    id: "chatgpt",
+    label: "ChatGPT",
+    defaultHost: "http://127.0.0.1:23119/llm-for-zotero/webchat",
+    modelName: "chatgpt.com",
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    defaultHost: "http://127.0.0.1:23119/llm-for-zotero/webchat",
+    modelName: "chat.deepseek.com",
+  },
 ] as const satisfies readonly WebChatTargetEntry[];
 
 export type WebChatTarget = (typeof WEBCHAT_TARGETS)[number]["id"];
@@ -30,7 +40,9 @@ export function getWebChatTarget(id: string): WebChatTargetEntry | undefined {
 }
 
 /** Resolve a WebChatTarget from a model name like "chatgpt.com" or "chat.deepseek.com". */
-export function getWebChatTargetByModelName(modelName: string): WebChatTargetEntry | undefined {
+export function getWebChatTargetByModelName(
+  modelName: string,
+): WebChatTargetEntry | undefined {
   return WEBCHAT_TARGETS.find((t) => t.modelName === modelName);
 }
 

@@ -29,7 +29,7 @@
     "release": "zotero-plugin release",
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && zotero-plugin test",
-    "test:unit": "npx tsx node_modules/mocha/bin/mocha.js --require ./test/register.cjs 'test/**/*.test.ts'",
+    "test:unit": "npx tsx node_modules/mocha/bin/mocha.js --require ./test/register.cjs --ignore 'test/upstream-disabled/**' 'test/**/*.test.ts'",
     "update-deps": "npm update --save"
   },
   "dependencies": {

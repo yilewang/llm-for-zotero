@@ -1,4 +1,8 @@
-export type { ContextModule, ContextRegistry, PreviewRenderParams } from "./contextModule";
+export type {
+  ContextModule,
+  ContextRegistry,
+  PreviewRenderParams,
+} from "./contextModule";
 
 // ── Paper context state ──
 export {

@@ -73,10 +73,7 @@ export function hashBody(str: string): string {
  *   of hash outcome. So frontmatter-only edits neither block auto-upgrade
  *   nor get silently lost.
  */
-export function hashSkillForUpgrade(
-  raw: string,
-  fallbackBody: string,
-): string {
+export function hashSkillForUpgrade(raw: string, fallbackBody: string): string {
   const { block } = extractManagedBlock(raw);
   if (block !== null) return hashBody(block);
   return hashBody(fallbackBody);

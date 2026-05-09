@@ -44,12 +44,12 @@ export function createImportLocalFilesTool(
           },
           targetCollectionId: {
             type: "number",
-            description:
-              "Optional collection ID to add imported items to.",
+            description: "Optional collection ID to add imported items to.",
           },
           libraryID: {
             type: "number",
-            description: "Target library ID. Defaults to the user's personal library.",
+            description:
+              "Target library ID. Defaults to the user's personal library.",
           },
         },
       },

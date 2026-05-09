@@ -7,54 +7,21 @@ import { AGENT_PERSONA_INSTRUCTIONS } from "./agentPersona";
 import { buildAgentMemoryBlock } from "../store/conversationMemory";
 import { getAllSkills } from "../skills";
 
-import { resolveProviderCapabilities } from "../../providers";
-import type { ProviderCapabilities } from "../../providers";
+import { isTextOnlyModel } from "../../providers";
 import {
-  buildNotesDirectoryConfigSection,
+  isNotesDirectoryConfigured,
+  getNotesDirectoryPath,
+  getNotesDirectoryFolder,
+  getNotesDirectoryAttachmentsFolder,
+  getNotesDirectoryNickname,
 } from "../../utils/notesDirectoryConfig";
+import { joinLocalPath } from "../../utils/localPath";
 import { buildRuntimePlatformGuidanceText } from "../../utils/runtimePlatform";
-import {
-  buildPaperQuoteCitationGuidance,
-  formatPaperCitationLabel,
-  formatPaperSourceLabel,
-} from "../../modules/contextPanel/paperAttribution";
-import type { PaperContextRef } from "../../shared/types";
-import {
-  renderAgentResourceContextPlan,
-  type AgentResourceContextPlan,
-} from "../context/resourceLifecycle";
 
 export function isMultimodalRequestSupported(
   request: AgentRuntimeRequest,
 ): boolean {
-  return resolveRequestProviderCapabilities(request).multimodal;
-}
-
-function resolveRequestProviderCapabilities(
-  request: AgentRuntimeRequest,
-): ProviderCapabilities {
-  return resolveProviderCapabilities({
-    model: request.model || "",
-    protocol: request.providerProtocol,
-    authMode: request.authMode,
-    apiBase: request.apiBase,
-  });
-}
-
-function formatPaperRefLine(
-  prefix: string,
-  entry: PaperContextRef,
-  index: number,
-): string {
-  const metadata = [
-    `itemId=${entry.itemId}`,
-    `contextItemId=${entry.contextItemId}`,
-    `citationLabel=${formatPaperCitationLabel(entry)}`,
-    `sourceLabel=${formatPaperSourceLabel(entry)}`,
-    entry.citationKey ? `citationKey=${entry.citationKey}` : "",
-    entry.mineruCacheDir ? `mineruCacheDir=${entry.mineruCacheDir}` : "",
-  ].filter(Boolean);
-  return `- ${prefix} ${index + 1}: ${entry.title} [${metadata.join(", ")}]`;
+  return !isTextOnlyModel(request.model || "");
 }
 
 export function stringifyMessageContent(
@@ -106,10 +73,7 @@ function normalizeHistoryMessages(
     }));
 }
 
-function buildFullUserMessage(
-  request: AgentRuntimeRequest,
-  options: { priorReadBlock?: string } = {},
-): AgentModelMessage {
+function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
   const fullTextPaperKeySet = new Set(
     (request.fullTextPaperContexts || []).map(
       (entry) => `${entry.itemId}:${entry.contextItemId}`,
@@ -126,7 +90,10 @@ function buildFullUserMessage(
   if (request.activeItemId) {
     contextLines.push(`- Active item ID: ${request.activeItemId}`);
   }
-  if (request.activeNoteContext) {
+  const hasActiveNoteEditingFocus = Array.isArray(request.selectedTextSources)
+    ? request.selectedTextSources.some((source) => source === "note-edit")
+    : false;
+  if (request.activeNoteContext && hasActiveNoteEditingFocus) {
     const note = request.activeNoteContext;
     contextLines.push(
       `- Active note: ${note.title} [noteId=${note.noteId}, kind=${note.noteKind}]`,
@@ -145,7 +112,6 @@ function buildFullUserMessage(
     const selectedTextBlock = request.selectedTexts
       .map((entry, index) => {
         const source = request.selectedTextSources?.[index];
-        const paperContext = request.selectedTextPaperContexts?.[index];
         const sourceLabel =
           source === "model"
             ? "model response"
@@ -154,32 +120,17 @@ function buildFullUserMessage(
               : source === "note-edit"
                 ? "active note editing focus"
                 : "PDF reader";
-        const sourceMeta =
-          source === "pdf" && paperContext
-            ? `, paper=${paperContext.title}, source_label=${formatPaperSourceLabel(paperContext)}`
-            : "";
-        return `Selected text ${index + 1} [source=${sourceLabel}${sourceMeta}]:\n"""\n${entry}\n"""`;
+        return `Selected text ${index + 1} [source=${sourceLabel}]:\n"""\n${entry}\n"""`;
       })
       .join("\n\n");
     contextLines.push(selectedTextBlock);
   }
-  const citationPaperRefs = [
-    ...(request.selectedTextPaperContexts || []).filter(
-      (entry): entry is PaperContextRef => Boolean(entry),
-    ),
-    ...retrievalOnlyPapers,
-    ...(request.fullTextPaperContexts || []),
-  ];
-  if (citationPaperRefs.length) {
-    contextLines.push(
-      "Citation/source label rule: for direct quotes and substantive paper-grounded claims, use the exact sourceLabel shown for the relevant paper.",
-    );
-  }
   if (retrievalOnlyPapers.length) {
     contextLines.push(
       "Retrieval-only paper refs:",
-      ...retrievalOnlyPapers.map((entry, index) =>
-        formatPaperRefLine("Retrieval paper", entry, index),
+      ...retrievalOnlyPapers.map(
+        (entry, index) =>
+          `- Retrieval paper ${index + 1}: ${entry.title} [itemId=${entry.itemId}, contextItemId=${entry.contextItemId}${entry.mineruCacheDir ? `, mineruCacheDir=${entry.mineruCacheDir}` : ""}]`,
       ),
     );
   }
@@ -189,52 +140,23 @@ function buildFullUserMessage(
   ) {
     contextLines.push(
       "Full-text paper refs for this turn:",
-      ...request.fullTextPaperContexts.map((entry, index) =>
-        formatPaperRefLine("Full-text paper", entry, index),
-      ),
-      ...request.fullTextPaperContexts
-        .flatMap((entry) => buildPaperQuoteCitationGuidance(entry))
-        .filter(Boolean),
-    );
-  }
-  if (
-    Array.isArray(request.selectedCollectionContexts) &&
-    request.selectedCollectionContexts.length
-  ) {
-    contextLines.push(
-      "Selected Zotero collection scopes:",
-      ...request.selectedCollectionContexts.map(
+      ...request.fullTextPaperContexts.map(
         (entry, index) =>
-          `- Collection ${index + 1}: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
+          `- Full-text paper ${index + 1}: ${entry.title} [itemId=${entry.itemId}, contextItemId=${entry.contextItemId}${entry.mineruCacheDir ? `, mineruCacheDir=${entry.mineruCacheDir}` : ""}]`,
       ),
-      "Treat these collections as scoped candidate sets. Use query_library with filters.collectionId or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
-      "If the user explicitly asks to read or analyze the full text of every paper in a collection, plan a batch workflow: enumerate papers, read/process them in bounded batches, create compact per-paper digests with evidence, then synthesize.",
     );
   }
-  const pdfAttachments = (request.attachments || []).filter(
-    (a) =>
-      a.category === "pdf" &&
-      typeof a.storedPath === "string" &&
-      a.storedPath.trim(),
-  );
-  const nonPdfAttachments = (request.attachments || []).filter(
-    (a) => a.category !== "pdf",
-  );
-  if (nonPdfAttachments.length) {
+  if (Array.isArray(request.attachments) && request.attachments.length) {
     contextLines.push(
       "Current uploaded attachments are available through the registered document tools.",
     );
-  }
-  if (options.priorReadBlock) {
-    contextLines.push(options.priorReadBlock);
   }
 
   const promptText = `${contextLines.join("\n")}\n\nUser request:\n${request.userText}`;
   const screenshots = Array.isArray(request.screenshots)
     ? request.screenshots.filter((entry) => Boolean(entry))
     : [];
-  const hasInlineMedia = screenshots.length > 0 || pdfAttachments.length > 0;
-  if (!hasInlineMedia || !isMultimodalRequestSupported(request)) {
+  if (!screenshots.length || !isMultimodalRequestSupported(request)) {
     return {
       role: "user",
       content: promptText,
@@ -253,33 +175,8 @@ function buildFullUserMessage(
           url,
         },
       })),
-      ...pdfAttachments.map((a) => ({
-        type: "file_ref" as const,
-        file_ref: {
-          name: a.name,
-          mimeType: a.mimeType || "application/pdf",
-          storedPath: a.storedPath as string,
-          contentHash: a.contentHash,
-        },
-      })),
     ],
   };
-}
-
-function buildUserMessage(
-  request: AgentRuntimeRequest,
-  resourceContextPlan?: AgentResourceContextPlan,
-): AgentModelMessage {
-  if (
-    resourceContextPlan &&
-    (resourceContextPlan.injection === "thin" ||
-      resourceContextPlan.injection === "delta")
-  ) {
-    return renderAgentResourceContextPlan(resourceContextPlan, request);
-  }
-  return buildFullUserMessage(request, {
-    priorReadBlock: resourceContextPlan?.priorReadBlock,
-  });
 }
 
 type PromptSection = {
@@ -352,95 +249,52 @@ function buildAutoReadInstruction(request: AgentRuntimeRequest): string {
   );
 }
 
-function getInScopePaperContexts(request: AgentRuntimeRequest) {
-  return [
-    ...(request.selectedPaperContexts || []),
-    ...(request.fullTextPaperContexts || []),
-    ...(request.pinnedPaperContexts || []),
-  ];
-}
-
-function buildFigureMineruInstruction(
-  request: AgentRuntimeRequest,
-  matchedSkillIds: ReadonlyArray<string>,
-): string {
-  const activeSkillIds = new Set([
-    ...matchedSkillIds,
-    ...(request.forcedSkillIds || []),
-  ]);
-  if (!activeSkillIds.has("analyze-figures")) return "";
-  const mineruPapers = getInScopePaperContexts(request).filter((entry) =>
-    Boolean(entry.mineruCacheDir),
-  );
-  if (!mineruPapers.length) return "";
-  const cacheHints = mineruPapers
-    .map((entry, index) => {
-      const label = entry.title?.trim() || `paper ${index + 1}`;
-      return `- ${label}: ${entry.mineruCacheDir}`;
-    })
-    .join("\n");
-  return (
-    "TURN RULE: This is a figure/table interpretation task and MinerU cache is available for at least one in-scope paper. " +
-    "Before using `search_paper`, `read_paper`, or `view_pdf_pages`, first inspect MinerU by calling `file_io(read, '{mineruCacheDir}/manifest.json')` for the relevant cached paper. " +
-    "Then read the relevant `full.md` offsets and any referenced image files from that cache. " +
-    "Only fall back to PDF/search tools if the manifest or cache content cannot answer the figure request.\n" +
-    `Available MinerU cache directories:\n${cacheHints}`
-  );
-}
-
-function buildWriteNoteFileInstruction(
-  request: AgentRuntimeRequest,
-  matchedSkillIds: ReadonlyArray<string>,
-): string {
-  const activeSkillIds = new Set([
-    ...matchedSkillIds,
-    ...(request.forcedSkillIds || []),
-  ]);
-  if (!activeSkillIds.has("write-note")) return "";
-  const text = request.userText || "";
-  if (/\b(zotero\s+note|current\s+zotero\s+note|active\s+note)\b/i.test(text)) {
-    return "TURN RULE: The user is asking for a Zotero note edit. Use `edit_current_note` for the Zotero note workflow rather than writing an external Markdown file.";
+function buildNotesDirectorySection(): string {
+  if (!isNotesDirectoryConfigured()) return "";
+  const dirPath = getNotesDirectoryPath();
+  const targetFolder = getNotesDirectoryFolder();
+  const attachmentsFolder = getNotesDirectoryAttachmentsFolder();
+  const nickname = getNotesDirectoryNickname().trim();
+  const defaultTargetPath = targetFolder
+    ? joinLocalPath(dirPath, targetFolder)
+    : dirPath;
+  const lines = ["Notes directory configuration (user-configured):"];
+  if (nickname) {
+    lines.push(`- Nickname: ${nickname}`);
   }
-  if (
-    !/\b(obsidian|vault|markdown\s+file|md\s+file|file|folder|directory|disk|export|save|write\s+(?:it|this|that)?\s*(?:to|into))\b/i.test(
-      text,
-    )
-  ) {
-    return "";
-  }
-  return (
-    'TURN RULE: The user is asking for an Obsidian/file-based note. Successful completion requires calling `file_io` with `action: "write"` and Markdown content. ' +
-    "Do not finish by placing the full note body in chat. If the notes directory is not configured or the target path cannot be resolved, give a brief setup error instead of dumping the note body."
+  const attachmentsPath = attachmentsFolder
+    ? joinLocalPath(dirPath, attachmentsFolder)
+    : "";
+  lines.push(
+    `- Directory path: ${dirPath}`,
+    `- Default folder: ${targetFolder}`,
+    `- Default target path: ${defaultTargetPath}`,
+    `- Attachments folder: ${attachmentsFolder} (relative to notes directory root)`,
   );
+  if (attachmentsPath) {
+    lines.push(
+      `- Attachments path: ${attachmentsPath} (resolved absolute path for copying images)`,
+    );
+  }
+  if (nickname) {
+    lines.push(
+      `When the user mentions "${nickname}" in the context of notes, write to this directory.`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function buildRuntimePlatformSection(): string {
   return buildRuntimePlatformGuidanceText();
 }
 
-function buildTextOnlyModelInstruction(request: AgentRuntimeRequest): string {
-  if (resolveRequestProviderCapabilities(request).multimodal) return "";
-  const modelLabel = (request.model || "selected model").trim();
-  return (
-    `MODEL LIMITATION: ${modelLabel} is treated as text-only in this plugin. ` +
-    "Do not rely on screenshots, PDF page images, or image-file visual inspection. " +
-    "For MinerU-cached papers, prefer `manifest.json`, `full.md` section offsets, captions, tables, formulas, and surrounding extracted text. " +
-    "If the user asks for information that requires direct visual inspection and only an image is available, state that this model cannot inspect the image directly and answer only from extracted text/captions."
-  );
-}
-
 export async function buildAgentInitialMessages(
   request: AgentRuntimeRequest,
   tools: AgentToolDefinition<any, any>[],
   matchedSkillIds: ReadonlyArray<string>,
-  resourceContextPlan?: AgentResourceContextPlan,
 ): Promise<AgentModelMessage[]> {
   const memoryBlock = await buildAgentMemoryBlock(request.conversationKey);
   const autoReadInstruction = buildAutoReadInstruction(request);
-  const workflowParityInstructions = [
-    buildFigureMineruInstruction(request, matchedSkillIds),
-    buildWriteNoteFileInstruction(request, matchedSkillIds),
-  ].filter(Boolean);
 
   const sections: PromptSection[] = [
     {
@@ -456,16 +310,12 @@ export async function buildAgentInitialMessages(
       lines: [buildRuntimePlatformSection()],
     },
     {
-      id: "model-limitations",
-      lines: [buildTextOnlyModelInstruction(request)],
-    },
-    {
       id: "custom-instructions",
       lines: [(request.customInstructions || "").trim()],
     },
     {
       id: "notes-directory-config",
-      lines: [buildNotesDirectoryConfigSection()],
+      lines: [buildNotesDirectorySection()],
     },
     {
       id: "tool-guidance",
@@ -479,10 +329,6 @@ export async function buildAgentInitialMessages(
       id: "auto-read",
       lines: [autoReadInstruction],
     },
-    {
-      id: "workflow-parity",
-      lines: workflowParityInstructions,
-    },
   ];
 
   return [
@@ -491,6 +337,6 @@ export async function buildAgentInitialMessages(
       content: buildSystemPrompt(sections),
     },
     ...normalizeHistoryMessages(request),
-    buildUserMessage(request, resourceContextPlan),
+    buildUserMessage(request),
   ];
 }

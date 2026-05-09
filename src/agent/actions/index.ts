@@ -28,19 +28,4 @@ export type {
   ActionResult,
   ActionServices,
   ActionLLMConfig,
-  ActionRequestContext,
 } from "./types";
-export type {
-  PaperScopedActionProfile,
-  PaperScopedActionInput,
-  PaperScopedActionCollectionCandidate,
-  PaperScopedActionTarget,
-} from "./paperScope";
-export {
-  resolvePaperScopedCommandInput,
-  resolvePaperScopedActionTargets,
-  normalizePaperScopedActionInput,
-  normalizePositiveIntArray,
-  normalizeLimit,
-  applyLimit,
-} from "./paperScope";

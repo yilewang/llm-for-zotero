@@ -1,47 +1,38 @@
 /**
- * Bridge debug logger. Callers already gate these logs behind bridge debug prefs,
- * so this file only needs to emit them consistently in Zotero/browser contexts.
+ * Simple debug logger that works in Zotero environment.
+ * Output goes to Error Console and browser console when available.
  */
-const PREFIX = "[ClaudeBridge]";
 
-function formatMessage(message: string, payload?: unknown): string {
-  if (payload === undefined) {
-    return `${PREFIX} ${message}`;
-  }
-  try {
-    return `${PREFIX} ${message} | ${JSON.stringify(payload)}`;
-  } catch {
-    return `${PREFIX} ${message}`;
-  }
-}
+const PREFIX = "[LLM-SlashDebug]";
 
-export function dbg(message: string, payload?: unknown): void {
-  const fullMessage = formatMessage(message, payload);
+export function dbg(message: string, data?: unknown): void {
+  const fullMessage =
+    data !== undefined
+      ? `${PREFIX} ${message} | ${JSON.stringify(data)}`
+      : `${PREFIX} ${message}`;
   try {
     ztoolkit?.log?.(fullMessage);
   } catch {
-    // ignore debug logging failures
+    // ignore
   }
   try {
     console.log(fullMessage);
   } catch {
-    // ignore debug logging failures
+    // ignore
   }
 }
 
 export function dbgError(message: string, error: unknown): void {
-  const fullMessage = formatMessage(
-    `ERROR: ${message}`,
-    error instanceof Error ? { message: error.message } : error,
-  );
+  const errorStr = error instanceof Error ? error.message : String(error);
+  const fullMessage = `${PREFIX} ERROR: ${message} | ${errorStr}`;
   try {
     ztoolkit?.log?.(fullMessage);
   } catch {
-    // ignore debug logging failures
+    // ignore
   }
   try {
     console.error(fullMessage);
   } catch {
-    // ignore debug logging failures
+    // ignore
   }
 }

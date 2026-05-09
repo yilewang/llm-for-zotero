@@ -78,7 +78,9 @@ export function createReadAttachmentTool(
       summaries: {
         onCall: ({ args }) => {
           const a = args as Record<string, unknown> | null;
-          return a?.attachFile ? "Preparing file for model" : "Reading attachment content";
+          return a?.attachFile
+            ? "Preparing file for model"
+            : "Reading attachment content";
         },
         onPending: "Waiting for your approval before sending document content",
         onApproved: "Approval received - sending document content",
@@ -122,15 +124,13 @@ export function createReadAttachmentTool(
             })
           : null) || firstNonImageAttachment(context.request.attachments);
       const attachmentName =
-        attachment?.name ||
-        explicitTarget?.name ||
-        "Attached file";
+        attachment?.name || explicitTarget?.name || "Attached file";
       const mimeType = attachment?.mimeType || "application/pdf";
       return {
         toolName: "read_attachment",
         title: attachmentName,
         description:
-          "Review the file details below. Click \"Send to model\" to let the model inspect this attachment.",
+          'Review the file details below. Click "Send to model" to let the model inspect this attachment.',
         confirmLabel: "Send to model",
         cancelLabel: "Cancel",
         fields: [

@@ -56,15 +56,6 @@ describe("mineruZip", function () {
     }
 
     assert.equal(result.mdContent, "preferred markdown");
-    assert.includeMembers(
-      result.files.map((file) => file.relativePath),
-      [
-        "summary.md",
-        "nested/full.md",
-        "images/figure-1.png",
-        "content_list.json",
-      ],
-    );
     assert.includeMembers(result.entryNames, [
       "summary.md",
       "nested/full.md",
@@ -100,10 +91,7 @@ describe("mineruZip", function () {
     }
 
     assert.equal(result.reason, "md_empty");
-    assert.match(
-      describeMineruZipInspectionFailure(result),
-      /empty/i,
-    );
+    assert.match(describeMineruZipInspectionFailure(result), /empty/i);
   });
 
   it("reports whitespace-only Markdown as a failure", function () {
@@ -114,7 +102,9 @@ describe("mineruZip", function () {
     const result = inspectMineruZipBytes(zipBytes);
     assert.isFalse(result.ok);
     if (result.ok) {
-      throw new Error("Expected ZIP inspection to fail for whitespace-only markdown");
+      throw new Error(
+        "Expected ZIP inspection to fail for whitespace-only markdown",
+      );
     }
 
     assert.equal(result.reason, "md_empty");

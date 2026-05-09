@@ -114,37 +114,4 @@ describe("notes citation page export", function () {
     assert.include(result.noteHtml, "(Whittington et al., 2020, page 8)");
     assert.notInclude(result.noteHtml, "(Whittington et al., 2020, page 1)");
   });
-
-  it("links citations when the paper exists only in hidden citation contexts", function () {
-    const citationPaperContexts: PaperContextRef[] = [
-      {
-        itemId: 1,
-        contextItemId: 23,
-        title: "Whittington 2020",
-        firstCreator: "Whittington et al.",
-        year: "2020",
-      },
-    ];
-    const messages: Message[] = [
-      {
-        role: "user",
-        text: "Summarize the retrieved folder paper.",
-        timestamp: 1,
-        citationPaperContexts,
-      },
-      {
-        role: "assistant",
-        text: "The paper emphasizes fast environment-specific learning (Whittington et al., 2020).",
-        timestamp: 2,
-        modelName: "Claude",
-      },
-    ];
-
-    const result = buildChatHistoryNotePayload(messages);
-
-    assert.include(
-      result.noteHtml,
-      'href="zotero://open-pdf/library/items/ATTACH23"',
-    );
-  });
 });

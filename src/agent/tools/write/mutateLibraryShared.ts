@@ -18,7 +18,11 @@ import type {
 } from "../../services/zoteroGateway";
 import { EDITABLE_ARTICLE_METADATA_FIELDS } from "../../services/zoteroGateway";
 import { pushUndoEntry } from "../../store/undoStore";
-import { normalizePositiveInt, normalizeStringArray, validateObject } from "../shared";
+import {
+  normalizePositiveInt,
+  normalizeStringArray,
+  validateObject,
+} from "../shared";
 
 // ── Tag assignment helpers ──────────────────────────────────────────────────
 
@@ -54,16 +58,20 @@ export function buildTagAssignmentField(
   }
   const targetByItemId = new Map(
     zoteroGateway
-      .getPaperTargetsByItemIds(assignments.map((assignment) => assignment.itemId))
+      .getPaperTargetsByItemIds(
+        assignments.map((assignment) => assignment.itemId),
+      )
       .map((target) => [target.itemId, target] as const),
   );
   return {
     type: "tag_assignment_table" as const,
     id: getTagAssignmentFieldId(operation),
-    label: "Suggested tags to add",
+    label: "Suggested tags",
     rows: assignments.map((assignment) => {
       const target = targetByItemId.get(assignment.itemId);
-      const details = [target?.firstCreator || "", target?.year || ""].filter(Boolean);
+      const details = [target?.firstCreator || "", target?.year || ""].filter(
+        Boolean,
+      );
       return {
         id: `${assignment.itemId}`,
         label: target?.title || `Item ${assignment.itemId}`,
@@ -93,12 +101,16 @@ export function normalizeTagAssignmentsFromResolution(
       }
       return { itemId, tags };
     })
-    .filter((entry): entry is { itemId: number; tags: string[] } => Boolean(entry));
+    .filter((entry): entry is { itemId: number; tags: string[] } =>
+      Boolean(entry),
+    );
 }
 
 // ── Move assignment helpers ─────────────────────────────────────────────────
 
-export function getMoveAssignmentFieldId(operation: MoveToCollectionOperation): string {
+export function getMoveAssignmentFieldId(
+  operation: MoveToCollectionOperation,
+): string {
   return `moveAssignments:${operation.id || "move_to_collection"}`;
 }
 
@@ -212,7 +224,8 @@ export function buildMoveAssignmentField(
   return {
     type: "assignment_table" as const,
     id: getMoveAssignmentFieldId(operation),
-    label: assignments.length === 1 ? "Destination folder" : "Destination folders",
+    label:
+      assignments.length === 1 ? "Destination folder" : "Destination folders",
     options: [
       { id: "__skip__", label: "Leave untouched" },
       ...options.map((option) => ({
@@ -266,9 +279,8 @@ export function normalizeMoveAssignmentsFromResolution(
       }
       return { itemId, targetCollectionId };
     })
-    .filter(
-      (entry): entry is { itemId: number; targetCollectionId: number } =>
-        Boolean(entry),
+    .filter((entry): entry is { itemId: number; targetCollectionId: number } =>
+      Boolean(entry),
     );
 }
 
@@ -321,8 +333,7 @@ export function buildUpdateMetadataReviewField(
     item: context.item,
   });
   const snapshot = zoteroGateway.getEditableArticleMetadata(item);
-  const rows: Extract<AgentPendingField, { type: "review_table" }>["rows"] =
-    [];
+  const rows: Extract<AgentPendingField, { type: "review_table" }>["rows"] = [];
 
   for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(operation.metadata, fieldName))
@@ -429,7 +440,9 @@ export function normalizeStringValue(value: unknown): string | null {
   return null;
 }
 
-export function normalizeCreator(value: unknown): EditableArticleCreator | null {
+export function normalizeCreator(
+  value: unknown,
+): EditableArticleCreator | null {
   if (!validateObject<Record<string, unknown>>(value)) return null;
   const creatorType =
     typeof value.creatorType === "string" && value.creatorType.trim()
@@ -457,7 +470,9 @@ export function normalizeCreator(value: unknown): EditableArticleCreator | null 
   };
 }
 
-export function normalizeCreatorsList(raw: unknown): EditableArticleCreator[] | null {
+export function normalizeCreatorsList(
+  raw: unknown,
+): EditableArticleCreator[] | null {
   if (Array.isArray(raw)) {
     const list = raw
       .map((entry) => normalizeCreator(entry))
@@ -499,7 +514,8 @@ export function normalizeMetadataPatch(
     : value;
   const metadata: EditableArticleMetadataPatch = {};
   for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(normalizedValue, fieldName)) continue;
+    if (!Object.prototype.hasOwnProperty.call(normalizedValue, fieldName))
+      continue;
     const normalized = normalizeStringValue(normalizedValue[fieldName]);
     if (normalized === null) continue;
     metadata[fieldName as EditableArticleMetadataField] = normalized;
@@ -507,12 +523,14 @@ export function normalizeMetadataPatch(
   // Accept "creators" or "authors" (common model alias). Handle arrays and
   // comma/semicolon-separated strings. Non-parseable values are silently skipped
   // so they do not abort the entire patch.
-  const rawCreators =
-    Object.prototype.hasOwnProperty.call(normalizedValue, "creators")
-      ? normalizedValue.creators
-      : Object.prototype.hasOwnProperty.call(normalizedValue, "authors")
-        ? normalizedValue.authors
-        : undefined;
+  const rawCreators = Object.prototype.hasOwnProperty.call(
+    normalizedValue,
+    "creators",
+  )
+    ? normalizedValue.creators
+    : Object.prototype.hasOwnProperty.call(normalizedValue, "authors")
+      ? normalizedValue.authors
+      : undefined;
   if (rawCreators !== undefined) {
     const creators = normalizeCreatorsList(rawCreators);
     if (creators !== null) {

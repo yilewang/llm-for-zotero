@@ -31,11 +31,6 @@ import type {
   SelectedTextSource,
 } from "./types";
 import {
-  readNoteSnapshot,
-  stripNoteHtml,
-  type NoteSnapshot,
-} from "./noteSnapshot";
-import {
   extractStandalonePaperSourceLabel,
   extractInlineCitationMentions,
   formatSourceLabelWithPage,
@@ -46,21 +41,37 @@ import {
   isGlobalPortalItem,
   isPaperPortalItem,
   resolveNoteParentItem,
+  resolveNoteTitle,
   resolvePaperPortalBaseItem,
 } from "./portalScope";
-import {
-  isClaudeGlobalPortalItem,
-  isClaudePaperPortalItem,
-  resolveClaudePaperPortalBaseItem,
-} from "../../claudeCode/portal";
-import {
-  isCodexGlobalPortalItem,
-  isCodexPaperPortalItem,
-  resolveCodexPaperPortalBaseItem,
-} from "../../codexAppServer/portal";
-import { getMessageCitationPaperContexts } from "./citationContexts";
 
-export { readNoteSnapshot, stripNoteHtml, type NoteSnapshot };
+export type NoteSnapshot = {
+  noteId: number;
+  noteItemKey?: string;
+  title: string;
+  html: string;
+  text: string;
+  libraryID: number;
+  parentItemId?: number;
+  parentItemKey?: string;
+  noteKind: "item" | "standalone";
+};
+
+export function stripNoteHtml(html: string): string {
+  if (!html) return "";
+  let text = html.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, "");
+  text = text.replace(/<\/(p|div|h[1-6]|li|tr|blockquote)>/gi, "\n");
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<[^>]+>/g, "");
+  text = text
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+  return text.replace(/\n{3,}/g, "\n\n").trim();
+}
 
 function decodeNoteHtmlEntities(text: string): string {
   return text
@@ -145,24 +156,40 @@ export function renderRawNoteHtml(contentText: string): string {
   }
 }
 
-export function resolveParentItemForNoteTarget(
-  item: Zotero.Item,
-): Zotero.Item | null {
-  if (
-    isGlobalPortalItem(item) ||
-    isClaudeGlobalPortalItem(item) ||
-    isCodexGlobalPortalItem(item)
-  ) {
+export function readNoteSnapshot(
+  item: Zotero.Item | null | undefined,
+): NoteSnapshot | null {
+  if (!(item as any)?.isNote?.()) return null;
+  const noteId = Number(item?.id);
+  if (!Number.isFinite(noteId) || noteId <= 0) return null;
+  const html = String((item as any).getNote?.() || "");
+  const parentItem = resolveNoteParentItem(item);
+  return {
+    noteId: Math.floor(noteId),
+    noteItemKey:
+      typeof (item as any)?.key === "string" && (item as any).key.trim()
+        ? (item as any).key.trim().toUpperCase()
+        : undefined,
+    title: resolveNoteTitle(item),
+    html,
+    text: stripNoteHtml(html),
+    libraryID: Number(item?.libraryID) || 0,
+    parentItemId: parentItem?.id,
+    parentItemKey:
+      typeof (parentItem as any)?.key === "string" &&
+      (parentItem as any).key.trim()
+        ? (parentItem as any).key.trim().toUpperCase()
+        : undefined,
+    noteKind: parentItem ? "item" : "standalone",
+  };
+}
+
+function resolveParentItemForNote(item: Zotero.Item): Zotero.Item | null {
+  if (isGlobalPortalItem(item)) {
     return null;
   }
   if (isPaperPortalItem(item)) {
     return resolvePaperPortalBaseItem(item);
-  }
-  if (isClaudePaperPortalItem(item)) {
-    return resolveClaudePaperPortalBaseItem(item);
-  }
-  if (isCodexPaperPortalItem(item)) {
-    return resolveCodexPaperPortalBaseItem(item);
   }
   const noteParentItem = resolveNoteParentItem(item);
   if (noteParentItem) {
@@ -705,7 +732,7 @@ export function buildChatHistoryNotePayload(messages: Message[]): {
       );
     }
     if (msg.role === "user") {
-      lastUserPaperContexts = getMessageCitationPaperContexts(msg);
+      lastUserPaperContexts = msg.paperContexts;
     }
     if (!rendered && !screenshotHtml && !fileHtml) continue;
     textLines.push(`${speaker}: ${textWithContext}`);
@@ -738,12 +765,8 @@ export async function createNoteFromAssistantText(
   contentText: string,
   modelName: string,
   paperContexts?: PaperContextRef[],
-  options: {
-    appendToTrackedNote?: boolean;
-    rememberCreatedNote?: boolean;
-  } = {},
 ): Promise<"created" | "appended"> {
-  const parentItem = resolveParentItemForNoteTarget(item);
+  const parentItem = resolveParentItemForNote(item);
   const parentId = parentItem?.id;
   if (!parentItem || !parentId) {
     throw new Error("No parent item available for note creation");
@@ -757,31 +780,29 @@ export async function createNoteFromAssistantText(
   // ProseMirror.)
   const html = buildAssistantNoteHtml(contentText, modelName, paperContexts);
 
-  if (options.appendToTrackedNote) {
-    // Try to find an existing tracked note for this parent item.
-    // If one exists and is still valid, append the new content to it.
-    const existingNote = getTrackedAssistantNoteForParent(parentId);
-    if (existingNote) {
-      try {
-        const appendedHtml = appendAssistantAnswerToNoteHtml(
-          existingNote.getNote() || "",
-          html,
-        );
-        existingNote.setNote(appendedHtml);
-        await existingNote.saveTx();
-        ztoolkit.log(
-          `LLM: Appended to existing note ${existingNote.id} for parent ${parentId}`,
-        );
-        return "appended";
-      } catch (appendErr) {
-        // If appending fails (e.g. note was deleted externally), fall through
-        // to create a new note instead.
-        ztoolkit.log(
-          "LLM: Failed to append to existing note, creating new:",
-          appendErr,
-        );
-        removeAssistantNoteMapEntry(parentId);
-      }
+  // Try to find an existing tracked note for this parent item.
+  // If one exists and is still valid, append the new content to it.
+  const existingNote = getTrackedAssistantNoteForParent(parentId);
+  if (existingNote) {
+    try {
+      const appendedHtml = appendAssistantAnswerToNoteHtml(
+        existingNote.getNote() || "",
+        html,
+      );
+      existingNote.setNote(appendedHtml);
+      await existingNote.saveTx();
+      ztoolkit.log(
+        `LLM: Appended to existing note ${existingNote.id} for parent ${parentId}`,
+      );
+      return "appended";
+    } catch (appendErr) {
+      // If appending fails (e.g. note was deleted externally), fall through
+      // to create a new note instead.
+      ztoolkit.log(
+        "LLM: Failed to append to existing note, creating new:",
+        appendErr,
+      );
+      removeAssistantNoteMapEntry(parentId);
     }
   }
 
@@ -796,9 +817,7 @@ export async function createNoteFromAssistantText(
   const newNoteId =
     typeof saveResult === "number" && saveResult > 0 ? saveResult : note.id;
   if (newNoteId && newNoteId > 0) {
-    if (options.rememberCreatedNote) {
-      rememberAssistantNoteForParent(parentId, newNoteId);
-    }
+    rememberAssistantNoteForParent(parentId, newNoteId);
     ztoolkit.log(`LLM: Created new note ${newNoteId} for parent ${parentId}`);
   } else {
     ztoolkit.log(
@@ -832,7 +851,7 @@ export async function createNoteFromChatHistory(
   item: Zotero.Item,
   history: Message[],
 ): Promise<void> {
-  const parentItem = resolveParentItemForNoteTarget(item);
+  const parentItem = resolveParentItemForNote(item);
   const parentId = parentItem?.id;
   if (!parentItem || !parentId) {
     throw new Error("No parent item available for note creation");

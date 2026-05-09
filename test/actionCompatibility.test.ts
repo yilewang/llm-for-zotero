@@ -143,10 +143,7 @@ describe("action compatibility after tool refactors", function () {
     assert.isTrue(result.ok);
     if (!result.ok) return;
     assert.equal(searchArgs?.doi, "10.1000/seed");
-    assert.deepEqual(
-      importArgs?.identifiers,
-      ["10.1000/r1", "10.1000/r2"],
-    );
+    assert.deepEqual(importArgs?.identifiers, ["10.1000/r1", "10.1000/r2"]);
     assert.deepEqual(result.output, {
       seedTitle: "Seed Paper",
       discovered: 2,
@@ -229,6 +226,22 @@ describe("action compatibility after tool refactors", function () {
     registry.register(
       createStubTool(
         {
+          name: "query_library",
+          description: "query",
+          inputSchema: { type: "object" },
+          mutability: "read",
+          requiresConfirmation: false,
+        },
+        (args) => ({ ok: true, value: args as Record<string, unknown> }),
+        async () => ({
+          results: [{ itemId: 1 }, { itemId: 2 }, { itemId: 3 }],
+        }),
+      ),
+    );
+
+    registry.register(
+      createStubTool(
+        {
           name: "apply_tags",
           description: "apply tags",
           inputSchema: { type: "object" },
@@ -247,55 +260,12 @@ describe("action compatibility after tool refactors", function () {
     );
 
     const { ctx } = createActionContext(registry);
-    ctx.zoteroGateway = {
-      listBibliographicItemTargets: async () => ({
-        items: [
-          {
-            itemId: 1,
-            itemType: "journalArticle",
-            title: "Paper One",
-            firstCreator: "Alice Example",
-            year: "2024",
-            attachments: [],
-            tags: [],
-            collectionIds: [],
-          },
-          {
-            itemId: 2,
-            itemType: "journalArticle",
-            title: "Paper Two",
-            firstCreator: "Bob Example",
-            year: "2023",
-            attachments: [],
-            tags: ["existing"],
-            collectionIds: [],
-          },
-          {
-            itemId: 3,
-            itemType: "journalArticle",
-            title: "Paper Three",
-            firstCreator: "Cara Example",
-            year: "2022",
-            attachments: [],
-            tags: [],
-            collectionIds: [],
-          },
-        ],
-        totalCount: 3,
-      }),
-      getEditableArticleMetadata: () => ({
-        fields: {
-          abstractNote: "Abstract",
-        },
-      }),
-      getItem: (itemId: number) => ({ id: itemId }),
-    } as never;
     const result = await autoTagAction.execute({}, ctx);
 
     assert.isTrue(result.ok);
     if (!result.ok) return;
     assert.deepEqual(result.output, {
-      targeted: 3,
+      untagged: 3,
       tagged: 2,
       skipped: 1,
     });
@@ -369,7 +339,6 @@ describe("action compatibility after tool refactors", function () {
           missingFields: ["abstract", "DOI/URL", "tags", "PDF"],
         },
       ],
-      metadataFixed: 0,
       noteId: undefined,
     });
   });

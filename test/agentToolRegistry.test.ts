@@ -49,8 +49,9 @@ describe("AgentToolRegistry", function () {
           ? {
               ok: true,
               value: {
-                operations: (args as { operations: Array<Record<string, unknown>> })
-                  .operations,
+                operations: (
+                  args as { operations: Array<Record<string, unknown>> }
+                ).operations,
               },
             }
           : { ok: false, error: "operations required" },
@@ -64,11 +65,13 @@ describe("AgentToolRegistry", function () {
             type: "checklist",
             id: "selectedOperations",
             label: "Operations",
-            items: input.operations.map((operation: { id: string; type: string }) => ({
-              id: operation.id,
-              label: operation.type,
-              checked: true,
-            })),
+            items: input.operations.map(
+              (operation: { id: string; type: string }) => ({
+                id: operation.id,
+                label: operation.type,
+                checked: true,
+              }),
+            ),
           },
           {
             type: "textarea",
@@ -89,7 +92,10 @@ describe("AgentToolRegistry", function () {
         const selectedIds = new Set(
           Array.isArray(data.selectedOperations)
             ? data.selectedOperations
-                .filter((entry) => entry.checked !== false && typeof entry.id === "string")
+                .filter(
+                  (entry) =>
+                    entry.checked !== false && typeof entry.id === "string",
+                )
                 .map((entry) => entry.id as string)
             : input.operations.map((operation: { id: string }) => operation.id),
         );
@@ -100,7 +106,9 @@ describe("AgentToolRegistry", function () {
               typeof data.operationsJson === "string"
                 ? data.operationsJson
                 : JSON.stringify(input.operations),
-            ).filter((operation: { id: string }) => selectedIds.has(operation.id)),
+            ).filter((operation: { id: string }) =>
+              selectedIds.has(operation.id),
+            ),
           },
         };
       },
@@ -124,10 +132,10 @@ describe("AgentToolRegistry", function () {
     assert.equal(result.kind, "confirmation");
     if (result.kind !== "confirmation") return;
     assert.equal(result.action.toolName, "mutate_library");
-    assert.deepEqual(result.action.fields.map((field) => field.id), [
-      "selectedOperations",
-      "operationsJson",
-    ]);
+    assert.deepEqual(
+      result.action.fields.map((field) => field.id),
+      ["selectedOperations", "operationsJson"],
+    );
     assert.equal(result.deny().result.ok, false);
     const approved = await result.execute({
       selectedOperations: [{ id: "op-1", checked: true }],
@@ -152,7 +160,9 @@ describe("AgentToolRegistry", function () {
       validate: () => ({
         ok: true,
         value: {
-          operations: [{ type: "import_identifiers", identifiers: ["10.1000/a"] }],
+          operations: [
+            { type: "import_identifiers", identifiers: ["10.1000/a"] },
+          ],
         },
       }),
       acceptInheritedApproval: (_input, approval) =>

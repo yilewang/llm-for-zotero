@@ -97,9 +97,8 @@ function migrateLegacyPrefs(): void {
 async function migrateMineruContentMdCleanup(): Promise<void> {
   if (Zotero.Prefs.get(PREF_MINERU_CONTENT_MD_CLEANUP, true)) return;
   try {
-    const { cleanupLegacyContentMdFiles } = await import(
-      "../modules/contextPanel/mineruCache"
-    );
+    const { cleanupLegacyContentMdFiles } =
+      await import("../modules/contextPanel/mineruCache");
     await cleanupLegacyContentMdFiles();
   } catch {
     /* ignore – cache dir may not exist yet */
@@ -114,12 +113,14 @@ async function migrateMineruContentMdCleanup(): Promise<void> {
 async function migrateMineruManifestBuild(): Promise<void> {
   if (Zotero.Prefs.get(PREF_MINERU_MANIFEST_BUILD, true)) return;
   try {
-    const { getMineruCacheDir, buildAndWriteManifest } = await import(
-      "../modules/contextPanel/mineruCache"
-    );
+    const { getMineruCacheDir, buildAndWriteManifest } =
+      await import("../modules/contextPanel/mineruCache");
     const cacheDir = getMineruCacheDir();
     const IOUtils = (globalThis as Record<string, unknown>).IOUtils as
-      | { getChildren?: (path: string) => Promise<string[]>; exists?: (path: string) => Promise<boolean> }
+      | {
+          getChildren?: (path: string) => Promise<string[]>;
+          exists?: (path: string) => Promise<boolean>;
+        }
       | undefined;
     if (!IOUtils?.getChildren || !IOUtils?.exists) {
       Zotero.Prefs.set(PREF_MINERU_MANIFEST_BUILD, true, true);
@@ -149,7 +150,9 @@ async function migrateMineruManifestBuild(): Promise<void> {
       }
     }
     if (built > 0) {
-      ztoolkit.log(`LLM: Built manifest.json for ${built} existing MinerU cached paper(s).`);
+      ztoolkit.log(
+        `LLM: Built manifest.json for ${built} existing MinerU cached paper(s).`,
+      );
     }
   } catch {
     /* ignore – cache dir may not exist yet */

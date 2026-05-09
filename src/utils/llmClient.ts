@@ -8,13 +8,13 @@ import { config } from "../../package.json";
 import { DEFAULT_SYSTEM_PROMPT } from "./llmDefaults";
 import {
   getAnthropicReasoningProfileForModel,
-  getDeepseekReasoningProfileForModel,
   getGeminiReasoningProfileForModel,
   getGrokReasoningProfileForModel,
   getOpenAIReasoningProfileForModel,
   getQwenReasoningProfileForModel,
   getReasoningDefaultLevelForModel,
   getRuntimeReasoningOptionsForModel,
+  shouldUseDeepseekThinkingPayload,
   supportsReasoningForModel,
 } from "./reasoningProfiles";
 import type {
@@ -26,30 +26,10 @@ import type {
   GeminiThinkingValue,
   GeminiReasoningOption,
   GeminiReasoningProfile,
-  AnthropicAdaptiveEffort,
-  AnthropicThinkingMode,
   AnthropicReasoningProfile,
   QwenReasoningProfile,
   RuntimeReasoningOption,
 } from "./reasoningProfiles";
-import type {
-  ChatMessage,
-  ImageContent,
-  MessageContent,
-  ReasoningConfig,
-  ReasoningEvent,
-  TextContent,
-  UsageStats,
-} from "../shared/llm";
-export type {
-  ChatMessage,
-  ImageContent,
-  MessageContent,
-  ReasoningConfig,
-  ReasoningEvent,
-  TextContent,
-  UsageStats,
-} from "../shared/llm";
 import {
   EMBEDDINGS_ENDPOINT,
   FILES_ENDPOINT,
@@ -59,7 +39,7 @@ import {
 import { getLocalParentPath, joinLocalPath, pathToFileUrl } from "./localPath";
 import {
   normalizeTemperature,
-  normalizeMaxTokensForModel,
+  normalizeMaxTokens,
   normalizeInputTokenCap,
 } from "./normalization";
 import {
@@ -74,45 +54,52 @@ import {
   isGrokApiBase,
   providerSupportsResponsesEndpoint,
 } from "./providerPresets";
-import {
-  inferLegacyProviderProtocol,
-  type ProviderProtocol,
-} from "./providerProtocol";
+import type { ProviderProtocol } from "./providerProtocol";
 import {
   buildProviderTransportHeaders,
   resolveAnthropicMessagesEndpoint,
   resolveGeminiNativeEndpoint,
   resolveProviderTransportEndpoint,
 } from "./providerTransport";
-import { parseDataUrl } from "../shared/dataUrl";
-import { readFileRefAsBase64 } from "../agent/model/shared";
-import { buildMultipartRequest } from "./multipart";
-import {
-  extractCodexAppServerThreadId,
-  extractCodexAppServerTurnId,
-  getOrCreateCodexAppServerProcess,
-  isCodexAppServerThreadStartInstructionsUnsupportedError,
-  resolveCodexAppServerBinaryPath,
-  resolveCodexAppServerTurnInputWithFallback,
-  resolveCodexAppServerReasoningParams,
-  waitForCodexAppServerTurnCompletion,
-} from "./codexAppServerProcess";
-import {
-  buildLegacyCodexAppServerChatInput,
-  prepareCodexAppServerChatTurn,
-} from "./codexAppServerInput";
+import { parseDataUrl } from "../agent/model/shared";
 import {
   applyModelInputTokenCap,
   estimateConversationTokens,
   getModelInputTokenLimit,
   type InputCapResult,
 } from "./modelInputCap";
-import { isTextOnlyModel } from "../providers/modelChecks";
 
 // =============================================================================
 // Types
 // =============================================================================
 
+/** Image content for vision-capable models */
+export type ImageContent = {
+  type: "image_url";
+  image_url: {
+    url: string;
+    detail?: "low" | "high" | "auto";
+  };
+};
+
+/** Text content */
+export type TextContent = {
+  type: "text";
+  text: string;
+};
+
+/** Message content can be string or array of content parts (for vision) */
+export type MessageContent = string | (TextContent | ImageContent)[];
+
+export type ChatMessage = {
+  role: "user" | "assistant" | "system";
+  content: MessageContent;
+};
+
+export type ReasoningConfig = {
+  provider: ReasoningProvider;
+  level: ReasoningLevel;
+};
 export type ChatFileAttachment = {
   name: string;
   mimeType?: string;
@@ -153,6 +140,11 @@ export type ChatParams = {
   providerProtocol?: ProviderProtocol;
 };
 
+export type ReasoningEvent = {
+  summary?: string;
+  details?: string;
+};
+
 export type ContextBudgetPlan = {
   modelLimitTokens: number;
   limitTokens: number;
@@ -161,6 +153,12 @@ export type ContextBudgetPlan = {
   outputReserveTokens: number;
   reasoningReserveTokens: number;
   contextBudgetTokens: number;
+};
+
+export type UsageStats = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 };
 
 export type PreparedChatRequest = {
@@ -248,7 +246,7 @@ function getApiConfig(overrides?: {
   const resolvedApiBase =
     overrides?.apiBase ||
     prefApiBase ||
-    (authMode === "codex_auth" || authMode === "codex_app_server"
+    (authMode === "codex_auth"
       ? DEFAULT_CODEX_API_BASE
       : authMode === "copilot_auth"
         ? DEFAULT_COPILOT_API_BASE
@@ -270,20 +268,11 @@ function getApiConfig(overrides?: {
   const model = (overrides?.model || modelPrimary).trim();
   const embeddingModel = getPref("embeddingModel") || DEFAULT_EMBEDDING_MODEL;
   const customSystemPrompt = getPref("systemPrompt") || "";
-  const providerProtocol: ProviderProtocol = (() => {
-    if (overrides?.providerProtocol) return overrides.providerProtocol;
-    // Only inherit the configured group protocol when we are actually using that
-    // group's base URL. If the caller supplied their own apiBase override, derive
-    // the protocol from that URL instead so the correct transport is selected
-    // (e.g. a Grok /v1/responses URL should use responses_api, not the
-    // openai_chat_compat default from an unrelated legacy group entry).
-    if (!overrides?.apiBase) {
-      if (defaultEntry?.providerProtocol) return defaultEntry.providerProtocol;
-      if (defaultProviderGroup?.providerProtocol)
-        return defaultProviderGroup.providerProtocol;
-    }
-    return inferLegacyProviderProtocol({ authMode, apiBase });
-  })();
+  const providerProtocol: ProviderProtocol =
+    overrides?.providerProtocol ||
+    defaultEntry?.providerProtocol ||
+    defaultProviderGroup?.providerProtocol ||
+    "openai_chat_compat";
 
   if (!apiBase) {
     throw new Error("API URL is missing in preferences");
@@ -1132,28 +1121,93 @@ function isPurposeValidationError(status: number, bodyText: string): boolean {
   return /purpose/i.test(bodyText);
 }
 
+function getFormDataCtor(): typeof FormData | undefined {
+  const fromGlobal = (globalThis as { FormData?: typeof FormData }).FormData;
+  if (typeof fromGlobal === "function") return fromGlobal;
+  const fromToolkit = ztoolkit.getGlobal("FormData") as
+    | typeof FormData
+    | undefined;
+  return typeof fromToolkit === "function" ? fromToolkit : undefined;
+}
+
+function getBlobCtor(): typeof Blob | undefined {
+  const fromGlobal = (globalThis as { Blob?: typeof Blob }).Blob;
+  if (typeof fromGlobal === "function") return fromGlobal;
+  const fromToolkit = ztoolkit.getGlobal("Blob") as typeof Blob | undefined;
+  return typeof fromToolkit === "function" ? fromToolkit : undefined;
+}
+
+function toSafeMultipartToken(value: string): string {
+  return (value || "").replace(/[\r\n"]/g, "_").trim() || "attachment";
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const totalLength = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+function buildManualMultipartBody(params: {
+  purpose: string;
+  fileName: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}): { body: Uint8Array; contentType: string } {
+  const encoder = new TextEncoder();
+  const boundary = `----llmforzotero-${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
+  const safePurpose = toSafeMultipartToken(params.purpose);
+  const safeFileName = toSafeMultipartToken(params.fileName);
+  const safeMimeType = toSafeMultipartToken(params.mimeType);
+
+  const prefix = encoder.encode(
+    `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="purpose"\r\n\r\n` +
+      `${safePurpose}\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="${safeFileName}"\r\n` +
+      `Content-Type: ${safeMimeType}\r\n\r\n`,
+  );
+  const suffix = encoder.encode(`\r\n--${boundary}--\r\n`);
+  return {
+    body: concatBytes([prefix, params.bytes, suffix]),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
 function buildUploadRequest(params: {
   purpose: string;
   fileName: string;
   mimeType: string;
   bytes: Uint8Array;
 }): { body: BodyInit; contentType?: string; mode: "formdata" | "manual" } {
-  return buildMultipartRequest(
-    [
-      { name: "purpose", value: params.purpose || "assistants" },
-      {
-        name: "file",
-        filename: params.fileName || "attachment",
-        contentType: params.mimeType || "application/octet-stream",
-        data: params.bytes,
-      },
-    ],
-    {
-      boundaryPrefix: "llmforzotero",
-      fallbackName: "attachment",
-      preferFormData: true,
-    },
-  );
+  const FormDataCtor = getFormDataCtor();
+  const BlobCtor = getBlobCtor();
+  if (FormDataCtor && BlobCtor) {
+    const body = new FormDataCtor();
+    const blob = new BlobCtor([params.bytes], {
+      type: params.mimeType || "application/octet-stream",
+    });
+    body.append("purpose", params.purpose || "assistants");
+    body.append("file", blob, params.fileName || "attachment");
+    return { body, mode: "formdata" };
+  }
+
+  const manual = buildManualMultipartBody({
+    purpose: params.purpose,
+    fileName: params.fileName,
+    mimeType: params.mimeType,
+    bytes: params.bytes,
+  });
+  return {
+    body: manual.body,
+    contentType: manual.contentType,
+    mode: "manual",
+  };
 }
 
 async function uploadAttachmentForResponses(params: {
@@ -1336,34 +1390,6 @@ function buildMessages(
   return messages;
 }
 
-function stripUnsupportedImageContent(
-  messages: ChatMessage[],
-  modelName: string,
-): ChatMessage[] {
-  if (!isTextOnlyModel(modelName)) return messages;
-  return messages.map((message) => {
-    if (typeof message.content === "string") return message;
-    const omittedImageCount = message.content.filter(
-      (part) => part.type === "image_url",
-    ).length;
-    const textParts = message.content
-      .filter((part): part is TextContent => part.type === "text")
-      .map((part) => part.text)
-      .filter((text) => text.trim());
-    const omittedNotice =
-      omittedImageCount > 0
-        ? `[${omittedImageCount} image input${
-            omittedImageCount === 1 ? "" : "s"
-          } omitted because ${modelName || "the selected model"} does not support image input.]`
-        : "";
-    const content = [...textParts, omittedNotice].filter(Boolean).join("\n\n");
-    return {
-      ...message,
-      content: content || omittedNotice || "",
-    };
-  });
-}
-
 export function prepareChatRequest(params: ChatParams): PreparedChatRequest {
   const { apiBase, apiKey, authMode, model, systemPrompt, providerProtocol } =
     getApiConfig({
@@ -1373,10 +1399,7 @@ export function prepareChatRequest(params: ChatParams): PreparedChatRequest {
       model: params.model,
       providerProtocol: params.providerProtocol,
     });
-  const rawMessages = stripUnsupportedImageContent(
-    buildMessages(params, systemPrompt),
-    model,
-  );
+  const rawMessages = buildMessages(params, systemPrompt);
   const inputCap = applyModelInputTokenCap(
     rawMessages,
     model,
@@ -1433,10 +1456,7 @@ export function estimateAvailableContextBudget(params: {
     modelLimitTokens,
   );
   const softLimitTokens = Math.max(1, Math.floor(limitTokens * 0.9));
-  const outputReserveTokens = normalizeMaxTokensForModel(
-    params.maxTokens,
-    normalizedModel,
-  );
+  const outputReserveTokens = normalizeMaxTokens(params.maxTokens);
   const reasoningReserveTokens = getReasoningReserveTokens(params.reasoning);
 
   const baseMessages = buildMessages(
@@ -1614,8 +1634,6 @@ export type {
   GeminiThinkingValue,
   GeminiReasoningOption,
   GeminiReasoningProfile,
-  AnthropicAdaptiveEffort,
-  AnthropicThinkingMode,
   AnthropicReasoningProfile,
   QwenReasoningProfile,
   RuntimeReasoningOption,
@@ -1697,77 +1715,6 @@ function resolveAnthropicThinkingBudget(
   }
 
   return profile.defaultBudgetTokens;
-}
-
-function resolveAnthropicAdaptiveEffort(
-  level: ReasoningLevel,
-  profile: AnthropicReasoningProfile,
-): AnthropicAdaptiveEffort | null {
-  const direct = profile.levelToEffort[level];
-  if (direct) return direct;
-
-  const aliasLevel = getReasoningLevelAlias(level);
-  if (aliasLevel) {
-    const aliasEffort = profile.levelToEffort[aliasLevel];
-    if (aliasEffort) return aliasEffort;
-  }
-
-  const defaultEffort = profile.levelToEffort[profile.defaultLevel];
-  return defaultEffort || null;
-}
-
-function resolveAnthropicThinkingMode(params: {
-  profile: AnthropicReasoningProfile;
-  override?: AnthropicReasoningModeOverride;
-}): AnthropicReasoningModeOverride | null {
-  if (
-    params.override === "adaptive" &&
-    params.profile.supportsAdaptiveThinking
-  ) {
-    return "adaptive";
-  }
-  if (params.override === "manual" && params.profile.supportsManualThinking) {
-    return "manual";
-  }
-  if (
-    params.profile.preferredMode === "adaptive" &&
-    params.profile.supportsAdaptiveThinking
-  ) {
-    return "adaptive";
-  }
-  if (
-    params.profile.preferredMode === "manual" &&
-    params.profile.supportsManualThinking
-  ) {
-    return "manual";
-  }
-  return null;
-}
-
-function resolveAnthropicManualBudget(params: {
-  level: ReasoningLevel;
-  profile: AnthropicReasoningProfile;
-  maxTokens?: number;
-  modelName?: string;
-}): number {
-  const requested = Math.max(
-    1024,
-    Math.floor(resolveAnthropicThinkingBudget(params.level, params.profile)),
-  );
-  const maxTokens = Math.floor(Number(params.maxTokens));
-  if (!Number.isFinite(maxTokens) || maxTokens < 1) {
-    return requested;
-  }
-
-  const reservedAnswerTokens = 1024;
-  const maxBudgetTokens = maxTokens - reservedAnswerTokens;
-  if (maxBudgetTokens < 1024) {
-    const label = (params.modelName || "the selected Anthropic model").trim();
-    throw new Error(
-      `${label} extended thinking requires max_tokens of at least 2048 so budget_tokens can be less than max_tokens while leaving room for the answer. Increase max tokens or turn thinking off.`,
-    );
-  }
-  return Math.min(requested, maxBudgetTokens);
 }
 
 function resolveQwenEnableThinking(
@@ -1970,27 +1917,11 @@ function emptyReasoningPayload() {
   return { extra: {}, omitTemperature: false } as const;
 }
 
-export type AnthropicReasoningModeOverride = Exclude<
-  AnthropicThinkingMode,
-  "none"
->;
-
-export type ReasoningPayloadOptions = {
-  maxTokens?: number;
-  anthropicModeOverride?: AnthropicReasoningModeOverride;
-};
-
-export type ReasoningSelection = ReasoningConfig & {
-  anthropicModeOverride?: AnthropicReasoningModeOverride;
-};
-
 export function buildReasoningPayload(
   reasoning: ReasoningConfig | undefined,
   useResponses: boolean,
   modelName?: string,
   apiBase?: string,
-  providerProtocol?: ProviderProtocol,
-  options?: ReasoningPayloadOptions,
 ): { extra: Record<string, unknown>; omitTemperature: boolean } {
   if (!reasoning) {
     return emptyReasoningPayload();
@@ -2088,32 +2019,16 @@ export function buildReasoningPayload(
   }
 
   if (reasoning.provider === "deepseek") {
-    const profile = getDeepseekReasoningProfileForModel(modelName);
-    const thinkingType =
-      profile.levelToThinkingType[reasoning.level] ??
-      profile.defaultThinkingType;
-    if (!thinkingType) {
+    if (!shouldUseDeepseekThinkingPayload(modelName)) {
       return emptyReasoningPayload();
     }
-    const reasoningEffort =
-      profile.levelToReasoningEffort[reasoning.level] ??
-      profile.defaultReasoningEffort;
-    const extra: Record<string, unknown> = {
-      thinking: {
-        type: thinkingType,
-      },
-    };
-    if (thinkingType === "enabled" && reasoningEffort) {
-      if (providerProtocol === "anthropic_messages") {
-        extra.output_config = { effort: reasoningEffort };
-      } else {
-        extra.reasoning_effort = reasoningEffort;
-      }
-    }
     return {
-      extra,
-      omitTemperature:
-        thinkingType === "enabled" && profile.omitTemperatureWhenThinking,
+      extra: {
+        thinking: {
+          type: "enabled",
+        },
+      },
+      omitTemperature: false,
     };
   }
 
@@ -2127,44 +2042,19 @@ export function buildReasoningPayload(
   }
 
   if (reasoning.provider === "anthropic") {
-    if (providerProtocol !== "anthropic_messages") {
-      return emptyReasoningPayload();
-    }
     const profile = getAnthropicReasoningProfile(modelName);
-    const mode = resolveAnthropicThinkingMode({
+    const budgetTokens = resolveAnthropicThinkingBudget(
+      reasoning.level,
       profile,
-      override: options?.anthropicModeOverride,
-    });
-    if (!mode) {
-      return emptyReasoningPayload();
-    }
-    if (mode === "adaptive") {
-      const effort = resolveAnthropicAdaptiveEffort(reasoning.level, profile);
-      return {
-        extra: {
-          thinking: {
-            type: "adaptive",
-          },
-          ...(effort ? { output_config: { effort } } : {}),
-        },
-        omitTemperature: true,
-      };
-    }
-
-    const budgetTokens = resolveAnthropicManualBudget({
-      level: reasoning.level,
-      profile,
-      maxTokens: options?.maxTokens,
-      modelName,
-    });
+    );
     return {
       extra: {
         thinking: {
           type: "enabled",
-          budget_tokens: budgetTokens,
+          budget_tokens: Math.max(1024, Math.floor(budgetTokens)),
         },
       },
-      omitTemperature: true,
+      omitTemperature: false,
     };
   }
 
@@ -2177,9 +2067,6 @@ function buildAnthropicMessagesPayload(params: {
   effectiveMaxTokens: number;
   effectiveTemperature: number;
   stream: boolean;
-  reasoning?: ReasoningConfig;
-  apiBase?: string;
-  anthropicModeOverride?: AnthropicReasoningModeOverride;
 }): Record<string, unknown> {
   const systemParts = params.messages
     .filter((m) => m.role === "system")
@@ -2219,23 +2106,8 @@ function buildAnthropicMessagesPayload(params: {
     max_tokens: params.effectiveMaxTokens,
     messages: nonSystemMessages,
   };
-  const reasoningPayload = buildReasoningPayload(
-    params.reasoning,
-    false,
-    params.model,
-    params.apiBase,
-    "anthropic_messages",
-    {
-      maxTokens: params.effectiveMaxTokens,
-      anthropicModeOverride: params.anthropicModeOverride,
-    },
-  );
-  Object.assign(payload, reasoningPayload.extra);
   if (systemParts.length > 0) {
     payload.system = systemParts.join("\n\n");
-  }
-  if (!reasoningPayload.omitTemperature) {
-    payload.temperature = params.effectiveTemperature;
   }
   if (params.stream) {
     payload.stream = true;
@@ -2286,24 +2158,6 @@ async function parseAnthropicStreamResponse(
             fullText += parsed.delta.text;
             onDelta(parsed.delta.text);
           }
-          if (
-            parsed.type === "message_start" &&
-            parsed.message?.usage &&
-            onUsage
-          ) {
-            const inputTokens = parsed.message.usage.input_tokens ?? 0;
-            const outputTokens = parsed.message.usage.output_tokens ?? 0;
-            const totalTokens = inputTokens + outputTokens;
-            if (inputTokens > 0 || totalTokens > 0) {
-              onUsage({
-                promptTokens: inputTokens,
-                completionTokens: outputTokens,
-                totalTokens,
-                contextTokens: inputTokens,
-                contextWindowIsAuthoritative: inputTokens > 0,
-              });
-            }
-          }
           if (parsed.type === "message_delta" && parsed.usage && onUsage) {
             const outputTokens = parsed.usage.output_tokens ?? 0;
             if (outputTokens > 0) {
@@ -2330,7 +2184,6 @@ function buildGeminiNativePayload(params: {
   messages: ChatMessage[];
   effectiveMaxTokens: number;
   effectiveTemperature: number;
-  pdfParts?: Array<{ base64: string }>;
 }): Record<string, unknown> {
   const systemParts = params.messages
     .filter((m) => m.role === "system")
@@ -2341,7 +2194,7 @@ function buildGeminiNativePayload(params: {
           : m.content.map((c) => ("text" in c ? c.text : "")).join(""),
     }))
     .filter((p) => p.text);
-  const contents: Array<{ role: string; parts: unknown[] }> = params.messages
+  const contents = params.messages
     .filter((m) => m.role !== "system")
     .map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
@@ -2364,22 +2217,6 @@ function buildGeminiNativePayload(params: {
                 : { text: (c as { text: string }).text },
             ),
     }));
-  if (params.pdfParts?.length) {
-    let lastUserIdx = -1;
-    for (let i = contents.length - 1; i >= 0; i--) {
-      if (contents[i].role === "user") {
-        lastUserIdx = i;
-        break;
-      }
-    }
-    if (lastUserIdx >= 0) {
-      for (const p of params.pdfParts) {
-        contents[lastUserIdx].parts.push({
-          inlineData: { mimeType: "application/pdf", data: p.base64 },
-        });
-      }
-    }
-  }
   const payload: Record<string, unknown> = {
     contents,
     generationConfig: {
@@ -2444,9 +2281,6 @@ async function parseGeminiNativeStreamResponse(
                 completionTokens:
                   parsed.usageMetadata.candidatesTokenCount ?? 0,
                 totalTokens: total,
-                contextTokens: parsed.usageMetadata.promptTokenCount ?? 0,
-                contextWindowIsAuthoritative:
-                  (parsed.usageMetadata.promptTokenCount ?? 0) > 0,
               });
             }
           }
@@ -2469,7 +2303,6 @@ function createChatPayloadBuilder(params: {
   responseFileIds?: string[];
   authMode: ModelProviderAuthMode;
   apiBase: string;
-  providerProtocol?: ProviderProtocol;
   effectiveTemperature: number;
   effectiveMaxTokens: number;
   stream: boolean;
@@ -2481,7 +2314,6 @@ function createChatPayloadBuilder(params: {
     responseFileIds,
     authMode,
     apiBase,
-    providerProtocol,
     effectiveTemperature,
     effectiveMaxTokens,
     stream,
@@ -2534,8 +2366,6 @@ function createChatPayloadBuilder(params: {
       useResponses,
       model,
       apiBase,
-      providerProtocol,
-      { maxTokens: effectiveMaxTokens },
     );
     const temperatureParam = reasoningPayload.omitTemperature
       ? {}
@@ -2646,8 +2476,7 @@ function getTemperatureRecoveryPolicy(
     text.includes("not allowed") ||
     text.includes("unknown parameter") ||
     text.includes("invalid parameter") ||
-    text.includes("invalid temperature") ||
-    text.includes("deprecated")
+    text.includes("invalid temperature")
   ) {
     return { mode: "omit" };
   }
@@ -2828,15 +2657,14 @@ function isReasoningErrorMessage(errorMessage: string): boolean {
     text.includes("enable_thinking") ||
     text.includes("chat_template_kwargs") ||
     text.includes("thinking_level") ||
-    text.includes("thinking_budget") ||
-    text.includes("budget_tokens")
+    text.includes("thinking_budget")
   );
 }
 
 function getReasoningRecoverySelection(params: {
-  currentReasoning: ReasoningSelection | undefined;
+  currentReasoning: ReasoningConfig | undefined;
   modelName?: string;
-}): ReasoningSelection | undefined | null {
+}): ReasoningConfig | undefined | null {
   const { currentReasoning, modelName } = params;
   if (!currentReasoning) return null;
   const defaultLevel = getReasoningDefaultLevelForModel(
@@ -2852,53 +2680,14 @@ function getReasoningRecoverySelection(params: {
   return undefined;
 }
 
-function getReasoningSelectionKey(
-  reasoningSelection: ReasoningSelection | undefined,
-): string {
-  if (!reasoningSelection) return "none";
-  return [
-    reasoningSelection.provider,
-    reasoningSelection.level,
-    reasoningSelection.anthropicModeOverride || "",
-  ].join(":");
-}
-
-export function getAnthropicMessagesReasoningRecoverySelection(params: {
-  currentReasoning: ReasoningSelection | undefined;
-  modelName?: string;
-}): ReasoningSelection | undefined | null {
-  const { currentReasoning, modelName } = params;
-  if (!currentReasoning) return null;
-  if (currentReasoning.provider !== "anthropic") {
-    return getReasoningRecoverySelection(params);
-  }
-  const profile = getAnthropicReasoningProfile(modelName);
-  const currentMode = resolveAnthropicThinkingMode({
-    profile,
-    override: currentReasoning.anthropicModeOverride,
-  });
-  if (currentMode === "adaptive" && profile.supportsManualThinking) {
-    return {
-      provider: "anthropic",
-      level: currentReasoning.level,
-      anthropicModeOverride: "manual",
-    };
-  }
-  return undefined;
-}
-
 export async function postWithReasoningFallback(params: {
   url: string;
   auth: RequestAuthState;
   modelName?: string;
-  initialReasoning: ReasoningSelection | undefined;
+  initialReasoning: ReasoningConfig | undefined;
   buildPayload: (
-    reasoningOverride: ReasoningSelection | undefined,
+    reasoningOverride: ReasoningConfig | undefined,
   ) => Record<string, unknown>;
-  getRecoverySelection?: (params: {
-    currentReasoning: ReasoningSelection | undefined;
-    modelName?: string;
-  }) => ReasoningSelection | undefined | null;
   signal?: AbortSignal;
   headers?: Record<string, string>;
 }) {
@@ -2907,7 +2696,9 @@ export async function postWithReasoningFallback(params: {
   const maxRetries = 2;
   let lastError: unknown;
   const attemptedSelections = new Set<string>([
-    getReasoningSelectionKey(reasoningSelection),
+    reasoningSelection
+      ? `${reasoningSelection.provider}:${reasoningSelection.level}`
+      : "none",
   ]);
 
   while (retries <= maxRetries) {
@@ -2926,25 +2717,19 @@ export async function postWithReasoningFallback(params: {
       if (!isReasoningErrorMessage(message)) {
         throw err;
       }
-      const recovered = (
-        params.getRecoverySelection || getReasoningRecoverySelection
-      )({
+      const recovered = getReasoningRecoverySelection({
         currentReasoning: reasoningSelection,
         modelName: params.modelName,
       });
       if (recovered === null) {
         throw err;
       }
-      const nextKey = getReasoningSelectionKey(recovered);
+      const nextKey = recovered
+        ? `${recovered.provider}:${recovered.level}`
+        : "none";
       if (attemptedSelections.has(nextKey)) {
         throw err;
       }
-      ztoolkit.log("LLM: Retrying after reasoning payload rejection", {
-        model: params.modelName,
-        from: getReasoningSelectionKey(reasoningSelection),
-        to: nextKey,
-        error: message,
-      });
       attemptedSelections.add(nextKey);
       reasoningSelection = recovered;
       retries += 1;
@@ -3023,8 +2808,6 @@ async function callNativeProtocol(params: {
   signal?: AbortSignal;
   onDelta?: (delta: string) => void;
   onUsage?: (usage: UsageStats) => void;
-  attachments?: ChatFileAttachment[];
-  reasoning?: ReasoningConfig;
 }): Promise<string> {
   const {
     protocol,
@@ -3044,28 +2827,7 @@ async function callNativeProtocol(params: {
       ? resolveAnthropicMessagesEndpoint(apiBase)
       : resolveGeminiNativeEndpoint({ apiBase, model, stream: isStreaming });
   const headers = buildProviderTransportHeaders({ protocol, apiKey });
-  const pdfParts: Array<{ base64: string }> = [];
-  if (protocol === "gemini_native" && params.attachments?.length) {
-    for (const att of params.attachments) {
-      if (!att.storedPath) continue;
-      const mime = att.mimeType || "";
-      if (
-        mime !== "application/pdf" &&
-        !att.name?.toLowerCase().endsWith(".pdf")
-      )
-        continue;
-      try {
-        const base64 = await readFileRefAsBase64(att.storedPath);
-        pdfParts.push({ base64 });
-      } catch (err) {
-        ztoolkit.log(
-          "LLM: Failed to read PDF attachment for Gemini native",
-          err,
-        );
-      }
-    }
-  }
-  const buildBody = (reasoningOverride: ReasoningSelection | undefined) =>
+  const body =
     protocol === "anthropic_messages"
       ? buildAnthropicMessagesPayload({
           model,
@@ -3073,28 +2835,17 @@ async function callNativeProtocol(params: {
           effectiveMaxTokens,
           effectiveTemperature,
           stream: isStreaming,
-          reasoning: reasoningOverride,
-          apiBase,
-          anthropicModeOverride: reasoningOverride?.anthropicModeOverride,
         })
       : buildGeminiNativePayload({
           messages,
           effectiveMaxTokens,
           effectiveTemperature,
-          pdfParts: pdfParts.length ? pdfParts : undefined,
         });
-  const res = await postWithReasoningFallback({
-    url,
-    auth: { mode: "api_key", token: apiKey },
+  const res = await getFetch()(url, {
+    method: "POST",
     headers,
-    modelName: model,
-    initialReasoning: params.reasoning,
-    buildPayload: buildBody,
+    body: JSON.stringify(body),
     signal,
-    getRecoverySelection:
-      protocol === "anthropic_messages"
-        ? getAnthropicMessagesReasoningRecoverySelection
-        : undefined,
   });
   if (!res.ok) {
     throw new Error(`${res.status} (${url}) - ${await res.text()}`);
@@ -3123,94 +2874,6 @@ async function callNativeProtocol(params: {
   );
 }
 
-async function callCodexAppServerChat(params: {
-  model: string;
-  messages: ChatMessage[];
-  reasoning?: ReasoningConfig;
-  signal?: AbortSignal;
-  onDelta?: (delta: string) => void;
-  onReasoning?: (event: ReasoningEvent) => void;
-  onUsage?: (usage: UsageStats) => void;
-  codexPath?: string;
-}): Promise<string> {
-  const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
-  const proc = await getOrCreateCodexAppServerProcess("codex_app_server_chat", {
-    codexPath,
-  });
-  return proc.runTurnExclusive(async () => {
-    const preparedTurn = await prepareCodexAppServerChatTurn(params.messages);
-    const threadStartParams: Record<string, unknown> = {
-      model: params.model,
-      ephemeral: true,
-      approvalPolicy: "never",
-    };
-    if (preparedTurn.developerInstructions) {
-      threadStartParams.developerInstructions =
-        preparedTurn.developerInstructions;
-    }
-    let shouldUseLegacyInput = false;
-    let threadResult: unknown;
-    try {
-      threadResult = await proc.sendRequest("thread/start", threadStartParams);
-    } catch (error) {
-      if (
-        !preparedTurn.developerInstructions ||
-        !isCodexAppServerThreadStartInstructionsUnsupportedError(error)
-      ) {
-        throw error;
-      }
-      shouldUseLegacyInput = true;
-      const fallbackParams = { ...threadStartParams };
-      delete fallbackParams.developerInstructions;
-      ztoolkit.log(
-        "Codex app-server chat: thread/start developerInstructions unsupported; using legacy flattened input",
-      );
-      threadResult = await proc.sendRequest("thread/start", fallbackParams);
-    }
-    const threadId = extractCodexAppServerThreadId(threadResult);
-    if (!threadId) {
-      throw new Error("Codex app-server did not return a thread ID");
-    }
-    const input = shouldUseLegacyInput
-      ? await buildLegacyCodexAppServerChatInput(params.messages)
-      : await resolveCodexAppServerTurnInputWithFallback({
-          proc,
-          threadId,
-          historyItemsToInject: preparedTurn.historyItemsToInject,
-          turnInput: preparedTurn.turnInput,
-          legacyInputFactory: () =>
-            buildLegacyCodexAppServerChatInput(params.messages, {
-              includeSystem: !preparedTurn.developerInstructions,
-            }),
-          logContext: "chat",
-        });
-    const appServerReasoning = resolveCodexAppServerReasoningParams(
-      params.reasoning,
-      params.model,
-    );
-    const turnResult = await proc.sendRequest("turn/start", {
-      threadId,
-      input,
-      model: params.model,
-      ...appServerReasoning,
-    });
-    const turnId = extractCodexAppServerTurnId(turnResult);
-    if (!turnId) {
-      throw new Error("Codex app-server did not return a turn ID");
-    }
-    return waitForCodexAppServerTurnCompletion({
-      proc,
-      turnId,
-      onTextDelta: params.onDelta,
-      onReasoning: params.onReasoning,
-      onUsage: params.onUsage,
-      signal: params.signal,
-      cacheKey: "codex_app_server_chat",
-      processOptions: { codexPath },
-    });
-  });
-}
-
 /**
  * Call LLM API (non-streaming)
  */
@@ -3235,14 +2898,12 @@ export async function callLLM(params: ChatParams): Promise<string> {
       apiKey,
       model,
       messages,
-      effectiveMaxTokens: normalizeMaxTokensForModel(params.maxTokens, model),
+      effectiveMaxTokens: normalizeMaxTokens(params.maxTokens),
       effectiveTemperature: normalizeTemperature(params.temperature),
       signal: params.signal,
-      attachments: params.attachments,
-      reasoning: params.reasoning,
     });
   }
-  if (authMode === "codex_auth" || authMode === "codex_app_server") {
+  if (authMode === "codex_auth") {
     let output = "";
     const streamed = await callLLMStream(
       params,
@@ -3285,10 +2946,7 @@ export async function callLLM(params: ChatParams): Promise<string> {
       })
     : [];
   const effectiveTemperature = normalizeTemperature(params.temperature);
-  const effectiveMaxTokens = normalizeMaxTokensForModel(
-    params.maxTokens,
-    model,
-  );
+  const effectiveMaxTokens = normalizeMaxTokens(params.maxTokens);
 
   const url = resolveProviderTransportEndpoint({
     protocol: providerProtocol,
@@ -3309,7 +2967,6 @@ export async function callLLM(params: ChatParams): Promise<string> {
     responseFileIds,
     authMode,
     apiBase,
-    providerProtocol,
     effectiveTemperature,
     effectiveMaxTokens,
     stream: false,
@@ -3367,30 +3024,11 @@ export async function callLLMStream(
       apiKey,
       model,
       messages,
-      effectiveMaxTokens: normalizeMaxTokensForModel(params.maxTokens, model),
+      effectiveMaxTokens: normalizeMaxTokens(params.maxTokens),
       effectiveTemperature: normalizeTemperature(params.temperature),
       signal: params.signal,
       onDelta,
       onUsage,
-      attachments: params.attachments,
-      reasoning: params.reasoning,
-    });
-  }
-  if (authMode === "codex_app_server") {
-    if (Array.isArray(params.attachments) && params.attachments.length) {
-      throw new Error(
-        "codex app server currently does not support file attachments in the normal chat transport.",
-      );
-    }
-    return callCodexAppServerChat({
-      model,
-      messages,
-      reasoning: params.reasoning,
-      signal: params.signal,
-      onDelta,
-      onReasoning,
-      onUsage,
-      codexPath: apiBase,
     });
   }
   const auth = await resolveRequestAuthState({
@@ -3433,10 +3071,7 @@ export async function callLLMStream(
       })
     : [];
   const effectiveTemperature = normalizeTemperature(params.temperature);
-  const effectiveMaxTokens = normalizeMaxTokensForModel(
-    params.maxTokens,
-    model,
-  );
+  const effectiveMaxTokens = normalizeMaxTokens(params.maxTokens);
 
   const url = resolveProviderTransportEndpoint({
     protocol: providerProtocol,
@@ -3457,7 +3092,6 @@ export async function callLLMStream(
     responseFileIds,
     authMode,
     apiBase,
-    providerProtocol,
     effectiveTemperature,
     effectiveMaxTokens,
     stream: true,
@@ -3639,9 +3273,6 @@ export async function parseStreamResponse(
                 promptTokens: parsed.usage.prompt_tokens ?? 0,
                 completionTokens: parsed.usage.completion_tokens ?? 0,
                 totalTokens,
-                contextTokens: parsed.usage.prompt_tokens ?? 0,
-                contextWindowIsAuthoritative:
-                  (parsed.usage.prompt_tokens ?? 0) > 0,
               });
             }
           }
@@ -4133,8 +3764,6 @@ async function parseResponsesStream(
                   promptTokens: u.input_tokens ?? 0,
                   completionTokens: u.output_tokens ?? 0,
                   totalTokens: total,
-                  contextTokens: u.input_tokens ?? 0,
-                  contextWindowIsAuthoritative: (u.input_tokens ?? 0) > 0,
                 });
               }
             }

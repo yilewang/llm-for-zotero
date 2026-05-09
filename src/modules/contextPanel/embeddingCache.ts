@@ -119,10 +119,7 @@ async function readFileBytes(path: string): Promise<Uint8Array | null> {
   return null;
 }
 
-async function writeFileBytes(
-  path: string,
-  bytes: Uint8Array,
-): Promise<void> {
+async function writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
   const io = getIOUtils();
   if (io?.write) {
     await io.write(path, bytes);
@@ -268,9 +265,7 @@ export async function saveCachedEmbeddings(
  * Clear cached embeddings.
  * @param itemId  If provided, clear only that item. Otherwise clear all.
  */
-export async function clearEmbeddingCache(
-  itemId?: number,
-): Promise<void> {
+export async function clearEmbeddingCache(itemId?: number): Promise<void> {
   if (itemId != null) {
     await removePath(getCachePath(itemId));
   } else {

@@ -43,7 +43,7 @@ export function createViewPdfPagesTool(
         "Find and render PDF pages as images for visual analysis. " +
         "Provide a question to search for relevant pages, specific page " +
         "numbers to render, or set capture to true to screenshot the " +
-        "currently visible page in the reader. If mineruCacheDir is available, do not use this for ordinary summaries or text Q&A; use file_io on MinerU markdown first. Use view_pdf_pages only when visual page layout/image inspection is needed.",
+        "currently visible page in the reader.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -116,7 +116,8 @@ export function createViewPdfPagesTool(
         onDenied: "PDF page viewing cancelled",
         onSuccess: ({ content }) => {
           const c = content as Record<string, unknown> | null;
-          if (c?.capturedPageIndex !== undefined) return "Captured the current reader page";
+          if (c?.capturedPageIndex !== undefined)
+            return "Captured the current reader page";
           const count = typeof c?.pageCount === "number" ? c.pageCount : 0;
           return count > 0
             ? `Prepared ${count} PDF page image${count === 1 ? "" : "s"}`
@@ -148,7 +149,7 @@ export function createViewPdfPagesTool(
       ) {
         return fail(
           "Provide at least one of: question (to search pages), pages (to render), " +
-          "capture (to screenshot active view), or scope:'whole_document'.",
+            "capture (to screenshot active view), or scope:'whole_document'.",
         );
       }
       return ok(input);
@@ -162,13 +163,17 @@ export function createViewPdfPagesTool(
         });
         const previewImages = preview.artifacts
           .filter(
-            (artifact): artifact is Extract<typeof artifact, { kind: "image" }> =>
+            (
+              artifact,
+            ): artifact is Extract<typeof artifact, { kind: "image" }> =>
               artifact.kind === "image",
           )
           .map((artifact) => ({
             label: `Page ${
               artifact.pageLabel ||
-              (artifact.pageIndex !== undefined ? `${artifact.pageIndex + 1}` : "?")
+              (artifact.pageIndex !== undefined
+                ? `${artifact.pageIndex + 1}`
+                : "?")
             }`,
             storedPath: artifact.storedPath,
             mimeType: "image/png",
@@ -178,7 +183,7 @@ export function createViewPdfPagesTool(
           toolName: "view_pdf_pages",
           title: `${preview.target.title} - page ${preview.capturedPage.pageLabel}`,
           description:
-            "Review the captured page below. Click \"Send to model\" to let the model inspect it.",
+            'Review the captured page below. Click "Send to model" to let the model inspect it.',
           confirmLabel: "Send to model",
           cancelLabel: "Cancel",
           fields: [
@@ -195,7 +200,7 @@ export function createViewPdfPagesTool(
       let pages = input.pages || [];
       let previewPages = pages;
       let description =
-        "Review the selected pages below, then click \"Send to model\" to send them for inspection.";
+        'Review the selected pages below, then click "Send to model" to send them for inspection.';
       if (input.scope === "whole_document" && !pages.length) {
         const pageCount = await pdfPageService.getPageCountForTarget({
           request: context.request,
@@ -230,7 +235,7 @@ export function createViewPdfPagesTool(
         previewPages = pages;
         description =
           `Found ${pages.length} relevant page${pages.length === 1 ? "" : "s"} for your question. ` +
-          "Review below, then click \"Send to model\".";
+          'Review below, then click "Send to model".';
       }
 
       if (!previewPages.length) {
@@ -292,7 +297,9 @@ export function createViewPdfPagesTool(
       if (!validateObject<Record<string, unknown>>(resolutionData)) {
         return ok(input);
       }
-      if (Object.prototype.hasOwnProperty.call(resolutionData, "pageSelection")) {
+      if (
+        Object.prototype.hasOwnProperty.call(resolutionData, "pageSelection")
+      ) {
         const selection = parsePageSelectionValue(resolutionData.pageSelection);
         if (!selection?.pageIndexes.length) {
           return fail("At least one page is required");

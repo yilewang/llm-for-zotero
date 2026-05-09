@@ -42,9 +42,7 @@ function normalizeSections(value: unknown): ReadLibrarySection[] | null {
   return sections.length ? Array.from(new Set(sections)) : null;
 }
 
-function normalizePaperContexts(
-  value: unknown,
-): PaperContextRef[] | undefined {
+function normalizePaperContexts(value: unknown): PaperContextRef[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const contexts = value
     .map((entry) =>
@@ -52,8 +50,11 @@ function normalizePaperContexts(
         ? normalizeToolPaperContext(entry)
         : null,
     )
-    .filter((entry): entry is NonNullable<ReturnType<typeof normalizeToolPaperContext>> =>
-      Boolean(entry),
+    .filter(
+      (
+        entry,
+      ): entry is NonNullable<ReturnType<typeof normalizeToolPaperContext>> =>
+        Boolean(entry),
     );
   return contexts.length ? contexts : undefined;
 }
@@ -66,8 +67,7 @@ export function createReadLibraryTool(
     spec: {
       name: "read_library",
       description:
-        "Read structured Zotero item state for one or more items (papers, books, standalone notes, or any item type). Use sections to fetch metadata, notes (use 'content' or 'notes' for standalone notes), annotations, attachments (all types, not just PDFs), and collection membership keyed by item ID. " +
-        "For PDF attachments, the attachments section may include mineruCacheDir. When present, prefer reading that MinerU markdown with file_io before read_paper/search_paper/view_pdf_pages.",
+        "Read structured Zotero item state for one or more items (papers, books, standalone notes, or any item type). Use sections to fetch metadata, notes (use 'content' or 'notes' for standalone notes), annotations, attachments (all types, not just PDFs), and collection membership keyed by item ID.",
       inputSchema: {
         type: "object",
         required: ["sections"],
@@ -79,7 +79,8 @@ export function createReadLibraryTool(
           },
           paperContexts: {
             type: "array",
-            description: "Paper context references. Alternative to itemIds for targeting papers.",
+            description:
+              "Paper context references. Alternative to itemIds for targeting papers.",
             items: PAPER_CONTEXT_REF_SCHEMA,
           },
           sections: {
@@ -133,12 +134,12 @@ export function createReadLibraryTool(
         if (!rawSections.length) {
           return fail(
             "sections is required: provide an array like ['metadata', 'notes']. " +
-            "Valid sections: metadata, notes, content, annotations, attachments, collections."
+              "Valid sections: metadata, notes, content, annotations, attachments, collections.",
           );
         }
         return fail(
           `None of the provided sections are valid: ${JSON.stringify(rawSections.slice(0, 5))}. ` +
-          `Valid sections: metadata, notes, content, annotations, attachments, collections.`
+            `Valid sections: metadata, notes, content, annotations, attachments, collections.`,
         );
       }
       return ok<ReadLibraryInput>({

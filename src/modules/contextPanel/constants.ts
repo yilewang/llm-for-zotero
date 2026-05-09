@@ -18,8 +18,6 @@ export const RETRIEVAL_MIN_ACTIVE_PAPER_CHUNKS = 2;
 export const RETRIEVAL_MIN_OTHER_PAPER_CHUNKS = 1;
 export const PAPER_FOLLOWUP_RETRIEVAL_MIN_CHUNKS = 2;
 export const PAPER_FOLLOWUP_RETRIEVAL_MAX_CHUNKS = 5;
-export const COLLECTION_RETRIEVAL_MAX_PAPERS = 50;
-export const COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS = 10;
 export const PERSISTED_HISTORY_LIMIT = 200;
 export const AUTO_SCROLL_BOTTOM_THRESHOLD = 64;
 export const FONT_SCALE_DEFAULT_PERCENT = 120;
@@ -38,13 +36,7 @@ export const PAPER_CONVERSATION_KEY_BASE = 1_500_000_000;
 export const GLOBAL_CONVERSATION_KEY_BASE = 2_000_000_000;
 export const GLOBAL_HISTORY_LIMIT = 50;
 
-export function isUpstreamGlobalConversationKey(conversationKey: number): boolean {
-  return Number.isFinite(conversationKey) && Math.floor(conversationKey) >= GLOBAL_CONVERSATION_KEY_BASE && Math.floor(conversationKey) < 3_000_000_000;
-}
-
-export function formatFigureCountLabel(
-  count: number,
-): string {
+export function formatFigureCountLabel(count: number): string {
   if (count <= 0) return "";
   const noun = count === 1 ? t("Figure") : t("Figures");
   return `${noun} (${count})`;
@@ -85,7 +77,6 @@ export const BUILTIN_SHORTCUT_FILES = [
   { id: "methodology", label: "Methodology", file: "methodology.txt" },
   { id: "limitations", label: "Limitations", file: "limitations.txt" },
 ] as const;
-
 
 export const STOPWORDS = new Set([
   "an",

@@ -39,7 +39,8 @@ export const PROVIDER_PROTOCOL_SPECS: ProviderProtocolSpec[] = [
   {
     id: "responses_api",
     label: "Responses API",
-    helperText: "Use OpenAI-style Responses APIs with tool calls and direct file input.",
+    helperText:
+      "Use OpenAI-style Responses APIs with tool calls and direct file input.",
     streaming: true,
     toolCalls: true,
     multimodal: true,
@@ -82,8 +83,7 @@ export const PROVIDER_PROTOCOL_SPECS: ProviderProtocolSpec[] = [
   {
     id: "web_sync",
     label: "Web Sync (ChatGPT / DeepSeek)",
-    helperText:
-      `Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(", ")} via the browser extension web-sync bridge.`,
+    helperText: `Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(", ")} via the browser extension web-sync bridge.`,
     streaming: false,
     toolCalls: false,
     multimodal: true,
@@ -97,7 +97,10 @@ const PROVIDER_PROTOCOL_IDS = new Set<ProviderProtocol>(
 );
 
 export function isProviderProtocol(value: unknown): value is ProviderProtocol {
-  return typeof value === "string" && PROVIDER_PROTOCOL_IDS.has(value as ProviderProtocol);
+  return (
+    typeof value === "string" &&
+    PROVIDER_PROTOCOL_IDS.has(value as ProviderProtocol)
+  );
 }
 
 export function getProviderProtocolSpec(
@@ -110,54 +113,19 @@ export function getProviderProtocolSpec(
   return found;
 }
 
-function getApiBasePathname(apiBase: string | undefined): string {
-  const cleaned = (apiBase || "").trim().replace(/\/+$/, "");
-  if (!cleaned) return "";
-  try {
-    const parsed = new URL(cleaned);
-    return (parsed.pathname.replace(/\/+$/, "") || "/").toLowerCase();
-  } catch (_err) {
-    return cleaned.replace(/[?#].*$/, "").toLowerCase();
-  }
-}
-
-function isAnthropicMessagesBase(apiBase: string | undefined): boolean {
-  const pathname = getApiBasePathname(apiBase);
-  if (!pathname) return false;
-  return (
-    pathname === "/messages" ||
-    pathname.endsWith("/v1/messages") ||
-    pathname.endsWith("/anthropic") ||
-    pathname.endsWith("/anthropic/v1") ||
-    pathname.endsWith("/anthropic/v1/messages")
-  );
-}
-
-function isOpenAIChatCompletionsBase(apiBase: string | undefined): boolean {
-  const pathname = getApiBasePathname(apiBase);
-  return Boolean(pathname && pathname.endsWith("/chat/completions"));
-}
-
 export function inferLegacyProviderProtocol(params: {
   authMode?: string;
   apiBase?: string;
 }): ProviderProtocol {
-  if (params.authMode === "codex_auth" || params.authMode === "codex_app_server") {
+  if (params.authMode === "codex_auth") {
     return "codex_responses";
   }
   if (params.authMode === "copilot_auth") {
     return "openai_chat_compat";
   }
-  if (isResponsesBase(params.apiBase || "")) {
-    return "responses_api";
-  }
-  if (isAnthropicMessagesBase(params.apiBase)) {
-    return "anthropic_messages";
-  }
-  if (isOpenAIChatCompletionsBase(params.apiBase)) {
-    return "openai_chat_compat";
-  }
-  return "openai_chat_compat";
+  return isResponsesBase(params.apiBase || "")
+    ? "responses_api"
+    : "openai_chat_compat";
 }
 
 export function normalizeProviderProtocol(
@@ -177,7 +145,7 @@ export function normalizeProviderProtocolForAuthMode(params: {
   const inferred = inferLegacyProviderProtocol(params);
   const fallback = params.fallback || inferred;
   const normalized = normalizeProviderProtocol(params.protocol, fallback);
-  if (params.authMode === "codex_auth" || params.authMode === "codex_app_server") {
+  if (params.authMode === "codex_auth") {
     return "codex_responses";
   }
   if (params.authMode === "copilot_auth") {

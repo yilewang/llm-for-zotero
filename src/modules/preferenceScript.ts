@@ -8,7 +8,7 @@ import {
 } from "../utils/llmDefaults";
 import { HTML_NS } from "../utils/domHelpers";
 import {
-  normalizeMaxTokensForModel,
+  normalizeMaxTokens,
   normalizeOptionalInputTokenCap,
   normalizeTemperature,
 } from "../utils/normalization";
@@ -16,7 +16,6 @@ import {
   createEmptyProviderGroup,
   createProviderModelEntry,
   getModelProviderGroups,
-  migrateApiBaseForAuthModeChange,
   setModelProviderGroups,
   type ModelProviderAuthMode,
   type ModelProviderGroup,
@@ -35,10 +34,7 @@ import {
   getProviderProtocolSpec,
   type ProviderProtocol,
 } from "../utils/providerProtocol";
-import {
-  runProviderConnectionTest,
-  runCodexAppServerConnectionTest,
-} from "../utils/providerConnectionTest";
+import { runProviderConnectionTest } from "../utils/providerConnectionTest";
 import {
   startCopilotDeviceFlow,
   pollCopilotDeviceAuth,
@@ -48,26 +44,14 @@ import {
 } from "../utils/llmClient";
 import { resetEmbeddingFailedFlags } from "./contextPanel/pdfContext";
 import { clearRetrievalCandidateCache } from "./contextPanel/multiContextPlanner";
-import { getAgentTraceExportPath } from "../agent/store/traceStore";
 import { joinLocalPath } from "../utils/localPath";
 import {
   isMineruEnabled,
   getMineruApiKey,
-  getMineruLocalApiBase,
-  getMineruLocalBackend,
-  getMineruMode,
-  type MineruLocalBackend,
-  type MineruMode,
-  normalizeMineruLocalBackend,
   setMineruEnabled,
   setMineruApiKey,
-  setMineruLocalApiBase,
-  setMineruLocalBackend,
-  setMineruMode,
   isGlobalAutoParseEnabled,
   setGlobalAutoParseEnabled,
-  isMineruSyncEnabled,
-  setMineruSyncEnabled,
   getMineruExcludePatterns,
   setMineruExcludePatterns,
 } from "../utils/mineruConfig";
@@ -81,63 +65,8 @@ import {
   getNotesDirectoryNickname,
   setNotesDirectoryNickname,
 } from "../utils/notesDirectoryConfig";
-import {
-  testMineruConnection,
-  testMineruLocalConnection,
-  testProxyConnection,
-} from "../utils/mineruClient";
+import { testMineruConnection } from "../utils/mineruClient";
 import { registerMineruManagerScript } from "./mineruManagerScript";
-import {
-  cleanSyncedMineruPackages,
-  repairMineruSyncPackages,
-} from "./contextPanel/mineruSync";
-import { getRuntimePlatformInfo } from "../utils/runtimePlatform";
-import {
-  getClaudeAutoCompactThresholdPercent,
-  getClaudeBridgeUrl,
-  getClaudeConfigSourcePref,
-  getClaudeManagedInstructionTemplatePref,
-  getClaudePermissionModePref,
-  getClaudeReasoningModePref,
-  getClaudeRuntimeModelPref,
-  isClaudeAutoCompactEnabled,
-  isClaudeBlockStreamingEnabled,
-  getConversationSystemPref,
-  getLastUsedClaudeGlobalConversationKey,
-  getLastUsedClaudePaperConversationKey,
-  isClaudeCodeModeEnabled,
-  setClaudeAutoCompactEnabled,
-  setClaudeAutoCompactThresholdPercent,
-  setClaudeBridgeUrl,
-  setClaudeCodeModeEnabled,
-  setClaudeManagedInstructionTemplatePref,
-  setConversationSystemPref,
-  setClaudePermissionModePref,
-  setClaudeReasoningModePref,
-  setClaudeRuntimeModelPref,
-  setClaudeBlockStreamingEnabled,
-} from "../claudeCode/prefs";
-import {
-  getCodexReasoningModePref,
-  getCodexRuntimeModelPref,
-  isCodexZoteroMcpToolsEnabled,
-  isCodexAppServerModeEnabled,
-  setCodexAppServerModeEnabled,
-  setCodexZoteroMcpToolsEnabled,
-  setCodexReasoningModePref,
-  setCodexRuntimeModelPref,
-} from "../codexAppServer/prefs";
-import {
-  installOrUpdateCodexZoteroMcpConfig,
-  readCodexNativeMcpSetupStatus,
-} from "../codexAppServer/mcpSetup";
-import type { CodexReasoningMode } from "../codexAppServer/constants";
-import { getClaudeProfileSignature } from "../claudeCode/projectSkills";
-import {
-  getDefaultClaudeManagedInstructionBlock,
-  readClaudeProjectManagedInstructionBlock,
-  updateClaudeProjectManagedInstructionBlock,
-} from "../claudeCode/bootstrap";
 
 type PrefKey = "systemPrompt";
 
@@ -153,29 +82,8 @@ const setPref = (key: PrefKey, value: string) =>
 
 const CUSTOMIZED_API_HELPER_TEXT =
   "Choose a preset above, or switch to Customized to enter a full base URL or endpoint manually.";
-const LEGACY_CODEX_AUTH_HELPER_TEXT =
-  "Legacy direct ChatGPT/Codex backend mode. Existing users can keep using it in this release. New users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
-const CODEX_APP_SERVER_HELPER_TEXT =
-  "Recommended official Codex integration. Runs the local `codex app-server` CLI as the native Codex runtime. Run `codex login` first.";
-const LEGACY_CODEX_API_HELPER_TEXT =
-  "Legacy direct backend URL. Usually uses https://chatgpt.com/backend-api/codex/responses. Existing users can keep it in this release, but new users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
-const CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT =
-  "Uses Codex responses with the local codex app-server transport.";
-const CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS =
-  "Optional. Leave blank to auto-detect native Windows Codex. WSL Codex is not supported because Zotero MCP uses Windows-local loopback. Or enter a native path such as C:\\nvm4w\\nodejs\\codex.cmd or C:\\Users\\<user>\\AppData\\Roaming\\npm\\codex.cmd.";
-const CODEX_APP_SERVER_PATH_HELPER_TEXT_MACOS =
-  "Optional. Leave blank to auto-detect. Or enter an absolute path such as /opt/homebrew/bin/codex or /usr/local/bin/codex.";
-const CODEX_APP_SERVER_PATH_HELPER_TEXT_LINUX =
-  "Optional. Leave blank to auto-detect. Or enter an absolute path such as /usr/local/bin/codex or ~/.local/bin/codex.";
-
-function getCodexAppServerPathHelperText(): string {
-  const platform = getRuntimePlatformInfo().platform;
-  if (platform === "windows") return CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS;
-  if (platform === "macos") return CODEX_APP_SERVER_PATH_HELPER_TEXT_MACOS;
-  return CODEX_APP_SERVER_PATH_HELPER_TEXT_LINUX;
-}
-const LEGACY_CODEX_AUTH_PROTOCOL_HELPER_TEXT =
-  "Uses Codex responses with the legacy direct backend transport.";
+const CODEX_API_HELPER_TEXT =
+  "codex auth usually uses https://chatgpt.com/backend-api/codex/responses";
 const COPILOT_API_HELPER_TEXT =
   "GitHub Copilot uses device-based login. Click Login to authenticate via GitHub.";
 const DEFAULT_COPILOT_API_BASE = "https://api.githubcopilot.com";
@@ -200,7 +108,7 @@ const PROVIDER_PROFILES: ProviderProfile[] = [
   { label: "Provider C", modelPlaceholder: "gemini-2.5-pro", defaultModel: "" },
   {
     label: "Provider D",
-    modelPlaceholder: "deepseek-v4-flash",
+    modelPlaceholder: "deepseek-reasoner",
     defaultModel: "",
   },
 ];
@@ -217,14 +125,6 @@ function getProviderProfile(index: number): ProviderProfile {
     defaultModel: "",
   };
 }
-
-type AgentPermissionMode = "safe" | "yolo";
-
-function normalizeAgentPermissionMode(value: unknown): AgentPermissionMode {
-  return value === "yolo" ? "yolo" : "safe";
-}
-
-const DEFAULT_AGENT_BRIDGE_URL = "http://127.0.0.1:19787";
 
 function normalizeProviderPresetId(value: unknown): ProviderPresetId {
   if (typeof value !== "string") return "customized";
@@ -246,8 +146,7 @@ function getProtocolOptions(
   presetId: ProviderPresetId,
 ): ProviderProtocol[] {
   if (authMode === "webchat") return ["web_sync"]; // [webchat]
-  if (authMode === "codex_auth" || authMode === "codex_app_server")
-    return ["codex_responses"];
+  if (authMode === "codex_auth") return ["codex_responses"];
   if (authMode === "copilot_auth")
     return ["openai_chat_compat", "responses_api"];
   if (presetId !== "customized") {
@@ -265,20 +164,17 @@ function resolveSelectedProtocol(
   presetId: ProviderPresetId,
 ): ProviderProtocol {
   const fallback =
-    group.authMode === "codex_auth" || group.authMode === "codex_app_server"
+    group.authMode === "codex_auth"
       ? "codex_responses"
       : presetId === "customized"
-        ? undefined
+        ? "openai_chat_compat"
         : getProviderPreset(presetId).defaultProtocol;
   const allowed = getProtocolOptions(group.authMode, presetId);
-  const shouldInferCustomizedProtocol =
-    presetId === "customized" &&
-    group.providerProtocol === "openai_chat_compat";
   const normalized = normalizeProviderProtocolForAuthMode({
-    protocol: shouldInferCustomizedProtocol ? undefined : group.providerProtocol,
+    protocol: group.providerProtocol,
     authMode: group.authMode,
     apiBase: group.apiBase,
-    ...(fallback ? { fallback } : {}),
+    fallback,
   });
   return allowed.includes(normalized) ? normalized : allowed[0];
 }
@@ -350,7 +246,6 @@ function hasEmptyModel(group: ModelProviderGroup): boolean {
 function normalizeAuthMode(value: unknown): ModelProviderAuthMode {
   if (value === "webchat") return "webchat"; // [webchat]
   if (value === "codex_auth") return "codex_auth";
-  if (value === "codex_app_server") return "codex_app_server";
   if (value === "copilot_auth") return "copilot_auth";
   return "api_key";
 }
@@ -427,7 +322,7 @@ function resolveCodexAuthPath(): string {
 async function readCodexAccessToken(): Promise<string> {
   const authPath = resolveCodexAuthPath();
   const io = ztoolkit.getGlobal("IOUtils") as
-    | { read?: (path: string) => Promise<Uint8Array<ArrayBufferLike> | ArrayBuffer> }
+    | { read?: (path: string) => Promise<Uint8Array | ArrayBuffer> }
     | undefined;
   if (!io?.read) {
     throw new Error("IOUtils is unavailable; cannot read Codex auth file");
@@ -447,6 +342,51 @@ async function readCodexAccessToken(): Promise<string> {
   return token;
 }
 
+function extractTextFromCodexSSE(raw: string): string {
+  const lines = raw.split(/\r?\n/);
+  let out = "";
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const parsed = JSON.parse(payload) as {
+        type?: string;
+        delta?: string;
+        response?: {
+          output_text?: string;
+          output?: Array<{
+            content?: Array<{ type?: string; text?: string }>;
+          }>;
+        };
+      };
+      if (typeof parsed.delta === "string") {
+        out += parsed.delta;
+      }
+      const completedText = parsed.response?.output_text;
+      if (typeof completedText === "string" && completedText.trim()) {
+        out += completedText;
+      }
+      const outputItems = parsed.response?.output || [];
+      for (const item of outputItems) {
+        const content = item.content || [];
+        for (const part of content) {
+          if (
+            (part.type === "output_text" || part.type === "text") &&
+            typeof part.text === "string"
+          ) {
+            out += part.text;
+          }
+        }
+      }
+    } catch (_err) {
+      continue;
+    }
+  }
+  return out.trim();
+}
+
 // ── Style tokens ───────────────────────────────────────────────────
 
 // Inputs use CSS system colors (Field / FieldText) so they automatically
@@ -461,8 +401,6 @@ const INPUT_SM_STYLE =
   "width: 88px; padding: 4px 7px; font-size: 12px;" +
   " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 5px;" +
   " box-sizing: border-box; background: Field; color: FieldText;";
-
-const PROTOCOL_SELECT_SM_STYLE = INPUT_SM_STYLE + " width: 135px;";
 
 const LABEL_STYLE =
   "display: block; font-weight: 600; font-size: 12px;" +
@@ -500,48 +438,6 @@ const ADV_ROW_STYLE =
   "display: none; flex-direction: column; gap: 8px; padding: 10px 12px;" +
   " background: rgba(128,128,128,0.06);" +
   " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; margin-top: 4px;";
-
-async function confirmMineruSyncPackageDeletion(
-  disableSync: boolean,
-): Promise<boolean> {
-  const dialogData: { [key: string]: unknown } = {
-    loadCallback: () => {
-      return;
-    },
-    unloadCallback: () => {
-      return;
-    },
-  };
-  const message = disableSync
-    ? t(
-        "Synced MinerU ZIP packages are Zotero attachment items. MinerU sync will be disabled, then those package attachments will be deleted. Zotero may show sync conflicts while it syncs these deletions. If that happens, choose the local/deleted version to remove already-uploaded packages from Zotero sync.",
-      )
-    : t(
-        "Synced MinerU ZIP packages are Zotero attachment items. Those package attachments will be deleted. Zotero may show sync conflicts while it syncs these deletions. If that happens, choose the local/deleted version to remove already-uploaded packages from Zotero sync.",
-      );
-
-  new ztoolkit.Dialog(1, 1)
-    .addCell(0, 0, {
-      tag: "div",
-      namespace: "html",
-      properties: { textContent: message },
-      styles: {
-        width: "420px",
-        lineHeight: "1.45",
-        whiteSpace: "pre-line",
-      },
-    })
-    .addButton(
-      t(disableSync ? "Disable sync and delete" : "Delete packages"),
-      "delete",
-    )
-    .addButton(t("Cancel"), "cancel")
-    .setDialogData(dialogData)
-    .open(t("Delete MinerU sync packages?"));
-  await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock
-    .promise;
-  return (dialogData as { _lastButtonId?: string })._lastButtonId === "delete";
-}
 
 // ── Main export ────────────────────────────────────────────────────
 
@@ -635,12 +531,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   if (mineruApiKeyEl?.placeholder) {
     mineruApiKeyEl.placeholder = t(mineruApiKeyEl.placeholder);
   }
-  const mineruLocalApiBaseEl = doc.querySelector(
-    `#${config.addonRef}-mineru-local-api-base`,
-  ) as HTMLInputElement | null;
-  if (mineruLocalApiBaseEl?.placeholder) {
-    mineruLocalApiBaseEl.placeholder = t(mineruLocalApiBaseEl.placeholder);
-  }
   // Translate language dropdown options
   const localeSelectEl = doc.querySelector(
     `#${config.addonRef}-locale-select`,
@@ -712,36 +602,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const popupAddTextEnabledInput = doc.querySelector(
     `#${config.addonRef}-popup-add-text-enabled`,
   ) as HTMLInputElement | null;
+  const scrollSectionIntoViewInput = doc.querySelector(
+    `#${config.addonRef}-scroll-section-into-view`,
+  ) as HTMLInputElement | null;
   const enableAgentModeInput = doc.querySelector(
     `#${config.addonRef}-enable-agent-mode`,
   ) as HTMLInputElement | null;
-  const codexAppServerEnableSelect = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-enable`,
-  ) as HTMLSelectElement | null;
-  const codexAppServerSettingsWrap = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-settings`,
-  ) as HTMLDivElement | null;
-  const codexAppServerModelInput = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-model`,
-  ) as HTMLInputElement | null;
-  const codexAppServerReasoningSelect = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-reasoning`,
-  ) as HTMLSelectElement | null;
-  const codexAppServerTestBtn = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-test`,
-  ) as HTMLButtonElement | null;
-  const codexAppServerStatus = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-status`,
-  ) as HTMLSpanElement | null;
-  const codexAppServerMcpEnableInput = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-mcp-enable`,
-  ) as HTMLInputElement | null;
-  const codexAppServerMcpSetupBtn = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-mcp-setup`,
-  ) as HTMLButtonElement | null;
-  const codexAppServerMcpStatus = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-mcp-status`,
-  ) as HTMLSpanElement | null;
 
   if (!modelSections) return;
 
@@ -842,38 +708,26 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       const apiKeyOption = el(doc, "option") as HTMLOptionElement;
       apiKeyOption.value = "api_key";
       apiKeyOption.textContent = t("API Key");
-      apiKeyOption.selected = group.authMode === "api_key";
-      const codexAppServerOption = el(doc, "option") as HTMLOptionElement;
-      codexAppServerOption.value = "codex_app_server";
-      codexAppServerOption.textContent = t("Codex App Server (native runtime settings)");
-      codexAppServerOption.selected = group.authMode === "codex_app_server";
       const codexOption = el(doc, "option") as HTMLOptionElement;
       codexOption.value = "codex_auth";
-      codexOption.textContent = t("Codex Auth (Legacy)");
-      codexOption.selected = group.authMode === "codex_auth";
+      codexOption.textContent = t("Codex Auth");
       const copilotOption = el(doc, "option") as HTMLOptionElement;
       copilotOption.value = "copilot_auth";
       copilotOption.textContent = t("GitHub Copilot");
-      copilotOption.selected = group.authMode === "copilot_auth";
       // [webchat] Add webchat option
       const webchatOption = el(doc, "option") as HTMLOptionElement;
       webchatOption.value = "webchat";
       webchatOption.textContent = t("WebChat");
-      webchatOption.selected = group.authMode === "webchat";
-      authModeSelect.append(apiKeyOption);
-      if (group.authMode === "codex_app_server") {
-        authModeSelect.append(codexAppServerOption);
-      }
-      authModeSelect.append(codexOption, copilotOption, webchatOption);
+      authModeSelect.append(
+        apiKeyOption,
+        codexOption,
+        copilotOption,
+        webchatOption,
+      );
+      authModeSelect.value = group.authMode;
       authModeSelect.addEventListener("change", () => {
-        const previousAuthMode = group.authMode;
         const nextAuthMode = normalizeAuthMode(authModeSelect.value);
         group.authMode = nextAuthMode;
-        group.apiBase = migrateApiBaseForAuthModeChange(
-          previousAuthMode,
-          nextAuthMode,
-          group.apiBase,
-        );
         if (nextAuthMode === "webchat") {
           group.providerProtocol = "web_sync";
           // Set default webchat model to chatgpt.com (user can change it)
@@ -886,10 +740,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           ) {
             group.models = [{ ...group.models[0], model: "chatgpt.com" }];
           }
-        } else if (
-          nextAuthMode === "codex_auth" ||
-          nextAuthMode === "codex_app_server"
-        ) {
+        } else if (nextAuthMode === "codex_auth") {
           group.providerProtocol = "codex_responses";
         } else if (nextAuthMode === "copilot_auth") {
           group.providerProtocol = "openai_chat_compat";
@@ -920,10 +771,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           : group.authMode === "copilot_auth"
             ? t(COPILOT_API_HELPER_TEXT)
             : group.authMode === "codex_auth"
-              ? t(LEGACY_CODEX_AUTH_HELPER_TEXT)
-              : group.authMode === "codex_app_server"
-                ? t(CODEX_APP_SERVER_HELPER_TEXT)
-                : "";
+              ? t(
+                  "codex auth reuses local `codex login` credentials from ~/.codex/auth.json",
+                )
+              : "";
       authModeWrap.append(
         authModeLabel,
         authModeSelect,
@@ -931,9 +782,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
 
       const selectedPresetId: ProviderPresetId =
-        group.authMode === "codex_auth" ||
-        group.authMode === "codex_app_server" ||
-        group.authMode === "copilot_auth"
+        group.authMode === "codex_auth" || group.authMode === "copilot_auth"
           ? "customized"
           : (group.presetIdOverride ?? detectProviderPreset(group.apiBase));
       const selectedPreset =
@@ -942,7 +791,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           : getProviderPreset(selectedPresetId);
       const isCustomizedPreset =
         group.authMode !== "codex_auth" &&
-        group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth" &&
         selectedPresetId === "customized";
       group.providerProtocol = resolveSelectedProtocol(group, selectedPresetId);
@@ -955,7 +803,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
       if (
         group.authMode !== "codex_auth" &&
-        group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth"
       ) {
         const providerPresetLabel = el(
@@ -978,14 +825,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           const option = el(doc, "option") as HTMLOptionElement;
           option.value = preset.id;
           option.textContent = preset.label;
-          option.selected = preset.id === selectedPresetId;
           providerPresetSelect.appendChild(option);
         }
         const customizedOption = el(doc, "option") as HTMLOptionElement;
         customizedOption.value = "customized";
         customizedOption.textContent = t("Customized");
-        customizedOption.selected = selectedPresetId === "customized";
         providerPresetSelect.appendChild(customizedOption);
+
+        providerPresetSelect.value = selectedPresetId;
         providerPresetSelect.addEventListener("change", () => {
           const nextPresetId = normalizeProviderPresetId(
             providerPresetSelect.value,
@@ -1008,20 +855,61 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         providerPresetWrap.append(providerPresetLabel, providerPresetSelect);
       }
 
+      // ── Protocol ────────────────────────────────────────────────
+      const protocolWrap = el(
+        doc,
+        "div",
+        "display: flex; flex-direction: column;",
+      );
+      const protocolLabel = el(doc, "label", LABEL_STYLE, t("Protocol"));
+      const protocolSelect = el(
+        doc,
+        "select",
+        INPUT_STYLE,
+      ) as HTMLSelectElement;
+      protocolSelect.id = `${config.addonRef}-provider-protocol-${group.id}`;
+      protocolLabel.setAttribute("for", protocolSelect.id);
+      const protocolOptions = getProtocolOptions(
+        group.authMode,
+        selectedPresetId,
+      );
+      for (const protocol of protocolOptions) {
+        const option = el(doc, "option") as HTMLOptionElement;
+        option.value = protocol;
+        option.textContent = getProviderProtocolSpec(protocol).label;
+        protocolSelect.appendChild(option);
+      }
+      protocolSelect.value = group.providerProtocol;
+      protocolSelect.disabled = protocolOptions.length <= 1;
+      protocolSelect.addEventListener("change", () => {
+        group.providerProtocol = resolveSelectedProtocol(
+          {
+            ...group,
+            providerProtocol: protocolSelect.value as ProviderProtocol,
+          },
+          selectedPresetId,
+        );
+        persistGroups(groups);
+        setTimeout(() => rerender(), 0);
+      });
+      protocolWrap.append(
+        protocolLabel,
+        protocolSelect,
+        el(
+          doc,
+          "span",
+          HELPER_STYLE,
+          getProviderProtocolSpec(group.providerProtocol).helperText,
+        ),
+      );
+
       // ── API URL ──────────────────────────────────────────────────
       const apiUrlWrap = el(
         doc,
         "div",
         "display: flex; flex-direction: column;",
       );
-      const apiUrlLabel = el(
-        doc,
-        "label",
-        LABEL_STYLE,
-        group.authMode === "codex_app_server"
-          ? t("Codex CLI Path")
-          : t("API URL"),
-      );
+      const apiUrlLabel = el(doc, "label", LABEL_STYLE, t("API URL"));
       const apiUrlInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
       apiUrlInput.id = `${config.addonRef}-api-base-${group.id}`;
       apiUrlLabel.setAttribute("for", apiUrlInput.id);
@@ -1029,15 +917,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiUrlInput.placeholder =
         group.authMode === "codex_auth"
           ? DEFAULT_CODEX_API_BASE
-          : group.authMode === "codex_app_server"
-            ? "Optional absolute path to codex executable"
-            : group.authMode === "copilot_auth"
-              ? DEFAULT_COPILOT_API_BASE
-              : selectedPreset?.defaultApiBase || "https://api.openai.com/v1";
+          : group.authMode === "copilot_auth"
+            ? DEFAULT_COPILOT_API_BASE
+            : selectedPreset?.defaultApiBase || "https://api.openai.com/v1";
       apiUrlInput.value = group.apiBase;
       apiUrlInput.readOnly =
         group.authMode !== "codex_auth" &&
-        group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth" &&
         !isCustomizedPreset;
       apiUrlInput.style.opacity = apiUrlInput.readOnly ? "0.85" : "1";
@@ -1056,12 +941,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         "span",
         HELPER_STYLE,
         group.authMode === "codex_auth"
-          ? t(LEGACY_CODEX_API_HELPER_TEXT)
-          : group.authMode === "codex_app_server"
-            ? t(getCodexAppServerPathHelperText())
-            : group.authMode === "copilot_auth"
-              ? t(COPILOT_API_HELPER_TEXT)
-              : getPresetSelectHelperText(selectedPresetId),
+          ? t(CODEX_API_HELPER_TEXT)
+          : group.authMode === "copilot_auth"
+            ? t(COPILOT_API_HELPER_TEXT)
+            : getPresetSelectHelperText(selectedPresetId),
       );
       apiUrlWrap.append(apiUrlLabel, apiUrlInput, apiUrlHelper);
 
@@ -1086,7 +969,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiKeyWrap.append(apiKeyLabel, apiKeyInput);
       if (
         group.authMode === "codex_auth" ||
-        group.authMode === "codex_app_server" ||
         group.authMode === "copilot_auth"
       ) {
         apiKeyWrap.style.display = "none";
@@ -1633,12 +1515,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           doc,
           "label",
           "font-size: 10.5px; font-weight: 600; color: var(--fill-primary, inherit);",
-          t("API protocol override"),
+          t("Protocol"),
         );
         const protocolFieldSelect = el(
           doc,
           "select",
-          PROTOCOL_SELECT_SM_STYLE,
+          INPUT_SM_STYLE + " width: 120px;",
         ) as HTMLSelectElement;
         const autoOption = el(doc, "option") as HTMLOptionElement;
         autoOption.value = "";
@@ -1656,9 +1538,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         }
         protocolFieldSelect.value = modelEntry.providerProtocol || "";
         protocolFieldWrap.append(protocolFieldLabel, protocolFieldSelect);
-        if (allowedProtocols.length <= 1) {
-          protocolFieldWrap.style.display = "none";
-        }
 
         advFields.append(
           tempField.wrap,
@@ -1680,10 +1559,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
         const commitAdvanced = () => {
           modelEntry.temperature = normalizeTemperature(tempField.input.value);
-          modelEntry.maxTokens = normalizeMaxTokensForModel(
-            maxTokField.input.value,
-            modelEntry.model,
-          );
+          modelEntry.maxTokens = normalizeMaxTokens(maxTokField.input.value);
           modelEntry.inputTokenCap = normalizeOptionalInputTokenCap(
             inputCapField.input.value,
           );
@@ -1750,22 +1626,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
                   ? DEFAULT_COPILOT_API_BASE
                   : "")
             ).replace(/\/$/, "");
-            if (authMode === "codex_app_server") {
-              const modelName = (
-                modelEntry.model ||
-                profile.defaultModel ||
-                ""
-              ).trim();
-              const result = await runCodexAppServerConnectionTest({
-                modelName,
-                codexPath: group.apiBase.trim(),
-              });
-              statusLine.textContent =
-                `${t("✓ Success — model says: ")}"${result.reply}"\n` +
-                `${t("Agent capability: ")}${result.capabilityLabel}`;
-              statusLine.style.color = "green";
-              return;
-            }
             const apiKey =
               authMode === "codex_auth"
                 ? await readCodexAccessToken()
@@ -1835,13 +1695,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         cardBody.append(
           authModeWrap,
           copilotLoginWrap,
-          apiUrlWrap,
-          divider,
-          modelsWrap,
-        );
-      } else if (group.authMode === "codex_app_server") {
-        cardBody.append(
-          authModeWrap,
+          protocolWrap,
           apiUrlWrap,
           divider,
           modelsWrap,
@@ -1849,6 +1703,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       } else if (group.authMode === "codex_auth") {
         cardBody.append(
           authModeWrap,
+          protocolWrap,
           apiUrlWrap,
           apiKeyWrap,
           divider,
@@ -1858,6 +1713,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         cardBody.append(
           authModeWrap,
           providerPresetWrap,
+          protocolWrap,
           apiUrlWrap,
           apiKeyWrap,
           divider,
@@ -1940,66 +1796,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
-  const agentBackendModeSelect = doc.querySelector(
-    `#${config.addonRef}-agent-backend-mode`,
-  ) as HTMLSelectElement | null;
-  const agentBridgeSettingsWrap = doc.querySelector(
-    `#${config.addonRef}-agent-bridge-settings`,
-  ) as HTMLDivElement | null;
-  const agentBridgeUrlInput = doc.querySelector(
-    `#${config.addonRef}-agent-bridge-url`,
-  ) as HTMLInputElement | null;
-  const agentClaudeConfigSourceSelect = doc.querySelector(
-    `#${config.addonRef}-agent-claude-config-source`,
-  ) as HTMLSelectElement | null;
-  const agentPermissionModeSelect = doc.querySelector(
-    `#${config.addonRef}-agent-permission-mode`,
-  ) as HTMLSelectElement | null;
-  const claudeConfigPathsWrap = doc.querySelector(
-    `#${config.addonRef}-claude-config-paths`,
-  ) as HTMLDivElement | null;
-  const claudeCodeModelSelect = doc.querySelector(
-    `#${config.addonRef}-claude-code-model`,
-  ) as HTMLSelectElement | null;
-  const claudeCodeReasoningSelect = doc.querySelector(
-    `#${config.addonRef}-claude-code-reasoning`,
-  ) as HTMLSelectElement | null;
-  const claudeCodeBlockStreamingInput = doc.querySelector(
-    `#${config.addonRef}-claude-code-block-streaming`,
-  ) as HTMLInputElement | null;
-  const claudeCodeAutoCompactInput = doc.querySelector(
-    `#${config.addonRef}-claude-code-auto-compact`,
-  ) as HTMLInputElement | null;
-  const claudeCodeAutoCompactThresholdInput = doc.querySelector(
-    `#${config.addonRef}-claude-code-auto-compact-threshold`,
-  ) as HTMLInputElement | null;
-  const claudeCodeAutoCompactThresholdValue = doc.querySelector(
-    `#${config.addonRef}-claude-code-auto-compact-threshold-value`,
-  ) as HTMLSpanElement | null;
-  const claudeConfigDocLink = doc.querySelector(
-    `#${config.addonRef}-claude-config-doc-link`,
-  ) as HTMLAnchorElement | null;
-  const claudeTraceEnabledInput = doc.querySelector(
-    `#${config.addonRef}-claude-trace-enabled`,
-  ) as HTMLInputElement | null;
-  const claudeTracePathEl = doc.querySelector(
-    `#${config.addonRef}-claude-trace-path`,
-  ) as HTMLDivElement | null;
-  const claudeTraceCopyBtn = doc.querySelector(
-    `#${config.addonRef}-claude-trace-copy-path`,
-  ) as HTMLButtonElement | null;
-  const claudeManagedInstructionTemplateInput = doc.querySelector(
-    `#${config.addonRef}-claude-managed-instruction-template`,
-  ) as HTMLTextAreaElement | null;
-  const claudeManagedInstructionUpdateBtn = doc.querySelector(
-    `#${config.addonRef}-claude-managed-instruction-update`,
-  ) as HTMLButtonElement | null;
-  const claudeManagedInstructionResetBtn = doc.querySelector(
-    `#${config.addonRef}-claude-managed-instruction-reset`,
-  ) as HTMLButtonElement | null;
-  const claudeManagedInstructionStatus = doc.querySelector(
-    `#${config.addonRef}-claude-managed-instruction-status`,
-  ) as HTMLSpanElement | null;
+  if (scrollSectionIntoViewInput) {
+    const prefValue = Zotero.Prefs.get(
+      `${config.prefsPrefix}.scrollSectionIntoViewOnSwitch`,
+      true,
+    );
+    scrollSectionIntoViewInput.checked =
+      prefValue !== false && `${prefValue || ""}`.toLowerCase() !== "false";
+    scrollSectionIntoViewInput.addEventListener("change", () => {
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.scrollSectionIntoViewOnSwitch`,
+        scrollSectionIntoViewInput.checked,
+        true,
+      );
+    });
+  }
 
   if (enableAgentModeInput) {
     const prefValue = Zotero.Prefs.get(
@@ -2017,629 +1828,210 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
-  if (codexAppServerEnableSelect) {
-    const applyCodexAppServerUi = (enabled: boolean) => {
-      codexAppServerEnableSelect.value = enabled ? "enabled" : "disabled";
-      if (codexAppServerSettingsWrap) {
-        codexAppServerSettingsWrap.style.display = enabled ? "flex" : "none";
+  // ── Agent Backend Mode & Bridge URL settings ─────────────────────
+  {
+    const backendModeSelect = doc.querySelector(
+      `#${config.addonRef}-agent-backend-mode`,
+    ) as HTMLSelectElement | null;
+    const bridgeSettingsDiv = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-settings`,
+    ) as HTMLDivElement | null;
+    const bridgeUrlInput = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-url`,
+    ) as HTMLInputElement | null;
+
+    const updateBridgeVisibility = (mode: string) => {
+      if (bridgeSettingsDiv) {
+        bridgeSettingsDiv.style.display =
+          mode === "claude_bridge" ? "flex" : "none";
       }
     };
-    applyCodexAppServerUi(isCodexAppServerModeEnabled());
-    codexAppServerEnableSelect.addEventListener("change", () => {
-      const enabled = codexAppServerEnableSelect.value === "enabled";
-      applyCodexAppServerUi(enabled);
-      setCodexAppServerModeEnabled(enabled);
-      if (enabled) {
-        setConversationSystemPref("codex");
-      } else if (getConversationSystemPref() === "codex") {
-        setConversationSystemPref("upstream");
-      }
-    });
-  }
 
-  if (codexAppServerModelInput) {
-    codexAppServerModelInput.value = getCodexRuntimeModelPref();
-    const commitCodexModel = () => {
-      setCodexRuntimeModelPref(codexAppServerModelInput.value);
-      codexAppServerModelInput.value = getCodexRuntimeModelPref();
-    };
-    codexAppServerModelInput.addEventListener("change", commitCodexModel);
-    codexAppServerModelInput.addEventListener("blur", commitCodexModel);
-    codexAppServerModelInput.addEventListener("input", () => {
-      setCodexRuntimeModelPref(codexAppServerModelInput.value);
-    });
-  }
-
-  if (codexAppServerReasoningSelect) {
-    codexAppServerReasoningSelect.value = getCodexReasoningModePref();
-    codexAppServerReasoningSelect.addEventListener("change", () => {
-      setCodexReasoningModePref(
-        codexAppServerReasoningSelect.value as CodexReasoningMode,
-      );
-    });
-  }
-
-  if (codexAppServerTestBtn && codexAppServerStatus) {
-    codexAppServerTestBtn.addEventListener("click", () => {
-      void (async () => {
-        codexAppServerTestBtn.disabled = true;
-        codexAppServerStatus.style.display = "inline";
-        codexAppServerStatus.style.color = "var(--fill-secondary, #888)";
-        codexAppServerStatus.textContent = t("Testing…");
-        try {
-          const result = await runCodexAppServerConnectionTest({
-            modelName:
-              codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
-            codexPath: "",
-          });
-          codexAppServerStatus.textContent =
-            `${t("✓ Success — model says: ")}"${result.reply}"`;
-          codexAppServerStatus.style.color = "green";
-        } catch (err) {
-          codexAppServerStatus.textContent = `${t("Test failed: ")}${
-            err instanceof Error ? err.message : String(err)
-          }`;
-          codexAppServerStatus.style.color = "red";
-        } finally {
-          codexAppServerTestBtn.disabled = false;
-        }
-      })();
-    });
-  }
-
-  const renderCodexMcpStatus = (
-    message: string,
-    color = "var(--fill-secondary, #888)",
-  ) => {
-    if (!codexAppServerMcpStatus) return;
-    codexAppServerMcpStatus.style.display = "inline";
-    codexAppServerMcpStatus.style.color = color;
-    codexAppServerMcpStatus.textContent = message;
-  };
-
-  if (codexAppServerMcpEnableInput) {
-    codexAppServerMcpEnableInput.checked = isCodexZoteroMcpToolsEnabled();
-    codexAppServerMcpEnableInput.addEventListener("change", () => {
-      setCodexZoteroMcpToolsEnabled(codexAppServerMcpEnableInput.checked);
-      renderCodexMcpStatus(
-        codexAppServerMcpEnableInput.checked
-          ? t("Zotero MCP tools will be configured before native Codex turns.")
-          : t("Zotero MCP tools disabled for native Codex turns."),
-      );
-    });
-  }
-
-  if (codexAppServerMcpSetupBtn) {
-    codexAppServerMcpSetupBtn.addEventListener("click", () => {
-      void (async () => {
-        codexAppServerMcpSetupBtn.disabled = true;
-        renderCodexMcpStatus(t("Configuring Zotero MCP tools…"));
-        try {
-          const status = await installOrUpdateCodexZoteroMcpConfig({
-            codexPath: "",
-          });
-          setCodexZoteroMcpToolsEnabled(true);
-          if (codexAppServerMcpEnableInput) {
-            codexAppServerMcpEnableInput.checked = true;
-          }
-          const toolCount = status.toolNames.length;
-          renderCodexMcpStatus(
-            toolCount > 0
-              ? t(`Zotero MCP connected with ${toolCount} tools.`)
-              : t("Zotero MCP config written. Codex is reloading tools."),
-            "green",
-          );
-        } catch (error) {
-          renderCodexMcpStatus(
-            `${t("Zotero MCP setup failed: ")}${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            "red",
-          );
-        } finally {
-          codexAppServerMcpSetupBtn.disabled = false;
-        }
-      })();
-    });
-  }
-
-  if (codexAppServerMcpStatus && isCodexZoteroMcpToolsEnabled()) {
-    renderCodexMcpStatus(t("Checking Zotero MCP setup…"));
-    void readCodexNativeMcpSetupStatus({ codexPath: "" })
-      .then((status) => {
-        renderCodexMcpStatus(
-          status.connected === true
-            ? t(`Zotero MCP connected with ${status.toolNames.length} tools.`)
-            : status.configured
-              ? t("Zotero MCP configured. Use setup if tools do not appear.")
-              : t("Zotero MCP tools enabled but not configured yet."),
-          status.connected === true ? "green" : "var(--fill-secondary, #888)",
-        );
-      })
-      .catch((error) => {
-        renderCodexMcpStatus(
-          `${t("Could not read Codex MCP status: ")}${
-            error instanceof Error ? error.message : String(error)
-          }`,
-          "red",
-        );
-      });
-  }
-
-  if (agentBackendModeSelect) {
-    const applyAgentBackendUi = (enabled: boolean) => {
-      agentBackendModeSelect.value = enabled ? "claude_bridge" : "disabled";
-      if (agentBridgeSettingsWrap) {
-        agentBridgeSettingsWrap.style.display = enabled ? "flex" : "none";
-      }
-    };
-    applyAgentBackendUi(isClaudeCodeModeEnabled());
-    agentBackendModeSelect.addEventListener("change", () => {
-      const enabled = agentBackendModeSelect.value === "claude_bridge";
-      applyAgentBackendUi(enabled);
-      setClaudeCodeModeEnabled(enabled);
-      if (!enabled && getConversationSystemPref() === "claude_code") {
-        setConversationSystemPref("upstream");
-      }
-    });
-  }
-
-  if (codexAppServerEnableSelect && agentBackendModeSelect) {
-    const codexEnableCard =
-      codexAppServerEnableSelect.parentElement as HTMLElement | null;
-    const claudeEnableCard =
-      agentBackendModeSelect.parentElement as HTMLElement | null;
-    const applyDisabledStyling = (
-      card: HTMLElement | null,
-      select: HTMLSelectElement,
-      disabled: boolean,
-    ) => {
-      if (card) {
-        card.style.opacity = disabled ? "0.4" : "";
-        card.style.cursor = disabled ? "not-allowed" : "";
-      }
-      select.style.cursor = disabled ? "not-allowed" : "";
-    };
-    const syncModeMutualExclusion = () => {
-      const codexOn = codexAppServerEnableSelect.value === "enabled";
-      const claudeOn = agentBackendModeSelect.value === "claude_bridge";
-      const claudeShouldDisable = codexOn && !claudeOn;
-      const codexShouldDisable = claudeOn && !codexOn;
-      agentBackendModeSelect.disabled = claudeShouldDisable;
-      codexAppServerEnableSelect.disabled = codexShouldDisable;
-      agentBackendModeSelect.title = claudeShouldDisable
-        ? "Disable Codex App Server first to switch on Claude Code."
-        : "";
-      codexAppServerEnableSelect.title = codexShouldDisable
-        ? "Disable Claude Code first to switch on Codex App Server."
-        : "";
-      applyDisabledStyling(
-        claudeEnableCard,
-        agentBackendModeSelect,
-        claudeShouldDisable,
-      );
-      applyDisabledStyling(
-        codexEnableCard,
-        codexAppServerEnableSelect,
-        codexShouldDisable,
-      );
-    };
-    syncModeMutualExclusion();
-    codexAppServerEnableSelect.addEventListener(
-      "change",
-      syncModeMutualExclusion,
-    );
-    agentBackendModeSelect.addEventListener(
-      "change",
-      syncModeMutualExclusion,
-    );
-  }
-
-  if (agentBridgeUrlInput) {
-    agentBridgeUrlInput.value = getClaudeBridgeUrl() || DEFAULT_AGENT_BRIDGE_URL;
-    const commitBridgeUrl = () => {
-      setClaudeBridgeUrl(agentBridgeUrlInput.value);
-    };
-    agentBridgeUrlInput.addEventListener("change", commitBridgeUrl);
-    agentBridgeUrlInput.addEventListener("blur", commitBridgeUrl);
-  }
-
-  const copyTextToClipboard = async (text: string) => {
-    const value = text.trim();
-    if (!value) return;
-    const win = doc.defaultView;
-    if (win?.navigator?.clipboard?.writeText) {
-      try {
-        await win.navigator.clipboard.writeText(value);
-        return;
-      } catch {
-        /* ignore */
-      }
-    }
-    try {
-      const helper = (globalThis as any).Components;
-      const svc = helper?.classes?.[
-        "@mozilla.org/widget/clipboardhelper;1"
-      ]?.getService?.(helper?.interfaces?.nsIClipboardHelper) as
-        | { copyString?: (v: string) => void }
-        | undefined;
-      svc?.copyString?.(value);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const ensureDirectory = async (dirPath: string) => {
-    const IOUtils = (globalThis as any).IOUtils as
-      | {
-          exists?: (path: string) => Promise<boolean>;
-          makeDirectory?: (
-            path: string,
-            options?: { ignoreExisting?: boolean; createAncestors?: boolean },
-          ) => Promise<void>;
-        }
-      | undefined;
-    if (IOUtils?.exists && IOUtils?.makeDirectory) {
-      const exists = await IOUtils.exists(dirPath);
-      if (!exists) {
-        await IOUtils.makeDirectory(dirPath, {
-          ignoreExisting: true,
-          createAncestors: true,
-        });
-      }
-    }
-  };
-
-  const ensureFileIfMissing = async (filePath: string, content: string) => {
-    const IOUtils = (globalThis as any).IOUtils as
-      | {
-          exists?: (path: string) => Promise<boolean>;
-          write?: (path: string, data: Uint8Array<ArrayBufferLike>) => Promise<unknown>;
-        }
-      | undefined;
-    if (!IOUtils?.exists || !IOUtils?.write) return;
-    const exists = await IOUtils.exists(filePath).catch(() => false);
-    if (exists) return;
-    await IOUtils.write(filePath, new TextEncoder().encode(content));
-  };
-
-  const openDirectory = async (dirPath: string) => {
-    await ensureDirectory(dirPath);
-    try {
-      const Cc = (
-        globalThis as unknown as { Components?: { classes?: Record<string, { createInstance?: (iface: unknown) => unknown }>; interfaces?: Record<string, unknown> } }
-      ).Components?.classes;
-      const Ci = (
-        globalThis as unknown as { Components?: { interfaces?: Record<string, unknown> } }
-      ).Components?.interfaces;
-      if (Cc && Ci && typeof Cc["@mozilla.org/file/local;1"]?.createInstance === "function") {
-        const f = Cc["@mozilla.org/file/local;1"].createInstance(
-          Ci.nsIFile as unknown,
-        ) as
-          | { initWithPath?: (p: string) => void; reveal?: () => void }
-          | undefined;
-        if (f?.initWithPath) {
-          f.initWithPath(dirPath);
-          f.reveal?.();
-          return;
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-    try {
-      (Zotero as unknown as { launchFile?: (p: string) => void }).launchFile?.(dirPath);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  const getCurrentClaudeLocalDir = (): string => {
-    const env = getProcess()?.env;
-    const home =
-      env?.HOME?.trim() ||
-      env?.USERPROFILE?.trim() ||
-      getPathUtils()?.homeDir?.trim() ||
-      getOS()?.Constants?.Path?.homeDir?.trim() ||
-      getServices()?.dirsvc?.get?.("Home", getNsIFile())?.path?.trim() ||
-      (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim() ||
-      ".";
-    const runtimeRoot = joinLocalPath(home, "Zotero", "agent-runtime", getClaudeProfileSignature());
-    const scopesRoot = joinLocalPath(runtimeRoot, "scopes");
-    const conversationSystem = getConversationSystemPref();
-    if (conversationSystem !== "claude_code") {
-      return scopesRoot;
-    }
-    const pane = Zotero.getMainWindow?.()?.LLMForZoteroPane;
-    const paneItem = pane?.item;
-    const libraryID = Number(paneItem?.libraryID);
-    const itemID = Number(paneItem?.id);
-    const isPaper = Number.isFinite(itemID) && itemID > 0;
-    const scope = isPaper ? "paper" : "open";
-    const scopeId = isPaper && Number.isFinite(libraryID) && libraryID > 0
-      ? `${Math.floor(libraryID)}:${Math.floor(itemID)}`
-      : `${Number.isFinite(libraryID) && libraryID > 0 ? Math.floor(libraryID) : 1}`;
-    const conversationKey = isPaper && Number.isFinite(libraryID) && libraryID > 0
-      ? getLastUsedClaudePaperConversationKey(Math.floor(libraryID), Math.floor(itemID))
-      : Number.isFinite(libraryID) && libraryID > 0
-        ? getLastUsedClaudeGlobalConversationKey(Math.floor(libraryID))
-        : null;
-    if (!conversationKey) {
-      return joinLocalPath(scopesRoot, scope, scopeId);
-    }
-    return joinLocalPath(
-      scopesRoot,
-      scope,
-      scopeId,
-      "conversations",
-      String(conversationKey),
-      ".claude",
-    );
-  };
-
-  const renderClaudeConfigPaths = () => {
-    if (!claudeConfigPathsWrap) return;
-    claudeConfigPathsWrap.replaceChildren();
-    const env = getProcess()?.env;
-    const home =
-      env?.HOME?.trim() ||
-      env?.USERPROFILE?.trim() ||
-      getPathUtils()?.homeDir?.trim() ||
-      getOS()?.Constants?.Path?.homeDir?.trim() ||
-      getServices()?.dirsvc?.get?.("Home", getNsIFile())?.path?.trim() ||
-      (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim() ||
-      "";
-    const runtimeRoot = joinLocalPath(home || ".", "Zotero", "agent-runtime", getClaudeProfileSignature());
-    const projectClaudeDir = joinLocalPath(runtimeRoot, ".claude");
-    const localConversationDir = joinLocalPath(
-      runtimeRoot,
-      "scopes",
-      "<scope>",
-      "<scope-id>",
-      "conversations",
-      "<conversation-key>",
-      ".claude",
-    );
-    const rows = [
-      {
-        label: "User",
-        path: home ? joinLocalPath(home, ".claude") : "~/.claude",
-        openPath: home ? joinLocalPath(home, ".claude") : "~/.claude",
-        description: "Global defaults shared across Claude Code on this machine.",
-      },
-      {
-        label: "Project",
-        path: projectClaudeDir,
-        openPath: projectClaudeDir,
-        description: "Shared settings for all Claude runtimes launched by Zotero.",
-      },
-      {
-        label: "Local",
-        path: localConversationDir,
-        openPath: localConversationDir,
-        description: "Each conversation stores its own override folder under the scopes tree.",
-      },
-    ];
-    for (const row of rows) {
-      const wrap = el(
-        doc,
-        "div",
-        "display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 10px; border:1px solid var(--stroke-secondary, #c8c8c8); border-radius:8px; background: rgba(255,255,255,0.02);",
-      );
-      const textWrap = el(
-        doc,
-        "div",
-        "display:flex; flex-direction:column; gap:2px; min-width:0;",
-      );
-      const label = el(
-        doc,
-        "div",
-        "font-size:11px; font-weight:600; color: var(--fill-secondary, #666);",
-        row.label,
-      );
-      const description = el(
-        doc,
-        "div",
-        "font-size:10.5px; color: var(--fill-secondary, #666);",
-        row.description,
-      );
-      const path = el(
-        doc,
-        "div",
-        "font-size:11px; color: var(--fill-secondary, #666); word-break: break-all;",
-        row.path,
-      );
-      const openBtn = el(
-        doc,
-        "button",
-        "padding:4px 10px; font-size:11px; border:1px solid var(--stroke-secondary, #c8c8c8); border-radius:6px; background: Field; color: FieldText; cursor:pointer; flex:0 0 auto;",
-        "Open folder",
-      ) as HTMLButtonElement;
-      openBtn.type = "button";
-      openBtn.addEventListener("click", () => {
-        if (row.label === "Local") {
-          void (async () => {
-            const localDir = getCurrentClaudeLocalDir();
-            const localSettingsPath = joinLocalPath(localDir, "settings.local.json");
-            await ensureDirectory(localDir);
-            await ensureFileIfMissing(localSettingsPath, "{}\n");
-            await openDirectory(localDir);
-          })();
-          return;
-        }
-        void openDirectory(row.openPath || row.path);
-      });
-      textWrap.append(label, description, path);
-      wrap.append(textWrap, openBtn);
-      claudeConfigPathsWrap.appendChild(wrap);
-    }
-  };
-
-  if (agentClaudeConfigSourceSelect) {
-    agentClaudeConfigSourceSelect.value = getClaudeConfigSourcePref();
-    agentClaudeConfigSourceSelect.addEventListener("change", () => {
-      const next =
-        agentClaudeConfigSourceSelect.value === "user-only" ||
-        agentClaudeConfigSourceSelect.value === "zotero-only"
-          ? agentClaudeConfigSourceSelect.value
-          : "default";
-      Zotero.Prefs.set(`${config.prefsPrefix}.agentClaudeConfigSource`, next, true);
-      renderClaudeConfigPaths();
-    });
-  }
-  renderClaudeConfigPaths();
-
-  if (claudeConfigDocLink) {
-    claudeConfigDocLink.addEventListener("click", (event) => {
-      event.preventDefault();
-      const launch = (Zotero as unknown as { launchURL?: (url: string) => void }).launchURL;
-      launch?.("https://code.claude.com/docs/en/settings");
-    });
-  }
-
-  if (claudeTracePathEl) {
-    claudeTracePathEl.textContent = getAgentTraceExportPath("latest-run").replace(/[\\/]latest-run\.json$/i, "");
-  }
-  if (claudeTraceEnabledInput) {
-    const raw = Zotero.Prefs.get(`${config.prefsPrefix}.agentTraceExportEnabled`, true);
-    claudeTraceEnabledInput.checked = raw === true || `${raw || ""}`.toLowerCase() === "true";
-    claudeTraceEnabledInput.addEventListener("change", () => {
-      Zotero.Prefs.set(
-        `${config.prefsPrefix}.agentTraceExportEnabled`,
-        claudeTraceEnabledInput.checked,
+    if (backendModeSelect) {
+      const storedMode = Zotero.Prefs.get(
+        `${config.prefsPrefix}.agentBackendMode`,
         true,
       );
-    });
-  }
-  if (claudeTraceCopyBtn) {
-    claudeTraceCopyBtn.addEventListener("click", () => {
-      void copyTextToClipboard(
-        getAgentTraceExportPath("latest-run").replace(/[\\/]latest-run\.json$/i, ""),
-      );
-    });
-  }
-
-  if (claudeManagedInstructionTemplateInput) {
-    const defaultManagedBlock = getDefaultClaudeManagedInstructionBlock();
-    const syncManagedInstructionStatus = (message: string, color: string) => {
-      if (!claudeManagedInstructionStatus) return;
-      claudeManagedInstructionStatus.style.display = "inline";
-      claudeManagedInstructionStatus.style.color = color;
-      claudeManagedInstructionStatus.textContent = message;
-    };
-    const loadManagedInstructionTemplate = () => {
-      const saved = getClaudeManagedInstructionTemplatePref();
-      claudeManagedInstructionTemplateInput.value = saved || defaultManagedBlock;
-      if (!saved.trim()) {
-        void (async () => {
-          const onDisk = await readClaudeProjectManagedInstructionBlock();
-          if (!onDisk) return;
-          claudeManagedInstructionTemplateInput.value = onDisk;
-          setClaudeManagedInstructionTemplatePref(onDisk);
-        })();
-      }
-    };
-    loadManagedInstructionTemplate();
-    claudeManagedInstructionTemplateInput.addEventListener("input", () => {
-      setClaudeManagedInstructionTemplatePref(claudeManagedInstructionTemplateInput.value);
-      if (claudeManagedInstructionStatus?.style.display !== "none") {
-        syncManagedInstructionStatus(t("Template updated locally"), "var(--fill-secondary, #888)");
-      }
-    });
-    if (claudeManagedInstructionResetBtn) {
-      claudeManagedInstructionResetBtn.addEventListener("click", () => {
-        claudeManagedInstructionTemplateInput.value = defaultManagedBlock;
-        setClaudeManagedInstructionTemplatePref(defaultManagedBlock);
-        syncManagedInstructionStatus(t("Reset to default template"), "var(--fill-secondary, #888)");
+      const mode = typeof storedMode === "string" ? storedMode : "builtin";
+      backendModeSelect.value = mode;
+      updateBridgeVisibility(mode);
+      backendModeSelect.addEventListener("change", () => {
+        const newMode = backendModeSelect.value;
+        Zotero.Prefs.set(
+          `${config.prefsPrefix}.agentBackendMode`,
+          newMode,
+          true,
+        );
+        updateBridgeVisibility(newMode);
       });
     }
-    if (claudeManagedInstructionUpdateBtn) {
-      claudeManagedInstructionUpdateBtn.addEventListener("click", async () => {
-        const template = setClaudeManagedInstructionTemplatePref(
-          claudeManagedInstructionTemplateInput.value,
-        ) || defaultManagedBlock;
-        claudeManagedInstructionUpdateBtn.disabled = true;
-        syncManagedInstructionStatus(t("Updating CLAUDE.md…"), "var(--fill-secondary, #888)");
+
+    if (bridgeUrlInput) {
+      const storedUrl = Zotero.Prefs.get(
+        `${config.prefsPrefix}.agentBackendBridgeUrl`,
+        true,
+      );
+      bridgeUrlInput.value =
+        typeof storedUrl === "string" ? storedUrl : "";
+      bridgeUrlInput.addEventListener("input", () => {
+        Zotero.Prefs.set(
+          `${config.prefsPrefix}.agentBackendBridgeUrl`,
+          bridgeUrlInput.value.trim(),
+          true,
+        );
+      });
+    }
+
+    const autoSpawnCheckbox = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-autospawn`,
+    ) as HTMLInputElement | null;
+    const adapterPathInput = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-adapter-path`,
+    ) as HTMLInputElement | null;
+    const adapterPathBrowse = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-adapter-path-browse`,
+    ) as HTMLButtonElement | null;
+
+    if (autoSpawnCheckbox) {
+      const stored = Zotero.Prefs.get(
+        `${config.prefsPrefix}.agentBackendAutoSpawn`,
+        true,
+      );
+      autoSpawnCheckbox.checked = stored === true;
+      autoSpawnCheckbox.addEventListener("change", () => {
+        Zotero.Prefs.set(
+          `${config.prefsPrefix}.agentBackendAutoSpawn`,
+          autoSpawnCheckbox.checked,
+          true,
+        );
+      });
+    }
+
+    if (adapterPathInput) {
+      const storedPath = Zotero.Prefs.get(
+        `${config.prefsPrefix}.agentBackendAdapterPath`,
+        true,
+      );
+      adapterPathInput.value =
+        typeof storedPath === "string" ? storedPath : "";
+      adapterPathInput.addEventListener("input", () => {
+        Zotero.Prefs.set(
+          `${config.prefsPrefix}.agentBackendAdapterPath`,
+          adapterPathInput.value.trim(),
+          true,
+        );
+      });
+    }
+
+    const spawnTestBtn = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-adapter-spawn-test`,
+    ) as HTMLButtonElement | null;
+    const spawnStatusBox = doc.querySelector(
+      `#${config.addonRef}-agent-bridge-adapter-spawn-status`,
+    ) as HTMLDivElement | null;
+    const setSpawnStatus = (
+      kind: "success" | "info" | "error",
+      text: string,
+    ) => {
+      if (!spawnStatusBox) return;
+      const palette: Record<typeof kind, { bg: string; fg: string; border: string }> = {
+        success: { bg: "#d1fae5", fg: "#065f46", border: "#34d399" },
+        info: { bg: "#dbeafe", fg: "#1e3a8a", border: "#60a5fa" },
+        error: { bg: "#fee2e2", fg: "#991b1b", border: "#f87171" },
+      };
+      const c = palette[kind];
+      spawnStatusBox.style.display = "block";
+      spawnStatusBox.style.background = c.bg;
+      spawnStatusBox.style.color = c.fg;
+      spawnStatusBox.style.border = `1px solid ${c.border}`;
+      spawnStatusBox.textContent = text;
+    };
+    if (spawnTestBtn) {
+      spawnTestBtn.addEventListener("click", async () => {
         try {
-          await updateClaudeProjectManagedInstructionBlock(template);
-          syncManagedInstructionStatus(t("Managed block updated"), "green");
-        } catch (error) {
-          syncManagedInstructionStatus(
-            `${t("Failed to update CLAUDE.md")}: ${(error as Error).message}`,
-            "red",
+          const addonInstance = (
+            Zotero as unknown as Record<string, unknown>
+          )[config.addonInstance] as
+            | {
+                api?: {
+                  agent?: {
+                    spawnBridgeAdapter?: () => Promise<
+                      | { spawned: true; pid: number | null }
+                      | { spawned: false; reason: string }
+                    >;
+                    getBridgeAdapterState?: () => {
+                      spawned: boolean;
+                      pid: number | null;
+                      spawnedAt: number;
+                    };
+                  };
+                };
+              }
+            | undefined;
+          const api = addonInstance?.api?.agent;
+          if (!api?.spawnBridgeAdapter) {
+            setSpawnStatus(
+              "error",
+              "Spawn API not available. Is the agent subsystem loaded?",
+            );
+            return;
+          }
+          spawnTestBtn.disabled = true;
+          spawnTestBtn.textContent = "Spawning...";
+          setSpawnStatus("info", "Starting adapter, waiting for /healthz…");
+          const r = await api.spawnBridgeAdapter();
+          const state = api.getBridgeAdapterState?.();
+          if (r.spawned) {
+            setSpawnStatus(
+              "success",
+              `Adapter started. pid=${r.pid ?? "?"} · ${JSON.stringify(state ?? {})}`,
+            );
+          } else if (
+            /already reachable/i.test(r.reason) ||
+            /running/i.test(r.reason)
+          ) {
+            setSpawnStatus(
+              "success",
+              `Bridge is reachable. No spawn needed. (${r.reason})`,
+            );
+          } else {
+            setSpawnStatus("error", `Spawn failed: ${r.reason}`);
+          }
+        } catch (e) {
+          setSpawnStatus(
+            "error",
+            `Spawn threw: ${(e as Error)?.message || e}`,
           );
         } finally {
-          claudeManagedInstructionUpdateBtn.disabled = false;
+          spawnTestBtn.disabled = false;
+          spawnTestBtn.textContent = "Test spawn";
         }
       });
     }
-  }
 
-  if (agentPermissionModeSelect) {
-    agentPermissionModeSelect.value = getClaudePermissionModePref();
-    agentPermissionModeSelect.addEventListener("change", () => {
-      setClaudePermissionModePref(
-        normalizeAgentPermissionMode(agentPermissionModeSelect.value),
-      );
-    });
-  }
-
-  if (claudeCodeModelSelect) {
-    claudeCodeModelSelect.value = getClaudeRuntimeModelPref();
-    claudeCodeModelSelect.addEventListener("change", () => {
-      setClaudeRuntimeModelPref(claudeCodeModelSelect.value);
-    });
-  }
-
-  if (claudeCodeReasoningSelect) {
-    claudeCodeReasoningSelect.value = getClaudeReasoningModePref();
-    claudeCodeReasoningSelect.addEventListener("change", () => {
-      const next =
-        claudeCodeReasoningSelect.value === "low" ||
-        claudeCodeReasoningSelect.value === "medium" ||
-        claudeCodeReasoningSelect.value === "high" ||
-        claudeCodeReasoningSelect.value === "xhigh" ||
-        claudeCodeReasoningSelect.value === "max"
-          ? claudeCodeReasoningSelect.value
-          : "auto";
-      setClaudeReasoningModePref(next);
-    });
-  }
-
-  if (claudeCodeBlockStreamingInput) {
-    claudeCodeBlockStreamingInput.checked = isClaudeBlockStreamingEnabled();
-    claudeCodeBlockStreamingInput.addEventListener("change", () => {
-      setClaudeBlockStreamingEnabled(claudeCodeBlockStreamingInput.checked);
-    });
-  }
-
-  if (claudeCodeAutoCompactInput) {
-    claudeCodeAutoCompactInput.checked = isClaudeAutoCompactEnabled();
-    claudeCodeAutoCompactInput.addEventListener("change", () => {
-      setClaudeAutoCompactEnabled(claudeCodeAutoCompactInput.checked);
-    });
-  }
-  if (claudeCodeAutoCompactThresholdInput) {
-    const syncThresholdLabel = (value: number) => {
-      if (claudeCodeAutoCompactThresholdValue) {
-        claudeCodeAutoCompactThresholdValue.textContent = `${value}%`;
-      }
-    };
-    const persistThreshold = () => {
-      setClaudeAutoCompactThresholdPercent(
-        Number(claudeCodeAutoCompactThresholdInput.value),
-      );
-      syncThresholdLabel(getClaudeAutoCompactThresholdPercent());
-    };
-    const initialValue = getClaudeAutoCompactThresholdPercent();
-    claudeCodeAutoCompactThresholdInput.value = String(initialValue);
-    syncThresholdLabel(initialValue);
-    claudeCodeAutoCompactThresholdInput.addEventListener("input", () => {
-      persistThreshold();
-    });
-    claudeCodeAutoCompactThresholdInput.addEventListener("change", () => {
-      persistThreshold();
-    });
+    if (adapterPathBrowse && adapterPathInput) {
+      adapterPathBrowse.addEventListener("click", async () => {
+        try {
+          const result = await new ztoolkit.FilePicker(
+            "Select cc-llm4zotero-adapter directory",
+            "folder",
+            undefined,
+            adapterPathInput.value || undefined,
+            doc.defaultView as Window | undefined,
+          ).open();
+          if (typeof result === "string" && result) {
+            adapterPathInput.value = result;
+            Zotero.Prefs.set(
+              `${config.prefsPrefix}.agentBackendAdapterPath`,
+              result,
+              true,
+            );
+          }
+        } catch (e) {
+          console.error("Adapter path picker failed", e);
+        }
+      });
+    }
   }
 
   // ── Notes Directory settings ─────────────────────────────────────
@@ -3159,67 +2551,15 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const mineruSubSettings = doc.querySelector(
     `#${config.addonRef}-mineru-sub-settings`,
   ) as HTMLDivElement | null;
-  const mineruLocalModeInput = doc.querySelector(
-    `#${config.addonRef}-mineru-local-mode`,
-  ) as HTMLInputElement | null;
-  const mineruCloudInfo = doc.querySelector(
-    `#${config.addonRef}-mineru-cloud-info`,
-  ) as HTMLDivElement | null;
-  const mineruApiKeySection = doc.querySelector(
-    `#${config.addonRef}-mineru-api-key-section`,
-  ) as HTMLDivElement | null;
   const mineruApiKeyInput = doc.querySelector(
     `#${config.addonRef}-mineru-api-key`,
   ) as HTMLInputElement | null;
-  const mineruLocalSection = doc.querySelector(
-    `#${config.addonRef}-mineru-local-section`,
-  ) as HTMLDivElement | null;
-  const mineruLocalApiBaseInput = doc.querySelector(
-    `#${config.addonRef}-mineru-local-api-base`,
-  ) as HTMLInputElement | null;
-  const mineruLocalBackendSelect = doc.querySelector(
-    `#${config.addonRef}-mineru-local-backend`,
-  ) as HTMLSelectElement | null;
   const mineruTestBtn = doc.querySelector(
     `#${config.addonRef}-mineru-test`,
   ) as HTMLButtonElement | null;
   const mineruTestStatus = doc.querySelector(
     `#${config.addonRef}-mineru-test-status`,
   ) as HTMLSpanElement | null;
-  const mineruSyncEnabledInput = doc.querySelector(
-    `#${config.addonRef}-mineru-sync-enabled`,
-  ) as HTMLInputElement | null;
-  const mineruSyncPrepareBtn = doc.querySelector(
-    `#${config.addonRef}-mineru-sync-prepare`,
-  ) as HTMLButtonElement | null;
-  const mineruSyncCleanBtn = doc.querySelector(
-    `#${config.addonRef}-mineru-sync-clean`,
-  ) as HTMLButtonElement | null;
-  const mineruSyncStatus = doc.querySelector(
-    `#${config.addonRef}-mineru-sync-status`,
-  ) as HTMLSpanElement | null;
-
-  const getSelectedMineruMode = (): MineruMode =>
-    mineruLocalModeInput?.checked ? "local" : "cloud";
-  const clearMineruTestStatus = () => {
-    if (!mineruTestStatus) return;
-    mineruTestStatus.style.display = "none";
-    mineruTestStatus.textContent = "";
-  };
-  const syncMineruModeVisibility = () => {
-    const mode = getSelectedMineruMode();
-    if (mineruCloudInfo) {
-      mineruCloudInfo.style.display = mode === "cloud" ? "block" : "none";
-    }
-    if (mineruApiKeySection) {
-      mineruApiKeySection.style.display =
-        mode === "cloud" ? "flex" : "none";
-    }
-    if (mineruLocalSection) {
-      mineruLocalSection.style.display = mode === "local" ? "flex" : "none";
-    }
-  };
-
   if (mineruEnabledInput) {
     mineruEnabledInput.checked = isMineruEnabled();
     const syncSubVisibility = () => {
@@ -3228,153 +2568,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           ? "flex"
           : "none";
       }
-      syncMineruModeVisibility();
     };
     syncSubVisibility();
     mineruEnabledInput.addEventListener("change", () => {
       setMineruEnabled(mineruEnabledInput.checked);
       syncSubVisibility();
     });
-  }
-
-  const isMineruSyncChecked = () =>
-    mineruSyncEnabledInput
-      ? mineruSyncEnabledInput.checked
-      : isMineruSyncEnabled();
-  const updateMineruSyncCleanupLabel = () => {
-    if (!mineruSyncCleanBtn) return;
-    mineruSyncCleanBtn.textContent = t(
-      isMineruSyncChecked()
-        ? "Disable MinerU sync and delete packages"
-        : "Delete synced MinerU packages",
-    );
-  };
-  const syncMineruSyncControls = () => {
-    const enabled = isMineruSyncChecked();
-    if (mineruSyncPrepareBtn) {
-      mineruSyncPrepareBtn.disabled = !enabled;
-    }
-    updateMineruSyncCleanupLabel();
-  };
-
-  if (mineruSyncEnabledInput) {
-    mineruSyncEnabledInput.checked = isMineruSyncEnabled();
-    syncMineruSyncControls();
-    mineruSyncEnabledInput.addEventListener("change", () => {
-      const enabled = mineruSyncEnabledInput.checked;
-      setMineruSyncEnabled(enabled);
-      syncMineruSyncControls();
-      if (!mineruSyncStatus) return;
-      mineruSyncStatus.style.display = "block";
-      mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
-      if (!enabled) {
-        mineruSyncStatus.textContent = t(
-          "MinerU sync disabled. Existing synced packages are kept until deleted.",
-        );
-        return;
-      }
-      mineruSyncStatus.textContent = t(
-        "MinerU sync enabled. Existing local caches sync only when requested.",
-      );
-    });
-  } else {
-    syncMineruSyncControls();
-  }
-
-  if (mineruSyncPrepareBtn && mineruSyncStatus) {
-    mineruSyncPrepareBtn.addEventListener("click", () => {
-      if (!isMineruSyncEnabled()) {
-        mineruSyncStatus.style.display = "block";
-        mineruSyncStatus.style.color = "#b45309";
-        mineruSyncStatus.textContent = t(
-          "Enable MinerU sync before preparing packages.",
-        );
-        return;
-      }
-
-      mineruSyncPrepareBtn.disabled = true;
-      if (mineruSyncCleanBtn) mineruSyncCleanBtn.disabled = true;
-      mineruSyncStatus.style.display = "block";
-      mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
-      mineruSyncStatus.textContent = t("Syncing existing MinerU caches…");
-      void (async () => {
-        try {
-          const result = await repairMineruSyncPackages({
-            onProgress: (progress) => {
-              mineruSyncStatus.textContent =
-                t("Syncing existing MinerU caches") +
-                `: ${progress.scanned} scanned, ` +
-                `${progress.published} package(s), ` +
-                `${progress.restored} restored.`;
-            },
-          });
-          mineruSyncStatus.textContent =
-            t("Existing MinerU caches synced") +
-            `: ${result.published} package(s), ` +
-            `${result.restored} restored, ${result.upToDate} up to date, ` +
-            `${result.skipped} skipped.`;
-          mineruSyncStatus.style.color =
-            result.failed > 0 || result.diverged > 0 ? "#b45309" : "green";
-        } catch (error) {
-          mineruSyncStatus.textContent = `\u2717 ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-          mineruSyncStatus.style.color = "red";
-        } finally {
-          mineruSyncPrepareBtn.disabled = !isMineruSyncEnabled();
-          if (mineruSyncCleanBtn) mineruSyncCleanBtn.disabled = false;
-        }
-      })();
-    });
-  }
-
-  if (mineruSyncCleanBtn && mineruSyncStatus) {
-    const runMineruSyncCleanup = async () => {
-      const shouldDisableSync = isMineruSyncChecked();
-      const confirmed = await confirmMineruSyncPackageDeletion(
-        shouldDisableSync,
-      );
-      if (!confirmed) return;
-
-      mineruSyncCleanBtn.disabled = true;
-      if (shouldDisableSync) {
-        setMineruSyncEnabled(false);
-        if (mineruSyncEnabledInput) {
-          mineruSyncEnabledInput.checked = false;
-        }
-        syncMineruSyncControls();
-      }
-      mineruSyncStatus.style.display = "block";
-      mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
-      mineruSyncStatus.textContent = shouldDisableSync
-        ? t("MinerU sync disabled. Deleting synced MinerU packages…")
-        : t("Deleting synced MinerU packages…");
-      try {
-        const result = await cleanSyncedMineruPackages();
-        const deletedPrefix = shouldDisableSync
-          ? t("MinerU sync disabled. Deleted synced MinerU packages")
-          : t("Deleted synced MinerU packages");
-        mineruSyncStatus.textContent =
-          result.failed > 0
-            ? `${deletedPrefix}: ${result.deleted}, ${result.failed} failed.`
-            : `${deletedPrefix}: ${result.deleted}.`;
-        mineruSyncStatus.style.color = result.failed > 0 ? "#b45309" : "green";
-      } catch (error) {
-        mineruSyncStatus.textContent = `\u2717 ${
-          error instanceof Error ? error.message : String(error)
-        }`;
-        mineruSyncStatus.style.color = "red";
-      } finally {
-        mineruSyncCleanBtn.disabled = false;
-        syncMineruSyncControls();
-      }
-    };
-    mineruSyncCleanBtn.addEventListener("click", () =>
-      void runMineruSyncCleanup(),
-    );
-    mineruSyncCleanBtn.addEventListener("command", () =>
-      void runMineruSyncCleanup(),
-    );
   }
 
   const mineruGlobalAutoParseInput = doc.querySelector(
@@ -3387,18 +2586,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
-  if (mineruLocalModeInput) {
-    mineruLocalModeInput.checked = getMineruMode() === "local";
-    syncMineruModeVisibility();
-    mineruLocalModeInput.addEventListener("change", () => {
-      setMineruMode(getSelectedMineruMode());
-      syncMineruModeVisibility();
-      clearMineruTestStatus();
-    });
-  } else {
-    syncMineruModeVisibility();
-  }
-
   if (mineruApiKeyInput) {
     mineruApiKeyInput.value = getMineruApiKey();
     mineruApiKeyInput.addEventListener("input", () => {
@@ -3406,50 +2593,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
-  if (mineruLocalApiBaseInput) {
-    mineruLocalApiBaseInput.value = getMineruLocalApiBase();
-    const commitMineruLocalApiBase = () => {
-      setMineruLocalApiBase(mineruLocalApiBaseInput.value);
-      mineruLocalApiBaseInput.value = getMineruLocalApiBase();
-    };
-    mineruLocalApiBaseInput.addEventListener("change", commitMineruLocalApiBase);
-    mineruLocalApiBaseInput.addEventListener("blur", commitMineruLocalApiBase);
-  }
-
-  if (mineruLocalBackendSelect) {
-    mineruLocalBackendSelect.value = getMineruLocalBackend();
-    mineruLocalBackendSelect.addEventListener("change", () => {
-      const next: MineruLocalBackend = normalizeMineruLocalBackend(
-        mineruLocalBackendSelect.value,
-      );
-      setMineruLocalBackend(next);
-      mineruLocalBackendSelect.value = next;
-      clearMineruTestStatus();
-    });
-  }
-
   if (mineruTestBtn && mineruTestStatus) {
     const runMineruTest = async () => {
-      const mode = getSelectedMineruMode();
-      if (mode === "local" && mineruLocalApiBaseInput) {
-        setMineruLocalApiBase(mineruLocalApiBaseInput.value);
-        mineruLocalApiBaseInput.value = getMineruLocalApiBase();
+      const apiKey = getMineruApiKey().trim();
+      if (!apiKey) {
+        mineruTestStatus.style.display = "inline";
+        mineruTestStatus.textContent = t("Enter an API key first");
+        mineruTestStatus.style.color = "var(--fill-secondary, #888)";
+        return;
       }
       mineruTestBtn.disabled = true;
       mineruTestStatus.style.display = "inline";
       mineruTestStatus.textContent = t("Testing…");
       mineruTestStatus.style.color = "var(--fill-secondary, #888)";
       try {
-        if (mode === "local") {
-          await testMineruLocalConnection(getMineruLocalApiBase());
-        } else {
-          const apiKey = getMineruApiKey().trim();
-          if (apiKey) {
-            await testMineruConnection(apiKey);
-          } else {
-            await testProxyConnection();
-          }
-        }
+        await testMineruConnection(apiKey);
         mineruTestStatus.textContent = t("✓ Connection successful");
         mineruTestStatus.style.color = "green";
       } catch (error) {

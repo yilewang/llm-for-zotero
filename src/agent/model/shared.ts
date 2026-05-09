@@ -4,7 +4,6 @@ import type {
   AgentToolCall,
   ToolSpec,
 } from "../types";
-export { parseDataUrl } from "../../shared/dataUrl";
 
 export function getFetch(): typeof fetch {
   return ztoolkit.getGlobal("fetch") as typeof fetch;
@@ -88,7 +87,8 @@ export function groupToolContinuationMessages(messages: AgentModelMessage[]): {
   followupUserMessages: Extract<AgentModelMessage, { role: "user" }>[];
 } {
   const toolMessages: Extract<AgentModelMessage, { role: "tool" }>[] = [];
-  const followupUserMessages: Extract<AgentModelMessage, { role: "user" }>[] = [];
+  const followupUserMessages: Extract<AgentModelMessage, { role: "user" }>[] =
+    [];
   for (const message of messages) {
     if (message.role === "tool") {
       toolMessages.push(message);
@@ -101,6 +101,17 @@ export function groupToolContinuationMessages(messages: AgentModelMessage[]): {
   return {
     toolMessages,
     followupUserMessages,
+  };
+}
+
+export function parseDataUrl(
+  url: string,
+): { mimeType: string; data: string } | null {
+  const match = /^data:([^;,]+);base64,(.+)$/i.exec(url.trim());
+  if (!match) return null;
+  return {
+    mimeType: match[1],
+    data: match[2],
   };
 }
 
@@ -153,12 +164,9 @@ export function encodeBytesBase64(bytes: Uint8Array): string {
   return btoaFn(out);
 }
 
-export async function readFileRefAsBase64(
-  storedPath: string,
-): Promise<string> {
-  const { readAttachmentBytes } = await import(
-    "../../modules/contextPanel/attachmentStorage"
-  );
+export async function readFileRefAsBase64(storedPath: string): Promise<string> {
+  const { readAttachmentBytes } =
+    await import("../../modules/contextPanel/attachmentStorage");
   const bytes = await readAttachmentBytes(storedPath);
   return encodeBytesBase64(bytes);
 }

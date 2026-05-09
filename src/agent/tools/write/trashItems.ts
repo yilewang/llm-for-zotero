@@ -56,7 +56,9 @@ export function createTrashItemsTool(
             result.result && typeof result.result === "object"
               ? (result.result as Record<string, unknown>)
               : {};
-          const count = Number(resultInner.trashedCount || result.trashedCount || 0);
+          const count = Number(
+            resultInner.trashedCount || result.trashedCount || 0,
+          );
           return count > 0
             ? `Trashed ${count} item${count === 1 ? "" : "s"}`
             : "Items trashed";

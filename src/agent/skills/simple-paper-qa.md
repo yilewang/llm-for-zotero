@@ -33,6 +33,7 @@ tool call, then answer.
 ### Recipe
 
 **Step 1 — Read the paper once:**
+
 - If `mineruCacheDir` is available: use `file_io(read, '{mineruCacheDir}/full.md')`. This gives you the entire parsed paper including abstract, introduction, and conclusions.
 - If no MinerU cache: use `read_paper` for the paper. This returns the abstract, authors, and introduction — enough for most general questions.
 
@@ -43,6 +44,7 @@ this about?", "who are the authors?", "summarize this paper", the front matter
 or MinerU markdown is sufficient.
 
 ### When to escalate
+
 If (and only if) the user asks about something specific that the front matter
 does not cover (a particular experiment, a specific table, a named method, a
 result in a specific section), then make ONE targeted `search_paper` call

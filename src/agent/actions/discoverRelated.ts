@@ -1,4 +1,8 @@
-import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type {
+  AgentAction,
+  ActionExecutionContext,
+  ActionResult,
+} from "./types";
 import { callTool } from "./executor";
 import { getMetadataField } from "./metadataSnapshot";
 
@@ -19,7 +23,10 @@ type DiscoverRelatedOutput = {
  * Finds papers related to a given Zotero item (via recommendations, references,
  * or citations), presents the results for review, and imports selected papers.
  */
-export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRelatedOutput> = {
+export const discoverRelatedAction: AgentAction<
+  DiscoverRelatedInput,
+  DiscoverRelatedOutput
+> = {
   name: "discover_related",
   modes: ["paper"],
   description:
@@ -42,7 +49,8 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
       source: {
         type: "string",
         enum: ["openalex"],
-        description: "Search source. Only OpenAlex supports recommendations, references, and citations.",
+        description:
+          "Search source. Only OpenAlex supports recommendations, references, and citations.",
       },
       limit: {
         type: "number",
@@ -85,7 +93,9 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
       !Array.isArray(readContent.results)
         ? (readContent.results as Record<string, Record<string, unknown>>)
         : {};
-    const seedEntry = readResults[String(input.itemId)] as Record<string, unknown> | undefined;
+    const seedEntry = readResults[String(input.itemId)] as
+      | Record<string, unknown>
+      | undefined;
     const seedMeta = seedEntry?.metadata;
     const seedTitle =
       getMetadataField(seedMeta, "title") || `Item ${input.itemId}`;
@@ -124,7 +134,11 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
     const loadMoreIncrement = 20;
     const source = input.source || "openalex";
 
-    type FetchModeResult = { rows: PaperRow[]; failed: boolean; error?: string };
+    type FetchModeResult = {
+      rows: PaperRow[];
+      failed: boolean;
+      error?: string;
+    };
 
     const fetchMode = async (
       mode: SearchMode,
@@ -144,7 +158,9 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
         `Finding ${mode} for "${seedTitle}"`,
       );
       if (!result.ok) {
-        const errContent = result.content as Record<string, unknown> | undefined;
+        const errContent = result.content as
+          | Record<string, unknown>
+          | undefined;
         const errMsg =
           errContent && typeof errContent.error === "string"
             ? errContent.error
@@ -154,7 +170,9 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
       const content = result.content as Record<string, unknown>;
       const raw = Array.isArray(content.results) ? content.results : [];
       const rows = raw
-        .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+        .filter(
+          (r): r is Record<string, unknown> => !!r && typeof r === "object",
+        )
         .map((r, i) => buildPaperRow(r, i, mode));
       return { rows, failed: false };
     };
@@ -187,7 +205,8 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
           ? `arxiv:${arxivMatch}`
           : undefined;
       const badges: string[] = [];
-      if (typeof r.citationCount === "number") badges.push(`${r.citationCount} citations`);
+      if (typeof r.citationCount === "number")
+        badges.push(`${r.citationCount} citations`);
       if (doi) badges.push(`DOI: ${doi}`);
       return {
         // Mode-scoped ID avoids collision when the same paper shows up under
@@ -223,17 +242,6 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
     let fetchFailures: { mode: SearchMode; error: string }[] = [];
     let resolution: Awaited<ReturnType<typeof ctx.requestConfirmation>>;
 
-    const countUniqueDiscoveredRows = (rows: PaperRow[]): number => {
-      const keys = new Set<string>();
-      for (const row of rows) {
-        const key =
-          row.importIdentifier?.trim().toLowerCase() ||
-          `${row.title.trim().toLowerCase()}:${row.subtitle || ""}`;
-        if (key) keys.add(key);
-      }
-      return keys.size;
-    };
-
     const extractFetchResult = (
       settled: PromiseSettledResult<FetchModeResult>,
       mode: SearchMode,
@@ -262,14 +270,17 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
       ref = refResult.rows;
       cit = citResult.rows;
       allRows = [...rec, ...ref, ...cit];
-      totalDiscovered = countUniqueDiscoveredRows(allRows);
+      totalDiscovered = allRows.length;
       fetchFailures = [
         { mode: "recommendations" as const, result: recResult },
         { mode: "references" as const, result: refResult },
         { mode: "citations" as const, result: citResult },
       ]
         .filter((x) => x.result.failed)
-        .map((x) => ({ mode: x.mode, error: x.result.error || "unknown error" }));
+        .map((x) => ({
+          mode: x.mode,
+          error: x.result.error || "unknown error",
+        }));
     };
 
     await fetchAllModes(currentLimit);
@@ -361,8 +372,7 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
                 id: "citations",
                 label: "Citations",
                 rows: markRows(cit, false),
-                emptyMessage:
-                  "This paper has no citing works on OpenAlex yet.",
+                emptyMessage: "This paper has no citing works on OpenAlex yet.",
               },
             ],
             defaultModeId: lastActiveModeId,
@@ -426,17 +436,9 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
     }
 
     const finalData = (resolution.data || {}) as Record<string, unknown>;
-    const rawSelectedIds = Array.isArray(finalData.selectedPaperIds)
+    const selectedIds = Array.isArray(finalData.selectedPaperIds)
       ? (finalData.selectedPaperIds as string[])
       : rec.map((p) => p.id);
-    const selectedIds = rawSelectedIds.map((id) => {
-      const legacyMatch = /^paper-(\d+)$/i.exec(id);
-      if (!legacyMatch) return id;
-      const legacyIndex = Number(legacyMatch[1]);
-      return Number.isFinite(legacyIndex) && legacyIndex > 0
-        ? allRows[legacyIndex - 1]?.id || id
-        : id;
-    });
 
     const selectedPapers = allRows.filter((p) => selectedIds.includes(p.id));
     const identifiers = Array.from(
@@ -465,10 +467,13 @@ export const discoverRelatedAction: AgentAction<DiscoverRelatedInput, DiscoverRe
     );
 
     const importContent = importResult.content as Record<string, unknown>;
-    const resultObj = importContent.result as Record<string, unknown> | undefined;
-    const importedCount = importResult.ok && resultObj
-      ? Number(resultObj.succeeded || resultObj.importedCount || 0)
-      : 0;
+    const resultObj = importContent.result as
+      | Record<string, unknown>
+      | undefined;
+    const importedCount =
+      importResult.ok && resultObj
+        ? Number(resultObj.succeeded || resultObj.importedCount || 0)
+        : 0;
 
     ctx.onProgress({
       type: "step_done",

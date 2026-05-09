@@ -26,7 +26,11 @@ describe("search_paper tool", function () {
   it("retrieves evidence across multiple paper contexts", async function () {
     const tool = createSearchPaperTool(
       {
-        retrieveEvidence: async ({ papers }: { papers: Array<{ itemId: number }> }) =>
+        retrieveEvidence: async ({
+          papers,
+        }: {
+          papers: Array<{ itemId: number }>;
+        }) =>
           papers.map((paper, index) => ({
             paperContext: {
               itemId: paper.itemId,
@@ -112,10 +116,7 @@ describe("read_attachment tool", function () {
   };
 
   it("requires confirmation before sending an attached file to the model", async function () {
-    const tool = createReadAttachmentTool(
-      {} as never,
-      {} as never,
-    );
+    const tool = createReadAttachmentTool({} as never, {} as never);
 
     const validated = tool.validate({
       attachFile: true,
@@ -128,7 +129,10 @@ describe("read_attachment tool", function () {
       baseContext,
     );
     assert.isTrue(shouldConfirm);
-    const pending = await tool.createPendingAction?.(validated.value, baseContext);
+    const pending = await tool.createPendingAction?.(
+      validated.value,
+      baseContext,
+    );
     assert.exists(pending);
     assert.equal(pending?.toolName, "read_attachment");
     assert.equal(pending?.confirmLabel, "Send to model");
@@ -173,7 +177,8 @@ describe("view_pdf_pages tool", function () {
       };
       (
         globalThis as typeof globalThis & { btoa?: (value: string) => string }
-      ).btoa = (value: string) => Buffer.from(value, "binary").toString("base64");
+      ).btoa = (value: string) =>
+        Buffer.from(value, "binary").toString("base64");
 
       const tool = createViewPdfPagesTool(
         {
@@ -184,7 +189,11 @@ describe("view_pdf_pages tool", function () {
               title: "Paper One",
               contextItemId: 101,
               itemId: 1,
-              paperContext: { itemId: 1, contextItemId: 101, title: "Paper One" },
+              paperContext: {
+                itemId: 1,
+                contextItemId: 101,
+                title: "Paper One",
+              },
             },
             capturedPage: {
               pageIndex: 3,

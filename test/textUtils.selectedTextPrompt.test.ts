@@ -1,8 +1,5 @@
 import { assert } from "chai";
-import {
-  buildQuestionWithSelectedTextContexts,
-  setTokenUsage,
-} from "../src/modules/contextPanel/textUtils";
+import { buildQuestionWithSelectedTextContexts } from "../src/modules/contextPanel/textUtils";
 
 describe("textUtils selected text prompt composition", function () {
   it("includes paper attribution for open-chat prompt composition", function () {
@@ -68,25 +65,5 @@ describe("textUtils selected text prompt composition", function () {
     assert.include(prompt, "Selected text from a Zotero note:");
     assert.notInclude(prompt, "editing focus");
     assert.include(prompt, "User question:\nUse this for context.");
-  });
-
-  it("labels token usage as estimated active context pressure", function () {
-    const tokenEl = {
-      textContent: "",
-      title: "",
-      dataset: {} as Record<string, string>,
-      style: { display: "" },
-    } as unknown as HTMLElement;
-    const gaugeEl = {
-      title: "",
-      dataset: {} as Record<string, string>,
-      style: { display: "", background: "" },
-    } as unknown as HTMLElement;
-
-    setTokenUsage(tokenEl, 90, 100, gaugeEl, { estimated: true });
-
-    assert.equal(tokenEl.textContent, "90 / 100 (90%)");
-    assert.include(tokenEl.title, "Estimated active context window usage");
-    assert.equal(tokenEl.dataset.warning, "true");
   });
 });

@@ -1,10 +1,5 @@
-import {
-  buildPaperRetrievalCandidates,
-} from "../../modules/contextPanel/pdfContext";
-import {
-  formatPaperCitationLabel,
-  formatPaperSourceLabel,
-} from "../../modules/contextPanel/paperAttribution";
+import { buildPaperRetrievalCandidates } from "../../modules/contextPanel/pdfContext";
+import { formatPaperSourceLabel } from "../../modules/contextPanel/paperAttribution";
 import type { PaperContextRef } from "../../shared/types";
 import { PdfService } from "./pdfService";
 
@@ -13,7 +8,6 @@ type RetrievalResult = {
   chunkIndex: number;
   sectionLabel?: string;
   chunkKind?: string;
-  citationLabel: string;
   sourceLabel: string;
   text: string;
   score: number;
@@ -25,7 +19,12 @@ function dedupePaperContexts(
   const out: PaperContextRef[] = [];
   const seen = new Set<string>();
   for (const entry of paperContexts) {
-    if (!entry || !Number.isFinite(entry.itemId) || !Number.isFinite(entry.contextItemId)) continue;
+    if (
+      !entry ||
+      !Number.isFinite(entry.itemId) ||
+      !Number.isFinite(entry.contextItemId)
+    )
+      continue;
     const key = `${entry.itemId}:${entry.contextItemId}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -96,10 +95,6 @@ export class RetrievalService {
         pdfContext,
         params.question,
         {
-          apiBase: params.apiBase,
-          apiKey: params.apiKey,
-        },
-        {
           topK: perPaperTopK,
           mode: "evidence",
         },
@@ -109,7 +104,6 @@ export class RetrievalService {
         chunkIndex: candidate.chunkIndex,
         sectionLabel: candidate.sectionLabel,
         chunkKind: candidate.chunkKind,
-        citationLabel: formatPaperCitationLabel(paperContext),
         sourceLabel: formatPaperSourceLabel(paperContext),
         text: candidate.chunkText,
         score: candidate.evidenceScore,

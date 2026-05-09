@@ -11,7 +11,6 @@ import {
   shortcutRenderItemState,
   shortcutEscapeListenerAttached,
 } from "./state";
-import { resolveActiveNoteSession } from "./portalScope";
 import {
   getShortcutOverrides,
   setShortcutOverrides,
@@ -27,8 +26,6 @@ import {
   resetShortcutsToDefault,
 } from "./prefHelpers";
 import { setStatus } from "./textUtils";
-
-const shortcutRenderGeneration = new WeakMap<Element, number>();
 
 export async function loadShortcutText(file: string): Promise<string> {
   if (shortcutTextCache.has(file)) {
@@ -50,16 +47,10 @@ export async function renderShortcuts(
   item?: Zotero.Item | null,
   mode?: "paper" | "library",
 ) {
-  const renderGeneration = (shortcutRenderGeneration.get(body) || 0) + 1;
-  shortcutRenderGeneration.set(body, renderGeneration);
-  const isCurrentRender = () =>
-    shortcutRenderGeneration.get(body) === renderGeneration;
   shortcutRenderItemState.set(body, item);
 
-  // Library chat mode and note-editing mode: no shortcut buttons (actions
-  // available via / menu). Note-editing is detected from the item itself so
-  // we stay correct even if a caller forgets to pass mode="library".
-  if (mode === "library" || resolveActiveNoteSession(item)) {
+  // Library chat mode: no shortcut buttons (actions available via / menu)
+  if (mode === "library") {
     const container = body.querySelector(
       "#llm-shortcuts",
     ) as HTMLDivElement | null;
@@ -91,6 +82,7 @@ export async function renderShortcuts(
   if (!container) return;
 
   const moveMode = shortcutMoveModeState.get(body) === true;
+  container.innerHTML = "";
   const overrides = getShortcutOverrides();
   const labelOverrides = getShortcutLabelOverrides();
   const deletedIds = new Set(getDeletedShortcutIds());
@@ -117,9 +109,7 @@ export async function renderShortcuts(
     if (!promptText) {
       try {
         promptText = (await loadShortcutText(shortcut.file)).trim();
-        if (!isCurrentRender()) return;
       } catch {
-        if (!isCurrentRender()) return;
         promptText = "";
       }
     }
@@ -156,8 +146,6 @@ export async function renderShortcuts(
   ) {
     setShortcutOrder(normalizedOrder);
   }
-  if (!isCurrentRender()) return;
-  container.innerHTML = "";
   const orderIndex = new Map(
     normalizedOrder.map((shortcutId, index) => [shortcutId, index]),
   );
@@ -587,7 +575,7 @@ export async function renderShortcuts(
       menu.dataset.shortcutId = "";
       menu.dataset.shortcutKind = "";
       await renderShortcuts(body, item);
-      };
+    };
 
     menuDelete.onclick = async (e: Event) => {
       e.preventDefault();
@@ -650,7 +638,7 @@ export async function renderShortcuts(
       menu.dataset.shortcutId = "";
       menu.dataset.shortcutKind = "";
       await renderShortcuts(body, item);
-      };
+    };
 
     const bodyEl = body as HTMLElement;
     if (!bodyEl.dataset.llmShortcutBodyClickAttached) {

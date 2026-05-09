@@ -418,7 +418,7 @@ function addCitationCandidate(
   });
 }
 
-export function collectAssistantCitationCandidates(
+function collectAssistantCitationCandidates(
   panelItem: Zotero.Item,
   pairedUserMessage: Message | null | undefined,
 ): AssistantCitationPaperCandidate[] {
@@ -439,22 +439,6 @@ export function collectAssistantCitationCandidates(
     { sanitizeText },
   );
   for (const paperContext of paperContexts) {
-    addCitationCandidate(out, seen, paperContext, paperContext.contextItemId);
-  }
-
-  const fullTextPaperContexts = normalizePaperContextRefs(
-    pairedUserMessage?.fullTextPaperContexts,
-    { sanitizeText },
-  );
-  for (const paperContext of fullTextPaperContexts) {
-    addCitationCandidate(out, seen, paperContext, paperContext.contextItemId);
-  }
-
-  const citationPaperContexts = normalizePaperContextRefs(
-    pairedUserMessage?.citationPaperContexts,
-    { sanitizeText },
-  );
-  for (const paperContext of citationPaperContexts) {
     addCitationCandidate(out, seen, paperContext, paperContext.contextItemId);
   }
 
@@ -1175,8 +1159,8 @@ async function navigateToCachedCitationPage(
   const cacheKey = buildCitationCacheKey(contextItemId, quoteText);
   const cached = citationPageCache.get(cacheKey);
   if (!cached) return null;
-  let targetPageIndex = Math.floor(cached.pageIndex);
-  let targetPageLabel =
+  const targetPageIndex = Math.floor(cached.pageIndex);
+  const targetPageLabel =
     typeof cached.pageLabel === "string" && cached.pageLabel.trim()
       ? cached.pageLabel.trim()
       : `${targetPageIndex + 1}`;

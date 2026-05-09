@@ -108,14 +108,7 @@ const GLM_PATHS = [
   "/api/anthropic/v1",
   "/api/anthropic/v1/messages",
 ];
-const DEEPSEEK_PATHS = [
-  "/",
-  "/v1",
-  "/v1/chat/completions",
-  "/anthropic",
-  "/anthropic/v1",
-  "/anthropic/v1/messages",
-];
+const DEEPSEEK_PATHS = ["/", "/v1", "/v1/chat/completions"];
 const GROK_PATHS = ["/", "/v1", "/v1/chat/completions", "/v1/responses"];
 const QWEN_PATHS = [
   "/",
@@ -194,11 +187,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     id: "deepseek",
     label: "DeepSeek",
-    defaultApiBase: "https://api.deepseek.com/anthropic",
-    defaultProtocol: "anthropic_messages",
-    supportedProtocols: ["anthropic_messages", "openai_chat_compat"],
-    helperText:
-      "Preset uses DeepSeek's Anthropic-compatible endpoint for reliable agent tool use.",
+    defaultApiBase: "https://api.deepseek.com/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses DeepSeek's official API base (v1).",
     matches: makeHostAndPathMatcher(["api.deepseek.com"], DEEPSEEK_PATHS),
     supportsEmbeddings: true,
     defaultEmbeddingModel: "deepseek-embedding",
@@ -234,7 +226,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     defaultApiBase: "https://api.moonshot.ai/v1",
     defaultProtocol: "openai_chat_compat",
     supportedProtocols: ["openai_chat_compat"],
-    helperText: "Preset uses Moonshot's international API. Use api.moonshot.cn for China.",
+    helperText:
+      "Preset uses Moonshot's international API. Use api.moonshot.cn for China.",
     matches: makeHostAndPathMatcher(
       ["api.moonshot.cn", "api.moonshot.ai"],
       KIMI_PATHS,
@@ -249,10 +242,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     supportedProtocols: ["openai_chat_compat", "responses_api"],
     helperText:
       "Uses GitHub Copilot via device login. Requires an active Copilot subscription.",
-    matches: makeHostAndPathMatcher(
-      ["api.githubcopilot.com"],
-      COPILOT_PATHS,
-    ),
+    matches: makeHostAndPathMatcher(["api.githubcopilot.com"], COPILOT_PATHS),
     supportsEmbeddings: false,
   },
 ];

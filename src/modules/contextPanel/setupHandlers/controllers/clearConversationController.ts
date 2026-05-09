@@ -3,17 +3,11 @@ type StatusLevel = "ready" | "warning" | "error";
 type ClearConversationControllerDeps = {
   getConversationKey: () => number | null;
   getCurrentItemID: () => number | null;
-  getPendingRequestId?: (conversationKey: number) => number;
-  getAbortController?: (conversationKey: number) => AbortController | null;
-  setCancelledRequestId?: (conversationKey: number, requestId: number) => void;
-  setPendingRequestId?: (conversationKey: number, requestId: number) => void;
-  setAbortController?: (conversationKey: number, value: AbortController | null) => void;
   clearPendingTurnDeletion?: (conversationKey: number) => void;
   clearTransientComposeStateForItem: (itemId: number) => void;
   resetComposePreviewUI: () => void;
   resetConversationHistory: (conversationKey: number) => void;
   markConversationLoaded: (conversationKey: number) => void;
-  invalidateConversationSession?: (conversationKey: number) => Promise<void>;
   clearStoredConversation: (conversationKey: number) => Promise<void>;
   resetConversationTitle: (conversationKey: number) => Promise<void>;
   clearOwnerAttachmentRefs: (
@@ -52,14 +46,6 @@ export function createClearConversationController(
     const normalizedConversationKey = Math.floor(conversationKey as number);
     const normalizedItemID = Math.floor(currentItemID as number);
 
-    const pendingRequestId = deps.getPendingRequestId?.(normalizedConversationKey) || 0;
-    if (pendingRequestId > 0) {
-      const ctrl = deps.getAbortController?.(normalizedConversationKey);
-      if (ctrl) ctrl.abort();
-      deps.setCancelledRequestId?.(normalizedConversationKey, pendingRequestId);
-      deps.setPendingRequestId?.(normalizedConversationKey, 0);
-      deps.setAbortController?.(normalizedConversationKey, null);
-    }
     deps.clearPendingTurnDeletion?.(normalizedConversationKey);
     deps.clearTransientComposeStateForItem(normalizedItemID);
     deps.resetConversationHistory(normalizedConversationKey);
@@ -67,11 +53,6 @@ export function createClearConversationController(
     deps.clearAgentToolCaches?.(normalizedConversationKey);
     deps.resetComposePreviewUI();
 
-    try {
-      await deps.invalidateConversationSession?.(normalizedConversationKey);
-    } catch (err) {
-      deps.logError?.("LLM: Failed to invalidate Claude conversation session", err);
-    }
     try {
       await deps.clearStoredConversation(normalizedConversationKey);
     } catch (err) {

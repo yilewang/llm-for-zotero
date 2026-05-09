@@ -1,37 +1,108 @@
+import { config } from "../../package.json";
 import { AgentRuntime } from "./runtime";
 import { createBuiltInToolRegistry } from "./tools";
 import { ZoteroGateway } from "./services/zoteroGateway";
 import { PdfService } from "./services/pdfService";
 import { PdfPageService } from "./services/pdfPageService";
 import { RetrievalService } from "./services/retrievalService";
-import {
-  initAgentTraceStore,
-  getAgentRunTrace,
-} from "./store/traceStore";
+import { initAgentTraceStore, getAgentRunTrace } from "./store/traceStore";
 import { initConversationMemoryStore } from "./store/conversationMemory";
 import { createAgentModelAdapter } from "./model/factory";
 import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
 import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
+import {
+  createExternalBackendBridgeRuntime,
+  type AgentRuntimeLike,
+} from "./externalBackendBridge";
+import {
+  maybeSpawnAdapter,
+  stopSpawnedAdapter,
+  getSpawnedAdapterState,
+} from "./services/adapterSpawner";
 import type {
   AgentConfirmationResolution,
   AgentEvent,
   AgentRuntimeRequest,
   AgentToolDefinition,
 } from "./types";
-import {
-  getConversationSystemPref,
-  isClaudeCodeModeEnabled,
-} from "../claudeCode/prefs";
-import { getClaudeCommandCatalog } from "../claudeCode/commandCatalog";
-import { getClaudeBridgeRuntime, resetClaudeBridgeRuntime } from "../claudeCode/runtime";
-import { clearCodexZoteroMcpPreflightCache } from "../codexAppServer/mcpSetup";
 
 let runtime: AgentRuntime | null = null;
+let runtimeBridge: AgentRuntimeLike | null = null;
 let _actionRegistry: ActionRegistry | null = null;
 let _toolRegistry: ReturnType<typeof createBuiltInToolRegistry> | null = null;
 
 // Hoisted so getAgentApi() can expose them to third-party plugin authors.
 let _zoteroGateway: ZoteroGateway | null = null;
+
+type AgentBackendMode = "disabled" | "builtin" | "claude_bridge";
+
+function getAgentBackendMode(): AgentBackendMode {
+  try {
+    const enabled = Zotero.Prefs.get(
+      `${config.prefsPrefix}.enableAgentMode`,
+      true,
+    );
+    const isEnabled =
+      enabled === true || `${enabled || ""}`.toLowerCase() === "true";
+    if (!isEnabled) return "disabled";
+    const value = Zotero.Prefs.get(
+      `${config.prefsPrefix}.agentBackendMode`,
+      true,
+    );
+    if (
+      value === "builtin" ||
+      value === "claude_bridge" ||
+      value === "disabled"
+    ) {
+      return value;
+    }
+    return "builtin";
+  } catch {
+    return "builtin";
+  }
+}
+
+function getAdapterAutoSpawn(): boolean {
+  try {
+    const v = Zotero.Prefs.get(
+      `${config.prefsPrefix}.agentBackendAutoSpawn`,
+      true,
+    );
+    if (typeof v === "boolean") return v;
+    if (typeof v === "string") return v.trim().toLowerCase() === "true";
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function getAdapterPath(): string {
+  try {
+    const v = Zotero.Prefs.get(
+      `${config.prefsPrefix}.agentBackendAdapterPath`,
+      true,
+    );
+    return typeof v === "string" ? v.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function getExternalBackendBridgeUrl(): string {
+  if (getAgentBackendMode() !== "claude_bridge") {
+    return "";
+  }
+  try {
+    const value = Zotero.Prefs.get(
+      `${config.prefsPrefix}.agentBackendBridgeUrl`,
+      true,
+    );
+    const url = typeof value === "string" ? value.trim() : "";
+    return url || "http://127.0.0.1:19787";
+  } catch {
+    return "http://127.0.0.1:19787";
+  }
+}
 
 function createToolRegistry() {
   _zoteroGateway = new ZoteroGateway();
@@ -56,38 +127,68 @@ export async function initAgentSubsystem(): Promise<AgentRuntime> {
     adapterFactory: (request) => createAgentModelAdapter(request),
   });
 
+  // Initialize action registry and MCP server
   _actionRegistry = createBuiltInActionRegistry();
-  registerMcpServer({
-    toolRegistry: _toolRegistry,
-    zoteroGateway: _zoteroGateway!,
+  try {
+    registerMcpServer({
+      actionRegistry: _actionRegistry,
+      toolRegistry: _toolRegistry,
+      zoteroGateway: _zoteroGateway!,
+    });
+  } catch (err) {
+    // MCP server registration failure must not block bridge initialization
+    console.error("LLM: Failed to register MCP server", err);
+  }
+
+  runtimeBridge = createExternalBackendBridgeRuntime({
+    coreRuntime: runtime,
+    getBridgeUrl: getExternalBackendBridgeUrl,
   });
+
+  // Spawn adapter in background so plugin init does not block waiting for
+  // healthz (the bridge startup can take several seconds).
+  if (getAgentBackendMode() === "claude_bridge" && getAdapterAutoSpawn()) {
+    const bridgeUrl = getExternalBackendBridgeUrl();
+    const adapterPath = getAdapterPath();
+    if (bridgeUrl && adapterPath) {
+      void maybeSpawnAdapter({ bridgeUrl, adapterPath })
+        .then((result) => {
+          if (!result.spawned) {
+            console.log(
+              `LLM Agent: skipped adapter spawn (${result.reason})`,
+            );
+          } else {
+            console.log(
+              `LLM Agent: spawned adapter (pid=${result.pid ?? "?"})`,
+            );
+          }
+        })
+        .catch((err) => {
+          console.error("LLM Agent: adapter spawn failed", err);
+        });
+    }
+  }
 
   return runtime;
 }
 
 export function shutdownAgentSubsystem(): void {
   unregisterMcpServer();
-  clearCodexZoteroMcpPreflightCache();
+  void stopSpawnedAdapter().catch((err) => {
+    console.error("LLM Agent: failed to stop spawned adapter", err);
+  });
   _actionRegistry = null;
   _toolRegistry = null;
-  resetClaudeBridgeRuntime();
+  runtimeBridge = null;
   runtime = null;
   _zoteroGateway = null;
 }
 
-export function getCoreAgentRuntime(): AgentRuntime {
+export function getAgentRuntime(): AgentRuntime {
   if (!runtime) {
     throw new Error("Agent subsystem is not initialized");
   }
-  return runtime;
-}
-
-export function getAgentRuntime(): AgentRuntime {
-  const coreRuntime = getCoreAgentRuntime();
-  if (getConversationSystemPref() === "claude_code" && isClaudeCodeModeEnabled()) {
-    return getClaudeBridgeRuntime(coreRuntime) as unknown as AgentRuntime;
-  }
-  return coreRuntime;
+  return (runtimeBridge || runtime) as unknown as AgentRuntime;
 }
 
 /**
@@ -129,7 +230,6 @@ export function getAgentApi() {
       requestId: string,
       resolve: (resolution: AgentConfirmationResolution) => void,
     ) => getAgentRuntime().registerPendingConfirmation(requestId, resolve),
-    listSlashCommands: () => getClaudeCommandCatalog(getCoreAgentRuntime()),
 
     // ── Extension API ──────────────────────────────────────────────────────
     /**
@@ -185,17 +285,64 @@ export function getAgentApi() {
       return _zoteroGateway;
     },
 
+    // ── Adapter spawn control ─────────────────────────────────────────────
+    spawnBridgeAdapter: () =>
+      maybeSpawnAdapter({
+        bridgeUrl:
+          getExternalBackendBridgeUrl() || "http://127.0.0.1:19787",
+        adapterPath: getAdapterPath(),
+      }),
+    stopBridgeAdapter: () => stopSpawnedAdapter(),
+    getBridgeAdapterState: () => getSpawnedAdapterState(),
+
     // ── Action API ─────────────────────────────────────────────────────────
     /**
      * List all registered actions (name, description, inputSchema).
      */
-    listActions: (mode?: "paper" | "library") => {
-      if (!_actionRegistry) throw new Error("Agent subsystem is not initialized");
-      return _actionRegistry.listActions(mode);
+    listActions: () => {
+      if (!_actionRegistry)
+        throw new Error("Agent subsystem is not initialized");
+      const localActions = _actionRegistry.listActions().map((action) => ({
+        ...action,
+        source: "local" as const,
+      }));
+      const externalActions =
+        runtimeBridge?.listExternalActionsSync?.().map((action) => ({
+          name: action.name,
+          description: action.description,
+          inputSchema: action.inputSchema,
+          source: "backend" as const,
+          backendToolName: action.backendToolName,
+          riskLevel: action.riskLevel,
+          requiresConfirmation: action.requiresConfirmation,
+          mutability: action.mutability,
+        })) || [];
+      return [...externalActions, ...localActions];
     },
-    getPaperScopedActionProfile: (name: string) => {
-      if (!_actionRegistry) throw new Error("Agent subsystem is not initialized");
-      return _actionRegistry.getPaperScopedActionProfile(name);
+
+    refreshActions: async (force = false) => {
+      if (runtimeBridge?.refreshExternalActions) {
+        await runtimeBridge.refreshExternalActions(force);
+      }
+    },
+
+    listSlashCommands: () => {
+      if (!_actionRegistry)
+        throw new Error("Agent subsystem is not initialized");
+      const externalSlashCommands =
+        runtimeBridge?.listSlashCommandsSync?.() || [];
+      return externalSlashCommands.map((cmd) => ({
+        name: cmd.name,
+        description: cmd.description,
+        argumentHint: cmd.argumentHint,
+        source: "backend" as const,
+      }));
+    },
+
+    refreshSlashCommands: async (force = false) => {
+      if (runtimeBridge?.refreshSlashCommands) {
+        await runtimeBridge.refreshSlashCommands(force);
+      }
     },
 
     /**
@@ -218,8 +365,8 @@ export function getAgentApi() {
       name: string,
       input: unknown,
       opts: {
+        conversationKey?: number;
         libraryID?: number;
-        requestContext?: import("./actions").ActionRequestContext;
         confirmationMode?: import("./actions").ActionConfirmationMode;
         onProgress?: (event: import("./actions").ActionProgressEvent) => void;
         requestConfirmation?: (
@@ -230,11 +377,17 @@ export function getAgentApi() {
         llm?: import("./actions").ActionLLMConfig;
       } = {},
     ) => {
-      if (!_actionRegistry || !_toolRegistry) throw new Error("Agent subsystem is not initialized");
-      if (!_zoteroGateway) throw new Error("Agent subsystem is not initialized");
+      if (runtimeBridge?.runExternalAction && name.startsWith("cc_tool::")) {
+        return runtimeBridge.runExternalAction(name, input, opts);
+      }
+      if (!_actionRegistry || !_toolRegistry)
+        throw new Error("Agent subsystem is not initialized");
+      if (!_zoteroGateway)
+        throw new Error("Agent subsystem is not initialized");
       const libraryID =
         opts.libraryID ??
-        (Zotero as unknown as { Libraries: { userLibraryID: number } }).Libraries.userLibraryID;
+        (Zotero as unknown as { Libraries: { userLibraryID: number } })
+          .Libraries.userLibraryID;
       const ctx: import("./actions").ActionExecutionContext = {
         registry: _toolRegistry,
         zoteroGateway: _zoteroGateway,
@@ -242,9 +395,9 @@ export function getAgentApi() {
         libraryID,
         confirmationMode: opts.confirmationMode ?? "native_ui",
         onProgress: opts.onProgress ?? (() => {}),
-        requestConfirmation: opts.requestConfirmation ?? (async () => ({ approved: true })),
+        requestConfirmation:
+          opts.requestConfirmation ?? (async () => ({ approved: true })),
         llm: opts.llm,
-        requestContext: opts.requestContext,
       };
       return _actionRegistry.run(name, input, ctx);
     },

@@ -25,7 +25,6 @@
 import { getLocaleID } from "../../utils/locale";
 import { config, PANE_ID } from "./constants";
 import type { Message } from "./types";
-import type { ConversationSystem } from "../../shared/types";
 import {
   activeConversationModeByLibrary,
   activeGlobalConversationByLibrary,
@@ -45,7 +44,7 @@ import {
   collectAndDeleteUnreferencedBlobs,
 } from "../../utils/attachmentRefStore";
 import { normalizeSelectedText, setStatus } from "./textUtils";
-import { buildUI } from "./buildUI";
+import { buildUI, syncGlobalLockVisibility } from "./buildUI";
 import { setupHandlers } from "./setupHandlers";
 import { ensureConversationLoaded, getConversationKey } from "./chat";
 import { renderShortcuts } from "./shortcuts";
@@ -68,25 +67,10 @@ import { resolveReaderPopupPaperContext } from "./readerPopup";
 import {
   resolveInitialPanelItemState,
   resolveActiveLibraryID,
-  resolveConversationSystemForItem,
-  resolveShortcutMode,
+  resolveDisplayConversationKind,
 } from "./portalScope";
 import { getLockedGlobalConversationKey } from "./prefHelpers";
 import { getEditableSelectionFromDocument } from "./noteSelection";
-import {
-  activeClaudeConversationModeByLibrary,
-  activeClaudeGlobalConversationByLibrary,
-  buildClaudeLibraryStateKey,
-} from "../../claudeCode/state";
-import {
-  activeCodexConversationModeByLibrary,
-  activeCodexGlobalConversationByLibrary,
-  buildCodexLibraryStateKey,
-} from "../../codexAppServer/state";
-import {
-  retainClaudeRuntimeForBody,
-  releaseClaudeRuntimeForBody,
-} from "../../claudeCode/runtimeRetention";
 
 export { openStandaloneChat } from "./standaloneWindow";
 import {
@@ -120,6 +104,62 @@ export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
   doc.documentElement?.appendChild(katexLink);
 }
 
+// Scroll the LLM section into view after a fresh render so that switching
+// papers or reopening the item pane lands the user back on the plugin
+// section instead of dumping them at the top of the info pane.
+function scheduleScrollSectionIntoView(body: Element): void {
+  if (!body || !body.isConnected) return;
+  const enabled = Zotero.Prefs.get(
+    `${config.prefsPrefix}.scrollSectionIntoViewOnSwitch`,
+    true,
+  );
+  // Default true: only skip when the user has explicitly turned it off.
+  if (enabled === false || `${enabled ?? ""}`.toLowerCase() === "false") {
+    return;
+  }
+  const doc = body.ownerDocument;
+  const win = doc?.defaultView as (Window & typeof globalThis) | null;
+  if (!win) return;
+  const section = body.parentElement;
+  if (!section || !section.isConnected) return;
+  // Skip hidden panels (e.g. the inactive reader/library twin) — scrolling
+  // them is wasted layout work and getBoundingClientRect would lie.
+  if (section.getClientRects().length === 0) return;
+
+  const isSectionAtTop = (): boolean => {
+    if (!section.isConnected) return true;
+    try {
+      const rect = section.getBoundingClientRect();
+      // Tolerate a few pixels of Zotero pane padding/border above the section.
+      return rect.top >= -2 && rect.top <= 32;
+    } catch {
+      return false;
+    }
+  };
+
+  const scroll = () => {
+    if (!section.isConnected) return;
+    if (isSectionAtTop()) return;
+    try {
+      section.scrollIntoView({ block: "start", behavior: "auto" });
+    } catch {
+      /* scrollIntoView is best-effort */
+    }
+  };
+
+  // Why two timers instead of rAF: Zotero often resets the item-pane scroll
+  // to the top *after* its own render frame, undoing a same-frame scroll on
+  // subsequent paper switches. Deferring past that reset wins the race; the
+  // 320ms backup catches slower renders. The visibility guard makes repeat
+  // calls effectively free when the section is already where we want it.
+  try {
+    win.setTimeout(scroll, 120);
+    win.setTimeout(scroll, 320);
+  } catch {
+    scroll();
+  }
+}
+
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
   setReaderContextPanelRegistered(true);
@@ -150,12 +190,23 @@ export function registerReaderContextPanel() {
       ztoolkit.log(`LLM: panel itemChange tabType=${tabType}`);
       // Refresh the cached tab ID (side effect of getActiveReaderForSelectedTab)
       getActiveReaderForSelectedTab();
+      // Body re-use: when revisiting an already-opened paper, Zotero swaps
+      // back the cached body whose dataset.itemId matches the incoming item,
+      // so onRender takes the no-op else branch and never reaches scroll.
+      // Drive scroll from the item-change event so revisits also land on
+      // the LLM section. Idempotent via the at-top early-exit.
+      for (const [panelBody] of activeContextPanels) {
+        if (!(panelBody as Element).isConnected) {
+          activeContextPanels.delete(panelBody);
+          continue;
+        }
+        scheduleScrollSectionIntoView(panelBody as Element);
+      }
       return true;
     },
     onRender: ({ body, item }) => {
       // When standalone window is open, show placeholder instead of full UI
       if (isStandaloneWindowActive()) {
-        void releaseClaudeRuntimeForBody(body);
         renderStandalonePlaceholder(body);
         const resolvedState = resolveInitialPanelItemState(item);
         activeContextPanels.set(body, () => resolvedState.item);
@@ -163,42 +214,34 @@ export function registerReaderContextPanel() {
         (body as any).__llmSyncRendered = true;
         return;
       }
+      syncGlobalLockVisibility(body);
       try {
         const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
         // Treat missing panel root as needing a full render — the body may
         // belong to a tab that onAsyncRender never fired for.
         const needsFullRender = !activeContextPanels.has(body) || !panelRoot;
 
-        const resolvedState = resolveInitialPanelItemState(item);
-        const expectedSystem =
-          resolveConversationSystemForItem(resolvedState.item) || "upstream";
-
         // Also check if a global lock requires switching to open chat
-        const libraryID = resolveActiveLibraryID() ||
-          (resolvedState.item ? Number(resolvedState.item.libraryID || 0) : 0) ||
-          (item ? Number(item.libraryID || 0) : 0);
+        const libraryID =
+          resolveActiveLibraryID() || (item ? Number(item.libraryID || 0) : 0);
         const lockedKey =
-          expectedSystem === "claude_code" || expectedSystem === "codex"
-            ? null
-            : libraryID > 0
-              ? getLockedGlobalConversationKey(libraryID)
-              : null;
+          libraryID > 0 ? getLockedGlobalConversationKey(libraryID) : null;
         const currentKind = panelRoot?.dataset?.conversationKind;
         const currentItemKey = panelRoot?.dataset?.itemId;
-        const currentSystem = panelRoot?.dataset?.conversationSystem || "";
         // Lock is stale if:
         // - lock active + panel in paper mode (need to switch to global)
         // - lock active + panel shows different global conversation
         // - lock cleared + panel still in global mode (need to switch back to paper)
         const lockStale =
-          (lockedKey !== null && (
-            currentKind === "paper" ||
-            (currentItemKey !== undefined && currentItemKey !== String(lockedKey))
-          )) ||
+          (lockedKey !== null &&
+            (currentKind === "paper" ||
+              (currentItemKey !== undefined &&
+                currentItemKey !== String(lockedKey)))) ||
           (lockedKey === null && currentKind === "global" && !needsFullRender);
 
         // Detect if the active item has changed (e.g. user switched reader tabs).
         // If so, the panel must fully re-render to switch conversations.
+        const resolvedState = resolveInitialPanelItemState(item);
         const storedItemKey = panelRoot?.dataset?.itemId;
         const newItemKey = resolvedState.item
           ? String(getConversationKey(resolvedState.item))
@@ -207,11 +250,8 @@ export function registerReaderContextPanel() {
           !needsFullRender &&
           storedItemKey !== undefined &&
           storedItemKey !== newItemKey;
-        const systemChanged =
-          !needsFullRender &&
-          currentSystem !== expectedSystem;
 
-        if (needsFullRender || lockStale || itemChanged || systemChanged) {
+        if (needsFullRender || lockStale || itemChanged) {
           // Build UI synchronously so panel data attributes (basePaperItemId,
           // conversationKind, etc.) are immediately correct.  The reader popup
           // "Add Text" path reads these attributes to decide paper-mismatch —
@@ -219,16 +259,17 @@ export function registerReaderContextPanel() {
           buildUI(body, resolvedState.item);
           activeContextPanels.set(body, () => resolvedState.item);
           activeContextPanelRawItems.set(body, item || null);
-          void retainClaudeRuntimeForBody(body, resolvedState.item);
-          // Attach handlers synchronously so buttons are
+          // Attach handlers synchronously so buttons (lock, send, etc.) are
           // immediately interactive — don't gate on ensureConversationLoaded.
           setupHandlers(body, item);
           // Flag: onAsyncRender can skip the duplicate buildUI + setupHandlers.
           (body as any).__llmSyncRendered = true;
+          scheduleScrollSectionIntoView(body);
           // Defer conversation loading and chat rendering
           void (async () => {
             try {
-              if (resolvedState.item) await ensureConversationLoaded(resolvedState.item);
+              if (resolvedState.item)
+                await ensureConversationLoaded(resolvedState.item);
               if (isStandaloneWindowActive()) return;
               refreshChat(body, resolvedState.item);
             } catch (err) {
@@ -240,9 +281,10 @@ export function registerReaderContextPanel() {
           // (e.g. Add Text) always resolve the active item.
           activeContextPanels.set(body, () => resolvedState.item);
           activeContextPanelRawItems.set(body, item || null);
-          void retainClaudeRuntimeForBody(body, resolvedState.item);
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     },
     onAsyncRender: async ({ body, item, setEnabled, tabType }) => {
       setEnabled(true);
@@ -255,6 +297,7 @@ export function registerReaderContextPanel() {
 
       const resolvedInitialState = resolveInitialPanelItemState(item);
       const resolvedItem = resolvedInitialState.item;
+      const basePaperItem = resolvedInitialState.basePaperItem;
 
       // If onRender already did the synchronous buildUI + setupHandlers for
       // this render cycle, skip the duplicate work.  We still run the
@@ -275,11 +318,16 @@ export function registerReaderContextPanel() {
       // or if the standalone window was opened during the await.
       if (renderGeneration !== thisGeneration) return;
       if (isStandaloneWindowActive()) return;
-      await renderShortcuts(body, resolvedItem, resolveShortcutMode(resolvedItem));
+      const shortcutMode =
+        resolveDisplayConversationKind(resolvedItem) === "global"
+          ? "library"
+          : "paper";
+      await renderShortcuts(body, resolvedItem, shortcutMode);
       if (renderGeneration !== thisGeneration) return;
       if (isStandaloneWindowActive()) return;
       if (!syncAlreadyRendered) {
         setupHandlers(body, item);
+        scheduleScrollSectionIntoView(body);
       }
       refreshChat(body, resolvedItem);
       // Defer content extraction so the panel becomes interactive sooner.
@@ -388,9 +436,7 @@ export function registerReaderSelectionTracking() {
           };
           for (const [panelBody] of activeContextPanels.entries()) {
             if (!(panelBody as Element).isConnected) {
-              void releaseClaudeRuntimeForBody(panelBody as Element);
               activeContextPanels.delete(panelBody);
-              activeContextPanelRawItems.delete(panelBody);
               activeContextPanelStateSync.delete(panelBody);
               continue;
             }
@@ -437,6 +483,20 @@ export function registerReaderSelectionTracking() {
             Number.isFinite(readerLibraryID) && readerLibraryID > 0
               ? Math.floor(readerLibraryID)
               : 0;
+          const readerModeLock =
+            normalizedReaderLibraryID > 0
+              ? activeConversationModeByLibrary.get(normalizedReaderLibraryID)
+              : null;
+          const readerGlobalConversationKey =
+            readerModeLock === "global" && normalizedReaderLibraryID > 0
+              ? Math.floor(
+                  Number(
+                    activeGlobalConversationByLibrary.get(
+                      normalizedReaderLibraryID,
+                    ) || 0,
+                  ),
+                )
+              : 0;
           const readerPaperContext = resolveReaderPopupPaperContext(
             item,
             getActiveContextAttachmentFromTabs(),
@@ -473,17 +533,6 @@ export function registerReaderSelectionTracking() {
               ? Math.floor(parsed)
               : null;
           };
-          const getPanelConversationSystem = (
-            root: HTMLDivElement,
-          ): ConversationSystem | null => {
-            const raw = `${root.dataset.conversationSystem || ""}`
-              .trim()
-              .toLowerCase();
-            if (raw === "upstream") return "upstream";
-            if (raw === "claude_code") return "claude_code";
-            if (raw === "codex") return "codex";
-            return null;
-          };
           const isVisible = (root: HTMLElement) =>
             root.getClientRects().length > 0;
           const popupTopDoc = event.doc.defaultView?.top?.document || null;
@@ -493,41 +542,12 @@ export function registerReaderSelectionTracking() {
               const panelItemId = getPanelItemId(root);
               const panelLibraryId = getPanelLibraryId(root);
               const conversationKind = getPanelConversationKind(root);
-              const conversationSystem = getPanelConversationSystem(root);
               const conversationKey = panelItemId;
               const basePaperItemID = getPanelBasePaperItemID(root);
-              const panelModeLock =
-                panelLibraryId && conversationSystem === "claude_code"
-                  ? activeClaudeConversationModeByLibrary.get(
-                      buildClaudeLibraryStateKey(panelLibraryId),
-                    )
-                  : panelLibraryId && conversationSystem === "codex"
-                    ? activeCodexConversationModeByLibrary.get(
-                        buildCodexLibraryStateKey(panelLibraryId),
-                      )
-                  : panelLibraryId && conversationSystem === "upstream"
-                    ? activeConversationModeByLibrary.get(panelLibraryId)
-                    : null;
-              const panelGlobalConversationKey =
-                panelModeLock === "global" && panelLibraryId
-                  ? Math.floor(
-                      Number(
-                        (conversationSystem === "claude_code"
-                          ? activeClaudeGlobalConversationByLibrary.get(
-                              buildClaudeLibraryStateKey(panelLibraryId),
-                            )
-                          : conversationSystem === "codex"
-                            ? activeCodexGlobalConversationByLibrary.get(
-                                buildCodexLibraryStateKey(panelLibraryId),
-                              )
-                          : activeGlobalConversationByLibrary.get(panelLibraryId)) || 0,
-                      ),
-                    )
-                  : 0;
               const sameConversationMode =
-                panelModeLock === "global"
+                readerModeLock === "global"
                   ? conversationKind === "global"
-                  : panelModeLock === "paper"
+                  : readerModeLock === "paper"
                     ? conversationKind === "paper"
                     : false;
               return {
@@ -536,7 +556,6 @@ export function registerReaderSelectionTracking() {
                 panelItemId,
                 panelLibraryId,
                 conversationKind,
-                conversationSystem,
                 basePaperItemID,
                 conversationKey,
                 visible: isVisible(root),
@@ -549,8 +568,8 @@ export function registerReaderSelectionTracking() {
                   basePaperItemID !== null &&
                   basePaperItemID === readerPaperItemID,
                 matchesLockedGlobal:
-                  panelGlobalConversationKey > 0 &&
-                  conversationKey === panelGlobalConversationKey,
+                  readerGlobalConversationKey > 0 &&
+                  conversationKey === readerGlobalConversationKey,
                 sameConversationMode,
                 hasActiveFocus: Boolean(
                   ownerDoc?.activeElement &&
@@ -562,8 +581,7 @@ export function registerReaderSelectionTracking() {
               (state) =>
                 state.panelItemId !== null &&
                 state.conversationKey !== null &&
-                state.conversationKind !== null &&
-                state.conversationSystem !== null,
+                state.conversationKind !== null,
             );
           if (!rootStates.length) return;
           const sameLibraryStates =
@@ -629,13 +647,12 @@ export function registerReaderSelectionTracking() {
             // Paper mode: resolve the conversation key from the reader's
             // paper item via resolveInitialPanelItemState + getConversationKey.
             // This correctly handles portal keys (multi-conversation papers).
-            const readerItem = readerPaperItemID > 0
-              ? Zotero.Items.get(readerPaperItemID) || null
-              : null;
+            const readerItem =
+              readerPaperItemID > 0
+                ? Zotero.Items.get(readerPaperItemID) || null
+                : null;
             if (readerItem) {
-              const resolved = resolveInitialPanelItemState(readerItem, {
-                conversationSystem: bestState.conversationSystem,
-              });
+              const resolved = resolveInitialPanelItemState(readerItem);
               conversationKey = resolved.item
                 ? getConversationKey(resolved.item)
                 : readerPaperItemID;
@@ -691,8 +708,13 @@ export function registerReaderSelectionTracking() {
               const activeRoot = (activeBody as Element).querySelector(
                 "#llm-main",
               ) as HTMLDivElement | null;
-              if (Number(activeRoot?.dataset?.itemId || 0) === conversationKey) {
-                applySelectedTextPreview(activeBody as Element, conversationKey);
+              if (
+                Number(activeRoot?.dataset?.itemId || 0) === conversationKey
+              ) {
+                applySelectedTextPreview(
+                  activeBody as Element,
+                  conversationKey,
+                );
                 refreshedPanels += 1;
                 break;
               }
@@ -833,13 +855,12 @@ export function registerReaderSelectionTracking() {
           }
 
           // Clean up cache when the selection popup is dismissed.
-          // MutationObserver proved unreliable in this Gecko context, so use a
-          // delayed connectivity check instead.
-          const sentinelEl: HTMLSpanElement | null = sentinel;
-          const win = sentinelEl?.ownerDocument?.defaultView;
-          if (win && sentinelEl) {
+          // MutationObserver is unreliable in Gecko cross-compartment
+          // contexts, so use a simple delayed check instead.
+          const win = sentinel.ownerDocument?.defaultView;
+          if (win) {
             win.setTimeout(() => {
-              if (!sentinelEl.isConnected) {
+              if (!sentinel.isConnected) {
                 for (const key of keys) {
                   if (recentReaderSelectionCache.get(key) === selectedText) {
                     recentReaderSelectionCache.delete(key);
@@ -872,7 +893,6 @@ type MainWindowWithNoteEditingTracker = _ZoteroTypes.MainWindow & {
     intervalId: number;
     refresh: () => void;
     lastNoteId: number;
-    lastParentPaperItemId: number;
     lastSelectionText: string;
   };
 };
@@ -912,7 +932,9 @@ function getActiveNoteItemFromWindow(
         ? ""
         : `${tabs.selectedID}`;
     const activeTab = Array.isArray(tabs?._tabs)
-      ? tabs._tabs.find((tab: Record<string, unknown>) => `${tab?.id || ""}` === selectedId)
+      ? tabs._tabs.find(
+          (tab: Record<string, unknown>) => `${tab?.id || ""}` === selectedId,
+        )
       : null;
     const data = (activeTab?.data || {}) as Record<string, unknown>;
     const candidateIds = [
@@ -935,9 +957,11 @@ function getActiveNoteItemFromWindow(
   }
 
   try {
-    const pane = (win as unknown as {
-      ZoteroPane?: { getSelectedItems?: () => Zotero.Item[] };
-    }).ZoteroPane;
+    const pane = (
+      win as unknown as {
+        ZoteroPane?: { getSelectedItems?: () => Zotero.Item[] };
+      }
+    ).ZoteroPane;
     const selectedItems = pane?.getSelectedItems?.() || [];
     const noteItem = selectedItems.find((item: Zotero.Item) =>
       (item as any)?.isNote?.(),
@@ -1002,34 +1026,11 @@ function refreshTrackedNoteEditingSelection(
     noteItem && Number.isFinite(noteItem.id) && noteItem.id > 0
       ? Math.floor(noteItem.id)
       : 0;
-  const nextParentPaperItemId: number = (() => {
-    if (!noteItem) return 0;
-    try {
-      const parentId = Number((noteItem as any).parentItemID ?? 0);
-      return Number.isFinite(parentId) && parentId > 0 ? Math.floor(parentId) : 0;
-    } catch { return 0; }
-  })();
 
   if (nextNoteId === 0 && tracker.lastNoteId === 0) {
     // No note was active before and none is active now — nothing to do.
     return;
   }
-
-  // When focus moves to another window (e.g. the standalone chat window),
-  // the note-editor iframe loses hasFocus() and getEditableSelectionFromDocument
-  // returns "". Guard against this: if the main window has lost focus but the
-  // same note is still active and we already had a selection, keep it so the
-  // "Editing" chip stays visible while the user types in the standalone input.
-  try {
-    if (
-      tracker.lastSelectionText &&
-      tracker.lastNoteId === nextNoteId &&
-      typeof win.document.hasFocus === "function" &&
-      !win.document.hasFocus()
-    ) {
-      return;
-    }
-  } catch { /* ignore */ }
 
   const nextSelectionText = noteItem
     ? collectAccessibleDocuments(win.document).reduce((found, doc) => {
@@ -1057,20 +1058,8 @@ function refreshTrackedNoteEditingSelection(
     tracker.lastNoteId > 0 &&
     (tracker.lastNoteId !== nextNoteId || !nextSelectionText)
   ) {
-    if (
-      syncSelectedTextContextForSource(
-        tracker.lastNoteId,
-        "",
-        "note-edit",
-      )
-    ) {
+    if (syncSelectedTextContextForSource(tracker.lastNoteId, "", "note-edit")) {
       refreshPanelsForConversationKey(tracker.lastNoteId);
-    }
-    // Also clear from the parent paper panel (used by standalone window).
-    if (tracker.lastParentPaperItemId > 0) {
-      if (syncSelectedTextContextForSource(tracker.lastParentPaperItemId, "", "note-edit")) {
-        refreshPanelsForConversationKey(tracker.lastParentPaperItemId);
-      }
     }
   }
 
@@ -1084,17 +1073,9 @@ function refreshTrackedNoteEditingSelection(
     ) {
       refreshPanelsForConversationKey(nextNoteId);
     }
-    // Also sync to the parent paper panel so the standalone window (which is
-    // keyed to the parent paper item, not the note) shows the editing chip.
-    if (nextParentPaperItemId > 0) {
-      if (syncSelectedTextContextForSource(nextParentPaperItemId, nextSelectionText, "note-edit")) {
-        refreshPanelsForConversationKey(nextParentPaperItemId);
-      }
-    }
   }
 
   tracker.lastNoteId = nextNoteId;
-  tracker.lastParentPaperItemId = nextParentPaperItemId;
   tracker.lastSelectionText = nextSelectionText;
 }
 
@@ -1121,7 +1102,6 @@ export function registerNoteEditingSelectionTracking(
     intervalId,
     refresh,
     lastNoteId: 0,
-    lastParentPaperItemId: 0,
     lastSelectionText: "",
   };
   win.document.addEventListener("selectionchange", debouncedRefresh, true);
@@ -1134,7 +1114,11 @@ export function registerNoteEditingSelectionTracking(
       if (!tracker) return;
       win.clearInterval(tracker.intervalId);
       if (debounceTimer !== null) clearTimeout(debounceTimer);
-      win.document.removeEventListener("selectionchange", debouncedRefresh, true);
+      win.document.removeEventListener(
+        "selectionchange",
+        debouncedRefresh,
+        true,
+      );
       win.document.removeEventListener("mouseup", debouncedRefresh, true);
       win.document.removeEventListener("keyup", debouncedRefresh, true);
       delete trackedWindow.__llmNoteEditingSelectionTracking;

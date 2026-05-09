@@ -28,13 +28,16 @@ import {
   resumeAutoWatch,
   onAutoWatchProgress,
 } from "./mineruAutoWatch";
-import { getMineruAvailabilityForAttachmentId } from "./contextPanel/mineruSync";
 
 /** Show a confirm dialog with a custom title using ztoolkit.Dialog. */
 async function confirmDialog(message: string): Promise<boolean> {
   const dialogData: { [key: string]: unknown } = {
-    loadCallback: () => { return; },
-    unloadCallback: () => { return; },
+    loadCallback: () => {
+      return;
+    },
+    unloadCallback: () => {
+      return;
+    },
   };
   new ztoolkit.Dialog(1, 1)
     .addCell(0, 0, {
@@ -47,7 +50,8 @@ async function confirmDialog(message: string): Promise<boolean> {
     .addButton("Cancel", "cancel")
     .setDialogData(dialogData)
     .open(t("Delete confirmation"));
-  await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock.promise;
+  await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock
+    .promise;
   return (dialogData as { _lastButtonId?: string })._lastButtonId === "ok";
 }
 
@@ -155,43 +159,6 @@ export async function registerMineruManagerScript(
     }
   }
 
-  function isMineruAvailable(item: MineruItemEntry): boolean {
-    return item.availability !== "missing";
-  }
-
-  function getAvailabilityTooltip(item: MineruItemEntry): string {
-    if (item.availability === "synced") {
-      return t(
-        "Synced MinerU package available; local cache will restore when needed.",
-      );
-    }
-    if (item.availability === "both") {
-      return t("Local MinerU cache and synced package available.");
-    }
-    if (item.availability === "local") {
-      return t("Local MinerU cache available.");
-    }
-    return t("No MinerU cache available.");
-  }
-
-  async function refreshEntryAvailability(attachmentId: number): Promise<void> {
-    const entry = allItems.find((i) => i.attachmentId === attachmentId);
-    if (!entry) return;
-    const availability =
-      await getMineruAvailabilityForAttachmentId(attachmentId, {
-        validateSyncedPackage: false,
-      });
-    entry.localCached = availability.localCached;
-    entry.syncedPackage = availability.syncedPackage;
-    entry.availability = availability.status;
-    entry.cached = availability.status !== "missing";
-    const dot = dotElements.get(attachmentId);
-    if (dot) {
-      dot.style.background = entry.cached ? "#10b981" : "#d1d5db";
-      dot.title = getAvailabilityTooltip(entry);
-    }
-  }
-
   function getVisibleItems(): MineruItemEntry[] {
     let items: MineruItemEntry[];
     if (activeCollectionId === "all") items = allItems;
@@ -206,8 +173,8 @@ export async function registerMineruManagerScript(
     const dir = sortDir === "asc" ? 1 : -1;
     copy.sort((a, b) => {
       if (sortKey === "cached") {
-        const va = isMineruAvailable(a) ? 1 : 0;
-        const vb = isMineruAvailable(b) ? 1 : 0;
+        const va = a.cached ? 1 : 0;
+        const vb = b.cached ? 1 : 0;
         return (va - vb) * dir;
       }
       const va = a[sortKey] || "";
@@ -223,8 +190,8 @@ export async function registerMineruManagerScript(
     const dir = sortDir === "asc" ? 1 : -1;
     groups.sort((a, b) => {
       if (sortKey === "cached") {
-        const va = a.children.every(isMineruAvailable) ? 1 : 0;
-        const vb = b.children.every(isMineruAvailable) ? 1 : 0;
+        const va = a.children.every((c) => c.cached) ? 1 : 0;
+        const vb = b.children.every((c) => c.cached) ? 1 : 0;
         return (va - vb) * dir;
       }
       const va = (a[sortKey as keyof MineruParentGroup] as string) || "";
@@ -492,7 +459,10 @@ export async function registerMineruManagerScript(
     return Math.max(0, getHeaderContentWidth() - fixedWidth - gapWidth);
   }
 
-  function startColumnResize(boundary: ResizeBoundary, event: MouseEvent): void {
+  function startColumnResize(
+    boundary: ResizeBoundary,
+    event: MouseEvent,
+  ): void {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
@@ -512,10 +482,7 @@ export async function registerMineruManagerScript(
       let appliedDelta = rawDelta;
 
       if (boundary === "title|firstCreator") {
-        const minDelta = Math.min(
-          0,
-          MIN_COLUMN_WIDTHS.title - startTitleWidth,
-        );
+        const minDelta = Math.min(0, MIN_COLUMN_WIDTHS.title - startTitleWidth);
         const maxDelta = Math.max(
           0,
           startWidths.firstCreator - MIN_COLUMN_WIDTHS.firstCreator,
@@ -614,18 +581,13 @@ export async function registerMineruManagerScript(
       const placements = getHeaderHandlePlacements(key);
       for (const placement of placements) {
         const handleId = `${placement.boundary}:${placement.side}`;
-        if (
-          cell.querySelector(
-            `[data-mineru-resize-handle="${handleId}"]`,
-          )
-        ) {
+        if (cell.querySelector(`[data-mineru-resize-handle="${handleId}"]`)) {
           continue;
         }
 
         const handle = doc.createElement("span");
         handle.setAttribute("data-mineru-resize-handle", handleId);
-        handle.style.cssText =
-          `position: absolute; top: -4px; ${placement.side}: -6px; width: 12px; height: calc(100% + 8px); cursor: col-resize; z-index: 2;`;
+        handle.style.cssText = `position: absolute; top: -4px; ${placement.side}: -6px; width: 12px; height: calc(100% + 8px); cursor: col-resize; z-index: 2;`;
 
         const guide = doc.createElement("span");
         guide.style.cssText =
@@ -744,10 +706,10 @@ export async function registerMineruManagerScript(
     if (opts.isChild) row.style.borderBottomColor = "rgba(128,128,128,0.06)";
 
     const dot = doc.createElement("span");
-    dot.style.cssText = "width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;";
+    dot.style.cssText =
+      "width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;";
     setColumnWidthStyle(dot, "cached");
-    dot.style.background = isMineruAvailable(item) ? "#10b981" : "#d1d5db";
-    dot.title = getAvailabilityTooltip(item);
+    dot.style.background = item.cached ? "#10b981" : "#d1d5db";
     dotElements.set(item.attachmentId, dot);
     row.appendChild(dot);
 
@@ -898,21 +860,24 @@ export async function registerMineruManagerScript(
 
       // Aggregated status dot (before chevron)
       const parentDot = doc.createElement("span");
-      parentDot.style.cssText = "width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;";
+      parentDot.style.cssText =
+        "width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;";
       setColumnWidthStyle(parentDot, "cached");
 
       // Chevron (expand/collapse) — SVG triangle, after dot, before title
       const chev = doc.createElement("span");
-      chev.style.cssText =
-        `width: 12px; height: 12px; flex-shrink: 0; cursor: pointer; user-select: none; display: inline-flex; align-items: center; justify-content: center; margin-left: ${TITLE_CONTENT_OFFSET}px;`;
+      chev.style.cssText = `width: 12px; height: 12px; flex-shrink: 0; cursor: pointer; user-select: none; display: inline-flex; align-items: center; justify-content: center; margin-left: ${TITLE_CONTENT_OFFSET}px;`;
       const svgNS = "http://www.w3.org/2000/svg";
       const svg = doc.createElementNS(svgNS, "svg");
       svg.setAttribute("width", "8");
       svg.setAttribute("height", "8");
       svg.setAttribute("viewBox", "0 0 8 8");
-      svg.setAttribute("style", collapsed
-        ? "transform: rotate(0deg); transition: transform 0.1s;"
-        : "transform: rotate(90deg); transition: transform 0.1s;");
+      svg.setAttribute(
+        "style",
+        collapsed
+          ? "transform: rotate(0deg); transition: transform 0.1s;"
+          : "transform: rotate(90deg); transition: transform 0.1s;",
+      );
       const path = doc.createElementNS(svgNS, "path");
       path.setAttribute("d", "M2 1 L6 4 L2 7 Z");
       path.setAttribute("fill", "#888");
@@ -924,7 +889,7 @@ export async function registerMineruManagerScript(
         else collapsedParents.add(group.parentItemId);
         renderItemsList();
       });
-      parentDot.style.background = group.children.every(isMineruAvailable)
+      parentDot.style.background = group.children.every((c) => c.cached)
         ? "#10b981"
         : "#d1d5db";
       parentDotElements.set(group.parentItemId, parentDot);
@@ -958,13 +923,15 @@ export async function registerMineruManagerScript(
       parentRow.appendChild(authorSpan);
 
       const yearSpan = doc.createElement("span");
-      yearSpan.style.cssText = "flex: 0 0 40px; text-align: left; font-size: 11.5px; color: #888;";
+      yearSpan.style.cssText =
+        "flex: 0 0 40px; text-align: left; font-size: 11.5px; color: #888;";
       yearSpan.textContent = group.year;
       setColumnWidthStyle(yearSpan, "year");
       parentRow.appendChild(yearSpan);
 
       const dateSpan = doc.createElement("span");
-      dateSpan.style.cssText = "flex: 0 0 72px; text-align: right; font-size: 11px; color: #888;";
+      dateSpan.style.cssText =
+        "flex: 0 0 72px; text-align: right; font-size: 11px; color: #888;";
       dateSpan.textContent = fmtDate(group.dateAdded);
       setColumnWidthStyle(dateSpan, "dateAdded");
       parentRow.appendChild(dateSpan);
@@ -1005,8 +972,7 @@ export async function registerMineruManagerScript(
           selectedIds.clear();
           for (const c of group.children) selectedIds.add(c.attachmentId);
         }
-        if (!isShift)
-          lastClickedId = group.children[0]?.attachmentId ?? null;
+        if (!isShift) lastClickedId = group.children[0]?.attachmentId ?? null;
         renderItemsList();
         updateButtons();
       });
@@ -1038,8 +1004,10 @@ export async function registerMineruManagerScript(
             void (async () => {
               const status = await getMineruStatus(child.attachmentId);
               if (status === "cached") childDot.style.background = "#10b981";
-              else if (status === "processing") childDot.style.background = "#f59e0b";
-              else if (status === "failed") childDot.style.background = "#ef4444";
+              else if (status === "processing")
+                childDot.style.background = "#f59e0b";
+              else if (status === "failed")
+                childDot.style.background = "#ef4444";
               else childDot.style.background = "#d1d5db";
               updateParentDot(group.parentItemId, group);
             })();
@@ -1246,10 +1214,13 @@ export async function registerMineruManagerScript(
       hideContextMenu();
       for (const id of ids) {
         await deleteMineruCacheForItem(id);
-        await refreshEntryAvailability(id);
+        const dot = dotElements.get(id);
+        if (dot) dot.style.background = "#d1d5db";
+        const entry = allItems.find((i) => i.attachmentId === id);
+        if (entry) entry.cached = false;
       }
       localProcessedCount = allItems.filter(
-        (i) => !i.excluded && isMineruAvailable(i),
+        (i) => !i.excluded && i.cached,
       ).length;
       updateProgressBar();
     });
@@ -1326,13 +1297,7 @@ export async function registerMineruManagerScript(
       const dot = dotElements.get(lastSeenCurrentId);
       if (dot) dot.style.background = failed ? "#ef4444" : "#10b981";
       const entry = allItems.find((i) => i.attachmentId === lastSeenCurrentId);
-      if (entry && !failed) {
-        entry.localCached = true;
-        entry.cached = true;
-        entry.availability = entry.syncedPackage ? "both" : "local";
-        const currentDot = dotElements.get(entry.attachmentId);
-        if (currentDot) currentDot.title = getAvailabilityTooltip(entry);
-      }
+      if (entry && !failed) entry.cached = true;
       lastSeenCurrentId = null;
     }
   });
@@ -1403,12 +1368,13 @@ export async function registerMineruManagerScript(
           return;
         for (const id of selectedIds) {
           await deleteMineruCacheForItem(id);
-          await refreshEntryAvailability(id);
+          const entry = allItems.find((i) => i.attachmentId === id);
+          if (entry) entry.cached = false;
         }
         selectedIds.clear();
         lastClickedId = null;
         localProcessedCount = allItems.filter(
-          (i) => !i.excluded && isMineruAvailable(i),
+          (i) => !i.excluded && i.cached,
         ).length;
         updateProgressBar();
         renderItemsList();
@@ -1422,10 +1388,11 @@ export async function registerMineruManagerScript(
           return;
         for (const id of ids) {
           await deleteMineruCacheForItem(id);
-          await refreshEntryAvailability(id);
+          const entry = allItems.find((i) => i.attachmentId === id);
+          if (entry) entry.cached = false;
         }
         localProcessedCount = allItems.filter(
-          (i) => !i.excluded && isMineruAvailable(i),
+          (i) => !i.excluded && i.cached,
         ).length;
         updateProgressBar();
         renderItemsList();
@@ -1462,21 +1429,16 @@ export async function registerMineruManagerScript(
     buildCollectionMaps();
     const actionableItems = allItems.filter((i) => !i.excluded);
     localTotalCount = actionableItems.length;
-    localProcessedCount = actionableItems.filter(isMineruAvailable).length;
+    localProcessedCount = actionableItems.filter((i) => i.cached).length;
     updateProgressBar();
   }
 
   // ── Auto-refresh on library changes ────────────────────────────────────────
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
-  let refreshInProgress = false;
-  let refreshQueued = false;
-  async function runRefresh(): Promise<void> {
-    if (refreshInProgress) {
-      refreshQueued = true;
-      return;
-    }
-    refreshInProgress = true;
-    try {
+  const debouncedRefresh = () => {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(async () => {
+      refreshTimer = null;
       const prevCollectionId = activeCollectionId;
       await loadData();
       // If the previously selected collection no longer exists, reset to "all"
@@ -1488,25 +1450,7 @@ export async function registerMineruManagerScript(
       }
       renderSidebar();
       renderItemsList();
-    } finally {
-      refreshInProgress = false;
-      if (refreshQueued) {
-        refreshQueued = false;
-        scheduleRefresh(2500);
-      }
-    }
-  }
-
-  function scheduleRefresh(delayMs = 2000): void {
-    if (refreshTimer) clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(async () => {
-      refreshTimer = null;
-      await runRefresh();
-    }, delayMs);
-  }
-
-  const debouncedRefresh = () => {
-    scheduleRefresh();
+    }, 1000);
   };
 
   let notifierId: string | null = null;

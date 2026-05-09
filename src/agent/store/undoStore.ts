@@ -9,10 +9,7 @@ const stacks = new Map<number, UndoEntry[]>();
 
 const MAX_UNDO_DEPTH = 10;
 
-export function pushUndoEntry(
-  conversationKey: number,
-  entry: UndoEntry,
-): void {
+export function pushUndoEntry(conversationKey: number, entry: UndoEntry): void {
   let stack = stacks.get(conversationKey);
   if (!stack) {
     stack = [];

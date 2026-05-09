@@ -31,9 +31,7 @@ export function createUndoLastActionTool(): AgentToolDefinition<
         onSuccess: ({ content }) => {
           const description =
             content && typeof content === "object"
-              ? String(
-                  (content as { description?: unknown }).description || "",
-                )
+              ? String((content as { description?: unknown }).description || "")
               : "";
           return description
             ? `Undone: ${description}`

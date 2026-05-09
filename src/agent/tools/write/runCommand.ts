@@ -226,11 +226,11 @@ async function executeCommand(params: {
   }
 }
 
-// Per-conversation auto-approve state for run_command.
-const commandAutoApprovedConversations = new Set<number>();
+// Per-conversation auto-approve state for run_command and file_io
+const autoApprovedConversations = new Set<number>();
 
 export function isCommandAutoApproved(conversationKey: number): boolean {
-  return commandAutoApprovedConversations.has(conversationKey);
+  return autoApprovedConversations.has(conversationKey);
 }
 
 export function setCommandAutoApproved(
@@ -238,9 +238,9 @@ export function setCommandAutoApproved(
   value: boolean,
 ): void {
   if (value) {
-    commandAutoApprovedConversations.add(conversationKey);
+    autoApprovedConversations.add(conversationKey);
   } else {
-    commandAutoApprovedConversations.delete(conversationKey);
+    autoApprovedConversations.delete(conversationKey);
   }
 }
 
@@ -255,14 +255,10 @@ const DESTRUCTIVE_COMMANDS =
 /** Redirect to file (overwrite or append) — but not heredoc `<<`. */
 const REDIRECT_PATTERN = /(?:^|[^<])\s*>{1,2}\s*[^\s&]/;
 
-function isDestructiveCommand(command: string): boolean {
-  return DESTRUCTIVE_COMMANDS.test(command.trim());
-}
-
 function isReadOnlyCommand(command: string): boolean {
   const trimmed = command.trim();
   // Destructive commands always need confirmation
-  if (isDestructiveCommand(trimmed)) return false;
+  if (DESTRUCTIVE_COMMANDS.test(trimmed)) return false;
   // File redirects are writes
   if (REDIRECT_PATTERN.test(trimmed)) return false;
   // Known read-only commands are safe
@@ -373,12 +369,10 @@ export function createRunCommandTool(): AgentToolDefinition<
     },
 
     shouldRequireConfirmation(input, context) {
-      // Destructive commands always need confirmation.
-      if (isDestructiveCommand(input.command)) return true;
+      // Skip confirmation if user already approved commands in this conversation
+      if (isCommandAutoApproved(context.request.conversationKey)) return false;
       // Auto-approve read-only commands (analysis, inspection, listing)
       if (isReadOnlyCommand(input.command)) return false;
-      // Skip confirmation if user already approved commands in this conversation.
-      if (isCommandAutoApproved(context.request.conversationKey)) return false;
       return true;
     },
 
@@ -413,7 +407,7 @@ export function createRunCommandTool(): AgentToolDefinition<
             value: "ask",
             options: [
               { id: "ask", label: "Ask every time" },
-              { id: "auto", label: "Auto accept this tool for this chat" },
+              { id: "auto", label: "Auto accept for this chat" },
             ],
           },
         ],

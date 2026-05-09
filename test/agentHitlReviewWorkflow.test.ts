@@ -12,14 +12,19 @@ import type {
   AgentRuntimeRequest,
   AgentToolDefinition,
 } from "../src/agent/types";
-import type { AgentModelAdapter, AgentStepParams } from "../src/agent/model/adapter";
+import type {
+  AgentModelAdapter,
+  AgentStepParams,
+} from "../src/agent/model/adapter";
 
 type MockDbRow = Record<string, unknown>;
 
 function installMockDb() {
   const runs = new Map<string, MockDbRow>();
   const events: MockDbRow[] = [];
-  const originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero;
+  const originalZotero = (
+    globalThis as typeof globalThis & { Zotero?: unknown }
+  ).Zotero;
   (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
     DB: {
       executeTransaction: async (fn: () => Promise<unknown>) => fn(),
@@ -56,12 +61,18 @@ function installMockDb() {
           });
           return [];
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_run_events")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_run_events")
+        ) {
           return events
             .filter((entry) => entry.runId === params[0])
             .sort((a, b) => Number(a.seq) - Number(b.seq));
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_runs")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_runs")
+        ) {
           const run = runs.get(String(params[0]));
           return run ? [run] : [];
         }
@@ -81,7 +92,8 @@ class StepAdapter implements AgentModelAdapter {
 
   constructor(
     private readonly steps: Array<
-      AgentModelStep | ((params: AgentStepParams) => Promise<AgentModelStep> | AgentModelStep)
+      | AgentModelStep
+      | ((params: AgentStepParams) => Promise<AgentModelStep> | AgentModelStep)
     >,
     private readonly capabilities: AgentModelCapabilities = {
       streaming: false,
@@ -126,7 +138,9 @@ function makeRequest(
 }
 
 function createStubSearchTool(
-  execute: (input: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>,
+  execute: (
+    input: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>,
 ): AgentToolDefinition<Record<string, unknown>, unknown> {
   return {
     spec: {
@@ -153,7 +167,9 @@ function createStubSearchTool(
 
 function createStubFacadeTool(
   toolName: string,
-  execute: (input: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>,
+  execute: (
+    input: Record<string, unknown>,
+  ) => Promise<Record<string, unknown>> | Record<string, unknown>,
   acceptActionIds: string[] = [],
 ): AgentToolDefinition<Record<string, unknown>, unknown> {
   return {
@@ -211,7 +227,13 @@ describe("AgentRuntime HITL review workflow", function () {
                 DOI: "10.1000/a",
                 date: "2024",
                 url: "https://doi.org/10.1000/a",
-                creators: [{ creatorType: "author", name: "Alice Example", fieldMode: 1 }],
+                creators: [
+                  {
+                    creatorType: "author",
+                    name: "Alice Example",
+                    fieldMode: 1,
+                  },
+                ],
               },
             },
             {
@@ -222,22 +244,30 @@ describe("AgentRuntime HITL review workflow", function () {
                 DOI: "10.1000/b",
                 date: "2025",
                 url: "https://doi.org/10.1000/b",
-                creators: [{ creatorType: "author", name: "Bob Example", fieldMode: 1 }],
+                creators: [
+                  { creatorType: "author", name: "Bob Example", fieldMode: 1 },
+                ],
               },
             },
           ],
         })),
       );
       registry.register(
-        createStubFacadeTool("update_metadata", async (input) => {
-          const metadata = input.metadata as Record<string, unknown> | undefined;
-          assert.exists(metadata);
-          assert.equal(metadata?.DOI, "10.1000/a");
-          return {
-            appliedCount: 1,
-            results: [{ itemId: 1 }],
-          };
-        }, ["apply_direct", "review_changes"]),
+        createStubFacadeTool(
+          "update_metadata",
+          async (input) => {
+            const metadata = input.metadata as
+              | Record<string, unknown>
+              | undefined;
+            assert.exists(metadata);
+            assert.equal(metadata?.DOI, "10.1000/a");
+            return {
+              appliedCount: 1,
+              results: [{ itemId: 1 }],
+            };
+          },
+          ["apply_direct", "review_changes"],
+        ),
       );
       const adapter = new StepAdapter([
         {
@@ -312,8 +342,7 @@ describe("AgentRuntime HITL review workflow", function () {
       );
       const updateResultIndex = events.findIndex(
         (event) =>
-          event.type === "tool_result" &&
-          event.name === "update_metadata",
+          event.type === "tool_result" && event.name === "update_metadata",
       );
       assert.isAtLeast(resultIndex, 0);
       assert.isAbove(reviewIndex, resultIndex);
@@ -345,17 +374,18 @@ describe("AgentRuntime HITL review workflow", function () {
         })),
       );
       registry.register(
-        createStubFacadeTool("import_identifiers", async (input) => {
-          assert.deepEqual(
-            input.identifiers,
-            ["10.1000/importable"],
-          );
-          return {
-            appliedCount: 1,
-            result: { succeeded: 1, failed: 0 },
-            warnings: [],
-          };
-        }, ["import"]),
+        createStubFacadeTool(
+          "import_identifiers",
+          async (input) => {
+            assert.deepEqual(input.identifiers, ["10.1000/importable"]);
+            return {
+              appliedCount: 1,
+              result: { succeeded: 1, failed: 0 },
+              warnings: [],
+            };
+          },
+          ["import"],
+        ),
       );
       const adapter = new StepAdapter([
         {
@@ -404,7 +434,10 @@ describe("AgentRuntime HITL review workflow", function () {
             });
             return;
           }
-          if (event.type === "confirmation_required" && event.action.toolName === "import_identifiers") {
+          if (
+            event.type === "confirmation_required" &&
+            event.action.toolName === "import_identifiers"
+          ) {
             sawFacadeConfirmation = true;
           }
         },
@@ -439,18 +472,19 @@ describe("AgentRuntime HITL review workflow", function () {
         })),
       );
       registry.register(
-        createStubFacadeTool("edit_current_note", async (input) => {
-          assert.equal(input.mode, "create");
-          assert.include(
-            String(input.content || ""),
-            "Custom reviewed note",
-          );
-          return {
-            appliedCount: 1,
-            result: { status: "created" },
-            warnings: [],
-          };
-        }, ["save_paper_note", "save_metadata_note"]),
+        createStubFacadeTool(
+          "edit_current_note",
+          async (input) => {
+            assert.equal(input.mode, "create");
+            assert.include(String(input.content || ""), "Custom reviewed note");
+            return {
+              appliedCount: 1,
+              result: { status: "created" },
+              warnings: [],
+            };
+          },
+          ["save_paper_note", "save_metadata_note"],
+        ),
       );
       const adapter = new StepAdapter([
         {
@@ -498,7 +532,10 @@ describe("AgentRuntime HITL review workflow", function () {
             });
             return;
           }
-          if (event.type === "confirmation_required" && event.action.toolName === "edit_current_note") {
+          if (
+            event.type === "confirmation_required" &&
+            event.action.toolName === "edit_current_note"
+          ) {
             sawFacadeConfirmation = true;
           }
         },
@@ -529,7 +566,10 @@ describe("AgentRuntime HITL review workflow", function () {
             query,
             results: [
               {
-                title: query === "refined search" ? "Refined Paper" : "Initial Paper",
+                title:
+                  query === "refined search"
+                    ? "Refined Paper"
+                    : "Initial Paper",
                 authors: ["Elliot Example"],
                 year: 2026,
                 doi:

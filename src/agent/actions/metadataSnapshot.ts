@@ -34,12 +34,15 @@ function isCreator(value: unknown): value is EditableArticleCreator {
   if (!record) return false;
   return Boolean(
     readString(record.name) ||
-      readString(record.firstName) ||
-      readString(record.lastName),
+    readString(record.firstName) ||
+    readString(record.lastName),
   );
 }
 
 export function hasMetadataCreators(metadata: unknown): boolean {
   const record = asRecord(metadata);
-  return Array.isArray(record?.creators) && record.creators.some((entry) => isCreator(entry));
+  return (
+    Array.isArray(record?.creators) &&
+    record.creators.some((entry) => isCreator(entry))
+  );
 }

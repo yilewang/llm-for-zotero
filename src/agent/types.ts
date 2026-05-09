@@ -1,18 +1,14 @@
+import type { ChatMessage } from "../utils/llmClient";
 import type { ModelProviderAuthMode } from "../utils/modelProviders";
 import type { ProviderProtocol } from "../utils/providerProtocol";
 import type {
   AdvancedModelParams,
   ActiveNoteContext,
   ChatAttachment,
-  CollectionContextRef,
   PaperContextRef,
   SelectedTextSource,
 } from "../shared/types";
-import type {
-  ChatMessage,
-  ReasoningConfig as LLMReasoningConfig,
-  UsageStats,
-} from "../shared/llm";
+import type { ReasoningConfig as LLMReasoningConfig } from "../utils/llmClient";
 
 export type AgentRequest = {
   conversationKey: number;
@@ -21,11 +17,9 @@ export type AgentRequest = {
   activeItemId?: number;
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
-  selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   selectedPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
-  selectedCollectionContexts?: CollectionContextRef[];
   attachments?: ChatAttachment[];
   screenshots?: string[];
   /** Skill IDs to force-activate regardless of regex matching (from slash menu selection). */
@@ -36,6 +30,9 @@ export type AgentRequest = {
   providerProtocol?: ProviderProtocol;
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
+  scopeType?: "paper" | "open" | "folder" | "tag" | "tagset" | "custom";
+  scopeId?: string;
+  scopeLabel?: string;
 };
 
 export type AgentPendingActionButton = {
@@ -236,21 +233,18 @@ export type ToolSpec = {
 export type AgentEvent =
   | {
       type: "provider_event";
-      providerType?: string;
+      providerType: string;
       sessionId?: string;
-      payload?: Record<string, unknown>;
-      ts?: number;
+      payload: Record<string, unknown>;
+      ts: number;
     }
   | { type: "status"; text: string }
   | {
       type: "reasoning";
       round: number;
-      stepId?: string;
-      stepLabel?: string;
       summary?: string;
       details?: string;
     }
-  | ({ type: "usage"; round: number } & UsageStats)
   | { type: "tool_call"; callId: string; name: string; args: unknown }
   | {
       type: "tool_result";
@@ -281,37 +275,6 @@ export type AgentEvent =
     }
   | { type: "message_delta"; text: string }
   | { type: "message_rollback"; length: number; text: string }
-  | {
-      type: "codex_progress";
-      itemId: string;
-      text: string;
-      status?: "running" | "completed";
-    }
-  | {
-      type: "codex_tool_activity";
-      itemId: string;
-      phase: "started" | "completed";
-      toolName?: string;
-      toolLabel?: string;
-      serverName?: string;
-      args?: unknown;
-      ok?: boolean;
-      text?: string;
-    }
-  | {
-      type: "usage";
-      inputTokens: number;
-      outputTokens: number;
-      cacheCreationInputTokens?: number;
-      cacheReadInputTokens?: number;
-      contextTokens: number;
-      contextWindow?: number;
-      contextWindowIsAuthoritative?: boolean;
-      percentage?: number;
-      sessionId?: string;
-      model?: string;
-    }
-  | { type: "context_compacted"; automatic?: boolean }
   | { type: "fallback"; reason: string }
   | { type: "final"; text: string };
 
@@ -392,7 +355,6 @@ export type AgentUserMessage = {
 export type AgentAssistantMessage = {
   role: "assistant";
   content: string | AgentModelContentPart[];
-  reasoning_content?: string;
   tool_calls?: AgentToolCall[];
 };
 
@@ -425,14 +387,12 @@ export type AgentRuntimeRequest = AgentRequest & {
   item?: Zotero.Item | null;
   history?: ChatMessage[];
   authMode?: ModelProviderAuthMode;
-  claudeEffortLevel?: "low" | "medium" | "high" | "xhigh" | "max";
   systemPrompt?: string;
   /** Optional user-defined instructions injected between persona and tool guidance */
   customInstructions?: string;
   modelProviderLabel?: string;
   libraryID?: number;
   activeNoteContext?: ActiveNoteContext;
-  metadata?: Record<string, unknown>;
 };
 
 export type AgentRuntimeOutcome =
@@ -632,7 +592,6 @@ export type PreparedToolExecutionResult = {
 
 export type PreparedToolExecutionOptions = {
   inheritedApproval?: AgentInheritedApproval;
-  forceConfirmation?: boolean;
 };
 
 export type PreparedToolExecution =

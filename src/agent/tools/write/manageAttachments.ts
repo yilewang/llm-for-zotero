@@ -13,7 +13,10 @@ import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
 import { executeAndRecordUndo } from "./mutateLibraryShared";
 
 type ManageAttachmentsInput = {
-  operation: DeleteAttachmentOperation | RenameAttachmentOperation | RelinkAttachmentOperation;
+  operation:
+    | DeleteAttachmentOperation
+    | RenameAttachmentOperation
+    | RelinkAttachmentOperation;
 };
 
 export function createManageAttachmentsTool(
@@ -72,7 +75,10 @@ export function createManageAttachmentsTool(
       label: "Manage Attachments",
       summaries: {
         onCall: ({ args }) => {
-          const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+          const a =
+            args && typeof args === "object"
+              ? (args as Record<string, unknown>)
+              : {};
           const action = String(a.action || "manage");
           return `Preparing to ${action} attachment`;
         },
@@ -130,7 +136,9 @@ export function createManageAttachmentsTool(
 
     createPendingAction(input) {
       const { operation } = input;
-      const info = zoteroGateway.getAttachmentInfo({ attachmentId: operation.attachmentId });
+      const info = zoteroGateway.getAttachmentInfo({
+        attachmentId: operation.attachmentId,
+      });
       const title = info?.title || `Attachment ${operation.attachmentId}`;
 
       if (operation.type === "delete_attachment") {
@@ -141,7 +149,12 @@ export function createManageAttachmentsTool(
           confirmLabel: "Delete",
           cancelLabel: "Cancel",
           fields: [
-            { type: "text" as const, id: "info", label: "Attachment", value: title },
+            {
+              type: "text" as const,
+              id: "info",
+              label: "Attachment",
+              value: title,
+            },
           ],
         };
       }
@@ -154,8 +167,18 @@ export function createManageAttachmentsTool(
           confirmLabel: "Rename",
           cancelLabel: "Cancel",
           fields: [
-            { type: "text" as const, id: "from", label: "Current name", value: title },
-            { type: "text" as const, id: "to", label: "New name", value: operation.newName },
+            {
+              type: "text" as const,
+              id: "from",
+              label: "Current name",
+              value: title,
+            },
+            {
+              type: "text" as const,
+              id: "to",
+              label: "New name",
+              value: operation.newName,
+            },
           ],
         };
       }
@@ -168,8 +191,18 @@ export function createManageAttachmentsTool(
         confirmLabel: "Re-link",
         cancelLabel: "Cancel",
         fields: [
-          { type: "text" as const, id: "attachment", label: "Attachment", value: title },
-          { type: "text" as const, id: "path", label: "New path", value: (operation as RelinkAttachmentOperation).newPath },
+          {
+            type: "text" as const,
+            id: "attachment",
+            label: "Attachment",
+            value: title,
+          },
+          {
+            type: "text" as const,
+            id: "path",
+            label: "New path",
+            value: (operation as RelinkAttachmentOperation).newPath,
+          },
         ],
       };
     },

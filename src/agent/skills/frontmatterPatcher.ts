@@ -52,8 +52,7 @@ export function patchSkillFrontmatter(
     return line;
   });
   if (!sawVersion) patchedFm.unshift(`version: ${shipped.version}`);
-  if (!sawDescription)
-    patchedFm.unshift(`description: ${shipped.description}`);
+  if (!sawDescription) patchedFm.unshift(`description: ${shipped.description}`);
 
   const header = lines.slice(0, fmStart + 1);
   const body = lines.slice(fmEnd);

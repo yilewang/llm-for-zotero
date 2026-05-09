@@ -8,14 +8,19 @@ import type {
   AgentModelStep,
   AgentRuntimeRequest,
 } from "../src/agent/types";
-import type { AgentModelAdapter, AgentStepParams } from "../src/agent/model/adapter";
+import type {
+  AgentModelAdapter,
+  AgentStepParams,
+} from "../src/agent/model/adapter";
 
 type MockDbRow = Record<string, unknown>;
 
 function installMockDb() {
   const runs = new Map<string, MockDbRow>();
   const events: MockDbRow[] = [];
-  const originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero;
+  const originalZotero = (
+    globalThis as typeof globalThis & { Zotero?: unknown }
+  ).Zotero;
   (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
     DB: {
       executeTransaction: async (fn: () => Promise<unknown>) => fn(),
@@ -52,12 +57,18 @@ function installMockDb() {
           });
           return [];
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_run_events")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_run_events")
+        ) {
           return events
             .filter((entry) => entry.runId === params[0])
             .sort((a, b) => Number(a.seq) - Number(b.seq));
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_runs")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_runs")
+        ) {
           const run = runs.get(String(params[0]));
           return run ? [run] : [];
         }
@@ -90,21 +101,19 @@ class InspectingAdapter implements AgentModelAdapter {
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
     const systemMessage = params.messages[0];
     this.sawGuidance =
-      this.sawGuidance ||
-      (systemMessage?.role === "system" &&
-        typeof systemMessage.content === "string" &&
-        systemMessage.content.includes("self_contained_test_tool"));
-    this.sawFollowup = params.messages.some((message) => {
-      if (message.role !== "user") return false;
-      if (typeof message.content === "string") {
-        return message.content.includes("Self-contained follow-up:");
-      }
-      return message.content.some(
-        (part) =>
-          part.type === "text" &&
-          part.text.includes("Self-contained follow-up:"),
-      );
-    });
+      systemMessage?.role === "system" &&
+      typeof systemMessage.content === "string" &&
+      systemMessage.content.includes("self_contained_test_tool");
+    this.sawFollowup = params.messages.some(
+      (message) =>
+        message.role === "user" &&
+        Array.isArray(message.content) &&
+        message.content.some(
+          (part) =>
+            part.type === "text" &&
+            part.text.includes("Self-contained follow-up:"),
+        ),
+    );
     if (!this.sawFollowup) {
       return {
         kind: "tool_calls",

@@ -1,5 +1,4 @@
 import type {
-  CollectionContextRef,
   NoteContextRef,
   PaperContextRef,
   SelectedTextSource,
@@ -69,7 +68,9 @@ export function normalizePositiveInt(value: unknown): number | null {
   return normalized > 0 ? normalized : null;
 }
 
-export function normalizeSelectedTextSource(value: unknown): SelectedTextSource {
+export function normalizeSelectedTextSource(
+  value: unknown,
+): SelectedTextSource {
   if (value === "model") return "model";
   if (value === "note") return "note";
   if (value === "note-edit") return "note-edit";
@@ -119,9 +120,13 @@ export function normalizeNoteContextRef(
   }
   if (!parentItemKey && parentItemId) {
     const parentItem =
-      (globalThis as {
-        Zotero?: { Items?: { get?: (id: number) => Zotero.Item | null | undefined } };
-      }).Zotero?.Items?.get?.(parentItemId) || null;
+      (
+        globalThis as {
+          Zotero?: {
+            Items?: { get?: (id: number) => Zotero.Item | null | undefined };
+          };
+        }
+      ).Zotero?.Items?.get?.(parentItemId) || null;
     parentItemKey = normalizeLibraryItemKey((parentItem as any)?.key);
   }
   if (!resolvedTitle) {
@@ -208,33 +213,6 @@ export function normalizePaperContextRefs(
       citationKey: citationKey || undefined,
       firstCreator: firstCreator || undefined,
       year: year || undefined,
-    });
-  }
-  return out;
-}
-
-export function normalizeCollectionContextRefs(
-  value: unknown,
-  options?: {
-    sanitizeText?: TextSanitizer;
-  },
-): CollectionContextRef[] {
-  if (!Array.isArray(value)) return [];
-  const sanitize = options?.sanitizeText;
-  const out: CollectionContextRef[] = [];
-  const seen = new Set<number>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") continue;
-    const typed = entry as Record<string, unknown>;
-    const collectionId = normalizePositiveInt(typed.collectionId);
-    const libraryID = normalizePositiveInt(typed.libraryID);
-    if (!collectionId || !libraryID || seen.has(collectionId)) continue;
-    const name = normalizeText(typed.name, sanitize) || `Collection ${collectionId}`;
-    seen.add(collectionId);
-    out.push({
-      collectionId,
-      name,
-      libraryID,
     });
   }
   return out;

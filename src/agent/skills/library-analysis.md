@@ -31,6 +31,7 @@ When the user asks for a summary, overview, statistics, or analysis of their **w
 Instead, use a single `zotero_script(mode:'read')` call that iterates all items inside Zotero's runtime and aggregates the answer in one pass. The script runs locally — there is no context-size limitation because only the final `env.log()` output is returned to the conversation.
 
 ### Strategy
+
 1. Write a `zotero_script(mode:'read')` script that:
    - Calls `Zotero.Items.getAll(env.libraryID, false, false, false)` to get all items.
    - Filters to `item.isRegularItem()` (skips attachments, notes, annotations).
@@ -40,6 +41,7 @@ Instead, use a single `zotero_script(mode:'read')` call that iterates all items 
 3. If the user needs detail on specific items after seeing the summary, use `query_library` with targeted filters for just those items.
 
 ### Example: "give me an overview of my library"
+
 ```javascript
 const items = await Zotero.Items.getAll(env.libraryID, false, false, false);
 const byYear = {};
@@ -49,7 +51,7 @@ let total = 0;
 for (const item of items) {
   if (!item.isRegularItem()) continue;
   total++;
-  const year = String(item.getField('date') || '').slice(0, 4) || 'unknown';
+  const year = String(item.getField("date") || "").slice(0, 4) || "unknown";
   byYear[year] = (byYear[year] || 0) + 1;
   byType[item.itemType] = (byType[item.itemType] || 0) + 1;
   for (const tag of item.getTags()) {
@@ -60,6 +62,7 @@ env.log(JSON.stringify({ total, byYear, byType, byTag }, null, 2));
 ```
 
 ### Key rules
+
 - NEVER page through `query_library` to collect all items — it will overflow the context.
 - A single `zotero_script(mode:'read')` can process thousands of items because only the final summary is returned.
 - If the user asks about a specific collection, filter by collection inside the script using `Zotero.Collections.get(collectionId).getChildItems()`.

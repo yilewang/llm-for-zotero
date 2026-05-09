@@ -13,8 +13,9 @@ export type RuntimePlatformInfo = {
 };
 
 function resolveRuntimePlatform(): RuntimePlatform {
-  const zotero = (globalThis as { Zotero?: { isWin?: boolean; isMac?: boolean } })
-    .Zotero;
+  const zotero = (
+    globalThis as { Zotero?: { isWin?: boolean; isMac?: boolean } }
+  ).Zotero;
   if (zotero?.isWin) return "windows";
   if (zotero?.isMac) return "macos";
 
@@ -24,9 +25,8 @@ function resolveRuntimePlatform(): RuntimePlatform {
     if (navPlatform.includes("mac")) return "macos";
   }
 
-  const processPlatform = (
-    globalThis as { process?: { platform?: string } }
-  ).process?.platform;
+  const processPlatform = (globalThis as { process?: { platform?: string } })
+    .process?.platform;
   if (processPlatform === "win32") return "windows";
   if (processPlatform === "darwin") return "macos";
   return "linux";
@@ -90,7 +90,7 @@ export function getRuntimePlatformInfo(): RuntimePlatformInfo {
     pathSeparator: "/",
     homeReference: "~",
     listFilesExample: "ls ~/Desktop",
-    findPdfExample: "find ~/Desktop -name \"*.pdf\"",
+    findPdfExample: 'find ~/Desktop -name "*.pdf"',
   };
 }
 

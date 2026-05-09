@@ -69,7 +69,8 @@ export function createSelfContainedTestTool(): AgentToolDefinition<
     createPendingAction: (input) => ({
       toolName: "self_contained_test_tool",
       title: "Review self-contained demo",
-      description: "This test-only action exercises every supported field type.",
+      description:
+        "This test-only action exercises every supported field type.",
       confirmLabel: "Apply",
       cancelLabel: "Cancel",
       fields: [

@@ -1,5 +1,18 @@
 {
   "extends": "zotero-types/entries/sandbox/",
   "include": ["src", "typings"],
-  "exclude": ["build", "addon"]
+  "exclude": [
+    "build",
+    "addon",
+    "src/claudeCode",
+    "src/codexAppServer",
+    "src/agent/actions/paperScope.ts",
+    "src/agent/actions/paperScopeTypes.ts",
+    "src/agent/context/resourceLifecycle.ts",
+    "src/modules/contextPanel/autoTagCommand.ts",
+    "src/modules/contextPanel/mineruSync.ts",
+    "src/modules/contextPanel/paperScopeCommand.ts",
+    "src/modules/contextPanel/queuedFollowUps.ts",
+    "src/modules/contextPanel/slashMenuBehavior.ts"
+  ]
 }

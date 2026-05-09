@@ -6,7 +6,7 @@ import {
   type ChatFileAttachment,
 } from "../../utils/llmClient";
 import {
-  normalizeMaxTokensForModel,
+  normalizeMaxTokens,
   normalizeTemperature,
 } from "../../utils/normalization";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
@@ -25,7 +25,10 @@ import {
   normalizeResponsesStepFromPayload,
   parseResponsesStepStream,
 } from "./responsesShared";
-import { buildResponsesFunctionTools, getToolContinuationMessages } from "./shared";
+import {
+  buildResponsesFunctionTools,
+  getToolContinuationMessages,
+} from "./shared";
 
 async function uploadFilePart(
   part: Extract<AgentModelContentPart, { type: "file_ref" }>,
@@ -112,7 +115,6 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
           true,
           request.model,
           request.apiBase,
-          "responses_api",
         );
         return {
           model: request.model,
@@ -123,15 +125,14 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
           tool_choice: "auto",
           store: false,
           stream: true,
-          max_output_tokens: normalizeMaxTokensForModel(
-            request.advanced?.maxTokens,
-            request.model,
-          ),
+          max_output_tokens: normalizeMaxTokens(request.advanced?.maxTokens),
           ...reasoningPayload.extra,
           ...(reasoningPayload.omitTemperature
             ? {}
             : {
-                temperature: normalizeTemperature(request.advanced?.temperature),
+                temperature: normalizeTemperature(
+                  request.advanced?.temperature,
+                ),
               }),
         };
       },

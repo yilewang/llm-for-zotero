@@ -10,16 +10,11 @@ import {
 } from "./constants";
 import type { ActionDropdownSpec } from "./types";
 import {
-  getBaseSlashMenuItems,
-  resolveSlashActionChatMode,
-  type SlashBaseMenuItem,
-} from "./slashMenuBehavior";
-import {
   getPaperPortalBaseItemID,
+  isGlobalPortalItem,
   isPaperPortalItem,
   resolveActiveNoteSession,
   resolveDisplayConversationKind,
-  resolvePreferredConversationSystem,
 } from "./portalScope";
 
 function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
@@ -40,6 +35,39 @@ function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
   menu.style.display = "none";
   slot.append(button, menu);
   return { slot, button, menu };
+}
+
+const globalRegistryKey = "__llm_mode_lock_registry";
+
+/**
+ * Keeps the active panel lock button display unblocked and prunes stale
+ * registry entries from disposed panel bodies.
+ */
+export function syncGlobalLockVisibility(currentBody: Element) {
+  const myZotero = (globalThis as any).Zotero || globalThis;
+  if (!myZotero[globalRegistryKey]) {
+    myZotero[globalRegistryKey] = new Set<Element>();
+  }
+  const allLocks: Set<Element> = myZotero[globalRegistryKey];
+
+  try {
+    for (const el of Array.from(allLocks)) {
+      if (!el.isConnected) {
+        allLocks.delete(el);
+        continue;
+      }
+      const htmlEl = el as HTMLElement;
+      // Only normalize the currently active panel lock button.
+      // Writing sticky inline `display:none` to other panels can persist when
+      // users switch back to a previously visited tab, causing the lock icon
+      // to disappear even though lock state is still active.
+      if (currentBody.contains(el)) {
+        htmlEl.style.removeProperty("display");
+      }
+    }
+  } catch (err) {
+    ztoolkit.log(`LLM DEBUG: Error syncing lock visibility: ${err}`);
+  }
 }
 
 function buildUI(body: Element, item?: Zotero.Item | null) {
@@ -65,12 +93,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     hasItem && item
       ? activeNoteSession?.parentItemId ||
         (isPaperPortalItem(item)
-        ? getPaperPortalBaseItemID(item) || 0
-        : item.isAttachment() && item.parentID
-          ? item.parentID
-          : isPaperMode
-            ? item.id
-            : 0)
+          ? getPaperPortalBaseItemID(item) || 0
+          : item.isAttachment() && item.parentID
+            ? item.parentID
+            : isPaperMode
+              ? item.id
+              : 0)
       : 0;
   const hasPaperContext = basePaperItemId > 0;
 
@@ -98,8 +126,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       ? "global"
       : "paper"
     : "";
-  container.dataset.conversationSystem =
-    resolvePreferredConversationSystem({ item });
   container.dataset.basePaperItemId =
     basePaperItemId > 0 ? `${basePaperItemId}` : "";
   container.dataset.noteKind = activeNoteSession?.noteKind || "";
@@ -153,20 +179,21 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   historyToggle.setAttribute("aria-expanded", "false");
   historyToggle.style.display = activeNoteSession ? "none" : "";
 
-  const isStandaloneBody = (body as HTMLElement).dataset?.standalone === "true";
-  const headerModeControls = createElement(doc, "div", "llm-header-mode-controls", {
-    id: "llm-header-mode-controls",
-  });
-
-  // Mode chip: single pill showing current mode
+  // Mode chip: single pill showing current mode + lock
   const modeSwitchWrap = createElement(doc, "div", "llm-mode-switch", {
     id: "llm-mode-capsule",
   });
   modeSwitchWrap.dataset.mode = hasItem && isGlobalMode ? "global" : "paper";
 
+  const isStandaloneBody = (body as HTMLElement).dataset?.standalone === "true";
+
+  // In sidepanels, the mode chip is a non-clickable indicator (always "Paper chat").
+  // In the standalone window, it shows "Library chat".
   const modeChipLabel = activeNoteSession
     ? t("Note editing")
-    : (isGlobalMode ? t("Library chat") : t("Paper chat"));
+    : isStandaloneBody
+      ? t("Library chat")
+      : t("Paper chat");
   const modeChipBtn = createElement(doc, "button", "llm-mode-chip", {
     id: "llm-mode-chip",
     type: "button",
@@ -174,45 +201,85 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     title: modeChipLabel,
   });
   modeChipBtn.setAttribute("aria-label", modeChipLabel);
+  if (!isStandaloneBody) {
+    modeChipBtn.style.cursor = "default";
+  }
 
-  modeSwitchWrap.append(modeChipBtn);
-
-  const claudeToggleBtn = createElement(doc, "button", "llm-claude-system-toggle", {
-    id: "llm-claude-system-toggle",
-    type: "button",
-    title: "Claude Code",
+  // Lock button, right of chip (only visible in standalone open-chat mode)
+  const modeLockBtn = createElement(doc, "div", "llm-mode-lock", {
+    id: "llm-mode-lock",
+    title: t("Lock library chat as default"),
   });
-  claudeToggleBtn.setAttribute("aria-label", "Claude Code");
-  const claudeToggleIcon = createElement(doc, "span", "llm-claude-system-toggle-icon", {
-    id: "llm-claude-system-toggle-icon",
-  });
-  claudeToggleIcon.setAttribute("aria-hidden", "true");
-  claudeToggleBtn.appendChild(claudeToggleIcon);
+  modeLockBtn.dataset.locked = "false";
+  modeLockBtn.setAttribute("aria-label", t("Lock library chat as default"));
+  modeLockBtn.setAttribute("role", "button");
+  modeLockBtn.setAttribute("tabindex", "0");
+  modeLockBtn.style.display =
+    isStandaloneBody && hasItem && isGlobalMode && !activeNoteSession
+      ? "flex"
+      : "none";
 
-  const claudeContextGauge = createElement(doc, "div", "llm-claude-context-gauge", {
-    id: "llm-claude-context-gauge",
-  }) as HTMLDivElement;
-  claudeContextGauge.style.display = "none";
-  claudeContextGauge.setAttribute("aria-hidden", "true");
+  modeSwitchWrap.append(modeChipBtn, modeLockBtn);
 
-  headerModeControls.append(modeSwitchWrap, claudeToggleBtn, claudeContextGauge);
-  historyBar.append(historyNewBtn, historyToggle, headerModeControls);
+  historyBar.append(historyNewBtn, historyToggle, modeSwitchWrap);
 
   headerInfo.append(title, historyBar);
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
-  const popoutBtn = createElement(doc, "button", "llm-btn-icon llm-popout-btn", {
-    id: "llm-popout",
-    type: "button",
-    title: t("Open in Window"),
-  });
+  const sessionFolderBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-session-action-btn llm-session-folder-btn",
+    {
+      id: "llm-session-folder-btn",
+      type: "button",
+      textContent: "",
+      title: t("Open current Claude session folder"),
+    },
+  ) as HTMLButtonElement;
+  sessionFolderBtn.style.display = "none";
+  sessionFolderBtn.setAttribute(
+    "aria-label",
+    t("Open current Claude session folder"),
+  );
+  const sessionTerminalBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-session-action-btn llm-session-terminal-btn",
+    {
+      id: "llm-session-terminal-btn",
+      type: "button",
+      textContent: "",
+      title: t("Open terminal in current Claude session folder"),
+    },
+  ) as HTMLButtonElement;
+  sessionTerminalBtn.style.display = "none";
+  sessionTerminalBtn.setAttribute(
+    "aria-label",
+    t("Open terminal in current Claude session folder"),
+  );
+  const popoutBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-popout-btn",
+    {
+      id: "llm-popout",
+      type: "button",
+      title: t("Open in Window"),
+    },
+  );
   popoutBtn.setAttribute("aria-label", t("Open chat in a standalone window"));
-  const settingsBtn = createElement(doc, "button", "llm-btn-icon llm-settings-btn", {
-    id: "llm-settings",
-    type: "button",
-    title: t("Settings"),
-  });
+  const settingsBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-settings-btn",
+    {
+      id: "llm-settings",
+      type: "button",
+      title: t("Settings"),
+    },
+  );
   settingsBtn.setAttribute("aria-label", t("Open plugin settings"));
   settingsBtn.dataset.preferencesPaneId = PREFERENCES_PANE_ID;
   const exportBtn = createElement(doc, "button", "llm-btn-icon", {
@@ -227,7 +294,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     type: "button",
     textContent: t("Clear"),
   });
-  headerActions.append(popoutBtn, settingsBtn, exportBtn, clearBtn);
+  headerActions.append(
+    sessionTerminalBtn,
+    sessionFolderBtn,
+    popoutBtn,
+    settingsBtn,
+    exportBtn,
+    clearBtn,
+  );
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
   const historyMenu = createElement(doc, "div", "llm-history-menu", {
@@ -461,17 +535,16 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     t("Send multiple PDF pages"),
     t("Select pages from the open PDF"),
   );
-  const slashBaseButtons: Record<SlashBaseMenuItem, HTMLButtonElement> = {
-    upload: slashUploadBtn,
-    reference: slashReferenceBtn,
-    pdfPage: slashPdfPageBtn,
-    pdfMultiplePages: slashPdfMultiplePagesBtn,
-  };
-  slashList.append(
-    ...getBaseSlashMenuItems(
-      resolveSlashActionChatMode(displayConversationKind),
-    ).map((entry) => slashBaseButtons[entry]),
-  );
+  if (isStandaloneBody && isGlobalMode) {
+    slashList.append(slashUploadBtn, slashReferenceBtn);
+  } else {
+    slashList.append(
+      slashUploadBtn,
+      slashReferenceBtn,
+      slashPdfPageBtn,
+      slashPdfMultiplePagesBtn,
+    );
+  }
   slashMenu.append(slashList);
   // slashMenu is appended to composeArea below (after composeArea is created)
 
@@ -506,6 +579,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     "llm-agent-toggle-indicator",
   );
   runtimeModeIndicator.setAttribute("aria-hidden", "true");
+  const runtimeModeBackendIcon = createElement(
+    doc,
+    "span",
+    "llm-agent-toggle-backend-icon",
+  );
+  runtimeModeBackendIcon.setAttribute("aria-hidden", "true");
   const runtimeModeLabel = createElement(
     doc,
     "span",
@@ -514,8 +593,26 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       textContent: t("Agent mode"),
     },
   );
-  runtimeModeBtn.append(runtimeModeIndicator, runtimeModeLabel);
+  runtimeModeBtn.append(
+    runtimeModeIndicator,
+    runtimeModeBackendIcon,
+    runtimeModeLabel,
+  );
   contextPreviews.appendChild(runtimeModeBtn);
+  const claudePermissionBtn = createElement(
+    doc,
+    "button",
+    "llm-claude-permission-toggle",
+    {
+      id: "llm-claude-permission-toggle",
+      type: "button",
+      textContent: "safe",
+      title: "Claude Code permission mode",
+    },
+  ) as HTMLButtonElement;
+  claudePermissionBtn.style.display = "none";
+  claudePermissionBtn.setAttribute("aria-label", "Claude Code permission mode");
+  contextPreviews.appendChild(claudePermissionBtn);
   const selectedContextList = createElement(
     doc,
     "div",
@@ -691,6 +788,16 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   actionHitlPanel.style.display = "none";
   composeArea.appendChild(actionHitlPanel);
 
+  const agentQueuePanel = createElement(doc, "div", "llm-agent-queue-panel", {
+    id: "llm-agent-queue-panel",
+  });
+  agentQueuePanel.style.display = "none";
+  const agentQueueList = createElement(doc, "div", "llm-agent-queue-list", {
+    id: "llm-agent-queue-list",
+  });
+  agentQueuePanel.append(agentQueueList);
+  composeArea.appendChild(agentQueuePanel);
+
   // Command row — shows active skill/action badge above textarea
   // Uses the exact same chip DOM as paper context chips
   const commandRow = createElement(
@@ -724,12 +831,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   commandRowHeader.appendChild(commandRowClear);
   commandRow.appendChild(commandRowHeader);
   composeArea.appendChild(commandRow);
-
-  const queueBar = createElement(doc, "div", "llm-queued-input-bar", {
-    id: "llm-queued-input-bar",
-  });
-  queueBar.style.display = "none";
-  composeArea.appendChild(queueBar);
 
   const inputBox = createElement(doc, "textarea", "llm-input", {
     id: "llm-input",
@@ -783,14 +884,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     {
       id: "llm-upload-file",
       type: "button",
-      textContent: "/",
-      title: t("Slash commands"),
+      textContent: UPLOAD_FILE_EXPANDED_LABEL,
+      title: t("Context actions"),
       disabled: !hasItem,
     },
   );
   uploadBtn.setAttribute("aria-haspopup", "menu");
   uploadBtn.setAttribute("aria-expanded", "false");
-  uploadBtn.setAttribute("aria-label", t("Slash commands"));
+  uploadBtn.setAttribute("aria-label", t("Context actions"));
   const uploadInput = createElement(doc, "input", "", {
     id: "llm-upload-input",
     type: "file",
@@ -817,6 +918,24 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
 
   const {
+    slot: claudeModelDropdown,
+    button: _claudeModelBtn,
+    menu: claudeModelMenu,
+  } = createActionDropdown(doc, {
+    slotId: "llm-claude-model-dropdown",
+    slotClassName: "llm-model-dropdown llm-claude-runtime-only",
+    buttonId: "llm-claude-model-toggle",
+    buttonClassName:
+      "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-model-btn",
+    buttonText: "Model: ...",
+    menuId: "llm-claude-model-menu",
+    menuClassName: "llm-model-menu",
+    disabled: !hasItem,
+  });
+  claudeModelDropdown.style.display = "none";
+  claudeModelMenu.style.display = "none";
+
+  const {
     slot: reasoningDropdown,
     button: reasoningBtn,
     menu: reasoningMenu,
@@ -831,6 +950,24 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     menuClassName: "llm-reasoning-menu",
     disabled: !hasItem,
   });
+
+  const {
+    slot: claudeReasoningDropdown,
+    button: _claudeReasoningBtn,
+    menu: claudeReasoningMenu,
+  } = createActionDropdown(doc, {
+    slotId: "llm-claude-reasoning-dropdown",
+    slotClassName: "llm-reasoning-dropdown llm-claude-runtime-only",
+    buttonId: "llm-claude-reasoning-toggle",
+    buttonClassName:
+      "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-reasoning-btn",
+    buttonText: t("Reasoning"),
+    menuId: "llm-claude-reasoning-menu",
+    menuClassName: "llm-reasoning-menu",
+    disabled: !hasItem,
+  });
+  claudeReasoningDropdown.style.display = "none";
+  claudeReasoningMenu.style.display = "none";
 
   const sendBtn = createElement(
     doc,
@@ -875,7 +1012,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     selectTextSlot,
     screenshotSlot,
     modelDropdown,
+    claudeModelDropdown,
     reasoningDropdown,
+    claudeReasoningDropdown,
   );
   // Hide PDF-reader-specific buttons in standalone library chat
   if (isStandaloneBody && isGlobalMode) {
@@ -889,6 +1028,15 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   container.appendChild(statusBar);
   body.appendChild(container);
 
+  // ---------- Sync visibility ----------
+  const myZotero = (globalThis as any).Zotero || globalThis;
+  if (!myZotero[globalRegistryKey]) {
+    myZotero[globalRegistryKey] = new Set<Element>();
+  }
+  const allLocks: Set<Element> = myZotero[globalRegistryKey];
+  allLocks.add(modeLockBtn);
+
+  syncGlobalLockVisibility(body);
 }
 
 export { buildUI };

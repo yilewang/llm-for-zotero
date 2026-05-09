@@ -70,17 +70,14 @@ describe("patchSkillFrontmatter", function () {
   });
 
   it("returns null when on-disk version is already current or newer", function () {
-    const onDisk =
-      "---\nid: foo\nversion: 3\ndescription: x\n---\nbody";
-    const shipped =
-      "---\nid: foo\nversion: 2\ndescription: y\n---\nbody";
+    const onDisk = "---\nid: foo\nversion: 3\ndescription: x\n---\nbody";
+    const shipped = "---\nid: foo\nversion: 2\ndescription: y\n---\nbody";
     assert.isNull(patchSkillFrontmatter(onDisk, shipped));
   });
 
   it("returns null when the file has no frontmatter block", function () {
     const onDisk = "Just body, no markers at all.\n";
-    const shipped =
-      "---\nid: foo\nversion: 2\ndescription: y\n---\nbody";
+    const shipped = "---\nid: foo\nversion: 2\ndescription: y\n---\nbody";
     assert.isNull(patchSkillFrontmatter(onDisk, shipped));
   });
 

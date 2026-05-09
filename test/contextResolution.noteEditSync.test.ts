@@ -24,7 +24,11 @@ describe("contextResolution note-edit sync", function () {
     ]);
 
     assert.isTrue(
-      syncSelectedTextContextForSource(itemId, "Edit this sentence", "note-edit"),
+      syncSelectedTextContextForSource(
+        itemId,
+        "Edit this sentence",
+        "note-edit",
+      ),
     );
     assert.deepEqual(
       getSelectedTextContextEntries(itemId).map((entry) => ({
@@ -53,10 +57,18 @@ describe("contextResolution note-edit sync", function () {
 
   it("does not rewrite state when the note-edit focus is unchanged", function () {
     assert.isTrue(
-      syncSelectedTextContextForSource(itemId, "Tighten this wording", "note-edit"),
+      syncSelectedTextContextForSource(
+        itemId,
+        "Tighten this wording",
+        "note-edit",
+      ),
     );
     assert.isFalse(
-      syncSelectedTextContextForSource(itemId, "Tighten this wording", "note-edit"),
+      syncSelectedTextContextForSource(
+        itemId,
+        "Tighten this wording",
+        "note-edit",
+      ),
     );
   });
 
