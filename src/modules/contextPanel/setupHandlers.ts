@@ -197,6 +197,7 @@ import {
 import {
   resolveSlashActionChatMode,
   shouldRenderDynamicSlashMenu,
+  shouldRenderSkillSlashMenu,
 } from "./slashMenuBehavior";
 import { buildPaperKey } from "./pdfContext";
 import {
@@ -764,6 +765,13 @@ export function setupHandlers(
     isClaudeConversationSystem() || isCodexConversationSystem();
   const shouldRenderDynamicSlashMenuForCurrentConversation = () =>
     shouldRenderDynamicSlashMenu({
+      itemPresent: Boolean(item),
+      isWebChat: isWebChatModeActive(),
+      runtimeMode: getCurrentRuntimeMode(),
+      conversationSystem: getConversationSystem(),
+    });
+  const shouldRenderSkillSlashMenuForCurrentConversation = () =>
+    shouldRenderSkillSlashMenu({
       itemPresent: Boolean(item),
       isWebChat: isWebChatModeActive(),
       runtimeMode: getCurrentRuntimeMode(),
@@ -8746,6 +8754,12 @@ export function setupHandlers(
       (el) => (el as Element).remove(),
     );
   };
+  const clearSkillSlashItems = () => {
+    if (!slashMenu) return;
+    slashMenu
+      .querySelectorAll("[data-slash-skill-item]")
+      .forEach((el: Element) => el.remove());
+  };
   type ClaudeSlashMenuItem = {
     name: string;
     description: string;
@@ -8850,13 +8864,15 @@ export function setupHandlers(
   const renderDynamicSlashMenuSections = (query = "") => {
     if (!shouldRenderDynamicSlashMenuForCurrentConversation()) {
       clearAgentSlashItems();
-      slashMenu
-        ?.querySelectorAll("[data-slash-skill-item]")
-        .forEach((el: Element) => el.remove());
+      clearSkillSlashItems();
       return;
     }
     renderAgentActionsInSlashMenu(query);
-    renderSkillsInSlashMenu(query);
+    if (shouldRenderSkillSlashMenuForCurrentConversation()) {
+      renderSkillsInSlashMenu(query);
+    } else {
+      clearSkillSlashItems();
+    }
   };
 
   const scheduleActionPickerTrigger = () => {
@@ -9639,9 +9655,7 @@ export function setupHandlers(
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc) return;
 
-    list
-      .querySelectorAll("[data-slash-skill-item]")
-      .forEach((el: Element) => el.remove());
+    clearSkillSlashItems();
 
     const allSkills = getAllSkills();
     if (!allSkills.length) return;

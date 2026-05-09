@@ -131,7 +131,10 @@ import {
   readCodexNativeMcpSetupStatus,
 } from "../codexAppServer/mcpSetup";
 import type { CodexReasoningMode } from "../codexAppServer/constants";
-import { getClaudeProfileSignature } from "../claudeCode/projectSkills";
+import {
+  getClaudeRuntimeRootDir,
+  getClaudeUserHomeDir,
+} from "../claudeCode/projectSkills";
 import { applyClaudeCodeModePreferenceChange } from "../claudeCode/bootstrapGate";
 import {
   getDefaultClaudeManagedInstructionBlock,
@@ -2331,16 +2334,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   };
 
   const getCurrentClaudeLocalDir = (): string => {
-    const env = getProcess()?.env;
-    const home =
-      env?.HOME?.trim() ||
-      env?.USERPROFILE?.trim() ||
-      getPathUtils()?.homeDir?.trim() ||
-      getOS()?.Constants?.Path?.homeDir?.trim() ||
-      getServices()?.dirsvc?.get?.("Home", getNsIFile())?.path?.trim() ||
-      (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim() ||
-      ".";
-    const runtimeRoot = joinLocalPath(home, "Zotero", "agent-runtime", getClaudeProfileSignature());
+    const runtimeRoot = getClaudeRuntimeRootDir();
     const scopesRoot = joinLocalPath(runtimeRoot, "scopes");
     const conversationSystem = getConversationSystemPref();
     if (conversationSystem !== "claude_code") {
@@ -2376,16 +2370,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const renderClaudeConfigPaths = () => {
     if (!claudeConfigPathsWrap) return;
     claudeConfigPathsWrap.replaceChildren();
-    const env = getProcess()?.env;
-    const home =
-      env?.HOME?.trim() ||
-      env?.USERPROFILE?.trim() ||
-      getPathUtils()?.homeDir?.trim() ||
-      getOS()?.Constants?.Path?.homeDir?.trim() ||
-      getServices()?.dirsvc?.get?.("Home", getNsIFile())?.path?.trim() ||
-      (Zotero as unknown as { Profile?: { dir?: string } }).Profile?.dir?.trim() ||
-      "";
-    const runtimeRoot = joinLocalPath(home || ".", "Zotero", "agent-runtime", getClaudeProfileSignature());
+    let home = "";
+    try {
+      home = getClaudeUserHomeDir();
+    } catch {
+      home = "";
+    }
+    let runtimeRoot = "";
+    try {
+      runtimeRoot = getClaudeRuntimeRootDir();
+    } catch {
+      runtimeRoot = joinLocalPath(".", "Zotero", "agent-runtime", "<profile>");
+    }
     const projectClaudeDir = joinLocalPath(runtimeRoot, ".claude");
     const localConversationDir = joinLocalPath(
       runtimeRoot,

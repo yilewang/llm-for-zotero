@@ -86,7 +86,14 @@ function getNsIFile(): unknown {
   return components?.interfaces?.nsIFile;
 }
 
-function getHomeDir(): string {
+function getZoteroDataDir(): string | null {
+  const dataDir = (
+    Zotero as unknown as { DataDirectory?: { dir?: string } }
+  ).DataDirectory?.dir?.trim();
+  return dataDir || null;
+}
+
+export function getClaudeUserHomeDir(): string {
   const env = getProcess()?.env;
   const home =
     env?.HOME?.trim() ||
@@ -121,8 +128,16 @@ export function getClaudeProfileSignature(): string {
 }
 
 export function getClaudeRuntimeRootDir(): string {
+  const dataDir = getZoteroDataDir();
+  if (dataDir) {
+    return joinLocalPath(
+      dataDir,
+      "agent-runtime",
+      getClaudeProfileSignature(),
+    );
+  }
   return joinLocalPath(
-    getHomeDir(),
+    getClaudeUserHomeDir(),
     "Zotero",
     "agent-runtime",
     getClaudeProfileSignature(),

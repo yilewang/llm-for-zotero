@@ -4,6 +4,7 @@ import {
   getBaseSlashMenuItems,
   resolveSlashActionChatMode,
   shouldRenderDynamicSlashMenu,
+  shouldRenderSkillSlashMenu,
 } from "../src/modules/contextPanel/slashMenuBehavior";
 
 describe("slash menu behavior", function () {
@@ -21,6 +22,37 @@ describe("slash menu behavior", function () {
   it("renders dynamic sections in Codex native mode", function () {
     assert.isTrue(
       shouldRenderDynamicSlashMenu({
+        itemPresent: true,
+        isWebChat: false,
+        runtimeMode: "chat",
+        conversationSystem: "codex",
+      }),
+    );
+  });
+
+  it("keeps Claude Code commands dynamic without showing original agent skills", function () {
+    const params = {
+      itemPresent: true,
+      isWebChat: false,
+      runtimeMode: "agent",
+      conversationSystem: "claude_code",
+    } as const;
+
+    assert.isTrue(shouldRenderDynamicSlashMenu(params));
+    assert.isFalse(shouldRenderSkillSlashMenu(params));
+  });
+
+  it("renders skills in original agent mode and Codex native mode", function () {
+    assert.isTrue(
+      shouldRenderSkillSlashMenu({
+        itemPresent: true,
+        isWebChat: false,
+        runtimeMode: "agent",
+        conversationSystem: "upstream",
+      }),
+    );
+    assert.isTrue(
+      shouldRenderSkillSlashMenu({
         itemPresent: true,
         isWebChat: false,
         runtimeMode: "chat",

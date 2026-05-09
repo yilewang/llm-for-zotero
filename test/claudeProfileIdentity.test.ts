@@ -34,6 +34,55 @@ describe("Claude profile-aware identity", function () {
     assert.match(b, /^profile-[a-f0-9]+$/);
   });
 
+  it("uses Zotero data directory as the Claude runtime root when available", function () {
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DataDirectory: { dir: "/zotero-data" },
+      Profile: { dir: "/profiles/main" },
+    };
+
+    const profileSignature = buildClaudeProfileSignature("/profiles/main");
+    const runtimeRoot = getClaudeRuntimeRootDir();
+    const paperScope = buildClaudeScope({
+      libraryID: 7,
+      kind: "paper",
+      paperItemID: 42,
+      paperTitle: "Paper",
+    });
+
+    assert.equal(
+      runtimeRoot,
+      `/zotero-data/agent-runtime/${profileSignature}`,
+    );
+    assert.equal(paperScope.scopeId, `${profileSignature}:7:42`);
+  });
+
+  it("keeps the home-based Claude runtime root fallback without a data directory", function () {
+    const originalHome = process.env.HOME;
+    try {
+      process.env.HOME = "/home/claude-user";
+      globalScope.Zotero = {
+        ...(originalZotero || {}),
+        DataDirectory: { dir: "" },
+        Profile: { dir: "/profiles/main" },
+      };
+
+      const profileSignature = buildClaudeProfileSignature("/profiles/main");
+      const runtimeRoot = getClaudeRuntimeRootDir();
+
+      assert.equal(
+        runtimeRoot,
+        `/home/claude-user/Zotero/agent-runtime/${profileSignature}`,
+      );
+    } finally {
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+    }
+  });
+
   it("uses the profile signature in runtime roots and scope ids", function () {
     globalScope.Zotero = {
       ...(originalZotero || {}),
