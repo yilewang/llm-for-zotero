@@ -8,14 +8,13 @@ import {
   MineruRateLimitError,
   MineruCancelledError,
 } from "../utils/mineruClient";
-import {
-  writeMineruCacheFiles,
-} from "./contextPanel/mineruCache";
+import { writeMineruCacheFiles } from "./contextPanel/mineruCache";
 import { invalidateCachedContextText } from "./contextPanel/pdfContext";
 import {
   setItemProcessing,
   setItemCached,
   setItemFailed,
+  clearItemStatus,
 } from "./mineruProcessingStatus";
 import {
   getMineruAvailabilityForAttachment,
@@ -48,6 +47,8 @@ let isPaused = false;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let currentAbort: AbortController | null = null;
 let currentItemTitle = "";
+let currentAttachmentId: number | null = null;
+const staleAbortAttachmentIds = new Set<number>();
 const progressListeners = new Set<ProgressListener>();
 
 function getAbortControllerCtor(): (new () => AbortController) | null {
@@ -127,6 +128,74 @@ function isPdfAttachment(item: Zotero.Item): boolean {
   );
 }
 
+function normalizeNotifierId(id: string | number): number | null {
+  const itemId = typeof id === "string" ? parseInt(id, 10) : id;
+  return Number.isFinite(itemId) ? itemId : null;
+}
+
+function getValidatedQueueItem(entry: QueueEntry): Zotero.Item | null {
+  const item = Zotero.Items.get(entry.attachmentId);
+  if (!item || !isPdfAttachment(item)) return null;
+
+  const itemParentId = Number(item.parentID);
+  const normalizedItemParentId =
+    Number.isFinite(itemParentId) && itemParentId > 0
+      ? Math.floor(itemParentId)
+      : null;
+
+  if (entry.parentItemId && normalizedItemParentId !== entry.parentItemId) {
+    return null;
+  }
+
+  if (normalizedItemParentId) {
+    const parentItem = Zotero.Items.get(normalizedItemParentId);
+    const attachmentIds = parentItem?.getAttachments?.() || [];
+    if (!attachmentIds.includes(entry.attachmentId)) return null;
+  }
+
+  return item;
+}
+
+function discardStaleEntry(entry: QueueEntry, reason: string): void {
+  clearItemStatus(entry.attachmentId);
+  ztoolkit.log(
+    `MinerU auto-parse: skipping stale PDF ${entry.attachmentId} (${reason})`,
+  );
+}
+
+function removeDeletedAttachmentsFromQueue(ids: number[]): void {
+  const deletedIds = new Set(ids);
+  const previousLength = processingQueue.length;
+  processingQueue = processingQueue.filter(
+    (entry) => !deletedIds.has(entry.attachmentId),
+  );
+
+  for (const id of deletedIds) {
+    clearItemStatus(id);
+  }
+
+  if (previousLength !== processingQueue.length) {
+    ztoolkit.log(
+      `MinerU auto-parse: removed ${
+        previousLength - processingQueue.length
+      } deleted PDF(s) from queue`,
+    );
+  }
+
+  if (currentAttachmentId !== null && deletedIds.has(currentAttachmentId)) {
+    staleAbortAttachmentIds.add(currentAttachmentId);
+    if (currentAbort) {
+      currentAbort.abort();
+      currentAbort = null;
+    }
+    ztoolkit.log(
+      `MinerU auto-parse: cancelled deleted PDF ${currentAttachmentId}`,
+    );
+  }
+
+  notifyProgress();
+}
+
 async function processQueue(): Promise<void> {
   if (isProcessing || isPaused || processingQueue.length === 0) return;
 
@@ -145,9 +214,13 @@ async function processQueue(): Promise<void> {
     currentItemTitle = entry.title;
     notifyProgress();
 
-    const entryItem = Zotero.Items.get(entry.attachmentId);
+    const entryItem = getValidatedQueueItem(entry);
+    if (!entryItem) {
+      discardStaleEntry(entry, "attachment no longer current");
+      continue;
+    }
+
     if (
-      entryItem &&
       (
         await getMineruAvailabilityForAttachment(entryItem, {
           validateSyncedPackage: false,
@@ -165,12 +238,12 @@ async function processQueue(): Promise<void> {
     const AbortCtor = getAbortControllerCtor();
     const abort = AbortCtor ? new AbortCtor() : null;
     currentAbort = abort;
+    currentAttachmentId = entry.attachmentId;
 
     try {
-      const pdfItem = Zotero.Items.get(entry.attachmentId);
+      const pdfItem = getValidatedQueueItem(entry);
       if (!pdfItem) {
-        ztoolkit.log(`MinerU auto-parse: item ${entry.attachmentId} not found`);
-        setItemFailed(entry.attachmentId, "Item not found");
+        discardStaleEntry(entry, "attachment changed before parse");
         continue;
       }
 
@@ -196,6 +269,11 @@ async function processQueue(): Promise<void> {
       );
 
       if (result?.mdContent) {
+        if (!getValidatedQueueItem(entry)) {
+          discardStaleEntry(entry, "attachment changed before cache write");
+          continue;
+        }
+
         await writeMineruCacheFiles(
           entry.attachmentId,
           result.mdContent,
@@ -223,14 +301,20 @@ async function processQueue(): Promise<void> {
         ztoolkit.log(`MinerU auto-parse: no content for ${entry.title}`);
       }
     } catch (e) {
-      errorCount++;
       if (e instanceof MineruCancelledError) {
+        if (staleAbortAttachmentIds.has(entry.attachmentId)) {
+          staleAbortAttachmentIds.delete(entry.attachmentId);
+          discardStaleEntry(entry, "attachment deleted while parsing");
+          continue;
+        }
+        errorCount++;
         ztoolkit.log(`MinerU auto-parse: cancelled ${entry.title}`);
         setItemFailed(entry.attachmentId, "Cancelled");
         processingQueue.unshift(entry);
         break;
       }
       if (e instanceof MineruRateLimitError) {
+        errorCount++;
         ztoolkit.log(
           `MinerU auto-parse: rate limited - ${(e as Error).message}`,
         );
@@ -242,13 +326,21 @@ async function processQueue(): Promise<void> {
         );
         break;
       }
+      errorCount++;
       const errorMsg = (e as Error).message || String(e);
       setItemFailed(entry.attachmentId, errorMsg);
       ztoolkit.log(`MinerU auto-parse: error processing ${entry.title}:`, e);
+    } finally {
+      if (currentAttachmentId === entry.attachmentId) {
+        currentAttachmentId = null;
+        currentAbort = null;
+      }
+      staleAbortAttachmentIds.delete(entry.attachmentId);
     }
   }
 
   currentAbort = null;
+  currentAttachmentId = null;
   currentItemTitle = "";
   isProcessing = false;
   notifyProgress();
@@ -287,16 +379,24 @@ async function handleItemNotification(
   type: string,
   ids: Array<string | number>,
 ): Promise<void> {
-  if (event !== "add" || type !== "item") return;
+  if (type !== "item") return;
+
+  const itemIds = ids
+    .map(normalizeNotifierId)
+    .filter((id): id is number => id !== null);
+
+  if (event === "delete") {
+    removeDeletedAttachmentsFromQueue(itemIds);
+    return;
+  }
+
+  if (event !== "add") return;
 
   if (!isGlobalAutoParseEnabled()) return;
 
-  ztoolkit.log(`MinerU auto-parse: handling ${ids.length} added item(s)`);
+  ztoolkit.log(`MinerU auto-parse: handling ${itemIds.length} added item(s)`);
 
-  for (const id of ids) {
-    const itemId = typeof id === "string" ? parseInt(id, 10) : id;
-    if (!Number.isFinite(itemId)) continue;
-
+  for (const itemId of itemIds) {
     const item = Zotero.Items.get(itemId);
     if (!item) continue;
 
@@ -331,8 +431,7 @@ async function handleItemNotification(
         ztoolkit.log(`MinerU auto-parse: enqueuing ${title}`);
         enqueueForProcessing(pdf.id, title, item.id);
       }
-    }
-    else if (isPdfAttachment(item)) {
+    } else if (isPdfAttachment(item)) {
       const pdfFilename =
         (item as unknown as { attachmentFilename?: string })
           .attachmentFilename || "";
@@ -444,6 +543,8 @@ export function stopAutoWatch(): void {
   isProcessing = false;
   isPaused = false;
   currentItemTitle = "";
+  currentAttachmentId = null;
+  staleAbortAttachmentIds.clear();
 
   if (debounceTimer) {
     clearTimeout(debounceTimer);
@@ -475,4 +576,47 @@ export function getAutoWatchStatus(): AutoWatchStatus {
     currentItem: currentItemTitle,
     queueLength: processingQueue.length,
   };
+}
+
+export async function handleAutoWatchNotificationForTests(
+  event: string,
+  type: string,
+  ids: Array<string | number>,
+): Promise<void> {
+  await handleItemNotification(event, type, ids);
+}
+
+export async function processAutoWatchQueueForTests(): Promise<void> {
+  await processQueue();
+}
+
+export function getAutoWatchQueueSnapshotForTests(): QueueEntry[] {
+  return processingQueue.map((entry) => ({ ...entry }));
+}
+
+export function isAutoWatchQueueEntryCurrentForTests(
+  entry: QueueEntry,
+): boolean {
+  return Boolean(getValidatedQueueItem(entry));
+}
+
+export function resetAutoWatchForTests(): void {
+  if (currentAbort) {
+    currentAbort.abort();
+    currentAbort = null;
+  }
+
+  processingQueue = [];
+  isProcessing = false;
+  isPaused = false;
+  currentItemTitle = "";
+  currentAttachmentId = null;
+  staleAbortAttachmentIds.clear();
+
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+
+  progressListeners.clear();
 }
