@@ -365,9 +365,53 @@ export function formatTokenCount(tokens: number): string {
   return `${Math.round(tokens / 1000)}k`;
 }
 
-export function setTokenUsage(el: HTMLElement, sessionTokens: number): void {
-  el.textContent = `${formatTokenCount(Math.max(0, sessionTokens))} tokens`;
-  el.style.display = "inline";
+export function setTokenUsage(
+  el: HTMLElement,
+  sessionTokens: number,
+  contextWindow?: number,
+  gaugeEl?: HTMLElement | null,
+  options: { estimated?: boolean } = {},
+): void {
+  const normalizedTokens = Math.max(0, sessionTokens);
+  if (
+    typeof contextWindow === "number" &&
+    Number.isFinite(contextWindow) &&
+    contextWindow > 0 &&
+    normalizedTokens > 0
+  ) {
+    const percentage = Math.max(
+      0,
+      Math.min(100, Math.round((normalizedTokens / contextWindow) * 100)),
+    );
+    const prefix = options.estimated
+      ? "Estimated active context window usage"
+      : "Active context window usage";
+    const title =
+      percentage > 80
+        ? `${prefix}: ${formatTokenCount(normalizedTokens)} / ${formatTokenCount(contextWindow)} input tokens — approaching limit, run /compact`
+        : `${prefix}: ${formatTokenCount(normalizedTokens)} / ${formatTokenCount(contextWindow)} input tokens`;
+    el.textContent = `${formatTokenCount(normalizedTokens)} / ${formatTokenCount(contextWindow)} (${percentage}%)`;
+    el.title = title;
+    el.dataset.warning = percentage > 80 ? "true" : "false";
+    el.style.display = "inline";
+    if (gaugeEl) {
+      gaugeEl.style.display = "none";
+      gaugeEl.style.background = "transparent";
+      delete gaugeEl.dataset.warning;
+      gaugeEl.title = "";
+    }
+    return;
+  }
+  el.textContent = "";
+  el.title = "";
+  delete el.dataset.warning;
+  el.style.display = "none";
+  if (gaugeEl) {
+    gaugeEl.style.display = "none";
+    gaugeEl.style.background = "transparent";
+    delete gaugeEl.dataset.warning;
+    gaugeEl.title = "";
+  }
 }
 
 export function clampNumber(value: number, min: number, max: number): number {

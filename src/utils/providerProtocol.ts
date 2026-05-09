@@ -113,19 +113,54 @@ export function getProviderProtocolSpec(
   return found;
 }
 
+function getApiBasePathname(apiBase: string | undefined): string {
+  const cleaned = (apiBase || "").trim().replace(/\/+$/, "");
+  if (!cleaned) return "";
+  try {
+    const parsed = new URL(cleaned);
+    return (parsed.pathname.replace(/\/+$/, "") || "/").toLowerCase();
+  } catch (_err) {
+    return cleaned.replace(/[?#].*$/, "").toLowerCase();
+  }
+}
+
+function isAnthropicMessagesBase(apiBase: string | undefined): boolean {
+  const pathname = getApiBasePathname(apiBase);
+  if (!pathname) return false;
+  return (
+    pathname === "/messages" ||
+    pathname.endsWith("/v1/messages") ||
+    pathname.endsWith("/anthropic") ||
+    pathname.endsWith("/anthropic/v1") ||
+    pathname.endsWith("/anthropic/v1/messages")
+  );
+}
+
+function isOpenAIChatCompletionsBase(apiBase: string | undefined): boolean {
+  const pathname = getApiBasePathname(apiBase);
+  return Boolean(pathname && pathname.endsWith("/chat/completions"));
+}
+
 export function inferLegacyProviderProtocol(params: {
   authMode?: string;
   apiBase?: string;
 }): ProviderProtocol {
-  if (params.authMode === "codex_auth") {
+  if (params.authMode === "codex_auth" || params.authMode === "codex_app_server") {
     return "codex_responses";
   }
   if (params.authMode === "copilot_auth") {
     return "openai_chat_compat";
   }
-  return isResponsesBase(params.apiBase || "")
-    ? "responses_api"
-    : "openai_chat_compat";
+  if (isResponsesBase(params.apiBase || "")) {
+    return "responses_api";
+  }
+  if (isAnthropicMessagesBase(params.apiBase)) {
+    return "anthropic_messages";
+  }
+  if (isOpenAIChatCompletionsBase(params.apiBase)) {
+    return "openai_chat_compat";
+  }
+  return "openai_chat_compat";
 }
 
 export function normalizeProviderProtocol(
@@ -145,7 +180,7 @@ export function normalizeProviderProtocolForAuthMode(params: {
   const inferred = inferLegacyProviderProtocol(params);
   const fallback = params.fallback || inferred;
   const normalized = normalizeProviderProtocol(params.protocol, fallback);
-  if (params.authMode === "codex_auth") {
+  if (params.authMode === "codex_auth" || params.authMode === "codex_app_server") {
     return "codex_responses";
   }
   if (params.authMode === "copilot_auth") {

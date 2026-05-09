@@ -4,6 +4,7 @@ import { encodeBytesBase64 } from "./model/shared";
 import { recordAgentTurn } from "./store/conversationMemory";
 import type {
   AgentInheritedApproval,
+  AgentModelCapabilities,
   AgentModelContentPart,
   AgentConfirmationResolution,
   AgentEvent,
@@ -18,11 +19,29 @@ import type {
   AgentToolResult,
 } from "./types";
 import type { AgentModelAdapter } from "./model/adapter";
+import type {
+  AgentAdapterToolCallResult,
+  AgentAdapterToolContentItem,
+} from "./model/adapter";
 import { resolveAgentLimits } from "./model/limits";
 import { classifyRequest } from "./model/requestClassifier";
 import { buildAgentInitialMessages } from "./model/messageBuilder";
 import { detectSkillIntent } from "./model/skillClassifier";
 import { getAllSkills, getMatchedSkillIds } from "./skills";
+import {
+  buildAgentResourceContextPlan,
+  commitAgentReadActivities,
+  commitAgentResourceContextPlan,
+  type AgentPendingReadActivity,
+} from "./context/resourceLifecycle";
+import {
+  getNotesDirectoryNickname,
+  isNotesDirectoryConfigured,
+} from "../utils/notesDirectoryConfig";
+import {
+  estimateContextMessagesTokens,
+  resolveContextWindowTokens,
+} from "../utils/modelInputCap";
 import {
   appendAgentRunEvent,
   createAgentRun,
@@ -104,11 +123,52 @@ function summarizeArtifacts(artifacts: AgentToolArtifact[]): string {
   return parts.join(" ");
 }
 
+function summarizeTextOnlyArtifacts(
+  artifacts: AgentToolArtifact[],
+  modelName?: string,
+): string {
+  const imageCount = artifacts.filter(
+    (artifact) => artifact.kind === "image",
+  ).length;
+  const fileCount = artifacts.filter(
+    (artifact) => artifact.kind === "file_ref",
+  ).length;
+  return summarizeTextOnlyOmittedParts(imageCount, fileCount, modelName);
+}
+
+function summarizeTextOnlyOmittedParts(
+  imageCount: number,
+  fileCount: number,
+  modelName?: string,
+): string {
+  const omitted: string[] = [];
+  if (imageCount) {
+    omitted.push(`${imageCount} image${imageCount === 1 ? "" : "s"}`);
+  }
+  if (fileCount) {
+    omitted.push(`${fileCount} file${fileCount === 1 ? "" : "s"}`);
+  }
+  const target = (modelName || "The selected model").trim();
+  const omittedLabel = omitted.length ? omitted.join(" and ") : "artifacts";
+  return (
+    `${omittedLabel} prepared by the tool were not attached because ${target} does not support image or file input. ` +
+    "Use the tool result text, MinerU manifest/full.md content, captions, and surrounding extracted text instead. " +
+    "If direct visual inspection is required, say that a vision-capable model is needed."
+  );
+}
+
 async function buildArtifactFollowupMessage(
   result: AgentToolResult,
+  options: { multimodal?: boolean; modelName?: string } = {},
 ): Promise<AgentModelMessage | null> {
   const artifacts = Array.isArray(result.artifacts) ? result.artifacts : [];
   if (!artifacts.length || !result.ok) return null;
+  if (options.multimodal === false) {
+    return {
+      role: "user",
+      content: summarizeTextOnlyArtifacts(artifacts, options.modelName),
+    };
+  }
   const parts: AgentModelContentPart[] = [
     {
       type: "text",
@@ -154,6 +214,40 @@ async function buildArtifactFollowupMessage(
     : null;
 }
 
+function filterFollowupMessageForCapabilities(
+  message: AgentModelMessage | null,
+  capabilities: AgentModelCapabilities,
+  modelName?: string,
+): AgentModelMessage | null {
+  if (!message || capabilities.multimodal) return message;
+  if (typeof message.content === "string") return message;
+
+  const textParts: string[] = [];
+  let omittedImages = 0;
+  let omittedFiles = 0;
+  for (const part of message.content) {
+    if (part.type === "text") {
+      if (part.text.trim()) textParts.push(part.text);
+      continue;
+    }
+    if (part.type === "image_url") {
+      omittedImages += 1;
+      continue;
+    }
+    omittedFiles += 1;
+  }
+
+  if (omittedImages || omittedFiles) {
+    textParts.push(
+      summarizeTextOnlyOmittedParts(omittedImages, omittedFiles, modelName),
+    );
+  }
+  return {
+    ...message,
+    content: textParts.filter(Boolean).join("\n\n"),
+  };
+}
+
 type ToolWorkflowDelivery = {
   callId: string;
   name: string;
@@ -167,6 +261,84 @@ type ToolWorkflowOutcome = {
   stopRun?: boolean;
   finalText?: string;
 };
+
+function stringifyToolDeliveryContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (content === null || content === undefined) {
+    return "";
+  }
+  try {
+    return JSON.stringify(content, null, 2);
+  } catch {
+    return String(content);
+  }
+}
+
+function pushAdapterTextItem(
+  target: AgentAdapterToolContentItem[],
+  text: string,
+): void {
+  if (!text) return;
+  target.push({ type: "inputText", text });
+}
+
+function pushAdapterMessageItems(
+  target: AgentAdapterToolContentItem[],
+  message: AgentModelMessage,
+): void {
+  if (typeof message.content === "string") {
+    pushAdapterTextItem(target, message.content);
+    return;
+  }
+  for (const part of message.content) {
+    if (part.type === "text") {
+      pushAdapterTextItem(target, part.text);
+      continue;
+    }
+    if (part.type === "image_url") {
+      target.push({
+        type: "inputImage",
+        imageUrl: part.image_url.url,
+      });
+      continue;
+    }
+    pushAdapterTextItem(target, `[Prepared file: ${part.file_ref.name}]`);
+  }
+}
+
+function buildAdapterToolCallResult(
+  outcome: ToolWorkflowOutcome,
+): AgentAdapterToolCallResult {
+  const contentItems: AgentAdapterToolContentItem[] = [];
+  if (outcome.delivery) {
+    pushAdapterTextItem(
+      contentItems,
+      stringifyToolDeliveryContent(outcome.delivery.content),
+    );
+    for (const followupMessage of outcome.delivery.followupMessages) {
+      pushAdapterMessageItems(contentItems, followupMessage);
+    }
+  } else if (outcome.finalText) {
+    pushAdapterTextItem(contentItems, outcome.finalText);
+  } else {
+    pushAdapterTextItem(
+      contentItems,
+      stringifyToolDeliveryContent(outcome.toolResult.content),
+    );
+  }
+  if (!contentItems.length) {
+    pushAdapterTextItem(
+      contentItems,
+      outcome.toolResult.ok ? "Tool completed successfully." : "Tool failed.",
+    );
+  }
+  return {
+    contentItems,
+    success: outcome.toolResult.ok,
+  };
+}
 
 type ExecutedToolCall = {
   toolResult: AgentToolResult;
@@ -192,6 +364,34 @@ function readToolError(result: AgentToolResult): string {
 
 function isUserDeniedToolResult(result: AgentToolResult): boolean {
   return readToolError(result).toLowerCase() === "user denied action";
+}
+
+function isWriteNoteFileRequest(
+  request: AgentRuntimeRequest,
+  matchedSkills: ReadonlyArray<string>,
+): boolean {
+  const activeSkillIds = new Set([
+    ...matchedSkills,
+    ...(request.forcedSkillIds || []),
+  ]);
+  if (!activeSkillIds.has("write-note")) return false;
+  const text = request.userText || "";
+  if (/\b(zotero\s+note|current\s+zotero\s+note|active\s+note)\b/i.test(text)) {
+    return false;
+  }
+  return /\b(obsidian|vault|markdown\s+file|md\s+file|file|folder|directory|disk|export|save|write\s+(?:it|this|that)?\s*(?:to|into))\b/i.test(
+    text,
+  );
+}
+
+function isSuccessfulFileIoWrite(record: {
+  name: string;
+  ok: boolean;
+  input?: unknown;
+}): boolean {
+  if (record.name !== "file_io" || !record.ok) return false;
+  if (!record.input || typeof record.input !== "object") return false;
+  return (record.input as { action?: unknown }).action === "write";
 }
 
 export class AgentRuntime {
@@ -280,6 +480,7 @@ export class AgentRuntime {
     const request = params.request;
     const runId = createRunId();
     const adapter = this.adapterFactory(request);
+    const adapterCapabilities = adapter.getCapabilities(request);
     let eventSeq = 0;
     let currentAnswerText = "";
     const item = request.item || null;
@@ -323,6 +524,12 @@ export class AgentRuntime {
       modelProviderLabel: request.modelProviderLabel,
     };
     const toolsUsedThisTurn: string[] = [];
+    const toolExecutionRecords: Array<{
+      name: string;
+      ok: boolean;
+      input?: unknown;
+    }> = [];
+    const pendingReadActivities: AgentPendingReadActivity[] = [];
     // Intent/skill selection runs ONCE per user turn, before the system
     // prompt is built. The flow:
     //   1. detectSkillIntent — one LLM call against the primary model,
@@ -338,10 +545,21 @@ export class AgentRuntime {
     // inside the agent loop — no per-step classification cost.
     const classifiedSkillIds = await detectSkillIntent(request, getAllSkills());
     const matchedSkills = getMatchedSkillIds(request, classifiedSkillIds);
+    const resourceContextPlan = buildAgentResourceContextPlan(request);
+    await emit({
+      type: "provider_event",
+      providerType: "agent_resource_lifecycle",
+      payload: {
+        lifecycleState: resourceContextPlan.lifecycleState,
+        contextInjection: resourceContextPlan.injection,
+        resourceDelta: resourceContextPlan.resourceDeltaCounts,
+      },
+    });
     const messages = (await buildAgentInitialMessages(
       request,
       this.registry.listToolDefinitionsForRequest(request),
       matchedSkills,
+      resourceContextPlan,
     )) as AgentModelMessage[];
 
     for (const skillId of matchedSkills) {
@@ -353,6 +571,13 @@ export class AgentRuntime {
     const { maxRounds, maxToolCallsPerRound } = resolveAgentLimits(
       intent.isBulkOperation,
     );
+    const requiresFileNoteWrite = isWriteNoteFileRequest(
+      request,
+      matchedSkills,
+    );
+    let noteWriteCorrectionUsed = false;
+    const hasSuccessfulFileWrite = () =>
+      toolExecutionRecords.some((record) => isSuccessfulFileIoWrite(record));
     const shouldFlushStreamBuffer = (value: string): boolean => {
       if (!value) return false;
       if (value.length >= 8) return true;
@@ -370,13 +595,20 @@ export class AgentRuntime {
         });
       }
       await finishAgentRun(runId, status, finalText);
-      if (status === "completed" && finalText) {
-        await recordAgentTurn(
-          request.conversationKey,
-          request.userText,
-          toolsUsedThisTurn,
-          finalText,
-        );
+      if (status === "completed") {
+        commitAgentResourceContextPlan(resourceContextPlan);
+        commitAgentReadActivities({
+          conversationKey: request.conversationKey,
+          activities: pendingReadActivities,
+        });
+        if (finalText) {
+          await recordAgentTurn(
+            request.conversationKey,
+            request.userText,
+            toolsUsedThisTurn,
+            finalText,
+          );
+        }
       }
       return {
         kind: "completed",
@@ -437,6 +669,37 @@ export class AgentRuntime {
           text,
         });
       };
+      const rollbackStepStreamedText = async () => {
+        await flushStepDelta();
+        if (!stepStreamedText) return;
+        currentAnswerText = currentAnswerText.slice(
+          0,
+          Math.max(0, currentAnswerText.length - stepStreamedText.length),
+        );
+        await emit({
+          type: "message_rollback",
+          length: stepStreamedText.length,
+          text: stepStreamedText,
+        });
+        stepStreamedText = "";
+        stepPendingDelta = "";
+      };
+      const stepContextWindow = resolveContextWindowTokens(
+        request.model || "",
+        request.advanced?.inputTokenCap,
+      );
+      const stepContextTokens = estimateContextMessagesTokens(messages);
+      if (stepContextTokens > 0 && stepContextWindow > 0) {
+        await emit({
+          type: "usage",
+          round,
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          contextTokens: stepContextTokens,
+          contextWindow: stepContextWindow,
+        });
+      }
       const step = await adapter.runStep({
         request,
         messages,
@@ -455,9 +718,76 @@ export class AgentRuntime {
           await emit({
             type: "reasoning",
             round,
+            stepId: reasoning.stepId,
+            stepLabel: reasoning.stepLabel,
             summary: reasoning.summary,
             details: reasoning.details,
           });
+        },
+        onUsage: async (usage) => {
+          const usageRecord = usage as unknown as Record<string, unknown>;
+          const totalTokens = Math.max(0, usage.totalTokens || 0);
+          const promptTokens = Math.max(0, usage.promptTokens || 0);
+          const completionTokens = Math.max(0, usage.completionTokens || 0);
+          const contextTokens =
+            typeof usageRecord.contextTokens === "number" &&
+            Number.isFinite(usageRecord.contextTokens)
+              ? Math.max(0, usageRecord.contextTokens)
+              : undefined;
+          const contextWindow =
+            typeof usageRecord.contextWindow === "number" &&
+            Number.isFinite(usageRecord.contextWindow)
+              ? Math.max(0, usageRecord.contextWindow)
+              : typeof contextTokens === "number" && contextTokens > 0
+                ? stepContextWindow
+                : undefined;
+          const contextWindowIsAuthoritative =
+            usageRecord.contextWindowIsAuthoritative === true;
+          const percentage =
+            typeof usageRecord.percentage === "number" &&
+            Number.isFinite(usageRecord.percentage)
+              ? Math.max(0, Math.min(100, usageRecord.percentage))
+              : undefined;
+          const sessionId =
+            typeof usageRecord.sessionId === "string" &&
+            usageRecord.sessionId.trim()
+              ? usageRecord.sessionId.trim()
+              : undefined;
+          const model =
+            typeof usageRecord.model === "string" && usageRecord.model.trim()
+              ? usageRecord.model.trim()
+              : undefined;
+          if (
+            totalTokens <= 0 &&
+            promptTokens <= 0 &&
+            completionTokens <= 0 &&
+            !(typeof contextTokens === "number" && contextTokens > 0) &&
+            !(typeof contextWindow === "number" && contextWindow > 0)
+          ) {
+            return;
+          }
+          await emit({
+            type: "usage",
+            round,
+            promptTokens,
+            completionTokens,
+            totalTokens,
+            ...(typeof contextTokens === "number" ? { contextTokens } : {}),
+            ...(typeof contextWindow === "number" ? { contextWindow } : {}),
+            ...(contextWindowIsAuthoritative
+              ? { contextWindowIsAuthoritative: true }
+              : {}),
+            ...(typeof percentage === "number" ? { percentage } : {}),
+            ...(sessionId ? { sessionId } : {}),
+            ...(model ? { model } : {}),
+          });
+        },
+        onToolCall: async (call) => {
+          await rollbackStepStreamedText();
+          const outcome = await executeToolWorkflow(call, round, {
+            modelCallId: call.id,
+          });
+          return buildAdapterToolCallResult(outcome);
         },
       });
       await flushStepDelta();
@@ -541,8 +871,24 @@ export class AgentRuntime {
         };
       }
       const { toolResult } = executedCall;
+      toolExecutionRecords.push({
+        name: toolResult.name,
+        ok: toolResult.ok,
+        input: executedCall.input,
+      });
       if (toolResult.ok) {
         consecutiveToolErrors = 0;
+        pendingReadActivities.push({
+          toolName: toolResult.name,
+          toolLabel:
+            typeof executedCall.toolDefinition?.presentation?.label ===
+            "string"
+              ? executedCall.toolDefinition.presentation.label
+              : undefined,
+          input: executedCall.input,
+          request,
+          timestamp: this.now(),
+        });
       } else {
         consecutiveToolErrors += 1;
         const rawError = readToolError(toolResult);
@@ -578,10 +924,26 @@ export class AgentRuntime {
             ...context,
             currentAnswerText,
           })
-        : await buildArtifactFollowupMessage(toolResult);
-      const followupMessages = [...extraFollowupMessages];
-      if (followupMessage) {
-        followupMessages.push(followupMessage);
+        : await buildArtifactFollowupMessage(toolResult, {
+            multimodal: adapterCapabilities.multimodal,
+            modelName: request.model,
+          });
+      const filteredFollowupMessage = filterFollowupMessageForCapabilities(
+        followupMessage,
+        adapterCapabilities,
+        request.model,
+      );
+      const followupMessages = extraFollowupMessages
+        .map((message) =>
+          filterFollowupMessageForCapabilities(
+            message,
+            adapterCapabilities,
+            request.model,
+          ),
+        )
+        .filter((message): message is AgentModelMessage => Boolean(message));
+      if (filteredFollowupMessage) {
+        followupMessages.push(filteredFollowupMessage);
       }
       return {
         callId,
@@ -706,6 +1068,20 @@ export class AgentRuntime {
         ),
       };
     };
+    const rollbackCommittedStreamedText = async (
+      stepStreamedText: string,
+    ): Promise<void> => {
+      if (!stepStreamedText) return;
+      currentAnswerText = currentAnswerText.slice(
+        0,
+        Math.max(0, currentAnswerText.length - stepStreamedText.length),
+      );
+      await emit({
+        type: "message_rollback",
+        length: stepStreamedText.length,
+        text: stepStreamedText,
+      });
+    };
     for (let round = 1; round <= maxRounds; round += 1) {
       const { step, stepStreamedText } = await runModelStep(
         round,
@@ -714,6 +1090,34 @@ export class AgentRuntime {
           : `Continuing agent (${round}/${maxRounds})`,
       );
       if (step.kind === "final") {
+        if (
+          requiresFileNoteWrite &&
+          !hasSuccessfulFileWrite() &&
+          isNotesDirectoryConfigured()
+        ) {
+          await rollbackCommittedStreamedText(stepStreamedText);
+          if (!noteWriteCorrectionUsed) {
+            noteWriteCorrectionUsed = true;
+            messages.push(
+              step.assistantMessage ?? {
+                role: "assistant",
+                content: stepStreamedText,
+              },
+            );
+            messages.push({
+              role: "user",
+              content:
+                'Correction for this turn: the user\'s request requires writing a Markdown note to the configured notes directory. Call `file_io` with `action: "write"` now, using the configured notes directory/default target path and a clear `.md` filename. Do not put the note body in chat. If a write is impossible, explain the setup problem briefly.',
+            });
+            continue;
+          }
+          const nickname = getNotesDirectoryNickname().trim();
+          const targetLabel = nickname ? `${nickname} note` : "note";
+          return completeRun(
+            `I could not complete the ${targetLabel} write because the model did not call \`file_io(write, ...)\` after being corrected.`,
+            "failed",
+          );
+        }
         return emitFinalStep(step, stepStreamedText);
       }
 
@@ -721,17 +1125,7 @@ export class AgentRuntime {
       // model streamed during this step is intermediate "thinking" text
       // (e.g. "Let me read more of the paper...") that should appear in
       // the agent trace but NOT in the final chat answer.  Roll it back.
-      if (stepStreamedText) {
-        currentAnswerText = currentAnswerText.slice(
-          0,
-          Math.max(0, currentAnswerText.length - stepStreamedText.length),
-        );
-        await emit({
-          type: "message_rollback",
-          length: stepStreamedText.length,
-          text: stepStreamedText,
-        });
-      }
+      await rollbackCommittedStreamedText(stepStreamedText);
 
       const calls = step.calls.slice(0, maxToolCallsPerRound);
       messages.push({

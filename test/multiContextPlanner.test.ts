@@ -5,10 +5,12 @@ import {
   resolveMultiContextPlan,
   selectContextAssemblyMode,
 } from "../src/modules/contextPanel/multiContextPlanner";
+import { COLLECTION_RETRIEVAL_MAX_PAPERS } from "../src/modules/contextPanel/constants";
 import {
   buildChunkMetadata,
   buildPaperKey,
 } from "../src/modules/contextPanel/pdfContext";
+import { tokenizeRetrievalText } from "../src/modules/contextPanel/retrievalTokenizer";
 import { pdfTextCache } from "../src/modules/contextPanel/state";
 import type {
   ChunkStat,
@@ -17,9 +19,7 @@ import type {
 } from "../src/modules/contextPanel/types";
 
 function tokenize(text: string): string[] {
-  return (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(
-    (token) => token.length >= 3,
-  );
+  return tokenizeRetrievalText(text);
 }
 
 function buildPdfContext(title: string, chunks: string[]): PdfContext {
@@ -59,16 +59,30 @@ function buildPdfContext(title: string, chunks: string[]): PdfContext {
 type MockItem = {
   id: number;
   parentID?: number;
+  libraryID?: number;
   attachmentContentType?: string;
   firstCreator?: string;
+  dateModified?: string;
   isAttachment: () => boolean;
   isRegularItem: () => boolean;
+  getDisplayTitle?: () => string;
+  getCreators?: () => Array<{ firstName?: string; lastName?: string; name?: string }>;
   getField: (field: string) => string;
   getAttachments: () => number[];
 };
 
+type MockCollection = {
+  id: number;
+  name: string;
+  libraryID: number;
+  getChildItems: () => number[];
+  getChildCollections: () => number[];
+};
+
 const zoteroItems = new Map<number, MockItem>();
+const zoteroCollections = new Map<number, MockCollection>();
 let originalZotero: unknown;
+let originalZtoolkit: unknown;
 
 function registerMockPaper(params: {
   itemId: number;
@@ -77,13 +91,20 @@ function registerMockPaper(params: {
   firstCreator?: string;
   year?: string;
   citationKey?: string;
+  abstractNote?: string;
+  dateModified?: string;
   pdfContext: PdfContext;
 }): PaperContextRef {
   const parent: MockItem = {
     id: params.itemId,
+    libraryID: 1,
     firstCreator: params.firstCreator,
+    dateModified: params.dateModified,
     isAttachment: () => false,
     isRegularItem: () => true,
+    getDisplayTitle: () => params.title,
+    getCreators: () =>
+      params.firstCreator ? [{ name: params.firstCreator }] : [],
     getField: (field: string) => {
       switch (field) {
         case "title":
@@ -96,6 +117,8 @@ function registerMockPaper(params: {
           return params.year || "";
         case "citationKey":
           return params.citationKey || "";
+        case "abstractNote":
+          return params.abstractNote || "";
         default:
           return "";
       }
@@ -105,6 +128,7 @@ function registerMockPaper(params: {
   const attachment: MockItem = {
     id: params.contextItemId,
     parentID: params.itemId,
+    libraryID: 1,
     attachmentContentType: "application/pdf",
     isAttachment: () => true,
     isRegularItem: () => false,
@@ -151,10 +175,18 @@ describe("multiContextPlanner", function () {
     originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown })
       .Zotero;
     const prefs: Record<string, unknown> = {};
+    (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit = {
+      log: () => undefined,
+    };
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
       Items: {
         get(id: number) {
           return zoteroItems.get(id) || null;
+        },
+      },
+      Collections: {
+        get(id: number) {
+          return zoteroCollections.get(id) || null;
         },
       },
       Prefs: {
@@ -163,17 +195,25 @@ describe("multiContextPlanner", function () {
           prefs[key] = value;
         },
       },
+      PDFWorker: {
+        getFullText: async (id: number) => ({
+          text: `Abstract\nCalibration drift affects robust retrieval for attachment ${id}.`,
+        }),
+      },
     } as unknown as typeof Zotero;
   });
 
   after(function () {
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
       originalZotero;
+    (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit =
+      originalZtoolkit;
   });
 
   afterEach(function () {
     pdfTextCache.clear();
     zoteroItems.clear();
+    zoteroCollections.clear();
   });
 
   it("selects full mode when full text fits context budget", function () {
@@ -540,5 +580,80 @@ describe("multiContextPlanner", function () {
     assert.isAtLeast(plan.selectedPaperCount, 1);
     assert.include(plan.contextText, "Full Paper Contexts:");
     assert.match(plan.contextText, /Title: Pinned [AB]/);
+  });
+
+  it("metadata-ranks large collection scopes and caps deep retrieval", async function () {
+    const itemIds: number[] = [];
+    for (let index = 1; index <= 60; index += 1) {
+      const suffix = String(index).padStart(3, "0");
+      itemIds.push(1_000 + index);
+      registerMockPaper({
+        itemId: 1_000 + index,
+        contextItemId: 2_000 + index,
+        title: `Calibration Drift Paper ${suffix}`,
+        firstCreator: "Rivera",
+        year: "2026",
+        abstractNote:
+          "This abstract discusses calibration drift and robust retrieval.",
+        pdfContext: buildPdfContext(`Calibration Drift Paper ${suffix}`, [
+          `Abstract\nCalibration drift affects robust retrieval in paper ${suffix}.`,
+          `Methods\nThis paper ${suffix} contains follow-up implementation detail.`,
+        ]),
+      });
+    }
+    zoteroCollections.set(55, {
+      id: 55,
+      name: "Large Methods Folder",
+      libraryID: 1,
+      getChildItems: () => itemIds,
+      getChildCollections: () => [],
+    });
+
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "open",
+      activeContextItem: null,
+      question: "What does calibration drift say about robust retrieval?",
+      collectionContexts: [
+        {
+          collectionId: 55,
+          name: "Large Methods Folder",
+          libraryID: 1,
+        },
+      ],
+      paperContexts: [],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      advanced: {
+        temperature: 0.2,
+        maxTokens: 512,
+        inputTokenCap: 8_000,
+      },
+    });
+
+    assert.equal(plan.mode, "retrieval");
+    assert.include(plan.contextText, "Selected Zotero collection scopes:");
+    assert.include(plan.contextText, "metadata-ranked shortlist");
+    assert.include(
+      plan.contextText,
+      `${COLLECTION_RETRIEVAL_MAX_PAPERS} of 60 PDF-backed papers selected`,
+    );
+    assert.include(plan.contextText, "Title: Calibration Drift Paper 001");
+    assert.notInclude(plan.contextText, "Title: Calibration Drift Paper 060");
+    assert.isAtMost(plan.selectedPaperCount, COLLECTION_RETRIEVAL_MAX_PAPERS);
+    assert.isAtLeast(plan.citationPaperContexts?.length || 0, 1);
+    assert.isAtMost(
+      plan.citationPaperContexts?.length || 0,
+      COLLECTION_RETRIEVAL_MAX_PAPERS,
+    );
+    assert.include(
+      (plan.citationPaperContexts || []).map((paper) => paper.title),
+      "Calibration Drift Paper 001",
+    );
+    assert.notInclude(
+      (plan.citationPaperContexts || []).map((paper) => paper.title),
+      "Calibration Drift Paper 060",
+    );
   });
 });

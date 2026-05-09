@@ -10,11 +10,16 @@ import {
 } from "./constants";
 import type { ActionDropdownSpec } from "./types";
 import {
+  getBaseSlashMenuItems,
+  resolveSlashActionChatMode,
+  type SlashBaseMenuItem,
+} from "./slashMenuBehavior";
+import {
   getPaperPortalBaseItemID,
-  isGlobalPortalItem,
   isPaperPortalItem,
   resolveActiveNoteSession,
   resolveDisplayConversationKind,
+  resolvePreferredConversationSystem,
 } from "./portalScope";
 
 function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
@@ -35,39 +40,6 @@ function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
   menu.style.display = "none";
   slot.append(button, menu);
   return { slot, button, menu };
-}
-
-const globalRegistryKey = "__llm_mode_lock_registry";
-
-/**
- * Keeps the active panel lock button display unblocked and prunes stale
- * registry entries from disposed panel bodies.
- */
-export function syncGlobalLockVisibility(currentBody: Element) {
-  const myZotero = (globalThis as any).Zotero || globalThis;
-  if (!myZotero[globalRegistryKey]) {
-    myZotero[globalRegistryKey] = new Set<Element>();
-  }
-  const allLocks: Set<Element> = myZotero[globalRegistryKey];
-
-  try {
-    for (const el of Array.from(allLocks)) {
-      if (!el.isConnected) {
-        allLocks.delete(el);
-        continue;
-      }
-      const htmlEl = el as HTMLElement;
-      // Only normalize the currently active panel lock button.
-      // Writing sticky inline `display:none` to other panels can persist when
-      // users switch back to a previously visited tab, causing the lock icon
-      // to disappear even though lock state is still active.
-      if (currentBody.contains(el)) {
-        htmlEl.style.removeProperty("display");
-      }
-    }
-  } catch (err) {
-    ztoolkit.log(`LLM DEBUG: Error syncing lock visibility: ${err}`);
-  }
 }
 
 function buildUI(body: Element, item?: Zotero.Item | null) {
@@ -126,6 +98,8 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       ? "global"
       : "paper"
     : "";
+  container.dataset.conversationSystem =
+    resolvePreferredConversationSystem({ item });
   container.dataset.basePaperItemId =
     basePaperItemId > 0 ? `${basePaperItemId}` : "";
   container.dataset.noteKind = activeNoteSession?.noteKind || "";
@@ -179,16 +153,17 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   historyToggle.setAttribute("aria-expanded", "false");
   historyToggle.style.display = activeNoteSession ? "none" : "";
 
-  // Mode chip: single pill showing current mode + lock
+  const isStandaloneBody = (body as HTMLElement).dataset?.standalone === "true";
+  const headerModeControls = createElement(doc, "div", "llm-header-mode-controls", {
+    id: "llm-header-mode-controls",
+  });
+
+  // Mode chip: single pill showing current mode
   const modeSwitchWrap = createElement(doc, "div", "llm-mode-switch", {
     id: "llm-mode-capsule",
   });
   modeSwitchWrap.dataset.mode = hasItem && isGlobalMode ? "global" : "paper";
 
-  const isStandaloneBody = (body as HTMLElement).dataset?.standalone === "true";
-
-  // In sidepanels, the mode chip is a non-clickable indicator (always "Paper chat").
-  // In the standalone window, it shows "Library chat".
   const modeChipLabel = activeNoteSession
     ? t("Note editing")
     : isStandaloneBody
@@ -201,14 +176,13 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     title: modeChipLabel,
   });
   modeChipBtn.setAttribute("aria-label", modeChipLabel);
-  if (!isStandaloneBody) {
-    modeChipBtn.style.cursor = "default";
-  }
 
-  // Lock button, right of chip (only visible in standalone open-chat mode)
-  const modeLockBtn = createElement(doc, "div", "llm-mode-lock", {
-    id: "llm-mode-lock",
-    title: t("Lock library chat as default"),
+  modeSwitchWrap.append(modeChipBtn);
+
+  const claudeToggleBtn = createElement(doc, "button", "llm-claude-system-toggle", {
+    id: "llm-claude-system-toggle",
+    type: "button",
+    title: "Claude Code",
   });
   modeLockBtn.dataset.locked = "false";
   modeLockBtn.setAttribute("aria-label", t("Lock library chat as default"));
@@ -219,9 +193,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       ? "flex"
       : "none";
 
-  modeSwitchWrap.append(modeChipBtn, modeLockBtn);
+  const claudeContextGauge = createElement(doc, "div", "llm-claude-context-gauge", {
+    id: "llm-claude-context-gauge",
+  }) as HTMLDivElement;
+  claudeContextGauge.style.display = "none";
+  claudeContextGauge.setAttribute("aria-hidden", "true");
 
-  historyBar.append(historyNewBtn, historyToggle, modeSwitchWrap);
+  headerModeControls.append(modeSwitchWrap, claudeToggleBtn, claudeContextGauge);
+  historyBar.append(historyNewBtn, historyToggle, headerModeControls);
 
   headerInfo.append(title, historyBar);
   headerTop.appendChild(headerInfo);
@@ -832,6 +811,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   commandRow.appendChild(commandRowHeader);
   composeArea.appendChild(commandRow);
 
+  const queueBar = createElement(doc, "div", "llm-queued-input-bar", {
+    id: "llm-queued-input-bar",
+  });
+  queueBar.style.display = "none";
+  composeArea.appendChild(queueBar);
+
   const inputBox = createElement(doc, "textarea", "llm-input", {
     id: "llm-input",
     placeholder: hasItem
@@ -884,14 +869,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     {
       id: "llm-upload-file",
       type: "button",
-      textContent: UPLOAD_FILE_EXPANDED_LABEL,
-      title: t("Context actions"),
+      textContent: "/",
+      title: t("Slash commands"),
       disabled: !hasItem,
     },
   );
   uploadBtn.setAttribute("aria-haspopup", "menu");
   uploadBtn.setAttribute("aria-expanded", "false");
-  uploadBtn.setAttribute("aria-label", t("Context actions"));
+  uploadBtn.setAttribute("aria-label", t("Slash commands"));
   const uploadInput = createElement(doc, "input", "", {
     id: "llm-upload-input",
     type: "file",
@@ -1028,15 +1013,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   container.appendChild(statusBar);
   body.appendChild(container);
 
-  // ---------- Sync visibility ----------
-  const myZotero = (globalThis as any).Zotero || globalThis;
-  if (!myZotero[globalRegistryKey]) {
-    myZotero[globalRegistryKey] = new Set<Element>();
-  }
-  const allLocks: Set<Element> = myZotero[globalRegistryKey];
-  allLocks.add(modeLockBtn);
-
-  syncGlobalLockVisibility(body);
 }
 
 export { buildUI };

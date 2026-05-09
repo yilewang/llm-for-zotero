@@ -156,6 +156,12 @@ describe("apiHelpers", function () {
         isResponsesBase("https://api.openai.com/v1/chat/completions"),
       );
     });
+
+    it("should not treat singular or guessed response aliases as responses base", function () {
+      assert.isFalse(isResponsesBase("https://api.openai.com/v1/response"));
+      assert.isFalse(isResponsesBase("https://api.openai.com/response"));
+      assert.isFalse(isResponsesBase("https://api.openai.com/response_api"));
+    });
   });
 
   describe("isGeminiBase", function () {

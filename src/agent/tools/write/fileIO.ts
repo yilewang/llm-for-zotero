@@ -2,9 +2,13 @@
  * Tool for reading and writing files on the local filesystem.
  * Enables the agent to read data files, write scripts, export results, etc.
  */
-import type { AgentToolDefinition } from "../../types";
+import type { AgentToolContext, AgentToolDefinition } from "../../types";
+import type { PaperContextRef } from "../../../shared/types";
+import {
+  formatPaperCitationLabel,
+  formatPaperSourceLabel,
+} from "../../../modules/contextPanel/paperAttribution";
 import { ok, fail, validateObject } from "../shared";
-import { isCommandAutoApproved, setCommandAutoApproved } from "./runCommand";
 import { getLocalParentPath } from "../../../utils/localPath";
 
 type FileIOInput = {
@@ -15,6 +19,86 @@ type FileIOInput = {
   offset?: number;
   length?: number;
 };
+
+const fileIoAutoApprovedConversations = new Set<number>();
+
+export function isFileIoAutoApproved(conversationKey: number): boolean {
+  return fileIoAutoApprovedConversations.has(conversationKey);
+}
+
+export function setFileIoAutoApproved(
+  conversationKey: number,
+  value: boolean,
+): void {
+  if (value) {
+    fileIoAutoApprovedConversations.add(conversationKey);
+  } else {
+    fileIoAutoApprovedConversations.delete(conversationKey);
+  }
+}
+
+function normalizePathForPrefix(value: string): string {
+  return value.replace(/\\/g, "/").replace(/\/+$/g, "");
+}
+
+function collectRequestPaperContexts(
+  request: AgentToolContext["request"],
+): PaperContextRef[] {
+  const out: PaperContextRef[] = [];
+  const seen = new Set<string>();
+  const push = (entry: PaperContextRef | undefined) => {
+    if (
+      !entry ||
+      !Number.isFinite(entry.itemId) ||
+      !Number.isFinite(entry.contextItemId)
+    )
+      return;
+    const key = `${entry.itemId}:${entry.contextItemId}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(entry);
+  };
+  for (const entry of request.selectedTextPaperContexts || []) push(entry);
+  for (const entry of request.selectedPaperContexts || []) push(entry);
+  for (const entry of request.fullTextPaperContexts || []) push(entry);
+  for (const entry of request.pinnedPaperContexts || []) push(entry);
+  return out;
+}
+
+function buildCodexMineruPaperSourceMetadata(
+  filePath: string,
+  request: AgentToolContext["request"],
+): {
+  paperContext: PaperContextRef;
+  citationLabel: string;
+  sourceLabel: string;
+  citationInstruction: string;
+} | null {
+  if (request.authMode !== "codex_app_server") return null;
+  const normalizedFilePath = normalizePathForPrefix(filePath);
+  for (const paperContext of collectRequestPaperContexts(request)) {
+    const cacheDir =
+      typeof paperContext.mineruCacheDir === "string"
+        ? normalizePathForPrefix(paperContext.mineruCacheDir)
+        : "";
+    if (!cacheDir) continue;
+    if (
+      normalizedFilePath === cacheDir ||
+      normalizedFilePath.startsWith(`${cacheDir}/`)
+    ) {
+      const sourceLabel = formatPaperSourceLabel(paperContext);
+      return {
+        paperContext,
+        citationLabel: formatPaperCitationLabel(paperContext),
+        sourceLabel,
+        citationInstruction:
+          `This file is parsed paper text for ${paperContext.title}. ` +
+          `When using this content in the answer, include a short verbatim blockquote and put ${sourceLabel} on the next line. A bare parenthetical citation alone is not enough.`,
+      };
+    }
+  }
+  return null;
+}
 
 /**
  * Read a file using Gecko-compatible I/O APIs.
@@ -83,7 +167,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
     spec: {
       name: "file_io",
       description:
-        "Read or write files on the local filesystem. Reads text files (Markdown, JSON, CSV, etc.) and image files (PNG, JPG, SVG — returned as visual artifacts the model can see). Supports offset/length for partial reads of large files.",
+        "Read or write files on the local filesystem. Reads text files (Markdown, JSON, CSV, etc.) and image files (PNG, JPG, SVG — returned as visual artifacts the model can see). Supports offset/length for partial reads of large files. Use this first for MinerU paper caches: read {mineruCacheDir}/manifest.json for section ranges or {mineruCacheDir}/full.md for parsed paper text.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -238,7 +322,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
         value: "ask",
         options: [
           { id: "ask", label: "Ask every time" },
-          { id: "auto", label: "Auto accept for this chat" },
+          { id: "auto", label: "Auto accept this tool for this chat" },
         ],
       };
       if (input.action === "read") {
@@ -293,19 +377,23 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
       // Read operations are safe — auto-approve
       if (input.action === "read") return false;
       // Write operations require confirmation unless user opted into auto-approve
-      return !isCommandAutoApproved(context.request.conversationKey);
+      return !isFileIoAutoApproved(context.request.conversationKey);
     },
 
     applyConfirmation(input, resolutionData, context) {
       if (validateObject<Record<string, unknown>>(resolutionData)) {
         if (resolutionData.approvalMode === "auto") {
-          setCommandAutoApproved(context.request.conversationKey, true);
+          setFileIoAutoApproved(context.request.conversationKey, true);
         }
       }
       return ok(input);
     },
 
-    async execute(input) {
+    async execute(input, context) {
+      const paperSourceMetadata = buildCodexMineruPaperSourceMetadata(
+        input.filePath,
+        context.request,
+      );
       if (input.action === "read") {
         // Image files: return via artifacts so the LLM can see them visually
         const IMAGE_EXTENSIONS = new Set([
@@ -357,6 +445,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
               filePath: input.filePath,
               imageFile: true,
               mimeType,
+              ...(paperSourceMetadata || {}),
             },
             artifacts: [
               {
@@ -380,6 +469,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
               filePath: input.filePath,
               text,
               bytesRead: text.length,
+              ...(paperSourceMetadata || {}),
               ...(start > 0 ? { offset: start } : {}),
               ...(text.length < raw.length ? { totalLength: raw.length } : {}),
             },

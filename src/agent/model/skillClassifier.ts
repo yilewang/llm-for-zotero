@@ -41,7 +41,7 @@ export async function detectSkillIntent(
   if (skills.length === 0) return [];
   const userText = (request.userText || "").trim();
   if (!userText) return regexFallback(skills, request);
-  if (!request.model || !request.apiBase) {
+  if (!canUseSkillClassifierModel(request)) {
     return regexFallback(skills, request);
   }
 
@@ -79,6 +79,14 @@ export async function detectSkillIntent(
   return parsed;
 }
 
+export function canUseSkillClassifierModel(
+  request: Pick<AgentRuntimeRequest, "model" | "apiBase" | "authMode">,
+): boolean {
+  if (!request.model) return false;
+  if (request.apiBase) return true;
+  return request.authMode === "codex_app_server";
+}
+
 function regexFallback(
   skills: AgentSkill[],
   request: Pick<AgentRuntimeRequest, "userText">,
@@ -114,6 +122,11 @@ function buildClassifierPrompt(
     context.push(
       `- Full-text papers marked: ${request.fullTextPaperContexts.length}`,
     );
+  if (request.selectedCollectionContexts?.length) {
+    context.push(
+      `- Selected collection scopes: ${request.selectedCollectionContexts.length}`,
+    );
+  }
 
   return [
     "You are a skill router for a Zotero research-assistant agent. Return a JSON array of skill IDs drawn from the list below.",

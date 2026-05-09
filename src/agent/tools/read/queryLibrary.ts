@@ -143,6 +143,25 @@ function resolveReferenceItemId(
   return normalizePositiveInt(context.request.activeItemId) || null;
 }
 
+function withResultCounts<T extends { results: unknown[] }>(
+  payload: T,
+  params: {
+    totalCount?: number;
+  } = {},
+): T & { totalCount: number; returnedCount: number; limited: boolean } {
+  const returnedCount = payload.results.length;
+  const totalCount =
+    Number.isFinite(params.totalCount) && Number(params.totalCount) >= 0
+      ? Math.floor(Number(params.totalCount))
+      : returnedCount;
+  return {
+    ...payload,
+    totalCount,
+    returnedCount,
+    limited: totalCount > returnedCount,
+  };
+}
+
 export function createQueryLibraryTool(
   zoteroGateway: ZoteroGateway,
 ): AgentToolDefinition<QueryLibraryInput, unknown> {
@@ -151,7 +170,7 @@ export function createQueryLibraryTool(
     spec: {
       name: "query_library",
       description:
-        "Discover Zotero items and collections. Use it to search or list any item type (papers, books, notes, web pages, and more), filter by author/year/collection/itemType, browse the collection tree, find related papers, detect duplicates, or list standalone notes. By default returns all item types; use filters.hasPdf:true for PDF-backed papers only.",
+        "Discover Zotero items and collections. Use it to search or list any item type (papers, books, notes, web pages, and more), filter by author/year/collection/itemType, browse the collection tree, find related papers, detect duplicates, or list standalone notes. By default returns all item types; use filters.hasPdf:true for PDF-backed papers only. For 'how many papers/items...' questions, use totalCount/returnedCount/limited instead of hand-counting the returned rows.",
       inputSchema: {
         type: "object",
         required: ["entity", "mode"],
@@ -186,7 +205,11 @@ export function createQueryLibraryTool(
             properties: {
               unfiled: { type: "boolean" },
               untagged: { type: "boolean" },
-              hasPdf: { type: "boolean" },
+              hasPdf: {
+                type: "boolean",
+                description:
+                  "Set true to count/search PDF-backed paper-style items only; combine with itemType for narrower paper counts.",
+              },
               collectionId: { type: "number" },
               author: {
                 type: "string",
@@ -289,8 +312,17 @@ export function createQueryLibraryTool(
               totalGroups === 1 ? "" : "s"
             }`;
           }
-          return results.length > 0
-            ? `Found ${results.length} result${results.length === 1 ? "" : "s"}`
+          const totalCount = Number(
+            content &&
+            typeof content === "object" &&
+              (content as { totalCount?: unknown }).totalCount
+              ? (content as { totalCount?: unknown }).totalCount
+              : results.length,
+          );
+          return totalCount > 0
+            ? `Found ${totalCount} result${totalCount === 1 ? "" : "s"}${
+                results.length < totalCount ? ` (${results.length} shown)` : ""
+              }`
             : "No matching library results";
         },
       },
@@ -373,29 +405,29 @@ export function createQueryLibraryTool(
             text: input.text || "",
             limit: input.limit,
           });
-          return {
+          return withResultCounts({
             entity: input.entity,
             mode: input.mode,
             results: result.results,
             warnings: result.warnings,
-          };
+          });
         }
         // list mode
         const result = await queryService.listStandaloneNotes({
           libraryID,
           limit: input.limit,
         });
-        return {
+        return withResultCounts({
           entity: input.entity,
           mode: input.mode,
           totalCount: result.totalCount,
           results: result.results,
           warnings: result.warnings,
-        };
+        }, { totalCount: result.totalCount });
       }
       if (input.entity === "libraries") {
         const results = zoteroGateway.listAllLibraries();
-        return { entity: input.entity, mode: input.mode, results };
+        return withResultCounts({ entity: input.entity, mode: input.mode, results });
       }
       if (input.entity === "tags") {
         const result = await queryService.queryTags({
@@ -403,13 +435,12 @@ export function createQueryLibraryTool(
           query: input.mode === "search" ? input.text : undefined,
           limit: input.limit,
         });
-        return {
+        return withResultCounts({
           entity: input.entity,
           mode: input.mode,
           results: result.results,
-          totalCount: result.results.length,
           warnings: result.warnings,
-        };
+        });
       }
       if (input.entity === "collections") {
         if (input.mode === "list" && input.view === "tree") {
@@ -427,12 +458,12 @@ export function createQueryLibraryTool(
           text: input.text,
           limit: input.limit,
         });
-        return {
+        return withResultCounts({
           entity: input.entity,
           mode: input.mode,
           results: result.results,
           warnings: result.warnings,
-        };
+        }, { totalCount: result.totalCount });
       }
       if (input.mode === "search") {
         const result = await queryService.searchItems({
@@ -444,12 +475,12 @@ export function createQueryLibraryTool(
           excludeContextItemId:
             zoteroGateway.getActiveContextItem(context.item)?.id || null,
         });
-        return {
+        return withResultCounts({
           entity: input.entity,
           mode: input.mode,
           results: result.results,
           warnings: result.warnings,
-        };
+        }, { totalCount: result.totalCount });
       }
       if (input.mode === "list") {
         const result = await queryService.listItems({
@@ -458,13 +489,13 @@ export function createQueryLibraryTool(
           limit: input.limit,
           include: input.include,
         });
-        return {
+        return withResultCounts({
           entity: input.entity,
           mode: input.mode,
           totalCount: result.totalCount,
           results: result.results,
           warnings: result.warnings,
-        };
+        }, { totalCount: result.totalCount });
       }
       if (input.mode === "related") {
         const referenceItemId = resolveReferenceItemId(

@@ -41,6 +41,39 @@ describe("agent model factory", function () {
     assert.equal(adapter.constructor.name, "GeminiNativeAgentAdapter");
   });
 
+  it("does not route Codex app-server requests through the legacy agent adapter", function () {
+    const adapter = createAgentModelAdapter(
+      makeRequest({
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+        model: "gpt-5.4",
+        apiBase: "",
+      }),
+    );
+    const request = makeRequest({ authMode: "codex_app_server" });
+    const capabilities = adapter.getCapabilities(request);
+
+    assert.equal(
+      adapter.constructor.name,
+      "CodexAppServerNativeOnlyAgentAdapter",
+    );
+    assert.isFalse(capabilities.toolCalls);
+    assert.isFalse(adapter.supportsTools(request));
+  });
+
+  it("keeps legacy Codex auth on the Codex Responses adapter", function () {
+    const request = makeRequest({
+      authMode: "codex_auth",
+      apiBase: "https://chatgpt.com/backend-api/codex/responses",
+      providerProtocol: undefined,
+    });
+    const adapter = createAgentModelAdapter(request);
+
+    assert.equal(adapter.constructor.name, "CodexResponsesAgentAdapter");
+    assert.isTrue(adapter.getCapabilities(request).toolCalls);
+    assert.isTrue(adapter.supportsTools(request));
+  });
+
   it("falls back to legacy protocol inference when protocol is missing", function () {
     assert.equal(
       resolveRequestProviderProtocol(

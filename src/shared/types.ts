@@ -80,7 +80,6 @@ export type ActiveNoteSession = {
     showModeSwitch: boolean;
     showNewConversation: boolean;
     showHistory: boolean;
-    showOpenLock: boolean;
   };
 };
 
@@ -94,6 +93,8 @@ export type ActiveNoteContext = {
    *  structure and inline styles when editing styled/template notes. */
   noteHtml?: string;
 };
+
+export type ConversationSystem = "upstream" | "claude_code" | "codex";
 
 export type GlobalConversationSummary = {
   conversationKey: number;
@@ -112,5 +113,47 @@ export type PaperConversationSummary = {
   createdAt: number;
   title?: string;
   lastActivityAt: number;
+  userTurnCount: number;
+};
+
+export type ClaudeConversationKind = "global" | "paper";
+
+export type ClaudeConversationSummary = {
+  conversationKey: number;
+  libraryID: number;
+  kind: ClaudeConversationKind;
+  paperItemID?: number;
+  createdAt: number;
+  updatedAt: number;
+  title?: string;
+  providerSessionId?: string;
+  scopedConversationKey?: string;
+  scopeType?: string;
+  scopeId?: string;
+  scopeLabel?: string;
+  cwd?: string;
+  model?: string;
+  effort?: string;
+  userTurnCount: number;
+};
+
+export type CodexConversationKind = "global" | "paper";
+
+export type CodexConversationSummary = {
+  conversationKey: number;
+  libraryID: number;
+  kind: CodexConversationKind;
+  paperItemID?: number;
+  createdAt: number;
+  updatedAt: number;
+  title?: string;
+  providerSessionId?: string;
+  scopedConversationKey?: string;
+  scopeType?: string;
+  scopeId?: string;
+  scopeLabel?: string;
+  cwd?: string;
+  model?: string;
+  effort?: string;
   userTurnCount: number;
 };

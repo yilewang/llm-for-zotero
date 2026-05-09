@@ -865,6 +865,11 @@ export function resolveSearchLiteratureReview(
             sourceMode: "review",
           } satisfies AgentInheritedApproval,
         },
+        terminalText: {
+          onSuccess: "Saved the selected metadata to a note.",
+          onDenied: "Metadata note save was cancelled.",
+          onError: "Could not save the selected metadata to a note.",
+        },
       };
     }
     if (actionId === "apply_direct") {
@@ -905,6 +910,11 @@ export function resolveSearchLiteratureReview(
             sourceMode: "review",
           } satisfies AgentInheritedApproval,
         },
+        terminalText: {
+          onSuccess: "Applied the selected metadata to the paper.",
+          onDenied: "Metadata update was cancelled.",
+          onError: "Could not apply the selected metadata to the paper.",
+        },
       };
     }
     if (actionId === "review_changes") {
@@ -944,6 +954,11 @@ export function resolveSearchLiteratureReview(
             sourceMode: "review",
           } satisfies AgentInheritedApproval,
         },
+        terminalText: {
+          onSuccess: "Applied the selected metadata to the paper.",
+          onDenied: "Metadata update was cancelled.",
+          onError: "Could not apply the selected metadata to the paper.",
+        },
       };
     }
     return {
@@ -972,20 +987,25 @@ export function resolveSearchLiteratureReview(
     }
     return {
       kind: "invoke_tool",
-      call: {
-        name: "import_identifiers",
-        arguments: {
-          identifiers,
-          libraryID: normalizedArgs.libraryID || context.request.libraryID,
+        call: {
+          name: "import_identifiers",
+          arguments: {
+            identifiers,
+            libraryID: normalizedArgs.libraryID || context.request.libraryID,
         },
         inheritedApproval: {
           sourceToolName: "search_literature_online",
           sourceActionId: "import",
-          sourceMode: "review",
-        } satisfies AgentInheritedApproval,
-      },
-    };
-  }
+            sourceMode: "review",
+          } satisfies AgentInheritedApproval,
+        },
+        terminalText: {
+          onSuccess: "Imported the selected papers into Zotero.",
+          onDenied: "Paper import was cancelled.",
+          onError: "Could not import the selected papers into Zotero.",
+        },
+      };
+    }
 
   if (actionId === "save_note") {
     const noteContent = normalizeNoteSourceText(
@@ -993,21 +1013,26 @@ export function resolveSearchLiteratureReview(
     );
     return {
       kind: "invoke_tool",
-      call: {
-        name: "edit_current_note",
-        arguments: {
-          mode: "create",
-          content: noteContent,
+        call: {
+          name: "edit_current_note",
+          arguments: {
+            mode: "create",
+            content: noteContent,
           target: "item",
         },
         inheritedApproval: {
           sourceToolName: "search_literature_online",
           sourceActionId: "save_paper_note",
-          sourceMode: "review",
-        } satisfies AgentInheritedApproval,
-      },
-    };
-  }
+            sourceMode: "review",
+          } satisfies AgentInheritedApproval,
+        },
+        terminalText: {
+          onSuccess: "Saved the selected papers to a note.",
+          onDenied: "Paper note save was cancelled.",
+          onError: "Could not save the selected papers to a note.",
+        },
+      };
+    }
 
   if (actionId === "new_search") {
     return {

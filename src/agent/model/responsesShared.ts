@@ -422,6 +422,7 @@ export async function parseResponsesStepStream(
   stream: ReadableStream<Uint8Array>,
   onTextDelta?: (delta: string) => void | Promise<void>,
   onReasoning?: (event: ReasoningEvent) => void | Promise<void>,
+  onUsage?: (usage: UsageStats) => void | Promise<void>,
 ): Promise<NormalizedResponsesStep> {
   const reader = stream.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const decoder = new TextDecoder();
@@ -739,6 +740,48 @@ export async function parseResponsesStepStream(
               parsed.response.output_text || extractOutputText(outputs),
               "final",
             );
+            const usage =
+              parsed.response &&
+              typeof parsed.response === "object" &&
+              "usage" in parsed.response
+                ? (
+                    parsed.response as {
+                      usage?: {
+                        input_tokens?: unknown;
+                        output_tokens?: unknown;
+                        total_tokens?: unknown;
+                      };
+                    }
+                  ).usage
+                : undefined;
+            const totalTokens =
+              typeof usage?.total_tokens === "number"
+                ? usage.total_tokens
+                : (typeof usage?.input_tokens === "number"
+                    ? usage.input_tokens
+                    : 0) +
+                  (typeof usage?.output_tokens === "number"
+                    ? usage.output_tokens
+                    : 0);
+            if (onUsage && totalTokens > 0) {
+              await onUsage({
+                promptTokens:
+                  typeof usage?.input_tokens === "number"
+                    ? usage.input_tokens
+                    : 0,
+                completionTokens:
+                  typeof usage?.output_tokens === "number"
+                    ? usage.output_tokens
+                    : 0,
+                totalTokens,
+                ...(typeof usage?.input_tokens === "number"
+                  ? {
+                      contextTokens: usage.input_tokens,
+                      contextWindowIsAuthoritative: true,
+                    }
+                  : {}),
+              });
+            }
           }
         } catch (_error) {
           continue;

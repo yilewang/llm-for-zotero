@@ -11,7 +11,7 @@ import type { ProviderCapabilities, ProviderParams } from "../types";
 export function matches(params: ProviderParams): boolean {
   const auth = (params.authMode || "").toLowerCase();
   const proto = (params.protocol || "").toLowerCase();
-  return auth === "codex_auth" || proto === "codex_responses";
+  return auth === "codex_auth" || auth === "codex_app_server" || proto === "codex_responses";
 }
 
 export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {

@@ -71,6 +71,10 @@ export function normalizeToolPaperContext(
       typeof value.year === "string" && value.year.trim()
         ? value.year.trim()
         : undefined,
+    mineruCacheDir:
+      typeof value.mineruCacheDir === "string" && value.mineruCacheDir.trim()
+        ? value.mineruCacheDir.trim()
+        : undefined,
   };
 }
 
@@ -93,6 +97,11 @@ export const PAPER_CONTEXT_REF_SCHEMA = {
       description: "Zotero attachment/context item ID",
     },
     title: { type: "string" as const },
+    mineruCacheDir: {
+      type: "string" as const,
+      description:
+        "Optional MinerU cache directory for this paper. Prefer file_io on manifest.json/full.md under this path before raw PDF tools.",
+    },
   },
   additionalProperties: false,
 };

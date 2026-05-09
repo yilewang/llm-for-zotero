@@ -46,6 +46,10 @@ function isBigModelHost(parsed: ParsedApiBase | null): boolean {
   return Boolean(parsed && parsed.hostname === "open.bigmodel.cn");
 }
 
+function isDeepSeekHost(parsed: ParsedApiBase | null): boolean {
+  return Boolean(parsed && parsed.hostname === "api.deepseek.com");
+}
+
 function rewriteApiBasePath(parsed: ParsedApiBase, pathname: string): string {
   return `${parsed.origin}${pathname}`;
 }
@@ -77,6 +81,17 @@ export function normalizeOpenAICompatibleBase(apiBase: string): string {
     }
   }
 
+  if (isDeepSeekHost(parsed)) {
+    if (
+      parsed.pathname === "/" ||
+      parsed.pathname === "/anthropic" ||
+      parsed.pathname === "/anthropic/v1" ||
+      parsed.pathname === "/anthropic/v1/messages"
+    ) {
+      return rewriteApiBasePath(parsed, "/v1");
+    }
+  }
+
   return cleaned;
 }
 
@@ -104,6 +119,16 @@ function normalizeAnthropicCompatibleBase(apiBase: string): string {
       parsed.pathname === "/api/coding/paas/v4/chat/completions"
     ) {
       return rewriteApiBasePath(parsed, "/api/anthropic");
+    }
+  }
+
+  if (isDeepSeekHost(parsed)) {
+    if (
+      parsed.pathname === "/" ||
+      parsed.pathname === "/v1" ||
+      parsed.pathname === "/v1/chat/completions"
+    ) {
+      return rewriteApiBasePath(parsed, "/anthropic");
     }
   }
 

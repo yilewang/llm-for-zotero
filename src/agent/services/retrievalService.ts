@@ -8,6 +8,7 @@ type RetrievalResult = {
   chunkIndex: number;
   sectionLabel?: string;
   chunkKind?: string;
+  citationLabel: string;
   sourceLabel: string;
   text: string;
   score: number;
@@ -95,6 +96,10 @@ export class RetrievalService {
         pdfContext,
         params.question,
         {
+          apiBase: params.apiBase,
+          apiKey: params.apiKey,
+        },
+        {
           topK: perPaperTopK,
           mode: "evidence",
         },
@@ -104,6 +109,7 @@ export class RetrievalService {
         chunkIndex: candidate.chunkIndex,
         sectionLabel: candidate.sectionLabel,
         chunkKind: candidate.chunkKind,
+        citationLabel: formatPaperCitationLabel(paperContext),
         sourceLabel: formatPaperSourceLabel(paperContext),
         text: candidate.chunkText,
         score: candidate.evidenceScore,

@@ -41,6 +41,24 @@ type ChatCompletionChoice = {
   };
 };
 
+function isDeepseekChatModel(modelName?: string): boolean {
+  const normalized = (modelName || "").trim().toLowerCase();
+  if (!normalized) return false;
+  const tail = normalized.split("/").pop() || "";
+  const candidates =
+    tail && tail !== normalized ? [normalized, tail] : [normalized];
+  return candidates.some((candidate) => /^deepseek(?:$|[-.])/.test(candidate));
+}
+
+function buildDeepseekReasoningContent(
+  modelName: string | undefined,
+  reasoningText: string,
+): { reasoning_content?: string } {
+  if (!isDeepseekChatModel(modelName)) return {};
+  const trimmed = reasoningText.trim();
+  return trimmed ? { reasoning_content: trimmed } : {};
+}
+
 function isToolCapableApiBase(request: AgentRuntimeRequest): boolean {
   const apiBase = (request.apiBase || "").trim();
   if (!apiBase) return false;
@@ -88,9 +106,16 @@ async function buildMessagesPayload(messages: AgentModelMessage[]) {
       }
       content = parts;
     }
+    const reasoningContent =
+      message.role === "assistant" &&
+      typeof message.reasoning_content === "string" &&
+      message.reasoning_content.trim()
+        ? { reasoning_content: message.reasoning_content }
+        : {};
     result.push({
       role: message.role,
       content,
+      ...reasoningContent,
       ...(message.role === "assistant" &&
       Array.isArray(message.tool_calls) &&
       message.tool_calls.length
@@ -288,6 +313,7 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           false,
           request.model,
           request.apiBase,
+          "openai_chat_compat",
         );
         return {
           model: request.model,
@@ -297,12 +323,16 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           stream: true,
           ...(usesMaxCompletionTokens(request.model || "")
             ? {
-                max_completion_tokens: normalizeMaxTokens(
+                max_completion_tokens: normalizeMaxTokensForModel(
                   request.advanced?.maxTokens,
+                  request.model,
                 ),
               }
             : {
-                max_tokens: normalizeMaxTokens(request.advanced?.maxTokens),
+                max_tokens: normalizeMaxTokensForModel(
+                  request.advanced?.maxTokens,
+                  request.model,
+                ),
               }),
           ...reasoningPayload.extra,
           ...(reasoningPayload.omitTemperature
@@ -337,6 +367,10 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           assistantMessage: {
             role: "assistant",
             content: result.text,
+            ...buildDeepseekReasoningContent(
+              request.model,
+              result.reasoningText,
+            ),
             tool_calls: result.toolCalls,
           },
         };
@@ -372,6 +406,7 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
         assistantMessage: {
           role: "assistant",
           content: typeof message?.content === "string" ? message.content : "",
+          ...buildDeepseekReasoningContent(request.model, reasoningText),
           tool_calls: toolCalls,
         },
       };

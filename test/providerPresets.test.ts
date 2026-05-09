@@ -39,6 +39,10 @@ describe("providerPresets", function () {
       detectProviderPreset("https://api.deepseek.com/v1"),
       "deepseek",
     );
+    assert.equal(
+      detectProviderPreset("https://api.deepseek.com/anthropic/v1/messages"),
+      "deepseek",
+    );
     assert.equal(detectProviderPreset("https://api.x.ai/v1/responses"), "grok");
     assert.equal(
       detectProviderPreset(
@@ -83,8 +87,12 @@ describe("providerPresets", function () {
       "https://open.bigmodel.cn/api/anthropic",
     );
     assert.equal(
+      getProviderPreset("deepseek").defaultApiBase,
+      "https://api.deepseek.com/anthropic",
+    );
+    assert.equal(
       getProviderPreset("kimi").defaultApiBase,
-      "https://api.moonshot.cn/v1",
+      "https://api.moonshot.ai/v1",
     );
   });
 
@@ -103,7 +111,12 @@ describe("providerPresets", function () {
       "anthropic_messages",
       "openai_chat_compat",
     ]);
+    assert.equal(
+      getProviderPreset("deepseek").defaultProtocol,
+      "anthropic_messages",
+    );
     assert.deepEqual(getProviderPreset("deepseek").supportedProtocols, [
+      "anthropic_messages",
       "openai_chat_compat",
     ]);
   });

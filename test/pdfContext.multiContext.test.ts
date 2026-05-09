@@ -4,18 +4,158 @@ import {
   buildFullPaperContext,
   buildPaperKey,
   buildPaperRetrievalCandidates,
+  ensurePDFTextCached,
   renderEvidencePack,
 } from "../src/modules/contextPanel/pdfContext";
+import {
+  readManifest,
+  writeMineruCacheFiles,
+} from "../src/modules/contextPanel/mineruCache";
+import { tokenizeRetrievalText } from "../src/modules/contextPanel/retrievalTokenizer";
+import { pdfTextCache } from "../src/modules/contextPanel/state";
 import type {
   ChunkStat,
   PaperContextRef,
   PdfContext,
 } from "../src/modules/contextPanel/types";
 
+const encoder = new TextEncoder();
+
+type MemoryIO = {
+  files: Map<string, Uint8Array>;
+  dirs: Set<string>;
+  writes: string[];
+};
+
+function bytes(value: string | number[]): Uint8Array {
+  return typeof value === "string"
+    ? encoder.encode(value)
+    : new Uint8Array(value);
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/g, "") || "/";
+}
+
+function parentPath(path: string): string {
+  const normalized = normalizePath(path);
+  const index = normalized.lastIndexOf("/");
+  return index <= 0 ? "/" : normalized.slice(0, index);
+}
+
+function addDir(dirs: Set<string>, path: string): void {
+  let current = normalizePath(path);
+  const ancestors: string[] = [];
+  while (current && current !== "/") {
+    ancestors.push(current);
+    current = parentPath(current);
+  }
+  ancestors.push("/");
+  for (const dir of ancestors.reverse()) dirs.add(dir);
+}
+
+function setupMemoryIO(): MemoryIO {
+  const files = new Map<string, Uint8Array>();
+  const dirs = new Set<string>();
+  const writes: string[] = [];
+  addDir(dirs, "/tmp/zotero");
+
+  const io = {
+    exists: async (path: string) => {
+      const normalized = normalizePath(path);
+      return files.has(normalized) || dirs.has(normalized);
+    },
+    read: async (path: string) => {
+      const normalized = normalizePath(path);
+      const data = files.get(normalized);
+      if (!data) throw new Error(`Missing file: ${path}`);
+      return data;
+    },
+    makeDirectory: async (path: string) => {
+      addDir(dirs, path);
+    },
+    write: async (path: string, data: Uint8Array) => {
+      const normalized = normalizePath(path);
+      addDir(dirs, parentPath(normalized));
+      files.set(normalized, data);
+      writes.push(normalized);
+    },
+    remove: async (path: string) => {
+      const normalized = normalizePath(path);
+      for (const key of [...files.keys()]) {
+        if (key === normalized || key.startsWith(`${normalized}/`)) {
+          files.delete(key);
+        }
+      }
+      for (const key of [...dirs.keys()]) {
+        if (key === normalized || key.startsWith(`${normalized}/`)) {
+          dirs.delete(key);
+        }
+      }
+    },
+    getChildren: async (path: string) => {
+      const normalized = normalizePath(path);
+      const prefix = normalized === "/" ? "/" : `${normalized}/`;
+      const children = new Set<string>();
+      for (const key of [...dirs, ...files.keys()]) {
+        if (!key.startsWith(prefix) || key === normalized) continue;
+        const rest = key.slice(prefix.length);
+        const childName = rest.split("/")[0];
+        if (childName) children.add(`${prefix}${childName}`);
+      }
+      return [...children];
+    },
+  };
+
+  (globalThis as unknown as { IOUtils: typeof io }).IOUtils = io;
+  return { files, dirs, writes };
+}
+
+function setupZoteroGlobals(parentTitle = "Mock MinerU Paper"): void {
+  const parentItem = {
+    getField: (field: string) => (field === "title" ? parentTitle : ""),
+  };
+  (globalThis as unknown as { Zotero: unknown }).Zotero = {
+    DataDirectory: { dir: "/tmp/zotero" },
+    Profile: { dir: "/tmp/profile" },
+    Prefs: {
+      get: (key: string) => (key.endsWith(".mineruEnabled") ? true : undefined),
+      set: () => {},
+    },
+    Items: {
+      get: (id: number) => (id === 100 ? parentItem : null),
+    },
+    PDFWorker: {
+      getFullText: async () => ({ text: "" }),
+    },
+  };
+  (globalThis as unknown as { ztoolkit: unknown }).ztoolkit = {
+    log: () => {},
+  };
+}
+
+function mockPdfAttachment(id: number): Zotero.Item {
+  return {
+    id,
+    parentID: 100,
+    attachmentContentType: "application/pdf",
+    isAttachment: () => true,
+    getField: (field: string) => (field === "title" ? "PDF" : ""),
+  } as unknown as Zotero.Item;
+}
+
+function fullPaperRef(contextItemId: number): PaperContextRef {
+  return {
+    itemId: 100,
+    contextItemId,
+    title: "Mock MinerU Paper",
+    firstCreator: "Tester",
+    year: "2026",
+  };
+}
+
 function tokenize(text: string): string[] {
-  return (text.toLowerCase().match(/[a-z0-9]+/g) || []).filter(
-    (token) => token.length >= 3,
-  );
+  return tokenizeRetrievalText(text);
 }
 
 function buildPdfContext(chunks: string[]): PdfContext {
@@ -72,6 +212,18 @@ describe("pdfContext multi-context helpers", function () {
   after(function () {
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
       originalZotero;
+    if (originalIOUtils === undefined) {
+      delete (globalThis as unknown as { IOUtils?: unknown }).IOUtils;
+    } else {
+      (globalThis as unknown as { IOUtils?: unknown }).IOUtils =
+        originalIOUtils;
+    }
+    if (originalZtoolkit === undefined) {
+      delete (globalThis as unknown as { ztoolkit?: unknown }).ztoolkit;
+    } else {
+      (globalThis as unknown as { ztoolkit?: unknown }).ztoolkit =
+        originalZtoolkit;
+    }
   });
 
   it("builds retrieval candidates with scores and metadata", async function () {
@@ -98,6 +250,31 @@ describe("pdfContext multi-context helpers", function () {
     assert.equal(candidates[0].paperKey, buildPaperKey(paper));
     assert.equal(candidates[0].itemId, 1);
     assert.isAtLeast(candidates[0].estimatedTokens, 1);
+  });
+
+  it("ranks matching Korean text with Hangul n-gram retrieval", async function () {
+    const paper: PaperContextRef = {
+      itemId: 1,
+      contextItemId: 11,
+      title: "Korean Paper",
+      firstCreator: "Kim",
+      year: "2026",
+    };
+    const context = buildPdfContext([
+      "이 논문은 표현학습방법을 제안하고 실험으로 검증한다.",
+      "This unrelated appendix describes baseline calibration.",
+    ]);
+    const candidates = await buildPaperRetrievalCandidates(
+      paper,
+      context,
+      "학습방법",
+      undefined,
+      { topK: 2 },
+    );
+
+    assert.lengthOf(candidates, 2);
+    assert.equal(candidates[0].chunkIndex, 0);
+    assert.isAbove(candidates[0].bm25Score, candidates[1].bm25Score);
   });
 
   it("renders full paper context with metadata", function () {
@@ -201,5 +378,150 @@ describe("pdfContext multi-context helpers", function () {
     ]);
     assert.lengthOf(metadata, 1);
     assert.equal(metadata[0].chunkKind, "figure-caption");
+  });
+
+  it("keeps MinerU full.md text when manifest headings contain regex syntax", async function () {
+    setupMemoryIO();
+    const attachmentId = 1201;
+    const specialHeading = "化粪池 $+$ 土地渗滤系统";
+    const mdContent = [
+      "# Introduction",
+      "This paper introduces dry and cold region toilet renovation.",
+      `# ${specialHeading}`,
+      "This section compares septic tank plus soil infiltration systems.",
+      "# Conclusion",
+      "The paper recommends matching technologies to local constraints.",
+    ].join("\n\n");
+
+    await writeMineruCacheFiles(attachmentId, mdContent, [
+      { relativePath: "paper/full.md", data: bytes(mdContent) },
+      {
+        relativePath: "paper/content_list.json",
+        data: bytes(
+          JSON.stringify([
+            { type: "text", text_level: 1, text: "Introduction", page_idx: 0 },
+            {
+              type: "text",
+              text_level: 1,
+              text: specialHeading,
+              page_idx: 1,
+            },
+            { type: "text", text_level: 1, text: "Conclusion", page_idx: 2 },
+          ]),
+        ),
+      },
+    ]);
+
+    await ensurePDFTextCached(mockPdfAttachment(attachmentId));
+    const context = pdfTextCache.get(attachmentId);
+    assert.exists(context);
+    const rendered = buildFullPaperContext(fullPaperRef(attachmentId), context);
+
+    assert.include(rendered, "Paper Text:");
+    assert.include(rendered, specialHeading);
+    assert.include(rendered, "septic tank plus soil infiltration");
+    assert.notInclude(
+      rendered,
+      "[No extractable PDF text available. Using metadata only.]",
+    );
+    assert.include(
+      context!.chunkMeta.map((meta) => meta.sectionLabel),
+      specialHeading,
+    );
+  });
+
+  it("falls back to all MinerU markdown when manifest chunk metadata fails", async function () {
+    const io = setupMemoryIO();
+    const attachmentId = 1202;
+    const mdContent = [
+      "# Introduction",
+      "The readable MinerU text should survive manifest failure.",
+      "# Body",
+      "Fallback-only text must still be visible to the model.",
+      "# Conclusion",
+      "The plugin must not degrade to metadata only.",
+    ].join("\n\n");
+
+    await writeMineruCacheFiles(attachmentId, mdContent, [
+      { relativePath: "paper/full.md", data: bytes(mdContent) },
+    ]);
+    io.files.set(
+      `/tmp/zotero/llm-for-zotero-mineru/${attachmentId}/manifest.json`,
+      bytes(
+        JSON.stringify({
+          sections: [
+            { heading: null, charStart: 0, charEnd: mdContent.length },
+          ],
+          totalChars: mdContent.length,
+        }),
+      ),
+    );
+
+    await ensurePDFTextCached(mockPdfAttachment(attachmentId));
+    const context = pdfTextCache.get(attachmentId);
+    assert.exists(context);
+    const rendered = buildFullPaperContext(fullPaperRef(attachmentId), context);
+
+    assert.include(rendered, "Paper Text:");
+    assert.include(rendered, "Fallback-only text must still be visible");
+    assert.notInclude(
+      rendered,
+      "[No extractable PDF text available. Using metadata only.]",
+    );
+    assert.isAbove(context!.chunks.length, 0);
+    assert.equal(context!.fullLength, mdContent.length);
+  });
+
+  it("rebuilds stale MinerU manifests before chunking", async function () {
+    const io = setupMemoryIO();
+    const attachmentId = 1203;
+    const mdV1 = [
+      "# Introduction",
+      "Old introduction.",
+      "# Methods",
+      "Old methods.",
+      "# Conclusion",
+      "Old conclusion.",
+    ].join("\n\n");
+    const mdV2 = [
+      "# Introduction",
+      "Updated introduction that should be sent to the model.",
+      "# Methods",
+      "Updated methods with more detail.",
+      "# Conclusion",
+      "Updated conclusion.",
+    ].join("\n\n");
+
+    await writeMineruCacheFiles(attachmentId, mdV1, [
+      { relativePath: "paper/full.md", data: bytes(mdV1) },
+      {
+        relativePath: "paper/content_list.json",
+        data: bytes(
+          JSON.stringify([
+            { type: "text", text_level: 1, text: "Introduction", page_idx: 0 },
+            { type: "text", text_level: 1, text: "Methods", page_idx: 1 },
+            { type: "text", text_level: 1, text: "Conclusion", page_idx: 2 },
+          ]),
+        ),
+      },
+    ]);
+    io.files.set(
+      `/tmp/zotero/llm-for-zotero-mineru/${attachmentId}/full.md`,
+      bytes(mdV2),
+    );
+
+    await ensurePDFTextCached(mockPdfAttachment(attachmentId));
+    const rebuiltManifest = await readManifest(attachmentId);
+    const context = pdfTextCache.get(attachmentId);
+    assert.exists(context);
+    const rendered = buildFullPaperContext(fullPaperRef(attachmentId), context);
+
+    assert.equal(rebuiltManifest?.totalChars, mdV2.length);
+    assert.include(rendered, "Updated introduction that should be sent");
+    assert.notInclude(rendered, "Old introduction.");
+    assert.notInclude(
+      rendered,
+      "[No extractable PDF text available. Using metadata only.]",
+    );
   });
 });

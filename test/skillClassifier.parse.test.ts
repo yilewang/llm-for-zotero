@@ -1,5 +1,8 @@
 import { assert } from "chai";
-import { parseClassifierResponse } from "../src/agent/model/skillClassifier";
+import {
+  canUseSkillClassifierModel,
+  parseClassifierResponse,
+} from "../src/agent/model/skillClassifier";
 import type { AgentSkill } from "../src/agent/skills/skillLoader";
 
 const SKILLS: AgentSkill[] = [
@@ -69,5 +72,22 @@ describe("parseClassifierResponse", function () {
       "write-note",
       "compare-papers",
     ]);
+  });
+
+  it("allows blank apiBase for Codex app-server skill classification", function () {
+    assert.isTrue(
+      canUseSkillClassifierModel({
+        model: "gpt-5.4",
+        apiBase: "",
+        authMode: "codex_app_server",
+      }),
+    );
+    assert.isFalse(
+      canUseSkillClassifierModel({
+        model: "gpt-5.4",
+        apiBase: "",
+        authMode: "api_key",
+      }),
+    );
   });
 });

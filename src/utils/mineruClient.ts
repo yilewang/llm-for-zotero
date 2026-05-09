@@ -5,6 +5,17 @@ import {
   type MinerUZipFile,
   type MinerUZipInspectionResult,
 } from "./mineruZip";
+import {
+  getMineruApiKey,
+  getMineruLocalApiBase,
+  getMineruLocalBackend,
+  getMineruMode,
+  normalizeMineruLocalApiBase,
+  toMineruApiBackend,
+  type MineruLocalBackend,
+} from "./mineruConfig";
+import { t } from "./i18n";
+import { buildMultipartRequest } from "./multipart";
 
 const MINERU_DIRECT_API_BASE = "https://mineru.net/api/v4";
 const MINERU_PROXY_API_BASE =
@@ -25,6 +36,8 @@ function getMineruAuthHeaders(apiKey: string): Record<string, string> {
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 60000;
+const LOCAL_PARSE_TIMEOUT_MS = 15 * 60 * 1000;
+const LOCAL_PROGRESS_INTERVAL_MS = 3000;
 
 export type MinerUExtractedFile = MinerUZipFile;
 
@@ -51,6 +64,20 @@ export class MineruCancelledError extends Error {
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new MineruCancelledError();
+}
+
+function getFetch(): typeof fetch {
+  return ztoolkit.getGlobal("fetch") as typeof fetch;
+}
+
+function getAbortControllerCtor(): typeof AbortController | undefined {
+  return (
+    (globalThis as { AbortController?: typeof AbortController })
+      .AbortController ??
+    (ztoolkit.getGlobal("AbortController") as
+      | typeof AbortController
+      | undefined)
+  );
 }
 
 /** Race a promise against an AbortSignal — rejects immediately when aborted. */
@@ -113,6 +140,18 @@ type MineruZipExtractionResult =
       message: string;
       download: BinaryDownloadResult;
       zipInspection?: MinerUZipInspectionResult;
+    };
+
+type MineruZipBytesExtractionResult =
+  | {
+      ok: true;
+      mdContent: string;
+      files: MinerUExtractedFile[];
+    }
+  | {
+      ok: false;
+      message: string;
+      zipInspection: MinerUZipInspectionResult;
     };
 
 function getIOUtils(): IOUtilsLike | undefined {
@@ -467,27 +506,16 @@ async function readPdfBytes(pdfPath: string): Promise<Uint8Array | null> {
   return null;
 }
 
-async function downloadAndExtractZip(
-  zipUrl: string,
+function extractMineruZipBytes(
+  zipBytes: Uint8Array,
   report: (s: string) => void,
-): Promise<MineruZipExtractionResult> {
-  report("Downloading results…");
-  const downloadResult = await httpGetBinary(zipUrl);
-  if (!downloadResult.bytes) {
-    return {
-      ok: false,
-      message: buildDownloadFailureMessage(downloadResult),
-      download: downloadResult,
-    };
-  }
-
-  report("Extracting files…");
-  const zipInspection = inspectMineruZipBytes(downloadResult.bytes);
+): MineruZipBytesExtractionResult {
+  report(t("Extracting files…"));
+  const zipInspection = inspectMineruZipBytes(zipBytes);
   if (!zipInspection.ok) {
     return {
       ok: false,
       message: describeMineruZipInspectionFailure(zipInspection),
-      download: downloadResult,
       zipInspection,
     };
   }
@@ -497,6 +525,254 @@ async function downloadAndExtractZip(
     mdContent: zipInspection.mdContent,
     files: zipInspection.files,
   };
+}
+
+async function downloadAndExtractZip(
+  zipUrl: string,
+  report: (s: string) => void,
+): Promise<MineruZipExtractionResult> {
+  report(t("Downloading results…"));
+  const downloadResult = await httpGetBinary(zipUrl);
+  if (!downloadResult.bytes) {
+    return {
+      ok: false,
+      message: buildDownloadFailureMessage(downloadResult),
+      download: downloadResult,
+    };
+  }
+
+  const extracted = extractMineruZipBytes(downloadResult.bytes, report);
+  if (!extracted.ok) {
+    return {
+      ok: false,
+      message: extracted.message,
+      download: downloadResult,
+      zipInspection: extracted.zipInspection,
+    };
+  }
+
+  return {
+    ok: true,
+    mdContent: extracted.mdContent,
+    files: extracted.files,
+  };
+}
+
+function getSafePdfFileName(pdfPath: string): string {
+  const rawName = pdfPath.split(/[\\/]/).pop() || "paper.pdf";
+  return rawName.replace(/[^\x20-\x7E]/g, "_") || "paper.pdf";
+}
+
+function joinApiPath(baseUrl: string, path: string): string {
+  return `${normalizeMineruLocalApiBase(baseUrl)}${path}`;
+}
+
+function truncateResponseText(text: string, maxLength = 240): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength - 3)}...`
+    : normalized;
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+  timeoutMessage: string,
+): Promise<Response> {
+  const AbortCtrl = getAbortControllerCtor();
+  if (!AbortCtrl) {
+    return await new Promise<Response>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const finishResolve = (value: Response) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(value);
+      };
+      const finishReject = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = () => finishReject(new MineruCancelledError());
+      const timer = setTimeout(
+        () => finishReject(new Error(timeoutMessage)),
+        timeoutMs,
+      );
+
+      if (signal?.aborted) {
+        finishReject(new MineruCancelledError());
+        return;
+      }
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+      getFetch()(url, init).then(finishResolve, finishReject);
+    });
+  }
+
+  const controller = new AbortCtrl();
+  let timedOut = false;
+  const onAbort = () => controller.abort();
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    return await getFetch()(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw new MineruCancelledError();
+    if (timedOut) throw new Error(timeoutMessage);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+function buildLocalFileParseBody(params: {
+  fileName: string;
+  pdfBytes: Uint8Array;
+  backend: MineruLocalBackend;
+}): { body: BodyInit; contentType?: string; mode: "formdata" | "manual" } {
+  return buildMultipartRequest(
+    [
+      {
+        name: "files",
+        filename: params.fileName,
+        contentType: "application/pdf",
+        data: params.pdfBytes,
+      },
+      { name: "backend", value: toMineruApiBackend(params.backend) },
+      { name: "parse_method", value: "auto" },
+      { name: "formula_enable", value: "true" },
+      { name: "table_enable", value: "true" },
+      { name: "return_md", value: "true" },
+      { name: "return_content_list", value: "true" },
+      { name: "return_images", value: "true" },
+      { name: "response_format_zip", value: "true" },
+      { name: "return_original_file", value: "false" },
+    ],
+    {
+      boundaryPrefix: "MinerUBoundary",
+      fallbackName: "field",
+      preferFormData: true,
+    },
+  );
+}
+
+async function parsePdfViaLocalFileParse(
+  pdfPath: string,
+  baseUrl: string,
+  backend: MineruLocalBackend,
+  report: (s: string) => void,
+  signal?: AbortSignal,
+): Promise<MinerUResult> {
+  throwIfAborted(signal);
+  report(t("Reading PDF file…"));
+  const pdfBytes = await readPdfBytes(pdfPath);
+  if (!pdfBytes || !pdfBytes.length) {
+    report(t("PDF file is empty or unreadable"));
+    return null;
+  }
+
+  const fileName = getSafePdfFileName(pdfPath);
+  const sizeMB = (pdfBytes.length / (1024 * 1024)).toFixed(1);
+  const { body, contentType } = buildLocalFileParseBody({
+    fileName,
+    pdfBytes,
+    backend,
+  });
+
+  throwIfAborted(signal);
+  report(t("Uploading to local server… (%s MB)").replace("%s", sizeMB));
+  const url = joinApiPath(baseUrl, "/file_parse");
+  const startTime = Date.now();
+  const progressTimer = setInterval(() => {
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    report(t("Waiting for parser… (%ss)").replace("%s", `${elapsed}`));
+  }, LOCAL_PROGRESS_INTERVAL_MS);
+
+  let response: Response;
+  try {
+    const headers: Record<string, string> = {};
+    if (contentType) headers["Content-Type"] = contentType;
+    response = await raceAbort(
+      fetchWithTimeout(
+        url,
+        {
+          method: "POST",
+          headers,
+          body,
+        },
+        signal,
+        LOCAL_PARSE_TIMEOUT_MS,
+        t("Local MinerU parsing timed out"),
+      ),
+      signal,
+    );
+  } finally {
+    clearInterval(progressTimer);
+  }
+
+  const contentTypeHeader = response.headers.get("content-type");
+  if (!response.ok) {
+    let responseText = "";
+    try {
+      responseText = await raceAbort(response.text(), signal);
+    } catch {
+      /* ignore */
+    }
+    const suffix = responseText
+      ? `: ${truncateResponseText(responseText)}`
+      : "";
+    report(
+      `${t("Local parse failed: HTTP %s").replace("%s", `${response.status}`)}${suffix}`,
+    );
+    return null;
+  }
+
+  throwIfAborted(signal);
+  const zipBytes = new Uint8Array(
+    await raceAbort(response.arrayBuffer(), signal),
+  );
+  const extracted = extractMineruZipBytes(zipBytes, report);
+  if (extracted.ok) {
+    report(
+      t("Done (%s files extracted)").replace("%s", `${extracted.files.length}`),
+    );
+    return { mdContent: extracted.mdContent, files: extracted.files };
+  }
+
+  report(extracted.message);
+  logMineruZipFailure(
+    {
+      bytes: zipBytes,
+      attempts: [
+        {
+          transport: "fetch",
+          status: response.status,
+          contentType: contentTypeHeader,
+          byteLength: zipBytes.length,
+          error: extracted.message,
+        },
+      ],
+    },
+    extracted.zipInspection,
+  );
+  return null;
 }
 
 // ── Presigned URL upload workflow ──────────────────────────────────────────────
@@ -877,10 +1153,10 @@ async function parsePdfViaUpload(
   signal?: AbortSignal,
 ): Promise<MinerUResult> {
   throwIfAborted(signal);
-  report("Reading PDF file…");
+  report(t("Reading PDF file…"));
   const pdfBytes = await readPdfBytes(pdfPath);
   if (!pdfBytes || !pdfBytes.length) {
-    report("PDF file is empty or unreadable");
+    report(t("PDF file is empty or unreadable"));
     return null;
   }
 
@@ -889,7 +1165,7 @@ async function parsePdfViaUpload(
   const fileName = rawName.replace(/[^\x20-\x7E]/g, "_") || "paper.pdf";
   const sizeMB = (pdfBytes.length / (1024 * 1024)).toFixed(1);
   throwIfAborted(signal);
-  report(`Requesting upload URL… (${sizeMB} MB)`);
+  report(t("Requesting upload URL… (%s MB)").replace("%s", sizeMB));
 
   const batchResult = await httpJson(
     "POST",
@@ -918,7 +1194,12 @@ async function parsePdfViaUpload(
     if (/rate.?limit|quota|exceeded|limit.*reached/i.test(respMsg)) {
       throw new MineruRateLimitError(`MinerU rate limit: ${respMsg}`);
     }
-    report(`Batch request failed: HTTP ${batchResult.status}`);
+    report(
+      t("Batch request failed: HTTP %s").replace(
+        "%s",
+        `${batchResult.status}`,
+      ),
+    );
     return null;
   }
 
@@ -929,12 +1210,12 @@ async function parsePdfViaUpload(
   const fileUrls = batchData?.data?.file_urls;
 
   if (!batchId || !fileUrls?.length) {
-    report("Missing batch_id or file_urls in response");
+    report(t("Missing batch_id or file_urls in response"));
     return null;
   }
 
   throwIfAborted(signal);
-  report("Uploading PDF…");
+  report(t("Uploading PDF…"));
   // Do NOT send Content-Type — the presigned URL's signature may not include it,
   // and adding it would cause Alibaba OSS to return 403.
   // Race the entire upload chain against the abort signal so pause/stop
@@ -952,16 +1233,20 @@ async function parsePdfViaUpload(
         return fileUrls[0].slice(0, 80);
       }
     })();
-    report(`Upload failed: HTTP ${uploadResult.status} to ${uploadHost}`);
+    report(
+      t("Upload failed: HTTP %s to %s")
+        .replace("%s", `${uploadResult.status}`)
+        .replace("%s", uploadHost),
+    );
     return null;
   }
 
-  report("Processing on server…");
+  report(t("Processing on server…"));
   const startTime = Date.now();
   while (Date.now() - startTime < POLL_TIMEOUT_MS) {
     await sleep(POLL_INTERVAL_MS, signal);
     const elapsed = Math.round((Date.now() - startTime) / 1000);
-    report(`Processing on server… (${elapsed}s)`);
+    report(t("Processing on server… (%ss)").replace("%s", `${elapsed}`));
 
     const pollResult = await httpJson(
       "GET",
@@ -995,7 +1280,12 @@ async function parsePdfViaUpload(
         report,
       );
       if (extracted.ok) {
-        report(`Done (${extracted.files.length} files extracted)`);
+        report(
+          t("Done (%s files extracted)").replace(
+            "%s",
+            `${extracted.files.length}`,
+          ),
+        );
         return { mdContent: extracted.mdContent, files: extracted.files };
       }
       report(extracted.message);
@@ -1004,12 +1294,12 @@ async function parsePdfViaUpload(
     }
 
     if (extractResult.state === "failed") {
-      report("Extraction failed on server");
+      report(t("Extraction failed on server"));
       return null;
     }
   }
 
-  report("Timed out after 10 minutes");
+  report(t("Timed out after 10 minutes"));
   return null;
 }
 
@@ -1033,6 +1323,54 @@ export async function parsePdfWithMineruCloud(
     report(`Error: ${(e as Error).message}`);
     return null;
   }
+}
+
+export async function parsePdfWithMineruLocal(
+  pdfPath: string,
+  baseUrl: string,
+  backend: MineruLocalBackend,
+  onProgress?: MinerUProgressCallback,
+  signal?: AbortSignal,
+): Promise<MinerUResult> {
+  const report = (stage: string) => {
+    ztoolkit.log(`MinerU local: ${stage}`);
+    onProgress?.(stage);
+  };
+  try {
+    return await parsePdfViaLocalFileParse(
+      pdfPath,
+      baseUrl,
+      backend,
+      report,
+      signal,
+    );
+  } catch (e) {
+    if (e instanceof MineruCancelledError) throw e;
+    report(`Error: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+export async function parsePdfWithMineru(
+  pdfPath: string,
+  onProgress?: MinerUProgressCallback,
+  signal?: AbortSignal,
+): Promise<MinerUResult> {
+  if (getMineruMode() === "local") {
+    return parsePdfWithMineruLocal(
+      pdfPath,
+      getMineruLocalApiBase(),
+      getMineruLocalBackend(),
+      onProgress,
+      signal,
+    );
+  }
+  return parsePdfWithMineruCloud(
+    pdfPath,
+    getMineruApiKey(),
+    onProgress,
+    signal,
+  );
 }
 
 /**
@@ -1129,6 +1467,27 @@ export async function testProxyConnection(): Promise<void> {
   if (result.status === 401 || result.status === 403) {
     throw new Error(
       "Proxy authentication failed — please provide your own API key",
+    );
+  }
+}
+
+export async function testMineruLocalConnection(
+  baseUrl: string,
+): Promise<void> {
+  const url = joinApiPath(baseUrl, "/health");
+  const response = await fetchWithTimeout(
+    url,
+    { method: "GET" },
+    undefined,
+    10000,
+    t("Local MinerU health check timed out"),
+  );
+  if (!response.ok) {
+    throw new Error(
+      t("Local MinerU health check failed: HTTP %s").replace(
+        "%s",
+        `${response.status}`,
+      ),
     );
   }
 }

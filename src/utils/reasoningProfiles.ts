@@ -47,15 +47,38 @@ export type GeminiReasoningProfile = {
   levelToValue: Partial<Record<ReasoningLevel, GeminiThinkingValue>>;
   defaultLevel: ReasoningLevel;
 };
+export type AnthropicThinkingMode = "adaptive" | "manual" | "none";
+export type AnthropicAdaptiveEffort =
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
 export type AnthropicReasoningProfile = {
   defaultBudgetTokens: number;
   levelToBudgetTokens: Partial<Record<ReasoningLevel, number>>;
+  levelToEffort: Partial<Record<ReasoningLevel, AnthropicAdaptiveEffort>>;
   defaultLevel: ReasoningLevel;
+  preferredMode: AnthropicThinkingMode;
+  supportsAdaptiveThinking: boolean;
+  supportsManualThinking: boolean;
 };
 export type QwenReasoningProfile = {
   defaultEnableThinking: boolean | null;
   levelToEnableThinking: Partial<Record<ReasoningLevel, boolean | null>>;
   defaultLevel: ReasoningLevel;
+};
+export type DeepseekThinkingType = "enabled" | "disabled";
+export type DeepseekReasoningEffort = "high" | "max";
+export type DeepseekReasoningProfile = {
+  defaultThinkingType: DeepseekThinkingType | null;
+  defaultReasoningEffort: DeepseekReasoningEffort | null;
+  levelToThinkingType: Partial<Record<ReasoningLevel, DeepseekThinkingType>>;
+  levelToReasoningEffort: Partial<
+    Record<ReasoningLevel, DeepseekReasoningEffort | null>
+  >;
+  defaultLevel: ReasoningLevel;
+  omitTemperatureWhenThinking: boolean;
 };
 
 type ProviderProfile = {
@@ -76,12 +99,24 @@ type ProviderProfile = {
   anthropic?: {
     defaultBudgetTokens: number;
     levelToBudgetTokens: Partial<Record<ReasoningLevel, number>>;
+    levelToEffort?: Partial<Record<ReasoningLevel, AnthropicAdaptiveEffort>>;
+    preferredMode: AnthropicThinkingMode;
+    supportsAdaptiveThinking: boolean;
+    supportsManualThinking: boolean;
   };
   qwen?: {
     defaultEnableThinking: boolean | null;
     levelToEnableThinking: Partial<Record<ReasoningLevel, boolean | null>>;
   };
-  deepseekThinkingEnabled?: boolean;
+  deepseek?: {
+    defaultThinkingType: DeepseekThinkingType | null;
+    defaultReasoningEffort: DeepseekReasoningEffort | null;
+    levelToThinkingType: Partial<Record<ReasoningLevel, DeepseekThinkingType>>;
+    levelToReasoningEffort: Partial<
+      Record<ReasoningLevel, DeepseekReasoningEffort | null>
+    >;
+    omitTemperatureWhenThinking?: boolean;
+  };
 };
 
 type ProfileRule = {
@@ -339,9 +374,47 @@ const DEEPSEEK_REASONER_PROFILE: ProviderProfile = singleEnabledOptionProfile(
   "default",
   "enabled",
   {
-    deepseekThinkingEnabled: true,
+    deepseek: {
+      defaultThinkingType: "enabled",
+      defaultReasoningEffort: null,
+      levelToThinkingType: {
+        default: "enabled",
+      },
+      levelToReasoningEffort: {
+        default: null,
+      },
+      omitTemperatureWhenThinking: false,
+    },
   },
 );
+
+const DEEPSEEK_V4_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "default",
+  options: [
+    option("default", "default"),
+    option("minimal", "disabled"),
+    option("high", "high"),
+    option("xhigh", "max"),
+  ],
+  deepseek: {
+    defaultThinkingType: "enabled",
+    defaultReasoningEffort: "high",
+    levelToThinkingType: {
+      default: "enabled",
+      minimal: "disabled",
+      high: "enabled",
+      xhigh: "enabled",
+    },
+    levelToReasoningEffort: {
+      default: "high",
+      minimal: null,
+      high: "high",
+      xhigh: "max",
+    },
+    omitTemperatureWhenThinking: true,
+  },
+};
 
 const DEEPSEEK_CHAT_PROFILE: ProviderProfile = {
   supportsReasoning: false,
@@ -401,21 +474,105 @@ const QWEN_NON_THINKING_ONLY_PROFILE: ProviderProfile = {
   },
 };
 
-const ANTHROPIC_THINKING_PROFILE: ProviderProfile = {
+const ANTHROPIC_ADAPTIVE_MAX_OPTIONS: RuntimeReasoningOption[] = [
+  option("low", "low"),
+  option("medium", "medium"),
+  option("high", "high"),
+  option("xhigh", "max"),
+];
+
+const ANTHROPIC_ADAPTIVE_XHIGH_OPTIONS: RuntimeReasoningOption[] = [
+  option("low", "low"),
+  option("medium", "medium"),
+  option("high", "high"),
+  option("xhigh", "xhigh"),
+];
+
+const ANTHROPIC_MANUAL_OPTIONS: RuntimeReasoningOption[] = [
+  option("low", "1024"),
+  option("medium", "2000"),
+  option("high", "10000"),
+  option("xhigh", "32000"),
+];
+
+const ANTHROPIC_MAX_EFFORT_MAP: Partial<
+  Record<ReasoningLevel, AnthropicAdaptiveEffort>
+> = {
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "max",
+};
+
+const ANTHROPIC_XHIGH_EFFORT_MAP: Partial<
+  Record<ReasoningLevel, AnthropicAdaptiveEffort>
+> = {
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+};
+
+const ANTHROPIC_BUDGET_MAP: Partial<Record<ReasoningLevel, number>> = {
+  low: 1024,
+  medium: 2000,
+  high: 10000,
+  xhigh: 32000,
+};
+
+const ANTHROPIC_ADAPTIVE_ONLY_PROFILE: ProviderProfile = {
   supportsReasoning: true,
-  defaultLevel: "default",
-  options: [
-    option("default", "2000"),
-    option("low", "1024"),
-    option("high", "10000"),
-  ],
+  defaultLevel: "high",
+  options: ANTHROPIC_ADAPTIVE_MAX_OPTIONS,
   anthropic: {
     defaultBudgetTokens: 2000,
-    levelToBudgetTokens: {
-      default: 2000,
-      low: 1024,
-      high: 10000,
-    },
+    levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
+    levelToEffort: ANTHROPIC_MAX_EFFORT_MAP,
+    preferredMode: "adaptive",
+    supportsAdaptiveThinking: true,
+    supportsManualThinking: false,
+  },
+};
+
+const ANTHROPIC_OPUS_47_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "high",
+  options: ANTHROPIC_ADAPTIVE_XHIGH_OPTIONS,
+  anthropic: {
+    defaultBudgetTokens: 2000,
+    levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
+    levelToEffort: ANTHROPIC_XHIGH_EFFORT_MAP,
+    preferredMode: "adaptive",
+    supportsAdaptiveThinking: true,
+    supportsManualThinking: false,
+  },
+};
+
+const ANTHROPIC_ADAPTIVE_WITH_MANUAL_FALLBACK_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "high",
+  options: ANTHROPIC_ADAPTIVE_MAX_OPTIONS,
+  anthropic: {
+    defaultBudgetTokens: 2000,
+    levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
+    levelToEffort: ANTHROPIC_MAX_EFFORT_MAP,
+    preferredMode: "adaptive",
+    supportsAdaptiveThinking: true,
+    supportsManualThinking: true,
+  },
+};
+
+const ANTHROPIC_MANUAL_THINKING_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "medium",
+  options: ANTHROPIC_MANUAL_OPTIONS,
+  anthropic: {
+    defaultBudgetTokens: 2000,
+    levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
+    levelToEffort: {},
+    preferredMode: "manual",
+    supportsAdaptiveThinking: false,
+    supportsManualThinking: true,
   },
 };
 
@@ -490,11 +647,15 @@ const PROFILE_RULES: Record<
   deepseek: {
     rules: [
       {
-        match: /^deepseek-(?:reasoner|r1)(?:\b|[.-])/,
+        match: /(^|[/:])deepseek-v4-(?:flash|pro)(?:\b|[.-])/,
+        profile: DEEPSEEK_V4_PROFILE,
+      },
+      {
+        match: /(^|[/:])deepseek-(?:reasoner|r1)(?:\b|[.-])/,
         profile: DEEPSEEK_REASONER_PROFILE,
       },
       {
-        match: /^deepseek-chat(?:\b|[.-])/,
+        match: /(^|[/:])deepseek-chat(?:\b|[.-])/,
         profile: DEEPSEEK_CHAT_PROFILE,
       },
     ],
@@ -558,11 +719,28 @@ const PROFILE_RULES: Record<
   anthropic: {
     rules: [
       {
-        match: /(^|[/:])claude(?:\b|[.-])/,
-        profile: ANTHROPIC_THINKING_PROFILE,
+        match: /(^|[/:.])claude-mythos-preview(?:\b|[.-])/,
+        profile: ANTHROPIC_ADAPTIVE_ONLY_PROFILE,
+      },
+      {
+        match: /(^|[/:.])claude-opus-4-7(?:\b|[.-])/,
+        profile: ANTHROPIC_OPUS_47_PROFILE,
+      },
+      {
+        match: /(^|[/:.])claude-(?:opus|sonnet)-4-6(?:\b|[.-])/,
+        profile: ANTHROPIC_ADAPTIVE_WITH_MANUAL_FALLBACK_PROFILE,
+      },
+      {
+        match: /(^|[/:.])claude-haiku-4-5(?:\b|[.-])/,
+        profile: ANTHROPIC_MANUAL_THINKING_PROFILE,
+      },
+      {
+        match:
+          /(^|[/:.])claude-(?:opus-(?:4-5|4-1|4)|sonnet-(?:4-5|4)|3-7-sonnet)(?:\b|[.-])/,
+        profile: ANTHROPIC_MANUAL_THINKING_PROFILE,
       },
     ],
-    fallback: ANTHROPIC_THINKING_PROFILE,
+    fallback: UNSUPPORTED_PROFILE,
   },
 };
 
@@ -640,7 +818,31 @@ export function getReasoningDefaultLevelForModel(
 
 export function shouldUseDeepseekThinkingPayload(modelName?: string): boolean {
   const profile = resolveProviderProfile("deepseek", modelName);
-  return Boolean(profile.deepseekThinkingEnabled);
+  return Boolean(profile.deepseek?.defaultThinkingType);
+}
+
+export function getDeepseekReasoningProfileForModel(
+  modelName?: string,
+): DeepseekReasoningProfile {
+  const profile = resolveProviderProfile("deepseek", modelName);
+  const deepseekProfile = profile.deepseek;
+  const defaultLevel = getResolvedDefaultLevel(
+    "deepseek",
+    modelName,
+    "default",
+  );
+  return {
+    defaultThinkingType: deepseekProfile?.defaultThinkingType ?? null,
+    defaultReasoningEffort: deepseekProfile?.defaultReasoningEffort ?? null,
+    levelToThinkingType: cloneLevelMap(deepseekProfile?.levelToThinkingType),
+    levelToReasoningEffort: cloneLevelMap(
+      deepseekProfile?.levelToReasoningEffort,
+    ),
+    defaultLevel,
+    omitTemperatureWhenThinking: Boolean(
+      deepseekProfile?.omitTemperatureWhenThinking,
+    ),
+  };
 }
 
 export function getOpenAIReasoningProfileForModel(
@@ -680,17 +882,18 @@ export function getAnthropicReasoningProfileForModel(
   modelName?: string,
 ): AnthropicReasoningProfile {
   const profile = resolveProviderProfile("anthropic", modelName);
-  const anthropicProfile =
-    profile.anthropic || ANTHROPIC_THINKING_PROFILE.anthropic;
-  const defaultLevel = getResolvedDefaultLevel(
-    "anthropic",
-    modelName,
-    "default",
-  );
+  const anthropicProfile = profile.anthropic;
+  const defaultLevel = getResolvedDefaultLevel("anthropic", modelName, "high");
   return {
     defaultBudgetTokens: anthropicProfile?.defaultBudgetTokens || 2000,
     levelToBudgetTokens: cloneLevelMap(anthropicProfile?.levelToBudgetTokens),
+    levelToEffort: cloneLevelMap(anthropicProfile?.levelToEffort),
     defaultLevel,
+    preferredMode: anthropicProfile?.preferredMode || "none",
+    supportsAdaptiveThinking: Boolean(
+      anthropicProfile?.supportsAdaptiveThinking,
+    ),
+    supportsManualThinking: Boolean(anthropicProfile?.supportsManualThinking),
   };
 }
 

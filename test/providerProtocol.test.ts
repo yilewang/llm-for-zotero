@@ -28,7 +28,72 @@ describe("providerProtocol", function () {
     assert.equal(
       normalizeProviderProtocolForAuthMode({
         authMode: "api_key",
+        apiBase: "https://proxy.example.com/responses",
+      }),
+      "responses_api",
+    );
+    assert.equal(
+      normalizeProviderProtocolForAuthMode({
+        authMode: "api_key",
+        apiBase: "https://proxy.example.com/v1/response",
+      }),
+      "openai_chat_compat",
+    );
+    assert.equal(
+      normalizeProviderProtocolForAuthMode({
+        authMode: "api_key",
+        apiBase: "https://proxy.example.com/response",
+      }),
+      "openai_chat_compat",
+    );
+    assert.equal(
+      normalizeProviderProtocolForAuthMode({
+        authMode: "api_key",
+        apiBase: "https://proxy.example.com/response_api",
+      }),
+      "openai_chat_compat",
+    );
+    assert.equal(
+      normalizeProviderProtocolForAuthMode({
+        authMode: "api_key",
+        apiBase: "https://proxy.example.com/my-response-service",
+      }),
+      "openai_chat_compat",
+    );
+    assert.equal(
+      normalizeProviderProtocolForAuthMode({
+        authMode: "api_key",
         apiBase: "https://api.openai.com/v1",
+      }),
+      "openai_chat_compat",
+    );
+  });
+
+  it("infers Anthropic Messages from canonical message endpoint paths", function () {
+    for (const apiBase of [
+      "https://proxy.example.com/anthropic",
+      "https://proxy.example.com/anthropic/v1",
+      "https://proxy.example.com/anthropic/v1/messages",
+      "https://proxy.example.com/v1/messages",
+      "https://proxy.example.com/messages",
+    ]) {
+      assert.equal(
+        normalizeProviderProtocolForAuthMode({
+          authMode: "api_key",
+          apiBase,
+        }),
+        "anthropic_messages",
+        apiBase,
+      );
+    }
+  });
+
+  it("keeps explicit protocol overrides over URL inference", function () {
+    assert.equal(
+      normalizeProviderProtocolForAuthMode({
+        protocol: "openai_chat_compat",
+        authMode: "api_key",
+        apiBase: "https://proxy.example.com/anthropic",
       }),
       "openai_chat_compat",
     );

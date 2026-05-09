@@ -1,7 +1,7 @@
 import { config } from "../../package.json";
 import { DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE } from "./llmDefaults";
 import {
-  normalizeMaxTokens,
+  normalizeMaxTokensForModel,
   normalizeOptionalInputTokenCap,
   normalizeTemperature,
 } from "./normalization";
@@ -136,6 +136,7 @@ function normalizeApiBase(apiBase: string): string {
 
 function normalizeProviderAuthMode(value: unknown): ModelProviderAuthMode {
   if (value === "codex_auth") return "codex_auth";
+  if (value === "codex_app_server") return "codex_app_server";
   if (value === "copilot_auth") return "copilot_auth";
   if (value === "webchat") return "webchat"; // [webchat]
   return "api_key";
@@ -143,12 +144,16 @@ function normalizeProviderAuthMode(value: unknown): ModelProviderAuthMode {
 
 function normalizeAdvancedModelConfig(
   value?: AdvancedModelConfigInput | null,
+  modelName?: string,
 ): AdvancedModelConfig {
   return {
     temperature: normalizeTemperature(
       `${value?.temperature ?? DEFAULT_TEMPERATURE}`,
     ),
-    maxTokens: normalizeMaxTokens(`${value?.maxTokens ?? DEFAULT_MAX_TOKENS}`),
+    maxTokens: normalizeMaxTokensForModel(
+      `${value?.maxTokens ?? DEFAULT_MAX_TOKENS}`,
+      modelName,
+    ),
     inputTokenCap: normalizeOptionalInputTokenCap(value?.inputTokenCap),
   };
 }
@@ -276,11 +281,14 @@ function normalizeGroupModel(model: unknown): ModelProviderModel | null {
     providerProtocol?: unknown;
   };
   const modelName = normalizeString(rawModel.model);
-  const advanced = normalizeAdvancedModelConfig({
-    temperature: Number(rawModel.temperature),
-    maxTokens: Number(rawModel.maxTokens),
-    inputTokenCap: rawModel.inputTokenCap as number | string | undefined,
-  });
+  const advanced = normalizeAdvancedModelConfig(
+    {
+      temperature: Number(rawModel.temperature),
+      maxTokens: Number(rawModel.maxTokens),
+      inputTokenCap: rawModel.inputTokenCap as number | string | undefined,
+    },
+    modelName,
+  );
   const modelProtocol = isProviderProtocol(rawModel.providerProtocol)
     ? rawModel.providerProtocol
     : undefined;
@@ -293,6 +301,42 @@ function normalizeGroupModel(model: unknown): ModelProviderModel | null {
     ...advanced,
     ...(modelProtocol ? { providerProtocol: modelProtocol } : {}),
   };
+}
+
+function resolveStoredPresetId(group: ModelProviderGroup): ProviderPresetId {
+  if (
+    group.authMode === "codex_auth" ||
+    group.authMode === "codex_app_server" ||
+    group.authMode === "copilot_auth" ||
+    group.authMode === "webchat"
+  ) {
+    return "customized";
+  }
+  return group.presetIdOverride ?? detectProviderPreset(group.apiBase);
+}
+
+function resolveRuntimeProviderProtocol(
+  group: ModelProviderGroup,
+  modelEntry?: ModelProviderModel,
+): ProviderProtocol {
+  const authMode = normalizeProviderAuthMode(group.authMode);
+  const presetId = resolveStoredPresetId(group);
+  const fallback =
+    presetId === "customized"
+      ? undefined
+      : getProviderPreset(presetId).defaultProtocol;
+  const shouldInferCustomizedProtocol =
+    presetId === "customized" &&
+    group.providerProtocol === "openai_chat_compat";
+  const protocol =
+    modelEntry?.providerProtocol ||
+    (shouldInferCustomizedProtocol ? undefined : group.providerProtocol);
+  return normalizeProviderProtocolForAuthMode({
+    protocol,
+    authMode,
+    apiBase: group.apiBase,
+    ...(fallback ? { fallback } : {}),
+  });
 }
 
 export function normalizeModelProviderGroups(
@@ -359,8 +403,9 @@ function resolveLegacyModelSlot(
   const temperature = normalizeTemperature(
     getStringPref(`temperature${suffix}`) || `${DEFAULT_TEMPERATURE}`,
   );
-  const maxTokens = normalizeMaxTokens(
+  const maxTokens = normalizeMaxTokensForModel(
     getStringPref(`maxTokens${suffix}`) || `${DEFAULT_MAX_TOKENS}`,
+    modelName,
   );
   const inputTokenCap = normalizeOptionalInputTokenCap(
     getStringPref(`inputTokenCap${suffix}`),
@@ -420,7 +465,7 @@ export function buildModelProviderGroupsFromLegacySlots(
     const entry: ModelProviderModel = {
       id: createId("model"),
       model: slot.model.trim(),
-      ...normalizeAdvancedModelConfig(slot),
+      ...normalizeAdvancedModelConfig(slot, slot.model),
     };
     group.models.push(entry);
     legacyToEntryId[slot.key] = entry.id;
@@ -480,6 +525,35 @@ export function setModelProviderGroups(groups: ModelProviderGroup[]): void {
   storeModelProviderGroups(normalizeModelProviderGroups(groups));
 }
 
+// The `apiBase` field is repurposed as a local "Codex CLI Path" under
+// `codex_app_server`. When toggling between that mode and the others, drop
+// the stored value if it doesn't fit the new role so the user never sees a
+// stale URL under the path label, or a Windows path under the API URL label.
+export function migrateApiBaseForAuthModeChange(
+  previousAuthMode: ModelProviderAuthMode,
+  nextAuthMode: ModelProviderAuthMode,
+  apiBase: string,
+): string {
+  const trimmed = apiBase.trim();
+  if (!trimmed) return apiBase;
+  const looksLikeUrl = /^https?:\/\//i.test(trimmed);
+  if (
+    nextAuthMode === "codex_app_server" &&
+    previousAuthMode !== "codex_app_server" &&
+    looksLikeUrl
+  ) {
+    return "";
+  }
+  if (
+    previousAuthMode === "codex_app_server" &&
+    nextAuthMode !== "codex_app_server" &&
+    !looksLikeUrl
+  ) {
+    return "";
+  }
+  return apiBase;
+}
+
 export function createEmptyProviderGroup(): ModelProviderGroup {
   return {
     id: createId("provider"),
@@ -499,7 +573,7 @@ export function createProviderModelEntry(
   return {
     id: createId("model"),
     model: model.trim(),
-    ...normalizeAdvancedModelConfig(advanced),
+    ...normalizeAdvancedModelConfig(advanced, model),
     ...(providerProtocol ? { providerProtocol } : {}),
   };
 }
@@ -519,10 +593,12 @@ export function getRuntimeModelEntries(): RuntimeModelEntry[] {
       authMode === "webchat"
         ? `${baseProviderLabel} (web)`
         : authMode === "codex_auth"
-          ? `${baseProviderLabel} (codex auth)`
-          : authMode === "copilot_auth"
-            ? `${baseProviderLabel} (copilot auth)`
-            : baseProviderLabel;
+          ? `${baseProviderLabel} (codex auth, legacy)`
+          : authMode === "codex_app_server"
+            ? `${baseProviderLabel} (app server)`
+            : authMode === "copilot_auth"
+              ? `${baseProviderLabel} (copilot auth)`
+              : baseProviderLabel;
     const normalizedCounts = new Map<string, number>();
     for (const modelEntry of group.models) {
       const modelName = modelEntry.model.trim();
@@ -536,9 +612,11 @@ export function getRuntimeModelEntries(): RuntimeModelEntry[] {
           ? `web/${modelName}`
           : authMode === "codex_auth"
             ? `codex/${modelName}`
-            : authMode === "copilot_auth"
-              ? `copilot/${modelName}`
-              : modelName;
+            : authMode === "codex_app_server"
+              ? `codex-app/${modelName}`
+              : authMode === "copilot_auth"
+                ? `copilot/${modelName}`
+                : modelName;
       entries.push({
         entryId: modelEntry.id,
         groupId: group.id,
@@ -546,18 +624,14 @@ export function getRuntimeModelEntries(): RuntimeModelEntry[] {
         apiBase: normalizeApiBase(group.apiBase),
         apiKey: group.apiKey.trim(),
         authMode,
-        providerProtocol: normalizeProviderProtocolForAuthMode({
-          protocol: modelEntry.providerProtocol || group.providerProtocol,
-          authMode,
-          apiBase: group.apiBase,
-        }),
+        providerProtocol: resolveRuntimeProviderProtocol(group, modelEntry),
         providerLabel,
         providerOrder: groupIndex,
         displayModelLabel:
           duplicateCount > 1
             ? `${baseModelLabel} #${duplicateCount}`
             : baseModelLabel,
-        advanced: normalizeAdvancedModelConfig(modelEntry),
+        advanced: normalizeAdvancedModelConfig(modelEntry, modelName),
       });
     }
   }

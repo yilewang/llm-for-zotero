@@ -1,5 +1,6 @@
 import type { PaperContextRef } from "./types";
 import { sanitizeText } from "./textUtils";
+import { isMineruSyncPackageAttachment } from "./mineruSync";
 
 export type PaperSearchAttachmentCandidate = {
   contextItemId: number;
@@ -943,7 +944,9 @@ function buildIndexedItemCandidate(
   const allAtts: Zotero.Item[] = [];
   for (const attachmentId of item.getAttachments()) {
     const att = Zotero.Items.get(attachmentId);
-    if (att && att.isAttachment?.()) allAtts.push(att);
+    if (att && att.isAttachment?.() && !isMineruSyncPackageAttachment(att)) {
+      allAtts.push(att);
+    }
   }
   // Child notes — represented as attachment-like entries with a special content type
   const noteAttachments: IndexedPaperAttachment[] = [];

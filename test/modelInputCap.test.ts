@@ -1,8 +1,10 @@
 import { assert } from "chai";
 import {
   applyModelInputTokenCap,
+  estimateContextMessagesTokens,
   estimateConversationTokens,
   getModelInputTokenLimit,
+  resolveContextWindowTokens,
   type InputCapMessage,
 } from "../src/utils/modelInputCap";
 
@@ -15,11 +17,73 @@ describe("modelInputCap", function () {
       assert.equal(getModelInputTokenLimit("gpt-5.2"), 400000);
       assert.equal(getModelInputTokenLimit("gpt-4.1-mini"), 1047576);
       assert.equal(getModelInputTokenLimit("openai/gpt-4o-mini"), 128000);
-      assert.equal(getModelInputTokenLimit("deepseek-reasoner"), 128000);
+      assert.equal(getModelInputTokenLimit("deepseek-v4-flash"), 1000000);
+      assert.equal(getModelInputTokenLimit("deepseek-v4-pro"), 1000000);
+      assert.equal(
+        getModelInputTokenLimit("deepseek/deepseek-v4-pro"),
+        1000000,
+      );
+      assert.equal(getModelInputTokenLimit("deepseek-reasoner"), 1000000);
+      assert.equal(getModelInputTokenLimit("deepseek-chat"), 1000000);
+      assert.equal(getModelInputTokenLimit("deepseek-custom"), 128000);
       assert.equal(getModelInputTokenLimit("gemini-2.5-pro"), 1048576);
       assert.equal(getModelInputTokenLimit("gemini-3-pro"), 1000000);
       assert.equal(getModelInputTokenLimit("qwen-long-latest"), 10000000);
       assert.equal(getModelInputTokenLimit("unknown-custom-model"), 128000);
+    });
+  });
+
+  describe("active context estimates", function () {
+    it("counts tool calls, tool results, images, and file references", function () {
+      const textOnly = estimateContextMessagesTokens([
+        { role: "user", content: "Summarize this." },
+      ]);
+      const withAgentParts = estimateContextMessagesTokens([
+        { role: "user", content: "Summarize this." },
+        {
+          role: "assistant",
+          content: "I will inspect it.",
+          tool_calls: [
+            {
+              id: "call-1",
+              name: "read_paper",
+              arguments: { target: "paper-1" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          name: "read_paper",
+          tool_call_id: "call-1",
+          content: "Extracted methods and results.",
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Use this figure too." },
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,aaa", detail: "high" },
+            },
+            {
+              type: "file_ref",
+              file_ref: {
+                name: "supplement.pdf",
+                mimeType: "application/pdf",
+                storedPath: "/tmp/supplement.pdf",
+              },
+            },
+          ],
+        },
+      ]);
+
+      assert.isAbove(withAgentParts, textOnly);
+      assert.isAtLeast(withAgentParts - textOnly, 1500);
+    });
+
+    it("resolves the active context window from model and override", function () {
+      assert.equal(resolveContextWindowTokens("gpt-5.4"), 1050000);
+      assert.equal(resolveContextWindowTokens("gpt-5.4", 64000), 64000);
     });
   });
 
@@ -50,7 +114,7 @@ describe("modelInputCap", function () {
         },
         { role: "user", content: "Summarize the key findings." },
       ];
-      const result = applyModelInputTokenCap(messages, "deepseek-chat");
+      const result = applyModelInputTokenCap(messages, "deepseek-custom");
       assert.isTrue(result.capped);
       assert.isAtMost(result.estimatedAfterTokens, result.softLimitTokens);
       assert.isTrue(result.effects.documentContextTrimmed);

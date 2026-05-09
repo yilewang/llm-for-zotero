@@ -1,7 +1,9 @@
 import { assert } from "chai";
 import {
+  getModelOutputTokenLimit,
   normalizeInputTokenCap,
   normalizeMaxTokens,
+  normalizeMaxTokensForModel,
   normalizeOptionalInputTokenCap,
   normalizeTemperature,
 } from "../src/utils/normalization";
@@ -43,6 +45,42 @@ describe("normalization", function () {
       assert.equal(
         normalizeMaxTokens(MAX_ALLOWED_TOKENS + 99),
         MAX_ALLOWED_TOKENS,
+      );
+    });
+  });
+
+  describe("normalizeMaxTokensForModel", function () {
+    it("uses the DeepSeek V4 output limit for V4 models and aliases", function () {
+      assert.equal(getModelOutputTokenLimit("deepseek-v4-pro"), 384000);
+      assert.equal(
+        getModelOutputTokenLimit("deepseek/deepseek-v4-flash"),
+        384000,
+      );
+      assert.equal(getModelOutputTokenLimit("deepseek-reasoner"), 384000);
+      assert.equal(
+        normalizeMaxTokensForModel(400000, "deepseek-v4-pro"),
+        384000,
+      );
+    });
+
+    it("keeps the default output limit for unknown models", function () {
+      assert.equal(
+        normalizeMaxTokensForModel(MAX_ALLOWED_TOKENS + 99, "custom-model"),
+        MAX_ALLOWED_TOKENS,
+      );
+    });
+
+    it("uses documented output limits for current Anthropic models", function () {
+      assert.equal(getModelOutputTokenLimit("claude-opus-4-7"), 128000);
+      assert.equal(
+        getModelOutputTokenLimit("anthropic.claude-opus-4-6"),
+        128000,
+      );
+      assert.equal(getModelOutputTokenLimit("claude-sonnet-4-6"), 64000);
+      assert.equal(getModelOutputTokenLimit("claude-haiku-4-5"), 64000);
+      assert.equal(
+        normalizeMaxTokensForModel(200000, "claude-opus-4-7"),
+        128000,
       );
     });
   });

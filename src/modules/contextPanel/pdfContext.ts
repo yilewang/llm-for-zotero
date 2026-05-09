@@ -17,8 +17,11 @@ import {
   CHUNK_TARGET_LENGTH,
   RETRIEVAL_TOP_K_PER_PAPER,
   RRF_K,
-  STOPWORDS,
 } from "./constants";
+import {
+  tokenizeRetrievalQuery,
+  tokenizeRetrievalText,
+} from "./retrievalTokenizer";
 import {
   buildPaperQuoteCitationGuidance,
   formatPaperCitationLabel,
@@ -26,8 +29,13 @@ import {
 } from "./paperAttribution";
 import { readNoteSnapshot } from "./notes";
 import { pdfTextCache, pdfTextLoadingTasks } from "./state";
-import { readCachedMineruMd, ensureManifest } from "./mineruCache";
+import {
+  buildAndWriteManifest,
+  ensureManifest,
+  readCachedMineruMd,
+} from "./mineruCache";
 import type { MineruManifest, ManifestSection } from "./mineruCache";
+import { ensureMineruRuntimeCacheForAttachment } from "./mineruSync";
 import { isMineruEnabled } from "../../utils/mineruConfig";
 import type {
   PdfContext,
@@ -150,6 +158,13 @@ async function cachePDFText(item: Zotero.Item) {
         : null;
 
     // 1. Try MinerU disk cache (only if MinerU is enabled)
+    if (isMineruEnabled() && pdfItem) {
+      try {
+        await ensureMineruRuntimeCacheForAttachment(pdfItem);
+      } catch (error) {
+        ztoolkit.log("LLM: MinerU sync restore failed", error);
+      }
+    }
     const cachedMd = isMineruEnabled()
       ? await readCachedMineruMd(item.id)
       : null;
@@ -177,7 +192,24 @@ async function cachePDFText(item: Zotero.Item) {
       if (sourceType === "mineru") {
         try {
           manifest = await ensureManifest(item.id);
-        } catch {
+          if (
+            manifest &&
+            cachedMd &&
+            typeof manifest.totalChars === "number" &&
+            manifest.totalChars !== cachedMd.length
+          ) {
+            ztoolkit.log("LLM: MinerU manifest length mismatch; rebuilding", {
+              attachmentId: item.id,
+              manifestTotalChars: manifest.totalChars,
+              mdLength: cachedMd.length,
+            });
+            manifest = await buildAndWriteManifest(item.id);
+          }
+        } catch (e) {
+          ztoolkit.log(
+            "LLM: MinerU manifest unavailable; using markdown chunks",
+            formatErrorForLog(e),
+          );
           // Non-critical — fall back to heuristic chunking
         }
       }
@@ -239,7 +271,7 @@ async function cachePDFText(item: Zotero.Item) {
       });
     }
   } catch (e) {
-    ztoolkit.log("Error caching PDF:", e);
+    ztoolkit.log("Error caching PDF:", formatErrorForLog(e), e);
     pdfTextCache.set(item.id, {
       title: "",
       chunks: [],
@@ -730,6 +762,14 @@ function sanitizePdfText(value: string): string {
   return (value || "").replace(/\r\n?/g, "\n").trim();
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sectionLabelPatternSource(sectionLabel: string): string {
+  return escapeRegExp(sectionLabel).replace(/\s+/g, "\\s+");
+}
+
 // ── Markdown heading detection (MinerU only) ─────────────────────────────────
 
 const MARKDOWN_HEADING_MAP: Record<
@@ -830,15 +870,16 @@ function trimLeadingSectionHeading(
   const trimmed = sanitizePdfText(chunkText);
   const lines = trimmed.split(/\n+/);
   const firstLine = lines[0]?.trim() || "";
+  const escapedSectionLabel = sectionLabelPatternSource(sectionLabel);
   const headingPattern = new RegExp(
-    `^(?:\\d+(?:\\.\\d+)*)?\\s*${sectionLabel.replace(/\s+/g, "\\s+")}\\b[:.\\s-]*$`,
+    `^(?:\\d+(?:\\.\\d+)*)?\\s*${escapedSectionLabel}\\b[:.\\s-]*$`,
     "i",
   );
   if (headingPattern.test(firstLine)) {
     return lines.slice(1).join(" ").trim() || trimmed;
   }
   const inlinePattern = new RegExp(
-    `^(?:\\d+(?:\\.\\d+)*)?\\s*${sectionLabel.replace(/\s+/g, "\\s+")}\\b[:.\\s-]+`,
+    `^(?:\\d+(?:\\.\\d+)*)?\\s*${escapedSectionLabel}\\b[:.\\s-]+`,
     "i",
   );
   return trimmed.replace(inlinePattern, "").trim() || trimmed;
@@ -891,14 +932,14 @@ function cleanLeadingEvidenceNoise(
   } else if (chunkKind === "table-caption") {
     cleaned = cleaned.replace(TABLE_CAPTION_PATTERN, "").trim();
   }
-  cleaned = cleaned.replace(/^[-–—:;,.()\[\]]+\s*/, "").trim();
+  cleaned = cleaned.replace(/^[-–—:;,.()[\]]+\s*/, "").trim();
   cleaned = cleaned.replace(/^(?:\d{1,3}\s+){1,3}(?=[A-Za-z])/u, "").trim();
   cleaned = cleaned.replace(/^(?:[a-z][a-z-]{1,24}\.)\s+(?=[A-Z])/u, "");
   cleaned = cleaned.replace(
     /^(?:page|p)\s*\d{1,4}(?:\s+of\s+\d{1,4})?\s*/i,
     "",
   );
-  cleaned = cleaned.replace(/^[-–—:;,.()\[\]]+\s*/, "").trim();
+  cleaned = cleaned.replace(/^[-–—:;,.()[\]]+\s*/, "").trim();
   return {
     text: cleaned || original,
     removedLeadingNoise: Boolean(cleaned && cleaned !== original),
@@ -1065,29 +1106,7 @@ export function formatSuggestedEvidenceCitation(
 }
 
 function tokenizeText(text: string): string[] {
-  const lower = text.toLowerCase();
-
-  // Unicode-aware word tokens (Latin, Cyrillic, accented, etc.)
-  const wordTokens = (lower.match(/[\p{L}\p{N}]+/gu) || []).filter(
-    (t) => t.length >= 2 && !STOPWORDS.has(t),
-  );
-
-  // CJK character bigrams (Chinese, Japanese Kanji, Korean Hanja)
-  const cjkChars =
-    lower.match(/[\u4E00-\u9FFF\u3400-\u4DBF\uF900-\uFAFF]/g) || [];
-  const cjkBigrams: string[] = [];
-  for (let i = 0; i < cjkChars.length - 1; i++) {
-    cjkBigrams.push(cjkChars[i] + cjkChars[i + 1]);
-  }
-
-  // Japanese Hiragana/Katakana bigrams
-  const kanaChars = lower.match(/[\u3040-\u309F\u30A0-\u30FF]/g) || [];
-  const kanaBigrams: string[] = [];
-  for (let i = 0; i < kanaChars.length - 1; i++) {
-    kanaBigrams.push(kanaChars[i] + kanaChars[i + 1]);
-  }
-
-  return [...wordTokens, ...cjkBigrams, ...kanaBigrams];
+  return tokenizeRetrievalText(text);
 }
 
 function buildChunkIndex(chunks: string[]): {
@@ -1119,8 +1138,7 @@ function buildChunkIndex(chunks: string[]): {
 }
 
 function tokenizeQuery(query: string): string[] {
-  const tokens = tokenizeText(query);
-  return Array.from(new Set(tokens));
+  return tokenizeRetrievalQuery(query);
 }
 
 function scoreChunkBM25(
@@ -1615,7 +1633,15 @@ export async function buildPaperRetrievalCandidates(
   paperContext: PaperContextRef,
   pdfContext: PdfContext | undefined,
   question: string,
-  options?: {
+  apiOverridesOrOptions?: {
+    apiBase?: string;
+    apiKey?: string;
+    topK?: number;
+    mode?: "general" | "evidence";
+    /** Pre-computed query embedding to avoid redundant API calls in multi-paper loops. */
+    precomputedQueryEmbedding?: number[];
+  },
+  compatibilityOptions?: {
     topK?: number;
     mode?: "general" | "evidence";
     /** Pre-computed query embedding to avoid redundant API calls in multi-paper loops. */
@@ -1623,6 +1649,13 @@ export async function buildPaperRetrievalCandidates(
   },
 ): Promise<PaperContextCandidate[]> {
   if (!pdfContext) return [];
+  const options =
+    compatibilityOptions ||
+    ("topK" in (apiOverridesOrOptions || {}) ||
+    "mode" in (apiOverridesOrOptions || {}) ||
+    "precomputedQueryEmbedding" in (apiOverridesOrOptions || {})
+      ? apiOverridesOrOptions
+      : undefined);
   const { chunks, chunkStats, docFreq, avgChunkLength } = pdfContext;
   if (!chunks.length || !chunkStats.length) return [];
   const chunkMeta =

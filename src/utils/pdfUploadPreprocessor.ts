@@ -6,6 +6,11 @@
  * a separate file upload step before the PDF can be referenced in messages.
  */
 
+import {
+  buildManualMultipartBody,
+  type MultipartField,
+} from "./multipart";
+
 type UploadResult = {
   systemMessageContent: string;
   label: string;

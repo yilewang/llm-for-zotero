@@ -22,11 +22,37 @@ type ImagePart = {
   };
 };
 
+type FilePart = {
+  type: "file_ref";
+  file_ref: {
+    name?: string;
+    mimeType?: string;
+    storedPath?: string;
+    contentHash?: string;
+  };
+};
+
 export type InputCapMessageContent = string | (TextPart | ImagePart)[];
 
 export type InputCapMessage = {
   role: "user" | "assistant" | "system";
   content: InputCapMessageContent;
+};
+
+export type ContextEstimateMessageContent =
+  | string
+  | (TextPart | ImagePart | FilePart)[];
+
+export type ContextEstimateMessage = {
+  role: string;
+  content: ContextEstimateMessageContent;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: Array<{
+    id?: unknown;
+    name?: unknown;
+    arguments?: unknown;
+  }>;
 };
 
 type ModelInputLimitRule = {
@@ -38,7 +64,9 @@ export const DEFAULT_MODEL_INPUT_TOKEN_LIMIT = DEFAULT_INPUT_TOKEN_CAP;
 export const TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4;
 
 const IMAGE_PART_ESTIMATED_TOKENS = 1_024;
+const FILE_PART_ESTIMATED_TOKENS = 512;
 const MESSAGE_OVERHEAD_ESTIMATED_TOKENS = 4;
+const TOOL_CALL_OVERHEAD_ESTIMATED_TOKENS = 8;
 const TOKEN_SAFETY_RATIO = 0.9;
 const MIN_CONTEXT_CHARS = 256;
 const MIN_PROMPT_CHARS = 64;
@@ -86,7 +114,8 @@ const MODEL_INPUT_LIMIT_RULES: ModelInputLimitRule[] = [
   { pattern: /^codestral(?:[.-]|$)/, limit: 128_000 },
 
   // DeepSeek
-  { pattern: /^deepseek-(?:chat|reasoner)(?:[.-]|$)/, limit: 128_000 },
+  { pattern: /^deepseek-v4-(?:flash|pro)(?:[.-]|$)/, limit: 1_000_000 },
+  { pattern: /^deepseek-(?:chat|reasoner)(?:[.-]|$)/, limit: 1_000_000 },
   { pattern: /^deepseek(?:[.-]|$)/, limit: 128_000 },
 ];
 
@@ -161,7 +190,31 @@ function findContextMessageIndex(messages: InputCapMessage[]): number {
   return -1;
 }
 
-function estimateContentTokens(content: InputCapMessageContent): number {
+function estimateToolCallTokens(
+  toolCall: NonNullable<ContextEstimateMessage["tool_calls"]>[number],
+): number {
+  let total = TOOL_CALL_OVERHEAD_ESTIMATED_TOKENS;
+  if (typeof toolCall.id === "string") {
+    total += estimateTextTokens(toolCall.id);
+  }
+  if (typeof toolCall.name === "string") {
+    total += estimateTextTokens(toolCall.name);
+  }
+  if (typeof toolCall.arguments === "string") {
+    total += estimateTextTokens(toolCall.arguments);
+  } else if (toolCall.arguments !== undefined) {
+    try {
+      total += estimateTextTokens(JSON.stringify(toolCall.arguments));
+    } catch {
+      total += estimateTextTokens(String(toolCall.arguments));
+    }
+  }
+  return total;
+}
+
+export function estimateMessageContentTokens(
+  content: ContextEstimateMessageContent,
+): number {
   if (typeof content === "string") {
     return estimateTextTokens(content);
   }
@@ -169,11 +222,25 @@ function estimateContentTokens(content: InputCapMessageContent): number {
   for (const part of content) {
     if (part.type === "text") {
       total += estimateTextTokens(part.text);
-    } else {
+    } else if (part.type === "image_url") {
       total += IMAGE_PART_ESTIMATED_TOKENS;
+    } else {
+      const name =
+        typeof part.file_ref.name === "string" ? part.file_ref.name : "";
+      const mimeType =
+        typeof part.file_ref.mimeType === "string"
+          ? part.file_ref.mimeType
+          : "";
+      total +=
+        FILE_PART_ESTIMATED_TOKENS +
+        estimateTextTokens([name, mimeType].filter(Boolean).join(" "));
     }
   }
   return total;
+}
+
+function estimateContentTokens(content: InputCapMessageContent): number {
+  return estimateMessageContentTokens(content);
 }
 
 function trimContextMessage(
@@ -288,6 +355,25 @@ export function estimateConversationTokens(
   return total;
 }
 
+export function estimateContextMessagesTokens(
+  messages: ContextEstimateMessage[],
+): number {
+  let total = 0;
+  for (const message of messages) {
+    total += MESSAGE_OVERHEAD_ESTIMATED_TOKENS;
+    total += estimateTextTokens(message.role);
+    if (message.name) total += estimateTextTokens(message.name);
+    if (message.tool_call_id) total += estimateTextTokens(message.tool_call_id);
+    total += estimateMessageContentTokens(message.content);
+    if (Array.isArray(message.tool_calls)) {
+      for (const toolCall of message.tool_calls) {
+        total += estimateToolCallTokens(toolCall);
+      }
+    }
+  }
+  return total;
+}
+
 export function getModelInputTokenLimit(modelName: string): number {
   const normalized = (modelName || "").trim().toLowerCase();
   if (!normalized) return DEFAULT_MODEL_INPUT_TOKEN_LIMIT;
@@ -304,6 +390,16 @@ export function getModelInputTokenLimit(modelName: string): number {
     }
   }
   return DEFAULT_MODEL_INPUT_TOKEN_LIMIT;
+}
+
+export function resolveContextWindowTokens(
+  modelName: string,
+  inputTokenCapOverride?: number,
+): number {
+  return normalizeInputTokenCap(
+    inputTokenCapOverride,
+    getModelInputTokenLimit(modelName),
+  );
 }
 
 export type InputCapResult = {

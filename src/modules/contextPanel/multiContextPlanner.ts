@@ -6,6 +6,8 @@ import {
 } from "../../utils/llmClient";
 import { estimateTextTokens } from "../../utils/modelInputCap";
 import {
+  COLLECTION_RETRIEVAL_MAX_PAPERS,
+  COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS,
   PAPER_FOLLOWUP_RETRIEVAL_MAX_CHUNKS,
   PAPER_FOLLOWUP_RETRIEVAL_MIN_CHUNKS,
   RETRIEVAL_MMR_LAMBDA,
@@ -31,6 +33,7 @@ import {
 } from "./pdfContext";
 import { pdfTextCache } from "./state";
 import { sanitizeText } from "./textUtils";
+import { tokenizeRetrievalDiversity } from "./retrievalTokenizer";
 
 // ── Cross-turn retrieval cache ──────────────────────────────────────────────
 // Caches chunk candidates returned by buildPaperRetrievalCandidates so that
@@ -118,6 +121,7 @@ function buildEnrichedRetrievalQuery(
 
 import type {
   AdvancedModelParams,
+  CollectionContextRef,
   MultiContextPlan,
   PaperContextCandidate,
   PaperContextRef,
@@ -194,6 +198,294 @@ function buildMetadataOnlyFallback(papers: PaperContextRef[]): string {
   return `Paper Context Metadata:\n\n${blocks.join("\n\n---\n\n")}`;
 }
 
+function normalizeCollectionId(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.floor(parsed);
+  return normalized > 0 ? normalized : null;
+}
+
+function readItemField(item: Zotero.Item | null | undefined, field: string): string {
+  if (!item) return "";
+  try {
+    return sanitizeText(item.getField?.(field as _ZoteroTypes.Item.ItemField) || "").trim();
+  } catch (_err) {
+    return "";
+  }
+}
+
+function sanitizeUnknownText(value: unknown): string {
+  return typeof value === "string" ? sanitizeText(value).trim() : "";
+}
+
+function readItemCreators(item: Zotero.Item | null | undefined): string {
+  if (!item) return "";
+  try {
+    const creators = item.getCreators?.() || [];
+    const creatorText = creators
+      .map((creator) => {
+        const first = sanitizeUnknownText((creator as { firstName?: unknown }).firstName);
+        const last = sanitizeUnknownText((creator as { lastName?: unknown }).lastName);
+        const name = sanitizeUnknownText((creator as { name?: unknown }).name);
+        return [first, last].filter(Boolean).join(" ") || name || last;
+      })
+      .filter(Boolean)
+      .join(" ");
+    return (
+      creatorText ||
+      sanitizeUnknownText((item as { firstCreator?: unknown }).firstCreator) ||
+      readItemField(item, "firstCreator")
+    );
+  } catch (_err) {
+    return sanitizeUnknownText((item as { firstCreator?: unknown }).firstCreator);
+  }
+}
+
+function readModifiedTimestamp(item: Zotero.Item | null | undefined): number {
+  const raw = sanitizeUnknownText((item as { dateModified?: unknown })?.dateModified);
+  if (!raw) return 0;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function buildPaperRefFromRegularItem(item: Zotero.Item): PaperContextRef | null {
+  const target = item?.isRegularItem?.() ? item : null;
+  if (!target) return null;
+  const attachment = getFirstPdfChildAttachment(target);
+  if (!attachment) return null;
+  const title =
+    readItemField(target, "title") ||
+    sanitizeUnknownText(target.getDisplayTitle?.()) ||
+    `Item ${target.id}`;
+  const firstCreator =
+    sanitizeUnknownText((target as { firstCreator?: unknown }).firstCreator) ||
+    readItemField(target, "firstCreator") ||
+    undefined;
+  const year = readItemField(target, "date").match(/\b(19|20)\d{2}\b/)?.[0];
+  const attachmentTitle =
+    readItemField(attachment, "title") ||
+    sanitizeUnknownText(
+      (attachment as unknown as { attachmentFilename?: unknown }).attachmentFilename,
+    ) ||
+    undefined;
+  return {
+    itemId: target.id,
+    contextItemId: attachment.id,
+    title,
+    attachmentTitle,
+    firstCreator,
+    year,
+  };
+}
+
+function normalizeMetadataText(value: string): string {
+  return sanitizeText(value)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenizeMetadataQuery(question: string): string[] {
+  return Array.from(
+    new Set(
+      normalizeMetadataText(question)
+        .split(/\s+/g)
+        .filter((token) => token.length >= 3),
+    ),
+  );
+}
+
+function scoreCollectionPaperMetadata(params: {
+  questionTokens: string[];
+  title: string;
+  creators: string;
+  year: string;
+  abstractNote: string;
+  collectionName: string;
+}): number {
+  const title = normalizeMetadataText(params.title);
+  const creators = normalizeMetadataText(params.creators);
+  const year = normalizeMetadataText(params.year);
+  const abstractNote = normalizeMetadataText(params.abstractNote);
+  const collectionName = normalizeMetadataText(params.collectionName);
+  let score = 0;
+  for (const token of params.questionTokens) {
+    if (title.includes(token)) score += 5;
+    if (creators.includes(token)) score += 3;
+    if (year.includes(token)) score += 2;
+    if (abstractNote.includes(token)) score += 2;
+    if (collectionName.includes(token)) score += 1;
+  }
+  return score;
+}
+
+function getCollectionChildItemIds(collection: Zotero.Collection): number[] {
+  try {
+    return (collection.getChildItems?.(true, false) || [])
+      .map((id) => normalizeCollectionId(id))
+      .filter((id): id is number => Boolean(id));
+  } catch (_err) {
+    return [];
+  }
+}
+
+function getCollectionChildCollectionIds(collection: Zotero.Collection): number[] {
+  try {
+    return (collection.getChildCollections?.(true, false) || [])
+      .map((id) => normalizeCollectionId(id))
+      .filter((id): id is number => Boolean(id));
+  } catch (_err) {
+    return [];
+  }
+}
+
+function collectCollectionItemIds(
+  collectionId: number,
+  seenCollections = new Set<number>(),
+): number[] {
+  if (seenCollections.has(collectionId)) return [];
+  seenCollections.add(collectionId);
+  const collection = Zotero.Collections.get(collectionId);
+  if (!collection) return [];
+  const out = new Set<number>(getCollectionChildItemIds(collection));
+  for (const childCollectionId of getCollectionChildCollectionIds(collection)) {
+    for (const childItemId of collectCollectionItemIds(childCollectionId, seenCollections)) {
+      out.add(childItemId);
+    }
+  }
+  return Array.from(out);
+}
+
+type CollectionScopeResolution = {
+  papers: PlannerPaperEntry[];
+  contextText: string;
+  totalPaperCount: number;
+  shortlistedPaperCount: number;
+};
+
+async function resolveCollectionScopePapers(params: {
+  collectionContexts?: CollectionContextRef[];
+  question: string;
+  excludePaperKeys: Set<string>;
+  orderStart: number;
+}): Promise<CollectionScopeResolution> {
+  const collectionContexts = Array.isArray(params.collectionContexts)
+    ? params.collectionContexts
+    : [];
+  if (!collectionContexts.length) {
+    return {
+      papers: [],
+      contextText: "",
+      totalPaperCount: 0,
+      shortlistedPaperCount: 0,
+    };
+  }
+
+  const questionTokens = tokenizeMetadataQuery(params.question);
+  const candidates: Array<{
+    paperContext: PaperContextRef;
+    item: Zotero.Item;
+    score: number;
+    modifiedAt: number;
+    collectionLabel: string;
+  }> = [];
+  const summaries: string[] = ["Selected Zotero collection scopes:"];
+  const seenPaperKeys = new Set(params.excludePaperKeys);
+  let totalPaperCount = 0;
+
+  for (const collectionContext of collectionContexts) {
+    const collectionId = normalizeCollectionId(collectionContext.collectionId);
+    if (!collectionId) continue;
+    const collection = Zotero.Collections.get(collectionId);
+    const collectionName =
+      sanitizeText(collectionContext.name).trim() ||
+      sanitizeText(collection?.name || "").trim() ||
+      `Collection ${collectionId}`;
+    const itemIds = collection ? collectCollectionItemIds(collectionId) : [];
+    let collectionPaperCount = 0;
+    for (const itemId of itemIds) {
+      const item = Zotero.Items.get(itemId);
+      if (!item?.isRegularItem?.()) continue;
+      const paperContext = buildPaperRefFromRegularItem(item);
+      if (!paperContext) continue;
+      collectionPaperCount += 1;
+      const paperKey = buildPaperKey(paperContext);
+      if (seenPaperKeys.has(paperKey)) continue;
+      seenPaperKeys.add(paperKey);
+      const title = paperContext.title;
+      const creators = readItemCreators(item);
+      const year = paperContext.year || readItemField(item, "date");
+      const abstractNote = readItemField(item, "abstractNote");
+      candidates.push({
+        paperContext,
+        item,
+        score: scoreCollectionPaperMetadata({
+          questionTokens,
+          title,
+          creators,
+          year,
+          abstractNote,
+          collectionName,
+        }),
+        modifiedAt: readModifiedTimestamp(item),
+        collectionLabel: collectionName,
+      });
+    }
+    totalPaperCount += collectionPaperCount;
+    summaries.push(
+      `- ${collectionName} [collectionId=${collectionId}, libraryID=${collectionContext.libraryID}, papers=${collectionPaperCount}]`,
+    );
+  }
+
+  candidates.sort((left, right) => {
+    const scoreDelta = right.score - left.score;
+    if (scoreDelta !== 0) return scoreDelta;
+    const modifiedDelta = right.modifiedAt - left.modifiedAt;
+    if (modifiedDelta !== 0) return modifiedDelta;
+    return left.paperContext.title.localeCompare(right.paperContext.title, undefined, {
+      sensitivity: "base",
+    });
+  });
+
+  const positive = candidates.filter((candidate) => candidate.score > 0);
+  const shortlistSource = positive.length ? positive : candidates;
+  const shortlistLimit = positive.length
+    ? COLLECTION_RETRIEVAL_MAX_PAPERS
+    : Math.min(
+        COLLECTION_RETRIEVAL_MAX_PAPERS,
+        COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS,
+      );
+  const shortlisted = shortlistSource.slice(0, shortlistLimit);
+  const papers: PlannerPaperEntry[] = [];
+  for (const [index, candidate] of shortlisted.entries()) {
+    const contextItem = resolveContextItem(candidate.paperContext);
+    if (contextItem) {
+      await ensurePDFTextCached(contextItem);
+    }
+    papers.push({
+      order: params.orderStart + index,
+      paperKey: buildPaperKey(candidate.paperContext),
+      paperContext: candidate.paperContext,
+      contextItem,
+      pdfContext: contextItem ? pdfTextCache.get(contextItem.id) : undefined,
+      isActive: false,
+      pinKind: "none",
+    });
+  }
+
+  summaries.push(
+    `Collection retrieval strategy: metadata-ranked shortlist; ${shortlisted.length} of ${totalPaperCount} PDF-backed papers selected for deeper retrieval. Full text was not read for every paper in the collection.`,
+  );
+
+  return {
+    papers,
+    contextText: summaries.join("\n"),
+    totalPaperCount,
+    shortlistedPaperCount: shortlisted.length,
+  };
+}
+
 function candidateKey(candidate: PaperContextCandidate): string {
   return `${candidate.paperKey}:${candidate.chunkIndex}`;
 }
@@ -211,11 +503,7 @@ function normalizeScores(values: number[]): number[] {
 }
 
 function tokenizeForDiversity(text: string): Set<string> {
-  const tokens = (text.toLowerCase().match(/[a-z0-9]{3,}/g) || []).slice(
-    0,
-    256,
-  );
-  return new Set(tokens);
+  return tokenizeRetrievalDiversity(text);
 }
 
 function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
@@ -233,6 +521,7 @@ type RetrievedAssembly = {
   contextText: string;
   selectedChunkCount: number;
   selectedPaperCount: number;
+  citationPaperContexts: PaperContextRef[];
 };
 
 type RetrievedAssemblyOptions = {
@@ -240,6 +529,28 @@ type RetrievedAssemblyOptions = {
   maxChunks?: number;
   minTotalChunks?: number;
 };
+
+function mergePlannerCitationPaperContexts(
+  ...groups: Array<Array<PlannerPaperEntry | PaperContextRef> | undefined>
+): PaperContextRef[] {
+  const refs: PaperContextRef[] = [];
+  for (const group of groups) {
+    for (const entry of group || []) {
+      refs.push("paperContext" in entry ? entry.paperContext : entry);
+    }
+  }
+  return normalizePaperContextEntries(refs);
+}
+
+function citationPaperContextsForKeys(
+  papers: PlannerPaperEntry[],
+  keys: Set<string>,
+): PaperContextRef[] {
+  if (!keys.size) return [];
+  return mergePlannerCitationPaperContexts(
+    papers.filter((paper) => keys.has(paper.paperKey)),
+  );
+}
 
 export function assembleFullMultiPaperContext(params: {
   papers: PlannerPaperEntry[];
@@ -381,7 +692,12 @@ export async function assembleRetrievedMultiPaperContext(params: {
   const { papers, question, contextBudgetTokens, minChunksByPaper, options } =
     params;
   if (!papers.length || contextBudgetTokens <= 0) {
-    return { contextText: "", selectedChunkCount: 0, selectedPaperCount: 0 };
+    return {
+      contextText: "",
+      selectedChunkCount: 0,
+      selectedPaperCount: 0,
+      citationPaperContexts: [],
+    };
   }
 
   // Pre-compute query embedding once so we don't make N identical API calls
@@ -423,6 +739,7 @@ export async function assembleRetrievedMultiPaperContext(params: {
       ),
       selectedChunkCount: 0,
       selectedPaperCount: papers.length,
+      citationPaperContexts: mergePlannerCitationPaperContexts(papers),
     };
   }
 
@@ -592,6 +909,12 @@ export async function assembleRetrievedMultiPaperContext(params: {
     selectedPaperCount: selectedCandidates.length
       ? new Set(selectedCandidates.map((candidate) => candidate.paperKey)).size
       : papers.length,
+    citationPaperContexts: selectedCandidates.length
+      ? citationPaperContextsForKeys(
+          papers,
+          new Set(selectedCandidates.map((candidate) => candidate.paperKey)),
+        )
+      : mergePlannerCitationPaperContexts(papers),
   };
 }
 
@@ -743,6 +1066,7 @@ export async function resolveMultiContextPlan(params: {
   contextPrefix?: string;
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
+  collectionContexts?: CollectionContextRef[];
   historyPaperContexts?: PaperContextRef[];
   history?: ChatMessage[];
   images?: string[];
@@ -763,6 +1087,15 @@ export async function resolveMultiContextPlan(params: {
     fullTextPaperContexts: params.fullTextPaperContexts,
     historyPaperContexts: params.historyPaperContexts,
   });
+  const collectionScope = await resolveCollectionScopePapers({
+    collectionContexts: params.collectionContexts,
+    question: params.question,
+    excludePaperKeys: new Set(papers.map((paper) => paper.paperKey)),
+    orderStart: papers.length + 1,
+  });
+  const collectionPapers = collectionScope.papers;
+  const prependCollectionScope = (contextText: string): string =>
+    appendContextBlocks([collectionScope.contextText, contextText]);
   const contextBudget = estimateAvailableContextBudget({
     model: params.model,
     prompt: params.question,
@@ -783,15 +1116,37 @@ export async function resolveMultiContextPlan(params: {
     ),
   };
 
-  if (!papers.length) {
+  if (!papers.length && !collectionPapers.length) {
+    const contextText = prependCollectionScope("");
     return {
       mode: "retrieval",
       strategy: "general-retrieval",
-      contextText: "",
+      contextText,
       contextBudget: adjustedContextBudget,
-      usedContextTokens: 0,
+      usedContextTokens: estimateTextTokens(contextText),
       selectedPaperCount: 0,
       selectedChunkCount: 0,
+      citationPaperContexts: [],
+    };
+  }
+
+  if (!papers.length && collectionPapers.length) {
+    const retrieved = await assembleRetrievedMultiPaperContext({
+      papers: collectionPapers,
+      question: params.question,
+      contextBudgetTokens: adjustedContextBudget.contextBudgetTokens,
+      minChunksByPaper: new Map<string, number>(),
+    });
+    const contextText = prependCollectionScope(retrieved.contextText);
+    return {
+      mode: "retrieval",
+      strategy: "general-retrieval",
+      contextText,
+      contextBudget: adjustedContextBudget,
+      usedContextTokens: estimateTextTokens(contextText),
+      selectedPaperCount: retrieved.selectedPaperCount,
+      selectedChunkCount: retrieved.selectedChunkCount,
+      citationPaperContexts: retrieved.citationPaperContexts,
     };
   }
 
@@ -829,7 +1184,8 @@ export async function resolveMultiContextPlan(params: {
       // Include remaining @-referenced (unpinned) papers via retrieval if
       // there is token budget left.
       let extraRetrieved: RetrievedAssembly | null = null;
-      if (otherUnpinned.length) {
+      const extraRetrievalPapers = [...otherUnpinned, ...collectionPapers];
+      if (extraRetrievalPapers.length) {
         const remainingTokens = Math.max(
           0,
           adjustedContextBudget.contextBudgetTokens - full.estimatedTokens,
@@ -840,7 +1196,7 @@ export async function resolveMultiContextPlan(params: {
             params.history,
           );
           extraRetrieved = await assembleRetrievedMultiPaperContext({
-            papers: otherUnpinned,
+            papers: extraRetrievalPapers,
             question: enrichedQuestion,
             contextBudgetTokens: remainingTokens,
             minChunksByPaper: buildMinChunkMapForRetrievedPapers(otherUnpinned),
@@ -848,10 +1204,12 @@ export async function resolveMultiContextPlan(params: {
         }
       }
 
-      const combinedContext = appendContextBlocks([
-        full.contextText,
-        extraRetrieved?.selectedChunkCount ? extraRetrieved.contextText : "",
-      ]);
+      const combinedContext = prependCollectionScope(
+        appendContextBlocks([
+          full.contextText,
+          extraRetrieved?.selectedChunkCount ? extraRetrieved.contextText : "",
+        ]),
+      );
       const usedContextTokens = estimateTextTokens(combinedContext);
       return {
         mode: "full",
@@ -863,6 +1221,10 @@ export async function resolveMultiContextPlan(params: {
           (full.contextText ? pinnedPapers.length : 0) +
           (extraRetrieved?.selectedPaperCount || 0),
         selectedChunkCount: extraRetrieved?.selectedChunkCount || 0,
+        citationPaperContexts: mergePlannerCitationPaperContexts(
+          full.contextText ? pinnedPapers : [],
+          extraRetrieved?.citationPaperContexts,
+        ),
       };
     }
 
@@ -874,25 +1236,27 @@ export async function resolveMultiContextPlan(params: {
     );
     // Include all papers (active + @-referenced) in retrieval, not just the
     // active paper alone.
-    const allRetrievalPapers = [activePaper, ...otherPapers];
+    const directRetrievalPapers = [activePaper, ...otherPapers];
+    const allRetrievalPapers = [...directRetrievalPapers, ...collectionPapers];
     const retrieved = await assembleRetrievedMultiPaperContext({
       papers: allRetrievalPapers,
       question: enrichedQuestion,
       contextBudgetTokens: adjustedContextBudget.contextBudgetTokens,
-      minChunksByPaper: buildMinChunkMapForRetrievedPapers(allRetrievalPapers),
+      minChunksByPaper: buildMinChunkMapForRetrievedPapers(directRetrievalPapers),
       options: {
         guaranteedAbstractPaperKey: activePaper.paperKey,
         maxChunks: PAPER_FOLLOWUP_RETRIEVAL_MAX_CHUNKS,
         minTotalChunks: PAPER_FOLLOWUP_RETRIEVAL_MIN_CHUNKS,
       },
     });
-    const usedContextTokens = estimateTextTokens(retrieved.contextText);
+    const contextText = prependCollectionScope(retrieved.contextText);
+    const usedContextTokens = estimateTextTokens(contextText);
     return {
       mode: "retrieval",
       strategy: firstPaperTurn
         ? "paper-explicit-retrieval"
         : "paper-followup-retrieval",
-      contextText: retrieved.contextText,
+      contextText,
       contextBudget: adjustedContextBudget,
       usedContextTokens,
       selectedPaperCount: retrieved.selectedPaperCount,
@@ -928,22 +1292,25 @@ export async function resolveMultiContextPlan(params: {
         adjustedContextBudget.contextBudgetTokens - full.estimatedTokens,
       );
       let extraUnpinned: RetrievedAssembly | null = null;
-      if (remainingTokens >= 1024 && unpinned.length) {
+      const extraUnpinnedPapers = [...unpinned, ...collectionPapers];
+      if (remainingTokens >= 1024 && extraUnpinnedPapers.length) {
         extraUnpinned = await assembleRetrievedMultiPaperContext({
-          papers: unpinned,
+          papers: extraUnpinnedPapers,
           question: params.question,
           contextBudgetTokens: remainingTokens,
-          minChunksByPaper: new Map<string, number>(),
+          minChunksByPaper: buildMinChunkMapForRetrievedPapers(unpinned),
         });
       }
       const extraBlock =
         extraUnpinned && extraUnpinned.selectedChunkCount > 0
           ? extraUnpinned.contextText
           : "";
-      const combinedContext = appendContextBlocks([
-        full.contextText,
-        extraBlock,
-      ]);
+      const combinedContext = prependCollectionScope(
+        appendContextBlocks([
+          full.contextText,
+          extraBlock,
+        ]),
+      );
       const usedContextTokens = estimateTextTokens(combinedContext);
       const selectedPaperCount =
         fullPreferredPapers.length +
@@ -958,6 +1325,10 @@ export async function resolveMultiContextPlan(params: {
         usedContextTokens,
         selectedPaperCount,
         selectedChunkCount: extraUnpinned?.selectedChunkCount || 0,
+        citationPaperContexts: mergePlannerCitationPaperContexts(
+          fullPreferredPapers,
+          extraUnpinned?.citationPaperContexts,
+        ),
       };
     }
 
@@ -980,6 +1351,9 @@ export async function resolveMultiContextPlan(params: {
         ...unpinned.filter(
           (paper) => !partialFull.includedPaperKeys.has(paper.paperKey),
         ),
+        ...collectionPapers.filter(
+          (paper) => !partialFull.includedPaperKeys.has(paper.paperKey),
+        ),
       ];
       let extraRetrieved: RetrievedAssembly | null = null;
       if (
@@ -993,14 +1367,18 @@ export async function resolveMultiContextPlan(params: {
           question: params.question,
           contextBudgetTokens: remainingTokens,
           minChunksByPaper: buildMinChunkMapForRetrievedPapers(
-            retrievalCompanionPapers,
+            retrievalCompanionPapers.filter(
+              (paper) => !collectionPapers.some((entry) => entry.paperKey === paper.paperKey),
+            ),
           ),
         });
       }
-      const combinedContext = appendContextBlocks([
-        partialFull.contextText,
-        extraRetrieved?.selectedChunkCount ? extraRetrieved.contextText : "",
-      ]);
+      const combinedContext = prependCollectionScope(
+        appendContextBlocks([
+          partialFull.contextText,
+          extraRetrieved?.selectedChunkCount ? extraRetrieved.contextText : "",
+        ]),
+      );
       const usedContextTokens = estimateTextTokens(combinedContext);
       const selectedPaperCount =
         partialFull.selectedPaperCount +
@@ -1015,21 +1393,32 @@ export async function resolveMultiContextPlan(params: {
         usedContextTokens,
         selectedPaperCount,
         selectedChunkCount: extraRetrieved?.selectedChunkCount || 0,
+        citationPaperContexts: mergePlannerCitationPaperContexts(
+          citationPaperContextsForKeys(
+            fullPreferredPapers,
+            partialFull.includedPaperKeys,
+          ),
+          extraRetrieved?.citationPaperContexts,
+        ),
       };
     }
   }
 
-  // All papers were explicitly selected by the user — always include every one.
-  const retrievalPapers = [...fullTextPapers, ...unpinned];
+  // Directly selected papers get per-paper coverage; collection papers are a
+  // metadata-ranked retrieval pool and do not get guaranteed per-paper chunks.
+  const directRetrievalPapers = [...fullTextPapers, ...unpinned];
+  const retrievalPapers = [...directRetrievalPapers, ...collectionPapers];
   if (!retrievalPapers.length) {
+    const contextText = prependCollectionScope("");
     return {
       mode: "retrieval",
       strategy: "general-retrieval",
-      contextText: "",
+      contextText,
       contextBudget: adjustedContextBudget,
-      usedContextTokens: 0,
+      usedContextTokens: estimateTextTokens(contextText),
       selectedPaperCount: 0,
       selectedChunkCount: 0,
+      citationPaperContexts: [],
     };
   }
 
@@ -1037,16 +1426,18 @@ export async function resolveMultiContextPlan(params: {
     papers: retrievalPapers,
     question: params.question,
     contextBudgetTokens: adjustedContextBudget.contextBudgetTokens,
-    minChunksByPaper: buildMinChunkMapForRetrievedPapers(retrievalPapers),
+    minChunksByPaper: buildMinChunkMapForRetrievedPapers(directRetrievalPapers),
   });
-  const usedContextTokens = estimateTextTokens(retrieved.contextText);
+  const contextText = prependCollectionScope(retrieved.contextText);
+  const usedContextTokens = estimateTextTokens(contextText);
   return {
     mode: "retrieval",
     strategy: "general-retrieval",
-    contextText: retrieved.contextText,
+    contextText,
     contextBudget: adjustedContextBudget,
     usedContextTokens,
     selectedPaperCount: retrieved.selectedPaperCount,
     selectedChunkCount: retrieved.selectedChunkCount,
+    citationPaperContexts: retrieved.citationPaperContexts,
   };
 }

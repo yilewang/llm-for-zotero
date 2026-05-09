@@ -1,4 +1,4 @@
-import { hasCachedMineruMd } from "./contextPanel/mineruCache";
+import { getMineruAvailabilityForAttachmentId } from "./contextPanel/mineruSync";
 
 type ProcessingStatus = "idle" | "processing" | "failed" | "cached";
 
@@ -63,8 +63,10 @@ export type MineruStatus = "cached" | "processing" | "failed" | "idle";
 export async function getMineruStatus(
   attachmentId: number,
 ): Promise<MineruStatus> {
-  const cached = await hasCachedMineruMd(attachmentId);
-  if (cached) {
+  const availability = await getMineruAvailabilityForAttachmentId(attachmentId, {
+    validateSyncedPackage: false,
+  });
+  if (availability.status !== "missing") {
     return "cached";
   }
 

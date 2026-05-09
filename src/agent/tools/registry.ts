@@ -190,8 +190,10 @@ export class AgentToolRegistry {
     };
 
     const shouldRequireConfirmation =
-      (await tool.shouldRequireConfirmation?.(validation.value, context)) ??
-      tool.spec.requiresConfirmation;
+      options.forceConfirmation && tool.createPendingAction
+        ? true
+        : ((await tool.shouldRequireConfirmation?.(validation.value, context)) ??
+          tool.spec.requiresConfirmation);
     const acceptsInheritedApproval =
       shouldRequireConfirmation &&
       options.inheritedApproval &&

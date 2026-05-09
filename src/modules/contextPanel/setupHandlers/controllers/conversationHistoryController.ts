@@ -1,3 +1,4 @@
+import type { ConversationSystem } from "../../../../shared/types";
 import { sanitizeText } from "../../textUtils";
 
 export const GLOBAL_HISTORY_UNDO_WINDOW_MS = 6_000;
@@ -29,6 +30,7 @@ export type PendingHistoryDeletion = {
   kind: "paper" | "global";
   conversationKey: number;
   libraryID: number;
+  conversationSystem: ConversationSystem;
   paperItemID?: number;
   title: string;
   wasActive: boolean;
@@ -36,6 +38,66 @@ export type PendingHistoryDeletion = {
   expiresAt: number;
   timeoutId: number | null;
 };
+
+export type HistoryDayGroup<T> = {
+  label: string;
+  items: T[];
+};
+
+type HistoryDayGroupOptions = {
+  now?: Date | number;
+  translate?: (label: string) => string;
+};
+
+function translateHistoryLabel(
+  label: string,
+  options?: HistoryDayGroupOptions,
+): string {
+  return options?.translate ? options.translate(label) : label;
+}
+
+export function getHistoryDayGroupLabel(
+  timestamp: number,
+  options?: HistoryDayGroupOptions,
+): string {
+  const nowInput = options?.now;
+  const now =
+    nowInput instanceof Date
+      ? nowInput
+      : typeof nowInput === "number" && Number.isFinite(nowInput)
+        ? new Date(nowInput)
+        : new Date();
+  const todayStart = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  ).getTime();
+  const yesterdayStart = todayStart - 86_400_000;
+  const weekStart = todayStart - 6 * 86_400_000;
+  const monthStart = todayStart - 29 * 86_400_000;
+  if (timestamp >= todayStart) return translateHistoryLabel("Today", options);
+  if (timestamp >= yesterdayStart) return translateHistoryLabel("Yesterday", options);
+  if (timestamp >= weekStart) return translateHistoryLabel("Last 7 days", options);
+  if (timestamp >= monthStart) return translateHistoryLabel("Last 30 days", options);
+  return translateHistoryLabel("Older", options);
+}
+
+export function groupHistoryEntriesByDay<T extends { lastActivityAt: number }>(
+  entries: T[],
+  options?: HistoryDayGroupOptions,
+): Array<HistoryDayGroup<T>> {
+  const groups: Array<HistoryDayGroup<T>> = [];
+  let currentLabel = "";
+  for (const entry of entries) {
+    const label = getHistoryDayGroupLabel(entry.lastActivityAt, options);
+    if (label !== currentLabel) {
+      currentLabel = label;
+      groups.push({ label, items: [] });
+    }
+    groups[groups.length - 1].items.push(entry);
+  }
+  return groups;
+}
 
 export function formatGlobalHistoryTimestamp(timestamp: number): string {
   try {

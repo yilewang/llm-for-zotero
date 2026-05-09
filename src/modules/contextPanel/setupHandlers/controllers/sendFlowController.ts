@@ -4,13 +4,18 @@ import type {
   AdvancedModelParams,
   ChatAttachment,
   ChatRuntimeMode,
-  NoteContextRef,
+  CollectionContextRef,
   PaperContextRef,
   SelectedTextContext,
 } from "../../types";
 import type { SelectedTextSource } from "../../types";
 import type { EditLatestTurnMarker, EditLatestTurnResult } from "../../chat";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../../../utils/llmClient";
+import {
+  buildCodexAppServerAttachmentBlockMessage,
+  getBlockedCodexAppServerChatAttachments,
+  shouldApplyCodexAppServerChatAttachmentPolicy,
+} from "../../codexAppServerAttachmentPolicy";
 
 type StatusLevel = "ready" | "warning" | "error";
 
@@ -20,7 +25,7 @@ type SelectedProfile = {
   apiBase: string;
   apiKey: string;
   providerLabel: string;
-  authMode?: "api_key" | "codex_auth" | "copilot_auth" | "webchat";
+  authMode?: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat";
   providerProtocol?: ProviderProtocol;
 };
 
@@ -45,6 +50,7 @@ type SendFlowControllerDeps = {
   closePaperPicker: () => void;
   getSelectedTextContextEntries: (itemId: number) => SelectedTextContext[];
   getSelectedPaperContexts: (itemId: number) => PaperContextRef[];
+  getSelectedCollectionContexts: (itemId: number) => CollectionContextRef[];
   getFullTextPaperContexts: (
     item: Zotero.Item,
     paperContexts: PaperContextRef[],
@@ -68,11 +74,11 @@ type SendFlowControllerDeps = {
   uploadPdfForProvider: (params: {
     apiBase: string;
     apiKey: string;
-    pdfBytes: Uint8Array;
+    pdfBytes: Uint8Array<ArrayBufferLike>;
     fileName: string;
   }) => Promise<{ systemMessageContent: string; label: string } | null>;
-  resolvePdfBytes: (paperContext: PaperContextRef) => Promise<Uint8Array>;
-  encodeBytesBase64: (bytes: Uint8Array) => string;
+  resolvePdfBytes: (paperContext: PaperContextRef) => Promise<Uint8Array<ArrayBufferLike>>;
+  encodeBytesBase64: (bytes: Uint8Array<ArrayBufferLike>) => string;
   getSelectedFiles: (itemId: number) => ChatAttachment[];
   getSelectedImages: (itemId: number) => string[];
   resolvePromptText: (
@@ -95,8 +101,18 @@ type SendFlowControllerDeps = {
   ) => string;
   isAgentMode: () => boolean;
   isGlobalMode: () => boolean;
+  isClaudeConversationSystem: () => boolean;
+  isCodexConversationSystem: () => boolean;
   normalizeConversationTitleSeed: (raw: unknown) => string;
   getConversationKey: (item: Zotero.Item) => number;
+  touchClaudeConversationTitle: (
+    conversationKey: number,
+    title: string,
+  ) => Promise<void>;
+  touchCodexConversationTitle: (
+    conversationKey: number,
+    title: string,
+  ) => Promise<void>;
   touchGlobalConversationTitle: (
     conversationKey: number,
     title: string,
@@ -121,6 +137,7 @@ type SendFlowControllerDeps = {
   sendQuestion: (
     opts: import("../../types").SendQuestionOptions,
   ) => Promise<void>;
+  retainClaudeRuntime?: (body: Element, item: Zotero.Item) => Promise<void>;
   retainPinnedImageState: (itemId: number) => void;
   retainPaperState: (itemId: number) => void;
   consumePaperModeState: (itemId: number) => void;

@@ -108,6 +108,7 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
           true,
           request.model,
           request.apiBase,
+          "codex_responses",
         );
         return {
           model: request.model,
@@ -136,6 +137,7 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
             response.body,
             params.onTextDelta,
             params.onReasoning,
+            params.onUsage,
           )
         : normalizeResponsesStepFromPayload(
             (await response.json()) as ResponsesPayload,

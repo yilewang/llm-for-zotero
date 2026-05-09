@@ -14,6 +14,40 @@ import {
   MAX_ALLOWED_INPUT_TOKEN_CAP,
 } from "./llmDefaults";
 
+type ModelOutputLimitRule = {
+  pattern: RegExp;
+  limit: number;
+};
+
+const MODEL_OUTPUT_LIMIT_RULES: ModelOutputLimitRule[] = [
+  {
+    pattern: /(^|[/:.])claude-(?:opus-4-7|opus-4-6)(?:[.-]|$)/,
+    limit: 128_000,
+  },
+  {
+    pattern: /(^|[/:.])claude-(?:sonnet-4-6|haiku-4-5)(?:[.-]|$)/,
+    limit: 64_000,
+  },
+  { pattern: /^deepseek-v4-(?:flash|pro)(?:[.-]|$)/, limit: 384_000 },
+  { pattern: /^deepseek-(?:chat|reasoner)(?:[.-]|$)/, limit: 384_000 },
+];
+
+function getModelNameCandidates(modelName?: string): string[] {
+  const normalized = (modelName || "").trim().toLowerCase();
+  if (!normalized) return [];
+  const tail = normalized.split("/").pop() || "";
+  return tail && tail !== normalized ? [normalized, tail] : [normalized];
+}
+
+export function getModelOutputTokenLimit(modelName?: string): number {
+  for (const candidate of getModelNameCandidates(modelName)) {
+    for (const rule of MODEL_OUTPUT_LIMIT_RULES) {
+      if (rule.pattern.test(candidate)) return rule.limit;
+    }
+  }
+  return MAX_ALLOWED_TOKENS;
+}
+
 /** Clamp a temperature value to [0, 2], falling back to DEFAULT_TEMPERATURE. */
 export function normalizeTemperature(value?: number | string): number {
   const parsed =
@@ -30,6 +64,19 @@ export function normalizeMaxTokens(value?: number | string): number {
       : Math.floor(Number(value));
   if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_MAX_TOKENS;
   return Math.min(parsed, MAX_ALLOWED_TOKENS);
+}
+
+/** Clamp max-tokens using a model-specific output limit when known. */
+export function normalizeMaxTokensForModel(
+  value?: number | string,
+  modelName?: string,
+): number {
+  const parsed =
+    typeof value === "string"
+      ? Number.parseInt(value, 10)
+      : Math.floor(Number(value));
+  if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_MAX_TOKENS;
+  return Math.min(parsed, getModelOutputTokenLimit(modelName));
 }
 
 /** Clamp an input-token-cap value to [1, MAX_ALLOWED_INPUT_TOKEN_CAP], with configurable fallback. */

@@ -53,7 +53,10 @@ export interface Message {
   screenshotImages?: string[];
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
+  citationPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
+  collectionContextsExpanded?: boolean;
   paperContextsExpanded?: boolean;
   attachments?: ChatAttachment[];
   attachmentsExpanded?: boolean;
@@ -64,6 +67,9 @@ export interface Message {
   modelEntryId?: string;
   modelProviderLabel?: string;
   streaming?: boolean;
+  pendingFinalText?: string;
+  waitingAnimationStartedAt?: number;
+  pendingAgentTraceEvents?: import("../../agent/types").AgentRunEventRecord[];
   reasoningSummary?: string;
   reasoningDetails?: string;
   reasoningOpen?: boolean;
@@ -76,6 +82,9 @@ export interface Message {
     | null;
   webchatChatUrl?: string;
   webchatChatId?: string;
+  compactMarker?: boolean;
+  runtimeMarkerText?: string;
+  modelSwitchMarkerText?: string;
 }
 
 export type ChatRuntimeMode = "chat" | "agent";
@@ -207,6 +216,7 @@ export type MultiContextPlan = {
   usedContextTokens: number;
   selectedPaperCount: number;
   selectedChunkCount: number;
+  citationPaperContexts?: PaperContextRef[];
   assistantInstruction?: string;
 };
 
@@ -226,6 +236,60 @@ export type PaperPortalItem = {
   __llmPaperPortalItem: true;
   __llmPaperPortalBaseItemID: number;
   __llmPaperPortalSessionVersion: number;
+  id: number;
+  libraryID: number;
+  parentID?: number;
+  attachmentContentType?: string;
+  isAttachment: () => boolean;
+  getAttachments: () => number[];
+  getField: (field: string) => string;
+  isRegularItem: () => boolean;
+};
+
+export type ClaudeGlobalPortalItem = {
+  __llmClaudeGlobalPortalItem: true;
+  __llmClaudeConversationKind: "global";
+  id: number;
+  libraryID: number;
+  parentID?: number;
+  attachmentContentType?: string;
+  isAttachment: () => boolean;
+  getAttachments: () => number[];
+  getField: (field: string) => string;
+  isRegularItem: () => boolean;
+};
+
+export type ClaudePaperPortalItem = {
+  __llmClaudePaperPortalItem: true;
+  __llmClaudeConversationKind: "paper";
+  __llmClaudePaperPortalBaseItemID: number;
+  id: number;
+  libraryID: number;
+  parentID?: number;
+  attachmentContentType?: string;
+  isAttachment: () => boolean;
+  getAttachments: () => number[];
+  getField: (field: string) => string;
+  isRegularItem: () => boolean;
+};
+
+export type CodexGlobalPortalItem = {
+  __llmCodexGlobalPortalItem: true;
+  __llmCodexConversationKind: "global";
+  id: number;
+  libraryID: number;
+  parentID?: number;
+  attachmentContentType?: string;
+  isAttachment: () => boolean;
+  getAttachments: () => number[];
+  getField: (field: string) => string;
+  isRegularItem: () => boolean;
+};
+
+export type CodexPaperPortalItem = {
+  __llmCodexPaperPortalItem: true;
+  __llmCodexConversationKind: "paper";
+  __llmCodexPaperPortalBaseItemID: number;
   id: number;
   libraryID: number;
   parentID?: number;
@@ -261,6 +325,10 @@ export type SendQuestionOptions = {
   model?: string;
   apiBase?: string;
   apiKey?: string;
+  authMode?: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat";
+  providerProtocol?: import("../../utils/providerProtocol").ProviderProtocol;
+  modelEntryId?: string;
+  modelProviderLabel?: string;
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
   displayQuestion?: string;
@@ -270,6 +338,7 @@ export type SendQuestionOptions = {
   selectedTextNoteContexts?: (NoteContextRef | undefined)[];
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
   attachments?: ChatAttachment[];
   runtimeMode?: ChatRuntimeMode;
   agentRunId?: string;
@@ -283,6 +352,7 @@ export type SendQuestionOptions = {
   webchatSendPdf?: boolean;
   /** [webchat] When true, send the prompt into a fresh ChatGPT conversation. */
   webchatForceNewChat?: boolean;
+  skipAutoCompact?: boolean;
 };
 
 export type EditRetryOptions = {
@@ -296,6 +366,7 @@ export type EditRetryOptions = {
   screenshotImages?: string[];
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
   attachments?: ChatAttachment[];
   pdfUploadSystemMessages?: string[];
   targetRuntimeMode?: ChatRuntimeMode;
@@ -307,6 +378,10 @@ export type EditRetryOptions = {
   model?: string;
   apiBase?: string;
   apiKey?: string;
+  authMode?: "api_key" | "codex_auth" | "codex_app_server" | "copilot_auth" | "webchat";
+  providerProtocol?: import("../../utils/providerProtocol").ProviderProtocol;
+  modelEntryId?: string;
+  modelProviderLabel?: string;
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
 };

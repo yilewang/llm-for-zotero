@@ -7,7 +7,7 @@
 
 export type JsonRpcRequest = {
   jsonrpc: "2.0";
-  id: string | number | null;
+  id?: string | number | null;
   method: string;
   params?: unknown;
 };
@@ -46,8 +46,14 @@ export type McpServerInfo = {
 
 export type McpToolDefinition = {
   name: string;
+  title?: string;
   description: string;
   inputSchema: object;
+  annotations?: {
+    readOnlyHint?: boolean;
+    openWorldHint?: boolean;
+    destructiveHint?: boolean;
+  };
 };
 
 export type McpToolsListResult = {
@@ -67,6 +73,7 @@ export type McpToolCallResult = {
 // MCP method names
 export const MCP_METHODS = {
   INITIALIZE: "initialize",
+  INITIALIZED: "notifications/initialized",
   TOOLS_LIST: "tools/list",
   TOOLS_CALL: "tools/call",
 } as const;
