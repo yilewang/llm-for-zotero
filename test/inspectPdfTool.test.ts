@@ -62,6 +62,97 @@ describe("search_paper tool", function () {
     assert.lengthOf((result as { results: unknown[] }).results, 2);
   });
 
+  it("resolves evidence targets from explicit item and attachment IDs", async function () {
+    const tool = createSearchPaperTool(
+      {
+        retrieveEvidence: async ({
+          papers,
+        }: {
+          papers: Array<{ itemId: number; contextItemId: number }>;
+        }) =>
+          papers.map((paper, index) => ({
+            paperContext: {
+              itemId: paper.itemId,
+              contextItemId: paper.contextItemId,
+              title: `Paper ${paper.itemId}`,
+            },
+            chunkIndex: index,
+            text: `Evidence ${paper.contextItemId}`,
+            score: 0.9 - index * 0.1,
+            sourceLabel: `Paper ${paper.itemId}`,
+          })),
+      } as never,
+      {
+        ensurePaperContext: async () => {},
+      } as never,
+      {
+        resolvePaperContextTarget: ({
+          itemId,
+          contextItemId,
+        }: {
+          itemId?: number;
+          contextItemId?: number;
+        }) =>
+          itemId && contextItemId
+            ? { itemId, contextItemId, title: `Paper ${itemId}` }
+            : null,
+        listPaperContexts: () => [],
+      } as never,
+    );
+
+    const validated = tool.validate({
+      question: "What is the method?",
+      targets: [
+        { itemId: 1, contextItemId: 101 },
+        { itemId: 2, contextItemId: 202 },
+      ],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const result = await tool.execute(validated.value, baseContext);
+    const results = (result as { results: Array<{ paperContext: unknown }> })
+      .results;
+    assert.lengthOf(results, 2);
+    assert.deepEqual(results.map((entry) => entry.paperContext), [
+      { itemId: 1, contextItemId: 101, title: "Paper 1" },
+      { itemId: 2, contextItemId: 202, title: "Paper 2" },
+    ]);
+  });
+
+  it("does not fall back to ambient paper context for invalid evidence targets", async function () {
+    const tool = createSearchPaperTool(
+      {
+        retrieveEvidence: async () => [],
+      } as never,
+      {
+        ensurePaperContext: async () => {},
+      } as never,
+      {
+        resolvePaperContextTarget: () => null,
+        listPaperContexts: (request: AgentToolContext["request"]) =>
+          request.selectedPaperContexts || [],
+      } as never,
+    );
+
+    const validated = tool.validate({
+      question: "What is the method?",
+      target: { itemId: 9, contextItemId: 909 },
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    try {
+      await tool.execute(validated.value, baseContext);
+      assert.fail("Expected explicit target resolution to fail");
+    } catch (error) {
+      assert.match(
+        error instanceof Error ? error.message : String(error),
+        /Could not resolve paper target itemId=9, contextItemId=909/,
+      );
+    }
+  });
+
   it("uses presentation summaries for evidence retrieval", function () {
     const tool = createSearchPaperTool(
       {} as never,

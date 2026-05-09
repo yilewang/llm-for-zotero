@@ -819,6 +819,48 @@ export class ZoteroGateway {
     return out;
   }
 
+  resolvePaperContextTarget(params: {
+    itemId?: number;
+    contextItemId?: number;
+  }): PaperContextRef | null {
+    const itemId =
+      Number.isFinite(params.itemId) && Number(params.itemId) > 0
+        ? Math.floor(Number(params.itemId))
+        : undefined;
+    const contextItemId =
+      Number.isFinite(params.contextItemId) && Number(params.contextItemId) > 0
+        ? Math.floor(Number(params.contextItemId))
+        : undefined;
+
+    if (contextItemId) {
+      const paperContext = resolvePaperContextRefFromAttachment(
+        this.getItem(contextItemId),
+      );
+      if (!paperContext) return null;
+      if (itemId && paperContext.itemId !== itemId) return null;
+      return paperContext;
+    }
+
+    if (!itemId) return null;
+    const item = this.resolveBibliographicItem(this.getItem(itemId));
+    if (!item) return null;
+    const target = buildPaperTargetFromItem(item);
+    const firstAttachment = target?.attachments[0];
+    if (!target || !firstAttachment) return null;
+    return (
+      resolvePaperContextRefFromAttachment(
+        this.getItem(firstAttachment.contextItemId),
+      ) || {
+        itemId: target.itemId,
+        contextItemId: firstAttachment.contextItemId,
+        title: target.title,
+        attachmentTitle: firstAttachment.title,
+        firstCreator: target.firstCreator,
+        year: target.year,
+      }
+    );
+  }
+
   async listBibliographicItemTargets(params: {
     libraryID: number;
     limit?: number;

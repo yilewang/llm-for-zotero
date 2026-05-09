@@ -69,6 +69,28 @@ export function normalizeTargets(
   return targets.length ? targets : undefined;
 }
 
+function describeTarget(target: PdfTarget): string {
+  const parts = [
+    target.itemId ? `itemId=${target.itemId}` : "",
+    target.contextItemId ? `contextItemId=${target.contextItemId}` : "",
+  ].filter(Boolean);
+  return parts.length ? parts.join(", ") : "missing itemId/contextItemId";
+}
+
+function resolveTarget(
+  target: PdfTarget,
+  zoteroGateway: ZoteroGateway,
+): PaperContextRef | null {
+  if (target.paperContext) return target.paperContext;
+  if (target.itemId || target.contextItemId) {
+    return zoteroGateway.resolvePaperContextTarget({
+      itemId: target.itemId,
+      contextItemId: target.contextItemId,
+    });
+  }
+  return null;
+}
+
 /**
  * Resolve paper contexts from the tool input, falling back to the
  * request-level paper contexts when no explicit target is provided.
@@ -81,11 +103,25 @@ export function resolveDefaultTargets(
   maxCount: number,
 ): PaperContextRef[] {
   if (targets?.length) {
-    return targets
-      .map((t) => t.paperContext)
-      .filter((entry): entry is PaperContextRef => Boolean(entry));
+    const resolved: PaperContextRef[] = [];
+    for (const explicitTarget of targets) {
+      const paperContext = resolveTarget(explicitTarget, zoteroGateway);
+      if (!paperContext) {
+        throw new Error(
+          `Could not resolve paper target ${describeTarget(explicitTarget)}`,
+        );
+      }
+      resolved.push(paperContext);
+    }
+    return resolved.slice(0, maxCount);
   }
-  if (target?.paperContext) return [target.paperContext];
+  if (target) {
+    const paperContext = resolveTarget(target, zoteroGateway);
+    if (!paperContext) {
+      throw new Error(`Could not resolve paper target ${describeTarget(target)}`);
+    }
+    return [paperContext];
+  }
   return zoteroGateway.listPaperContexts(context.request).slice(0, maxCount);
 }
 

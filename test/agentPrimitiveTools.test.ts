@@ -749,6 +749,129 @@ describe("primitive agent tools", function () {
     assert.equal(first.sourceLabel, "(Nguyen, 2023)");
   });
 
+  it("read_paper resolves explicit item and attachment IDs", async function () {
+    const hydrated: PaperContextRef = {
+      itemId: 30,
+      contextItemId: 31,
+      title: "Hydrated Paper",
+      firstCreator: "Nguyen",
+      year: "2023",
+    };
+    const tool = createReadPaperTool(
+      new FakePdfService(makePdfContext(["Abstract text."])),
+      {
+        resolvePaperContextTarget: () => hydrated,
+        listPaperContexts: () => [],
+      } as never,
+    );
+    const validated = tool.validate({
+      target: { itemId: 30, contextItemId: 31 },
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const result = await tool.execute(validated.value, baseContext);
+    const first = (result as { results: Array<Record<string, unknown>> })
+      .results[0];
+    assert.deepEqual(first.paperContext, hydrated);
+    assert.equal(first.sourceLabel, "(Nguyen, 2023)");
+  });
+
+  it("read_paper resolves multiple explicit item and attachment ID targets", async function () {
+    const contexts: Record<number, PaperContextRef> = {
+      31: { itemId: 30, contextItemId: 31, title: "Paper A" },
+      41: { itemId: 40, contextItemId: 41, title: "Paper B" },
+    };
+    const tool = createReadPaperTool(
+      new FakePdfService(makePdfContext(["Abstract text."])),
+      {
+        resolvePaperContextTarget: ({
+          contextItemId,
+        }: {
+          contextItemId?: number;
+        }) => (contextItemId ? contexts[contextItemId] || null : null),
+        listPaperContexts: () => [],
+      } as never,
+    );
+    const validated = tool.validate({
+      targets: [
+        { itemId: 30, contextItemId: 31 },
+        { itemId: 40, contextItemId: 41 },
+      ],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const result = await tool.execute(validated.value, baseContext);
+    const paperContexts = (
+      result as { results: Array<{ paperContext: PaperContextRef }> }
+    ).results.map((entry) => entry.paperContext);
+    assert.deepEqual(paperContexts, [contexts[31], contexts[41]]);
+  });
+
+  it("read_paper resolves chunk reads from explicit item and attachment IDs", async function () {
+    const hydrated: PaperContextRef = {
+      itemId: 30,
+      contextItemId: 31,
+      title: "Chunk Paper",
+    };
+    const tool = createReadPaperTool(
+      new FakePdfService(makePdfContext(["Abstract text.", "Method text."])),
+      {
+        resolvePaperContextTarget: () => hydrated,
+        listPaperContexts: () => [],
+      } as never,
+    );
+    const validated = tool.validate({
+      target: { itemId: 30, contextItemId: 31 },
+      chunkIndexes: [1],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const result = await tool.execute(validated.value, baseContext);
+    const first = (result as { results: Array<Record<string, unknown>> })
+      .results[0];
+    assert.equal(first.text, "Method text.");
+    assert.deepEqual(first.paperContext, hydrated);
+  });
+
+  it("read_paper does not fall back to ambient paper context for invalid explicit targets", async function () {
+    const ambient: PaperContextRef = {
+      itemId: 99,
+      contextItemId: 199,
+      title: "Ambient Paper",
+    };
+    const tool = createReadPaperTool(
+      new FakePdfService(makePdfContext(["Ambient abstract."])),
+      {
+        resolvePaperContextTarget: () => null,
+        listPaperContexts: () => [ambient],
+      } as never,
+    );
+    const validated = tool.validate({
+      target: { itemId: 30, contextItemId: 31 },
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    try {
+      await tool.execute(validated.value, {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          selectedPaperContexts: [ambient],
+        },
+      });
+      assert.fail("Expected explicit target resolution to fail");
+    } catch (error) {
+      assert.match(
+        error instanceof Error ? error.message : String(error),
+        /Could not resolve paper target itemId=30, contextItemId=31/,
+      );
+    }
+  });
+
   it("search_paper returns citation and source labels", async function () {
     const paperContext: PaperContextRef = {
       itemId: 40,
