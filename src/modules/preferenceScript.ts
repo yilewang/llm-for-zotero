@@ -118,6 +118,7 @@ import {
   setClaudeBlockStreamingEnabled,
 } from "../claudeCode/prefs";
 import {
+  getCodexBinaryPathPref,
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
   isCodexZoteroMcpToolsEnabled,
@@ -2070,7 +2071,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           const result = await runCodexAppServerConnectionTest({
             modelName:
               codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
-            codexPath: "",
+            codexPath: getCodexBinaryPathPref(),
           });
           codexAppServerStatus.textContent =
             `${t("✓ Success — model says: ")}"${result.reply}"`;
@@ -2116,7 +2117,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         renderCodexMcpStatus(t("Configuring Zotero MCP tools…"));
         try {
           const status = await installOrUpdateCodexZoteroMcpConfig({
-            codexPath: "",
+            codexPath: getCodexBinaryPathPref(),
           });
           setCodexZoteroMcpToolsEnabled(true);
           if (codexAppServerMcpEnableInput) {
@@ -2145,7 +2146,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
   if (codexAppServerMcpStatus && isCodexZoteroMcpToolsEnabled()) {
     renderCodexMcpStatus(t("Checking Zotero MCP setup…"));
-    void readCodexNativeMcpSetupStatus({ codexPath: "" })
+    void readCodexNativeMcpSetupStatus({ codexPath: getCodexBinaryPathPref() })
       .then((status) => {
         renderCodexMcpStatus(
           status.connected === true
