@@ -229,10 +229,7 @@ function buildWrappedDisplayMath(math: string): string | null {
 
   const terms = splitTopLevelAdditiveTerms(math);
   if (terms.length < 3) return null;
-  const lines = [
-    `& ${terms[0]}`,
-    ...terms.slice(1).map((term) => `& ${term}`),
-  ];
+  const lines = [`& ${terms[0]}`, ...terms.slice(1).map((term) => `& ${term}`)];
   return `\\begin{aligned}${lines.join(" \\\\ ")}\\end{aligned}`;
 }
 
@@ -348,17 +345,11 @@ export function normalizeBlockBoundaries(text: string): string {
   // Safe because #{1,4} followed by a space is an unambiguous header marker
   // and almost never appears as inline text outside code blocks (which are
   // already extracted before this function is called).
-  result = result.replace(
-    /([^\n])([ \t]+)(#{1,4} )/g,
-    "$1\n\n$3",
-  );
+  result = result.replace(/([^\n])([ \t]+)(#{1,4} )/g, "$1\n\n$3");
 
   // Blockquote markers (> ) after sentence / citation-ending punctuation.
   // More conservative than headers because `>` is common in comparisons.
-  result = result.replace(
-    /([.!?:)\]"])([ \t]+)(> )/g,
-    "$1\n\n$3",
-  );
+  result = result.replace(/([.!?:)\]"])([ \t]+)(> )/g, "$1\n\n$3");
 
   return result;
 }
@@ -665,13 +656,15 @@ function renderBlockquote(content: string): string {
   // constructs (display math, code blocks, etc.) inside blockquotes work.
   const innerText = innerLines.join("\n");
   const innerBlocks = splitTextBlocks(innerText);
-  const innerHtml = innerBlocks.map((block) => {
-    try {
-      return renderBlock(block);
-    } catch {
-      return `<div class="render-fallback">${escapeHtml(block.raw)}</div>`;
-    }
-  }).join("\n");
+  const innerHtml = innerBlocks
+    .map((block) => {
+      try {
+        return renderBlock(block);
+      } catch {
+        return `<div class="render-fallback">${escapeHtml(block.raw)}</div>`;
+      }
+    })
+    .join("\n");
   return `<blockquote>${innerHtml}</blockquote>`;
 }
 

@@ -45,7 +45,7 @@ type QueueEntry = {
 
 // ── Singleton state ──────────────────────────────────────────────────────────
 
-let state: MineruBatchState = {
+const state: MineruBatchState = {
   running: false,
   paused: false,
   currentItemId: null,

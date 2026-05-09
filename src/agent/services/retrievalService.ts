@@ -1,6 +1,4 @@
-import {
-  buildPaperRetrievalCandidates,
-} from "../../modules/contextPanel/pdfContext";
+import { buildPaperRetrievalCandidates } from "../../modules/contextPanel/pdfContext";
 import { formatPaperSourceLabel } from "../../modules/contextPanel/paperAttribution";
 import type { PaperContextRef } from "../../shared/types";
 import { PdfService } from "./pdfService";
@@ -21,7 +19,12 @@ function dedupePaperContexts(
   const out: PaperContextRef[] = [];
   const seen = new Set<string>();
   for (const entry of paperContexts) {
-    if (!entry || !Number.isFinite(entry.itemId) || !Number.isFinite(entry.contextItemId)) continue;
+    if (
+      !entry ||
+      !Number.isFinite(entry.itemId) ||
+      !Number.isFinite(entry.contextItemId)
+    )
+      continue;
     const key = `${entry.itemId}:${entry.contextItemId}`;
     if (seen.has(key)) continue;
     seen.add(key);

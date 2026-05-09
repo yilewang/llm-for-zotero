@@ -64,7 +64,9 @@ function normalizeHistoryMessages(
   const raw = Array.isArray(request.history) ? request.history : [];
   const windowed = selectAgentHistoryWindow(raw, 10);
   return windowed
-    .filter((message) => message.role === "user" || message.role === "assistant")
+    .filter(
+      (message) => message.role === "user" || message.role === "assistant",
+    )
     .map((message) => ({
       role: message.role,
       content: stringifyMessageContent(message.content),
@@ -99,7 +101,9 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
     if (note.parentItemId) {
       contextLines.push(`- Active note parent item ID: ${note.parentItemId}`);
     }
-    contextLines.push(`Current note content for this turn:\n"""\n${note.noteText}\n"""`);
+    contextLines.push(
+      `Current note content for this turn:\n"""\n${note.noteText}\n"""`,
+    );
     if (note.noteHtml) {
       contextLines.push(`Original note HTML:\n"""\n${note.noteHtml}\n"""`);
     }
@@ -113,9 +117,9 @@ function buildUserMessage(request: AgentRuntimeRequest): AgentModelMessage {
             ? "model response"
             : source === "note"
               ? "Zotero note"
-            : source === "note-edit"
-              ? "active note editing focus"
-              : "PDF reader";
+              : source === "note-edit"
+                ? "active note editing focus"
+                : "PDF reader";
         return `Selected text ${index + 1} [source=${sourceLabel}]:\n"""\n${entry}\n"""`;
       })
       .join("\n\n");
@@ -225,8 +229,8 @@ function collectGuidanceInstructions(
 function buildAutoReadInstruction(request: AgentRuntimeRequest): string {
   const fullTextPapers = request.fullTextPaperContexts || [];
   if (!fullTextPapers.length) return "";
-  const allHaveMineruCache = fullTextPapers.every(
-    (entry) => Boolean(entry.mineruCacheDir),
+  const allHaveMineruCache = fullTextPapers.every((entry) =>
+    Boolean(entry.mineruCacheDir),
   );
   if (allHaveMineruCache) {
     return (
@@ -254,9 +258,7 @@ function buildNotesDirectorySection(): string {
   const defaultTargetPath = targetFolder
     ? joinLocalPath(dirPath, targetFolder)
     : dirPath;
-  const lines = [
-    "Notes directory configuration (user-configured):",
-  ];
+  const lines = ["Notes directory configuration (user-configured):"];
   if (nickname) {
     lines.push(`- Nickname: ${nickname}`);
   }

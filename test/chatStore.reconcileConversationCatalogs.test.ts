@@ -57,11 +57,19 @@ describe("chatStore conversation catalog reconciliation", function () {
               },
             ];
           }
-          if (sql.includes("INSERT OR IGNORE INTO llm_for_zotero_global_conversations")) {
+          if (
+            sql.includes(
+              "INSERT OR IGNORE INTO llm_for_zotero_global_conversations",
+            )
+          ) {
             inserts.push({ sql, params: normalizedParams });
             return [];
           }
-          if (sql.includes("INSERT OR IGNORE INTO llm_for_zotero_paper_conversations")) {
+          if (
+            sql.includes(
+              "INSERT OR IGNORE INTO llm_for_zotero_paper_conversations",
+            )
+          ) {
             inserts.push({ sql, params: normalizedParams });
             return [];
           }

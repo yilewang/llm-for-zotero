@@ -8,7 +8,11 @@ import {
   buildPaperStateKey,
 } from "./prefHelpers";
 import { activePaperConversationByPaper } from "./state";
-import type { ActiveNoteSession, GlobalPortalItem, PaperPortalItem } from "./types";
+import type {
+  ActiveNoteSession,
+  GlobalPortalItem,
+  PaperPortalItem,
+} from "./types";
 
 export function resolveActiveLibraryID(): number | null {
   try {
@@ -169,9 +173,8 @@ function resolveActiveTabTitleForNote(
     (Zotero.getActiveZoteroPane?.() as { document?: Document } | undefined)
       ?.document?.defaultView &&
       (
-        (
-          Zotero.getActiveZoteroPane?.() as { document?: Document } | undefined
-        )?.document?.defaultView as { Zotero?: { Tabs?: unknown } }
+        (Zotero.getActiveZoteroPane?.() as { document?: Document } | undefined)
+          ?.document?.defaultView as { Zotero?: { Tabs?: unknown } }
       ).Zotero?.Tabs,
   ];
   for (const candidate of tabsCandidates) {
@@ -212,9 +215,7 @@ function resolveActiveTabTitleForNote(
   return "";
 }
 
-export function resolveNoteTitle(
-  item: Zotero.Item | null | undefined,
-): string {
+export function resolveNoteTitle(item: Zotero.Item | null | undefined): string {
   if (!(item as any)?.isNote?.()) return "";
   const activeTabTitle = resolveActiveTabTitleForNote(item);
   if (activeTabTitle) return activeTabTitle;
@@ -293,7 +294,6 @@ export function resolveConversationBaseItem(
   }
   return targetItem?.isRegularItem?.() ? targetItem : null;
 }
-
 
 function resolveLibraryIdFromItem(
   targetItem: Zotero.Item | null | undefined,

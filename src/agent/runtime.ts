@@ -58,22 +58,37 @@ async function toDataUrl(
 
 function summarizeArtifacts(artifacts: AgentToolArtifact[]): string {
   const imagePages = artifacts
-    .filter((artifact): artifact is Extract<AgentToolArtifact, { kind: "image" }> => {
-      return artifact.kind === "image";
-    })
-    .map((artifact) => artifact.pageLabel || (Number.isFinite(artifact.pageIndex) ? `${artifact.pageIndex! + 1}` : ""));
+    .filter(
+      (artifact): artifact is Extract<AgentToolArtifact, { kind: "image" }> => {
+        return artifact.kind === "image";
+      },
+    )
+    .map(
+      (artifact) =>
+        artifact.pageLabel ||
+        (Number.isFinite(artifact.pageIndex)
+          ? `${artifact.pageIndex! + 1}`
+          : ""),
+    );
   const fileTitles = artifacts
-    .filter((artifact): artifact is Extract<AgentToolArtifact, { kind: "file_ref" }> => {
-      return artifact.kind === "file_ref";
-    })
+    .filter(
+      (
+        artifact,
+      ): artifact is Extract<AgentToolArtifact, { kind: "file_ref" }> => {
+        return artifact.kind === "file_ref";
+      },
+    )
     .map((artifact) => artifact.title || artifact.name);
   const parts: string[] = [];
   if (imagePages.length) {
     parts.push(
-      `Prepared PDF page image${imagePages.length === 1 ? "" : "s"} (${imagePages
-        .filter(Boolean)
-        .map((entry) => `p${entry}`)
-        .join(", ") || `${imagePages.length} page${imagePages.length === 1 ? "" : "s"}`}) for visual inspection.`,
+      `Prepared PDF page image${imagePages.length === 1 ? "" : "s"} (${
+        imagePages
+          .filter(Boolean)
+          .map((entry) => `p${entry}`)
+          .join(", ") ||
+        `${imagePages.length} page${imagePages.length === 1 ? "" : "s"}`
+      }) for visual inspection.`,
     );
   }
   if (fileTitles.length) {
@@ -113,7 +128,11 @@ async function buildArtifactFollowupMessage(
           },
         });
       } catch (error) {
-        ztoolkit.log("LLM Agent: Failed to load image artifact", artifact, error);
+        ztoolkit.log(
+          "LLM Agent: Failed to load image artifact",
+          artifact,
+          error,
+        );
       }
       continue;
     }
@@ -155,10 +174,7 @@ type ExecutedToolCall = {
   input?: unknown;
 };
 
-function buildSyntheticToolCall(
-  name: string,
-  args: unknown,
-): AgentToolCall {
+function buildSyntheticToolCall(name: string, args: unknown): AgentToolCall {
   return {
     id: `synthetic-${name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     name,
@@ -182,7 +198,10 @@ export class AgentRuntime {
   private readonly registry: AgentToolRegistry;
   private readonly adapterFactory: AgentRuntimeDeps["adapterFactory"];
   private readonly now: () => number;
-  private readonly pendingConfirmations = new Map<string, PendingConfirmation>();
+  private readonly pendingConfirmations = new Map<
+    string,
+    PendingConfirmation
+  >();
 
   constructor(deps: AgentRuntimeDeps) {
     this.registry = deps.registry;
@@ -281,7 +300,8 @@ export class AgentRuntime {
     };
 
     if (!adapter.supportsTools(request)) {
-      const reason = "Agent tools unavailable for this model; used direct response instead.";
+      const reason =
+        "Agent tools unavailable for this model; used direct response instead.";
       await emit({
         type: "fallback",
         reason,
@@ -316,10 +336,7 @@ export class AgentRuntime {
     //      and emitted as trace events for UI visibility.
     // The resulting system prompt is reused across every model inference
     // inside the agent loop — no per-step classification cost.
-    const classifiedSkillIds = await detectSkillIntent(
-      request,
-      getAllSkills(),
-    );
+    const classifiedSkillIds = await detectSkillIntent(request, getAllSkills());
     const matchedSkills = getMatchedSkillIds(request, classifiedSkillIds);
     const messages = (await buildAgentInitialMessages(
       request,
@@ -372,7 +389,8 @@ export class AgentRuntime {
       step: Extract<AgentModelStep, { kind: "final" }>,
       stepStreamedText: string,
     ): Promise<AgentRuntimeOutcome> => {
-      const finalText = step.text || stepStreamedText || currentAnswerText || "No response.";
+      const finalText =
+        step.text || stepStreamedText || currentAnswerText || "No response.";
       if (finalText) {
         if (!stepStreamedText) {
           currentAnswerText = finalText;
@@ -450,7 +468,10 @@ export class AgentRuntime {
     };
     const requestActionResolution = async (
       action: AgentPendingAction,
-    ): Promise<{ requestId: string; resolution: AgentConfirmationResolution }> => {
+    ): Promise<{
+      requestId: string;
+      resolution: AgentConfirmationResolution;
+    }> => {
       const requestId = createConfirmationRequestId();
       const resolution = new Promise<AgentConfirmationResolution>((resolve) => {
         this.pendingConfirmations.set(requestId, { resolve });
@@ -487,12 +508,16 @@ export class AgentRuntime {
         args: call.arguments,
       });
       toolsUsedThisTurn.push(call.name);
-      const execution = await this.registry.prepareExecution(call, {
-        ...context,
-        currentAnswerText,
-      }, {
-        inheritedApproval: options.inheritedApproval,
-      });
+      const execution = await this.registry.prepareExecution(
+        call,
+        {
+          ...context,
+          currentAnswerText,
+        },
+        {
+          inheritedApproval: options.inheritedApproval,
+        },
+      );
       let executedCall: {
         toolResult: AgentToolResult;
         toolDefinition?: import("./types").AgentToolDefinition<any, any>;
@@ -585,7 +610,7 @@ export class AgentRuntime {
         toolDefinition?.createResultReviewAction &&
         toolDefinition.resolveResultReview
       ) {
-        let currentResult = toolResult;
+        const currentResult = toolResult;
         const currentInput = input;
         while (true) {
           const reviewAction = await toolDefinition.createResultReviewAction(
@@ -684,7 +709,9 @@ export class AgentRuntime {
     for (let round = 1; round <= maxRounds; round += 1) {
       const { step, stepStreamedText } = await runModelStep(
         round,
-        round === 1 ? "Running agent" : `Continuing agent (${round}/${maxRounds})`,
+        round === 1
+          ? "Running agent"
+          : `Continuing agent (${round}/${maxRounds})`,
       );
       if (step.kind === "final") {
         return emitFinalStep(step, stepStreamedText);
@@ -730,7 +757,10 @@ export class AgentRuntime {
           }
         }
         if (outcome.stopRun) {
-          return completeRun(outcome.finalText || currentAnswerText, "completed");
+          return completeRun(
+            outcome.finalText || currentAnswerText,
+            "completed",
+          );
         }
         if (consecutiveToolErrors >= 3) {
           const finalText =

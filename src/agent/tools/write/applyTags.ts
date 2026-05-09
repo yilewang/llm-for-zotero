@@ -137,15 +137,11 @@ export function createApplyTagsTool(
           }
           const itemId = Number(entry.itemId);
           if (!Number.isFinite(itemId) || itemId <= 0) {
-            return fail(
-              "Each assignment must include a valid positive itemId",
-            );
+            return fail("Each assignment must include a valid positive itemId");
           }
           const tags = normalizeStringArray(entry.tags);
           if (!tags) {
-            return fail(
-              "Each assignment must include a non-empty tags array",
-            );
+            return fail("Each assignment must include a non-empty tags array");
           }
           assignments.push({ itemId: Math.floor(itemId), tags });
         }
@@ -180,8 +176,7 @@ export function createApplyTagsTool(
         const fields = tagField ? [tagField] : [];
 
         const assignments = operation.assignments || [];
-        const itemCount =
-          assignments.length || operation.itemIds?.length || 0;
+        const itemCount = assignments.length || operation.itemIds?.length || 0;
         const tagSummary = operation.tags?.length
           ? operation.tags.join(", ")
           : "per-item tags";
@@ -198,9 +193,7 @@ export function createApplyTagsTool(
 
       // action === "remove"
       const operation = input.operation as RemoveTagsOperation;
-      const targets = zoteroGateway.getPaperTargetsByItemIds(
-        operation.itemIds,
-      );
+      const targets = zoteroGateway.getPaperTargetsByItemIds(operation.itemIds);
       const targetByItemId = new Map(
         targets.map((target) => [target.itemId, target] as const),
       );
@@ -243,8 +236,7 @@ export function createApplyTagsTool(
         const resolved = data?.[fieldId];
 
         if (resolved !== undefined) {
-          const assignments =
-            normalizeTagAssignmentsFromResolution(resolved);
+          const assignments = normalizeTagAssignmentsFromResolution(resolved);
           if (assignments && assignments.length > 0) {
             const updatedOperation: ApplyTagsOperation = {
               ...operation,

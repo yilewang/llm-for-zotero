@@ -44,9 +44,10 @@ function createRequestId(): string {
   return `confirm-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function normalizeExecutionOutput(
-  value: AgentToolExecutionOutput<any>,
-): { content: unknown; artifacts?: AgentToolArtifact[] } {
+function normalizeExecutionOutput(value: AgentToolExecutionOutput<any>): {
+  content: unknown;
+  artifacts?: AgentToolArtifact[];
+} {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const record = value as {
       content?: unknown;
@@ -73,8 +74,7 @@ export class AgentToolRegistry {
     request: AgentRuntimeRequest,
   ): AgentToolDefinition<any, any>[] {
     return Array.from(this.tools.values()).filter(
-      (tool) =>
-        tool.isAvailable?.(request) !== false,
+      (tool) => tool.isAvailable?.(request) !== false,
     );
   }
 

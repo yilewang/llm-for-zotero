@@ -5,7 +5,10 @@ import type {
   ActionExecutionContext,
   ActionProgressEvent,
 } from "../src/agent/actions/types";
-import type { AgentPendingAction, AgentToolDefinition } from "../src/agent/types";
+import type {
+  AgentPendingAction,
+  AgentToolDefinition,
+} from "../src/agent/types";
 
 function createStubTool<TInput extends Record<string, unknown>, TResult>(
   spec: AgentToolDefinition<TInput, TResult>["spec"],
@@ -77,7 +80,11 @@ describe("sync_metadata action", function () {
                 date: "2024",
                 publicationTitle: "Journal of Tests",
                 creators: [
-                  { creatorType: "author", name: "Alice Example", fieldMode: 1 },
+                  {
+                    creatorType: "author",
+                    name: "Alice Example",
+                    fieldMode: 1,
+                  },
                   { creatorType: "author", name: "Bob Example", fieldMode: 1 },
                 ],
               },
@@ -101,7 +108,8 @@ describe("sync_metadata action", function () {
             args &&
             typeof args === "object" &&
             Array.isArray((args as { operations?: unknown[] }).operations)
-              ? ((args as { operations: Array<Record<string, unknown>> }).operations)
+              ? (args as { operations: Array<Record<string, unknown>> })
+                  .operations
               : [];
           const op = operations[0];
           const metadata =

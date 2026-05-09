@@ -65,7 +65,8 @@ describe("primitive agent tools", function () {
           collectionIds: [11],
         },
       ],
-      getEditableArticleMetadata: () => makeMetadataSnapshot(99, "Example Paper"),
+      getEditableArticleMetadata: () =>
+        makeMetadataSnapshot(99, "Example Paper"),
       getItem: () => ({ id: 99 }) as any,
       getActiveContextItem: () => null,
       listCollectionSummaries: () => [],
@@ -107,7 +108,8 @@ describe("primitive agent tools", function () {
 
     const result = await tool.execute(validated.value, baseContext);
     assert.deepEqual((result as { warnings: unknown[] }).warnings, []);
-    const first = (result as { results: Array<Record<string, unknown>> }).results[0];
+    const first = (result as { results: Array<Record<string, unknown>> })
+      .results[0];
     assert.equal(first.itemId, 99);
     assert.equal((first.metadata as { title?: string }).title, "Example Paper");
     assert.deepEqual(first.attachments, [{ contextItemId: 501, title: "PDF" }]);
@@ -134,7 +136,11 @@ describe("primitive agent tools", function () {
         title: "Reader Context Paper",
       }),
       getItem: () => null,
-      findRelatedPapersInLibrary: async ({ referenceItemId }: { referenceItemId: number }) => {
+      findRelatedPapersInLibrary: async ({
+        referenceItemId,
+      }: {
+        referenceItemId: number;
+      }) => {
         receivedReferenceItemId = referenceItemId;
         return {
           referenceTitle: "Reader Context Paper",
@@ -204,7 +210,13 @@ describe("primitive agent tools", function () {
           title: "Paper Seven",
           firstCreator: "Dana Example",
           year: "2020",
-          attachments: [{ contextItemId: 701, title: "Main PDF", contentType: "application/pdf" }],
+          attachments: [
+            {
+              contextItemId: 701,
+              title: "Main PDF",
+              contentType: "application/pdf",
+            },
+          ],
           tags: ["alpha"],
           collectionIds: [12],
         },
@@ -228,7 +240,11 @@ describe("primitive agent tools", function () {
         },
       ],
       getAllChildAttachmentInfos: async () => [
-        { contextItemId: 701, title: "Main PDF", contentType: "application/pdf" },
+        {
+          contextItemId: 701,
+          title: "Main PDF",
+          contentType: "application/pdf",
+        },
       ],
       getCollectionSummary: () => ({
         collectionId: 12,
@@ -240,7 +256,13 @@ describe("primitive agent tools", function () {
 
     const validated = tool.validate({
       itemIds: [7],
-      sections: ["metadata", "notes", "annotations", "attachments", "collections"],
+      sections: [
+        "metadata",
+        "notes",
+        "annotations",
+        "attachments",
+        "collections",
+      ],
     });
     assert.isTrue(validated.ok);
     if (!validated.ok) return;
@@ -250,7 +272,9 @@ describe("primitive agent tools", function () {
     assert.equal(entry.title, "Paper Seven");
     assert.lengthOf(entry.notes, 1);
     assert.lengthOf(entry.annotations, 1);
-    assert.deepEqual(entry.attachments, [{ contextItemId: 701, title: "Main PDF", contentType: "application/pdf" }]);
+    assert.deepEqual(entry.attachments, [
+      { contextItemId: 701, title: "Main PDF", contentType: "application/pdf" },
+    ]);
     assert.deepEqual(entry.collections, [
       { collectionId: 12, name: "Reading", libraryID: 1, path: "Reading" },
     ]);
@@ -291,10 +315,7 @@ describe("primitive agent tools", function () {
         mode: "agent",
         userText: "can you help me tag these papers?",
       },
-      [
-        createQueryLibraryTool({} as never),
-        createApplyTagsTool({} as never),
-      ],
+      [createQueryLibraryTool({} as never), createApplyTagsTool({} as never)],
       [],
     );
     const systemText =
@@ -415,11 +436,7 @@ describe("primitive agent tools", function () {
         libraryID: 1,
         noteKind: "standalone",
       }),
-      replaceCurrentNote: async ({
-        content,
-      }: {
-        content: string;
-      }) => {
+      replaceCurrentNote: async ({ content }: { content: string }) => {
         assert.equal(content, "Approved *note*");
         return {
           noteId: 55,
@@ -546,6 +563,6 @@ describe("primitive agent tools", function () {
     assert.notInclude(userText, "Active note: Draft Note");
     assert.notInclude(userText, "Current note content for this turn");
     assert.notInclude(userText, "Current note body");
-    assert.include(userText, 'Selected text 1 [source=PDF reader]:');
+    assert.include(userText, "Selected text 1 [source=PDF reader]:");
   });
 });

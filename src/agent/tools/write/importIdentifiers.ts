@@ -8,7 +8,13 @@ import {
   type ImportIdentifiersOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
-import { ok, fail, validateObject, normalizePositiveInt, normalizeStringArray } from "../shared";
+import {
+  ok,
+  fail,
+  validateObject,
+  normalizePositiveInt,
+  normalizeStringArray,
+} from "../shared";
 import { executeAndRecordUndo } from "./mutateLibraryShared";
 
 type ImportIdentifiersInput = {
@@ -23,8 +29,7 @@ export function createImportIdentifiersTool(
   return {
     spec: {
       name: "import_identifiers",
-      description:
-        "Import papers into Zotero by DOI, ISBN, arXiv ID, or URL.",
+      description: "Import papers into Zotero by DOI, ISBN, arXiv ID, or URL.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -65,7 +70,9 @@ export function createImportIdentifiersTool(
             result.result && typeof result.result === "object"
               ? (result.result as Record<string, unknown>)
               : {};
-          const count = Number(resultInner.importedCount || result.importedCount || 0);
+          const count = Number(
+            resultInner.importedCount || result.importedCount || 0,
+          );
           return count > 0
             ? `Imported ${count} paper${count === 1 ? "" : "s"}`
             : "Papers imported";
@@ -76,8 +83,7 @@ export function createImportIdentifiersTool(
     acceptInheritedApproval: async (_input, approval) => {
       // Accept review-mode approvals from search_literature_online review cards
       return (
-        approval.sourceMode === "review" &&
-        approval.sourceActionId === "import"
+        approval.sourceMode === "review" && approval.sourceActionId === "import"
       );
     },
 

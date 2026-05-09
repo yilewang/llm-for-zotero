@@ -77,7 +77,8 @@ export function formatPaperCitationLabel(
   const fallbackId =
     Number.isFinite(paperContext.itemId) && paperContext.itemId > 0
       ? Math.floor(paperContext.itemId)
-      : Number.isFinite(paperContext.contextItemId) && paperContext.contextItemId > 0
+      : Number.isFinite(paperContext.contextItemId) &&
+          paperContext.contextItemId > 0
         ? Math.floor(paperContext.contextItemId)
         : 0;
   return fallbackId > 0 ? `Paper ${fallbackId}` : "Paper";
@@ -181,7 +182,9 @@ export function resolvePaperContextRefFromAttachment(
         `Paper ${normalizedPaperItemId}`,
     ),
   );
-  const citationKey = normalizeText(String(paperItem.getField("citationKey") || ""));
+  const citationKey = normalizeText(
+    String(paperItem.getField("citationKey") || ""),
+  );
   const attachmentTitle = getAttachmentDisplayTitle(contextItem);
   const firstCreator = normalizeText(
     String(
@@ -244,11 +247,16 @@ export function resolvePaperContextRefFromItem(
   );
   const citationKey = normalizeText(String(item.getField("citationKey") || ""));
   const firstCreator = normalizeText(
-    String(item.getField("firstCreator") || (item as Zotero.Item).firstCreator || ""),
+    String(
+      item.getField("firstCreator") || (item as Zotero.Item).firstCreator || "",
+    ),
   );
   const year = normalizeText(
     String(
-      item.getField("year") || item.getField("date") || item.getField("issued") || "",
+      item.getField("year") ||
+        item.getField("date") ||
+        item.getField("issued") ||
+        "",
     ),
   );
   return {

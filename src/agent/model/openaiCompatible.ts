@@ -4,7 +4,10 @@ import {
   postWithReasoningFallback,
   resolveRequestAuthState,
 } from "../../utils/llmClient";
-import { normalizeMaxTokens, normalizeTemperature } from "../../utils/normalization";
+import {
+  normalizeMaxTokens,
+  normalizeTemperature,
+} from "../../utils/normalization";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
 import type {
   AgentModelCapabilities,
@@ -65,9 +68,21 @@ async function buildMessagesPayload(messages: AgentModelMessage[]) {
       const parts: unknown[] = [];
       for (const rp of resolved) {
         switch (rp.type) {
-          case "text": parts.push({ type: "text", text: rp.text }); break;
-          case "image": parts.push({ type: "image_url", image_url: { url: `data:${rp.mimeType};base64,${rp.base64}` } }); break;
-          case "pdf": parts.push({ type: "image_url", image_url: { url: `data:application/pdf;base64,${rp.base64}` } }); break;
+          case "text":
+            parts.push({ type: "text", text: rp.text });
+            break;
+          case "image":
+            parts.push({
+              type: "image_url",
+              image_url: { url: `data:${rp.mimeType};base64,${rp.base64}` },
+            });
+            break;
+          case "pdf":
+            parts.push({
+              type: "image_url",
+              image_url: { url: `data:application/pdf;base64,${rp.base64}` },
+            });
+            break;
           // file_placeholder: silently dropped (no provider support)
         }
       }
@@ -129,8 +144,15 @@ type StreamedToolCallAccumulator = {
 async function parseOpenAIChatCompletionStream(
   body: ReadableStream<Uint8Array>,
   onTextDelta?: (delta: string) => void | Promise<void>,
-  onReasoning?: (event: { summary?: string; details?: string }) => void | Promise<void>,
-): Promise<{ text: string; toolCalls: AgentToolCall[]; reasoningText: string }> {
+  onReasoning?: (event: {
+    summary?: string;
+    details?: string;
+  }) => void | Promise<void>,
+): Promise<{
+  text: string;
+  toolCalls: AgentToolCall[];
+  reasoningText: string;
+}> {
   const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
@@ -186,15 +208,15 @@ async function parseOpenAIChatCompletionStream(
                 typeof tc.index === "number" ? tc.index : toolCallMap.size;
               if (!toolCallMap.has(idx)) {
                 toolCallMap.set(idx, {
-                  id:
-                    tc.id?.trim() || createFallbackToolCallId("tool", idx),
+                  id: tc.id?.trim() || createFallbackToolCallId("tool", idx),
                   name: tc.function?.name?.trim() || "",
                   argumentChunks: [],
                 });
               }
               const entry = toolCallMap.get(idx)!;
               if (tc.id?.trim()) entry.id = tc.id.trim();
-              if (tc.function?.name?.trim()) entry.name = tc.function.name.trim();
+              if (tc.function?.name?.trim())
+                entry.name = tc.function.name.trim();
               if (typeof tc.function?.arguments === "string") {
                 entry.argumentChunks.push(tc.function.arguments);
               }
@@ -286,7 +308,9 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           ...(reasoningPayload.omitTemperature
             ? {}
             : {
-                temperature: normalizeTemperature(request.advanced?.temperature),
+                temperature: normalizeTemperature(
+                  request.advanced?.temperature,
+                ),
               }),
         };
       },
@@ -328,7 +352,9 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
     }
 
     // Fallback: non-streaming JSON response
-    const data = (await response.json()) as { choices?: ChatCompletionChoice[] };
+    const data = (await response.json()) as {
+      choices?: ChatCompletionChoice[];
+    };
     const message = data.choices?.[0]?.message;
     const reasoningText =
       message?.reasoning_content ||

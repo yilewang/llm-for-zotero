@@ -30,7 +30,10 @@ async function resolveItemPdfPath(
   item: Zotero.Item,
 ): Promise<{ path: string; filename: string } | null> {
   // If the item itself is a PDF attachment
-  if (item.isAttachment?.() && item.attachmentContentType === "application/pdf") {
+  if (
+    item.isAttachment?.() &&
+    item.attachmentContentType === "application/pdf"
+  ) {
     const path = await getFilePath(item);
     if (path) return { path, filename: extractFilename(path) };
   }
@@ -39,7 +42,11 @@ async function resolveItemPdfPath(
   const attachmentIds = item.getAttachments?.() || [];
   for (const attId of attachmentIds) {
     const att = Zotero.Items.get(attId);
-    if (!att?.isAttachment?.() || att.attachmentContentType !== "application/pdf") continue;
+    if (
+      !att?.isAttachment?.() ||
+      att.attachmentContentType !== "application/pdf"
+    )
+      continue;
     const path = await getFilePath(att);
     if (path) return { path, filename: extractFilename(path) };
   }
@@ -61,13 +68,19 @@ async function getFilePath(att: Zotero.Item): Promise<string | null> {
   if (asyncPath) return asyncPath as string;
 
   // Fallback: getFilePath (sync)
-  if (typeof (att as unknown as { getFilePath?: () => string | undefined }).getFilePath === "function") {
-    const syncPath = (att as unknown as { getFilePath: () => string | undefined }).getFilePath();
+  if (
+    typeof (att as unknown as { getFilePath?: () => string | undefined })
+      .getFilePath === "function"
+  ) {
+    const syncPath = (
+      att as unknown as { getFilePath: () => string | undefined }
+    ).getFilePath();
     if (syncPath) return syncPath;
   }
 
   // Fallback: attachmentPath property
-  const rawPath = (att as unknown as { attachmentPath?: string }).attachmentPath;
+  const rawPath = (att as unknown as { attachmentPath?: string })
+    .attachmentPath;
   return rawPath || null;
 }
 

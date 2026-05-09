@@ -213,9 +213,9 @@ export function buildQuestionWithSelectedTextContexts(
         ? "model_response 🧠"
         : source === "note"
           ? "zotero_note 📝"
-        : source === "note-edit"
-          ? "note_editor ✍🏻"
-          : "pdf_reader 📋";
+          : source === "note-edit"
+            ? "note_editor ✍🏻"
+            : "pdf_reader 📋";
     const paperLabel =
       includePaperAttribution && source === "pdf"
         ? formatPaperCitationLabel(selectedTextPaperContexts[index])
@@ -231,7 +231,8 @@ export function buildQuestionWithSelectedTextContexts(
     return `Text Context ${index + 1} [source=${sourceLabel}]${paperPart}${citationPart}:\n"""\n${text}\n"""`;
   });
   const guidance =
-    includePaperAttribution && selectedTextPaperContexts.some((entry) => !!entry)
+    includePaperAttribution &&
+    selectedTextPaperContexts.some((entry) => !!entry)
       ? `${buildPaperQuoteCitationGuidance().join("\n")}\n\n`
       : "";
   return `Selected text contexts with explicit sources:\n${guidance}${contextBlocks.join(
@@ -268,7 +269,12 @@ export function buildModelPromptWithFileContext(
   const metaBlocks: string[] = [];
   for (const attachment of fileAttachments) {
     // PDF-paper attachments are sent as binary file_ref — skip text metadata
-    if (typeof attachment.id === "string" && (attachment.id.startsWith("pdf-paper-") || attachment.id.startsWith("pdf-page-"))) continue;
+    if (
+      typeof attachment.id === "string" &&
+      (attachment.id.startsWith("pdf-paper-") ||
+        attachment.id.startsWith("pdf-page-"))
+    )
+      continue;
     metaBlocks.push(
       `- ${attachment.name} (${attachment.mimeType || "application/octet-stream"}, ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB)`,
     );
@@ -354,7 +360,8 @@ export function setStatus(
 export function formatTokenCount(tokens: number): string {
   if (tokens < 0) return "0";
   if (tokens < 1000) return `${tokens}`;
-  if (tokens < 10000) return `${(tokens / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  if (tokens < 10000)
+    return `${(tokens / 1000).toFixed(1).replace(/\.0$/, "")}k`;
   return `${Math.round(tokens / 1000)}k`;
 }
 

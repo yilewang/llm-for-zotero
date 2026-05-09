@@ -16,7 +16,10 @@ import {
   normalizePaperContextRefs,
   normalizeSelectedTextSources,
 } from "../normalizers";
-import { agentReasoningExpandedCache } from "../agentState";
+import {
+  agentReasoningExpandedCache,
+  agentToolGroupExpandedCache,
+} from "../agentState";
 import { buildTextDiffPreview } from "./diffPreview";
 
 type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
@@ -50,6 +53,12 @@ type AgentTraceDisplayItem =
       label: string;
       summary?: string;
       details?: string;
+    }
+  | {
+      type: "tool_group";
+      key: string;
+      label: string;
+      items: Array<{ type: "action"; row: AgentTraceSummaryRow; chips?: AgentTraceChip[] }>;
     };
 
 type RenderAgentTraceParams = {
@@ -530,7 +539,8 @@ function renderAssignmentTableField(
     control.appendChild(selectLabel);
 
     const select = doc.createElement("select");
-    select.className = "llm-agent-hitl-page-input llm-agent-hitl-assignment-select";
+    select.className =
+      "llm-agent-hitl-page-input llm-agent-hitl-assignment-select";
     for (const option of field.options) {
       const optionEl = doc.createElement("option");
       optionEl.value = option.id;
@@ -778,9 +788,7 @@ function renderTagAssignmentTableField(
     rows.push({
       buttons: chipButtons,
       getTags: () =>
-        chipInputs
-          .map((input) => input.value.trim())
-          .filter(Boolean),
+        chipInputs.map((input) => input.value.trim()).filter(Boolean),
       setDisabled: (disabled) => {
         addButton.disabled = disabled;
         for (const input of chipInputs) {
@@ -807,8 +815,7 @@ function renderTagAssignmentTableField(
           row.setDisabled(disabled);
         }
       },
-      isValid: () =>
-        getAssignments().some((entry) => entry.value.length > 0),
+      isValid: () => getAssignments().some((entry) => entry.value.length > 0),
       bindValidity: (callback) => {
         listeners.push(callback);
       },
@@ -860,8 +867,9 @@ function renderResultCardList(
       openBtn.addEventListener("click", (e) => {
         e.preventDefault();
         try {
-          const launch = (Zotero as unknown as { launchURL?: (url: string) => void })
-            .launchURL;
+          const launch = (
+            Zotero as unknown as { launchURL?: (url: string) => void }
+          ).launchURL;
           if (typeof launch === "function") launch(card.href!);
         } catch {
           /* ignore */
@@ -985,7 +993,8 @@ function renderPaperResultListField(
       tab.className = "llm-search-mode-tab";
       tab.dataset.modeId = mode.id;
       tab.textContent = mode.label;
-      if (mode.id === activeModeId) tab.classList.add("llm-search-mode-tab-active");
+      if (mode.id === activeModeId)
+        tab.classList.add("llm-search-mode-tab-active");
       tab.addEventListener("click", () => {
         if (activeModeId === mode.id) return;
         activeModeId = mode.id;
@@ -1049,7 +1058,11 @@ function renderPaperResultListField(
       btn.type = "button";
       btn.className = "llm-search-sort-btn";
       btn.textContent =
-        key === "relevance" ? "Relevance" : key === "date" ? "Date" : "Citations";
+        key === "relevance"
+          ? "Relevance"
+          : key === "date"
+            ? "Date"
+            : "Citations";
       btn.addEventListener("click", () => {
         sortByMode.set(activeModeId, key);
         renderActiveMode();
@@ -1311,12 +1324,17 @@ function normalizePendingActions(action: AgentPendingAction) {
           },
         ];
   const cancelActionId =
-    action.cancelActionId && provided.some((entry) => entry.id === action.cancelActionId)
+    action.cancelActionId &&
+    provided.some((entry) => entry.id === action.cancelActionId)
       ? action.cancelActionId
-      : provided.find((entry) => entry.id === "cancel")?.id || provided[provided.length - 1]?.id;
-  const primaryActions = provided.filter((entry) => entry.id !== cancelActionId);
+      : provided.find((entry) => entry.id === "cancel")?.id ||
+        provided[provided.length - 1]?.id;
+  const primaryActions = provided.filter(
+    (entry) => entry.id !== cancelActionId,
+  );
   const defaultActionId =
-    action.defaultActionId && primaryActions.some((entry) => entry.id === action.defaultActionId)
+    action.defaultActionId &&
+    primaryActions.some((entry) => entry.id === action.defaultActionId)
       ? action.defaultActionId
       : primaryActions[0]?.id || cancelActionId;
   return {
@@ -1338,11 +1356,12 @@ function isDeferredActionField(field: AgentPendingField): boolean {
   );
 }
 
-function getPendingActionButton(
-  action: AgentPendingAction,
-  actionId: string,
-) {
-  return normalizePendingActions(action).actions.find((entry) => entry.id === actionId) || null;
+function getPendingActionButton(action: AgentPendingAction, actionId: string) {
+  return (
+    normalizePendingActions(action).actions.find(
+      (entry) => entry.id === actionId,
+    ) || null
+  );
 }
 
 function getPendingActionExecutionMode(
@@ -1361,8 +1380,10 @@ function getPendingActionExecutionMode(
       return false;
     }
     const visibleForAction =
-      !field.visibleForActionIds?.length || field.visibleForActionIds.includes(actionId);
-    const requiredForAction = field.requiredForActionIds?.includes(actionId) || false;
+      !field.visibleForActionIds?.length ||
+      field.visibleForActionIds.includes(actionId);
+    const requiredForAction =
+      field.requiredForActionIds?.includes(actionId) || false;
     return visibleForAction || requiredForAction;
   })
     ? "edit"
@@ -1389,7 +1410,10 @@ function isFieldVisibleForAction(
   field: AgentPendingField,
   actionId: string,
 ): boolean {
-  return !field.visibleForActionIds?.length || field.visibleForActionIds.includes(actionId);
+  return (
+    !field.visibleForActionIds?.length ||
+    field.visibleForActionIds.includes(actionId)
+  );
 }
 
 function isFieldRequiredForAction(
@@ -1407,8 +1431,8 @@ function getPaperResultMinSelection(
   actionId: string,
 ): number {
   return (
-    field.minSelectedByAction?.find((entry) => entry.actionId === actionId)?.min ||
-    0
+    field.minSelectedByAction?.find((entry) => entry.actionId === actionId)
+      ?.min || 0
   );
 }
 
@@ -1742,14 +1766,21 @@ export function renderPendingActionCard(
 
   const buttons: HTMLButtonElement[] = [];
   const isActionValid = (actionId: string) =>
-    fieldAccessors.every((accessor) => isAccessorValidForAction(accessor, actionId));
+    fieldAccessors.every((accessor) =>
+      isAccessorValidForAction(accessor, actionId),
+    );
   const getActionById = (actionId: string) =>
     normalizedActions.actions.find((entry) => entry.id === actionId) || null;
   const actionNeedsSeparateSubmit = (actionId: string) =>
     getPendingActionExecutionMode(pending.action, actionId) === "edit";
   const getSeparateSubmitLabel = (actionId: string) => {
     const actionButton = getActionById(actionId);
-    return actionButton?.submitLabel || actionButton?.label || pending.action.confirmLabel || "Apply";
+    return (
+      actionButton?.submitLabel ||
+      actionButton?.label ||
+      pending.action.confirmLabel ||
+      "Apply"
+    );
   };
   const getBackLabel = (actionId: string) => {
     return getActionById(actionId)?.backLabel || "Get back";
@@ -1789,7 +1820,8 @@ export function renderPendingActionCard(
       const actionButton = doc.createElement("button");
       actionButton.type = "button";
       actionButton.dataset.actionChoice = action.id;
-      actionButton.dataset.primary = action.style === "primary" ? "true" : "false";
+      actionButton.dataset.primary =
+        action.style === "primary" ? "true" : "false";
       actionButton.className =
         action.id === activeActionId
           ? "llm-agent-hitl-btn llm-agent-hitl-btn-active"
@@ -1798,7 +1830,9 @@ export function renderPendingActionCard(
             : "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
       actionButton.textContent = action.label;
       actionButton.addEventListener("click", () => {
-        const nextActionNeedsSeparateSubmit = actionNeedsSeparateSubmit(action.id);
+        const nextActionNeedsSeparateSubmit = actionNeedsSeparateSubmit(
+          action.id,
+        );
         if (activeActionId === action.id) {
           if (!nextActionNeedsSeparateSubmit && isActionValid(action.id)) {
             handleExecute();
@@ -1851,15 +1885,21 @@ export function renderPendingActionCard(
       const selectedCount = Array.isArray(accessor.getValue())
         ? (accessor.getValue() as unknown[]).length
         : 0;
-      return selectedCount >= getPaperResultMinSelection(accessor.field, actionId);
+      return (
+        selectedCount >= getPaperResultMinSelection(accessor.field, actionId)
+      );
     }
     return accessor.isValid();
   };
   const syncActionUi = () => {
     const isSeparateSubmitMode =
-      buttonLayout.hasActionChooser && actionNeedsSeparateSubmit(activeActionId);
+      buttonLayout.hasActionChooser &&
+      actionNeedsSeparateSubmit(activeActionId);
     for (const accessor of fieldAccessors) {
-      accessor.container.hidden = !isFieldVisibleForAction(accessor.field, activeActionId);
+      accessor.container.hidden = !isFieldVisibleForAction(
+        accessor.field,
+        activeActionId,
+      );
     }
     const activeAction = getActionById(activeActionId);
     if (actionChooser) {
@@ -1929,7 +1969,9 @@ export function renderPendingActionCard(
     cancelButton.dataset.kind = "cancel";
     cancelButton.className = "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
     cancelButton.textContent =
-      normalizedActions.cancelAction.label || pending.action.cancelLabel || "Cancel";
+      normalizedActions.cancelAction.label ||
+      pending.action.cancelLabel ||
+      "Cancel";
     cancelButton.addEventListener("click", () => {
       setButtonsDisabled(true);
       getAgentRuntime().resolveConfirmation(pending.requestId, {
@@ -2025,7 +2067,9 @@ function buildAgentTraceRequestSummary(
 ): AgentTraceRequestSummary {
   const selectedTexts = userMessage ? getMessageSelectedTexts(userMessage) : [];
   const paperTitles = userMessage
-    ? normalizePaperContexts(userMessage.paperContexts).map((entry) => entry.title)
+    ? normalizePaperContexts(userMessage.paperContexts).map(
+        (entry) => entry.title,
+      )
     : [];
   const fileNames = Array.isArray(userMessage?.attachments)
     ? userMessage.attachments
@@ -2170,7 +2214,8 @@ function summarizeAgentTraceToolCall(
 
   // Show code block for shell commands and file I/O
   let codeBlock: string | undefined;
-  const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+  const a =
+    args && typeof args === "object" ? (args as Record<string, unknown>) : {};
   if (name === "run_command" && typeof a.command === "string") {
     codeBlock = a.command;
   } else if (name === "file_io" && typeof a.filePath === "string") {
@@ -2182,7 +2227,7 @@ function summarizeAgentTraceToolCall(
     icon: "→",
     // For file_io, use the descriptive onCall text (e.g. "Reading paper section")
     // instead of the generic label. For other tools (run_command), keep label.
-    text: (codeBlock && name !== "file_io") ? label : text,
+    text: codeBlock && name !== "file_io" ? label : text,
     codeBlock,
   };
 }
@@ -2277,8 +2322,7 @@ function summarizeAgentTraceToolResult(
       resolveToolPresentationSummary(
         getToolDefinition(name)?.presentation?.summaries?.onError,
         { label, content, request },
-      ) ||
-      `Could not complete ${label}: ${rawError || "Tool failed"}`;
+      ) || `Could not complete ${label}: ${rawError || "Tool failed"}`;
     return {
       kind: "skip",
       icon: "!",
@@ -2358,6 +2402,45 @@ function compactAgentTraceEvents(
     compact.push(entry);
   }
   return compact;
+}
+
+const TOOL_GROUP_MIN = 2;
+
+function groupToolActions(items: AgentTraceDisplayItem[]): AgentTraceDisplayItem[] {
+  const result: AgentTraceDisplayItem[] = [];
+  let i = 0;
+  let groupCounter = 0;
+  while (i < items.length) {
+    const item = items[i];
+    if (item.type !== "action" || !["tool", "ok", "skip"].includes(item.row.kind)) {
+      result.push(item);
+      i += 1;
+      continue;
+    }
+    // Collect run of consecutive tool action items
+    const run: Array<{ type: "action"; row: AgentTraceSummaryRow; chips?: AgentTraceChip[] }> = [];
+    while (i < items.length) {
+      const cur = items[i];
+      if (cur.type === "action" && ["tool", "ok", "skip"].includes(cur.row.kind)) {
+        run.push(cur as { type: "action"; row: AgentTraceSummaryRow; chips?: AgentTraceChip[] });
+        i += 1;
+      } else {
+        break;
+      }
+    }
+    if (run.length < TOOL_GROUP_MIN) {
+      result.push(...run);
+    } else {
+      groupCounter += 1;
+      result.push({
+        type: "tool_group",
+        key: `tg-${groupCounter}`,
+        label: `${run.length} tool calls`,
+        items: run,
+      });
+    }
+  }
+  return result;
 }
 
 export function buildAgentTraceDisplayItems(
@@ -2475,8 +2558,9 @@ export function buildAgentTraceDisplayItems(
           if (entry.payload.ok) {
             try {
               const cards =
-                getToolDefinition(entry.payload.name)
-                  ?.presentation?.buildResultCards?.(entry.payload.content) ??
+                getToolDefinition(
+                  entry.payload.name,
+                )?.presentation?.buildResultCards?.(entry.payload.content) ??
                 null;
               if (cards && cards.length > 0) {
                 items.push({ type: "card_list", cards });
@@ -2492,7 +2576,10 @@ export function buildAgentTraceDisplayItems(
         pendingActions.set(entry.payload.requestId, entry.payload.action);
         items.push({
           type: "action",
-          row: summarizeAgentTraceConfirmationRequest(entry.payload.action, requestSummary),
+          row: summarizeAgentTraceConfirmationRequest(
+            entry.payload.action,
+            requestSummary,
+          ),
         });
         break;
       case "confirmation_resolved": {
@@ -2560,7 +2647,7 @@ export function buildAgentTraceDisplayItems(
     }
   }
 
-  return items;
+  return groupToolActions(items);
 }
 
 export function renderAgentTrace({
@@ -2594,7 +2681,9 @@ export function renderAgentTrace({
   }
   const processItems = buildAgentTraceDisplayItems(events, userMessage);
   const pending = getPendingConfirmation(events);
-  const hasFinalResponse = events.some((entry) => entry.payload.type === "final");
+  const hasFinalResponse = events.some(
+    (entry) => entry.payload.type === "final",
+  );
   for (const itemEntry of processItems) {
     if (itemEntry.type === "message") {
       const messageEl = doc.createElement("div");
@@ -2660,6 +2749,63 @@ export function renderAgentTrace({
       // Details section removed — most models duplicate summary in details
 
       details.appendChild(bodyWrap);
+      list.appendChild(details);
+      continue;
+    }
+
+    if (itemEntry.type === "tool_group") {
+      const expansionKey = `${runId}:${itemEntry.key}`;
+      const details = doc.createElement("details") as HTMLDetailsElement;
+      details.className = "llm-agent-tool-group";
+      details.open = Boolean(agentToolGroupExpandedCache.get(expansionKey));
+      const summary = doc.createElement("summary") as HTMLElement;
+      summary.className = "llm-agent-tool-group-summary";
+      const summaryIcon = doc.createElement("span");
+      summaryIcon.className = "llm-at-icon";
+      summaryIcon.textContent = "↻";
+      const summaryText = doc.createElement("span");
+      summaryText.className = "llm-at-text llm-at-tool-text";
+      summaryText.textContent = itemEntry.label;
+      summary.append(summaryIcon, summaryText);
+      const toggleGroup = (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const next = !details.open;
+        details.open = next;
+        agentToolGroupExpandedCache.set(expansionKey, next);
+      };
+      summary.addEventListener("mousedown", toggleGroup);
+      summary.addEventListener("click", (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      details.appendChild(summary);
+      const body = doc.createElement("div");
+      body.className = "llm-agent-tool-group-body";
+      for (const subItem of itemEntry.items) {
+        const subWrap = doc.createElement("div");
+        subWrap.className = "llm-agent-process-action";
+        const subRow = doc.createElement("div");
+        subRow.className = `llm-at-row llm-at-row-${subItem.row.kind}`;
+        const subIcon = doc.createElement("span");
+        subIcon.className = "llm-at-icon";
+        subIcon.textContent = subItem.row.icon;
+        const subText = doc.createElement("span");
+        subText.className = `llm-at-text llm-at-${subItem.row.kind}-text`;
+        subText.textContent = subItem.row.text;
+        subRow.append(subIcon, subText);
+        subWrap.appendChild(subRow);
+        if (subItem.row.codeBlock) {
+          const codeWrap = doc.createElement("pre");
+          codeWrap.className = "llm-at-code-block";
+          const code = doc.createElement("code");
+          code.textContent = subItem.row.codeBlock;
+          codeWrap.appendChild(code);
+          subWrap.appendChild(codeWrap);
+        }
+        body.appendChild(subWrap);
+      }
+      details.appendChild(body);
       list.appendChild(details);
       continue;
     }

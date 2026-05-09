@@ -8,12 +8,7 @@ import {
   type QueryLibraryMode,
 } from "../../services/libraryQueryService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
-import {
-  fail,
-  normalizePositiveInt,
-  ok,
-  validateObject,
-} from "../shared";
+import { fail, normalizePositiveInt, ok, validateObject } from "../shared";
 
 type QueryLibraryInput = {
   entity: QueryLibraryEntity;
@@ -60,7 +55,8 @@ function normalizeRef(value: unknown): number | PaperContextRef | null {
           ? value.title.trim()
           : `Paper ${itemId}`,
       attachmentTitle:
-        typeof value.attachmentTitle === "string" && value.attachmentTitle.trim()
+        typeof value.attachmentTitle === "string" &&
+        value.attachmentTitle.trim()
           ? value.attachmentTitle.trim()
           : undefined,
       citationKey:
@@ -80,7 +76,9 @@ function normalizeRef(value: unknown): number | PaperContextRef | null {
   return itemId || null;
 }
 
-function normalizeRefs(value: unknown): Array<number | PaperContextRef> | undefined {
+function normalizeRefs(
+  value: unknown,
+): Array<number | PaperContextRef> | undefined {
   if (!Array.isArray(value)) return undefined;
   const refs = value
     .map((entry) => normalizeRef(entry))
@@ -124,7 +122,9 @@ function normalizeFilters(value: unknown): QueryLibraryFilters | undefined {
 
 function resolveReferenceItemId(
   input: QueryLibraryInput,
-  context: Parameters<AgentToolDefinition<QueryLibraryInput, unknown>["execute"]>[1],
+  context: Parameters<
+    AgentToolDefinition<QueryLibraryInput, unknown>["execute"]
+  >[1],
   zoteroGateway: ZoteroGateway,
 ): number | null {
   const firstRef = input.refs?.[0];
@@ -160,7 +160,8 @@ export function createQueryLibraryTool(
           entity: {
             type: "string",
             enum: ["items", "collections", "notes", "tags", "libraries"],
-            description: "What to query: 'items' for any library item, 'collections' for folders, 'notes' to search/list notes (mode:'search' finds all notes including child notes, mode:'list' lists standalone notes only), 'tags' to list/search all tags in the library, 'libraries' to enumerate all libraries (personal + group).",
+            description:
+              "What to query: 'items' for any library item, 'collections' for folders, 'notes' to search/list notes (mode:'search' finds all notes including child notes, mode:'list' lists standalone notes only), 'tags' to list/search all tags in the library, 'libraries' to enumerate all libraries (personal + group).",
           },
           mode: {
             type: "string",
@@ -201,11 +202,13 @@ export function createQueryLibraryTool(
               },
               itemType: {
                 type: "string",
-                description: "Filter by Zotero item type, e.g. 'book', 'note', 'webpage', 'journalArticle', 'conferencePaper'. Only used with entity:'items'.",
+                description:
+                  "Filter by Zotero item type, e.g. 'book', 'note', 'webpage', 'journalArticle', 'conferencePaper'. Only used with entity:'items'.",
               },
               tag: {
                 type: "string",
-                description: "Filter by exact tag name (e.g. 'machine learning'). Only items with this tag are returned.",
+                description:
+                  "Filter by exact tag name (e.g. 'machine learning'). Only items with this tag are returned.",
               },
             },
           },
@@ -220,7 +223,13 @@ export function createQueryLibraryTool(
             type: "array",
             items: {
               type: "string",
-              enum: ["metadata", "attachments", "tags", "collections", "abstract"],
+              enum: [
+                "metadata",
+                "attachments",
+                "tags",
+                "collections",
+                "abstract",
+              ],
             },
           },
         },
@@ -270,7 +279,7 @@ export function createQueryLibraryTool(
           }
           const totalGroups = Number(
             content &&
-            typeof content === "object" &&
+              typeof content === "object" &&
               (content as { totalGroups?: unknown }).totalGroups
               ? (content as { totalGroups?: unknown }).totalGroups
               : 0,
@@ -330,9 +339,11 @@ export function createQueryLibraryTool(
         return fail("mode:'related' is only valid for entity:'items'");
       }
       const view =
-        args.view === "tree" ? "tree" as const
-          : args.view === "flat" ? "flat" as const
-          : undefined;
+        args.view === "tree"
+          ? ("tree" as const)
+          : args.view === "flat"
+            ? ("flat" as const)
+            : undefined;
       return ok<QueryLibraryInput>({
         entity,
         mode,
@@ -456,9 +467,15 @@ export function createQueryLibraryTool(
         };
       }
       if (input.mode === "related") {
-        const referenceItemId = resolveReferenceItemId(input, context, zoteroGateway);
+        const referenceItemId = resolveReferenceItemId(
+          input,
+          context,
+          zoteroGateway,
+        );
         if (!referenceItemId) {
-          throw new Error("A reference paper is required for related-item queries");
+          throw new Error(
+            "A reference paper is required for related-item queries",
+          );
         }
         const result = await queryService.findRelatedItems({
           libraryID,

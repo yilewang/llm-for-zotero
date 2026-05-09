@@ -1,4 +1,8 @@
-import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type {
+  AgentAction,
+  ActionExecutionContext,
+  ActionResult,
+} from "./types";
 import type {
   EditableArticleMetadataPatch,
   EditableArticleMetadataField,
@@ -31,7 +35,10 @@ type SyncMetadataOutput = {
  *
  * Supports items with DOI, arXiv ID, or just a title — not limited to DOI-only items.
  */
-export const syncMetadataAction: AgentAction<SyncMetadataInput, SyncMetadataOutput> = {
+export const syncMetadataAction: AgentAction<
+  SyncMetadataInput,
+  SyncMetadataOutput
+> = {
   name: "sync_metadata",
   description:
     "Fetch canonical metadata from Zotero translators, CrossRef, and Semantic Scholar for library items. " +
@@ -77,9 +84,17 @@ export const syncMetadataAction: AgentAction<SyncMetadataInput, SyncMetadataOutp
       queryArgs.filters = { collectionId: input.collectionId };
     }
 
-    const queryResult = await callTool("query_library", queryArgs, ctx, "Querying library items");
+    const queryResult = await callTool(
+      "query_library",
+      queryArgs,
+      ctx,
+      "Querying library items",
+    );
     if (!queryResult.ok) {
-      return { ok: false, error: `Failed to query library: ${JSON.stringify(queryResult.content)}` };
+      return {
+        ok: false,
+        error: `Failed to query library: ${JSON.stringify(queryResult.content)}`,
+      };
     }
 
     const content = queryResult.content as Record<string, unknown>;
@@ -98,7 +113,9 @@ export const syncMetadataAction: AgentAction<SyncMetadataInput, SyncMetadataOutp
       const itemId = typeof record.itemId === "number" ? record.itemId : null;
       if (!itemId) continue;
       const meta = record.metadata;
-      const doi = getMetadataField(meta, "DOI")?.replace(/^https?:\/\/doi\.org\//i, "") || undefined;
+      const doi =
+        getMetadataField(meta, "DOI")?.replace(/^https?:\/\/doi\.org\//i, "") ||
+        undefined;
       const title = getMetadataTitle(meta) || undefined;
       if (doi || title) {
         candidates.push({ itemId, doi, title, currentMeta: meta });
@@ -114,7 +131,13 @@ export const syncMetadataAction: AgentAction<SyncMetadataInput, SyncMetadataOutp
     if (!candidates.length) {
       return {
         ok: true,
-        output: { scanned: allItems.length, withIdentifier: 0, updated: 0, skipped: 0, errors: 0 },
+        output: {
+          scanned: allItems.length,
+          withIdentifier: 0,
+          updated: 0,
+          skipped: 0,
+          errors: 0,
+        },
       };
     }
 
@@ -136,7 +159,9 @@ export const syncMetadataAction: AgentAction<SyncMetadataInput, SyncMetadataOutp
     let errorCount = 0;
 
     for (const { itemId, doi, title, currentMeta } of candidates) {
-      const label = doi ? `DOI: ${doi}` : `title: ${(title || "").slice(0, 50)}`;
+      const label = doi
+        ? `DOI: ${doi}`
+        : `title: ${(title || "").slice(0, 50)}`;
       ctx.onProgress({
         type: "status",
         message: `Fetching metadata for ${label}`,
@@ -165,13 +190,17 @@ export const syncMetadataAction: AgentAction<SyncMetadataInput, SyncMetadataOutp
       }
 
       const metaContent = metaResult.content as Record<string, unknown>;
-      const results = Array.isArray(metaContent.results) ? metaContent.results : [];
+      const results = Array.isArray(metaContent.results)
+        ? metaContent.results
+        : [];
       const externalMeta = results[0] as Record<string, unknown> | undefined;
       if (!externalMeta) continue;
 
       // The patch is built at the source (literatureSearchService) — just read it.
       // Only fill in fields that are currently empty in Zotero.
-      const sourcePatch = externalMeta.patch as EditableArticleMetadataPatch | undefined;
+      const sourcePatch = externalMeta.patch as
+        | EditableArticleMetadataPatch
+        | undefined;
       if (!sourcePatch || Object.keys(sourcePatch).length === 0) continue;
 
       const patch: EditableArticleMetadataPatch = {};
@@ -191,7 +220,10 @@ export const syncMetadataAction: AgentAction<SyncMetadataInput, SyncMetadataOutp
           itemId,
           patch,
           currentMeta,
-          externalTitle: typeof externalMeta.displayTitle === "string" ? externalMeta.displayTitle : (sourcePatch.title || String(itemId)),
+          externalTitle:
+            typeof externalMeta.displayTitle === "string"
+              ? externalMeta.displayTitle
+              : sourcePatch.title || String(itemId),
         });
       }
     }
@@ -238,7 +270,12 @@ export const syncMetadataAction: AgentAction<SyncMetadataInput, SyncMetadataOutp
 
     const mutateContent = mutateResult.content as Record<string, unknown>;
     const succeeded = mutateResult.ok
-      ? Number(mutateContent.appliedCount || (Array.isArray(mutateContent.results) ? mutateContent.results.length : updateCandidates.length))
+      ? Number(
+          mutateContent.appliedCount ||
+            (Array.isArray(mutateContent.results)
+              ? mutateContent.results.length
+              : updateCandidates.length),
+        )
       : 0;
     const denied = mutateResult.ok ? 0 : updateCandidates.length;
 

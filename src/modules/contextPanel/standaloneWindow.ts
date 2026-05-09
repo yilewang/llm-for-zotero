@@ -15,7 +15,10 @@ import {
   createGlobalPortalItem,
   createPaperPortalItem,
 } from "./portalScope";
-import { getLockedGlobalConversationKey, buildPaperStateKey } from "./prefHelpers";
+import {
+  getLockedGlobalConversationKey,
+  buildPaperStateKey,
+} from "./prefHelpers";
 import { applyPanelFontScale } from "./prefHelpers";
 import { buildUI } from "./buildUI";
 import { setupHandlers, type SetupHandlersHooks } from "./setupHandlers";
@@ -1918,9 +1921,8 @@ export function openStandaloneChat(options?: {
         const originalText = skillRefreshBtn.textContent;
         skillRefreshBtn.textContent = t("Checking…");
         try {
-          const { initUserSkills } = await import(
-            "../../agent/skills/userSkills"
-          );
+          const { initUserSkills } =
+            await import("../../agent/skills/userSkills");
           await initUserSkills();
           await reloadRuntimeSkills();
           await renderSkillGrid();

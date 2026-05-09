@@ -131,7 +131,10 @@ function registerMockPaper(params: {
   };
 }
 
-function buildActiveAttachment(itemId: number, contextItemId: number): MockItem {
+function buildActiveAttachment(
+  itemId: number,
+  contextItemId: number,
+): MockItem {
   return {
     id: contextItemId,
     parentID: itemId,
@@ -145,7 +148,8 @@ function buildActiveAttachment(itemId: number, contextItemId: number): MockItem 
 
 describe("multiContextPlanner", function () {
   before(function () {
-    originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero;
+    originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown })
+      .Zotero;
     const prefs: Record<string, unknown> = {};
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
       Items: {
@@ -155,7 +159,9 @@ describe("multiContextPlanner", function () {
       },
       Prefs: {
         get: (key: string) => prefs[key],
-        set: (key: string, value: unknown) => { prefs[key] = value; },
+        set: (key: string, value: unknown) => {
+          prefs[key] = value;
+        },
       },
     } as unknown as typeof Zotero;
   });
@@ -253,7 +259,10 @@ describe("multiContextPlanner", function () {
     });
     const plan = await resolveMultiContextPlan({
       conversationMode: "paper",
-      activeContextItem: buildActiveAttachment(paper.itemId, paper.contextItemId) as any,
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
       question: "Summarize this paper.",
       paperContexts: [],
       fullTextPaperContexts: [paper],
@@ -286,7 +295,10 @@ describe("multiContextPlanner", function () {
     });
     const plan = await resolveMultiContextPlan({
       conversationMode: "paper",
-      activeContextItem: buildActiveAttachment(paper.itemId, paper.contextItemId) as any,
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
       question: "Summarize the paper.",
       paperContexts: [],
       fullTextPaperContexts: [paper],
@@ -323,7 +335,10 @@ describe("multiContextPlanner", function () {
     });
     const plan = await resolveMultiContextPlan({
       conversationMode: "paper",
-      activeContextItem: buildActiveAttachment(paper.itemId, paper.contextItemId) as any,
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
       question: "What do the results say about recall?",
       paperContexts: [],
       fullTextPaperContexts: [],
@@ -437,7 +452,10 @@ describe("multiContextPlanner", function () {
 
     assert.isAtLeast(result.selectedChunkCount, 2);
     assert.isAtMost(result.selectedChunkCount, 5);
-    assert.include(result.contextText, "Results describe the most important outcome.");
+    assert.include(
+      result.contextText,
+      "Results describe the most important outcome.",
+    );
   });
 
   it("adds a capability reminder only for follow-up questions about access or coverage", async function () {
@@ -454,7 +472,10 @@ describe("multiContextPlanner", function () {
     });
     const plan = await resolveMultiContextPlan({
       conversationMode: "paper",
-      activeContextItem: buildActiveAttachment(paper.itemId, paper.contextItemId) as any,
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
       question: "Do you have access to the full text or only a few sections?",
       paperContexts: [],
       fullTextPaperContexts: [],
@@ -464,7 +485,10 @@ describe("multiContextPlanner", function () {
     });
     const unrelated = await resolveMultiContextPlan({
       conversationMode: "paper",
-      activeContextItem: buildActiveAttachment(paper.itemId, paper.contextItemId) as any,
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
       question: "What is the main finding?",
       paperContexts: [],
       fullTextPaperContexts: [],

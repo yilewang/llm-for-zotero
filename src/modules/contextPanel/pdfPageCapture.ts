@@ -4,7 +4,6 @@ import { getActiveReaderForSelectedTab } from "./contextResolution";
 // These mirror the equivalent private helpers in agent/services/pdfPageService
 // but live here so contextPanel code can use them without importing agent code.
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function unwrapWrappedJsObject<T>(value: T): T {
   if (!value || (typeof value !== "object" && typeof value !== "function")) {
     return value;
@@ -47,7 +46,6 @@ function resolveRenderablePdfPage(value: unknown): RenderablePdfPage | null {
   return null;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getPdfViewerApplication(reader: any): any | null {
   const candidates = [
     reader?._internalReader?._lastView,
@@ -75,7 +73,6 @@ function getPdfViewerApplication(reader: any): any | null {
   return null;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getReaderDocument(reader: any): Document | null {
   return (
     reader?._iframeWindow?.document ||
@@ -88,10 +85,10 @@ function getReaderDocument(reader: any): Document | null {
 function isCanvasElement(value: unknown): value is HTMLCanvasElement {
   return Boolean(
     value &&
-      typeof value === "object" &&
-      typeof (value as { getContext?: unknown }).getContext === "function" &&
-      ((value as { nodeName?: unknown }).nodeName === "CANVAS" ||
-        (value as { tagName?: unknown }).tagName === "CANVAS"),
+    typeof value === "object" &&
+    typeof (value as { getContext?: unknown }).getContext === "function" &&
+    ((value as { nodeName?: unknown }).nodeName === "CANVAS" ||
+      (value as { tagName?: unknown }).tagName === "CANVAS"),
   );
 }
 
@@ -110,8 +107,10 @@ function pickLargestCanvas(
   return best;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getPageViewCanvas(app: any, pageIndex: number): HTMLCanvasElement | null {
+function getPageViewCanvas(
+  app: any,
+  pageIndex: number,
+): HTMLCanvasElement | null {
   const pageView = unwrapWrappedJsObject(
     app?.pdfViewer?.getPageView?.(pageIndex) ||
       app?.pdfViewer?._pages?.[pageIndex] ||
@@ -122,7 +121,9 @@ function getPageViewCanvas(app: any, pageIndex: number): HTMLCanvasElement | nul
   if (isCanvasElement(directCanvas)) return directCanvas;
   if (pageView.div) {
     return pickLargestCanvas(
-      Array.from(pageView.div.querySelectorAll("canvas")) as HTMLCanvasElement[],
+      Array.from(
+        pageView.div.querySelectorAll("canvas"),
+      ) as HTMLCanvasElement[],
     );
   }
   return null;
@@ -146,9 +147,8 @@ function findRenderedPageCanvas(
 }
 
 async function waitForRenderedPageCanvas(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   reader: any,
   pageNumber: number,
   timeoutMs = 1800,
@@ -211,9 +211,7 @@ export async function captureCurrentPdfPage(): Promise<string | null> {
   const pdfDocument = unwrapWrappedJsObject(
     app.pdfDocument as { getPage?: (n: number) => Promise<unknown> },
   );
-  if (
-    typeof (pdfDocument as { getPage?: unknown }).getPage !== "function"
-  ) {
+  if (typeof (pdfDocument as { getPage?: unknown }).getPage !== "function") {
     return null;
   }
   const rawPage = await (
@@ -296,8 +294,11 @@ export function parsePageRanges(input: string, maxPage: number): number[] {
 /**
  * Navigates the reader to a specific page index (0-based).
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function navigateReaderToPage(reader: any, pageIndex: number): Promise<boolean> {
+
+async function navigateReaderToPage(
+  reader: any,
+  pageIndex: number,
+): Promise<boolean> {
   if (typeof reader?.navigate !== "function") return false;
   const idx = Math.max(0, Math.floor(pageIndex));
   try {
@@ -319,9 +320,8 @@ async function navigateReaderToPage(reader: any, pageIndex: number): Promise<boo
  * Falls back to off-screen PDF.js rendering if the canvas grab fails.
  */
 async function capturePageByNavigation(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
   reader: any,
   pageNumber: number,
 ): Promise<string | null> {
@@ -375,7 +375,9 @@ async function capturePageByNavigation(
     const offscreen = canvasDoc.createElement("canvas") as HTMLCanvasElement;
     offscreen.width = Math.max(1, Math.ceil(viewport.width));
     offscreen.height = Math.max(1, Math.ceil(viewport.height));
-    const context = offscreen.getContext("2d") as CanvasRenderingContext2D | null;
+    const context = offscreen.getContext(
+      "2d",
+    ) as CanvasRenderingContext2D | null;
     if (!context) return null;
 
     const renderTask = pdfPage.render({ canvasContext: context, viewport });
@@ -429,7 +431,11 @@ export async function capturePdfPages(
   try {
     for (let idx = 0; idx < total; idx++) {
       opts?.onProgress?.(idx + 1, total);
-      const dataUrl = await capturePageByNavigation(app, reader, pageNumbers[idx]);
+      const dataUrl = await capturePageByNavigation(
+        app,
+        reader,
+        pageNumbers[idx],
+      );
       if (dataUrl) {
         results.push(dataUrl);
       }

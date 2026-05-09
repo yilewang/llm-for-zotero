@@ -52,7 +52,10 @@ function normalizeOperationEntry(
       ) as PaperContextRef | undefined) || undefined
     : undefined;
   return {
-    id: typeof value.id === "string" && value.id.trim() ? value.id.trim() : `op-${index + 1}`,
+    id:
+      typeof value.id === "string" && value.id.trim()
+        ? value.id.trim()
+        : `op-${index + 1}`,
     type: "update_metadata",
     itemId: normalizePositiveInt(value.itemId),
     paperContext,
@@ -78,8 +81,7 @@ export function createUpdateMetadataTool(
         properties: {
           itemId: {
             type: "number",
-            description:
-              "Zotero item ID. If omitted, targets the active item.",
+            description: "Zotero item ID. If omitted, targets the active item.",
           },
           metadata: {
             type: "object",
@@ -173,9 +175,7 @@ export function createUpdateMetadataTool(
       if (Array.isArray(args.operations)) {
         const operations = args.operations
           .map((entry, index) => normalizeOperationEntry(entry, index))
-          .filter(
-            (entry): entry is UpdateMetadataOperation => Boolean(entry),
-          );
+          .filter((entry): entry is UpdateMetadataOperation => Boolean(entry));
         if (!operations.length) {
           return fail(
             "operations must contain at least one entry with valid metadata fields.",
@@ -236,28 +236,24 @@ export function createUpdateMetadataTool(
             isBatch,
           );
         })
-        .filter(
-          (f): f is NonNullable<typeof f> => Boolean(f),
-        );
+        .filter((f): f is NonNullable<typeof f> => Boolean(f));
 
       const title = isBatch
         ? `Update metadata for ${input.operations.length} items`
-        : `Update metadata for ${
-            (() => {
-              const op = input.operations[0];
-              const item = zoteroGateway.resolveMetadataItem({
-                itemId: op.itemId,
-                paperContext: op.paperContext,
-                request: context.request,
-                item: context.item,
-              });
-              return (
-                zoteroGateway.getEditableArticleMetadata(item)?.title ||
-                op.paperContext?.title ||
-                `Item ${op.itemId ?? "active item"}`
-              );
-            })()
-          }`;
+        : `Update metadata for ${(() => {
+            const op = input.operations[0];
+            const item = zoteroGateway.resolveMetadataItem({
+              itemId: op.itemId,
+              paperContext: op.paperContext,
+              request: context.request,
+              item: context.item,
+            });
+            return (
+              zoteroGateway.getEditableArticleMetadata(item)?.title ||
+              op.paperContext?.title ||
+              `Item ${op.itemId ?? "active item"}`
+            );
+          })()}`;
 
       return {
         toolName: "update_metadata",

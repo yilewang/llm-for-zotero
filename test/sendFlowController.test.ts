@@ -169,20 +169,21 @@ describe("sendFlowController", function () {
   });
 
   it("uses retain-pinned callbacks for edit-latest flow", async function () {
-    const { controller, inputBox, getCounts, getLastEditRuntimeMode } = createBaseDeps({
-      getActiveEditSession: () => ({
-        conversationKey: item.id,
-        userTimestamp: 10,
-        assistantTimestamp: 20,
-      }),
-      getLatestEditablePair: async () => ({
-        conversationKey: item.id,
-        pair: {
-          userMessage: { timestamp: 10 },
-          assistantMessage: { timestamp: 20, streaming: false },
-        },
-      }),
-    });
+    const { controller, inputBox, getCounts, getLastEditRuntimeMode } =
+      createBaseDeps({
+        getActiveEditSession: () => ({
+          conversationKey: item.id,
+          userTimestamp: 10,
+          assistantTimestamp: 20,
+        }),
+        getLatestEditablePair: async () => ({
+          conversationKey: item.id,
+          pair: {
+            userMessage: { timestamp: 10 },
+            assistantMessage: { timestamp: 20, streaming: false },
+          },
+        }),
+      });
     await controller.doSend();
     const counts = getCounts();
 
@@ -221,10 +222,7 @@ describe("sendFlowController", function () {
   });
 
   it("passes provider-uploaded PDF context through latest-turn edit retries", async function () {
-    const {
-      controller,
-      getLastEditPdfUploadSystemMessages,
-    } = createBaseDeps({
+    const { controller, getLastEditPdfUploadSystemMessages } = createBaseDeps({
       getSelectedFiles: () => [],
       getFullTextPaperContexts: () => [],
       getPdfModePaperContexts: () => [selectedPaper],

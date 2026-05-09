@@ -93,12 +93,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     hasItem && item
       ? activeNoteSession?.parentItemId ||
         (isPaperPortalItem(item)
-        ? getPaperPortalBaseItemID(item) || 0
-        : item.isAttachment() && item.parentID
-          ? item.parentID
-          : isPaperMode
-            ? item.id
-            : 0)
+          ? getPaperPortalBaseItemID(item) || 0
+          : item.isAttachment() && item.parentID
+            ? item.parentID
+            : isPaperMode
+              ? item.id
+              : 0)
       : 0;
   const hasPaperContext = basePaperItemId > 0;
 
@@ -191,7 +191,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   // In the standalone window, it shows "Library chat".
   const modeChipLabel = activeNoteSession
     ? t("Note editing")
-    : (isStandaloneBody ? t("Library chat") : t("Paper chat"));
+    : isStandaloneBody
+      ? t("Library chat")
+      : t("Paper chat");
   const modeChipBtn = createElement(doc, "button", "llm-mode-chip", {
     id: "llm-mode-chip",
     type: "button",
@@ -213,7 +215,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   modeLockBtn.setAttribute("role", "button");
   modeLockBtn.setAttribute("tabindex", "0");
   modeLockBtn.style.display =
-    isStandaloneBody && hasItem && isGlobalMode && !activeNoteSession ? "flex" : "none";
+    isStandaloneBody && hasItem && isGlobalMode && !activeNoteSession
+      ? "flex"
+      : "none";
 
   modeSwitchWrap.append(modeChipBtn, modeLockBtn);
 
@@ -223,17 +227,59 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   headerTop.appendChild(headerInfo);
 
   const headerActions = createElement(doc, "div", "llm-header-actions");
-  const popoutBtn = createElement(doc, "button", "llm-btn-icon llm-popout-btn", {
-    id: "llm-popout",
-    type: "button",
-    title: t("Open in Window"),
-  });
+  const sessionFolderBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-session-action-btn llm-session-folder-btn",
+    {
+      id: "llm-session-folder-btn",
+      type: "button",
+      textContent: "",
+      title: t("Open current Claude session folder"),
+    },
+  ) as HTMLButtonElement;
+  sessionFolderBtn.style.display = "none";
+  sessionFolderBtn.setAttribute(
+    "aria-label",
+    t("Open current Claude session folder"),
+  );
+  const sessionTerminalBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-session-action-btn llm-session-terminal-btn",
+    {
+      id: "llm-session-terminal-btn",
+      type: "button",
+      textContent: "",
+      title: t("Open terminal in current Claude session folder"),
+    },
+  ) as HTMLButtonElement;
+  sessionTerminalBtn.style.display = "none";
+  sessionTerminalBtn.setAttribute(
+    "aria-label",
+    t("Open terminal in current Claude session folder"),
+  );
+  const popoutBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-popout-btn",
+    {
+      id: "llm-popout",
+      type: "button",
+      title: t("Open in Window"),
+    },
+  );
   popoutBtn.setAttribute("aria-label", t("Open chat in a standalone window"));
-  const settingsBtn = createElement(doc, "button", "llm-btn-icon llm-settings-btn", {
-    id: "llm-settings",
-    type: "button",
-    title: t("Settings"),
-  });
+  const settingsBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-settings-btn",
+    {
+      id: "llm-settings",
+      type: "button",
+      title: t("Settings"),
+    },
+  );
   settingsBtn.setAttribute("aria-label", t("Open plugin settings"));
   settingsBtn.dataset.preferencesPaneId = PREFERENCES_PANE_ID;
   const exportBtn = createElement(doc, "button", "llm-btn-icon", {
@@ -248,7 +294,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     type: "button",
     textContent: t("Clear"),
   });
-  headerActions.append(popoutBtn, settingsBtn, exportBtn, clearBtn);
+  headerActions.append(
+    sessionTerminalBtn,
+    sessionFolderBtn,
+    popoutBtn,
+    settingsBtn,
+    exportBtn,
+    clearBtn,
+  );
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
   const historyMenu = createElement(doc, "div", "llm-history-menu", {
@@ -485,7 +538,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   if (isStandaloneBody && isGlobalMode) {
     slashList.append(slashUploadBtn, slashReferenceBtn);
   } else {
-    slashList.append(slashUploadBtn, slashReferenceBtn, slashPdfPageBtn, slashPdfMultiplePagesBtn);
+    slashList.append(
+      slashUploadBtn,
+      slashReferenceBtn,
+      slashPdfPageBtn,
+      slashPdfMultiplePagesBtn,
+    );
   }
   slashMenu.append(slashList);
   // slashMenu is appended to composeArea below (after composeArea is created)
@@ -521,6 +579,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     "llm-agent-toggle-indicator",
   );
   runtimeModeIndicator.setAttribute("aria-hidden", "true");
+  const runtimeModeBackendIcon = createElement(
+    doc,
+    "span",
+    "llm-agent-toggle-backend-icon",
+  );
+  runtimeModeBackendIcon.setAttribute("aria-hidden", "true");
   const runtimeModeLabel = createElement(
     doc,
     "span",
@@ -529,8 +593,26 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       textContent: t("Agent mode"),
     },
   );
-  runtimeModeBtn.append(runtimeModeIndicator, runtimeModeLabel);
+  runtimeModeBtn.append(
+    runtimeModeIndicator,
+    runtimeModeBackendIcon,
+    runtimeModeLabel,
+  );
   contextPreviews.appendChild(runtimeModeBtn);
+  const claudePermissionBtn = createElement(
+    doc,
+    "button",
+    "llm-claude-permission-toggle",
+    {
+      id: "llm-claude-permission-toggle",
+      type: "button",
+      textContent: "safe",
+      title: "Claude Code permission mode",
+    },
+  ) as HTMLButtonElement;
+  claudePermissionBtn.style.display = "none";
+  claudePermissionBtn.setAttribute("aria-label", "Claude Code permission mode");
+  contextPreviews.appendChild(claudePermissionBtn);
   const selectedContextList = createElement(
     doc,
     "div",
@@ -706,6 +788,16 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   actionHitlPanel.style.display = "none";
   composeArea.appendChild(actionHitlPanel);
 
+  const agentQueuePanel = createElement(doc, "div", "llm-agent-queue-panel", {
+    id: "llm-agent-queue-panel",
+  });
+  agentQueuePanel.style.display = "none";
+  const agentQueueList = createElement(doc, "div", "llm-agent-queue-list", {
+    id: "llm-agent-queue-list",
+  });
+  agentQueuePanel.append(agentQueueList);
+  composeArea.appendChild(agentQueuePanel);
+
   // Command row — shows active skill/action badge above textarea
   // Uses the exact same chip DOM as paper context chips
   const commandRow = createElement(
@@ -826,6 +918,24 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
 
   const {
+    slot: claudeModelDropdown,
+    button: _claudeModelBtn,
+    menu: claudeModelMenu,
+  } = createActionDropdown(doc, {
+    slotId: "llm-claude-model-dropdown",
+    slotClassName: "llm-model-dropdown llm-claude-runtime-only",
+    buttonId: "llm-claude-model-toggle",
+    buttonClassName:
+      "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-model-btn",
+    buttonText: "Model: ...",
+    menuId: "llm-claude-model-menu",
+    menuClassName: "llm-model-menu",
+    disabled: !hasItem,
+  });
+  claudeModelDropdown.style.display = "none";
+  claudeModelMenu.style.display = "none";
+
+  const {
     slot: reasoningDropdown,
     button: reasoningBtn,
     menu: reasoningMenu,
@@ -840,6 +950,24 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     menuClassName: "llm-reasoning-menu",
     disabled: !hasItem,
   });
+
+  const {
+    slot: claudeReasoningDropdown,
+    button: _claudeReasoningBtn,
+    menu: claudeReasoningMenu,
+  } = createActionDropdown(doc, {
+    slotId: "llm-claude-reasoning-dropdown",
+    slotClassName: "llm-reasoning-dropdown llm-claude-runtime-only",
+    buttonId: "llm-claude-reasoning-toggle",
+    buttonClassName:
+      "llm-shortcut-btn llm-action-btn llm-action-btn-secondary llm-reasoning-btn",
+    buttonText: t("Reasoning"),
+    menuId: "llm-claude-reasoning-menu",
+    menuClassName: "llm-reasoning-menu",
+    disabled: !hasItem,
+  });
+  claudeReasoningDropdown.style.display = "none";
+  claudeReasoningMenu.style.display = "none";
 
   const sendBtn = createElement(
     doc,
@@ -884,7 +1012,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     selectTextSlot,
     screenshotSlot,
     modelDropdown,
+    claudeModelDropdown,
     reasoningDropdown,
+    claudeReasoningDropdown,
   );
   // Hide PDF-reader-specific buttons in standalone library chat
   if (isStandaloneBody && isGlobalMode) {

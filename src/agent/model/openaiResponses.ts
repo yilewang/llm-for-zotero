@@ -5,7 +5,10 @@ import {
   uploadFilesForResponses,
   type ChatFileAttachment,
 } from "../../utils/llmClient";
-import { normalizeMaxTokens, normalizeTemperature } from "../../utils/normalization";
+import {
+  normalizeMaxTokens,
+  normalizeTemperature,
+} from "../../utils/normalization";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
 import type {
   AgentModelCapabilities,
@@ -22,7 +25,10 @@ import {
   normalizeResponsesStepFromPayload,
   parseResponsesStepStream,
 } from "./responsesShared";
-import { buildResponsesFunctionTools, getToolContinuationMessages } from "./shared";
+import {
+  buildResponsesFunctionTools,
+  getToolContinuationMessages,
+} from "./shared";
 
 async function uploadFilePart(
   part: Extract<AgentModelContentPart, { type: "file_ref" }>,
@@ -124,7 +130,9 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
           ...(reasoningPayload.omitTemperature
             ? {}
             : {
-                temperature: normalizeTemperature(request.advanced?.temperature),
+                temperature: normalizeTemperature(
+                  request.advanced?.temperature,
+                ),
               }),
         };
       },

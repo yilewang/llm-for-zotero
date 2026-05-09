@@ -48,7 +48,8 @@ describe("parseClassifierResponse", function () {
   });
 
   it("drops IDs that aren't in the known skill set", function () {
-    const raw = '{"skillIds": ["write-note", "made-up-skill", "analyze-figures"]}';
+    const raw =
+      '{"skillIds": ["write-note", "made-up-skill", "analyze-figures"]}';
     const result = parseClassifierResponse(raw, SKILLS);
     assert.deepEqual(result, ["write-note", "analyze-figures"]);
   });
@@ -57,7 +58,9 @@ describe("parseClassifierResponse", function () {
     assert.isNull(parseClassifierResponse("not JSON at all", SKILLS));
     assert.isNull(parseClassifierResponse("", SKILLS));
     assert.isNull(parseClassifierResponse('{"wrongKey": []}', SKILLS));
-    assert.isNull(parseClassifierResponse('{"skillIds": "not-an-array"}', SKILLS));
+    assert.isNull(
+      parseClassifierResponse('{"skillIds": "not-an-array"}', SKILLS),
+    );
   });
 
   it("strips non-string entries from the skillIds array", function () {

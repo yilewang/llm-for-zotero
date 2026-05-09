@@ -109,7 +109,8 @@ describe("editCurrentNote path imports", function () {
     await tool.execute(
       {
         mode: "edit",
-        content: '<img src="file://server/share/fig%231.png" alt="Shared figure" />',
+        content:
+          '<img src="file://server/share/fig%231.png" alt="Shared figure" />',
         noteId: 55,
         expectedOriginalHtml: "<p>Original body</p>",
       },
@@ -126,7 +127,10 @@ describe("editCurrentNote path imports", function () {
         return { key: "UNUSED" };
       },
       replaceCurrentNote: async ({ content }: { content: string }) => {
-        assert.equal(content, '<img src="file://server" alt="Broken figure" />');
+        assert.equal(
+          content,
+          '<img src="file://server" alt="Broken figure" />',
+        );
         return {
           noteId: 55,
           title: "Draft Note",

@@ -1,4 +1,8 @@
-import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type {
+  AgentAction,
+  ActionExecutionContext,
+  ActionResult,
+} from "./types";
 import { callTool } from "./executor";
 import { callLLM } from "../../utils/llmClient";
 
@@ -87,7 +91,12 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
     }
     if (input.limit) queryArgs.limit = input.limit;
 
-    const queryResult = await callTool("query_library", queryArgs, ctx, "Finding untagged items");
+    const queryResult = await callTool(
+      "query_library",
+      queryArgs,
+      ctx,
+      "Finding untagged items",
+    );
     if (!queryResult.ok) {
       return {
         ok: false,
@@ -96,7 +105,9 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
     }
 
     const queryContent = queryResult.content as Record<string, unknown>;
-    const untaggedRaw = Array.isArray(queryContent.results) ? queryContent.results : [];
+    const untaggedRaw = Array.isArray(queryContent.results)
+      ? queryContent.results
+      : [];
     const untaggedItems = normalizeUntaggedItems(untaggedRaw);
 
     ctx.onProgress({
@@ -167,10 +178,11 @@ export const autoTagAction: AgentAction<AutoTagInput, AutoTagOutput> = {
     );
 
     const mutateContent = mutateResult.content as Record<string, unknown>;
-    const resultObj = mutateContent.result as Record<string, unknown> | undefined;
-    const taggedCount = mutateResult.ok && resultObj
-      ? Number(resultObj.updatedCount || 0)
-      : 0;
+    const resultObj = mutateContent.result as
+      | Record<string, unknown>
+      | undefined;
+    const taggedCount =
+      mutateResult.ok && resultObj ? Number(resultObj.updatedCount || 0) : 0;
     const mutateError =
       !mutateResult.ok && typeof mutateContent.error === "string"
         ? mutateContent.error
@@ -219,7 +231,8 @@ function normalizeUntaggedItems(raw: unknown[]): UntaggedItem[] {
       itemId: record.itemId,
       title,
       abstract,
-      creator: typeof record.firstCreator === "string" ? record.firstCreator : "",
+      creator:
+        typeof record.firstCreator === "string" ? record.firstCreator : "",
       year: typeof record.year === "string" ? record.year : "",
     });
   }
@@ -291,12 +304,12 @@ async function suggestTagsBatch(
   return parseTagResponse(raw, batch);
 }
 
-function buildTagPrompt(
-  batch: UntaggedItem[],
-  existingTags: string[],
-): string {
+function buildTagPrompt(batch: UntaggedItem[], existingTags: string[]): string {
   const vocab = existingTags.length
-    ? `Existing tags in this library (prefer these when they fit):\n${existingTags.slice(0, 80).map((t) => `- ${t}`).join("\n")}\n\n`
+    ? `Existing tags in this library (prefer these when they fit):\n${existingTags
+        .slice(0, 80)
+        .map((t) => `- ${t}`)
+        .join("\n")}\n\n`
     : "";
   const itemsBlock = batch
     .map((item) => {

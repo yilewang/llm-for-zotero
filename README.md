@@ -226,12 +226,12 @@ Open `Preferences` → `llm-for-zotero` and scroll to the **Notes Directory** se
   <img src="./assets/outside_notes.png" alt="Screenshot of the Notes Directory settings panel" width="512" />
 </p>
 
-| Setting                  | Description                                                                                      | Example                |
-| ------------------------ | ------------------------------------------------------------------------------------------------ | ---------------------- |
-| **Nickname**             | How you refer to this directory in chat — the agent recognizes the name when you mention it      | `Obsidian`, `Logseq`   |
-| **Notes Directory Path** | Absolute path to the root directory where notes are saved                                        | `/Users/me/MyVault`    |
-| **Default Folder**       | Default subfolder for new notes (the agent can write to a different folder if you ask it to)     | `Logs`                 |
-| **Attachments Folder**   | Folder for copied figures and images, **relative to the directory root**                         | `Logs/imgs`            |
+| Setting                  | Description                                                                                  | Example              |
+| ------------------------ | -------------------------------------------------------------------------------------------- | -------------------- |
+| **Nickname**             | How you refer to this directory in chat — the agent recognizes the name when you mention it  | `Obsidian`, `Logseq` |
+| **Notes Directory Path** | Absolute path to the root directory where notes are saved                                    | `/Users/me/MyVault`  |
+| **Default Folder**       | Default subfolder for new notes (the agent can write to a different folder if you ask it to) | `Logs`               |
+| **Attachments Folder**   | Folder for copied figures and images, **relative to the directory root**                     | `Logs/imgs`          |
 
 Click **Test Write Access** to verify the plugin can write to your directory.
 
@@ -267,44 +267,44 @@ The agent ships with focused tools split into **read** (no confirmation needed) 
 
 #### Library & PDF reading
 
-| Tool                       | Description                                                                                                       |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Tool                       | Description                                                                                                                                                                      |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `query_library`            | Discover Zotero items and collections — search/list any item type, filter by author/year/collection/itemType, browse the collection tree, find related papers, detect duplicates |
-| `read_library`             | Read structured item state for one or more items — metadata, notes, annotations, attachments, collection membership |
-| `read_paper`               | Read text content from a PDF — opening sections by default, or specific section indexes (up to 20 papers per call) |
-| `search_paper`             | Find specific evidence in papers via a question — returns ranked relevant passages (up to 10 papers per call)     |
-| `view_pdf_pages`           | Render PDF pages as images for visual analysis — by question, by page number, or capture the currently visible page |
-| `read_attachment`          | Read any Zotero attachment by ID (HTML snapshots, text files, images), or send the whole file to the model        |
-| `search_literature_online` | Search live scholarly sources (CrossRef, Semantic Scholar) for metadata, recommendations, references, citations   |
+| `read_library`             | Read structured item state for one or more items — metadata, notes, annotations, attachments, collection membership                                                              |
+| `read_paper`               | Read text content from a PDF — opening sections by default, or specific section indexes (up to 20 papers per call)                                                               |
+| `search_paper`             | Find specific evidence in papers via a question — returns ranked relevant passages (up to 10 papers per call)                                                                    |
+| `view_pdf_pages`           | Render PDF pages as images for visual analysis — by question, by page number, or capture the currently visible page                                                              |
+| `read_attachment`          | Read any Zotero attachment by ID (HTML snapshots, text files, images), or send the whole file to the model                                                                       |
+| `search_literature_online` | Search live scholarly sources (CrossRef, Semantic Scholar) for metadata, recommendations, references, citations                                                                  |
 
 #### Library writes
 
-| Tool                  | Description                                                                                  |
-| --------------------- | -------------------------------------------------------------------------------------------- |
-| `apply_tags`          | Add or remove tags on one or more papers                                                     |
-| `update_metadata`     | Update metadata fields (title, authors, DOI, etc.) on an item                                |
-| `move_to_collection`  | Add or remove papers from collections                                                        |
-| `manage_collections`  | Create or delete collections (folders)                                                       |
-| `manage_attachments`  | Delete, rename, or re-link broken attachment file paths                                      |
-| `merge_items`         | Merge duplicates — keeps the master, moves children from the others, trashes the rest        |
-| `trash_items`         | Move items to the trash                                                                      |
-| `import_identifiers`  | Import papers by DOI, ISBN, arXiv ID, or URL                                                 |
-| `import_local_files`  | Import local files (PDFs, etc.) — Zotero auto-fetches metadata for recognized PDFs           |
-| `edit_current_note`   | Edit the active Zotero note or create a new one (plain text, Markdown, or HTML)              |
+| Tool                 | Description                                                                           |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| `apply_tags`         | Add or remove tags on one or more papers                                              |
+| `update_metadata`    | Update metadata fields (title, authors, DOI, etc.) on an item                         |
+| `move_to_collection` | Add or remove papers from collections                                                 |
+| `manage_collections` | Create or delete collections (folders)                                                |
+| `manage_attachments` | Delete, rename, or re-link broken attachment file paths                               |
+| `merge_items`        | Merge duplicates — keeps the master, moves children from the others, trashes the rest |
+| `trash_items`        | Move items to the trash                                                               |
+| `import_identifiers` | Import papers by DOI, ISBN, arXiv ID, or URL                                          |
+| `import_local_files` | Import local files (PDFs, etc.) — Zotero auto-fetches metadata for recognized PDFs    |
+| `edit_current_note`  | Edit the active Zotero note or create a new one (plain text, Markdown, or HTML)       |
 
 #### Filesystem & scripting
 
-| Tool             | Description                                                                                              |
-| ---------------- | -------------------------------------------------------------------------------------------------------- |
-| `file_io`        | Read or write files on the local filesystem — text and image, with offset/length for partial reads       |
-| `run_command`    | Run a shell command (zsh on macOS, bash on Linux, cmd.exe on Windows) — for analysis scripts and CLI tools |
-| `zotero_script`  | Execute JavaScript inside Zotero's runtime — read mode for bulk data, write mode for custom mutations    |
+| Tool            | Description                                                                                                |
+| --------------- | ---------------------------------------------------------------------------------------------------------- |
+| `file_io`       | Read or write files on the local filesystem — text and image, with offset/length for partial reads         |
+| `run_command`   | Run a shell command (zsh on macOS, bash on Linux, cmd.exe on Windows) — for analysis scripts and CLI tools |
+| `zotero_script` | Execute JavaScript inside Zotero's runtime — read mode for bulk data, write mode for custom mutations      |
 
 #### Safety net
 
-| Tool               | Description                                                                                            |
-| ------------------ | ------------------------------------------------------------------------------------------------------ |
-| `undo_last_action` | Undo the most recent write action in this conversation — keeps the last 10 entries per session         |
+| Tool               | Description                                                                                    |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| `undo_last_action` | Undo the most recent write action in this conversation — keeps the last 10 entries per session |
 
 The design philosophy is **read tools are unrestricted; write tools always confirm and stay undoable**. Ask the agent what it can do — it will tell you.
 
@@ -362,16 +362,16 @@ Skills are customizable guidance files that shape how the agent approaches diffe
 
 The plugin ships with **8 built-in skills** covering common research workflows:
 
-| Skill | What it guides the agent to do |
-| --- | --- |
-| `simple-paper-qa` | Answer general questions about a paper efficiently (read once, answer immediately) |
-| `evidence-based-qa` | Find specific methods, results, or evidence with targeted retrieval |
-| `analyze-figures` | Interpret figures and tables using MinerU-extracted images |
-| `compare-papers` | Compare multiple papers using batched reads and focused retrieval |
-| `library-analysis` | Summarize or analyze your entire library without context overflow |
-| `literature-review` | Conduct a structured literature review (discover, read, synthesize) |
-| `write-note` | Write reading notes either as Zotero notes or as Markdown files in your notes directory (Obsidian, Logseq, plain folders) |
-| `import-cited-reference` | Import papers cited in the current PDF into your Zotero library |
+| Skill                    | What it guides the agent to do                                                                                            |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `simple-paper-qa`        | Answer general questions about a paper efficiently (read once, answer immediately)                                        |
+| `evidence-based-qa`      | Find specific methods, results, or evidence with targeted retrieval                                                       |
+| `analyze-figures`        | Interpret figures and tables using MinerU-extracted images                                                                |
+| `compare-papers`         | Compare multiple papers using batched reads and focused retrieval                                                         |
+| `library-analysis`       | Summarize or analyze your entire library without context overflow                                                         |
+| `literature-review`      | Conduct a structured literature review (discover, read, synthesize)                                                       |
+| `write-note`             | Write reading notes either as Zotero notes or as Markdown files in your notes directory (Obsidian, Logseq, plain folders) |
+| `import-cited-reference` | Import papers cited in the current PDF into your Zotero library                                                           |
 
 ### Creating Custom Skills
 
@@ -380,7 +380,7 @@ The plugin ships with **8 built-in skills** covering common research workflows:
 3. Edit the `id`, regex `match` patterns, and instruction body in your text editor.
 4. Save — the skill loads immediately, no restart needed.
 
-Skills are stored as Markdown files in `{ZoteroDataDir}/llm-for-zotero/skills/`. Left-click any skill to edit it; right-click for *Show in file system* or *Delete*.
+Skills are stored as Markdown files in `{ZoteroDataDir}/llm-for-zotero/skills/`. Left-click any skill to edit it; right-click for _Show in file system_ or _Delete_.
 
 ---
 

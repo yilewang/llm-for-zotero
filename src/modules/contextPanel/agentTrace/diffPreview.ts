@@ -22,7 +22,10 @@ type SequenceOp<T> =
   | { kind: "remove"; before: T }
   | { kind: "add"; after: T };
 
-type RawDiffLine = Extract<DiffPreviewLine, { kind: "context" | "add" | "remove" }>;
+type RawDiffLine = Extract<
+  DiffPreviewLine,
+  { kind: "context" | "add" | "remove" }
+>;
 
 type BuildTextDiffPreviewOptions = {
   contextLines?: number;
@@ -76,10 +79,7 @@ function diffSequence<T>(
 
   for (let row = middleBefore.length - 1; row >= 0; row -= 1) {
     for (let col = middleAfter.length - 1; col >= 0; col -= 1) {
-      heights[row][col] = equals(
-        middleBefore[row] as T,
-        middleAfter[col] as T,
-      )
+      heights[row][col] = equals(middleBefore[row] as T, middleAfter[col] as T)
         ? heights[row + 1][col + 1] + 1
         : Math.max(heights[row + 1][col], heights[row][col + 1]);
     }
@@ -176,8 +176,10 @@ function buildLinePairSegments(
   removeSegments: DiffPreviewSegment[];
   addSegments: DiffPreviewSegment[];
 } {
-  const tokenDiff = diffSequence(tokenizeLine(before), tokenizeLine(after), (left, right) =>
-    left === right,
+  const tokenDiff = diffSequence(
+    tokenizeLine(before),
+    tokenizeLine(after),
+    (left, right) => left === right,
   );
   const removeSegments = collapseSegments(
     tokenDiff
@@ -216,8 +218,10 @@ function withDefaultSegment(
 }
 
 function buildRawDiffLines(before: string, after: string): RawDiffLine[] {
-  const ops = diffSequence(normalizeLines(before), normalizeLines(after), (left, right) =>
-    left === right,
+  const ops = diffSequence(
+    normalizeLines(before),
+    normalizeLines(after),
+    (left, right) => left === right,
   );
   const rows: RawDiffLine[] = [];
   let oldLineNumber = 1;
@@ -282,7 +286,11 @@ function buildRawDiffLines(before: string, after: string): RawDiffLine[] {
       });
     }
 
-    for (let removeIndex = pairCount; removeIndex < removed.length; removeIndex += 1) {
+    for (
+      let removeIndex = pairCount;
+      removeIndex < removed.length;
+      removeIndex += 1
+    ) {
       const line = removed[removeIndex];
       if (!line) continue;
       rows.push({

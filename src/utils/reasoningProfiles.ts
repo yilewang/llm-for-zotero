@@ -352,10 +352,7 @@ const DEEPSEEK_CHAT_PROFILE: ProviderProfile = {
 const KIMI_THINKING_PROFILE: ProviderProfile = {
   supportsReasoning: true,
   defaultLevel: "default",
-  options: [
-    option("default", "enabled"),
-    option("minimal", "disabled"),
-  ],
+  options: [option("default", "enabled"), option("minimal", "disabled")],
 };
 
 const KIMI_NON_THINKING_PROFILE: ProviderProfile = {

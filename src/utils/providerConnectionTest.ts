@@ -65,7 +65,7 @@ function extractAnthropicText(data: unknown): string {
       if (!entry || typeof entry !== "object") return "";
       return (entry as { type?: unknown; text?: unknown }).type === "text" &&
         typeof (entry as { text?: unknown }).text === "string"
-        ? ((entry as { text: string }).text || "")
+        ? (entry as { text: string }).text || ""
         : "";
     })
     .join("");
@@ -76,9 +76,11 @@ function extractGeminiText(data: unknown): string {
   const candidates = (data as { candidates?: unknown }).candidates;
   if (!Array.isArray(candidates)) return "";
   const parts = (
-    candidates[0] as {
-      content?: { parts?: Array<{ text?: unknown }> };
-    } | undefined
+    candidates[0] as
+      | {
+          content?: { parts?: Array<{ text?: unknown }> };
+        }
+      | undefined
   )?.content?.parts;
   if (!Array.isArray(parts)) return "";
   return parts
@@ -214,7 +216,8 @@ export function getProviderConnectionCapabilityLabel(params: {
     authMode: params.authMode,
     providerProtocol: params.protocol,
   };
-  const capabilities = createAgentModelAdapter(request).getCapabilities(request);
+  const capabilities =
+    createAgentModelAdapter(request).getCapabilities(request);
   return describeAgentCapabilityClass(
     getAgentCapabilityClass({
       toolCalls: capabilities.toolCalls,

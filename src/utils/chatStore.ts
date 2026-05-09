@@ -45,7 +45,12 @@ export type StoredChatMessage = {
   modelEntryId?: string;
   modelProviderLabel?: string;
   webchatRunState?: "done" | "incomplete" | "error";
-  webchatCompletionReason?: "settled" | "forced_cancel" | "timeout" | "error" | null;
+  webchatCompletionReason?:
+    | "settled"
+    | "forced_cancel"
+    | "timeout"
+    | "error"
+    | null;
   webchatChatUrl?: string;
   webchatChatId?: string;
   reasoningSummary?: string;
@@ -159,9 +164,8 @@ function normalizeLimit(limit: number, fallback: number): number {
 function resolveUserLibraryID(): number {
   const normalized = normalizeLibraryID(
     Number(
-      (
-        Zotero as unknown as { Libraries?: { userLibraryID?: unknown } }
-      ).Libraries?.userLibraryID,
+      (Zotero as unknown as { Libraries?: { userLibraryID?: unknown } })
+        .Libraries?.userLibraryID,
     ),
   );
   return normalized || 1;
@@ -203,7 +207,9 @@ async function reconcileGlobalConversationCatalog(): Promise<void> {
   )) as ConversationCatalogSeedRow[] | undefined;
 
   for (const row of rows || []) {
-    const conversationKey = normalizeConversationKey(Number(row.conversationKey));
+    const conversationKey = normalizeConversationKey(
+      Number(row.conversationKey),
+    );
     if (!conversationKey) continue;
     const title =
       typeof row.title === "string" && row.title.trim()
@@ -247,7 +253,9 @@ async function reconcileLegacyPaperV1ConversationCatalog(): Promise<void> {
   )) as ConversationCatalogSeedRow[] | undefined;
 
   for (const row of rows || []) {
-    const conversationKey = normalizeConversationKey(Number(row.conversationKey));
+    const conversationKey = normalizeConversationKey(
+      Number(row.conversationKey),
+    );
     if (!conversationKey) continue;
     const paperItem = Zotero.Items.get(conversationKey) || null;
     if (!paperItem?.isRegularItem?.()) continue;
@@ -434,7 +442,9 @@ export async function initChatStore(): Promise<void> {
       );
     }
     const hasFullTextPaperContextsJsonColumn = Boolean(
-      columns?.some((column) => column?.name === "full_text_paper_contexts_json"),
+      columns?.some(
+        (column) => column?.name === "full_text_paper_contexts_json",
+      ),
     );
     if (!hasFullTextPaperContextsJsonColumn) {
       await Zotero.DB.queryAsync(
@@ -1611,6 +1621,51 @@ export async function listGlobalConversations(
     const normalized = toGlobalConversationSummary(row);
     if (!normalized) continue;
     out.push(normalized);
+  }
+  return out;
+}
+
+export async function getConversationRuntimeModes(
+  conversationKeys: number[],
+): Promise<Map<number, "chat" | "agent">> {
+  const normalizedKeys = Array.from(
+    new Set(
+      conversationKeys
+        .map((key) => normalizeConversationKey(Number(key)))
+        .filter((key): key is number => Boolean(key)),
+    ),
+  );
+  if (!normalizedKeys.length) return new Map();
+  const placeholders = normalizedKeys.map(() => "?").join(", ");
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT conversation_key AS conversationKey,
+            MAX(CASE WHEN run_mode = 'agent' THEN 1 ELSE 0 END) AS hasAgent,
+            MAX(CASE WHEN run_mode = 'chat' THEN 1 ELSE 0 END) AS hasChat
+     FROM ${CHAT_MESSAGES_TABLE}
+     WHERE conversation_key IN (${placeholders})
+       AND run_mode IN ('chat', 'agent')
+     GROUP BY conversation_key`,
+    normalizedKeys,
+  )) as
+    | Array<{
+        conversationKey?: unknown;
+        hasAgent?: unknown;
+        hasChat?: unknown;
+      }>
+    | undefined;
+  const out = new Map<number, "chat" | "agent">();
+  for (const row of rows || []) {
+    const conversationKey = normalizeConversationKey(
+      Number(row.conversationKey),
+    );
+    if (!conversationKey) continue;
+    if (Number(row.hasAgent) > 0) {
+      out.set(conversationKey, "agent");
+      continue;
+    }
+    if (Number(row.hasChat) > 0) {
+      out.set(conversationKey, "chat");
+    }
   }
   return out;
 }

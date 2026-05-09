@@ -8,9 +8,7 @@ function isSelectionInsideEditableSurface(
   const HTMLElementCtor = doc.defaultView?.HTMLElement;
   const elementNodeType = doc.defaultView?.Node?.ELEMENT_NODE ?? 1;
   let el: Element | null =
-    node.nodeType === elementNodeType
-      ? (node as Element)
-      : node.parentElement;
+    node.nodeType === elementNodeType ? (node as Element) : node.parentElement;
   while (el) {
     if (el.id === "llm-main" || el.closest?.("#llm-main")) {
       return false;

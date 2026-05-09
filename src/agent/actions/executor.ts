@@ -85,7 +85,10 @@ export async function callTool(
     action: prepared.action,
   });
 
-  const resolution = await ctx.requestConfirmation(prepared.requestId, prepared.action);
+  const resolution = await ctx.requestConfirmation(
+    prepared.requestId,
+    prepared.action,
+  );
 
   if (!resolution.approved) {
     return prepared.deny(resolution.data).result;

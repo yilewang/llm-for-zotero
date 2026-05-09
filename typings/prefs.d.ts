@@ -17,6 +17,7 @@ declare namespace _ZoteroTypes {
       "lastUsedModelEntryId": string;
       "systemPrompt": string;
       "showPopupAddText": boolean;
+      "scrollSectionIntoViewOnSwitch": boolean;
       "semanticScholarApiKey": string;
       "temperaturePrimary": string;
       "maxTokensPrimary": string;
@@ -27,6 +28,11 @@ declare namespace _ZoteroTypes {
       "temperatureQuaternary": string;
       "maxTokensQuaternary": string;
       "enableAgentMode": boolean;
+      "agentBackendMode": string;
+      "agentBackendBridgeUrl": string;
+      "agentBackendAutoSpawn": boolean;
+      "agentBackendAdapterPath": string;
+      "agentClaudeTerminalPath": string;
       "obsidianVaultPath": string;
       "obsidianTargetFolder": string;
       "obsidianAttachmentsFolder": string;

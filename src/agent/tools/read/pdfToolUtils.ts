@@ -39,7 +39,9 @@ export type PdfTarget = {
 
 export function normalizeTarget(value: unknown): PdfTarget | undefined {
   if (!validateObject<Record<string, unknown>>(value)) return undefined;
-  const paperContext = validateObject<Record<string, unknown>>(value.paperContext)
+  const paperContext = validateObject<Record<string, unknown>>(
+    value.paperContext,
+  )
     ? normalizeToolPaperContext(value.paperContext) || undefined
     : undefined;
   return {
@@ -115,8 +117,9 @@ export function firstNonImageAttachment(
 ): ChatAttachment | null {
   const entries = Array.isArray(attachments) ? attachments : [];
   return (
-    entries.find((entry) => entry.category !== "image" && Boolean(entry.storedPath)) ||
-    null
+    entries.find(
+      (entry) => entry.category !== "image" && Boolean(entry.storedPath),
+    ) || null
   );
 }
 
@@ -128,10 +131,15 @@ export function encodeBase64(bytes: Uint8Array): string {
   let out = "";
   const chunkSize = 0x8000;
   for (let index = 0; index < bytes.length; index += chunkSize) {
-    const chunk = bytes.subarray(index, Math.min(bytes.length, index + chunkSize));
+    const chunk = bytes.subarray(
+      index,
+      Math.min(bytes.length, index + chunkSize),
+    );
     out += String.fromCharCode(...chunk);
   }
-  const btoaFn = (globalThis as typeof globalThis & { btoa?: (s: string) => string }).btoa;
+  const btoaFn = (
+    globalThis as typeof globalThis & { btoa?: (s: string) => string }
+  ).btoa;
   if (typeof btoaFn !== "function") throw new Error("btoa unavailable");
   return btoaFn(out);
 }
@@ -156,7 +164,9 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 const preparedCache = new Map<number, PreparedPdfCache>();
 const capturedCache = new Map<number, CapturedPdfCache>();
 
-export function getCachedPrepared(conversationKey: number): PreparedPdfCache | null {
+export function getCachedPrepared(
+  conversationKey: number,
+): PreparedPdfCache | null {
   const entry = preparedCache.get(conversationKey);
   if (!entry || Date.now() > entry.expiresAt) {
     preparedCache.delete(conversationKey);
@@ -165,7 +175,9 @@ export function getCachedPrepared(conversationKey: number): PreparedPdfCache | n
   return entry;
 }
 
-export function getCachedCapture(conversationKey: number): CapturedPdfCache | null {
+export function getCachedCapture(
+  conversationKey: number,
+): CapturedPdfCache | null {
   const entry = capturedCache.get(conversationKey);
   if (!entry || Date.now() > entry.expiresAt) {
     capturedCache.delete(conversationKey);

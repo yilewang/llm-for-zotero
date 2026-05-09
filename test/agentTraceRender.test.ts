@@ -3,7 +3,10 @@ import {
   buildAgentTraceDisplayItems,
   getPendingActionButtonLayout,
 } from "../src/modules/contextPanel/agentTrace/render";
-import type { AgentPendingAction, AgentRunEventRecord } from "../src/agent/types";
+import type {
+  AgentPendingAction,
+  AgentRunEventRecord,
+} from "../src/agent/types";
 
 describe("agentTrace render", function () {
   it("preserves whitespace when compacting reasoning deltas", function () {
@@ -33,9 +36,7 @@ describe("agentTrace render", function () {
     ];
 
     const items = buildAgentTraceDisplayItems(events, null);
-    const reasoningItem = items.find(
-      (item) => item.type === "reasoning",
-    );
+    const reasoningItem = items.find((item) => item.type === "reasoning");
 
     assert.deepInclude(reasoningItem, {
       type: "reasoning",

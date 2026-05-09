@@ -80,7 +80,14 @@ describe("reviewCards note drafts", function () {
     assert.exists(action);
     assert.deepEqual(
       action?.fields.map((field) => field.type),
-      ["paper_result_list", "diff_preview", "textarea", "text", "select", "text"],
+      [
+        "paper_result_list",
+        "diff_preview",
+        "textarea",
+        "text",
+        "select",
+        "text",
+      ],
     );
     const diffField = action?.fields[1] as Extract<
       NonNullable<typeof action>["fields"][number],
@@ -126,7 +133,11 @@ describe("reviewCards note drafts", function () {
     assert.equal(next.kind, "invoke_tool");
     if (next.kind !== "invoke_tool") return;
     assert.equal(next.call.name, "edit_current_note");
-    const args = next.call.arguments as { mode?: string; content?: string; target?: string };
+    const args = next.call.arguments as {
+      mode?: string;
+      content?: string;
+      target?: string;
+    };
     assert.equal(args.mode, "create");
     assert.equal(args.content, "# Summary\n\n**Key point**");
     assert.equal(args.target, "item");
@@ -147,7 +158,9 @@ describe("reviewCards note drafts", function () {
               title: "Wrong Paper",
               DOI: "10.1000/wrong",
               date: "2024",
-              creators: [{ creatorType: "author", name: "Other Author", fieldMode: 1 }],
+              creators: [
+                { creatorType: "author", name: "Other Author", fieldMode: 1 },
+              ],
             },
           },
           {

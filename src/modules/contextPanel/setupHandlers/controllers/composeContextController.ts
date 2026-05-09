@@ -3,11 +3,15 @@ import { sanitizeText } from "../../textUtils";
 import { resolvePaperContextDisplayMetadata as resolvePaperContextDisplayMetadataShared } from "../../paperAttribution";
 import type { PaperContextRef, PaperContentSourceMode } from "../../types";
 
-export function normalizePaperContextEntries(value: unknown): PaperContextRef[] {
+export function normalizePaperContextEntries(
+  value: unknown,
+): PaperContextRef[] {
   return normalizePaperContextRefs(value, { sanitizeText });
 }
 
-export function resolvePaperContextDisplayMetadata(paperContext: PaperContextRef): {
+export function resolvePaperContextDisplayMetadata(
+  paperContext: PaperContextRef,
+): {
   firstCreator?: string;
   year?: string;
 } {
@@ -70,9 +74,7 @@ function buildCreatorYearBase(paperContext: PaperContextRef): string {
   const metadata = resolvePaperContextDisplayMetadata(paperContext);
   const creator = sanitizeText(metadata.firstCreator || "").trim();
   const year = extractPaperYear(paperContext);
-  const label = creator
-    ? (year ? `${creator}, ${year}` : creator)
-    : "Paper";
+  const label = creator ? (year ? `${creator}, ${year}` : creator) : "Paper";
   return `📚 ${label}`;
 }
 
@@ -97,18 +99,20 @@ export function formatPaperContextChipTitle(
   const meta = [metadata.firstCreator || "", metadata.year || ""]
     .filter(Boolean)
     .join(" · ");
-  const modeLabel = contentSourceMode === "text"
-    ? "Source: Extracted text"
-    : contentSourceMode === "mineru"
-      ? "Source: MinerU (enhanced markdown)"
-      : contentSourceMode === "pdf"
-        ? "Source: PDF file"
+  const modeLabel =
+    contentSourceMode === "text"
+      ? "Source: Extracted text"
+      : contentSourceMode === "mineru"
+        ? "Source: MinerU (enhanced markdown)"
+        : contentSourceMode === "pdf"
+          ? "Source: PDF file"
+          : "";
+  const attachmentTitle =
+    contentSourceMode === "pdf"
+      ? resolveAttachmentTitle(paperContext)
+      : contentSourceMode === "mineru"
+        ? "full.md"
         : "";
-  const attachmentTitle = contentSourceMode === "pdf"
-    ? resolveAttachmentTitle(paperContext)
-    : contentSourceMode === "mineru"
-      ? "full.md"
-      : "";
   return [
     paperContext.title,
     meta,

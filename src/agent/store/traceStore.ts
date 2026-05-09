@@ -189,4 +189,3 @@ export async function getAgentRunTrace(runId: string): Promise<{
     events: await listAgentRunEvents(runId),
   };
 }
-

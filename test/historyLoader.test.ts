@@ -75,7 +75,11 @@ describe("historyLoader", function () {
       DB: {
         queryAsync: async (sql: string, params?: unknown[]) => {
           const normalizedParams = Array.isArray(params) ? params : [];
-          if (sql.includes("INSERT OR IGNORE INTO llm_for_zotero_paper_conversations")) {
+          if (
+            sql.includes(
+              "INSERT OR IGNORE INTO llm_for_zotero_paper_conversations",
+            )
+          ) {
             return [];
           }
           if (

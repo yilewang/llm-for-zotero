@@ -1,4 +1,8 @@
-import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type {
+  AgentAction,
+  ActionExecutionContext,
+  ActionResult,
+} from "./types";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -117,17 +121,99 @@ function topNFromMap(
 }
 
 const STOPWORDS = new Set([
-  "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-  "of", "with", "by", "from", "as", "is", "was", "are", "were", "be",
-  "been", "being", "have", "has", "had", "do", "does", "did", "will",
-  "would", "could", "should", "may", "might", "shall", "can", "not",
-  "no", "nor", "so", "yet", "both", "each", "few", "more", "most",
-  "other", "some", "such", "than", "too", "very", "its", "that", "this",
-  "these", "those", "it", "we", "they", "their", "our", "your", "my",
-  "his", "her", "about", "above", "after", "again", "all", "also",
-  "among", "any", "between", "during", "into", "over", "through", "under",
-  "using", "via", "based", "new", "how", "what", "which", "when", "where",
-  "who", "why", "upon",
+  "a",
+  "an",
+  "the",
+  "and",
+  "or",
+  "but",
+  "in",
+  "on",
+  "at",
+  "to",
+  "for",
+  "of",
+  "with",
+  "by",
+  "from",
+  "as",
+  "is",
+  "was",
+  "are",
+  "were",
+  "be",
+  "been",
+  "being",
+  "have",
+  "has",
+  "had",
+  "do",
+  "does",
+  "did",
+  "will",
+  "would",
+  "could",
+  "should",
+  "may",
+  "might",
+  "shall",
+  "can",
+  "not",
+  "no",
+  "nor",
+  "so",
+  "yet",
+  "both",
+  "each",
+  "few",
+  "more",
+  "most",
+  "other",
+  "some",
+  "such",
+  "than",
+  "too",
+  "very",
+  "its",
+  "that",
+  "this",
+  "these",
+  "those",
+  "it",
+  "we",
+  "they",
+  "their",
+  "our",
+  "your",
+  "my",
+  "his",
+  "her",
+  "about",
+  "above",
+  "after",
+  "again",
+  "all",
+  "also",
+  "among",
+  "any",
+  "between",
+  "during",
+  "into",
+  "over",
+  "through",
+  "under",
+  "using",
+  "via",
+  "based",
+  "new",
+  "how",
+  "what",
+  "which",
+  "when",
+  "where",
+  "who",
+  "why",
+  "upon",
 ]);
 
 function tokenizeTitle(title: string): string[] {
@@ -294,7 +380,9 @@ export const libraryStatisticsAction: AgentAction<
             const da = normalizeText(item.getField?.("dateAdded"));
             const m = da.match(/^(\d{4}-\d{2})/);
             if (m) increment(monthCounts, m[1]);
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         }
         continue;
       }
@@ -310,7 +398,9 @@ export const libraryStatisticsAction: AgentAction<
           const dateStr = normalizeText(item.getField?.("date"));
           const yearMatch = dateStr.match(/\b(19|20)\d{2}\b/);
           if (yearMatch) increment(yearCounts, yearMatch[0]);
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
 
       // ── Authors ──
@@ -341,7 +431,9 @@ export const libraryStatisticsAction: AgentAction<
           if (enabled.has("topAuthors")) {
             for (const name of names) increment(authorCounts, name);
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
 
       // ── Journal / venue ──
@@ -349,7 +441,9 @@ export const libraryStatisticsAction: AgentAction<
         try {
           const pubTitle = normalizeText(item.getField?.("publicationTitle"));
           if (pubTitle) increment(journalCounts, pubTitle);
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
 
       // ── Tags ──
@@ -364,7 +458,9 @@ export const libraryStatisticsAction: AgentAction<
               totalTagAssignments++;
             }
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
 
       // ── Collections (for unfiled count and per-collection item counts) ──
@@ -381,7 +477,9 @@ export const libraryStatisticsAction: AgentAction<
               );
             }
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
 
       // ── Growth timeline ──
@@ -390,7 +488,9 @@ export const libraryStatisticsAction: AgentAction<
           const da = normalizeText(item.getField?.("dateAdded"));
           const m = da.match(/^(\d{4}-\d{2})/);
           if (m) increment(monthCounts, m[1]);
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
 
       // ── Title keywords ──
@@ -402,7 +502,9 @@ export const libraryStatisticsAction: AgentAction<
               increment(wordCounts, word);
             }
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
       }
     }
 
@@ -422,7 +524,9 @@ export const libraryStatisticsAction: AgentAction<
         total: STEPS,
       });
       try {
-        const summaries = ctx.zoteroGateway.listCollectionSummaries(ctx.libraryID);
+        const summaries = ctx.zoteroGateway.listCollectionSummaries(
+          ctx.libraryID,
+        );
         const tree: CollectionStat[] = summaries.map((s) => ({
           collectionId: s.collectionId,
           name: s.name,
@@ -477,14 +581,18 @@ export const libraryStatisticsAction: AgentAction<
             if (contentType !== "application/pdf") continue;
 
             const annotationIds: number[] =
-              (att as unknown as { getAnnotations?: (includeTrashed?: boolean) => number[] })
-                .getAnnotations?.(false) || [];
+              (
+                att as unknown as {
+                  getAnnotations?: (includeTrashed?: boolean) => number[];
+                }
+              ).getAnnotations?.(false) || [];
             for (const annId of annotationIds) {
               const ann = Zotero.Items.get(annId);
               if (!ann?.isAnnotation?.()) continue;
               const annType =
                 normalizeText(
-                  (ann as unknown as { annotationType?: string }).annotationType,
+                  (ann as unknown as { annotationType?: string })
+                    .annotationType,
                 ) || "highlight";
               increment(annotationsByType, annType);
               itemAnnotationCount++;
@@ -501,7 +609,9 @@ export const libraryStatisticsAction: AgentAction<
               count: itemAnnotationCount,
             });
           }
-        } catch { /* ignore individual item errors */ }
+        } catch {
+          /* ignore individual item errors */
+        }
       }
 
       perItemCounts.sort((a, b) => b.count - a.count);
@@ -531,7 +641,9 @@ export const libraryStatisticsAction: AgentAction<
     let libraryName = "My Library";
     try {
       libraryName = Zotero.Libraries.getName(ctx.libraryID) || libraryName;
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     // Scope description
     let scopeDescription = "entire library";
@@ -594,7 +706,8 @@ export const libraryStatisticsAction: AgentAction<
 
     if (enabled.has("authorshipStats") && itemsWithAuthors > 0) {
       output.authorshipStats = {
-        avgAuthorsPerItem: Math.round((totalAuthorsSum / itemsWithAuthors) * 10) / 10,
+        avgAuthorsPerItem:
+          Math.round((totalAuthorsSum / itemsWithAuthors) * 10) / 10,
         maxAuthorsPerItem: maxAuthors,
         minAuthorsPerItem: minAuthors === Infinity ? 0 : minAuthors,
         singleAuthorCount,

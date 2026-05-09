@@ -54,16 +54,21 @@ function buildPdfContext(chunks: string[]): PdfContext {
 
 describe("pdfContext multi-context helpers", function () {
   let originalZotero: unknown;
+
   before(function () {
-    originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero;
+    originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown })
+      .Zotero;
     const prefs: Record<string, unknown> = {};
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
       Prefs: {
         get: (key: string) => prefs[key],
-        set: (key: string, value: unknown) => { prefs[key] = value; },
+        set: (key: string, value: unknown) => {
+          prefs[key] = value;
+        },
       },
     };
   });
+
   after(function () {
     (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
       originalZotero;

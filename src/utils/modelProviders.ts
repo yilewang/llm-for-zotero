@@ -32,7 +32,11 @@ export type ModelProviderModel = AdvancedModelConfig & {
   providerProtocol?: ProviderProtocol;
 };
 
-export type ModelProviderAuthMode = "api_key" | "codex_auth" | "copilot_auth" | "webchat"; // [webchat]
+export type ModelProviderAuthMode =
+  | "api_key"
+  | "codex_auth"
+  | "copilot_auth"
+  | "webchat"; // [webchat]
 
 export type ModelProviderGroup = {
   id: string;

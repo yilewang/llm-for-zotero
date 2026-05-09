@@ -1,5 +1,11 @@
 import { renderMarkdown, renderMarkdownForNote } from "../../utils/markdown";
-import { getWelcomeHtml, getWebChatWelcomeHtml, getStandaloneLibraryChatStartPageHtml, getPaperChatStartPageHtml, getNoteEditingStartPageHtml } from "../../utils/i18n";
+import {
+  getWelcomeHtml,
+  getWebChatWelcomeHtml,
+  getStandaloneLibraryChatStartPageHtml,
+  getPaperChatStartPageHtml,
+  getNoteEditingStartPageHtml,
+} from "../../utils/i18n";
 import {
   appendMessage as appendStoredMessage,
   clearConversation as clearStoredConversation,
@@ -81,10 +87,7 @@ import {
   selectedRuntimeModeCache,
   pdfTextCache,
 } from "./state";
-import {
-  agentRunTraceCache,
-  agentRunTraceLoadingTasks,
-} from "./agentState";
+import { agentRunTraceCache, agentRunTraceLoadingTasks } from "./agentState";
 import {
   sanitizeText,
   formatTime,
@@ -138,7 +141,7 @@ import { buildChatHistoryNotePayload, readNoteSnapshot } from "./notes";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { canEditUserPromptTurn } from "./editability";
-import { renderAgentTrace } from "./agentTrace/render";
+import { renderAgentTrace, renderPendingActionCard } from "./agentTrace/render";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 import { decorateAssistantCitationLinks } from "./assistantCitationLinks";
@@ -331,7 +334,10 @@ function resolveAutoLoadedPaperContextForItem(
   if (activeNoteSession?.noteKind === "standalone") {
     return null;
   }
-  if (activeNoteSession?.noteKind === "item" && activeNoteSession.parentItemId) {
+  if (
+    activeNoteSession?.noteKind === "item" &&
+    activeNoteSession.parentItemId
+  ) {
     const parentItem = Zotero.Items.get(activeNoteSession.parentItemId) || null;
     if (!parentItem?.isRegularItem?.()) return null;
     const activeContextItem = getActiveContextAttachmentFromTabs();
@@ -905,7 +911,10 @@ async function ensureAgentRunTraceLoaded(
   const task = (async () => {
     try {
       const trace = await getAgentRunTrace(normalizedRunId);
-      agentRunTraceCache.set(normalizedRunId, trace.events);
+      agentRunTraceCache.set(normalizedRunId, {
+        status: "ready",
+        events: trace.events,
+      });
     } catch (err) {
       ztoolkit.log("LLM: Failed to load agent run trace", err);
     } finally {
@@ -919,10 +928,12 @@ async function ensureAgentRunTraceLoaded(
   await task;
 }
 
-function getCachedAgentRunEvents(runId: string | undefined): AgentRunEventRecord[] {
+function getCachedAgentRunEvents(
+  runId: string | undefined,
+): AgentRunEventRecord[] {
   const normalizedRunId = (runId || "").trim();
   if (!normalizedRunId) return [];
-  return agentRunTraceCache.get(normalizedRunId) || [];
+  return agentRunTraceCache.get(normalizedRunId)?.events || [];
 }
 
 export function detectReasoningProvider(
@@ -1250,8 +1261,11 @@ function resolveEffectiveRequestConfig(params: {
   const apiKey = (params.apiKey || fallbackEntry?.apiKey || "").trim();
   const authMode =
     params.authMode ||
-    (fallbackEntry?.authMode === "webchat" ? "webchat" :
-     fallbackEntry?.authMode === "codex_auth" ? "codex_auth" : "api_key");
+    (fallbackEntry?.authMode === "webchat"
+      ? "webchat"
+      : fallbackEntry?.authMode === "codex_auth"
+        ? "codex_auth"
+        : "api_key");
   const reasoning =
     params.reasoning ||
     getSelectedReasoningForItem(params.item.id, model, apiBase);
@@ -1314,13 +1328,15 @@ async function buildContextPlanForRequest(params: {
     if (!rawActiveContextItem || !params.pdfModePaperKeys?.size) return false;
     const autoLoaded = resolveAutoLoadedPaperContextForItem(params.item);
     if (!autoLoaded) return false;
-    return params.pdfModePaperKeys.has(`${autoLoaded.itemId}:${autoLoaded.contextItemId}`);
+    return params.pdfModePaperKeys.has(
+      `${autoLoaded.itemId}:${autoLoaded.contextItemId}`,
+    );
   })();
-  const activeContextItem = activeContextItemInPdfMode ? null : rawActiveContextItem;
+  const activeContextItem = activeContextItemInPdfMode
+    ? null
+    : rawActiveContextItem;
   const conversationMode: "open" | "paper" =
-    resolveDisplayConversationKind(params.item) === "global"
-      ? "open"
-      : "paper";
+    resolveDisplayConversationKind(params.item) === "global" ? "open" : "paper";
   const systemPrompt = getStringPref("systemPrompt") || undefined;
 
   const plan = await resolveMultiContextPlan({
@@ -1330,7 +1346,10 @@ async function buildContextPlanForRequest(params: {
     contextPrefix: "",
     // Exclude PDF-mode papers from the text retrieval pipeline
     paperContexts: params.pdfModePaperKeys?.size
-      ? params.paperContexts.filter((p) => !params.pdfModePaperKeys!.has(`${p.itemId}:${p.contextItemId}`))
+      ? params.paperContexts.filter(
+          (p) =>
+            !params.pdfModePaperKeys!.has(`${p.itemId}:${p.contextItemId}`),
+        )
       : params.paperContexts,
     fullTextPaperContexts: params.fullTextPaperContexts,
     historyPaperContexts: params.recentPaperContexts,
@@ -1372,21 +1391,21 @@ async function buildContextPlanForRequest(params: {
     contextBudgetTokens: plan.contextBudget.contextBudgetTokens,
     usedContextTokens: plan.usedContextTokens,
   });
-  const noteContext = buildActiveNoteContextBlock(
-    params.item,
-  ).trim();
+  const noteContext = buildActiveNoteContextBlock(params.item).trim();
   const planContext = sanitizeText(plan.contextText || "").trim();
   // Include provider-uploaded PDF content (Qwen fileid://, Kimi extracted text)
   const uploadedPdfContext = (params.pdfUploadSystemMessages || [])
     .map((msg) => sanitizeText(msg).trim())
     .filter(Boolean)
     .join("\n\n");
-  const combinedContext = [noteContext, planContext, uploadedPdfContext].filter(Boolean).join("\n\n");
+  const combinedContext = [noteContext, planContext, uploadedPdfContext]
+    .filter(Boolean)
+    .join("\n\n");
 
   // Extract MinerU figure images from the context (if applicable).
   // Skip for text-only models (e.g. DeepSeek) that reject image_url content.
   const effectiveModel = params.effectiveRequestConfig.model || "";
-  let mineruImages: string[] = [];
+  const mineruImages: string[] = [];
   if (planContext && !isTextOnlyModel(effectiveModel)) {
     // Collect all MinerU-cached attachment IDs from context papers
     const mineruAttachmentIds: number[] = [];
@@ -1397,8 +1416,14 @@ async function buildContextPlanForRequest(params: {
       }
     }
     // Also include @-referenced papers with MinerU cache
-    for (const paper of [...params.paperContexts, ...params.fullTextPaperContexts]) {
-      if (paper.contextItemId && !mineruAttachmentIds.includes(paper.contextItemId)) {
+    for (const paper of [
+      ...params.paperContexts,
+      ...params.fullTextPaperContexts,
+    ]) {
+      if (
+        paper.contextItemId &&
+        !mineruAttachmentIds.includes(paper.contextItemId)
+      ) {
         const pdfCtx = pdfTextCache.get(paper.contextItemId);
         if (pdfCtx?.sourceType === "mineru") {
           mineruAttachmentIds.push(paper.contextItemId);
@@ -1542,7 +1567,14 @@ function applyWebChatAnswerSnapshot(
   message: Message,
   text: string,
   snapshot: {
-    runState?: "submitted" | "active" | "settling" | "done" | "incomplete" | "error" | null;
+    runState?:
+      | "submitted"
+      | "active"
+      | "settling"
+      | "done"
+      | "incomplete"
+      | "error"
+      | null;
     completionReason?: "settled" | "forced_cancel" | "timeout" | "error" | null;
     remoteChatUrl?: string | null;
     remoteChatId?: string | null;
@@ -1570,7 +1602,14 @@ function applyWebChatThinkingSnapshot(
   message: Message,
   text: string,
   snapshot: {
-    runState?: "submitted" | "active" | "settling" | "done" | "incomplete" | "error" | null;
+    runState?:
+      | "submitted"
+      | "active"
+      | "settling"
+      | "done"
+      | "incomplete"
+      | "error"
+      | null;
     completionReason?: "settled" | "forced_cancel" | "timeout" | "error" | null;
   },
 ): void {
@@ -1871,15 +1910,14 @@ function includeAutoLoadedPaperContext(
       autoLoadedPaperContext,
       ...normalizedPaperContexts,
     ]),
-    fullTextPaperContexts:
-      isExcludedFromTextPipeline
-        ? normalizedFullTextPaperContexts
-        : fullTextPaperContexts === undefined
-          ? normalizePaperContexts([
-              autoLoadedPaperContext,
-              ...normalizedFullTextPaperContexts,
-            ])
-          : normalizedFullTextPaperContexts,
+    fullTextPaperContexts: isExcludedFromTextPipeline
+      ? normalizedFullTextPaperContexts
+      : fullTextPaperContexts === undefined
+        ? normalizePaperContexts([
+            autoLoadedPaperContext,
+            ...normalizedFullTextPaperContexts,
+          ])
+        : normalizedFullTextPaperContexts,
   };
 }
 
@@ -1957,7 +1995,10 @@ function syncComposeContextForInlineEdit(
     if (key.startsWith(modePrefix)) paperContextModeOverrides.delete(key);
   }
   for (const paperContext of fullTextPaperContexts) {
-    paperContextModeOverrides.set(`${item.id}:${buildPaperKey(paperContext)}`, "full-next");
+    paperContextModeOverrides.set(
+      `${item.id}:${buildPaperKey(paperContext)}`,
+      "full-next",
+    );
   }
 
   activeContextPanelStateSync.get(body)?.();
@@ -1967,11 +2008,25 @@ export async function editLatestUserMessageAndRetry(
   opts: import("./types").EditRetryOptions,
 ): Promise<EditLatestTurnResult> {
   const {
-    body, item, displayQuestion, selectedTexts, selectedTextSources,
-    selectedTextPaperContexts, selectedTextNoteContexts, screenshotImages,
-    paperContexts, fullTextPaperContexts, attachments, pdfUploadSystemMessages,
+    body,
+    item,
+    displayQuestion,
+    selectedTexts,
+    selectedTextSources,
+    selectedTextPaperContexts,
+    selectedTextNoteContexts,
+    screenshotImages,
+    paperContexts,
+    fullTextPaperContexts,
+    attachments,
+    pdfUploadSystemMessages,
     targetRuntimeMode,
-    expected, model, apiBase, apiKey, reasoning, advanced,
+    expected,
+    model,
+    apiBase,
+    apiKey,
+    reasoning,
+    advanced,
   } = opts;
   await ensureConversationLoaded(item);
   const conversationKey = getConversationKey(item);
@@ -2227,7 +2282,10 @@ export async function retryLatestAssistantResponse(
   try {
     const llmHistory = buildLLMHistoryMessages(historyForLLM);
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
-    const retryPdfKeys = derivePdfModePaperKeys(retryPair.userMessage.attachments, item);
+    const retryPdfKeys = derivePdfModePaperKeys(
+      retryPair.userMessage.attachments,
+      item,
+    );
 
     // Create AbortController early so the signal is available during context
     // planning.
@@ -2254,17 +2312,20 @@ export async function retryLatestAssistantResponse(
     });
     let combinedContext = contextPlan.combinedContext;
     // Append collection scope context if any collections are selected
-    const retrySelectedCollections = selectedCollectionContextCache.get(item.id) || [];
+    const retrySelectedCollections =
+      selectedCollectionContextCache.get(item.id) || [];
     if (retrySelectedCollections.length > 0) {
-      const collectionNames = retrySelectedCollections.map((c) => c.name).join(", ");
+      const collectionNames = retrySelectedCollections
+        .map((c) => c.name)
+        .join(", ");
       combinedContext = `${combinedContext}\n\n[Selected Zotero collections as context scope: ${collectionNames}]`;
     }
     retryPair.userMessage.paperContexts = contextPlan.paperContexts.length
       ? contextPlan.paperContexts
       : undefined;
-    retryPair.userMessage.fullTextPaperContexts =
-      contextPlan.fullTextPaperContexts.length
-        ? contextPlan.fullTextPaperContexts
+    retryPair.userMessage.fullTextPaperContexts = contextPlan
+      .fullTextPaperContexts.length
+      ? contextPlan.fullTextPaperContexts
       : undefined;
     await updateStoredLatestUserMessage(conversationKey, {
       text: retryPair.userMessage.text,
@@ -2456,12 +2517,26 @@ export async function editUserTurnAndRetry(opts: {
   advanced?: AdvancedModelParams;
 }): Promise<void> {
   const {
-    body, item, userTimestamp, assistantTimestamp, newText,
-    selectedTexts, selectedTextSources, selectedTextPaperContexts,
-    selectedTextNoteContexts, screenshotImages, paperContexts,
-    fullTextPaperContexts, attachments, pdfUploadSystemMessages,
+    body,
+    item,
+    userTimestamp,
+    assistantTimestamp,
+    newText,
+    selectedTexts,
+    selectedTextSources,
+    selectedTextPaperContexts,
+    selectedTextNoteContexts,
+    screenshotImages,
+    paperContexts,
+    fullTextPaperContexts,
+    attachments,
+    pdfUploadSystemMessages,
     targetRuntimeMode,
-    model, apiBase, apiKey, reasoning, advanced,
+    model,
+    apiBase,
+    apiKey,
+    reasoning,
+    advanced,
   } = opts;
   await ensureConversationLoaded(item);
   const conversationKey = getConversationKey(item);
@@ -2710,7 +2785,9 @@ async function enrichPaperContextsWithMineruCache(
       if (await hasCachedMineruMd(paper.contextItemId)) {
         mineruCacheDir = getMineruItemDir(paper.contextItemId);
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     enriched.push(mineruCacheDir ? { ...paper, mineruCacheDir } : paper);
   }
   return enriched;
@@ -2752,12 +2829,39 @@ async function buildAgentRuntimeRequest(
 }
 
 function buildAgentEngineDeps(): AgentEngineDeps {
+  const showPendingConfirmationCard = (
+    body: Element,
+    requestId: string,
+    action: import("../../agent/types").AgentPendingAction,
+  ): void => {
+    const ownerDoc = body.ownerDocument;
+    const { chatBox } = getPanelRequestUI(body);
+    if (!ownerDoc || !chatBox) return;
+    chatBox.querySelector(".llm-action-inline-card")?.remove();
+    const wrapper = ownerDoc.createElement("div");
+    wrapper.className = "llm-action-inline-card";
+    wrapper.appendChild(
+      renderPendingActionCard(ownerDoc, {
+        requestId,
+        action,
+      }),
+    );
+    chatBox.appendChild(wrapper);
+    chatBox.scrollTop = chatBox.scrollHeight;
+  };
+
+  const hidePendingConfirmationCard = (body: Element): void => {
+    const { chatBox } = getPanelRequestUI(body);
+    chatBox?.querySelector(".llm-action-inline-card")?.remove();
+  };
+
   return {
     chatHistory,
     agentRunTraceCache,
     cancelledRequestId: (ck: number) => getCancelledRequestId(ck),
     currentAbortController: (ck: number) => getAbortController(ck),
-    setCurrentAbortController: (ck: number, ctrl: AbortController | null) => setAbortController(ck, ctrl),
+    setCurrentAbortController: (ck: number, ctrl: AbortController | null) =>
+      setAbortController(ck, ctrl),
     getAbortControllerCtor,
     nextRequestId,
     setPendingRequestId,
@@ -2783,9 +2887,13 @@ function buildAgentEngineDeps(): AgentEngineDeps {
     waitForUiStep,
     finalizeCancelledAssistantMessage,
     sanitizeText,
+    showPendingConfirmationCard,
+    hidePendingConfirmationCard,
     persistConversationMessage,
-    updateStoredLatestUserMessage: updateStoredLatestUserMessage as AgentEngineDeps["updateStoredLatestUserMessage"],
-    updateStoredLatestAssistantMessage: updateStoredLatestAssistantMessage as AgentEngineDeps["updateStoredLatestAssistantMessage"],
+    updateStoredLatestUserMessage:
+      updateStoredLatestUserMessage as AgentEngineDeps["updateStoredLatestUserMessage"],
+    updateStoredLatestAssistantMessage:
+      updateStoredLatestAssistantMessage as AgentEngineDeps["updateStoredLatestAssistantMessage"],
     sendChatFallback: sendQuestion,
     getAgentRuntime,
     maxSelectedImages: MAX_SELECTED_IMAGES,
@@ -2808,7 +2916,16 @@ async function retryLatestAgentResponse(
   reasoning?: LLMReasoningConfig,
   advanced?: AdvancedModelParams,
 ): Promise<void> {
-  await retryAgentTurn(body, item, model, apiBase, apiKey, reasoning, advanced, buildAgentEngineDeps());
+  await retryAgentTurn(
+    body,
+    item,
+    model,
+    apiBase,
+    apiKey,
+    reasoning,
+    advanced,
+    buildAgentEngineDeps(),
+  );
 }
 
 async function sendAgentQuestion(opts: {
@@ -2836,19 +2953,53 @@ async function sendAgentQuestion(opts: {
   await sendAgentTurn(opts, buildAgentEngineDeps());
 }
 
-export async function sendQuestion(opts: import("./types").SendQuestionOptions) {
+export async function sendQuestion(
+  opts: import("./types").SendQuestionOptions,
+) {
   const {
-    body, item, question, images, model, apiBase, apiKey, reasoning, advanced,
-    displayQuestion, selectedTexts, selectedTextSources, selectedTextPaperContexts,
-    selectedTextNoteContexts, paperContexts, fullTextPaperContexts, attachments,
-    runtimeMode = "chat", agentRunId, skipAgentDispatch = false, pdfModePaperKeys,
+    body,
+    item,
+    question,
+    images,
+    model,
+    apiBase,
+    apiKey,
+    reasoning,
+    advanced,
+    displayQuestion,
+    selectedTexts,
+    selectedTextSources,
+    selectedTextPaperContexts,
+    selectedTextNoteContexts,
+    paperContexts,
+    fullTextPaperContexts,
+    attachments,
+    runtimeMode = "chat",
+    agentRunId,
+    skipAgentDispatch = false,
+    pdfModePaperKeys,
   } = opts;
   if (runtimeMode === "agent" && !skipAgentDispatch) {
     await sendAgentQuestion({
-      body, item, question, images, model, apiBase, apiKey, reasoning, advanced,
-      displayQuestion, selectedTexts, selectedTextSources, selectedTextPaperContexts,
-      selectedTextNoteContexts, paperContexts, fullTextPaperContexts, attachments,
-      pdfModePaperKeys, forcedSkillIds: opts.forcedSkillIds,
+      body,
+      item,
+      question,
+      images,
+      model,
+      apiBase,
+      apiKey,
+      reasoning,
+      advanced,
+      displayQuestion,
+      selectedTexts,
+      selectedTextSources,
+      selectedTextPaperContexts,
+      selectedTextNoteContexts,
+      paperContexts,
+      fullTextPaperContexts,
+      attachments,
+      pdfModePaperKeys,
+      forcedSkillIds: opts.forcedSkillIds,
       pdfUploadSystemMessages: opts.pdfUploadSystemMessages,
     });
     return;
@@ -2909,7 +3060,9 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     item,
     normalizedPaperContexts,
     normalizedFullTextPaperContexts,
-    pdfModePaperKeys && pdfModePaperKeys.size > 0 ? pdfModePaperKeys : undefined,
+    pdfModePaperKeys && pdfModePaperKeys.size > 0
+      ? pdfModePaperKeys
+      : undefined,
   );
   const screenshotImagesForMessage = Array.isArray(images)
     ? images
@@ -2939,8 +3092,8 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     )
       ? selectedTextPaperContextsForMessage
       : undefined,
-    selectedTextNoteContexts: selectedTextNoteContextsForMessage.some(
-      (entry) => Boolean(entry),
+    selectedTextNoteContexts: selectedTextNoteContextsForMessage.some((entry) =>
+      Boolean(entry),
     )
       ? selectedTextNoteContextsForMessage
       : undefined,
@@ -3033,8 +3186,11 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     const webChatQueueRefresh = createQueuedRefresh(refreshChatSafely);
     try {
       // Determine webchat target from the model name (e.g., "chatgpt.com" → "chatgpt", "chat.deepseek.com" → "deepseek")
-      const { getWebChatTargetByModelName } = await import("../../webchat/types");
-      const webchatTargetEntry = getWebChatTargetByModelName(effectiveRequestConfig.model || "");
+      const { getWebChatTargetByModelName } =
+        await import("../../webchat/types");
+      const webchatTargetEntry = getWebChatTargetByModelName(
+        effectiveRequestConfig.model || "",
+      );
       const webchatTarget = webchatTargetEntry?.id || "chatgpt";
       const webchatLabel = webchatTargetEntry?.label || "ChatGPT";
       setStatusSafely(`Sending to ${webchatLabel}…`, "sending");
@@ -3055,7 +3211,10 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
         host: getRelayBaseUrl(),
         sendPdf: opts.webchatSendPdf === true,
         forceNewChat: opts.webchatForceNewChat === true,
-        images: screenshotImagesForMessage.length > 0 ? screenshotImagesForMessage : undefined,
+        images:
+          screenshotImagesForMessage.length > 0
+            ? screenshotImagesForMessage
+            : undefined,
         chatgptMode,
         target: webchatTarget,
         signal: getAbortController(conversationKey)?.signal,
@@ -3069,13 +3228,19 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
         },
       });
 
-      if (getCancelledRequestId(conversationKey) >= thisRequestId || Boolean(getAbortController(conversationKey)?.signal.aborted)) {
+      if (
+        getCancelledRequestId(conversationKey) >= thisRequestId ||
+        Boolean(getAbortController(conversationKey)?.signal.aborted)
+      ) {
         await markCancelled();
         return;
       }
 
-      assistantMessage.text = sanitizeText(answer.text) || assistantMessage.text || "No response.";
-      assistantMessage.reasoningDetails = sanitizeText(answer.thinking || "") || assistantMessage.reasoningDetails;
+      assistantMessage.text =
+        sanitizeText(answer.text) || assistantMessage.text || "No response.";
+      assistantMessage.reasoningDetails =
+        sanitizeText(answer.thinking || "") ||
+        assistantMessage.reasoningDetails;
       assistantMessage.reasoningOpen = assistantMessage.reasoningDetails
         ? isReasoningExpandedByDefault()
         : false;
@@ -3087,8 +3252,10 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
         answer.completionReason ||
         (answer.runState === "done" ? "settled" : null);
       // [webchat] Persist the ChatGPT conversation URL so refresh can navigate back
-      if (answer.remoteChatUrl) assistantMessage.webchatChatUrl = answer.remoteChatUrl;
-      if (answer.remoteChatId) assistantMessage.webchatChatId = answer.remoteChatId;
+      if (answer.remoteChatUrl)
+        assistantMessage.webchatChatUrl = answer.remoteChatUrl;
+      if (answer.remoteChatId)
+        assistantMessage.webchatChatId = answer.remoteChatId;
       assistantMessage.streaming = false;
 
       refreshChatSafely();
@@ -3113,7 +3280,7 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
       const errMsg = (err as Error).message || "Error";
       const hasSnapshot = Boolean(
         sanitizeText(assistantMessage.text || "") ||
-          sanitizeText(assistantMessage.reasoningDetails || ""),
+        sanitizeText(assistantMessage.reasoningDetails || ""),
       );
       if (hasSnapshot) {
         assistantMessage.webchatRunState = "incomplete";
@@ -3138,7 +3305,8 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
   try {
     const rawLLMHistory = buildLLMHistoryMessages(historyForLLM);
     // Apply auto-summary compression when the history grows long.
-    const llmHistory = applyHistoryCompression(conversationKey, rawLLMHistory) ?? rawLLMHistory;
+    const llmHistory =
+      applyHistoryCompression(conversationKey, rawLLMHistory) ?? rawLLMHistory;
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
 
     // Create AbortController early so the signal is available during context
@@ -3166,7 +3334,8 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     });
     let combinedContext = contextPlan.combinedContext;
     // Append collection scope context if any collections are selected
-    const selectedCollections = selectedCollectionContextCache.get(item.id) || [];
+    const selectedCollections =
+      selectedCollectionContextCache.get(item.id) || [];
     if (selectedCollections.length > 0) {
       const collectionNames = selectedCollections.map((c) => c.name).join(", ");
       combinedContext = `${combinedContext}\n\n[Selected Zotero collections as context scope: ${collectionNames}]`;
@@ -3174,9 +3343,8 @@ export async function sendQuestion(opts: import("./types").SendQuestionOptions) 
     userMessage.paperContexts = contextPlan.paperContexts.length
       ? contextPlan.paperContexts
       : undefined;
-    userMessage.fullTextPaperContexts =
-      contextPlan.fullTextPaperContexts.length
-        ? contextPlan.fullTextPaperContexts
+    userMessage.fullTextPaperContexts = contextPlan.fullTextPaperContexts.length
+      ? contextPlan.fullTextPaperContexts
       : undefined;
     await updateStoredLatestUserMessage(conversationKey, {
       text: userMessage.text,
@@ -3458,6 +3626,98 @@ function buildInlineEditWidget(
   return widgetRoot;
 }
 
+export function resolveAgentScopeFromItem(item: Zotero.Item): {
+  scopeType: "paper" | "open" | "folder" | "tag" | "tagset" | "custom";
+  scopeId: string;
+  scopeLabel?: string;
+} {
+  const libraryID =
+    typeof item.libraryID === "number" && Number.isFinite(item.libraryID)
+      ? Math.floor(item.libraryID)
+      : 0;
+  let paperItemId = 0;
+  if (item.isAttachment?.() && item.parentID) {
+    paperItemId = Math.floor(item.parentID);
+  } else if (item.isRegularItem?.()) {
+    paperItemId = Math.floor(item.id);
+  }
+  if (paperItemId > 0) {
+    const paperItem = Zotero.Items.get(paperItemId);
+    const scopeLabel =
+      paperItem?.isRegularItem?.() && typeof paperItem.getField === "function"
+        ? String(paperItem.getField("title") || "").trim() || undefined
+        : undefined;
+    return {
+      scopeType: "paper",
+      scopeId: `${libraryID}:${paperItemId}`,
+      scopeLabel,
+    };
+  }
+
+  const displayKind = resolveDisplayConversationKind(item);
+  if (displayKind === "global") {
+    try {
+      const pane = Zotero.getActiveZoteroPane?.() as
+        | {
+            getSelectedCollection?: () => unknown;
+            getSelectedTags?: () => unknown;
+          }
+        | undefined;
+      const selectedCollection = pane?.getSelectedCollection?.() as
+        | { id?: unknown; name?: unknown }
+        | null
+        | undefined;
+      const collectionId =
+        typeof selectedCollection?.id === "number" &&
+        Number.isFinite(selectedCollection.id)
+          ? Math.floor(selectedCollection.id)
+          : 0;
+      if (collectionId > 0) {
+        const collectionName =
+          typeof selectedCollection?.name === "string"
+            ? selectedCollection.name.trim()
+            : "";
+        return {
+          scopeType: "folder",
+          scopeId: `${libraryID}:${collectionId}`,
+          scopeLabel: collectionName || `Collection ${collectionId}`,
+        };
+      }
+
+      const selectedTagsRaw = pane?.getSelectedTags?.();
+      const selectedTags = Array.isArray(selectedTagsRaw)
+        ? selectedTagsRaw
+            .filter((tag): tag is string => typeof tag === "string")
+            .map((tag) => tag.trim())
+            .filter(Boolean)
+        : [];
+      if (selectedTags.length === 1) {
+        return {
+          scopeType: "tag",
+          scopeId: `${libraryID}:${selectedTags[0]}`,
+          scopeLabel: selectedTags[0],
+        };
+      }
+      if (selectedTags.length > 1) {
+        const normalized = [...selectedTags].sort((a, b) => a.localeCompare(b));
+        return {
+          scopeType: "tagset",
+          scopeId: `${libraryID}:${normalized.join("|")}`,
+          scopeLabel: normalized.join(" + "),
+        };
+      }
+    } catch {
+      // ignore and fallback to open scope
+    }
+  }
+
+  return {
+    scopeType: "open",
+    scopeId: String(libraryID),
+    scopeLabel: "Open Chat",
+  };
+}
+
 export function refreshChat(body: Element, item?: Zotero.Item | null) {
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
@@ -3507,11 +3767,19 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     // [webchat] Show webchat-specific welcome instead of generic instructions
     const effectiveConfig = resolveEffectiveRequestConfig({ item });
     if (effectiveConfig.providerProtocol === "web_sync") {
-      const { getWebChatTargetByModelName } = require("../../webchat/types") as typeof import("../../webchat/types");
-      const targetEntry = getWebChatTargetByModelName(effectiveConfig.model || "");
-      chatBox.innerHTML = getWebChatWelcomeHtml(targetEntry?.label, targetEntry?.modelName);
+      const { getWebChatTargetByModelName } =
+        require("../../webchat/types") as typeof import("../../webchat/types");
+      const targetEntry = getWebChatTargetByModelName(
+        effectiveConfig.model || "",
+      );
+      chatBox.innerHTML = getWebChatWelcomeHtml(
+        targetEntry?.label,
+        targetEntry?.modelName,
+      );
     } else {
-      const isStandalone = panelRoot?.dataset?.standalone === "true" || (body as HTMLElement).dataset?.standalone === "true";
+      const isStandalone =
+        panelRoot?.dataset?.standalone === "true" ||
+        (body as HTMLElement).dataset?.standalone === "true";
       const isNoteEditing = !!resolveActiveNoteSession(item);
       if (isNoteEditing) {
         chatBox.innerHTML = getNoteEditingStartPageHtml();
@@ -3546,7 +3814,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     ? latestRetryPair.userIndex + 1
     : -1;
   // [webchat] Resolve provider protocol once for editability checks
-  const renderProviderProtocol = resolveEffectiveRequestConfig({ item }).providerProtocol;
+  const renderProviderProtocol = resolveEffectiveRequestConfig({
+    item,
+  }).providerProtocol;
   const conversationIsIdle = !history.some((m) => m.streaming);
   for (const [index, msg] of history.entries()) {
     const isUser = msg.role === "user";
@@ -3579,7 +3849,8 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
       const screenshotImages = Array.isArray(msg.screenshotImages)
         ? msg.screenshotImages.filter(
-            (entry) => Boolean(entry) && !entry.startsWith("data:application/pdf"),
+            (entry) =>
+              Boolean(entry) && !entry.startsWith("data:application/pdf"),
           )
         : [];
       let screenshotExpanded: HTMLDivElement | null = null;
@@ -3729,7 +4000,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       // Determine which papers were sent in PDF mode (have pdf-paper-* attachments)
       const pdfPaperContextItemIds = new Set(
         (Array.isArray(msg.attachments) ? msg.attachments : [])
-          .filter((a) => typeof a?.id === "string" && a.id.startsWith("pdf-paper-"))
+          .filter(
+            (a) => typeof a?.id === "string" && a.id.startsWith("pdf-paper-"),
+          )
           .map((a) => {
             const m = a.id.match(/^pdf-paper-(\d+)-/);
             return m ? Number(m[1]) : 0;
@@ -3784,7 +4057,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
           // Content source mode badge
           const isPdf = pdfPaperContextItemIds.has(paperContext.contextItemId);
-          const isFullText = fullTextPaperKeys.has(`${paperContext.itemId}:${paperContext.contextItemId}`);
+          const isFullText = fullTextPaperKeys.has(
+            `${paperContext.itemId}:${paperContext.contextItemId}`,
+          );
           if (isPdf || isFullText) {
             const badge = doc.createElement("span") as HTMLSpanElement;
             badge.className = `llm-user-papers-item-badge llm-user-papers-item-badge-${isPdf ? "pdf" : "text"}`;
@@ -3840,7 +4115,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
               entry.category !== "image" &&
               typeof entry.name === "string" &&
               // Exclude PDF-paper attachments (shown under paper context instead)
-              !(typeof entry.id === "string" && entry.id.startsWith("pdf-paper-")),
+              !(
+                typeof entry.id === "string" &&
+                entry.id.startsWith("pdf-paper-")
+              ),
           )
         : [];
       hasUserContext = hasUserContext || fileAttachments.length > 0;
@@ -4177,9 +4455,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           const contextSource = resolveContextSourceItem(item);
           const ctxItem = contextSource.contextItem;
           const pdfCtx = ctxItem ? pdfTextCache.get(ctxItem.id) : null;
-          const resolveImage = pdfCtx?.sourceType === "mineru" && ctxItem
-            ? buildImageResolver(ctxItem.id)
-            : undefined;
+          const resolveImage =
+            pdfCtx?.sourceType === "mineru" && ctxItem
+              ? buildImageResolver(ctxItem.id)
+              : undefined;
           bubble.innerHTML = renderMarkdown(safeText, { resolveImage });
         } catch (err) {
           ztoolkit.log("LLM render error:", err);
@@ -4420,8 +4699,10 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         refreshBtn.addEventListener("click", async () => {
           refreshBtn.disabled = true;
           try {
-            const { refreshCurrentConversation } = await import("../../webchat/client");
-            const { getRelayBaseUrl } = await import("../../webchat/relayServer");
+            const { refreshCurrentConversation } =
+              await import("../../webchat/client");
+            const { getRelayBaseUrl } =
+              await import("../../webchat/relayServer");
             const scraped = await refreshCurrentConversation(
               getRelayBaseUrl(),
               msg.webchatChatUrl || null,
@@ -4429,22 +4710,32 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             );
             if (scraped.length > 0) {
               const refreshed: Message[] = scraped.map((m) => ({
-                role: (m.kind === "user" ? "user" : "assistant") as "user" | "assistant",
+                role: (m.kind === "user" ? "user" : "assistant") as
+                  | "user"
+                  | "assistant",
                 text: m.text || "",
                 timestamp: Date.now(),
-                modelName: m.kind === "bot" ? (msg.modelName || "chatgpt.com") : undefined,
+                modelName:
+                  m.kind === "bot" ? msg.modelName || "chatgpt.com" : undefined,
                 modelProviderLabel: m.kind === "bot" ? "WebChat" : undefined,
                 reasoningDetails: m.thinking || undefined,
               }));
               chatHistory.set(conversationKey, refreshed);
               refreshChat(body, item);
             } else {
-              refreshBtn.title = "No messages found — chat site may be on a different page";
-              setTimeout(() => { refreshBtn.title = "Re-fetch this conversation from webchat"; refreshBtn.disabled = false; }, 2000);
+              refreshBtn.title =
+                "No messages found — chat site may be on a different page";
+              setTimeout(() => {
+                refreshBtn.title = "Re-fetch this conversation from webchat";
+                refreshBtn.disabled = false;
+              }, 2000);
             }
           } catch {
             refreshBtn.title = "Refresh failed";
-            setTimeout(() => { refreshBtn.title = "Re-fetch this conversation from webchat"; refreshBtn.disabled = false; }, 2000);
+            setTimeout(() => {
+              refreshBtn.title = "Re-fetch this conversation from webchat";
+              refreshBtn.disabled = false;
+            }, 2000);
           }
         });
         webchatStatusRow.appendChild(refreshBtn);

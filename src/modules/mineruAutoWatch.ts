@@ -307,8 +307,7 @@ async function handleItemNotification(
         ztoolkit.log(`MinerU auto-parse: enqueuing ${title}`);
         enqueueForProcessing(pdf.id, title, item.id);
       }
-    }
-    else if (isPdfAttachment(item)) {
+    } else if (isPdfAttachment(item)) {
       const pdfFilename =
         (item as unknown as { attachmentFilename?: string })
           .attachmentFilename || "";

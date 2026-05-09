@@ -39,7 +39,10 @@ export const shortcutRenderItemState = new WeakMap<
 export const activeContextPanels = new Map<Element, () => Zotero.Item | null>();
 /** Raw Zotero item (from onRender) per body — used to recover the original
  *  paper item when clearing a global lock. */
-export const activeContextPanelRawItems = new Map<Element, Zotero.Item | null>();
+export const activeContextPanelRawItems = new Map<
+  Element,
+  Zotero.Item | null
+>();
 export const activeContextPanelStateSync = new Map<Element, () => void>();
 export const shortcutEscapeListenerAttached = new WeakSet<Document>();
 export let readerContextPanelRegistered = false;
@@ -73,14 +76,22 @@ export function setPendingRequestId(conversationKey: number, id: number): void {
 export function getCancelledRequestId(conversationKey: number): number {
   return cancelledRequestIds.get(conversationKey) ?? -1;
 }
-export function setCancelledRequestId(conversationKey: number, value: number): void {
+export function setCancelledRequestId(
+  conversationKey: number,
+  value: number,
+): void {
   cancelledRequestIds.set(conversationKey, value);
 }
 
-export function getAbortController(conversationKey: number): AbortController | null {
+export function getAbortController(
+  conversationKey: number,
+): AbortController | null {
   return abortControllers.get(conversationKey) ?? null;
 }
-export function setAbortController(conversationKey: number, value: AbortController | null): void {
+export function setAbortController(
+  conversationKey: number,
+  value: AbortController | null,
+): void {
   if (value === null) {
     abortControllers.delete(conversationKey);
   } else {
@@ -104,14 +115,18 @@ export let panelFontScalePercent = 120; // FONT_SCALE_DEFAULT_PERCENT — overwr
 export function setPanelFontScalePercent(value: number) {
   panelFontScalePercent = value;
   // Lazy-import to avoid circular dependency (prefHelpers imports from state).
-  import("./prefHelpers").then((m) => m.setFontScalePref(value)).catch(() => {});
+  import("./prefHelpers")
+    .then((m) => m.setFontScalePref(value))
+    .catch(() => {});
 }
 /** Call once at plugin startup to restore the persisted font scale. */
 export function initFontScale(): void {
   // Lazy-import to avoid circular dependency.
-  import("./prefHelpers").then((m) => {
-    panelFontScalePercent = m.getFontScalePref();
-  }).catch(() => {});
+  import("./prefHelpers")
+    .then((m) => {
+      panelFontScalePercent = m.getFontScalePref();
+    })
+    .catch(() => {});
 }
 
 export let responseMenuTarget: {
@@ -140,24 +155,45 @@ export function setPromptMenuTarget(value: typeof promptMenuTarget) {
 
 // Screenshot selection state (per item) — capped to prevent memory growth
 // from accumulated base64 image data (24-hour TTL, max 30 items).
-export const selectedImageCache = new TTLMap<number, string[]>(24 * 60 * 60 * 1000, 30);
+export const selectedImageCache = new TTLMap<number, string[]>(
+  24 * 60 * 60 * 1000,
+  30,
+);
 export const selectedFileAttachmentCache = new Map<number, ChatAttachment[]>();
 export const selectedFilePreviewExpandedCache = new Map<number, boolean>();
 export const selectedPaperContextCache = new Map<number, PaperContextRef[]>();
-export const selectedOtherRefContextCache = new Map<number, OtherContextRef[]>();
-export const selectedCollectionContextCache = new Map<number, CollectionContextRef[]>();
+export const selectedOtherRefContextCache = new Map<
+  number,
+  OtherContextRef[]
+>();
+export const selectedCollectionContextCache = new Map<
+  number,
+  CollectionContextRef[]
+>();
 // Flat override maps: key = "ownerItemId:paperItemId:contextItemId"
-export const paperContextModeOverrides = new Map<string, PaperContextSendMode>();
-export const paperContentSourceOverrides = new Map<string, PaperContentSourceMode>();
+export const paperContextModeOverrides = new Map<
+  string,
+  PaperContextSendMode
+>();
+export const paperContentSourceOverrides = new Map<
+  string,
+  PaperContentSourceMode
+>();
 // Stores the contextItemId of the currently expanded (sticky) paper chip, or false/undefined if none
-export const selectedPaperPreviewExpandedCache = new Map<number, number | false>();
+export const selectedPaperPreviewExpandedCache = new Map<
+  number,
+  number | false
+>();
 export const activeGlobalConversationByLibrary = new Map<number, number>();
 export const activeConversationModeByLibrary = new Map<
   number,
   "paper" | "global"
 >();
 // Draft text per conversation — capped to prevent unbounded growth (24h TTL, max 100).
-export const draftInputCache = new TTLMap<number, string>(24 * 60 * 60 * 1000, 100);
+export const draftInputCache = new TTLMap<number, string>(
+  24 * 60 * 60 * 1000,
+  100,
+);
 export const selectedTextCache = new Map<number, SelectedTextContext[]>();
 export const selectedTextPreviewExpandedCache = new Map<number, number>();
 export const selectedNotePreviewExpandedCache = new Map<number, boolean>();
@@ -168,7 +204,10 @@ export const pinnedImageKeys = new Map<number, Set<string>>();
 export const pinnedFileKeys = new Map<number, Set<string>>();
 export const pinnedPaperKeys = new Map<number, Set<string>>();
 // Recent reader text selections — capped (5-min TTL, max 50).
-export const recentReaderSelectionCache = new TTLMap<number, string>(5 * 60 * 1000, 50);
+export const recentReaderSelectionCache = new TTLMap<number, string>(
+  5 * 60 * 1000,
+  50,
+);
 
 export const activePaperConversationByPaper = new Map<string, number>();
 
@@ -235,7 +274,9 @@ export function setInlineEditSavedDraft(text: string): void {
 export function clearAllState(): void {
   // Disconnect any ResizeObservers stored on panel bodies before clearing.
   for (const [panelBody] of activeContextPanels) {
-    const obs = (panelBody as any).__llmResizeObservers as ResizeObserver[] | undefined;
+    const obs = (panelBody as any).__llmResizeObservers as
+      | ResizeObserver[]
+      | undefined;
     if (obs) {
       for (const o of obs) o.disconnect();
       delete (panelBody as any).__llmResizeObservers;

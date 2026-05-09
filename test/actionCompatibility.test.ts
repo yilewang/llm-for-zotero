@@ -143,10 +143,7 @@ describe("action compatibility after tool refactors", function () {
     assert.isTrue(result.ok);
     if (!result.ok) return;
     assert.equal(searchArgs?.doi, "10.1000/seed");
-    assert.deepEqual(
-      importArgs?.identifiers,
-      ["10.1000/r1", "10.1000/r2"],
-    );
+    assert.deepEqual(importArgs?.identifiers, ["10.1000/r1", "10.1000/r2"]);
     assert.deepEqual(result.output, {
       seedTitle: "Seed Paper",
       discovered: 2,

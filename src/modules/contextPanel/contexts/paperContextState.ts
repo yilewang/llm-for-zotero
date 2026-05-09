@@ -36,7 +36,9 @@ export function getPaperModeOverride(
   itemId: number,
   paperContext: PaperContextRef,
 ): PaperContextSendMode | null {
-  return paperContextModeOverrides.get(overrideKey(itemId, paperContext)) || null;
+  return (
+    paperContextModeOverrides.get(overrideKey(itemId, paperContext)) || null
+  );
 }
 
 export function setPaperModeOverride(
@@ -66,7 +68,9 @@ export function getPaperContentSourceOverride(
   itemId: number,
   paperContext: PaperContextRef,
 ): PaperContentSourceMode | null {
-  return paperContentSourceOverrides.get(overrideKey(itemId, paperContext)) || null;
+  return (
+    paperContentSourceOverrides.get(overrideKey(itemId, paperContext)) || null
+  );
 }
 
 export function setPaperContentSourceOverride(
@@ -111,6 +115,8 @@ export function clearAllRefContextState(itemId: number): void {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-export function normalizePaperContextEntries(value: unknown): PaperContextRef[] {
+export function normalizePaperContextEntries(
+  value: unknown,
+): PaperContextRef[] {
   return normalizePaperContextRefs(value, { sanitizeText });
 }

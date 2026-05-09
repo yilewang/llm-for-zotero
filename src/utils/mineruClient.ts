@@ -539,10 +539,8 @@ function getCurlPath(): string | null {
   return "/usr/bin/curl";
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getSubprocess(): any | null {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const CU = (globalThis as any).ChromeUtils;
     if (CU?.importESModule) {
       try {
@@ -585,7 +583,7 @@ async function runCurl(args: string[], timeoutMs = 300000): Promise<number> {
         command: curlPath,
         arguments: args,
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
       const drain = async (pipe: any) => {
         if (!pipe?.readString) return;
         try {

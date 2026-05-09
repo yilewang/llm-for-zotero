@@ -144,10 +144,7 @@ async function readFileBytes(path: string): Promise<Uint8Array | null> {
   return null;
 }
 
-async function writeFileBytes(
-  path: string,
-  bytes: Uint8Array,
-): Promise<void> {
+async function writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
   const io = getIOUtils();
   if (io?.write) {
     await io.write(path, bytes);
@@ -198,15 +195,14 @@ export async function hasCachedMineruMd(id: number): Promise<boolean> {
   return await pathExists(getLegacyMdPath(id));
 }
 
-export async function readCachedMineruMd(
-  id: number,
-): Promise<string | null> {
+export async function readCachedMineruMd(id: number): Promise<string | null> {
   // Try full.md (current canonical path)
   const bytes = await readFileBytes(getMineruMdPath(id));
   if (bytes) return new TextDecoder("utf-8").decode(bytes);
   // Try legacy _content.md
   const legacyContentBytes = await readFileBytes(getLegacyContentMdPath(id));
-  if (legacyContentBytes) return new TextDecoder("utf-8").decode(legacyContentBytes);
+  if (legacyContentBytes)
+    return new TextDecoder("utf-8").decode(legacyContentBytes);
   // Try legacy single-file cache
   const legacyBytes = await readFileBytes(getLegacyMdPath(id));
   if (legacyBytes) return new TextDecoder("utf-8").decode(legacyBytes);
@@ -274,7 +270,8 @@ const EXT_MIME: Record<string, string> = {
 
 function toBase64(bytes: Uint8Array): string {
   let binary = "";
-  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i++)
+    binary += String.fromCharCode(bytes[i]);
   return btoa(binary);
 }
 
@@ -534,7 +531,11 @@ export function buildManifest(
         prevSection.tables.push(...section.tables);
         prevSection.equationCount += section.equationCount;
       } else {
-        merged.push({ ...section, figures: [...section.figures], tables: [...section.tables] });
+        merged.push({
+          ...section,
+          figures: [...section.figures],
+          tables: [...section.tables],
+        });
       }
     }
     sections.length = 0;
@@ -595,7 +596,9 @@ async function findContentListPath(itemDir: string): Promise<string | null> {
  * Build and write manifest.json for a cached paper.
  * Reads full.md and content_list.json from the cache directory.
  */
-export async function buildAndWriteManifest(id: number): Promise<MineruManifest | null> {
+export async function buildAndWriteManifest(
+  id: number,
+): Promise<MineruManifest | null> {
   const itemDir = getMineruItemDir(id);
   if (!(await pathExists(itemDir))) return null;
 
@@ -620,7 +623,10 @@ export async function buildAndWriteManifest(id: number): Promise<MineruManifest 
 
   // Write manifest.json
   const manifestPath = getManifestPath(id);
-  await writeFileBytes(manifestPath, new TextEncoder().encode(JSON.stringify(manifest)));
+  await writeFileBytes(
+    manifestPath,
+    new TextEncoder().encode(JSON.stringify(manifest)),
+  );
 
   return manifest;
 }
@@ -643,7 +649,9 @@ export async function readManifest(id: number): Promise<MineruManifest | null> {
  * Get or build the manifest for a cached paper.
  * Reads from disk if available, otherwise builds and writes it.
  */
-export async function ensureManifest(id: number): Promise<MineruManifest | null> {
+export async function ensureManifest(
+  id: number,
+): Promise<MineruManifest | null> {
   const existing = await readManifest(id);
   if (existing) return existing;
   return buildAndWriteManifest(id);

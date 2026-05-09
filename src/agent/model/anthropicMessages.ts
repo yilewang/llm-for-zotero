@@ -89,15 +89,35 @@ async function buildAnthropicParts(
   const resolved = await resolveContentParts(message);
   return resolved.map((part): AnthropicContentBlock => {
     switch (part.type) {
-      case "text": return { type: "text", text: part.text };
-      case "image": return { type: "image", source: { type: "base64", media_type: part.mimeType, data: part.base64 } };
-      case "pdf": return { type: "document", source: { type: "base64", media_type: "application/pdf", data: part.base64 } };
-      case "file_placeholder": return { type: "text", text: `[Prepared file: ${part.name}]` };
+      case "text":
+        return { type: "text", text: part.text };
+      case "image":
+        return {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: part.mimeType,
+            data: part.base64,
+          },
+        };
+      case "pdf":
+        return {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: part.base64,
+          },
+        };
+      case "file_placeholder":
+        return { type: "text", text: `[Prepared file: ${part.name}]` };
     }
   });
 }
 
-async function buildInitialAnthropicMessages(messages: AgentModelMessage[]): Promise<{
+async function buildInitialAnthropicMessages(
+  messages: AgentModelMessage[],
+): Promise<{
   system?: string;
   messages: AnthropicMessage[];
 }> {

@@ -1,5 +1,8 @@
 import { getGeminiReasoningProfile } from "../../utils/llmClient";
-import { normalizeMaxTokens, normalizeTemperature } from "../../utils/normalization";
+import {
+  normalizeMaxTokens,
+  normalizeTemperature,
+} from "../../utils/normalization";
 import {
   buildProviderTransportHeaders,
   resolveProviderTransportEndpoint,
@@ -13,7 +16,10 @@ import type {
   ToolSpec,
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
-import { isMultimodalRequestSupported, stringifyMessageContent } from "./messageBuilder";
+import {
+  isMultimodalRequestSupported,
+  stringifyMessageContent,
+} from "./messageBuilder";
 import {
   createFallbackToolCallId,
   getFetch,
@@ -61,7 +67,14 @@ function chooseGeminiSchemaType(typeValue: unknown): string | null {
   const candidates = typeValue
     .map((entry) => (typeof entry === "string" ? normalize(entry) : null))
     .filter((entry): entry is string => Boolean(entry) && entry !== "null");
-  const priority = ["array", "object", "string", "integer", "number", "boolean"];
+  const priority = [
+    "array",
+    "object",
+    "string",
+    "integer",
+    "number",
+    "boolean",
+  ];
   for (const preferred of priority) {
     if (candidates.includes(preferred)) {
       return preferred;
@@ -76,7 +89,14 @@ function chooseGeminiSchemaTypeFromSchemas(
   const candidates = schemas
     .map((entry) => chooseGeminiSchemaType(entry.type))
     .filter((entry): entry is string => Boolean(entry));
-  const priority = ["array", "object", "string", "integer", "number", "boolean"];
+  const priority = [
+    "array",
+    "object",
+    "string",
+    "integer",
+    "number",
+    "boolean",
+  ];
   for (const preferred of priority) {
     if (candidates.includes(preferred)) {
       return preferred;
@@ -85,7 +105,9 @@ function chooseGeminiSchemaTypeFromSchemas(
   return candidates[0] || null;
 }
 
-function collectGeminiUnionVariants(schema: Record<string, unknown>): Array<Record<string, unknown>> {
+function collectGeminiUnionVariants(
+  schema: Record<string, unknown>,
+): Array<Record<string, unknown>> {
   return ["anyOf", "oneOf", "allOf"]
     .flatMap((key) => {
       const value = schema[key];
@@ -114,7 +136,10 @@ function sanitizeGeminiSchema(
   const sanitized: Record<string, unknown> = {
     type: resolvedType,
   };
-  if (typeof rawSchema.description === "string" && rawSchema.description.trim()) {
+  if (
+    typeof rawSchema.description === "string" &&
+    rawSchema.description.trim()
+  ) {
     sanitized.description = rawSchema.description.trim();
   }
   if (Array.isArray(rawSchema.enum)) {
@@ -131,14 +156,18 @@ function sanitizeGeminiSchema(
       rawSchema.items && !Array.isArray(rawSchema.items)
         ? rawSchema.items
         : unionVariants
-            .map((entry) => (entry.items && !Array.isArray(entry.items) ? entry.items : null))
+            .map((entry) =>
+              entry.items && !Array.isArray(entry.items) ? entry.items : null,
+            )
             .find(Boolean);
     sanitized.items = sanitizeGeminiSchema(rawItems || { type: "string" });
     return sanitized;
   }
   if (resolvedType === "object") {
     const rawProperties =
-      rawSchema.properties && typeof rawSchema.properties === "object" && !Array.isArray(rawSchema.properties)
+      rawSchema.properties &&
+      typeof rawSchema.properties === "object" &&
+      !Array.isArray(rawSchema.properties)
         ? (rawSchema.properties as Record<string, unknown>)
         : unionVariants
             .map((entry) =>
@@ -149,10 +178,9 @@ function sanitizeGeminiSchema(
                 : null,
             )
             .find(Boolean) || null;
-    const propertyEntries = Object.entries(rawProperties || {}).map(([key, value]) => [
-      key,
-      sanitizeGeminiSchema(value),
-    ]);
+    const propertyEntries = Object.entries(rawProperties || {}).map(
+      ([key, value]) => [key, sanitizeGeminiSchema(value)],
+    );
     if (!propertyEntries.length && !options?.topLevel) {
       return {
         type: "string",
@@ -218,14 +246,22 @@ function resolveGeminiReasoningConfig(request: AgentRuntimeRequest) {
   };
 }
 
-async function buildGeminiParts(message: AgentModelMessage): Promise<GeminiPart[]> {
+async function buildGeminiParts(
+  message: AgentModelMessage,
+): Promise<GeminiPart[]> {
   const resolved = await resolveContentParts(message);
   return resolved.map((part): GeminiPart => {
     switch (part.type) {
-      case "text": return { text: part.text };
-      case "image": return { inlineData: { mimeType: part.mimeType, data: part.base64 } };
-      case "pdf": return { inlineData: { mimeType: "application/pdf", data: part.base64 } };
-      case "file_placeholder": return { text: `[Prepared file: ${part.name}]` };
+      case "text":
+        return { text: part.text };
+      case "image":
+        return { inlineData: { mimeType: part.mimeType, data: part.base64 } };
+      case "pdf":
+        return {
+          inlineData: { mimeType: "application/pdf", data: part.base64 },
+        };
+      case "file_placeholder":
+        return { text: `[Prepared file: ${part.name}]` };
     }
   });
 }
@@ -243,7 +279,10 @@ function extractGeminiResponseParts(data: GeminiResponse): GeminiPart[] {
 
 async function buildInitialGeminiMessages(
   messages: AgentModelMessage[],
-): Promise<{ systemInstruction?: { parts: Array<{ text: string }> }; contents: GeminiMessage[] }> {
+): Promise<{
+  systemInstruction?: { parts: Array<{ text: string }> };
+  contents: GeminiMessage[];
+}> {
   const systemParts: string[] = [];
   const contents: GeminiMessage[] = [];
   for (const message of messages) {
@@ -287,9 +326,8 @@ async function buildInitialGeminiMessages(
 async function buildGeminiContinuationMessages(
   messages: AgentModelMessage[],
 ): Promise<GeminiMessage[]> {
-  const { toolMessages, followupUserMessages } = groupToolContinuationMessages(
-    messages,
-  );
+  const { toolMessages, followupUserMessages } =
+    groupToolContinuationMessages(messages);
   const contents: GeminiMessage[] = [];
   if (toolMessages.length) {
     contents.push({
@@ -362,9 +400,7 @@ function normalizeGeminiResponse(data: GeminiResponse): {
         args?: unknown;
       };
       const name =
-        typeof functionCall.name === "string"
-          ? functionCall.name.trim()
-          : "";
+        typeof functionCall.name === "string" ? functionCall.name.trim() : "";
       if (!name) continue;
       toolCalls.push({
         id: createFallbackToolCallId("gemini-call", index),
@@ -391,7 +427,11 @@ async function parseGeminiStepStream(
     summary?: string;
     details?: string;
   }) => void | Promise<void>,
-): Promise<{ text: string; toolCalls: AgentToolCall[]; responseParts: GeminiPart[] }> {
+): Promise<{
+  text: string;
+  toolCalls: AgentToolCall[];
+  responseParts: GeminiPart[];
+}> {
   const reader = stream.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const decoder = new TextDecoder();
   let buffer = "";

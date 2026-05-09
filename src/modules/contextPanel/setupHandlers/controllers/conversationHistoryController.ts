@@ -17,6 +17,7 @@ export type ConversationHistoryEntry = {
   lastActivityAt: number;
   paperItemID?: number;
   sessionVersion?: number;
+  runtimeMode?: "chat" | "agent";
 };
 
 export type HistorySwitchTarget =

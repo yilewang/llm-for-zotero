@@ -10,7 +10,12 @@ import type {
   ZoteroGateway,
 } from "./zoteroGateway";
 
-export type QueryLibraryEntity = "items" | "collections" | "notes" | "tags" | "libraries";
+export type QueryLibraryEntity =
+  | "items"
+  | "collections"
+  | "notes"
+  | "tags"
+  | "libraries";
 export type QueryLibraryMode = "search" | "list" | "related" | "duplicates";
 export type QueryLibraryInclude =
   | "metadata"
@@ -36,7 +41,6 @@ export type QueryLibraryItemResult = LibraryItemTarget & {
   collections?: CollectionSummary[];
   abstract?: string;
 };
-
 
 function includeField(
   includes: QueryLibraryInclude[] | undefined,
@@ -65,7 +69,9 @@ function enrichPaperTarget(
     title: target.title,
     firstCreator: target.firstCreator,
     year: target.year,
-    attachments: includeField(include, "attachments") ? (target.attachments as LibraryItemTarget["attachments"]) : [],
+    attachments: includeField(include, "attachments")
+      ? (target.attachments as LibraryItemTarget["attachments"])
+      : [],
     tags: includeField(include, "tags") ? target.tags : [],
     collectionIds: target.collectionIds,
   };
@@ -109,7 +115,10 @@ function enrichItemTarget(
     );
   }
   if (includeField(include, "collections")) {
-    result.collections = buildCollectionSummaries(zoteroGateway, target.collectionIds);
+    result.collections = buildCollectionSummaries(
+      zoteroGateway,
+      target.collectionIds,
+    );
   }
   if (includeField(include, "abstract") && !includeField(include, "metadata")) {
     const item = zoteroGateway.getItem(target.itemId);
@@ -117,7 +126,6 @@ function enrichItemTarget(
   }
   return result;
 }
-
 
 export class LibraryQueryService {
   constructor(private readonly zoteroGateway: ZoteroGateway) {}
@@ -135,7 +143,8 @@ export class LibraryQueryService {
     let results = this.zoteroGateway.listCollectionSummaries(params.libraryID);
     if (params.mode === "search" && query) {
       results = results.filter((collection) => {
-        const haystack = `${collection.name} ${collection.path || ""}`.toLowerCase();
+        const haystack =
+          `${collection.name} ${collection.path || ""}`.toLowerCase();
         return haystack.includes(query);
       });
     }
@@ -143,7 +152,8 @@ export class LibraryQueryService {
       ? Math.max(1, Math.floor(params.limit as number))
       : undefined;
     return {
-      results: limit && results.length > limit ? results.slice(0, limit) : results,
+      results:
+        limit && results.length > limit ? results.slice(0, limit) : results,
       warnings: [],
     };
   }
@@ -208,8 +218,8 @@ export class LibraryQueryService {
     let papers = papersResult.papers;
     if (filters.author) {
       const authorLower = filters.author.toLowerCase();
-      papers = papers.filter(
-        (p) => p.firstCreator?.toLowerCase().includes(authorLower),
+      papers = papers.filter((p) =>
+        p.firstCreator?.toLowerCase().includes(authorLower),
       );
     }
     if (filters.yearFrom != null || filters.yearTo != null) {
@@ -260,7 +270,9 @@ export class LibraryQueryService {
           return true;
         });
       }
-      const enriched = items.map((item) => enrichItemTarget(item, this.zoteroGateway, params.include));
+      const enriched = items.map((item) =>
+        enrichItemTarget(item, this.zoteroGateway, params.include),
+      );
       return { results: enriched, totalCount: items.length, warnings: [] };
     }
 
@@ -299,8 +311,12 @@ export class LibraryQueryService {
   }> {
     const filters = params.filters || {};
     const agentFilters: AgentLibraryFilters | undefined =
-      filters.collectionId || filters.unfiled || filters.itemType ||
-      filters.author || filters.yearFrom != null || filters.yearTo != null ||
+      filters.collectionId ||
+      filters.unfiled ||
+      filters.itemType ||
+      filters.author ||
+      filters.yearFrom != null ||
+      filters.yearTo != null ||
       filters.tag
         ? {
             collectionId: filters.collectionId,
@@ -336,15 +352,18 @@ export class LibraryQueryService {
       libraryID: params.libraryID,
       limit: params.limit,
     });
-    const enriched = result.notes.map((note) => ({
-      itemId: note.itemId,
-      itemType: note.itemType,
-      title: note.title,
-      attachments: [],
-      tags: note.tags,
-      collectionIds: note.collectionIds,
-      noteKind: note.noteKind,
-    } as QueryLibraryItemResult));
+    const enriched = result.notes.map(
+      (note) =>
+        ({
+          itemId: note.itemId,
+          itemType: note.itemType,
+          title: note.title,
+          attachments: [],
+          tags: note.tags,
+          collectionIds: note.collectionIds,
+          noteKind: note.noteKind,
+        }) as QueryLibraryItemResult,
+    );
     return { results: enriched, totalCount: result.totalCount, warnings: [] };
   }
 
@@ -353,7 +372,12 @@ export class LibraryQueryService {
     text: string;
     limit?: number;
   }): Promise<{
-    results: Array<QueryLibraryItemResult & { parentItemId?: number; parentItemTitle?: string }>;
+    results: Array<
+      QueryLibraryItemResult & {
+        parentItemId?: number;
+        parentItemTitle?: string;
+      }
+    >;
     warnings: string[];
   }> {
     const results = await this.zoteroGateway.searchAllNotes({
@@ -447,14 +471,15 @@ export class LibraryQueryService {
     libraryID: number;
     query?: string;
     limit?: number;
-  }): Promise<{ results: { name: string; type: number }[]; warnings: string[] }> {
+  }): Promise<{
+    results: { name: string; type: number }[];
+    warnings: string[];
+  }> {
     const results = await this.zoteroGateway.listLibraryTags(params);
     return { results, warnings: [] };
   }
 
-  async browseCollectionTree(params: {
-    libraryID: number;
-  }): Promise<{
+  async browseCollectionTree(params: { libraryID: number }): Promise<{
     libraryID: number;
     libraryName: string;
     collections: CollectionBrowseNode[];

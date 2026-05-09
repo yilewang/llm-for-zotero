@@ -333,7 +333,10 @@ export function applyModelInputTokenCap(
     inputTokenCapOverride,
     modelLimitTokens,
   );
-  const softLimitTokens = Math.max(1, Math.floor(limitTokens * TOKEN_SAFETY_RATIO));
+  const softLimitTokens = Math.max(
+    1,
+    Math.floor(limitTokens * TOKEN_SAFETY_RATIO),
+  );
   let working = cloneMessages(messages);
   const estimatedBeforeTokens = estimateConversationTokens(working);
   let estimatedAfterTokens = estimatedBeforeTokens;

@@ -70,8 +70,9 @@ describe("hooks paper search cache invalidation", function () {
         getByLibrary: () => [],
       },
     } as typeof Zotero;
-    (globalThis as typeof globalThis & { ztoolkit: { log: () => void } })
-      .ztoolkit = {
+    (
+      globalThis as typeof globalThis & { ztoolkit: { log: () => void } }
+    ).ztoolkit = {
       log: () => {},
     };
   });

@@ -2,11 +2,12 @@ import {
   ensureAttachmentBlobFromPath,
   persistAttachmentBlob,
 } from "../../modules/contextPanel/attachmentStorage";
-import { getActiveReaderForSelectedTab, getLastKnownSelectedTabId, selectZoteroTab } from "../../modules/contextPanel/contextResolution";
-import type {
-  ChatAttachment,
-  PaperContextRef,
-} from "../../shared/types";
+import {
+  getActiveReaderForSelectedTab,
+  getLastKnownSelectedTabId,
+  selectZoteroTab,
+} from "../../modules/contextPanel/contextResolution";
+import type { ChatAttachment, PaperContextRef } from "../../shared/types";
 import { warmPageTextCache } from "../../modules/contextPanel/livePdfSelectionLocator";
 import type { AgentRuntimeRequest, AgentToolArtifact } from "../types";
 import { PdfService, resolveContextItemFromPaperContext } from "./pdfService";
@@ -71,10 +72,7 @@ type RenderablePdfPage = {
     width: number;
     height: number;
   };
-  render: (params: {
-    canvasContext: unknown;
-    viewport: unknown;
-  }) =>
+  render: (params: { canvasContext: unknown; viewport: unknown }) =>
     | Promise<unknown>
     | {
         promise?: Promise<unknown>;
@@ -90,9 +88,7 @@ function unwrapWrappedJsObject<T>(value: T): T {
     return value;
   }
   try {
-    return (
-      (value as T & { wrappedJSObject?: T }).wrappedJSObject || value
-    );
+    return (value as T & { wrappedJSObject?: T }).wrappedJSObject || value;
   } catch (_error) {
     return value;
   }
@@ -109,7 +105,8 @@ export function resolveRenderablePdfPage(
     seen.add(current);
     const candidate = unwrapWrappedJsObject(current as Record<string, unknown>);
     if (
-      typeof (candidate as Partial<RenderablePdfPage>).getViewport === "function" &&
+      typeof (candidate as Partial<RenderablePdfPage>).getViewport ===
+        "function" &&
       typeof (candidate as Partial<RenderablePdfPage>).render === "function"
     ) {
       return candidate as RenderablePdfPage;
@@ -200,7 +197,9 @@ export function parsePageSelectionValue(
       .filter((entry): entry is number => Number.isFinite(entry))
       .map((entry) => Math.max(0, entry - 1));
     if (!pageIndexes.length) return null;
-    const unique = Array.from(new Set(pageIndexes)).sort((left, right) => left - right);
+    const unique = Array.from(new Set(pageIndexes)).sort(
+      (left, right) => left - right,
+    );
     return {
       pageIndexes: unique,
       displayValue: formatPageSelectionValue(unique),
@@ -259,13 +258,11 @@ function getPageLabel(pageIndex: number, pageLabel?: string): string {
   return trimmed || `${pageIndex + 1}`;
 }
 
-function isPdfAttachment(
-  item: Zotero.Item | null | undefined,
-): boolean {
+function isPdfAttachment(item: Zotero.Item | null | undefined): boolean {
   return Boolean(
     item &&
-      item.isAttachment?.() &&
-      item.attachmentContentType === "application/pdf",
+    item.isAttachment?.() &&
+    item.attachmentContentType === "application/pdf",
   );
 }
 
@@ -320,7 +317,8 @@ function getPdfViewerApplication(reader: any): any | null {
     try {
       const wrapped =
         candidate?._iframeWindow?.wrappedJSObject?.PDFViewerApplication ||
-        candidate?._iframe?.contentWindow?.wrappedJSObject?.PDFViewerApplication ||
+        candidate?._iframe?.contentWindow?.wrappedJSObject
+          ?.PDFViewerApplication ||
         candidate?._window?.wrappedJSObject?.PDFViewerApplication;
       if (wrapped?.pdfDocument) return wrapped;
     } catch (_error) {
@@ -376,7 +374,11 @@ async function openReaderForItem(
   const activeReader = getActiveReaderForSelectedTab();
   if (getReaderItemId(activeReader) === Math.floor(targetItemId)) {
     if (location) {
-      await navigateReaderToPage(activeReader, location.pageIndex, location.pageLabel);
+      await navigateReaderToPage(
+        activeReader,
+        location.pageIndex,
+        location.pageLabel,
+      );
     }
     return activeReader;
   }
@@ -394,7 +396,9 @@ async function openReaderForItem(
       location
         ? {
             pageIndex: Math.floor(location.pageIndex),
-            ...(location.pageLabel ? { pageLabel: sanitizeText(location.pageLabel) } : {}),
+            ...(location.pageLabel
+              ? { pageLabel: sanitizeText(location.pageLabel) }
+              : {}),
           }
         : undefined,
     );
@@ -421,11 +425,15 @@ function restoreNonReaderTab(savedTabId: string | number | null): void {
   // savedTabId is captured before the PDF operation opens a reader tab.
   // Falls back to "zotero-pane" (library tab) if no ID was available.
   const targetTabId = savedTabId || "zotero-pane";
-  ztoolkit.log(`[LLM] restoreNonReaderTab: target="${targetTabId}" (saved=${savedTabId ?? "null"})`);
+  ztoolkit.log(
+    `[LLM] restoreNonReaderTab: target="${targetTabId}" (saved=${savedTabId ?? "null"})`,
+  );
   const doRestore = (label: string) => {
     const ok = selectZoteroTab(targetTabId);
     if (!ok) {
-      ztoolkit.log(`[LLM] restoreNonReaderTab(${label}): selectZoteroTab("${targetTabId}") failed`);
+      ztoolkit.log(
+        `[LLM] restoreNonReaderTab(${label}): selectZoteroTab("${targetTabId}") failed`,
+      );
     }
   };
   doRestore("immediate");
@@ -459,10 +467,10 @@ function getReaderDocument(reader: any): Document | null {
 function isCanvasElement(value: unknown): value is HTMLCanvasElement {
   return Boolean(
     value &&
-      typeof value === "object" &&
-      typeof (value as { getContext?: unknown }).getContext === "function" &&
-      ((value as { nodeName?: unknown }).nodeName === "CANVAS" ||
-        (value as { tagName?: unknown }).tagName === "CANVAS"),
+    typeof value === "object" &&
+    typeof (value as { getContext?: unknown }).getContext === "function" &&
+    ((value as { nodeName?: unknown }).nodeName === "CANVAS" ||
+      (value as { tagName?: unknown }).tagName === "CANVAS"),
   );
 }
 
@@ -491,12 +499,10 @@ function getPageViewCanvas(
     app?.pdfViewer?.getPageView?.(pageIndex) ||
       app?.pdfViewer?._pages?.[pageIndex] ||
       null,
-  ) as
-    | {
-        canvas?: unknown;
-        div?: Element | null;
-      }
-    | null;
+  ) as {
+    canvas?: unknown;
+    div?: Element | null;
+  } | null;
   if (!pageView) return null;
   const directCanvas = unwrapWrappedJsObject(pageView.canvas);
   if (isCanvasElement(directCanvas)) {
@@ -539,7 +545,11 @@ async function waitForRenderedPageCanvas(
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     const pageViewCanvas = getPageViewCanvas(app, pageNumber - 1);
-    if (pageViewCanvas && pageViewCanvas.width > 0 && pageViewCanvas.height > 0) {
+    if (
+      pageViewCanvas &&
+      pageViewCanvas.width > 0 &&
+      pageViewCanvas.height > 0
+    ) {
       return pageViewCanvas;
     }
     const doc = getReaderDocument(reader);
@@ -573,7 +583,9 @@ async function captureRenderedReaderPage(
     const tempCanvas = doc.createElement("canvas") as HTMLCanvasElement;
     tempCanvas.width = Math.max(1, sourceCanvas.width);
     tempCanvas.height = Math.max(1, sourceCanvas.height);
-    const context = tempCanvas.getContext("2d") as CanvasRenderingContext2D | null;
+    const context = tempCanvas.getContext(
+      "2d",
+    ) as CanvasRenderingContext2D | null;
     if (!context) return null;
     context.drawImage(sourceCanvas, 0, 0);
     return canvasToBytes(tempCanvas);
@@ -599,7 +611,9 @@ async function canvasToBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
   return bytes;
 }
 
-export function isExplicitWholeDocumentRequest(text: string | undefined): boolean {
+export function isExplicitWholeDocumentRequest(
+  text: string | undefined,
+): boolean {
   const normalized = sanitizeText(text).toLowerCase();
   if (!normalized) return false;
   return /\b(entire|whole|full)\s+(pdf|paper|document)\b/.test(normalized);
@@ -611,9 +625,11 @@ export class PdfPageService {
     private readonly zoteroGateway: ZoteroGateway,
   ) {}
 
-  async getPageCountForTarget(params: ResolvePdfTargetInput & {
-    request: AgentRuntimeRequest;
-  }): Promise<number> {
+  async getPageCountForTarget(
+    params: ResolvePdfTargetInput & {
+      request: AgentRuntimeRequest;
+    },
+  ): Promise<number> {
     const savedTabId = getLastKnownSelectedTabId();
     try {
       const target = await this.resolveTarget(params);
@@ -627,7 +643,9 @@ export class PdfPageService {
         pageLabel: "1",
       });
       if (!reader) {
-        throw new Error("Could not open the Zotero PDF reader for this attachment");
+        throw new Error(
+          "Could not open the Zotero PDF reader for this attachment",
+        );
       }
       const app = await waitForPdfDocument(reader);
       const pdfDocument = unwrapWrappedJsObject(
@@ -635,7 +653,8 @@ export class PdfPageService {
       );
       const rawCount = Number(
         (pdfDocument && (pdfDocument as { numPages?: number }).numPages) ??
-          (app as { pdfDocument?: { numPages?: number } })?.pdfDocument?.numPages ??
+          (app as { pdfDocument?: { numPages?: number } })?.pdfDocument
+            ?.numPages ??
           0,
       );
       if (!Number.isFinite(rawCount) || rawCount <= 0) {
@@ -673,7 +692,9 @@ export class PdfPageService {
     params: ResolvePdfTargetInput & { request: AgentRuntimeRequest },
   ): Promise<ResolvedPdfTarget> {
     if (params.paperContext) {
-      const contextItem = resolveContextItemFromPaperContext(params.paperContext);
+      const contextItem = resolveContextItemFromPaperContext(
+        params.paperContext,
+      );
       const storedPath = getPdfPath(contextItem);
       if (!contextItem || !storedPath) {
         throw new Error("Could not resolve the PDF attachment for that paper");
@@ -700,7 +721,8 @@ export class PdfPageService {
       ? (this.zoteroGateway.getItem(params.contextItemId) as Zotero.Item)
       : null;
     if (contextItemById) {
-      const paperContext = this.pdfService.getPaperContextForItem(contextItemById);
+      const paperContext =
+        this.pdfService.getPaperContextForItem(contextItemById);
       const storedPath = getPdfPath(contextItemById);
       if (!storedPath) {
         throw new Error("Could not access the Zotero PDF file path");
@@ -732,8 +754,9 @@ export class PdfPageService {
     });
     const bibliographicAttachment = getFirstPdfAttachment(bibliographicItem);
     if (bibliographicAttachment) {
-      const paperContext =
-        this.pdfService.getPaperContextForItem(bibliographicAttachment);
+      const paperContext = this.pdfService.getPaperContextForItem(
+        bibliographicAttachment,
+      );
       const storedPath = getPdfPath(bibliographicAttachment);
       if (!storedPath) {
         throw new Error("Could not access the Zotero PDF file path");
@@ -752,8 +775,11 @@ export class PdfPageService {
         itemId: paperContext?.itemId || bibliographicItem?.id,
         attachmentName:
           sanitizeText(
-            (bibliographicAttachment as unknown as { attachmentFilename?: string })
-              .attachmentFilename,
+            (
+              bibliographicAttachment as unknown as {
+                attachmentFilename?: string;
+              }
+            ).attachmentFilename,
           ) || undefined,
       };
     }
@@ -762,7 +788,10 @@ export class PdfPageService {
       attachmentId: params.attachmentId,
       name: params.name,
     });
-    if (uploadedAttachment?.storedPath && uploadedAttachment.category === "pdf") {
+    if (
+      uploadedAttachment?.storedPath &&
+      uploadedAttachment.category === "pdf"
+    ) {
       return {
         source: "upload",
         title: uploadedAttachment.name,
@@ -775,10 +804,12 @@ export class PdfPageService {
 
     const activeItem =
       this.zoteroGateway.getItem(params.request.activeItemId) || null;
-    const activeContextItem = this.zoteroGateway.getActiveContextItem(activeItem);
+    const activeContextItem =
+      this.zoteroGateway.getActiveContextItem(activeItem);
     if (isPdfAttachment(activeContextItem)) {
       const activePdfItem = activeContextItem as Zotero.Item;
-      const paperContext = this.pdfService.getPaperContextForItem(activeContextItem);
+      const paperContext =
+        this.pdfService.getPaperContextForItem(activeContextItem);
       const storedPath = getPdfPath(activeContextItem);
       if (!storedPath) {
         throw new Error("Could not access the active Zotero PDF file path");
@@ -842,7 +873,9 @@ export class PdfPageService {
       }
       const reader = await openReaderForItem(target.contextItemId);
       if (!reader) {
-        throw new Error("Could not open the Zotero PDF reader for this attachment");
+        throw new Error(
+          "Could not open the Zotero PDF reader for this attachment",
+        );
       }
       const cache = await warmPageTextCache(reader);
       const pages = cache?.pages || [];
@@ -859,10 +892,16 @@ export class PdfPageService {
             if (!token) continue;
             if (text.includes(token)) score += 2;
           }
-          if (mode === "figure" && /\b(fig|figure|panel|diagram|plot|chart)\b/.test(text)) {
+          if (
+            mode === "figure" &&
+            /\b(fig|figure|panel|diagram|plot|chart)\b/.test(text)
+          ) {
             score += 3;
           }
-          if (mode === "equation" && /\b(eq|equation|theorem|proof|formula)\b/.test(text)) {
+          if (
+            mode === "equation" &&
+            /\b(eq|equation|theorem|proof|formula)\b/.test(text)
+          ) {
             score += 3;
           }
           if (score <= 0 && page.pageIndex < 2) {
@@ -881,7 +920,10 @@ export class PdfPageService {
             excerpt: sanitizeText(page.text).slice(0, 220),
           };
         })
-        .sort((left, right) => right.score - left.score || left.pageIndex - right.pageIndex);
+        .sort(
+          (left, right) =>
+            right.score - left.score || left.pageIndex - right.pageIndex,
+        );
       const topK = Math.max(1, Math.min(6, Math.floor(params.topK || 3)));
       return {
         target,
@@ -912,7 +954,9 @@ export class PdfPageService {
     }
   }
 
-  private async _preparePagesForModelInner(params: PreparePdfPagesParams): Promise<{
+  private async _preparePagesForModelInner(
+    params: PreparePdfPagesParams,
+  ): Promise<{
     target: ResolvedPdfTarget;
     pages: Array<{
       pageIndex: number;
@@ -947,13 +991,17 @@ export class PdfPageService {
         allPages.add(pageIndex + offset);
       }
     }
-    const orderedPages = Array.from(allPages).sort((left, right) => left - right);
+    const orderedPages = Array.from(allPages).sort(
+      (left, right) => left - right,
+    );
     const reader = await openReaderForItem(target.contextItemId, {
       pageIndex: orderedPages[0],
       pageLabel: `${orderedPages[0] + 1}`,
     });
     if (!reader) {
-      throw new Error("Could not open the Zotero PDF reader for this attachment");
+      throw new Error(
+        "Could not open the Zotero PDF reader for this attachment",
+      );
     }
     const app = await waitForPdfDocument(reader);
     if (!app?.pdfDocument) {
@@ -973,13 +1021,14 @@ export class PdfPageService {
       let bytes = await captureRenderedReaderPage(app, reader, pageIndex);
       if (!bytes) {
         const canvasDoc =
-          getReaderDocument(reader) ||
-          Zotero.getMainWindow?.()?.document;
+          getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
         if (!canvasDoc) {
           throw new Error("No document is available for PDF page rendering");
         }
         const pdfDocument = unwrapWrappedJsObject(
-          app.pdfDocument as { getPage?: (pageNumber: number) => Promise<unknown> },
+          app.pdfDocument as {
+            getPage?: (pageNumber: number) => Promise<unknown>;
+          },
         );
         if (typeof pdfDocument?.getPage !== "function") {
           throw new Error("Could not access the PDF document page loader");
@@ -1013,7 +1062,8 @@ export class PdfPageService {
           await renderTask.promise;
         } else if (
           renderTask &&
-          (typeof renderTask === "object" || typeof renderTask === "function") &&
+          (typeof renderTask === "object" ||
+            typeof renderTask === "function") &&
           "then" in renderTask &&
           typeof renderTask.then === "function"
         ) {
@@ -1125,7 +1175,9 @@ export class PdfPageService {
       allPages.add(Math.max(0, currentPageIndex - offset));
       allPages.add(currentPageIndex + offset);
     }
-    const orderedPages = Array.from(allPages).sort((left, right) => left - right);
+    const orderedPages = Array.from(allPages).sort(
+      (left, right) => left - right,
+    );
 
     const preparedPages: Array<{
       pageIndex: number;
@@ -1146,7 +1198,9 @@ export class PdfPageService {
           throw new Error("No document available for PDF page rendering");
         }
         const pdfDocument = unwrapWrappedJsObject(
-          app.pdfDocument as { getPage?: (pageNumber: number) => Promise<unknown> },
+          app.pdfDocument as {
+            getPage?: (pageNumber: number) => Promise<unknown>;
+          },
         );
         if (typeof pdfDocument?.getPage !== "function") {
           throw new Error("Could not access the PDF document page loader");
@@ -1180,7 +1234,8 @@ export class PdfPageService {
           await renderTask.promise;
         } else if (
           renderTask &&
-          (typeof renderTask === "object" || typeof renderTask === "function") &&
+          (typeof renderTask === "object" ||
+            typeof renderTask === "function") &&
           "then" in renderTask &&
           typeof renderTask.then === "function"
         ) {
@@ -1216,7 +1271,8 @@ export class PdfPageService {
     try {
       const textCache = await warmPageTextCache(reader);
       const entry = textCache?.pages.find(
-        (p: { pageIndex: number; text: string }) => p.pageIndex === currentPageIndex,
+        (p: { pageIndex: number; text: string }) =>
+          p.pageIndex === currentPageIndex,
       );
       pageText = sanitizeText(entry?.text ?? "");
     } catch {
@@ -1275,14 +1331,17 @@ export async function renderAllPdfPages(
     });
     if (!reader) throw new Error("Could not open PDF reader");
     const app = await waitForPdfDocument(reader);
-    if (!app?.pdfDocument)
-      throw new Error("Could not load PDF document");
+    if (!app?.pdfDocument) throw new Error("Could not load PDF document");
     const pdfDocument = unwrapWrappedJsObject(
-      app.pdfDocument as { numPages?: number; getPage?: (n: number) => Promise<unknown> },
+      app.pdfDocument as {
+        numPages?: number;
+        getPage?: (n: number) => Promise<unknown>;
+      },
     );
     const rawCount = Number(
       pdfDocument?.numPages ??
-        (app as { pdfDocument?: { numPages?: number } })?.pdfDocument?.numPages ??
+        (app as { pdfDocument?: { numPages?: number } })?.pdfDocument
+          ?.numPages ??
         0,
     );
     const numPages = Math.min(
@@ -1291,36 +1350,48 @@ export async function renderAllPdfPages(
     );
     if (numPages <= 0) throw new Error("PDF has no pages");
 
-    const results: { storedPath: string; contentHash: string; pageIndex: number }[] = [];
+    const results: {
+      storedPath: string;
+      contentHash: string;
+      pageIndex: number;
+    }[] = [];
     for (let i = 0; i < numPages; i++) {
       await navigateReaderToPage(reader, i, `${i + 1}`);
       let bytes = await captureRenderedReaderPage(app, reader, i);
       if (!bytes) {
         // Fallback: render via PDF.js API directly
         const canvasDoc =
-          getReaderDocument(reader) ||
-          Zotero.getMainWindow?.()?.document;
+          getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
         if (canvasDoc && typeof pdfDocument?.getPage === "function") {
           const pdfPage = resolveRenderablePdfPage(
             await pdfDocument.getPage(i + 1),
           );
           if (pdfPage) {
             const viewport = pdfPage.getViewport({ scale: 1.8 });
-            const canvas = canvasDoc.createElement("canvas") as HTMLCanvasElement;
+            const canvas = canvasDoc.createElement(
+              "canvas",
+            ) as HTMLCanvasElement;
             canvas.width = Math.max(1, Math.ceil(viewport.width));
             canvas.height = Math.max(1, Math.ceil(viewport.height));
             const context = canvas.getContext("2d");
             if (context) {
-              const renderTask = pdfPage.render({ canvasContext: context, viewport });
+              const renderTask = pdfPage.render({
+                canvasContext: context,
+                viewport,
+              });
               if (
-                renderTask && typeof renderTask === "object" &&
-                "promise" in renderTask && renderTask.promise
+                renderTask &&
+                typeof renderTask === "object" &&
+                "promise" in renderTask &&
+                renderTask.promise
               ) {
                 await renderTask.promise;
               } else if (
                 renderTask &&
-                (typeof renderTask === "object" || typeof renderTask === "function") &&
-                "then" in renderTask && typeof renderTask.then === "function"
+                (typeof renderTask === "object" ||
+                  typeof renderTask === "function") &&
+                "then" in renderTask &&
+                typeof renderTask.then === "function"
               ) {
                 await renderTask;
               }

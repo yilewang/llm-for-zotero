@@ -1,4 +1,8 @@
-import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type {
+  AgentAction,
+  ActionExecutionContext,
+  ActionResult,
+} from "./types";
 import type {
   EditableArticleMetadataPatch,
   EditableArticleMetadataField,
@@ -40,7 +44,10 @@ type AuditLibraryOutput = {
  * Combined audit + sync action: scans the library for incomplete metadata,
  * fetches canonical metadata for items with issues, and applies fixes.
  */
-export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutput> = {
+export const auditLibraryAction: AgentAction<
+  AuditLibraryInput,
+  AuditLibraryOutput
+> = {
   name: "audit_library",
   modes: ["library"],
   description:
@@ -65,7 +72,8 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
       },
       saveNote: {
         type: "boolean",
-        description: "If true, saves the audit report as a Zotero note. Default: false.",
+        description:
+          "If true, saves the audit report as a Zotero note. Default: false.",
       },
     },
   },
@@ -78,20 +86,35 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
     let step = 0;
 
     // Step 1: query items
-    ctx.onProgress({ type: "step_start", step: "Querying library items", index: ++step, total: STEPS });
+    ctx.onProgress({
+      type: "step_start",
+      step: "Querying library items",
+      index: ++step,
+      total: STEPS,
+    });
     const queryArgs: Record<string, unknown> = {
       entity: "items",
       mode: "list",
       include: ["metadata", "tags", "attachments"],
     };
     if (input.scope === "collection" && input.collectionId) {
-      (queryArgs as { filters?: unknown }).filters = { collectionId: input.collectionId };
+      (queryArgs as { filters?: unknown }).filters = {
+        collectionId: input.collectionId,
+      };
     }
     if (input.limit) queryArgs.limit = input.limit;
 
-    const queryResult = await callTool("query_library", queryArgs, ctx, "Querying library items");
+    const queryResult = await callTool(
+      "query_library",
+      queryArgs,
+      ctx,
+      "Querying library items",
+    );
     if (!queryResult.ok) {
-      return { ok: false, error: `Failed to query library: ${JSON.stringify(queryResult.content)}` };
+      return {
+        ok: false,
+        error: `Failed to query library: ${JSON.stringify(queryResult.content)}`,
+      };
     }
 
     const content = queryResult.content as Record<string, unknown>;
@@ -103,7 +126,12 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
     });
 
     // Step 2: analyze metadata gaps
-    ctx.onProgress({ type: "step_start", step: "Analyzing metadata", index: ++step, total: STEPS });
+    ctx.onProgress({
+      type: "step_start",
+      step: "Analyzing metadata",
+      index: ++step,
+      total: STEPS,
+    });
     const issues: AuditIssue[] = [];
 
     for (const item of items) {
@@ -116,7 +144,8 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
       const title = getMetadataTitle(meta) || record.title || `Item ${itemId}`;
       const missingFields: string[] = [];
 
-      if (!getMetadataField(meta, "abstractNote")) missingFields.push("abstract");
+      if (!getMetadataField(meta, "abstractNote"))
+        missingFields.push("abstract");
       if (!getMetadataField(meta, "DOI") && !getMetadataField(meta, "url")) {
         missingFields.push("DOI/URL");
       }
@@ -124,7 +153,9 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
       const tags = Array.isArray(record.tags) ? record.tags : [];
       if (tags.length === 0) missingFields.push("tags");
 
-      const attachments = Array.isArray(record.attachments) ? record.attachments : [];
+      const attachments = Array.isArray(record.attachments)
+        ? record.attachments
+        : [];
       const hasPdf = attachments.some(
         (att: unknown) =>
           att &&
@@ -170,11 +201,15 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
       if (!record) continue;
 
       const meta = record.metadata;
-      const doi = getMetadataField(meta, "DOI")?.replace(/^https?:\/\/doi\.org\//i, "") || undefined;
+      const doi =
+        getMetadataField(meta, "DOI")?.replace(/^https?:\/\/doi\.org\//i, "") ||
+        undefined;
       const title = getMetadataTitle(meta) || undefined;
       if (!doi && !title) continue;
 
-      const label = doi ? `DOI: ${doi}` : `title: ${(title || "").slice(0, 50)}`;
+      const label = doi
+        ? `DOI: ${doi}`
+        : `title: ${(title || "").slice(0, 50)}`;
       ctx.onProgress({
         type: "status",
         message: `Fetching metadata for ${label}`,
@@ -197,11 +232,15 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
       if (!metaResult.ok) continue;
 
       const metaContent = metaResult.content as Record<string, unknown>;
-      const results = Array.isArray(metaContent.results) ? metaContent.results : [];
+      const results = Array.isArray(metaContent.results)
+        ? metaContent.results
+        : [];
       const externalMeta = results[0] as Record<string, unknown> | undefined;
       if (!externalMeta) continue;
 
-      const sourcePatch = externalMeta.patch as EditableArticleMetadataPatch | undefined;
+      const sourcePatch = externalMeta.patch as
+        | EditableArticleMetadataPatch
+        | undefined;
       if (!sourcePatch || Object.keys(sourcePatch).length === 0) continue;
 
       // Only fill in fields that are currently empty
@@ -253,7 +292,12 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
 
       const mutateContent = mutateResult.content as Record<string, unknown>;
       metadataFixed = mutateResult.ok
-        ? Number(mutateContent.appliedCount || (Array.isArray(mutateContent.results) ? mutateContent.results.length : updateCandidates.length))
+        ? Number(
+            mutateContent.appliedCount ||
+              (Array.isArray(mutateContent.results)
+                ? mutateContent.results.length
+                : updateCandidates.length),
+          )
         : 0;
 
       ctx.onProgress({
@@ -280,7 +324,12 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
     // Optional: save audit note
     let noteId: number | undefined;
     if (input.saveNote) {
-      ctx.onProgress({ type: "step_start", step: "Saving audit note", index: ++step, total: STEPS });
+      ctx.onProgress({
+        type: "step_start",
+        step: "Saving audit note",
+        index: ++step,
+        total: STEPS,
+      });
       const reportLines = [
         `## Library Audit Report`,
         ``,
@@ -289,8 +338,9 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
         `Metadata fixed: ${metadataFixed}`,
         ``,
         `### Issues`,
-        ...issues.map((issue) =>
-          `- **${issue.title}** (ID: ${issue.itemId}): missing ${issue.missingFields.join(", ")}`,
+        ...issues.map(
+          (issue) =>
+            `- **${issue.title}** (ID: ${issue.itemId}): missing ${issue.missingFields.join(", ")}`,
         ),
       ];
 
@@ -307,8 +357,11 @@ export const auditLibraryAction: AgentAction<AuditLibraryInput, AuditLibraryOutp
 
       if (saveResult.ok) {
         const saveContent = saveResult.content as Record<string, unknown>;
-        const resultObj = saveContent.result as Record<string, unknown> | undefined;
-        noteId = typeof resultObj?.noteId === "number" ? resultObj.noteId : undefined;
+        const resultObj = saveContent.result as
+          | Record<string, unknown>
+          | undefined;
+        noteId =
+          typeof resultObj?.noteId === "number" ? resultObj.noteId : undefined;
       }
       ctx.onProgress({ type: "step_done", step: "Saving audit note" });
     }

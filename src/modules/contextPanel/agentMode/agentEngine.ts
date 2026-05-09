@@ -9,6 +9,7 @@
 import type { AgentRuntime } from "../../../agent/runtime";
 import type {
   AgentEvent,
+  AgentPendingAction,
   AgentRunEventRecord,
   AgentRuntimeRequest,
 } from "../../../agent/types";
@@ -23,6 +24,7 @@ import type { ReasoningConfig as LLMReasoningConfig } from "../../../utils/llmCl
 import type { ChatMessage } from "../../../utils/llmClient";
 import type { StoredChatMessage } from "../../../utils/chatStore";
 import type { Message } from "../types";
+import type { AgentTraceUiState } from "../agentState";
 
 // ---------------------------------------------------------------------------
 // Types for panel helpers (defined inline to avoid importing from chat.ts)
@@ -90,6 +92,122 @@ type ReconstructedRetryPayload = {
   fullTextPaperContexts: PaperContextRef[];
 };
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function normalizeEffortLabel(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === "low" ||
+    normalized === "medium" ||
+    normalized === "high" ||
+    normalized === "max" ||
+    normalized === "default"
+  ) {
+    return normalized;
+  }
+  return undefined;
+}
+
+function stripEffortSuffix(modelName: string): string {
+  return modelName.replace(/\s+\(effort:\s*[^)]+\)\s*$/i, "").trim();
+}
+
+function appendAgentMessageDelta(
+  currentText: string,
+  rawDelta: string,
+  sanitizeText: (text: string) => string,
+): string {
+  const delta = sanitizeText(rawDelta || "");
+  if (!delta) return currentText;
+  if (!currentText) return delta;
+
+  // Providers may stream either incremental chunks or full snapshots.
+  // Normalize both forms to avoid repeated stacked partial output.
+  if (delta === currentText) return currentText;
+  if (delta.startsWith(currentText)) return delta;
+  if (currentText.endsWith(delta)) return currentText;
+
+  const maxOverlap = Math.min(currentText.length, delta.length);
+  let overlap = 0;
+  for (let len = maxOverlap; len > 0; len--) {
+    if (currentText.endsWith(delta.slice(0, len))) {
+      overlap = len;
+      break;
+    }
+  }
+  return currentText + delta.slice(overlap);
+}
+
+function composeClaudeModelDisplay(model: string, effort?: string): string {
+  const normalizedModel = stripEffortSuffix(model);
+  const normalizedEffort = normalizeEffortLabel(effort);
+  if (!normalizedModel) return "";
+  if (!normalizedEffort || normalizedEffort === "default") {
+    return normalizedModel;
+  }
+  return `${normalizedModel} (effort: ${normalizedEffort})`;
+}
+
+function extractClaudeProviderRuntimeInfo(event: AgentEvent): {
+  model?: string;
+  effort?: string;
+} {
+  if (event.type !== "provider_event") return {};
+  const providerType = (event.providerType || "").trim().toLowerCase();
+  const payload = asRecord(event.payload);
+  let model: string | undefined;
+  let effort: string | undefined;
+
+  if (providerType === "runtime_config") {
+    const directEffort = normalizeEffortLabel(payload.resolvedEffort);
+    if (directEffort) effort = directEffort;
+  }
+
+  // assistant event
+  if (providerType === "assistant") {
+    const message = asRecord(payload.message);
+    const value = message.model;
+    if (typeof value === "string" && value.trim()) model = value.trim();
+    const effortValue = normalizeEffortLabel(message.effort);
+    if (effortValue) effort = effortValue;
+  }
+
+  // stream_event -> message_start
+  if (providerType === "stream_event") {
+    const streamEvent = asRecord(payload.event);
+    const message = asRecord(streamEvent.message);
+    const value = message.model;
+    if (typeof value === "string" && value.trim()) model = value.trim();
+    const effortValue = normalizeEffortLabel(message.effort);
+    if (effortValue) effort = effortValue;
+  }
+
+  // result event may carry modelUsage map
+  if (providerType === "result") {
+    const directModel = payload.model;
+    if (typeof directModel === "string" && directModel.trim()) {
+      model = directModel.trim();
+    }
+    const modelUsage = asRecord(payload.modelUsage);
+    const modelKeys = Object.keys(modelUsage).filter(Boolean);
+    if (!model && modelKeys.length > 0) model = modelKeys[0];
+    const effortValue = normalizeEffortLabel(payload.effort);
+    if (effortValue) effort = effortValue;
+  }
+
+  const normalizedModel = model ? stripEffortSuffix(model) : undefined;
+  if (!normalizedModel && !effort) return {};
+  return {
+    model: normalizedModel,
+    effort,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // AgentEngineDeps — all external dependencies injected by chat.ts
 // ---------------------------------------------------------------------------
@@ -99,12 +217,15 @@ export type AgentEngineDeps = {
   chatHistory: Map<number, Message[]>;
 
   // Agent trace cache
-  agentRunTraceCache: Map<string, AgentRunEventRecord[]>;
+  agentRunTraceCache: Map<string, AgentTraceUiState>;
 
   // Request lifecycle (per-conversation)
   cancelledRequestId: (conversationKey: number) => number;
   currentAbortController: (conversationKey: number) => AbortController | null;
-  setCurrentAbortController: (conversationKey: number, ctrl: AbortController | null) => void;
+  setCurrentAbortController: (
+    conversationKey: number,
+    ctrl: AbortController | null,
+  ) => void;
   getAbortControllerCtor: () => new () => AbortController;
   nextRequestId: () => number;
   setPendingRequestId: (conversationKey: number, id: number) => void;
@@ -165,7 +286,10 @@ export type AgentEngineDeps = {
     item: Zotero.Item,
     paperContexts?: PaperContextRef[],
     fullTextPaperContexts?: PaperContextRef[],
-  ) => { paperContexts: PaperContextRef[]; fullTextPaperContexts: PaperContextRef[] };
+  ) => {
+    paperContexts: PaperContextRef[];
+    fullTextPaperContexts: PaperContextRef[];
+  };
   findLatestRetryPair: (history: Message[]) => LatestRetryPairShape | null;
   reconstructRetryPayload: (userMessage: Message) => ReconstructedRetryPayload;
   isReasoningExpandedByDefault: () => boolean;
@@ -176,6 +300,12 @@ export type AgentEngineDeps = {
     fallbackText?: string,
   ) => void;
   sanitizeText: (text: string) => string;
+  showPendingConfirmationCard: (
+    body: Element,
+    requestId: string,
+    action: AgentPendingAction,
+  ) => void;
+  hidePendingConfirmationCard: (body: Element) => void;
 
   // Persistence
   persistConversationMessage: (
@@ -192,7 +322,9 @@ export type AgentEngineDeps = {
   ) => Promise<void>;
 
   // Chat fallback (when model does not support tool calls)
-  sendChatFallback: (opts: import("../types").SendQuestionOptions) => Promise<void>;
+  sendChatFallback: (
+    opts: import("../types").SendQuestionOptions,
+  ) => Promise<void>;
 
   // Agent runtime
   getAgentRuntime: () => AgentRuntime;
@@ -229,9 +361,23 @@ export async function sendAgentTurn(
   deps: AgentEngineDeps,
 ): Promise<void> {
   const {
-    body, item, question, images, model, apiBase, apiKey, reasoning, advanced,
-    displayQuestion, selectedTexts, selectedTextSources, selectedTextPaperContexts,
-    selectedTextNoteContexts, paperContexts, fullTextPaperContexts, attachments,
+    body,
+    item,
+    question,
+    images,
+    model,
+    apiBase,
+    apiKey,
+    reasoning,
+    advanced,
+    displayQuestion,
+    selectedTexts,
+    selectedTextSources,
+    selectedTextPaperContexts,
+    selectedTextNoteContexts,
+    paperContexts,
+    fullTextPaperContexts,
+    attachments,
     forcedSkillIds,
   } = opts;
   await deps.ensureConversationLoaded(item);
@@ -252,8 +398,9 @@ export async function sendAgentTurn(
     selectedTextsForMessage.length,
   );
   const normalizedPaperContexts = deps.normalizePaperContexts(paperContexts);
-  const normalizedFullTextPaperContexts =
-    deps.normalizePaperContexts(fullTextPaperContexts);
+  const normalizedFullTextPaperContexts = deps.normalizePaperContexts(
+    fullTextPaperContexts,
+  );
   const {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
@@ -284,9 +431,23 @@ export async function sendAgentTurn(
     });
     if (fallback.kind === "fallback") {
       await deps.sendChatFallback({
-        body, item, question, images, model, apiBase, apiKey, reasoning, advanced,
-        displayQuestion, selectedTexts, selectedTextSources, selectedTextPaperContexts,
-        selectedTextNoteContexts, paperContexts, fullTextPaperContexts, attachments,
+        body,
+        item,
+        question,
+        images,
+        model,
+        apiBase,
+        apiKey,
+        reasoning,
+        advanced,
+        displayQuestion,
+        selectedTexts,
+        selectedTextSources,
+        selectedTextPaperContexts,
+        selectedTextNoteContexts,
+        paperContexts,
+        fullTextPaperContexts,
+        attachments,
         runtimeMode: "agent",
         agentRunId: fallback.runId,
         skipAgentDispatch: true,
@@ -300,6 +461,9 @@ export async function sendAgentTurn(
   deps.setPendingRequestId(conversationKey, thisRequestId);
   const initialConversationKey = deps.getConversationKey(item);
   deps.setRequestUIBusy(body, ui, initialConversationKey, "Preparing agent...");
+  if (ui.inputBox) {
+    ui.inputBox.disabled = false;
+  }
 
   const historyForRun = deps.chatHistory.get(conversationKey) || [];
   const shownQuestion = displayQuestion || question;
@@ -338,8 +502,8 @@ export async function sendAgentTurn(
     )
       ? selectedTextPaperContextsForMessage
       : undefined,
-    selectedTextNoteContexts: selectedTextNoteContextsForMessage.some(
-      (entry) => Boolean(entry),
+    selectedTextNoteContexts: selectedTextNoteContextsForMessage.some((entry) =>
+      Boolean(entry),
     )
       ? selectedTextNoteContextsForMessage
       : undefined,
@@ -386,8 +550,12 @@ export async function sendAgentTurn(
     reasoningOpen: false,
   };
   historyForRun.push(assistantMessage);
-  const { refreshChatSafely, setStatusSafely } =
-    deps.createPanelUpdateHelpers(body, item, conversationKey, ui);
+  const { refreshChatSafely, setStatusSafely } = deps.createPanelUpdateHelpers(
+    body,
+    item,
+    conversationKey,
+    ui,
+  );
   refreshChatSafely();
 
   let assistantPersisted = false;
@@ -420,8 +588,13 @@ export async function sendAgentTurn(
     );
     const queueRefresh = deps.createQueuedRefresh(refreshChatSafely);
 
+    let resolvedClaudeModel = stripEffortSuffix(
+      assistantMessage.modelName || "",
+    );
+    let resolvedClaudeEffort: string | undefined;
+
     const pushTraceEvent = (runId: string, event: AgentEvent) => {
-      const list = deps.agentRunTraceCache.get(runId) || [];
+      const list = deps.agentRunTraceCache.get(runId)?.events || [];
       list.push({
         runId,
         seq: list.length + 1,
@@ -429,7 +602,11 @@ export async function sendAgentTurn(
         payload: event,
         createdAt: Date.now(),
       });
-      deps.agentRunTraceCache.set(runId, list);
+      deps.agentRunTraceCache.set(runId, {
+        status: "ready",
+        events: list,
+        lastAttemptAt: Date.now(),
+      });
     };
 
     const outcome = await agentRuntime.runTurn({
@@ -438,7 +615,11 @@ export async function sendAgentTurn(
       onStart: async (runId) => {
         assistantMessage.agentRunId = runId;
         userMessage.agentRunId = runId;
-        deps.agentRunTraceCache.set(runId, []);
+        deps.agentRunTraceCache.set(runId, {
+          status: "loading",
+          events: [],
+          lastAttemptAt: Date.now(),
+        });
         refreshChatSafely();
         await deps.updateStoredLatestUserMessage(conversationKey, {
           text: userMessage.text,
@@ -459,15 +640,48 @@ export async function sendAgentTurn(
         if (assistantMessage.agentRunId) {
           pushTraceEvent(assistantMessage.agentRunId, event);
         }
+        const claudeRuntimeInfo = extractClaudeProviderRuntimeInfo(event);
+        if (claudeRuntimeInfo.model) {
+          resolvedClaudeModel = claudeRuntimeInfo.model;
+        }
+        if (claudeRuntimeInfo.effort) {
+          resolvedClaudeEffort = claudeRuntimeInfo.effort;
+        }
+        if (resolvedClaudeModel) {
+          assistantMessage.modelName = composeClaudeModelDisplay(
+            resolvedClaudeModel,
+            resolvedClaudeEffort,
+          );
+          assistantMessage.modelProviderLabel = "Claude Code";
+        }
         switch (event.type) {
           case "status":
             setStatusSafely(event.text, "sending");
+            break;
+          case "confirmation_required":
+            deps.showPendingConfirmationCard(
+              body,
+              event.requestId,
+              event.action,
+            );
+            setStatusSafely("Awaiting approval", "warning");
+            break;
+          case "confirmation_resolved":
+            deps.hidePendingConfirmationCard(body);
+            setStatusSafely(
+              event.approved ? "Approved; continuing…" : "Approval denied",
+              event.approved ? "sending" : "warning",
+            );
             break;
           case "fallback":
             setStatusSafely(event.reason, "sending");
             break;
           case "message_delta":
-            assistantMessage.text += deps.sanitizeText(event.text);
+            assistantMessage.text = appendAgentMessageDelta(
+              assistantMessage.text,
+              event.text,
+              deps.sanitizeText,
+            );
             break;
           case "message_rollback":
             if (typeof event.length === "number" && event.length > 0) {
@@ -486,7 +700,10 @@ export async function sendAgentTurn(
           default:
             break;
         }
-        if (event.type === "message_delta" || event.type === "message_rollback") {
+        if (
+          event.type === "message_delta" ||
+          event.type === "message_rollback"
+        ) {
           queueRefresh();
           return;
         }
@@ -567,6 +784,9 @@ export async function retryAgentTurn(
   const thisRequestId = deps.nextRequestId();
   deps.setPendingRequestId(conversationKey, thisRequestId);
   deps.setRequestUIBusy(body, ui, conversationKey, "Preparing agent retry...");
+  if (ui.inputBox) {
+    ui.inputBox.disabled = false;
+  }
 
   const assistantMessage = retryPair.assistantMessage;
 
@@ -589,7 +809,8 @@ export async function retryAgentTurn(
   });
   assistantMessage.modelName = effectiveRequestConfig.model;
   assistantMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
-  assistantMessage.modelProviderLabel = effectiveRequestConfig.modelProviderLabel;
+  assistantMessage.modelProviderLabel =
+    effectiveRequestConfig.modelProviderLabel;
 
   const { refreshChatSafely, setStatusSafely } = deps.createPanelUpdateHelpers(
     body,
@@ -659,6 +880,8 @@ export async function retryAgentTurn(
   };
 
   const agentRuntime = deps.getAgentRuntime();
+  let resolvedClaudeModel = stripEffortSuffix(assistantMessage.modelName || "");
+  let resolvedClaudeEffort: string | undefined;
   try {
     const AbortControllerCtor = deps.getAbortControllerCtor();
     deps.setCurrentAbortController(
@@ -668,7 +891,7 @@ export async function retryAgentTurn(
     const queueRefresh = deps.createQueuedRefresh(refreshChatSafely);
 
     const pushTraceEvent = (runId: string, event: AgentEvent) => {
-      const list = deps.agentRunTraceCache.get(runId) || [];
+      const list = deps.agentRunTraceCache.get(runId)?.events || [];
       list.push({
         runId,
         seq: list.length + 1,
@@ -676,7 +899,11 @@ export async function retryAgentTurn(
         payload: event,
         createdAt: Date.now(),
       });
-      deps.agentRunTraceCache.set(runId, list);
+      deps.agentRunTraceCache.set(runId, {
+        status: "ready",
+        events: list,
+        lastAttemptAt: Date.now(),
+      });
     };
 
     const outcome = await agentRuntime.runTurn({
@@ -685,7 +912,11 @@ export async function retryAgentTurn(
       onStart: async (runId) => {
         assistantMessage.agentRunId = runId;
         retryPair.userMessage.agentRunId = runId;
-        deps.agentRunTraceCache.set(runId, []);
+        deps.agentRunTraceCache.set(runId, {
+          status: "loading",
+          events: [],
+          lastAttemptAt: Date.now(),
+        });
         refreshChatSafely();
         await deps.updateStoredLatestUserMessage(conversationKey, {
           text: retryPair.userMessage.text,
@@ -706,15 +937,48 @@ export async function retryAgentTurn(
         if (assistantMessage.agentRunId) {
           pushTraceEvent(assistantMessage.agentRunId, event);
         }
+        const claudeRuntimeInfo = extractClaudeProviderRuntimeInfo(event);
+        if (claudeRuntimeInfo.model) {
+          resolvedClaudeModel = claudeRuntimeInfo.model;
+        }
+        if (claudeRuntimeInfo.effort) {
+          resolvedClaudeEffort = claudeRuntimeInfo.effort;
+        }
+        if (resolvedClaudeModel) {
+          assistantMessage.modelName = composeClaudeModelDisplay(
+            resolvedClaudeModel,
+            resolvedClaudeEffort,
+          );
+          assistantMessage.modelProviderLabel = "Claude Code";
+        }
         switch (event.type) {
           case "status":
             setStatusSafely(event.text, "sending");
+            break;
+          case "confirmation_required":
+            deps.showPendingConfirmationCard(
+              body,
+              event.requestId,
+              event.action,
+            );
+            setStatusSafely("Awaiting approval", "warning");
+            break;
+          case "confirmation_resolved":
+            deps.hidePendingConfirmationCard(body);
+            setStatusSafely(
+              event.approved ? "Approved; continuing…" : "Approval denied",
+              event.approved ? "sending" : "warning",
+            );
             break;
           case "fallback":
             setStatusSafely(event.reason, "sending");
             break;
           case "message_delta":
-            assistantMessage.text += deps.sanitizeText(event.text);
+            assistantMessage.text = appendAgentMessageDelta(
+              assistantMessage.text,
+              event.text,
+              deps.sanitizeText,
+            );
             break;
           case "message_rollback":
             if (typeof event.length === "number" && event.length > 0) {
@@ -733,7 +997,10 @@ export async function retryAgentTurn(
           default:
             break;
         }
-        if (event.type === "message_delta" || event.type === "message_rollback") {
+        if (
+          event.type === "message_delta" ||
+          event.type === "message_rollback"
+        ) {
           queueRefresh();
           return;
         }

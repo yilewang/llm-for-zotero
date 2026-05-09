@@ -5,7 +5,13 @@ import {
   type RemoveFromCollectionOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
-import { ok, fail, validateObject, normalizePositiveInt, normalizePositiveIntArray } from "../shared";
+import {
+  ok,
+  fail,
+  validateObject,
+  normalizePositiveInt,
+  normalizePositiveIntArray,
+} from "../shared";
 import {
   buildMoveAssignmentField,
   normalizeMoveAssignmentsFromResolution,
@@ -35,7 +41,8 @@ export function createMoveToCollectionTool(
             type: "string",
             enum: ["add", "remove"],
             default: "add",
-            description: "Whether to add items to or remove items from a collection.",
+            description:
+              "Whether to add items to or remove items from a collection.",
           },
           itemIds: {
             type: "array",
@@ -48,11 +55,13 @@ export function createMoveToCollectionTool(
           },
           targetCollectionName: {
             type: "string",
-            description: "Target collection name (resolved via the confirmation card).",
+            description:
+              "Target collection name (resolved via the confirmation card).",
           },
           collectionId: {
             type: "number",
-            description: "Collection ID to remove items from (for action 'remove').",
+            description:
+              "Collection ID to remove items from (for action 'remove').",
           },
           assignments: {
             type: "array",
@@ -88,7 +97,9 @@ export function createMoveToCollectionTool(
 
     validate: (args) => {
       if (!validateObject<Record<string, unknown>>(args)) {
-        return fail("Expected an object with action, itemIds, and collection details.");
+        return fail(
+          "Expected an object with action, itemIds, and collection details.",
+        );
       }
 
       const action =
@@ -126,7 +137,8 @@ export function createMoveToCollectionTool(
 
       const targetCollectionId = normalizePositiveInt(args.targetCollectionId);
       const targetCollectionName =
-        typeof args.targetCollectionName === "string" && args.targetCollectionName.trim()
+        typeof args.targetCollectionName === "string" &&
+        args.targetCollectionName.trim()
           ? args.targetCollectionName.trim()
           : undefined;
 
@@ -225,9 +237,7 @@ export function createMoveToCollectionTool(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-function normalizeAssignmentsFromArgs(
-  args: Record<string, unknown>,
-): Array<{
+function normalizeAssignmentsFromArgs(args: Record<string, unknown>): Array<{
   itemId: number;
   targetCollectionId?: number;
   targetCollectionName?: string;
@@ -246,7 +256,8 @@ function normalizeAssignmentsFromArgs(
       itemId,
       targetCollectionId: normalizePositiveInt(entry.targetCollectionId),
       targetCollectionName:
-        typeof entry.targetCollectionName === "string" && entry.targetCollectionName.trim()
+        typeof entry.targetCollectionName === "string" &&
+        entry.targetCollectionName.trim()
           ? entry.targetCollectionName.trim()
           : undefined,
     });

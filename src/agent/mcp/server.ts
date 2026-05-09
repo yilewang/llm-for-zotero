@@ -16,7 +16,10 @@
  */
 
 import type { ActionRegistry } from "../actions/registry";
-import type { ActionExecutionContext, ActionProgressEvent } from "../actions/types";
+import type {
+  ActionExecutionContext,
+  ActionProgressEvent,
+} from "../actions/types";
 import type { AgentToolRegistry } from "../tools/registry";
 import type { ZoteroGateway } from "../services/zoteroGateway";
 import {
@@ -42,8 +45,8 @@ type McpServerDeps = {
 
 function resolveDefaultLibraryId(): number {
   // Zotero.Libraries.userLibraryID is the personal library ID (always 1 in most setups)
-  return (Zotero as unknown as { Libraries: { userLibraryID: number } }).Libraries
-    .userLibraryID;
+  return (Zotero as unknown as { Libraries: { userLibraryID: number } })
+    .Libraries.userLibraryID;
 }
 
 function makeNoopProgress(_event: ActionProgressEvent): void {
@@ -65,11 +68,13 @@ async function handleInitialize(): Promise<McpServerInfo> {
 
 function handleToolsList(actionRegistry: ActionRegistry): McpToolsListResult {
   return {
-    tools: actionRegistry.listActions().map(({ name, description, inputSchema }) => ({
-      name,
-      description,
-      inputSchema,
-    })),
+    tools: actionRegistry
+      .listActions()
+      .map(({ name, description, inputSchema }) => ({
+        name,
+        description,
+        inputSchema,
+      })),
   };
 }
 
@@ -133,13 +138,21 @@ async function handleRequest(
       typeof parsed.method !== "string"
     ) {
       return JSON.stringify(
-        makeError(null, RPC_ERRORS.INVALID_REQUEST.code, RPC_ERRORS.INVALID_REQUEST.message),
+        makeError(
+          null,
+          RPC_ERRORS.INVALID_REQUEST.code,
+          RPC_ERRORS.INVALID_REQUEST.message,
+        ),
       );
     }
     request = parsed as JsonRpcRequest;
   } catch {
     return JSON.stringify(
-      makeError(null, RPC_ERRORS.PARSE_ERROR.code, RPC_ERRORS.PARSE_ERROR.message),
+      makeError(
+        null,
+        RPC_ERRORS.PARSE_ERROR.code,
+        RPC_ERRORS.PARSE_ERROR.message,
+      ),
     );
   }
 
@@ -157,9 +170,17 @@ async function handleRequest(
     }
 
     if (method === MCP_METHODS.TOOLS_CALL) {
-      if (!params || typeof params !== "object" || typeof (params as McpToolCallParams).name !== "string") {
+      if (
+        !params ||
+        typeof params !== "object" ||
+        typeof (params as McpToolCallParams).name !== "string"
+      ) {
         return JSON.stringify(
-          makeError(id, RPC_ERRORS.INVALID_PARAMS.code, "tools/call requires { name, arguments }"),
+          makeError(
+            id,
+            RPC_ERRORS.INVALID_PARAMS.code,
+            "tools/call requires { name, arguments }",
+          ),
         );
       }
       const result = await handleToolsCall(params as McpToolCallParams, deps);
@@ -167,12 +188,20 @@ async function handleRequest(
     }
 
     return JSON.stringify(
-      makeError(id, RPC_ERRORS.METHOD_NOT_FOUND.code, `Unknown method: ${method}`),
+      makeError(
+        id,
+        RPC_ERRORS.METHOD_NOT_FOUND.code,
+        `Unknown method: ${method}`,
+      ),
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return JSON.stringify(
-      makeError(id, RPC_ERRORS.INTERNAL_ERROR.code, `Internal error: ${message}`),
+      makeError(
+        id,
+        RPC_ERRORS.INTERNAL_ERROR.code,
+        `Internal error: ${message}`,
+      ),
     );
   }
 }

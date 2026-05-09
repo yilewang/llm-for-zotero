@@ -1,7 +1,5 @@
 import type { PaperContextRef } from "../../shared/types";
-import type {
-  AgentRuntimeRequest,
-} from "../types";
+import type { AgentRuntimeRequest } from "../types";
 import type {
   CollectionSummary,
   EditableArticleMetadataSnapshot,
@@ -30,7 +28,9 @@ export type ReadLibraryResultEntry = {
 };
 
 function uniqueNumbers(values: number[]): number[] {
-  return Array.from(new Set(values.filter((value) => Number.isFinite(value) && value > 0)));
+  return Array.from(
+    new Set(values.filter((value) => Number.isFinite(value) && value > 0)),
+  );
 }
 
 export class LibraryReadService {
@@ -44,7 +44,9 @@ export class LibraryReadService {
     const itemIds = [
       ...(params.itemIds || []),
       ...(params.paperContexts || []).map((entry) => entry.itemId),
-      ...this.zoteroGateway.listPaperContexts(params.request).map((entry) => entry.itemId),
+      ...this.zoteroGateway
+        .listPaperContexts(params.request)
+        .map((entry) => entry.itemId),
       Number(params.request.activeItemId) || 0,
     ];
     return uniqueNumbers(itemIds);
@@ -72,9 +74,10 @@ export class LibraryReadService {
 
       // Note path — handles both standalone notes and child notes attached to a paper
       if ((rawItem as any).isNote?.()) {
-        const noteContent = sectionSet.has("notes") || sectionSet.has("content")
-          ? this.zoteroGateway.getStandaloneNoteContent({ noteId: itemId })
-          : null;
+        const noteContent =
+          sectionSet.has("notes") || sectionSet.has("content")
+            ? this.zoteroGateway.getStandaloneNoteContent({ noteId: itemId })
+            : null;
         results[String(itemId)] = {
           itemId,
           title: noteContent?.title || `Note ${itemId}`,
@@ -86,10 +89,9 @@ export class LibraryReadService {
       // Regular item path
       const item = this.zoteroGateway.resolveMetadataItem({ itemId });
       if (!item) continue;
-      const metadata =
-        sectionSet.has("metadata")
-          ? this.zoteroGateway.getEditableArticleMetadata(item)
-          : undefined;
+      const metadata = sectionSet.has("metadata")
+        ? this.zoteroGateway.getEditableArticleMetadata(item)
+        : undefined;
       const target = targetMap.get(itemId);
       const collectionIds = target?.collectionIds || [];
       results[String(itemId)] = {
@@ -117,7 +119,9 @@ export class LibraryReadService {
           : undefined,
         collections: sectionSet.has("collections")
           ? collectionIds
-              .map((collectionId) => this.zoteroGateway.getCollectionSummary(collectionId))
+              .map((collectionId) =>
+                this.zoteroGateway.getCollectionSummary(collectionId),
+              )
               .filter((entry): entry is CollectionSummary => Boolean(entry))
           : undefined,
       };

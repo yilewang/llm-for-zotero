@@ -8,14 +8,19 @@ import type {
   AgentModelStep,
   AgentRuntimeRequest,
 } from "../src/agent/types";
-import type { AgentModelAdapter, AgentStepParams } from "../src/agent/model/adapter";
+import type {
+  AgentModelAdapter,
+  AgentStepParams,
+} from "../src/agent/model/adapter";
 
 type MockDbRow = Record<string, unknown>;
 
 function installMockDb() {
   const runs = new Map<string, MockDbRow>();
   const events: MockDbRow[] = [];
-  const originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero;
+  const originalZotero = (
+    globalThis as typeof globalThis & { Zotero?: unknown }
+  ).Zotero;
   (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
     DB: {
       executeTransaction: async (fn: () => Promise<unknown>) => fn(),
@@ -52,12 +57,18 @@ function installMockDb() {
           });
           return [];
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_run_events")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_run_events")
+        ) {
           return events
             .filter((entry) => entry.runId === params[0])
             .sort((a, b) => Number(a.seq) - Number(b.seq));
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_runs")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_runs")
+        ) {
           const run = runs.get(String(params[0]));
           return run ? [run] : [];
         }

@@ -39,9 +39,11 @@ Call `search_paper` with a focused question about the comparison dimension the u
 If the user asks about a specific aspect not covered by the retrieved evidence, make another `search_paper` call with a more specific question. Avoid `read_paper(chunkIndexes:[...])` unless the user asks for a specific section.
 
 ### MinerU cache optimization
+
 Before reading PDFs, check if papers have MinerU cache available (visible in `read_library` results as `mineruCacheDir`). When available, prefer reading `file_io(read, '{mineruCacheDir}/full.md')` — this gives high-quality structured markdown with preserved equations and figures, and is faster than `read_paper`.
 
 ### Key rules
+
 - ALWAYS batch papers in the `targets` array — do not call `read_paper` separately for each paper.
 - Use `read_paper` first (structured overview), then `search_paper` (focused detail). This two-step approach keeps context small.
 - Do NOT use `read_paper(chunkIndexes:[...])` or read full MinerU files for all papers at once — read targeted sections only.

@@ -39,7 +39,8 @@ export const PROVIDER_PROTOCOL_SPECS: ProviderProtocolSpec[] = [
   {
     id: "responses_api",
     label: "Responses API",
-    helperText: "Use OpenAI-style Responses APIs with tool calls and direct file input.",
+    helperText:
+      "Use OpenAI-style Responses APIs with tool calls and direct file input.",
     streaming: true,
     toolCalls: true,
     multimodal: true,
@@ -82,8 +83,7 @@ export const PROVIDER_PROTOCOL_SPECS: ProviderProtocolSpec[] = [
   {
     id: "web_sync",
     label: "Web Sync (ChatGPT / DeepSeek)",
-    helperText:
-      `Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(", ")} via the browser extension web-sync bridge.`,
+    helperText: `Relay questions to ${WEBCHAT_TARGETS.map((wt) => wt.label).join(", ")} via the browser extension web-sync bridge.`,
     streaming: false,
     toolCalls: false,
     multimodal: true,
@@ -97,7 +97,10 @@ const PROVIDER_PROTOCOL_IDS = new Set<ProviderProtocol>(
 );
 
 export function isProviderProtocol(value: unknown): value is ProviderProtocol {
-  return typeof value === "string" && PROVIDER_PROTOCOL_IDS.has(value as ProviderProtocol);
+  return (
+    typeof value === "string" &&
+    PROVIDER_PROTOCOL_IDS.has(value as ProviderProtocol)
+  );
 }
 
 export function getProviderProtocolSpec(

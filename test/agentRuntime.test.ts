@@ -10,14 +10,19 @@ import type {
   AgentModelStep,
   AgentRuntimeRequest,
 } from "../src/agent/types";
-import type { AgentModelAdapter, AgentStepParams } from "../src/agent/model/adapter";
+import type {
+  AgentModelAdapter,
+  AgentStepParams,
+} from "../src/agent/model/adapter";
 
 type MockDbRow = Record<string, unknown>;
 
 function installMockDb() {
   const runs = new Map<string, MockDbRow>();
   const events: MockDbRow[] = [];
-  const originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero;
+  const originalZotero = (
+    globalThis as typeof globalThis & { Zotero?: unknown }
+  ).Zotero;
   (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
     DB: {
       executeTransaction: async (fn: () => Promise<unknown>) => fn(),
@@ -54,12 +59,18 @@ function installMockDb() {
           });
           return [];
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_run_events")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_run_events")
+        ) {
           return events
             .filter((entry) => entry.runId === params[0])
             .sort((a, b) => Number(a.seq) - Number(b.seq));
         }
-        if (sql.includes("SELECT run_id AS runId") && sql.includes("agent_runs")) {
+        if (
+          sql.includes("SELECT run_id AS runId") &&
+          sql.includes("agent_runs")
+        ) {
           const run = runs.get(String(params[0]));
           return run ? [run] : [];
         }
@@ -319,7 +330,8 @@ describe("AgentRuntime", function () {
         globalThis as typeof globalThis & {
           btoa?: (value: string) => string;
         }
-      ).btoa = (value: string) => Buffer.from(value, "binary").toString("base64");
+      ).btoa = (value: string) =>
+        Buffer.from(value, "binary").toString("base64");
 
       const registry = new AgentToolRegistry();
       registry.register({
@@ -454,38 +466,38 @@ describe("AgentRuntime", function () {
         registry,
         adapterFactory: () =>
           new MockAdapter(
-            [
-              1, 2, 3, 4,
-            ].map((index) => ({
-              kind: "tool_calls" as const,
-              calls: [
-                {
-                  id: `call-${index}`,
-                  name: "read_context",
-                  arguments: {},
-                },
-              ],
-              assistantMessage: {
-                role: "assistant" as const,
-                content: "",
-                tool_calls: [
+            [1, 2, 3, 4]
+              .map((index) => ({
+                kind: "tool_calls" as const,
+                calls: [
                   {
                     id: `call-${index}`,
                     name: "read_context",
                     arguments: {},
                   },
                 ],
-              },
-            })).concat([
-              {
-                kind: "final" as const,
-                text: "Summary ready.",
                 assistantMessage: {
-                  role: "assistant",
-                  content: "Summary ready.",
+                  role: "assistant" as const,
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: `call-${index}`,
+                      name: "read_context",
+                      arguments: {},
+                    },
+                  ],
                 },
-              },
-            ]),
+              }))
+              .concat([
+                {
+                  kind: "final" as const,
+                  text: "Summary ready.",
+                  assistantMessage: {
+                    role: "assistant",
+                    content: "Summary ready.",
+                  },
+                },
+              ]),
             {
               streaming: false,
               toolCalls: true,
@@ -514,7 +526,8 @@ describe("AgentRuntime", function () {
       assert.equal(outcome.text, "Summary ready.");
       assert.isTrue(
         events.some(
-          (event) => event.type === "status" && event.text === "Continuing agent (5/8)",
+          (event) =>
+            event.type === "status" && event.text === "Continuing agent (5/8)",
         ),
       );
       assert.equal(
@@ -570,7 +583,10 @@ describe("AgentRuntime", function () {
                   Array.isArray(message.tool_calls) &&
                   message.tool_calls.length > 0,
               );
-              if (!priorAssistant || !Array.isArray(priorAssistant.tool_calls)) {
+              if (
+                !priorAssistant ||
+                !Array.isArray(priorAssistant.tool_calls)
+              ) {
                 return {
                   kind: "tool_calls",
                   calls: [1, 2, 3, 4, 5, 6, 7].map((index) => ({
@@ -596,7 +612,8 @@ describe("AgentRuntime", function () {
                 priorAssistant.tool_calls.length === 6 &&
                 toolMessages.length === 6 &&
                 toolMessages.every(
-                  (message, index) => message.tool_call_id === `call-${index + 1}`,
+                  (message, index) =>
+                    message.tool_call_id === `call-${index + 1}`,
                 );
             }
             return {
@@ -678,9 +695,7 @@ describe("AgentRuntime", function () {
       assert.deepEqual(
         events
           .filter((event) => event.type === "message_delta")
-          .map((event) =>
-            event.type === "message_delta" ? event.text : "",
-          ),
+          .map((event) => (event.type === "message_delta" ? event.text : "")),
         ["Hello ", "world."],
       );
     } finally {
@@ -721,7 +736,9 @@ describe("AgentRuntime", function () {
           async runStep(params: AgentStepParams): Promise<AgentModelStep> {
             stepIndex += 1;
             if (stepIndex === 1) {
-              await params.onReasoning?.({ details: "Inspecting the request." });
+              await params.onReasoning?.({
+                details: "Inspecting the request.",
+              });
               return {
                 kind: "tool_calls",
                 calls: [

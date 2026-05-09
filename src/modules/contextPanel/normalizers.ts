@@ -68,7 +68,9 @@ export function normalizePositiveInt(value: unknown): number | null {
   return normalized > 0 ? normalized : null;
 }
 
-export function normalizeSelectedTextSource(value: unknown): SelectedTextSource {
+export function normalizeSelectedTextSource(
+  value: unknown,
+): SelectedTextSource {
   if (value === "model") return "model";
   if (value === "note") return "note";
   if (value === "note-edit") return "note-edit";
@@ -118,9 +120,13 @@ export function normalizeNoteContextRef(
   }
   if (!parentItemKey && parentItemId) {
     const parentItem =
-      (globalThis as {
-        Zotero?: { Items?: { get?: (id: number) => Zotero.Item | null | undefined } };
-      }).Zotero?.Items?.get?.(parentItemId) || null;
+      (
+        globalThis as {
+          Zotero?: {
+            Items?: { get?: (id: number) => Zotero.Item | null | undefined };
+          };
+        }
+      ).Zotero?.Items?.get?.(parentItemId) || null;
     parentItemKey = normalizeLibraryItemKey((parentItem as any)?.key);
   }
   if (!resolvedTitle) {

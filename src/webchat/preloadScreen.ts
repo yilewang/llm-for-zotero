@@ -7,7 +7,11 @@
  */
 
 import { createElement } from "../utils/domHelpers";
-import { relayGetExtensionLiveness, relayGetExtensionStatus, relayClearExtensionStatus } from "./relayServer";
+import {
+  relayGetExtensionLiveness,
+  relayGetExtensionStatus,
+  relayClearExtensionStatus,
+} from "./relayServer";
 import { WEBCHAT_TARGETS } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -37,9 +41,11 @@ const STEPS: PreloadStep[] = [
   {
     key: "extension",
     label: "Extension connection",
-    check: () => relayGetExtensionLiveness().aliveSinceMs < EXTENSION_ALIVE_THRESHOLD_MS,
+    check: () =>
+      relayGetExtensionLiveness().aliveSinceMs < EXTENSION_ALIVE_THRESHOLD_MS,
     maxAttempts: 20, // 10 seconds
-    failHint: "Install the Sync for Zotero Chrome extension and reload the page.",
+    failHint:
+      "Install the Sync for Zotero Chrome extension and reload the page.",
   },
 ];
 
@@ -52,7 +58,11 @@ function makeChatSiteStep(targetHost?: string): PreloadStep {
       const status = relayGetExtensionStatus();
       if (!status?.chatTabAlive) return false;
       if (targetHost && status.chatUrl) {
-        try { return new URL(status.chatUrl).hostname.includes(targetHost); } catch { /* fall through */ }
+        try {
+          return new URL(status.chatUrl).hostname.includes(targetHost);
+        } catch {
+          /* fall through */
+        }
       }
       return !targetHost; // pass only when no specific target is required
     },
@@ -111,15 +121,20 @@ export async function showWebChatPreloadScreen(
   });
 
   const stepsContainer = el(doc, "div", "llm-webchat-preload-steps");
-  const stepEls: { row: HTMLElement; icon: HTMLElement; label: HTMLElement }[] = [];
+  const stepEls: { row: HTMLElement; icon: HTMLElement; label: HTMLElement }[] =
+    [];
 
   const allSteps = [...STEPS, makeChatSiteStep(targetHost)];
   for (const step of allSteps) {
     const row = el(doc, "div", "llm-webchat-preload-step");
     row.dataset.step = step.key;
     row.style.opacity = "0";
-    const icon = el(doc, "span", "llm-webchat-preload-icon", { textContent: "\u25CF" }); // ●
-    const label = el(doc, "span", "llm-webchat-preload-label", { textContent: step.label });
+    const icon = el(doc, "span", "llm-webchat-preload-icon", {
+      textContent: "\u25CF",
+    }); // ●
+    const label = el(doc, "span", "llm-webchat-preload-label", {
+      textContent: step.label,
+    });
     row.append(icon, label);
     stepsContainer.appendChild(row);
     stepEls.push({ row, icon, label });
@@ -210,11 +225,17 @@ export async function showWebChatPreloadScreen(
           retryBtn.removeEventListener("click", onClick);
           if (abortPoll !== null) clearInterval(abortPoll);
         };
-        const onClick = () => { cleanup(); resolve(); };
+        const onClick = () => {
+          cleanup();
+          resolve();
+        };
         retryBtn.addEventListener("click", onClick);
         if (signal) {
           abortPoll = setInterval(() => {
-            if (signal.aborted) { cleanup(); resolve(); }
+            if (signal.aborted) {
+              cleanup();
+              resolve();
+            }
           }, 200);
         }
       });

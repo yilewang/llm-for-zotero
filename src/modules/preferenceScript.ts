@@ -602,6 +602,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const popupAddTextEnabledInput = doc.querySelector(
     `#${config.addonRef}-popup-add-text-enabled`,
   ) as HTMLInputElement | null;
+  const scrollSectionIntoViewInput = doc.querySelector(
+    `#${config.addonRef}-scroll-section-into-view`,
+  ) as HTMLInputElement | null;
   const enableAgentModeInput = doc.querySelector(
     `#${config.addonRef}-enable-agent-mode`,
   ) as HTMLInputElement | null;
@@ -1788,6 +1791,22 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       Zotero.Prefs.set(
         `${config.prefsPrefix}.showPopupAddText`,
         popupAddTextEnabledInput.checked,
+        true,
+      );
+    });
+  }
+
+  if (scrollSectionIntoViewInput) {
+    const prefValue = Zotero.Prefs.get(
+      `${config.prefsPrefix}.scrollSectionIntoViewOnSwitch`,
+      true,
+    );
+    scrollSectionIntoViewInput.checked =
+      prefValue !== false && `${prefValue || ""}`.toLowerCase() !== "false";
+    scrollSectionIntoViewInput.addEventListener("change", () => {
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.scrollSectionIntoViewOnSwitch`,
+        scrollSectionIntoViewInput.checked,
         true,
       );
     });

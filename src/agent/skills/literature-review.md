@@ -44,6 +44,7 @@ Cap the corpus at **15-20 papers**. If more match, select the most relevant base
 Do **NOT** read every paper in full. Abstracts from Phase 1 are sufficient for most.
 
 Deep-read only the **3-5 most relevant papers** to the review topic:
+
 1. If MinerU cache is available: `file_io(read, '{mineruCacheDir}/full.md')` — best quality, gets full text with figures.
 2. Otherwise: `read_paper` for structured metadata + abstract.
 3. For targeted claims: `search_paper` with focused questions (e.g., "What methods were used?", "What were the key findings?").
@@ -80,16 +81,19 @@ Write the review directly in the chat response. Use this structure:
 If key figures from deep-read papers would strengthen a thematic point, embed them: `![Figure caption](file:///{mineruCacheDir}/images/filename.png)`. Place figures within the thematic sections they relate to, not in a separate section.
 
 ### Citation rules
+
 - Every factual claim must have an inline citation.
 - Use `(Author, Year)` for single-author papers, `(Author & Author, Year)` for two, `(Author et al., Year)` for three or more.
 - The citation label should match the Zotero item metadata (use `creators` and `date` fields).
 - Do NOT invent citations or cite papers not in the user's library.
 
 ### After writing
+
 - Ask the user if they want the review saved as a Zotero note: `edit_current_note(mode:'create', content:'...', target:'standalone')`.
 - If saving, convert the markdown to the Zotero note HTML format.
 
 ### Key rules
+
 - Budget: aim for **4-8 tool calls** total across all phases.
 - Do NOT dump all paper content into context — use abstracts first, deep-read selectively.
 - Do NOT produce a per-paper summary list — synthesize thematically.

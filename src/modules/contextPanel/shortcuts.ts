@@ -575,7 +575,7 @@ export async function renderShortcuts(
       menu.dataset.shortcutId = "";
       menu.dataset.shortcutKind = "";
       await renderShortcuts(body, item);
-      };
+    };
 
     menuDelete.onclick = async (e: Event) => {
       e.preventDefault();
@@ -638,7 +638,7 @@ export async function renderShortcuts(
       menu.dataset.shortcutId = "";
       menu.dataset.shortcutKind = "";
       await renderShortcuts(body, item);
-      };
+    };
 
     const bodyEl = body as HTMLElement;
     if (!bodyEl.dataset.llmShortcutBodyClickAttached) {

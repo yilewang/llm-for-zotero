@@ -68,16 +68,18 @@ export interface Message {
   reasoningDetails?: string;
   reasoningOpen?: boolean;
   webchatRunState?: "done" | "incomplete" | "error";
-  webchatCompletionReason?: "settled" | "forced_cancel" | "timeout" | "error" | null;
+  webchatCompletionReason?:
+    | "settled"
+    | "forced_cancel"
+    | "timeout"
+    | "error"
+    | null;
   webchatChatUrl?: string;
   webchatChatId?: string;
 }
 
 export type ChatRuntimeMode = "chat" | "agent";
-export type PaperContextSendMode =
-  | "retrieval"
-  | "full-next"
-  | "full-sticky";
+export type PaperContextSendMode = "retrieval" | "full-next" | "full-sticky";
 
 export type PaperContentSourceMode = "text" | "mineru" | "pdf";
 
@@ -297,7 +299,11 @@ export type EditRetryOptions = {
   attachments?: ChatAttachment[];
   pdfUploadSystemMessages?: string[];
   targetRuntimeMode?: ChatRuntimeMode;
-  expected?: { conversationKey: number; userTimestamp: number; assistantTimestamp: number };
+  expected?: {
+    conversationKey: number;
+    userTimestamp: number;
+    assistantTimestamp: number;
+  };
   model?: string;
   apiBase?: string;
   apiKey?: string;

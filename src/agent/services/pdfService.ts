@@ -1,6 +1,4 @@
-import {
-  ensurePDFTextCached,
-} from "../../modules/contextPanel/pdfContext";
+import { ensurePDFTextCached } from "../../modules/contextPanel/pdfContext";
 import { pdfTextCache } from "../../modules/contextPanel/state";
 import { resolvePaperContextRefFromAttachment } from "../../modules/contextPanel/paperAttribution";
 import type { PaperContextRef } from "../../shared/types";
@@ -10,7 +8,10 @@ function getFirstPdfChildAttachment(
   item: Zotero.Item | null | undefined,
 ): Zotero.Item | null {
   if (!item) return null;
-  if (item.isAttachment?.() && item.attachmentContentType === "application/pdf") {
+  if (
+    item.isAttachment?.() &&
+    item.attachmentContentType === "application/pdf"
+  ) {
     return item;
   }
   if (!item.isRegularItem?.()) return null;
@@ -109,7 +110,9 @@ export class PdfService {
     };
   }
 
-  getPaperContextForItem(item: Zotero.Item | null | undefined): PaperContextRef | null {
+  getPaperContextForItem(
+    item: Zotero.Item | null | undefined,
+  ): PaperContextRef | null {
     const attachment = getFirstPdfChildAttachment(item);
     return resolvePaperContextRefFromAttachment(attachment);
   }

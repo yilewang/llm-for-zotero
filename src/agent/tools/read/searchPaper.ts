@@ -9,7 +9,11 @@ import {
   PAPER_CONTEXT_REF_SCHEMA,
   validateObject,
 } from "../shared";
-import { normalizeTarget, normalizeTargets, resolveDefaultTargets } from "./pdfToolUtils";
+import {
+  normalizeTarget,
+  normalizeTargets,
+  resolveDefaultTargets,
+} from "./pdfToolUtils";
 import type { PdfTarget } from "./pdfToolUtils";
 
 type SearchPaperInput = {

@@ -1159,8 +1159,8 @@ async function navigateToCachedCitationPage(
   const cacheKey = buildCitationCacheKey(contextItemId, quoteText);
   const cached = citationPageCache.get(cacheKey);
   if (!cached) return null;
-  let targetPageIndex = Math.floor(cached.pageIndex);
-  let targetPageLabel =
+  const targetPageIndex = Math.floor(cached.pageIndex);
+  const targetPageLabel =
     typeof cached.pageLabel === "string" && cached.pageLabel.trim()
       ? cached.pageLabel.trim()
       : `${targetPageIndex + 1}`;

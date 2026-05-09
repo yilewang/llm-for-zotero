@@ -1,5 +1,8 @@
 import { assert } from "chai";
-import { createAgentModelAdapter, resolveRequestProviderProtocol } from "../src/agent/model/factory";
+import {
+  createAgentModelAdapter,
+  resolveRequestProviderProtocol,
+} from "../src/agent/model/factory";
 import type { AgentRuntimeRequest } from "../src/agent/types";
 
 describe("agent model factory", function () {

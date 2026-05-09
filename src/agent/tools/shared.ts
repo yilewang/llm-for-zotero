@@ -1,10 +1,5 @@
-import type {
-  AgentToolInputValidation,
-} from "../types";
-import type {
-  ChatAttachment,
-  PaperContextRef,
-} from "../../shared/types";
+import type { AgentToolInputValidation } from "../types";
+import type { ChatAttachment, PaperContextRef } from "../../shared/types";
 
 export type NoteSaveTarget = "item" | "standalone";
 

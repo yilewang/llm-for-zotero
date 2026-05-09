@@ -54,7 +54,9 @@ function getCachedRetrievalCandidates(
   paperKey: string,
   question: string,
 ): PaperContextCandidate[] | undefined {
-  return retrievalCandidateCache.get(buildRetrievalCacheKey(paperKey, question));
+  return retrievalCandidateCache.get(
+    buildRetrievalCacheKey(paperKey, question),
+  );
 }
 
 function setCachedRetrievalCandidates(
@@ -311,13 +313,19 @@ function assembleBestEffortFullMultiPaperContext(params: {
 
     const currentCombined = buildFullPaperContextWrapper(blocks);
     const currentTokens = estimateTextTokens(currentCombined);
-    const separatorTokens = estimateTextTokens(blocks.length ? "\n\n---\n\n" : "");
+    const separatorTokens = estimateTextTokens(
+      blocks.length ? "\n\n---\n\n" : "",
+    );
     const paperHeadingTokens = estimateTextTokens(`Paper ${index + 1}\n`);
     const wrapperTokens = blocks.length
       ? 0
       : estimateTextTokens("Full Paper Contexts:\n\n");
     const remainingForPaper =
-      budget - currentTokens - separatorTokens - paperHeadingTokens - wrapperTokens;
+      budget -
+      currentTokens -
+      separatorTokens -
+      paperHeadingTokens -
+      wrapperTokens;
     if (remainingForPaper <= 0) {
       continue;
     }
@@ -370,13 +378,8 @@ export async function assembleRetrievedMultiPaperContext(params: {
   minChunksByPaper?: Map<string, number>;
   options?: RetrievedAssemblyOptions;
 }): Promise<RetrievedAssembly> {
-  const {
-    papers,
-    question,
-    contextBudgetTokens,
-    minChunksByPaper,
-    options,
-  } = params;
+  const { papers, question, contextBudgetTokens, minChunksByPaper, options } =
+    params;
   if (!papers.length || contextBudgetTokens <= 0) {
     return { contextText: "", selectedChunkCount: 0, selectedPaperCount: 0 };
   }
@@ -797,7 +800,8 @@ export async function resolveMultiContextPlan(params: {
     (paper) => paper.pinKind === "explicit",
   );
   const unpinned = papers.filter((paper) => paper.pinKind === "none");
-  const activePaper = papers.find((paper) => paper.isActive) || papers[0] || null;
+  const activePaper =
+    papers.find((paper) => paper.isActive) || papers[0] || null;
   const firstPaperTurn =
     params.conversationMode === "paper" && isFirstPaperTurn(params.history);
 
@@ -816,7 +820,10 @@ export async function resolveMultiContextPlan(params: {
       // Pre-generate embeddings in the background so they are cached for
       // future retrieval queries (e.g. multi-paper or long conversations).
       for (const paper of pinnedPapers) {
-        preGenerateEmbeddings(paper.pdfContext, paper.paperContext.contextItemId);
+        preGenerateEmbeddings(
+          paper.pdfContext,
+          paper.paperContext.contextItemId,
+        );
       }
 
       // Include remaining @-referenced (unpinned) papers via retrieval if
@@ -890,10 +897,9 @@ export async function resolveMultiContextPlan(params: {
       usedContextTokens,
       selectedPaperCount: retrieved.selectedPaperCount,
       selectedChunkCount: retrieved.selectedChunkCount,
-      assistantInstruction:
-        firstPaperTurn
-          ? undefined
-          : buildPaperFollowupAssistantInstruction(params.question),
+      assistantInstruction: firstPaperTurn
+        ? undefined
+        : buildPaperFollowupAssistantInstruction(params.question),
     };
   }
 

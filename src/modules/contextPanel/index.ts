@@ -64,7 +64,11 @@ import {
   getSelectionFromDocument,
 } from "./readerSelection";
 import { resolveReaderPopupPaperContext } from "./readerPopup";
-import { resolveInitialPanelItemState, resolveActiveLibraryID, resolveDisplayConversationKind } from "./portalScope";
+import {
+  resolveInitialPanelItemState,
+  resolveActiveLibraryID,
+  resolveDisplayConversationKind,
+} from "./portalScope";
 import { getLockedGlobalConversationKey } from "./prefHelpers";
 import { getEditableSelectionFromDocument } from "./noteSelection";
 
@@ -100,6 +104,62 @@ export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
   doc.documentElement?.appendChild(katexLink);
 }
 
+// Scroll the LLM section into view after a fresh render so that switching
+// papers or reopening the item pane lands the user back on the plugin
+// section instead of dumping them at the top of the info pane.
+function scheduleScrollSectionIntoView(body: Element): void {
+  if (!body || !body.isConnected) return;
+  const enabled = Zotero.Prefs.get(
+    `${config.prefsPrefix}.scrollSectionIntoViewOnSwitch`,
+    true,
+  );
+  // Default true: only skip when the user has explicitly turned it off.
+  if (enabled === false || `${enabled ?? ""}`.toLowerCase() === "false") {
+    return;
+  }
+  const doc = body.ownerDocument;
+  const win = doc?.defaultView as (Window & typeof globalThis) | null;
+  if (!win) return;
+  const section = body.parentElement;
+  if (!section || !section.isConnected) return;
+  // Skip hidden panels (e.g. the inactive reader/library twin) — scrolling
+  // them is wasted layout work and getBoundingClientRect would lie.
+  if (section.getClientRects().length === 0) return;
+
+  const isSectionAtTop = (): boolean => {
+    if (!section.isConnected) return true;
+    try {
+      const rect = section.getBoundingClientRect();
+      // Tolerate a few pixels of Zotero pane padding/border above the section.
+      return rect.top >= -2 && rect.top <= 32;
+    } catch {
+      return false;
+    }
+  };
+
+  const scroll = () => {
+    if (!section.isConnected) return;
+    if (isSectionAtTop()) return;
+    try {
+      section.scrollIntoView({ block: "start", behavior: "auto" });
+    } catch {
+      /* scrollIntoView is best-effort */
+    }
+  };
+
+  // Why two timers instead of rAF: Zotero often resets the item-pane scroll
+  // to the top *after* its own render frame, undoing a same-frame scroll on
+  // subsequent paper switches. Deferring past that reset wins the race; the
+  // 320ms backup catches slower renders. The visibility guard makes repeat
+  // calls effectively free when the section is already where we want it.
+  try {
+    win.setTimeout(scroll, 120);
+    win.setTimeout(scroll, 320);
+  } catch {
+    scroll();
+  }
+}
+
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
   setReaderContextPanelRegistered(true);
@@ -130,6 +190,18 @@ export function registerReaderContextPanel() {
       ztoolkit.log(`LLM: panel itemChange tabType=${tabType}`);
       // Refresh the cached tab ID (side effect of getActiveReaderForSelectedTab)
       getActiveReaderForSelectedTab();
+      // Body re-use: when revisiting an already-opened paper, Zotero swaps
+      // back the cached body whose dataset.itemId matches the incoming item,
+      // so onRender takes the no-op else branch and never reaches scroll.
+      // Drive scroll from the item-change event so revisits also land on
+      // the LLM section. Idempotent via the at-top early-exit.
+      for (const [panelBody] of activeContextPanels) {
+        if (!(panelBody as Element).isConnected) {
+          activeContextPanels.delete(panelBody);
+          continue;
+        }
+        scheduleScrollSectionIntoView(panelBody as Element);
+      }
       return true;
     },
     onRender: ({ body, item }) => {
@@ -150,9 +222,10 @@ export function registerReaderContextPanel() {
         const needsFullRender = !activeContextPanels.has(body) || !panelRoot;
 
         // Also check if a global lock requires switching to open chat
-        const libraryID = resolveActiveLibraryID() ||
-          (item ? Number(item.libraryID || 0) : 0);
-        const lockedKey = libraryID > 0 ? getLockedGlobalConversationKey(libraryID) : null;
+        const libraryID =
+          resolveActiveLibraryID() || (item ? Number(item.libraryID || 0) : 0);
+        const lockedKey =
+          libraryID > 0 ? getLockedGlobalConversationKey(libraryID) : null;
         const currentKind = panelRoot?.dataset?.conversationKind;
         const currentItemKey = panelRoot?.dataset?.itemId;
         // Lock is stale if:
@@ -160,10 +233,10 @@ export function registerReaderContextPanel() {
         // - lock active + panel shows different global conversation
         // - lock cleared + panel still in global mode (need to switch back to paper)
         const lockStale =
-          (lockedKey !== null && (
-            currentKind === "paper" ||
-            (currentItemKey !== undefined && currentItemKey !== String(lockedKey))
-          )) ||
+          (lockedKey !== null &&
+            (currentKind === "paper" ||
+              (currentItemKey !== undefined &&
+                currentItemKey !== String(lockedKey)))) ||
           (lockedKey === null && currentKind === "global" && !needsFullRender);
 
         // Detect if the active item has changed (e.g. user switched reader tabs).
@@ -191,10 +264,12 @@ export function registerReaderContextPanel() {
           setupHandlers(body, item);
           // Flag: onAsyncRender can skip the duplicate buildUI + setupHandlers.
           (body as any).__llmSyncRendered = true;
+          scheduleScrollSectionIntoView(body);
           // Defer conversation loading and chat rendering
           void (async () => {
             try {
-              if (resolvedState.item) await ensureConversationLoaded(resolvedState.item);
+              if (resolvedState.item)
+                await ensureConversationLoaded(resolvedState.item);
               if (isStandaloneWindowActive()) return;
               refreshChat(body, resolvedState.item);
             } catch (err) {
@@ -207,7 +282,9 @@ export function registerReaderContextPanel() {
           activeContextPanels.set(body, () => resolvedState.item);
           activeContextPanelRawItems.set(body, item || null);
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     },
     onAsyncRender: async ({ body, item, setEnabled, tabType }) => {
       setEnabled(true);
@@ -241,12 +318,16 @@ export function registerReaderContextPanel() {
       // or if the standalone window was opened during the await.
       if (renderGeneration !== thisGeneration) return;
       if (isStandaloneWindowActive()) return;
-      const shortcutMode = resolveDisplayConversationKind(resolvedItem) === "global" ? "library" : "paper";
+      const shortcutMode =
+        resolveDisplayConversationKind(resolvedItem) === "global"
+          ? "library"
+          : "paper";
       await renderShortcuts(body, resolvedItem, shortcutMode);
       if (renderGeneration !== thisGeneration) return;
       if (isStandaloneWindowActive()) return;
       if (!syncAlreadyRendered) {
         setupHandlers(body, item);
+        scheduleScrollSectionIntoView(body);
       }
       refreshChat(body, resolvedItem);
       // Defer content extraction so the panel becomes interactive sooner.
@@ -566,9 +647,10 @@ export function registerReaderSelectionTracking() {
             // Paper mode: resolve the conversation key from the reader's
             // paper item via resolveInitialPanelItemState + getConversationKey.
             // This correctly handles portal keys (multi-conversation papers).
-            const readerItem = readerPaperItemID > 0
-              ? Zotero.Items.get(readerPaperItemID) || null
-              : null;
+            const readerItem =
+              readerPaperItemID > 0
+                ? Zotero.Items.get(readerPaperItemID) || null
+                : null;
             if (readerItem) {
               const resolved = resolveInitialPanelItemState(readerItem);
               conversationKey = resolved.item
@@ -626,8 +708,13 @@ export function registerReaderSelectionTracking() {
               const activeRoot = (activeBody as Element).querySelector(
                 "#llm-main",
               ) as HTMLDivElement | null;
-              if (Number(activeRoot?.dataset?.itemId || 0) === conversationKey) {
-                applySelectedTextPreview(activeBody as Element, conversationKey);
+              if (
+                Number(activeRoot?.dataset?.itemId || 0) === conversationKey
+              ) {
+                applySelectedTextPreview(
+                  activeBody as Element,
+                  conversationKey,
+                );
                 refreshedPanels += 1;
                 break;
               }
@@ -845,7 +932,9 @@ function getActiveNoteItemFromWindow(
         ? ""
         : `${tabs.selectedID}`;
     const activeTab = Array.isArray(tabs?._tabs)
-      ? tabs._tabs.find((tab: Record<string, unknown>) => `${tab?.id || ""}` === selectedId)
+      ? tabs._tabs.find(
+          (tab: Record<string, unknown>) => `${tab?.id || ""}` === selectedId,
+        )
       : null;
     const data = (activeTab?.data || {}) as Record<string, unknown>;
     const candidateIds = [
@@ -868,9 +957,11 @@ function getActiveNoteItemFromWindow(
   }
 
   try {
-    const pane = (win as unknown as {
-      ZoteroPane?: { getSelectedItems?: () => Zotero.Item[] };
-    }).ZoteroPane;
+    const pane = (
+      win as unknown as {
+        ZoteroPane?: { getSelectedItems?: () => Zotero.Item[] };
+      }
+    ).ZoteroPane;
     const selectedItems = pane?.getSelectedItems?.() || [];
     const noteItem = selectedItems.find((item: Zotero.Item) =>
       (item as any)?.isNote?.(),
@@ -967,13 +1058,7 @@ function refreshTrackedNoteEditingSelection(
     tracker.lastNoteId > 0 &&
     (tracker.lastNoteId !== nextNoteId || !nextSelectionText)
   ) {
-    if (
-      syncSelectedTextContextForSource(
-        tracker.lastNoteId,
-        "",
-        "note-edit",
-      )
-    ) {
+    if (syncSelectedTextContextForSource(tracker.lastNoteId, "", "note-edit")) {
       refreshPanelsForConversationKey(tracker.lastNoteId);
     }
   }
@@ -1029,7 +1114,11 @@ export function registerNoteEditingSelectionTracking(
       if (!tracker) return;
       win.clearInterval(tracker.intervalId);
       if (debounceTimer !== null) clearTimeout(debounceTimer);
-      win.document.removeEventListener("selectionchange", debouncedRefresh, true);
+      win.document.removeEventListener(
+        "selectionchange",
+        debouncedRefresh,
+        true,
+      );
       win.document.removeEventListener("mouseup", debouncedRefresh, true);
       win.document.removeEventListener("keyup", debouncedRefresh, true);
       delete trackedWindow.__llmNoteEditingSelectionTracking;

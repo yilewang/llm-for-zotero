@@ -85,6 +85,18 @@ async function loadSubprocess(): Promise<unknown | null> {
   return null;
 }
 
+// Convention: the adapter checkout sits as a sibling of Zotero's
+// `agent-runtime/` and `agent-state/` directories, i.e. directly under the
+// Zotero install root. Deriving zoteroRoot = dirname(adapterPath) lets us
+// drive the bridge on machines whose Zotero install isn't at the adapter's
+// `${HOME}/Zotero` default (notably custom-drive Windows installs).
+function deriveZoteroRoot(adapterPath: string): string {
+  const trimmed = adapterPath.replace(/[\\/]+$/, "");
+  if (!trimmed) return "";
+  const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return idx > 0 ? trimmed.substring(0, idx) : "";
+}
+
 function isWindows(): boolean {
   try {
     const z = Zotero as unknown as { isWin?: boolean };
@@ -135,14 +147,22 @@ export async function maybeSpawnAdapter(params: {
     return { spawned: false, reason: "Subprocess API unavailable" };
   }
 
+  const zoteroRoot = deriveZoteroRoot(adapterPath);
   let command: string;
   let args: string[];
   if (isWindows()) {
     command = "C:\\Windows\\System32\\cmd.exe";
     args = ["/c", "npm", "run", "serve:bridge"];
+    if (zoteroRoot) {
+      // npm forwards args after `--` to the underlying script.
+      args.push("--", "--zotero-root", zoteroRoot);
+    }
   } else {
     command = "/bin/sh";
-    args = ["-c", "npm run serve:bridge"];
+    const tail = zoteroRoot
+      ? ` -- --zotero-root '${zoteroRoot.replace(/'/g, "'\\''")}'`
+      : "";
+    args = ["-c", `npm run serve:bridge${tail}`];
   }
 
   try {

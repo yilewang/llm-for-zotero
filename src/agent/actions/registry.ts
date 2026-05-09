@@ -1,4 +1,8 @@
-import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type {
+  AgentAction,
+  ActionExecutionContext,
+  ActionResult,
+} from "./types";
 
 export class ActionRegistry {
   private readonly actions = new Map<string, AgentAction<any, any>>();
@@ -15,7 +19,9 @@ export class ActionRegistry {
     return this.actions.get(name);
   }
 
-  listActions(mode?: "paper" | "library"): Array<{ name: string; description: string; inputSchema: object }> {
+  listActions(
+    mode?: "paper" | "library",
+  ): Array<{ name: string; description: string; inputSchema: object }> {
     return Array.from(this.actions.values())
       .filter((a) => !mode || !a.modes || a.modes.includes(mode))
       .map(({ name, description, inputSchema }) => ({

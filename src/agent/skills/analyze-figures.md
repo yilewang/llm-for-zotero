@@ -49,10 +49,12 @@ Use both the image and the section text (caption + discussion) to give a complet
 ### When MinerU cache is NOT available
 
 Fall back to PDF tools:
+
 1. `view_pdf_pages` with the figure label to find which page(s) contain it and get the page image for visual analysis
 2. `search_paper` for surrounding discussion text
 
 ### Key rules
+
 - **NEVER** use OCR tools, Python scripts, Swift, Tesseract, or shell commands to analyze images. Visual models see images directly.
 - **NEVER** attempt to install packages (PIL, cv2, etc.) to process images.
 - Prefer MinerU cache over raw PDF — it's faster and gives better quality.
@@ -60,7 +62,9 @@ Fall back to PDF tools:
 - For tables: the MinerU markdown usually contains the table as structured text — read that directly instead of rendering images.
 
 ### Saving figure analysis to notes
+
 When the user asks to save your figure analysis to a note (e.g., "save it", "put that in a note", "create a note", "write to obsidian"), the Write Note skill handles the full workflow. Key rules:
+
 - **Always embed the analyzed figure image** in the note — mandatory, not optional. A note explaining Figure 2 must show Figure 2.
 - Place the image at the start of the relevant section, before the explanation text.
 - If you analyzed multiple figures, embed all of them.

@@ -47,7 +47,9 @@ export const BUILTIN_SKILL_FILES: Record<string, string> = {
 };
 
 /** Set of filenames that are built-in (shipped with the plugin). */
-export const BUILTIN_SKILL_FILENAMES = new Set(Object.keys(BUILTIN_SKILL_FILES));
+export const BUILTIN_SKILL_FILENAMES = new Set(
+  Object.keys(BUILTIN_SKILL_FILES),
+);
 
 /**
  * Returns the parsed instruction body of a shipped built-in skill.
@@ -124,7 +126,10 @@ function computeContextForcedSkillIds(
  *      result is available.
  */
 export function getMatchedSkillIds(
-  request: Pick<import("../types").AgentRuntimeRequest, "userText" | "forcedSkillIds">,
+  request: Pick<
+    import("../types").AgentRuntimeRequest,
+    "userText" | "forcedSkillIds"
+  >,
   classifiedIds?: ReadonlyArray<string>,
 ): string[] {
   const forcedIds = new Set(request.forcedSkillIds || []);

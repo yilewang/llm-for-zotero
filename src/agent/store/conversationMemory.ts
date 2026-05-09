@@ -26,9 +26,11 @@ const store = new Map<number, TurnMemory[]>();
 let initPromise: Promise<boolean> | null = null;
 
 function getDb(): ZoteroDb | null {
-  const zotero = (globalThis as typeof globalThis & {
-    Zotero?: { DB?: ZoteroDb };
-  }).Zotero;
+  const zotero = (
+    globalThis as typeof globalThis & {
+      Zotero?: { DB?: ZoteroDb };
+    }
+  ).Zotero;
   return zotero?.DB || null;
 }
 
@@ -52,7 +54,10 @@ async function ensureConversationMemoryStore(): Promise<boolean> {
       );
       return true;
     } catch (error) {
-      ztoolkit.log("LLM Agent: Failed to initialize conversation memory store", error);
+      ztoolkit.log(
+        "LLM Agent: Failed to initialize conversation memory store",
+        error,
+      );
       return false;
     }
   })();
@@ -87,7 +92,9 @@ function formatMemoryBlock(turns: TurnMemory[]): string {
     "Prior findings from this conversation (do not re-run tools for these unless the user asks you to update them):",
   ];
   for (const turn of turns) {
-    lines.push(`- User asked: "${turn.question}${turn.question.length >= QUESTION_EXCERPT_LEN ? "…" : ""}"`);
+    lines.push(
+      `- User asked: "${turn.question}${turn.question.length >= QUESTION_EXCERPT_LEN ? "…" : ""}"`,
+    );
     if (turn.toolsUsed.length) {
       lines.push(`  Tools used: ${turn.toolsUsed.join(", ")}`);
     }
@@ -135,7 +142,9 @@ async function loadConversationMemory(
           question:
             typeof row.questionExcerpt === "string" ? row.questionExcerpt : "",
           toolsUsed: Array.isArray(toolsUsed)
-            ? toolsUsed.filter((entry): entry is string => typeof entry === "string")
+            ? toolsUsed.filter(
+                (entry): entry is string => typeof entry === "string",
+              )
             : [],
           answerExcerpt:
             typeof row.answerExcerpt === "string" ? row.answerExcerpt : "",

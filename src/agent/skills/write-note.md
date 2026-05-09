@@ -140,6 +140,7 @@ Written by LLM-for-Zotero.
 - **Footer is mandatory on every note** (paper or general, Zotero or file-based). End the note with a horizontal rule followed by `Written by LLM-for-Zotero.` on its own line, exactly as shown in the templates. For HTML Zotero notes, use `<hr/><p>Written by LLM-for-Zotero.</p>`.
 
 **Checklist before writing the note — verify each item:**
+
 1. `title:` value is the paper's full title from Zotero (paper notes) or the user's note title (general notes) — NOT the filename, NOT the figure/subtopic label, NOT the date.
 2. Frontmatter contains exactly the 7 keys shown above, in that order, and NO others.
 3. You did not add `authors`, `note_type`, `figure`, `abstract`, or any other field.
@@ -195,6 +196,7 @@ Write:        ![Figure 2. RSA toolbox schematic](../imgs/Nili2014/figure-2.jpg)
 ### Step 4a — Write to Zotero (`edit_current_note`)
 
 **Creating notes** (mode: `create`):
+
 - Notes are created directly without a confirmation card.
 - In **paper chat** (active item exists): default to `target: 'item'` — attaches the note to the active paper.
 - In **library chat** (no active item): default to `target: 'standalone'` — creates a standalone note.
@@ -202,16 +204,19 @@ Write:        ![Figure 2. RSA toolbox schematic](../imgs/Nili2014/figure-2.jpg)
 - If the paper has **multiple** child notes and the user wants to append, ask which note to write to before proceeding.
 
 **Editing existing notes** (mode: `edit`):
+
 - Edits always show a diff review card for the user to approve.
 - PREFER `patches` (find-and-replace pairs) over `content` (full rewrite) — patches are faster.
 - Use mode `edit` for: append to specific position, insert, delete, rewrite sections.
 
 **Format:**
+
 - Pass Markdown by default. When the user explicitly requests HTML output or provides an HTML template (e.g., Better Notes templates with inline styles), write HTML with inline styles directly.
 
 ### Step 4b — Write to file (`file_io`)
 
 **Prerequisites:**
+
 - The user's notes directory path and default folder are provided in the system prompt under "Notes directory configuration". If missing, tell the user to configure the notes directory in the plugin preferences (Settings > Agent tab).
 - The default folder is used when the user doesn't specify a folder. If the user specifies a different folder, write there instead.
 
@@ -234,12 +239,12 @@ Three components, joined by single hyphens:
 
 **Worked examples:**
 
-| User request | Filename |
-|---|---|
-| "summary notes about figure 1 to my obsidian note" | `stable-and-dynamic-coding-for-working-memory-figure-1-2026-04-16.md` |
-| "create a reading note for this paper" | `stable-and-dynamic-coding-for-working-memory-2026-04-16.md` |
-| "methodology summary" | `stable-and-dynamic-coding-for-working-memory-methodology-2026-04-16.md` |
-| "literature review on working memory" (non-paper note) | `literature-review-on-working-memory-2026-04-16.md` |
+| User request                                           | Filename                                                                 |
+| ------------------------------------------------------ | ------------------------------------------------------------------------ |
+| "summary notes about figure 1 to my obsidian note"     | `stable-and-dynamic-coding-for-working-memory-figure-1-2026-04-16.md`    |
+| "create a reading note for this paper"                 | `stable-and-dynamic-coding-for-working-memory-2026-04-16.md`             |
+| "methodology summary"                                  | `stable-and-dynamic-coding-for-working-memory-methodology-2026-04-16.md` |
+| "literature review on working memory" (non-paper note) | `literature-review-on-working-memory-2026-04-16.md`                      |
 
 **Writing steps:**
 
@@ -281,6 +286,7 @@ Any placeholder the user writes (`{citekey}`, `{firstauthor}`, `{year}`, `{doi}`
 - If the user has replaced this skill's managed block with their own customization (either by editing the block directly or by writing their own template outside the MANAGED markers), follow their customization instead of the defaults above.
 
 ### Budget
+
 Total tool calls: 2–5 (read content, optionally look up citekeys, optionally copy images, write note).
 
 <!-- LLM-FOR-ZOTERO:MANAGED-END -->

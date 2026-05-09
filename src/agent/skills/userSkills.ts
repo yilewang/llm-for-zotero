@@ -39,8 +39,7 @@ export { patchSkillFrontmatter } from "./frontmatterPatcher";
 // Body hash tracking — detect user modifications to skill files
 // ---------------------------------------------------------------------------
 
-const BODY_HASH_PREF_KEY =
-  "extensions.zotero.llmForZotero.skillBodyHashes";
+const BODY_HASH_PREF_KEY = "extensions.zotero.llmForZotero.skillBodyHashes";
 
 function getBodyHashes(): Record<string, string> {
   try {
@@ -299,9 +298,7 @@ export async function initUserSkills(): Promise<void> {
         } else {
           // Customized or unknown legacy copy → keep as personal skill
           seeded.delete(file);
-          Zotero.debug?.(
-            `[llm-for-zotero] Kept ${file} as personal skill`,
-          );
+          Zotero.debug?.(`[llm-for-zotero] Kept ${file} as personal skill`);
         }
       } catch (err) {
         Zotero.debug?.(
@@ -382,9 +379,7 @@ export async function initUserSkills(): Promise<void> {
         }
         await io.write(filePath, encoder.encode(shippedContent));
         bodyHashes[filename] = shippedHash;
-        Zotero.debug?.(
-          `[llm-for-zotero] Upgraded skill: ${filename}`,
-        );
+        Zotero.debug?.(`[llm-for-zotero] Upgraded skill: ${filename}`);
       } else if (!storedHash) {
         // Bootstrap: no hash record (pre-hash installation). Only upgrade if
         // the raw file still matches a known shipped version for this built-in;
@@ -495,9 +490,7 @@ export async function loadUserSkills(): Promise<AgentSkill[]> {
     try {
       const data = await io.read(filePath);
       const bytes =
-        data instanceof Uint8Array
-          ? data
-          : new Uint8Array(data as ArrayBuffer);
+        data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
       const raw = new TextDecoder("utf-8").decode(bytes);
 
       const skill = parseSkill(raw);
@@ -609,7 +602,7 @@ Describe when and how the agent should behave when this skill matches.
 
   let index = 1;
   let filePath: string;
-  // eslint-disable-next-line no-constant-condition
+
   while (true) {
     filePath = joinLocalPath(dir, `custom-skill-${index}.md`);
     try {
@@ -685,9 +678,7 @@ export async function getSkillListing(): Promise<SkillListingEntry[]> {
     try {
       const data = await io.read(filePath);
       const bytes =
-        data instanceof Uint8Array
-          ? data
-          : new Uint8Array(data as ArrayBuffer);
+        data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
       const raw = new TextDecoder("utf-8").decode(bytes);
       const skill = parseSkill(raw);
       if (skill.id === "unknown") continue;
@@ -779,9 +770,7 @@ export async function restoreSkillToDefault(
     const seeded = getSeededSkills();
     seeded.add(filename);
     setSeededSkills(seeded);
-    Zotero.debug?.(
-      `[llm-for-zotero] Restored skill to default: ${filename}`,
-    );
+    Zotero.debug?.(`[llm-for-zotero] Restored skill to default: ${filename}`);
     return true;
   } catch (err) {
     Zotero.debug?.(
@@ -820,10 +809,10 @@ export async function getSkillDiff(
  */
 export async function openSkillFile(filePath: string): Promise<void> {
   try {
-    const fileModule = (Zotero as unknown as {
+    const fileModule = Zotero as unknown as {
       File?: { reveal?: (path: string) => void };
       launchFile?: (path: string) => void;
-    });
+    };
     if (typeof fileModule.launchFile === "function") {
       fileModule.launchFile(filePath);
     } else if (fileModule.File?.reveal) {

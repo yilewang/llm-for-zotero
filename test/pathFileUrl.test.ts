@@ -7,10 +7,7 @@ import {
 
 describe("pathFileUrl", function () {
   it("should convert POSIX path to file URL", function () {
-    assert.equal(
-      toFileUrl("/tmp/my file.md"),
-      "file:///tmp/my%20file.md",
-    );
+    assert.equal(toFileUrl("/tmp/my file.md"), "file:///tmp/my%20file.md");
   });
 
   it("should convert Windows path to file URL", function () {
@@ -21,10 +18,7 @@ describe("pathFileUrl", function () {
   });
 
   it("should return file URL unchanged", function () {
-    assert.equal(
-      toFileUrl("file:///tmp/demo.txt"),
-      "file:///tmp/demo.txt",
-    );
+    assert.equal(toFileUrl("file:///tmp/demo.txt"), "file:///tmp/demo.txt");
   });
 
   it("should parse file URL back to path", function () {

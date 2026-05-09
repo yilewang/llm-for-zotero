@@ -1,4 +1,8 @@
-import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type {
+  AgentAction,
+  ActionExecutionContext,
+  ActionResult,
+} from "./types";
 import type {
   EditableArticleMetadataPatch,
   EditableArticleMetadataField,
@@ -27,7 +31,10 @@ type CompleteMetadataOutput = {
  * First identifies missing fields, then fetches canonical metadata
  * from external sources and applies fixes with HITL review.
  */
-export const completeMetadataAction: AgentAction<CompleteMetadataInput, CompleteMetadataOutput> = {
+export const completeMetadataAction: AgentAction<
+  CompleteMetadataInput,
+  CompleteMetadataOutput
+> = {
   name: "complete_metadata",
   modes: ["paper"],
   description:
@@ -63,13 +70,19 @@ export const completeMetadataAction: AgentAction<CompleteMetadataInput, Complete
 
     const readResult = await callTool(
       "read_library",
-      { itemIds: [input.itemId], sections: ["metadata", "tags", "attachments"] },
+      {
+        itemIds: [input.itemId],
+        sections: ["metadata", "tags", "attachments"],
+      },
       ctx,
       `Reading metadata for item ${input.itemId}`,
     );
 
     if (!readResult.ok) {
-      return { ok: false, error: `Failed to read item: ${JSON.stringify(readResult.content)}` };
+      return {
+        ok: false,
+        error: `Failed to read item: ${JSON.stringify(readResult.content)}`,
+      };
     }
 
     const readContent = readResult.content as Record<string, unknown>;
@@ -79,7 +92,9 @@ export const completeMetadataAction: AgentAction<CompleteMetadataInput, Complete
       !Array.isArray(readContent.results)
         ? (readContent.results as Record<string, Record<string, unknown>>)
         : {};
-    const itemEntry = readResults[String(input.itemId)] as Record<string, unknown> | undefined;
+    const itemEntry = readResults[String(input.itemId)] as
+      | Record<string, unknown>
+      | undefined;
     const meta = itemEntry?.metadata;
     const title = getMetadataTitle(meta) || `Item ${input.itemId}`;
 
@@ -91,7 +106,9 @@ export const completeMetadataAction: AgentAction<CompleteMetadataInput, Complete
     }
     const tags = Array.isArray(itemEntry?.tags) ? itemEntry!.tags : [];
     if (tags.length === 0) missingFields.push("tags");
-    const attachments = Array.isArray(itemEntry?.attachments) ? itemEntry!.attachments : [];
+    const attachments = Array.isArray(itemEntry?.attachments)
+      ? itemEntry!.attachments
+      : [];
     const hasPdf = attachments.some(
       (att: unknown) =>
         att &&
@@ -123,7 +140,9 @@ export const completeMetadataAction: AgentAction<CompleteMetadataInput, Complete
       total: STEPS,
     });
 
-    const doi = getMetadataField(meta, "DOI")?.replace(/^https?:\/\/doi\.org\//i, "") || undefined;
+    const doi =
+      getMetadataField(meta, "DOI")?.replace(/^https?:\/\/doi\.org\//i, "") ||
+      undefined;
     const searchArgs: Record<string, unknown> = {
       mode: "metadata",
       libraryID: ctx.libraryID,
@@ -154,7 +173,9 @@ export const completeMetadataAction: AgentAction<CompleteMetadataInput, Complete
     }
 
     const metaContent = metaResult.content as Record<string, unknown>;
-    const results = Array.isArray(metaContent.results) ? metaContent.results : [];
+    const results = Array.isArray(metaContent.results)
+      ? metaContent.results
+      : [];
     const externalMeta = results[0] as Record<string, unknown> | undefined;
 
     if (!externalMeta) {
@@ -170,7 +191,9 @@ export const completeMetadataAction: AgentAction<CompleteMetadataInput, Complete
     }
 
     // Build patch — only fill in fields that are currently empty
-    const sourcePatch = externalMeta.patch as EditableArticleMetadataPatch | undefined;
+    const sourcePatch = externalMeta.patch as
+      | EditableArticleMetadataPatch
+      | undefined;
     if (!sourcePatch || Object.keys(sourcePatch).length === 0) {
       ctx.onProgress({
         type: "step_done",
@@ -220,11 +243,13 @@ export const completeMetadataAction: AgentAction<CompleteMetadataInput, Complete
       total: STEPS,
     });
 
-    const operations = [{
-      type: "update_metadata" as const,
-      itemId: input.itemId,
-      metadata: patch,
-    }];
+    const operations = [
+      {
+        type: "update_metadata" as const,
+        itemId: input.itemId,
+        metadata: patch,
+      },
+    ];
 
     const mutateResult = await callTool(
       "update_metadata",
@@ -245,7 +270,12 @@ export const completeMetadataAction: AgentAction<CompleteMetadataInput, Complete
 
     return {
       ok: true,
-      output: { title, missingFields, updated, patchedFields: updated ? patchedFields : [] },
+      output: {
+        title,
+        missingFields,
+        updated,
+        patchedFields: updated ? patchedFields : [],
+      },
     };
   },
 };

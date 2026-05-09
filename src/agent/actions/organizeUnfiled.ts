@@ -1,4 +1,8 @@
-import type { AgentAction, ActionExecutionContext, ActionResult } from "./types";
+import type {
+  AgentAction,
+  ActionExecutionContext,
+  ActionResult,
+} from "./types";
 import { callTool } from "./executor";
 import { callLLM } from "../../utils/llmClient";
 
@@ -38,7 +42,10 @@ const LLM_BATCH_SIZE = 12;
  * available (e.g. MCP mode), the card falls back to "Leave untouched" for
  * every row.
  */
-export const organizeUnfiledAction: AgentAction<OrganizeUnfiledInput, OrganizeUnfiledOutput> = {
+export const organizeUnfiledAction: AgentAction<
+  OrganizeUnfiledInput,
+  OrganizeUnfiledOutput
+> = {
   name: "organize_unfiled",
   modes: ["library"],
   description:
@@ -51,7 +58,8 @@ export const organizeUnfiledAction: AgentAction<OrganizeUnfiledInput, OrganizeUn
     properties: {
       limit: {
         type: "number",
-        description: "Max number of unfiled items to process per run. Default: no limit.",
+        description:
+          "Max number of unfiled items to process per run. Default: no limit.",
       },
     },
   },
@@ -79,13 +87,23 @@ export const organizeUnfiledAction: AgentAction<OrganizeUnfiledInput, OrganizeUn
     };
     if (input.limit) queryArgs.limit = input.limit;
 
-    const queryResult = await callTool("query_library", queryArgs, ctx, "Finding unfiled items");
+    const queryResult = await callTool(
+      "query_library",
+      queryArgs,
+      ctx,
+      "Finding unfiled items",
+    );
     if (!queryResult.ok) {
-      return { ok: false, error: `Failed to query library: ${JSON.stringify(queryResult.content)}` };
+      return {
+        ok: false,
+        error: `Failed to query library: ${JSON.stringify(queryResult.content)}`,
+      };
     }
 
     const queryContent = queryResult.content as Record<string, unknown>;
-    const unfiledRaw = Array.isArray(queryContent.results) ? queryContent.results : [];
+    const unfiledRaw = Array.isArray(queryContent.results)
+      ? queryContent.results
+      : [];
     const unfiledItems = normalizeUnfiledItems(unfiledRaw);
 
     ctx.onProgress({
@@ -179,10 +197,11 @@ export const organizeUnfiledAction: AgentAction<OrganizeUnfiledInput, OrganizeUn
     );
 
     const mutateContent = mutateResult.content as Record<string, unknown>;
-    const resultObj = mutateContent.result as Record<string, unknown> | undefined;
-    const movedCount = mutateResult.ok && resultObj
-      ? Number(resultObj.movedCount || 0)
-      : 0;
+    const resultObj = mutateContent.result as
+      | Record<string, unknown>
+      | undefined;
+    const movedCount =
+      mutateResult.ok && resultObj ? Number(resultObj.movedCount || 0) : 0;
     const mutateError =
       !mutateResult.ok && typeof mutateContent.error === "string"
         ? mutateContent.error
@@ -231,7 +250,8 @@ function normalizeUnfiledItems(raw: unknown[]): UnfiledItem[] {
       itemId: record.itemId,
       title,
       abstract,
-      creator: typeof record.firstCreator === "string" ? record.firstCreator : "",
+      creator:
+        typeof record.firstCreator === "string" ? record.firstCreator : "",
       year: typeof record.year === "string" ? record.year : "",
     });
   }

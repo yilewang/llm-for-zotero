@@ -41,10 +41,7 @@ describe("reasoningProfiles", function () {
     });
 
     it("limits gpt-5-pro to high reasoning only", function () {
-      const options = getRuntimeReasoningOptionsForModel(
-        "openai",
-        "gpt-5-pro",
-      );
+      const options = getRuntimeReasoningOptionsForModel("openai", "gpt-5-pro");
       assert.deepEqual(
         options.map((option) => option.level),
         ["high"],

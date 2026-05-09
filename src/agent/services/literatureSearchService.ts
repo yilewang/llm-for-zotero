@@ -117,7 +117,10 @@ function normalizeString(value: unknown): string {
 }
 
 function stripHtmlTags(value: string): string {
-  return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function fetchJson(
@@ -153,10 +156,14 @@ async function zoteroFetchText(url: string): Promise<string> {
       timeout: 15000,
     });
     const text = xhr.responseText ?? "";
-    Zotero.debug(`[llm-for-zotero] zoteroFetchText: status=${xhr.status}, responseLength=${text.length}`);
+    Zotero.debug(
+      `[llm-for-zotero] zoteroFetchText: status=${xhr.status}, responseLength=${text.length}`,
+    );
     return text;
   } catch (error) {
-    Zotero.debug(`[llm-for-zotero] zoteroFetchText FAILED: ${error instanceof Error ? error.message : String(error)}`);
+    Zotero.debug(
+      `[llm-for-zotero] zoteroFetchText FAILED: ${error instanceof Error ? error.message : String(error)}`,
+    );
     throw error;
   }
 }
@@ -166,8 +173,12 @@ async function zoteroFetchJson(url: string): Promise<unknown> {
   try {
     return JSON.parse(text);
   } catch (error) {
-    Zotero.debug(`[llm-for-zotero] zoteroFetchJson: JSON parse failed, text preview: ${text.slice(0, 200)}`);
-    throw new Error(`JSON parse failed: ${error instanceof Error ? error.message : String(error)}`);
+    Zotero.debug(
+      `[llm-for-zotero] zoteroFetchJson: JSON parse failed, text preview: ${text.slice(0, 200)}`,
+    );
+    throw new Error(
+      `JSON parse failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -177,7 +188,11 @@ async function oaFetch(url: string): Promise<unknown> {
 }
 
 function reconstructAbstract(invertedIndex: unknown): string {
-  if (!invertedIndex || typeof invertedIndex !== "object" || Array.isArray(invertedIndex)) {
+  if (
+    !invertedIndex ||
+    typeof invertedIndex !== "object" ||
+    Array.isArray(invertedIndex)
+  ) {
     return "";
   }
   const entries: Array<[string, number]> = [];
@@ -192,7 +207,10 @@ function reconstructAbstract(invertedIndex: unknown): string {
     }
   }
   entries.sort((left, right) => left[1] - right[1]);
-  return entries.map(([word]) => word).join(" ").trim();
+  return entries
+    .map(([word]) => word)
+    .join(" ")
+    .trim();
 }
 
 function normalizeOpenAlexWork(raw: unknown): OnlinePaperResult | null {
@@ -227,7 +245,10 @@ function normalizeOpenAlexWork(raw: unknown): OnlinePaperResult | null {
     : doiUrl || undefined;
   const citationCount =
     typeof work.cited_by_count === "number" ? work.cited_by_count : undefined;
-  const openAccess = work.open_access as Record<string, unknown> | null | undefined;
+  const openAccess = work.open_access as
+    | Record<string, unknown>
+    | null
+    | undefined;
   const openAccessUrl = normalizeString(openAccess?.oa_url) || undefined;
   const openAlexId = normalizeString(work.id) || undefined;
 
@@ -248,7 +269,9 @@ function extractOpenAlexId(url: string): string | null {
   return match?.[1] ?? null;
 }
 
-async function resolveOpenAlexWork(doi: string): Promise<Record<string, unknown> | null> {
+async function resolveOpenAlexWork(
+  doi: string,
+): Promise<Record<string, unknown> | null> {
   try {
     const encodedDoi = encodeURIComponent(`https://doi.org/${doi}`);
     const raw = (await oaFetch(
@@ -394,9 +417,10 @@ async function fetchArxivSearch(
     const abstract = abstractText
       ? `${abstractText.slice(0, 400)}${abstractText.length > 400 ? "..." : ""}`
       : undefined;
-    const publishedValue = entry.querySelector("published")?.textContent?.trim() ?? "";
+    const publishedValue =
+      entry.querySelector("published")?.textContent?.trim() ?? "";
     const year = publishedValue
-      ? (parseInt(publishedValue.slice(0, 4), 10) || undefined)
+      ? parseInt(publishedValue.slice(0, 4), 10) || undefined
       : undefined;
     const authors: string[] = [];
     for (const author of entry.querySelectorAll("author")) {
@@ -405,7 +429,8 @@ async function fetchArxivSearch(
         authors.push(name);
       }
     }
-    const sourceUrl = entry.querySelector("id")?.textContent?.trim() ?? undefined;
+    const sourceUrl =
+      entry.querySelector("id")?.textContent?.trim() ?? undefined;
     const linkNodes = entry.querySelectorAll("link");
     let pdfLink: string | undefined;
     for (const node of linkNodes) {
@@ -468,12 +493,15 @@ async function fetchEuropePmcSearch(
       const authorString =
         typeof item.authorString === "string" ? item.authorString.trim() : "";
       const authors = authorString
-        ? authorString.split(",").map((entry) => entry.trim()).filter(Boolean)
+        ? authorString
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean)
         : [];
       const yearRaw = item.pubYear ?? item.firstPublicationDate;
       const year =
         typeof yearRaw === "string"
-          ? (parseInt(yearRaw.slice(0, 4), 10) || undefined)
+          ? parseInt(yearRaw.slice(0, 4), 10) || undefined
           : typeof yearRaw === "number"
             ? yearRaw
             : undefined;
@@ -495,9 +523,13 @@ async function fetchEuropePmcSearch(
           ? `https://doi.org/${doi}`
           : undefined;
       const urlList =
-        (item.fullTextUrlList as { fullTextUrl?: Array<{ url: string }> } | undefined)
-          ?.fullTextUrl ?? [];
-      const openAccessUrl = urlList[0]?.url || (doi ? `https://doi.org/${doi}` : undefined);
+        (
+          item.fullTextUrlList as
+            | { fullTextUrl?: Array<{ url: string }> }
+            | undefined
+        )?.fullTextUrl ?? [];
+      const openAccessUrl =
+        urlList[0]?.url || (doi ? `https://doi.org/${doi}` : undefined);
       return {
         title,
         authors,
@@ -535,7 +567,10 @@ function isActivePaper(
     if (resultKey === activeTitleKey) {
       return true;
     }
-    if (resultKey.startsWith(activeTitleKey) || activeTitleKey.startsWith(resultKey)) {
+    if (
+      resultKey.startsWith(activeTitleKey) ||
+      activeTitleKey.startsWith(resultKey)
+    ) {
       return true;
     }
   }
@@ -554,30 +589,40 @@ async function lookupCrossRefByDoi(
     if (!message) {
       return null;
     }
-    const titleList = Array.isArray(message.title) ? (message.title as string[]) : [];
+    const titleList = Array.isArray(message.title)
+      ? (message.title as string[])
+      : [];
     const authorList = Array.isArray(message.author)
-      ? (message.author as Array<{ given?: string; family?: string; name?: string }>)
+      ? (message.author as Array<{
+          given?: string;
+          family?: string;
+          name?: string;
+        }>)
       : [];
     const authors = authorList
       .map((author) =>
-        author.name ? author.name : [author.given, author.family].filter(Boolean).join(" "),
+        author.name
+          ? author.name
+          : [author.given, author.family].filter(Boolean).join(" "),
       )
       .filter(Boolean);
-    const published = (
-      message["published-print"] ||
+    const published = (message["published-print"] ||
       message["published-online"] ||
       message.published ||
       message.issued ||
-      message.created
-    ) as { "date-parts"?: number[][] } | undefined;
+      message.created) as { "date-parts"?: number[][] } | undefined;
     const year = published?.["date-parts"]?.[0]?.[0];
     const containerTitle = Array.isArray(message["container-title"])
       ? (message["container-title"] as string[])
       : [];
     const abstractText = normalizeString(message.abstract);
     const title = titleList[0] ? stripHtmlTags(titleList[0]) : undefined;
-    const abstract = abstractText ? stripHtmlTags(abstractText).slice(0, 600) : undefined;
-    const venue = containerTitle[0] ? stripHtmlTags(containerTitle[0]) : undefined;
+    const abstract = abstractText
+      ? stripHtmlTags(abstractText).slice(0, 600)
+      : undefined;
+    const venue = containerTitle[0]
+      ? stripHtmlTags(containerTitle[0])
+      : undefined;
     const resolvedDoi = normalizeString(message.DOI) || doi;
     const url = normalizeString(message.URL) || undefined;
     const patch: EditableArticleMetadataPatch = {};
@@ -595,12 +640,14 @@ async function lookupCrossRefByDoi(
       }));
     }
     const yearStr = year ? String(year) : undefined;
-    const authorLabel = authors.slice(0, 3).join(", ") + (authors.length > 3 ? " et al." : "");
+    const authorLabel =
+      authors.slice(0, 3).join(", ") + (authors.length > 3 ? " et al." : "");
     return {
       source: "CrossRef",
       patch,
       displayTitle: title,
-      displaySubtitle: [yearStr, authorLabel, venue].filter(Boolean).join(" · ") || undefined,
+      displaySubtitle:
+        [yearStr, authorLabel, venue].filter(Boolean).join(" · ") || undefined,
     };
   } catch (err) {
     ztoolkit.log("LLM: CrossRef metadata fetch failed", err);
@@ -608,7 +655,9 @@ async function lookupCrossRefByDoi(
   }
 }
 
-async function searchCrossRef(query: string): Promise<ExternalMetadataResult[]> {
+async function searchCrossRef(
+  query: string,
+): Promise<ExternalMetadataResult[]> {
   try {
     const encoded = encodeURIComponent(query);
     const data = (await fetchJson(
@@ -621,9 +670,15 @@ async function searchCrossRef(query: string): Promise<ExternalMetadataResult[]> 
     return items
       .map((item) => {
         const message = item as Record<string, unknown>;
-        const titleList = Array.isArray(message.title) ? (message.title as string[]) : [];
+        const titleList = Array.isArray(message.title)
+          ? (message.title as string[])
+          : [];
         const authorList = Array.isArray(message.author)
-          ? (message.author as Array<{ given?: string; family?: string; name?: string }>)
+          ? (message.author as Array<{
+              given?: string;
+              family?: string;
+              name?: string;
+            }>)
           : [];
         const authors = authorList
           .map((author) =>
@@ -632,13 +687,11 @@ async function searchCrossRef(query: string): Promise<ExternalMetadataResult[]> 
               : [author.given, author.family].filter(Boolean).join(" "),
           )
           .filter(Boolean);
-        const published = (
-          message["published-print"] ||
+        const published = (message["published-print"] ||
           message["published-online"] ||
           message.published ||
           message.issued ||
-          message.created
-        ) as { "date-parts"?: number[][] } | undefined;
+          message.created) as { "date-parts"?: number[][] } | undefined;
         const year = published?.["date-parts"]?.[0]?.[0];
         const containerTitle = Array.isArray(message["container-title"])
           ? (message["container-title"] as string[])
@@ -646,8 +699,12 @@ async function searchCrossRef(query: string): Promise<ExternalMetadataResult[]> 
         const abstractText = normalizeString(message.abstract);
         const doi = normalizeString(message.DOI);
         const title = titleList[0] ? stripHtmlTags(titleList[0]) : undefined;
-        const abstract = abstractText ? stripHtmlTags(abstractText).slice(0, 600) : undefined;
-        const venue = containerTitle[0] ? stripHtmlTags(containerTitle[0]) : undefined;
+        const abstract = abstractText
+          ? stripHtmlTags(abstractText).slice(0, 600)
+          : undefined;
+        const venue = containerTitle[0]
+          ? stripHtmlTags(containerTitle[0])
+          : undefined;
         const url = normalizeString(message.URL) || undefined;
         const patch: EditableArticleMetadataPatch = {};
         if (title) patch.title = title;
@@ -664,12 +721,16 @@ async function searchCrossRef(query: string): Promise<ExternalMetadataResult[]> 
           }));
         }
         const yearStr = year ? String(year) : undefined;
-        const authorLabel = authors.slice(0, 3).join(", ") + (authors.length > 3 ? " et al." : "");
+        const authorLabel =
+          authors.slice(0, 3).join(", ") +
+          (authors.length > 3 ? " et al." : "");
         return {
           source: "CrossRef",
           patch,
           displayTitle: title,
-          displaySubtitle: [yearStr, authorLabel, venue].filter(Boolean).join(" · ") || undefined,
+          displaySubtitle:
+            [yearStr, authorLabel, venue].filter(Boolean).join(" · ") ||
+            undefined,
         } satisfies ExternalMetadataResult;
       })
       .filter((result) => result.displayTitle || result.patch.DOI);
@@ -701,7 +762,9 @@ async function lookupSemanticScholar(params: {
 
     const raw = (await fetchJson(url)) as Record<string, unknown>;
     const paper =
-      params.doi || params.arxivId ? raw : (raw as { data?: unknown[] }).data?.[0];
+      params.doi || params.arxivId
+        ? raw
+        : (raw as { data?: unknown[] }).data?.[0];
     if (!paper || typeof paper !== "object") {
       return null;
     }
@@ -721,7 +784,8 @@ async function lookupSemanticScholar(params: {
     const title = normalizeString(result.title) || undefined;
     const doi = externalIds.DOI || externalIds.doi || params.doi || undefined;
     const year = typeof result.year === "number" ? result.year : undefined;
-    const abstract = normalizeString(result.abstract).slice(0, 600) || undefined;
+    const abstract =
+      normalizeString(result.abstract).slice(0, 600) || undefined;
     const venue = normalizeString(result.venue) || undefined;
     const patch: EditableArticleMetadataPatch = {};
     if (title) patch.title = title;
@@ -737,13 +801,18 @@ async function lookupSemanticScholar(params: {
       }));
     }
     const yearStr = year ? String(year) : undefined;
-    const authorLabel = authors.slice(0, 3).join(", ") + (authors.length > 3 ? " et al." : "");
+    const authorLabel =
+      authors.slice(0, 3).join(", ") + (authors.length > 3 ? " et al." : "");
     return {
       source: "Semantic Scholar",
       patch,
-      citationCount: typeof result.citationCount === "number" ? result.citationCount : undefined,
+      citationCount:
+        typeof result.citationCount === "number"
+          ? result.citationCount
+          : undefined,
       displayTitle: title,
-      displaySubtitle: [yearStr, authorLabel, venue].filter(Boolean).join(" · ") || undefined,
+      displaySubtitle:
+        [yearStr, authorLabel, venue].filter(Boolean).join(" · ") || undefined,
     };
   } catch {
     return null;
@@ -776,7 +845,8 @@ export class LiteratureSearchService {
     if (!metadataItem) {
       return { doi, title, arxivId };
     }
-    const snapshot = this.zoteroGateway.getEditableArticleMetadata(metadataItem);
+    const snapshot =
+      this.zoteroGateway.getEditableArticleMetadata(metadataItem);
     if (!doi && snapshot?.fields.DOI) {
       doi = snapshot.fields.DOI.trim();
     }
@@ -827,8 +897,13 @@ export class LiteratureSearchService {
       const candidateTitle = crossRefResults[0].displayTitle || "";
       const queryKey = normalizeTitleKey(params.title);
       const candidateKey = normalizeTitleKey(candidateTitle);
-      if (queryKey && candidateKey && (queryKey === candidateKey ||
-          queryKey.includes(candidateKey) || candidateKey.includes(queryKey))) {
+      if (
+        queryKey &&
+        candidateKey &&
+        (queryKey === candidateKey ||
+          queryKey.includes(candidateKey) ||
+          candidateKey.includes(queryKey))
+      ) {
         return {
           identifier: crossRefResults[0].patch.DOI,
           confidence: "title",
@@ -839,7 +914,11 @@ export class LiteratureSearchService {
     // Try Semantic Scholar by title
     const s2 = await lookupSemanticScholar({ title: params.title });
     if (s2?.patch.DOI) {
-      return { identifier: s2.patch.DOI, confidence: "title", resolvedDoi: s2.patch.DOI };
+      return {
+        identifier: s2.patch.DOI,
+        confidence: "title",
+        resolvedDoi: s2.patch.DOI,
+      };
     }
     return { confidence: "none" };
   }
@@ -859,22 +938,28 @@ export class LiteratureSearchService {
         resolved.identifier,
       );
       if (patch) {
-        const authors = patch.creators
-          ?.map((c) =>
-            c.name
-              ? c.name
-              : [c.firstName, c.lastName].filter(Boolean).join(" "),
-          )
-          .filter(Boolean) || [];
+        const authors =
+          patch.creators
+            ?.map((c) =>
+              c.name
+                ? c.name
+                : [c.firstName, c.lastName].filter(Boolean).join(" "),
+            )
+            .filter(Boolean) || [];
         const yearStr = patch.date || undefined;
-        const authorLabel = authors.slice(0, 3).join(", ") + (authors.length > 3 ? " et al." : "");
+        const authorLabel =
+          authors.slice(0, 3).join(", ") +
+          (authors.length > 3 ? " et al." : "");
         const venue = patch.publicationTitle || patch.proceedingsTitle;
         translatorResult = {
           source: "Zotero Translator",
           patch,
-          matchConfidence: resolved.confidence === "none" ? undefined : resolved.confidence,
+          matchConfidence:
+            resolved.confidence === "none" ? undefined : resolved.confidence,
           displayTitle: patch.title,
-          displaySubtitle: [yearStr, authorLabel, venue].filter(Boolean).join(" · ") || undefined,
+          displaySubtitle:
+            [yearStr, authorLabel, venue].filter(Boolean).join(" · ") ||
+            undefined,
         };
       }
     }
@@ -939,7 +1024,8 @@ export class LiteratureSearchService {
         paperContext: input.paperContext,
       });
       if (metadataItem) {
-        const snapshot = this.zoteroGateway.getEditableArticleMetadata(metadataItem);
+        const snapshot =
+          this.zoteroGateway.getEditableArticleMetadata(metadataItem);
         if (snapshot?.fields.DOI) {
           doi = snapshot.fields.DOI.trim();
         }
@@ -961,9 +1047,13 @@ export class LiteratureSearchService {
         return { results: [], message: "No search query available for arXiv." };
       }
       try {
-        Zotero.debug(`[llm-for-zotero] arXiv search: query="${query}", limit=${limit}`);
+        Zotero.debug(
+          `[llm-for-zotero] arXiv search: query="${query}", limit=${limit}`,
+        );
         const results = dedupe(await fetchArxivSearch(query, limit));
-        Zotero.debug(`[llm-for-zotero] arXiv search returned ${results.length} results`);
+        Zotero.debug(
+          `[llm-for-zotero] arXiv search returned ${results.length} results`,
+        );
         return {
           results,
           total: results.length,
@@ -985,12 +1075,19 @@ export class LiteratureSearchService {
     if (source === "europepmc") {
       const query = input.query || titleFallback;
       if (!query) {
-        return { results: [], message: "No search query available for Europe PMC." };
+        return {
+          results: [],
+          message: "No search query available for Europe PMC.",
+        };
       }
       try {
-        Zotero.debug(`[llm-for-zotero] Europe PMC search: query="${query}", limit=${limit}`);
+        Zotero.debug(
+          `[llm-for-zotero] Europe PMC search: query="${query}", limit=${limit}`,
+        );
         const results = dedupe(await fetchEuropePmcSearch(query, limit));
-        Zotero.debug(`[llm-for-zotero] Europe PMC search returned ${results.length} results`);
+        Zotero.debug(
+          `[llm-for-zotero] Europe PMC search returned ${results.length} results`,
+        );
         return {
           results,
           total: results.length,

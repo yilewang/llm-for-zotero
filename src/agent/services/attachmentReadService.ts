@@ -32,7 +32,8 @@ const IMAGE_MIME_PREFIXES = ["image/"];
 function categorizeContentType(contentType: string): AttachmentContentCategory {
   const ct = contentType.toLowerCase().trim();
   if (ct === "application/pdf") return "pdf";
-  if (IMAGE_MIME_PREFIXES.some((prefix) => ct.startsWith(prefix))) return "image";
+  if (IMAGE_MIME_PREFIXES.some((prefix) => ct.startsWith(prefix)))
+    return "image";
   if (TEXT_MIME_PREFIXES.some((prefix) => ct.startsWith(prefix))) return "text";
   if (TEXT_MIME_EXACT.has(ct)) return "text";
   return "binary";
@@ -116,7 +117,8 @@ export class AttachmentReadService {
 
     // Resolve file path
     const attachmentItem = this.zoteroGateway.getItem(params.attachmentId);
-    const filePath: string | undefined = (attachmentItem as any)?.getFilePath?.() || undefined;
+    const filePath: string | undefined =
+      (attachmentItem as any)?.getFilePath?.() || undefined;
     if (!filePath) {
       return {
         ...baseResult,
@@ -150,7 +152,8 @@ export class AttachmentReadService {
         Number.isFinite(params.maxChars) && (params.maxChars as number) > 0
           ? Math.floor(params.maxChars as number)
           : 50000;
-      const truncated = text.length > maxChars ? `${text.slice(0, maxChars)}\u2026` : text;
+      const truncated =
+        text.length > maxChars ? `${text.slice(0, maxChars)}\u2026` : text;
       return {
         ...baseWithPath,
         textContent: truncated,

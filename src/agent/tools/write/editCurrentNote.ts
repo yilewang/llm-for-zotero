@@ -88,9 +88,15 @@ type NotePatch = { find: string; replace: string };
 function sanitizeNoteHtml(html: string): string {
   let s = html;
   // Remove dangerous elements (with content)
-  s = s.replace(/<(script|style|iframe|object|embed|form|input)[^>]*>[\s\S]*?<\/\1>/gi, "");
+  s = s.replace(
+    /<(script|style|iframe|object|embed|form|input)[^>]*>[\s\S]*?<\/\1>/gi,
+    "",
+  );
   // Remove self-closing / void variants
-  s = s.replace(/<(script|style|iframe|object|embed|form|input)\b[^>]*\/?>/gi, "");
+  s = s.replace(
+    /<(script|style|iframe|object|embed|form|input)\b[^>]*\/?>/gi,
+    "",
+  );
   // Remove event-handler attributes (on*)
   s = s.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
   // Neutralise javascript: / vbscript: URLs in href / src
@@ -399,14 +405,17 @@ export function createEditCurrentNoteTool(
 
     validate: (args) => {
       if (!validateObject<Record<string, unknown>>(args)) {
-        return fail("Expected an object with a 'content' string or 'patches' array");
+        return fail(
+          "Expected an object with a 'content' string or 'patches' array",
+        );
       }
       const mode =
         args.mode === "create" ? ("create" as const) : ("edit" as const);
 
       // Parse patches if provided
       const hasPatches = Array.isArray(args.patches) && args.patches.length > 0;
-      const hasContent = typeof args.content === "string" && args.content.trim();
+      const hasContent =
+        typeof args.content === "string" && args.content.trim();
 
       if (mode === "create") {
         if (!hasContent) {
@@ -426,7 +435,9 @@ export function createEditCurrentNoteTool(
         patches = [];
         for (const entry of args.patches as unknown[]) {
           if (!validateObject<Record<string, unknown>>(entry)) {
-            return fail("Each patch must be an object with { find: string, replace: string }");
+            return fail(
+              "Each patch must be an object with { find: string, replace: string }",
+            );
           }
           if (typeof entry.find !== "string" || !entry.find) {
             return fail("Each patch must include a non-empty 'find' string");
@@ -457,9 +468,7 @@ export function createEditCurrentNoteTool(
       return ok<EditCurrentNoteInput & { _patches?: NotePatch[] }>({
         mode,
         content,
-        _rawHtmlContent: contentHasStyledHtml
-          ? rawContent.trim()
-          : undefined,
+        _rawHtmlContent: contentHasStyledHtml ? rawContent.trim() : undefined,
         _patches: patches,
         target: mode === "create" ? target : undefined,
         targetItemId:
@@ -470,7 +479,9 @@ export function createEditCurrentNoteTool(
     },
     createPendingAction: (input, context) => {
       // Resolve patches into full content if needed
-      const inputExt = input as EditCurrentNoteInput & { _patches?: NotePatch[] };
+      const inputExt = input as EditCurrentNoteInput & {
+        _patches?: NotePatch[];
+      };
       if (inputExt._patches && input.mode === "edit") {
         const snapshot = zoteroGateway.getActiveNoteSnapshot({
           request: context.request,
@@ -602,9 +613,10 @@ export function createEditCurrentNoteTool(
       });
     },
     execute: async (input, context) => {
-      const hasLocalImages = /!\[[^\]]*\]\(file:\/\/|<img\s+[^>]*src\s*=\s*"file:\/\//i.test(
-        input.content,
-      );
+      const hasLocalImages =
+        /!\[[^\]]*\]\(file:\/\/|<img\s+[^>]*src\s*=\s*"file:\/\//i.test(
+          input.content,
+        );
 
       if (input.mode === "create") {
         // Auto-fallback to standalone if no parent item is resolvable
@@ -612,7 +624,8 @@ export function createEditCurrentNoteTool(
         if (input.target !== "standalone") {
           const resolvedItem = input.targetItemId
             ? zoteroGateway.getItem(input.targetItemId)
-            : zoteroGateway.getItem(context.request.activeItemId) || context.item;
+            : zoteroGateway.getItem(context.request.activeItemId) ||
+              context.item;
           if (!resolvedItem) {
             input.target = "standalone";
           }
@@ -642,7 +655,8 @@ export function createEditCurrentNoteTool(
         const parentId = parentItem?.isRegularItem?.()
           ? parentItem.id
           : parentItem?.parentID || parentItem?.id;
-        const libraryID = parentItem?.libraryID || context.request.libraryID || 1;
+        const libraryID =
+          parentItem?.libraryID || context.request.libraryID || 1;
 
         // Create a blank note first
         const note = new Zotero.Item("note");
@@ -657,7 +671,11 @@ export function createEditCurrentNoteTool(
         // Import images into this note
         let finalContent = input.content;
         try {
-          finalContent = await importLocalImages(input.content, noteId, zoteroGateway);
+          finalContent = await importLocalImages(
+            input.content,
+            noteId,
+            zoteroGateway,
+          );
         } catch (e) {
           Zotero.debug?.(`[llm-for-zotero] Image import failed: ${e}`);
         }

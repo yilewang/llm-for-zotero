@@ -24,7 +24,8 @@ describe("OpenAICompatibleAgentAdapter", function () {
     assert.isTrue(
       adapter.supportsTools(
         makeRequest({
-          apiBase: "https://generativelanguage.googleapis.com/v1beta/openai/responses",
+          apiBase:
+            "https://generativelanguage.googleapis.com/v1beta/openai/responses",
         }),
       ),
     );
