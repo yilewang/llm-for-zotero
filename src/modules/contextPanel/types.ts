@@ -59,6 +59,7 @@ export interface Message {
   collectionContextsExpanded?: boolean;
   paperContextsExpanded?: boolean;
   attachments?: ChatAttachment[];
+  modelAttachments?: ChatAttachment[];
   attachmentsExpanded?: boolean;
   attachmentActiveIndex?: number;
   screenshotExpanded?: boolean;

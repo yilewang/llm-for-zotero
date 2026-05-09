@@ -75,9 +75,44 @@ describe("chatStore note contexts", function () {
       contextWindow: 200000,
     });
 
-    assert.lengthOf(capturedParams, 26);
-    assert.equal(capturedParams[24], 1234);
-    assert.equal(capturedParams[25], 200000);
+    assert.lengthOf(capturedParams, 27);
+    assert.equal(capturedParams[25], 1234);
+    assert.equal(capturedParams[26], 200000);
+  });
+
+  it("persists an explicit empty model attachment split", async function () {
+    let capturedQuery = "";
+    let capturedParams: unknown[] = [];
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string, params?: unknown[]) => {
+          capturedQuery = sql;
+          capturedParams = Array.isArray(params) ? params : [];
+          return [];
+        },
+      },
+    };
+
+    await appendMessage(42, {
+      role: "user",
+      text: "Read the PDF",
+      timestamp: 100,
+      attachments: [
+        {
+          id: "pdf-paper-123-1",
+          name: "paper.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 10,
+          category: "pdf",
+          storedPath: "/tmp/paper.pdf",
+        },
+      ],
+      modelAttachments: [],
+    });
+
+    assert.include(capturedQuery, "model_attachments_json");
+    assert.equal(capturedParams[17], JSON.stringify([]));
   });
 
   it("persists selectedCollectionContexts when appending a message", async function () {
@@ -146,6 +181,7 @@ describe("chatStore note contexts", function () {
                 libraryID: 1,
               },
             ]),
+            modelAttachmentsJson: JSON.stringify([]),
             contextTokens: 321,
             contextWindow: 64000,
           },
@@ -174,6 +210,7 @@ describe("chatStore note contexts", function () {
         libraryID: 1,
       },
     ]);
+    assert.deepEqual(messages[0]?.modelAttachments, []);
     assert.equal(messages[0]?.contextTokens, 321);
     assert.equal(messages[0]?.contextWindow, 64000);
   });

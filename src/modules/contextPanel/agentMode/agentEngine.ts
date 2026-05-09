@@ -599,6 +599,9 @@ export async function sendAgentTurn(
       ? selectedCollectionContexts
       : undefined,
   };
+  if (modelAttachments !== undefined) {
+    userMessage.modelAttachments = modelAttachments;
+  }
   if (!isCompactCommand) {
     historyForRun.push(userMessage);
     await deps.persistConversationMessage(conversationKey, {
@@ -615,6 +618,7 @@ export async function sendAgentTurn(
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
       screenshotImages: userMessage.screenshotImages,
       attachments: userMessage.attachments,
+      modelAttachments: userMessage.modelAttachments,
     });
   }
 
@@ -630,6 +634,9 @@ export async function sendAgentTurn(
     reasoning,
     advanced,
   });
+  userMessage.modelName = effectiveRequestConfig.model;
+  userMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
+  userMessage.modelProviderLabel = effectiveRequestConfig.modelProviderLabel;
   const assistantMessage: Message = {
     role: "assistant",
     text: "",
@@ -713,6 +720,10 @@ export async function sendAgentTurn(
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
       screenshotImages: userMessage.screenshotImages,
       attachments: userMessage.attachments,
+      modelAttachments: userMessage.modelAttachments,
+      modelName: userMessage.modelName,
+      modelEntryId: userMessage.modelEntryId,
+      modelProviderLabel: userMessage.modelProviderLabel,
     });
   }
   const runtimeRequest = await deps.buildAgentRuntimeRequest({
@@ -840,6 +851,10 @@ export async function sendAgentTurn(
             citationPaperContexts: userMessage.citationPaperContexts,
             selectedCollectionContexts: userMessage.selectedCollectionContexts,
             attachments: userMessage.attachments,
+            modelAttachments: userMessage.modelAttachments,
+            modelName: userMessage.modelName,
+            modelEntryId: userMessage.modelEntryId,
+            modelProviderLabel: userMessage.modelProviderLabel,
           });
         }
       },
@@ -948,6 +963,10 @@ export async function sendAgentTurn(
                   userMessage.selectedCollectionContexts,
                 screenshotImages: userMessage.screenshotImages,
                 attachments: userMessage.attachments,
+                modelAttachments: userMessage.modelAttachments,
+                modelName: userMessage.modelName,
+                modelEntryId: userMessage.modelEntryId,
+                modelProviderLabel: userMessage.modelProviderLabel,
               });
             }
             break;
@@ -1299,6 +1318,17 @@ export async function retryAgentTurn(
   const historyForLLM = deps.buildLLMHistoryMessages(
     history.slice(0, retryPair.userIndex),
   );
+  if (modelAttachmentsOverride !== undefined) {
+    retryPair.userMessage.modelAttachments = modelAttachmentsOverride;
+  }
+  retryPair.userMessage.modelName = effectiveRequestConfig.model;
+  retryPair.userMessage.modelEntryId = effectiveRequestConfig.modelEntryId;
+  retryPair.userMessage.modelProviderLabel =
+    effectiveRequestConfig.modelProviderLabel;
+  const retryModelAttachments =
+    modelAttachmentsOverride ??
+    retryPair.userMessage.modelAttachments ??
+    retryPair.userMessage.attachments?.filter((a) => a.category !== "image");
 
   const runtimeRequest = await deps.buildAgentRuntimeRequest({
     conversationKey,
@@ -1310,9 +1340,7 @@ export async function retryAgentTurn(
     paperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
-    attachments:
-      modelAttachmentsOverride ??
-      retryPair.userMessage.attachments?.filter((a) => a.category !== "image"),
+    attachments: retryModelAttachments,
     screenshots: screenshotImages,
     effectiveRequestConfig,
     history: historyForLLM,
@@ -1389,6 +1417,10 @@ export async function retryAgentTurn(
           selectedCollectionContexts:
             retryPair.userMessage.selectedCollectionContexts,
           attachments: retryPair.userMessage.attachments,
+          modelAttachments: retryPair.userMessage.modelAttachments,
+          modelName: retryPair.userMessage.modelName,
+          modelEntryId: retryPair.userMessage.modelEntryId,
+          modelProviderLabel: retryPair.userMessage.modelProviderLabel,
         });
       },
       onEvent: async (event) => {
@@ -1503,6 +1535,10 @@ export async function retryAgentTurn(
                 retryPair.userMessage.selectedCollectionContexts,
               screenshotImages: retryPair.userMessage.screenshotImages,
               attachments: retryPair.userMessage.attachments,
+              modelAttachments: retryPair.userMessage.modelAttachments,
+              modelName: retryPair.userMessage.modelName,
+              modelEntryId: retryPair.userMessage.modelEntryId,
+              modelProviderLabel: retryPair.userMessage.modelProviderLabel,
             });
             break;
           }

@@ -18,6 +18,18 @@ import {
   normalizeCollectionContextRefs,
 } from "../modules/contextPanel/normalizers";
 
+export type StoredChatAttachment = {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  category: "image" | "pdf" | "markdown" | "code" | "text" | "file";
+  imageDataUrl?: string;
+  textContent?: string;
+  storedPath?: string;
+  contentHash?: string;
+};
+
 export type StoredChatMessage = {
   role: "user" | "assistant";
   text: string;
@@ -34,17 +46,8 @@ export type StoredChatMessage = {
   citationPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   screenshotImages?: string[];
-  attachments?: Array<{
-    id: string;
-    name: string;
-    mimeType: string;
-    sizeBytes: number;
-    category: "image" | "pdf" | "markdown" | "code" | "text" | "file";
-    imageDataUrl?: string;
-    textContent?: string;
-    storedPath?: string;
-    contentHash?: string;
-  }>;
+  attachments?: StoredChatAttachment[];
+  modelAttachments?: StoredChatAttachment[];
   modelName?: string;
   modelEntryId?: string;
   modelProviderLabel?: string;
@@ -163,6 +166,106 @@ function normalizeConversationTitleSeed(value: string): string {
 function normalizeLimit(limit: number, fallback: number): number {
   if (!Number.isFinite(limit)) return fallback;
   return Math.max(1, Math.floor(limit));
+}
+
+function normalizeStoredAttachments(
+  attachments?: StoredChatAttachment[],
+): StoredChatAttachment[] {
+  return Array.isArray(attachments)
+    ? attachments
+        .filter(
+          (entry) => entry && typeof entry.id === "string" && entry.id.trim(),
+        )
+        .map((entry) => ({
+          ...entry,
+          id: entry.id.trim(),
+          name:
+            typeof entry.name === "string" && entry.name.trim()
+              ? entry.name.trim()
+              : "Attachment",
+          mimeType:
+            typeof entry.mimeType === "string" && entry.mimeType.trim()
+              ? entry.mimeType.trim()
+              : "application/octet-stream",
+          sizeBytes: Number.isFinite(Number(entry.sizeBytes))
+            ? Math.max(0, Math.floor(Number(entry.sizeBytes)))
+            : 0,
+          storedPath:
+            typeof entry.storedPath === "string" && entry.storedPath.trim()
+              ? entry.storedPath.trim()
+              : undefined,
+          contentHash:
+            typeof entry.contentHash === "string" &&
+            /^[a-f0-9]{64}$/i.test(entry.contentHash.trim())
+              ? entry.contentHash.trim().toLowerCase()
+              : undefined,
+        }))
+    : [];
+}
+
+function parseStoredAttachmentsJson(
+  value: unknown,
+  options: { preserveEmpty?: boolean } = {},
+): StoredChatAttachment[] | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return undefined;
+    const normalized = parsed.reduce<StoredChatAttachment[]>((out, entry) => {
+      if (!entry || typeof entry !== "object") return out;
+      const typed = entry as Record<string, unknown>;
+      const id =
+        typeof typed.id === "string" && typed.id.trim()
+          ? typed.id.trim()
+          : null;
+      const name =
+        typeof typed.name === "string" && typed.name.trim()
+          ? typed.name.trim()
+          : null;
+      const mimeType =
+        typeof typed.mimeType === "string" && typed.mimeType.trim()
+          ? typed.mimeType.trim()
+          : "application/octet-stream";
+      const sizeBytes = Number(typed.sizeBytes);
+      const category = typed.category;
+      const validCategory =
+        category === "image" ||
+        category === "pdf" ||
+        category === "markdown" ||
+        category === "code" ||
+        category === "text" ||
+        category === "file";
+      if (!id || !name || !validCategory) return out;
+      out.push({
+        id,
+        name,
+        mimeType,
+        sizeBytes: Number.isFinite(sizeBytes) ? Math.max(0, sizeBytes) : 0,
+        category,
+        imageDataUrl:
+          typeof typed.imageDataUrl === "string" && typed.imageDataUrl.trim()
+            ? typed.imageDataUrl
+            : undefined,
+        textContent:
+          typeof typed.textContent === "string" && typed.textContent
+            ? typed.textContent
+            : undefined,
+        storedPath:
+          typeof typed.storedPath === "string" && typed.storedPath.trim()
+            ? typed.storedPath.trim()
+            : undefined,
+        contentHash:
+          typeof typed.contentHash === "string" &&
+          /^[a-f0-9]{64}$/i.test(typed.contentHash.trim())
+            ? typed.contentHash.trim().toLowerCase()
+            : undefined,
+      });
+      return out;
+    }, []);
+    return normalized.length || options.preserveEmpty ? normalized : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveUserLibraryID(): number {
@@ -325,6 +428,7 @@ export async function initChatStore(): Promise<void> {
         collection_contexts_json TEXT,
         screenshot_images TEXT,
         attachments_json TEXT,
+        model_attachments_json TEXT,
         model_name TEXT,
         model_entry_id TEXT,
         model_provider_label TEXT,
@@ -524,6 +628,15 @@ export async function initChatStore(): Promise<void> {
          ADD COLUMN attachments_json TEXT`,
       );
     }
+    const hasModelAttachmentsJsonColumn = Boolean(
+      columns?.some((column) => column?.name === "model_attachments_json"),
+    );
+    if (!hasModelAttachmentsJsonColumn) {
+      await Zotero.DB.queryAsync(
+        `ALTER TABLE ${CHAT_MESSAGES_TABLE}
+         ADD COLUMN model_attachments_json TEXT`,
+      );
+    }
 
     await Zotero.DB.queryAsync(
       `CREATE INDEX IF NOT EXISTS ${CHAT_MESSAGES_INDEX}
@@ -608,6 +721,7 @@ export async function loadConversation(
             collection_contexts_json AS collectionContextsJson,
             screenshot_images AS screenshotImages,
             attachments_json AS attachmentsJson,
+            model_attachments_json AS modelAttachmentsJson,
             model_name AS modelName,
             model_entry_id AS modelEntryId,
             model_provider_label AS modelProviderLabel,
@@ -640,6 +754,7 @@ export async function loadConversation(
         collectionContextsJson?: unknown;
         screenshotImages?: unknown;
         attachmentsJson?: unknown;
+        modelAttachmentsJson?: unknown;
         modelName?: unknown;
         modelEntryId?: unknown;
         modelProviderLabel?: unknown;
@@ -813,75 +928,11 @@ export async function loadConversation(
         screenshotImages = undefined;
       }
     }
-    let attachments: StoredChatMessage["attachments"] | undefined;
-    if (typeof row.attachmentsJson === "string" && row.attachmentsJson) {
-      try {
-        const parsed = JSON.parse(row.attachmentsJson) as unknown;
-        if (Array.isArray(parsed)) {
-          const normalized = parsed.reduce<
-            NonNullable<StoredChatMessage["attachments"]>
-          >((out, entry) => {
-            if (!entry || typeof entry !== "object") return out;
-            const typed = entry as Record<string, unknown>;
-            const id =
-              typeof typed.id === "string" && typed.id.trim()
-                ? typed.id.trim()
-                : null;
-            const name =
-              typeof typed.name === "string" && typed.name.trim()
-                ? typed.name.trim()
-                : null;
-            const mimeType =
-              typeof typed.mimeType === "string" && typed.mimeType.trim()
-                ? typed.mimeType.trim()
-                : "application/octet-stream";
-            const sizeBytes = Number(typed.sizeBytes);
-            const category = typed.category;
-            const validCategory =
-              category === "image" ||
-              category === "pdf" ||
-              category === "markdown" ||
-              category === "code" ||
-              category === "text" ||
-              category === "file";
-            if (!id || !name || !validCategory) return out;
-            out.push({
-              id,
-              name,
-              mimeType,
-              sizeBytes: Number.isFinite(sizeBytes)
-                ? Math.max(0, sizeBytes)
-                : 0,
-              category,
-              imageDataUrl:
-                typeof typed.imageDataUrl === "string" &&
-                typed.imageDataUrl.trim()
-                  ? typed.imageDataUrl
-                  : undefined,
-              textContent:
-                typeof typed.textContent === "string" && typed.textContent
-                  ? typed.textContent
-                  : undefined,
-              storedPath:
-                typeof typed.storedPath === "string" && typed.storedPath.trim()
-                  ? typed.storedPath.trim()
-                  : undefined,
-              contentHash:
-                typeof typed.contentHash === "string" &&
-                /^[a-f0-9]{64}$/i.test(typed.contentHash.trim())
-                  ? typed.contentHash.trim().toLowerCase()
-                  : undefined,
-            });
-            return out;
-          }, []);
-          if (normalized.length) {
-            attachments = normalized;
-          }
-        }
-      } catch (_err) {
-        attachments = undefined;
-      }
-    }
+    let attachments = parseStoredAttachmentsJson(row.attachmentsJson);
+    const modelAttachments = parseStoredAttachmentsJson(
+      row.modelAttachmentsJson,
+      { preserveEmpty: true },
+    );
     if (!attachments?.length && screenshotImages?.length) {
       attachments = screenshotImages.map((url, index) => ({
         id: `legacy-screenshot-${index + 1}`,
@@ -923,6 +974,7 @@ export async function loadConversation(
       selectedCollectionContexts,
       screenshotImages,
       attachments,
+      modelAttachments,
       modelName: typeof row.modelName === "string" ? row.modelName : undefined,
       modelEntryId:
         typeof row.modelEntryId === "string" ? row.modelEntryId : undefined,
@@ -1005,28 +1057,16 @@ export async function appendMessage(
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
     : [];
-  const attachments = Array.isArray(message.attachments)
-    ? message.attachments
-        .filter(
-          (entry) => entry && typeof entry.id === "string" && entry.id.trim(),
-        )
-        .map((entry) => ({
-          ...entry,
-          storedPath:
-            typeof entry.storedPath === "string" && entry.storedPath.trim()
-              ? entry.storedPath.trim()
-              : undefined,
-          contentHash:
-            typeof entry.contentHash === "string" &&
-            /^[a-f0-9]{64}$/i.test(entry.contentHash.trim())
-              ? entry.contentHash.trim().toLowerCase()
-              : undefined,
-        }))
-    : [];
+  const attachments = normalizeStoredAttachments(message.attachments);
+  const hasExplicitModelAttachments = Object.prototype.hasOwnProperty.call(
+    message,
+    "modelAttachments",
+  );
+  const modelAttachments = normalizeStoredAttachments(message.modelAttachments);
   await Zotero.DB.queryAsync(
     `INSERT INTO ${CHAT_MESSAGES_TABLE}
-      (conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, collection_contexts_json, screenshot_images, attachments_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, collection_contexts_json, screenshot_images, attachments_json, model_attachments_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       normalizedKey,
       message.role,
@@ -1055,6 +1095,7 @@ export async function appendMessage(
         : null,
       screenshotImages.length ? JSON.stringify(screenshotImages) : null,
       attachments.length ? JSON.stringify(attachments) : null,
+      hasExplicitModelAttachments ? JSON.stringify(modelAttachments) : null,
       message.modelName || null,
       message.modelEntryId || null,
       message.modelProviderLabel || null,
@@ -1091,6 +1132,10 @@ export async function updateLatestUserMessage(
     | "selectedCollectionContexts"
     | "screenshotImages"
     | "attachments"
+    | "modelAttachments"
+    | "modelName"
+    | "modelEntryId"
+    | "modelProviderLabel"
   >,
 ): Promise<void> {
   const normalizedKey = normalizeConversationKey(conversationKey);
@@ -1129,24 +1174,12 @@ export async function updateLatestUserMessage(
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
     : [];
-  const attachments = Array.isArray(message.attachments)
-    ? message.attachments
-        .filter(
-          (entry) => entry && typeof entry.id === "string" && entry.id.trim(),
-        )
-        .map((entry) => ({
-          ...entry,
-          storedPath:
-            typeof entry.storedPath === "string" && entry.storedPath.trim()
-              ? entry.storedPath.trim()
-              : undefined,
-          contentHash:
-            typeof entry.contentHash === "string" &&
-            /^[a-f0-9]{64}$/i.test(entry.contentHash.trim())
-              ? entry.contentHash.trim().toLowerCase()
-              : undefined,
-        }))
-    : [];
+  const attachments = normalizeStoredAttachments(message.attachments);
+  const hasExplicitModelAttachments = Object.prototype.hasOwnProperty.call(
+    message,
+    "modelAttachments",
+  );
+  const modelAttachments = normalizeStoredAttachments(message.modelAttachments);
 
   await Zotero.DB.queryAsync(
     `UPDATE ${CHAT_MESSAGES_TABLE}
@@ -1164,7 +1197,11 @@ export async function updateLatestUserMessage(
          citation_paper_contexts_json = ?,
          collection_contexts_json = ?,
          screenshot_images = ?,
-         attachments_json = ?
+         attachments_json = ?,
+         model_attachments_json = ?,
+         model_name = ?,
+         model_entry_id = ?,
+         model_provider_label = ?
      WHERE id = (
        SELECT id
        FROM ${CHAT_MESSAGES_TABLE}
@@ -1198,6 +1235,10 @@ export async function updateLatestUserMessage(
         : null,
       screenshotImages.length ? JSON.stringify(screenshotImages) : null,
       attachments.length ? JSON.stringify(attachments) : null,
+      hasExplicitModelAttachments ? JSON.stringify(modelAttachments) : null,
+      message.modelName || null,
+      message.modelEntryId || null,
+      message.modelProviderLabel || null,
       normalizedKey,
     ],
   );

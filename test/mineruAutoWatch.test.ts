@@ -242,7 +242,7 @@ describe("mineruAutoWatch", function () {
     assert.isFalse(isAutoWatchQueueEntryCurrentForTests(entry));
   });
 
-  it("invalidates and requeues a modified PDF when its fingerprint changed", async function () {
+  it("ignores modified PDF fingerprint changes during auto-watch", async function () {
     const parent = createParent();
     const pdf = createPdf();
     const items = new Map<number, MockItem>([
@@ -261,10 +261,8 @@ describe("mineruAutoWatch", function () {
 
     await handleAutoWatchNotificationForTests("modify", "item", [pdf.id]);
 
-    assert.isFalse(await hasCachedMineruMd(pdf.id));
-    const queue = getAutoWatchQueueSnapshotForTests();
-    assert.lengthOf(queue, 1);
-    assert.equal(queue[0].attachmentId, pdf.id);
+    assert.isTrue(await hasCachedMineruMd(pdf.id));
+    assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
   });
 
   it("keeps a modified PDF cache when the fingerprint is unchanged", async function () {

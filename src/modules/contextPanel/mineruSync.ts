@@ -5,19 +5,16 @@ import { isMineruSyncEnabled } from "../../utils/mineruConfig";
 import {
   buildMineruSourceProvenance,
   buildAndWriteManifest,
-  compareMineruSourceProvenanceToAttachment,
   ensureManifest,
   getMineruCacheDir,
   getMineruItemDir,
   hasCachedMineruMd,
-  invalidateMineruMd,
   MINERU_SOURCE_PROVENANCE_FILE,
   readMineruSourceProvenance,
   writeMineruSourceProvenanceForAttachment,
   writeMineruCacheFiles,
   type MineruCacheFile,
   type MineruSourceFingerprint,
-  type MineruSourceProvenance,
   type MineruSourceProvenanceStatus,
 } from "./mineruCache";
 import { pdfTextCache, pdfTextLoadingTasks } from "./state";
@@ -764,49 +761,24 @@ function getPackageTimestampMs(metadata?: MineruSyncMetadata): number {
   return 0;
 }
 
-function metadataToSourceProvenance(
-  metadata: MineruSyncMetadata,
-  sourceAttachment: Zotero.Item,
-): MineruSourceProvenance | null {
-  if (!metadata.sourceFingerprint) return null;
-  const provenanceStatus =
-    metadata.provenanceStatus === "verified" ||
-    metadata.provenanceStatus === "legacy_unverified"
-      ? metadata.provenanceStatus
-      : "legacy_unverified";
-  return {
-    attachmentId: sourceAttachment.id,
-    attachmentKey: metadata.sourceAttachmentKey || metadata.attachmentKey,
-    parentItemKey: metadata.parentItemKey,
-    sourceFilename: metadata.sourceAttachmentFilename,
-    sourceFingerprint: metadata.sourceFingerprint,
-    provenanceStatus,
-    parsedAt:
-      typeof metadata.parsedAt === "string" && metadata.parsedAt.trim()
-        ? metadata.parsedAt
-        : metadata.createdAt || new Date(0).toISOString(),
-  };
-}
-
 async function packageProvenanceMatchesSource(
   metadata: MineruSyncMetadata | undefined,
   sourceAttachment: Zotero.Item,
 ): Promise<boolean> {
-  if (!metadata?.sourceFingerprint) return true;
-  const provenance = metadataToSourceProvenance(metadata, sourceAttachment);
-  if (!provenance) return true;
-  const match = await compareMineruSourceProvenanceToAttachment(
-    provenance,
-    sourceAttachment,
-  );
-  if (match === "match") return true;
-  ztoolkit.log(
-    "LLM: MinerU sync package provenance mismatch",
-    metadata.sourceAttachmentKey,
-    sourceAttachment.id,
-    match,
-  );
-  return false;
+  if (!metadata) return true;
+  const metadataKey = String(
+    metadata.sourceAttachmentKey || metadata.attachmentKey || "",
+  ).trim();
+  const sourceKey = getItemKey(sourceAttachment);
+  if (metadataKey && sourceKey && metadataKey !== sourceKey) {
+    ztoolkit.log(
+      "LLM: MinerU sync package source key mismatch",
+      metadataKey,
+      sourceAttachment.id,
+    );
+    return false;
+  }
+  return true;
 }
 
 function extractPackageFiles(zipBytes: Uint8Array): ExtractedMineruSyncPackage | null {
@@ -1568,16 +1540,6 @@ export async function repairMineruCaches(
             "legacy_unverified",
           );
           result.backfilledLegacyProvenance += 1;
-        } else {
-          const match = await compareMineruSourceProvenanceToAttachment(
-            provenance,
-            item,
-          );
-          if (match === "mismatch") {
-            await invalidateMineruMd(item.id);
-            result.removedStaleCaches += 1;
-            hasLocalCache = false;
-          }
         }
       }
 

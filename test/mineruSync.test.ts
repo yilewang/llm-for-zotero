@@ -1275,7 +1275,7 @@ describe("mineruSync", function () {
     assert.equal(provenance?.provenanceStatus, "legacy_unverified");
   });
 
-  it("removes a stale local cache when the current PDF fingerprint changed", async function () {
+  it("keeps a local cache when only the current PDF fingerprint changed", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();
     const parent = createParent();
@@ -1302,8 +1302,8 @@ describe("mineruSync", function () {
 
     const result = await repairMineruCaches();
 
-    assert.equal(result.removedStaleCaches, 1);
-    assert.isFalse(await hasCachedMineruMd(pdf.id));
+    assert.equal(result.removedStaleCaches, 0);
+    assert.isTrue(await hasCachedMineruMd(pdf.id));
   });
 
   it("restores a missing local cache from a synced ZIP with matching provenance", async function () {
@@ -1355,7 +1355,7 @@ describe("mineruSync", function () {
     assert.equal(provenance?.provenanceStatus, "verified");
   });
 
-  it("refuses to restore from a synced ZIP whose provenance no longer matches the PDF", async function () {
+  it("restores from a synced ZIP when only the current PDF fingerprint changed", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();
     const parent = createParent();
@@ -1396,9 +1396,13 @@ describe("mineruSync", function () {
 
     const result = await repairMineruCaches();
 
-    assert.equal(result.restored, 0);
+    assert.equal(result.restored, 1);
     assert.equal(result.failed, 0);
-    assert.isFalse(await hasCachedMineruMd(pdf.id));
+    assert.isTrue(await hasCachedMineruMd(pdf.id));
+    assert.equal(
+      await readCachedMineruMd(pdf.id),
+      "# Intro\n![Fig](images/fig1.png)\n# Results\ncontent",
+    );
   });
 
   it("deletes orphan plugin-owned synced ZIP packages during repair", async function () {
