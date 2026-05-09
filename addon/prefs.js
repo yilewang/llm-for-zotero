@@ -24,6 +24,36 @@ pref("agentBackendBridgeUrl", "http://127.0.0.1:19787");
 pref("agentBackendAutoSpawn", false);
 pref("agentBackendAdapterPath", "");
 pref("agentClaudeTerminalPath", "");
+// Upstream PR #128 / PR #141 prefs — kept for the imported but currently unwired
+// src/claudeCode/ and src/codexAppServer/ modules; safe to remove together with
+// those modules if you decide to drop them.
+pref("enableClaudeCodeMode", false);
+pref("agentClaudeConfigSource", "default");
+pref("agentPermissionMode", "safe");
+pref("conversationSystem", "upstream");
+pref("enableCodexAppServerMode", false);
+pref("codexAppServerModel", "gpt-5.4");
+pref("codexAppServerReasoning", "auto");
+pref("codexAppServerPath", "");
+pref("codexAppServerConversationModeMap", "");
+pref("codexAppServerZoteroMcpToolsEnabled", true);
+pref("codexNativeSkillRoutingMode", "hybrid");
+pref("codexAppServerGlobalConversationMap", "");
+pref("codexAppServerPaperConversationMap", "");
+pref("codexAppServerLastAllocatedConversationKeyMap", "");
+pref("codexAppServerLastAllocatedGlobalConversationKey", 0);
+pref("codexAppServerLastAllocatedPaperConversationKey", 0);
+pref("claudeCodeConversationModeMap", "");
+pref("claudeCodeGlobalConversationMap", "");
+pref("claudeCodePaperConversationMap", "");
+pref("claudeCodeLastAllocatedConversationKeyMap", "");
+pref("claudeCodeLastAllocatedGlobalConversationKey", 0);
+pref("claudeCodeLastAllocatedPaperConversationKey", 0);
+pref("claudeCodeModel", "sonnet");
+pref("claudeCodeReasoning", "auto");
+pref("claudeCodeBlockStreaming", false);
+pref("claudeCodeAutoCompact", false);
+pref("claudeCodeAutoCompactThreshold", 50);
 pref("obsidianVaultPath", "");
 pref("obsidianTargetFolder", "Zotero Notes");
 pref("obsidianAttachmentsFolder", "assets");

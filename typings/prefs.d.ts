@@ -33,6 +33,35 @@ declare namespace _ZoteroTypes {
       "agentBackendAutoSpawn": boolean;
       "agentBackendAdapterPath": string;
       "agentClaudeTerminalPath": string;
+      // Upstream PR #128 / PR #141 prefs (paired with the imported but unwired
+      // src/claudeCode/ and src/codexAppServer/ modules).
+      "enableClaudeCodeMode": boolean;
+      "agentClaudeConfigSource": string;
+      "agentPermissionMode": string;
+      "conversationSystem": string;
+      "enableCodexAppServerMode": boolean;
+      "codexAppServerModel": string;
+      "codexAppServerReasoning": string;
+      "codexAppServerPath": string;
+      "codexAppServerConversationModeMap": string;
+      "codexAppServerZoteroMcpToolsEnabled": boolean;
+      "codexNativeSkillRoutingMode": string;
+      "codexAppServerGlobalConversationMap": string;
+      "codexAppServerPaperConversationMap": string;
+      "codexAppServerLastAllocatedConversationKeyMap": string;
+      "codexAppServerLastAllocatedGlobalConversationKey": number;
+      "codexAppServerLastAllocatedPaperConversationKey": number;
+      "claudeCodeConversationModeMap": string;
+      "claudeCodeGlobalConversationMap": string;
+      "claudeCodePaperConversationMap": string;
+      "claudeCodeLastAllocatedConversationKeyMap": string;
+      "claudeCodeLastAllocatedGlobalConversationKey": number;
+      "claudeCodeLastAllocatedPaperConversationKey": number;
+      "claudeCodeModel": string;
+      "claudeCodeReasoning": string;
+      "claudeCodeBlockStreaming": boolean;
+      "claudeCodeAutoCompact": boolean;
+      "claudeCodeAutoCompactThreshold": number;
       "obsidianVaultPath": string;
       "obsidianTargetFolder": string;
       "obsidianAttachmentsFolder": string;
