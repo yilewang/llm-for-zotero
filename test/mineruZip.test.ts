@@ -56,15 +56,6 @@ describe("mineruZip", function () {
     }
 
     assert.equal(result.mdContent, "preferred markdown");
-    assert.includeMembers(
-      result.files.map((file) => file.relativePath),
-      [
-        "summary.md",
-        "nested/full.md",
-        "images/figure-1.png",
-        "content_list.json",
-      ],
-    );
     assert.includeMembers(result.entryNames, [
       "summary.md",
       "nested/full.md",

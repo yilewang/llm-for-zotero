@@ -4,7 +4,6 @@ import type {
   AgentToolCall,
   ToolSpec,
 } from "../types";
-export { parseDataUrl } from "../../shared/dataUrl";
 
 export function getFetch(): typeof fetch {
   return ztoolkit.getGlobal("fetch") as typeof fetch;
@@ -102,6 +101,17 @@ export function groupToolContinuationMessages(messages: AgentModelMessage[]): {
   return {
     toolMessages,
     followupUserMessages,
+  };
+}
+
+export function parseDataUrl(
+  url: string,
+): { mimeType: string; data: string } | null {
+  const match = /^data:([^;,]+);base64,(.+)$/i.exec(url.trim());
+  if (!match) return null;
+  return {
+    mimeType: match[1],
+    data: match[2],
   };
 }
 

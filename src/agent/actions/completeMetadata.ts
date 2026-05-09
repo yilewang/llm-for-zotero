@@ -10,33 +10,20 @@ import type {
 import { EDITABLE_ARTICLE_METADATA_FIELDS } from "../services/zoteroGateway";
 import { callTool } from "./executor";
 import {
-  resolvePaperScopedActionTargets,
-  type PaperScopedActionInput,
-  type PaperScopedActionProfile,
-  type PaperScopedActionTarget,
-} from "./paperScope";
-import {
   getMetadataField,
   getMetadataTitle,
   hasMetadataCreators,
 } from "./metadataSnapshot";
 
-type CompleteMetadataInput = PaperScopedActionInput;
-
-type CompleteMetadataItemOutput = {
+type CompleteMetadataInput = {
   itemId: number;
-  title: string;
-  missingFields: string[];
-  patchedFields: string[];
-  updated: boolean;
 };
 
 type CompleteMetadataOutput = {
-  targeted: number;
-  updated: number;
-  skipped: number;
-  errors: number;
-  items: CompleteMetadataItemOutput[];
+  title: string;
+  missingFields: string[];
+  updated: boolean;
+  patchedFields: string[];
 };
 
 /**
@@ -49,41 +36,19 @@ export const completeMetadataAction: AgentAction<
   CompleteMetadataOutput
 > = {
   name: "complete_metadata",
-  modes: ["paper", "library"],
-  paperScopeProfile: completeMetadataPaperScopeProfile,
+  modes: ["paper"],
   description:
-    "Audit targeted papers for missing bibliographic metadata, fetch canonical metadata from external sources, " +
-    "and open one review card with the proposed field updates.",
+    "Audit and complete metadata for the current paper. " +
+    "Identifies missing fields (abstract, DOI, tags, PDF), fetches canonical metadata, " +
+    "and applies fixes after user review.",
   inputSchema: {
     type: "object",
+    required: ["itemId"],
     additionalProperties: false,
     properties: {
       itemId: {
         type: "number",
-        description: "Single Zotero paper item ID to target.",
-      },
-      itemIds: {
-        type: "array",
-        items: { type: "number" },
-        description: "Explicit Zotero paper item IDs to target.",
-      },
-      scope: {
-        type: "string",
-        enum: ["all", "collection"],
-        description: "Which papers to consider when explicit itemIds/collectionIds are not provided.",
-      },
-      collectionId: {
-        type: "number",
-        description: "Single collection ID to target.",
-      },
-      collectionIds: {
-        type: "array",
-        items: { type: "number" },
-        description: "Collection IDs to target.",
-      },
-      limit: {
-        type: "number",
-        description: "Max number of targeted papers to include in this run.",
+        description: "The Zotero item ID of the paper to complete.",
       },
     },
   },
@@ -92,41 +57,10 @@ export const completeMetadataAction: AgentAction<
     input: CompleteMetadataInput,
     ctx: ActionExecutionContext,
   ): Promise<ActionResult<CompleteMetadataOutput>> {
-    const STEPS = 4;
+    const STEPS = 3;
     let step = 0;
 
-    ctx.onProgress({
-      type: "step_start",
-      step: "Resolving target papers",
-      index: ++step,
-      total: STEPS,
-    });
-
-    const targets = await resolvePaperScopedActionTargets(
-      input,
-      ctx,
-      completeMetadataPaperScopeProfile,
-    );
-
-    ctx.onProgress({
-      type: "step_done",
-      step: "Resolving target papers",
-      summary: `${targets.length} paper${targets.length === 1 ? "" : "s"} targeted`,
-    });
-
-    if (!targets.length) {
-      return {
-        ok: true,
-        output: {
-          targeted: 0,
-          updated: 0,
-          skipped: 0,
-          errors: 0,
-          items: [],
-        },
-      };
-    }
-
+    // Step 1: Read current item metadata
     ctx.onProgress({
       type: "step_start",
       step: "Reading paper metadata",
@@ -186,9 +120,19 @@ export const completeMetadataAction: AgentAction<
     ctx.onProgress({
       type: "step_done",
       step: "Reading paper metadata",
-      summary: `Loaded ${readEntries.length}/${targets.length} paper metadata snapshots`,
+      summary: missingFields.length
+        ? `Missing: ${missingFields.join(", ")}`
+        : "All metadata fields present",
     });
 
+    if (missingFields.length === 0) {
+      return {
+        ok: true,
+        output: { title, missingFields: [], updated: false, patchedFields: [] },
+      };
+    }
+
+    // Step 2: Fetch canonical metadata
     ctx.onProgress({
       type: "step_start",
       step: "Fetching canonical metadata",
@@ -209,16 +153,24 @@ export const completeMetadataAction: AgentAction<
       searchArgs.title = title;
     }
 
-    for (const entry of readEntries) {
-      const missingFields = detectMissingFields(entry);
-      const initialOutput: CompleteMetadataItemOutput = {
-        itemId: entry.itemId,
-        title: entry.title,
-        missingFields,
-        patchedFields: [],
-        updated: false,
+    const metaResult = await callTool(
+      "search_literature_online",
+      searchArgs,
+      ctx,
+      `Fetching metadata for "${title}"`,
+    );
+
+    if (!metaResult.ok) {
+      ctx.onProgress({
+        type: "step_done",
+        step: "Fetching canonical metadata",
+        summary: "Could not find external metadata",
+      });
+      return {
+        ok: true,
+        output: { title, missingFields, updated: false, patchedFields: [] },
       };
-      itemOutputs.set(entry.itemId, initialOutput);
+    }
 
     const metaContent = metaResult.content as Record<string, unknown>;
     const results = Array.isArray(metaContent.results)
@@ -261,90 +213,29 @@ export const completeMetadataAction: AgentAction<
       if (!currentValue && newValue) {
         patch[fieldName as EditableArticleMetadataField] = newValue;
       }
-
-      const doi = getMetadataField(entry.metadata, "DOI")
-        ?.replace(/^https?:\/\/doi\.org\//i, "") || undefined;
-      const title = getMetadataTitle(entry.metadata) || entry.title;
-      if (!doi && !title) {
-        continue;
-      }
-
-      ctx.onProgress({
-        type: "status",
-        message: doi
-          ? `Fetching metadata for DOI: ${doi}`
-          : `Fetching metadata for title: ${title.slice(0, 60)}`,
-      });
-
-      const searchArgs: Record<string, unknown> = {
-        mode: "metadata",
-        libraryID: ctx.libraryID,
-      };
-      if (doi) {
-        searchArgs.doi = doi;
-      } else if (title) {
-        searchArgs.title = title;
-      }
-
-      const metaResult = await callTool(
-        "search_literature_online",
-        searchArgs,
-        ctx,
-        `Fetching metadata for "${title}"`,
-      );
-
-      if (!metaResult.ok) {
-        errorCount++;
-        continue;
-      }
-
-      const metaContent = metaResult.content as Record<string, unknown>;
-      const results = Array.isArray(metaContent.results) ? metaContent.results : [];
-      const externalMeta = results[0] as Record<string, unknown> | undefined;
-      if (!externalMeta) continue;
-
-      const patch = buildMetadataPatch(entry.metadata, externalMeta.patch);
-      const patchedFields = Object.keys(patch);
-      if (!patchedFields.length) continue;
-
-      updateCandidates.push({
-        itemId: entry.itemId,
-        title: entry.title,
-        missingFields,
-        patchedFields,
-        patch,
-      });
-      itemOutputs.set(entry.itemId, {
-        ...initialOutput,
-        patchedFields,
-      });
     }
+    if (!hasMetadataCreators(meta) && sourcePatch.creators?.length) {
+      patch.creators = sourcePatch.creators;
+    }
+
+    const patchedFields = Object.keys(patch);
 
     ctx.onProgress({
       type: "step_done",
       step: "Fetching canonical metadata",
-      summary: `${updateCandidates.length} paper${updateCandidates.length === 1 ? "" : "s"} have updatable fields`,
+      summary: patchedFields.length
+        ? `Can fill: ${patchedFields.join(", ")}`
+        : "No new fields to fill",
     });
 
-    if (!updateCandidates.length) {
+    if (patchedFields.length === 0) {
       return {
         ok: true,
-        output: {
-          targeted: targets.length,
-          updated: 0,
-          skipped: targets.length,
-          errors: errorCount,
-          items: targets.map((target) => itemOutputs.get(target.itemId) || {
-            itemId: target.itemId,
-            title: target.title,
-            missingFields: [],
-            patchedFields: [],
-            updated: false,
-          }),
-        },
+        output: { title, missingFields, updated: false, patchedFields: [] },
       };
     }
 
+    // Step 3: Apply updates with HITL review
     ctx.onProgress({
       type: "step_start",
       step: "Applying metadata updates",
@@ -367,31 +258,13 @@ export const completeMetadataAction: AgentAction<
       "Updating metadata",
     );
 
-    const mutateContent = mutateResult.content as Record<string, unknown>;
-    const updatedCount = mutateResult.ok
-      ? Number(
-          mutateContent.appliedCount ||
-          (Array.isArray(mutateContent.results) ? mutateContent.results.length : updateCandidates.length),
-        )
-      : 0;
-
-    if (mutateResult.ok) {
-      for (const candidate of updateCandidates) {
-        itemOutputs.set(candidate.itemId, {
-          itemId: candidate.itemId,
-          title: candidate.title,
-          missingFields: candidate.missingFields,
-          patchedFields: candidate.patchedFields,
-          updated: true,
-        });
-      }
-    }
+    const updated = mutateResult.ok;
 
     ctx.onProgress({
       type: "step_done",
       step: "Applying metadata updates",
-      summary: mutateResult.ok
-        ? `Updated ${updatedCount} paper${updatedCount === 1 ? "" : "s"}`
+      summary: updated
+        ? `Updated ${patchedFields.length} field${patchedFields.length === 1 ? "" : "s"}`
         : "Update was denied or failed",
     });
 
@@ -406,88 +279,3 @@ export const completeMetadataAction: AgentAction<
     };
   },
 };
-
-async function readMetadataEntries(
-  targets: PaperScopedActionTarget[],
-  ctx: ActionExecutionContext,
-): Promise<MetadataReadEntry[]> {
-  const readResult = await callTool(
-    "read_library",
-    {
-      itemIds: targets.map((target) => target.itemId),
-      sections: ["metadata", "tags", "attachments"],
-    },
-    ctx,
-    `Reading metadata for ${targets.length} paper${targets.length === 1 ? "" : "s"}`,
-  );
-
-  if (!readResult.ok) {
-    throw new Error(`Failed to read targeted papers: ${JSON.stringify(readResult.content)}`);
-  }
-
-  const readContent = readResult.content as Record<string, unknown>;
-  const readResults =
-    readContent.results &&
-    typeof readContent.results === "object" &&
-    !Array.isArray(readContent.results)
-      ? (readContent.results as Record<string, Record<string, unknown>>)
-      : {};
-
-  return targets.map((target) => {
-    const itemEntry = readResults[String(target.itemId)] as Record<string, unknown> | undefined;
-    return {
-      itemId: target.itemId,
-      title: getMetadataTitle(itemEntry?.metadata) || target.title || `Item ${target.itemId}`,
-      metadata: itemEntry?.metadata,
-      tags: Array.isArray(itemEntry?.tags) ? itemEntry.tags : [],
-      attachments: Array.isArray(itemEntry?.attachments) ? itemEntry.attachments : [],
-    };
-  });
-}
-
-function detectMissingFields(entry: MetadataReadEntry): string[] {
-  const missingFields: string[] = [];
-  if (!getMetadataField(entry.metadata, "abstractNote")) missingFields.push("abstract");
-  if (!getMetadataField(entry.metadata, "DOI") && !getMetadataField(entry.metadata, "url")) {
-    missingFields.push("DOI/URL");
-  }
-  if (!hasMetadataCreators(entry.metadata)) {
-    missingFields.push("authors");
-  }
-  if (!entry.tags.length) {
-    missingFields.push("tags");
-  }
-  const hasPdf = entry.attachments.some(
-    (attachment) =>
-      attachment &&
-      typeof attachment === "object" &&
-      (attachment as Record<string, unknown>).contentType === "application/pdf",
-  );
-  if (!hasPdf) {
-    missingFields.push("PDF");
-  }
-  return missingFields;
-}
-
-function buildMetadataPatch(
-  currentMetadata: unknown,
-  rawPatch: unknown,
-): EditableArticleMetadataPatch {
-  const sourcePatch = rawPatch as EditableArticleMetadataPatch | undefined;
-  if (!sourcePatch || Object.keys(sourcePatch).length === 0) {
-    return {};
-  }
-
-  const patch: EditableArticleMetadataPatch = {};
-  for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
-    const currentValue = getMetadataField(currentMetadata, fieldName);
-    const newValue = sourcePatch[fieldName as EditableArticleMetadataField];
-    if (!currentValue && newValue) {
-      patch[fieldName as EditableArticleMetadataField] = newValue;
-    }
-  }
-  if (!hasMetadataCreators(currentMetadata) && sourcePatch.creators?.length) {
-    patch.creators = sourcePatch.creators;
-  }
-  return patch;
-}

@@ -19,9 +19,6 @@ function buildToolContext(
   ctx: ActionExecutionContext,
   stepDescription: string,
 ): AgentToolContext {
-  const syntheticItem = ctx.requestContext?.activeItemId
-    ? ctx.zoteroGateway.getItem(ctx.requestContext.activeItemId)
-    : null;
   return {
     // Actions run outside an agent turn, so we build a synthetic request.
     request: {
@@ -29,12 +26,8 @@ function buildToolContext(
       mode: "agent",
       userText: stepDescription,
       libraryID: ctx.libraryID,
-      activeItemId: ctx.requestContext?.activeItemId,
-      selectedPaperContexts: ctx.requestContext?.selectedPaperContexts,
-      fullTextPaperContexts: ctx.requestContext?.fullTextPaperContexts,
-      selectedCollectionContexts: ctx.requestContext?.selectedCollectionContexts,
     },
-    item: syntheticItem,
+    item: null,
     currentAnswerText: "",
     modelName: "action",
   };

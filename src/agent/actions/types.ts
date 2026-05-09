@@ -7,11 +7,6 @@ import type { LibraryMutationService } from "../services/libraryMutationService"
 import type { LiteratureSearchService } from "../services/literatureSearchService";
 import type { ModelProviderAuthMode } from "../../utils/modelProviders";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
-import type {
-  CollectionContextRef,
-  PaperContextRef,
-} from "../../shared/types";
-import type { PaperScopedActionProfile } from "./paperScopeTypes";
 
 /**
  * LLM credentials that an action can use to call the model directly
@@ -58,14 +53,6 @@ export type ActionServices = {
   literatureSearchService: LiteratureSearchService;
 };
 
-export type ActionRequestContext = {
-  mode?: "paper" | "library";
-  activeItemId?: number;
-  selectedPaperContexts?: PaperContextRef[];
-  fullTextPaperContexts?: PaperContextRef[];
-  selectedCollectionContexts?: CollectionContextRef[];
-};
-
 export type ActionExecutionContext = {
   /** The tool registry — used by ActionExecutor to call tools deterministically. */
   registry: AgentToolRegistry;
@@ -91,8 +78,6 @@ export type ActionExecutionContext = {
    * (e.g. the MCP server) where no user-side model is configured.
    */
   llm?: ActionLLMConfig;
-  /** Optional chat-context refs forwarded from the compose UI. */
-  requestContext?: ActionRequestContext;
 };
 
 export type ActionResult<TOutput = unknown> =
@@ -104,8 +89,6 @@ export interface AgentAction<TInput = unknown, TOutput = unknown> {
   description: string;
   /** Chat modes this action is available in. If omitted, available in all modes. */
   modes?: Array<"paper" | "library">;
-  /** Optional shared scope behavior for paper-scoped slash actions. */
-  paperScopeProfile?: PaperScopedActionProfile;
   inputSchema: object;
   execute(
     input: TInput,

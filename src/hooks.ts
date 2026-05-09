@@ -9,12 +9,8 @@ import {
   registerReaderSelectionTracking,
   openStandaloneChat,
 } from "./modules/contextPanel";
-import { resolveActiveLibraryID } from "./modules/contextPanel/portalScope";
 import { invalidatePaperSearchCache } from "./modules/contextPanel/paperSearch";
 import { initChatStore } from "./utils/chatStore";
-import { initClaudeCodeStore } from "./claudeCode/store";
-import { initCodexAppServerStore } from "./codexAppServer/store";
-import { ensureClaudeProjectBootstrap } from "./claudeCode/bootstrap";
 import {
   initAttachmentRefStore,
   reconcileNoteAttachmentRefsFromNoteContent,
@@ -31,7 +27,6 @@ import {
 import { pauseBatchProcessing } from "./modules/mineruBatchProcessor";
 import { startAutoWatch, stopAutoWatch } from "./modules/mineruAutoWatch";
 import { clearAllState, initFontScale } from "./modules/contextPanel/state";
-import { clearQueuedFollowUpState } from "./modules/contextPanel/queuedFollowUps";
 
 async function onStartup() {
   await Promise.all([
@@ -54,21 +49,6 @@ async function onStartup() {
     await initChatStore();
   } catch (err) {
     ztoolkit.log("LLM: Failed to initialize chat store", err);
-  }
-  try {
-    await initClaudeCodeStore();
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize Claude Code store", err);
-  }
-  try {
-    await initCodexAppServerStore();
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize Codex App Server store", err);
-  }
-  try {
-    await ensureClaudeProjectBootstrap();
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to bootstrap Claude project config", err);
   }
   try {
     await initAgentSubsystem();
@@ -148,22 +128,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
     key.setAttribute("modifiers", "accel,shift");
     key.setAttribute("key", "L");
     key.setAttribute("oncommand", "void(0)");
-    key.addEventListener("command", () => {
-      let initialItem: Zotero.Item | null = null;
-      try {
-        const pane = Zotero.getActiveZoteroPane?.() as
-          | { getSelectedItems?: () => Zotero.Item[] }
-          | undefined;
-        initialItem = pane?.getSelectedItems?.()?.[0] || null;
-      } catch {
-        void 0;
-      }
-      if (!initialItem && resolveActiveLibraryID()) {
-        openStandaloneChat();
-        return;
-      }
-      openStandaloneChat({ initialItem });
-    });
+    key.addEventListener("command", () => openStandaloneChat());
     keyset.appendChild(key);
   }
 }
@@ -203,7 +168,6 @@ function onShutdown(): void {
   pauseBatchProcessing();
   stopAutoWatch();
   shutdownAgentSubsystem();
-  clearQueuedFollowUpState();
   clearAllState();
   // Remove addon object
   addon.data.alive = false;
@@ -216,14 +180,6 @@ function onShutdown(): void {
  * Any operations should be placed in a function to keep this funcion clear.
  */
 let paperSearchInvalidateTimer: ReturnType<typeof setTimeout> | null = null;
-
-export function flushPaperSearchInvalidationForTests(): void {
-  if (paperSearchInvalidateTimer !== null) {
-    clearTimeout(paperSearchInvalidateTimer);
-    paperSearchInvalidateTimer = null;
-  }
-  invalidatePaperSearchCache();
-}
 
 async function onNotify(
   event: string,

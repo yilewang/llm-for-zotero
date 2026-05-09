@@ -1,5 +1,4 @@
 import type {
-  CollectionContextRef,
   NoteContextRef,
   PaperContextRef,
   SelectedTextSource,
@@ -214,33 +213,6 @@ export function normalizePaperContextRefs(
       citationKey: citationKey || undefined,
       firstCreator: firstCreator || undefined,
       year: year || undefined,
-    });
-  }
-  return out;
-}
-
-export function normalizeCollectionContextRefs(
-  value: unknown,
-  options?: {
-    sanitizeText?: TextSanitizer;
-  },
-): CollectionContextRef[] {
-  if (!Array.isArray(value)) return [];
-  const sanitize = options?.sanitizeText;
-  const out: CollectionContextRef[] = [];
-  const seen = new Set<number>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") continue;
-    const typed = entry as Record<string, unknown>;
-    const collectionId = normalizePositiveInt(typed.collectionId);
-    const libraryID = normalizePositiveInt(typed.libraryID);
-    if (!collectionId || !libraryID || seen.has(collectionId)) continue;
-    const name = normalizeText(typed.name, sanitize) || `Collection ${collectionId}`;
-    seen.add(collectionId);
-    out.push({
-      collectionId,
-      name,
-      libraryID,
     });
   }
   return out;

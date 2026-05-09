@@ -39,11 +39,7 @@ export function resolvePaperContextDisplayMetadata(
   let firstCreator = normalizeText(paperContext.firstCreator || "");
   let year = extractYearValue(paperContext.year);
   if ((!firstCreator || !year) && typeof Zotero !== "undefined") {
-    const zoteroItem = (
-      Zotero as unknown as {
-        Items?: { get?: (itemId: number) => Zotero.Item | null | undefined };
-      }
-    ).Items?.get?.(paperContext.itemId);
+    const zoteroItem = Zotero.Items.get(paperContext.itemId);
     if (zoteroItem?.isRegularItem?.()) {
       if (!firstCreator) {
         firstCreator = normalizeText(

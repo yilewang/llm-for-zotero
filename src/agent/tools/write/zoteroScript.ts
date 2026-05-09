@@ -5,7 +5,7 @@
  *
  * Two modes:
  * - "read": gather data across many items, no confirmation needed
- * - "write": executes directly with undo instrumentation required
+ * - "write": confirmation card shows script + description, then executes with undo
  */
 import type { AgentToolDefinition, AgentToolContext } from "../../types";
 import { ok, fail, validateObject } from "../shared";
@@ -308,10 +308,6 @@ function resolveLibraryID(context: AgentToolContext): number {
     .Libraries.userLibraryID;
 }
 
-function hasUndoInstrumentation(script: string): boolean {
-  return /\benv\s*\.\s*(?:snapshot|addUndoStep)\s*\(/.test(script);
-}
-
 // ── Guidance ────────────────────────────────────────────────────────────────
 
 const ZOTERO_SCRIPT_GUIDANCE = `## zotero_script — Zotero Runtime JavaScript
@@ -377,7 +373,7 @@ env.log(\`Total: \${count} items\`);
 3. Use \`env.log(msg)\` to report progress — this output is shown to the user
 4. The script body is an async function — top-level await is supported
 5. Do NOT use \`eraseTx()\` — use Zotero trash instead (item.deleted = true; await item.saveTx())
-6. Write straightforward code — no dry-run branching needed. The script runs directly, and undo_last_action uses snapshots/custom undo steps to revert it.`;
+6. Write straightforward code — no dry-run branching needed. The confirmation card lets the user review before execution.`;
 
 // ── Tool definition ─────────────────────────────────────────────────────────
 
@@ -391,8 +387,8 @@ export function createZoteroScriptTool(): AgentToolDefinition<
       description:
         "Execute a JavaScript script inside Zotero's runtime with full API access. " +
         "Two modes: mode:'read' for gathering data across many items (no confirmation); " +
-        "mode:'write' for mutations (runs directly with undo support; env.snapshot(item) or env.addUndoStep(fn) is required). " +
-        "The script receives the global Zotero object and an env helper (env.log, env.snapshot, env.addUndoStep, env.libraryID).",
+        "mode:'write' for mutations (user reviews script in confirmation card, then it executes with undo support). " +
+        "The script receives the global Zotero object and an env helper (env.log, env.snapshot, env.libraryID).",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -402,7 +398,7 @@ export function createZoteroScriptTool(): AgentToolDefinition<
             type: "string",
             enum: ["read", "write"],
             description:
-              "'read' for gathering/computing data, 'write' for mutations (direct execution + undo).",
+              "'read' for gathering/computing data (no confirmation), 'write' for mutations (confirmation + undo).",
           },
           script: {
             type: "string",
@@ -422,7 +418,7 @@ export function createZoteroScriptTool(): AgentToolDefinition<
         },
       },
       mutability: "write",
-      requiresConfirmation: false,
+      requiresConfirmation: true,
     },
 
     guidance: {
@@ -448,7 +444,7 @@ export function createZoteroScriptTool(): AgentToolDefinition<
               : "Zotero operation";
           return `${mode === "read" ? "Reading" : "Preparing"}: ${desc}`;
         },
-        onPending: "Preparing Zotero script",
+        onPending: "Waiting for confirmation to run Zotero script",
         onApproved: "Executing Zotero script",
         onDenied: "Script cancelled",
         onSuccess: ({ content }) => {
@@ -490,7 +486,7 @@ export function createZoteroScriptTool(): AgentToolDefinition<
 
       return ok<ZoteroScriptInput>({
         mode,
-        script,
+        script: args.script.trim(),
         description: args.description.trim(),
         timeoutMs,
       });

@@ -1,10 +1,6 @@
 import { ensurePDFTextCached } from "../../modules/contextPanel/pdfContext";
 import { pdfTextCache } from "../../modules/contextPanel/state";
-import {
-  formatPaperCitationLabel,
-  formatPaperSourceLabel,
-  resolvePaperContextRefFromAttachment,
-} from "../../modules/contextPanel/paperAttribution";
+import { resolvePaperContextRefFromAttachment } from "../../modules/contextPanel/paperAttribution";
 import type { PaperContextRef } from "../../shared/types";
 import type { PdfContext } from "../../modules/contextPanel/types";
 
@@ -64,8 +60,6 @@ export class PdfService {
     text: string;
     chunkIndex: number;
     totalChunks: number;
-    citationLabel: string;
-    sourceLabel: string;
     paperContext: PaperContextRef;
   }> {
     const pdfContext = await this.ensurePaperContext(params.paperContext);
@@ -82,8 +76,6 @@ export class PdfService {
       text: pdfContext.chunks[chunkIndex],
       chunkIndex,
       totalChunks: pdfContext.chunks.length,
-      citationLabel: formatPaperCitationLabel(params.paperContext),
-      sourceLabel: formatPaperSourceLabel(params.paperContext),
       paperContext: params.paperContext,
     };
   }
@@ -96,8 +88,6 @@ export class PdfService {
     text: string;
     chunkIndexes: number[];
     totalChunks: number;
-    citationLabel: string;
-    sourceLabel: string;
     paperContext: PaperContextRef;
   }> {
     const pdfContext = await this.ensurePaperContext(params.paperContext);
@@ -116,8 +106,6 @@ export class PdfService {
       text,
       chunkIndexes: selectedChunks.map((_, index) => index),
       totalChunks: pdfContext.chunks.length,
-      citationLabel: formatPaperCitationLabel(params.paperContext),
-      sourceLabel: formatPaperSourceLabel(params.paperContext),
       paperContext: params.paperContext,
     };
   }

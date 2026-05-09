@@ -39,7 +39,7 @@ import {
   isPinnedSelectedText,
   prunePinnedSelectedTextKeys,
 } from "./setupHandlers/controllers/pinnedContextController";
-import { readNoteSnapshot } from "./noteSnapshot";
+import { readNoteSnapshot } from "./notes";
 
 type SelectedTextPageLocation = {
   contextItemId?: number;

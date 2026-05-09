@@ -55,71 +55,6 @@ describe("chatStore note contexts", function () {
     );
   });
 
-  it("persists context usage fields when appending a message", async function () {
-    let capturedParams: unknown[] = [];
-    globalScope.Zotero = {
-      ...(originalZotero || {}),
-      DB: {
-        queryAsync: async (_sql: string, params?: unknown[]) => {
-          capturedParams = Array.isArray(params) ? params : [];
-          return [];
-        },
-      },
-    };
-
-    await appendMessage(42, {
-      role: "assistant",
-      text: "Here is the answer",
-      timestamp: 100,
-      contextTokens: 1234,
-      contextWindow: 200000,
-    });
-
-    assert.lengthOf(capturedParams, 26);
-    assert.equal(capturedParams[24], 1234);
-    assert.equal(capturedParams[25], 200000);
-  });
-
-  it("persists selectedCollectionContexts when appending a message", async function () {
-    let capturedQuery = "";
-    let capturedParams: unknown[] = [];
-    globalScope.Zotero = {
-      ...(originalZotero || {}),
-      DB: {
-        queryAsync: async (sql: string, params?: unknown[]) => {
-          capturedQuery = sql;
-          capturedParams = Array.isArray(params) ? params : [];
-          return [];
-        },
-      },
-    };
-
-    await appendMessage(42, {
-      role: "user",
-      text: "Compare this folder",
-      timestamp: 100,
-      selectedCollectionContexts: [
-        {
-          collectionId: 55,
-          name: "Methods",
-          libraryID: 1,
-        },
-      ],
-    });
-
-    assert.include(capturedQuery, "collection_contexts_json");
-    assert.equal(
-      capturedParams[14],
-      JSON.stringify([
-        {
-          collectionId: 55,
-          name: "Methods",
-          libraryID: 1,
-        },
-      ]),
-    );
-  });
-
   it("loads selectedTextNoteContexts from stored chat rows", async function () {
     globalScope.Zotero = {
       ...(originalZotero || {}),
@@ -139,15 +74,6 @@ describe("chatStore note contexts", function () {
                 title: "Context note",
               },
             ]),
-            collectionContextsJson: JSON.stringify([
-              {
-                collectionId: 55,
-                name: "Methods",
-                libraryID: 1,
-              },
-            ]),
-            contextTokens: 321,
-            contextWindow: 64000,
           },
         ],
       },
@@ -167,14 +93,5 @@ describe("chatStore note contexts", function () {
         title: "Context note",
       },
     ]);
-    assert.deepEqual(messages[0]?.selectedCollectionContexts, [
-      {
-        collectionId: 55,
-        name: "Methods",
-        libraryID: 1,
-      },
-    ]);
-    assert.equal(messages[0]?.contextTokens, 321);
-    assert.equal(messages[0]?.contextWindow, 64000);
   });
 });

@@ -76,8 +76,6 @@ const HTML_ESCAPE_MAP: Record<string, string> = {
   "'": "&#039;",
 };
 
-const HARD_BREAK_TOKEN = "@@LLMHARDBREAK@@";
-
 // =============================================================================
 // Utility Functions
 // =============================================================================
@@ -85,24 +83,6 @@ const HARD_BREAK_TOKEN = "@@LLMHARDBREAK@@";
 /** Escape HTML special characters */
 function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (m) => HTML_ESCAPE_MAP[m]);
-}
-
-function escapeAttribute(text: string): string {
-  return escapeHtml(text).replace(/\r/g, "&#13;").replace(/\n/g, "&#10;");
-}
-
-function wrapCopyable(
-  html: string,
-  copySource: string,
-  kind: "code" | "math" | "table",
-  display: "block" | "inline" = "block",
-): string {
-  const className =
-    display === "inline"
-      ? `llm-copyable llm-copyable-${kind} llm-copyable-inline`
-      : `llm-copyable llm-copyable-${kind}`;
-  const tag = display === "inline" ? "span" : "div";
-  return `<${tag} class="${className}" data-llm-copy-source="${escapeAttribute(copySource)}">${html}</${tag}>`;
 }
 
 /** Count non-overlapping occurrences of a pattern */
@@ -117,28 +97,6 @@ function countOccurrences(text: string, pattern: string | RegExp): number {
 /** Escape special regex characters */
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function hasUnescapedPipe(text: string, start: number, end: number): boolean {
-  for (let index = Math.max(0, start); index < Math.min(text.length, end); index++) {
-    if (text[index] !== "|") continue;
-    let slashCount = 0;
-    for (let prev = index - 1; prev >= 0 && text[prev] === "\\"; prev--) {
-      slashCount++;
-    }
-    if (slashCount % 2 === 0) return true;
-  }
-  return false;
-}
-
-function isInsidePipeTableCell(text: string, markerIndex: number): boolean {
-  const lineStart = text.lastIndexOf("\n", markerIndex - 1) + 1;
-  const nextNewline = text.indexOf("\n", markerIndex);
-  const lineEnd = nextNewline === -1 ? text.length : nextNewline;
-  return (
-    hasUnescapedPipe(text, lineStart, markerIndex) &&
-    hasUnescapedPipe(text, markerIndex, lineEnd)
-  );
 }
 
 /** Render LaTeX to HTML using KaTeX */
@@ -286,43 +244,6 @@ function renderDisplayLatex(latex: string): string {
   return renderLatex(latex, true);
 }
 
-function isEscapedDelimiter(text: string, index: number): boolean {
-  let slashCount = 0;
-  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) {
-    slashCount++;
-  }
-  return slashCount % 2 === 1;
-}
-
-function canOpenInlineDollarMath(text: string, index: number): boolean {
-  if (text[index] !== "$") return false;
-  if (isEscapedDelimiter(text, index)) return false;
-  if (text[index + 1] === "$") return false;
-  const next = text[index + 1] || "";
-  return Boolean(next && !/\s/.test(next));
-}
-
-function canCloseInlineDollarMath(text: string, index: number): boolean {
-  if (text[index] !== "$") return false;
-  if (isEscapedDelimiter(text, index)) return false;
-  if (text[index - 1] === "$") return false;
-  const previous = text[index - 1] || "";
-  const next = text[index + 1] || "";
-  if (!previous || /\s/.test(previous)) return false;
-  // In prose, a dollar sign followed by a digit is almost always another
-  // currency amount, not the closing delimiter for math.
-  if (/\d/.test(next)) return false;
-  return true;
-}
-
-function findClosingInlineDollarMath(text: string, openIndex: number): number {
-  for (let index = openIndex + 1; index < text.length; index++) {
-    if (text[index] !== "$") continue;
-    if (canCloseInlineDollarMath(text, index)) return index;
-  }
-  return -1;
-}
-
 // =============================================================================
 // Delimiter Validation
 // =============================================================================
@@ -433,187 +354,6 @@ export function normalizeBlockBoundaries(text: string): string {
   return result;
 }
 
-function isOrderedListLine(trimmed: string): boolean {
-  return /^\d+\.\s+/.test(trimmed);
-}
-
-function isUnorderedListLine(trimmed: string): boolean {
-  return /^[-*]\s+/.test(trimmed);
-}
-
-function isTableDividerLine(trimmed: string): boolean {
-  return /^\|?[\s:-]+(?:\|[\s:-]+)+\|?$/.test(trimmed) && trimmed.includes("-");
-}
-
-function readTableCells(row: string): string[] {
-  const cells: string[] = [];
-  let current = "";
-  let escaped = false;
-  for (const char of row) {
-    if (escaped) {
-      current += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (char === "|") {
-      cells.push(current.trim());
-      current = "";
-      continue;
-    }
-    current += char;
-  }
-  if (escaped) current += "\\";
-  cells.push(current.trim());
-  return cells.filter((cell, idx, arr) => {
-    const isEdge = (idx === 0 || idx === arr.length - 1) && cell === "";
-    return !isEdge;
-  });
-}
-
-function findTableDividerIndex(lines: string[], index: number): number {
-  const first = lines[index]?.trim() || "";
-  if (!first.includes("|")) return -1;
-  for (
-    let candidate = index + 1;
-    candidate < lines.length && candidate <= index + 3;
-    candidate++
-  ) {
-    const trimmed = lines[candidate]?.trim() || "";
-    if (!trimmed) return -1;
-    if (isTableDividerLine(trimmed)) return candidate;
-  }
-  return -1;
-}
-
-function isTableStart(lines: string[], index: number): boolean {
-  return findTableDividerIndex(lines, index) >= 0;
-}
-
-function hasExpectedTableCells(row: string, expectedCells: number): boolean {
-  return readTableCells(row).length >= expectedCells;
-}
-
-function normalizeTableLine(line: string): string {
-  return line.trim().replace(/\s+/g, " ");
-}
-
-function collectTableBlock(
-  lines: string[],
-  startIndex: number,
-): { raw: string; nextIndex: number } | null {
-  const dividerIndex = findTableDividerIndex(lines, startIndex);
-  if (dividerIndex < 0) return null;
-
-  const header = normalizeTableLine(
-    lines.slice(startIndex, dividerIndex).join(" "),
-  );
-  const divider = normalizeTableLine(lines[dividerIndex] || "");
-  const expectedCells = Math.max(
-    readTableCells(header).length,
-    readTableCells(divider).length,
-  );
-  if (expectedCells < 2) return null;
-
-  const tableLines = [header, divider];
-  let currentRow = "";
-  let i = dividerIndex + 1;
-
-  while (i < lines.length) {
-    const trimmed = normalizeTableLine(lines[i] || "");
-    if (!trimmed) break;
-    if (
-      !currentRow &&
-      (/^#{1,4}\s+/.test(trimmed) ||
-        /^>/.test(trimmed) ||
-        /^---+$/.test(trimmed) ||
-        /^\$\$/.test(trimmed) ||
-        /^\\\[/.test(trimmed) ||
-        isOrderedListLine(trimmed) ||
-        isUnorderedListLine(trimmed))
-    ) {
-      break;
-    }
-
-    if (currentRow && hasExpectedTableCells(currentRow, expectedCells)) {
-      if (trimmed.startsWith("|")) {
-        tableLines.push(currentRow);
-        currentRow = trimmed;
-      } else if (currentRow.trim().endsWith("|")) {
-        break;
-      } else {
-        currentRow = `${currentRow} ${trimmed}`;
-      }
-    } else {
-      currentRow = currentRow ? `${currentRow} ${trimmed}` : trimmed;
-    }
-    i++;
-  }
-
-  if (currentRow && currentRow.includes("|")) {
-    tableLines.push(currentRow);
-  }
-
-  return { raw: tableLines.join("\n"), nextIndex: i };
-}
-
-function isStructuralBlockStart(lines: string[], index: number): boolean {
-  const trimmed = lines[index]?.trim() || "";
-  return (
-    /^#{1,4}\s+/.test(trimmed) ||
-    /^>/.test(trimmed) ||
-    /^---+$/.test(trimmed) ||
-    /^\$\$/.test(trimmed) ||
-    /^\\\[/.test(trimmed) ||
-    isTableStart(lines, index)
-  );
-}
-
-function collectListBlock(
-  lines: string[],
-  startIndex: number,
-  ordered: boolean,
-): { raw: string; nextIndex: number } {
-  const listLines: string[] = [];
-  const isSameListLine = ordered ? isOrderedListLine : isUnorderedListLine;
-  const isOtherListLine = ordered ? isUnorderedListLine : isOrderedListLine;
-  let i = startIndex;
-
-  while (i < lines.length) {
-    const trimmed = lines[i].trim();
-
-    // Allow blank lines between list items when the next non-empty line is
-    // still the same list kind, matching the previous behavior.
-    if (!trimmed) {
-      let next = i + 1;
-      while (next < lines.length && !lines[next].trim()) {
-        next++;
-      }
-      if (next < lines.length && isSameListLine(lines[next].trim())) {
-        i = next;
-        continue;
-      }
-      break;
-    }
-
-    if (
-      listLines.length > 0 &&
-      !isSameListLine(trimmed) &&
-      (isOtherListLine(trimmed) || isStructuralBlockStart(lines, i))
-    ) {
-      break;
-    }
-
-    listLines.push(lines[i]);
-    i++;
-  }
-
-  return { raw: listLines.join("\n"), nextIndex: i };
-}
-
 /** Split non-code text into blocks by blank lines and structure */
 function splitTextBlocks(text: string): TextBlock[] {
   const normalized = normalizeBlockBoundaries(text);
@@ -701,27 +441,78 @@ function splitTextBlocks(text: string): TextBlock[] {
       continue;
     }
 
-    // Table
-    const tableBlock = collectTableBlock(lines, i);
-    if (tableBlock) {
-      const { raw, nextIndex } = tableBlock;
-      i = nextIndex;
-      blocks.push({ type: "table", content: raw, raw });
-      continue;
+    // Table (starts with |)
+    if (trimmed.includes("|") && i + 1 < lines.length) {
+      const nextTrimmed = lines[i + 1]?.trim() || "";
+      if (/^[\s|:-]+$/.test(nextTrimmed) && nextTrimmed.includes("-")) {
+        const tableLines: string[] = [line, lines[i + 1]];
+        i += 2;
+        while (i < lines.length && lines[i].trim().includes("|")) {
+          tableLines.push(lines[i]);
+          i++;
+        }
+        const raw = tableLines.join("\n");
+        blocks.push({ type: "table", content: raw, raw });
+        continue;
+      }
     }
 
     // Ordered list
-    if (isOrderedListLine(trimmed)) {
-      const { raw, nextIndex } = collectListBlock(lines, i, true);
-      i = nextIndex;
+    if (/^\d+\.\s+/.test(trimmed)) {
+      const listLines: string[] = [];
+      while (i < lines.length) {
+        const listLine = lines[i].trim();
+        if (/^\d+\.\s+/.test(listLine)) {
+          listLines.push(lines[i]);
+          i++;
+          continue;
+        }
+
+        // Allow blank lines between list items when the next non-empty line
+        // is still an ordered list item.
+        if (!listLine) {
+          let next = i + 1;
+          while (next < lines.length && !lines[next].trim()) {
+            next++;
+          }
+          if (next < lines.length && /^\d+\.\s+/.test(lines[next].trim())) {
+            i = next;
+            continue;
+          }
+        }
+        break;
+      }
+      const raw = listLines.join("\n");
       blocks.push({ type: "list", content: raw, raw });
       continue;
     }
 
     // Unordered list
-    if (isUnorderedListLine(trimmed)) {
-      const { raw, nextIndex } = collectListBlock(lines, i, false);
-      i = nextIndex;
+    if (/^[-*]\s+/.test(trimmed)) {
+      const listLines: string[] = [];
+      while (i < lines.length) {
+        const listLine = lines[i].trim();
+        if (/^[-*]\s+/.test(listLine)) {
+          listLines.push(lines[i]);
+          i++;
+          continue;
+        }
+
+        // Allow blank lines between list items when the next non-empty line
+        // is still an unordered list item.
+        if (!listLine) {
+          let next = i + 1;
+          while (next < lines.length && !lines[next].trim()) {
+            next++;
+          }
+          if (next < lines.length && /^[-*]\s+/.test(lines[next].trim())) {
+            i = next;
+            continue;
+          }
+        }
+        break;
+      }
+      const raw = listLines.join("\n");
       blocks.push({ type: "list", content: raw, raw });
       continue;
     }
@@ -732,13 +523,19 @@ function splitTextBlocks(text: string): TextBlock[] {
       i < lines.length &&
       lines[i].trim() &&
       !/^#{1,4}\s+/.test(lines[i].trim()) &&
-      !isUnorderedListLine(lines[i].trim()) &&
-      !isOrderedListLine(lines[i].trim()) &&
+      !/^[-*]\s+/.test(lines[i].trim()) &&
+      !/^\d+\.\s+/.test(lines[i].trim()) &&
       !/^>/.test(lines[i].trim()) &&
       !/^---+$/.test(lines[i].trim()) &&
       !/^\$\$/.test(lines[i].trim()) &&
       !/^\\\[/.test(lines[i].trim()) &&
-      !isTableStart(lines, i)
+      // Break before a table: current line has | and next line is a divider row
+      !(
+        lines[i].trim().includes("|") &&
+        i + 1 < lines.length &&
+        /^[\s|:-]+$/.test(lines[i + 1]?.trim() || "") &&
+        (lines[i + 1]?.trim() || "").includes("-")
+      )
     ) {
       paraLines.push(lines[i]);
       i++;
@@ -787,16 +584,13 @@ function renderCodeBlock(code: string, raw: string): string {
   const langMatch = raw.match(/^```(\w*)/);
   const lang = langMatch?.[1] || "";
   const langClass = lang ? ` class="lang-${lang}"` : "";
-  const html = `<pre${langClass}><code>${escapeHtml(code.trim())}</code></pre>`;
-  if (zoteroNoteMode) return html;
-  return wrapCopyable(html, raw.trim(), "code");
+  return `<pre${langClass}><code>${escapeHtml(code.trim())}</code></pre>`;
 }
 
 /** Render display math block */
 function renderMathBlock(content: string): string {
   // Remove $$ or \[...\] delimiters
-  const copySource = content.trim();
-  let math = copySource;
+  let math = content.trim();
   if (math.startsWith("$$") && math.endsWith("$$")) {
     math = math.slice(2, -2);
   } else {
@@ -811,7 +605,7 @@ function renderMathBlock(content: string): string {
   }
 
   const rendered = renderDisplayLatex(math);
-  return wrapCopyable(`<div class="math-display">${rendered}</div>`, copySource, "math");
+  return `<div class="math-display">${rendered}</div>`;
 }
 
 /** Render header */
@@ -832,39 +626,6 @@ function renderHeader(content: string): string {
   return `<p>${renderInline(trimmed)}</p>`;
 }
 
-function normalizeSoftBreaks(content: string): string {
-  const lines = content.split(/\r?\n/);
-  let result = "";
-  let previousLineHadHardBreak = false;
-
-  for (let index = 0; index < lines.length; index++) {
-    const rawLine = lines[index];
-    const hardBreak = / {2,}$/.test(rawLine) || /\\$/.test(rawLine);
-    const lineText = rawLine
-      .replace(/\\$/, "")
-      .replace(/[ \t]+$/, "")
-      .trim();
-
-    if (index > 0) {
-      if (previousLineHadHardBreak) {
-        result += HARD_BREAK_TOKEN;
-      } else if (!/^[,.;:!?%)}\]"'’”]/.test(lineText)) {
-        result += " ";
-      }
-    }
-    result += lineText;
-    previousLineHadHardBreak = hardBreak;
-  }
-
-  return result;
-}
-
-function renderInlineWithSoftBreaks(content: string): string {
-  return renderInline(normalizeSoftBreaks(content))
-    .split(HARD_BREAK_TOKEN)
-    .join("<br/>");
-}
-
 /** Render list (ordered or unordered) */
 function renderList(content: string): string {
   const lines = content.split(/\r?\n/).filter((l) => l.trim());
@@ -872,25 +633,11 @@ function renderList(content: string): string {
   const isOrdered = Boolean(orderedMatch);
   const tag = isOrdered ? "ol" : "ul";
   const start = orderedMatch ? parseInt(orderedMatch[1], 10) : 1;
-  const itemLines: string[][] = [];
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    const markerMatch = isOrdered
-      ? trimmed.match(/^\d+\.\s+/)
-      : trimmed.match(/^[-*]\s+/);
-    if (markerMatch) {
-      itemLines.push([
-        line.trimStart().replace(isOrdered ? /^\d+\.\s+/ : /^[-*]\s+/, ""),
-      ]);
-    } else if (itemLines.length) {
-      itemLines[itemLines.length - 1].push(line.trimStart());
-    }
-  }
-
-  const items = itemLines.map(
-    (item) => `<li>${renderInlineWithSoftBreaks(item.join("\n"))}</li>`,
-  );
+  const items = lines.map((line) => {
+    const text = line.trim().replace(/^(\d+\.)\s+|^[-*]\s+/, "");
+    return `<li>${renderInline(text)}</li>`;
+  });
 
   if (isOrdered && Number.isFinite(start) && start > 1) {
     return `<${tag} start="${start}">${items.join("")}</${tag}>`;
@@ -928,9 +675,18 @@ function renderTable(content: string): string {
     return `<p>${escapeHtml(content)}</p>`;
   }
 
-  const headerCells = readTableCells(lines[0]);
+  const readCells = (row: string) =>
+    row
+      .split("|")
+      .map((cell) => cell.trim())
+      .filter((cell, idx, arr) => {
+        const isEdge = (idx === 0 || idx === arr.length - 1) && cell === "";
+        return !isEdge;
+      });
+
+  const headerCells = readCells(lines[0]);
   // Skip divider line (lines[1])
-  const bodyRows = lines.slice(2).map((line) => readTableCells(line));
+  const bodyRows = lines.slice(2).map((line) => readCells(line));
 
   const headerHtml = `<tr>${headerCells.map((c) => `<th>${renderInline(c)}</th>`).join("")}</tr>`;
   const bodyHtml = bodyRows
@@ -940,14 +696,14 @@ function renderTable(content: string): string {
     )
     .join("");
 
-  const html = `<div class="llm-table-scroll"><table><thead>${headerHtml}</thead><tbody>${bodyHtml}</tbody></table></div>`;
-  if (zoteroNoteMode) return html;
-  return wrapCopyable(html, content.trim(), "table");
+  return `<table><thead>${headerHtml}</thead><tbody>${bodyHtml}</tbody></table>`;
 }
 
 /** Render paragraph */
 function renderParagraph(content: string): string {
-  return `<p>${renderInlineWithSoftBreaks(content)}</p>`;
+  const lines = content.split(/\r?\n/);
+  const rendered = lines.map((l) => renderInline(l)).join("<br/>");
+  return `<p>${rendered}</p>`;
 }
 
 // =============================================================================
@@ -969,60 +725,34 @@ function renderInline(text: string): string {
   result = result.replace(/\\\(([\s\S]*?)\\\)/g, (_m, inner) => `$${inner}$`);
   result = result.replace(/\\\[([\s\S]*?)\\\]/g, (_m, inner) => `$$${inner}$$`);
 
-  // 2. Inline math ($...$). Parse valid delimiter pairs instead of relying on
-  // a global "$" count so one prose currency amount cannot disable all math.
-  // Display math first ($$...$$)
-  result = result.replace(/\$\$([^$]+?)\$\$/g, (_match, math) => {
-    const copySource = `$$${math}$$`;
-    if (zoteroNoteMode) {
-      // Zotero note-editor: <span class="math">$LaTeX$</span>
-      return protect(`<span class="math">$${escapeHtml(math.trim())}$</span>`);
-    }
-    const rendered = renderDisplayLatex(math.trim());
-    return protect(
-      wrapCopyable(
-        `<span class="math-display-inline">${rendered}</span>`,
-        copySource,
-        "math",
-        "inline",
-      ),
-    );
-  });
+  // 2. Inline math ($...$) - only if balanced
+  if (hasBalancedInlineDelimiter(result, "$")) {
+    // Display math first ($$...$$)
+    result = result.replace(/\$\$([^$]+?)\$\$/g, (_match, math) => {
+      if (zoteroNoteMode) {
+        // Zotero note-editor: <span class="math">$LaTeX$</span>
+        return protect(
+          `<span class="math">$${escapeHtml(math.trim())}$</span>`,
+        );
+      }
+      const rendered = renderDisplayLatex(math.trim());
+      return protect(`<span class="math-display-inline">${rendered}</span>`);
+    });
 
-  let mathRendered = "";
-  let mathCursor = 0;
-  for (let index = 0; index < result.length; index++) {
-    if (!canOpenInlineDollarMath(result, index)) continue;
-    const closeIndex = findClosingInlineDollarMath(result, index);
-    if (closeIndex < 0) continue;
-
-    const inner = result.slice(index + 1, closeIndex);
-    const trimmed = inner.trim();
-    if (!trimmed) continue;
-
-    mathRendered += result.slice(mathCursor, index);
-    if (zoteroNoteMode) {
-      // Zotero note-editor: <span class="math">$LaTeX$</span>
-      mathRendered += protect(
-        `<span class="math">$${escapeHtml(trimmed)}$</span>`,
-      );
-    } else {
+    // Inline math ($...$)
+    result = result.replace(/\$([^$\n]+?)\$/g, (_match, inner) => {
+      const trimmed = inner.trim();
+      // Skip currency-like patterns
+      if (!trimmed || /^\d+([.,]\d+)?$/.test(trimmed)) {
+        return `$${inner}$`;
+      }
+      if (zoteroNoteMode) {
+        // Zotero note-editor: <span class="math">$LaTeX$</span>
+        return protect(`<span class="math">$${escapeHtml(trimmed)}$</span>`);
+      }
       const rendered = renderLatex(trimmed, false);
-      mathRendered += protect(
-        wrapCopyable(
-          `<span class="math-inline">${rendered}</span>`,
-          `$${inner}$`,
-          "math",
-          "inline",
-        ),
-      );
-    }
-    mathCursor = closeIndex + 1;
-    index = closeIndex;
-  }
-  if (mathCursor > 0) {
-    mathRendered += result.slice(mathCursor);
-    result = mathRendered;
+      return protect(`<span class="math-inline">${rendered}</span>`);
+    });
   }
 
   // 3. Inline code - only if balanced
@@ -1107,8 +837,7 @@ function renderInline(text: string): string {
   // 11. Links [text](url)
   result = result.replace(
     /\[([^\]]+)\]\(([^)]+)\)/g,
-    (_match, text: string, href: string) =>
-      `<a href="${escapeAttribute(href.trim())}" target="_blank" rel="noopener">${escapeHtml(text)}</a>`,
+    '<a href="$2" target="_blank" rel="noopener">$1</a>',
   );
 
   // 11. Restore protected blocks.

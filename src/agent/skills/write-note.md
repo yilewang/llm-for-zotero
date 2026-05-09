@@ -200,19 +200,14 @@ Write:        ![Figure 2. RSA toolbox schematic](../imgs/Nili2014/figure-2.jpg)
 - Notes are created directly without a confirmation card.
 - In **paper chat** (active item exists): default to `target: 'item'` — attaches the note to the active paper.
 - In **library chat** (no active item): default to `target: 'standalone'` — creates a standalone note.
-- `create` always means a brand-new note. Do not use `create` when the user asks to append to an existing note.
-
-**Appending to existing notes** (mode: `append`):
-- Use mode `append` when the user says append, add to an existing note, continue a note, or save into a specific existing note.
-- Pass `targetNoteId` when you know the note ID.
-- If no `targetNoteId` is supplied, the tool appends to the active note; otherwise it can append to the single child note on the target item.
-- If the target paper has multiple child notes, ask which note to append to before proceeding.
+- If the paper already has a single child note, the tool auto-appends your content with an `<hr/>` separator. Just call `edit_current_note(mode:'create')`.
+- If the paper has **multiple** child notes and the user wants to append, ask which note to write to before proceeding.
 
 **Editing existing notes** (mode: `edit`):
 
 - Edits always show a diff review card for the user to approve.
 - PREFER `patches` (find-and-replace pairs) over `content` (full rewrite) — patches are faster.
-- Use mode `edit` for: append to a specific position, insert, delete, rewrite sections.
+- Use mode `edit` for: append to specific position, insert, delete, rewrite sections.
 
 **Format:**
 

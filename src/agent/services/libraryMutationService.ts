@@ -79,7 +79,6 @@ export type SaveNoteOperation = {
   target?: NoteSaveTarget;
   targetItemId?: number;
   modelName?: string;
-  appendToTrackedNote?: boolean;
 };
 
 export type TrashItemsOperation = {
@@ -507,7 +506,6 @@ export class LibraryMutationService {
           content: operation.content,
           modelName: operation.modelName || context.modelName,
           target: operation.target,
-          appendToTrackedNote: operation.appendToTrackedNote,
         });
         return {
           result: {

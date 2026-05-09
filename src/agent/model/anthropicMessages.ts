@@ -1,11 +1,6 @@
+import { buildReasoningPayload } from "../../utils/llmClient";
 import {
-  buildReasoningPayload,
-  getAnthropicMessagesReasoningRecoverySelection,
-  postWithReasoningFallback,
-  type ReasoningSelection,
-} from "../../utils/llmClient";
-import {
-  normalizeMaxTokensForModel,
+  normalizeMaxTokens,
   normalizeTemperature,
 } from "../../utils/normalization";
 import {
@@ -27,11 +22,11 @@ import {
 } from "./messageBuilder";
 import {
   createFallbackToolCallId,
+  getFetch,
   getToolContinuationMessages,
   groupToolContinuationMessages,
 } from "./shared";
 import { resolveContentParts } from "./adapterUtils";
-import { isTextOnlyModel } from "../../providers";
 
 type AnthropicContentBlock = {
   type: string;
@@ -57,11 +52,6 @@ type AnthropicNormalizedResponse = {
 type AnthropicStreamBlockState = {
   block: AnthropicContentBlock;
   partialJson?: string;
-};
-
-type AnthropicBuildOptions = {
-  allowMedia: boolean;
-  modelName?: string;
 };
 
 function buildAnthropicTools(tools: ToolSpec[]) {
@@ -95,41 +85,7 @@ function normalizeAnthropicContentBlock(
 
 async function buildAnthropicParts(
   message: AgentModelMessage,
-  options: AnthropicBuildOptions,
 ): Promise<AnthropicContentBlock[]> {
-  if (!options.allowMedia) {
-    const target = (options.modelName || "The selected model").trim();
-    if (typeof message.content === "string") {
-      return [{ type: "text", text: message.content }];
-    }
-    const textParts: string[] = [];
-    let imageCount = 0;
-    let fileCount = 0;
-    for (const part of message.content) {
-      if (part.type === "text") {
-        if (part.text.trim()) textParts.push(part.text);
-        continue;
-      }
-      if (part.type === "image_url") {
-        imageCount += 1;
-      } else {
-        fileCount += 1;
-      }
-    }
-    const omitted: string[] = [];
-    if (imageCount) {
-      omitted.push(`${imageCount} image${imageCount === 1 ? "" : "s"}`);
-    }
-    if (fileCount) {
-      omitted.push(`${fileCount} file${fileCount === 1 ? "" : "s"}`);
-    }
-    if (omitted.length) {
-      textParts.push(
-        `[${omitted.join(" and ")} omitted because ${target} does not support image or document input.]`,
-      );
-    }
-    return [{ type: "text", text: textParts.join("\n\n") }];
-  }
   const resolved = await resolveContentParts(message);
   return resolved.map((part): AnthropicContentBlock => {
     switch (part.type) {
@@ -178,7 +134,7 @@ async function buildInitialAnthropicMessages(
       anthropicMessages.push({
         role: "assistant",
         content: [
-          ...(await buildAnthropicParts(message, options)),
+          ...(await buildAnthropicParts(message)),
           ...(Array.isArray(message.tool_calls)
             ? message.tool_calls.map((call) => ({
                 type: "tool_use" as const,
@@ -193,7 +149,7 @@ async function buildInitialAnthropicMessages(
     }
     anthropicMessages.push({
       role: "user",
-      content: await buildAnthropicParts(message, options),
+      content: await buildAnthropicParts(message),
     });
   }
   return {
@@ -204,7 +160,6 @@ async function buildInitialAnthropicMessages(
 
 async function buildAnthropicContinuationMessages(
   messages: AgentModelMessage[],
-  options: AnthropicBuildOptions,
 ): Promise<AnthropicMessage[]> {
   const { toolMessages, followupUserMessages } =
     groupToolContinuationMessages(messages);
@@ -222,7 +177,7 @@ async function buildAnthropicContinuationMessages(
   for (const message of followupUserMessages) {
     anthropicMessages.push({
       role: "user",
-      content: await buildAnthropicParts(message, options),
+      content: await buildAnthropicParts(message),
     });
   }
   return anthropicMessages;
@@ -499,76 +454,57 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
 
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
     const request = params.request;
-    const buildOptions = {
-      allowMedia: !isTextOnlyModel(request.model || ""),
-      modelName: request.model,
-    };
-    const initial = await buildInitialAnthropicMessages(
-      params.messages,
-      buildOptions,
-    );
+    const initial = await buildInitialAnthropicMessages(params.messages);
     if (!this.conversationMessages) {
       this.conversationMessages = initial.messages;
       this.systemPrompt = initial.system;
     }
     const continuation = await buildAnthropicContinuationMessages(
       getToolContinuationMessages(params.messages),
-      buildOptions,
     );
     const messages =
       continuation.length && this.conversationMessages
         ? [...this.conversationMessages, ...continuation]
         : this.conversationMessages || initial.messages;
-    const maxTokens = normalizeMaxTokensForModel(
-      request.advanced?.maxTokens,
+    const reasoningPayload = buildReasoningPayload(
+      request.reasoning,
+      false,
       request.model,
+      request.apiBase,
     );
-    const toolsPayload = buildAnthropicTools(params.tools);
-    const buildPayload = (
-      reasoningOverride: ReasoningSelection | undefined,
-    ) => {
-      const reasoningPayload = buildReasoningPayload(
-        reasoningOverride,
-        false,
-        request.model,
-        request.apiBase,
-        "anthropic_messages",
-        {
-          maxTokens,
-          anthropicModeOverride: reasoningOverride?.anthropicModeOverride,
-        },
-      );
-      return {
-        model: request.model,
-        max_tokens: maxTokens,
-        messages,
-        system: this.systemPrompt,
-        tools: toolsPayload,
-        tool_choice: { type: "auto" },
-        stream: true,
-        ...reasoningPayload.extra,
-        ...(reasoningPayload.omitTemperature
-          ? {}
-          : {
-              temperature: normalizeTemperature(request.advanced?.temperature),
-            }),
-      };
+    // Anthropic requires temperature === 1 when extended thinking is enabled.
+    // Any other value causes a 400 "temperature may only be set to 1" error.
+    const thinkingEnabled =
+      reasoningPayload.extra.thinking != null &&
+      typeof reasoningPayload.extra.thinking === "object" &&
+      (reasoningPayload.extra.thinking as { type?: string }).type === "enabled";
+    const effectiveTemperature = thinkingEnabled
+      ? 1
+      : normalizeTemperature(request.advanced?.temperature);
+    const payload = {
+      model: request.model,
+      max_tokens: normalizeMaxTokens(request.advanced?.maxTokens),
+      messages,
+      system: this.systemPrompt,
+      tools: buildAnthropicTools(params.tools),
+      tool_choice: { type: "auto" },
+      stream: true,
+      ...reasoningPayload.extra,
+      ...(reasoningPayload.omitTemperature
+        ? {}
+        : { temperature: effectiveTemperature }),
     };
     const url = resolveProviderTransportEndpoint({
       protocol: "anthropic_messages",
       apiBase: request.apiBase || "",
     });
-    const response = await postWithReasoningFallback({
-      url,
-      auth: { mode: "api_key", token: request.apiKey || "" },
+    const response = await getFetch()(url, {
+      method: "POST",
       headers: buildProviderTransportHeaders({
         protocol: "anthropic_messages",
         apiKey: request.apiKey || "",
       }),
-      modelName: request.model,
-      initialReasoning: request.reasoning,
-      buildPayload,
-      getRecoverySelection: getAnthropicMessagesReasoningRecoverySelection,
+      body: JSON.stringify(payload),
       signal: params.signal,
     });
     if (!response.ok) {

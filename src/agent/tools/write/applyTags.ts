@@ -143,10 +143,7 @@ export function createApplyTagsTool(
           if (!tags) {
             return fail("Each assignment must include a non-empty tags array");
           }
-          assignments.push({
-            itemId: Math.floor(itemId),
-            tags: normalizeStringArray(entry.tags) || [],
-          });
+          assignments.push({ itemId: Math.floor(itemId), tags });
         }
         const operation: ApplyTagsOperation = {
           type: "apply_tags",
@@ -181,15 +178,15 @@ export function createApplyTagsTool(
         const assignments = operation.assignments || [];
         const itemCount = assignments.length || operation.itemIds?.length || 0;
         const tagSummary = operation.tags?.length
-          ? `Tags to add: ${operation.tags.join(", ")}`
-          : "Review the suggested per-paper tag additions.";
+          ? operation.tags.join(", ")
+          : "per-item tags";
 
         return {
           toolName: "apply_tags",
           title: `Add tags to ${itemCount} paper${itemCount === 1 ? "" : "s"}`,
           confirmLabel: "Apply",
           cancelLabel: "Cancel",
-          description: tagSummary,
+          description: `Tags: ${tagSummary}`,
           fields,
         };
       }

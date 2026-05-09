@@ -63,14 +63,9 @@ function enrichPaperTarget(
   zoteroGateway: ZoteroGateway,
   include: QueryLibraryInclude[] | undefined,
 ): QueryLibraryItemResult {
-  const metadataItem = zoteroGateway.getItem(target.itemId);
-  const itemType =
-    (target as LibraryItemTarget).itemType ||
-    zoteroGateway.getEditableArticleMetadata(metadataItem)?.itemType ||
-    "journalArticle";
   const result: QueryLibraryItemResult = {
     itemId: target.itemId,
-    itemType,
+    itemType: (target as LibraryItemTarget).itemType || "journalArticle",
     title: target.title,
     firstCreator: target.firstCreator,
     year: target.year,
@@ -142,7 +137,6 @@ export class LibraryQueryService {
     limit?: number;
   }): {
     results: CollectionSummary[];
-    totalCount: number;
     warnings: string[];
   } {
     const query = `${params.text || ""}`.trim().toLowerCase();
@@ -203,40 +197,29 @@ export class LibraryQueryService {
       papersResult = await this.zoteroGateway.listCollectionPaperTargets({
         libraryID: params.libraryID,
         collectionId: filters.collectionId,
+        limit: params.limit,
       });
     } else if (filters.unfiled) {
       papersResult = await this.zoteroGateway.listUnfiledPaperTargets({
         libraryID: params.libraryID,
+        limit: params.limit,
       });
     } else if (filters.untagged) {
       papersResult = await this.zoteroGateway.listUntaggedPaperTargets({
         libraryID: params.libraryID,
+        limit: params.limit,
       });
     } else {
       papersResult = await this.zoteroGateway.listLibraryPaperTargets({
         libraryID: params.libraryID,
+        limit: params.limit,
       });
     }
     let papers = papersResult.papers;
-    if (filters.itemType) {
-      const expectedType = filters.itemType.toLowerCase();
-      papers = papers.filter((paper) => {
-        const itemType =
-          this.zoteroGateway.getEditableArticleMetadata(
-            this.zoteroGateway.getItem(paper.itemId),
-          )?.itemType || "";
-        return itemType.toLowerCase() === expectedType;
-      });
-    }
     if (filters.author) {
       const authorLower = filters.author.toLowerCase();
       papers = papers.filter((p) =>
         p.firstCreator?.toLowerCase().includes(authorLower),
-      );
-    }
-    if (filters.tag) {
-      papers = papers.filter((paper) =>
-        paper.tags.some((tag) => tag === filters.tag),
       );
     }
     if (filters.yearFrom != null || filters.yearTo != null) {
@@ -248,18 +231,10 @@ export class LibraryQueryService {
         return true;
       });
     }
-    const totalCount = papers.length;
-    const normalizedLimit = Number.isFinite(params.limit)
-      ? Math.max(1, Math.floor(params.limit as number))
-      : undefined;
-    const limitedPapers =
-      normalizedLimit && papers.length > normalizedLimit
-        ? papers.slice(0, normalizedLimit)
-        : papers;
-    const enriched = limitedPapers.map((paper) =>
+    const enriched = papers.map((paper) =>
       enrichPaperTarget(paper, this.zoteroGateway, params.include),
     );
-    return { results: enriched, totalCount, warnings: [] };
+    return { results: enriched, totalCount: papers.length, warnings: [] };
   }
 
   async listAllItems(params: {
@@ -278,14 +253,10 @@ export class LibraryQueryService {
     if (filters.untagged) {
       const itemsResult = await this.zoteroGateway.listUntaggedItemTargets({
         libraryID: params.libraryID,
+        limit: params.limit,
         itemType: filters.itemType,
       });
       let items = itemsResult.items;
-      if (filters.hasPdf !== undefined) {
-        items = items.filter(
-          (item) => queryItemResultHasPdf(item) === filters.hasPdf,
-        );
-      }
       if (filters.author) {
         const q = filters.author.toLowerCase();
         items = items.filter((p) => p.firstCreator?.toLowerCase().includes(q));
@@ -309,7 +280,6 @@ export class LibraryQueryService {
     const agentFilters: AgentLibraryFilters = {
       collectionId: filters.collectionId,
       unfiled: filters.unfiled,
-      hasPdf: filters.hasPdf,
       itemType: filters.itemType,
       author: filters.author,
       yearFrom: filters.yearFrom,
@@ -337,7 +307,6 @@ export class LibraryQueryService {
     allItemTypes?: boolean;
   }): Promise<{
     results: QueryLibraryItemResult[];
-    totalCount: number;
     warnings: string[];
   }> {
     const filters = params.filters || {};
@@ -352,7 +321,6 @@ export class LibraryQueryService {
         ? {
             collectionId: filters.collectionId,
             unfiled: filters.unfiled,
-            hasPdf: filters.hasPdf,
             itemType: filters.itemType,
             author: filters.author,
             yearFrom: filters.yearFrom,
@@ -366,10 +334,10 @@ export class LibraryQueryService {
       filters: agentFilters,
       limit: params.limit,
     });
-    const enriched = results.items.map((item) =>
+    const enriched = results.map((item) =>
       enrichItemTarget(item, this.zoteroGateway, params.include),
     );
-    return { results: enriched, totalCount: results.totalCount, warnings: [] };
+    return { results: enriched, warnings: [] };
   }
 
   async listStandaloneNotes(params: {

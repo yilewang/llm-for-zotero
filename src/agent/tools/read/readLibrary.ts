@@ -67,8 +67,7 @@ export function createReadLibraryTool(
     spec: {
       name: "read_library",
       description:
-        "Read structured Zotero item state for one or more items (papers, books, standalone notes, or any item type). Use sections to fetch metadata, notes (use 'content' or 'notes' for standalone notes), annotations, attachments (all types, not just PDFs), and collection membership keyed by item ID. " +
-        "For PDF attachments, the attachments section may include mineruCacheDir. When present, prefer reading that MinerU markdown with file_io before read_paper/search_paper/view_pdf_pages.",
+        "Read structured Zotero item state for one or more items (papers, books, standalone notes, or any item type). Use sections to fetch metadata, notes (use 'content' or 'notes' for standalone notes), annotations, attachments (all types, not just PDFs), and collection membership keyed by item ID.",
       inputSchema: {
         type: "object",
         required: ["sections"],

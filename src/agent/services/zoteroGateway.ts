@@ -21,7 +21,6 @@ import {
 } from "../../modules/contextPanel/contextResolution";
 import { resolvePaperContextRefFromAttachment } from "../../modules/contextPanel/paperAttribution";
 import { invalidateCachedContextText } from "../../modules/contextPanel/pdfContext";
-import { ensureMineruCacheDirForAttachment } from "../../modules/contextPanel/mineruSync";
 import type { AgentRuntimeRequest } from "../types";
 import type { PaperContextRef } from "../../shared/types";
 import {
@@ -584,54 +583,22 @@ async function getAllLibraryItems(libraryID: number): Promise<Zotero.Item[]> {
 
 function buildItemTargets(
   items: Zotero.Item[],
-  options?: { itemType?: string; hasPdf?: boolean },
+  options?: { itemType?: string; limit?: number },
 ): LibraryItemTarget[] {
+  const normalizedLimit =
+    Number.isFinite(options?.limit) && (options?.limit as number) > 0
+      ? Math.floor(options!.limit as number)
+      : undefined;
   const typeFilter = options?.itemType?.trim().toLowerCase();
   const results: LibraryItemTarget[] = [];
   for (const item of items) {
+    if (normalizedLimit && results.length >= normalizedLimit) break;
     const target = buildItemTargetFromItem(item);
     if (!target) continue;
     if (typeFilter && target.itemType.toLowerCase() !== typeFilter) continue;
-    if (!libraryItemTargetMatchesFilters(target, options)) continue;
     results.push(target);
   }
   return results;
-}
-
-function normalizeResultLimit(limit: unknown): number | undefined {
-  return Number.isFinite(limit) && Number(limit) > 0
-    ? Math.max(1, Math.floor(Number(limit)))
-    : undefined;
-}
-
-function limitItemTargets(
-  items: LibraryItemTarget[],
-  limit: unknown,
-): LibraryItemTarget[] {
-  const normalizedLimit = normalizeResultLimit(limit);
-  return normalizedLimit && items.length > normalizedLimit
-    ? items.slice(0, normalizedLimit)
-    : items;
-}
-
-function libraryItemTargetHasPdf(target: LibraryItemTarget): boolean {
-  return target.attachments.some((attachment) => {
-    const contentType = normalizeText(attachment.contentType).toLowerCase();
-    const title = normalizeText(attachment.title).toLowerCase();
-    return (
-      contentType === "application/pdf" ||
-      title.endsWith(".pdf") ||
-      title === "pdf"
-    );
-  });
-}
-
-function libraryItemTargetMatchesFilters(
-  target: LibraryItemTarget,
-  filters?: { hasPdf?: boolean },
-): boolean {
-  if (filters?.hasPdf === undefined) return true;
-  return libraryItemTargetHasPdf(target) === filters.hasPdf;
 }
 
 // ── Zotero.Search-backed listing helpers ──────────────────────────────────────
@@ -639,7 +606,6 @@ function libraryItemTargetMatchesFilters(
 export type AgentLibraryFilters = {
   collectionId?: number;
   unfiled?: boolean;
-  hasPdf?: boolean;
   itemType?: string;
   author?: string;
   yearFrom?: number;
@@ -870,56 +836,6 @@ export class ZoteroGateway {
       seen.add(item.id);
       const target = buildPaperTargetFromItem(item);
       if (target) {
-        out.push(target);
-      }
-    }
-    return out;
-  }
-
-  async listBibliographicItemTargets(params: {
-    libraryID: number;
-    limit?: number;
-  }): Promise<{
-    items: LibraryItemTarget[];
-    totalCount: number;
-  }> {
-    const libraryID = Number.isFinite(params.libraryID)
-      ? Math.floor(params.libraryID)
-      : 0;
-    if (!libraryID) {
-      throw new Error("No active library available for listing bibliographic items");
-    }
-    const rawItems = await getAllLibraryItems(libraryID);
-    const items: LibraryItemTarget[] = [];
-    for (const rawItem of rawItems) {
-      const item = this.resolveBibliographicItem(rawItem);
-      if (!item) continue;
-      const target = buildItemTargetFromItem(item);
-      if (target && !target.noteKind) {
-        items.push(target);
-      }
-    }
-    const normalizedLimit = Number.isFinite(params.limit)
-      ? Math.max(1, Math.floor(params.limit as number))
-      : undefined;
-    return {
-      items:
-        normalizedLimit && items.length > normalizedLimit
-          ? items.slice(0, normalizedLimit)
-          : items,
-      totalCount: items.length,
-    };
-  }
-
-  getBibliographicItemTargetsByItemIds(itemIds: number[]): LibraryItemTarget[] {
-    const out: LibraryItemTarget[] = [];
-    const seen = new Set<number>();
-    for (const rawItemId of itemIds) {
-      const item = this.resolveBibliographicItem(this.getItem(rawItemId));
-      if (!item || seen.has(item.id)) continue;
-      seen.add(item.id);
-      const target = buildItemTargetFromItem(item);
-      if (target && !target.noteKind) {
         out.push(target);
       }
     }
@@ -1396,30 +1312,21 @@ export class ZoteroGateway {
       const rawIds: number[] = await search.search();
       // Drop child items (child notes, annotations, attachments)
       const topIds: number[] = [];
-      const seen = new Set<number>();
       for (const id of rawIds) {
         const item = Zotero.Items.get(id);
-        if (item && !item.parentID && !item.isAnnotation?.() && !seen.has(id)) {
-          seen.add(id);
-          topIds.push(id);
-        }
+        if (item && !item.parentID && !item.isAnnotation?.()) topIds.push(id);
       }
       const limited = normalizedLimit
         ? topIds.slice(0, normalizedLimit)
         : topIds;
       const items: LibraryItemTarget[] = [];
-      for (const id of topIds) {
+      for (const id of limited) {
         const raw = this.getItem(id);
         if (!raw) continue;
         const target = buildItemTargetFromItem(raw);
-        if (target && libraryItemTargetMatchesFilters(target, params.filters)) {
-          items.push(target);
-        }
+        if (target) items.push(target);
       }
-      return {
-        items: normalizedLimit ? items.slice(0, normalizedLimit) : items,
-        totalCount: items.length,
-      };
+      return { items, totalCount: topIds.length };
     } catch (_error) {
       void _error;
       return this._listItemsByFiltersInMemory(params);
@@ -1486,14 +1393,12 @@ export class ZoteroGateway {
       ? Math.max(1, Math.floor(params.limit as number))
       : undefined;
     for (const item of rawItems) {
+      if (normalizedLimit && standaloneNotes.length >= normalizedLimit) break;
       if (!(item as any).isNote?.() || item.parentID) continue;
       const target = buildItemTargetFromItem(item);
       if (target) standaloneNotes.push(target);
     }
-    return {
-      notes: limitItemTargets(standaloneNotes, params.limit),
-      totalCount: standaloneNotes.length,
-    };
+    return { notes: standaloneNotes, totalCount: standaloneNotes.length };
   }
 
   getStandaloneNoteContent(params: { noteId: number }): PaperNoteRecord | null {
@@ -1591,23 +1496,16 @@ export class ZoteroGateway {
       }
       const targets: LibraryItemTarget[] = [];
       for (const itemId of resolvedIds) {
+        if (targets.length >= normalizedLimit) break;
         const item = this.getItem(itemId);
         if (!item) continue;
         const target = buildItemTargetFromItem(item);
-        if (target && libraryItemTargetMatchesFilters(target, params.filters)) {
-          targets.push(target);
-        }
+        if (target) targets.push(target);
       }
-      return {
-        items:
-          normalizedLimit && targets.length > normalizedLimit
-            ? targets.slice(0, normalizedLimit)
-            : targets,
-        totalCount: targets.length,
-      };
+      return targets;
     } catch (_error) {
       void _error;
-      return { items: [], totalCount: 0 };
+      return [];
     }
   }
 
@@ -2064,7 +1962,6 @@ export class ZoteroGateway {
     content: string;
     modelName: string;
     target?: "item" | "standalone";
-    appendToTrackedNote?: boolean;
   }): Promise<"created" | "appended" | "standalone_created"> {
     if (params.target === "standalone") {
       const libraryID =
@@ -2085,11 +1982,6 @@ export class ZoteroGateway {
       params.item,
       params.content,
       params.modelName,
-      undefined,
-      {
-        appendToTrackedNote: params.appendToTrackedNote === true,
-        rememberCreatedNote: params.appendToTrackedNote === true,
-      },
     );
   }
 

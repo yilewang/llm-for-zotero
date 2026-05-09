@@ -1,14 +1,13 @@
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { LibraryMutationService } from "../../services/libraryMutationService";
 import { pushUndoEntry } from "../../store/undoStore";
-import type { AgentToolContext, AgentToolDefinition } from "../../types";
+import type { AgentToolDefinition } from "../../types";
 import {
   normalizeNoteSourceText,
   stripNoteHtml,
   renderRawNoteHtml,
-  readNoteSnapshot,
-  resolveParentItemForNoteTarget,
 } from "../../../modules/contextPanel/notes";
+import { rememberAssistantNoteForParent } from "../../../modules/contextPanel/prefHelpers";
 import { escapeNoteHtml } from "../../../modules/contextPanel/textUtils";
 import { fileUrlToPath } from "../../../utils/localPath";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
@@ -112,7 +111,7 @@ function htmlHasInlineStyles(html: string): boolean {
 }
 
 type EditCurrentNoteInput = {
-  mode: "edit" | "create" | "append";
+  mode: "edit" | "create";
   content: string;
   expectedOriginalHtml?: string;
   /** Pre-patched HTML computed by applying patches directly to the original
@@ -130,7 +129,6 @@ type EditCurrentNoteInput = {
   noteTitle?: string;
   target?: "item" | "standalone";
   targetItemId?: number;
-  targetNoteId?: number;
 };
 
 /**
@@ -303,128 +301,6 @@ function applyPatchesToNoteHtml(
   return result;
 }
 
-function buildAppendedNoteHtml(
-  existingHtml: string,
-  appendHtml: string,
-): string {
-  const base = (existingHtml || "").trim();
-  const addition = (appendHtml || "").trim();
-  if (!base) return addition;
-  if (!addition) return base;
-  return `${base}<hr/>${addition}`;
-}
-
-function buildAppendedNoteText(
-  existingText: string,
-  appendText: string,
-): string {
-  const base = (existingText || "").trim();
-  const addition = (appendText || "").trim();
-  if (!base) return addition;
-  if (!addition) return base;
-  return `${base}\n\n---\n\n${addition}`;
-}
-
-function getUniqueInScopePaperItemIds(context: AgentToolContext): number[] {
-  const ids = [
-    ...(context.request.selectedPaperContexts || []),
-    ...(context.request.fullTextPaperContexts || []),
-    ...(context.request.pinnedPaperContexts || []),
-  ]
-    .map((entry) => normalizePositiveInt(entry?.itemId))
-    .filter((entry): entry is number => Boolean(entry));
-  return Array.from(new Set(ids));
-}
-
-function resolveParentTargetForCreate(
-  zoteroGateway: ZoteroGateway,
-  input: Pick<EditCurrentNoteInput, "targetItemId">,
-  context: AgentToolContext,
-): { item: Zotero.Item; parentItem: Zotero.Item } | null {
-  const resolve = (item: Zotero.Item | null | undefined) => {
-    if (!item) return null;
-    const parentItem = resolveParentItemForNoteTarget(item);
-    return parentItem?.id ? { item, parentItem } : null;
-  };
-
-  const explicitTarget = resolve(zoteroGateway.getItem(input.targetItemId));
-  if (explicitTarget) return explicitTarget;
-
-  const activeNoteParentId = normalizePositiveInt(
-    context.request.activeNoteContext?.parentItemId,
-  );
-  const activeNoteParent = resolve(zoteroGateway.getItem(activeNoteParentId));
-  if (activeNoteParent) return activeNoteParent;
-
-  const activeItem = resolve(
-    zoteroGateway.getItem(context.request.activeItemId),
-  );
-  if (activeItem) return activeItem;
-
-  const contextItem = resolve(context.item);
-  if (contextItem) return contextItem;
-
-  const inScopeItemIds = getUniqueInScopePaperItemIds(context);
-  if (inScopeItemIds.length === 1) {
-    return resolve(zoteroGateway.getItem(inScopeItemIds[0]));
-  }
-
-  return null;
-}
-
-function getNoteItemById(
-  zoteroGateway: ZoteroGateway,
-  noteId: number | undefined,
-): Zotero.Item | null {
-  const note = zoteroGateway.getItem(noteId);
-  return (note as any)?.isNote?.() ? note : null;
-}
-
-function resolveAppendNoteTarget(
-  zoteroGateway: ZoteroGateway,
-  input: Pick<EditCurrentNoteInput, "targetItemId" | "targetNoteId">,
-  context: AgentToolContext,
-): Zotero.Item {
-  const explicitNoteId = normalizePositiveInt(input.targetNoteId);
-  if (explicitNoteId) {
-    const note = getNoteItemById(zoteroGateway, explicitNoteId);
-    if (!note) {
-      throw new Error(`Target note ${explicitNoteId} was not found`);
-    }
-    return note;
-  }
-
-  const activeNoteId = normalizePositiveInt(
-    context.request.activeNoteContext?.noteId,
-  );
-  const activeNote =
-    getNoteItemById(zoteroGateway, activeNoteId) ||
-    (((context.item as any)?.isNote?.()
-      ? context.item
-      : null) as Zotero.Item | null) ||
-    getNoteItemById(zoteroGateway, context.request.activeItemId);
-  if (activeNote) return activeNote;
-
-  const target = resolveParentTargetForCreate(zoteroGateway, input, context);
-  if (!target) {
-    throw new Error("No target item is available for note append");
-  }
-
-  const noteIds: number[] = (target.parentItem as any).getNotes?.() || [];
-  const notes = noteIds
-    .map((noteId) => getNoteItemById(zoteroGateway, noteId))
-    .filter((note): note is Zotero.Item => Boolean(note && !note.deleted));
-  if (notes.length === 1) return notes[0];
-  if (notes.length > 1) {
-    throw new Error(
-      `Item ${target.parentItem.id} has multiple child notes; pass targetNoteId to choose which one to append to.`,
-    );
-  }
-  throw new Error(
-    `Item ${target.parentItem.id} has no child note to append to`,
-  );
-}
-
 export function createEditCurrentNoteTool(
   zoteroGateway: ZoteroGateway,
 ): AgentToolDefinition<EditCurrentNoteInput, unknown> {
@@ -433,16 +309,16 @@ export function createEditCurrentNoteTool(
     spec: {
       name: "edit_current_note",
       description:
-        "Edit the current open Zotero note, append to an existing note, or create a new note attached to a paper or as a standalone note. Accepts plain text, Markdown, or HTML with inline styles.",
+        "Edit the current open Zotero note, or create a new note attached to a paper or as a standalone note. Accepts plain text, Markdown, or HTML with inline styles.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
           mode: {
             type: "string",
-            enum: ["edit", "create", "append"],
+            enum: ["edit", "create"],
             description:
-              "Use 'edit' only when rewriting or patching an existing current note. Use 'append' to add content to an existing note. Use 'create' to create a brand-new attached or standalone note.",
+              "Use 'edit' to replace the current open note (default), or 'create' to create a new note.",
           },
           content: {
             type: "string",
@@ -479,12 +355,7 @@ export function createEditCurrentNoteTool(
           targetItemId: {
             type: "number",
             description:
-              "For mode 'create': attach note to this specific item ID. For mode 'append': use this item when resolving the single child note fallback.",
-          },
-          targetNoteId: {
-            type: "number",
-            description:
-              "For mode 'append': append to this specific existing Zotero note ID.",
+              "For mode 'create': attach note to this specific item ID. If omitted, attaches to the active item.",
           },
         },
       },
@@ -494,16 +365,14 @@ export function createEditCurrentNoteTool(
     guidance: {
       matches: () => true,
       instruction:
-        "When a Zotero note is already open/current and the user asks to edit, rewrite, revise, polish, or update that note, call `edit_current_note` with mode 'edit'. NEVER output note text directly in chat. " +
+        "When a note is open and the user asks to edit, rewrite, revise, polish, or update ANY text, call `edit_current_note` with mode 'edit'. NEVER output note text directly in chat. " +
         "For edits, PREFER `patches` (find-and-replace pairs) over `content` (full rewrite). " +
-        "When the user asks to append/add content to an existing note, call `edit_current_note` with mode 'append' and `content`; pass `targetNoteId` when the destination note is known. " +
-        "When the user asks to create/write/save a new item note, call `edit_current_note` with mode 'create', target 'item', and `content`; create means a brand-new child note, not appending to the response-save note. " +
-        "For standalone notes, call `edit_current_note` with mode 'create', target 'standalone', and `content`. " +
+        "To create a new note, call `edit_current_note` with mode 'create' and `content`. " +
         "Pass Markdown by default. When the user explicitly requests HTML output (e.g. for styled note templates), pass well-formed HTML with inline styles directly. " +
         "When the note discusses a specific figure or table you previously read via file_io, embed the image: `![Figure N](file:///{path})` — auto-imported as a Zotero attachment.",
     },
     presentation: {
-      label: "Edit / Create / Append Note",
+      label: "Edit / Create Note",
       summaries: {
         onCall: "Preparing note changes",
         onPending: "Waiting for confirmation on note edit",
@@ -541,21 +410,17 @@ export function createEditCurrentNoteTool(
         );
       }
       const mode =
-        args.mode === "create"
-          ? ("create" as const)
-          : args.mode === "append"
-            ? ("append" as const)
-            : ("edit" as const);
+        args.mode === "create" ? ("create" as const) : ("edit" as const);
 
       // Parse patches if provided
       const hasPatches = Array.isArray(args.patches) && args.patches.length > 0;
       const hasContent =
         typeof args.content === "string" && args.content.trim();
 
-      if (mode === "create" || mode === "append") {
+      if (mode === "create") {
         if (!hasContent) {
           return fail(
-            `content is required for mode '${mode}': provide the note body as a string`,
+            "content is required for mode 'create': provide the note body as a string",
           );
         }
       } else if (!hasContent && !hasPatches) {
@@ -607,12 +472,8 @@ export function createEditCurrentNoteTool(
         _patches: patches,
         target: mode === "create" ? target : undefined,
         targetItemId:
-          mode === "create" || mode === "append"
+          mode === "create"
             ? normalizePositiveInt(args.targetItemId)
-            : undefined,
-        targetNoteId:
-          mode === "append"
-            ? normalizePositiveInt(args.targetNoteId)
             : undefined,
       } as EditCurrentNoteInput);
     },
@@ -645,11 +506,8 @@ export function createEditCurrentNoteTool(
         delete inputExt._patches;
       }
 
-      // --- Resolve _isHtml for create/append mode from LLM output ---
-      if (
-        (input.mode === "create" || input.mode === "append") &&
-        input._rawHtmlContent
-      ) {
+      // --- Resolve _isHtml for create mode from LLM output ---
+      if (input.mode === "create" && input._rawHtmlContent) {
         input._isHtml = true;
         input.content = sanitizeNoteHtml(input._rawHtmlContent);
         delete input._rawHtmlContent;
@@ -677,45 +535,6 @@ export function createEditCurrentNoteTool(
               id: "content",
               label: "Final note content",
               value: normalizedContent,
-            },
-          ],
-        };
-      }
-
-      if (input.mode === "append") {
-        const targetNote = resolveAppendNoteTarget(
-          zoteroGateway,
-          input,
-          context,
-        );
-        const snapshot = readNoteSnapshot(targetNote);
-        if (!snapshot) {
-          throw new Error("Could not read the target note");
-        }
-        input.expectedOriginalHtml = snapshot.html;
-        input.noteId = snapshot.noteId;
-        input.noteTitle = snapshot.title || "Untitled note";
-
-        const appendText = input._isHtml
-          ? normalizeNoteSourceText(input.content)
-          : normalizedContent;
-
-        return {
-          toolName: "edit_current_note",
-          mode: "review",
-          title: "Review note append",
-          description: `Review the proposed content before appending it to "${input.noteTitle}".`,
-          confirmLabel: "Append",
-          cancelLabel: "Cancel",
-          fields: [
-            {
-              type: "diff_preview",
-              id: "noteDiff",
-              label: "Note changes",
-              before: snapshot.text,
-              after: buildAppendedNoteText(snapshot.text, appendText),
-              contextLines: 0,
-              emptyMessage: "No note changes yet.",
             },
           ],
         };
@@ -750,7 +569,7 @@ export function createEditCurrentNoteTool(
         toolName: "edit_current_note",
         mode: "review",
         title: `Review note update`,
-        description: `Review the proposed note changes for "${input.noteTitle}" before applying them.`,
+        description: `Review the proposed note changes for "${input.noteTitle}" and edit the final note text before applying it.`,
         confirmLabel: "Apply edit",
         cancelLabel: "Cancel",
         fields: [
@@ -760,8 +579,15 @@ export function createEditCurrentNoteTool(
             label: "Note changes",
             before: snapshot.text,
             after: diffAfter,
+            sourceFieldId: "content",
             contextLines: 0,
             emptyMessage: "No note changes yet.",
+          },
+          {
+            type: "textarea",
+            id: "content",
+            label: "Final note content",
+            value: input._isHtml ? input.content : normalizedContent,
           },
         ],
       };
@@ -795,9 +621,6 @@ export function createEditCurrentNoteTool(
       if (input.mode === "create") {
         // Auto-fallback to standalone if no parent item is resolvable
         // (e.g. library chat mode with no active paper)
-        let resolvedParentTarget: ReturnType<
-          typeof resolveParentTargetForCreate
-        > = null;
         if (input.target !== "standalone") {
           const resolvedItem = input.targetItemId
             ? zoteroGateway.getItem(input.targetItemId)
@@ -805,9 +628,6 @@ export function createEditCurrentNoteTool(
               context.item;
           if (!resolvedItem) {
             input.target = "standalone";
-            input.targetItemId = undefined;
-          } else {
-            input.targetItemId = resolvedParentTarget.parentItem.id;
           }
         }
 
@@ -820,7 +640,6 @@ export function createEditCurrentNoteTool(
               content: input.content,
               target: input.target,
               targetItemId: input.targetItemId,
-              appendToTrackedNote: false,
             },
             context,
             "edit_current_note",
@@ -869,6 +688,10 @@ export function createEditCurrentNoteTool(
         }
         await note.saveTx();
 
+        if (input.target !== "standalone" && parentId && noteId > 0) {
+          rememberAssistantNoteForParent(parentId, noteId);
+        }
+
         // Register undo
         pushUndoEntry(context.request.conversationKey, {
           id: `undo-edit-current-note-create-${noteId}-${Date.now()}`,
@@ -887,67 +710,6 @@ export function createEditCurrentNoteTool(
           status: "created",
           noteId,
           title: String(note.getField?.("title") || ""),
-        };
-      }
-
-      if (input.mode === "append") {
-        const targetNote = input.noteId
-          ? getNoteItemById(zoteroGateway, input.noteId)
-          : resolveAppendNoteTarget(zoteroGateway, input, context);
-        const snapshot = readNoteSnapshot(targetNote);
-        if (!targetNote || !snapshot) {
-          throw new Error("Could not read the target note");
-        }
-        if (
-          typeof input.expectedOriginalHtml === "string" &&
-          stripNoteHtml(snapshot.html) !==
-            stripNoteHtml(input.expectedOriginalHtml)
-        ) {
-          throw new Error(
-            "The target note changed before this append was applied. Refresh and try again.",
-          );
-        }
-
-        let contentToAppend = input.content;
-        if (hasLocalImages) {
-          try {
-            contentToAppend = await importLocalImages(
-              input.content,
-              snapshot.noteId,
-              zoteroGateway,
-            );
-          } catch (e) {
-            Zotero.debug?.(`[llm-for-zotero] Image import failed: ${e}`);
-          }
-        }
-
-        const appendHtml = input._isHtml
-          ? sanitizeNoteHtml(contentToAppend)
-          : renderRawNoteHtml(contentToAppend);
-        const nextHtml = buildAppendedNoteHtml(snapshot.html, appendHtml);
-        targetNote.setNote(nextHtml);
-        await targetNote.saveTx();
-
-        pushUndoEntry(context.request.conversationKey, {
-          id: `undo-edit-current-note-append-${snapshot.noteId}-${Date.now()}`,
-          toolName: "edit_current_note",
-          description: `Revert note append: ${snapshot.title}`,
-          revert: async () => {
-            await zoteroGateway.restoreNoteHtml({
-              noteId: snapshot.noteId,
-              html: snapshot.html,
-            });
-          },
-        });
-
-        const appendedText = input._isHtml
-          ? normalizeNoteSourceText(contentToAppend)
-          : normalizeNoteSourceText(contentToAppend);
-        return {
-          status: "appended",
-          noteId: snapshot.noteId,
-          title: snapshot.title,
-          noteText: buildAppendedNoteText(snapshot.text, appendedText),
         };
       }
 

@@ -1,7 +1,6 @@
 import { assert } from "chai";
 import {
   clearCachedCitationPagesForTests,
-  collectAssistantCitationCandidates,
   decorateAssistantCitationLinks,
   extractInlineCitationMentions,
   extractBlockquoteTailCitation,
@@ -76,46 +75,6 @@ describe("assistantCitationLinks", function () {
     assert.lengthOf(matches, 1);
     assert.equal(matches[0].contextItemId, 22);
     assert.equal(matches[0].paperContext.title, "Paper B");
-  });
-
-  it("collects citation candidates from full-text and hidden citation contexts", function () {
-    const fullTextOnly: PaperContextRef = {
-      itemId: 10,
-      contextItemId: 110,
-      title: "Full Text Only",
-      firstCreator: "Garcia",
-      year: "2024",
-    };
-    const hiddenCitationOnly: PaperContextRef = {
-      itemId: 20,
-      contextItemId: 220,
-      title: "Hidden Citation Only",
-      firstCreator: "Patel",
-      year: "2025",
-    };
-    const candidates = collectAssistantCitationCandidates(
-      {
-        __llmGlobalPortalItem: true,
-        id: 2_000_000_001,
-        libraryID: 1,
-      } as never,
-      {
-        role: "user",
-        text: "Compare these.",
-        timestamp: 1,
-        fullTextPaperContexts: [fullTextOnly],
-        citationPaperContexts: [hiddenCitationOnly],
-      },
-    );
-
-    assert.sameMembers(
-      candidates.map((entry) => entry.contextItemId),
-      [110, 220],
-    );
-    assert.sameMembers(
-      candidates.map((entry) => entry.sourceLabel),
-      ["(Garcia, 2024)", "(Patel, 2025)"],
-    );
   });
 
   it("preserves ambiguous matches when two papers share the same citation label", function () {

@@ -8,7 +8,7 @@ import {
 } from "../utils/llmDefaults";
 import { HTML_NS } from "../utils/domHelpers";
 import {
-  normalizeMaxTokensForModel,
+  normalizeMaxTokens,
   normalizeOptionalInputTokenCap,
   normalizeTemperature,
 } from "../utils/normalization";
@@ -16,7 +16,6 @@ import {
   createEmptyProviderGroup,
   createProviderModelEntry,
   getModelProviderGroups,
-  migrateApiBaseForAuthModeChange,
   setModelProviderGroups,
   type ModelProviderAuthMode,
   type ModelProviderGroup,
@@ -35,10 +34,7 @@ import {
   getProviderProtocolSpec,
   type ProviderProtocol,
 } from "../utils/providerProtocol";
-import {
-  runProviderConnectionTest,
-  runCodexAppServerConnectionTest,
-} from "../utils/providerConnectionTest";
+import { runProviderConnectionTest } from "../utils/providerConnectionTest";
 import {
   startCopilotDeviceFlow,
   pollCopilotDeviceAuth,
@@ -48,26 +44,14 @@ import {
 } from "../utils/llmClient";
 import { resetEmbeddingFailedFlags } from "./contextPanel/pdfContext";
 import { clearRetrievalCandidateCache } from "./contextPanel/multiContextPlanner";
-import { getAgentTraceExportPath } from "../agent/store/traceStore";
 import { joinLocalPath } from "../utils/localPath";
 import {
   isMineruEnabled,
   getMineruApiKey,
-  getMineruLocalApiBase,
-  getMineruLocalBackend,
-  getMineruMode,
-  type MineruLocalBackend,
-  type MineruMode,
-  normalizeMineruLocalBackend,
   setMineruEnabled,
   setMineruApiKey,
-  setMineruLocalApiBase,
-  setMineruLocalBackend,
-  setMineruMode,
   isGlobalAutoParseEnabled,
   setGlobalAutoParseEnabled,
-  isMineruSyncEnabled,
-  setMineruSyncEnabled,
   getMineruExcludePatterns,
   setMineruExcludePatterns,
 } from "../utils/mineruConfig";
@@ -81,63 +65,8 @@ import {
   getNotesDirectoryNickname,
   setNotesDirectoryNickname,
 } from "../utils/notesDirectoryConfig";
-import {
-  testMineruConnection,
-  testMineruLocalConnection,
-  testProxyConnection,
-} from "../utils/mineruClient";
+import { testMineruConnection } from "../utils/mineruClient";
 import { registerMineruManagerScript } from "./mineruManagerScript";
-import {
-  cleanSyncedMineruPackages,
-  repairMineruSyncPackages,
-} from "./contextPanel/mineruSync";
-import { getRuntimePlatformInfo } from "../utils/runtimePlatform";
-import {
-  getClaudeAutoCompactThresholdPercent,
-  getClaudeBridgeUrl,
-  getClaudeConfigSourcePref,
-  getClaudeManagedInstructionTemplatePref,
-  getClaudePermissionModePref,
-  getClaudeReasoningModePref,
-  getClaudeRuntimeModelPref,
-  isClaudeAutoCompactEnabled,
-  isClaudeBlockStreamingEnabled,
-  getConversationSystemPref,
-  getLastUsedClaudeGlobalConversationKey,
-  getLastUsedClaudePaperConversationKey,
-  isClaudeCodeModeEnabled,
-  setClaudeAutoCompactEnabled,
-  setClaudeAutoCompactThresholdPercent,
-  setClaudeBridgeUrl,
-  setClaudeCodeModeEnabled,
-  setClaudeManagedInstructionTemplatePref,
-  setConversationSystemPref,
-  setClaudePermissionModePref,
-  setClaudeReasoningModePref,
-  setClaudeRuntimeModelPref,
-  setClaudeBlockStreamingEnabled,
-} from "../claudeCode/prefs";
-import {
-  getCodexReasoningModePref,
-  getCodexRuntimeModelPref,
-  isCodexZoteroMcpToolsEnabled,
-  isCodexAppServerModeEnabled,
-  setCodexAppServerModeEnabled,
-  setCodexZoteroMcpToolsEnabled,
-  setCodexReasoningModePref,
-  setCodexRuntimeModelPref,
-} from "../codexAppServer/prefs";
-import {
-  installOrUpdateCodexZoteroMcpConfig,
-  readCodexNativeMcpSetupStatus,
-} from "../codexAppServer/mcpSetup";
-import type { CodexReasoningMode } from "../codexAppServer/constants";
-import { getClaudeProfileSignature } from "../claudeCode/projectSkills";
-import {
-  getDefaultClaudeManagedInstructionBlock,
-  readClaudeProjectManagedInstructionBlock,
-  updateClaudeProjectManagedInstructionBlock,
-} from "../claudeCode/bootstrap";
 
 type PrefKey = "systemPrompt";
 
@@ -153,29 +82,8 @@ const setPref = (key: PrefKey, value: string) =>
 
 const CUSTOMIZED_API_HELPER_TEXT =
   "Choose a preset above, or switch to Customized to enter a full base URL or endpoint manually.";
-const LEGACY_CODEX_AUTH_HELPER_TEXT =
-  "Legacy direct ChatGPT/Codex backend mode. Existing users can keep using it in this release. New users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
-const CODEX_APP_SERVER_HELPER_TEXT =
-  "Recommended official Codex integration. Runs the local `codex app-server` CLI as the native Codex runtime. Run `codex login` first.";
-const LEGACY_CODEX_API_HELPER_TEXT =
-  "Legacy direct backend URL. Usually uses https://chatgpt.com/backend-api/codex/responses. Existing users can keep it in this release, but new users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
-const CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT =
-  "Uses Codex responses with the local codex app-server transport.";
-const CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS =
-  "Optional. Leave blank to auto-detect native Windows Codex. WSL Codex is not supported because Zotero MCP uses Windows-local loopback. Or enter a native path such as C:\\nvm4w\\nodejs\\codex.cmd or C:\\Users\\<user>\\AppData\\Roaming\\npm\\codex.cmd.";
-const CODEX_APP_SERVER_PATH_HELPER_TEXT_MACOS =
-  "Optional. Leave blank to auto-detect. Or enter an absolute path such as /opt/homebrew/bin/codex or /usr/local/bin/codex.";
-const CODEX_APP_SERVER_PATH_HELPER_TEXT_LINUX =
-  "Optional. Leave blank to auto-detect. Or enter an absolute path such as /usr/local/bin/codex or ~/.local/bin/codex.";
-
-function getCodexAppServerPathHelperText(): string {
-  const platform = getRuntimePlatformInfo().platform;
-  if (platform === "windows") return CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS;
-  if (platform === "macos") return CODEX_APP_SERVER_PATH_HELPER_TEXT_MACOS;
-  return CODEX_APP_SERVER_PATH_HELPER_TEXT_LINUX;
-}
-const LEGACY_CODEX_AUTH_PROTOCOL_HELPER_TEXT =
-  "Uses Codex responses with the legacy direct backend transport.";
+const CODEX_API_HELPER_TEXT =
+  "codex auth usually uses https://chatgpt.com/backend-api/codex/responses";
 const COPILOT_API_HELPER_TEXT =
   "GitHub Copilot uses device-based login. Click Login to authenticate via GitHub.";
 const DEFAULT_COPILOT_API_BASE = "https://api.githubcopilot.com";
@@ -200,7 +108,7 @@ const PROVIDER_PROFILES: ProviderProfile[] = [
   { label: "Provider C", modelPlaceholder: "gemini-2.5-pro", defaultModel: "" },
   {
     label: "Provider D",
-    modelPlaceholder: "deepseek-v4-flash",
+    modelPlaceholder: "deepseek-reasoner",
     defaultModel: "",
   },
 ];
@@ -217,14 +125,6 @@ function getProviderProfile(index: number): ProviderProfile {
     defaultModel: "",
   };
 }
-
-type AgentPermissionMode = "safe" | "yolo";
-
-function normalizeAgentPermissionMode(value: unknown): AgentPermissionMode {
-  return value === "yolo" ? "yolo" : "safe";
-}
-
-const DEFAULT_AGENT_BRIDGE_URL = "http://127.0.0.1:19787";
 
 function normalizeProviderPresetId(value: unknown): ProviderPresetId {
   if (typeof value !== "string") return "customized";
@@ -246,8 +146,7 @@ function getProtocolOptions(
   presetId: ProviderPresetId,
 ): ProviderProtocol[] {
   if (authMode === "webchat") return ["web_sync"]; // [webchat]
-  if (authMode === "codex_auth" || authMode === "codex_app_server")
-    return ["codex_responses"];
+  if (authMode === "codex_auth") return ["codex_responses"];
   if (authMode === "copilot_auth")
     return ["openai_chat_compat", "responses_api"];
   if (presetId !== "customized") {
@@ -265,20 +164,17 @@ function resolveSelectedProtocol(
   presetId: ProviderPresetId,
 ): ProviderProtocol {
   const fallback =
-    group.authMode === "codex_auth" || group.authMode === "codex_app_server"
+    group.authMode === "codex_auth"
       ? "codex_responses"
       : presetId === "customized"
-        ? undefined
+        ? "openai_chat_compat"
         : getProviderPreset(presetId).defaultProtocol;
   const allowed = getProtocolOptions(group.authMode, presetId);
-  const shouldInferCustomizedProtocol =
-    presetId === "customized" &&
-    group.providerProtocol === "openai_chat_compat";
   const normalized = normalizeProviderProtocolForAuthMode({
-    protocol: shouldInferCustomizedProtocol ? undefined : group.providerProtocol,
+    protocol: group.providerProtocol,
     authMode: group.authMode,
     apiBase: group.apiBase,
-    ...(fallback ? { fallback } : {}),
+    fallback,
   });
   return allowed.includes(normalized) ? normalized : allowed[0];
 }
@@ -350,7 +246,6 @@ function hasEmptyModel(group: ModelProviderGroup): boolean {
 function normalizeAuthMode(value: unknown): ModelProviderAuthMode {
   if (value === "webchat") return "webchat"; // [webchat]
   if (value === "codex_auth") return "codex_auth";
-  if (value === "codex_app_server") return "codex_app_server";
   if (value === "copilot_auth") return "copilot_auth";
   return "api_key";
 }
@@ -427,7 +322,7 @@ function resolveCodexAuthPath(): string {
 async function readCodexAccessToken(): Promise<string> {
   const authPath = resolveCodexAuthPath();
   const io = ztoolkit.getGlobal("IOUtils") as
-    | { read?: (path: string) => Promise<Uint8Array<ArrayBufferLike> | ArrayBuffer> }
+    | { read?: (path: string) => Promise<Uint8Array | ArrayBuffer> }
     | undefined;
   if (!io?.read) {
     throw new Error("IOUtils is unavailable; cannot read Codex auth file");
@@ -447,6 +342,51 @@ async function readCodexAccessToken(): Promise<string> {
   return token;
 }
 
+function extractTextFromCodexSSE(raw: string): string {
+  const lines = raw.split(/\r?\n/);
+  let out = "";
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === "[DONE]") continue;
+    try {
+      const parsed = JSON.parse(payload) as {
+        type?: string;
+        delta?: string;
+        response?: {
+          output_text?: string;
+          output?: Array<{
+            content?: Array<{ type?: string; text?: string }>;
+          }>;
+        };
+      };
+      if (typeof parsed.delta === "string") {
+        out += parsed.delta;
+      }
+      const completedText = parsed.response?.output_text;
+      if (typeof completedText === "string" && completedText.trim()) {
+        out += completedText;
+      }
+      const outputItems = parsed.response?.output || [];
+      for (const item of outputItems) {
+        const content = item.content || [];
+        for (const part of content) {
+          if (
+            (part.type === "output_text" || part.type === "text") &&
+            typeof part.text === "string"
+          ) {
+            out += part.text;
+          }
+        }
+      }
+    } catch (_err) {
+      continue;
+    }
+  }
+  return out.trim();
+}
+
 // ── Style tokens ───────────────────────────────────────────────────
 
 // Inputs use CSS system colors (Field / FieldText) so they automatically
@@ -461,8 +401,6 @@ const INPUT_SM_STYLE =
   "width: 88px; padding: 4px 7px; font-size: 12px;" +
   " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 5px;" +
   " box-sizing: border-box; background: Field; color: FieldText;";
-
-const PROTOCOL_SELECT_SM_STYLE = INPUT_SM_STYLE + " width: 135px;";
 
 const LABEL_STYLE =
   "display: block; font-weight: 600; font-size: 12px;" +
@@ -500,48 +438,6 @@ const ADV_ROW_STYLE =
   "display: none; flex-direction: column; gap: 8px; padding: 10px 12px;" +
   " background: rgba(128,128,128,0.06);" +
   " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; margin-top: 4px;";
-
-async function confirmMineruSyncPackageDeletion(
-  disableSync: boolean,
-): Promise<boolean> {
-  const dialogData: { [key: string]: unknown } = {
-    loadCallback: () => {
-      return;
-    },
-    unloadCallback: () => {
-      return;
-    },
-  };
-  const message = disableSync
-    ? t(
-        "Synced MinerU ZIP packages are Zotero attachment items. MinerU sync will be disabled, then those package attachments will be deleted. Zotero may show sync conflicts while it syncs these deletions. If that happens, choose the local/deleted version to remove already-uploaded packages from Zotero sync.",
-      )
-    : t(
-        "Synced MinerU ZIP packages are Zotero attachment items. Those package attachments will be deleted. Zotero may show sync conflicts while it syncs these deletions. If that happens, choose the local/deleted version to remove already-uploaded packages from Zotero sync.",
-      );
-
-  new ztoolkit.Dialog(1, 1)
-    .addCell(0, 0, {
-      tag: "div",
-      namespace: "html",
-      properties: { textContent: message },
-      styles: {
-        width: "420px",
-        lineHeight: "1.45",
-        whiteSpace: "pre-line",
-      },
-    })
-    .addButton(
-      t(disableSync ? "Disable sync and delete" : "Delete packages"),
-      "delete",
-    )
-    .addButton(t("Cancel"), "cancel")
-    .setDialogData(dialogData)
-    .open(t("Delete MinerU sync packages?"));
-  await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock
-    .promise;
-  return (dialogData as { _lastButtonId?: string })._lastButtonId === "delete";
-}
 
 // ── Main export ────────────────────────────────────────────────────
 
@@ -635,12 +531,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   if (mineruApiKeyEl?.placeholder) {
     mineruApiKeyEl.placeholder = t(mineruApiKeyEl.placeholder);
   }
-  const mineruLocalApiBaseEl = doc.querySelector(
-    `#${config.addonRef}-mineru-local-api-base`,
-  ) as HTMLInputElement | null;
-  if (mineruLocalApiBaseEl?.placeholder) {
-    mineruLocalApiBaseEl.placeholder = t(mineruLocalApiBaseEl.placeholder);
-  }
   // Translate language dropdown options
   const localeSelectEl = doc.querySelector(
     `#${config.addonRef}-locale-select`,
@@ -718,33 +608,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const enableAgentModeInput = doc.querySelector(
     `#${config.addonRef}-enable-agent-mode`,
   ) as HTMLInputElement | null;
-  const codexAppServerEnableSelect = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-enable`,
-  ) as HTMLSelectElement | null;
-  const codexAppServerSettingsWrap = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-settings`,
-  ) as HTMLDivElement | null;
-  const codexAppServerModelInput = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-model`,
-  ) as HTMLInputElement | null;
-  const codexAppServerReasoningSelect = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-reasoning`,
-  ) as HTMLSelectElement | null;
-  const codexAppServerTestBtn = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-test`,
-  ) as HTMLButtonElement | null;
-  const codexAppServerStatus = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-status`,
-  ) as HTMLSpanElement | null;
-  const codexAppServerMcpEnableInput = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-mcp-enable`,
-  ) as HTMLInputElement | null;
-  const codexAppServerMcpSetupBtn = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-mcp-setup`,
-  ) as HTMLButtonElement | null;
-  const codexAppServerMcpStatus = doc.querySelector(
-    `#${config.addonRef}-codex-app-server-mcp-status`,
-  ) as HTMLSpanElement | null;
 
   if (!modelSections) return;
 
@@ -845,38 +708,26 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       const apiKeyOption = el(doc, "option") as HTMLOptionElement;
       apiKeyOption.value = "api_key";
       apiKeyOption.textContent = t("API Key");
-      apiKeyOption.selected = group.authMode === "api_key";
-      const codexAppServerOption = el(doc, "option") as HTMLOptionElement;
-      codexAppServerOption.value = "codex_app_server";
-      codexAppServerOption.textContent = t("Codex App Server (native runtime settings)");
-      codexAppServerOption.selected = group.authMode === "codex_app_server";
       const codexOption = el(doc, "option") as HTMLOptionElement;
       codexOption.value = "codex_auth";
-      codexOption.textContent = t("Codex Auth (Legacy)");
-      codexOption.selected = group.authMode === "codex_auth";
+      codexOption.textContent = t("Codex Auth");
       const copilotOption = el(doc, "option") as HTMLOptionElement;
       copilotOption.value = "copilot_auth";
       copilotOption.textContent = t("GitHub Copilot");
-      copilotOption.selected = group.authMode === "copilot_auth";
       // [webchat] Add webchat option
       const webchatOption = el(doc, "option") as HTMLOptionElement;
       webchatOption.value = "webchat";
       webchatOption.textContent = t("WebChat");
-      webchatOption.selected = group.authMode === "webchat";
-      authModeSelect.append(apiKeyOption);
-      if (group.authMode === "codex_app_server") {
-        authModeSelect.append(codexAppServerOption);
-      }
-      authModeSelect.append(codexOption, copilotOption, webchatOption);
+      authModeSelect.append(
+        apiKeyOption,
+        codexOption,
+        copilotOption,
+        webchatOption,
+      );
+      authModeSelect.value = group.authMode;
       authModeSelect.addEventListener("change", () => {
-        const previousAuthMode = group.authMode;
         const nextAuthMode = normalizeAuthMode(authModeSelect.value);
         group.authMode = nextAuthMode;
-        group.apiBase = migrateApiBaseForAuthModeChange(
-          previousAuthMode,
-          nextAuthMode,
-          group.apiBase,
-        );
         if (nextAuthMode === "webchat") {
           group.providerProtocol = "web_sync";
           // Set default webchat model to chatgpt.com (user can change it)
@@ -889,10 +740,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           ) {
             group.models = [{ ...group.models[0], model: "chatgpt.com" }];
           }
-        } else if (
-          nextAuthMode === "codex_auth" ||
-          nextAuthMode === "codex_app_server"
-        ) {
+        } else if (nextAuthMode === "codex_auth") {
           group.providerProtocol = "codex_responses";
         } else if (nextAuthMode === "copilot_auth") {
           group.providerProtocol = "openai_chat_compat";
@@ -934,9 +782,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
 
       const selectedPresetId: ProviderPresetId =
-        group.authMode === "codex_auth" ||
-        group.authMode === "codex_app_server" ||
-        group.authMode === "copilot_auth"
+        group.authMode === "codex_auth" || group.authMode === "copilot_auth"
           ? "customized"
           : (group.presetIdOverride ?? detectProviderPreset(group.apiBase));
       const selectedPreset =
@@ -945,7 +791,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           : getProviderPreset(selectedPresetId);
       const isCustomizedPreset =
         group.authMode !== "codex_auth" &&
-        group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth" &&
         selectedPresetId === "customized";
       group.providerProtocol = resolveSelectedProtocol(group, selectedPresetId);
@@ -958,7 +803,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
       if (
         group.authMode !== "codex_auth" &&
-        group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth"
       ) {
         const providerPresetLabel = el(
@@ -981,14 +825,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           const option = el(doc, "option") as HTMLOptionElement;
           option.value = preset.id;
           option.textContent = preset.label;
-          option.selected = preset.id === selectedPresetId;
           providerPresetSelect.appendChild(option);
         }
         const customizedOption = el(doc, "option") as HTMLOptionElement;
         customizedOption.value = "customized";
         customizedOption.textContent = t("Customized");
-        customizedOption.selected = selectedPresetId === "customized";
         providerPresetSelect.appendChild(customizedOption);
+
+        providerPresetSelect.value = selectedPresetId;
         providerPresetSelect.addEventListener("change", () => {
           const nextPresetId = normalizeProviderPresetId(
             providerPresetSelect.value,
@@ -1011,20 +855,61 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         providerPresetWrap.append(providerPresetLabel, providerPresetSelect);
       }
 
+      // ── Protocol ────────────────────────────────────────────────
+      const protocolWrap = el(
+        doc,
+        "div",
+        "display: flex; flex-direction: column;",
+      );
+      const protocolLabel = el(doc, "label", LABEL_STYLE, t("Protocol"));
+      const protocolSelect = el(
+        doc,
+        "select",
+        INPUT_STYLE,
+      ) as HTMLSelectElement;
+      protocolSelect.id = `${config.addonRef}-provider-protocol-${group.id}`;
+      protocolLabel.setAttribute("for", protocolSelect.id);
+      const protocolOptions = getProtocolOptions(
+        group.authMode,
+        selectedPresetId,
+      );
+      for (const protocol of protocolOptions) {
+        const option = el(doc, "option") as HTMLOptionElement;
+        option.value = protocol;
+        option.textContent = getProviderProtocolSpec(protocol).label;
+        protocolSelect.appendChild(option);
+      }
+      protocolSelect.value = group.providerProtocol;
+      protocolSelect.disabled = protocolOptions.length <= 1;
+      protocolSelect.addEventListener("change", () => {
+        group.providerProtocol = resolveSelectedProtocol(
+          {
+            ...group,
+            providerProtocol: protocolSelect.value as ProviderProtocol,
+          },
+          selectedPresetId,
+        );
+        persistGroups(groups);
+        setTimeout(() => rerender(), 0);
+      });
+      protocolWrap.append(
+        protocolLabel,
+        protocolSelect,
+        el(
+          doc,
+          "span",
+          HELPER_STYLE,
+          getProviderProtocolSpec(group.providerProtocol).helperText,
+        ),
+      );
+
       // ── API URL ──────────────────────────────────────────────────
       const apiUrlWrap = el(
         doc,
         "div",
         "display: flex; flex-direction: column;",
       );
-      const apiUrlLabel = el(
-        doc,
-        "label",
-        LABEL_STYLE,
-        group.authMode === "codex_app_server"
-          ? t("Codex CLI Path")
-          : t("API URL"),
-      );
+      const apiUrlLabel = el(doc, "label", LABEL_STYLE, t("API URL"));
       const apiUrlInput = el(doc, "input", INPUT_STYLE) as HTMLInputElement;
       apiUrlInput.id = `${config.addonRef}-api-base-${group.id}`;
       apiUrlLabel.setAttribute("for", apiUrlInput.id);
@@ -1032,15 +917,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiUrlInput.placeholder =
         group.authMode === "codex_auth"
           ? DEFAULT_CODEX_API_BASE
-          : group.authMode === "codex_app_server"
-            ? "Optional absolute path to codex executable"
-            : group.authMode === "copilot_auth"
-              ? DEFAULT_COPILOT_API_BASE
-              : selectedPreset?.defaultApiBase || "https://api.openai.com/v1";
+          : group.authMode === "copilot_auth"
+            ? DEFAULT_COPILOT_API_BASE
+            : selectedPreset?.defaultApiBase || "https://api.openai.com/v1";
       apiUrlInput.value = group.apiBase;
       apiUrlInput.readOnly =
         group.authMode !== "codex_auth" &&
-        group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth" &&
         !isCustomizedPreset;
       apiUrlInput.style.opacity = apiUrlInput.readOnly ? "0.85" : "1";
@@ -1059,12 +941,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         "span",
         HELPER_STYLE,
         group.authMode === "codex_auth"
-          ? t(LEGACY_CODEX_API_HELPER_TEXT)
-          : group.authMode === "codex_app_server"
-            ? t(getCodexAppServerPathHelperText())
-            : group.authMode === "copilot_auth"
-              ? t(COPILOT_API_HELPER_TEXT)
-              : getPresetSelectHelperText(selectedPresetId),
+          ? t(CODEX_API_HELPER_TEXT)
+          : group.authMode === "copilot_auth"
+            ? t(COPILOT_API_HELPER_TEXT)
+            : getPresetSelectHelperText(selectedPresetId),
       );
       apiUrlWrap.append(apiUrlLabel, apiUrlInput, apiUrlHelper);
 
@@ -1089,7 +969,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiKeyWrap.append(apiKeyLabel, apiKeyInput);
       if (
         group.authMode === "codex_auth" ||
-        group.authMode === "codex_app_server" ||
         group.authMode === "copilot_auth"
       ) {
         apiKeyWrap.style.display = "none";
@@ -1636,12 +1515,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           doc,
           "label",
           "font-size: 10.5px; font-weight: 600; color: var(--fill-primary, inherit);",
-          t("API protocol override"),
+          t("Protocol"),
         );
         const protocolFieldSelect = el(
           doc,
           "select",
-          PROTOCOL_SELECT_SM_STYLE,
+          INPUT_SM_STYLE + " width: 120px;",
         ) as HTMLSelectElement;
         const autoOption = el(doc, "option") as HTMLOptionElement;
         autoOption.value = "";
@@ -1659,9 +1538,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         }
         protocolFieldSelect.value = modelEntry.providerProtocol || "";
         protocolFieldWrap.append(protocolFieldLabel, protocolFieldSelect);
-        if (allowedProtocols.length <= 1) {
-          protocolFieldWrap.style.display = "none";
-        }
 
         advFields.append(
           tempField.wrap,
@@ -1683,10 +1559,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
         const commitAdvanced = () => {
           modelEntry.temperature = normalizeTemperature(tempField.input.value);
-          modelEntry.maxTokens = normalizeMaxTokensForModel(
-            maxTokField.input.value,
-            modelEntry.model,
-          );
+          modelEntry.maxTokens = normalizeMaxTokens(maxTokField.input.value);
           modelEntry.inputTokenCap = normalizeOptionalInputTokenCap(
             inputCapField.input.value,
           );
@@ -1753,22 +1626,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
                   ? DEFAULT_COPILOT_API_BASE
                   : "")
             ).replace(/\/$/, "");
-            if (authMode === "codex_app_server") {
-              const modelName = (
-                modelEntry.model ||
-                profile.defaultModel ||
-                ""
-              ).trim();
-              const result = await runCodexAppServerConnectionTest({
-                modelName,
-                codexPath: group.apiBase.trim(),
-              });
-              statusLine.textContent =
-                `${t("✓ Success — model says: ")}"${result.reply}"\n` +
-                `${t("Agent capability: ")}${result.capabilityLabel}`;
-              statusLine.style.color = "green";
-              return;
-            }
             const apiKey =
               authMode === "codex_auth"
                 ? await readCodexAccessToken()
@@ -1838,13 +1695,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         cardBody.append(
           authModeWrap,
           copilotLoginWrap,
-          apiUrlWrap,
-          divider,
-          modelsWrap,
-        );
-      } else if (group.authMode === "codex_app_server") {
-        cardBody.append(
-          authModeWrap,
+          protocolWrap,
           apiUrlWrap,
           divider,
           modelsWrap,
@@ -1852,6 +1703,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       } else if (group.authMode === "codex_auth") {
         cardBody.append(
           authModeWrap,
+          protocolWrap,
           apiUrlWrap,
           apiKeyWrap,
           divider,
@@ -1861,6 +1713,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         cardBody.append(
           authModeWrap,
           providerPresetWrap,
+          protocolWrap,
           apiUrlWrap,
           apiKeyWrap,
           divider,
@@ -2698,67 +2551,15 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const mineruSubSettings = doc.querySelector(
     `#${config.addonRef}-mineru-sub-settings`,
   ) as HTMLDivElement | null;
-  const mineruLocalModeInput = doc.querySelector(
-    `#${config.addonRef}-mineru-local-mode`,
-  ) as HTMLInputElement | null;
-  const mineruCloudInfo = doc.querySelector(
-    `#${config.addonRef}-mineru-cloud-info`,
-  ) as HTMLDivElement | null;
-  const mineruApiKeySection = doc.querySelector(
-    `#${config.addonRef}-mineru-api-key-section`,
-  ) as HTMLDivElement | null;
   const mineruApiKeyInput = doc.querySelector(
     `#${config.addonRef}-mineru-api-key`,
   ) as HTMLInputElement | null;
-  const mineruLocalSection = doc.querySelector(
-    `#${config.addonRef}-mineru-local-section`,
-  ) as HTMLDivElement | null;
-  const mineruLocalApiBaseInput = doc.querySelector(
-    `#${config.addonRef}-mineru-local-api-base`,
-  ) as HTMLInputElement | null;
-  const mineruLocalBackendSelect = doc.querySelector(
-    `#${config.addonRef}-mineru-local-backend`,
-  ) as HTMLSelectElement | null;
   const mineruTestBtn = doc.querySelector(
     `#${config.addonRef}-mineru-test`,
   ) as HTMLButtonElement | null;
   const mineruTestStatus = doc.querySelector(
     `#${config.addonRef}-mineru-test-status`,
   ) as HTMLSpanElement | null;
-  const mineruSyncEnabledInput = doc.querySelector(
-    `#${config.addonRef}-mineru-sync-enabled`,
-  ) as HTMLInputElement | null;
-  const mineruSyncPrepareBtn = doc.querySelector(
-    `#${config.addonRef}-mineru-sync-prepare`,
-  ) as HTMLButtonElement | null;
-  const mineruSyncCleanBtn = doc.querySelector(
-    `#${config.addonRef}-mineru-sync-clean`,
-  ) as HTMLButtonElement | null;
-  const mineruSyncStatus = doc.querySelector(
-    `#${config.addonRef}-mineru-sync-status`,
-  ) as HTMLSpanElement | null;
-
-  const getSelectedMineruMode = (): MineruMode =>
-    mineruLocalModeInput?.checked ? "local" : "cloud";
-  const clearMineruTestStatus = () => {
-    if (!mineruTestStatus) return;
-    mineruTestStatus.style.display = "none";
-    mineruTestStatus.textContent = "";
-  };
-  const syncMineruModeVisibility = () => {
-    const mode = getSelectedMineruMode();
-    if (mineruCloudInfo) {
-      mineruCloudInfo.style.display = mode === "cloud" ? "block" : "none";
-    }
-    if (mineruApiKeySection) {
-      mineruApiKeySection.style.display =
-        mode === "cloud" ? "flex" : "none";
-    }
-    if (mineruLocalSection) {
-      mineruLocalSection.style.display = mode === "local" ? "flex" : "none";
-    }
-  };
-
   if (mineruEnabledInput) {
     mineruEnabledInput.checked = isMineruEnabled();
     const syncSubVisibility = () => {
@@ -2767,153 +2568,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           ? "flex"
           : "none";
       }
-      syncMineruModeVisibility();
     };
     syncSubVisibility();
     mineruEnabledInput.addEventListener("change", () => {
       setMineruEnabled(mineruEnabledInput.checked);
       syncSubVisibility();
     });
-  }
-
-  const isMineruSyncChecked = () =>
-    mineruSyncEnabledInput
-      ? mineruSyncEnabledInput.checked
-      : isMineruSyncEnabled();
-  const updateMineruSyncCleanupLabel = () => {
-    if (!mineruSyncCleanBtn) return;
-    mineruSyncCleanBtn.textContent = t(
-      isMineruSyncChecked()
-        ? "Disable MinerU sync and delete packages"
-        : "Delete synced MinerU packages",
-    );
-  };
-  const syncMineruSyncControls = () => {
-    const enabled = isMineruSyncChecked();
-    if (mineruSyncPrepareBtn) {
-      mineruSyncPrepareBtn.disabled = !enabled;
-    }
-    updateMineruSyncCleanupLabel();
-  };
-
-  if (mineruSyncEnabledInput) {
-    mineruSyncEnabledInput.checked = isMineruSyncEnabled();
-    syncMineruSyncControls();
-    mineruSyncEnabledInput.addEventListener("change", () => {
-      const enabled = mineruSyncEnabledInput.checked;
-      setMineruSyncEnabled(enabled);
-      syncMineruSyncControls();
-      if (!mineruSyncStatus) return;
-      mineruSyncStatus.style.display = "block";
-      mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
-      if (!enabled) {
-        mineruSyncStatus.textContent = t(
-          "MinerU sync disabled. Existing synced packages are kept until deleted.",
-        );
-        return;
-      }
-      mineruSyncStatus.textContent = t(
-        "MinerU sync enabled. Existing local caches sync only when requested.",
-      );
-    });
-  } else {
-    syncMineruSyncControls();
-  }
-
-  if (mineruSyncPrepareBtn && mineruSyncStatus) {
-    mineruSyncPrepareBtn.addEventListener("click", () => {
-      if (!isMineruSyncEnabled()) {
-        mineruSyncStatus.style.display = "block";
-        mineruSyncStatus.style.color = "#b45309";
-        mineruSyncStatus.textContent = t(
-          "Enable MinerU sync before preparing packages.",
-        );
-        return;
-      }
-
-      mineruSyncPrepareBtn.disabled = true;
-      if (mineruSyncCleanBtn) mineruSyncCleanBtn.disabled = true;
-      mineruSyncStatus.style.display = "block";
-      mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
-      mineruSyncStatus.textContent = t("Syncing existing MinerU caches…");
-      void (async () => {
-        try {
-          const result = await repairMineruSyncPackages({
-            onProgress: (progress) => {
-              mineruSyncStatus.textContent =
-                t("Syncing existing MinerU caches") +
-                `: ${progress.scanned} scanned, ` +
-                `${progress.published} package(s), ` +
-                `${progress.restored} restored.`;
-            },
-          });
-          mineruSyncStatus.textContent =
-            t("Existing MinerU caches synced") +
-            `: ${result.published} package(s), ` +
-            `${result.restored} restored, ${result.upToDate} up to date, ` +
-            `${result.skipped} skipped.`;
-          mineruSyncStatus.style.color =
-            result.failed > 0 || result.diverged > 0 ? "#b45309" : "green";
-        } catch (error) {
-          mineruSyncStatus.textContent = `\u2717 ${
-            error instanceof Error ? error.message : String(error)
-          }`;
-          mineruSyncStatus.style.color = "red";
-        } finally {
-          mineruSyncPrepareBtn.disabled = !isMineruSyncEnabled();
-          if (mineruSyncCleanBtn) mineruSyncCleanBtn.disabled = false;
-        }
-      })();
-    });
-  }
-
-  if (mineruSyncCleanBtn && mineruSyncStatus) {
-    const runMineruSyncCleanup = async () => {
-      const shouldDisableSync = isMineruSyncChecked();
-      const confirmed = await confirmMineruSyncPackageDeletion(
-        shouldDisableSync,
-      );
-      if (!confirmed) return;
-
-      mineruSyncCleanBtn.disabled = true;
-      if (shouldDisableSync) {
-        setMineruSyncEnabled(false);
-        if (mineruSyncEnabledInput) {
-          mineruSyncEnabledInput.checked = false;
-        }
-        syncMineruSyncControls();
-      }
-      mineruSyncStatus.style.display = "block";
-      mineruSyncStatus.style.color = "var(--fill-secondary, #888)";
-      mineruSyncStatus.textContent = shouldDisableSync
-        ? t("MinerU sync disabled. Deleting synced MinerU packages…")
-        : t("Deleting synced MinerU packages…");
-      try {
-        const result = await cleanSyncedMineruPackages();
-        const deletedPrefix = shouldDisableSync
-          ? t("MinerU sync disabled. Deleted synced MinerU packages")
-          : t("Deleted synced MinerU packages");
-        mineruSyncStatus.textContent =
-          result.failed > 0
-            ? `${deletedPrefix}: ${result.deleted}, ${result.failed} failed.`
-            : `${deletedPrefix}: ${result.deleted}.`;
-        mineruSyncStatus.style.color = result.failed > 0 ? "#b45309" : "green";
-      } catch (error) {
-        mineruSyncStatus.textContent = `\u2717 ${
-          error instanceof Error ? error.message : String(error)
-        }`;
-        mineruSyncStatus.style.color = "red";
-      } finally {
-        mineruSyncCleanBtn.disabled = false;
-        syncMineruSyncControls();
-      }
-    };
-    mineruSyncCleanBtn.addEventListener("click", () =>
-      void runMineruSyncCleanup(),
-    );
-    mineruSyncCleanBtn.addEventListener("command", () =>
-      void runMineruSyncCleanup(),
-    );
   }
 
   const mineruGlobalAutoParseInput = doc.querySelector(
@@ -2926,18 +2586,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
-  if (mineruLocalModeInput) {
-    mineruLocalModeInput.checked = getMineruMode() === "local";
-    syncMineruModeVisibility();
-    mineruLocalModeInput.addEventListener("change", () => {
-      setMineruMode(getSelectedMineruMode());
-      syncMineruModeVisibility();
-      clearMineruTestStatus();
-    });
-  } else {
-    syncMineruModeVisibility();
-  }
-
   if (mineruApiKeyInput) {
     mineruApiKeyInput.value = getMineruApiKey();
     mineruApiKeyInput.addEventListener("input", () => {
@@ -2945,50 +2593,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
-  if (mineruLocalApiBaseInput) {
-    mineruLocalApiBaseInput.value = getMineruLocalApiBase();
-    const commitMineruLocalApiBase = () => {
-      setMineruLocalApiBase(mineruLocalApiBaseInput.value);
-      mineruLocalApiBaseInput.value = getMineruLocalApiBase();
-    };
-    mineruLocalApiBaseInput.addEventListener("change", commitMineruLocalApiBase);
-    mineruLocalApiBaseInput.addEventListener("blur", commitMineruLocalApiBase);
-  }
-
-  if (mineruLocalBackendSelect) {
-    mineruLocalBackendSelect.value = getMineruLocalBackend();
-    mineruLocalBackendSelect.addEventListener("change", () => {
-      const next: MineruLocalBackend = normalizeMineruLocalBackend(
-        mineruLocalBackendSelect.value,
-      );
-      setMineruLocalBackend(next);
-      mineruLocalBackendSelect.value = next;
-      clearMineruTestStatus();
-    });
-  }
-
   if (mineruTestBtn && mineruTestStatus) {
     const runMineruTest = async () => {
-      const mode = getSelectedMineruMode();
-      if (mode === "local" && mineruLocalApiBaseInput) {
-        setMineruLocalApiBase(mineruLocalApiBaseInput.value);
-        mineruLocalApiBaseInput.value = getMineruLocalApiBase();
+      const apiKey = getMineruApiKey().trim();
+      if (!apiKey) {
+        mineruTestStatus.style.display = "inline";
+        mineruTestStatus.textContent = t("Enter an API key first");
+        mineruTestStatus.style.color = "var(--fill-secondary, #888)";
+        return;
       }
       mineruTestBtn.disabled = true;
       mineruTestStatus.style.display = "inline";
       mineruTestStatus.textContent = t("Testing…");
       mineruTestStatus.style.color = "var(--fill-secondary, #888)";
       try {
-        if (mode === "local") {
-          await testMineruLocalConnection(getMineruLocalApiBase());
-        } else {
-          const apiKey = getMineruApiKey().trim();
-          if (apiKey) {
-            await testMineruConnection(apiKey);
-          } else {
-            await testProxyConnection();
-          }
-        }
+        await testMineruConnection(apiKey);
         mineruTestStatus.textContent = t("✓ Connection successful");
         mineruTestStatus.style.color = "green";
       } catch (error) {

@@ -4,18 +4,13 @@ import {
   buildModelProviderGroupsFromLegacySlots,
   deriveProviderLabel,
   getRuntimeModelEntries,
-  migrateApiBaseForAuthModeChange,
   setModelProviderGroups,
   type LegacyModelSlot,
   type ModelProviderGroup,
 } from "../src/utils/modelProviders";
 
-let originalZotero: typeof Zotero | undefined;
-
 describe("modelProviders", function () {
-  before(function () {
-    originalZotero = globalThis.Zotero;
-  });
+  const originalZotero = globalThis.Zotero;
 
   beforeEach(function () {
     const prefStore = new Map<string, unknown>();
@@ -159,88 +154,6 @@ describe("modelProviders", function () {
     assert.equal(entries[0].providerProtocol, "openai_chat_compat");
   });
 
-  it("infers Anthropic protocol for customized providers with default chat protocol", function () {
-    const groups: ModelProviderGroup[] = [
-      {
-        id: "provider-1",
-        apiBase: "https://proxy.example.com/anthropic",
-        apiKey: "sk-anthropic",
-        authMode: "api_key",
-        providerProtocol: "openai_chat_compat",
-        presetIdOverride: "customized",
-        models: [
-          {
-            id: "model-1",
-            model: "claude-sonnet-4-5",
-            temperature: 0.3,
-            maxTokens: 4096,
-          },
-        ],
-      },
-    ];
-
-    setModelProviderGroups(groups);
-    const entries = getRuntimeModelEntries();
-
-    assert.lengthOf(entries, 1);
-    assert.equal(entries[0].providerProtocol, "anthropic_messages");
-  });
-
-  it("infers Responses protocol for customized providers with canonical responses URLs", function () {
-    const groups: ModelProviderGroup[] = [
-      {
-        id: "provider-1",
-        apiBase: "https://proxy.example.com/v1/responses",
-        apiKey: "sk-responses",
-        authMode: "api_key",
-        providerProtocol: "openai_chat_compat",
-        presetIdOverride: "customized",
-        models: [
-          {
-            id: "model-1",
-            model: "gpt-5.4",
-            temperature: 0.3,
-            maxTokens: 4096,
-          },
-        ],
-      },
-    ];
-
-    setModelProviderGroups(groups);
-    const entries = getRuntimeModelEntries();
-
-    assert.lengthOf(entries, 1);
-    assert.equal(entries[0].providerProtocol, "responses_api");
-  });
-
-  it("keeps per-model protocol override above customized URL inference", function () {
-    const groups: ModelProviderGroup[] = [
-      {
-        id: "provider-1",
-        apiBase: "https://proxy.example.com/anthropic",
-        apiKey: "sk-chat",
-        authMode: "api_key",
-        providerProtocol: "openai_chat_compat",
-        presetIdOverride: "customized",
-        models: [
-          {
-            id: "model-1",
-            model: "chat-compatible-model",
-            temperature: 0.3,
-            maxTokens: 4096,
-            providerProtocol: "openai_chat_compat",
-          },
-        ],
-      },
-    ];
-
-    setModelProviderGroups(groups);
-    const entries = getRuntimeModelEntries();
-
-    assert.lengthOf(entries, 1);
-    assert.equal(entries[0].providerProtocol, "openai_chat_compat");
-  });
-
   it("keeps input token cap unset when no override is stored", function () {
     const groups: ModelProviderGroup[] = [
       {
@@ -269,37 +182,6 @@ describe("modelProviders", function () {
 
     assert.lengthOf(entries, 1);
     assert.isUndefined(entries[0].advanced.inputTokenCap);
-  });
-
-  it("preserves large DeepSeek V4 output token settings", function () {
-    const groups: ModelProviderGroup[] = [
-      {
-        id: "provider-1",
-        apiBase: "https://api.deepseek.com/v1",
-        apiKey: "sk-deepseek",
-        authMode: "api_key",
-        providerProtocol: "openai_chat_compat",
-        models: [
-          {
-            id: "model-1",
-            model: "deepseek-v4-pro",
-            temperature: 0.3,
-            maxTokens: 384000,
-          },
-        ],
-      },
-    ];
-
-    setModelProviderGroups(groups);
-    (
-      globalThis.Zotero.Prefs as {
-        set: (key: string, value: unknown, global?: boolean) => void;
-      }
-    ).set(`${config.prefsPrefix}.modelProviderGroupsMigrationVersion`, 3, true);
-    const entries = getRuntimeModelEntries();
-
-    assert.lengthOf(entries, 1);
-    assert.equal(entries[0].advanced.maxTokens, 384000);
   });
 
   it("normalizes missing authMode to api_key for stored groups", function () {
@@ -364,118 +246,5 @@ describe("modelProviders", function () {
     assert.lengthOf(entries, 1);
     assert.equal(entries[0].authMode, "codex_auth");
     assert.equal(entries[0].providerProtocol, "codex_responses");
-    assert.equal(entries[0].providerLabel, "OpenAI (codex auth, legacy)");
-    assert.equal(entries[0].displayModelLabel, "codex/gpt-5.4");
-  });
-
-  it("keeps codex app server entries labeled separately", function () {
-    (
-      globalThis.Zotero.Prefs as {
-        set: (key: string, value: unknown, global?: boolean) => void;
-      }
-    ).set(
-      `${config.prefsPrefix}.modelProviderGroups`,
-      JSON.stringify([
-        {
-          id: "provider-codex-app",
-          apiBase: "https://chatgpt.com/backend-api/codex/responses",
-          apiKey: "",
-          authMode: "codex_app_server",
-          models: [
-            { id: "m1", model: "gpt-5.4", temperature: 0.3, maxTokens: 4096 },
-          ],
-        },
-      ]),
-      true,
-    );
-    (
-      globalThis.Zotero.Prefs as {
-        set: (key: string, value: unknown, global?: boolean) => void;
-      }
-    ).set(`${config.prefsPrefix}.modelProviderGroupsMigrationVersion`, 3, true);
-
-    const entries = getRuntimeModelEntries();
-    assert.lengthOf(entries, 1);
-    assert.equal(entries[0].authMode, "codex_app_server");
-    assert.equal(entries[0].providerProtocol, "codex_responses");
-    assert.equal(entries[0].providerLabel, "OpenAI (app server)");
-    assert.equal(entries[0].displayModelLabel, "codex-app/gpt-5.4");
-  });
-
-  describe("migrateApiBaseForAuthModeChange", function () {
-    it("clears http(s) URLs when entering codex_app_server", function () {
-      assert.equal(
-        migrateApiBaseForAuthModeChange(
-          "codex_auth",
-          "codex_app_server",
-          "https://chatgpt.com/backend-api/codex/responses",
-        ),
-        "",
-      );
-      assert.equal(
-        migrateApiBaseForAuthModeChange(
-          "api_key",
-          "codex_app_server",
-          "  HTTP://example.com/v1  ",
-        ),
-        "",
-      );
-    });
-
-    it("preserves an existing local path when re-entering codex_app_server", function () {
-      assert.equal(
-        migrateApiBaseForAuthModeChange(
-          "codex_app_server",
-          "codex_app_server",
-          "C:\\nvm4w\\nodejs\\codex.cmd",
-        ),
-        "C:\\nvm4w\\nodejs\\codex.cmd",
-      );
-    });
-
-    it("clears local paths when leaving codex_app_server for a URL-based mode", function () {
-      assert.equal(
-        migrateApiBaseForAuthModeChange(
-          "codex_app_server",
-          "codex_auth",
-          "C:\\nvm4w\\nodejs\\codex.cmd",
-        ),
-        "",
-      );
-      assert.equal(
-        migrateApiBaseForAuthModeChange(
-          "codex_app_server",
-          "api_key",
-          "/usr/local/bin/codex",
-        ),
-        "",
-      );
-    });
-
-    it("keeps URLs when leaving codex_app_server (the user already had a URL stashed)", function () {
-      assert.equal(
-        migrateApiBaseForAuthModeChange(
-          "codex_app_server",
-          "codex_auth",
-          "https://chatgpt.com/backend-api/codex/responses",
-        ),
-        "https://chatgpt.com/backend-api/codex/responses",
-      );
-    });
-
-    it("leaves apiBase alone for non-app-server transitions", function () {
-      assert.equal(
-        migrateApiBaseForAuthModeChange(
-          "api_key",
-          "copilot_auth",
-          "https://api.openai.com/v1",
-        ),
-        "https://api.openai.com/v1",
-      );
-      assert.equal(
-        migrateApiBaseForAuthModeChange("api_key", "codex_auth", ""),
-        "",
-      );
-    });
   });
 });

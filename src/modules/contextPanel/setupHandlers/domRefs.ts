@@ -37,13 +37,12 @@ export type PanelDomRefs = {
   historyMenu: HTMLDivElement | null;
   modeCapsule: HTMLElement | null;
   modeChipBtn: HTMLButtonElement | null;
+  modeLockBtn: HTMLElement | null;
   historyRowMenu: HTMLDivElement | null;
   historyRowRenameBtn: HTMLButtonElement | null;
   historyUndo: HTMLDivElement | null;
   historyUndoText: HTMLSpanElement | null;
   historyUndoBtn: HTMLButtonElement | null;
-  claudeSystemToggleBtn: HTMLButtonElement | null;
-  claudeSystemToggleIcon: HTMLSpanElement | null;
   selectTextBtn: HTMLButtonElement | null;
   screenshotBtn: HTMLButtonElement | null;
   uploadBtn: HTMLButtonElement | null;
@@ -77,7 +76,6 @@ export type PanelDomRefs = {
   agentQueueList: HTMLDivElement | null;
   commandRow: HTMLDivElement | null;
   commandRowBadge: HTMLSpanElement | null;
-  queueBar: HTMLDivElement | null;
   responseMenu: HTMLDivElement | null;
   responseMenuCopyBtn: HTMLButtonElement | null;
   responseMenuNoteBtn: HTMLButtonElement | null;
@@ -206,12 +204,6 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     historyUndoBtn: body.querySelector(
       "#llm-history-undo-btn",
     ) as HTMLButtonElement | null,
-    claudeSystemToggleBtn: body.querySelector(
-      "#llm-claude-system-toggle",
-    ) as HTMLButtonElement | null,
-    claudeSystemToggleIcon: body.querySelector(
-      "#llm-claude-system-toggle-icon",
-    ) as HTMLSpanElement | null,
     selectTextBtn: body.querySelector(
       "#llm-select-text",
     ) as HTMLButtonElement | null,
@@ -307,9 +299,6 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     commandRowBadge: body.querySelector(
       "#llm-command-row-badge",
     ) as HTMLSpanElement | null,
-    queueBar: body.querySelector(
-      "#llm-queued-input-bar",
-    ) as HTMLDivElement | null,
     responseMenu: body.querySelector(
       "#llm-response-menu",
     ) as HTMLDivElement | null,

@@ -1,14 +1,16 @@
 import { config } from "../../package.json";
 import {
+  getMineruApiKey,
   isGlobalAutoParseEnabled,
   isFilenameExcluded,
 } from "../utils/mineruConfig";
 import {
-  parsePdfWithMineru,
+  parsePdfWithMineruCloud,
   MineruRateLimitError,
   MineruCancelledError,
 } from "../utils/mineruClient";
 import {
+  hasCachedMineruMd,
   writeMineruCacheFiles,
 } from "./contextPanel/mineruCache";
 import { invalidateCachedContextText } from "./contextPanel/pdfContext";
@@ -17,10 +19,6 @@ import {
   setItemCached,
   setItemFailed,
 } from "./mineruProcessingStatus";
-import {
-  getMineruAvailabilityForAttachment,
-  publishMineruCachePackageForAttachment,
-} from "./contextPanel/mineruSync";
 
 type QueueEntry = {
   attachmentId: number;
@@ -134,6 +132,7 @@ async function processQueue(): Promise<void> {
   isPaused = false;
   notifyProgress();
 
+  const apiKey = getMineruApiKey();
   let processedCount = 0;
   let errorCount = 0;
 
@@ -145,17 +144,9 @@ async function processQueue(): Promise<void> {
     currentItemTitle = entry.title;
     notifyProgress();
 
-    const entryItem = Zotero.Items.get(entry.attachmentId);
-    if (
-      entryItem &&
-      (
-        await getMineruAvailabilityForAttachment(entryItem, {
-          validateSyncedPackage: false,
-        })
-      ).status !== "missing"
-    ) {
+    if (await hasCachedMineruMd(entry.attachmentId)) {
       ztoolkit.log(
-        `MinerU auto-parse: skipping available item ${entry.attachmentId}`,
+        `MinerU auto-parse: skipping cached item ${entry.attachmentId}`,
       );
       continue;
     }
@@ -189,8 +180,9 @@ async function processQueue(): Promise<void> {
       }
 
       ztoolkit.log(`MinerU auto-parse: processing ${entry.title}`);
-      const result = await parsePdfWithMineru(
+      const result = await parsePdfWithMineruCloud(
         pdfPath as string,
+        apiKey,
         undefined,
         abort?.signal,
       );
@@ -202,16 +194,6 @@ async function processQueue(): Promise<void> {
           result.files,
         );
         setItemCached(entry.attachmentId);
-        void publishMineruCachePackageForAttachment(entry.attachmentId).then(
-          (published) => {
-            if (published.status === "error") {
-              ztoolkit.log(
-                "LLM: MinerU sync package publish failed",
-                published,
-              );
-            }
-          },
-        );
         // Flush stale in-memory text cache and disk embedding cache so the
         // next query picks up MinerU-quality chunks and re-generates embeddings.
         invalidateCachedContextText(entry.attachmentId);
@@ -317,14 +299,8 @@ async function handleItemNotification(
           );
           continue;
         }
-        if (
-          (
-            await getMineruAvailabilityForAttachment(pdf, {
-              validateSyncedPackage: false,
-            })
-          ).status !== "missing"
-        ) {
-          ztoolkit.log(`MinerU auto-parse: PDF ${pdf.id} already available`);
+        if (await hasCachedMineruMd(pdf.id)) {
+          ztoolkit.log(`MinerU auto-parse: PDF ${pdf.id} already cached`);
           continue;
         }
         const title = item.getField?.("title") || `Item ${pdf.id}`;
@@ -341,14 +317,8 @@ async function handleItemNotification(
         );
         continue;
       }
-      if (
-        (
-          await getMineruAvailabilityForAttachment(item, {
-            validateSyncedPackage: false,
-          })
-        ).status !== "missing"
-      ) {
-        ztoolkit.log(`MinerU auto-parse: PDF ${item.id} already available`);
+      if (await hasCachedMineruMd(item.id)) {
+        ztoolkit.log(`MinerU auto-parse: PDF ${item.id} already cached`);
         continue;
       }
       const parentItem = item.parentID ? Zotero.Items.get(item.parentID) : null;
