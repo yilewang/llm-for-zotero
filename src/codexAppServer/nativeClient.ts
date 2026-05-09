@@ -1300,11 +1300,11 @@ function buildZoteroEnvironmentManifest(params: {
   );
   if (scope.kind === "paper") {
     lines.push(
-      "- Paper workflow: if the active or selected paper context lists mineruCacheDir, read MinerU manifest.json/full.md with file_io before using raw PDF tools. Use read_paper/search_paper only when MinerU is unavailable or after MinerU lacks the needed evidence; use view_pdf_pages only for visual page inspection.",
+      "- Paper workflow: if the active or selected paper context lists mineruCacheDir, read MinerU manifest.json/full.md with file_io({ action:'read', filePath:'...' }) before using raw PDF tools. Use read_paper/search_paper only when MinerU is unavailable or after MinerU lacks the needed evidence; use view_pdf_pages only for visual page inspection.",
     );
   } else {
     lines.push(
-      "- Library workflow: use query_library to discover/search/list items in the active library, then read_library and paper tools on selected item IDs before answering. Do not ask the user to paste the whole library.",
+      "- Library workflow: use query_library with explicit entity and mode, for example query_library({ entity:'items', mode:'search', text:'...' }) or query_library({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }), to discover/search/list items in the active library, then read_library and paper tools on selected item IDs before answering. Do not ask the user to paste the whole library.",
     );
   }
   return [

@@ -578,7 +578,7 @@ function decorateMcpToolDescription(
   mutability: ToolSpec["mutability"],
 ): string {
   const scopeGuidance =
-    "Zotero MCP scope: omit libraryID, activeItemId, and activeContextItemId to use the current Codex Zotero chat scope. Use query_library to discover Zotero items and read_library for structured item state. MinerU priority: when the active scope, selected paper scope, or read_library attachment result includes mineruCacheDir, read {mineruCacheDir}/manifest.json or full.md with file_io before raw PDF tools. Use search_paper/read_paper only when MinerU is unavailable or insufficient; use view_pdf_pages only for visual page inspection. For counting questions, prefer query_library totalCount/returnedCount/limited metadata instead of hand-counting listed results.";
+    "Zotero MCP scope: omit libraryID, activeItemId, and activeContextItemId to use the current Codex Zotero chat scope. Use query_library with explicit entity and mode, for example query_library({ entity:'items', mode:'search', text:'...' }) or query_library({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items, and read_library for structured item state. MinerU priority: when the active scope, selected paper scope, or read_library attachment result includes mineruCacheDir, read {mineruCacheDir}/manifest.json or full.md with file_io({ action:'read', filePath:'...' }) before raw PDF tools. Use search_paper/read_paper only when MinerU is unavailable or insufficient; use view_pdf_pages only for visual page inspection. For counting questions, prefer query_library totalCount/returnedCount/limited metadata instead of hand-counting listed results.";
   const writeGuidance =
     toolName === "zotero_script"
       ? "zotero_script runs directly without a review card. Write scripts must call env.snapshot(item) before mutating items, or env.addUndoStep(fn) for custom changes, so undo_last_action can revert the operation."
@@ -1184,20 +1184,18 @@ export function registerMcpServer(deps: McpServerDeps): void {
   Zotero.Server.Endpoints[ZOTERO_MCP_ENDPOINT_PATH] = McpEndpoint;
 }
 
-export async function invokeRegisteredZoteroMcpEndpoint(options: EndpointOptions): Promise<
-  [number, string, string] | null
-> {
+export async function invokeRegisteredZoteroMcpEndpoint(
+  options: EndpointOptions,
+): Promise<[number, string, string] | null> {
   const deps = registeredMcpDeps;
   if (!deps) return null;
   if (!isAuthorized(options.headers)) {
-    return [
-      401,
-      "application/json",
-      JSON.stringify({ error: "unauthorized" }),
-    ];
+    return [401, "application/json", JSON.stringify({ error: "unauthorized" })];
   }
   const body =
-    typeof options.data === "string" ? options.data : JSON.stringify(options.data);
+    typeof options.data === "string"
+      ? options.data
+      : JSON.stringify(options.data);
   const response = await handleRequest(body, deps, options.headers);
   return [response.status, response.contentType, response.body];
 }

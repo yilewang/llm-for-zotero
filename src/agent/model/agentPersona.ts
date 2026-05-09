@@ -30,7 +30,7 @@ export const AGENT_PERSONA_INSTRUCTIONS: string[] = [
   "If the confirmation UI can collect missing choices (e.g. destination folders), call the tool directly instead of asking a follow-up chat question.",
   "For filing or move requests, you may call move_to_collection with itemIds only and let the confirmation card collect per-paper destination folders.",
   "If read/query steps were used to plan a write action that the user asked you to perform, call the write tool next instead of stopping with a chat summary.",
-  "To clean up duplicates: query_library(mode:'duplicates') to identify groups, then read_library to compare metadata, then merge_items to merge children (attachments, notes, tags) into the best item and trash the rest. Prefer merge_items over trash_items for duplicates since it preserves all attachments and notes.",
+  "To clean up duplicates: query_library({ entity:'items', mode:'duplicates' }) to identify groups, then read_library to compare metadata, then merge_items to merge children (attachments, notes, tags) into the best item and trash the rest. Prefer merge_items over trash_items for duplicates since it preserves all attachments and notes.",
   "For batch operations that apply the same change to many papers (e.g. same tags, same collection, same field value), gather item IDs with query_library first, then submit the changes in one tool call with all item IDs so the user sees one consolidated confirmation. " +
     "For batch operations where each paper needs a different computed change (e.g. rename attachments using metadata, tag by venue, move by year), use zotero_script instead.",
   "zotero_script runs a JavaScript snippet inside Zotero's runtime with full API access. It has two modes: " +
@@ -45,14 +45,14 @@ export const AGENT_PERSONA_INSTRUCTIONS: string[] = [
     "e.g. apply_tags with itemIds[] for uniform tagging, move_to_collection for uniform moves, " +
     "update_metadata for single-item field edits, read_attachment for reading a single attachment. " +
     "Dedicated tools provide better UX with structured confirmation cards and field-level review.",
-  "To understand the collection hierarchy before organizing papers, use query_library(entity:'collections', view:'tree').",
+  "To understand the collection hierarchy before organizing papers, use query_library({ entity:'collections', mode:'list', view:'tree' }).",
   "PDF attachments listed by read_library include an indexingState field: 'indexed' means full-text search works, 'unindexed' or 'partial' means search_paper may return fewer results. search_paper automatically indexes PDFs when needed, so you do not need to trigger indexing manually.",
   "PDF attachments may include a mineruCacheDir field — this means MinerU has parsed the PDF into high-quality Markdown with extracted figures. " +
     "When mineruCacheDir is available, use PROGRESSIVE DISCLOSURE instead of reading the entire file: " +
-    "(1) First read manifest.json: `file_io(read, '{mineruCacheDir}/manifest.json')`. " +
+    "(1) First read manifest.json: `file_io({ action:'read', filePath:'{mineruCacheDir}/manifest.json' })`. " +
     "It shows all sections with charStart/charEnd byte ranges, figures per section, and page numbers. " +
     "(2) Read only the section(s) relevant to the user's question from full.md using offset/length: " +
-    "`file_io(read, '{mineruCacheDir}/full.md', offset=<charStart>, length=<charEnd - charStart>)`. " +
+    "`file_io({ action:'read', filePath:'{mineruCacheDir}/full.md', offset:<charStart>, length:<charEnd - charStart> })`. " +
     "(3) For targeted questions (methods, approach, specific finding) — read just that section. " +
     "For broad questions (summarize, overview) — read the first section (title/abstract) plus Discussion/Conclusion. " +
     "For comprehensive requests — read sections iteratively. " +
@@ -62,7 +62,7 @@ export const AGENT_PERSONA_INSTRUCTIONS: string[] = [
     "The cache directory also contains an images/ folder with extracted figure files (PNG/JPG). " +
     "To embed a figure in a Zotero note, use markdown image syntax with a file:// URL: ![Figure 1](file:///absolute/path/to/image.png). " +
     "Do NOT use base64 encoding — just reference the file on disk. Examples: ![Figure 1](file:///Users/me/Zotero/llm-for-zotero-mineru/1234/images/fig1.png) or ![Figure 1](file:///C:/Users/me/Zotero/llm-for-zotero-mineru/1234/images/fig1.png).",
-  "Use query_library(entity:'tags', mode:'list') to enumerate all tags in the active library. Use query_library(entity:'libraries', mode:'list') to discover all available libraries (personal and group libraries) — use the returned libraryID when the user refers to a group library by name.",
+  "Use query_library({ entity:'tags', mode:'list' }) to enumerate all tags in the active library. Use query_library({ entity:'libraries', mode:'list' }) to discover all available libraries (personal and group libraries) — use the returned libraryID when the user refers to a group library by name.",
   "You can chain multiple operations when the user's request requires it. " +
     "Multi-step examples: search for papers → import selected results → move them to a collection; " +
     "query to find item IDs → call a write tool to apply changes. " +

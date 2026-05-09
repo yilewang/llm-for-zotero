@@ -9,9 +9,7 @@ import { getAllSkills } from "../skills";
 
 import { resolveProviderCapabilities } from "../../providers";
 import type { ProviderCapabilities } from "../../providers";
-import {
-  buildNotesDirectoryConfigSection,
-} from "../../utils/notesDirectoryConfig";
+import { buildNotesDirectoryConfigSection } from "../../utils/notesDirectoryConfig";
 import { buildRuntimePlatformGuidanceText } from "../../utils/runtimePlatform";
 import {
   buildPaperQuoteCitationGuidance,
@@ -207,7 +205,7 @@ function buildFullUserMessage(
         (entry, index) =>
           `- Collection ${index + 1}: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
       ),
-      "Treat these collections as scoped candidate sets. Use query_library with filters.collectionId or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
+      "Treat these collections as scoped candidate sets. Use query_library({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
       "If the user explicitly asks to read or analyze the full text of every paper in a collection, plan a batch workflow: enumerate papers, read/process them in bounded batches, create compact per-paper digests with evidence, then synthesize.",
     );
   }
@@ -339,7 +337,7 @@ function buildAutoReadInstruction(request: AgentRuntimeRequest): string {
     return (
       "TURN RULE: Because the user marked specific paper(s) for full-text use on this turn, " +
       "your very first action MUST be to read the paper content. " +
-      "All marked papers have MinerU cache — start by reading `file_io(read, '{mineruCacheDir}/manifest.json')` for each paper " +
+      "All marked papers have MinerU cache — start by reading `file_io({ action:'read', filePath:'{mineruCacheDir}/manifest.json' })` for each paper " +
       "to see the section structure, then read the relevant sections from full.md using offset/length. " +
       "Do this before answering, even if the answer seems obvious."
     );
@@ -381,7 +379,7 @@ function buildFigureMineruInstruction(
     .join("\n");
   return (
     "TURN RULE: This is a figure/table interpretation task and MinerU cache is available for at least one in-scope paper. " +
-    "Before using `search_paper`, `read_paper`, or `view_pdf_pages`, first inspect MinerU by calling `file_io(read, '{mineruCacheDir}/manifest.json')` for the relevant cached paper. " +
+    "Before using `search_paper`, `read_paper`, or `view_pdf_pages`, first inspect MinerU by calling `file_io({ action:'read', filePath:'{mineruCacheDir}/manifest.json' })` for the relevant cached paper. " +
     "Then read the relevant `full.md` offsets and any referenced image files from that cache. " +
     "Only fall back to PDF/search tools if the manifest or cache content cannot answer the figure request.\n" +
     `Available MinerU cache directories:\n${cacheHints}`

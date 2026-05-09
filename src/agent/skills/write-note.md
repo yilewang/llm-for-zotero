@@ -1,7 +1,7 @@
 ---
 id: write-note
 description: Write a long-form reading or literature note for a specific paper, saved as a Zotero note or Markdown file. Use ONLY when the user explicitly asks to write, draft, or edit a note.
-version: 5
+version: 6
 match: /\b(create|make|write|draft|generate)\b.*\b(note|summary note|reading note|notes?)\b.*\b(for|from|about|on)\b.*\b(paper|article|this)\b/i
 match: /\b(note|notes?)\b.*\b(for|from|about|on)\b.*\b(paper|article|this|these)\b/i
 match: /\b(reading notes?|study notes?|literature notes?|research notes?)\b/i
@@ -52,7 +52,7 @@ If unclear, default to Zotero note.
 
 ### Step 1 — Read content
 
-- If `mineruCacheDir` is available: use `file_io(read, '{mineruCacheDir}/full.md')`.
+- If `mineruCacheDir` is available: use `file_io({ action:'read', filePath:'{mineruCacheDir}/full.md' })`.
 - Otherwise: use `read_paper` for the overview, then optionally one `search_paper` call for key results/methods if the user wants detail beyond the abstract.
 - For multi-paper notes (reviews, comparisons): use `query_library` + `read_paper`/`file_io` for each paper.
 - For free-form notes: use whatever the user provides or requests.
@@ -60,7 +60,7 @@ If unclear, default to Zotero note.
 
 ### Step 2 — Compose the note using the template below
 
-Look up `title` (the paper's full title), `citekey`, `doi`, `journal`, `year`, and **authors** from Zotero item metadata via `read_library(sections:['metadata'])`. Cite papers using **Pandoc citation syntax** `[@citekey]` **only when `citekey` is non-empty**. If `citekey` is missing or empty (common when Better BibTeX is not installed), reference papers in prose instead (`First-Author et al. (Year)`) and rely on the full citation in the `## References` section. **Never emit `[@]`** — an empty citation is a bug.
+Look up `title` (the paper's full title), `citekey`, `doi`, `journal`, `year`, and **authors** from Zotero item metadata via `read_library({ sections:['metadata'] })`. Cite papers using **Pandoc citation syntax** `[@citekey]` **only when `citekey` is non-empty**. If `citekey` is missing or empty (common when Better BibTeX is not installed), reference papers in prose instead (`First-Author et al. (Year)`) and rely on the full citation in the `## References` section. **Never emit `[@]`** — an empty citation is a bug.
 
 For **Zotero notes** (`edit_current_note`): omit the YAML frontmatter block entirely. Use only the heading and section structure.
 
@@ -129,7 +129,7 @@ Written by LLM-for-Zotero.
 
 ### How to apply the template
 
-- For **paper notes**, `{{paperTitle}}` is **the full title of the paper itself** (e.g., `"A toolbox for representational similarity analysis"`), looked up from Zotero metadata via `read_library(sections:['metadata'])`. Use the exact same value in both the `title:` frontmatter field and the `# heading`.
+- For **paper notes**, `{{paperTitle}}` is **the full title of the paper itself** (e.g., `"A toolbox for representational similarity analysis"`), looked up from Zotero metadata via `read_library({ sections:['metadata'] })`. Use the exact same value in both the `title:` frontmatter field and the `# heading`.
 - For **general notes**, `{{noteTitle}}` is the review topic or user-provided title. Use the same value in both `title:` frontmatter and `# heading`.
 - **Filename and `title:` are independent fields.** The filename uses its own three-part pattern (see Step 4b) that MAY include the note subtopic and date; frontmatter `title:` never does. Never copy any part of the filename into `title:`.
 - Fill in `{{created}}` with today's date in YYYY-MM-DD format. This is when the note was created, not when the paper was published (that's the `year` field).
@@ -140,6 +140,7 @@ Written by LLM-for-Zotero.
 - **Footer is mandatory on every note** (paper or general, Zotero or file-based). End the note with a horizontal rule followed by `Written by LLM-for-Zotero.` on its own line, exactly as shown in the templates. For HTML Zotero notes, use `<hr/><p>Written by LLM-for-Zotero.</p>`.
 
 **Checklist before writing the note — verify each item:**
+
 1. `title:` value is the paper's full title from Zotero (paper notes) or the user's note title (general notes) — NOT the filename, NOT the figure/subtopic label, NOT the date.
 2. Frontmatter contains exactly the 7 keys shown above, in that order, and NO others.
 3. You did not add `authors`, `note_type`, `figure`, `abstract`, or any other field.
@@ -195,28 +196,33 @@ Write:        ![Figure 2. RSA toolbox schematic](../imgs/Nili2014/figure-2.jpg)
 ### Step 4a — Write to Zotero (`edit_current_note`)
 
 **Creating notes** (mode: `create`):
+
 - Notes are created directly without a confirmation card.
 - In **paper chat** (active item exists): default to `target: 'item'` — attaches the note to the active paper.
 - In **library chat** (no active item): default to `target: 'standalone'` — creates a standalone note.
 - `create` always means a brand-new note. Do not use `create` when the user asks to append to an existing note.
 
 **Appending to existing notes** (mode: `append`):
+
 - Use mode `append` when the user says append, add to an existing note, continue a note, or save into a specific existing note.
 - Pass `targetNoteId` when you know the note ID.
 - If no `targetNoteId` is supplied, the tool appends to the active note; otherwise it can append to the single child note on the target item.
 - If the target paper has multiple child notes, ask which note to append to before proceeding.
 
 **Editing existing notes** (mode: `edit`):
+
 - Edits always show a diff review card for the user to approve.
 - PREFER `patches` (find-and-replace pairs) over `content` (full rewrite) — patches are faster.
 - Use mode `edit` for: append to a specific position, insert, delete, rewrite sections.
 
 **Format:**
+
 - Pass Markdown by default. When the user explicitly requests HTML output or provides an HTML template (e.g., Better Notes templates with inline styles), write HTML with inline styles directly.
 
 ### Step 4b — Write to file (`file_io`)
 
 **Prerequisites:**
+
 - The user's notes directory path and default folder are provided in the system prompt under "Notes directory configuration". If missing, tell the user to configure the notes directory in the plugin preferences (Settings > Agent tab).
 - The default folder is used when the user doesn't specify a folder. If the user specifies a different folder, write there instead.
 
@@ -239,17 +245,17 @@ Three components, joined by single hyphens:
 
 **Worked examples:**
 
-| User request | Filename |
-|---|---|
-| "summary notes about figure 1 to my obsidian note" | `stable-and-dynamic-coding-for-working-memory-figure-1-2026-04-16.md` |
-| "create a reading note for this paper" | `stable-and-dynamic-coding-for-working-memory-2026-04-16.md` |
-| "methodology summary" | `stable-and-dynamic-coding-for-working-memory-methodology-2026-04-16.md` |
-| "literature review on working memory" (non-paper note) | `literature-review-on-working-memory-2026-04-16.md` |
+| User request                                           | Filename                                                                 |
+| ------------------------------------------------------ | ------------------------------------------------------------------------ |
+| "summary notes about figure 1 to my obsidian note"     | `stable-and-dynamic-coding-for-working-memory-figure-1-2026-04-16.md`    |
+| "create a reading note for this paper"                 | `stable-and-dynamic-coding-for-working-memory-2026-04-16.md`             |
+| "methodology summary"                                  | `stable-and-dynamic-coding-for-working-memory-methodology-2026-04-16.md` |
+| "literature review on working memory" (non-paper note) | `literature-review-on-working-memory-2026-04-16.md`                      |
 
 **Writing steps:**
 
 1. Construct the file path: `{notesDirectoryPath}/{folder}/<filename>.md`, using the native path separator from the runtime platform section.
-2. Call `file_io(write, filePath, noteContent)`.
+2. Call `file_io({ action:'write', filePath, content:noteContent })`.
 3. If writing fails, report the error clearly with the attempted path.
 
 **Filename is independent of frontmatter.** The frontmatter `title:` stays the paper's full title (paper notes) or the user's note title (general notes) per the template. Do NOT put the subtopic or the date into `title:`.
@@ -286,6 +292,7 @@ Any placeholder the user writes (`{citekey}`, `{firstauthor}`, `{year}`, `{doi}`
 - If the user has replaced this skill's managed block with their own customization (either by editing the block directly or by writing their own template outside the MANAGED markers), follow their customization instead of the defaults above.
 
 ### Budget
+
 Total tool calls: 2–5 (read content, optionally look up citekeys, optionally copy images, write note).
 
 <!-- LLM-FOR-ZOTERO:MANAGED-END -->

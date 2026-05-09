@@ -888,8 +888,7 @@ export class AgentRuntime {
         pendingReadActivities.push({
           toolName: toolResult.name,
           toolLabel:
-            typeof executedCall.toolDefinition?.presentation?.label ===
-            "string"
+            typeof executedCall.toolDefinition?.presentation?.label === "string"
               ? executedCall.toolDefinition.presentation.label
               : undefined,
           input: executedCall.input,
@@ -1121,7 +1120,7 @@ export class AgentRuntime {
           const nickname = getNotesDirectoryNickname().trim();
           const targetLabel = nickname ? `${nickname} note` : "note";
           return completeRun(
-            `I could not complete the ${targetLabel} write because the model did not call \`file_io(write, ...)\` after being corrected.`,
+            `I could not complete the ${targetLabel} write because the model did not call \`file_io({ action:'write', filePath, content })\` after being corrected.`,
             "failed",
           );
         }

@@ -281,12 +281,28 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object with action and filePath");
       }
-      const action = args.action;
+      const action =
+        args.action === "read" || args.action === "write"
+          ? args.action
+          : args.action === undefined &&
+              (args.mode === "read" || args.mode === "write")
+            ? args.mode
+            : null;
       if (action !== "read" && action !== "write") {
-        return fail("action must be 'read' or 'write'");
+        return fail(
+          "action must be 'read' or 'write'. Example: file_io({ action:'read', filePath:'/absolute/path.md' })",
+        );
       }
-      if (typeof args.filePath !== "string" || !args.filePath.trim()) {
-        return fail("filePath is required: an absolute path to the file");
+      const rawFilePath =
+        typeof args.filePath === "string"
+          ? args.filePath
+          : typeof args.path === "string"
+            ? args.path
+            : "";
+      if (!rawFilePath.trim()) {
+        return fail(
+          "filePath is required: an absolute path to the file. Deprecated alias path is accepted for older prompts.",
+        );
       }
       if (action === "write" && typeof args.content !== "string") {
         return fail("content is required for action 'write'");
@@ -305,7 +321,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
           : undefined;
       return ok<FileIOInput>({
         action,
-        filePath: args.filePath.trim(),
+        filePath: rawFilePath.trim(),
         content: action === "write" ? String(args.content) : undefined,
         encoding,
         offset,

@@ -9,7 +9,13 @@ import {
   type MergeItemsOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
-import { ok, fail, validateObject, normalizePositiveInt, normalizePositiveIntArray } from "../shared";
+import {
+  ok,
+  fail,
+  validateObject,
+  normalizePositiveInt,
+  normalizePositiveIntArray,
+} from "../shared";
 import { executeAndRecordUndo } from "./mutateLibraryShared";
 
 type MergeItemsInput = {
@@ -33,8 +39,7 @@ export function createMergeItemsTool(
         properties: {
           masterItemId: {
             type: "number",
-            description:
-              "The item ID to keep as the surviving master record.",
+            description: "The item ID to keep as the surviving master record.",
           },
           otherItemIds: {
             type: "array",
@@ -50,9 +55,11 @@ export function createMergeItemsTool(
 
     guidance: {
       matches: (request) =>
-        /\b(merge|dedupe|dedup|duplicat|combine)\b/i.test(request.userText || ""),
+        /\b(merge|dedupe|dedup|duplicat|combine)\b/i.test(
+          request.userText || "",
+        ),
       instruction:
-        "To merge duplicates: first use query_library(mode:'duplicates') to find duplicate groups, then use read_library to compare metadata and decide which item is the best master, then call merge_items with the master and the others. The master keeps all children (attachments, notes, tags, collections) from the merged items.",
+        "To merge duplicates: first use query_library({ entity:'items', mode:'duplicates' }) to find duplicate groups, then use read_library to compare metadata and decide which item is the best master, then call merge_items with the master and the others. The master keeps all children (attachments, notes, tags, collections) from the merged items.",
     },
 
     presentation: {
@@ -85,11 +92,15 @@ export function createMergeItemsTool(
       }
       const masterItemId = normalizePositiveInt(args.masterItemId);
       if (!masterItemId) {
-        return fail("masterItemId is required: the item ID to keep as the surviving record");
+        return fail(
+          "masterItemId is required: the item ID to keep as the surviving record",
+        );
       }
       const otherItemIds = normalizePositiveIntArray(args.otherItemIds);
       if (!otherItemIds?.length) {
-        return fail("otherItemIds must be a non-empty array of item IDs to merge and trash");
+        return fail(
+          "otherItemIds must be a non-empty array of item IDs to merge and trash",
+        );
       }
       const operation: MergeItemsOperation = {
         type: "merge_items",
@@ -103,12 +114,16 @@ export function createMergeItemsTool(
       const { operation } = input;
       const masterItem = zoteroGateway.getItem(operation.masterItemId);
       const masterTitle = masterItem
-        ? String(masterItem.getField?.("title") || `Item ${operation.masterItemId}`)
+        ? String(
+            masterItem.getField?.("title") || `Item ${operation.masterItemId}`,
+          )
         : `Item ${operation.masterItemId}`;
 
       const otherTitles = operation.otherItemIds.map((id) => {
         const item = zoteroGateway.getItem(id);
-        return item ? String(item.getField?.("title") || `Item ${id}`) : `Item ${id}`;
+        return item
+          ? String(item.getField?.("title") || `Item ${id}`)
+          : `Item ${id}`;
       });
 
       return {

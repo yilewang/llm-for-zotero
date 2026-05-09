@@ -457,7 +457,10 @@ describe("primitive agent tools", function () {
 
     assert.include(userText, "Selected Zotero collection scopes:");
     assert.include(userText, "Methods [collectionId=55, libraryID=1]");
-    assert.include(userText, "query_library with filters.collectionId");
+    assert.include(
+      userText,
+      "query_library({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } })",
+    );
     assert.include(
       userText,
       "Do not assume all full text has already been read.",

@@ -1,7 +1,7 @@
 ---
 id: literature-review
 description: Structured scientific review with thematic synthesis and citations
-version: 1
+version: 2
 match: /\b(literature review|lit review|review of (the )?literature)\b/i
 match: /\b(conduct|write|create|generate|draft)\b.*\b(review|synthesis|survey)\b.*\b(on|about|regarding|of)\b/i
 match: /\bconduct a literature review\b/i
@@ -33,9 +33,9 @@ When the user asks for a literature review, follow this three-phase workflow. Th
 Identify the corpus of papers to review:
 
 - **Papers already in context**: If the user has pinned or selected papers (visible in `selectedPaperContexts` or `fullTextPaperContexts`), use those directly. No discovery step needed.
-- **Topic search**: If the user provides a topic or keywords, use `query_library(query:'<topic>')` to find matching papers in their library.
-- **Collection**: If the user names a collection, use `zotero_script(mode:'read')` to iterate items in that collection.
-- **Whole library**: If the user wants a review across their entire library, use `zotero_script(mode:'read')` to get all items (same pattern as `library-analysis`).
+- **Topic search**: If the user provides a topic or keywords, use `query_library({ entity:'items', mode:'search', text:'<topic>', include:['metadata','abstract'] })` to find matching papers in their library.
+- **Collection**: If the user names a collection, use `query_library({ entity:'collections', mode:'search', text:'<collection name>' })` to resolve it, then `query_library({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> }, include:['metadata','abstract'] })`.
+- **Whole library**: If the user wants a review across their entire library, use `zotero_script({ mode:'read', description:'Summarize candidate papers for a literature review', script:'...' })` to aggregate candidates in Zotero's runtime (same pattern as `library-analysis`).
 
 Cap the corpus at **15-20 papers**. If more match, select the most relevant based on title/abstract relevance to the topic. Use `read_library` to retrieve metadata (title, authors, year, abstract, publicationTitle) for all discovered papers.
 
@@ -44,7 +44,8 @@ Cap the corpus at **15-20 papers**. If more match, select the most relevant base
 Do **NOT** read every paper in full. Abstracts from Phase 1 are sufficient for most.
 
 Deep-read only the **3-5 most relevant papers** to the review topic:
-1. If MinerU cache is available: `file_io(read, '{mineruCacheDir}/full.md')` — best quality, gets full text with figures.
+
+1. If MinerU cache is available: `file_io({ action:'read', filePath:'{mineruCacheDir}/full.md' })` — best quality, gets full text with figures.
 2. Otherwise: `read_paper` for structured metadata + abstract.
 3. For targeted claims: `search_paper` with focused questions (e.g., "What methods were used?", "What were the key findings?").
 
@@ -80,16 +81,19 @@ Write the review directly in the chat response. Use this structure:
 If key figures from deep-read papers would strengthen a thematic point, embed them: `![Figure caption](file:///{mineruCacheDir}/images/filename.png)`. Place figures within the thematic sections they relate to, not in a separate section.
 
 ### Citation rules
+
 - Every factual claim must have an inline citation.
 - Use `(Author, Year)` for single-author papers, `(Author & Author, Year)` for two, `(Author et al., Year)` for three or more.
 - The citation label should match the Zotero item metadata (use `creators` and `date` fields).
 - Do NOT invent citations or cite papers not in the user's library.
 
 ### After writing
-- Ask the user if they want the review saved as a Zotero note: `edit_current_note(mode:'create', content:'...', target:'standalone')`.
+
+- Ask the user if they want the review saved as a Zotero note: `edit_current_note({ mode:'create', content:'...', target:'standalone' })`.
 - If saving, convert the markdown to the Zotero note HTML format.
 
 ### Key rules
+
 - Budget: aim for **4-8 tool calls** total across all phases.
 - Do NOT dump all paper content into context — use abstracts first, deep-read selectively.
 - Do NOT produce a per-paper summary list — synthesize thematically.

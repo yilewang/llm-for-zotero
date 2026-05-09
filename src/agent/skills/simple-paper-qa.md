@@ -1,7 +1,7 @@
 ---
 id: simple-paper-qa
 description: Answer open-ended natural-language questions about the content of one specific paper (what it argues, how it compares to X, what figure 3 means). Not for Zotero operations like editing metadata, tagging, or running scripts.
-version: 1
+version: 2
 match: /\b(what|who|when|where|which|tell me|explain)\b.*\b(about|paper|article|study|wrote|author|publish|year|journal|abstract|topic|field|contribution|finding|claim|conclusion|argue)\b/i
 match: /\bsummar(y|ize|ise)\b/i
 match: /\b(what is|what are|what does|what do)\b.*\b(this paper|this article|this study|the paper|the article)\b/i
@@ -33,16 +33,18 @@ tool call, then answer.
 ### Recipe
 
 **Step 1 — Read the paper once:**
-- If `mineruCacheDir` is available: use `file_io(read, '{mineruCacheDir}/full.md')`. This gives you the entire parsed paper including abstract, introduction, and conclusions.
+
+- If `mineruCacheDir` is available: use `file_io({ action:'read', filePath:'{mineruCacheDir}/full.md' })`. This gives you the entire parsed paper including abstract, introduction, and conclusions.
 - If no MinerU cache: use `read_paper` for the paper. This returns the abstract, authors, and introduction — enough for most general questions.
 
 **Step 2 — Answer immediately.**
-Do NOT call `search_paper`, `read_paper(chunkIndexes:[...])`, or any other tool unless the
+Do NOT call `search_paper`, `read_paper({ chunkIndexes:[...] })`, or any other tool unless the
 front matter genuinely does not contain the answer. For questions like "what is
 this about?", "who are the authors?", "summarize this paper", the front matter
 or MinerU markdown is sufficient.
 
 ### When to escalate
+
 If (and only if) the user asks about something specific that the front matter
 does not cover (a particular experiment, a specific table, a named method, a
 result in a specific section), then make ONE targeted `search_paper` call

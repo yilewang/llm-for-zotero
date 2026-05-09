@@ -39,8 +39,7 @@ export { patchSkillFrontmatter } from "./frontmatterPatcher";
 // Body hash tracking — detect user modifications to skill files
 // ---------------------------------------------------------------------------
 
-const BODY_HASH_PREF_KEY =
-  "extensions.zotero.llmForZotero.skillBodyHashes";
+const BODY_HASH_PREF_KEY = "extensions.zotero.llmForZotero.skillBodyHashes";
 
 function getBodyHashes(): Record<string, string> {
   try {
@@ -120,6 +119,18 @@ const OBSOLETE_SKILL_FILES: ReadonlyArray<{
   },
 ];
 
+const OBSOLETE_SKILL_FILENAMES = new Set(
+  OBSOLETE_SKILL_FILES.map((entry) => entry.filename),
+);
+
+const OBSOLETE_SKILL_IDS = new Set([
+  "write-to-obsidian",
+  "note-to-file",
+  "note-from-paper",
+  "note-editing",
+  "note-template",
+]);
+
 // Exact raw-content hashes for prior shipped versions of built-ins whose
 // version increased in this release. On the first run with hash tracking, we
 // only auto-upgrade when the on-disk raw file still matches a known shipped
@@ -127,7 +138,14 @@ const OBSOLETE_SKILL_FILES: ReadonlyArray<{
 const BUILTIN_BOOTSTRAP_RAW_HASHES: Partial<
   Record<string, ReadonlyArray<string>>
 > = {
-  "analyze-figures.md": ["msvqtf"],
+  "library-analysis.md": ["ftq8b2"],
+  "compare-papers.md": ["1jvl4lu"],
+  "analyze-figures.md": ["msvqtf", "17o1bpl"],
+  "simple-paper-qa.md": ["1r2ban6"],
+  "evidence-based-qa.md": ["1er2ubr"],
+  "write-note.md": ["172xn8t"],
+  "literature-review.md": ["kbrknh"],
+  "import-cited-reference.md": ["19bomz1"],
 };
 
 // ---------------------------------------------------------------------------
@@ -299,9 +317,7 @@ export async function initUserSkills(): Promise<void> {
         } else {
           // Customized or unknown legacy copy → keep as personal skill
           seeded.delete(file);
-          Zotero.debug?.(
-            `[llm-for-zotero] Kept ${file} as personal skill`,
-          );
+          Zotero.debug?.(`[llm-for-zotero] Kept ${file} as personal skill`);
         }
       } catch (err) {
         Zotero.debug?.(
@@ -382,9 +398,7 @@ export async function initUserSkills(): Promise<void> {
         }
         await io.write(filePath, encoder.encode(shippedContent));
         bodyHashes[filename] = shippedHash;
-        Zotero.debug?.(
-          `[llm-for-zotero] Upgraded skill: ${filename}`,
-        );
+        Zotero.debug?.(`[llm-for-zotero] Upgraded skill: ${filename}`);
       } else if (!storedHash) {
         // Bootstrap: no hash record (pre-hash installation). Only upgrade if
         // the raw file still matches a known shipped version for this built-in;
@@ -495,12 +509,21 @@ export async function loadUserSkills(): Promise<AgentSkill[]> {
     try {
       const data = await io.read(filePath);
       const bytes =
-        data instanceof Uint8Array
-          ? data
-          : new Uint8Array(data as ArrayBuffer);
+        data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
       const raw = new TextDecoder("utf-8").decode(bytes);
 
       const skill = parseSkill(raw);
+      const filename = filePath.split(/[/\\]/).pop() || "";
+
+      if (
+        OBSOLETE_SKILL_FILENAMES.has(filename) ||
+        OBSOLETE_SKILL_IDS.has(skill.id)
+      ) {
+        Zotero.debug?.(
+          `[llm-for-zotero] Skipping obsolete preserved skill file: ${filePath}`,
+        );
+        continue;
+      }
 
       if (skill.id === "unknown" || skill.patterns.length === 0) {
         Zotero.debug?.(
@@ -509,7 +532,6 @@ export async function loadUserSkills(): Promise<AgentSkill[]> {
         continue;
       }
 
-      const filename = filePath.split(/[/\\]/).pop() || "";
       if (BUILTIN_SKILL_FILENAMES.has(filename)) {
         const shippedInstruction = getBuiltinSkillInstruction(filename);
         skill.source =
@@ -609,7 +631,6 @@ Describe when and how the agent should behave when this skill matches.
 
   let index = 1;
   let filePath: string;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     filePath = joinLocalPath(dir, `custom-skill-${index}.md`);
     try {
@@ -685,9 +706,7 @@ export async function getSkillListing(): Promise<SkillListingEntry[]> {
     try {
       const data = await io.read(filePath);
       const bytes =
-        data instanceof Uint8Array
-          ? data
-          : new Uint8Array(data as ArrayBuffer);
+        data instanceof Uint8Array ? data : new Uint8Array(data as ArrayBuffer);
       const raw = new TextDecoder("utf-8").decode(bytes);
       const skill = parseSkill(raw);
       if (skill.id === "unknown") continue;
@@ -779,9 +798,7 @@ export async function restoreSkillToDefault(
     const seeded = getSeededSkills();
     seeded.add(filename);
     setSeededSkills(seeded);
-    Zotero.debug?.(
-      `[llm-for-zotero] Restored skill to default: ${filename}`,
-    );
+    Zotero.debug?.(`[llm-for-zotero] Restored skill to default: ${filename}`);
     return true;
   } catch (err) {
     Zotero.debug?.(
@@ -820,10 +837,10 @@ export async function getSkillDiff(
  */
 export async function openSkillFile(filePath: string): Promise<void> {
   try {
-    const fileModule = (Zotero as unknown as {
+    const fileModule = Zotero as unknown as {
       File?: { reveal?: (path: string) => void };
       launchFile?: (path: string) => void;
-    });
+    };
     if (typeof fileModule.launchFile === "function") {
       fileModule.launchFile(filePath);
     } else if (fileModule.File?.reveal) {

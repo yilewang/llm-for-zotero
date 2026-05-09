@@ -8,12 +8,7 @@ import {
   type QueryLibraryMode,
 } from "../../services/libraryQueryService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
-import {
-  fail,
-  normalizePositiveInt,
-  ok,
-  validateObject,
-} from "../shared";
+import { fail, normalizePositiveInt, ok, validateObject } from "../shared";
 
 type QueryLibraryInput = {
   entity: QueryLibraryEntity;
@@ -25,6 +20,12 @@ type QueryLibraryInput = {
   include?: QueryLibraryInclude[];
   view?: "flat" | "tree";
 };
+
+const QUERY_LIBRARY_SHAPE_HINT =
+  "entity and mode are required. Examples: " +
+  "{ entity:'items', mode:'search', text:'memory' }, " +
+  "{ entity:'items', mode:'duplicates' }, " +
+  "{ entity:'collections', mode:'list', view:'tree' }";
 
 const VALID_INCLUDE = new Set<QueryLibraryInclude>([
   "metadata",
@@ -60,7 +61,8 @@ function normalizeRef(value: unknown): number | PaperContextRef | null {
           ? value.title.trim()
           : `Paper ${itemId}`,
       attachmentTitle:
-        typeof value.attachmentTitle === "string" && value.attachmentTitle.trim()
+        typeof value.attachmentTitle === "string" &&
+        value.attachmentTitle.trim()
           ? value.attachmentTitle.trim()
           : undefined,
       citationKey:
@@ -80,7 +82,9 @@ function normalizeRef(value: unknown): number | PaperContextRef | null {
   return itemId || null;
 }
 
-function normalizeRefs(value: unknown): Array<number | PaperContextRef> | undefined {
+function normalizeRefs(
+  value: unknown,
+): Array<number | PaperContextRef> | undefined {
   if (!Array.isArray(value)) return undefined;
   const refs = value
     .map((entry) => normalizeRef(entry))
@@ -122,9 +126,42 @@ function normalizeFilters(value: unknown): QueryLibraryFilters | undefined {
   };
 }
 
+function normalizeLegacyQueryLibraryArgs(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized = { ...args };
+  const query =
+    typeof normalized.query === "string" && normalized.query.trim()
+      ? normalized.query.trim()
+      : "";
+
+  if (!normalized.entity && !normalized.mode && query) {
+    normalized.entity = "items";
+    normalized.mode = "search";
+    normalized.text = query;
+  }
+  if (!normalized.entity && normalized.mode === "duplicates") {
+    normalized.entity = "items";
+  }
+  if (
+    normalized.entity === "collections" &&
+    !normalized.mode &&
+    normalized.view === "tree"
+  ) {
+    normalized.mode = "list";
+  }
+  if (!normalized.text && query && normalized.mode === "search") {
+    normalized.text = query;
+  }
+  delete normalized.query;
+  return normalized;
+}
+
 function resolveReferenceItemId(
   input: QueryLibraryInput,
-  context: Parameters<AgentToolDefinition<QueryLibraryInput, unknown>["execute"]>[1],
+  context: Parameters<
+    AgentToolDefinition<QueryLibraryInput, unknown>["execute"]
+  >[1],
   zoteroGateway: ZoteroGateway,
 ): number | null {
   const firstRef = input.refs?.[0];
@@ -170,7 +207,7 @@ export function createQueryLibraryTool(
     spec: {
       name: "query_library",
       description:
-        "Discover Zotero items and collections. Use it to search or list any item type (papers, books, notes, web pages, and more), filter by author/year/collection/itemType, browse the collection tree, find related papers, detect duplicates, or list standalone notes. By default returns all item types; use filters.hasPdf:true for PDF-backed papers only. For 'how many papers/items...' questions, use totalCount/returnedCount/limited instead of hand-counting the returned rows.",
+        "Discover Zotero items and collections. Every call must include entity and mode. Use text, not query, for search terms. Use it to search or list any item type (papers, books, notes, web pages, and more), filter by author/year/collection/itemType, browse the collection tree, find related papers, detect duplicates, or list standalone notes. By default returns all item types; use filters.hasPdf:true for PDF-backed papers only. For 'how many papers/items...' questions, use totalCount/returnedCount/limited instead of hand-counting the returned rows.",
       inputSchema: {
         type: "object",
         required: ["entity", "mode"],
@@ -179,7 +216,8 @@ export function createQueryLibraryTool(
           entity: {
             type: "string",
             enum: ["items", "collections", "notes", "tags", "libraries"],
-            description: "What to query: 'items' for any library item, 'collections' for folders, 'notes' to search/list notes (mode:'search' finds all notes including child notes, mode:'list' lists standalone notes only), 'tags' to list/search all tags in the library, 'libraries' to enumerate all libraries (personal + group).",
+            description:
+              "What to query: 'items' for any library item, 'collections' for folders, 'notes' to search/list notes (mode:'search' finds all notes including child notes, mode:'list' lists standalone notes only), 'tags' to list/search all tags in the library, 'libraries' to enumerate all libraries (personal + group).",
           },
           mode: {
             type: "string",
@@ -224,11 +262,13 @@ export function createQueryLibraryTool(
               },
               itemType: {
                 type: "string",
-                description: "Filter by Zotero item type, e.g. 'book', 'note', 'webpage', 'journalArticle', 'conferencePaper'. Only used with entity:'items'.",
+                description:
+                  "Filter by Zotero item type, e.g. 'book', 'note', 'webpage', 'journalArticle', 'conferencePaper'. Only used with entity:'items'.",
               },
               tag: {
                 type: "string",
-                description: "Filter by exact tag name (e.g. 'machine learning'). Only items with this tag are returned.",
+                description:
+                  "Filter by exact tag name (e.g. 'machine learning'). Only items with this tag are returned.",
               },
             },
           },
@@ -243,7 +283,13 @@ export function createQueryLibraryTool(
             type: "array",
             items: {
               type: "string",
-              enum: ["metadata", "attachments", "tags", "collections", "abstract"],
+              enum: [
+                "metadata",
+                "attachments",
+                "tags",
+                "collections",
+                "abstract",
+              ],
             },
           },
         },
@@ -257,7 +303,7 @@ export function createQueryLibraryTool(
           request.userText,
         ),
       instruction:
-        "For library-organization requests, gather the item IDs first with query_library(entity:'items', mode:'list', filters:{unfiled:true}) when needed. If the user wants you to file or move papers and the exact destination collection IDs are not known yet, call move_to_collection with {action:'add', itemIds:[...]} and let the confirmation card collect the target folders. Use query_library(entity:'collections', mode:'list', view:'tree') when you need the collection hierarchy to prefill or explain choices.",
+        "For library-organization requests, gather the item IDs first with query_library({ entity:'items', mode:'list', filters:{ unfiled:true } }) when needed. If the user wants you to file or move papers and the exact destination collection IDs are not known yet, call move_to_collection with {action:'add', itemIds:[...]} and let the confirmation card collect the target folders. Use query_library({ entity:'collections', mode:'list', view:'tree' }) when you need the collection hierarchy to prefill or explain choices.",
     },
     presentation: {
       label: "Query Library",
@@ -293,7 +339,7 @@ export function createQueryLibraryTool(
           }
           const totalGroups = Number(
             content &&
-            typeof content === "object" &&
+              typeof content === "object" &&
               (content as { totalGroups?: unknown }).totalGroups
               ? (content as { totalGroups?: unknown }).totalGroups
               : 0,
@@ -305,7 +351,7 @@ export function createQueryLibraryTool(
           }
           const totalCount = Number(
             content &&
-            typeof content === "object" &&
+              typeof content === "object" &&
               (content as { totalCount?: unknown }).totalCount
               ? (content as { totalCount?: unknown }).totalCount
               : results.length,
@@ -322,23 +368,24 @@ export function createQueryLibraryTool(
       if (!validateObject<Record<string, unknown>>(args)) {
         return fail("Expected an object");
       }
+      const normalizedArgs = normalizeLegacyQueryLibraryArgs(args);
       const entity =
-        args.entity === "items" ||
-        args.entity === "collections" ||
-        args.entity === "notes" ||
-        args.entity === "tags" ||
-        args.entity === "libraries"
-          ? (args.entity as QueryLibraryEntity)
+        normalizedArgs.entity === "items" ||
+        normalizedArgs.entity === "collections" ||
+        normalizedArgs.entity === "notes" ||
+        normalizedArgs.entity === "tags" ||
+        normalizedArgs.entity === "libraries"
+          ? (normalizedArgs.entity as QueryLibraryEntity)
           : null;
       const mode =
-        args.mode === "search" ||
-        args.mode === "list" ||
-        args.mode === "related" ||
-        args.mode === "duplicates"
-          ? (args.mode as QueryLibraryMode)
+        normalizedArgs.mode === "search" ||
+        normalizedArgs.mode === "list" ||
+        normalizedArgs.mode === "related" ||
+        normalizedArgs.mode === "duplicates"
+          ? (normalizedArgs.mode as QueryLibraryMode)
           : null;
       if (!entity || !mode) {
-        return fail("entity and mode are required");
+        return fail(QUERY_LIBRARY_SHAPE_HINT);
       }
       if (entity === "collections" && !["search", "list"].includes(mode)) {
         return fail("collections only support mode:'search' or mode:'list'");
@@ -353,29 +400,36 @@ export function createQueryLibraryTool(
         return fail("libraries only support mode:'list'");
       }
       if ((entity === "items" || entity === "notes") && mode === "search") {
-        const text = typeof args.text === "string" ? args.text.trim() : "";
+        const text =
+          typeof normalizedArgs.text === "string"
+            ? normalizedArgs.text.trim()
+            : "";
         if (!text) {
-          return fail("text is required for search mode");
+          return fail(
+            "text is required for search mode. Use query_library({ entity:'items', mode:'search', text:'<terms>' })",
+          );
         }
       }
       if (mode === "related" && entity !== "items") {
         return fail("mode:'related' is only valid for entity:'items'");
       }
       const view =
-        args.view === "tree" ? "tree" as const
-          : args.view === "flat" ? "flat" as const
-          : undefined;
+        normalizedArgs.view === "tree"
+          ? ("tree" as const)
+          : normalizedArgs.view === "flat"
+            ? ("flat" as const)
+            : undefined;
       return ok<QueryLibraryInput>({
         entity,
         mode,
         text:
-          typeof args.text === "string" && args.text.trim()
-            ? args.text.trim()
+          typeof normalizedArgs.text === "string" && normalizedArgs.text.trim()
+            ? normalizedArgs.text.trim()
             : undefined,
-        refs: normalizeRefs(args.refs),
-        filters: normalizeFilters(args.filters),
-        limit: normalizePositiveInt(args.limit),
-        include: normalizeInclude(args.include),
+        refs: normalizeRefs(normalizedArgs.refs),
+        filters: normalizeFilters(normalizedArgs.filters),
+        limit: normalizePositiveInt(normalizedArgs.limit),
+        include: normalizeInclude(normalizedArgs.include),
         view,
       });
     },
@@ -406,17 +460,24 @@ export function createQueryLibraryTool(
           libraryID,
           limit: input.limit,
         });
-        return withResultCounts({
-          entity: input.entity,
-          mode: input.mode,
-          totalCount: result.totalCount,
-          results: result.results,
-          warnings: result.warnings,
-        }, { totalCount: result.totalCount });
+        return withResultCounts(
+          {
+            entity: input.entity,
+            mode: input.mode,
+            totalCount: result.totalCount,
+            results: result.results,
+            warnings: result.warnings,
+          },
+          { totalCount: result.totalCount },
+        );
       }
       if (input.entity === "libraries") {
         const results = zoteroGateway.listAllLibraries();
-        return withResultCounts({ entity: input.entity, mode: input.mode, results });
+        return withResultCounts({
+          entity: input.entity,
+          mode: input.mode,
+          results,
+        });
       }
       if (input.entity === "tags") {
         const result = await queryService.queryTags({
@@ -447,12 +508,15 @@ export function createQueryLibraryTool(
           text: input.text,
           limit: input.limit,
         });
-        return withResultCounts({
-          entity: input.entity,
-          mode: input.mode,
-          results: result.results,
-          warnings: result.warnings,
-        }, { totalCount: result.totalCount });
+        return withResultCounts(
+          {
+            entity: input.entity,
+            mode: input.mode,
+            results: result.results,
+            warnings: result.warnings,
+          },
+          { totalCount: result.totalCount },
+        );
       }
       if (input.mode === "search") {
         const result = await queryService.searchItems({
@@ -464,12 +528,15 @@ export function createQueryLibraryTool(
           excludeContextItemId:
             zoteroGateway.getActiveContextItem(context.item)?.id || null,
         });
-        return withResultCounts({
-          entity: input.entity,
-          mode: input.mode,
-          results: result.results,
-          warnings: result.warnings,
-        }, { totalCount: result.totalCount });
+        return withResultCounts(
+          {
+            entity: input.entity,
+            mode: input.mode,
+            results: result.results,
+            warnings: result.warnings,
+          },
+          { totalCount: result.totalCount },
+        );
       }
       if (input.mode === "list") {
         const result = await queryService.listItems({
@@ -478,18 +545,27 @@ export function createQueryLibraryTool(
           limit: input.limit,
           include: input.include,
         });
-        return withResultCounts({
-          entity: input.entity,
-          mode: input.mode,
-          totalCount: result.totalCount,
-          results: result.results,
-          warnings: result.warnings,
-        }, { totalCount: result.totalCount });
+        return withResultCounts(
+          {
+            entity: input.entity,
+            mode: input.mode,
+            totalCount: result.totalCount,
+            results: result.results,
+            warnings: result.warnings,
+          },
+          { totalCount: result.totalCount },
+        );
       }
       if (input.mode === "related") {
-        const referenceItemId = resolveReferenceItemId(input, context, zoteroGateway);
+        const referenceItemId = resolveReferenceItemId(
+          input,
+          context,
+          zoteroGateway,
+        );
         if (!referenceItemId) {
-          throw new Error("A reference paper is required for related-item queries");
+          throw new Error(
+            "A reference paper is required for related-item queries",
+          );
         }
         const result = await queryService.findRelatedItems({
           libraryID,
