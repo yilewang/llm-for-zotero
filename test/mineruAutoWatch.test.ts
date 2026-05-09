@@ -15,7 +15,6 @@ import {
 import {
   hasCachedMineruMd,
   writeMineruCacheFiles,
-  writeMineruSourceProvenanceForAttachment,
 } from "../src/modules/contextPanel/mineruCache";
 
 const encoder = new TextEncoder();
@@ -63,7 +62,10 @@ function addDir(dirs: Set<string>, path: string): void {
   for (const dir of ancestors.reverse()) dirs.add(dir);
 }
 
-function setupZotero(items: Map<number, MockItem>): {
+function setupZotero(
+  items: Map<number, MockItem>,
+  options: { pref?: (key: string) => unknown } = {},
+): {
   files: Map<string, Uint8Array>;
 } {
   const files = new Map<string, Uint8Array>();
@@ -74,6 +76,8 @@ function setupZotero(items: Map<number, MockItem>): {
     DataDirectory: { dir: "/tmp/zotero" },
     Prefs: {
       get: (key: string) => {
+        const override = options.pref?.(key);
+        if (override !== undefined) return override;
         if (key.endsWith(".mineruGlobalAutoParse")) return true;
         if (key.endsWith(".mineruSyncEnabled")) return false;
         return "";
@@ -85,8 +89,11 @@ function setupZotero(items: Map<number, MockItem>): {
     },
   };
   (globalThis as unknown as { ztoolkit: unknown }).ztoolkit = {
-    getGlobal: (name: string) =>
-      name === "AbortController" ? AbortController : undefined,
+    getGlobal: (name: string) => {
+      if (name === "AbortController") return AbortController;
+      if (name === "fetch") return globalThis.fetch;
+      return undefined;
+    },
     log: () => {},
   };
   const io = {
@@ -224,6 +231,50 @@ describe("mineruAutoWatch", function () {
     assert.isTrue(isAutoWatchQueueEntryCurrentForTests(queue[0]));
   });
 
+  it("does not enqueue a duplicate PDF while that PDF is actively parsing", async function () {
+    const originalFetch = globalThis.fetch;
+    let resolveFetch: ((response: Response) => void) | null = null;
+    let fetchStarted: (() => void) | null = null;
+    const fetchStartedPromise = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    globalThis.fetch = (() => {
+      fetchStarted?.();
+      return new Promise<Response>((resolve) => {
+        resolveFetch = resolve;
+      });
+    }) as typeof fetch;
+
+    try {
+      const parent = createParent();
+      const pdf = createPdf();
+      const items = new Map<number, MockItem>([
+        [parent.id, parent],
+        [pdf.id, pdf],
+      ]);
+      const io = setupZotero(items, {
+        pref: (key) => (key.endsWith(".mineruMode") ? "local" : undefined),
+      });
+      io.files.set("/tmp/paper.pdf", bytes("%PDF-1.7"));
+
+      await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
+      assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 1);
+
+      const processing = processAutoWatchQueueForTests();
+      await fetchStartedPromise;
+      assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
+
+      await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
+      assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
+
+      assert.exists(resolveFetch);
+      resolveFetch?.(new Response("failed", { status: 500 }));
+      await processing;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("rejects a PDF that is no longer listed by its parent item", async function () {
     const parent = createParent(201, []);
     const pdf = createPdf();
@@ -242,7 +293,7 @@ describe("mineruAutoWatch", function () {
     assert.isFalse(isAutoWatchQueueEntryCurrentForTests(entry));
   });
 
-  it("ignores modified PDF fingerprint changes during auto-watch", async function () {
+  it("ignores modified PDFs during auto-watch when a cache already exists", async function () {
     const parent = createParent();
     const pdf = createPdf();
     const items = new Map<number, MockItem>([
@@ -254,9 +305,6 @@ describe("mineruAutoWatch", function () {
     await writeMineruCacheFiles(pdf.id, "# Old parse", [
       { relativePath: "content_list.json", data: bytes("[]") },
     ]);
-    await writeMineruSourceProvenanceForAttachment(
-      pdf as unknown as Zotero.Item,
-    );
     pdf.attachmentSyncedHash = "hash-b";
 
     await handleAutoWatchNotificationForTests("modify", "item", [pdf.id]);
@@ -265,7 +313,7 @@ describe("mineruAutoWatch", function () {
     assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
   });
 
-  it("keeps a modified PDF cache when the fingerprint is unchanged", async function () {
+  it("keeps a modified PDF cache when attachment metadata changes", async function () {
     const parent = createParent();
     const pdf = createPdf();
     const items = new Map<number, MockItem>([
@@ -277,9 +325,6 @@ describe("mineruAutoWatch", function () {
     await writeMineruCacheFiles(pdf.id, "# Current parse", [
       { relativePath: "content_list.json", data: bytes("[]") },
     ]);
-    await writeMineruSourceProvenanceForAttachment(
-      pdf as unknown as Zotero.Item,
-    );
     pdf.attachmentFilename = "renamed.pdf";
 
     await handleAutoWatchNotificationForTests("modify", "item", [pdf.id]);

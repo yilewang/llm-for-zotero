@@ -3,7 +3,6 @@ import { config, version as addonVersion } from "../../../package.json";
 import { joinLocalPath, getLocalParentPath } from "../../utils/localPath";
 import { isMineruSyncEnabled } from "../../utils/mineruConfig";
 import {
-  buildMineruSourceProvenance,
   buildAndWriteManifest,
   ensureManifest,
   getMineruCacheDir,
@@ -14,8 +13,6 @@ import {
   writeMineruSourceProvenanceForAttachment,
   writeMineruCacheFiles,
   type MineruCacheFile,
-  type MineruSourceFingerprint,
-  type MineruSourceProvenanceStatus,
 } from "./mineruCache";
 import { pdfTextCache, pdfTextLoadingTasks } from "./state";
 
@@ -42,8 +39,6 @@ export type MineruSyncMetadata = {
   sourceAttachmentKey: string;
   sourceAttachmentFilename?: string;
   parentItemKey?: string;
-  sourceFingerprint?: MineruSourceFingerprint;
-  provenanceStatus?: MineruSourceProvenanceStatus;
   parsedAt?: string;
 };
 
@@ -129,9 +124,7 @@ export type MineruCacheRepairResult = {
   checked: number;
   restored: number;
   removedOrphanCaches: number;
-  removedStaleCaches: number;
   removedOrphanSyncPackages: number;
-  backfilledLegacyProvenance: number;
   failed: number;
 };
 
@@ -488,12 +481,7 @@ async function createMetadata(
 ): Promise<MineruSyncMetadata> {
   const parentItem = getParentItem(sourceAttachment);
   const now = new Date().toISOString();
-  const localProvenance =
-    (await readMineruSourceProvenance(sourceAttachment.id)) ||
-    (await buildMineruSourceProvenance(
-      sourceAttachment,
-      "legacy_unverified",
-    ));
+  const localProvenance = await readMineruSourceProvenance(sourceAttachment.id);
   return {
     kind: MINERU_SYNC_PACKAGE_KIND,
     version: MINERU_SYNC_PACKAGE_VERSION,
@@ -509,9 +497,7 @@ async function createMetadata(
     sourceAttachmentKey: getItemKey(sourceAttachment),
     sourceAttachmentFilename: getAttachmentFilename(sourceAttachment),
     parentItemKey: getItemKey(parentItem),
-    sourceFingerprint: localProvenance.sourceFingerprint,
-    provenanceStatus: localProvenance.provenanceStatus,
-    parsedAt: localProvenance.parsedAt,
+    parsedAt: localProvenance?.parsedAt,
   };
 }
 
@@ -781,7 +767,9 @@ async function packageProvenanceMatchesSource(
   return true;
 }
 
-function extractPackageFiles(zipBytes: Uint8Array): ExtractedMineruSyncPackage | null {
+function extractPackageFiles(
+  zipBytes: Uint8Array,
+): ExtractedMineruSyncPackage | null {
   try {
     const zipEntries = unzipSync(zipBytes);
     const metadataBytes = zipEntries[MINERU_SYNC_METADATA_FILE];
@@ -1067,21 +1055,24 @@ async function writeLocalSyncState(params: {
     cacheContentHash: params.cacheContentHash,
   };
   await writeFileBytes(
-    joinLocalPath(getMineruItemDir(params.attachmentId), MINERU_LOCAL_SYNC_STATE_FILE),
+    joinLocalPath(
+      getMineruItemDir(params.attachmentId),
+      MINERU_LOCAL_SYNC_STATE_FILE,
+    ),
     new TextEncoder().encode(JSON.stringify(state, null, 2)),
   );
 }
 
 async function writeRestoredSourceProvenance(params: {
   sourceAttachment: Zotero.Item;
-  metadata: MineruSyncMetadata;
+  packageAttachmentId?: number;
+  cacheContentHash?: string;
 }): Promise<void> {
-  await writeMineruSourceProvenanceForAttachment(
-    params.sourceAttachment,
-    params.metadata.provenanceStatus === "verified"
-      ? "verified"
-      : "legacy_unverified",
-  );
+  await writeMineruSourceProvenanceForAttachment(params.sourceAttachment, {
+    origin: "restored",
+    packageAttachmentId: params.packageAttachmentId,
+    cacheContentHash: params.cacheContentHash,
+  });
 }
 
 async function invalidateRestoredMineruCache(
@@ -1135,7 +1126,9 @@ export async function publishMineruCachePackageForAttachment(
       requireReadable: false,
     });
     const equivalent = selectBestPackageCandidate(
-      existing.filter((candidate) => candidate.contentHash === built.contentHash),
+      existing.filter(
+        (candidate) => candidate.contentHash === built.contentHash,
+      ),
     );
     if (equivalent) {
       await prunePackageCandidates(existing, equivalent.item.id);
@@ -1211,7 +1204,8 @@ export async function ensureMineruRuntimeCacheForAttachment(
     );
     await writeRestoredSourceProvenance({
       sourceAttachment,
-      metadata: selected.extracted.metadata,
+      packageAttachmentId: selected.item.id,
+      cacheContentHash: packageContentHash,
     });
     await writeLocalSyncState({
       attachmentId,
@@ -1299,22 +1293,15 @@ export async function repairSyncedMineruCacheForAttachment(
     );
     const diverged = uniqueHashes.size > 1;
     if (diverged) {
-      ztoolkit.log(
-        "LLM: MinerU sync package divergence detected",
-        sourceKey,
-        [...uniqueHashes],
-      );
+      ztoolkit.log("LLM: MinerU sync package divergence detected", sourceKey, [
+        ...uniqueHashes,
+      ]);
     }
     const packageContentHash = selected.extracted.contentHash;
-    const localContentHash = await computeLocalMineruCacheContentHash(
-      attachmentId,
-    );
+    const localContentHash =
+      await computeLocalMineruCacheContentHash(attachmentId);
 
     if (localContentHash && localContentHash === packageContentHash) {
-      await writeRestoredSourceProvenance({
-        sourceAttachment,
-        metadata: selected.extracted.metadata,
-      });
       await writeLocalSyncState({
         attachmentId,
         sourceAttachmentKey: sourceKey,
@@ -1339,7 +1326,8 @@ export async function repairSyncedMineruCacheForAttachment(
     );
     await writeRestoredSourceProvenance({
       sourceAttachment,
-      metadata: selected.extracted.metadata,
+      packageAttachmentId: selected.item.id,
+      cacheContentHash: packageContentHash,
     });
     await writeLocalSyncState({
       attachmentId,
@@ -1481,9 +1469,7 @@ async function cleanupOrphanSyncedMineruPackages(
       continue;
     }
 
-    if (metadata.sourceFingerprint) {
-      await packageProvenanceMatchesSource(metadata, sourceAttachment);
-    }
+    await packageProvenanceMatchesSource(metadata, sourceAttachment);
   }
 
   return result;
@@ -1496,9 +1482,7 @@ export async function repairMineruCaches(
     checked: 0,
     restored: 0,
     removedOrphanCaches: 0,
-    removedStaleCaches: 0,
     removedOrphanSyncPackages: 0,
-    backfilledLegacyProvenance: 0,
     failed: 0,
   };
   const batchSize =
@@ -1531,19 +1515,7 @@ export async function repairMineruCaches(
   for (const item of pdfAttachments) {
     result.checked += 1;
     try {
-      let hasLocalCache = await hasCachedMineruMd(item.id);
-      if (hasLocalCache) {
-        const provenance = await readMineruSourceProvenance(item.id);
-        if (!provenance) {
-          await writeMineruSourceProvenanceForAttachment(
-            item,
-            "legacy_unverified",
-          );
-          result.backfilledLegacyProvenance += 1;
-        }
-      }
-
-      if (!hasLocalCache) {
+      if (!(await hasCachedMineruMd(item.id))) {
         const restored = await repairSyncedMineruCacheForAttachment(item, {
           ignoreSyncPreference: true,
         });

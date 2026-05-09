@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
-  compareMineruSourceProvenanceToAttachment,
+  MINERU_SOURCE_PROVENANCE_KIND,
+  MINERU_SOURCE_PROVENANCE_VERSION,
   normalizeMineruCacheFiles,
   readCachedMineruMd,
   readMineruSourceProvenance,
@@ -317,7 +318,7 @@ describe("mineruCache", function () {
     );
   });
 
-  it("writes verified PDF provenance and detects content-ish fingerprint changes", async function () {
+  it("writes lightweight parsed source metadata without fingerprinting the PDF", async function () {
     const io = setupMemoryIO();
     const pdfPath = "/tmp/zotero/storage/42/paper.pdf";
     const parent = {
@@ -335,7 +336,9 @@ describe("mineruCache", function () {
       attachmentContentType: "application/pdf",
       isRegularItem: () => false,
       isAttachment: () => true,
-      getFilePathAsync: async () => pdfPath,
+      getFilePathAsync: async () => {
+        throw new Error("source metadata should not read PDF bytes");
+      },
     };
     (globalThis as any).Zotero.Items = {
       get: (id: number) => (id === 10 ? parent : id === 42 ? pdf : null),
@@ -347,60 +350,63 @@ describe("mineruCache", function () {
       pdf as unknown as Zotero.Item,
     );
 
+    const raw = JSON.parse(
+      decoder.decode(
+        io.files.get(
+          normalizePath(
+            "/tmp/zotero/llm-for-zotero-mineru/42/_llm_source.json",
+          ),
+        )!,
+      ),
+    );
+    assert.equal(raw.kind, MINERU_SOURCE_PROVENANCE_KIND);
+    assert.equal(raw.version, MINERU_SOURCE_PROVENANCE_VERSION);
+    assert.equal(raw.origin, "parsed");
+    assert.equal(raw.parsedAt, raw.recordedAt);
+    assert.notProperty(raw, "sourceFingerprint");
+    assert.notProperty(raw, "provenanceStatus");
+
     const provenance = await readMineruSourceProvenance(42);
+    assert.deepEqual(provenance, written);
     assert.equal(provenance?.attachmentKey, "PDFKEY");
     assert.equal(provenance?.parentItemKey, "PARENTKEY");
-    assert.equal(provenance?.provenanceStatus, "verified");
-    assert.equal(provenance?.sourceFingerprint.kind, "file-chunk-hash");
-
-    assert.equal(
-      await compareMineruSourceProvenanceToAttachment(
-        written,
-        pdf as unknown as Zotero.Item,
-      ),
-      "match",
-    );
-
-    io.files.set(normalizePath(pdfPath), bytes([9, 9, 9, 9, 9, 9]));
-    assert.equal(
-      await compareMineruSourceProvenanceToAttachment(
-        written,
-        pdf as unknown as Zotero.Item,
-      ),
-      "mismatch",
-    );
   });
 
-  it("keeps provenance valid when only filename/path metadata changes", async function () {
+  it("reads legacy source metadata without preserving fingerprint state", async function () {
     const io = setupMemoryIO();
-    let pdfPath = "/tmp/zotero/storage/51/original.pdf";
-    const pdf = {
-      id: 51,
-      key: "PDFMETA",
-      attachmentFilename: "original.pdf",
-      attachmentContentType: "application/pdf",
-      isRegularItem: () => false,
-      isAttachment: () => true,
-      getFilePathAsync: async () => pdfPath,
-    };
-    (globalThis as any).Zotero.Items = { get: () => null };
-    io.files.set(normalizePath(pdfPath), bytes([4, 3, 2, 1]));
-
-    await writeMineruCacheFiles(51, "# Intro", []);
-    const provenance = await writeMineruSourceProvenanceForAttachment(
-      pdf as unknown as Zotero.Item,
+    io.files.set(
+      normalizePath("/tmp/zotero/llm-for-zotero-mineru/51/_llm_source.json"),
+      bytes(
+        JSON.stringify({
+          attachmentId: 51,
+          attachmentKey: "PDFMETA",
+          sourceFilename: "original.pdf",
+          sourceFingerprint: {
+            kind: "file-chunk-hash",
+            value: "fnv1a32-legacy",
+            size: 4,
+            strong: true,
+          },
+          provenanceStatus: "legacy_unverified",
+          parsedAt: "2020-01-01T00:00:00.000Z",
+        }),
+      ),
     );
 
-    pdf.attachmentFilename = "renamed.pdf";
-    pdfPath = "/tmp/zotero/storage/51/renamed.pdf";
-    io.files.set(normalizePath(pdfPath), bytes([4, 3, 2, 1]));
+    const provenance = await readMineruSourceProvenance(51);
 
-    assert.equal(
-      await compareMineruSourceProvenanceToAttachment(
-        provenance,
-        pdf as unknown as Zotero.Item,
-      ),
-      "match",
+    assert.equal(provenance?.kind, MINERU_SOURCE_PROVENANCE_KIND);
+    assert.equal(provenance?.version, MINERU_SOURCE_PROVENANCE_VERSION);
+    assert.equal(provenance?.origin, "parsed");
+    assert.equal(provenance?.recordedAt, "2020-01-01T00:00:00.000Z");
+    assert.equal(provenance?.parsedAt, "2020-01-01T00:00:00.000Z");
+    assert.notProperty(
+      provenance as Record<string, unknown>,
+      "sourceFingerprint",
+    );
+    assert.notProperty(
+      provenance as Record<string, unknown>,
+      "provenanceStatus",
     );
   });
 

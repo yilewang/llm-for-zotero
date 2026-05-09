@@ -367,6 +367,7 @@ function enqueueForProcessing(
   title: string,
   parentItemId?: number,
 ): void {
+  if (currentAttachmentId === attachmentId) return;
   if (processingQueue.some((e) => e.attachmentId === attachmentId)) return;
   processingQueue.push({ attachmentId, title, parentItemId });
   notifyProgress();
