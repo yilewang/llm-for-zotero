@@ -66,7 +66,11 @@ type MockItem = {
   isAttachment: () => boolean;
   isRegularItem: () => boolean;
   getDisplayTitle?: () => string;
-  getCreators?: () => Array<{ firstName?: string; lastName?: string; name?: string }>;
+  getCreators?: () => Array<{
+    firstName?: string;
+    lastName?: string;
+    name?: string;
+  }>;
   getField: (field: string) => string;
   getAttachments: () => number[];
 };
@@ -155,7 +159,10 @@ function registerMockPaper(params: {
   };
 }
 
-function buildActiveAttachment(itemId: number, contextItemId: number): MockItem {
+function buildActiveAttachment(
+  itemId: number,
+  contextItemId: number,
+): MockItem {
   return {
     id: contextItemId,
     parentID: itemId,
@@ -169,8 +176,11 @@ function buildActiveAttachment(itemId: number, contextItemId: number): MockItem 
 
 describe("multiContextPlanner", function () {
   before(function () {
-    originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero;
-    originalZtoolkit = (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit;
+    originalZotero = (globalThis as typeof globalThis & { Zotero?: unknown })
+      .Zotero;
+    originalZtoolkit = (
+      globalThis as typeof globalThis & { ztoolkit?: unknown }
+    ).ztoolkit;
     const prefs: Record<string, unknown> = {};
     (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit = {
       log: () => undefined,
@@ -188,7 +198,9 @@ describe("multiContextPlanner", function () {
       },
       Prefs: {
         get: (key: string) => prefs[key],
-        set: (key: string, value: unknown) => { prefs[key] = value; },
+        set: (key: string, value: unknown) => {
+          prefs[key] = value;
+        },
       },
       PDFWorker: {
         getFullText: async (id: number) => ({
@@ -294,7 +306,10 @@ describe("multiContextPlanner", function () {
     });
     const plan = await resolveMultiContextPlan({
       conversationMode: "paper",
-      activeContextItem: buildActiveAttachment(paper.itemId, paper.contextItemId) as any,
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
       question: "Summarize this paper.",
       paperContexts: [],
       fullTextPaperContexts: [paper],
@@ -327,7 +342,10 @@ describe("multiContextPlanner", function () {
     });
     const plan = await resolveMultiContextPlan({
       conversationMode: "paper",
-      activeContextItem: buildActiveAttachment(paper.itemId, paper.contextItemId) as any,
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
       question: "Summarize the paper.",
       paperContexts: [],
       fullTextPaperContexts: [paper],
@@ -364,7 +382,10 @@ describe("multiContextPlanner", function () {
     });
     const plan = await resolveMultiContextPlan({
       conversationMode: "paper",
-      activeContextItem: buildActiveAttachment(paper.itemId, paper.contextItemId) as any,
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
       question: "What do the results say about recall?",
       paperContexts: [],
       fullTextPaperContexts: [],
@@ -478,7 +499,10 @@ describe("multiContextPlanner", function () {
 
     assert.isAtLeast(result.selectedChunkCount, 2);
     assert.isAtMost(result.selectedChunkCount, 5);
-    assert.include(result.contextText, "Results describe the most important outcome.");
+    assert.include(
+      result.contextText,
+      "Results describe the most important outcome.",
+    );
   });
 
   it("adds a capability reminder only for follow-up questions about access or coverage", async function () {
@@ -495,7 +519,10 @@ describe("multiContextPlanner", function () {
     });
     const plan = await resolveMultiContextPlan({
       conversationMode: "paper",
-      activeContextItem: buildActiveAttachment(paper.itemId, paper.contextItemId) as any,
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
       question: "Do you have access to the full text or only a few sections?",
       paperContexts: [],
       fullTextPaperContexts: [],
@@ -505,7 +532,10 @@ describe("multiContextPlanner", function () {
     });
     const unrelated = await resolveMultiContextPlan({
       conversationMode: "paper",
-      activeContextItem: buildActiveAttachment(paper.itemId, paper.contextItemId) as any,
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
       question: "What is the main finding?",
       paperContexts: [],
       fullTextPaperContexts: [],
@@ -611,13 +641,19 @@ describe("multiContextPlanner", function () {
 
     assert.equal(plan.mode, "retrieval");
     assert.include(plan.contextText, "Selected Zotero collection scopes:");
+    assert.include(
+      plan.contextText,
+      "Collection manifest (PDF-backed papers):",
+    );
     assert.include(plan.contextText, "metadata-ranked shortlist");
     assert.include(
       plan.contextText,
       `${COLLECTION_RETRIEVAL_MAX_PAPERS} of 60 PDF-backed papers selected`,
     );
     assert.include(plan.contextText, "Title: Calibration Drift Paper 001");
-    assert.notInclude(plan.contextText, "Title: Calibration Drift Paper 060");
+    assert.include(plan.contextText, "Title: Calibration Drift Paper 060");
+    assert.include(plan.contextText, "itemId=1060");
+    assert.include(plan.contextText, "contextItemId=2060");
     assert.isAtMost(plan.selectedPaperCount, COLLECTION_RETRIEVAL_MAX_PAPERS);
     assert.isAtLeast(plan.citationPaperContexts?.length || 0, 1);
     assert.isAtMost(
@@ -632,5 +668,78 @@ describe("multiContextPlanner", function () {
       (plan.citationPaperContexts || []).map((paper) => paper.title),
       "Calibration Drift Paper 060",
     );
+  });
+
+  it("includes a complete collection manifest when retrieval surfaces fewer papers", async function () {
+    const itemIds: number[] = [];
+    for (let index = 1; index <= 6; index += 1) {
+      itemIds.push(3_000 + index);
+      registerMockPaper({
+        itemId: 3_000 + index,
+        contextItemId: 4_000 + index,
+        title: `Small Folder Paper ${index}`,
+        firstCreator: `Author ${index}`,
+        year: `202${index}`,
+        citationKey: index === 1 ? "SmallKey1" : undefined,
+        abstractNote:
+          index <= 2
+            ? "This abstract discusses a targeted manifest retrieval topic."
+            : "This abstract is deliberately unrelated to the query.",
+        pdfContext: buildPdfContext(`Small Folder Paper ${index}`, [
+          `${"retrieval topic ".repeat(90)}paper ${index}`.trim(),
+        ]),
+      });
+    }
+    zoteroCollections.set(77, {
+      id: 77,
+      name: "Small Folder",
+      libraryID: 1,
+      getChildItems: () => itemIds,
+      getChildCollections: () => [],
+    });
+
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "open",
+      activeContextItem: null,
+      question: "What does the targeted manifest retrieval topic say?",
+      collectionContexts: [
+        {
+          collectionId: 77,
+          name: "Small Folder",
+          libraryID: 1,
+        },
+      ],
+      paperContexts: [],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      advanced: {
+        temperature: 0.2,
+        maxTokens: 512,
+        inputTokenCap: 1_000,
+      },
+    });
+
+    assert.equal(plan.mode, "retrieval");
+    assert.include(
+      plan.contextText,
+      "Collection manifest (PDF-backed papers):",
+    );
+    assert.include(plan.contextText, "Citation key: SmallKey1");
+    for (let index = 1; index <= 6; index += 1) {
+      assert.include(plan.contextText, `Title: Small Folder Paper ${index}`);
+      assert.include(plan.contextText, `itemId=${3_000 + index}`);
+      assert.include(plan.contextText, `contextItemId=${4_000 + index}`);
+      assert.include(
+        plan.contextText,
+        `Attachment: Small Folder Paper ${index} PDF`,
+      );
+    }
+    assert.include(
+      plan.contextText,
+      "6 of 6 PDF-backed papers selected for deeper retrieval",
+    );
+    assert.isBelow(plan.selectedPaperCount, 6);
   });
 });

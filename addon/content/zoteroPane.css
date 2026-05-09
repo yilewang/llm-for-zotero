@@ -5367,6 +5367,7 @@ label.llm-search-results-item:hover {
   position: absolute;
   left: 0;
   right: 0;
+  top: auto;
   bottom: calc(100% + 8px);
   z-index: 30;
   max-height: min(40vh, 280px);
@@ -5376,6 +5377,11 @@ label.llm-search-results-item:hover {
   background: var(--material-background, #fff);
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.24);
   scroll-padding-block: 6px;
+}
+
+.llm-paper-picker.llm-paper-picker-below {
+  top: calc(100% + 8px);
+  bottom: auto;
 }
 
 .llm-paper-picker-list {

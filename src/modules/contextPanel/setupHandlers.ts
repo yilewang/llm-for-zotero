@@ -397,6 +397,9 @@ import { createClearConversationController } from "./setupHandlers/controllers/c
 import {
   cancelVisiblePendingConfirmationCards,
 } from "./setupHandlers/controllers/cancelPendingConfirmationController";
+import {
+  buildInlineEditRetryContextSnapshot,
+} from "./setupHandlers/controllers/inlineEditRetryController";
 import { clearAllAgentToolCaches } from "../../agent/tools";
 import { renderShortcuts } from "./shortcuts";
 import { loadConversationHistoryScope } from "./historyLoader";
@@ -8744,6 +8747,7 @@ export function setupHandlers(
     resetPaperPickerState();
     if (paperPicker) {
       paperPicker.style.display = "none";
+      paperPicker.classList.remove("llm-paper-picker-below");
     }
     if (paperPickerList) {
       paperPickerList.innerHTML = "";
@@ -10175,6 +10179,38 @@ export function setupHandlers(
     }
     return -1;
   };
+  const positionPaperPickerForVisibleAnchor = () => {
+    if (!paperPicker) return;
+    const ownerDoc = body.ownerDocument;
+    const ownerWin = ownerDoc?.defaultView;
+    const composeArea = paperPicker.parentElement as HTMLElement | null;
+    if (!ownerDoc || !ownerWin || !composeArea) {
+      paperPicker.classList.remove("llm-paper-picker-below");
+      return;
+    }
+    const anchorRect = composeArea.getBoundingClientRect();
+    const panelRect = panelRoot?.getBoundingClientRect?.();
+    const viewportTop = Math.max(0, panelRect?.top ?? 0);
+    const viewportBottom = Math.min(
+      ownerWin.innerHeight || ownerDoc.documentElement?.clientHeight || 0,
+      panelRect?.bottom ?? Number.POSITIVE_INFINITY,
+    );
+    const margin = 12;
+    const pickerHeight = Math.max(
+      1,
+      paperPicker.getBoundingClientRect().height || paperPicker.scrollHeight,
+    );
+    const spaceAbove = Math.max(0, anchorRect.top - viewportTop - margin);
+    const spaceBelow = Math.max(0, viewportBottom - anchorRect.bottom - margin);
+    const shouldOpenBelow =
+      spaceAbove < pickerHeight && spaceBelow > spaceAbove;
+    paperPicker.classList.toggle("llm-paper-picker-below", shouldOpenBelow);
+  };
+  const showPaperPicker = () => {
+    if (!paperPicker) return;
+    paperPicker.style.display = "block";
+    positionPaperPickerForVisibleAnchor();
+  };
   const upsertPaperContext = (paper: PaperContextRef): boolean => {
     if (!item) return false;
     const autoLoadedPaperContext = resolveAutoLoadedPaperContext();
@@ -10564,7 +10600,7 @@ export function setupHandlers(
         textContent: paperPickerEmptyMessage,
       });
       paperPickerList.appendChild(empty);
-      paperPicker.style.display = "block";
+      showPaperPicker();
       return;
     }
     rebuildPaperPickerRows();
@@ -10831,7 +10867,7 @@ export function setupHandlers(
       });
       paperPickerList.appendChild(option);
     });
-    paperPicker.style.display = "block";
+    showPaperPicker();
     const activeOption = paperPickerList.children[
       paperPickerActiveRowIndex
     ] as HTMLElement | null;
@@ -11425,14 +11461,18 @@ export function setupHandlers(
       const selectedContexts = textContextKey
         ? getSelectedTextContextEntries(textContextKey)
         : [];
-      const selectedTexts = selectedContexts.map((entry) => entry.text);
-      const selectedTextSources = selectedContexts.map((entry) => entry.source);
-      const selectedTextPaperContexts = selectedContexts.map(
-        (entry) => entry.paperContext,
-      );
-      const selectedTextNoteContexts = selectedContexts.map(
-        (entry) => entry.noteContext,
-      );
+      const {
+        selectedTexts,
+        selectedTextSources,
+        selectedTextPaperContexts,
+        selectedTextNoteContexts,
+        selectedCollectionContexts,
+      } = buildInlineEditRetryContextSnapshot({
+        selectedContexts,
+        selectedCollectionContexts: selectedCollectionContextCache.get(
+          currentItem.id,
+        ),
+      });
       const allPaperContexts = getManualPaperContextsForItem(
         currentItem.id,
         currentItem.id === item?.id ? resolveAutoLoadedPaperContext() : null,
@@ -11714,6 +11754,7 @@ export function setupHandlers(
           selectedTextSources,
           selectedTextPaperContexts,
           selectedTextNoteContexts,
+          selectedCollectionContexts,
           screenshotImages: images,
           paperContexts: selectedPaperContexts,
           fullTextPaperContexts,
