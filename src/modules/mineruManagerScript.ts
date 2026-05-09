@@ -21,6 +21,7 @@ import { getMineruItemDir } from "./contextPanel/mineruCache";
 import {
   getMineruStatus,
   onProcessingStatusChange,
+  type MineruStatus,
 } from "./mineruProcessingStatus";
 import {
   getAutoWatchStatus,
@@ -96,6 +97,41 @@ const MIN_COLUMN_WIDTHS = {
   year: 34,
   dateAdded: 64,
 } as const;
+const MINERU_STATUS_DOT_COLORS: Record<MineruStatus, string> = {
+  cached: "#10b981",
+  processing: "#f59e0b",
+  failed: "#ef4444",
+  idle: "#d1d5db",
+};
+
+export type MineruParentStatusChild = Pick<
+  MineruItemEntry,
+  "availability" | "excluded"
+> & {
+  status: MineruStatus;
+};
+
+export function getMineruParentDisplayStatus(
+  children: readonly MineruParentStatusChild[],
+): MineruStatus {
+  const actionableChildren = children.filter((child) => !child.excluded);
+  if (!actionableChildren.length) return "idle";
+
+  if (actionableChildren.some((child) => child.status === "processing")) {
+    return "processing";
+  }
+  if (actionableChildren.some((child) => child.status === "failed")) {
+    return "failed";
+  }
+  if (
+    actionableChildren.every(
+      (child) => child.status === "cached" || child.availability !== "missing",
+    )
+  ) {
+    return "cached";
+  }
+  return "idle";
+}
 
 export async function registerMineruManagerScript(
   win: Window,
@@ -174,6 +210,17 @@ export async function registerMineruManagerScript(
     return item.availability !== "missing";
   }
 
+  function getAvailabilityDisplayStatus(item: MineruItemEntry): MineruStatus {
+    return isMineruAvailable(item) ? "cached" : "idle";
+  }
+
+  function setDotDisplayStatus(
+    dot: HTMLSpanElement,
+    status: MineruStatus,
+  ): void {
+    dot.style.background = MINERU_STATUS_DOT_COLORS[status];
+  }
+
   function getAvailabilityTooltip(item: MineruItemEntry): string {
     if (item.availability === "synced") {
       return t(
@@ -204,9 +251,10 @@ export async function registerMineruManagerScript(
     entry.cached = availability.status !== "missing";
     const dot = dotElements.get(attachmentId);
     if (dot) {
-      dot.style.background = entry.cached ? "#10b981" : "#d1d5db";
+      setDotDisplayStatus(dot, await getMineruStatus(attachmentId));
       dot.title = getAvailabilityTooltip(entry);
     }
+    void updateParentDotForAttachment(attachmentId);
   }
 
   function getVisibleItems(): MineruItemEntry[] {
@@ -733,23 +781,75 @@ export async function registerMineruManagerScript(
   // Parent dot aggregation for multi-PDF items
   const parentDotElements = new Map<number, HTMLSpanElement>();
 
-  function updateParentDot(parentId: number, group: MineruParentGroup): void {
+  function getInitialParentDisplayStatus(
+    group: MineruParentGroup,
+  ): MineruStatus {
+    return getMineruParentDisplayStatus(
+      group.children.map((child) => ({
+        availability: child.availability,
+        excluded: child.excluded,
+        status: getAvailabilityDisplayStatus(child),
+      })),
+    );
+  }
+
+  async function getResolvedParentDisplayStatus(
+    group: MineruParentGroup,
+  ): Promise<MineruStatus> {
+    const childStatuses = await Promise.all(
+      group.children.map(async (child) => ({
+        availability: child.availability,
+        excluded: child.excluded,
+        status: await getMineruStatus(child.attachmentId),
+      })),
+    );
+    return getMineruParentDisplayStatus(childStatuses);
+  }
+
+  async function updateParentDot(
+    parentId: number,
+    group: MineruParentGroup,
+  ): Promise<void> {
     const parentDot = parentDotElements.get(parentId);
     if (!parentDot) return;
-    let hasProcessing = false;
-    let hasFailed = false;
-    let allGreen = true;
-    for (const child of group.children) {
-      const childDot = dotElements.get(child.attachmentId);
-      const bg = childDot?.style.background || "";
-      if (bg.includes("245, 158, 11") || bg === "#f59e0b") hasProcessing = true;
-      else if (bg.includes("239, 68, 68") || bg === "#ef4444") hasFailed = true;
-      if (!bg.includes("16, 185, 129") && bg !== "#10b981") allGreen = false;
+    const status = await getResolvedParentDisplayStatus(group);
+    if (parentDotElements.get(parentId) !== parentDot) return;
+    setDotDisplayStatus(parentDot, status);
+  }
+
+  function findRenderedGroupForAttachment(
+    attachmentId: number,
+  ): MineruParentGroup | null {
+    return (
+      getVisibleGroups().find((group) =>
+        group.children.some((child) => child.attachmentId === attachmentId),
+      ) || null
+    );
+  }
+
+  function markParentDotProcessingForAttachment(attachmentId: number): void {
+    const group = findRenderedGroupForAttachment(attachmentId);
+    if (!group) return;
+    const parentDot = parentDotElements.get(group.parentItemId);
+    if (parentDot) setDotDisplayStatus(parentDot, "processing");
+  }
+
+  function updateParentDotForAttachment(attachmentId: number): void {
+    const group = findRenderedGroupForAttachment(attachmentId);
+    if (group) void updateParentDot(group.parentItemId, group);
+  }
+
+  function refreshRenderedParentDots(): void {
+    for (const group of getVisibleGroups()) {
+      void updateParentDot(group.parentItemId, group);
     }
-    if (allGreen) parentDot.style.background = "#10b981";
-    else if (hasProcessing) parentDot.style.background = "#f59e0b";
-    else if (hasFailed) parentDot.style.background = "#ef4444";
-    else parentDot.style.background = "#d1d5db";
+  }
+
+  async function refreshAttachmentDot(
+    attachmentId: number,
+    dot: HTMLSpanElement,
+  ): Promise<void> {
+    setDotDisplayStatus(dot, await getMineruStatus(attachmentId));
   }
 
   /** Build a standard item row (reused for parent, child, and single-PDF rows). */
@@ -768,17 +868,13 @@ export async function registerMineruManagerScript(
     dot.style.cssText =
       "width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;";
     setColumnWidthStyle(dot, "cached");
-    dot.style.background = isMineruAvailable(item) ? "#10b981" : "#d1d5db";
+    setDotDisplayStatus(dot, getAvailabilityDisplayStatus(item));
     dot.title = getAvailabilityTooltip(item);
     dotElements.set(item.attachmentId, dot);
     row.appendChild(dot);
 
     void (async () => {
-      const status = await getMineruStatus(item.attachmentId);
-      if (status === "cached") dot.style.background = "#10b981";
-      else if (status === "processing") dot.style.background = "#f59e0b";
-      else if (status === "failed") dot.style.background = "#ef4444";
-      else dot.style.background = "#d1d5db";
+      await refreshAttachmentDot(item.attachmentId, dot);
     })();
 
     const titleSpan = doc.createElement("span");
@@ -949,10 +1045,9 @@ export async function registerMineruManagerScript(
         else collapsedParents.add(group.parentItemId);
         renderItemsList();
       });
-      parentDot.style.background = group.children.every(isMineruAvailable)
-        ? "#10b981"
-        : "#d1d5db";
+      setDotDisplayStatus(parentDot, getInitialParentDisplayStatus(group));
       parentDotElements.set(group.parentItemId, parentDot);
+      void updateParentDot(group.parentItemId, group);
       parentRow.appendChild(parentDot);
       parentRow.appendChild(chev);
 
@@ -1062,14 +1157,8 @@ export async function registerMineruManagerScript(
           const childDot = dotElements.get(child.attachmentId);
           if (childDot) {
             void (async () => {
-              const status = await getMineruStatus(child.attachmentId);
-              if (status === "cached") childDot.style.background = "#10b981";
-              else if (status === "processing")
-                childDot.style.background = "#f59e0b";
-              else if (status === "failed")
-                childDot.style.background = "#ef4444";
-              else childDot.style.background = "#d1d5db";
-              updateParentDot(group.parentItemId, group);
+              await refreshAttachmentDot(child.attachmentId, childDot);
+              void updateParentDot(group.parentItemId, group);
             })();
           }
 
@@ -1336,11 +1425,14 @@ export async function registerMineruManagerScript(
           el.style.background = "color-mix(in srgb, #f59e0b 15%, transparent)";
           // Also set dot to yellow
           const dot = dotElements.get(attId);
-          if (dot) dot.style.background = "#f59e0b";
+          if (dot) setDotDisplayStatus(dot, "processing");
         } else if (!selectedIds.has(attId)) {
           el.style.background = "";
         }
       }
+    }
+    if (s.currentItemId) {
+      markParentDotProcessingForAttachment(s.currentItemId);
     }
   }
 
@@ -1352,7 +1444,7 @@ export async function registerMineruManagerScript(
     } else if (lastSeenCurrentId !== null) {
       const failed = s.lastFailedItemId === lastSeenCurrentId;
       const dot = dotElements.get(lastSeenCurrentId);
-      if (dot) dot.style.background = failed ? "#ef4444" : "#10b981";
+      if (dot) setDotDisplayStatus(dot, failed ? "failed" : "cached");
       const entry = allItems.find((i) => i.attachmentId === lastSeenCurrentId);
       if (entry && !failed) {
         entry.localCached = true;
@@ -1361,6 +1453,7 @@ export async function registerMineruManagerScript(
         const currentDot = dotElements.get(entry.attachmentId);
         if (currentDot) currentDot.title = getAvailabilityTooltip(entry);
       }
+      updateParentDotForAttachment(lastSeenCurrentId);
       lastSeenCurrentId = null;
     }
   });
@@ -1375,8 +1468,9 @@ export async function registerMineruManagerScript(
     if (s.currentItemId) {
       const dot = dotElements.get(s.currentItemId);
       if (dot && dot.style.background !== "rgb(245, 158, 11)") {
-        dot.style.background = "#f59e0b";
+        setDotDisplayStatus(dot, "processing");
       }
+      markParentDotProcessingForAttachment(s.currentItemId);
     }
   }, 500);
   (win as unknown as { _mineruDotPoll?: number })._mineruDotPoll =
@@ -1639,17 +1733,9 @@ export async function registerMineruManagerScript(
   const unsubscribeProcessingStatus = onProcessingStatusChange(() => {
     void (async () => {
       for (const [attachmentId, dot] of dotElements.entries()) {
-        const status = await getMineruStatus(attachmentId);
-        if (status === "cached") {
-          dot.style.background = "#10b981";
-        } else if (status === "processing") {
-          dot.style.background = "#f59e0b";
-        } else if (status === "failed") {
-          dot.style.background = "#ef4444";
-        } else {
-          dot.style.background = "#d1d5db";
-        }
+        await refreshAttachmentDot(attachmentId, dot);
       }
+      refreshRenderedParentDots();
     })();
   });
 
