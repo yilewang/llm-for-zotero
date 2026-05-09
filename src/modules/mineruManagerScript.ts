@@ -28,7 +28,11 @@ import {
   resumeAutoWatch,
   onAutoWatchProgress,
 } from "./mineruAutoWatch";
-import { getMineruAvailabilityForAttachmentId } from "./contextPanel/mineruSync";
+import {
+  getMineruAvailabilityForAttachmentId,
+  repairMineruCaches,
+  type MineruCacheRepairResult,
+} from "./contextPanel/mineruSync";
 
 /** Show a confirm dialog with a custom title using ztoolkit.Dialog. */
 async function confirmDialog(message: string): Promise<boolean> {
@@ -100,6 +104,7 @@ export async function registerMineruManagerScript(
   const progressLabel = $("progress-label") as HTMLSpanElement | null;
   const statusEl = $("status") as HTMLDivElement | null;
   const startBtn = $("start-btn") as HTMLButtonElement | null;
+  const repairBtn = $("repair-btn") as HTMLButtonElement | null;
   const deleteBtn = $("delete-btn") as HTMLButtonElement | null;
   const errorSpan = $("error") as HTMLSpanElement | null;
   const sidebar = $("sidebar") as HTMLDivElement | null;
@@ -126,6 +131,7 @@ export async function registerMineruManagerScript(
   let localTotalCount = 0;
   let localProcessedCount = 0;
   const collapsedSidebar = new Set<number>();
+  let isRepairing = false;
 
   // Sorting
   let sortKey: SortKey = "dateAdded";
@@ -153,6 +159,10 @@ export async function registerMineruManagerScript(
     if (progressLabel) {
       progressLabel.textContent = `${localProcessedCount} / ${localTotalCount}`;
     }
+  }
+
+  function formatRepairSummary(result: MineruCacheRepairResult): string {
+    return `Checked ${result.checked} PDFs. Restored ${result.restored}. Removed: ${result.removedOrphanCaches} orphan caches, ${result.removedStaleCaches} stale caches, ${result.removedOrphanSyncPackages} orphan sync packages. Failed ${result.failed}.`;
   }
 
   function isMineruAvailable(item: MineruItemEntry): boolean {
@@ -258,6 +268,7 @@ export async function registerMineruManagerScript(
     const inFolder = isSubfolder() || activeCollectionId === "unfiled";
 
     if (startBtn) {
+      startBtn.disabled = isRepairing;
       if ((s.running && !s.paused) || (aw.isProcessing && !aw.isPaused)) {
         startBtn.textContent = t("Pause");
       } else if (hasSelection) {
@@ -269,7 +280,13 @@ export async function registerMineruManagerScript(
       }
     }
 
+    if (repairBtn) {
+      repairBtn.disabled = isRepairing || s.running || aw.isProcessing;
+      repairBtn.textContent = isRepairing ? t("Repairing...") : t("Repair Cache");
+    }
+
     if (deleteBtn) {
+      deleteBtn.disabled = isRepairing;
       if (hasSelection) {
         deleteBtn.textContent = `${t("Delete Cache")} (${selectedIds.size})`;
       } else if (inFolder) {
@@ -1358,6 +1375,7 @@ export async function registerMineruManagerScript(
   // ── Button handlers ────────────────────────────────────────────────────────
   if (startBtn) {
     startBtn.addEventListener("click", () => {
+      if (isRepairing) return;
       const s = getMineruBatchState();
       const aw = getAutoWatchStatus();
       // Pause batch processing if running
@@ -1392,8 +1410,62 @@ export async function registerMineruManagerScript(
     });
   }
 
+  if (repairBtn) {
+    repairBtn.addEventListener("click", async () => {
+      if (isRepairing) return;
+      const s = getMineruBatchState();
+      const aw = getAutoWatchStatus();
+      if (s.running || aw.isProcessing) return;
+
+      isRepairing = true;
+      selectedIds.clear();
+      lastClickedId = null;
+      if (statusEl) {
+        statusEl.textContent = t("Repairing MinerU cache...");
+        statusEl.title = statusEl.textContent;
+        statusEl.style.color = "";
+      }
+      updateButtons();
+
+      try {
+        const result = await repairMineruCaches({
+          onProgress: (progress) => {
+            if (!statusEl) return;
+            const msg = formatRepairSummary(progress);
+            statusEl.textContent = msg;
+            statusEl.title = msg;
+          },
+        });
+        await loadData();
+        renderSidebar();
+        renderColumnHeaders();
+        renderItemsList();
+        const msg = formatRepairSummary(result);
+        if (statusEl) {
+          statusEl.textContent = msg;
+          statusEl.title = msg;
+          statusEl.style.color = result.failed > 0 ? "#dc2626" : "";
+        }
+      } catch (error) {
+        const msg = `Repair failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+        if (statusEl) {
+          statusEl.textContent = msg;
+          statusEl.title = msg;
+          statusEl.style.color = "#dc2626";
+        }
+        ztoolkit.log("LLM MinerU: repair failed", error);
+      } finally {
+        isRepairing = false;
+        updateButtons();
+      }
+    });
+  }
+
   if (deleteBtn) {
     deleteBtn.addEventListener("click", async () => {
+      if (isRepairing) return;
       if (selectedIds.size > 0) {
         if (
           !(await confirmDialog(

@@ -1,10 +1,13 @@
 import { assert } from "chai";
 import {
+  compareMineruSourceProvenanceToAttachment,
   normalizeMineruCacheFiles,
   readCachedMineruMd,
+  readMineruSourceProvenance,
   readManifest,
   readMineruImageAsBase64,
   writeMineruCacheFiles,
+  writeMineruSourceProvenanceForAttachment,
   type MineruCacheFile,
 } from "../src/modules/contextPanel/mineruCache";
 
@@ -311,6 +314,93 @@ describe("mineruCache", function () {
     assert.match(
       await readMineruImageAsBase64(7, "images/a.png"),
       /^data:image\/png;base64,/,
+    );
+  });
+
+  it("writes verified PDF provenance and detects content-ish fingerprint changes", async function () {
+    const io = setupMemoryIO();
+    const pdfPath = "/tmp/zotero/storage/42/paper.pdf";
+    const parent = {
+      id: 10,
+      key: "PARENTKEY",
+      isRegularItem: () => true,
+      isAttachment: () => false,
+      getAttachments: () => [42],
+    };
+    const pdf = {
+      id: 42,
+      key: "PDFKEY",
+      parentID: 10,
+      attachmentFilename: "paper.pdf",
+      attachmentContentType: "application/pdf",
+      isRegularItem: () => false,
+      isAttachment: () => true,
+      getFilePathAsync: async () => pdfPath,
+    };
+    (globalThis as any).Zotero.Items = {
+      get: (id: number) => (id === 10 ? parent : id === 42 ? pdf : null),
+    };
+    io.files.set(normalizePath(pdfPath), bytes([1, 2, 3, 4, 5]));
+
+    await writeMineruCacheFiles(42, "# Intro", []);
+    const written = await writeMineruSourceProvenanceForAttachment(
+      pdf as unknown as Zotero.Item,
+    );
+
+    const provenance = await readMineruSourceProvenance(42);
+    assert.equal(provenance?.attachmentKey, "PDFKEY");
+    assert.equal(provenance?.parentItemKey, "PARENTKEY");
+    assert.equal(provenance?.provenanceStatus, "verified");
+    assert.equal(provenance?.sourceFingerprint.kind, "file-chunk-hash");
+
+    assert.equal(
+      await compareMineruSourceProvenanceToAttachment(
+        written,
+        pdf as unknown as Zotero.Item,
+      ),
+      "match",
+    );
+
+    io.files.set(normalizePath(pdfPath), bytes([9, 9, 9, 9, 9, 9]));
+    assert.equal(
+      await compareMineruSourceProvenanceToAttachment(
+        written,
+        pdf as unknown as Zotero.Item,
+      ),
+      "mismatch",
+    );
+  });
+
+  it("keeps provenance valid when only filename/path metadata changes", async function () {
+    const io = setupMemoryIO();
+    let pdfPath = "/tmp/zotero/storage/51/original.pdf";
+    const pdf = {
+      id: 51,
+      key: "PDFMETA",
+      attachmentFilename: "original.pdf",
+      attachmentContentType: "application/pdf",
+      isRegularItem: () => false,
+      isAttachment: () => true,
+      getFilePathAsync: async () => pdfPath,
+    };
+    (globalThis as any).Zotero.Items = { get: () => null };
+    io.files.set(normalizePath(pdfPath), bytes([4, 3, 2, 1]));
+
+    await writeMineruCacheFiles(51, "# Intro", []);
+    const provenance = await writeMineruSourceProvenanceForAttachment(
+      pdf as unknown as Zotero.Item,
+    );
+
+    pdf.attachmentFilename = "renamed.pdf";
+    pdfPath = "/tmp/zotero/storage/51/renamed.pdf";
+    io.files.set(normalizePath(pdfPath), bytes([4, 3, 2, 1]));
+
+    assert.equal(
+      await compareMineruSourceProvenanceToAttachment(
+        provenance,
+        pdf as unknown as Zotero.Item,
+      ),
+      "match",
     );
   });
 

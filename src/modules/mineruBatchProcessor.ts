@@ -6,6 +6,7 @@ import {
 } from "../utils/mineruClient";
 import {
   writeMineruCacheFiles,
+  writeMineruSourceProvenanceForAttachment,
   invalidateMineruMd,
   getMineruCacheDir,
 } from "./contextPanel/mineruCache";
@@ -302,6 +303,7 @@ async function processNext(): Promise<void> {
         result.mdContent,
         result.files,
       );
+      await writeMineruSourceProvenanceForAttachment(pdfItem);
       setItemCached(entry.attachmentId);
       void publishMineruCachePackageForAttachment(entry.attachmentId).then(
         (published) => {

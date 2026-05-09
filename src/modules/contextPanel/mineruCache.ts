@@ -1,11 +1,48 @@
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
 
 const MINERU_CACHE_DIR_NAME = "llm-for-zotero-mineru";
+export const MINERU_SOURCE_PROVENANCE_FILE = "_llm_source.json";
 
 export type MineruCacheFile = {
   relativePath: string;
   data: Uint8Array;
 };
+
+export type MineruSourceProvenanceStatus =
+  | "verified"
+  | "legacy_unverified";
+
+export type MineruSourceFingerprint =
+  | {
+      kind: "zotero-storage-hash";
+      value: string;
+      strong: true;
+    }
+  | {
+      kind: "file-chunk-hash";
+      value: string;
+      size: number;
+      strong: true;
+    }
+  | {
+      kind: "weak-file-metadata";
+      value: string;
+      strong: false;
+      path?: string;
+      sourceFilename?: string;
+    };
+
+export type MineruSourceProvenance = {
+  attachmentId: number;
+  attachmentKey?: string;
+  parentItemKey?: string;
+  sourceFilename?: string;
+  sourceFingerprint: MineruSourceFingerprint;
+  provenanceStatus: MineruSourceProvenanceStatus;
+  parsedAt: string;
+};
+
+export type MineruSourceProvenanceMatch = "match" | "mismatch" | "unknown";
 
 type NormalizedMineruCacheFile = MineruCacheFile & {
   originalRelativePath: string;
@@ -208,6 +245,36 @@ function stableHash(value: string): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function updateFnv1a(hash: number, byte: number): number {
+  hash ^= byte & 0xff;
+  return Math.imul(hash, 0x01000193) >>> 0;
+}
+
+function hashBytes(hash: number, bytes: Uint8Array): number {
+  let next = hash >>> 0;
+  for (let i = 0; i < bytes.length; i++) {
+    next = updateFnv1a(next, bytes[i]);
+  }
+  return next;
+}
+
+function stableChunkHash(bytes: Uint8Array): string {
+  const chunkSize = Math.min(64 * 1024, bytes.length);
+  const first = bytes.slice(0, chunkSize);
+  const lastStart = Math.max(0, bytes.length - chunkSize);
+  const last = bytes.slice(lastStart);
+  const encoder = new TextEncoder();
+  let hash = 0x811c9dc5;
+  hash = hashBytes(hash, encoder.encode(String(bytes.length)));
+  hash = updateFnv1a(hash, 0);
+  hash = hashBytes(hash, first);
+  hash = updateFnv1a(hash, 0xff);
+  if (lastStart > 0) {
+    hash = hashBytes(hash, last);
+  }
+  return `fnv1a32-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 function splitFileName(fileName: string): { stem: string; ext: string } {
@@ -604,6 +671,322 @@ function formatCacheWriteError(error: unknown): string {
     /* ignore */
   }
   return String(error || "Unknown error");
+}
+
+function getItemKey(item: Zotero.Item | null | undefined): string {
+  const value = (item as unknown as { key?: unknown } | null | undefined)?.key;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function getAttachmentFilename(item: Zotero.Item): string {
+  return String(
+    (item as unknown as { attachmentFilename?: unknown }).attachmentFilename ||
+      "",
+  ).trim();
+}
+
+function getParentItem(item: Zotero.Item): Zotero.Item | null {
+  const parentId = Number(item.parentID);
+  if (!Number.isFinite(parentId) || parentId <= 0) return null;
+  return Zotero.Items.get(Math.floor(parentId)) || null;
+}
+
+function normalizeFingerprintHash(value: unknown): string {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function getZoteroStorageHash(item: Zotero.Item): string {
+  const record = item as unknown as Record<string, unknown>;
+  for (const key of [
+    "attachmentSyncedHash",
+    "attachmentStorageHash",
+    "storageHash",
+    "contentHash",
+    "attachmentHash",
+  ]) {
+    const value = normalizeFingerprintHash(record[key]);
+    if (value) return value;
+  }
+  for (const field of [
+    "attachmentSyncedHash",
+    "attachmentStorageHash",
+    "storageHash",
+  ]) {
+    try {
+      const value = normalizeFingerprintHash(item.getField?.(field));
+      if (value) return value;
+    } catch {
+      /* ignore */
+    }
+  }
+  return "";
+}
+
+async function getAttachmentFilePath(item: Zotero.Item): Promise<string> {
+  try {
+    const asyncPath = await (
+      item as unknown as { getFilePathAsync?: () => Promise<string | false> }
+    ).getFilePathAsync?.();
+    if (typeof asyncPath === "string" && asyncPath.trim()) {
+      return asyncPath.trim();
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const syncPath = (
+      item as unknown as { getFilePath?: () => string | false }
+    ).getFilePath?.();
+    if (typeof syncPath === "string" && syncPath.trim()) {
+      return syncPath.trim();
+    }
+  } catch {
+    /* fall through */
+  }
+  return "";
+}
+
+function parseMineruSourceFingerprint(
+  value: unknown,
+): MineruSourceFingerprint | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Partial<MineruSourceFingerprint> & {
+    kind?: unknown;
+    value?: unknown;
+    strong?: unknown;
+    size?: unknown;
+    path?: unknown;
+    sourceFilename?: unknown;
+  };
+  if (typeof record.kind !== "string" || typeof record.value !== "string") {
+    return null;
+  }
+  if (
+    record.kind === "zotero-storage-hash" &&
+    record.strong === true &&
+    record.value.trim()
+  ) {
+    return {
+      kind: "zotero-storage-hash",
+      value: record.value.trim(),
+      strong: true,
+    };
+  }
+  if (
+    record.kind === "file-chunk-hash" &&
+    record.strong === true &&
+    record.value.trim() &&
+    typeof record.size === "number" &&
+    Number.isFinite(record.size)
+  ) {
+    return {
+      kind: "file-chunk-hash",
+      value: record.value.trim(),
+      size: Math.max(0, Math.floor(record.size)),
+      strong: true,
+    };
+  }
+  if (record.kind === "weak-file-metadata" && record.value.trim()) {
+    return {
+      kind: "weak-file-metadata",
+      value: record.value.trim(),
+      strong: false,
+      path: typeof record.path === "string" ? record.path : undefined,
+      sourceFilename:
+        typeof record.sourceFilename === "string"
+          ? record.sourceFilename
+          : undefined,
+    };
+  }
+  return null;
+}
+
+function parseMineruSourceProvenance(
+  value: unknown,
+): MineruSourceProvenance | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Partial<MineruSourceProvenance> & {
+    attachmentId?: unknown;
+    attachmentKey?: unknown;
+    parentItemKey?: unknown;
+    sourceFilename?: unknown;
+    sourceFingerprint?: unknown;
+    provenanceStatus?: unknown;
+    parsedAt?: unknown;
+  };
+  const attachmentId = Number(record.attachmentId);
+  const fingerprint = parseMineruSourceFingerprint(record.sourceFingerprint);
+  if (!Number.isFinite(attachmentId) || attachmentId <= 0 || !fingerprint) {
+    return null;
+  }
+  const provenanceStatus =
+    record.provenanceStatus === "verified" ||
+    record.provenanceStatus === "legacy_unverified"
+      ? record.provenanceStatus
+      : "legacy_unverified";
+  return {
+    attachmentId: Math.floor(attachmentId),
+    attachmentKey:
+      typeof record.attachmentKey === "string"
+        ? record.attachmentKey
+        : undefined,
+    parentItemKey:
+      typeof record.parentItemKey === "string"
+        ? record.parentItemKey
+        : undefined,
+    sourceFilename:
+      typeof record.sourceFilename === "string"
+        ? record.sourceFilename
+        : undefined,
+    sourceFingerprint: fingerprint,
+    provenanceStatus,
+    parsedAt:
+      typeof record.parsedAt === "string" && record.parsedAt.trim()
+        ? record.parsedAt
+        : new Date(0).toISOString(),
+  };
+}
+
+function getMineruSourceProvenancePath(id: number): string {
+  return joinLocalPath(getMineruItemDir(id), MINERU_SOURCE_PROVENANCE_FILE);
+}
+
+export function isStrongMineruSourceFingerprint(
+  fingerprint: MineruSourceFingerprint | null | undefined,
+): boolean {
+  return Boolean(fingerprint?.strong);
+}
+
+export function mineruSourceFingerprintsEqual(
+  a: MineruSourceFingerprint | null | undefined,
+  b: MineruSourceFingerprint | null | undefined,
+): boolean {
+  if (!a || !b || a.kind !== b.kind || a.value !== b.value) return false;
+  if (a.kind === "file-chunk-hash" && b.kind === "file-chunk-hash") {
+    return a.size === b.size;
+  }
+  return true;
+}
+
+export async function computeMineruSourceFingerprint(
+  attachment: Zotero.Item,
+): Promise<MineruSourceFingerprint> {
+  const storageHash = getZoteroStorageHash(attachment);
+  if (storageHash) {
+    return {
+      kind: "zotero-storage-hash",
+      value: storageHash,
+      strong: true,
+    };
+  }
+
+  const sourceFilename = getAttachmentFilename(attachment);
+  const path = await getAttachmentFilePath(attachment);
+  if (path) {
+    const data = await readFileBytes(path);
+    if (data) {
+      return {
+        kind: "file-chunk-hash",
+        value: stableChunkHash(data),
+        size: data.length,
+        strong: true,
+      };
+    }
+  }
+
+  return {
+    kind: "weak-file-metadata",
+    value: stableHash(`${sourceFilename}\n${path}`),
+    strong: false,
+    path: path || undefined,
+    sourceFilename: sourceFilename || undefined,
+  };
+}
+
+export async function buildMineruSourceProvenance(
+  attachment: Zotero.Item,
+  provenanceStatus: MineruSourceProvenanceStatus = "verified",
+): Promise<MineruSourceProvenance> {
+  const parentItem = getParentItem(attachment);
+  return {
+    attachmentId: attachment.id,
+    attachmentKey: getItemKey(attachment) || undefined,
+    parentItemKey: getItemKey(parentItem) || undefined,
+    sourceFilename: getAttachmentFilename(attachment) || undefined,
+    sourceFingerprint: await computeMineruSourceFingerprint(attachment),
+    provenanceStatus,
+    parsedAt: new Date().toISOString(),
+  };
+}
+
+export async function readMineruSourceProvenance(
+  attachmentId: number,
+): Promise<MineruSourceProvenance | null> {
+  const bytes = await readFileBytes(getMineruSourceProvenancePath(attachmentId));
+  if (!bytes) return null;
+  try {
+    return parseMineruSourceProvenance(
+      JSON.parse(new TextDecoder("utf-8").decode(bytes)),
+    );
+  } catch {
+    return null;
+  }
+}
+
+export async function writeMineruSourceProvenance(
+  attachmentId: number,
+  provenance: MineruSourceProvenance,
+): Promise<void> {
+  await ensureDir(getMineruItemDir(attachmentId));
+  await writeFileBytes(
+    getMineruSourceProvenancePath(attachmentId),
+    new TextEncoder().encode(JSON.stringify(provenance, null, 2)),
+  );
+}
+
+export async function writeMineruSourceProvenanceForAttachment(
+  attachment: Zotero.Item,
+  provenanceStatus: MineruSourceProvenanceStatus = "verified",
+): Promise<MineruSourceProvenance> {
+  const provenance = await buildMineruSourceProvenance(
+    attachment,
+    provenanceStatus,
+  );
+  await writeMineruSourceProvenance(attachment.id, provenance);
+  return provenance;
+}
+
+export async function compareMineruSourceProvenanceToAttachment(
+  provenance: MineruSourceProvenance,
+  attachment: Zotero.Item,
+): Promise<MineruSourceProvenanceMatch> {
+  const currentKey = getItemKey(attachment);
+  if (
+    provenance.attachmentKey &&
+    currentKey &&
+    provenance.attachmentKey !== currentKey
+  ) {
+    return "mismatch";
+  }
+
+  const currentFingerprint = await computeMineruSourceFingerprint(attachment);
+  if (
+    mineruSourceFingerprintsEqual(
+      provenance.sourceFingerprint,
+      currentFingerprint,
+    )
+  ) {
+    return "match";
+  }
+
+  if (
+    isStrongMineruSourceFingerprint(provenance.sourceFingerprint) &&
+    isStrongMineruSourceFingerprint(currentFingerprint)
+  ) {
+    return "mismatch";
+  }
+
+  return "unknown";
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

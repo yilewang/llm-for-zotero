@@ -8,7 +8,9 @@ import {
   getMineruItemDir,
   hasCachedMineruMd,
   readCachedMineruMd,
+  readMineruSourceProvenance,
   writeMineruCacheFiles,
+  writeMineruSourceProvenanceForAttachment,
 } from "../src/modules/contextPanel/mineruCache";
 import { pdfTextCache } from "../src/modules/contextPanel/state";
 import {
@@ -20,6 +22,7 @@ import {
   MINERU_SYNC_ATTACHMENT_TITLE_PREFIX,
   MINERU_SYNC_METADATA_FILE,
   publishMineruCachePackageForAttachment,
+  repairMineruCaches,
   repairSyncedMineruCacheForAttachment,
   restoreSyncedMineruCacheForAttachment,
   shouldIncludeMineruCachePackageEntry,
@@ -1240,5 +1243,209 @@ describe("mineruSync", function () {
     assert.equal(await readCachedMineruMd(pdf.id), "# Newer synced");
     assert.isFalse(older.deleted === true);
     assert.isFalse(newer.deleted === true);
+  });
+
+  it("repairs orphan local folders and backfills legacy provenance for current caches", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdf = createAttachment({
+      id: 301,
+      key: "PDFREPAIRLOCAL",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "repair-local.pdf",
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+
+    await writeSampleCache(pdf.id);
+    await writeSampleCache(999);
+
+    const result = await repairMineruCaches();
+
+    assert.equal(result.checked, 1);
+    assert.equal(result.removedOrphanCaches, 1);
+    assert.equal(result.backfilledLegacyProvenance, 1);
+    assert.isTrue(await hasCachedMineruMd(pdf.id));
+    assert.isFalse(await hasCachedMineruMd(999));
+    const provenance = await readMineruSourceProvenance(pdf.id);
+    assert.equal(provenance?.provenanceStatus, "legacy_unverified");
+  });
+
+  it("removes a stale local cache when the current PDF fingerprint changed", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdfPath = "/tmp/zotero/storage/302/stale.pdf";
+    const pdf = createAttachment({
+      id: 302,
+      key: "PDFSTALELOCAL",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "stale.pdf",
+      filePath: pdfPath,
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+    io.files.set(normalizePath(pdfPath), bytes([1, 2, 3, 4]));
+
+    await writeSampleCache(pdf.id);
+    await writeMineruSourceProvenanceForAttachment(
+      pdf as unknown as Zotero.Item,
+    );
+    io.files.set(normalizePath(pdfPath), bytes([9, 8, 7, 6]));
+
+    const result = await repairMineruCaches();
+
+    assert.equal(result.removedStaleCaches, 1);
+    assert.isFalse(await hasCachedMineruMd(pdf.id));
+  });
+
+  it("restores a missing local cache from a synced ZIP with matching provenance", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdfPath = "/tmp/zotero/storage/303/restorable.pdf";
+    const pdf = createAttachment({
+      id: 303,
+      key: "PDFREPAIRSTORE",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "restorable.pdf",
+      filePath: pdfPath,
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+    io.files.set(normalizePath(pdfPath), bytes([1, 3, 5, 7]));
+
+    await writeSampleCache(pdf.id);
+    await writeMineruSourceProvenanceForAttachment(
+      pdf as unknown as Zotero.Item,
+    );
+    const zipBytes = await buildMineruSyncPackageBytes(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.exists(zipBytes);
+    attachPackage({
+      io,
+      items,
+      parent,
+      id: 304,
+      key: "PKGREPAIRSTORE",
+      sourceKey: "PDFREPAIRSTORE",
+      bytes: zipBytes!,
+    });
+    await io.remove(`/tmp/zotero/llm-for-zotero-mineru/${pdf.id}`);
+
+    const result = await repairMineruCaches();
+
+    assert.equal(result.restored, 1);
+    assert.equal(
+      await readCachedMineruMd(pdf.id),
+      "# Intro\n![Fig](images/fig1.png)\n# Results\ncontent",
+    );
+    const provenance = await readMineruSourceProvenance(pdf.id);
+    assert.equal(provenance?.provenanceStatus, "verified");
+  });
+
+  it("refuses to restore from a synced ZIP whose provenance no longer matches the PDF", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdfPath = "/tmp/zotero/storage/305/mismatch.pdf";
+    const pdf = createAttachment({
+      id: 305,
+      key: "PDFREPAIRMISMATCH",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "mismatch.pdf",
+      filePath: pdfPath,
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+    io.files.set(normalizePath(pdfPath), bytes([2, 4, 6, 8]));
+
+    await writeSampleCache(pdf.id);
+    await writeMineruSourceProvenanceForAttachment(
+      pdf as unknown as Zotero.Item,
+    );
+    const zipBytes = await buildMineruSyncPackageBytes(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.exists(zipBytes);
+    attachPackage({
+      io,
+      items,
+      parent,
+      id: 306,
+      key: "PKGREPAIRMISMATCH",
+      sourceKey: "PDFREPAIRMISMATCH",
+      bytes: zipBytes!,
+    });
+    await io.remove(`/tmp/zotero/llm-for-zotero-mineru/${pdf.id}`);
+    io.files.set(normalizePath(pdfPath), bytes([8, 6, 4, 2]));
+
+    const result = await repairMineruCaches();
+
+    assert.equal(result.restored, 0);
+    assert.equal(result.failed, 0);
+    assert.isFalse(await hasCachedMineruMd(pdf.id));
+  });
+
+  it("deletes orphan plugin-owned synced ZIP packages during repair", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdfPath = "/tmp/zotero/storage/307/orphaned.pdf";
+    const pdf = createAttachment({
+      id: 307,
+      key: "PDFORPHANZIP",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "orphaned.pdf",
+      filePath: pdfPath,
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+    io.files.set(normalizePath(pdfPath), bytes([7, 7, 7, 7]));
+
+    await writeSampleCache(pdf.id);
+    await writeMineruSourceProvenanceForAttachment(
+      pdf as unknown as Zotero.Item,
+    );
+    const zipBytes = await buildMineruSyncPackageBytes(
+      pdf as unknown as Zotero.Item,
+    );
+    assert.exists(zipBytes);
+    const packageItem = attachPackage({
+      io,
+      items,
+      parent,
+      id: 308,
+      key: "PKGORPHANZIP",
+      sourceKey: "PDFORPHANZIP",
+      bytes: zipBytes!,
+    });
+
+    items.delete(pdf.id);
+    parent.attachmentIDs = [packageItem.id];
+    await io.remove(`/tmp/zotero/llm-for-zotero-mineru/${pdf.id}`);
+
+    const result = await repairMineruCaches();
+
+    assert.equal(result.checked, 0);
+    assert.equal(result.removedOrphanSyncPackages, 1);
+    assert.isTrue(packageItem.deleted);
   });
 });

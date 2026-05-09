@@ -8,7 +8,14 @@ import {
   MineruRateLimitError,
   MineruCancelledError,
 } from "../utils/mineruClient";
-import { writeMineruCacheFiles } from "./contextPanel/mineruCache";
+import {
+  compareMineruSourceProvenanceToAttachment,
+  hasCachedMineruMd,
+  invalidateMineruMd,
+  readMineruSourceProvenance,
+  writeMineruCacheFiles,
+  writeMineruSourceProvenanceForAttachment,
+} from "./contextPanel/mineruCache";
 import { invalidateCachedContextText } from "./contextPanel/pdfContext";
 import {
   setItemProcessing,
@@ -279,6 +286,7 @@ async function processQueue(): Promise<void> {
           result.mdContent,
           result.files,
         );
+        await writeMineruSourceProvenanceForAttachment(pdfItem);
         setItemCached(entry.attachmentId);
         void publishMineruCachePackageForAttachment(entry.attachmentId).then(
           (published) => {
@@ -374,6 +382,73 @@ function enqueueForProcessing(
   }, DEBOUNCE_MS);
 }
 
+function getQueueTitleForPdf(item: Zotero.Item): {
+  title: string;
+  parentItemId?: number;
+} {
+  const parentId = Number(item.parentID);
+  const parentItem =
+    Number.isFinite(parentId) && parentId > 0
+      ? Zotero.Items.get(Math.floor(parentId))
+      : null;
+  return {
+    title:
+      parentItem?.getField?.("title") ||
+      item.getField?.("title") ||
+      `PDF ${item.id}`,
+    parentItemId:
+      Number.isFinite(parentId) && parentId > 0
+        ? Math.floor(parentId)
+        : undefined,
+  };
+}
+
+async function handlePdfModifyNotification(item: Zotero.Item): Promise<void> {
+  if (!isPdfAttachment(item)) return;
+  const pdfFilename =
+    (item as unknown as { attachmentFilename?: string }).attachmentFilename ||
+    "";
+  if (isFilenameExcluded(pdfFilename)) return;
+
+  const localCached = await hasCachedMineruMd(item.id);
+  const provenance = localCached
+    ? await readMineruSourceProvenance(item.id)
+    : null;
+
+  if (localCached && provenance) {
+    const match = await compareMineruSourceProvenanceToAttachment(
+      provenance,
+      item,
+    );
+    if (match === "mismatch") {
+      await invalidateMineruMd(item.id);
+      clearItemStatus(item.id);
+      ztoolkit.log(
+        `MinerU auto-parse: invalidated stale cache for modified PDF ${item.id}`,
+      );
+      if (isGlobalAutoParseEnabled()) {
+        const { title, parentItemId } = getQueueTitleForPdf(item);
+        enqueueForProcessing(item.id, title, parentItemId);
+      }
+    }
+    return;
+  }
+
+  if (!isGlobalAutoParseEnabled()) return;
+  if (
+    (
+      await getMineruAvailabilityForAttachment(item, {
+        validateSyncedPackage: false,
+      })
+    ).status !== "missing"
+  ) {
+    return;
+  }
+
+  const { title, parentItemId } = getQueueTitleForPdf(item);
+  enqueueForProcessing(item.id, title, parentItemId);
+}
+
 async function handleItemNotification(
   event: string,
   type: string,
@@ -387,6 +462,14 @@ async function handleItemNotification(
 
   if (event === "delete") {
     removeDeletedAttachmentsFromQueue(itemIds);
+    return;
+  }
+
+  if (event === "modify") {
+    for (const itemId of itemIds) {
+      const item = Zotero.Items.get(itemId);
+      if (item) await handlePdfModifyNotification(item);
+    }
     return;
   }
 
