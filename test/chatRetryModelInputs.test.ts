@@ -96,4 +96,40 @@ describe("chat retry model inputs", function () {
 
     assert.deepEqual(result.modelAttachments, []);
   });
+
+  it("fails upload-provider retries when a PDF paper attachment has no stored path", async function () {
+    const missingStoredPathPdf: ChatAttachment = {
+      id: "pdf-paper-123-1",
+      name: "paper.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 10,
+      category: "pdf",
+    };
+    const uploadConfig: EffectiveRequestConfig = {
+      ...visionConfig,
+      model: "kimi-k2.5",
+      apiBase: "https://api.moonshot.cn/v1",
+      apiKey: "test-key",
+      modelEntryId: "kimi-entry",
+      modelProviderLabel: "Kimi",
+    };
+
+    try {
+      await resolveRetryModelInputsForTests({
+        userMessage: {
+          ...retryUserMessage(),
+          attachments: [missingStoredPathPdf],
+        },
+        visibleAttachments: [missingStoredPathPdf],
+        screenshotImages: [],
+        effectiveRequestConfig: uploadConfig,
+      });
+      assert.fail("Expected missing storedPath to reject the retry");
+    } catch (err) {
+      assert.match(
+        err instanceof Error ? err.message : String(err),
+        /missing its locally persisted PDF/,
+      );
+    }
+  });
 });

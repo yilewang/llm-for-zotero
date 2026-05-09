@@ -841,6 +841,48 @@ describe("sendFlowController", function () {
     });
   });
 
+  it("renders PDF-mode papers as page images in codex app server chat", async function () {
+    const pdfAttachment: ChatAttachment = {
+      id: "pdf-paper-34-1",
+      name: "paper.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 1024,
+      category: "pdf",
+      storedPath: "/tmp/paper.pdf",
+    };
+    const pdfImage = "data:image/png;base64,PDFPAGE";
+    const { controller, getCounts, getLastSend, getStatuses } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      getFullTextPaperContexts: () => [],
+      getPdfModePaperContexts: () => [selectedPaper],
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "gpt-5.4",
+        apiBase: "https://chatgpt.com/backend-api/codex/responses",
+        apiKey: "",
+        providerLabel: "Codex",
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+      }),
+      getModelPdfSupport: () => "vision" as const,
+      resolvePdfPaperAttachments: async () => [pdfAttachment],
+      renderPdfPagesAsImages: async () => [pdfImage],
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 1);
+    assert.deepEqual(getLastSend().lastSentImages, [pdfImage]);
+    assert.deepEqual(getLastSend().lastSentAttachments, [pdfAttachment]);
+    assert.deepEqual(getLastSend().lastSentModelAttachments, []);
+    assert.notInclude(
+      getStatuses().map((status) => status.message),
+      "Codex App Server chat does not support pinned PDF or binary file attachments (paper.pdf). Remove them and try again.",
+    );
+  });
+
   it("blocks pinned binary files in codex app server latest-turn edit retries", async function () {
     const blockedAttachment: ChatAttachment = {
       id: "file-3",

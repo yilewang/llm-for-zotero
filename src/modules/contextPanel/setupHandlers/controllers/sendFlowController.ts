@@ -243,6 +243,17 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     const selectedNonPdfFiles = selectedBaseFiles.filter(
       (attachment) => !isPdfAttachment(attachment),
     );
+    if (useCodexAttachmentPolicy) {
+      const blockedAttachments =
+        getBlockedCodexAppServerChatAttachments(selectedBaseFiles);
+      if (blockedAttachments.length) {
+        deps.setStatusMessage?.(
+          buildCodexAppServerAttachmentBlockMessage(blockedAttachments),
+          "error",
+        );
+        return;
+      }
+    }
     const selectedImages = deps
       .getSelectedImages(item.id)
       .slice(0, MAX_SELECTED_IMAGES);
@@ -261,8 +272,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     let pdfUploadSystemMessages: string[] = [];
     const hasProviderProcessedPdfs =
       pdfModePaperContexts.length > 0 &&
-      !isWebChat &&
-      !useCodexAttachmentPolicy;
+      !isWebChat;
     // [webchat] Skip provider-capability PDF processing — webchat handles PDF
     // through its own pipeline (sendPdf → relay → extension → attachPDF).
     if (hasProviderProcessedPdfs) {
@@ -430,17 +440,6 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         "error",
       );
       return;
-    }
-    if (useCodexAttachmentPolicy) {
-      const blockedAttachments =
-        getBlockedCodexAppServerChatAttachments(selectedFiles);
-      if (blockedAttachments.length) {
-        deps.setStatusMessage?.(
-          buildCodexAppServerAttachmentBlockMessage(blockedAttachments),
-          "error",
-        );
-        return;
-      }
     }
     const hasPaperComposeState =
       allSelectedPaperContexts.length > 0 ||

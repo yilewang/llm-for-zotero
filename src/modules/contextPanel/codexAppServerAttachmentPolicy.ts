@@ -6,6 +6,13 @@ import type {
 
 const BLOCKED_CATEGORIES = new Set<ChatAttachmentCategory>(["pdf", "file"]);
 
+function isGeneratedPdfPaperAttachment(attachment: ChatAttachment): boolean {
+  return (
+    typeof attachment.id === "string" &&
+    /^pdf-(?:paper|page)-\d+-/.test(attachment.id)
+  );
+}
+
 function normalizeRelevantAttachments(
   attachments?: ChatAttachment[],
 ): ChatAttachment[] {
@@ -15,6 +22,7 @@ function normalizeRelevantAttachments(
       Boolean(attachment) &&
       typeof attachment === "object" &&
       attachment.category !== "image" &&
+      !isGeneratedPdfPaperAttachment(attachment) &&
       typeof attachment.name === "string" &&
       attachment.name.trim().length > 0,
   );

@@ -3585,6 +3585,19 @@ async function resolveRetryModelInputs(params: {
         : visibleAttachments;
   const pdfUploadSystemMessages: string[] = [];
   if (pdfSupport === "upload" && pdfPaperAttachments.length) {
+    const missingStoredPath = pdfPaperAttachments.find(
+      (attachment) => !(attachment.storedPath || "").trim(),
+    );
+    if (missingStoredPath) {
+      const name =
+        typeof missingStoredPath.name === "string" &&
+        missingStoredPath.name.trim()
+          ? missingStoredPath.name.trim()
+          : "the PDF";
+      throw new Error(
+        `Cannot retry PDF upload because ${name} is missing its locally persisted PDF. Re-send the paper or switch models.`,
+      );
+    }
     const apiBase = (params.effectiveRequestConfig.apiBase || "").trim();
     const apiKey = (params.effectiveRequestConfig.apiKey || "").trim();
     if (!apiBase || !apiKey) {
@@ -3598,7 +3611,6 @@ async function resolveRetryModelInputs(params: {
     const provider = detectPdfUploadProvider(apiBase);
     for (const attachment of pdfPaperAttachments) {
       const storedPath = (attachment.storedPath || "").trim();
-      if (!storedPath) continue;
       const result = await uploadPdfForProvider({
         provider,
         apiBase,
