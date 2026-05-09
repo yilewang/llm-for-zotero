@@ -117,15 +117,20 @@ import {
   setClaudeBlockStreamingEnabled,
 } from "../claudeCode/prefs";
 import {
+  getCodexBinaryPathPref,
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
   isCodexZoteroMcpToolsEnabled,
   isCodexAppServerModeEnabled,
   setCodexAppServerModeEnabled,
+  setCodexBinaryPathPref,
   setCodexZoteroMcpToolsEnabled,
   setCodexReasoningModePref,
   setCodexRuntimeModelPref,
 } from "../codexAppServer/prefs";
+import {
+  getConfiguredCodexAppServerBinaryPath,
+} from "../codexAppServer/binaryPath";
 import {
   installOrUpdateCodexZoteroMcpConfig,
   readCodexNativeMcpSetupStatus,
@@ -730,6 +735,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const codexAppServerReasoningSelect = doc.querySelector(
     `#${config.addonRef}-codex-app-server-reasoning`,
   ) as HTMLSelectElement | null;
+  const codexAppServerPathInput = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-path`,
+  ) as HTMLInputElement | null;
+  const codexAppServerPathHelper = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-path-helper`,
+  ) as HTMLSpanElement | null;
   const codexAppServerTestBtn = doc.querySelector(
     `#${config.addonRef}-codex-app-server-test`,
   ) as HTMLButtonElement | null;
@@ -2062,6 +2073,23 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  if (codexAppServerPathInput) {
+    codexAppServerPathInput.value = getCodexBinaryPathPref();
+    const commitCodexPath = () => {
+      setCodexBinaryPathPref(codexAppServerPathInput.value);
+      codexAppServerPathInput.value = getCodexBinaryPathPref();
+    };
+    codexAppServerPathInput.addEventListener("change", commitCodexPath);
+    codexAppServerPathInput.addEventListener("blur", commitCodexPath);
+    codexAppServerPathInput.addEventListener("input", () => {
+      setCodexBinaryPathPref(codexAppServerPathInput.value);
+    });
+  }
+
+  if (codexAppServerPathHelper) {
+    codexAppServerPathHelper.textContent = t(getCodexAppServerPathHelperText());
+  }
+
   if (codexAppServerTestBtn && codexAppServerStatus) {
     codexAppServerTestBtn.addEventListener("click", () => {
       void (async () => {
@@ -2073,7 +2101,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           const result = await runCodexAppServerConnectionTest({
             modelName:
               codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
-            codexPath: "",
+            codexPath: getConfiguredCodexAppServerBinaryPath(),
           });
           codexAppServerStatus.textContent =
             `${t("✓ Success — model says: ")}"${result.reply}"`;
@@ -2119,7 +2147,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         renderCodexMcpStatus(t("Configuring Zotero MCP tools…"));
         try {
           const status = await installOrUpdateCodexZoteroMcpConfig({
-            codexPath: "",
+            codexPath: getConfiguredCodexAppServerBinaryPath(),
           });
           setCodexZoteroMcpToolsEnabled(true);
           if (codexAppServerMcpEnableInput) {
@@ -2148,7 +2176,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
   if (codexAppServerMcpStatus && isCodexZoteroMcpToolsEnabled()) {
     renderCodexMcpStatus(t("Checking Zotero MCP setup…"));
-    void readCodexNativeMcpSetupStatus({ codexPath: "" })
+    void readCodexNativeMcpSetupStatus({
+      codexPath: getConfiguredCodexAppServerBinaryPath(),
+    })
       .then((status) => {
         renderCodexMcpStatus(
           status.connected === true

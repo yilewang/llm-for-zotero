@@ -51,6 +51,9 @@ import {
   isCodexZoteroMcpToolsEnabled,
 } from "../../codexAppServer/prefs";
 import {
+  getEffectiveCodexAppServerBinaryPath,
+} from "../../codexAppServer/binaryPath";
+import {
   resolveCodexNativeApprovalRequest,
   runCodexAppServerNativeTurn,
   type CodexNativeConversationScope,
@@ -4191,7 +4194,9 @@ export async function retryLatestAssistantResponse(
             messages: finalPrepared.messages,
             reasoning: effectiveRequestConfig.reasoning,
             signal: getAbortController(conversationKey)?.signal,
-            codexPath: effectiveRequestConfig.apiBase,
+            codexPath: getEffectiveCodexAppServerBinaryPath(
+              effectiveRequestConfig.apiBase,
+            ),
             skillContext: buildCodexNativeSkillContext({
               selectedTexts: retryPair.userMessage.selectedTexts,
               selectedTextSources: retryPair.userMessage.selectedTextSources,
@@ -5650,7 +5655,9 @@ export async function sendQuestion(
             messages: finalPrepared.messages,
             reasoning: effectiveRequestConfig.reasoning,
             signal: getAbortController(conversationKey)?.signal,
-            codexPath: effectiveRequestConfig.apiBase,
+            codexPath: getEffectiveCodexAppServerBinaryPath(
+              effectiveRequestConfig.apiBase,
+            ),
             skillContext: buildCodexNativeSkillContext({
               forcedSkillIds: opts.forcedSkillIds,
               selectedTexts: selectedTextsForMessage,

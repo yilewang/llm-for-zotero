@@ -443,6 +443,9 @@ import {
   setCodexRuntimeModelPref,
 } from "../../codexAppServer/prefs";
 import {
+  getConfiguredCodexAppServerBinaryPath,
+} from "../../codexAppServer/binaryPath";
+import {
   activeClaudeConversationModeByLibrary,
   activeClaudeGlobalConversationByLibrary,
   activeClaudePaperConversationByPaper,
@@ -788,7 +791,7 @@ export function setupHandlers(
         entryId: `codex_app_server::${model}`,
         groupId: "codex_app_server",
         model,
-        apiBase: "",
+        apiBase: getConfiguredCodexAppServerBinaryPath(),
         apiKey: "",
         authMode: "codex_app_server",
         providerProtocol: "codex_responses",

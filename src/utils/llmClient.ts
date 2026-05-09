@@ -102,6 +102,9 @@ import {
   prepareCodexAppServerChatTurn,
 } from "./codexAppServerInput";
 import {
+  getEffectiveCodexAppServerBinaryPath,
+} from "../codexAppServer/binaryPath";
+import {
   applyModelInputTokenCap,
   estimateConversationTokens,
   getModelInputTokenLimit,
@@ -3427,7 +3430,7 @@ export async function callLLMStream(
       onDelta,
       onReasoning,
       onUsage,
-      codexPath: apiBase,
+      codexPath: getEffectiveCodexAppServerBinaryPath(apiBase),
     });
   }
   const auth = await resolveRequestAuthState({
