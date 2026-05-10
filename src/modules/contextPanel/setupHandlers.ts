@@ -1249,6 +1249,11 @@ export function setupHandlers(
           Number.isFinite(currentBasePaperItemID) &&
           currentBasePaperItemID > 0
         ) {
+          const lockedGlobalKey = getLockedGlobalConversationKey(libraryID);
+          if (lockedGlobalKey !== null) {
+            setLockedGlobalConversationKey(libraryID, null);
+            removeAutoLockedGlobalConversationKey(lockedGlobalKey);
+          }
           const normalizedConversationKey = Math.floor(conversationKey as number);
           const paperStateKey = buildPaperStateKey(
             libraryID,

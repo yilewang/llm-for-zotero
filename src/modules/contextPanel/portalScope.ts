@@ -460,10 +460,13 @@ function resolvePreferredConversationMode(
       getLastUsedCodexConversationMode(libraryID);
     return rememberedMode === "global" ? "global" : "paper";
   }
+  const rememberedMode = activeConversationModeByLibrary.get(libraryID);
+  if (rememberedMode === "paper") {
+    return "paper";
+  }
   if (getLockedGlobalConversationKey(libraryID) !== null) {
     return "global";
   }
-  const rememberedMode = activeConversationModeByLibrary.get(libraryID);
   return rememberedMode === "global" ? "global" : "paper";
 }
 
