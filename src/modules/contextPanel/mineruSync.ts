@@ -317,17 +317,22 @@ function hashBytes(hash: number, bytes: Uint8Array): number {
 
 function computeCacheEntriesContentHash(
   entries: Record<string, Uint8Array>,
+  options: { includeSourceProvenance?: boolean } = {},
 ): string {
   const encoder = new TextEncoder();
   let hash = 0x811c9dc5;
   for (const path of Object.keys(entries).sort()) {
+    const normalizedPath = normalizePackagePath(path);
+    if (!normalizedPath) continue;
     if (
-      path === MINERU_SYNC_METADATA_FILE ||
-      path === MINERU_LOCAL_SYNC_STATE_FILE
+      normalizedPath === MINERU_SYNC_METADATA_FILE ||
+      normalizedPath === MINERU_LOCAL_SYNC_STATE_FILE ||
+      (!options.includeSourceProvenance &&
+        isMineruSourceProvenanceEntryPath(normalizedPath))
     ) {
       continue;
     }
-    hash = hashBytes(hash, encoder.encode(path));
+    hash = hashBytes(hash, encoder.encode(normalizedPath));
     hash = updateFnv1a(hash, 0);
     hash = hashBytes(hash, entries[path]);
     hash = updateFnv1a(hash, 0xff);
@@ -377,6 +382,13 @@ export function shouldIncludeMineruCachePackageEntry(
   if (basename === MINERU_SOURCE_PROVENANCE_FILE) return true;
   if (basename === MINERU_LOCAL_SYNC_STATE_FILE) return false;
   return basename.toLowerCase() !== "layout.json";
+}
+
+function isMineruSourceProvenanceEntryPath(relativePath: string): boolean {
+  const normalized = normalizePackagePath(relativePath);
+  if (!normalized) return false;
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] === MINERU_SOURCE_PROVENANCE_FILE;
 }
 
 function normalizeAbsolutePath(path: string): string {
@@ -795,10 +807,14 @@ function extractPackageFiles(
 
     if (!hashEntries["full.md"]) return null;
     const contentHash = computeCacheEntriesContentHash(hashEntries);
+    const legacyContentHash = computeCacheEntriesContentHash(hashEntries, {
+      includeSourceProvenance: true,
+    });
     if (
       typeof metadata.cacheContentHash === "string" &&
       metadata.cacheContentHash.trim() &&
-      metadata.cacheContentHash !== contentHash
+      metadata.cacheContentHash !== contentHash &&
+      metadata.cacheContentHash !== legacyContentHash
     ) {
       return null;
     }

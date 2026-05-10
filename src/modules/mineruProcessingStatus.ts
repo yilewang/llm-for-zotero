@@ -67,9 +67,6 @@ export async function getMineruStatus(
   if (status?.status === "processing") {
     return "processing";
   }
-  if (status?.status === "failed") {
-    return "failed";
-  }
 
   const availability = await getMineruAvailabilityForAttachmentId(
     attachmentId,
@@ -79,6 +76,10 @@ export async function getMineruStatus(
   );
   if (availability.status !== "missing") {
     return "cached";
+  }
+
+  if (status?.status === "failed") {
+    return "failed";
   }
 
   if (status?.status === "cached") {

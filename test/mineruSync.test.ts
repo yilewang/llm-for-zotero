@@ -7,6 +7,7 @@ import {
 import {
   getMineruItemDir,
   hasCachedMineruMd,
+  MINERU_SOURCE_PROVENANCE_FILE,
   readCachedMineruMd,
   readMineruSourceProvenance,
   writeMineruCacheFiles,
@@ -321,6 +322,9 @@ describe("mineruSync", function () {
     assert.isTrue(shouldIncludeMineruCachePackageEntry("full.md"));
     assert.isTrue(shouldIncludeMineruCachePackageEntry("content_list.json"));
     assert.isTrue(shouldIncludeMineruCachePackageEntry("images/figure.png"));
+    assert.isTrue(
+      shouldIncludeMineruCachePackageEntry(MINERU_SOURCE_PROVENANCE_FILE),
+    );
     assert.isFalse(shouldIncludeMineruCachePackageEntry("layout.json"));
     assert.isFalse(shouldIncludeMineruCachePackageEntry("../full.md"));
     assert.isFalse(shouldIncludeMineruCachePackageEntry("/tmp/full.md"));
@@ -1344,6 +1348,12 @@ describe("mineruSync", function () {
     assert.equal(provenance?.origin, "restored");
     assert.equal(provenance?.packageAttachmentId, packageItem.id);
     assert.match(provenance?.cacheContentHash || "", /^fnv1a32-[a-f0-9]{8}$/);
+
+    const secondRepair = await repairSyncedMineruCacheForAttachment(
+      pdf as unknown as Zotero.Item,
+      { ignoreSyncPreference: true },
+    );
+    assert.equal(secondRepair.status, "already_cached");
   });
 
   it("restores from a legacy synced ZIP while ignoring old fingerprint metadata", async function () {
