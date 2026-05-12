@@ -376,6 +376,10 @@ import { attachComposeCaptureController } from "./setupHandlers/controllers/comp
 import { attachFloatingMenuInteractionController } from "./setupHandlers/controllers/floatingMenuInteractionController";
 import { createPaperPickerController } from "./setupHandlers/controllers/paperPickerController";
 import { createActionCommandController } from "./setupHandlers/controllers/actionCommandController";
+import {
+  createCoalescedFrameScheduler,
+  getOrCreateKeyedInFlightTask,
+} from "./setupHandlers/controllers/uiSchedulingController";
 import { clearAllAgentToolCaches } from "../../agent/tools";
 import { renderShortcuts } from "./shortcuts";
 import { loadConversationHistoryScope } from "./historyLoader";
@@ -1729,6 +1733,26 @@ export function setupHandlers(
     sendBtn,
     cancelBtn,
   });
+  const responsiveLayoutScheduler = createCoalescedFrameScheduler({
+    getWindow: () => body.ownerDocument?.defaultView || null,
+    run: () => {
+      withScrollGuard(
+        chatBox,
+        conversationKey,
+        () => {
+          applyResponsiveActionButtonsLayout();
+          syncUserContextAlignmentWidths(body);
+        },
+        "relative",
+      );
+    },
+  });
+  const scheduleResponsiveLayoutSync = () => {
+    responsiveLayoutScheduler.schedule();
+  };
+  const flushResponsiveLayoutSyncNow = () => {
+    responsiveLayoutScheduler.flush();
+  };
 
   const clearSelectedImageState = (itemId: number) =>
     clearSelectedImageState_(pinnedImageKeys, itemId);
@@ -1798,6 +1822,24 @@ export function setupHandlers(
   // exists on disk, the contextItemId is added here so isPaperContextMineru
   // returns true immediately without waiting for pdfTextCache to be populated.
   const mineruAvailableIds = new Set<number>();
+  const pendingMineruAvailabilityChecks = new Map<number, Promise<void>>();
+  let mineruChipStyleDepsPromise: Promise<{
+    getMineruAvailabilityForAttachmentId: typeof import("./mineruSync").getMineruAvailabilityForAttachmentId;
+    isMineruEnabled: typeof import("../../utils/mineruConfig").isMineruEnabled;
+  }> | null = null;
+  const loadMineruChipStyleDeps = () => {
+    if (!mineruChipStyleDepsPromise) {
+      mineruChipStyleDepsPromise = Promise.all([
+        import("./mineruSync"),
+        import("../../utils/mineruConfig"),
+      ]).then(([mineruSync, mineruConfig]) => ({
+        getMineruAvailabilityForAttachmentId:
+          mineruSync.getMineruAvailabilityForAttachmentId,
+        isMineruEnabled: mineruConfig.isMineruEnabled,
+      }));
+    }
+    return mineruChipStyleDepsPromise;
+  };
 
   const isPaperContextMineru = (paperContext: PaperContextRef): boolean => {
     if (mineruAvailableIds.has(paperContext.contextItemId)) return true;
@@ -1817,25 +1859,31 @@ export function setupHandlers(
   const checkAndApplyMineruChipStyle = async (
     contextItemId: number,
   ): Promise<void> => {
-    try {
-      if (mineruAvailableIds.has(contextItemId)) return; // already detected
-      const { getMineruAvailabilityForAttachmentId } =
-        await import("./mineruSync");
-      const { isMineruEnabled } = await import("../../utils/mineruConfig");
-      if (!isMineruEnabled()) return;
-      const availability = await getMineruAvailabilityForAttachmentId(
-        contextItemId,
-        {
-          validateSyncedPackage: false,
-        },
-      );
-      if (availability.status === "missing") return;
-      mineruAvailableIds.add(contextItemId);
-      // MinerU is now available — re-render chips so the default mode flips to "mineru"
-      updatePaperPreviewPreservingScroll();
-    } catch {
-      /* ignore */
-    }
+    if (mineruAvailableIds.has(contextItemId)) return;
+    return getOrCreateKeyedInFlightTask(
+      pendingMineruAvailabilityChecks,
+      contextItemId,
+      async () => {
+        try {
+          if (mineruAvailableIds.has(contextItemId)) return;
+          const { getMineruAvailabilityForAttachmentId, isMineruEnabled } =
+            await loadMineruChipStyleDeps();
+          if (!isMineruEnabled()) return;
+          const availability = await getMineruAvailabilityForAttachmentId(
+            contextItemId,
+            {
+              validateSyncedPackage: false,
+            },
+          );
+          if (availability.status === "missing") return;
+          mineruAvailableIds.add(contextItemId);
+          // MinerU is now available; re-render chips so the default mode flips.
+          schedulePanelStateRefresh();
+        } catch {
+          /* ignore */
+        }
+      },
+    );
   };
 
   const resolvePaperContextNextSendMode = (
@@ -3020,7 +3068,7 @@ export function setupHandlers(
     updateSelectedTextPreview();
   };
   activeContextPanelStateSync.set(body, syncConversationPanelState);
-  const updatePaperPreviewPreservingScroll = () => {
+  const runPanelStateRefreshNow = () => {
     if (!item) {
       runWithChatScrollGuard(syncConversationPanelState);
       return;
@@ -3029,36 +3077,28 @@ export function setupHandlers(
       includeChat: false,
       includePanelState: true,
     });
+  };
+  const panelStateRefreshScheduler = createCoalescedFrameScheduler({
+    getWindow: () => body.ownerDocument?.defaultView || null,
+    run: runPanelStateRefreshNow,
+  });
+  const schedulePanelStateRefresh = () => {
+    panelStateRefreshScheduler.schedule();
+  };
+  const flushPanelStateRefreshNow = () => {
+    panelStateRefreshScheduler.flush();
+  };
+  const updatePaperPreviewPreservingScroll = () => {
+    schedulePanelStateRefresh();
   };
   const updateFilePreviewPreservingScroll = () => {
-    if (!item) {
-      runWithChatScrollGuard(syncConversationPanelState);
-      return;
-    }
-    refreshConversationPanels(body, item, {
-      includeChat: false,
-      includePanelState: true,
-    });
+    schedulePanelStateRefresh();
   };
   const updateImagePreviewPreservingScroll = () => {
-    if (!item) {
-      runWithChatScrollGuard(syncConversationPanelState);
-      return;
-    }
-    refreshConversationPanels(body, item, {
-      includeChat: false,
-      includePanelState: true,
-    });
+    schedulePanelStateRefresh();
   };
   const updateSelectedTextPreviewPreservingScroll = () => {
-    if (!item) {
-      runWithChatScrollGuard(syncConversationPanelState);
-      return;
-    }
-    refreshConversationPanels(body, item, {
-      includeChat: false,
-      includePanelState: true,
-    });
+    schedulePanelStateRefresh();
   };
   const refreshChatPreservingScroll = () => {
     if (!item) {
@@ -3257,7 +3297,7 @@ export function setupHandlers(
         ? currentModelHint
         : currentModelHint || "Only one model is configured";
       modelBtn.disabled = !item;
-      applyResponsiveActionButtonsLayout();
+      scheduleResponsiveLayoutSync();
       updateImagePreviewPreservingScroll();
     });
   };
@@ -3914,7 +3954,7 @@ export function setupHandlers(
       // [webchat] Hide reasoning dropdown — users control thinking mode on chatgpt.com
       if (isWebChatMode()) {
         reasoningBtn.style.display = "none";
-        applyResponsiveActionButtonsLayout();
+        scheduleResponsiveLayoutSync();
         return;
       }
       reasoningBtn.style.display = "";
@@ -3960,7 +4000,7 @@ export function setupHandlers(
       const reasoningHint = "Click to adjust reasoning level";
       reasoningBtn.dataset.reasoningLabel = reasoningLabel;
       reasoningBtn.dataset.reasoningHint = reasoningHint;
-      applyResponsiveActionButtonsLayout();
+      scheduleResponsiveLayoutSync();
     });
   };
 
@@ -4379,7 +4419,10 @@ export function setupHandlers(
   updateFilePreviewPreservingScroll();
   updateImagePreviewPreservingScroll();
   updateSelectedTextPreviewPreservingScroll();
+  flushPanelStateRefreshNow();
   syncModelFromPrefs();
+  flushResponsiveLayoutSyncNow();
+  flushPanelStateRefreshNow();
   // Set active_target before applyWebChatModeUI so sidebar filters by the correct site
   try {
     if (isWebChatMode()) {
@@ -4470,14 +4513,13 @@ export function setupHandlers(
   if (ResizeObserverCtor && panelRoot && modelBtn) {
     const newObservers: ResizeObserver[] = [];
     const ro = new ResizeObserverCtor(() => {
-      // Wrap layout mutations in scroll guard so that flex-driven
+      // Keep layout mutations on the guarded scheduler so flex-driven
       // resize of .llm-messages doesn't corrupt the scroll snapshot.
       withScrollGuard(
         chatBox,
         conversationKey,
         () => {
-          applyResponsiveActionButtonsLayout();
-          syncUserContextAlignmentWidths(body);
+          scheduleResponsiveLayoutSync();
         },
         "relative",
       );
@@ -5588,6 +5630,8 @@ export function setupHandlers(
     closeHistoryNewMenu();
     closeHistoryMenu();
     updateModelButton();
+    flushResponsiveLayoutSyncNow();
+    flushPanelStateRefreshNow();
     rebuildModelMenu();
     if (!modelMenu.childElementCount) {
       closeModelMenu();
@@ -5610,6 +5654,7 @@ export function setupHandlers(
     closeHistoryNewMenu();
     closeHistoryMenu();
     updateReasoningButton();
+    flushResponsiveLayoutSyncNow();
     rebuildReasoningMenu();
     if (!reasoningMenu.childElementCount) {
       closeReasoningMenu();

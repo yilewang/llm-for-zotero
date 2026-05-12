@@ -3,6 +3,7 @@ import type { ConversationHistoryEntry } from "../src/modules/contextPanel/setup
 import {
   buildHistorySearchResults,
   collectHistorySearchRanges,
+  createHistorySearchDocumentFingerprint,
   createHistorySearchDocument,
   normalizeHistorySearchQuery,
   tokenizeHistorySearchQuery,
@@ -40,6 +41,38 @@ describe("historySearchController", function () {
     ]);
   });
 
+  it("fingerprints documents by key, kind, title, and activity", function () {
+    const base = historyEntry(101, "Methods chat", 100);
+    const baseFingerprint = createHistorySearchDocumentFingerprint(base);
+
+    assert.equal(
+      createHistorySearchDocumentFingerprint({ ...base }),
+      baseFingerprint,
+    );
+    assert.notEqual(
+      createHistorySearchDocumentFingerprint({
+        ...base,
+        title: "Updated methods",
+      }),
+      baseFingerprint,
+    );
+    assert.notEqual(
+      createHistorySearchDocumentFingerprint({
+        ...base,
+        lastActivityAt: 101,
+      }),
+      baseFingerprint,
+    );
+    assert.notEqual(
+      createHistorySearchDocumentFingerprint({
+        ...base,
+        kind: "paper",
+        section: "paper",
+      }),
+      baseFingerprint,
+    );
+  });
+
   it("builds ranked search results from indexed titles and messages", function () {
     const first = historyEntry(101, "Methods chat", 100);
     const second = historyEntry(102, "Zotero setup", 200);
@@ -56,7 +89,11 @@ describe("historySearchController", function () {
       ],
     ]);
 
-    const results = buildHistorySearchResults([first, second], "zotero", documents);
+    const results = buildHistorySearchResults(
+      [first, second],
+      "zotero",
+      documents,
+    );
 
     assert.deepEqual(
       results.map((result) => result.entry.conversationKey),

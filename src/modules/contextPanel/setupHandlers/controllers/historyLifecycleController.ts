@@ -173,6 +173,7 @@ import {
   appendHistorySearchHighlightedText,
   buildHistorySearchResults,
   createHistorySearchDocument,
+  createHistorySearchDocumentFingerprint,
   normalizeHistorySearchQuery,
   tokenizeHistorySearchQuery,
   type HistorySearchDocument,
@@ -189,6 +190,14 @@ type PendingTurnDeletion = {
   assistantMessage: Message;
   timeoutId: number | null;
   expiresAt: number;
+};
+type CachedHistorySearchDocument = {
+  fingerprint: string;
+  document: HistorySearchDocument;
+};
+type PendingHistorySearchDocumentTask = {
+  fingerprint: string;
+  task: Promise<HistorySearchDocument>;
 };
 
 export type HistoryLifecycleControllerDeps = {
@@ -361,8 +370,6 @@ export function createHistoryLifecycleController(
     historySearchQuery = "";
     historySearchExpanded = false;
     historySearchLoading = false;
-    historySearchDocumentCache.clear();
-    historySearchDocumentTasks.clear();
   };
   const closeHistoryRowMenu = () => {
     deps.closeHistoryRowMenu();
@@ -449,11 +456,18 @@ export function createHistoryLifecycleController(
   let historySearchExpanded = false;
   let historySearchLoading = false;
   let historySearchLoadSeq = 0;
-  const historySearchDocumentCache = new Map<number, HistorySearchDocument>();
+  const historySearchDocumentCache = new Map<
+    number,
+    CachedHistorySearchDocument
+  >();
   const historySearchDocumentTasks = new Map<
     number,
-    Promise<HistorySearchDocument>
+    PendingHistorySearchDocumentTask
   >();
+  const historySearchDocumentCacheLimit = Math.max(
+    1,
+    Math.min(GLOBAL_HISTORY_LIMIT, 50),
+  );
   let globalHistoryLoadSeq = 0;
   let pendingHistoryDeletion: PendingHistoryDeletion | null = null;
   const pendingHistoryDeletionKeys = new Set<number>();
@@ -626,21 +640,102 @@ export function createHistoryLifecycleController(
     return createHistorySearchDocument(entry, messages);
   };
 
+  const getHistorySearchDocumentFingerprint = (
+    entry: ConversationHistoryEntry,
+  ): string => createHistorySearchDocumentFingerprint(entry);
+
+  const getUsableHistorySearchDocument = (
+    entry: ConversationHistoryEntry,
+  ): HistorySearchDocument | null => {
+    const cached = historySearchDocumentCache.get(entry.conversationKey);
+    if (!cached) return null;
+    if (cached.fingerprint !== getHistorySearchDocumentFingerprint(entry)) {
+      return null;
+    }
+    return cached.document;
+  };
+
+  const hasUsableHistorySearchDocument = (
+    entry: ConversationHistoryEntry,
+  ): boolean => Boolean(getUsableHistorySearchDocument(entry));
+
+  const getHistorySearchDocumentMap = (
+    entries: ConversationHistoryEntry[],
+  ): Map<number, HistorySearchDocument> => {
+    const documents = new Map<number, HistorySearchDocument>();
+    for (const entry of entries) {
+      const document = getUsableHistorySearchDocument(entry);
+      if (document) {
+        documents.set(entry.conversationKey, document);
+      }
+    }
+    return documents;
+  };
+
+  const pruneHistorySearchDocumentCache = () => {
+    if (historySearchDocumentCache.size <= historySearchDocumentCacheLimit) {
+      return;
+    }
+    const retainedKeys = new Set(
+      latestConversationHistory
+        .slice(0, historySearchDocumentCacheLimit)
+        .map((entry) => entry.conversationKey),
+    );
+    for (const key of Array.from(historySearchDocumentCache.keys())) {
+      if (historySearchDocumentCache.size <= historySearchDocumentCacheLimit) {
+        return;
+      }
+      if (!retainedKeys.has(key)) {
+        historySearchDocumentCache.delete(key);
+      }
+    }
+    for (const key of Array.from(historySearchDocumentCache.keys())) {
+      if (historySearchDocumentCache.size <= historySearchDocumentCacheLimit) {
+        return;
+      }
+      historySearchDocumentCache.delete(key);
+    }
+  };
+
+  const invalidateHistorySearchDocument = (conversationKey: number) => {
+    const normalizedKey = Number.isFinite(conversationKey)
+      ? Math.floor(conversationKey)
+      : 0;
+    if (normalizedKey <= 0) return;
+    historySearchDocumentCache.delete(normalizedKey);
+    historySearchDocumentTasks.delete(normalizedKey);
+  };
+
   const ensureHistorySearchDocument = async (
     entry: ConversationHistoryEntry,
   ): Promise<HistorySearchDocument> => {
+    const fingerprint = getHistorySearchDocumentFingerprint(entry);
     const cached = historySearchDocumentCache.get(entry.conversationKey);
-    if (cached) return cached;
+    if (cached?.fingerprint === fingerprint) return cached.document;
     const pending = historySearchDocumentTasks.get(entry.conversationKey);
-    if (pending) return pending;
+    if (pending?.fingerprint === fingerprint) return pending.task;
     const task = buildHistorySearchDocument(entry)
       .then((document) => {
-        historySearchDocumentCache.set(entry.conversationKey, document);
-        historySearchDocumentTasks.delete(entry.conversationKey);
+        const currentTask = historySearchDocumentTasks.get(
+          entry.conversationKey,
+        );
+        if (currentTask?.task === task) {
+          historySearchDocumentCache.set(entry.conversationKey, {
+            fingerprint,
+            document,
+          });
+          historySearchDocumentTasks.delete(entry.conversationKey);
+          pruneHistorySearchDocumentCache();
+        }
         return document;
       })
       .catch((error) => {
-        historySearchDocumentTasks.delete(entry.conversationKey);
+        const currentTask = historySearchDocumentTasks.get(
+          entry.conversationKey,
+        );
+        if (currentTask?.task === task) {
+          historySearchDocumentTasks.delete(entry.conversationKey);
+        }
         ztoolkit.log("LLM: Failed to index conversation history for search", {
           conversationKey: entry.conversationKey,
           error,
@@ -649,10 +744,19 @@ export function createHistoryLifecycleController(
           conversationKey: entry.conversationKey,
           candidates: [],
         };
-        historySearchDocumentCache.set(entry.conversationKey, fallback);
+        if (currentTask?.task === task) {
+          historySearchDocumentCache.set(entry.conversationKey, {
+            fingerprint,
+            document: fallback,
+          });
+          pruneHistorySearchDocumentCache();
+        }
         return fallback;
       });
-    historySearchDocumentTasks.set(entry.conversationKey, task);
+    historySearchDocumentTasks.set(entry.conversationKey, {
+      fingerprint,
+      task,
+    });
     return task;
   };
 
@@ -723,9 +827,7 @@ export function createHistoryLifecycleController(
     historyMenu.appendChild(searchWrap);
 
     const searchDocumentsReady = searchActive
-      ? allEntries.every((entry) =>
-          historySearchDocumentCache.has(entry.conversationKey),
-        )
+      ? allEntries.every((entry) => hasUsableHistorySearchDocument(entry))
       : true;
     if (searchActive && !searchDocumentsReady) {
       const loadingRow = createElement(
@@ -743,7 +845,7 @@ export function createHistoryLifecycleController(
       ? buildHistorySearchResults(
           allEntries,
           normalizedSearchQuery,
-          historySearchDocumentCache,
+          getHistorySearchDocumentMap(allEntries),
         )
       : [];
     const searchResultsByKey = new Map<number, HistorySearchResult>();
@@ -951,7 +1053,7 @@ export function createHistoryLifecycleController(
       return;
     }
     const missingEntries = entries.filter(
-      (entry) => !historySearchDocumentCache.has(entry.conversationKey),
+      (entry) => !hasUsableHistorySearchDocument(entry),
     );
     if (!missingEntries.length) {
       historySearchLoading = false;
@@ -1477,6 +1579,7 @@ export function createHistoryLifecycleController(
       }
       return b.conversationKey - a.conversationKey;
     });
+    pruneHistorySearchDocumentCache();
 
     titleStatic.style.display = "none";
     historyBar.style.display = "inline-flex";
@@ -1546,6 +1649,7 @@ export function createHistoryLifecycleController(
     closeHistoryNewMenu();
     closeHistoryMenu();
     await ensureConversationLoaded(item as Zotero.Item);
+    invalidateHistorySearchDocument(normalizedConversationKey);
     restoreDraftInputForCurrentConversation();
     refreshChatPreservingScroll();
     resetComposePreviewUI();
@@ -1757,6 +1861,7 @@ export function createHistoryLifecycleController(
     closeHistoryNewMenu();
     closeHistoryMenu();
     await ensureConversationLoaded(item as Zotero.Item);
+    invalidateHistorySearchDocument(getConversationKey(item as Zotero.Item));
     restoreDraftInputForCurrentConversation();
     refreshChatPreservingScroll();
     resetComposePreviewUI();
@@ -2059,6 +2164,7 @@ export function createHistoryLifecycleController(
   };
 
   const clearPendingDeletionCaches = (conversationKey: number) => {
+    invalidateHistorySearchDocument(conversationKey);
     chatHistory.delete(conversationKey);
     loadedConversationKeys.delete(conversationKey);
     selectedModelCache.delete(conversationKey);
@@ -2466,6 +2572,7 @@ export function createHistoryLifecycleController(
       ztoolkit.log("LLM: Failed to refresh turn attachment refs", err);
     }
     scheduleAttachmentGc();
+    invalidateHistorySearchDocument(pending.conversationKey);
     if (hasError && status) {
       setStatus(status, t("Failed to fully delete turn. Check logs."), "error");
     } else if (reason === "timeout" && status) {
@@ -2493,6 +2600,7 @@ export function createHistoryLifecycleController(
       );
       chatHistory.set(pending.conversationKey, history);
     }
+    invalidateHistorySearchDocument(pending.conversationKey);
     if (item && getConversationKey(item) === pending.conversationKey) {
       setActiveEditSession(null);
       refreshChatPreservingScroll();
@@ -2547,6 +2655,7 @@ export function createHistoryLifecycleController(
 
     history.splice(pair.userIndex, 2);
     chatHistory.set(target.conversationKey, history);
+    invalidateHistorySearchDocument(target.conversationKey);
     setActiveEditSession(null);
     refreshChatPreservingScroll();
 
@@ -2624,6 +2733,7 @@ export function createHistoryLifecycleController(
       libraryID: pending.libraryID,
       title: pending.title,
     });
+    invalidateHistorySearchDocument(pending.conversationKey);
     if (pending.wasActive) {
       await switchToHistoryTarget({
         kind: pending.kind,
@@ -2705,6 +2815,7 @@ export function createHistoryLifecycleController(
       } else {
         await setGlobalConversationTitle(entry.conversationKey, nextTitle);
       }
+      invalidateHistorySearchDocument(entry.conversationKey);
       await refreshGlobalHistoryHeader();
       if (status) setStatus(status, t("Conversation renamed"), "ready");
     } catch (err) {
@@ -2791,6 +2902,7 @@ export function createHistoryLifecycleController(
     }
 
     pendingHistoryDeletionKeys.add(entry.conversationKey);
+    invalidateHistorySearchDocument(entry.conversationKey);
     const pending: PendingHistoryDeletion = {
       kind: entry.kind,
       conversationKey: entry.conversationKey,

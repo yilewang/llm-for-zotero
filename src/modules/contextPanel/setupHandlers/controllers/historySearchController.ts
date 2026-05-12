@@ -31,6 +31,23 @@ type HistorySearchMessage = {
   text?: unknown;
 };
 
+export function createHistorySearchDocumentFingerprint(
+  entry: ConversationHistoryEntry,
+): string {
+  const conversationKey = Number.isFinite(entry.conversationKey)
+    ? Math.floor(entry.conversationKey)
+    : 0;
+  const lastActivityAt = Number.isFinite(entry.lastActivityAt)
+    ? Math.floor(entry.lastActivityAt)
+    : 0;
+  return JSON.stringify([
+    conversationKey,
+    entry.kind === "paper" ? "paper" : "global",
+    normalizeHistorySearchText(entry.title),
+    lastActivityAt,
+  ]);
+}
+
 export function normalizeHistorySearchQuery(value: string): string {
   return sanitizeText(value || "")
     .trim()
@@ -134,9 +151,14 @@ export function appendHistorySearchHighlightedText(
     if (start > cursor) {
       container.appendChild(ownerDoc.createTextNode(text.slice(cursor, start)));
     }
-    const mark = createElement(ownerDoc, "mark", "llm-history-search-highlight", {
-      textContent: text.slice(start, end),
-    });
+    const mark = createElement(
+      ownerDoc,
+      "mark",
+      "llm-history-search-highlight",
+      {
+        textContent: text.slice(start, end),
+      },
+    );
     container.appendChild(mark);
     cursor = end;
   }
