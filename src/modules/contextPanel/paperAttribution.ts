@@ -101,6 +101,7 @@ export function buildPaperQuoteCitationGuidance(
       "Answer format when quoting this paper:",
       "> quoted text from the paper",
       formatPaperSourceLabel(paperContext),
+      "- If exact passages are available, include short blockquotes when useful for grounding the answer.",
       "- Use the EXACT source label above. Do NOT translate or romanize author names.",
     ];
   }
@@ -108,6 +109,7 @@ export function buildPaperQuoteCitationGuidance(
     "Paper-grounded citation format for the final answer:",
     "> quoted text from the paper",
     "(Author, Year)",
+    "- If exact passages are available, include short blockquotes when useful for grounding the answer.",
     "- Put the source label on the line immediately after the quote.",
     "- Use the EXACT source label provided for each paper. Do NOT translate or romanize author names.",
     "- Do not cite raw chunk ids, citation keys, or invented page numbers.",

@@ -370,7 +370,17 @@ export function createPaperReadTool(
         onDenied: "Paper reading cancelled",
         onSuccess: ({ content }) => {
           const c = content as Record<string, unknown> | null;
+          const mode = typeof c?.mode === "string" ? c.mode : undefined;
           const results = Array.isArray(c?.results) ? c.results.length : 1;
+          const papers = Array.isArray(c?.papers) ? c.papers.length : undefined;
+          if (mode === "targeted") {
+            if (papers !== undefined) {
+              const passageLabel = results === 1 ? "passage" : "passages";
+              const paperLabel = papers === 1 ? "paper" : "papers";
+              return `Read ${results} ${passageLabel} from ${papers} ${paperLabel}`;
+            }
+            return results > 1 ? `Read ${results} passages` : "Read paper content";
+          }
           return results > 1 ? `Read ${results} papers` : "Read paper content";
         },
       },

@@ -339,6 +339,24 @@ describe("semantic tool surface", function () {
     assert.equal(output.papers?.[1]?.passages?.[0]?.text, "Second method passage.");
   });
 
+  it("paper_read targeted success text counts passages separately from papers", function () {
+    const tool = createPaperReadTool({} as never, {} as never, {} as never);
+    const onSuccess = tool.presentation?.summaries?.onSuccess;
+    assert.isFunction(onSuccess);
+    if (typeof onSuccess !== "function") return;
+    assert.equal(
+      onSuccess({
+        label: "Read Paper",
+        content: {
+          mode: "targeted",
+          results: Array.from({ length: 8 }, (_, index) => ({ chunkIndex: index })),
+          papers: [{ sourceLabel: "(Chandra et al., 2025)", passages: [] }],
+        },
+      }),
+      "Read 8 passages from 1 paper",
+    );
+  });
+
   it("matches simple-paper-qa for understand-this-paper typo requests", function () {
     setUserSkills([parseSkill(BUILTIN_SKILL_FILES["simple-paper-qa.md"])]);
     assert.include(
@@ -357,6 +375,7 @@ describe("semantic tool surface", function () {
       "paper_read({ mode:'targeted', query:'methods methodology method section', targets:[...] })",
     );
     assert.include(raw, "For method-section requests, do not call overview first");
+    assert.include(raw, "include short blockquotes");
     assert.include(raw, "Do not call visual/page tools, `file_io`, or `run_command`");
   });
 

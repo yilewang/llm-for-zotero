@@ -43,6 +43,10 @@ describe("paperAttribution", function () {
       buildPaperQuoteCitationGuidance(paper).join("\n"),
       "(Smith et al., 2021)",
     );
+    assert.include(
+      buildPaperQuoteCitationGuidance(paper).join("\n"),
+      "include short blockquotes",
+    );
   });
 
   it("falls back deterministically when metadata is missing", function () {

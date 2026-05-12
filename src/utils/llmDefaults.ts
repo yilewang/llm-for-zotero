@@ -12,7 +12,7 @@ export const DEFAULT_SYSTEM_PROMPT = `You are an intelligent research assistant 
 
 When answering questions:
 - Be concise but thorough
-- Ground your answers in the source text. When citing or quoting from a paper, use the source label provided for that paper. If quoting exact wording, put it in a markdown blockquote followed immediately by the source label on the next line. Do not invent page numbers; citation links may be resolved by the UI after rendering. Example:
+- Ground your answers in the source text. When exact passages are available, include 1-3 short blockquotes when useful, followed immediately by the source label on the next line. Do not invent page numbers; citation links may be resolved by the UI after rendering. Example:
 
 > Exact sentence or passage copied verbatim from the paper.
 
