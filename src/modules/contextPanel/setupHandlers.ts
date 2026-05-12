@@ -4,7 +4,10 @@ import { getAllSkills } from "../../agent/skills";
 import type { AgentSkill } from "../../agent/skills/skillLoader";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
 import type { ConversationSystem } from "../../shared/types";
-import { getLastUsedModelEntryId, getModelEntryById } from "../../utils/modelProviders";
+import {
+  getLastUsedModelEntryId,
+  getModelEntryById,
+} from "../../utils/modelProviders";
 import {
   buildQueuedFollowUpThreadKey,
   enqueueQueuedFollowUp,
@@ -30,21 +33,9 @@ import {
   FONT_SCALE_MAX_PERCENT,
   FONT_SCALE_STEP_PERCENT,
   FONT_SCALE_DEFAULT_PERCENT,
-  getSelectTextExpandedLabel,
-  SELECT_TEXT_COMPACT_LABEL,
-  getScreenshotExpandedLabel,
-  SCREENSHOT_COMPACT_LABEL,
-  UPLOAD_FILE_EXPANDED_LABEL,
-  UPLOAD_FILE_COMPACT_LABEL,
-  REASONING_COMPACT_LABEL,
-  ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
-  ACTION_LAYOUT_DROPDOWN_ICON_WIDTH_PX,
-  ACTION_LAYOUT_MODEL_WRAP_MIN_CHARS,
-  ACTION_LAYOUT_MODEL_FULL_MAX_LINES,
   GLOBAL_HISTORY_LIMIT,
   isUpstreamGlobalConversationKey,
   PREFERENCES_PANE_ID,
-  MAX_UPLOAD_PDF_SIZE_BYTES,
 } from "./constants";
 import {
   selectedModelCache,
@@ -104,7 +95,6 @@ import {
   buildQuestionWithSelectedTextContexts,
   buildModelPromptWithFileContext,
   resolvePromptText,
-  getSelectedTextWithinBubble,
   getAttachmentTypeLabel,
   normalizeSelectedTextSource,
 } from "./textUtils";
@@ -150,7 +140,6 @@ import {
   isScrollUpdateSuspended,
   withScrollGuard,
   copyTextToClipboard,
-  copyRenderedMarkdownToClipboard,
   refreshConversationPanels,
   detectReasoningProvider,
   getReasoningOptions,
@@ -226,17 +215,9 @@ import {
 } from "./contexts/textContextState";
 import { captureScreenshotSelection, optimizeImageDataUrl } from "./screenshot";
 import { captureCurrentPdfPage } from "./pdfPageCapture";
-import {
-  createNoteFromAssistantText,
-  createStandaloneNoteFromAssistantText,
-  createNoteFromChatHistory,
-  createStandaloneNoteFromChatHistory,
-  buildChatHistoryNotePayload,
-  readNoteSnapshot,
-} from "./notes";
+import { readNoteSnapshot } from "./notes";
 import {
   persistAttachmentBlob,
-  readAttachmentBytes,
   extractManagedBlobHash,
   isManagedBlobPath,
   removeAttachmentFile,
@@ -329,6 +310,7 @@ import {
   resolveShortcutMode,
 } from "./portalScope";
 import { getPanelDomRefs } from "./setupHandlers/domRefs";
+import type { SetupHandlersContext } from "./setupHandlers/types";
 import { observeElementDisconnected } from "./setupHandlers/lifecycle";
 import {
   MODEL_MENU_OPEN_CLASS,
@@ -339,6 +321,7 @@ import {
   positionFloatingMenu,
   setFloatingMenuOpen,
 } from "./setupHandlers/controllers/menuController";
+import { createActionLayoutController } from "./setupHandlers/controllers/actionLayoutController";
 import {
   getReasoningLevelDisplayLabel,
   isReasoningDisplayLabelActive,
@@ -394,12 +377,13 @@ import {
 } from "./setupHandlers/controllers/fileIntakeController";
 import { createSendFlowController } from "./setupHandlers/controllers/sendFlowController";
 import { createClearConversationController } from "./setupHandlers/controllers/clearConversationController";
-import {
-  cancelVisiblePendingConfirmationCards,
-} from "./setupHandlers/controllers/cancelPendingConfirmationController";
-import {
-  buildInlineEditRetryContextSnapshot,
-} from "./setupHandlers/controllers/inlineEditRetryController";
+import { cancelVisiblePendingConfirmationCards } from "./setupHandlers/controllers/cancelPendingConfirmationController";
+import { buildInlineEditRetryContextSnapshot } from "./setupHandlers/controllers/inlineEditRetryController";
+import { attachAssistantSelectionPopup } from "./setupHandlers/controllers/assistantSelectionPopupController";
+import { attachMenuActionController } from "./setupHandlers/controllers/menuActionController";
+import { createPdfPaperAttachmentResolver } from "./setupHandlers/controllers/pdfPaperAttachmentResolver";
+import { resolvePdfModeModelInputs } from "./setupHandlers/controllers/pdfPaperModelInputController";
+import { createWebChatHistoryController } from "./setupHandlers/controllers/webChatHistoryController";
 import { clearAllAgentToolCaches } from "../../agent/tools";
 import { renderShortcuts } from "./shortcuts";
 import { loadConversationHistoryScope } from "./historyLoader";
@@ -445,9 +429,7 @@ import {
   setCodexReasoningModePref,
   setCodexRuntimeModelPref,
 } from "../../codexAppServer/prefs";
-import {
-  getConfiguredCodexAppServerBinaryPath,
-} from "../../codexAppServer/binaryPath";
+import { getConfiguredCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
 import {
   activeClaudeConversationModeByLibrary,
   activeClaudeGlobalConversationByLibrary,
@@ -466,10 +448,7 @@ import {
   retainClaudeRuntimeForBody,
   releaseClaudeRuntimeForBody,
 } from "../../claudeCode/runtimeRetention";
-import {
-  isClaudeGlobalPortalItem,
-  isClaudePaperPortalItem,
-} from "../../claudeCode/portal";
+import { isClaudePaperPortalItem } from "../../claudeCode/portal";
 import {
   clearClaudeConversation,
   createClaudeGlobalConversation,
@@ -534,7 +513,9 @@ export function setupHandlers(
   initialItem?: Zotero.Item | null,
   hooks?: SetupHandlersHooks,
 ) {
-  const existingPanelRoot = body.querySelector("#llm-main") as HTMLElement | null;
+  const existingPanelRoot = body.querySelector(
+    "#llm-main",
+  ) as HTMLElement | null;
   const preferredConversationSystem =
     existingPanelRoot?.dataset?.conversationSystem === "claude_code"
       ? "claude_code"
@@ -558,6 +539,7 @@ export function setupHandlers(
     return resolveActiveLibraryID() || 0;
   };
 
+  const panelRefs = getPanelDomRefs(body);
   const {
     inputBox,
     inputSection,
@@ -638,7 +620,7 @@ export function setupHandlers(
     status,
     chatBox,
     panelRoot,
-  } = getPanelDomRefs(body);
+  } = panelRefs;
 
   if (!inputBox || !sendBtn) {
     ztoolkit.log("LLM: Could not find input or send button");
@@ -685,16 +667,18 @@ export function setupHandlers(
 
   // Disconnect previous ResizeObservers to prevent accumulation across
   // successive setupHandlers calls (each call creates fresh observers).
-  const prevObservers = (body as any).__llmResizeObservers as ResizeObserver[] | undefined;
+  const prevObservers = (body as any).__llmResizeObservers as
+    | ResizeObserver[]
+    | undefined;
   if (prevObservers) {
     for (const obs of prevObservers) obs.disconnect();
     delete (body as any).__llmResizeObservers;
   }
 
-  let renderQueuedFollowUpInputs: () => void = () => { };
-  let scheduleQueuedFollowUpDrain: () => void = () => { };
+  let renderQueuedFollowUpInputs: () => void = () => {};
+  let scheduleQueuedFollowUpDrain: () => void = () => {};
   let isQueuedFollowUpSendAvailable: () => boolean = () => false;
-  let queueFollowUpInput: (text: string) => void = () => { };
+  let queueFollowUpInput: (text: string) => void = () => {};
 
   const syncRequestUiForCurrentConversation = () => {
     const activeConversationKey = item ? getConversationKey(item) : null;
@@ -748,10 +732,8 @@ export function setupHandlers(
       ztoolkit.log("LLM: standalone history hook failed", err);
     }
   };
-  const isGlobalMode = () =>
-    resolveDisplayConversationKind(item) === "global";
-  const isPaperMode = () =>
-    resolveDisplayConversationKind(item) === "paper";
+  const isGlobalMode = () => resolveDisplayConversationKind(item) === "global";
+  const isPaperMode = () => resolveDisplayConversationKind(item) === "paper";
   const initialConversationSystem: ConversationSystem =
     panelRoot.dataset.conversationSystem === "claude_code"
       ? "claude_code"
@@ -763,7 +745,8 @@ export function setupHandlers(
       item,
       preferredSystem: initialConversationSystem,
     });
-  const getConversationSystem = (): ConversationSystem => currentConversationSystem;
+  const getConversationSystem = (): ConversationSystem =>
+    currentConversationSystem;
   const isClaudeConversationSystem = () =>
     getConversationSystem() === "claude_code";
   const isCodexConversationSystem = () => getConversationSystem() === "codex";
@@ -816,7 +799,8 @@ export function setupHandlers(
     }
     const preferred = getConversationSystemPref();
     if (preferred === "codex" && isCodexModeAvailable()) return "codex";
-    if (preferred === "claude_code" && isClaudeModeAvailable()) return "claude_code";
+    if (preferred === "claude_code" && isClaudeModeAvailable())
+      return "claude_code";
     if (isCodexModeAvailable()) return "codex";
     if (isClaudeModeAvailable()) return "claude_code";
     return "upstream";
@@ -886,7 +870,11 @@ export function setupHandlers(
     const agentFeatureEnabled = getAgentModeEnabled();
     // [webchat] Agent mode not available in webchat — hide toggle
     let webChatActive = false;
-    try { webChatActive = isWebChatModeActive(); } catch { /* not ready */ }
+    try {
+      webChatActive = isWebChatModeActive();
+    } catch {
+      /* not ready */
+    }
     // Hide the entire toggle when agent feature is disabled or in webchat mode.
     const shouldHide = !agentFeatureEnabled || webChatActive;
     runtimeModeBtn.style.display = shouldHide ? "none" : "";
@@ -925,19 +913,22 @@ export function setupHandlers(
   const updateClaudeSystemToggle = () => {
     if (!claudeSystemToggleBtn || !claudeSystemToggleIcon) return;
     const targetSystem = getPreferredTargetSystem();
-    const available =
-      isNoteSession()
-        ? targetSystem === "codex" || isCodexConversationSystem()
-        : isClaudeModeAvailable() || isCodexModeAvailable();
+    const available = isNoteSession()
+      ? targetSystem === "codex" || isCodexConversationSystem()
+      : isClaudeModeAvailable() || isCodexModeAvailable();
     claudeSystemToggleBtn.style.display = available ? "inline-flex" : "none";
     if (!available) return;
     const active = isRuntimeConversationSystem();
-    const inactiveLabel = targetSystem === "codex"
-      ? "Switch to Codex mode"
-      : "Switch to Claude Code mode";
+    const inactiveLabel =
+      targetSystem === "codex"
+        ? "Switch to Codex mode"
+        : "Switch to Claude Code mode";
     const activeLabel = "Switch to upstream mode";
     claudeSystemToggleBtn.dataset.active = active ? "true" : "false";
-    claudeSystemToggleBtn.setAttribute("aria-pressed", active ? "true" : "false");
+    claudeSystemToggleBtn.setAttribute(
+      "aria-pressed",
+      active ? "true" : "false",
+    );
     claudeSystemToggleBtn.title = active ? activeLabel : inactiveLabel;
     claudeSystemToggleBtn.setAttribute(
       "aria-label",
@@ -964,9 +955,11 @@ export function setupHandlers(
     claudeWarmupInFlight = Promise.allSettled([
       refreshClaudeSlashCommands(coreRuntime, false),
       listClaudeEfforts(coreRuntime, getSelectedClaudeRuntimeEntry().model),
-    ]).finally(() => {
-      claudeWarmupInFlight = null;
-    }).then(() => undefined);
+    ])
+      .finally(() => {
+        claudeWarmupInFlight = null;
+      })
+      .then(() => undefined);
   };
   const switchConversationSystem = async (
     nextSystem: ConversationSystem,
@@ -1016,23 +1009,27 @@ export function setupHandlers(
       const nextConversationKey =
         nextSystem === "claude_code"
           ? resolveRememberedClaudeConversationKey({
-            libraryID,
-            kind: "global",
-          }) ||
-          getLastUsedClaudeGlobalConversationKey(libraryID) ||
-          0
+              libraryID,
+              kind: "global",
+            }) ||
+            getLastUsedClaudeGlobalConversationKey(libraryID) ||
+            0
           : nextSystem === "codex"
             ? activeCodexGlobalConversationByLibrary.get(
-              buildCodexLibraryStateKey(libraryID),
-            ) ||
-            getLastUsedCodexGlobalConversationKey(libraryID) ||
-            0
+                buildCodexLibraryStateKey(libraryID),
+              ) ||
+              getLastUsedCodexGlobalConversationKey(libraryID) ||
+              0
             : (() => {
-              const lockedKey = getLockedGlobalConversationKey(libraryID);
-              if (lockedKey !== null) return lockedKey;
-              const activeKey = Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
-              return isUpstreamGlobalConversationKey(activeKey) ? Math.floor(activeKey) : 0;
-            })();
+                const lockedKey = getLockedGlobalConversationKey(libraryID);
+                if (lockedKey !== null) return lockedKey;
+                const activeKey = Number(
+                  activeGlobalConversationByLibrary.get(libraryID) || 0,
+                );
+                return isUpstreamGlobalConversationKey(activeKey)
+                  ? Math.floor(activeKey)
+                  : 0;
+              })();
       if (nextConversationKey > 0) {
         await switchGlobalConversation(nextConversationKey);
       } else {
@@ -1207,10 +1204,16 @@ export function setupHandlers(
     }
     if (item && libraryID > 0 && mode && !noteSession) {
       if (isClaudeConversationSystem()) {
-        activeClaudeConversationModeByLibrary.set(buildClaudeLibraryStateKey(libraryID), mode);
+        activeClaudeConversationModeByLibrary.set(
+          buildClaudeLibraryStateKey(libraryID),
+          mode,
+        );
         setLastUsedClaudeConversationMode(libraryID, mode);
       } else if (isCodexConversationSystem()) {
-        activeCodexConversationModeByLibrary.set(buildCodexLibraryStateKey(libraryID), mode);
+        activeCodexConversationModeByLibrary.set(
+          buildCodexLibraryStateKey(libraryID),
+          mode,
+        );
         setLastUsedCodexConversationMode(libraryID, mode);
         if (mode === "global") {
           activeCodexGlobalConversationByLibrary.set(
@@ -1224,7 +1227,9 @@ export function setupHandlers(
           Number.isFinite(currentBasePaperItemID) &&
           currentBasePaperItemID > 0
         ) {
-          const normalizedConversationKey = Math.floor(conversationKey as number);
+          const normalizedConversationKey = Math.floor(
+            conversationKey as number,
+          );
           const paperStateKey = buildCodexPaperStateKey(
             libraryID,
             Math.floor(currentBasePaperItemID),
@@ -1254,7 +1259,9 @@ export function setupHandlers(
             setLockedGlobalConversationKey(libraryID, null);
             removeAutoLockedGlobalConversationKey(lockedGlobalKey);
           }
-          const normalizedConversationKey = Math.floor(conversationKey as number);
+          const normalizedConversationKey = Math.floor(
+            conversationKey as number,
+          );
           const paperStateKey = buildPaperStateKey(
             libraryID,
             Math.floor(currentBasePaperItemID),
@@ -1285,7 +1292,9 @@ export function setupHandlers(
       if (!modeChipBtn.querySelector(".llm-webchat-dot")) {
         const currentLabel = noteSession
           ? "Note editing"
-          : (mode === "global" ? "Library chat" : "Paper chat");
+          : mode === "global"
+            ? "Library chat"
+            : "Paper chat";
         modeChipBtn.textContent = currentLabel;
         modeChipBtn.title = noteSession
           ? currentLabel
@@ -1356,9 +1365,14 @@ export function setupHandlers(
       }
       if (!getClaudeCodeModeEnabled()) {
         void releaseClaudeRuntimeForBody(body);
-        void invalidateAllClaudeHotRuntimes(getCoreAgentRuntime()).catch((err: unknown) => {
-          ztoolkit.log("LLM: Failed to invalidate all Claude hot runtimes", err);
-        });
+        void invalidateAllClaudeHotRuntimes(getCoreAgentRuntime()).catch(
+          (err: unknown) => {
+            ztoolkit.log(
+              "LLM: Failed to invalidate all Claude hot runtimes",
+              err,
+            );
+          },
+        );
         setConversationSystemPref("upstream");
         if (isClaudeConversationSystem()) {
           void switchConversationSystem("upstream");
@@ -1578,599 +1592,77 @@ export function setupHandlers(
     retryMenuAnchor = null;
   };
 
-  // Show floating "Quote" action when selecting assistant response text.
-  // Keep one quote instance per panel and proactively clean stale DOM buttons.
-  const popupHost = panelRoot as HTMLDivElement & {
-    __llmSelectionPopupCleanup?: () => void;
-  };
-  panelRoot
-    .querySelectorAll(".llm-assistant-selection-action")
-    .forEach((node: Element) => node.remove());
-  if (popupHost.__llmSelectionPopupCleanup) {
-    popupHost.__llmSelectionPopupCleanup();
-    delete popupHost.__llmSelectionPopupCleanup;
-  }
-  const selectionPopup = createElement(
-    panelDoc,
-    "button",
-    "llm-shortcut-btn llm-assistant-selection-action",
-    {
-      type: "button",
-      textContent: "❞ Quote",
-      title: "Quote selected text",
+  const handlerContext: SetupHandlersContext = {
+    body,
+    refs: panelRefs,
+    getItem: () => item,
+    getConversationKey,
+    setStatusMessage: (message, level) => {
+      if (status) setStatus(status, message, level);
     },
-  ) as HTMLButtonElement;
-  panelRoot.appendChild(selectionPopup);
-  let selectionPopupText = "";
-  let selectionDragStartBubble: HTMLElement | null = null;
-
-  const showSelectionPopup = () => {
-    if (!selectionPopup.classList.contains("is-visible")) {
-      selectionPopup.classList.add("is-visible");
-    }
-  };
-  const hideSelectionPopup = () => {
-    selectionPopup.classList.remove("is-visible");
-    selectionPopupText = "";
+    refreshChatPreservingScroll: () => refreshChatPreservingScroll(),
+    refreshGlobalHistoryHeader: () => refreshGlobalHistoryHeader(),
+    logError: (message, ...args) => {
+      ztoolkit.log(message, ...args);
+    },
   };
 
-  const findAssistantBubbleFromSelection = (): HTMLElement | null => {
-    if (!chatBox || !panelWin) return null;
-    const selection = panelWin.getSelection?.();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-      return null;
-    }
-    const anchorEl = isElementNode(selection.anchorNode)
-      ? selection.anchorNode
-      : selection.anchorNode?.parentElement || null;
-    const focusEl = isElementNode(selection.focusNode)
-      ? selection.focusNode
-      : selection.focusNode?.parentElement || null;
-    if (!anchorEl || !focusEl) return null;
-    const bubbleA = anchorEl.closest(".llm-bubble.assistant");
-    const bubbleB = focusEl.closest(".llm-bubble.assistant");
-    if (!bubbleA || !bubbleB || bubbleA !== bubbleB) return null;
-    if (!chatBox.contains(bubbleA)) return null;
-    return bubbleA as HTMLElement;
-  };
-
-  const updateSelectionPopup = (bubble?: HTMLElement | null) => {
-    if (
-      !panelWin ||
-      !chatBox ||
-      !panelRoot.isConnected ||
-      panelRoot.getClientRects().length === 0
-    ) {
-      hideSelectionPopup();
-      return;
-    }
-    const targetBubble = bubble || findAssistantBubbleFromSelection();
-    if (targetBubble?.closest(".llm-agent-reasoning")) {
-      hideSelectionPopup();
-      return;
-    }
-    if (!targetBubble) {
-      hideSelectionPopup();
-      return;
-    }
-    const selected = sanitizeText(
-      getSelectedTextWithinBubble(panelDoc, targetBubble),
-    ).trim();
-    if (!selected) {
-      hideSelectionPopup();
-      return;
-    }
-    selectionPopupText = selected;
-    const selection = panelWin.getSelection?.();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-      hideSelectionPopup();
-      return;
-    }
-    const range = selection.getRangeAt(0);
-    let rect = range.getBoundingClientRect();
-    const rects = range.getClientRects();
-    const anchorRect =
-      rects && rects.length > 0
-        ? rects[rects.length - 1] || rects[0] || rect
-        : rect;
-    // Prefer the selection focus endpoint (where mouse-up happened),
-    // so the popup appears near the "last selected" text.
-    let focusRect: DOMRect | null = null;
-    try {
-      const focusNode = selection.focusNode;
-      if (focusNode) {
-        const focusRange = panelDoc.createRange();
-        focusRange.setStart(focusNode, selection.focusOffset);
-        focusRange.setEnd(focusNode, selection.focusOffset);
-        let fr = focusRange.getBoundingClientRect();
-        const frs = focusRange.getClientRects();
-        if ((!fr.width || !fr.height) && frs && frs.length > 0) {
-          const first = frs[0];
-          if (first) fr = first;
-        }
-        if (fr.width || fr.height) {
-          focusRect = fr;
-        }
-      }
-    } catch (_err) {
-      void _err;
-    }
-    const positionRect = focusRect || anchorRect || rect;
-    if ((!rect.width || !rect.height) && anchorRect) {
-      rect = anchorRect;
-    }
-    if (!rect.width && !rect.height) {
-      hideSelectionPopup();
-      return;
-    }
-    const panelRect = panelRoot.getBoundingClientRect();
-    const chatRect = chatBox.getBoundingClientRect();
-    const popupRect = selectionPopup.getBoundingClientRect();
-    const margin = 8;
-    const hostLeft = chatRect.left - panelRect.left;
-    const hostTop = chatRect.top - panelRect.top;
-    const hostRight = hostLeft + chatRect.width;
-    const hostBottom = hostTop + chatRect.height;
-    // Anchor to focus endpoint (last selected text) for natural placement.
-    const focusX = positionRect.right - panelRect.left;
-    const focusTop = positionRect.top - panelRect.top;
-    const focusBottom = positionRect.bottom - panelRect.top;
-    let left = focusX + 8;
-    let top = focusTop - popupRect.height - 10;
-    if (top < hostTop + margin) top = rect.bottom - panelRect.top + 10;
-    if (top < hostTop + margin) top = focusBottom + 10;
-    if (left > hostRight - popupRect.width - margin) {
-      left = focusX - popupRect.width - 8;
-    }
-    left = clampNumber(
-      left,
-      hostLeft + margin,
-      hostRight - popupRect.width - margin,
-    );
-    top = clampNumber(
-      top,
-      hostTop + margin,
-      hostBottom - popupRect.height - margin,
-    );
-    selectionPopup.style.left = `${Math.round(left)}px`;
-    selectionPopup.style.top = `${Math.round(top)}px`;
-    showSelectionPopup();
-  };
-
-  const quoteSelectedAssistantText = () => {
-    if (!item) {
-      hideSelectionPopup();
-      return;
-    }
-    let selected = sanitizeText(selectionPopupText).trim();
-    if (!selected) {
-      const targetBubble = findAssistantBubbleFromSelection();
-      if (targetBubble) {
-        selected = sanitizeText(
-          getSelectedTextWithinBubble(panelDoc, targetBubble),
-        ).trim();
-      }
-    }
-    if (!selected) {
-      hideSelectionPopup();
-      if (status) setStatus(status, t("No assistant text selected"), "error");
-      return;
-    }
-    let added = false;
-    const activeItemId = getTextContextConversationKey();
-    if (!activeItemId) {
-      hideSelectionPopup();
-      return;
-    }
-    runWithChatScrollGuard(() => {
-      added = addSelectedTextContext(body, activeItemId, selected, {
-        successStatusText: "Selected response text included",
-        focusInput: false,
-        source: "model",
-      });
-    });
-    if (added) {
-      updateSelectedTextPreviewPreservingScroll();
-    }
-    hideSelectionPopup();
-    if (added) {
-      inputBox.focus({ preventScroll: true });
-    }
-  };
-
-  const onPanelMouseUp = (e: Event) => {
-    if (!panelWin) return;
-    if (!panelRoot.isConnected) {
-      disposeSelectionPopup();
-      return;
-    }
-    const me = e as MouseEvent;
-    if (typeof me.button === "number" && me.button !== 0) {
-      selectionDragStartBubble = null;
-      hideSelectionPopup();
-      return;
-    }
-    const target = e.target as Element | null;
-    const targetInsidePanel = Boolean(target && panelRoot.contains(target));
-    if (!targetInsidePanel && !selectionDragStartBubble) {
-      hideSelectionPopup();
-      return;
-    }
-    if (target && target.closest("summary.llm-agent-reasoning-summary")) {
-      hideSelectionPopup();
-      return;
-    }
-    const bubble = target?.closest(
-      ".llm-bubble.assistant",
-    ) as HTMLElement | null;
-    const fallbackBubble = bubble || selectionDragStartBubble;
-    selectionDragStartBubble = null;
-    panelWin.setTimeout(() => updateSelectionPopup(fallbackBubble), 0);
-  };
-  const onDocKeyUp = () => {
-    if (!panelRoot.isConnected) {
-      disposeSelectionPopup();
-      return;
-    }
-    panelWin?.setTimeout(() => updateSelectionPopup(), 0);
-  };
-  const onPanelPointerDown = (e: Event) => {
-    const target = e.target as Node | null;
-    if (target && selectionPopup.contains(target)) return;
-    const targetEl = target as Element | null;
-    selectionDragStartBubble =
-      (targetEl?.closest(".llm-bubble.assistant") as HTMLElement | null) ||
-      null;
-    hideSelectionPopup();
-  };
-  const onChatScrollHide = () => hideSelectionPopup();
-  const onChatContextMenu = () => hideSelectionPopup();
-
-  let selectionPopupHandled = false;
-  const triggerSelectionPopupAction = (e: Event) => {
-    if (selectionPopupHandled) return;
-    selectionPopupHandled = true;
-    e.preventDefault();
-    e.stopPropagation();
-    quoteSelectedAssistantText();
-    panelWin?.setTimeout(() => {
-      selectionPopupHandled = false;
-    }, 0);
-  };
-  const isPrimarySelectionPopupEvent = (e: Event): boolean => {
-    const maybeMouse = e as MouseEvent;
-    return typeof maybeMouse.button !== "number" || maybeMouse.button === 0;
-  };
-  selectionPopup.addEventListener("pointerdown", (e: Event) => {
-    if (!isPrimarySelectionPopupEvent(e)) return;
-    triggerSelectionPopupAction(e);
-  });
-  selectionPopup.addEventListener("mousedown", (e: Event) => {
-    if (!isPrimarySelectionPopupEvent(e)) return;
-    triggerSelectionPopupAction(e);
-  });
-  selectionPopup.addEventListener("click", triggerSelectionPopupAction);
-  selectionPopup.addEventListener("command", triggerSelectionPopupAction);
-  selectionPopup.addEventListener("contextmenu", (e: Event) => {
-    e.preventDefault();
-    e.stopPropagation();
-    hideSelectionPopup();
+  attachAssistantSelectionPopup({
+    body: handlerContext.body,
+    panelRoot,
+    panelDoc,
+    panelWin,
+    chatBox,
+    inputBox,
+    status,
+    getItem: handlerContext.getItem,
+    getTextContextConversationKey,
+    runWithChatScrollGuard: (fn) => runWithChatScrollGuard(fn),
+    updateSelectedTextPreviewPreservingScroll: () =>
+      updateSelectedTextPreviewPreservingScroll(),
+    isElementNode,
   });
 
-  panelDoc.addEventListener("mouseup", onPanelMouseUp, true);
-  panelDoc.addEventListener("keyup", onDocKeyUp, true);
-  panelRoot.addEventListener("pointerdown", onPanelPointerDown, true);
-  chatBox?.addEventListener("scroll", onChatScrollHide, { passive: true });
-  chatBox?.addEventListener("contextmenu", onChatContextMenu, true);
-  panelWin?.addEventListener("resize", onChatScrollHide, { passive: true });
-
-  const disposeSelectionPopup = () => {
-    panelDoc.removeEventListener("mouseup", onPanelMouseUp, true);
-    panelDoc.removeEventListener("keyup", onDocKeyUp, true);
-    panelRoot.removeEventListener("pointerdown", onPanelPointerDown, true);
-    chatBox?.removeEventListener("scroll", onChatScrollHide);
-    chatBox?.removeEventListener("contextmenu", onChatContextMenu, true);
-    panelWin?.removeEventListener("resize", onChatScrollHide);
-    selectionPopup.remove();
-    if (popupHost.__llmSelectionPopupCleanup === disposeSelectionPopup) {
-      delete popupHost.__llmSelectionPopupCleanup;
-    }
-  };
-  popupHost.__llmSelectionPopupCleanup = disposeSelectionPopup;
-
-  if (responseMenu && responseMenuCopyBtn && responseMenuNoteBtn) {
-    if (!responseMenu.dataset.listenerAttached) {
-      responseMenu.dataset.listenerAttached = "true";
-      // Stop propagation for both pointer and mouse events so that the
-      // document-level dismiss handler cannot race with button clicks.
-      responseMenu.addEventListener("pointerdown", (e: Event) => {
-        e.stopPropagation();
-      });
-      responseMenu.addEventListener("mousedown", (e: Event) => {
-        e.stopPropagation();
-      });
-      responseMenu.addEventListener("contextmenu", (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      responseMenuCopyBtn.addEventListener("click", async (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const target = responseMenuTarget;
-        closeResponseMenu();
-        if (!target) return;
-        // Render through renderMarkdownForNote and copy both HTML
-        // (for rich-text paste into Zotero notes) and plain text
-        // (for plain-text editors).  Uses the selection if present,
-        // otherwise the full response.
-        await copyRenderedMarkdownToClipboard(body, target.contentText);
-        if (status) setStatus(status, t("Copied response"), "ready");
-      });
-      responseMenuNoteBtn.addEventListener("click", async (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        // Capture all needed values immediately before any async work,
-        // so that even if responseMenuTarget is cleared we still have them.
-        const target = responseMenuTarget;
-        closeResponseMenu();
-        if (!target) {
-          ztoolkit.log("LLM: Note save – no responseMenuTarget");
-          return;
-        }
-        const { item: targetItem, contentText, modelName, paperContexts } = target;
-        if (!targetItem || !contentText) {
-          ztoolkit.log("LLM: Note save – missing item or contentText");
-          return;
-        }
-        try {
-          const targetNoteSession = resolveActiveNoteSession(targetItem);
-          if (
-            isGlobalPortalItem(targetItem) ||
-            isClaudeGlobalPortalItem(targetItem) ||
-            targetNoteSession?.noteKind === "standalone"
-          ) {
-            const libraryID =
-              Number.isFinite(targetItem.libraryID) && targetItem.libraryID > 0
-                ? Math.floor(targetItem.libraryID)
-                : getCurrentLibraryID();
-            await createStandaloneNoteFromAssistantText(
-              libraryID,
-              contentText,
-              modelName,
-              paperContexts,
-            );
-            if (status) {
-              setStatus(status, t("Created a new note"), "ready");
-            }
-            return;
-          }
-          const saveResult = await createNoteFromAssistantText(
-            targetItem,
-            contentText,
-            modelName,
-            paperContexts,
-            {
-              appendToTrackedNote: true,
-              rememberCreatedNote: true,
-            },
-          );
-          if (status) {
-            setStatus(
-              status,
-              saveResult === "appended"
-                ? t("Appended to existing note")
-                : t("Created a new note"),
-              "ready",
-            );
-          }
-        } catch (err) {
-          ztoolkit.log("Create note failed:", err);
-          if (status) setStatus(status, t("Failed to create note"), "error");
-        }
-      });
-      if (responseMenuDeleteBtn) {
-        responseMenuDeleteBtn.addEventListener("click", async (e: Event) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const target = responseMenuTarget;
-          closeResponseMenu();
-          if (!target || !item) return;
-          const conversationKey = Number(target.conversationKey || 0);
-          const userTimestamp = Number(target.userTimestamp || 0);
-          const assistantTimestamp = Number(target.assistantTimestamp || 0);
-          if (
-            !Number.isFinite(conversationKey) ||
-            conversationKey <= 0 ||
-            !Number.isFinite(userTimestamp) ||
-            userTimestamp <= 0 ||
-            !Number.isFinite(assistantTimestamp) ||
-            assistantTimestamp <= 0
-          ) {
-            if (status) setStatus(status, t("No deletable turn found"), "error");
-            return;
-          }
-          await queueTurnDeletion({
-            conversationKey: Math.floor(conversationKey),
-            userTimestamp: Math.floor(userTimestamp),
-            assistantTimestamp: Math.floor(assistantTimestamp),
-          });
-        });
-      }
-    }
-  }
-
-  if (promptMenu) {
-    if (!promptMenu.dataset.listenerAttached) {
-      promptMenu.dataset.listenerAttached = "true";
-      promptMenu.addEventListener("pointerdown", (e: Event) => {
-        e.stopPropagation();
-      });
-      promptMenu.addEventListener("mousedown", (e: Event) => {
-        e.stopPropagation();
-      });
-      promptMenu.addEventListener("contextmenu", (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      if (promptMenuDeleteBtn) {
-        promptMenuDeleteBtn.addEventListener("click", async (e: Event) => {
-          e.preventDefault();
-          e.stopPropagation();
-          const target = promptMenuTarget;
-          closePromptMenu();
-          if (!target || !item) return;
-          if (
-            !Number.isFinite(target.userTimestamp) ||
-            target.userTimestamp <= 0 ||
-            !Number.isFinite(target.assistantTimestamp) ||
-            target.assistantTimestamp <= 0
-          ) {
-            if (status) setStatus(status, t("No deletable turn found"), "error");
-            return;
-          }
-          await queueTurnDeletion({
-            conversationKey: Math.floor(target.conversationKey),
-            userTimestamp: Math.floor(target.userTimestamp),
-            assistantTimestamp: Math.floor(target.assistantTimestamp),
-          });
-        });
-      }
-    }
-  }
-
-  if (exportMenu && exportMenuCopyBtn && exportMenuNoteBtn) {
-    if (!exportMenu.dataset.listenerAttached) {
-      exportMenu.dataset.listenerAttached = "true";
-      exportMenu.addEventListener("pointerdown", (e: Event) => {
-        e.stopPropagation();
-      });
-      exportMenu.addEventListener("mousedown", (e: Event) => {
-        e.stopPropagation();
-      });
-      exportMenu.addEventListener("contextmenu", (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      exportMenuCopyBtn.addEventListener("click", async (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!item) return;
-        await ensureConversationLoaded(item as Zotero.Item);
-        const conversationKey = getConversationKey(item);
-        const history = chatHistory.get(conversationKey) || [];
-        const payload = buildChatHistoryNotePayload(history);
-        if (!payload.noteText) {
-          if (status) setStatus(status, t("No chat history detected."), "ready");
-          closeExportMenu();
-          return;
-        }
-        // Match single-response "copy as md": copy markdown/plain text only.
-        await copyTextToClipboard(body, payload.noteText);
-        if (status) setStatus(status, t("Copied chat as md"), "ready");
-        closeExportMenu();
-      });
-      exportMenuNoteBtn.addEventListener("click", async (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const currentItem = item;
-        const currentLibraryID = getCurrentLibraryID();
-        closeExportMenu();
-        if (!currentItem) return;
-        try {
-          await ensureConversationLoaded(currentItem);
-          const conversationKey = getConversationKey(currentItem);
-          const history = chatHistory.get(conversationKey) || [];
-          const payload = buildChatHistoryNotePayload(history);
-          if (!payload.noteText) {
-            if (status) setStatus(status, t("No chat history detected."), "ready");
-            return;
-          }
-          if (isGlobalMode()) {
-            await createStandaloneNoteFromChatHistory(
-              currentLibraryID,
-              history,
-            );
-          } else {
-            await createNoteFromChatHistory(currentItem, history);
-          }
-          if (status)
-            setStatus(status, t("Saved chat history to new note"), "ready");
-        } catch (err) {
-          ztoolkit.log("Save chat history note failed:", err);
-          if (status) setStatus(status, t("Failed to save chat history"), "error");
-        }
-      });
-    }
-  }
-
-  if (exportBtn) {
-    exportBtn.addEventListener("click", (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (exportBtn.disabled || !exportMenu || !item) return;
-      closeRetryModelMenu();
-      closeSlashMenu();
-      closeResponseMenu();
-      closePromptMenu();
-      closeHistoryNewMenu();
-      closeHistoryMenu();
-      if (exportMenu.style.display !== "none") {
-        closeExportMenu();
-        return;
-      }
-      positionMenuBelowButton(body, exportMenu, exportBtn);
-    });
-  }
-
-  if (popoutBtn) {
-    popoutBtn.addEventListener("click", (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      try {
-        const { isStandaloneWindowActive, openStandaloneChat } = require("./standaloneWindow");
-        if (isStandaloneWindowActive()) {
-          // Toggle off: close the standalone window
-          addon.data.standaloneWindow?.close();
-        } else {
-          openStandaloneChat({
-            initialItem: item,
-            initialConversationSystem: getConversationSystem(),
-            initialRuntimeMode:
-              item
-                ? selectedRuntimeModeCache.get(getConversationKey(item)) || null
-                : null,
-            sourceBody: body,
-          });
-        }
-      } catch (err) {
-        ztoolkit.log("LLM: Failed to toggle standalone window", err);
-      }
-    });
-  }
-
-  if (settingsBtn) {
-    settingsBtn.addEventListener("click", (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      try {
-        closeRetryModelMenu();
-        closeSlashMenu();
-        closeResponseMenu();
-        closePromptMenu();
-        closeHistoryNewMenu();
-        closeHistoryMenu();
-        closeExportMenu();
-        const paneId =
-          settingsBtn.dataset.preferencesPaneId || PREFERENCES_PANE_ID;
-        Zotero.Utilities.Internal.openPreferences(paneId);
-      } catch (error) {
-        ztoolkit.log("LLM: Failed to open plugin preferences", error);
-        if (status) {
-          setStatus(status, t("Could not open plugin settings"), "error");
-        }
-      }
-    });
-  }
+  attachMenuActionController({
+    body,
+    status,
+    responseMenu,
+    responseMenuCopyBtn,
+    responseMenuNoteBtn,
+    responseMenuDeleteBtn,
+    promptMenu,
+    promptMenuDeleteBtn,
+    exportMenu,
+    exportMenuCopyBtn,
+    exportMenuNoteBtn,
+    exportBtn,
+    popoutBtn,
+    settingsBtn,
+    preferencesPaneId: PREFERENCES_PANE_ID,
+    getItem: () => item,
+    getResponseMenuTarget: () => responseMenuTarget,
+    getPromptMenuTarget: () => promptMenuTarget,
+    getCurrentLibraryID,
+    getConversationSystem,
+    getCurrentRuntimeModeForItem: (targetItem) =>
+      selectedRuntimeModeCache.get(getConversationKey(targetItem)) || null,
+    isGlobalMode,
+    ensureConversationLoaded,
+    getConversationKey,
+    getHistory: (conversationKey) => chatHistory.get(conversationKey) || [],
+    resolveActiveNoteSession,
+    closeResponseMenu,
+    closePromptMenu,
+    closeExportMenu,
+    closeRetryModelMenu,
+    closeSlashMenu,
+    closeHistoryNewMenu,
+    closeHistoryMenu,
+    queueTurnDeletion: (target) => queueTurnDeletion(target),
+    logError: (message, error) => {
+      ztoolkit.log(message, error);
+    },
+  });
 
   // Clicking non-interactive panel area gives keyboard focus to the panel.
   panelRoot.addEventListener("mousedown", (e: Event) => {
@@ -2188,6 +1680,22 @@ export function setupHandlers(
     }
   });
 
+  const { applyResponsiveActionButtonsLayout } = createActionLayoutController({
+    body,
+    panelRoot,
+    actionsRow,
+    actionsLeft,
+    modelBtn,
+    modelSlot,
+    reasoningBtn,
+    reasoningSlot,
+    uploadBtn,
+    selectTextBtn,
+    screenshotBtn,
+    sendBtn,
+    cancelBtn,
+  });
+
   const clearSelectedImageState = (itemId: number) =>
     clearSelectedImageState_(pinnedImageKeys, itemId);
 
@@ -2203,7 +1711,10 @@ export function setupHandlers(
   // getPaperModeOverride, setPaperModeOverride, clearPaperModeOverrides
   // → imported from ./contexts/paperContextState
 
-  const consumePaperModeState = (itemId: number, opts?: { webchatGreyOut?: boolean }) => {
+  const consumePaperModeState = (
+    itemId: number,
+    opts?: { webchatGreyOut?: boolean },
+  ) => {
     if (!item || item.id !== itemId) {
       clearPaperModeOverrides(itemId);
       return;
@@ -2223,7 +1734,8 @@ export function setupHandlers(
     if (opts?.webchatGreyOut) {
       const allPaperContexts = getAllEffectivePaperContexts(item);
       for (const paperContext of allPaperContexts) {
-        if (resolvePaperContentSourceMode(itemId, paperContext) !== "pdf") continue;
+        if (resolvePaperContentSourceMode(itemId, paperContext) !== "pdf")
+          continue;
         const mode = resolvePaperContextNextSendMode(itemId, paperContext);
         if (mode === "full-next") {
           setPaperModeOverride(itemId, paperContext, "retrieval");
@@ -2268,21 +1780,28 @@ export function setupHandlers(
     return false;
   };
 
-  const checkAndApplyMineruChipStyle = async (contextItemId: number): Promise<void> => {
+  const checkAndApplyMineruChipStyle = async (
+    contextItemId: number,
+  ): Promise<void> => {
     try {
       if (mineruAvailableIds.has(contextItemId)) return; // already detected
-      const { getMineruAvailabilityForAttachmentId } = await import("./mineruSync");
+      const { getMineruAvailabilityForAttachmentId } =
+        await import("./mineruSync");
       const { isMineruEnabled } = await import("../../utils/mineruConfig");
       if (!isMineruEnabled()) return;
-      const availability =
-        await getMineruAvailabilityForAttachmentId(contextItemId, {
+      const availability = await getMineruAvailabilityForAttachmentId(
+        contextItemId,
+        {
           validateSyncedPackage: false,
-        });
+        },
+      );
       if (availability.status === "missing") return;
       mineruAvailableIds.add(contextItemId);
       // MinerU is now available — re-render chips so the default mode flips to "mineru"
       updatePaperPreviewPreservingScroll();
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   };
 
   const resolvePaperContextNextSendMode = (
@@ -2350,7 +1869,10 @@ export function setupHandlers(
     currentItem: Zotero.Item,
     selectedPaperContexts?: PaperContextRef[],
   ): PaperContextRef[] => {
-    return getAllEffectivePaperContexts(currentItem, selectedPaperContexts).filter(
+    return getAllEffectivePaperContexts(
+      currentItem,
+      selectedPaperContexts,
+    ).filter(
       (paperContext) =>
         resolvePaperContentSourceMode(currentItem.id, paperContext) !== "pdf" &&
         isPaperContextFullTextMode(
@@ -2363,7 +1885,10 @@ export function setupHandlers(
     currentItem: Zotero.Item,
     selectedPaperContexts?: PaperContextRef[],
   ): PaperContextRef[] => {
-    return getAllEffectivePaperContexts(currentItem, selectedPaperContexts).filter(
+    return getAllEffectivePaperContexts(
+      currentItem,
+      selectedPaperContexts,
+    ).filter(
       (paperContext) =>
         resolvePaperContentSourceMode(currentItem.id, paperContext) === "pdf",
     );
@@ -2374,7 +1899,10 @@ export function setupHandlers(
     currentItem: Zotero.Item,
     selectedPaperContexts?: PaperContextRef[],
   ): boolean => {
-    return getAllEffectivePaperContexts(currentItem, selectedPaperContexts).some(
+    return getAllEffectivePaperContexts(
+      currentItem,
+      selectedPaperContexts,
+    ).some(
       (paperContext) =>
         resolvePaperContentSourceMode(currentItem.id, paperContext) === "pdf" &&
         isPaperContextFullTextMode(
@@ -2470,8 +1998,9 @@ export function setupHandlers(
   const runWithChatScrollGuard = (fn: () => void) => {
     withScrollGuard(chatBox, conversationKey, fn);
   };
-  const EDIT_STALE_STATUS_TEXT =
-    t("Edit target changed. Please edit latest prompt again.");
+  const EDIT_STALE_STATUS_TEXT = t(
+    "Edit target changed. Please edit latest prompt again.",
+  );
   const getLatestEditablePair = async () => {
     if (!item) return null;
     await ensureConversationLoaded(item as Zotero.Item);
@@ -2517,9 +2046,9 @@ export function setupHandlers(
     if (win) {
       win.clearTimeout(paperChipMenuHideTimer);
     } else {
-      clearTimeout(paperChipMenuHideTimer as unknown as ReturnType<
-        typeof setTimeout
-      >);
+      clearTimeout(
+        paperChipMenuHideTimer as unknown as ReturnType<typeof setTimeout>,
+      );
     }
     paperChipMenuHideTimer = null;
   };
@@ -2535,7 +2064,9 @@ export function setupHandlers(
   const buildPaperChipAttachmentText = (
     paperContext: PaperContextRef,
   ): string => {
-    const attachmentTitle = sanitizeText(paperContext.attachmentTitle || "").trim();
+    const attachmentTitle = sanitizeText(
+      paperContext.attachmentTitle || "",
+    ).trim();
     const paperTitle = sanitizeText(paperContext.title || "").trim();
     if (!attachmentTitle || attachmentTitle === paperTitle) return "";
     return attachmentTitle;
@@ -2570,7 +2101,14 @@ export function setupHandlers(
     });
     titleLine.appendChild(title);
     const mode = options?.contentSourceMode;
-    const badgeText = mode === "mineru" ? "MD" : mode === "pdf" ? "PDF" : mode === "text" ? "Text" : null;
+    const badgeText =
+      mode === "mineru"
+        ? "MD"
+        : mode === "pdf"
+          ? "PDF"
+          : mode === "text"
+            ? "Text"
+            : null;
     if (badgeText) {
       titleLine.appendChild(
         createElement(ownerDoc, "span", "llm-paper-picker-badge", {
@@ -2589,11 +2127,13 @@ export function setupHandlers(
       );
     }
     // Attachment line: PDF shows real title, MinerU shows "full.md", Text has none
-    const displayAttachmentText = mode === "pdf"
-      ? buildPaperChipAttachmentText(paperContext) || resolveAttachmentTitle(paperContext)
-      : mode === "mineru"
-        ? "full.md"
-        : ""; // text mode: no attachment line
+    const displayAttachmentText =
+      mode === "pdf"
+        ? buildPaperChipAttachmentText(paperContext) ||
+          resolveAttachmentTitle(paperContext)
+        : mode === "mineru"
+          ? "full.md"
+          : ""; // text mode: no attachment line
     if (displayAttachmentText) {
       rowMain.appendChild(
         createElement(
@@ -2614,7 +2154,11 @@ export function setupHandlers(
     if (paperChipMenu?.isConnected) return paperChipMenu;
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc) return null;
-    const menu = createElement(ownerDoc, "div", "llm-model-menu llm-paper-chip-menu");
+    const menu = createElement(
+      ownerDoc,
+      "div",
+      "llm-model-menu llm-paper-chip-menu",
+    );
     menu.style.display = "none";
     menu.addEventListener("mouseenter", () => {
       clearPaperChipMenuHideTimer();
@@ -2668,7 +2212,10 @@ export function setupHandlers(
     const viewportMargin = 8;
     const gap = 6;
     const panelRect = body.getBoundingClientRect();
-    const minLeftBound = Math.max(viewportMargin, Math.round(panelRect.left) + 2);
+    const minLeftBound = Math.max(
+      viewportMargin,
+      Math.round(panelRect.left) + 2,
+    );
     const minTopBound = Math.max(viewportMargin, Math.round(panelRect.top) + 2);
     const maxRightBound = Math.round(panelRect.right) - 2;
     const maxBottomBound = Math.round(panelRect.bottom) - 2;
@@ -2731,7 +2278,12 @@ export function setupHandlers(
     paperChipMenuSticky = options?.sticky === true;
     paperChipMenuTarget = paperContext;
     menu.innerHTML = "";
-    menu.appendChild(buildPaperChipMenuCard(ownerDoc, paperContext, { contentSourceMode: (chip.dataset.contentSource as PaperContentSourceMode) || "text" }));
+    menu.appendChild(
+      buildPaperChipMenuCard(ownerDoc, paperContext, {
+        contentSourceMode:
+          (chip.dataset.contentSource as PaperContentSourceMode) || "text",
+      }),
+    );
     positionPaperChipMenuAboveAnchor(menu, chip);
     menu.style.display = "grid";
   };
@@ -2786,13 +2338,15 @@ export function setupHandlers(
   const focusPaperContextInActiveTab = async (
     paperContext: PaperContextRef,
   ): Promise<boolean> => {
-    const tabs = (Zotero as unknown as {
-      Tabs?: {
-        selectedType?: string;
-        getTabIDByItemID?: (itemID: number) => string;
-        select?: (id: string, reopening?: boolean, options?: unknown) => void;
-      };
-    }).Tabs;
+    const tabs = (
+      Zotero as unknown as {
+        Tabs?: {
+          selectedType?: string;
+          getTabIDByItemID?: (itemID: number) => string;
+          select?: (id: string, reopening?: boolean, options?: unknown) => void;
+        };
+      }
+    ).Tabs;
     const selectedType = String(tabs?.selectedType || "").toLowerCase();
     if (selectedType.includes("reader")) {
       const existingReaderTabId =
@@ -2804,11 +2358,11 @@ export function setupHandlers(
       }
       const readerApi = Zotero.Reader as
         | {
-          open?: (
-            itemID: number,
-            location?: _ZoteroTypes.Reader.Location,
-          ) => Promise<void | _ZoteroTypes.ReaderInstance>;
-        }
+            open?: (
+              itemID: number,
+              location?: _ZoteroTypes.Reader.Location,
+            ) => Promise<void | _ZoteroTypes.ReaderInstance>;
+          }
         | undefined;
       if (typeof readerApi?.open === "function") {
         await readerApi.open(paperContext.contextItemId);
@@ -2879,8 +2433,12 @@ export function setupHandlers(
     const showPdfChipStyle =
       contentSourceMode === "pdf" && (!isWebChatMode() || fullText);
     const showTextChipStyle =
-      contentSourceMode === "text" || (isWebChatMode() && contentSourceMode === "pdf" && !fullText);
-    chip.classList.toggle("llm-paper-context-chip-mineru", contentSourceMode === "mineru");
+      contentSourceMode === "text" ||
+      (isWebChatMode() && contentSourceMode === "pdf" && !fullText);
+    chip.classList.toggle(
+      "llm-paper-context-chip-mineru",
+      contentSourceMode === "mineru",
+    );
     chip.classList.toggle("llm-paper-context-chip-pdf", showPdfChipStyle);
     chip.classList.toggle("llm-paper-context-chip-text", showTextChipStyle);
     chip.classList.add("collapsed");
@@ -2895,7 +2453,10 @@ export function setupHandlers(
       "span",
       "llm-paper-context-chip-label",
       {
-        textContent: formatPaperContextChipLabel(paperContext, contentSourceMode),
+        textContent: formatPaperContextChipLabel(
+          paperContext,
+          contentSourceMode,
+        ),
         title: formatPaperContextChipTitle(paperContext, contentSourceMode),
       },
     );
@@ -2923,7 +2484,9 @@ export function setupHandlers(
       "div",
       "llm-selected-context-expanded llm-paper-context-chip-expanded",
     );
-    chipExpanded.appendChild(buildPaperChipMenuCard(ownerDoc, paperContext, { contentSourceMode }));
+    chipExpanded.appendChild(
+      buildPaperChipMenuCard(ownerDoc, paperContext, { contentSourceMode }),
+    );
     chip.append(chipExpanded, chipHeader);
 
     // Restore expanded (sticky) state after re-render
@@ -3043,7 +2606,8 @@ export function setupHandlers(
       autoLoadedPaperContext,
     );
     const selectedOtherRefs = selectedOtherRefContextCache.get(itemId) || [];
-    const selectedCollections = selectedCollectionContextCache.get(itemId) || [];
+    const selectedCollections =
+      selectedCollectionContextCache.get(itemId) || [];
     const hasAnyContext =
       selectedPapers.length > 0 ||
       selectedOtherRefs.length > 0 ||
@@ -3076,21 +2640,22 @@ export function setupHandlers(
     if (autoLoadedPaperContext) {
       appendPaperChip(ownerDoc, paperPreviewList, autoLoadedPaperContext, {
         autoLoaded: true,
-        fullText:
-          isPaperContextFullTextMode(
-            resolvePaperContextNextSendMode(itemId, autoLoadedPaperContext),
-          ),
-        contentSourceMode: resolvePaperContentSourceMode(itemId, autoLoadedPaperContext),
+        fullText: isPaperContextFullTextMode(
+          resolvePaperContextNextSendMode(itemId, autoLoadedPaperContext),
+        ),
+        contentSourceMode: resolvePaperContentSourceMode(
+          itemId,
+          autoLoadedPaperContext,
+        ),
       });
     }
     selectedPapers.forEach((paperContext, index) => {
       appendPaperChip(ownerDoc, paperPreviewList, paperContext, {
         removable: true,
         removableIndex: index,
-        fullText:
-          isPaperContextFullTextMode(
-            resolvePaperContextNextSendMode(itemId, paperContext),
-          ),
+        fullText: isPaperContextFullTextMode(
+          resolvePaperContextNextSendMode(itemId, paperContext),
+        ),
         contentSourceMode: resolvePaperContentSourceMode(itemId, paperContext),
       });
     });
@@ -3115,7 +2680,11 @@ export function setupHandlers(
     const allFiles = selectedFileAttachmentCache.get(itemId) || [];
     // Exclude PDF-paper attachments from file preview — they're shown under the paper chip instead
     const files = allFiles.filter(
-      (f) => !(typeof f.id === "string" && (f.id.startsWith("pdf-paper-") || f.id.startsWith("pdf-page-"))),
+      (f) =>
+        !(
+          typeof f.id === "string" &&
+          (f.id.startsWith("pdf-paper-") || f.id.startsWith("pdf-page-"))
+        ),
     );
     prunePinnedFileKeys(pinnedFileKeys, itemId, files);
     if (!files.length) {
@@ -3624,18 +3193,18 @@ export function setupHandlers(
   ): Promise<HistorySearchDocument> => {
     const messages = isClaudeConversationSystem()
       ? await loadClaudeConversation(
-        entry.conversationKey,
-        PERSISTED_HISTORY_LIMIT,
-      )
-      : isCodexConversationSystem()
-        ? await loadCodexConversation(
           entry.conversationKey,
           PERSISTED_HISTORY_LIMIT,
         )
+      : isCodexConversationSystem()
+        ? await loadCodexConversation(
+            entry.conversationKey,
+            PERSISTED_HISTORY_LIMIT,
+          )
         : await loadConversation(
-          entry.conversationKey,
-          PERSISTED_HISTORY_LIMIT,
-        );
+            entry.conversationKey,
+            PERSISTED_HISTORY_LIMIT,
+          );
     return createHistorySearchDocument(entry, messages);
   };
 
@@ -3737,8 +3306,8 @@ export function setupHandlers(
 
     const searchDocumentsReady = searchActive
       ? allEntries.every((entry) =>
-        historySearchDocumentCache.has(entry.conversationKey),
-      )
+          historySearchDocumentCache.has(entry.conversationKey),
+        )
       : true;
     if (searchActive && !searchDocumentsReady) {
       const loadingRow = createElement(
@@ -3754,10 +3323,10 @@ export function setupHandlers(
     }
     const rawSearchResults = searchActive
       ? buildHistorySearchResults(
-        allEntries,
-        normalizedSearchQuery,
-        historySearchDocumentCache,
-      )
+          allEntries,
+          normalizedSearchQuery,
+          historySearchDocumentCache,
+        )
       : [];
     const searchResultsByKey = new Map<number, HistorySearchResult>();
     for (const result of rawSearchResults) {
@@ -3785,16 +3354,18 @@ export function setupHandlers(
     // Sort entries: by match count when searching, otherwise by recency
     const sortedEntries = searchActive
       ? [...filteredEntries].sort((a, b) => {
-        const matchDelta =
-          (searchResultsByKey.get(b.conversationKey)?.matchCount || 0) -
-          (searchResultsByKey.get(a.conversationKey)?.matchCount || 0);
-        if (matchDelta !== 0) return matchDelta;
-        if (b.lastActivityAt !== a.lastActivityAt) {
-          return b.lastActivityAt - a.lastActivityAt;
-        }
-        return b.conversationKey - a.conversationKey;
-      })
-      : [...filteredEntries].sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+          const matchDelta =
+            (searchResultsByKey.get(b.conversationKey)?.matchCount || 0) -
+            (searchResultsByKey.get(a.conversationKey)?.matchCount || 0);
+          if (matchDelta !== 0) return matchDelta;
+          if (b.lastActivityAt !== a.lastActivityAt) {
+            return b.lastActivityAt - a.lastActivityAt;
+          }
+          return b.conversationKey - a.conversationKey;
+        })
+      : [...filteredEntries].sort(
+          (a, b) => b.lastActivityAt - a.lastActivityAt,
+        );
 
     // Group by day (matching standalone sidebar style)
     const dayGroups = groupHistoryEntriesByDay(sortedEntries, { translate: t });
@@ -3921,7 +3492,6 @@ export function setupHandlers(
       historyMenu.style.display !== "none"
     ) {
       positionMenuBelowButton(body, historyMenu, historyToggleBtn);
-
     }
     restoreHistorySearchInputFocus();
   };
@@ -3939,7 +3509,6 @@ export function setupHandlers(
       historyMenu.style.display !== "none"
     ) {
       positionMenuBelowButton(body, historyMenu, historyToggleBtn);
-
     }
   };
 
@@ -3959,7 +3528,6 @@ export function setupHandlers(
         historyMenu.style.display !== "none"
       ) {
         positionMenuBelowButton(body, historyMenu, historyToggleBtn);
-
       }
       restoreHistorySearchInputFocus();
       return;
@@ -3976,7 +3544,6 @@ export function setupHandlers(
         historyMenu.style.display !== "none"
       ) {
         positionMenuBelowButton(body, historyMenu, historyToggleBtn);
-
       }
       restoreHistorySearchInputFocus();
       return;
@@ -3989,7 +3556,6 @@ export function setupHandlers(
       historyMenu.style.display !== "none"
     ) {
       positionMenuBelowButton(body, historyMenu, historyToggleBtn);
-
     }
     restoreHistorySearchInputFocus();
     await ensureHistorySearchDocuments(missingEntries);
@@ -4002,7 +3568,6 @@ export function setupHandlers(
       historyMenu.style.display !== "none"
     ) {
       positionMenuBelowButton(body, historyMenu, historyToggleBtn);
-
     }
     restoreHistorySearchInputFocus();
   };
@@ -4051,7 +3616,9 @@ export function setupHandlers(
         try {
           if (isClaudeConversationSystem()) {
             const activePaperKey =
-              !isGlobalMode() && item && Number.isFinite(getConversationKey(item))
+              !isGlobalMode() &&
+              item &&
+              Number.isFinite(getConversationKey(item))
                 ? Math.floor(getConversationKey(item))
                 : 0;
             if (activePaperKey > 0) {
@@ -4109,7 +3676,9 @@ export function setupHandlers(
             }
           } else if (isCodexConversationSystem()) {
             const activePaperKey =
-              !isGlobalMode() && item && Number.isFinite(getConversationKey(item))
+              !isGlobalMode() &&
+              item &&
+              Number.isFinite(getConversationKey(item))
                 ? Math.floor(getConversationKey(item))
                 : 0;
             if (activePaperKey > 0) {
@@ -4235,9 +3804,11 @@ export function setupHandlers(
           activeGlobalKey = Math.floor(item.id);
         } else {
           const remembered = Number(
-            activeClaudeGlobalConversationByLibrary.get(buildClaudeLibraryStateKey(libraryID)) ||
-            getLastUsedClaudeGlobalConversationKey(libraryID) ||
-            0,
+            activeClaudeGlobalConversationByLibrary.get(
+              buildClaudeLibraryStateKey(libraryID),
+            ) ||
+              getLastUsedClaudeGlobalConversationKey(libraryID) ||
+              0,
           );
           if (Number.isFinite(remembered) && remembered > 0) {
             activeGlobalKey = Math.floor(remembered);
@@ -4251,17 +3822,22 @@ export function setupHandlers(
               kind: "global",
             });
           } catch (err) {
-            ztoolkit.log("LLM: Failed to ensure active Claude history row", err);
+            ztoolkit.log(
+              "LLM: Failed to ensure active Claude history row",
+              err,
+            );
           }
         }
         if (requestId !== globalHistoryLoadSeq) return;
 
         let historyEntries = [] as Array<
-          Awaited<ReturnType<typeof getClaudeConversationSummary>> extends infer T
-          ? T extends null
-          ? never
-          : T
-          : never
+          Awaited<
+            ReturnType<typeof getClaudeConversationSummary>
+          > extends infer T
+            ? T extends null
+              ? never
+              : T
+            : never
         >;
         try {
           historyEntries = await listClaudeGlobalConversations(
@@ -4269,14 +3845,18 @@ export function setupHandlers(
             GLOBAL_HISTORY_LIMIT,
           );
         } catch (err) {
-          ztoolkit.log("LLM: Failed to load Claude global history entries", err);
+          ztoolkit.log(
+            "LLM: Failed to load Claude global history entries",
+            err,
+          );
         }
         if (requestId !== globalHistoryLoadSeq) return;
 
         const seenGlobalKeys = new Set<number>();
         for (const entry of historyEntries) {
           const conversationKey = Number(entry.conversationKey);
-          if (!Number.isFinite(conversationKey) || conversationKey <= 0) continue;
+          if (!Number.isFinite(conversationKey) || conversationKey <= 0)
+            continue;
           const normalizedKey = Math.floor(conversationKey);
           if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
           if (seenGlobalKeys.has(normalizedKey)) continue;
@@ -4306,9 +3886,11 @@ export function setupHandlers(
           activeGlobalKey = Math.floor(item.id);
         } else {
           const remembered = Number(
-            activeCodexGlobalConversationByLibrary.get(buildCodexLibraryStateKey(libraryID)) ||
-            getLastUsedCodexGlobalConversationKey(libraryID) ||
-            0,
+            activeCodexGlobalConversationByLibrary.get(
+              buildCodexLibraryStateKey(libraryID),
+            ) ||
+              getLastUsedCodexGlobalConversationKey(libraryID) ||
+              0,
           );
           if (Number.isFinite(remembered) && remembered > 0) {
             activeGlobalKey = Math.floor(remembered);
@@ -4328,11 +3910,13 @@ export function setupHandlers(
         if (requestId !== globalHistoryLoadSeq) return;
 
         let historyEntries = [] as Array<
-          Awaited<ReturnType<typeof getCodexConversationSummary>> extends infer T
-          ? T extends null
-          ? never
-          : T
-          : never
+          Awaited<
+            ReturnType<typeof getCodexConversationSummary>
+          > extends infer T
+            ? T extends null
+              ? never
+              : T
+            : never
         >;
         try {
           historyEntries = await listCodexGlobalConversations(
@@ -4347,7 +3931,8 @@ export function setupHandlers(
         const seenGlobalKeys = new Set<number>();
         for (const entry of historyEntries) {
           const conversationKey = Number(entry.conversationKey);
-          if (!Number.isFinite(conversationKey) || conversationKey <= 0) continue;
+          if (!Number.isFinite(conversationKey) || conversationKey <= 0)
+            continue;
           const normalizedKey = Math.floor(conversationKey);
           if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
           if (seenGlobalKeys.has(normalizedKey)) continue;
@@ -4387,13 +3972,17 @@ export function setupHandlers(
           try {
             await ensureGlobalConversationExists(libraryID, activeGlobalKey);
           } catch (err) {
-            ztoolkit.log("LLM: Failed to ensure active global history row", err);
+            ztoolkit.log(
+              "LLM: Failed to ensure active global history row",
+              err,
+            );
           }
         }
         if (requestId !== globalHistoryLoadSeq) return;
 
-        let historyEntries: Awaited<ReturnType<typeof loadConversationHistoryScope>> =
-          [];
+        let historyEntries: Awaited<
+          ReturnType<typeof loadConversationHistoryScope>
+        > = [];
         try {
           historyEntries = await loadConversationHistoryScope({
             mode: "open",
@@ -4408,12 +3997,15 @@ export function setupHandlers(
         const seenGlobalKeys = new Set<number>();
         for (const entry of historyEntries) {
           const conversationKey = Number(entry.conversationKey);
-          if (!Number.isFinite(conversationKey) || conversationKey <= 0) continue;
+          if (!Number.isFinite(conversationKey) || conversationKey <= 0)
+            continue;
           const normalizedKey = Math.floor(conversationKey);
           if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
           if (seenGlobalKeys.has(normalizedKey)) continue;
           seenGlobalKeys.add(normalizedKey);
-          const lastActivity = Number(entry.lastActivityAt || entry.createdAt || 0);
+          const lastActivity = Number(
+            entry.lastActivityAt || entry.createdAt || 0,
+          );
           globalEntries.push({
             kind: "global",
             section: "open",
@@ -4453,7 +4045,8 @@ export function setupHandlers(
     }
 
     const activeHistorySection = isGlobalMode() ? "open" : "paper";
-    const allEntries = activeHistorySection === "paper" ? paperEntries : globalEntries;
+    const allEntries =
+      activeHistorySection === "paper" ? paperEntries : globalEntries;
     const visibleEntries = allEntries.filter(
       (entry) => !pendingHistoryDeletionKeys.has(entry.conversationKey),
     );
@@ -4506,10 +4099,7 @@ export function setupHandlers(
       ? createClaudeGlobalPortalItem(libraryID, normalizedConversationKey)
       : isCodexConversationSystem()
         ? createCodexGlobalPortalItem(libraryID, normalizedConversationKey)
-        : createGlobalPortalItem(
-          libraryID,
-          normalizedConversationKey,
-        );
+        : createGlobalPortalItem(libraryID, normalizedConversationKey);
     item = nextItem as any;
     syncConversationIdentity();
     void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
@@ -4527,7 +4117,10 @@ export function setupHandlers(
         buildCodexLibraryStateKey(libraryID),
         normalizedConversationKey,
       );
-      setLastUsedCodexGlobalConversationKey(libraryID, normalizedConversationKey);
+      setLastUsedCodexGlobalConversationKey(
+        libraryID,
+        normalizedConversationKey,
+      );
     }
     activeEditSession = null;
     inlineEditCleanup?.();
@@ -4564,8 +4157,11 @@ export function setupHandlers(
     const requestedConversationKey = Number(nextConversationKey || 0);
     if (isClaudeConversationSystem()) {
       let targetSummary =
-        Number.isFinite(requestedConversationKey) && requestedConversationKey > 0
-          ? await getClaudeConversationSummary(Math.floor(requestedConversationKey))
+        Number.isFinite(requestedConversationKey) &&
+        requestedConversationKey > 0
+          ? await getClaudeConversationSummary(
+              Math.floor(requestedConversationKey),
+            )
           : null;
       if (
         targetSummary &&
@@ -4599,7 +4195,10 @@ export function setupHandlers(
         }
       }
       if (!targetSummary) {
-        targetSummary = await ensureClaudePaperConversation(libraryID, paperItemID);
+        targetSummary = await ensureClaudePaperConversation(
+          libraryID,
+          paperItemID,
+        );
       }
       if (!targetSummary) return;
       const resolvedConversationKey = Math.floor(targetSummary.conversationKey);
@@ -4609,8 +4208,11 @@ export function setupHandlers(
       ) as any;
     } else if (isCodexConversationSystem()) {
       let targetSummary =
-        Number.isFinite(requestedConversationKey) && requestedConversationKey > 0
-          ? await getCodexConversationSummary(Math.floor(requestedConversationKey))
+        Number.isFinite(requestedConversationKey) &&
+        requestedConversationKey > 0
+          ? await getCodexConversationSummary(
+              Math.floor(requestedConversationKey),
+            )
           : null;
       if (
         targetSummary &&
@@ -4624,8 +4226,8 @@ export function setupHandlers(
           activeCodexPaperConversationByPaper.get(
             buildCodexPaperStateKey(libraryID, paperItemID),
           ) ||
-          getLastUsedCodexPaperConversationKey(libraryID, paperItemID) ||
-          0,
+            getLastUsedCodexPaperConversationKey(libraryID, paperItemID) ||
+            0,
         );
         if (
           Number.isFinite(rememberedConversationKey) &&
@@ -4644,7 +4246,10 @@ export function setupHandlers(
         }
       }
       if (!targetSummary) {
-        targetSummary = await ensureCodexPaperConversation(libraryID, paperItemID);
+        targetSummary = await ensureCodexPaperConversation(
+          libraryID,
+          paperItemID,
+        );
       }
       if (!targetSummary) return;
       const resolvedConversationKey = Math.floor(targetSummary.conversationKey);
@@ -4654,7 +4259,8 @@ export function setupHandlers(
       ) as any;
     } else {
       let targetSummary =
-        Number.isFinite(requestedConversationKey) && requestedConversationKey > 0
+        Number.isFinite(requestedConversationKey) &&
+        requestedConversationKey > 0
           ? await getPaperConversation(Math.floor(requestedConversationKey))
           : null;
       if (targetSummary && targetSummary.paperItemID !== paperItemID) {
@@ -4665,8 +4271,8 @@ export function setupHandlers(
           activePaperConversationByPaper.get(
             buildPaperStateKey(libraryID, paperItemID),
           ) ||
-          getLastUsedPaperConversationKey(libraryID, paperItemID) ||
-          0,
+            getLastUsedPaperConversationKey(libraryID, paperItemID) ||
+            0,
         );
         if (
           Number.isFinite(rememberedConversationKey) &&
@@ -4687,15 +4293,17 @@ export function setupHandlers(
         targetSummary = await ensurePaperV1Conversation(libraryID, paperItemID);
       }
       if (!targetSummary) return;
-      const normalizedConversationKey = Math.floor(targetSummary.conversationKey);
+      const normalizedConversationKey = Math.floor(
+        targetSummary.conversationKey,
+      );
       const nextItem =
         normalizedConversationKey === paperItemID
           ? paperItem
           : createPaperPortalItem(
-            paperItem,
-            normalizedConversationKey,
-            targetSummary.sessionVersion,
-          );
+              paperItem,
+              normalizedConversationKey,
+              targetSummary.sessionVersion,
+            );
       item = nextItem as any;
     }
     syncConversationIdentity();
@@ -4707,9 +4315,12 @@ export function setupHandlers(
         libraryID,
         paperItemID,
       });
-      void touchClaudeConversation(Math.floor(getConversationKey(item as Zotero.Item)), {
-        updatedAt: Date.now(),
-      });
+      void touchClaudeConversation(
+        Math.floor(getConversationKey(item as Zotero.Item)),
+        {
+          updatedAt: Date.now(),
+        },
+      );
     } else if (isCodexConversationSystem()) {
       const normalizedConversationKey = Math.floor(
         getConversationKey(item as Zotero.Item),
@@ -4762,7 +4373,8 @@ export function setupHandlers(
     deletedConversationKey: number,
   ): Promise<HistorySwitchTarget> => {
     if (isClaudeConversationSystem()) {
-      let summaries: Awaited<ReturnType<typeof listClaudePaperConversations>> = [];
+      let summaries: Awaited<ReturnType<typeof listClaudePaperConversations>> =
+        [];
       try {
         summaries = await listClaudePaperConversations(
           libraryID,
@@ -4783,11 +4395,19 @@ export function setupHandlers(
         if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
         return { kind: "paper", conversationKey: normalizedKey };
       }
-      let createdSummary: Awaited<ReturnType<typeof createClaudePaperConversation>> = null;
+      let createdSummary: Awaited<
+        ReturnType<typeof createClaudePaperConversation>
+      > = null;
       try {
-        createdSummary = await createClaudePaperConversation(libraryID, paperItemID);
+        createdSummary = await createClaudePaperConversation(
+          libraryID,
+          paperItemID,
+        );
       } catch (err) {
-        ztoolkit.log("LLM: Failed to create fallback Claude paper conversation", err);
+        ztoolkit.log(
+          "LLM: Failed to create fallback Claude paper conversation",
+          err,
+        );
       }
       if (createdSummary?.conversationKey) {
         return {
@@ -4795,7 +4415,10 @@ export function setupHandlers(
           conversationKey: Math.floor(createdSummary.conversationKey),
         };
       }
-      const ensured = await ensureClaudePaperConversation(libraryID, paperItemID);
+      const ensured = await ensureClaudePaperConversation(
+        libraryID,
+        paperItemID,
+      );
       if (ensured?.conversationKey) {
         const normalizedKey = Math.floor(ensured.conversationKey);
         if (
@@ -4868,7 +4491,9 @@ export function setupHandlers(
     deletedConversationKey: number,
   ): Promise<HistorySwitchTarget> => {
     if (isClaudeConversationSystem()) {
-      let remainingHistorical: Awaited<ReturnType<typeof listClaudeGlobalConversations>> = [];
+      let remainingHistorical: Awaited<
+        ReturnType<typeof listClaudeGlobalConversations>
+      > = [];
       try {
         remainingHistorical = await listClaudeGlobalConversations(
           libraryID,
@@ -4888,8 +4513,11 @@ export function setupHandlers(
         if (pendingHistoryDeletionKeys.has(normalizedKey)) continue;
         return { kind: "global", conversationKey: normalizedKey };
       }
-      const isEmptyDraft = async (conversationKey: number): Promise<boolean> => {
-        if (!Number.isFinite(conversationKey) || conversationKey <= 0) return false;
+      const isEmptyDraft = async (
+        conversationKey: number,
+      ): Promise<boolean> => {
+        if (!Number.isFinite(conversationKey) || conversationKey <= 0)
+          return false;
         const normalizedKey = Math.floor(conversationKey);
         if (normalizedKey === deletedConversationKey) return false;
         if (pendingHistoryDeletionKeys.has(normalizedKey)) return false;
@@ -4900,8 +4528,8 @@ export function setupHandlers(
         activeClaudeGlobalConversationByLibrary.get(
           buildClaudeLibraryStateKey(libraryID),
         ) ||
-        getLastUsedClaudeGlobalConversationKey(libraryID) ||
-        0,
+          getLastUsedClaudeGlobalConversationKey(libraryID) ||
+          0,
       );
       if (!(await isEmptyDraft(candidateDraftKey))) {
         candidateDraftKey = 0;
@@ -4922,10 +4550,14 @@ export function setupHandlers(
       let createdDraftKey = 0;
       try {
         createdDraftKey = Number(
-          (await createClaudeGlobalConversation(libraryID))?.conversationKey || 0,
+          (await createClaudeGlobalConversation(libraryID))?.conversationKey ||
+            0,
         );
       } catch (err) {
-        ztoolkit.log("LLM: Failed to create fallback Claude draft conversation", err);
+        ztoolkit.log(
+          "LLM: Failed to create fallback Claude draft conversation",
+          err,
+        );
       }
       if (createdDraftKey > 0) {
         return {
@@ -5047,19 +4679,22 @@ export function setupHandlers(
     const scope =
       summary?.scopeType === "paper" || summary?.scopeType === "open"
         ? {
-          scopeType: summary.scopeType as "paper" | "open",
-          scopeId: String(summary.scopeId || ""),
-          scopeLabel:
-            typeof summary.scopeLabel === "string" && summary.scopeLabel.trim()
-              ? summary.scopeLabel.trim()
-              : undefined,
-        }
+            scopeType: summary.scopeType as "paper" | "open",
+            scopeId: String(summary.scopeId || ""),
+            scopeLabel:
+              typeof summary.scopeLabel === "string" &&
+              summary.scopeLabel.trim()
+                ? summary.scopeLabel.trim()
+                : undefined,
+          }
         : buildClaudeScope({
-          libraryID: Math.floor(libraryID),
-          kind,
-          paperItemID:
-            kind === "paper" ? Number(summary?.paperItemID || 0) || undefined : undefined,
-        });
+            libraryID: Math.floor(libraryID),
+            kind,
+            paperItemID:
+              kind === "paper"
+                ? Number(summary?.paperItemID || 0) || undefined
+                : undefined,
+          });
     await invalidateClaudeConversationSession(getCoreAgentRuntime(), {
       conversationKey,
       scope,
@@ -5148,7 +4783,10 @@ export function setupHandlers(
         });
       } catch (err) {
         hasError = true;
-        ztoolkit.log("LLM: Failed to invalidate deleted Claude global conversation", err);
+        ztoolkit.log(
+          "LLM: Failed to invalidate deleted Claude global conversation",
+          err,
+        );
       }
     }
     try {
@@ -5277,7 +4915,10 @@ export function setupHandlers(
           );
         }
       } else {
-        const paperStateKey = buildPaperStateKey(pending.libraryID, paperItemID);
+        const paperStateKey = buildPaperStateKey(
+          pending.libraryID,
+          paperItemID,
+        );
         const rememberedConversationKey = Number(
           activePaperConversationByPaper.get(paperStateKey) || 0,
         );
@@ -5309,7 +4950,10 @@ export function setupHandlers(
         });
       } catch (err) {
         hasError = true;
-        ztoolkit.log("LLM: Failed to invalidate deleted Claude paper conversation", err);
+        ztoolkit.log(
+          "LLM: Failed to invalidate deleted Claude paper conversation",
+          err,
+        );
       }
     }
     try {
@@ -5634,7 +5278,11 @@ export function setupHandlers(
   ): Promise<void> => {
     if (isRequestPending(entry.conversationKey)) {
       if (status) {
-        setStatus(status, t("History is unavailable while generating"), "ready");
+        setStatus(
+          status,
+          t("History is unavailable while generating"),
+          "ready",
+        );
       }
       return;
     }
@@ -5652,7 +5300,8 @@ export function setupHandlers(
       if (status) setStatus(status, t("Conversation renamed"), "ready");
     } catch (err) {
       ztoolkit.log("LLM: Failed to rename conversation", err);
-      if (status) setStatus(status, t("Failed to rename conversation"), "error");
+      if (status)
+        setStatus(status, t("Failed to rename conversation"), "error");
     }
   };
 
@@ -5661,7 +5310,8 @@ export function setupHandlers(
     if (!entry.deletable) return;
     const libraryID = getCurrentLibraryID();
     if (!libraryID) {
-      if (status) setStatus(status, t("No active library for deletion"), "error");
+      if (status)
+        setStatus(status, t("No active library for deletion"), "error");
       return;
     }
 
@@ -5682,7 +5332,11 @@ export function setupHandlers(
         const paperItemID = Number(entry.paperItemID || 0);
         if (!paperItemID) {
           if (status) {
-            setStatus(status, t("Cannot resolve active paper session"), "error");
+            setStatus(
+              status,
+              t("Cannot resolve active paper session"),
+              "error",
+            );
           }
           return;
         }
@@ -5765,7 +5419,11 @@ export function setupHandlers(
     const libraryID = getCurrentLibraryID();
     if (!libraryID) {
       if (status) {
-        setStatus(status, t("No active library for global conversation"), "error");
+        setStatus(
+          status,
+          t("No active library for global conversation"),
+          "error",
+        );
       }
       return;
     }
@@ -5779,10 +5437,10 @@ export function setupHandlers(
         : forceFresh
           ? 0
           : Number(
-            activeClaudeGlobalConversationByLibrary.get(
-              buildClaudeLibraryStateKey(libraryID),
-            ) || 0,
-          );
+              activeClaudeGlobalConversationByLibrary.get(
+                buildClaudeLibraryStateKey(libraryID),
+              ) || 0,
+            );
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
@@ -5808,7 +5466,9 @@ export function setupHandlers(
             libraryID,
             GLOBAL_HISTORY_LIMIT,
           );
-          const latestEmpty = summaries.find((summary) => (summary.userTurnCount || 0) === 0);
+          const latestEmpty = summaries.find(
+            (summary) => (summary.userTurnCount || 0) === 0,
+          );
           const latestEmptyKey = Number(latestEmpty?.conversationKey || 0);
           if (Number.isFinite(latestEmptyKey) && latestEmptyKey > 0) {
             targetConversationKey = Math.floor(latestEmptyKey);
@@ -5824,15 +5484,20 @@ export function setupHandlers(
       if (targetConversationKey <= 0) {
         try {
           targetConversationKey = Number(
-            (await createClaudeGlobalConversation(libraryID))?.conversationKey || 0,
+            (await createClaudeGlobalConversation(libraryID))
+              ?.conversationKey || 0,
           );
         } catch (err) {
-          ztoolkit.log("LLM: Failed to create new Claude global conversation", err);
+          ztoolkit.log(
+            "LLM: Failed to create new Claude global conversation",
+            err,
+          );
         }
         reuseReason = null;
       }
       if (!targetConversationKey) {
-        if (status) setStatus(status, t("Failed to create conversation"), "error");
+        if (status)
+          setStatus(status, t("Failed to create conversation"), "error");
         return;
       }
       activeClaudeGlobalConversationByLibrary.set(
@@ -5845,10 +5510,10 @@ export function setupHandlers(
         : forceFresh
           ? 0
           : Number(
-            activeCodexGlobalConversationByLibrary.get(
-              buildCodexLibraryStateKey(libraryID),
-            ) || 0,
-          );
+              activeCodexGlobalConversationByLibrary.get(
+                buildCodexLibraryStateKey(libraryID),
+              ) || 0,
+            );
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
@@ -5871,7 +5536,9 @@ export function setupHandlers(
             libraryID,
             GLOBAL_HISTORY_LIMIT,
           );
-          const latestEmpty = summaries.find((summary) => (summary.userTurnCount || 0) === 0);
+          const latestEmpty = summaries.find(
+            (summary) => (summary.userTurnCount || 0) === 0,
+          );
           const latestEmptyKey = Number(latestEmpty?.conversationKey || 0);
           if (Number.isFinite(latestEmptyKey) && latestEmptyKey > 0) {
             targetConversationKey = Math.floor(latestEmptyKey);
@@ -5887,15 +5554,20 @@ export function setupHandlers(
       if (targetConversationKey <= 0) {
         try {
           targetConversationKey = Number(
-            (await createCodexGlobalConversation(libraryID))?.conversationKey || 0,
+            (await createCodexGlobalConversation(libraryID))?.conversationKey ||
+              0,
           );
         } catch (err) {
-          ztoolkit.log("LLM: Failed to create new Codex global conversation", err);
+          ztoolkit.log(
+            "LLM: Failed to create new Codex global conversation",
+            err,
+          );
         }
         reuseReason = null;
       }
       if (!targetConversationKey) {
-        if (status) setStatus(status, t("Failed to create conversation"), "error");
+        if (status)
+          setStatus(status, t("Failed to create conversation"), "error");
         return;
       }
       activeCodexGlobalConversationByLibrary.set(
@@ -5904,11 +5576,13 @@ export function setupHandlers(
       );
       setLastUsedCodexGlobalConversationKey(libraryID, targetConversationKey);
     } else {
-      const currentCandidate = isGlobalMode() && isUpstreamGlobalConversationKey(Number(getConversationKey(item) || 0))
-        ? getConversationKey(item)
-        : forceFresh
-          ? 0
-          : Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
+      const currentCandidate =
+        isGlobalMode() &&
+        isUpstreamGlobalConversationKey(Number(getConversationKey(item) || 0))
+          ? getConversationKey(item)
+          : forceFresh
+            ? 0
+            : Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
@@ -5954,7 +5628,8 @@ export function setupHandlers(
         reuseReason = null;
       }
       if (!targetConversationKey) {
-        if (status) setStatus(status, t("Failed to create conversation"), "error");
+        if (status)
+          setStatus(status, t("Failed to create conversation"), "error");
         return;
       }
       activeGlobalConversationByLibrary.set(libraryID, targetConversationKey);
@@ -6044,14 +5719,23 @@ export function setupHandlers(
         }
       }
       if (targetConversationKey <= 0) {
-        let createdSummary: Awaited<ReturnType<typeof createClaudePaperConversation>> = null;
+        let createdSummary: Awaited<
+          ReturnType<typeof createClaudePaperConversation>
+        > = null;
         try {
-          createdSummary = await createClaudePaperConversation(libraryID, paperItemID);
+          createdSummary = await createClaudePaperConversation(
+            libraryID,
+            paperItemID,
+          );
         } catch (err) {
-          ztoolkit.log("LLM: Failed to create new Claude paper conversation", err);
+          ztoolkit.log(
+            "LLM: Failed to create new Claude paper conversation",
+            err,
+          );
         }
         if (!createdSummary?.conversationKey) {
-          if (status) setStatus(status, t("Failed to create paper chat"), "error");
+          if (status)
+            setStatus(status, t("Failed to create paper chat"), "error");
           return;
         }
         targetConversationKey = createdSummary.conversationKey;
@@ -6099,14 +5783,23 @@ export function setupHandlers(
         }
       }
       if (targetConversationKey <= 0) {
-        let createdSummary: Awaited<ReturnType<typeof createCodexPaperConversation>> = null;
+        let createdSummary: Awaited<
+          ReturnType<typeof createCodexPaperConversation>
+        > = null;
         try {
-          createdSummary = await createCodexPaperConversation(libraryID, paperItemID);
+          createdSummary = await createCodexPaperConversation(
+            libraryID,
+            paperItemID,
+          );
         } catch (err) {
-          ztoolkit.log("LLM: Failed to create new Codex paper conversation", err);
+          ztoolkit.log(
+            "LLM: Failed to create new Codex paper conversation",
+            err,
+          );
         }
         if (!createdSummary?.conversationKey) {
-          if (status) setStatus(status, t("Failed to create paper chat"), "error");
+          if (status)
+            setStatus(status, t("Failed to create paper chat"), "error");
           return;
         }
         targetConversationKey = createdSummary.conversationKey;
@@ -6131,10 +5824,12 @@ export function setupHandlers(
 
       if (!forceFresh && targetConversationKey <= 0) {
         try {
-          const summaries = await listPaperConversations(libraryID, paperItemID, 50);
-          const emptyEntry = summaries.find(
-            (s) => s.userTurnCount === 0,
+          const summaries = await listPaperConversations(
+            libraryID,
+            paperItemID,
+            50,
           );
+          const emptyEntry = summaries.find((s) => s.userTurnCount === 0);
           if (emptyEntry?.conversationKey) {
             targetConversationKey = emptyEntry.conversationKey;
             reuseReason = "existing-draft";
@@ -6148,15 +5843,20 @@ export function setupHandlers(
       }
 
       if (targetConversationKey <= 0) {
-        let createdSummary: Awaited<ReturnType<typeof createPaperConversation>> =
-          null;
+        let createdSummary: Awaited<
+          ReturnType<typeof createPaperConversation>
+        > = null;
         try {
-          createdSummary = await createPaperConversation(libraryID, paperItemID);
+          createdSummary = await createPaperConversation(
+            libraryID,
+            paperItemID,
+          );
         } catch (err) {
           ztoolkit.log("LLM: Failed to create new paper conversation", err);
         }
         if (!createdSummary?.conversationKey) {
-          if (status) setStatus(status, t("Failed to create paper chat"), "error");
+          if (status)
+            setStatus(status, t("Failed to create paper chat"), "error");
           return;
         }
         targetConversationKey = createdSummary.conversationKey;
@@ -6176,7 +5876,9 @@ export function setupHandlers(
     if (status) {
       setStatus(
         status,
-        reuseReason ? t("Reused existing new chat") : t("Started new paper chat"),
+        reuseReason
+          ? t("Reused existing new chat")
+          : t("Started new paper chat"),
         "ready",
       );
     }
@@ -6230,7 +5932,9 @@ export function setupHandlers(
 
       // [webchat] In webchat mode, "+" creates a new ChatGPT conversation
       const { selectedEntry: _debugEntry } = getSelectedModelInfo();
-      ztoolkit.log(`[webchat] + clicked: authMode=${_debugEntry?.authMode}, entryId=${_debugEntry?.entryId}, isWebChat=${_debugEntry?.authMode === "webchat"}`);
+      ztoolkit.log(
+        `[webchat] + clicked: authMode=${_debugEntry?.authMode}, entryId=${_debugEntry?.entryId}, isWebChat=${_debugEntry?.authMode === "webchat"}`,
+      );
       if (isWebChatMode()) {
         // Clear local chat panel and mark the relay as needing a new chat.
         // The next send carries an explicit force_new_chat intent to the relay,
@@ -6256,7 +5960,8 @@ export function setupHandlers(
         const key = getConversationKey(item);
         chatHistory.set(key, []);
         refreshChatPreservingScroll();
-        if (status) setStatus(status, t("New chat — send a message to start"), "ready");
+        if (status)
+          setStatus(status, t("New chat — send a message to start"), "ready");
         return;
       }
 
@@ -6277,7 +5982,9 @@ export function setupHandlers(
       e.stopPropagation();
       if (isNoteSession()) return;
       closeHistoryNewMenu();
-      void runExplicitNewChatAction(() => createAndSwitchGlobalConversation(true));
+      void runExplicitNewChatAction(() =>
+        createAndSwitchGlobalConversation(true),
+      );
     });
   }
 
@@ -6288,7 +5995,9 @@ export function setupHandlers(
       if (isNoteSession()) return;
       if (historyNewPaperBtn.disabled) return;
       closeHistoryNewMenu();
-      void runExplicitNewChatAction(() => createAndSwitchPaperConversation(true));
+      void runExplicitNewChatAction(() =>
+        createAndSwitchPaperConversation(true),
+      );
     });
   }
 
@@ -6317,21 +6026,27 @@ export function setupHandlers(
       const libraryID = getCurrentLibraryID();
       const targetGlobalKey = isClaudeConversationSystem()
         ? resolveRememberedClaudeConversationKey({
-          libraryID,
-          kind: "global",
-        }) || getLastUsedClaudeGlobalConversationKey(libraryID) || 0
+            libraryID,
+            kind: "global",
+          }) ||
+          getLastUsedClaudeGlobalConversationKey(libraryID) ||
+          0
         : isCodexConversationSystem()
           ? activeCodexGlobalConversationByLibrary.get(
-            buildCodexLibraryStateKey(libraryID),
-          ) ||
-          getLastUsedCodexGlobalConversationKey(libraryID) ||
-          0
+              buildCodexLibraryStateKey(libraryID),
+            ) ||
+            getLastUsedCodexGlobalConversationKey(libraryID) ||
+            0
           : (() => {
-            const lockedKey = getLockedGlobalConversationKey(libraryID);
-            if (lockedKey !== null) return lockedKey;
-            const activeKey = Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
-            return isUpstreamGlobalConversationKey(activeKey) ? Math.floor(activeKey) : 0;
-          })();
+              const lockedKey = getLockedGlobalConversationKey(libraryID);
+              if (lockedKey !== null) return lockedKey;
+              const activeKey = Number(
+                activeGlobalConversationByLibrary.get(libraryID) || 0,
+              );
+              return isUpstreamGlobalConversationKey(activeKey)
+                ? Math.floor(activeKey)
+                : 0;
+            })();
       if (targetGlobalKey > 0) {
         void switchGlobalConversation(targetGlobalKey);
       } else {
@@ -6370,7 +6085,10 @@ export function setupHandlers(
 
         // [webchat] Show ChatGPT conversation history
         if (isWebChatMode()) {
-          if (isHistoryMenuOpen()) { closeHistoryMenu(); return; }
+          if (isHistoryMenuOpen()) {
+            closeHistoryMenu();
+            return;
+          }
           if (!historyMenu) return;
           await renderWebChatHistoryMenu();
           positionMenuBelowButton(body, historyMenu, historyToggleBtn);
@@ -6393,7 +6111,6 @@ export function setupHandlers(
         positionMenuBelowButton(body, historyMenu, historyToggleBtn);
         historyMenu.style.display = "flex";
         historyToggleBtn.setAttribute("aria-expanded", "true");
-
       })();
     });
   }
@@ -6623,497 +6340,6 @@ export function setupHandlers(
     };
   };
 
-  type ActionLabelMode = "icon" | "full";
-  type ModelLabelMode = "icon" | "full-single" | "full-wrap2";
-  type ActionLayoutMode = "icon" | "half" | "full";
-  type ActionRevealState = {
-    send: ActionLabelMode;
-    reasoning: ActionLabelMode;
-    model: ModelLabelMode;
-    screenshot: ActionLabelMode;
-    selectText: ActionLabelMode;
-  };
-
-  const setActionButtonLabel = (
-    button: HTMLButtonElement | null,
-    expandedLabel: string,
-    compactLabel: string,
-    mode: ActionLabelMode,
-  ) => {
-    if (!button) return;
-    const nextLabel = mode === "icon" ? compactLabel : expandedLabel;
-    if (button.textContent !== nextLabel) {
-      button.textContent = nextLabel;
-    }
-    button.classList.toggle("llm-action-icon-only", mode === "icon");
-  };
-
-  const setSendButtonLabel = (mode: ActionLabelMode) => {
-    setActionButtonLabel(sendBtn, "Send", "↑", mode);
-    sendBtn.title = "Send";
-    setActionButtonLabel(cancelBtn, "Cancel", "X", mode);
-    if (cancelBtn) {
-      cancelBtn.title = "Cancel";
-    }
-  };
-
-  const setPanelActionLayoutMode = (mode: ActionLayoutMode) => {
-    if (panelRoot.dataset.llmActionLayoutMode !== mode) {
-      panelRoot.dataset.llmActionLayoutMode = mode;
-    }
-  };
-
-  let layoutRetryScheduled = false;
-  const applyResponsiveActionButtonsLayout = () => {
-    if (!modelBtn || !actionsLeft) return;
-    const modelLabel = modelBtn.dataset.modelLabel || "default";
-    const modelHint = modelBtn.dataset.modelHint || "";
-    const modelCanUseTwoLineWrap =
-      [...(modelLabel || "").trim()].length >
-      ACTION_LAYOUT_MODEL_WRAP_MIN_CHARS;
-    const reasoningLabel =
-      reasoningBtn?.dataset.reasoningLabel ||
-      reasoningBtn?.textContent ||
-      "off";
-    const reasoningHint = reasoningBtn?.dataset.reasoningHint || "";
-
-    const immediateAvailableWidth = (() => {
-      const rowWidth = actionsRow?.clientWidth || 0;
-      if (rowWidth > 0) return rowWidth;
-      const leftWidth = actionsLeft.clientWidth || 0;
-      if (leftWidth > 0) return leftWidth;
-      return panelRoot?.clientWidth || 0;
-    })();
-    if (immediateAvailableWidth <= 0) {
-      const view = body.ownerDocument?.defaultView;
-      if (view && !layoutRetryScheduled) {
-        layoutRetryScheduled = true;
-        view.requestAnimationFrame(() => {
-          layoutRetryScheduled = false;
-          applyResponsiveActionButtonsLayout();
-        });
-      }
-      return;
-    }
-
-    const getComputedSizePx = (
-      style: CSSStyleDeclaration | null | undefined,
-      property: string,
-      fallback = 0,
-    ) => {
-      if (!style) return fallback;
-      const value = Number.parseFloat(style.getPropertyValue(property));
-      return Number.isFinite(value) ? value : fallback;
-    };
-
-    const textMeasureContext = (() => {
-      const canvas = body.ownerDocument?.createElement(
-        "canvas",
-      ) as HTMLCanvasElement | null;
-      return (
-        (canvas?.getContext("2d") as CanvasRenderingContext2D | null) || null
-      );
-    })();
-
-    const measureLabelTextWidth = (
-      button: HTMLButtonElement | null,
-      label: string,
-    ) => {
-      if (!button || !label) return 0;
-      const view = body.ownerDocument?.defaultView;
-      const style = view?.getComputedStyle(button);
-      if (textMeasureContext && style) {
-        const font =
-          style.font && style.font !== ""
-            ? style.font
-            : `${style.fontWeight || "400"} ${style.fontSize || "12px"} ${style.fontFamily || "sans-serif"}`;
-        textMeasureContext.font = font;
-        return textMeasureContext.measureText(label).width;
-      }
-      return label.length * 8;
-    };
-
-    const getElementGapPx = (element: HTMLElement | null) => {
-      if (!element) return 0;
-      const view = body.ownerDocument?.defaultView;
-      const style = view?.getComputedStyle(element);
-      const columnGap = getComputedSizePx(style, "column-gap", NaN);
-      if (Number.isFinite(columnGap)) return columnGap;
-      return getComputedSizePx(style, "gap", 0);
-    };
-
-    const getButtonNaturalWidth = (
-      button: HTMLButtonElement | null,
-      label: string,
-      maxLines = 1,
-    ) => {
-      if (!button) return 0;
-      const view = body.ownerDocument?.defaultView;
-      const style = view?.getComputedStyle(button);
-      const textWidth = measureLabelTextWidth(button, label);
-      const normalizedMaxLines = Math.max(1, Math.floor(maxLines));
-      const wrappedTextWidth =
-        normalizedMaxLines > 1
-          ? (() => {
-            const segments = label
-              .split(/[\s._-]+/g)
-              .map((segment) => segment.trim())
-              .filter(Boolean);
-            const longestSegmentWidth = segments.reduce((max, segment) => {
-              return Math.max(max, measureLabelTextWidth(button, segment));
-            }, 0);
-            return Math.max(
-              textWidth / normalizedMaxLines,
-              longestSegmentWidth,
-            );
-          })()
-          : textWidth;
-      const paddingWidth =
-        getComputedSizePx(style, "padding-left") +
-        getComputedSizePx(style, "padding-right");
-      const borderWidth =
-        getComputedSizePx(style, "border-left-width") +
-        getComputedSizePx(style, "border-right-width");
-      const chevronAllowance =
-        button === modelBtn || button === reasoningBtn ? 16 : 0;
-      return Math.ceil(
-        wrappedTextWidth + paddingWidth + borderWidth + chevronAllowance,
-      );
-    };
-
-    const getSlotWidthBounds = (slot: HTMLElement | null) => {
-      const view = body.ownerDocument?.defaultView;
-      const style = slot ? view?.getComputedStyle(slot) : null;
-      const minWidth = getComputedSizePx(style, "min-width", 0);
-      const maxRaw = getComputedSizePx(
-        style,
-        "max-width",
-        Number.POSITIVE_INFINITY,
-      );
-      const maxWidth = Number.isFinite(maxRaw)
-        ? maxRaw
-        : Number.POSITIVE_INFINITY;
-      return { minWidth, maxWidth };
-    };
-
-    const getFullSlotRequiredWidth = (
-      slot: HTMLElement | null,
-      button: HTMLButtonElement | null,
-      label: string,
-      maxLines = 1,
-    ) => {
-      if (!button) return 0;
-      const naturalWidth = getButtonNaturalWidth(button, label, maxLines);
-      if (!slot) return naturalWidth;
-      const { minWidth, maxWidth } = getSlotWidthBounds(slot);
-      return Math.min(maxWidth, Math.max(minWidth, naturalWidth));
-    };
-
-    const getRenderedWidthPx = (
-      element: HTMLElement | null,
-      fallback: number,
-    ) => {
-      const width = element?.getBoundingClientRect?.().width || 0;
-      return width > 0 ? Math.ceil(width) : fallback;
-    };
-
-    const getAvailableRowWidth = () => {
-      const hostWidth = Math.ceil(
-        (body as HTMLElement | null)?.getBoundingClientRect?.().width || 0,
-      );
-      const rowWidth = actionsRow?.clientWidth || 0;
-      if (rowWidth > 0)
-        return hostWidth > 0 ? Math.min(rowWidth, hostWidth) : rowWidth;
-      const panelWidth = panelRoot?.clientWidth || 0;
-      if (panelWidth > 0)
-        return hostWidth > 0 ? Math.min(panelWidth, hostWidth) : panelWidth;
-      const leftWidth = actionsLeft.clientWidth || 0;
-      if (leftWidth > 0)
-        return hostWidth > 0 ? Math.min(leftWidth, hostWidth) : leftWidth;
-      return hostWidth;
-    };
-
-    const uploadSlot = uploadBtn?.parentElement as HTMLElement | null;
-    const selectTextSlot = selectTextBtn?.parentElement as HTMLElement | null;
-    const screenshotSlot = screenshotBtn?.parentElement as HTMLElement | null;
-    const sendSlot = sendBtn?.parentElement as HTMLElement | null;
-
-    const getModelWidth = (mode: ModelLabelMode) => {
-      if (!modelBtn) return 0;
-      if (mode === "icon") return ACTION_LAYOUT_DROPDOWN_ICON_WIDTH_PX;
-      const maxLines =
-        mode === "full-wrap2" ? ACTION_LAYOUT_MODEL_FULL_MAX_LINES : 1;
-      return getFullSlotRequiredWidth(
-        modelSlot,
-        modelBtn,
-        modelLabel,
-        maxLines,
-      );
-    };
-
-    const getReasoningWidth = (mode: ActionLabelMode) => {
-      if (!reasoningBtn) return 0;
-      return mode === "full"
-        ? getFullSlotRequiredWidth(reasoningSlot, reasoningBtn, reasoningLabel)
-        : ACTION_LAYOUT_DROPDOWN_ICON_WIDTH_PX;
-    };
-
-    const getContextButtonWidth = (
-      slot: HTMLElement | null,
-      button: HTMLButtonElement | null,
-      expandedLabel: string,
-      mode: ActionLabelMode,
-    ) => {
-      if (!button) return 0;
-      return mode === "full"
-        ? getFullSlotRequiredWidth(slot, button, expandedLabel)
-        : ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX;
-    };
-
-    const getSendWidth = (mode: ActionLabelMode) => {
-      if (!sendBtn) return 0;
-      if (mode === "icon") {
-        return ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX;
-      }
-      const sendWidth = getFullSlotRequiredWidth(sendSlot, sendBtn, "Send");
-      const cancelWidth = getFullSlotRequiredWidth(
-        sendSlot,
-        cancelBtn,
-        "Cancel",
-      );
-      return Math.max(sendWidth, cancelWidth, 72);
-    };
-
-    const getRequiredWidth = (state: ActionRevealState) => {
-      const leftSlotWidths = [
-        uploadBtn
-          ? getRenderedWidthPx(
-            uploadSlot || uploadBtn,
-            Math.max(
-              uploadBtn.scrollWidth || 0,
-              ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
-            ),
-          )
-          : 0,
-        getContextButtonWidth(
-          selectTextSlot,
-          selectTextBtn,
-          getSelectTextExpandedLabel(),
-          state.selectText,
-        ),
-        getContextButtonWidth(
-          screenshotSlot,
-          screenshotBtn,
-          getScreenshotExpandedLabel(),
-          state.screenshot,
-        ),
-        getModelWidth(state.model),
-        getReasoningWidth(state.reasoning),
-      ].filter((width) => width > 0);
-      const leftGap = getElementGapPx(actionsLeft);
-      const leftRequiredWidth =
-        leftSlotWidths.reduce((sum, width) => sum + width, 0) +
-        Math.max(0, leftSlotWidths.length - 1) * leftGap;
-      const rightRequiredWidth = getSendWidth(state.send);
-      const rowGap = getElementGapPx(actionsRow);
-      return leftRequiredWidth + rightRequiredWidth + rowGap;
-    };
-
-    const doesStateFit = (state: ActionRevealState) =>
-      getAvailableRowWidth() + 1 >= getRequiredWidth(state);
-
-    const getPanelLayoutMode = (state: ActionRevealState): ActionLayoutMode => {
-      if (state.selectText === "full") {
-        return "full";
-      }
-      if (
-        state.screenshot === "full" ||
-        state.model !== "icon" ||
-        state.reasoning === "full"
-      ) {
-        return "half";
-      }
-      return "icon";
-    };
-
-    const applyMeasurementBaseline = () => {
-      // Normalize controls into a stable full-text style before measuring.
-      // This keeps width estimation independent from the currently rendered
-      // icon/full state and prevents flip-flopping around thresholds.
-      setActionButtonLabel(
-        uploadBtn,
-        UPLOAD_FILE_EXPANDED_LABEL,
-        UPLOAD_FILE_COMPACT_LABEL,
-        "icon",
-      );
-      setActionButtonLabel(
-        selectTextBtn,
-        getSelectTextExpandedLabel(),
-        SELECT_TEXT_COMPACT_LABEL,
-        "full",
-      );
-      setActionButtonLabel(
-        screenshotBtn,
-        getScreenshotExpandedLabel(),
-        SCREENSHOT_COMPACT_LABEL,
-        "full",
-      );
-      setSendButtonLabel("full");
-
-      modelBtn.classList.toggle("llm-model-btn-collapsed", false);
-      modelSlot?.classList.toggle("llm-model-dropdown-collapsed", false);
-      modelBtn.classList.toggle("llm-model-btn-wrap-2line", false);
-      modelBtn.textContent = modelLabel;
-      modelBtn.title = modelHint;
-
-      if (reasoningBtn) {
-        reasoningBtn.classList.toggle("llm-reasoning-btn-collapsed", false);
-        reasoningSlot?.classList.toggle(
-          "llm-reasoning-dropdown-collapsed",
-          false,
-        );
-        reasoningBtn.textContent = reasoningLabel;
-        reasoningBtn.title = reasoningHint;
-      }
-    };
-
-    const applyState = (state: ActionRevealState) => {
-      setActionButtonLabel(
-        uploadBtn,
-        UPLOAD_FILE_EXPANDED_LABEL,
-        UPLOAD_FILE_COMPACT_LABEL,
-        "icon",
-      );
-      setActionButtonLabel(
-        selectTextBtn,
-        getSelectTextExpandedLabel(),
-        SELECT_TEXT_COMPACT_LABEL,
-        state.selectText,
-      );
-      setActionButtonLabel(
-        screenshotBtn,
-        getScreenshotExpandedLabel(),
-        SCREENSHOT_COMPACT_LABEL,
-        state.screenshot,
-      );
-      setSendButtonLabel(state.send);
-
-      const modelCollapsed = state.model === "icon";
-      modelBtn.classList.toggle("llm-model-btn-collapsed", modelCollapsed);
-      modelSlot?.classList.toggle(
-        "llm-model-dropdown-collapsed",
-        modelCollapsed,
-      );
-      modelBtn.classList.toggle(
-        "llm-model-btn-wrap-2line",
-        state.model === "full-wrap2",
-      );
-      if (modelCollapsed) {
-        modelBtn.textContent = "";
-        modelBtn.title = modelHint ? `${modelLabel}\n${modelHint}` : modelLabel;
-      } else {
-        modelBtn.textContent = modelLabel;
-        modelBtn.title = modelHint;
-      }
-
-      if (reasoningBtn) {
-        const reasoningCollapsed = state.reasoning === "icon";
-        reasoningBtn.classList.toggle(
-          "llm-reasoning-btn-collapsed",
-          reasoningCollapsed,
-        );
-        reasoningSlot?.classList.toggle(
-          "llm-reasoning-dropdown-collapsed",
-          reasoningCollapsed,
-        );
-        if (!reasoningCollapsed) {
-          reasoningBtn.textContent = reasoningLabel;
-          reasoningBtn.title = reasoningHint;
-        } else {
-          reasoningBtn.textContent = REASONING_COMPACT_LABEL;
-          reasoningBtn.title = reasoningHint
-            ? `${reasoningLabel}\n${reasoningHint}`
-            : reasoningLabel;
-        }
-      }
-
-      setPanelActionLayoutMode(getPanelLayoutMode(state));
-    };
-
-    const widestState: ActionRevealState = {
-      send: "full",
-      reasoning: "full",
-      model: "full-single",
-      screenshot: "full",
-      selectText: "full",
-    };
-    const screenshotState: ActionRevealState = {
-      send: "full",
-      reasoning: "full",
-      model: "full-single",
-      screenshot: "full",
-      selectText: "icon",
-    };
-    const modelState: ActionRevealState = {
-      send: "full",
-      reasoning: "full",
-      model: "full-single",
-      screenshot: "icon",
-      selectText: "icon",
-    };
-    const reasoningState: ActionRevealState = {
-      send: "full",
-      reasoning: "full",
-      model: "icon",
-      screenshot: "icon",
-      selectText: "icon",
-    };
-    const sendState: ActionRevealState = {
-      send: "full",
-      reasoning: "icon",
-      model: "icon",
-      screenshot: "icon",
-      selectText: "icon",
-    };
-    const iconOnlyState: ActionRevealState = {
-      send: "icon",
-      reasoning: "icon",
-      model: "icon",
-      screenshot: "icon",
-      selectText: "icon",
-    };
-
-    // Reveal order as width grows:
-    // send/cancel -> reasoning -> model -> screenshots -> add text.
-    const candidateStates: ActionRevealState[] = [
-      widestState,
-      screenshotState,
-      modelState,
-      reasoningState,
-      sendState,
-      iconOnlyState,
-    ];
-
-    if (modelCanUseTwoLineWrap) {
-      candidateStates.splice(
-        1,
-        0,
-        { ...widestState, model: "full-wrap2" },
-        { ...screenshotState, model: "full-wrap2" },
-        { ...modelState, model: "full-wrap2" },
-      );
-    }
-
-    applyMeasurementBaseline();
-    for (const state of candidateStates) {
-      if (!doesStateFit(state)) continue;
-      applyState(state);
-      return;
-    }
-
-    applyState(iconOnlyState);
-  };
-
   const updateModelButton = () => {
     if (!item || !modelBtn) return;
     withScrollGuard(chatBox, conversationKey, () => {
@@ -7186,7 +6412,11 @@ export function setupHandlers(
     const { groupedChoices, selectedEntryId } = getSelectedModelInfo();
 
     modelMenu.innerHTML = "";
-    appendDropdownInstruction(modelMenu, t("Select model"), "llm-model-menu-hint");
+    appendDropdownInstruction(
+      modelMenu,
+      t("Select model"),
+      "llm-model-menu-hint",
+    );
     if (!groupedChoices.length) {
       appendModelMenuEmptyState(modelMenu, t("No models configured yet."));
       return;
@@ -7217,7 +6447,11 @@ export function setupHandlers(
             clearClaudeReasoningDisplayOverride();
             setClaudeRuntimeModelPref(entry.model);
             setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
-            setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+            setFloatingMenuOpen(
+              reasoningMenu,
+              REASONING_MENU_OPEN_CLASS,
+              false,
+            );
             updateModelButton();
             updateReasoningButton();
             return;
@@ -7225,7 +6459,11 @@ export function setupHandlers(
           if (isCodexConversationSystem()) {
             setCodexRuntimeModelPref(entry.model);
             setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
-            setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+            setFloatingMenuOpen(
+              reasoningMenu,
+              REASONING_MENU_OPEN_CLASS,
+              false,
+            );
             updateModelButton();
             updateReasoningButton();
             return;
@@ -7245,7 +6483,10 @@ export function setupHandlers(
           // non-qwen-long Qwen models).  Downgrade to text/mineru so the user
           // doesn't end up with a broken send.
           const newPdfSupport = getModelPdfSupport(
-            entry.model, entry.providerProtocol, entry.authMode, entry.apiBase,
+            entry.model,
+            entry.providerProtocol,
+            entry.authMode,
+            entry.apiBase,
           );
           const shouldDowngrade =
             newPdfSupport === "none" ||
@@ -7262,7 +6503,9 @@ export function setupHandlers(
               if (resolvePaperContentSourceMode(item.id, pc) === "pdf") {
                 const mineruAvailable = isPaperContextMineru(pc);
                 setPaperContentSourceOverride(
-                  item.id, pc, mineruAvailable ? "mineru" : "text",
+                  item.id,
+                  pc,
+                  mineruAvailable ? "mineru" : "text",
                 );
                 didDowngrade = true;
               }
@@ -7272,7 +6515,9 @@ export function setupHandlers(
               if (status) {
                 setStatus(
                   status,
-                  t("PDF mode is not supported by this model. Switched to Text/MD mode."),
+                  t(
+                    "PDF mode is not supported by this model. Switched to Text/MD mode.",
+                  ),
                   "warning",
                 );
               }
@@ -7291,11 +6536,15 @@ export function setupHandlers(
             // Set active target BEFORE applyWebChatModeUI so the hook's
             // renderWebChatSidebar() reads the correct target for filtering.
             try {
-              const { getWebChatTargetByModelName: getEntryTarget } = require("../../webchat/types") as typeof import("../../webchat/types");
-              const { relaySetActiveTarget: setTarget } = require("../../webchat/relayServer") as typeof import("../../webchat/relayServer");
+              const { getWebChatTargetByModelName: getEntryTarget } =
+                require("../../webchat/types") as typeof import("../../webchat/types");
+              const { relaySetActiveTarget: setTarget } =
+                require("../../webchat/relayServer") as typeof import("../../webchat/relayServer");
               const earlyTargetEntry = getEntryTarget(entry.model || "");
               if (earlyTargetEntry?.id) setTarget(earlyTargetEntry.id);
-            } catch { /* modules not yet loaded — async path below will handle it */ }
+            } catch {
+              /* modules not yet loaded — async path below will handle it */
+            }
             // Apply webchat UI immediately so model button is disabled during preload
             applyWebChatModeUI();
             void (async () => {
@@ -7306,20 +6555,33 @@ export function setupHandlers(
               }
 
               // Show preloading screen to verify connectivity before enabling webchat
-              const chatShellEl = body.querySelector(".llm-chat-shell") as HTMLElement | null;
+              const chatShellEl = body.querySelector(
+                ".llm-chat-shell",
+              ) as HTMLElement | null;
               if (chatShellEl) {
                 try {
                   abortWebChatPreload();
                   const token = { aborted: false };
                   webchatPreloadAbort = token;
-                  const { showWebChatPreloadScreen } = await import("../../webchat/preloadScreen");
-                  const { getWebChatTargetByModelName } = await import("../../webchat/types");
-                  const { relaySetActiveTarget } = await import("../../webchat/relayServer");
+                  const { showWebChatPreloadScreen } =
+                    await import("../../webchat/preloadScreen");
+                  const { getWebChatTargetByModelName } =
+                    await import("../../webchat/types");
+                  const { relaySetActiveTarget } =
+                    await import("../../webchat/relayServer");
                   const webchatProfile = getSelectedProfile();
-                  const webchatTargetEntry = getWebChatTargetByModelName(webchatProfile?.model || "");
+                  const webchatTargetEntry = getWebChatTargetByModelName(
+                    webchatProfile?.model || "",
+                  );
                   // Tell the relay (and thereby the extension) which site to use
-                  if (webchatTargetEntry?.id) relaySetActiveTarget(webchatTargetEntry.id);
-                  await showWebChatPreloadScreen(chatShellEl, token, webchatTargetEntry?.label, webchatTargetEntry?.modelName);
+                  if (webchatTargetEntry?.id)
+                    relaySetActiveTarget(webchatTargetEntry.id);
+                  await showWebChatPreloadScreen(
+                    chatShellEl,
+                    token,
+                    webchatTargetEntry?.label,
+                    webchatTargetEntry?.modelName,
+                  );
                 } catch {
                   // Preload failed or was aborted — still apply UI (dot will show status)
                 } finally {
@@ -7361,8 +6623,10 @@ export function setupHandlers(
       latestPair?.assistantMessage?.modelProviderLabel?.trim() || "";
     const matchingLegacyEntries = latestAssistantModelName
       ? groupedChoices.flatMap((group) =>
-        group.entries.filter((entry) => entry.model === latestAssistantModelName),
-      )
+          group.entries.filter(
+            (entry) => entry.model === latestAssistantModelName,
+          ),
+        )
       : [];
     retryModelMenu.innerHTML = "";
     if (!groupedChoices.length) {
@@ -7376,9 +6640,9 @@ export function setupHandlers(
           ? entry.entryId === latestAssistantModelEntryId
           : latestAssistantModelName
             ? entry.model === latestAssistantModelName &&
-            (latestAssistantProviderLabel
-              ? entry.providerLabel === latestAssistantProviderLabel
-              : matchingLegacyEntries.length === 1)
+              (latestAssistantProviderLabel
+                ? entry.providerLabel === latestAssistantProviderLabel
+                : matchingLegacyEntries.length === 1)
             : false;
         const option = createElement(
           body.ownerDocument as Document,
@@ -7477,9 +6741,7 @@ export function setupHandlers(
     return getClaudeReasoningModePref();
   };
 
-  const getClaudeReasoningDisplayLabel = (
-    mode: ClaudeReasoningDisplayMode,
-  ) => {
+  const getClaudeReasoningDisplayLabel = (mode: ClaudeReasoningDisplayMode) => {
     if (mode === "auto") return "Auto";
     if (mode === "xhigh") return "XHigh";
     if (mode === "max") return "Max";
@@ -7595,7 +6857,9 @@ export function setupHandlers(
     let selectedLevel =
       cachedLevel ||
       getLastUsedReasoningLevelForProvider(provider) ||
-      (provider === "anthropic" ? "none" : getLastUsedReasoningLevel() || "none");
+      (provider === "anthropic"
+        ? "none"
+        : getLastUsedReasoningLevel() || "none");
     if (provider === "anthropic") {
       if (!enabledLevels.includes(selectedLevel as LLMReasoningLevel)) {
         selectedLevel = "none";
@@ -7621,10 +6885,18 @@ export function setupHandlers(
     label: string;
     chatgptMode: string | undefined;
   }> = [
-      { level: "none", label: "Instant", chatgptMode: "instant" },
-      { level: "medium", label: "Standard Thinking", chatgptMode: "thinking_standard" },
-      { level: "high", label: "Extended Thinking", chatgptMode: "thinking_extended" },
-    ];
+    { level: "none", label: "Instant", chatgptMode: "instant" },
+    {
+      level: "medium",
+      label: "Standard Thinking",
+      chatgptMode: "thinking_standard",
+    },
+    {
+      level: "high",
+      label: "Extended Thinking",
+      chatgptMode: "thinking_extended",
+    },
+  ];
 
   const isWebChatMode = () => {
     const { selectedEntry } = getSelectedModelInfo();
@@ -7699,7 +6971,8 @@ export function setupHandlers(
       clearNextWebChatNewChatIntent();
       resetWebChatPdfUploadedForCurrentConversation();
     };
-    hooks.getCurrentModelName = () => getSelectedModelInfo().currentModel || null;
+    hooks.getCurrentModelName = () =>
+      getSelectedModelInfo().currentModel || null;
   }
 
   const startWebChatConnectionCheck = (dot: HTMLElement) => {
@@ -7745,27 +7018,27 @@ export function setupHandlers(
       const available = enabledLevels.length > 0;
       const resolvedReasoningLabel = isClaudeConversationSystem()
         ? (() => {
-          return getClaudeReasoningDisplayLabel(
-            getClaudeReasoningDisplayMode(),
-          );
-        })()
+            return getClaudeReasoningDisplayLabel(
+              getClaudeReasoningDisplayMode(),
+            );
+          })()
         : isCodexConversationSystem()
           ? (() => {
-            const mode = getCodexReasoningModePref();
-            if (mode === "auto") return "Auto";
-            if (mode === "xhigh") return "XHigh";
-            return mode.charAt(0).toUpperCase() + mode.slice(1);
-          })()
+              const mode = getCodexReasoningModePref();
+              if (mode === "auto") return "Auto";
+              if (mode === "xhigh") return "XHigh";
+              return mode.charAt(0).toUpperCase() + mode.slice(1);
+            })()
           : selectedLevel === "none"
             ? "off"
-          : available
-            ? getReasoningLevelDisplayLabel(
-              selectedLevel as LLMReasoningLevel,
-              provider,
-              currentModel,
-              options,
-            )
-            : "off";
+            : available
+              ? getReasoningLevelDisplayLabel(
+                  selectedLevel as LLMReasoningLevel,
+                  provider,
+                  currentModel,
+                  options,
+                )
+              : "off";
       const active =
         available && isReasoningDisplayLabelActive(resolvedReasoningLabel);
       const reasoningLabel = resolvedReasoningLabel;
@@ -7818,7 +7091,9 @@ export function setupHandlers(
           if (!item) return;
           if (isClaudeConversationSystem()) {
             clearClaudeReasoningDisplayOverride();
-            setClaudeReasoningModePref(mode.level === "none" ? "auto" : (mode.level as any));
+            setClaudeReasoningModePref(
+              mode.level === "none" ? "auto" : (mode.level as any),
+            );
           } else {
             selectedReasoningCache.clear();
             selectedReasoningCache.set(item.id, mode.level as any);
@@ -7845,13 +7120,13 @@ export function setupHandlers(
         value: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
         label: string;
       }> = [
-          { value: "auto", label: "Auto" },
-          { value: "low", label: "Low" },
-          { value: "medium", label: "Medium" },
-          { value: "high", label: "High" },
-          { value: "xhigh", label: "XHigh" },
-          { value: "max", label: "Max" },
-        ];
+        { value: "auto", label: "Auto" },
+        { value: "low", label: "Low" },
+        { value: "medium", label: "Medium" },
+        { value: "high", label: "High" },
+        { value: "xhigh", label: "XHigh" },
+        { value: "max", label: "Max" },
+      ];
       const currentMode = getClaudeReasoningDisplayMode();
       for (const mode of claudeModes) {
         const option = createElement(
@@ -7861,9 +7136,7 @@ export function setupHandlers(
           {
             type: "button",
             textContent:
-              currentMode === mode.value
-                ? `\u2713 ${mode.label}`
-                : mode.label,
+              currentMode === mode.value ? `\u2713 ${mode.label}` : mode.label,
           },
         );
         const applyClaudeSelection = (e: Event) => {
@@ -7887,12 +7160,12 @@ export function setupHandlers(
         value: "auto" | "low" | "medium" | "high" | "xhigh";
         label: string;
       }> = [
-          { value: "auto", label: "Auto" },
-          { value: "low", label: "Low" },
-          { value: "medium", label: "Medium" },
-          { value: "high", label: "High" },
-          { value: "xhigh", label: "XHigh" },
-        ];
+        { value: "auto", label: "Auto" },
+        { value: "low", label: "Low" },
+        { value: "medium", label: "Medium" },
+        { value: "high", label: "High" },
+        { value: "xhigh", label: "XHigh" },
+      ];
       const currentMode = getCodexReasoningModePref();
       for (const mode of codexModes) {
         const option = createElement(
@@ -7902,9 +7175,7 @@ export function setupHandlers(
           {
             type: "button",
             textContent:
-              currentMode === mode.value
-                ? `\u2713 ${mode.label}`
-                : mode.label,
+              currentMode === mode.value ? `\u2713 ${mode.label}` : mode.label,
           },
         );
         const applyCodexSelection = (e: Event) => {
@@ -7994,11 +7265,11 @@ export function setupHandlers(
             selectedLevel === level
               ? `\u2713 ${getReasoningLevelDisplayLabel(level, provider, currentModel, options)}`
               : getReasoningLevelDisplayLabel(
-                level,
-                provider,
-                currentModel,
-                options,
-              ),
+                  level,
+                  provider,
+                  currentModel,
+                  options,
+                ),
         },
       );
       if (optionState.enabled) {
@@ -8047,6 +7318,38 @@ export function setupHandlers(
     }
   };
 
+  const { warmUpWebChatHistory, renderWebChatHistoryMenu } =
+    createWebChatHistoryController({
+      body,
+      historyMenu,
+      getItem: () => item,
+      getSelectedModelInfo,
+      closeHistoryMenu,
+      getConversationKey,
+      setConversationHistory: (conversationKey, messages) => {
+        chatHistory.set(conversationKey, messages);
+      },
+      refreshChatPreservingScroll,
+      isWebChatMode,
+      resetWebChatPdfUploadedForCurrentConversation,
+      clearNextWebChatNewChatIntent,
+      setSelectedReasoningLevel: (itemId, level) => {
+        selectedReasoningCache.set(itemId, level);
+      },
+      setSelectedReasoningProvider: (itemId, provider) => {
+        selectedReasoningProviderCache.set(itemId, provider);
+      },
+      updateReasoningButton,
+      setStatusMessage: status
+        ? (message, level) => {
+            setStatus(status, message, level);
+          }
+        : undefined,
+      log: (message, ...args) => {
+        ztoolkit.log(message, ...args);
+      },
+    });
+
   // [webchat] Apply webchat-specific UI changes. Safe to call any time —
   // only modifies UI when actually in webchat mode, restores defaults otherwise.
   const applyWebChatModeUI = () => {
@@ -8077,15 +7380,20 @@ export function setupHandlers(
         let webchatChipTitle = "WebChat Sync";
         try {
           const { currentModel } = getSelectedModelInfo();
-          const { getWebChatTargetByModelName } = require("../../webchat/types") as typeof import("../../webchat/types");
+          const { getWebChatTargetByModelName } =
+            require("../../webchat/types") as typeof import("../../webchat/types");
           const entry = getWebChatTargetByModelName(currentModel || "");
           if (entry) {
             webchatChipLabel = entry.modelName;
             webchatChipTitle = `${entry.label} Web Sync`;
           }
-        } catch { /* fallback to defaults */ }
+        } catch {
+          /* fallback to defaults */
+        }
 
-        let dot = modeChipBtn.querySelector(".llm-webchat-dot") as HTMLElement | null;
+        let dot = modeChipBtn.querySelector(
+          ".llm-webchat-dot",
+        ) as HTMLElement | null;
         if (!dot) {
           dot = (modeChipBtn.ownerDocument as Document).createElement("span");
           dot.className = "llm-webchat-dot llm-webchat-dot-disconnected";
@@ -8093,7 +7401,9 @@ export function setupHandlers(
         modeChipBtn.textContent = "";
         modeChipBtn.appendChild(dot);
         modeChipBtn.appendChild(
-          (modeChipBtn.ownerDocument as Document).createTextNode(` ${webchatChipLabel}`),
+          (modeChipBtn.ownerDocument as Document).createTextNode(
+            ` ${webchatChipLabel}`,
+          ),
         );
         modeChipBtn.title = webchatChipTitle;
         modeChipBtn.style.cursor = "default";
@@ -8105,7 +7415,9 @@ export function setupHandlers(
           // Restore mode chip text — the normal render sync skips it while the dot is present
           const chipLabel = isGlobalMode() ? "Library chat" : "Paper chat";
           modeChipBtn.textContent = chipLabel;
-          modeChipBtn.title = isGlobalMode() ? "Switch to paper chat" : "Switch to library chat";
+          modeChipBtn.title = isGlobalMode()
+            ? "Switch to paper chat"
+            : "Switch to library chat";
         }
         stopWebChatConnectionCheck();
         modeChipBtn.style.cursor = "";
@@ -8155,292 +7467,6 @@ export function setupHandlers(
     syncRequestUiForCurrentConversation();
   };
 
-  // [webchat] Pre-fetch history in background — triggers a scrape command then polls
-  let historyWarmUpRunning = false;
-  const warmUpWebChatHistory = async () => {
-    if (historyWarmUpRunning) return;
-    historyWarmUpRunning = true;
-    try {
-      const { getWebChatTargetByModelName } = await import("../../webchat/types");
-      const { currentModel: warmupModel } = getSelectedModelInfo();
-      const warmupTargetEntry = getWebChatTargetByModelName(warmupModel || "");
-      const targetHostname = warmupTargetEntry?.modelName || null;
-      const requestedAt = Date.now();
-
-      // Tell the extension to scrape history NOW via a relay command
-      const { relaySetCommand } = await import("../../webchat/relayServer");
-      relaySetCommand({ type: "SCRAPE_HISTORY" });
-
-      const {
-        filterWebChatHistorySessionsForHostname,
-        getWebChatHistorySiteSyncEntry,
-        isWebChatHistorySiteFailure,
-        waitForFreshChatHistorySnapshot,
-      } = await import("../../webchat/client");
-      const snapshot = await waitForFreshChatHistorySnapshot(
-        "",
-        targetHostname,
-        requestedAt,
-        25_000,
-      );
-      const sessions = filterWebChatHistorySessionsForHostname(
-        snapshot.sessions,
-        targetHostname,
-      );
-      const siteSyncEntry = getWebChatHistorySiteSyncEntry(
-        snapshot,
-        targetHostname,
-      );
-      if (sessions.length > 0) {
-        ztoolkit.log(`[webchat] History warmed up: ${sessions.length} conversations`);
-      } else if (isWebChatHistorySiteFailure(siteSyncEntry)) {
-        ztoolkit.log(
-          `[webchat] History warm-up failed for ${targetHostname || "active site"}: ${siteSyncEntry?.status}`,
-        );
-      }
-    } catch { /* ignore */ }
-    historyWarmUpRunning = false;
-  };
-
-  // [webchat] Render ChatGPT conversation history in the history menu
-  const renderWebChatHistoryMenu = async () => {
-    if (!historyMenu) return;
-    historyMenu.innerHTML = "";
-
-    const doc = body.ownerDocument as Document;
-
-    // Section header
-    const header = createElement(doc, "div", "llm-history-menu-section-block", {});
-    const title = createElement(doc, "div", "llm-history-menu-section", {
-      textContent: "WebChat Conversations",
-    });
-    title.style.padding = "6px 10px";
-    title.style.fontSize = "10px";
-    title.style.fontWeight = "600";
-    title.style.textTransform = "uppercase";
-    title.style.letterSpacing = "0.5px";
-    title.style.opacity = "0.6";
-    header.appendChild(title);
-
-    // Show loading indicator while fetching
-    const loadingEl = createElement(doc, "div", "", {
-      textContent: "Fetching chat history…",
-    });
-    loadingEl.style.padding = "12px 10px";
-    loadingEl.style.fontSize = "11px";
-    loadingEl.style.opacity = "0.5";
-    header.appendChild(loadingEl);
-    historyMenu.appendChild(header);
-
-    // Trigger a fresh history scrape from the extension, then poll for results
-    const { getRelayBaseUrl: getHost } = await import("../../webchat/relayServer");
-    const host = getHost();
-    const { relaySetCommand } = await import("../../webchat/relayServer");
-    const {
-      filterWebChatHistorySessionsForHostname,
-      getWebChatHistorySiteSyncEntry,
-      isWebChatHistorySiteFailure,
-      waitForFreshChatHistorySnapshot,
-    } = await import("../../webchat/client");
-
-    // Tell the extension to scrape history NOW
-    const requestedAt = Date.now();
-    relaySetCommand({ type: "SCRAPE_HISTORY" });
-
-    // Resolve active webchat target for filtering
-    const { getWebChatTargetByModelName } = await import("../../webchat/types");
-    const { currentModel: historyModel } = getSelectedModelInfo();
-    const historyTargetEntry = getWebChatTargetByModelName(historyModel || "");
-    const targetHostname = historyTargetEntry?.modelName || null; // e.g. "chatgpt.com" or "chat.deepseek.com"
-
-    // Wait for a fresh update for the active site before deciding the list is empty.
-    let sessions: Array<{ id: string; title: string; chatUrl: string | null }> =
-      [];
-    let historyFetchFailed = false;
-    try {
-      const snapshot = await waitForFreshChatHistorySnapshot(
-        host,
-        targetHostname,
-        requestedAt,
-      );
-      sessions = filterWebChatHistorySessionsForHostname(
-        snapshot.sessions,
-        targetHostname,
-      );
-      historyFetchFailed = isWebChatHistorySiteFailure(
-        getWebChatHistorySiteSyncEntry(snapshot, targetHostname),
-      );
-    } catch { /* relay not reachable */ }
-
-    // Remove loading indicator
-    loadingEl.remove();
-
-    if (!sessions.length) {
-      const empty = createElement(doc, "div", "", {
-        textContent: historyFetchFailed
-          ? "Failed to fetch history"
-          : "No conversations yet",
-      });
-      empty.style.padding = "12px 10px";
-      empty.style.fontSize = "11px";
-      empty.style.opacity = "0.5";
-      header.appendChild(empty);
-      return;
-    }
-
-    await renderHistorySessions(doc, header, sessions, host);
-  };
-
-  // Helper: render session list into a history menu header container
-  const renderHistorySessions = async (
-    doc: Document,
-    container: HTMLElement,
-    sessions: Array<{ id: string; title: string; chatUrl: string | null }>,
-    host: string,
-  ) => {
-    // Scrollable viewport
-    const viewport = createElement(doc, "div", "llm-history-menu-section-viewport", {});
-    viewport.style.maxHeight = "300px";
-    viewport.style.overflowY = "auto";
-
-    const rows = createElement(doc, "div", "llm-history-menu-section-rows", {});
-
-    for (const session of sessions) {
-      const row = createElement(doc, "div", "llm-history-menu-row", {});
-      const btn = createElement(doc, "button", "llm-history-menu-row-main", {
-        type: "button",
-      });
-      const titleDiv = createElement(doc, "div", "llm-history-menu-row-title", {
-        textContent: session.title || "Untitled",
-      });
-      titleDiv.title = session.title || "";
-      // Determine site label from the chat URL
-      let siteLabel = "webchat";
-      try {
-        if (session.chatUrl) {
-          const url = new URL(session.chatUrl);
-          siteLabel = url.hostname;
-        }
-      } catch { /* use default */ }
-      const subtitle = createElement(doc, "div", "llm-history-menu-row-subtitle", {
-        textContent: siteLabel,
-      });
-      btn.appendChild(titleDiv);
-      btn.appendChild(subtitle);
-
-      btn.addEventListener("click", () => {
-        closeHistoryMenu();
-        if (!item) return;
-        // Navigate ChatGPT to this conversation and load messages
-        void (async () => {
-          const key = getConversationKey(item);
-          const isDeepSeekSession =
-            typeof session.chatUrl === "string" &&
-            /chat\.deepseek\.com/i.test(session.chatUrl);
-          try {
-            // Clear current chat and show loading indicator in the chat panel
-            // Derive model name from the session's chat URL
-            let loadModelName = "chatgpt.com";
-            try {
-              if (session.chatUrl) {
-                const loadUrl = new URL(session.chatUrl);
-                const { WEBCHAT_TARGETS: targets } = await import("../../webchat/types");
-                const matched = targets.find((wt) => loadUrl.hostname === wt.modelName || loadUrl.hostname === `www.${wt.modelName}`);
-                if (matched) loadModelName = matched.modelName;
-              }
-            } catch { /* default */ }
-            chatHistory.set(key, [{
-              role: "assistant" as const,
-              text: `Loading conversation: **${session.title || "Untitled"}**\n\nFetching messages…`,
-              timestamp: Date.now(),
-              modelName: loadModelName,
-              modelProviderLabel: "WebChat",
-              streaming: true,
-            }]);
-            refreshChatPreservingScroll();
-            if (status) setStatus(status, "Loading conversation…", "sending");
-
-            const { loadChatSession } = await import("../../webchat/client");
-            resetWebChatPdfUploadedForCurrentConversation();
-            clearNextWebChatNewChatIntent();
-            const result = await loadChatSession(host, session.id);
-            // The embedded relay now waits for the extension to confirm the
-            // ChatGPT thread is loaded, transcript-stable, and composer-ready.
-
-            const messages: Message[] = [];
-
-            if (result?.messages && Array.isArray(result.messages) && result.messages.length > 0) {
-              for (const m of result.messages) {
-                messages.push({
-                  role: m.kind === "user" ? "user" : "assistant",
-                  text: m.text || "",
-                  timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
-                  modelName: m.kind === "bot" ? loadModelName : undefined,
-                  modelProviderLabel: m.kind === "bot" ? "WebChat" : undefined,
-                  reasoningDetails: m.thinking || undefined,
-                });
-              }
-              if (status) setStatus(status, `Loaded ${result.messages.length} messages`, "ready");
-            } else {
-              if (status) {
-                setStatus(
-                  status,
-                  "No messages found in the selected conversation",
-                  "ready",
-                );
-              }
-            }
-
-            // If the user exited webchat while we were fetching, discard results
-            if (!isWebChatMode()) return;
-
-            chatHistory.set(key, messages);
-
-            // [webchat] Restore thinking mode from loaded conversation
-            const lastAssistant = messages.filter((m: { role: string; reasoningDetails?: string }) => m.role === "assistant").pop();
-            if (lastAssistant?.reasoningDetails) {
-              // Conversation used thinking — default to "high" (Extended)
-              selectedReasoningCache.set(item.id, "high");
-            } else {
-              selectedReasoningCache.set(item.id, "none");
-            }
-            selectedReasoningProviderCache.set(item.id, "unsupported");
-            updateReasoningButton();
-
-            refreshChatPreservingScroll();
-          } catch (err) {
-            ztoolkit.log("[webchat] Failed to load chat:", err);
-            chatHistory.set(key, [{
-              role: "assistant" as const,
-              text: isDeepSeekSession
-                ? "Failed to load selected DeepSeek conversation"
-                : "Failed to load selected conversation",
-              timestamp: Date.now(),
-              modelProviderLabel: "WebChat",
-            }]);
-            refreshChatPreservingScroll();
-            if (status) {
-              setStatus(
-                status,
-                isDeepSeekSession
-                  ? "Failed to load selected DeepSeek conversation"
-                  : `Error loading chat: ${(err as Error).message || "Unknown error"}`,
-                "error",
-              );
-            }
-          }
-        })();
-      });
-
-      row.appendChild(btn);
-      rows.appendChild(row);
-    }
-
-    viewport.appendChild(rows);
-    container.appendChild(viewport);
-    if (!container.parentElement) historyMenu?.appendChild(container);
-  };
-
   // Initialize preview state
   updatePaperPreviewPreservingScroll();
   updateFilePreviewPreservingScroll();
@@ -8450,31 +7476,47 @@ export function setupHandlers(
   // Set active_target before applyWebChatModeUI so sidebar filters by the correct site
   try {
     if (isWebChatMode()) {
-      const { getWebChatTargetByModelName: getColdTarget } = require("../../webchat/types") as typeof import("../../webchat/types");
-      const { relaySetActiveTarget: setColdTarget } = require("../../webchat/relayServer") as typeof import("../../webchat/relayServer");
+      const { getWebChatTargetByModelName: getColdTarget } =
+        require("../../webchat/types") as typeof import("../../webchat/types");
+      const { relaySetActiveTarget: setColdTarget } =
+        require("../../webchat/relayServer") as typeof import("../../webchat/relayServer");
       const { currentModel: coldStartModel } = getSelectedModelInfo();
       const coldEntry = getColdTarget(coldStartModel || "");
       if (coldEntry?.id) setColdTarget(coldEntry.id);
     }
-  } catch { /* isWebChatMode may not be ready */ }
+  } catch {
+    /* isWebChatMode may not be ready */
+  }
   applyWebChatModeUI();
   // [webchat] Cold startup → show preload screen so user knows they're in webchat mode
   try {
     if (isWebChatMode()) {
-      const chatShellEl = body.querySelector(".llm-chat-shell") as HTMLElement | null;
+      const chatShellEl = body.querySelector(
+        ".llm-chat-shell",
+      ) as HTMLElement | null;
       if (chatShellEl) {
         void (async () => {
           try {
             abortWebChatPreload();
             const token = { aborted: false };
             webchatPreloadAbort = token;
-            const { showWebChatPreloadScreen } = await import("../../webchat/preloadScreen");
-            const { getWebChatTargetByModelName } = await import("../../webchat/types");
-            const { relaySetActiveTarget: relaySetTarget2 } = await import("../../webchat/relayServer");
+            const { showWebChatPreloadScreen } =
+              await import("../../webchat/preloadScreen");
+            const { getWebChatTargetByModelName } =
+              await import("../../webchat/types");
+            const { relaySetActiveTarget: relaySetTarget2 } =
+              await import("../../webchat/relayServer");
             const { currentModel: coldModel } = getSelectedModelInfo();
-            const coldTargetEntry = getWebChatTargetByModelName(coldModel || "");
+            const coldTargetEntry = getWebChatTargetByModelName(
+              coldModel || "",
+            );
             if (coldTargetEntry?.id) relaySetTarget2(coldTargetEntry.id);
-            await showWebChatPreloadScreen(chatShellEl, token, coldTargetEntry?.label, coldTargetEntry?.modelName);
+            await showWebChatPreloadScreen(
+              chatShellEl,
+              token,
+              coldTargetEntry?.label,
+              coldTargetEntry?.modelName,
+            );
           } catch {
             // Preload failed or was aborted — dot will show connection status
           } finally {
@@ -8626,9 +7668,7 @@ export function setupHandlers(
     }
     if (isCodexConversationSystem()) {
       const mode = getCodexReasoningModePref();
-      return mode === "auto"
-        ? undefined
-        : { provider: "openai", level: mode };
+      return mode === "auto" ? undefined : { provider: "openai", level: mode };
     }
     const { provider, enabledLevels, selectedLevel } = getReasoningState();
     if (provider === "unsupported" || selectedLevel === "none")
@@ -8653,8 +7693,8 @@ export function setupHandlers(
     scheduleAttachmentGc,
     setStatusMessage: status
       ? (message, level) => {
-        setStatus(status, message, level);
-      }
+          setStatus(status, message, level);
+        }
       : undefined,
   });
 
@@ -8671,21 +7711,21 @@ export function setupHandlers(
   type PaperPickerMode = "browse" | "search" | "empty";
   type PaperPickerRow =
     | {
-      kind: "collection";
-      collectionId: number;
-      depth: number;
-    }
+        kind: "collection";
+        collectionId: number;
+        depth: number;
+      }
     | {
-      kind: "paper";
-      itemId: number;
-      depth: number;
-    }
+        kind: "paper";
+        itemId: number;
+        depth: number;
+      }
     | {
-      kind: "attachment";
-      itemId: number;
-      attachmentIndex: number;
-      depth: number;
-    };
+        kind: "attachment";
+        itemId: number;
+        attachmentIndex: number;
+        depth: number;
+      };
   let paperPickerMode: PaperPickerMode = "browse";
   let paperPickerEmptyMessage = "No references available.";
   let paperPickerGroups: PaperSearchGroupCandidate[] = [];
@@ -8734,8 +7774,7 @@ export function setupHandlers(
         : inputBox.value.length;
     return parseAtSearchToken(inputBox.value, caretEnd);
   };
-  const getActiveSlashToken = (): ActiveSlashToken | null =>
-    getActiveAtToken();
+  const getActiveSlashToken = (): ActiveSlashToken | null => getActiveAtToken();
   const getActiveActionToken = (): ActiveSlashToken | null => {
     const caretEnd =
       typeof inputBox.selectionStart === "number"
@@ -8825,7 +7864,11 @@ export function setupHandlers(
   };
 
   // ── Action picker ─────────────────────────────────────────────────────────
-  type ActionPickerItem = { name: string; description: string; inputSchema: object };
+  type ActionPickerItem = {
+    name: string;
+    description: string;
+    inputSchema: object;
+  };
   let actionPickerItems: ActionPickerItem[] = [];
   let actionPickerActiveIndex = 0;
   const isActionPickerOpen = () =>
@@ -8851,16 +7894,34 @@ export function setupHandlers(
       return;
     }
     actionPickerItems.forEach((action, idx) => {
-      const option = createElement(ownerDoc, "div", "llm-action-picker-item", {});
+      const option = createElement(
+        ownerDoc,
+        "div",
+        "llm-action-picker-item",
+        {},
+      );
       option.setAttribute("role", "option");
-      option.setAttribute("aria-selected", idx === actionPickerActiveIndex ? "true" : "false");
+      option.setAttribute(
+        "aria-selected",
+        idx === actionPickerActiveIndex ? "true" : "false",
+      );
       option.tabIndex = -1;
-      const titleEl = createElement(ownerDoc, "div", "llm-action-picker-title", {
-        textContent: action.name,
-      });
-      const descEl = createElement(ownerDoc, "div", "llm-action-picker-description", {
-        textContent: action.description,
-      });
+      const titleEl = createElement(
+        ownerDoc,
+        "div",
+        "llm-action-picker-title",
+        {
+          textContent: action.name,
+        },
+      );
+      const descEl = createElement(
+        ownerDoc,
+        "div",
+        "llm-action-picker-description",
+        {
+          textContent: action.description,
+        },
+      );
       option.append(titleEl, descEl);
       option.addEventListener("mousedown", (e: Event) => {
         e.preventDefault();
@@ -8893,7 +7954,15 @@ export function setupHandlers(
       return;
     }
     // [webchat] Slash menu not available in webchat mode
-    try { if (isWebChatMode()) { closeActionPicker(); closeSlashMenu(); return; } } catch { /* */ }
+    try {
+      if (isWebChatMode()) {
+        closeActionPicker();
+        closeSlashMenu();
+        return;
+      }
+    } catch {
+      /* */
+    }
     closeActionPicker();
     const token = getActiveActionToken();
     if (!token) {
@@ -8945,7 +8014,10 @@ export function setupHandlers(
     syncHasActionCardAttr();
   };
 
-  const showActionHitlCard = (requestId: string, action: AgentPendingAction): Promise<AgentConfirmationResolution> => {
+  const showActionHitlCard = (
+    requestId: string,
+    action: AgentPendingAction,
+  ): Promise<AgentConfirmationResolution> => {
     return new Promise((resolve) => {
       getAgentApi().registerPendingConfirmation(requestId, (resolution) => {
         closeActionHitlPanel();
@@ -9059,7 +8131,10 @@ export function setupHandlers(
    * `itemId` is auto-filled from the current item. All other required fields
    * need user input.
    */
-  const getNeedsUserInputFields = (actionName: string, schema: object): string[] => {
+  const getNeedsUserInputFields = (
+    actionName: string,
+    schema: object,
+  ): string[] => {
     const s = schema as { required?: string[] };
     if (!s.required?.length) return [];
     const autoFillable = new Set(["itemId"]);
@@ -9069,7 +8144,11 @@ export function setupHandlers(
   /**
    * Resolves the initial input for an action. Auto-fills `itemId` from context.
    */
-  const buildActionInput = (actionName: string, schema: object, extraFields: Record<string, string>): Record<string, unknown> => {
+  const buildActionInput = (
+    actionName: string,
+    schema: object,
+    extraFields: Record<string, string>,
+  ): Record<string, unknown> => {
     const input: Record<string, unknown> = { ...extraFields };
     const s = schema as { required?: string[] };
     if (s.required?.includes("itemId")) {
@@ -9117,18 +8196,19 @@ export function setupHandlers(
     };
   };
 
-  const getPaperScopedCollectionCandidates = (): PaperScopedActionCollectionCandidate[] => {
-    const libraryID = getCurrentLibraryID();
-    if (!libraryID) return [];
-    return getAgentApi()
-      .getZoteroGateway()
-      .listCollectionSummaries(libraryID)
-      .map((entry) => ({
-        collectionId: entry.collectionId,
-        name: entry.name,
-        path: entry.path,
-      }));
-  };
+  const getPaperScopedCollectionCandidates =
+    (): PaperScopedActionCollectionCandidate[] => {
+      const libraryID = getCurrentLibraryID();
+      if (!libraryID) return [];
+      return getAgentApi()
+        .getZoteroGateway()
+        .listCollectionSummaries(libraryID)
+        .map((entry) => ({
+          collectionId: entry.collectionId,
+          name: entry.name,
+          path: entry.path,
+        }));
+    };
 
   const resolvePaperScopedActionInput = async (
     actionName: string,
@@ -9166,8 +8246,12 @@ export function setupHandlers(
     allScopeLabel?: string;
     allScopeInput?: Record<string, unknown>;
   } => ({
-    firstScopeLabel: profile.scopePromptOptions?.first?.label || "First 20 papers",
-    firstScopeInput: profile.scopePromptOptions?.first?.input || { scope: "all", limit: 20 },
+    firstScopeLabel:
+      profile.scopePromptOptions?.first?.label || "First 20 papers",
+    firstScopeInput: profile.scopePromptOptions?.first?.input || {
+      scope: "all",
+      limit: 20,
+    },
     allScopeLabel: profile.scopePromptOptions?.all?.label || "Whole library",
     allScopeInput: profile.scopePromptOptions?.all?.input || { scope: "all" },
   });
@@ -9188,36 +8272,71 @@ export function setupHandlers(
         resolve(null);
         return;
       }
-      const props = (schema as { properties?: Record<string, { description?: string }> }).properties || {};
+      const props =
+        (schema as { properties?: Record<string, { description?: string }> })
+          .properties || {};
       chatBox.querySelector(".llm-action-inline-card")?.remove();
       const wrapper = ownerDoc.createElement("div");
       wrapper.className = "llm-action-inline-card";
       const form = createElement(ownerDoc, "div", "llm-action-launch-form", {});
-      const header = createElement(ownerDoc, "div", "llm-action-launch-form-header", {
-        textContent: formatActionLabel(actionName),
-      });
+      const header = createElement(
+        ownerDoc,
+        "div",
+        "llm-action-launch-form-header",
+        {
+          textContent: formatActionLabel(actionName),
+        },
+      );
       form.appendChild(header);
-      const fieldEls: Array<{ name: string; input: HTMLInputElement | HTMLTextAreaElement }> = [];
+      const fieldEls: Array<{
+        name: string;
+        input: HTMLInputElement | HTMLTextAreaElement;
+      }> = [];
       for (const fieldName of requiredFields) {
-        const label = createElement(ownerDoc, "label", "llm-action-launch-form-label", {
-          textContent: props[fieldName]?.description ?? fieldName,
-        });
-        const input = createElement(ownerDoc, "textarea", "llm-action-launch-form-input llm-input", {
-          placeholder: fieldName,
-        }) as HTMLTextAreaElement;
+        const label = createElement(
+          ownerDoc,
+          "label",
+          "llm-action-launch-form-label",
+          {
+            textContent: props[fieldName]?.description ?? fieldName,
+          },
+        );
+        const input = createElement(
+          ownerDoc,
+          "textarea",
+          "llm-action-launch-form-input llm-input",
+          {
+            placeholder: fieldName,
+          },
+        ) as HTMLTextAreaElement;
         input.rows = 2;
         form.append(label, input);
         fieldEls.push({ name: fieldName, input });
       }
-      const btns = createElement(ownerDoc, "div", "llm-action-launch-form-btns", {});
-      const runBtn = createElement(ownerDoc, "button", "llm-action-launch-form-run-btn", {
-        textContent: "Run",
-        type: "button",
-      }) as HTMLButtonElement;
-      const cancelBtn2 = createElement(ownerDoc, "button", "llm-action-launch-form-cancel-btn", {
-        textContent: "Cancel",
-        type: "button",
-      }) as HTMLButtonElement;
+      const btns = createElement(
+        ownerDoc,
+        "div",
+        "llm-action-launch-form-btns",
+        {},
+      );
+      const runBtn = createElement(
+        ownerDoc,
+        "button",
+        "llm-action-launch-form-run-btn",
+        {
+          textContent: "Run",
+          type: "button",
+        },
+      ) as HTMLButtonElement;
+      const cancelBtn2 = createElement(
+        ownerDoc,
+        "button",
+        "llm-action-launch-form-cancel-btn",
+        {
+          textContent: "Cancel",
+          type: "button",
+        },
+      ) as HTMLButtonElement;
       btns.append(runBtn, cancelBtn2);
       form.appendChild(btns);
       wrapper.appendChild(form);
@@ -9245,7 +8364,10 @@ export function setupHandlers(
   };
 
   /** Core action execution — shared between action picker and slash menu. */
-  const executeAgentAction = async (action: ActionPickerItem, parsedInput?: Record<string, unknown>): Promise<void> => {
+  const executeAgentAction = async (
+    action: ActionPickerItem,
+    parsedInput?: Record<string, unknown>,
+  ): Promise<void> => {
     inputBox.focus({ preventScroll: true });
     // Ensure agent subsystem is initialized before running any action
     try {
@@ -9255,7 +8377,9 @@ export function setupHandlers(
       if (status) setStatus(status, `Error: Agent system unavailable`, "error");
       return;
     }
-    const paperScopeProfile = getAgentApi().getPaperScopedActionProfile(action.name);
+    const paperScopeProfile = getAgentApi().getPaperScopedActionProfile(
+      action.name,
+    );
     let input: Record<string, unknown>;
     if (parsedInput) {
       // Input already parsed from inline command
@@ -9271,10 +8395,17 @@ export function setupHandlers(
         }
       }
     } else {
-      const needsInput = getNeedsUserInputFields(action.name, action.inputSchema);
+      const needsInput = getNeedsUserInputFields(
+        action.name,
+        action.inputSchema,
+      );
       let extraFields: Record<string, string> = {};
       if (needsInput.length) {
-        const filled = await showActionLaunchForm(action.name, needsInput, action.inputSchema);
+        const filled = await showActionLaunchForm(
+          action.name,
+          needsInput,
+          action.inputSchema,
+        );
         if (!filled) return;
         extraFields = Object.fromEntries(
           Object.entries(filled).map(([k, v]) => [k, String(v)]),
@@ -9300,7 +8431,8 @@ export function setupHandlers(
         }
       }
     }
-    if (status) setStatus(status, `Running: ${formatActionLabel(action.name)}…`, "ready");
+    if (status)
+      setStatus(status, `Running: ${formatActionLabel(action.name)}…`, "ready");
     const progressIndicator = createActionProgressIndicator(action.name);
     let lastProgressSummary = "";
     try {
@@ -9309,12 +8441,12 @@ export function setupHandlers(
       const selectedProfile = getSelectedProfile();
       const actionLlmConfig = selectedProfile
         ? {
-          model: selectedProfile.model,
-          apiBase: selectedProfile.apiBase,
-          apiKey: selectedProfile.apiKey,
-          authMode: selectedProfile.authMode,
-          providerProtocol: selectedProfile.providerProtocol,
-        }
+            model: selectedProfile.model,
+            apiBase: selectedProfile.apiBase,
+            apiKey: selectedProfile.apiKey,
+            authMode: selectedProfile.authMode,
+            providerProtocol: selectedProfile.providerProtocol,
+          }
         : undefined;
       const result = await agentApi.runAction(action.name, input, {
         libraryID: getCurrentLibraryID(),
@@ -9325,7 +8457,11 @@ export function setupHandlers(
           if (event.type === "step_start") {
             progressIndicator.setStep(event.step, event.index, event.total);
             if (status) {
-              setStatus(status, `${event.step} (${event.index}/${event.total})`, "ready");
+              setStatus(
+                status,
+                `${event.step} (${event.index}/${event.total})`,
+                "ready",
+              );
             }
           } else if (event.type === "step_done") {
             if (event.summary) {
@@ -9346,9 +8482,9 @@ export function setupHandlers(
           status,
           result.ok
             ? resolveActionCompletionStatusText({
-              actionName: action.name,
-              lastProgressSummary,
-            })
+                actionName: action.name,
+                lastProgressSummary,
+              })
             : `${formatActionLabel(action.name)} failed: ${result.error}`,
           result.ok ? "ready" : "error",
         );
@@ -9462,24 +8598,31 @@ export function setupHandlers(
     inputBox.placeholder = "";
     inputBox.value = "";
     inputBox.focus({ preventScroll: true });
-    const EvtCtor = (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
+    const EvtCtor =
+      (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
     inputBox.dispatchEvent(new EvtCtor("input", { bubbles: true }));
   };
 
   /** Returns the active command action if a badge is present, null otherwise. */
-  const getActiveCommandAction = (): ActionPickerItem | null => activeCommandAction;
+  const getActiveCommandAction = (): ActionPickerItem | null =>
+    activeCommandAction;
 
   /**
    * Parses natural-language parameters for an action command.
    * Returns a structured input object for the action.
    */
-  const parseCommandParams = (actionName: string, params: string): Record<string, unknown> => {
+  const parseCommandParams = (
+    actionName: string,
+    params: string,
+  ): Record<string, unknown> => {
     const input: Record<string, unknown> = {};
     if (!params) return input;
     const lower = params.toLowerCase();
 
     // Parse "for first N items" or "first N items"
-    const firstNMatch = /(?:for\s+)?(?:first|top)\s+(\d+)\s*items?/i.exec(params);
+    const firstNMatch = /(?:for\s+)?(?:first|top)\s+(\d+)\s*items?/i.exec(
+      params,
+    );
     if (firstNMatch) {
       input.limit = parseInt(firstNMatch[1], 10);
       return input;
@@ -9501,7 +8644,11 @@ export function setupHandlers(
     }
 
     // Parse "for whole library" or "for all"
-    if (lower.includes("whole library") || lower.includes("for all") || lower === "all") {
+    if (
+      lower.includes("whole library") ||
+      lower.includes("for all") ||
+      lower === "all"
+    ) {
       input.scope = "all";
       return input;
     }
@@ -9568,7 +8715,10 @@ export function setupHandlers(
         chatBox.querySelector(".llm-action-inline-card")?.remove();
         const wrapper = ownerDoc.createElement("div");
         wrapper.className = "llm-action-inline-card";
-        const cardEl = renderPendingActionCard(ownerDoc, { requestId, action: card });
+        const cardEl = renderPendingActionCard(ownerDoc, {
+          requestId,
+          action: card,
+        });
         wrapper.appendChild(cardEl);
         chatBox.appendChild(wrapper);
         chatBox.scrollTop = chatBox.scrollHeight;
@@ -9580,14 +8730,22 @@ export function setupHandlers(
    * Handles execution of a command chip action with optional text params.
    * Called from the send flow when a command chip is active.
    */
-  const handleInlineCommand = async (actionName: string, params: string): Promise<void> => {
+  const handleInlineCommand = async (
+    actionName: string,
+    params: string,
+  ): Promise<void> => {
     if (isClaudeConversationSystem()) {
-      inputBox.value = params.trim() ? `/${actionName} ${params.trim()}` : `/${actionName}`;
+      inputBox.value = params.trim()
+        ? `/${actionName} ${params.trim()}`
+        : `/${actionName}`;
       await doSend();
       return;
     }
     // Commands that go through agent chat for full trace visibility
-    if (actionName === "library_statistics" || actionName === "literature_review") {
+    if (
+      actionName === "library_statistics" ||
+      actionName === "literature_review"
+    ) {
       if (getCurrentRuntimeMode() !== "agent" && getAgentModeEnabled()) {
         setCurrentRuntimeMode("agent");
       }
@@ -9624,7 +8782,8 @@ export function setupHandlers(
       return;
     }
 
-    const paperScopeProfile = getAgentApi().getPaperScopedActionProfile(actionName);
+    const paperScopeProfile =
+      getAgentApi().getPaperScopedActionProfile(actionName);
     if (paperScopeProfile) {
       const resolvedInput = await resolvePaperScopedActionInput(
         actionName,
@@ -9635,9 +8794,9 @@ export function setupHandlers(
       let input =
         resolvedInput === "scope_required"
           ? await showScopeConfirmation(
-            actionName,
-            getPaperScopedPromptOptions(paperScopeProfile),
-          )
+              actionName,
+              getPaperScopedPromptOptions(paperScopeProfile),
+            )
           : resolvedInput;
       if (!input) return;
       void executeAgentAction(action, input);
@@ -9647,8 +8806,8 @@ export function setupHandlers(
     let input = parseCommandParams(actionName, params);
 
     // For organize_unfiled, no scope confirmation needed (always unfiled items)
-    const needsScopeConfirm = actionName !== "organize_unfiled" &&
-      actionName !== "discover_related";
+    const needsScopeConfirm =
+      actionName !== "organize_unfiled" && actionName !== "discover_related";
 
     // If no meaningful params and action needs scope, show HITL confirmation
     if (needsScopeConfirm && !params.trim()) {
@@ -9674,10 +8833,10 @@ export function setupHandlers(
 
     const filtered = query
       ? allSkills.filter(
-        (s: AgentSkill) =>
-          s.id.toLowerCase().includes(query) ||
-          s.description.toLowerCase().includes(query),
-      )
+          (s: AgentSkill) =>
+            s.id.toLowerCase().includes(query) ||
+            s.description.toLowerCase().includes(query),
+        )
       : allSkills;
 
     if (!filtered.length) return;
@@ -9777,9 +8936,11 @@ export function setupHandlers(
         loading.setAttribute("aria-hidden", "true");
         loading.textContent = t("Loading Claude commands…");
         list.insertBefore(loading, firstBase);
-        void refreshClaudeSlashCommands(getCoreAgentRuntime(), false).then(() => {
-          renderAgentActionsInSlashMenu(query);
-        }).catch(() => { });
+        void refreshClaudeSlashCommands(getCoreAgentRuntime(), false)
+          .then(() => {
+            renderAgentActionsInSlashMenu(query);
+          })
+          .catch(() => {});
         const baseLabel = mkAgentEl("div", "llm-slash-menu-section");
         baseLabel.setAttribute("aria-hidden", "true");
         baseLabel.textContent = t("Base actions");
@@ -9788,10 +8949,10 @@ export function setupHandlers(
       }
       const filtered = query
         ? commands.filter(
-          (command) =>
-            command.name.toLowerCase().includes(query) ||
-            command.description.toLowerCase().includes(query),
-        )
+            (command) =>
+              command.name.toLowerCase().includes(query) ||
+              command.description.toLowerCase().includes(query),
+          )
         : commands;
       if (filtered.length) {
         const section = mkAgentEl("div", "llm-slash-menu-section");
@@ -9799,7 +8960,10 @@ export function setupHandlers(
         section.textContent = "Claude Code";
         list.insertBefore(section, firstBase);
         filtered.forEach((command) => {
-          const btn = mkAgentEl("button", "llm-action-picker-item") as HTMLButtonElement;
+          const btn = mkAgentEl(
+            "button",
+            "llm-action-picker-item",
+          ) as HTMLButtonElement;
           btn.type = "button";
           btn.title = command.description;
           const titleEl = ownerDoc.createElement("span");
@@ -9834,17 +8998,19 @@ export function setupHandlers(
     try {
       allActions = getAgentApi().listActions(chatMode);
     } catch {
-      void initAgentSubsystem().then(() => {
-        renderAgentActionsInSlashMenu(query);
-      }).catch(() => { });
+      void initAgentSubsystem()
+        .then(() => {
+          renderAgentActionsInSlashMenu(query);
+        })
+        .catch(() => {});
       return;
     }
     const filtered = query
       ? allActions.filter(
-        (a) =>
-          a.name.toLowerCase().includes(query) ||
-          a.description.toLowerCase().includes(query),
-      )
+          (a) =>
+            a.name.toLowerCase().includes(query) ||
+            a.description.toLowerCase().includes(query),
+        )
       : allActions;
     const baseAnchor = list.querySelector("[data-slash-base-item]") || null;
     const baseLabel = mkAgentEl("div", "llm-slash-menu-section");
@@ -9857,7 +9023,10 @@ export function setupHandlers(
     agentLabel.textContent = t("Agent actions");
     list.insertBefore(agentLabel, baseLabel);
     filtered.forEach((action) => {
-      const btn = mkAgentEl("button", "llm-action-picker-item") as HTMLButtonElement;
+      const btn = mkAgentEl(
+        "button",
+        "llm-action-picker-item",
+      ) as HTMLButtonElement;
       btn.type = "button";
       btn.title = action.description;
       const titleEl = ownerDoc.createElement("span");
@@ -9914,13 +9083,17 @@ export function setupHandlers(
     if (contentType.startsWith("image/")) return "figure";
     return "other";
   }
-  function resolvePickerKindIcon(kind: "pdf" | "note" | "figure" | "other"): string {
+  function resolvePickerKindIcon(
+    kind: "pdf" | "note" | "figure" | "other",
+  ): string {
     if (kind === "pdf") return "📚";
     if (kind === "note") return "📝";
     if (kind === "figure") return "🖼";
     return "📎";
   }
-  function resolvePickerKindLabel(kind: "pdf" | "note" | "figure" | "other"): string {
+  function resolvePickerKindLabel(
+    kind: "pdf" | "note" | "figure" | "other",
+  ): string {
     if (kind === "pdf") return "PDF";
     if (kind === "note") return "Note";
     if (kind === "figure") return "Figure";
@@ -10265,7 +9438,9 @@ export function setupHandlers(
     updatePaperPreviewPreservingScroll();
     if (status) {
       const addedPaper = nextPapers[nextPapers.length - 1];
-      const mineruTag = isPaperContextMineru(addedPaper) ? ` ${t("(MinerU)")}` : "";
+      const mineruTag = isPaperContextMineru(addedPaper)
+        ? ` ${t("(MinerU)")}`
+        : "";
       setStatus(
         status,
         `${t("Paper context added. Full text will be sent on the next turn.")}${mineruTag}`,
@@ -10307,9 +9482,7 @@ export function setupHandlers(
     if (status) setStatus(status, t("Note context added as text."), "ready");
     return true;
   };
-  const addZoteroItemsAsPaperContext = (
-    zoteroItems: Zotero.Item[],
-  ): void => {
+  const addZoteroItemsAsPaperContext = (zoteroItems: Zotero.Item[]): void => {
     if (!item) return;
     let added = 0;
     let skipped = 0;
@@ -10335,25 +9508,28 @@ export function setupHandlers(
           "warning",
         );
       } else if (added > 0) {
-        setStatus(
-          status,
-          `Added ${added} paper(s) as context`,
-          "ready",
-        );
+        setStatus(status, `Added ${added} paper(s) as context`, "ready");
       }
     }
   };
   const upsertOtherRefContext = (ref: OtherContextRef): boolean => {
     if (!item) return false;
     const existing = selectedOtherRefContextCache.get(item.id) || [];
-    const duplicate = existing.some((e) => e.contextItemId === ref.contextItemId);
+    const duplicate = existing.some(
+      (e) => e.contextItemId === ref.contextItemId,
+    );
     if (duplicate) {
       if (status) setStatus(status, t("File already selected"), "warning");
       return false;
     }
     selectedOtherRefContextCache.set(item.id, [...existing, ref]);
     updatePaperPreviewPreservingScroll();
-    if (status) setStatus(status, `${ref.refKind === "figure" ? "Figure" : "File"} context added.`, "ready");
+    if (status)
+      setStatus(
+        status,
+        `${ref.refKind === "figure" ? "Figure" : "File"} context added.`,
+        "ready",
+      );
     return true;
   };
   const consumeActiveAtToken = (): boolean => {
@@ -10380,8 +9556,7 @@ export function setupHandlers(
     inputBox.setSelectionRange(nextCaret, nextCaret);
     return true;
   };
-  const consumeActiveSlashToken = (): boolean =>
-    consumeActiveAtToken();
+  const consumeActiveSlashToken = (): boolean => consumeActiveAtToken();
   const consumeActiveActionToken = (): boolean => {
     const token = getActiveActionToken();
     if (!token) return false;
@@ -10427,9 +9602,10 @@ export function setupHandlers(
     } else {
       upsertOtherRefContext({
         contextItemId: selectedAttachment.contextItemId,
-        parentItemId: selectedGroup.itemId !== selectedAttachment.contextItemId
-          ? selectedGroup.itemId
-          : undefined,
+        parentItemId:
+          selectedGroup.itemId !== selectedAttachment.contextItemId
+            ? selectedGroup.itemId
+            : undefined,
         title: selectedAttachment.title || selectedGroup.title,
         contentType: contentType || "application/octet-stream",
         refKind: kind === "figure" ? "figure" : "other",
@@ -10458,7 +9634,8 @@ export function setupHandlers(
     };
     const existing = selectedCollectionContextCache.get(item.id) || [];
     if (existing.some((e) => e.collectionId === ref.collectionId)) {
-      if (status) setStatus(status, t("Collection already selected"), "warning");
+      if (status)
+        setStatus(status, t("Collection already selected"), "warning");
       return false;
     }
     selectedCollectionContextCache.set(item.id, [...existing, ref]);
@@ -10624,11 +9801,12 @@ export function setupHandlers(
       const option = createElement(
         ownerDoc,
         "div",
-        `llm-paper-picker-item ${row.kind === "attachment"
-          ? "llm-paper-picker-attachment-row"
-          : row.kind === "paper"
-            ? "llm-paper-picker-group-row"
-            : "llm-paper-picker-group-row llm-paper-picker-collection-row"
+        `llm-paper-picker-item ${
+          row.kind === "attachment"
+            ? "llm-paper-picker-attachment-row"
+            : row.kind === "paper"
+              ? "llm-paper-picker-group-row"
+              : "llm-paper-picker-group-row llm-paper-picker-collection-row"
         }`,
       );
       option.setAttribute("role", "option");
@@ -10646,7 +9824,8 @@ export function setupHandlers(
           item.id,
           autoLoadedPaperContext,
         );
-        const selectedOtherRefs = selectedOtherRefContextCache.get(item.id) || [];
+        const selectedOtherRefs =
+          selectedOtherRefContextCache.get(item.id) || [];
         const group = getPaperPickerGroupByItemId(row.itemId);
         if (group) {
           const attachIdx = row.kind === "attachment" ? row.attachmentIndex : 0;
@@ -10655,8 +9834,12 @@ export function setupHandlers(
             const isSelected =
               (autoLoadedPaperContext?.itemId === group.itemId &&
                 autoLoadedPaperContext.contextItemId === att.contextItemId) ||
-              selectedPapers.some((p) => p.contextItemId === att.contextItemId) ||
-              selectedOtherRefs.some((r) => r.contextItemId === att.contextItemId);
+              selectedPapers.some(
+                (p) => p.contextItemId === att.contextItemId,
+              ) ||
+              selectedOtherRefs.some(
+                (r) => r.contextItemId === att.contextItemId,
+              );
             if (isSelected) {
               option.classList.add("llm-paper-picker-selected");
             }
@@ -10669,8 +9852,11 @@ export function setupHandlers(
         if (!collection) return;
         // Visual feedback: mark already-selected collections
         if (item) {
-          const selectedCollections = selectedCollectionContextCache.get(item.id) || [];
-          if (selectedCollections.some((c) => c.collectionId === row.collectionId)) {
+          const selectedCollections =
+            selectedCollectionContextCache.get(item.id) || [];
+          if (
+            selectedCollections.some((c) => c.collectionId === row.collectionId)
+          ) {
             option.classList.add("llm-paper-picker-selected");
           }
         }
@@ -10890,7 +10076,14 @@ export function setupHandlers(
       return;
     }
     // [webchat] Paper picker not available in webchat mode
-    try { if (isWebChatMode()) { closePaperPicker(); return; } } catch { /* */ }
+    try {
+      if (isWebChatMode()) {
+        closePaperPicker();
+        return;
+      }
+    } catch {
+      /* */
+    }
     const slashToken = getActiveSlashToken();
     if (!slashToken) {
       closePaperPicker();
@@ -11050,7 +10243,9 @@ export function setupHandlers(
     });
 
     // Command row dismiss button (reuses .llm-paper-context-clear class)
-    const commandRowClearBtn = body.querySelector("#llm-command-row .llm-paper-context-clear");
+    const commandRowClearBtn = body.querySelector(
+      "#llm-command-row .llm-paper-context-clear",
+    );
     if (commandRowClearBtn) {
       commandRowClearBtn.addEventListener("click", () => {
         if (forcedSkillId) {
@@ -11165,13 +10360,20 @@ export function setupHandlers(
     if (status) {
       setStatus(
         status,
-        nextQueue.length === 1 ? t("Queued 1 follow-up") : t(`Queued ${nextQueue.length} follow-ups`),
+        nextQueue.length === 1
+          ? t("Queued 1 follow-up")
+          : t(`Queued ${nextQueue.length} follow-ups`),
         "ready",
       );
     }
   };
 
   syncRequestUiForCurrentConversation();
+  const pdfPaperResolver = createPdfPaperAttachmentResolver({
+    logError: (message, ...args) => {
+      ztoolkit.log(message, ...args);
+    },
+  });
 
   const { doSend } = createSendFlowController({
     body,
@@ -11191,97 +10393,18 @@ export function setupHandlers(
       getEffectiveFullTextPaperContexts(currentItem, selectedPaperContexts),
     getPdfModePaperContexts: (currentItem, selectedPaperContexts) =>
       getEffectivePdfModePaperContexts(currentItem, selectedPaperContexts),
-    hasActivePdfFullTextPapers: (currentItem: Zotero.Item, selectedPaperContexts?: any[]) =>
-      hasActivePdfFullTextPapers(currentItem, selectedPaperContexts),
+    hasActivePdfFullTextPapers: (
+      currentItem: Zotero.Item,
+      selectedPaperContexts?: any[],
+    ) => hasActivePdfFullTextPapers(currentItem, selectedPaperContexts),
     hasUploadedPdfInCurrentWebChatConversation,
     markWebChatPdfUploadedForCurrentConversation,
-    resolvePdfPaperAttachments: async (paperContexts) => {
-      const results: import("./types").ChatAttachment[] = [];
-      for (const pc of paperContexts) {
-        try {
-          const attachment = Zotero.Items.get(pc.contextItemId);
-          if (!attachment?.isAttachment?.() || attachment.attachmentContentType !== "application/pdf") continue;
-          const filePath = await (async () => {
-            const asyncPath = await (
-              attachment as unknown as { getFilePathAsync?: () => Promise<string | false> }
-            ).getFilePathAsync?.();
-            if (asyncPath) return asyncPath as string;
-            if (typeof (attachment as { getFilePath?: () => string | undefined }).getFilePath === "function") {
-              return (attachment as { getFilePath: () => string | undefined }).getFilePath();
-            }
-            return (attachment as unknown as { attachmentPath?: string }).attachmentPath;
-          })();
-          if (!filePath) continue;
-          const bytes = await readAttachmentBytes(filePath);
-          if (bytes.byteLength > MAX_UPLOAD_PDF_SIZE_BYTES) continue;
-          const fileName = filePath.split(/[\\/]/).pop() || "document.pdf";
-          const persisted = await persistAttachmentBlob(fileName, new Uint8Array(bytes));
-          results.push({
-            id: `pdf-paper-${pc.contextItemId}-${Date.now()}`,
-            name: fileName,
-            mimeType: "application/pdf",
-            sizeBytes: bytes.byteLength,
-            category: "pdf",
-            storedPath: persisted.storedPath,
-            contentHash: persisted.contentHash,
-          });
-        } catch (err) {
-          ztoolkit.log("LLM: Failed to resolve PDF paper attachment", err);
-        }
-      }
-      return results;
-    },
-    renderPdfPagesAsImages: async (paperContexts, maxImages) => {
-      const { renderAllPdfPages } = await import("../../agent/services/pdfPageService");
-      const dataUrls: string[] = [];
-      const limit = Math.max(0, Math.floor(maxImages ?? MAX_SELECTED_IMAGES));
-      for (const pc of paperContexts) {
-        if (dataUrls.length >= limit) break;
-        try {
-          const pages = await renderAllPdfPages(pc.contextItemId, {
-            maxPages: Math.max(0, limit - dataUrls.length),
-          });
-          for (const page of pages) {
-            if (dataUrls.length >= limit) break;
-            // Read the persisted PNG and convert to data URL for the image pipeline
-            const bytes = await readAttachmentBytes(page.storedPath);
-            if (bytes.byteLength > 0) {
-              // Encode in chunks to avoid "too many function arguments" with large images
-              let binaryStr = "";
-              const chunkSize = 0x8000;
-              for (let i = 0; i < bytes.length; i += chunkSize) {
-                binaryStr += String.fromCharCode(...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)));
-              }
-              const base64 = btoa(binaryStr);
-              dataUrls.push(`data:image/png;base64,${base64}`);
-            }
-          }
-        } catch (err) {
-          ztoolkit.log("LLM: Failed to render PDF pages for", pc.contextItemId, err);
-        }
-      }
-      return dataUrls;
-    },
-    getModelPdfSupport: (modelName, protocol, authMode, apiBase) => getModelPdfSupport(modelName, protocol, authMode, apiBase),
-    uploadPdfForProvider: async (params) => {
-      const { detectPdfUploadProvider, uploadPdfForProvider } = await import("../../utils/pdfUploadPreprocessor");
-      const provider = detectPdfUploadProvider(params.apiBase);
-      return uploadPdfForProvider({ provider, ...params });
-    },
-    resolvePdfBytes: async (pc) => {
-      const attachment = Zotero.Items.get(pc.contextItemId);
-      if (!attachment?.isAttachment?.() || attachment.attachmentContentType !== "application/pdf") {
-        throw new Error("Not a PDF attachment");
-      }
-      const filePath = await (async () => {
-        const asyncPath = await (attachment as unknown as { getFilePathAsync?: () => Promise<string | false> }).getFilePathAsync?.();
-        if (asyncPath) return asyncPath as string;
-        if (typeof (attachment as { getFilePath?: () => string | undefined }).getFilePath === "function") return (attachment as { getFilePath: () => string | undefined }).getFilePath();
-        return (attachment as unknown as { attachmentPath?: string }).attachmentPath;
-      })();
-      if (!filePath) throw new Error("Could not locate PDF file");
-      return readAttachmentBytes(filePath);
-    },
+    resolvePdfPaperAttachments: pdfPaperResolver.resolvePdfPaperAttachments,
+    renderPdfPagesAsImages: pdfPaperResolver.renderPdfPagesAsImages,
+    getModelPdfSupport: (modelName, protocol, authMode, apiBase) =>
+      getModelPdfSupport(modelName, protocol, authMode, apiBase),
+    uploadPdfForProvider: pdfPaperResolver.uploadPdfForProvider,
+    resolvePdfBytes: pdfPaperResolver.resolvePdfBytes,
     getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],
     getSelectedImages: (itemId) => selectedImageCache.get(itemId) || [],
     resolvePromptText,
@@ -11353,8 +10476,8 @@ export function setupHandlers(
     },
     setStatusMessage: status
       ? (message, level) => {
-        setStatus(status, message, level);
-      }
+          setStatus(status, message, level);
+        }
       : undefined,
     editStaleStatusText: EDIT_STALE_STATUS_TEXT,
     consumeForcedSkillIds: () => {
@@ -11396,7 +10519,9 @@ export function setupHandlers(
         libraryID: Math.floor(libraryID),
         kind: currentKind,
         paperItemID:
-          currentKind === "paper" ? Number(baseItem?.id || 0) || undefined : undefined,
+          currentKind === "paper"
+            ? Number(baseItem?.id || 0) || undefined
+            : undefined,
         paperTitle:
           currentKind === "paper"
             ? String(baseItem?.getField?.("title") || "").trim() || undefined
@@ -11438,8 +10563,8 @@ export function setupHandlers(
     clearAgentToolCaches: clearAllAgentToolCaches,
     setStatusMessage: status
       ? (message, level) => {
-        setStatus(status, message, level);
-      }
+          setStatus(status, message, level);
+        }
       : undefined,
     logError: (message, err) => {
       ztoolkit.log(message, err);
@@ -11484,8 +10609,12 @@ export function setupHandlers(
       );
       // Agent mode always uses text/MinerU pipeline — it fetches PDF pages on demand
       const isAgent = getCurrentRuntimeMode() === "agent";
-      const pdfModePapers = isAgent ? [] : getEffectivePdfModePaperContexts(currentItem, allPaperContexts);
-      const pdfModeKeys = new Set(pdfModePapers.map((p) => `${p.itemId}:${p.contextItemId}`));
+      const pdfModePapers = isAgent
+        ? []
+        : getEffectivePdfModePaperContexts(currentItem, allPaperContexts);
+      const pdfModeKeys = new Set(
+        pdfModePapers.map((p) => `${p.itemId}:${p.contextItemId}`),
+      );
       const selectedPaperContexts = allPaperContexts.filter(
         (p) => !pdfModeKeys.has(`${p.itemId}:${p.contextItemId}`),
       );
@@ -11499,242 +10628,54 @@ export function setupHandlers(
         getSelectedModelInfo().currentModel ||
         ""
       ).trim();
-      // Resolve PDF-mode papers with the same provider-capability rules as
-      // the normal send flow so edit+retry preserves multimodal context.
-      const pdfSupport = getModelPdfSupport(
-        activeModelName,
-        selectedProfile?.providerProtocol,
-        selectedProfile?.authMode,
-        selectedProfile?.apiBase,
-      );
-      const pdfAttachments: import("./types").ChatAttachment[] = [];
-      const pdfPageImageDataUrls: string[] = [];
-      const pdfUploadSystemMessages: string[] = [];
-      if (pdfModePapers.length) {
-        if (pdfSupport === "none") {
-          if (status) {
-            setStatus(
-              status,
-              "This model does not support PDF or image input. Remove the PDF attachment or switch models.",
-              "error",
-            );
-          }
-          return;
-        }
-        if (pdfSupport === "upload") {
-          if (!selectedProfile?.apiBase || !selectedProfile?.apiKey) {
-            if (status) {
-              setStatus(
-                status,
-                "PDF upload requires a configured provider API key.",
-                "error",
-              );
-            }
-            return;
-          }
-          const { detectPdfUploadProvider, uploadPdfForProvider } =
-            await import("../../utils/pdfUploadPreprocessor");
-          const provider = detectPdfUploadProvider(selectedProfile.apiBase);
-          for (const pc of pdfModePapers) {
-            try {
-              const attachment = Zotero.Items.get(pc.contextItemId);
-              if (
-                !attachment?.isAttachment?.() ||
-                attachment.attachmentContentType !== "application/pdf"
-              ) {
-                continue;
+      const baseSelectedFiles =
+        selectedFileAttachmentCache.get(currentItem.id) || [];
+      const selectedImages = (
+        selectedImageCache.get(currentItem.id) || []
+      ).slice(0, MAX_SELECTED_IMAGES);
+      const pdfInputs = await resolvePdfModeModelInputs({
+        deps: {
+          setInputDisabled: (disabled) => {
+            inputBox.disabled = disabled;
+          },
+          setStatusMessage: status
+            ? (message, level) => {
+                setStatus(status, message, level);
               }
-              const filePath = await (async () => {
-                const asyncPath = await (
-                  attachment as unknown as {
-                    getFilePathAsync?: () => Promise<string | false>;
-                  }
-                ).getFilePathAsync?.();
-                if (asyncPath) return asyncPath as string;
-                if (
-                  typeof (attachment as { getFilePath?: () => string | undefined })
-                    .getFilePath === "function"
-                ) {
-                  return (
-                    attachment as { getFilePath: () => string | undefined }
-                  ).getFilePath();
-                }
-                return (attachment as unknown as { attachmentPath?: string })
-                  .attachmentPath;
-              })();
-              if (!filePath) continue;
-              const bytes = await readAttachmentBytes(filePath);
-              const result = await uploadPdfForProvider({
-                provider,
-                apiBase: selectedProfile.apiBase,
-                apiKey: selectedProfile.apiKey,
-                pdfBytes: bytes,
-                fileName: (() => {
-                  const raw = pc.attachmentTitle || pc.title || "document";
-                  return /\.pdf$/i.test(raw) ? raw : `${raw}.pdf`;
-                })(),
-              });
-              if (result) {
-                pdfUploadSystemMessages.push(result.systemMessageContent);
-              } else {
-                if (status) setStatus(status, "PDF upload failed.", "error");
-                return;
-              }
-            } catch (err) {
-              ztoolkit.log(
-                "LLM: Failed to upload PDF paper for edit",
-                pc.contextItemId,
-                err,
-              );
-              if (status) setStatus(status, "PDF upload failed.", "error");
-              return;
-            }
-          }
-        } else if (pdfSupport === "vision") {
-          if (status) {
-            setStatus(
-              status,
-              "This provider cannot read PDFs directly. Sending the Zotero PDF as page images.",
-              "warning",
-            );
-          }
-          const { renderAllPdfPages } = await import("../../agent/services/pdfPageService");
-          let remainingPdfImages = MAX_SELECTED_IMAGES;
-          for (const pc of pdfModePapers) {
-            if (remainingPdfImages <= 0) break;
-            try {
-              const pages = await renderAllPdfPages(pc.contextItemId, {
-                maxPages: remainingPdfImages,
-              });
-              for (const page of pages) {
-                if (remainingPdfImages <= 0) break;
-                const bytes = await readAttachmentBytes(page.storedPath);
-                if (bytes.byteLength <= 0) continue;
-                let binaryStr = "";
-                const chunkSize = 0x8000;
-                for (let i = 0; i < bytes.length; i += chunkSize) {
-                  binaryStr += String.fromCharCode(
-                    ...bytes.subarray(i, Math.min(bytes.length, i + chunkSize)),
-                  );
-                }
-                pdfPageImageDataUrls.push(
-                  `data:image/png;base64,${btoa(binaryStr)}`,
-                );
-                remainingPdfImages -= 1;
-              }
-            } catch (err) {
-              ztoolkit.log("LLM: Failed to render PDF pages for edit", pc.contextItemId, err);
-              if (status) setStatus(status, "PDF page rendering failed.", "error");
-              return;
-            }
-          }
-          if (!pdfPageImageDataUrls.length) {
-            if (status) setStatus(status, "PDF page rendering failed.", "error");
-            return;
-          }
-        } else if (pdfSupport === "native") {
-          for (const pc of pdfModePapers) {
-            try {
-              const attachment = Zotero.Items.get(pc.contextItemId);
-              if (!attachment?.isAttachment?.() || attachment.attachmentContentType !== "application/pdf") continue;
-              const filePath = await (async () => {
-                const asyncPath = await (attachment as unknown as { getFilePathAsync?: () => Promise<string | false> }).getFilePathAsync?.();
-                if (asyncPath) return asyncPath as string;
-                if (typeof (attachment as { getFilePath?: () => string | undefined }).getFilePath === "function") return (attachment as { getFilePath: () => string | undefined }).getFilePath();
-                return (attachment as unknown as { attachmentPath?: string }).attachmentPath;
-              })();
-              if (!filePath) continue;
-              const bytes = await readAttachmentBytes(filePath);
-              if (bytes.byteLength > MAX_UPLOAD_PDF_SIZE_BYTES) continue;
-              const fileName = filePath.split(/[\\/]/).pop() || "document.pdf";
-              const persisted = await persistAttachmentBlob(fileName, new Uint8Array(bytes));
-              pdfAttachments.push({
-                id: `pdf-paper-${pc.contextItemId}-${Date.now()}`,
-                name: fileName,
-                mimeType: "application/pdf",
-                sizeBytes: bytes.byteLength,
-                category: "pdf",
-                storedPath: persisted.storedPath,
-                contentHash: persisted.contentHash,
-              });
-            } catch (err) {
-              ztoolkit.log("LLM: Failed to resolve PDF paper for edit", pc.contextItemId, err);
-            }
-          }
-        }
-        if (pdfSupport !== "native") {
-          for (const pc of pdfModePapers) {
-            try {
-              const attachment = Zotero.Items.get(pc.contextItemId);
-              if (!attachment?.isAttachment?.() || attachment.attachmentContentType !== "application/pdf") continue;
-              const filePath = await (async () => {
-                const asyncPath = await (attachment as unknown as { getFilePathAsync?: () => Promise<string | false> }).getFilePathAsync?.();
-                if (asyncPath) return asyncPath as string;
-                if (typeof (attachment as { getFilePath?: () => string | undefined }).getFilePath === "function") return (attachment as { getFilePath: () => string | undefined }).getFilePath();
-                return (attachment as unknown as { attachmentPath?: string }).attachmentPath;
-              })();
-              if (!filePath) continue;
-              const bytes = await readAttachmentBytes(filePath);
-              if (bytes.byteLength > MAX_UPLOAD_PDF_SIZE_BYTES) continue;
-              const fileName = filePath.split(/[\\/]/).pop() || "document.pdf";
-              const persisted = await persistAttachmentBlob(fileName, new Uint8Array(bytes));
-              pdfAttachments.push({
-                id: `pdf-paper-${pc.contextItemId}-${Date.now()}`,
-                name: fileName,
-                mimeType: "application/pdf",
-                sizeBytes: bytes.byteLength,
-                category: "pdf",
-                storedPath: persisted.storedPath,
-                contentHash: persisted.contentHash,
-              });
-            } catch (err) {
-              ztoolkit.log("LLM: Failed to resolve PDF paper for edit display", pc.contextItemId, err);
-            }
-          }
-          if (pdfAttachments.length !== pdfModePapers.length) {
-            if (status) {
-              setStatus(
-                status,
-                "Could not resolve the selected paper PDF attachment.",
-                "error",
-              );
-            }
-            return;
-          }
-        }
-      }
-      const baseSelectedFiles = selectedFileAttachmentCache.get(currentItem.id) || [];
-      const hasDirectUploadedPdf = baseSelectedFiles.some((attachment) => {
-        const mimeType = (attachment.mimeType || "").trim().toLowerCase();
-        const name = (attachment.name || "").trim();
-        return (
-          attachment.category === "pdf" ||
-          mimeType === "application/pdf" ||
-          /\.pdf$/i.test(name)
-        );
+            : undefined,
+          logError: (message, ...args) => {
+            ztoolkit.log(message, ...args);
+          },
+          isScreenshotUnsupportedModel,
+          getModelPdfSupport,
+          resolvePdfPaperAttachments:
+            pdfPaperResolver.resolvePdfPaperAttachments,
+          renderPdfPagesAsImages: pdfPaperResolver.renderPdfPagesAsImages,
+          uploadPdfForProvider: pdfPaperResolver.uploadPdfForProvider,
+          resolvePdfBytes: pdfPaperResolver.resolvePdfBytes,
+        },
+        paperContexts: pdfModePapers,
+        selectedBaseFiles: baseSelectedFiles,
+        selectedImageCountForBudget: isScreenshotUnsupportedModel(
+          activeModelName,
+        )
+          ? 0
+          : selectedImages.length,
+        profile: selectedProfile,
+        currentModelName: activeModelName,
+        isWebChat: isWebChatMode(),
       });
-      if (
-        hasDirectUploadedPdf &&
-        pdfSupport === "vision" &&
-        status
-      ) {
-        setStatus(
-          status,
-          "This provider may not read uploaded PDFs directly.",
-          "warning",
-        );
-      }
-      const selectedFiles = [
-        ...baseSelectedFiles,
-        ...pdfAttachments,
-      ];
-      const modelFiles = pdfSupport === "native" ? selectedFiles : baseSelectedFiles;
-      const selectedImages = (selectedImageCache.get(currentItem.id) || []).slice(
-        0,
-        MAX_SELECTED_IMAGES,
-      );
+      if (!pdfInputs.ok) return;
+      const {
+        selectedFiles,
+        modelFiles,
+        pdfPageImageDataUrls,
+        pdfUploadSystemMessages,
+      } = pdfInputs;
       const images = [
-        ...(isScreenshotUnsupportedModel(activeModelName) ? [] : selectedImages),
+        ...(isScreenshotUnsupportedModel(activeModelName)
+          ? []
+          : selectedImages),
         ...pdfPageImageDataUrls,
       ].slice(0, MAX_SELECTED_IMAGES);
       const selectedReasoning = getSelectedReasoning();
@@ -11746,7 +10687,9 @@ export function setupHandlers(
       setInlineEditSavedDraft("");
       setInlineEditTarget(null);
       if (newText) {
-        consumePaperModeState(currentItem.id, { webchatGreyOut: isWebChatMode() });
+        consumePaperModeState(currentItem.id, {
+          webchatGreyOut: isWebChatMode(),
+        });
         retainPaperState(currentItem.id);
         updatePaperPreviewPreservingScroll();
         void editUserTurnAndRetry({
@@ -11796,7 +10739,8 @@ export function setupHandlers(
       const params = inputBox?.value?.trim() ?? "";
       clearCommandChip(); // also restores placeholder
       inputBox.value = "";
-      const EvtCtor2 = (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
+      const EvtCtor2 =
+        (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
       inputBox.dispatchEvent(new EvtCtor2("input", { bubbles: true }));
       persistDraftInputForCurrentConversation();
       void handleInlineCommand(chipAction.name, params);
@@ -11851,7 +10795,9 @@ export function setupHandlers(
       if (status) {
         setStatus(
           status,
-          nextMode === "agent" ? t("Agent mode enabled") : t("Chat mode enabled"),
+          nextMode === "agent"
+            ? t("Agent mode enabled")
+            : t("Chat mode enabled"),
           "ready",
         );
       }
@@ -11979,7 +10925,11 @@ export function setupHandlers(
       }
     }
     // Backspace at position 0 with active badge: remove it
-    if (ke.key === "Backspace" && inputBox.selectionStart === 0 && inputBox.selectionEnd === 0) {
+    if (
+      ke.key === "Backspace" &&
+      inputBox.selectionStart === 0 &&
+      inputBox.selectionEnd === 0
+    ) {
       if (forcedSkillId) {
         e.preventDefault();
         e.stopPropagation();
@@ -12014,8 +10964,7 @@ export function setupHandlers(
         inputBox.selectionStart === 0 && inputBox.selectionEnd === 0;
       if (!inputBox.value.trim() || cursorAtStart) {
         const convKey = item ? getConversationKey(item) : null;
-        const history =
-          convKey != null ? chatHistory.get(convKey) || [] : [];
+        const history = convKey != null ? chatHistory.get(convKey) || [] : [];
         const lastUserMsg = [...history]
           .reverse()
           .find((m) => m.role === "user");
@@ -12057,7 +11006,9 @@ export function setupHandlers(
       const panel = panelDoc.querySelector("#llm-main") as HTMLElement | null;
       if (!panel) return null;
       // In standalone window, accept events from anywhere in the document
-      const standaloneRoot = panelDoc.getElementById("llmforzotero-standalone-chat-root") as HTMLElement | null;
+      const standaloneRoot = panelDoc.getElementById(
+        "llmforzotero-standalone-chat-root",
+      ) as HTMLElement | null;
       if (standaloneRoot) return panel;
       const target = event.target as Node | null;
       const activeEl = panelDoc.activeElement;
@@ -12081,16 +11032,18 @@ export function setupHandlers(
         reset
           ? FONT_SCALE_DEFAULT_PERCENT
           : clampNumber(
-            panelFontScalePercent + (delta || 0),
-            FONT_SCALE_MIN_PERCENT,
-            FONT_SCALE_MAX_PERCENT,
-          ),
+              panelFontScalePercent + (delta || 0),
+              FONT_SCALE_MIN_PERCENT,
+              FONT_SCALE_MAX_PERCENT,
+            ),
       );
       event.preventDefault();
       event.stopPropagation();
       applyPanelFontScale(panel);
       // Also scale the standalone root so sidebar/tabs/title scale together
-      const standaloneRoot = panelDoc.getElementById("llmforzotero-standalone-chat-root") as HTMLElement | null;
+      const standaloneRoot = panelDoc.getElementById(
+        "llmforzotero-standalone-chat-root",
+      ) as HTMLElement | null;
       if (standaloneRoot) applyPanelFontScale(standaloneRoot);
     };
 
@@ -12167,10 +11120,18 @@ export function setupHandlers(
       __llmAddTextClick?: EventListener;
     };
     if (bodyDelegation.__llmAddTextPointerDown) {
-      body.removeEventListener("pointerdown", bodyDelegation.__llmAddTextPointerDown, true);
+      body.removeEventListener(
+        "pointerdown",
+        bodyDelegation.__llmAddTextPointerDown,
+        true,
+      );
     }
     if (bodyDelegation.__llmAddTextMouseDown) {
-      body.removeEventListener("mousedown", bodyDelegation.__llmAddTextMouseDown, true);
+      body.removeEventListener(
+        "mousedown",
+        bodyDelegation.__llmAddTextMouseDown,
+        true,
+      );
     }
     if (bodyDelegation.__llmAddTextClick) {
       body.removeEventListener("click", bodyDelegation.__llmAddTextClick, true);
@@ -12227,7 +11188,8 @@ export function setupHandlers(
 
       // Global mode: attribute text to source paper
       const readerAttachment = getActiveContextAttachmentFromTabs();
-      const readerPaperContext = resolvePaperContextRefFromAttachment(readerAttachment);
+      const readerPaperContext =
+        resolvePaperContextRefFromAttachment(readerAttachment);
       const paperContext = isGlobal ? readerPaperContext : null;
 
       // Resolve page location for jump-to-source
@@ -12250,12 +11212,22 @@ export function setupHandlers(
       }
     };
 
-    bodyDelegation.__llmAddTextPointerDown = cacheSelectionBeforeFocusShift as EventListener;
-    bodyDelegation.__llmAddTextMouseDown = cacheSelectionBeforeFocusShift as EventListener;
+    bodyDelegation.__llmAddTextPointerDown =
+      cacheSelectionBeforeFocusShift as EventListener;
+    bodyDelegation.__llmAddTextMouseDown =
+      cacheSelectionBeforeFocusShift as EventListener;
     bodyDelegation.__llmAddTextClick = addTextClickHandler as EventListener;
 
-    body.addEventListener("pointerdown", cacheSelectionBeforeFocusShift as EventListener, true);
-    body.addEventListener("mousedown", cacheSelectionBeforeFocusShift as EventListener, true);
+    body.addEventListener(
+      "pointerdown",
+      cacheSelectionBeforeFocusShift as EventListener,
+      true,
+    );
+    body.addEventListener(
+      "mousedown",
+      cacheSelectionBeforeFocusShift as EventListener,
+      true,
+    );
     body.addEventListener("click", addTextClickHandler as EventListener, true);
   }
 
@@ -12390,7 +11362,9 @@ export function setupHandlers(
     if (status) {
       setStatus(
         status,
-        t("Reference picker ready. Browse collections or type to search papers."),
+        t(
+          "Reference picker ready. Browse collections or type to search papers.",
+        ),
         "ready",
       );
     }
@@ -12459,12 +11433,18 @@ export function setupHandlers(
       closeSlashMenu();
       const { currentModel } = getSelectedModelInfo();
       if (isScreenshotUnsupportedModel(currentModel)) {
-        if (status) setStatus(status, getScreenshotDisabledHint(currentModel), "error");
+        if (status)
+          setStatus(status, getScreenshotDisabledHint(currentModel), "error");
         return;
       }
       const currentImages = selectedImageCache.get(item.id) || [];
       if (currentImages.length >= MAX_SELECTED_IMAGES) {
-        if (status) setStatus(status, `Maximum ${MAX_SELECTED_IMAGES} images allowed`, "error");
+        if (status)
+          setStatus(
+            status,
+            `Maximum ${MAX_SELECTED_IMAGES} images allowed`,
+            "error",
+          );
         return;
       }
       if (status) setStatus(status, t("Capturing PDF page..."), "sending");
@@ -12474,20 +11454,34 @@ export function setupHandlers(
           const win =
             body.ownerDocument?.defaultView ||
             (Zotero.getMainWindow?.() as Window | null);
-          const optimized = win ? await optimizeImageDataUrl(win, dataUrl) : dataUrl;
+          const optimized = win
+            ? await optimizeImageDataUrl(win, dataUrl)
+            : dataUrl;
           const existingImages = selectedImageCache.get(item.id) || [];
-          const nextImages = [...existingImages, optimized].slice(0, MAX_SELECTED_IMAGES);
+          const nextImages = [...existingImages, optimized].slice(
+            0,
+            MAX_SELECTED_IMAGES,
+          );
           selectedImageCache.set(item.id, nextImages);
           const expandedBefore = selectedImagePreviewExpandedCache.get(item.id);
           selectedImagePreviewExpandedCache.set(
             item.id,
             typeof expandedBefore === "boolean" ? expandedBefore : false,
           );
-          selectedImagePreviewActiveIndexCache.set(item.id, nextImages.length - 1);
+          selectedImagePreviewActiveIndexCache.set(
+            item.id,
+            nextImages.length - 1,
+          );
           updateImagePreviewPreservingScroll();
-          if (status) setStatus(status, `Page captured (${nextImages.length})`, "ready");
+          if (status)
+            setStatus(status, `Page captured (${nextImages.length})`, "ready");
         } else {
-          if (status) setStatus(status, t("No PDF page found — open a PDF in the reader first"), "error");
+          if (status)
+            setStatus(
+              status,
+              t("No PDF page found — open a PDF in the reader first"),
+              "error",
+            );
           updateImagePreviewPreservingScroll();
         }
       } catch (err) {
@@ -12507,20 +11501,32 @@ export function setupHandlers(
       closeSlashMenu();
       const { currentModel } = getSelectedModelInfo();
       if (isScreenshotUnsupportedModel(currentModel)) {
-        if (status) setStatus(status, getScreenshotDisabledHint(currentModel), "error");
+        if (status)
+          setStatus(status, getScreenshotDisabledHint(currentModel), "error");
         return;
       }
       const currentImages = selectedImageCache.get(item.id) || [];
       const remaining = MAX_SELECTED_IMAGES - currentImages.length;
       if (remaining <= 0) {
-        if (status) setStatus(status, `Maximum ${MAX_SELECTED_IMAGES} images allowed`, "error");
+        if (status)
+          setStatus(
+            status,
+            `Maximum ${MAX_SELECTED_IMAGES} images allowed`,
+            "error",
+          );
         return;
       }
       // Get page count from the active PDF
-      const { getPdfPageCount, parsePageRanges, capturePdfPages } = await import("./pdfPageCapture");
+      const { getPdfPageCount, parsePageRanges, capturePdfPages } =
+        await import("./pdfPageCapture");
       const totalPages = getPdfPageCount();
       if (totalPages <= 0) {
-        if (status) setStatus(status, t("No PDF page found — open a PDF in the reader first"), "error");
+        if (status)
+          setStatus(
+            status,
+            t("No PDF page found — open a PDF in the reader first"),
+            "error",
+          );
         return;
       }
       // Prompt user for page ranges via ztoolkit dialog
@@ -12530,38 +11536,56 @@ export function setupHandlers(
       if (!win) return;
       const dialogData: Record<string, unknown> = {
         pageRangeValue: `1-${Math.min(totalPages, remaining)}`,
-        loadCallback: () => { return; },
-        unloadCallback: () => { return; },
+        loadCallback: () => {
+          return;
+        },
+        unloadCallback: () => {
+          return;
+        },
       };
       const pageDialog = new ztoolkit.Dialog(2, 1)
         .addCell(0, 0, {
           tag: "label",
           namespace: "html",
-          properties: { innerHTML: `${t("Enter page numbers or ranges (e.g. 1-5, 8, 12):")} (1-${totalPages})` },
+          properties: {
+            innerHTML: `${t("Enter page numbers or ranges (e.g. 1-5, 8, 12):")} (1-${totalPages})`,
+          },
           styles: { display: "block", marginBottom: "8px" },
         })
-        .addCell(1, 0, {
-          tag: "input",
-          namespace: "html",
-          id: "llm-pdf-page-range-input",
-          attributes: {
-            "data-bind": "pageRangeValue",
-            "data-prop": "value",
-            type: "text",
+        .addCell(
+          1,
+          0,
+          {
+            tag: "input",
+            namespace: "html",
+            id: "llm-pdf-page-range-input",
+            attributes: {
+              "data-bind": "pageRangeValue",
+              "data-prop": "value",
+              type: "text",
+            },
+            styles: { width: "300px" },
           },
-          styles: { width: "300px" },
-        }, false)
+          false,
+        )
         .addButton("OK", "ok")
         .addButton("Cancel", "cancel")
         .setDialogData(dialogData)
         .open(t("Select PDF pages"));
       addon.data.dialog = pageDialog;
-      await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock.promise;
+      await (dialogData as { unloadLock: { promise: Promise<void> } })
+        .unloadLock.promise;
       addon.data.dialog = undefined;
-      if ((dialogData as { _lastButtonId?: string })._lastButtonId !== "ok") return;
-      const rawInput = String((dialogData as { pageRangeValue?: string }).pageRangeValue || "").trim();
+      if ((dialogData as { _lastButtonId?: string })._lastButtonId !== "ok")
+        return;
+      const rawInput = String(
+        (dialogData as { pageRangeValue?: string }).pageRangeValue || "",
+      ).trim();
       if (!rawInput) return;
-      const pageNumbers = parsePageRanges(rawInput, totalPages).slice(0, remaining);
+      const pageNumbers = parsePageRanges(rawInput, totalPages).slice(
+        0,
+        remaining,
+      );
       if (!pageNumbers.length) {
         if (status) setStatus(status, "No valid pages selected", "error");
         return;
@@ -12570,25 +11594,39 @@ export function setupHandlers(
       try {
         const dataUrls = await capturePdfPages(pageNumbers, {
           onProgress: (current, total) => {
-            if (status) setStatus(status, `${t("Capturing PDF pages...")} ${current}/${total}`, "sending");
+            if (status)
+              setStatus(
+                status,
+                `${t("Capturing PDF pages...")} ${current}/${total}`,
+                "sending",
+              );
           },
         });
         if (dataUrls.length > 0) {
           const optimized: string[] = [];
           for (const dataUrl of dataUrls) {
-            optimized.push(win ? await optimizeImageDataUrl(win, dataUrl) : dataUrl);
+            optimized.push(
+              win ? await optimizeImageDataUrl(win, dataUrl) : dataUrl,
+            );
           }
           const existingImages = selectedImageCache.get(item.id) || [];
-          const nextImages = [...existingImages, ...optimized].slice(0, MAX_SELECTED_IMAGES);
+          const nextImages = [...existingImages, ...optimized].slice(
+            0,
+            MAX_SELECTED_IMAGES,
+          );
           selectedImageCache.set(item.id, nextImages);
           const expandedBefore = selectedImagePreviewExpandedCache.get(item.id);
           selectedImagePreviewExpandedCache.set(
             item.id,
             typeof expandedBefore === "boolean" ? expandedBefore : true,
           );
-          selectedImagePreviewActiveIndexCache.set(item.id, nextImages.length - 1);
+          selectedImagePreviewActiveIndexCache.set(
+            item.id,
+            nextImages.length - 1,
+          );
           updateImagePreviewPreservingScroll();
-          if (status) setStatus(status, `${dataUrls.length} pages captured`, "ready");
+          if (status)
+            setStatus(status, `${dataUrls.length} pages captured`, "ready");
         } else {
           if (status) setStatus(status, t("PDF page capture failed"), "error");
           updateImagePreviewPreservingScroll();
@@ -12819,7 +11857,11 @@ export function setupHandlers(
   }
   const dismissPaperChipOnOutsidePointerDown = (e: PointerEvent) => {
     if (typeof e.button === "number" && e.button !== 0) return;
-    if (!paperChipMenuSticky || !paperChipMenu || paperChipMenu.style.display === "none")
+    if (
+      !paperChipMenuSticky ||
+      !paperChipMenu ||
+      paperChipMenu.style.display === "none"
+    )
       return;
     const target = e.target as Node | null;
     if (target && paperChipMenu.contains(target)) return;
@@ -12873,8 +11915,9 @@ export function setupHandlers(
         const href = linkTarget.href?.trim();
         if (href) {
           try {
-            const launch = (Zotero as unknown as { launchURL?: (url: string) => void })
-              .launchURL;
+            const launch = (
+              Zotero as unknown as { launchURL?: (url: string) => void }
+            ).launchURL;
             if (typeof launch === "function") {
               launch(href);
               return;
@@ -12911,7 +11954,8 @@ export function setupHandlers(
     modelBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      if (!item || !modelMenu || (modelBtn as HTMLButtonElement).disabled) return;
+      if (!item || !modelMenu || (modelBtn as HTMLButtonElement).disabled)
+        return;
       if (!isFloatingMenuOpen(modelMenu)) {
         openModelMenu();
       } else {
@@ -13287,7 +12331,10 @@ export function setupHandlers(
       if (otherClearBtn) {
         e.preventDefault();
         e.stopPropagation();
-        const index = Number.parseInt(otherClearBtn.dataset.otherRefIndex || "", 10);
+        const index = Number.parseInt(
+          otherClearBtn.dataset.otherRefIndex || "",
+          10,
+        );
         const others = selectedOtherRefContextCache.get(item.id) || [];
         if (Number.isFinite(index) && index >= 0 && index < others.length) {
           const next = others.filter((_, i) => i !== index);
@@ -13297,7 +12344,8 @@ export function setupHandlers(
             selectedOtherRefContextCache.delete(item.id);
           }
           updatePaperPreviewPreservingScroll();
-          if (status) setStatus(status, `File context removed (${next.length})`, "ready");
+          if (status)
+            setStatus(status, `File context removed (${next.length})`, "ready");
         }
         return;
       }
@@ -13309,9 +12357,16 @@ export function setupHandlers(
       if (collectionClearBtn) {
         e.preventDefault();
         e.stopPropagation();
-        const index = Number.parseInt(collectionClearBtn.dataset.collectionIndex || "", 10);
+        const index = Number.parseInt(
+          collectionClearBtn.dataset.collectionIndex || "",
+          10,
+        );
         const collections = selectedCollectionContextCache.get(item.id) || [];
-        if (Number.isFinite(index) && index >= 0 && index < collections.length) {
+        if (
+          Number.isFinite(index) &&
+          index >= 0 &&
+          index < collections.length
+        ) {
           const next = collections.filter((_, i) => i !== index);
           if (next.length) {
             selectedCollectionContextCache.set(item.id, next);
@@ -13319,7 +12374,8 @@ export function setupHandlers(
             selectedCollectionContextCache.delete(item.id);
           }
           updatePaperPreviewPreservingScroll();
-          if (status) setStatus(status, t("Collection context removed."), "ready");
+          if (status)
+            setStatus(status, t("Collection context removed."), "ready");
         }
         return;
       }
@@ -13348,7 +12404,9 @@ export function setupHandlers(
       }
       const removedPaper = selectedPapers[index];
       if (removedPaper) {
-        paperContextModeOverrides.delete(`${item.id}:${buildPaperKey(removedPaper)}`);
+        paperContextModeOverrides.delete(
+          `${item.id}:${buildPaperKey(removedPaper)}`,
+        );
       }
       const nextPapers = selectedPapers.filter((_, i) => i !== index);
       if (nextPapers.length) {
@@ -13381,14 +12439,26 @@ export function setupHandlers(
       e.preventDefault();
       e.stopPropagation();
       // PDF mode sends binary — retrieval/full toggle does not apply (except webchat)
-      const contentSource = resolvePaperContentSourceMode(item.id, paperContext);
+      const contentSource = resolvePaperContentSourceMode(
+        item.id,
+        paperContext,
+      );
       if (contentSource === "pdf" && !isWebChatMode()) {
         if (status) {
-          setStatus(status, t("PDF mode always sends the full file. Switch to TXT/MD for retrieval mode."), "warning");
+          setStatus(
+            status,
+            t(
+              "PDF mode always sends the full file. Switch to TXT/MD for retrieval mode.",
+            ),
+            "warning",
+          );
         }
         return;
       }
-      const currentMode = resolvePaperContextNextSendMode(item.id, paperContext);
+      const currentMode = resolvePaperContextNextSendMode(
+        item.id,
+        paperContext,
+      );
       const nextMode = isPaperContextFullTextMode(currentMode)
         ? "retrieval"
         : "full-sticky";
@@ -13398,7 +12468,10 @@ export function setupHandlers(
       paperChip.classList.toggle("llm-paper-context-chip-full", nextIsFullText);
       // [webchat] Also toggle the PDF class so the chip visually greys out
       if (contentSource === "pdf") {
-        paperChip.classList.toggle("llm-paper-context-chip-pdf", nextIsFullText);
+        paperChip.classList.toggle(
+          "llm-paper-context-chip-pdf",
+          nextIsFullText,
+        );
       }
       closePaperChipMenu();
       if (status) {
@@ -13406,12 +12479,15 @@ export function setupHandlers(
           setStatus(
             status,
             nextIsFullText
-              ? t("WebChat only requires uploading PDF once per session. If already uploaded, no need to send again.")
+              ? t(
+                  "WebChat only requires uploading PDF once per session. If already uploaded, no need to send again.",
+                )
               : t("Next query will not attach PDF."),
             "ready",
           );
         } else {
-          const sourceTag = contentSource === "mineru" ? ` ${t("(MinerU)")}` : "";
+          const sourceTag =
+            contentSource === "mineru" ? ` ${t("(MinerU)")}` : "";
           setStatus(
             status,
             nextMode === "full-sticky"
@@ -13435,7 +12511,8 @@ export function setupHandlers(
         const paperChipForCard = cardRow.closest(
           ".llm-paper-context-chip",
         ) as HTMLDivElement | null;
-        if (!paperChipForCard || !paperPreview.contains(paperChipForCard)) return;
+        if (!paperChipForCard || !paperPreview.contains(paperChipForCard))
+          return;
         e.preventDefault();
         e.stopPropagation();
         const paperContextForCard =
@@ -13448,10 +12525,7 @@ export function setupHandlers(
             }
           })
           .catch((err) => {
-            ztoolkit.log(
-              "LLM: Failed to focus paper context from card",
-              err,
-            );
+            ztoolkit.log("LLM: Failed to focus paper context from card", err);
             if (status) {
               setStatus(status, t("Could not focus this paper"), "error");
             }
@@ -13474,14 +12548,18 @@ export function setupHandlers(
         // Open the PDF attachment in a reader tab
         void (async () => {
           try {
-            const tabs = (Zotero as unknown as {
-              Tabs?: {
-                getTabIDByItemID?: (itemID: number) => string;
-                select?: (id: string) => void;
-              };
-            }).Tabs;
+            const tabs = (
+              Zotero as unknown as {
+                Tabs?: {
+                  getTabIDByItemID?: (itemID: number) => string;
+                  select?: (id: string) => void;
+                };
+              }
+            ).Tabs;
             // If already open in a tab, just switch to it
-            const existingTabId = tabs?.getTabIDByItemID?.(paperContext.contextItemId);
+            const existingTabId = tabs?.getTabIDByItemID?.(
+              paperContext.contextItemId,
+            );
             if (existingTabId && typeof tabs?.select === "function") {
               tabs.select(existingTabId);
               return;
@@ -13505,38 +12583,77 @@ export function setupHandlers(
       // [webchat] Content source is always PDF — no cycling
       if (isWebChatMode()) {
         if (status) {
-          setStatus(status, t("WebChat mode always uses PDF. Right-click to toggle send/skip."), "ready");
+          setStatus(
+            status,
+            t("WebChat mode always uses PDF. Right-click to toggle send/skip."),
+            "ready",
+          );
         }
         return;
       }
-      const currentSource = resolvePaperContentSourceMode(item.id, paperContext);
+      const currentSource = resolvePaperContentSourceMode(
+        item.id,
+        paperContext,
+      );
       const mineruAvailable = isPaperContextMineru(paperContext);
-      const nextSource = getNextContentSourceMode(currentSource, mineruAvailable);
+      const nextSource = getNextContentSourceMode(
+        currentSource,
+        mineruAvailable,
+      );
       // Warn (but allow) PDF mode in agent mode — Agent normally reads pages on demand
       if (nextSource === "pdf" && getCurrentRuntimeMode() === "agent") {
         if (status) {
-          setStatus(status, t("Agent mode normally reads PDF pages on demand. Forcing full PDF mode."), "warning");
+          setStatus(
+            status,
+            t(
+              "Agent mode normally reads PDF pages on demand. Forcing full PDF mode.",
+            ),
+            "warning",
+          );
         }
         // Fall through — allow the mode change
       }
       // Block PDF mode for models that don't support it (e.g., Copilot)
       if (nextSource === "pdf") {
         const selectedProfile = getSelectedProfile();
-        const modelName = (selectedProfile?.model || getSelectedModelInfo().currentModel || "").trim();
-        const pdfSupport = getModelPdfSupport(modelName, selectedProfile?.providerProtocol, selectedProfile?.authMode, selectedProfile?.apiBase);
+        const modelName = (
+          selectedProfile?.model ||
+          getSelectedModelInfo().currentModel ||
+          ""
+        ).trim();
+        const pdfSupport = getModelPdfSupport(
+          modelName,
+          selectedProfile?.providerProtocol,
+          selectedProfile?.authMode,
+          selectedProfile?.apiBase,
+        );
         if (pdfSupport === "none") {
           if (status) {
-            setStatus(status, t("PDF mode is not available for this model. Use Text or MD mode."), "error");
+            setStatus(
+              status,
+              t(
+                "PDF mode is not available for this model. Use Text or MD mode.",
+              ),
+              "error",
+            );
           }
           return;
         }
         // Block non-qwen-long Qwen models (only qwen-long supports PDF upload on DashScope)
         if (pdfSupport === "upload") {
-          const isQwen = (selectedProfile?.apiBase || "").toLowerCase().includes("dashscope");
+          const isQwen = (selectedProfile?.apiBase || "")
+            .toLowerCase()
+            .includes("dashscope");
           const isQwenLong = /^qwen-long(?:[.-]|$)/i.test(modelName);
           if (isQwen && !isQwenLong) {
             if (status) {
-              setStatus(status, t("Only qwen-long supports PDF upload on DashScope. Use Text or MD mode."), "error");
+              setStatus(
+                status,
+                t(
+                  "Only qwen-long supports PDF upload on DashScope. Use Text or MD mode.",
+                ),
+                "error",
+              );
             }
             return;
           }
@@ -13545,9 +12662,18 @@ export function setupHandlers(
       setPaperContentSourceOverride(item.id, paperContext, nextSource);
       updatePaperPreviewPreservingScroll();
       if (status) {
-        const modeLabel = nextSource === "text" ? "Text" : nextSource === "mineru" ? "MinerU" : "PDF";
+        const modeLabel =
+          nextSource === "text"
+            ? "Text"
+            : nextSource === "mineru"
+              ? "MinerU"
+              : "PDF";
         if (nextSource === "pdf") {
-          setStatus(status, `${t("Content source:")} ${modeLabel}. ${t("Full file will be sent. Right-click retrieval is not available.")}`, "ready");
+          setStatus(
+            status,
+            `${t("Content source:")} ${modeLabel}. ${t("Full file will be sent. Right-click retrieval is not available.")}`,
+            "ready",
+          );
         } else {
           setStatus(status, `${t("Content source:")} ${modeLabel}`, "ready");
         }
@@ -13635,11 +12761,11 @@ export function setupHandlers(
 
     const readerApi = Zotero.Reader as
       | {
-        open?: (
-          itemID: number,
-          location?: _ZoteroTypes.Reader.Location,
-        ) => Promise<void | _ZoteroTypes.ReaderInstance>;
-      }
+          open?: (
+            itemID: number,
+            location?: _ZoteroTypes.Reader.Location,
+          ) => Promise<void | _ZoteroTypes.ReaderInstance>;
+        }
       | undefined;
     if (typeof readerApi?.open === "function") {
       const openedReader = await readerApi.open(targetItemId, location);
@@ -13647,12 +12773,12 @@ export function setupHandlers(
         openedReader ||
         ((
           Zotero.Reader as
-          | {
-            getByTabID?: (
-              tabID: string | number,
-            ) => _ZoteroTypes.ReaderInstance;
-          }
-          | undefined
+            | {
+                getByTabID?: (
+                  tabID: string | number,
+                ) => _ZoteroTypes.ReaderInstance;
+              }
+            | undefined
         )?.getByTabID &&
           (() => {
             const tabs = (
@@ -13682,11 +12808,11 @@ export function setupHandlers(
 
     const pane = Zotero.getActiveZoteroPane?.() as
       | {
-        viewPDF?: (
-          itemID: number,
-          location: _ZoteroTypes.Reader.Location,
-        ) => Promise<void>;
-      }
+          viewPDF?: (
+            itemID: number,
+            location: _ZoteroTypes.Reader.Location,
+          ) => Promise<void>;
+        }
       | undefined;
     if (typeof pane?.viewPDF === "function") {
       await pane.viewPDF(targetItemId, location);
@@ -13711,9 +12837,9 @@ export function setupHandlers(
   if (selectedContextList) {
     selectedContextList.addEventListener("mouseover", (e: Event) => {
       const target = e.target as Element | null;
-      const noteChip = target?.closest("[data-note-chip='true']") as
-        | HTMLDivElement
-        | null;
+      const noteChip = target?.closest(
+        "[data-note-chip='true']",
+      ) as HTMLDivElement | null;
       if (!noteChip) {
         return;
       }
@@ -13725,9 +12851,9 @@ export function setupHandlers(
     });
     selectedContextList.addEventListener("focusin", (e: Event) => {
       const target = e.target as Element | null;
-      const noteChip = target?.closest("[data-note-chip='true']") as
-        | HTMLDivElement
-        | null;
+      const noteChip = target?.closest(
+        "[data-note-chip='true']",
+      ) as HTMLDivElement | null;
       if (!noteChip) {
         return;
       }
@@ -13741,9 +12867,9 @@ export function setupHandlers(
       if (!item) return;
       const target = e.target as Element | null;
       if (!target) return;
-      const noteChip = target.closest("[data-note-chip='true']") as
-        | HTMLDivElement
-        | null;
+      const noteChip = target.closest(
+        "[data-note-chip='true']",
+      ) as HTMLDivElement | null;
       const noteChipKind = noteChip?.dataset.noteChipKind || "";
       const noteMetaBtn = target.closest(
         ".llm-note-context-meta",
@@ -13877,9 +13003,9 @@ export function setupHandlers(
       if (!item) return;
       const target = e.target as Element | null;
       if (!target) return;
-      const noteChip = target.closest("[data-note-chip='true']") as
-        | HTMLDivElement
-        | null;
+      const noteChip = target.closest(
+        "[data-note-chip='true']",
+      ) as HTMLDivElement | null;
       if (noteChip?.dataset.noteChipKind === "active") {
         e.preventDefault();
         e.stopPropagation();
@@ -13991,7 +13117,13 @@ export function setupHandlers(
     const paperPinned =
       typeof selectedPaperPreviewExpandedCache.get(item.id) === "number";
     const filePinned = selectedFilePreviewExpandedCache.get(item.id) === true;
-    if (!textPinned && !notePinned && !figurePinned && !paperPinned && !filePinned)
+    if (
+      !textPinned &&
+      !notePinned &&
+      !figurePinned &&
+      !paperPinned &&
+      !filePinned
+    )
       return;
 
     setSelectedTextExpandedIndex(textContextKey, null);
@@ -14007,7 +13139,6 @@ export function setupHandlers(
   body.addEventListener("mousedown", dismissPinnedContextPanels, true);
   bodyWithPinnedDismiss.__llmPinnedContextDismissHandler =
     dismissPinnedContextPanels;
-
 
   // Cancel button
   if (cancelBtn) {
@@ -14030,10 +13161,15 @@ export function setupHandlers(
         try {
           const { relayRequestStop } = require("../../webchat/relayServer");
           relayRequestStop();
-        } catch { /* relay may not be loaded */ }
+        } catch {
+          /* relay may not be loaded */
+        }
       }
       if (cancelConvKey !== null) {
-        setCancelledRequestId(cancelConvKey, getPendingRequestId(cancelConvKey));
+        setCancelledRequestId(
+          cancelConvKey,
+          getPendingRequestId(cancelConvKey),
+        );
         setPendingRequestId(cancelConvKey, 0);
       }
       if (status) setStatus(status, t("Cancelled"), "ready");
@@ -14052,7 +13188,9 @@ export function setupHandlers(
           }
         }
       }
-      body.querySelectorAll(".llm-typing").forEach((el: Element) => el.remove());
+      body
+        .querySelectorAll(".llm-typing")
+        .forEach((el: Element) => el.remove());
       // Re-enable UI for the cancelled conversation
       if (inputBox) inputBox.disabled = false;
       if (sendBtn) {
@@ -14086,9 +13224,11 @@ export function setupHandlers(
         clearNextWebChatNewChatIntent();
         resetWebChatPdfUploadedForCurrentConversation();
         // Restore previous model, or fall back to first non-webchat model
-        const restoreId = previousNonWebchatModelId
-          || getAvailableModelEntries().find((e) => e.authMode !== "webchat")?.entryId
-          || null;
+        const restoreId =
+          previousNonWebchatModelId ||
+          getAvailableModelEntries().find((e) => e.authMode !== "webchat")
+            ?.entryId ||
+          null;
         if (restoreId) {
           setSelectedModelEntryForItem(item.id, restoreId);
         }
