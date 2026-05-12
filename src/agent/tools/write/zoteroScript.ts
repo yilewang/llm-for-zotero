@@ -360,7 +360,8 @@ export function createZoteroScriptTool(): AgentToolDefinition<
         "Execute a JavaScript script inside Zotero's runtime with full API access. " +
         "Two modes: mode:'read' for gathering data across many items (no confirmation); " +
         "mode:'write' for mutations (runs directly with undo support; env.snapshot(item) or env.addUndoStep(fn) is required). " +
-        "The script receives the global Zotero object and an env helper (env.log, env.snapshot, env.addUndoStep, env.libraryID).",
+        "The script receives the global Zotero object and an env helper (env.log, env.snapshot, env.addUndoStep, env.libraryID). " +
+        "Not for ordinary Zotero paper/library reading when semantic Zotero tools can answer.",
       inputSchema: {
         type: "object",
         additionalProperties: false,

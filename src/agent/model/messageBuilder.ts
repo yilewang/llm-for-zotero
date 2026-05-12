@@ -205,7 +205,7 @@ function buildFullUserMessage(
         (entry, index) =>
           `- Collection ${index + 1}: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
       ),
-      "Treat these collections as scoped candidate sets. Use query_library({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
+      "Treat these collections as scoped candidate sets. Use library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
       "If the user explicitly asks to read or analyze the full text of every paper in a collection, plan a batch workflow: enumerate papers, read/process them in bounded batches, create compact per-paper digests with evidence, then synthesize.",
     );
   }
@@ -336,15 +336,14 @@ function buildAutoReadInstruction(request: AgentRuntimeRequest): string {
   if (allHaveMineruCache) {
     return (
       "TURN RULE: Because the user marked specific paper(s) for full-text use on this turn, " +
-      "your very first action MUST be to read the paper content. " +
-      "All marked papers have MinerU cache — start by reading `file_io({ action:'read', filePath:'{mineruCacheDir}/manifest.json' })` for each paper " +
-      "to see the section structure, then read the relevant sections from full.md using offset/length. " +
+      "your very first action MUST be to call `paper_read({ mode:'overview' })` targeting only those full-text papers. " +
+      "The paper_read facade dispatches to the available MinerU or PDF text path; use `paper_read({ mode:'targeted', query:'...' })` only for a specific missing claim. " +
       "Do this before answering, even if the answer seems obvious."
     );
   }
   return (
     "TURN RULE: Because the user marked specific paper(s) for full-text use on this turn, " +
-    "your very first action MUST be to call `read_paper` targeting only those full-text papers. " +
+    "your very first action MUST be to call `paper_read({ mode:'overview' })` targeting only those full-text papers. " +
     "Do this before answering, even if the answer seems obvious. " +
     "Do not include retrieval-only papers in that mandatory first read."
   );
@@ -379,9 +378,8 @@ function buildFigureMineruInstruction(
     .join("\n");
   return (
     "TURN RULE: This is a figure/table interpretation task and MinerU cache is available for at least one in-scope paper. " +
-    "Before using `search_paper`, `read_paper`, or `view_pdf_pages`, first inspect MinerU by calling `file_io({ action:'read', filePath:'{mineruCacheDir}/manifest.json' })` for the relevant cached paper. " +
-    "Then read the relevant `full.md` offsets and any referenced image files from that cache. " +
-    "Only fall back to PDF/search tools if the manifest or cache content cannot answer the figure request.\n" +
+    "Prefer the semantic `paper_read` path: use `paper_read({ mode:'visual', query:'<figure/table label>' })` for rendered page inspection and `paper_read({ mode:'targeted', query:'<figure/table label and surrounding discussion>' })` for text around the figure. " +
+    "If a MinerU image path is explicitly needed for note embedding, inspect the cache with `file_io({ action:'read', filePath:'{mineruCacheDir}/manifest.json' })` and read only the relevant image/section.\n" +
     `Available MinerU cache directories:\n${cacheHints}`
   );
 }
@@ -397,7 +395,7 @@ function buildWriteNoteFileInstruction(
   if (!activeSkillIds.has("write-note")) return "";
   const text = request.userText || "";
   if (/\b(zotero\s+note|current\s+zotero\s+note|active\s+note)\b/i.test(text)) {
-    return "TURN RULE: The user is asking for a Zotero note edit. Use `edit_current_note` for the Zotero note workflow rather than writing an external Markdown file.";
+    return "TURN RULE: The user is asking for a Zotero note edit. Use `note_write` for the Zotero note workflow rather than writing an external Markdown file.";
   }
   if (
     !/\b(obsidian|vault|markdown\s+file|md\s+file|file|folder|directory|disk|export|save|write\s+(?:it|this|that)?\s*(?:to|into))\b/i.test(

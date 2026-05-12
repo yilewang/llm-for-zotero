@@ -50,8 +50,8 @@ Use both the image and the section text (caption + discussion) to give a complet
 
 Fall back to PDF tools:
 
-1. `view_pdf_pages` with the figure label to find which page(s) contain it and get the page image for visual analysis
-2. `search_paper` for surrounding discussion text
+1. `paper_read({ mode:'visual', query:'<figure/table label>' })` to find which page(s) contain it and get the page image for visual analysis
+2. `paper_read({ mode:'targeted', query:'<figure/table label and surrounding discussion>' })` for surrounding discussion text
 
 ### Key rules
 
@@ -68,4 +68,4 @@ When the user asks to save your figure analysis to a note (e.g., "save it", "put
 - **Always embed the analyzed figure image** in the note — mandatory, not optional. A note explaining Figure 2 must show Figure 2.
 - Place the image at the start of the relevant section, before the explanation text.
 - If you analyzed multiple figures, embed all of them.
-- If MinerU cache was not available (you used `view_pdf_pages` instead), the figure image cannot be embedded — mention this.
+- If MinerU cache was not available (you used `paper_read({ mode:'visual' })` instead), the figure image cannot be embedded — mention this.

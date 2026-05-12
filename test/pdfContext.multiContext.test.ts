@@ -259,6 +259,40 @@ describe("pdfContext multi-context helpers", function () {
     assert.isAtLeast(candidates[0].estimatedTokens, 1);
   });
 
+  it("falls back to Zotero full-text cache when PDFWorker returns no text", async function () {
+    const io = setupMemoryIO();
+    const cachePath = "/tmp/zotero/storage/ABCD1234/.zotero-ft-cache";
+    io.files.set(
+      cachePath,
+      bytes(
+        [
+          "Abstract",
+          "This indexed Zotero text should be used when PDFWorker is empty.",
+          "",
+          "Discussion",
+          "The full-text cache still contains usable paper content.",
+        ].join("\n"),
+      ),
+    );
+    const zotero = (globalThis as unknown as { Zotero: any }).Zotero;
+    zotero.Fulltext = {
+      getItemCacheFile: () => ({
+        path: cachePath,
+        exists: () => true,
+      }),
+    };
+
+    await ensurePDFTextCached(mockPdfAttachment(123));
+    const context = pdfTextCache.get(123);
+
+    assert.equal(context?.sourceType, "zotero-fulltext-cache");
+    assert.isAtLeast(context?.chunks.length || 0, 1);
+    assert.include(
+      context?.chunks.join("\n") || "",
+      "indexed Zotero text should be used",
+    );
+  });
+
   it("ranks matching Korean text with Hangul n-gram retrieval", async function () {
     const paper: PaperContextRef = {
       itemId: 1,

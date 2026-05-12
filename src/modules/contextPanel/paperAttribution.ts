@@ -107,10 +107,10 @@ export function buildPaperQuoteCitationGuidance(
   return [
     "Paper-grounded citation format for the final answer:",
     "> quoted text from the paper",
-    "(Author, Year, page N)",
+    "(Author, Year)",
     "- Put the source label on the line immediately after the quote.",
     "- Use the EXACT source label provided for each paper. Do NOT translate or romanize author names.",
-    "- Do not cite raw chunk ids, citation keys, or invented page numbers unless they are explicitly provided.",
+    "- Do not cite raw chunk ids, citation keys, or invented page numbers.",
   ];
 }
 

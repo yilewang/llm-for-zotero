@@ -33,11 +33,10 @@ a particular claim in a paper, use a two-step approach.
 
 **Step 1 — Gather context:**
 
-- If `mineruCacheDir` is available: use `file_io({ action:'read', filePath:'{mineruCacheDir}/full.md' })`. Search the text for the relevant section. Answer if found.
-- If no MinerU cache: use `read_paper` first to understand the paper's structure.
+- Call `paper_read({ mode:'overview' })` first to understand the paper's structure and main claims.
 
 **Step 2 — Targeted retrieval (only if Step 1 is insufficient):**
-Call `search_paper({ question:'<the specific question>' })` with a focused question. This returns the most relevant passages ranked by relevance.
+Call `paper_read({ mode:'targeted', query:'<the specific question>' })` with a focused question. This returns the most relevant passages ranked by relevance.
 
 **Step 3 — Answer from the evidence.**
 Do NOT make additional retrieval calls. If the evidence does not fully answer
@@ -46,6 +45,6 @@ more tool calls.
 
 ### Budget
 
-Aim for 1–2 tool calls total. A MinerU read often answers in one call.
-A non-MinerU path uses read_paper + search_paper = 2 calls.
+Aim for 1–2 tool calls total. `paper_read({ mode:'overview' })` often answers in one call.
+The normal fallback is overview + targeted retrieval = 2 calls.
 Only exceed 2 calls if the paper's indexing is incomplete (check indexingState).

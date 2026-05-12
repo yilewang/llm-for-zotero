@@ -18,8 +18,9 @@ const DEFAULT_CODEX_APP_SERVER_NATIVE_PROCESS_KEY = "codex_app_server_native";
 const MCP_PREFLIGHT_SUCCESS_TTL_MS = 5 * 60 * 1000;
 const MCP_PREFLIGHT_FAILURE_TTL_MS = 10 * 1000;
 export const REQUIRED_CODEX_ZOTERO_MCP_TOOL_NAMES = [
-  "query_library",
-  "read_library",
+  "library_search",
+  "library_read",
+  "paper_read",
 ] as const;
 
 export type CodexNativeMcpSetupStatus = {

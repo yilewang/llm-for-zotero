@@ -130,7 +130,7 @@ function createStubSearchTool(
 ): AgentToolDefinition<Record<string, unknown>, unknown> {
   return {
     spec: {
-      name: "search_literature_online",
+      name: "literature_search",
       description: "search",
       inputSchema: { type: "object" },
       mutability: "read",
@@ -187,7 +187,7 @@ function createStubFacadeTool(
       ],
     }),
     acceptInheritedApproval: (_input, approval) =>
-      approval.sourceToolName === "search_literature_online" &&
+      approval.sourceToolName === "literature_search" &&
       acceptActionIds.includes(approval.sourceActionId),
     applyConfirmation: (input) => ({ ok: true, value: input }),
     execute: async (input) => execute(input),
@@ -229,7 +229,7 @@ describe("AgentRuntime HITL review workflow", function () {
         })),
       );
       registry.register(
-        createStubFacadeTool("update_metadata", async (input) => {
+        createStubFacadeTool("library_update", async (input) => {
           const metadata = input.metadata as Record<string, unknown> | undefined;
           assert.exists(metadata);
           assert.equal(metadata?.DOI, "10.1000/a");
@@ -245,7 +245,7 @@ describe("AgentRuntime HITL review workflow", function () {
           calls: [
             {
               id: "call-search",
-              name: "search_literature_online",
+              name: "literature_search",
               arguments: { mode: "metadata", query: "paper metadata" },
             },
           ],
@@ -255,7 +255,7 @@ describe("AgentRuntime HITL review workflow", function () {
             tool_calls: [
               {
                 id: "call-search",
-                name: "search_literature_online",
+                name: "literature_search",
                 arguments: { mode: "metadata", query: "paper metadata" },
               },
             ],
@@ -278,7 +278,7 @@ describe("AgentRuntime HITL review workflow", function () {
           events.push(event);
           if (
             event.type === "confirmation_required" &&
-            event.action.toolName === "search_literature_online"
+            event.action.toolName === "literature_search"
           ) {
             assert.equal(event.action.mode, "review");
             assert.deepEqual(
@@ -291,7 +291,7 @@ describe("AgentRuntime HITL review workflow", function () {
               data: { selectedMetadataResult: "metadata-1" },
             });
           }
-          // update_metadata accepts inherited approval from the review card,
+          // library_update accepts inherited approval from the review card,
           // so no separate confirmation is expected here
         },
       });
@@ -303,21 +303,21 @@ describe("AgentRuntime HITL review workflow", function () {
       const resultIndex = events.findIndex(
         (event) =>
           event.type === "tool_result" &&
-          event.name === "search_literature_online",
+          event.name === "literature_search",
       );
       const reviewIndex = events.findIndex(
         (event) =>
           event.type === "confirmation_required" &&
-          event.action.toolName === "search_literature_online",
+          event.action.toolName === "literature_search",
       );
       const updateResultIndex = events.findIndex(
         (event) =>
           event.type === "tool_result" &&
-          event.name === "update_metadata",
+          event.name === "library_update",
       );
       assert.isAtLeast(resultIndex, 0);
       assert.isAbove(reviewIndex, resultIndex);
-      // update_metadata accepts inherited approval from review_changes,
+      // library_update accepts inherited approval from review_changes,
       // so it executes directly without a separate confirmation
       assert.isAbove(updateResultIndex, reviewIndex);
     } finally {
@@ -325,7 +325,7 @@ describe("AgentRuntime HITL review workflow", function () {
     }
   });
 
-  it("can import selected reviewed papers through import_identifiers", async function () {
+  it("can import selected reviewed papers through library_import", async function () {
     const restoreDb = installMockDb();
     try {
       const registry = new AgentToolRegistry();
@@ -345,7 +345,7 @@ describe("AgentRuntime HITL review workflow", function () {
         })),
       );
       registry.register(
-        createStubFacadeTool("import_identifiers", async (input) => {
+        createStubFacadeTool("library_import", async (input) => {
           assert.deepEqual(
             input.identifiers,
             ["10.1000/importable"],
@@ -363,7 +363,7 @@ describe("AgentRuntime HITL review workflow", function () {
           calls: [
             {
               id: "call-search",
-              name: "search_literature_online",
+              name: "literature_search",
               arguments: { mode: "search", query: "plasticity" },
             },
           ],
@@ -373,7 +373,7 @@ describe("AgentRuntime HITL review workflow", function () {
             tool_calls: [
               {
                 id: "call-search",
-                name: "search_literature_online",
+                name: "literature_search",
                 arguments: { mode: "search", query: "plasticity" },
               },
             ],
@@ -391,7 +391,7 @@ describe("AgentRuntime HITL review workflow", function () {
         onEvent: async (event) => {
           if (
             event.type === "confirmation_required" &&
-            event.action.toolName === "search_literature_online"
+            event.action.toolName === "literature_search"
           ) {
             assert.deepEqual(
               event.action.actions?.map((action) => action.id),
@@ -404,7 +404,7 @@ describe("AgentRuntime HITL review workflow", function () {
             });
             return;
           }
-          if (event.type === "confirmation_required" && event.action.toolName === "import_identifiers") {
+          if (event.type === "confirmation_required" && event.action.toolName === "library_import") {
             sawFacadeConfirmation = true;
           }
         },
@@ -420,7 +420,7 @@ describe("AgentRuntime HITL review workflow", function () {
     }
   });
 
-  it("can save reviewed papers into a note through edit_current_note", async function () {
+  it("can save reviewed papers into a note through note_write", async function () {
     const restoreDb = installMockDb();
     try {
       const registry = new AgentToolRegistry();
@@ -439,7 +439,7 @@ describe("AgentRuntime HITL review workflow", function () {
         })),
       );
       registry.register(
-        createStubFacadeTool("edit_current_note", async (input) => {
+        createStubFacadeTool("note_write", async (input) => {
           assert.equal(input.mode, "create");
           assert.include(
             String(input.content || ""),
@@ -458,7 +458,7 @@ describe("AgentRuntime HITL review workflow", function () {
           calls: [
             {
               id: "call-search",
-              name: "search_literature_online",
+              name: "literature_search",
               arguments: { mode: "recommendations" },
             },
           ],
@@ -468,7 +468,7 @@ describe("AgentRuntime HITL review workflow", function () {
             tool_calls: [
               {
                 id: "call-search",
-                name: "search_literature_online",
+                name: "literature_search",
                 arguments: { mode: "recommendations" },
               },
             ],
@@ -486,7 +486,7 @@ describe("AgentRuntime HITL review workflow", function () {
         onEvent: async (event) => {
           if (
             event.type === "confirmation_required" &&
-            event.action.toolName === "search_literature_online"
+            event.action.toolName === "literature_search"
           ) {
             runtime.resolveConfirmation(event.requestId, {
               approved: true,
@@ -498,7 +498,7 @@ describe("AgentRuntime HITL review workflow", function () {
             });
             return;
           }
-          if (event.type === "confirmation_required" && event.action.toolName === "edit_current_note") {
+          if (event.type === "confirmation_required" && event.action.toolName === "note_write") {
             sawFacadeConfirmation = true;
           }
         },
@@ -547,7 +547,7 @@ describe("AgentRuntime HITL review workflow", function () {
           calls: [
             {
               id: "call-search",
-              name: "search_literature_online",
+              name: "literature_search",
               arguments: { mode: "search", query: "initial search" },
             },
           ],
@@ -557,7 +557,7 @@ describe("AgentRuntime HITL review workflow", function () {
             tool_calls: [
               {
                 id: "call-search",
-                name: "search_literature_online",
+                name: "literature_search",
                 arguments: { mode: "search", query: "initial search" },
               },
             ],
@@ -575,7 +575,7 @@ describe("AgentRuntime HITL review workflow", function () {
         onEvent: async (event) => {
           if (
             event.type === "confirmation_required" &&
-            event.action.toolName === "search_literature_online"
+            event.action.toolName === "literature_search"
           ) {
             searchReviewCount += 1;
             if (searchReviewCount === 1) {
@@ -633,7 +633,7 @@ describe("AgentRuntime HITL review workflow", function () {
           calls: [
             {
               id: "call-search",
-              name: "search_literature_online",
+              name: "literature_search",
               arguments: { mode: "search", query: "cancel flow" },
             },
           ],
@@ -643,7 +643,7 @@ describe("AgentRuntime HITL review workflow", function () {
             tool_calls: [
               {
                 id: "call-search",
-                name: "search_literature_online",
+                name: "literature_search",
                 arguments: { mode: "search", query: "cancel flow" },
               },
             ],
@@ -660,7 +660,7 @@ describe("AgentRuntime HITL review workflow", function () {
         onEvent: async (event) => {
           if (
             event.type === "confirmation_required" &&
-            event.action.toolName === "search_literature_online"
+            event.action.toolName === "literature_search"
           ) {
             runtime.resolveConfirmation(event.requestId, {
               approved: false,

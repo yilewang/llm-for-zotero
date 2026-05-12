@@ -33,11 +33,11 @@ When the user asks for a literature review, follow this three-phase workflow. Th
 Identify the corpus of papers to review:
 
 - **Papers already in context**: If the user has pinned or selected papers (visible in `selectedPaperContexts` or `fullTextPaperContexts`), use those directly. No discovery step needed.
-- **Topic search**: If the user provides a topic or keywords, use `query_library({ entity:'items', mode:'search', text:'<topic>', include:['metadata','abstract'] })` to find matching papers in their library.
-- **Collection**: If the user names a collection, use `query_library({ entity:'collections', mode:'search', text:'<collection name>' })` to resolve it, then `query_library({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> }, include:['metadata','abstract'] })`.
+- **Topic search**: If the user provides a topic or keywords, use `library_search({ entity:'items', mode:'search', text:'<topic>', include:['metadata','abstract'] })` to find matching papers in their library.
+- **Collection**: If the user names a collection, use `library_search({ entity:'collections', mode:'search', text:'<collection name>' })` to resolve it, then `library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> }, include:['metadata','abstract'] })`.
 - **Whole library**: If the user wants a review across their entire library, use `zotero_script({ mode:'read', description:'Summarize candidate papers for a literature review', script:'...' })` to aggregate candidates in Zotero's runtime (same pattern as `library-analysis`).
 
-Cap the corpus at **15-20 papers**. If more match, select the most relevant based on title/abstract relevance to the topic. Use `read_library` to retrieve metadata (title, authors, year, abstract, publicationTitle) for all discovered papers.
+Cap the corpus at **15-20 papers**. If more match, select the most relevant based on title/abstract relevance to the topic. Use `library_read` to retrieve metadata (title, authors, year, abstract, publicationTitle) for all discovered papers.
 
 ### Phase 2 — Selective Deep Reading (2-5 tool calls)
 
@@ -45,9 +45,9 @@ Do **NOT** read every paper in full. Abstracts from Phase 1 are sufficient for m
 
 Deep-read only the **3-5 most relevant papers** to the review topic:
 
-1. If MinerU cache is available: `file_io({ action:'read', filePath:'{mineruCacheDir}/full.md' })` — best quality, gets full text with figures.
-2. Otherwise: `read_paper` for structured metadata + abstract.
-3. For targeted claims: `search_paper` with focused questions (e.g., "What methods were used?", "What were the key findings?").
+1. Use `paper_read({ mode:'overview', targets:[...] })` for selected papers.
+2. For targeted claims: `paper_read({ mode:'targeted', query:'...', targets:[...] })` with focused questions (e.g., "What methods were used?", "What were the key findings?").
+3. Use `paper_read({ mode:'visual', query:'...' })` or MinerU `file_io` image reads only when figures are directly relevant.
 
 Prioritize breadth over depth — it is better to include 15 papers with abstract-level understanding than 5 papers with full-text reads.
 
@@ -89,7 +89,7 @@ If key figures from deep-read papers would strengthen a thematic point, embed th
 
 ### After writing
 
-- Ask the user if they want the review saved as a Zotero note: `edit_current_note({ mode:'create', content:'...', target:'standalone' })`.
+- Ask the user if they want the review saved as a Zotero note: `note_write({ mode:'create', content:'...', target:'standalone' })`.
 - If saving, convert the markdown to the Zotero note HTML format.
 
 ### Key rules
@@ -98,4 +98,4 @@ If key figures from deep-read papers would strengthen a thematic point, embed th
 - Do NOT dump all paper content into context — use abstracts first, deep-read selectively.
 - Do NOT produce a per-paper summary list — synthesize thematically.
 - If the review covers >10 papers, prioritize breadth (abstracts) over depth (full reads).
-- If fewer than 3 papers match the topic, tell the user and offer to search online with `search_literature_online`.
+- If fewer than 3 papers match the topic, tell the user and offer to search online with `literature_search`.

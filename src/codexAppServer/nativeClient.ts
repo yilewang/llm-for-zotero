@@ -1211,7 +1211,7 @@ function buildCodexNativeResourceDeltaBlock(params: {
   return lines.join("\n");
 }
 
-function buildZoteroEnvironmentManifest(params: {
+export function buildZoteroEnvironmentManifest(params: {
   scope: CodexNativeConversationScope;
   mcpEnabled: boolean;
   mcpReady: boolean;
@@ -1289,22 +1289,22 @@ function buildZoteroEnvironmentManifest(params: {
   }
 
   lines.push(
-    "- Zotero MCP tools: available. Use them to inspect and update Zotero data instead of assuming library or paper content is preloaded.",
-    "- Critical: use only Zotero MCP tools for Zotero library, profile, item, PDF, and note data. If Zotero MCP tools are unavailable or fail, report the setup error. Do not inspect local Zotero profile folders, zotero.sqlite, WAL files, backups, or other filesystem copies to answer Zotero-library questions.",
-    "- Codex built-in shell access is disabled. Use Zotero MCP tools such as run_command, file_io, and zotero_script only when needed.",
-    "- Context reuse: if prior Zotero, PDF, or MinerU content already inspected in this Codex thread is sufficient, answer directly from that thread context without rereading. Reread only when the user asks about a new paper, section, figure, page, exact quote/evidence, or when the prior context is missing, stale, or uncertain.",
-    "- Write workflow: use focused Zotero MCP write tools for requested changes. For Zotero note creation or editing, call edit_current_note; do not output note-ready text in chat as a substitute.",
-    "- Note workflow: for note creation, saving, editing, appending, updating, or rewriting requests in any language, use edit_current_note. Do not rediscover the active note before editing it, and do not dump note-ready text in chat instead of applying the requested note change.",
-    "- Active-note workflow: when an active note ID is listed, edit_current_note can edit that note directly. Use the listed active note ID/scope as the target unless the user explicitly names a different note.",
-    "- Review workflow: most write tools return only after the user approves or denies the Zotero review card. zotero_script runs directly; write scripts must use env.snapshot(item) or env.addUndoStep(fn) so undo_last_action can revert them.",
+    "- You are Codex. Zotero resources and MCP tools are available when useful; they are not mandatory for every response.",
+    "- Use tools only when they materially improve the answer or are required to inspect/update Zotero. If available context is enough, answer directly.",
+    "- For Zotero library, profile, item, PDF, and note facts not shown in context, use Zotero MCP tools instead of local Zotero database/filesystem copies.",
+    "- Paper content: use paper_read overview for broad summaries, targeted for specific sections/results/methods, and visual/capture only for figures, layout, pages, or current reader capture.",
+    "- Citations: use the provided sourceLabel for paper-grounded claims. Do not call tools solely to discover page numbers; the UI citation binder may resolve page links after rendering.",
+    "- External lookup is allowed when the user asks for current web information, or when paper_read shows local paper content is unavailable and Zotero metadata/abstract is insufficient. Label external sources separately.",
+    "- Write/update requests should use semantic Zotero MCP write tools. Review cards or direct tool results are the deliverable for tool-backed writes.",
+    "- Advanced tools run_command, file_io, and zotero_script are escape hatches for explicit shell/file/script tasks or unsupported formats, not ordinary paper/library reading.",
   );
   if (scope.kind === "paper") {
     lines.push(
-      "- Paper workflow: if the active or selected paper context lists mineruCacheDir, read MinerU manifest.json/full.md with file_io({ action:'read', filePath:'...' }) before using raw PDF tools. Use read_paper/search_paper only when MinerU is unavailable or after MinerU lacks the needed evidence; use view_pdf_pages only for visual page inspection.",
+      "- Active paper resources are listed above. Use their IDs directly when a paper_read call is useful.",
     );
   } else {
     lines.push(
-      "- Library workflow: use query_library with explicit entity and mode, for example query_library({ entity:'items', mode:'search', text:'...' }) or query_library({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }), to discover/search/list items in the active library, then read_library and paper tools on selected item IDs before answering. Do not ask the user to paste the whole library.",
+      "- Library resources are listed above. Use library_search/library_read when the answer needs library data that is not already visible.",
     );
   }
   return [

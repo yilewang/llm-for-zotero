@@ -46,6 +46,10 @@ export function resolveContextItemFromPaperContext(
   return getFirstPdfChildAttachment(item);
 }
 
+function canInspectZoteroItems(): boolean {
+  return typeof (globalThis as any).Zotero?.Items?.get === "function";
+}
+
 export class PdfService {
   async ensurePaperContext(
     paperContext: PaperContextRef,
@@ -67,6 +71,12 @@ export class PdfService {
     sourceLabel: string;
     paperContext: PaperContextRef;
   }> {
+    const contextItem = canInspectZoteroItems()
+      ? resolveContextItemFromPaperContext(params.paperContext)
+      : null;
+    if (canInspectZoteroItems() && !contextItem) {
+      throw new Error("No PDF attachment is available for this Zotero item");
+    }
     const pdfContext = await this.ensurePaperContext(params.paperContext);
     const chunkIndex = Number.isFinite(params.chunkIndex)
       ? Math.max(0, Math.floor(params.chunkIndex))
@@ -99,6 +109,12 @@ export class PdfService {
     sourceLabel: string;
     paperContext: PaperContextRef;
   }> {
+    const contextItem = canInspectZoteroItems()
+      ? resolveContextItemFromPaperContext(params.paperContext)
+      : null;
+    if (canInspectZoteroItems() && !contextItem) {
+      throw new Error("No PDF attachment is available for this Zotero item");
+    }
     const pdfContext = await this.ensurePaperContext(params.paperContext);
     if (!pdfContext || !pdfContext.chunks.length) {
       throw new Error("No extractable PDF text available for this paper");
@@ -118,6 +134,66 @@ export class PdfService {
       citationLabel: formatPaperCitationLabel(params.paperContext),
       sourceLabel: formatPaperSourceLabel(params.paperContext),
       paperContext: params.paperContext,
+    };
+  }
+
+  async getOverviewExcerpt(params: {
+    paperContext: PaperContextRef;
+    maxChars?: number;
+  }): Promise<{
+    text: string;
+    chunkIndexes: number[];
+    totalChunks: number;
+    citationLabel: string;
+    sourceLabel: string;
+    paperContext: PaperContextRef;
+    backend: "raw_pdf_text";
+  }> {
+    const contextItem = canInspectZoteroItems()
+      ? resolveContextItemFromPaperContext(params.paperContext)
+      : null;
+    if (canInspectZoteroItems() && !contextItem) {
+      throw new Error("No PDF attachment is available for this Zotero item");
+    }
+    const pdfContext = await this.ensurePaperContext(params.paperContext);
+    if (!pdfContext || !pdfContext.chunks.length) {
+      throw new Error("No extractable PDF text available for this paper");
+    }
+    const maxChars = Number.isFinite(params.maxChars)
+      ? Math.max(800, Math.min(9000, Math.floor(params.maxChars as number)))
+      : 6000;
+    const selected = new Map<number, string>();
+    pdfContext.chunks.slice(0, 3).forEach((chunk, index) => {
+      selected.set(index, chunk);
+    });
+    const conclusionIndex = pdfContext.chunks.findIndex((chunk) =>
+      /\b(discussion|conclusion|conclusions|summary|general discussion)\b/i.test(
+        chunk.slice(0, 1200),
+      ),
+    );
+    if (conclusionIndex >= 0) {
+      selected.set(conclusionIndex, pdfContext.chunks[conclusionIndex]);
+      const next = conclusionIndex + 1;
+      if (next < pdfContext.chunks.length) {
+        selected.set(next, pdfContext.chunks[next]);
+      }
+    } else if (pdfContext.chunks.length > 4) {
+      selected.set(pdfContext.chunks.length - 1, pdfContext.chunks[pdfContext.chunks.length - 1]);
+    }
+    const ordered = Array.from(selected.entries()).sort((left, right) => left[0] - right[0]);
+    const text = ordered
+      .map(([index, chunk]) => `[chunk ${index}]\n${chunk.trim()}`)
+      .join("\n\n")
+      .slice(0, maxChars)
+      .trim();
+    return {
+      text,
+      chunkIndexes: ordered.map(([index]) => index),
+      totalChunks: pdfContext.chunks.length,
+      citationLabel: formatPaperCitationLabel(params.paperContext),
+      sourceLabel: formatPaperSourceLabel(params.paperContext),
+      paperContext: params.paperContext,
+      backend: "raw_pdf_text",
     };
   }
 

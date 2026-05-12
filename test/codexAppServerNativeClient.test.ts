@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  buildZoteroEnvironmentManifest,
   resolveCodexNativeApprovalRequest,
   resolveSafeCodexNativeApprovalRequest,
 } from "../src/codexAppServer/nativeClient";
@@ -157,6 +158,28 @@ describe("Codex app-server native client", function () {
       }).response,
       { action: "decline", content: null, _meta: null },
     );
+  });
+
+  it("uses a light Codex-native Zotero resource contract", function () {
+    const manifest = buildZoteroEnvironmentManifest({
+      scope: {
+        conversationKey: 1,
+        libraryID: 1,
+        kind: "paper",
+        paperItemID: 42,
+        activeItemId: 42,
+        activeContextItemId: 43,
+        paperTitle: "Native Paper",
+      },
+      mcpEnabled: true,
+      mcpReady: true,
+    });
+    assert.include(manifest, "You are Codex");
+    assert.include(manifest, "Zotero resources and MCP tools are available when useful");
+    assert.include(manifest, "Use tools only when they materially improve the answer");
+    assert.include(manifest, "Do not call tools solely to discover page numbers");
+    assert.notInclude(manifest, "page N");
+    assert.notInclude(manifest, "use shell creatively");
   });
 
   it("records successful native paper reads for context reuse hints", function () {

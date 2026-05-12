@@ -620,7 +620,7 @@ export function createSearchLiteratureReviewAction(
         // Build before/after diff rows for the fields that would change
         const diffRows = buildMetadataDiffRows(metadata, context, normalizedArgs);
         return {
-          toolName: "search_literature_online",
+          toolName: "literature_search",
           mode: "review",
           title: "Review metadata changes",
           description:
@@ -655,7 +655,7 @@ export function createSearchLiteratureReviewAction(
 
     // Low-confidence: show the original source-selection card
     return {
-      toolName: "search_literature_online",
+      toolName: "literature_search",
       mode: "review",
       title: "Choose metadata source",
       description:
@@ -687,7 +687,7 @@ export function createSearchLiteratureReviewAction(
   const normalizedArgs = normalizeSearchReviewArgs(args);
   const noteContent = buildPaperNoteTemplate(context, prepared);
   return {
-    toolName: "search_literature_online",
+    toolName: "literature_search",
     mode: "review",
     title: "Review online literature results",
     description:
@@ -783,14 +783,14 @@ export function resolveSearchLiteratureReview(
       return {
         kind: "invoke_tool",
         call: {
-          name: "edit_current_note",
+          name: "note_write",
           arguments: {
             mode: "create",
             content: noteContent,
             target: "item",
           },
           inheritedApproval: {
-            sourceToolName: "search_literature_online",
+            sourceToolName: "literature_search",
             sourceActionId: "save_metadata_note",
             sourceMode: "review",
           } satisfies AgentInheritedApproval,
@@ -820,13 +820,14 @@ export function resolveSearchLiteratureReview(
       return {
         kind: "invoke_tool",
         call: {
-          name: "update_metadata",
+          name: "library_update",
           arguments: {
+            kind: "metadata",
             ...(paperContext ? { paperContext } : { itemId }),
             metadata,
           },
           inheritedApproval: {
-            sourceToolName: "search_literature_online",
+            sourceToolName: "literature_search",
             sourceActionId: "apply_direct",
             sourceMode: "review",
           } satisfies AgentInheritedApproval,
@@ -860,13 +861,14 @@ export function resolveSearchLiteratureReview(
       return {
         kind: "invoke_tool",
         call: {
-          name: "update_metadata",
+          name: "library_update",
           arguments: {
+            kind: "metadata",
             ...(paperContext ? { paperContext } : { itemId }),
             metadata,
           },
           inheritedApproval: {
-            sourceToolName: "search_literature_online",
+            sourceToolName: "literature_search",
             sourceActionId: "review_changes",
             sourceMode: "review",
           } satisfies AgentInheritedApproval,
@@ -904,25 +906,26 @@ export function resolveSearchLiteratureReview(
     }
     return {
       kind: "invoke_tool",
-        call: {
-          name: "import_identifiers",
-          arguments: {
-            identifiers,
-            libraryID: normalizedArgs.libraryID || context.request.libraryID,
+      call: {
+        name: "library_import",
+        arguments: {
+          kind: "identifiers",
+          identifiers,
+          libraryID: normalizedArgs.libraryID || context.request.libraryID,
         },
         inheritedApproval: {
-          sourceToolName: "search_literature_online",
+          sourceToolName: "literature_search",
           sourceActionId: "import",
-            sourceMode: "review",
-          } satisfies AgentInheritedApproval,
-        },
-        terminalText: {
-          onSuccess: "Imported the selected papers into Zotero.",
-          onDenied: "Paper import was cancelled.",
-          onError: "Could not import the selected papers into Zotero.",
-        },
-      };
-    }
+          sourceMode: "review",
+        } satisfies AgentInheritedApproval,
+      },
+      terminalText: {
+        onSuccess: "Imported the selected papers into Zotero.",
+        onDenied: "Paper import was cancelled.",
+        onError: "Could not import the selected papers into Zotero.",
+      },
+    };
+  }
 
   if (actionId === "save_note") {
     const noteContent = normalizeNoteSourceText(
@@ -930,32 +933,32 @@ export function resolveSearchLiteratureReview(
     );
     return {
       kind: "invoke_tool",
-        call: {
-          name: "edit_current_note",
-          arguments: {
-            mode: "create",
-            content: noteContent,
+      call: {
+        name: "note_write",
+        arguments: {
+          mode: "create",
+          content: noteContent,
           target: "item",
         },
         inheritedApproval: {
-          sourceToolName: "search_literature_online",
+          sourceToolName: "literature_search",
           sourceActionId: "save_paper_note",
-            sourceMode: "review",
-          } satisfies AgentInheritedApproval,
-        },
-        terminalText: {
-          onSuccess: "Saved the selected papers to a note.",
-          onDenied: "Paper note save was cancelled.",
-          onError: "Could not save the selected papers to a note.",
-        },
-      };
-    }
+          sourceMode: "review",
+        } satisfies AgentInheritedApproval,
+      },
+      terminalText: {
+        onSuccess: "Saved the selected papers to a note.",
+        onDenied: "Paper note save was cancelled.",
+        onError: "Could not save the selected papers to a note.",
+      },
+    };
+  }
 
   if (actionId === "new_search") {
     return {
       kind: "invoke_tool",
       call: {
-        name: "search_literature_online",
+        name: "literature_search",
         arguments: {
           mode: "search",
           query:

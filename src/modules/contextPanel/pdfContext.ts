@@ -153,12 +153,92 @@ function formatErrorForLog(error: unknown): string {
   return String(error || "Unknown error");
 }
 
+function decodeFileContents(data: unknown): string {
+  if (typeof data === "string") return data;
+  if (data instanceof Uint8Array) return new TextDecoder("utf-8").decode(data);
+  if (data instanceof ArrayBuffer) {
+    return new TextDecoder("utf-8").decode(new Uint8Array(data));
+  }
+  return "";
+}
+
+async function readLocalTextFile(source: string | nsIFile): Promise<string> {
+  const zoteroFile = (Zotero as unknown as {
+    File?: {
+      getContentsAsync?: (
+        source: string | nsIFile,
+        charset?: string,
+      ) => Promise<unknown> | unknown;
+    };
+  }).File;
+  if (zoteroFile?.getContentsAsync) {
+    try {
+      const data = await zoteroFile.getContentsAsync(source, "utf-8");
+      const text = decodeFileContents(data);
+      if (text) return text;
+    } catch (error) {
+      ztoolkit.log(
+        "LLM: Zotero.File text read failed; trying lower-level readers:",
+        formatErrorForLog(error),
+      );
+    }
+  }
+
+  const path = typeof source === "string" ? source : source.path;
+  const IOUtils = (globalThis as unknown as {
+    IOUtils?: {
+      read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
+    };
+  }).IOUtils;
+  if (IOUtils?.read) {
+    return decodeFileContents(await IOUtils.read(path));
+  }
+
+  const OS = (globalThis as unknown as {
+    OS?: {
+      File?: {
+        read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
+      };
+    };
+  }).OS;
+  if (OS?.File?.read) {
+    return decodeFileContents(await OS.File.read(path));
+  }
+
+  return "";
+}
+
+async function readZoteroFulltextCache(
+  item: Zotero.Item,
+): Promise<string> {
+  try {
+    const fulltext = (Zotero as unknown as {
+      Fulltext?: { getItemCacheFile?: (item: Zotero.Item) => nsIFile };
+      FullText?: { getItemCacheFile?: (item: Zotero.Item) => nsIFile };
+    }).Fulltext || (Zotero as unknown as {
+      FullText?: { getItemCacheFile?: (item: Zotero.Item) => nsIFile };
+    }).FullText;
+    const cacheFile = fulltext?.getItemCacheFile?.(item);
+    if (!cacheFile) return "";
+    if (typeof cacheFile.exists === "function" && !cacheFile.exists()) {
+      return "";
+    }
+    return sanitizePdfText(await readLocalTextFile(cacheFile));
+  } catch (error) {
+    ztoolkit.log(
+      "LLM: Zotero full-text cache read failed:",
+      formatErrorForLog(error),
+    );
+    return "";
+  }
+}
+
 async function cachePDFText(item: Zotero.Item) {
   if (pdfTextCache.has(item.id)) return;
 
   try {
     let pdfText = "";
-    let sourceType: "mineru" | "zotero-worker" | undefined;
+    let sourceType: PdfContext["sourceType"];
     const mainItem =
       item.isAttachment() && item.parentID
         ? Zotero.Items.get(item.parentID)
@@ -197,6 +277,16 @@ async function cachePDFText(item: Zotero.Item) {
         }
       } catch (e) {
         ztoolkit.log("PDF extraction failed:", e);
+      }
+    }
+
+    // 3. Fallback to Zotero's full-text cache/index. PDFWorker can return no
+    // text even when Zotero already has indexed text for the attachment.
+    if (!pdfText && pdfItem) {
+      const cachedText = await readZoteroFulltextCache(pdfItem);
+      if (cachedText) {
+        pdfText = cachedText;
+        sourceType = "zotero-fulltext-cache";
       }
     }
 
@@ -1042,7 +1132,7 @@ function getSupportLevelLabel(chunkKind: PdfChunkKind | undefined): string {
 
 export function buildChunkMetadata(
   chunks: string[],
-  sourceType?: "mineru" | "zotero-worker",
+  sourceType?: PdfContext["sourceType"],
 ): PdfChunkMeta[] {
   const chunkMeta: PdfChunkMeta[] = [];
   let activeSection: SectionHeadingMatch | undefined;

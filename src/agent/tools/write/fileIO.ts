@@ -215,6 +215,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
         ),
       instruction:
         "Use file_io to read or write files on the user's filesystem. " +
+        "Do not use file_io for ordinary Zotero paper/library reading when semantic Zotero tools can answer. " +
         "Common uses: write a Python/R script before running it with run_command, read a CSV/JSON data file, " +
         "save analysis results to the user's Desktop, export formatted bibliographies. " +
         "Always use absolute paths.",

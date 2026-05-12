@@ -1,11 +1,12 @@
 ---
 id: compare-papers
 description: Compare multiple papers by theme, methodology, or findings
-version: 2
+version: 3
 match: /\b(compare|contrast|difference|differ|similarities|similarity)\b.*\b(papers?|articles?|studies|works?)\b/i
 match: /\b(papers?|articles?|studies)\b.*\b(compare|contrast|difference|differ|similarities|similarity)\b/i
 match: /\bcomparative\s+(analysis|review|study)\b/i
 match: /\bhow\s+(does|do|is|are)\b.*\bdiffer\b/i
+match: /\bcompare\b.*\b(methods?|methodology|sections?|approach|results?|limitations?)\b/i
 ---
 
 <!--
@@ -23,29 +24,13 @@ match: /\bhow\s+(does|do|is|are)\b.*\bdiffer\b/i
   To reset to default, delete this file — it will be recreated on next restart.
 -->
 
-## Comparing Multiple Papers — use targeted reading, not full text
+## Comparing Multiple Papers — targeted first when the dimension is known
 
-When the user asks to compare two or more papers, do NOT read entire paper contents into context. Full-text reads consume thousands of tokens per paper and can overflow the context window before you synthesize an answer.
+Use Zotero paper tools as resources, not a ritual. Batch selected papers in `targets`.
 
-### Strategy
-
-**Step 1 — Batch front matter (abstracts + intros):**
-Call `read_paper` with a `targets` array listing all papers to compare (up to 6). This returns ~500 tokens per paper in one call, giving you enough to understand each paper's scope, claims, and approach.
-
-**Step 2 — Targeted evidence retrieval:**
-Call `search_paper` with a focused question about the comparison dimension the user cares about (e.g. "What methods does this paper use?", "What are the main results?"). This returns the most relevant passages across all papers, globally ranked and deduplicated (~1500 tokens total).
-
-**Step 3 — Deeper follow-up (only if needed):**
-If the user asks about a specific aspect not covered by the retrieved evidence, make another `search_paper({ question:'<specific question>' })` call with a more specific question. Avoid `read_paper({ chunkIndexes:[...] })` unless the user asks for a specific section.
-
-### MinerU cache optimization
-
-Before reading PDFs, check if papers have MinerU cache available (visible in `read_library` results as `mineruCacheDir`). When available, prefer reading `file_io({ action:'read', filePath:'{mineruCacheDir}/full.md' })` — this gives high-quality structured markdown with preserved equations and figures, and is faster than `read_paper`.
-
-### Key rules
-
-- ALWAYS batch papers in the `targets` array — do not call `read_paper` separately for each paper.
-- Use `read_paper` first (structured overview), then `search_paper` (focused detail). This two-step approach keeps context small.
-- Do NOT use `read_paper({ chunkIndexes:[...] })` or read full MinerU files for all papers at once — read targeted sections only.
-- For 2-3 papers, the total context cost should be ~2000-3000 tokens. For 4-6 papers, ~3000-5000 tokens.
-- Synthesize comparisons from the retrieved excerpts. If something is missing, make one more targeted retrieval — don't read everything "just in case".
+- If the user names a comparison dimension such as methods, results, limitations, theory, data, or figures, start with one batched targeted read:
+  `paper_read({ mode:'targeted', query:'methods methodology method section', targets:[...] })`
+- For broad requests like "compare these papers" with no dimension, call `paper_read({ mode:'overview', targets:[...] })` once, then answer or make one focused targeted call if a specific gap remains.
+- For method-section requests, do not call overview first unless the targeted result is clearly insufficient.
+- Do not call visual/page tools, `file_io`, or `run_command` just to improve citation anchors or page numbers. Use the provided `sourceLabel`; the UI can bind citations after rendering.
+- Stop after the first useful batched result when it covers the selected papers. Make at most one follow-up `paper_read({ mode:'targeted', ... })` for a concrete missing dimension.

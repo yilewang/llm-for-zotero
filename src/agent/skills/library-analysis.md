@@ -26,7 +26,7 @@ match: /\b(distribution|breakdown|histogram)\b.*\b(years?|tags?|authors?|types?|
 
 ## Library / Collection Analysis - use zotero_script read mode
 
-When the user asks for a summary, overview, statistics, or analysis of their **whole library or a collection**, do NOT make multiple `query_library` calls to page through results. Each `query_library` call returns full metadata for every matching item, which quickly overflows the context window.
+When the user asks for a summary, overview, statistics, or analysis of their **whole library or a collection**, do NOT make multiple `library_search` calls to page through results. Each broad `library_search` call can return enough metadata to overflow the context window.
 
 Instead, use a single `zotero_script({ mode:'read', description:'Analyze library or collection statistics', script:'...' })` call that iterates all items inside Zotero's runtime and aggregates the answer in one pass. The script runs locally — there is no context-size limitation because only the final `env.log()` output is returned to the conversation.
 
@@ -38,7 +38,7 @@ Instead, use a single `zotero_script({ mode:'read', description:'Analyze library
    - Aggregates whatever the user asked for (counts by year, by type, by tag, top authors, collection sizes, etc.).
    - Calls `env.log()` with the aggregated result (compact JSON or readable text).
 2. Present the aggregated output to the user with interpretation.
-3. If the user needs detail on specific items after seeing the summary, use `query_library` with targeted filters for just those items.
+3. If the user needs detail on specific items after seeing the summary, use `library_search` with targeted filters for just those items.
 
 ### Example: "give me an overview of my library"
 
@@ -63,8 +63,8 @@ env.log(JSON.stringify({ total, byYear, byType, byTag }, null, 2));
 
 ### Key rules
 
-- NEVER page through `query_library` to collect all items — it will overflow the context.
+- NEVER page through `library_search` to collect all items — it will overflow the context.
 - A single `zotero_script({ mode:'read', description:'Analyze library or collection statistics', script:'...' })` can process thousands of items because only the final summary is returned.
 - If the user asks about a specific collection, filter by collection inside the script using `Zotero.Collections.get(collectionId).getChildItems()`.
 - Keep `env.log()` output concise — aggregate, don't list every item.
-- Use `query_library` only for targeted follow-up detail (e.g. "show me the 5 oldest papers").
+- Use `library_search` only for targeted follow-up detail (e.g. "show me the 5 oldest papers").

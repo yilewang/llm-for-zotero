@@ -27,7 +27,7 @@ describe("reviewCards note drafts", function () {
   it("adds a diff preview for metadata note drafts", function () {
     const result: AgentToolResult = {
       callId: "call-1",
-      name: "search_literature_online",
+      name: "literature_search",
       ok: true,
       content: {
         mode: "metadata",
@@ -60,7 +60,7 @@ describe("reviewCards note drafts", function () {
   it("adds a diff preview for paper-result note drafts", function () {
     const result: AgentToolResult = {
       callId: "call-1",
-      name: "search_literature_online",
+      name: "literature_search",
       ok: true,
       content: {
         mode: "recommendations",
@@ -93,7 +93,7 @@ describe("reviewCards note drafts", function () {
   it("normalizes reviewed note content before invoking save_note", function () {
     const result: AgentToolResult = {
       callId: "call-1",
-      name: "search_literature_online",
+      name: "literature_search",
       ok: true,
       content: {
         mode: "metadata",
@@ -125,7 +125,7 @@ describe("reviewCards note drafts", function () {
 
     assert.equal(next.kind, "invoke_tool");
     if (next.kind !== "invoke_tool") return;
-    assert.equal(next.call.name, "edit_current_note");
+    assert.equal(next.call.name, "note_write");
     const args = next.call.arguments as { mode?: string; content?: string; target?: string };
     assert.equal(args.mode, "create");
     assert.equal(args.content, "# Summary\n\n**Key point**");
@@ -135,7 +135,7 @@ describe("reviewCards note drafts", function () {
   it("builds a metadata update mutation directly from the selected metadata source", function () {
     const result: AgentToolResult = {
       callId: "call-1",
-      name: "search_literature_online",
+      name: "literature_search",
       ok: true,
       content: {
         mode: "metadata",
@@ -185,11 +185,13 @@ describe("reviewCards note drafts", function () {
 
     assert.equal(next.kind, "invoke_tool");
     if (next.kind !== "invoke_tool") return;
-    assert.equal(next.call.name, "update_metadata");
+    assert.equal(next.call.name, "library_update");
     const args = next.call.arguments as {
+      kind?: string;
       itemId?: number;
       metadata?: Record<string, unknown>;
     };
+    assert.equal(args.kind, "metadata");
     assert.equal(args.itemId, 55);
     assert.equal(args.metadata?.title, "Climer metadata");
     assert.equal(args.metadata?.DOI, "10.1000/example");

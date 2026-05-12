@@ -303,7 +303,7 @@ export function createQueryLibraryTool(
           request.userText,
         ),
       instruction:
-        "For library-organization requests, gather the item IDs first with query_library({ entity:'items', mode:'list', filters:{ unfiled:true } }) when needed. If the user wants you to file or move papers and the exact destination collection IDs are not known yet, call move_to_collection with {action:'add', itemIds:[...]} and let the confirmation card collect the target folders. Use query_library({ entity:'collections', mode:'list', view:'tree' }) when you need the collection hierarchy to prefill or explain choices.",
+        "For library-organization requests, gather the item IDs first with library_search({ entity:'items', mode:'list', filters:{ unfiled:true } }) when needed. If the user wants you to file or move papers and the exact destination collection IDs are not known yet, call library_update with {kind:'collections', action:'add', itemIds:[...]} and let the confirmation card collect the target folders. Use library_search({ entity:'collections', mode:'list', view:'tree' }) when you need the collection hierarchy to prefill or explain choices.",
     },
     presentation: {
       label: "Query Library",
@@ -406,7 +406,7 @@ export function createQueryLibraryTool(
             : "";
         if (!text) {
           return fail(
-            "text is required for search mode. Use query_library({ entity:'items', mode:'search', text:'<terms>' })",
+            "text is required for search mode. Use library_search({ entity:'items', mode:'search', text:'<terms>' })",
           );
         }
       }

@@ -99,14 +99,14 @@ describe("tool guidance contracts", function () {
     assert.deepEqual(failures, []);
   });
 
-  it("keeps query_library examples explicit about entity and mode", function () {
+  it("keeps library_search examples explicit about entity and mode", function () {
     const failures: string[] = [];
-    const callPattern = /query_library\(([^)]*)\)/g;
+    const callPattern = /library_search\(([^)]*)\)/g;
     for (const source of readSourceFiles()) {
       for (const match of source.content.matchAll(callPattern)) {
         const callBody = match[1] || "";
         if (!/\bentity\s*:/.test(callBody) || !/\bmode\s*:/.test(callBody)) {
-          failures.push(`${source.path}: query_library(${callBody})`);
+          failures.push(`${source.path}: library_search(${callBody})`);
         }
       }
     }

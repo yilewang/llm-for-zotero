@@ -406,7 +406,7 @@ describe("primitive agent tools", function () {
     ]);
   });
 
-  it("builds system instructions around the primitive tool names", async function () {
+  it("builds system instructions around semantic tool names", async function () {
     const messages = await buildAgentInitialMessages(
       {
         conversationKey: 1,
@@ -421,15 +421,17 @@ describe("primitive agent tools", function () {
     );
     const systemText =
       typeof messages[0]?.content === "string" ? messages[0].content : "";
-    assert.include(systemText, "search_literature_online");
-    assert.include(systemText, "query_library");
-    assert.include(systemText, "read_library");
-    assert.include(systemText, "read_paper");
-    assert.include(systemText, "apply_tags");
+    assert.include(systemText, "literature_search");
+    assert.include(systemText, "library_search");
+    assert.include(systemText, "library_read");
+    assert.include(systemText, "paper_read");
+    assert.include(systemText, "library_update");
     assert.include(
       systemText,
-      "the search_literature_online review card is the deliverable",
+      "the literature_search review card is the deliverable",
     );
+    assert.notInclude(systemText, "search_literature_online");
+    assert.notInclude(systemText, "query_library");
     assert.notInclude(systemText, "search_related_papers_online");
     assert.notInclude(systemText, "read_paper_front_matter");
   });
@@ -459,7 +461,7 @@ describe("primitive agent tools", function () {
     assert.include(userText, "Methods [collectionId=55, libraryID=1]");
     assert.include(
       userText,
-      "query_library({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } })",
+      "library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } })",
     );
     assert.include(
       userText,
@@ -931,14 +933,13 @@ describe("primitive agent tools", function () {
         mode: "agent",
         userText: "can you help me tag these papers?",
       },
-      [createQueryLibraryTool({} as never), createApplyTagsTool({} as never)],
+      [],
       [],
     );
     const systemText =
       typeof messages[0]?.content === "string" ? messages[0].content : "";
-    // The persona instructions now reference the new tool names
-    assert.include(systemText, "apply_tags");
-    assert.include(systemText, "move_to_collection");
+    assert.include(systemText, "library_update");
+    assert.include(systemText, "collection membership");
     assert.include(systemText, "confirmation card is the deliverable");
   });
 

@@ -140,7 +140,7 @@ export type PdfContext = {
   embeddingPromiseKey?: string;
   /** Last embedding attempt that failed; suppresses retry storms for the same config. */
   embeddingFailureKey?: string;
-  sourceType?: "mineru" | "zotero-worker";
+  sourceType?: "mineru" | "zotero-worker" | "zotero-fulltext-cache";
 };
 
 export type PdfChunkKind =

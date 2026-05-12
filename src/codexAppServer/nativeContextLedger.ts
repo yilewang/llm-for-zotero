@@ -4,6 +4,7 @@ import type { ZoteroMcpToolActivityEvent } from "../agent/mcp/server";
 const MAX_LEDGER_ENTRIES = 12;
 const MAX_RENDERED_LEDGER_ENTRIES = 8;
 const READ_TOOL_NAMES = new Set([
+  "paper_read",
   "read_paper",
   "search_paper",
   "view_pdf_pages",
@@ -177,6 +178,16 @@ function isLikelyMineruReadPath(filePath: string): boolean {
 
 function buildReadDetail(toolName: string, args: unknown): string | undefined {
   const record = normalizeRecord(args);
+  if (toolName === "paper_read") {
+    const mode = normalizeText(record.mode, 40) || "overview";
+    const pieces = [`mode=${mode}`];
+    const query = normalizeText(record.query, 120);
+    if (query) pieces.push(`query="${query}"`);
+    if (Array.isArray(record.pages) && record.pages.length) {
+      pieces.push(`pages=${record.pages.join(", ")}`);
+    }
+    return pieces.join(", ");
+  }
   if (toolName === "search_paper") {
     const question = normalizeText(record.question, 120);
     return question ? `question="${question}"` : undefined;

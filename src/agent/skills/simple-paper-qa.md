@@ -1,10 +1,11 @@
 ---
 id: simple-paper-qa
 description: Answer open-ended natural-language questions about the content of one specific paper (what it argues, how it compares to X, what figure 3 means). Not for Zotero operations like editing metadata, tagging, or running scripts.
-version: 2
+version: 4
 match: /\b(what|who|when|where|which|tell me|explain)\b.*\b(about|paper|article|study|wrote|author|publish|year|journal|abstract|topic|field|contribution|finding|claim|conclusion|argue)\b/i
 match: /\bsummar(y|ize|ise)\b/i
 match: /\b(what is|what are|what does|what do)\b.*\b(this paper|this article|this study|the paper|the article)\b/i
+match: /\b(understand|explain|walk me through|help me understand)\b.*\b(paper|ppaer|article|study)\b/i
 match: /\b(main|key|central|primary|core)\b.*\b(finding|result|contribution|argument|claim|conclusion|point|idea|theme|message|takeaway)\b/i
 match: /\b(tldr|tl;dr|gist|overview|brief)\b/i
 ---
@@ -16,7 +17,7 @@ match: /\b(tldr|tl;dr|gist|overview|brief)\b/i
   this paper about?", "summarize this", "who are the authors?").
 
   You can customize:
-  - Reading strategy: change when MinerU vs read_paper is used
+  - Reading strategy: change when `paper_read` overview vs targeted mode is used
   - Escalation rules: adjust when to do deeper retrieval
   - Answer style: modify how responses are structured
 
@@ -26,26 +27,10 @@ match: /\b(tldr|tl;dr|gist|overview|brief)\b/i
 
 ## Simple Paper Q&A — one read, then answer
 
-When the user asks a general question about a paper (topic, authors, summary,
-main findings, conclusions, field, contribution), you usually need only ONE
-tool call, then answer.
+Use Zotero paper tools as resources, not a ritual.
 
-### Recipe
-
-**Step 1 — Read the paper once:**
-
-- If `mineruCacheDir` is available: use `file_io({ action:'read', filePath:'{mineruCacheDir}/full.md' })`. This gives you the entire parsed paper including abstract, introduction, and conclusions.
-- If no MinerU cache: use `read_paper` for the paper. This returns the abstract, authors, and introduction — enough for most general questions.
-
-**Step 2 — Answer immediately.**
-Do NOT call `search_paper`, `read_paper({ chunkIndexes:[...] })`, or any other tool unless the
-front matter genuinely does not contain the answer. For questions like "what is
-this about?", "who are the authors?", "summarize this paper", the front matter
-or MinerU markdown is sufficient.
-
-### When to escalate
-
-If (and only if) the user asks about something specific that the front matter
-does not cover (a particular experiment, a specific table, a named method, a
-result in a specific section), then make ONE targeted `search_paper` call
-and answer from that. Do not read the whole paper.
+- For broad questions like "what is this paper about?", "summarize this", or "main message", call `paper_read({ mode:'overview' })` once, then answer.
+- If the user asks for a specific claim, method, result, table, or named section that overview cannot answer, make one focused `paper_read({ mode:'targeted', query:'<specific missing claim>' })` call.
+- If overview reports `contentStatus:'no_pdf_attachment'`, answer from Zotero metadata/abstract if sufficient; otherwise one external lookup is allowed and must be labeled as external.
+- If overview reports `contentStatus:'no_extractable_pdf_text'`, answer from metadata/abstract and state the limitation.
+- Do not call visual/page tools, `file_io`, or `run_command` just to improve citation anchors or page numbers. Use the provided `sourceLabel`; the UI can bind citations after rendering.

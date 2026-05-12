@@ -59,7 +59,7 @@ export function createMergeItemsTool(
           request.userText || "",
         ),
       instruction:
-        "To merge duplicates: first use query_library({ entity:'items', mode:'duplicates' }) to find duplicate groups, then use read_library to compare metadata and decide which item is the best master, then call merge_items with the master and the others. The master keeps all children (attachments, notes, tags, collections) from the merged items.",
+        "To merge duplicates: first use library_search({ entity:'items', mode:'duplicates' }) to find duplicate groups, then use library_read to compare metadata and decide which item is the best master, then call library_delete({ mode:'merge', ... }) with the master and the others. The master keeps all children (attachments, notes, tags, collections) from the merged items.",
     },
 
     presentation: {

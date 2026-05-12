@@ -67,6 +67,10 @@ export function getBuiltinSkillInstruction(
  */
 let skills: AgentSkill[] = [];
 
+const SIMPLE_PAPER_QA_SKILL_ID = "simple-paper-qa";
+const SIMPLE_PAPER_QA_INTENT_PATTERN =
+  /\b(understand|explain|walk me through|help me understand)\b.*\b(paper|ppaer|article|study)\b/i;
+
 /**
  * Replace the current set of skills.
  * Called once at plugin startup after scanning the user skills directory.
@@ -105,6 +109,9 @@ function computeContextForcedSkillIds(
     if (pattern.test(request.userText)) {
       forced.add("write-note");
     }
+  }
+  if (SIMPLE_PAPER_QA_INTENT_PATTERN.test(request.userText || "")) {
+    forced.add(SIMPLE_PAPER_QA_SKILL_ID);
   }
   return forced;
 }

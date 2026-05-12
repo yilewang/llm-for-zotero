@@ -100,7 +100,7 @@ describe("Zotero MCP server", function () {
 
   it("uses Zotero's configured HTTP port and rejects unauthenticated calls", async function () {
     const registry = new AgentToolRegistry();
-    registry.register(createReadTool("query_library"));
+    registry.register(createReadTool("library_search"));
     registerMcpServer({
       toolRegistry: registry,
       zoteroGateway: {} as never,
@@ -129,10 +129,10 @@ describe("Zotero MCP server", function () {
 
   it("lists curated read tools and built-in write tools without self-confirmation", async function () {
     const registry = new AgentToolRegistry();
-    registry.register(createReadTool("query_library"));
-    registry.register(createWriteTool("apply_tags"));
+    registry.register(createReadTool("library_search"));
+    registry.register(createWriteTool("library_update"));
     registry.register(createWriteTool("file_io"));
-    registry.register(createWriteTool("trash_items"));
+    registry.register(createWriteTool("library_delete"));
     registry.register(createReadTool("not_curated_read_tool"));
     registerMcpServer({
       toolRegistry: registry,
@@ -148,13 +148,13 @@ describe("Zotero MCP server", function () {
       (tool: { name: string }) => tool.name,
     );
     assert.deepEqual(names.sort(), [
-      "apply_tags",
       "file_io",
-      "query_library",
-      "trash_items",
+      "library_delete",
+      "library_search",
+      "library_update",
     ]);
     const queryTool = payload.result.tools.find(
-      (tool: { name: string }) => tool.name === "query_library",
+      (tool: { name: string }) => tool.name === "library_search",
     );
     assert.deepEqual(queryTool.annotations, {
       readOnlyHint: true,
@@ -168,7 +168,7 @@ describe("Zotero MCP server", function () {
       "number",
     );
     const writeTool = payload.result.tools.find(
-      (tool: { name: string }) => tool.name === "apply_tags",
+      (tool: { name: string }) => tool.name === "library_update",
     );
     assert.deepEqual(writeTool.annotations, {
       readOnlyHint: false,
@@ -188,7 +188,7 @@ describe("Zotero MCP server", function () {
       destructiveHint: false,
     });
     const trashTool = payload.result.tools.find(
-      (tool: { name: string }) => tool.name === "trash_items",
+      (tool: { name: string }) => tool.name === "library_delete",
     );
     assert.deepEqual(trashTool.annotations, {
       readOnlyHint: false,
@@ -199,7 +199,7 @@ describe("Zotero MCP server", function () {
 
   it("accepts the MCP initialized notification without a JSON-RPC response", async function () {
     const registry = new AgentToolRegistry();
-    registry.register(createReadTool("query_library"));
+    registry.register(createReadTool("library_search"));
     registerMcpServer({
       toolRegistry: registry,
       zoteroGateway: {} as never,
@@ -219,7 +219,7 @@ describe("Zotero MCP server", function () {
 
   it("executes curated read tools through the tool registry", async function () {
     const registry = new AgentToolRegistry();
-    registry.register(createReadTool("query_library"));
+    registry.register(createReadTool("library_search"));
     registerMcpServer({
       toolRegistry: registry,
       zoteroGateway: {} as never,
@@ -232,7 +232,7 @@ describe("Zotero MCP server", function () {
         id: 1,
         method: "tools/call",
         params: {
-          name: "query_library",
+          name: "library_search",
           arguments: { entity: "items" },
         },
       },
@@ -241,14 +241,14 @@ describe("Zotero MCP server", function () {
     const content = JSON.parse(payload.result.content[0].text);
     assert.equal(content.ok, true);
     assert.deepEqual(content.result, {
-      name: "query_library",
+      name: "library_search",
       input: { entity: "items" },
     });
   });
 
   it("emits exact MCP tool activity for native Codex trace fallback", async function () {
     const registry = new AgentToolRegistry();
-    registry.register(createReadTool("read_library"));
+    registry.register(createReadTool("library_read"));
     registerMcpServer({
       toolRegistry: registry,
       zoteroGateway: {} as never,
@@ -284,7 +284,7 @@ describe("Zotero MCP server", function () {
           id: "tool-call-1",
           method: "tools/call",
           params: {
-            name: "read_library",
+            name: "library_read",
             arguments: { sections: ["metadata"], libraryID: 999 },
           },
         },
@@ -308,7 +308,7 @@ describe("Zotero MCP server", function () {
         {
           requestId: "jsonrpc:tool-call-1",
           phase: "started",
-          toolName: "read_library",
+          toolName: "library_read",
           arguments: { sections: ["metadata"] },
           conversationKey: 789,
           libraryID: 7,
@@ -316,7 +316,7 @@ describe("Zotero MCP server", function () {
         {
           requestId: "jsonrpc:tool-call-1",
           phase: "completed",
-          toolName: "read_library",
+          toolName: "library_read",
           arguments: { sections: ["metadata"] },
           conversationKey: 789,
           libraryID: 7,
@@ -329,7 +329,7 @@ describe("Zotero MCP server", function () {
     const registry = new AgentToolRegistry();
     registry.register({
       spec: {
-        name: "query_library",
+        name: "library_search",
         description: "Query library",
         inputSchema: { type: "object", additionalProperties: true },
         mutability: "read",
@@ -356,7 +356,7 @@ describe("Zotero MCP server", function () {
         id: 1,
         method: "tools/call",
         params: {
-          name: "query_library",
+          name: "library_search",
           arguments: {
             entity: "items",
             mode: "list",
@@ -383,7 +383,7 @@ describe("Zotero MCP server", function () {
     const registry = new AgentToolRegistry();
     registry.register({
       spec: {
-        name: "read_paper",
+        name: "paper_read",
         description: "Read paper",
         inputSchema: { type: "object", additionalProperties: true },
         mutability: "read",
@@ -427,7 +427,7 @@ describe("Zotero MCP server", function () {
           id: 1,
           method: "tools/call",
           params: {
-            name: "read_paper",
+            name: "paper_read",
             arguments: {},
           },
         },
@@ -454,11 +454,79 @@ describe("Zotero MCP server", function () {
     }
   });
 
+  it("deduplicates repeated same-turn semantic read calls", async function () {
+    let executeCount = 0;
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "paper_read",
+        description: "Read paper",
+        inputSchema: { type: "object", additionalProperties: true },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async (input) => {
+        executeCount += 1;
+        return { executeCount, input };
+      },
+    });
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const scoped = registerScopedZoteroMcpScope(
+      {
+        profileSignature: "profile-dedupe",
+        conversationKey: 789,
+        libraryID: 1,
+        kind: "paper",
+        userText: "compare methods",
+      },
+      { token: "dedupe-scope-token" },
+    );
+
+    try {
+      const body = {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "paper_read",
+          arguments: { mode: "targeted", query: "methods" },
+        },
+      };
+      const firstResponse = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body,
+      });
+      const secondResponse = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        headers: { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token },
+        body: { ...body, id: 2 },
+      });
+
+      const firstPayload = JSON.parse(firstResponse[2]);
+      const firstContent = JSON.parse(firstPayload.result.content[0].text);
+      const secondPayload = JSON.parse(secondResponse[2]);
+      const secondContent = JSON.parse(secondPayload.result.content[0].text);
+      assert.equal(firstContent.ok, true);
+      assert.equal(firstContent.result.executeCount, 1);
+      assert.equal(secondContent.ok, true);
+      assert.equal(secondContent.duplicate, true);
+      assert.equal(secondContent.result.executeCount, 1);
+      assert.equal(executeCount, 1);
+    } finally {
+      scoped.clear();
+    }
+  });
+
   it("binds MCP tool context from the scoped header before the legacy active scope", async function () {
     const registry = new AgentToolRegistry();
     registry.register({
       spec: {
-        name: "query_library",
+        name: "library_search",
         description: "Query library",
         inputSchema: { type: "object", additionalProperties: true },
         mutability: "read",
@@ -505,7 +573,7 @@ describe("Zotero MCP server", function () {
           id: 1,
           method: "tools/call",
           params: {
-            name: "query_library",
+            name: "library_search",
             arguments: { entity: "items", mode: "list" },
           },
         },
@@ -528,7 +596,7 @@ describe("Zotero MCP server", function () {
     const registry = new AgentToolRegistry();
     registry.register({
       spec: {
-        name: "read_attachment",
+        name: "paper_read",
         description: "Read attachment",
         inputSchema: { type: "object", additionalProperties: true },
         mutability: "read",
@@ -536,7 +604,7 @@ describe("Zotero MCP server", function () {
       },
       validate: (args) => ({ ok: true, value: args ?? {} }),
       createPendingAction: async () => ({
-        toolName: "read_attachment",
+        toolName: "paper_read",
         title: "Attachment",
         confirmLabel: "Send",
         cancelLabel: "Cancel",
@@ -581,7 +649,7 @@ describe("Zotero MCP server", function () {
           id: 1,
           method: "tools/call",
           params: {
-            name: "read_attachment",
+            name: "paper_read",
             arguments: { attachFile: true },
           },
         },
@@ -595,7 +663,7 @@ describe("Zotero MCP server", function () {
       });
       assert.deepEqual(
         requests.map((entry) => entry.toolName),
-        ["read_attachment"],
+        ["paper_read"],
       );
     } finally {
       clearHandler();
@@ -608,7 +676,7 @@ describe("Zotero MCP server", function () {
     const registry = new AgentToolRegistry();
     registry.register({
       spec: {
-        name: "apply_tags",
+        name: "library_update",
         description: "Apply tags",
         inputSchema: { type: "object", additionalProperties: true },
         mutability: "write",
@@ -616,7 +684,7 @@ describe("Zotero MCP server", function () {
       },
       validate: (args) => ({ ok: true, value: args ?? {} }),
       createPendingAction: async () => ({
-        toolName: "apply_tags",
+        toolName: "library_update",
         title: "Apply Tags",
         confirmLabel: "Apply",
         cancelLabel: "Cancel",
@@ -657,7 +725,7 @@ describe("Zotero MCP server", function () {
           id: 1,
           method: "tools/call",
           params: {
-            name: "apply_tags",
+            name: "library_update",
             arguments: { itemIds: [1], tags: ["memory"] },
           },
         },
@@ -745,11 +813,11 @@ describe("Zotero MCP server", function () {
     }
   });
 
-  it("creates standalone notes through the edit_current_note review card path", async function () {
+  it("creates standalone notes through the note_write review card path", async function () {
     const registry = new AgentToolRegistry();
     registry.register({
       spec: {
-        name: "edit_current_note",
+        name: "note_write",
         description: "Edit or create notes",
         inputSchema: { type: "object", additionalProperties: true },
         mutability: "write",
@@ -759,7 +827,7 @@ describe("Zotero MCP server", function () {
       createPendingAction: async (input) => {
         const record = input as Record<string, unknown>;
         return {
-          toolName: "edit_current_note",
+          toolName: "note_write",
           mode: "review",
           title: "Review new note",
           description:
@@ -821,7 +889,7 @@ describe("Zotero MCP server", function () {
           id: 1,
           method: "tools/call",
           params: {
-            name: "edit_current_note",
+            name: "note_write",
             arguments: {
               mode: "create",
               target: "standalone",
@@ -845,7 +913,7 @@ describe("Zotero MCP server", function () {
     }
   });
 
-  it("binds scoped active notes to edit_current_note diff review cards", async function () {
+  it("binds scoped active notes to note_write diff review cards", async function () {
     const noteItem = {
       id: 501,
       key: "NOTE501",
@@ -864,7 +932,7 @@ describe("Zotero MCP server", function () {
     const registry = new AgentToolRegistry();
     registry.register({
       spec: {
-        name: "edit_current_note",
+        name: "note_write",
         description: "Edit active note",
         inputSchema: { type: "object", additionalProperties: true },
         mutability: "write",
@@ -878,7 +946,7 @@ describe("Zotero MCP server", function () {
           "Original active note",
         );
         return {
-          toolName: "edit_current_note",
+          toolName: "note_write",
           mode: "review",
           title: "Review note update",
           description: "Review the active note edit.",
@@ -944,7 +1012,7 @@ describe("Zotero MCP server", function () {
           id: 1,
           method: "tools/call",
           params: {
-            name: "edit_current_note",
+            name: "note_write",
             arguments: {
               mode: "edit",
               content: "Updated active note",
@@ -970,7 +1038,7 @@ describe("Zotero MCP server", function () {
     const registry = new AgentToolRegistry();
     registry.register({
       spec: {
-        name: "apply_tags",
+        name: "library_update",
         description: "Apply tags",
         inputSchema: { type: "object", additionalProperties: true },
         mutability: "write",
@@ -980,7 +1048,7 @@ describe("Zotero MCP server", function () {
       createPendingAction: async (_input, context: AgentToolContext) => {
         pendingConversationKey = context.request.conversationKey;
         return {
-          toolName: "apply_tags",
+          toolName: "library_update",
           title: "Apply Tags",
           confirmLabel: "Apply",
           cancelLabel: "Cancel",
@@ -1037,7 +1105,7 @@ describe("Zotero MCP server", function () {
           id: 1,
           method: "tools/call",
           params: {
-            name: "apply_tags",
+            name: "library_update",
             arguments: { itemIds: [1], tags: ["memory"] },
           },
         },

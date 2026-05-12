@@ -105,7 +105,7 @@ describe("Codex app-server MCP setup", function () {
               {
                 name: "llm_for_zotero",
                 status: "ready",
-                tools: [{ name: "query_library" }],
+                tools: [{ name: "library_search" }],
               },
             ],
           };
@@ -131,15 +131,15 @@ describe("Codex app-server MCP setup", function () {
     assert.equal(value?.url, "http://127.0.0.1:24680/llm-for-zotero/mcp");
     assert.equal(value?.default_tools_approval_mode, "approve");
     assert.deepEqual(value?.enabled_tools, getZoteroMcpAllowedToolNames());
-    assert.include(value?.enabled_tools as string[], "edit_current_note");
+    assert.include(value?.enabled_tools as string[], "note_write");
     assert.include(value?.enabled_tools as string[], "run_command");
     assert.notInclude(value?.enabled_tools as string[], "zotero_confirm_action");
     const toolApprovals = value?.tools as Record<
       string,
       { approval_mode?: string }
     >;
-    assert.equal(toolApprovals.query_library.approval_mode, "approve");
-    assert.equal(toolApprovals.edit_current_note.approval_mode, "approve");
+    assert.equal(toolApprovals.library_search.approval_mode, "approve");
+    assert.equal(toolApprovals.note_write.approval_mode, "approve");
     assert.equal(toolApprovals.run_command.approval_mode, "approve");
     assert.notProperty(toolApprovals, "zotero_confirm_action");
     assert.deepEqual(value?.http_headers, {
@@ -153,7 +153,7 @@ describe("Codex app-server MCP setup", function () {
     );
     assert.equal(status.configured, true);
     assert.equal(status.connected, true);
-    assert.deepEqual(status.toolNames, ["query_library"]);
+    assert.deepEqual(status.toolNames, ["library_search"]);
   });
 
   it("falls back to legacy config write shapes when dotted keyPath is unsupported", async function () {
@@ -182,7 +182,7 @@ describe("Codex app-server MCP setup", function () {
               {
                 name: "llm_for_zotero",
                 status: "ready",
-                tools: [{ name: "query_library" }],
+                tools: [{ name: "library_search" }],
               },
             ],
           };
@@ -224,7 +224,7 @@ describe("Codex app-server MCP setup", function () {
                 name: "llm_for_zotero",
                 status: "ready",
                 tools: [
-                  { name: "query_library" },
+                  { name: "library_search" },
                   { name: "not_a_zotero_tool" },
                 ],
               },
@@ -241,7 +241,7 @@ describe("Codex app-server MCP setup", function () {
 
     assert.equal(status.configured, true);
     assert.equal(status.connected, true);
-    assert.deepEqual(status.toolNames, ["query_library"]);
+    assert.deepEqual(status.toolNames, ["library_search"]);
     assert.deepEqual(status.errors, []);
   });
 
@@ -251,8 +251,9 @@ describe("Codex app-server MCP setup", function () {
       Server: { Endpoints: {} },
     } as unknown as typeof Zotero;
     const registry = new AgentToolRegistry();
-    registry.register(createReadTool("query_library"));
-    registry.register(createReadTool("read_library"));
+    registry.register(createReadTool("library_search"));
+    registry.register(createReadTool("library_read"));
+    registry.register(createReadTool("paper_read"));
     registerMcpServer({
       toolRegistry: registry,
       zoteroGateway: {} as never,
@@ -267,7 +268,11 @@ describe("Codex app-server MCP setup", function () {
     });
 
     assert.equal(status.connected, true);
-    assert.deepEqual(status.toolNames, ["query_library", "read_library"]);
+    assert.deepEqual(status.toolNames, [
+      "library_search",
+      "library_read",
+      "paper_read",
+    ]);
   });
 
   it("caches successful local MCP preflight across per-turn scope tokens", async function () {
@@ -300,7 +305,11 @@ describe("Codex app-server MCP setup", function () {
             jsonrpc: "2.0",
             id: payload.id,
             result: {
-              tools: [{ name: "query_library" }, { name: "read_library" }],
+              tools: [
+                { name: "library_search" },
+                { name: "library_read" },
+                { name: "paper_read" },
+              ],
             },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -318,8 +327,16 @@ describe("Codex app-server MCP setup", function () {
       required: true,
     });
 
-    assert.deepEqual(first.toolNames, ["query_library", "read_library"]);
-    assert.deepEqual(second.toolNames, ["query_library", "read_library"]);
+    assert.deepEqual(first.toolNames, [
+      "library_search",
+      "library_read",
+      "paper_read",
+    ]);
+    assert.deepEqual(second.toolNames, [
+      "library_search",
+      "library_read",
+      "paper_read",
+    ]);
     assert.deepEqual(methods, [
       "initialize",
       "notifications/initialized",
@@ -367,14 +384,14 @@ describe("Codex app-server MCP setup", function () {
       servers[scoped.serverName].default_tools_approval_mode,
       "approve",
     );
-    assert.include(servers[scoped.serverName].enabled_tools, "query_library");
-    assert.include(servers[scoped.serverName].enabled_tools, "read_library");
+    assert.include(servers[scoped.serverName].enabled_tools, "library_search");
+    assert.include(servers[scoped.serverName].enabled_tools, "library_read");
     assert.include(
       servers[scoped.serverName].enabled_tools,
-      "edit_current_note",
+      "note_write",
     );
     assert.equal(
-      servers[scoped.serverName].tools.edit_current_note.approval_mode,
+      servers[scoped.serverName].tools.note_write.approval_mode,
       "approve",
     );
     assert.equal(
@@ -400,10 +417,26 @@ describe("Codex app-server MCP setup", function () {
           serverUrl: "http://127.0.0.1:24680/llm-for-zotero/mcp",
           configured: true,
           connected: true,
-          toolNames: ["query_library"],
+          toolNames: ["library_search"],
           errors: [],
         }),
-      /missing required tools: read_library/,
+      /missing required tools: library_read, paper_read/,
+    );
+  });
+
+  it("rejects native turns when paper_read is missing from Zotero MCP", function () {
+    assert.throws(
+      () =>
+        assertRequiredCodexZoteroMcpToolsReady({
+          enabled: true,
+          serverName: "llm_for_zotero_profile_a",
+          serverUrl: "http://127.0.0.1:24680/llm-for-zotero/mcp",
+          configured: true,
+          connected: true,
+          toolNames: ["library_search", "library_read"],
+          errors: [],
+        }),
+      /missing required tools: paper_read/,
     );
   });
 });

@@ -282,7 +282,7 @@ export function createRunCommandTool(): AgentToolDefinition<
       name: "run_command",
       description:
         "Run a shell command on the local machine. The command string is passed directly to the native shell (cmd.exe on Windows, zsh on macOS, bash on Linux). " +
-        "Use this to run analysis scripts, process data, invoke CLI tools, list files, etc. Returns stdout, stderr, and exit code.",
+        "Use this for explicit shell tasks, data analysis scripts, conversion, or CLI tools. Not for ordinary Zotero paper/library reading when semantic Zotero tools can answer. Returns stdout, stderr, and exit code.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -317,6 +317,7 @@ export function createRunCommandTool(): AgentToolDefinition<
         ),
       instruction:
         "Use run_command to execute shell commands for data analysis, running scripts, or invoking external tools. " +
+        "Do not use run_command for ordinary Zotero paper/library reading when semantic Zotero tools can answer. " +
         "Use native shell syntax for the current OS: for example `dir %USERPROFILE%\\\\Desktop` on Windows or `ls ~/Desktop` on macOS/Linux. " +
         "Pass the complete command as a single string — pipes, redirects, globbing, and all shell features work. " +
         "Do NOT split the command into separate command/args fields.",

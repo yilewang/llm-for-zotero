@@ -231,6 +231,18 @@ export type ToolSpec = {
   inputSchema: object;
   mutability: "read" | "write";
   requiresConfirmation: boolean;
+  /**
+   * Model-visible tools are advertised to agent/model runtimes and MCP
+   * clients. Internal tools stay registered so plugin-owned migration
+   * delegates and review-card workflows can still invoke them.
+   */
+  exposure?: "model" | "internal";
+  /**
+   * Advanced tools remain model-visible when exposure is "model", but get
+   * stricter policy/trace treatment because they can touch local files,
+   * shell commands, or direct Zotero scripts.
+   */
+  tier?: "normal" | "advanced";
 };
 
 export type AgentEvent =

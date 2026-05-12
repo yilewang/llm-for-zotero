@@ -43,26 +43,20 @@ const MCP_PROTOCOL_VERSION = "2025-06-18";
 const DEFAULT_ZOTERO_HTTP_PORT = 23119;
 const SCOPED_MCP_SCOPE_TTL_MS = 2 * 60 * 60 * 1000;
 export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
-  "query_library",
-  "read_library",
-  "read_paper",
-  "search_paper",
-  "search_literature_online",
-  "read_attachment",
-  "view_pdf_pages",
+  "library_search",
+  "library_read",
+  "paper_read",
+  "literature_search",
+  "web_search",
 ] as const;
 export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
-  "apply_tags",
-  "move_to_collection",
-  "update_metadata",
-  "manage_collections",
-  "edit_current_note",
-  "import_identifiers",
-  "trash_items",
-  "merge_items",
-  "manage_attachments",
+  "library_update",
+  "collection_update",
+  "note_write",
+  "library_import",
+  "library_delete",
+  "attachment_update",
   "run_command",
-  "import_local_files",
   "file_io",
   "zotero_script",
   "undo_last_action",
@@ -82,8 +76,7 @@ const WRITE_TOOL_ANNOTATIONS = {
   destructiveHint: false,
 } as const;
 const DESTRUCTIVE_WRITE_TOOL_NAMES = new Set<string>([
-  "trash_items",
-  "merge_items",
+  "library_delete",
 ]);
 const DESTRUCTIVE_WRITE_TOOL_ANNOTATIONS = {
   ...WRITE_TOOL_ANNOTATIONS,
@@ -98,6 +91,12 @@ const MCP_SCOPE_ARG_NAMES = new Set([
   "activeContextItemID",
 ]);
 const CODEX_MCP_TOOL_APPROVAL_MODE = "approve";
+const MCP_READ_DEDUPE_TTL_MS = 2 * 60 * 1000;
+const MCP_READ_DEDUPE_TOOL_NAMES = new Set([
+  "library_search",
+  "library_read",
+  "paper_read",
+]);
 const MCP_TOOLS_WITH_OWN_CONFIRMATION_POLICY = new Set([
   "run_command",
   "file_io",
@@ -145,6 +144,10 @@ const scopedZoteroMcpScopes = new Map<
 >();
 let activeZoteroMcpScope: ZoteroMcpActiveScope | null = null;
 let registeredMcpDeps: McpServerDeps | null = null;
+const mcpReadDedupeCache = new Map<
+  string,
+  { expiresAt: number; result: McpToolCallResult }
+>();
 
 export type ZoteroMcpToolActivityEvent = {
   requestId: string;
@@ -470,6 +473,97 @@ function getHeader(
   return "";
 }
 
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+}
+
+function pruneExpiredMcpReadDedupeCache(): void {
+  const now = Date.now();
+  for (const [key, entry] of mcpReadDedupeCache) {
+    if (entry.expiresAt <= now) mcpReadDedupeCache.delete(key);
+  }
+}
+
+function buildMcpReadDedupeKey(params: {
+  toolName: string;
+  toolArgs: unknown;
+  headers?: Record<string, string>;
+}): string | null {
+  if (!MCP_READ_DEDUPE_TOOL_NAMES.has(params.toolName)) return null;
+  const scopeToken = getHeader(params.headers, ZOTERO_MCP_SCOPE_HEADER).trim();
+  const scope = resolveScopedMcpScope(params.headers);
+  const scopeKey = scopeToken
+    ? `token:${scopeToken}`
+    : [
+        "scope",
+        scope?.profileSignature || "",
+        scope?.conversationKey || "",
+        scope?.libraryID || "",
+        scope?.kind || "",
+        normalizeText(scope?.userText, 512) || "",
+      ].join(":");
+  return `${scopeKey}:${params.toolName}:${stableStringify(params.toolArgs || {})}`;
+}
+
+function cloneMcpResultWithDuplicateMarker(
+  result: McpToolCallResult,
+): McpToolCallResult {
+  const content = result.content.map((part, index) => {
+    if (index !== 0 || part.type !== "text") return { ...part };
+    try {
+      const parsed = JSON.parse(part.text) as Record<string, unknown>;
+      return {
+        ...part,
+        text: JSON.stringify(
+          {
+            ...parsed,
+            duplicate: true,
+          },
+          null,
+          2,
+        ),
+      };
+    } catch {
+      return {
+        ...part,
+        text: `${part.text}\n\n{\"duplicate\":true}`,
+      };
+    }
+  });
+  return {
+    content,
+    ...(result.isError ? { isError: result.isError } : {}),
+  };
+}
+
+function getCachedMcpReadResult(key: string | null): McpToolCallResult | null {
+  if (!key) return null;
+  pruneExpiredMcpReadDedupeCache();
+  const cached = mcpReadDedupeCache.get(key);
+  if (!cached) return null;
+  return cloneMcpResultWithDuplicateMarker(cached.result);
+}
+
+function rememberMcpReadResult(
+  key: string | null,
+  result: McpToolCallResult,
+): void {
+  if (!key || result.isError) return;
+  pruneExpiredMcpReadDedupeCache();
+  mcpReadDedupeCache.set(key, {
+    expiresAt: Date.now() + MCP_READ_DEDUPE_TTL_MS,
+    result,
+  });
+}
+
 function isAuthorized(headers: Record<string, string> | undefined): boolean {
   const expected = getOrCreateZoteroMcpBearerToken();
   const authorization = getHeader(headers, ZOTERO_MCP_AUTH_HEADER);
@@ -497,6 +591,7 @@ function formatToolTitle(name: string): string {
 }
 
 function isMcpExposedTool(tool: ToolSpec): boolean {
+  if (tool.exposure === "internal") return false;
   if (tool.mutability === "read") return CURATED_READ_TOOL_NAMES.has(tool.name);
   if (tool.mutability === "write")
     return CURATED_WRITE_TOOL_NAMES.has(tool.name);
@@ -578,12 +673,12 @@ function decorateMcpToolDescription(
   mutability: ToolSpec["mutability"],
 ): string {
   const scopeGuidance =
-    "Zotero MCP scope: omit libraryID, activeItemId, and activeContextItemId to use the current Codex Zotero chat scope. Use query_library with explicit entity and mode, for example query_library({ entity:'items', mode:'search', text:'...' }) or query_library({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items, and read_library for structured item state. MinerU priority: when the active scope, selected paper scope, or read_library attachment result includes mineruCacheDir, read {mineruCacheDir}/manifest.json or full.md with file_io({ action:'read', filePath:'...' }) before raw PDF tools. Use search_paper/read_paper only when MinerU is unavailable or insufficient; use view_pdf_pages only for visual page inspection. For counting questions, prefer query_library totalCount/returnedCount/limited metadata instead of hand-counting listed results.";
+    "Zotero MCP scope: omit libraryID, activeItemId, and activeContextItemId to use the current Codex Zotero chat scope. Use library_search with explicit entity and mode, for example library_search({ entity:'items', mode:'search', text:'...' }) or library_search({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items, and library_read for structured item state. Use paper_read for in-context paper content: mode:'overview' for summaries/main message, mode:'targeted' for textual evidence/sections/pages, mode:'visual' for rendered PDF pages, and mode:'capture' for the currently visible reader page. Use literature_search for scholarly discovery/import workflows and web_search for general web lookup. For counting questions, prefer library_search totalCount/returnedCount/limited metadata instead of hand-counting listed results.";
   const writeGuidance =
     toolName === "zotero_script"
       ? "zotero_script runs directly without a review card. Write scripts must call env.snapshot(item) before mutating items, or env.addUndoStep(fn) for custom changes, so undo_last_action can revert the operation."
       : mutability === "write"
-        ? "Write operations pause in Zotero for user review before execution. For Zotero note requests, call edit_current_note instead of returning note-ready text in chat."
+        ? "Write operations pause in Zotero for user review before execution. For Zotero note requests, call note_write instead of returning note-ready text in chat."
         : "";
   return [description, scopeGuidance, writeGuidance]
     .filter(Boolean)
@@ -1003,6 +1098,20 @@ async function handleToolsCall(
   }
 
   try {
+    const readDedupeKey =
+      tool.spec.mutability === "read"
+        ? buildMcpReadDedupeKey({
+            toolName: name,
+            toolArgs: scopeArgs.toolArgs,
+            headers,
+          })
+        : null;
+    const cachedReadResult = getCachedMcpReadResult(readDedupeKey);
+    if (cachedReadResult) {
+      completeActivity({ ok: true });
+      return cachedReadResult;
+    }
+
     const prepared = await deps.toolRegistry.prepareExecution(
       {
         id: `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
@@ -1033,6 +1142,7 @@ async function handleToolsCall(
       ok: !result.isError,
       error: extractToolCallErrorText(result),
     });
+    rememberMcpReadResult(readDedupeKey, result);
     return result;
   } catch (error) {
     completeActivity({
@@ -1205,6 +1315,7 @@ export async function invokeRegisteredZoteroMcpEndpoint(
  */
 export function unregisterMcpServer(): void {
   scopedZoteroMcpScopes.clear();
+  mcpReadDedupeCache.clear();
   zoteroMcpConfirmationHandlers.clear();
   registeredMcpDeps = null;
   delete Zotero.Server.Endpoints[ZOTERO_MCP_ENDPOINT_PATH];

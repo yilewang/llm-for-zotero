@@ -46,23 +46,23 @@ match: /\b(use|apply|with)\b.*\btemplate\b/i
 Decide the destination based on what the user says:
 
 - **File-based** (`file_io`): user mentions Obsidian, the notes directory nickname, or "save to file/directory/folder".
-- **Zotero note** (`edit_current_note`): user says "create a note", "save to note", "edit my note", or anything without a file destination.
+- **Zotero note** (`note_write`): user says "create a note", "save to note", "edit my note", or anything without a file destination.
 
 If unclear, default to Zotero note.
 
 ### Step 1 — Read content
 
 - If `mineruCacheDir` is available: use `file_io({ action:'read', filePath:'{mineruCacheDir}/full.md' })`.
-- Otherwise: use `read_paper` for the overview, then optionally one `search_paper` call for key results/methods if the user wants detail beyond the abstract.
-- For multi-paper notes (reviews, comparisons): use `query_library` + `read_paper`/`file_io` for each paper.
+- Otherwise: use `paper_read({ mode:'overview' })` for the overview, then optionally one `paper_read({ mode:'targeted', query:'...' })` call for key results/methods if the user wants detail beyond the abstract.
+- For multi-paper notes (reviews, comparisons): use `library_search` + `paper_read`/`file_io` for each paper.
 - For free-form notes: use whatever the user provides or requests.
-- Keep the read phase minimal: 1 call (MinerU) or 1–2 calls (read_paper/search_paper). Do not read the entire paper section by section.
+- Keep the read phase minimal: 1 call (overview) or 1–2 calls (overview/targeted). Do not read the entire paper section by section.
 
 ### Step 2 — Compose the note using the template below
 
-Look up `title` (the paper's full title), `citekey`, `doi`, `journal`, `year`, and **authors** from Zotero item metadata via `read_library({ sections:['metadata'] })`. Cite papers using **Pandoc citation syntax** `[@citekey]` **only when `citekey` is non-empty**. If `citekey` is missing or empty (common when Better BibTeX is not installed), reference papers in prose instead (`First-Author et al. (Year)`) and rely on the full citation in the `## References` section. **Never emit `[@]`** — an empty citation is a bug.
+Look up `title` (the paper's full title), `citekey`, `doi`, `journal`, `year`, and **authors** from Zotero item metadata via `library_read({ sections:['metadata'] })`. Cite papers using **Pandoc citation syntax** `[@citekey]` **only when `citekey` is non-empty**. If `citekey` is missing or empty (common when Better BibTeX is not installed), reference papers in prose instead (`First-Author et al. (Year)`) and rely on the full citation in the `## References` section. **Never emit `[@]`** — an empty citation is a bug.
 
-For **Zotero notes** (`edit_current_note`): omit the YAML frontmatter block entirely. Use only the heading and section structure.
+For **Zotero notes** (`note_write`): omit the YAML frontmatter block entirely. Use only the heading and section structure.
 
 For **file-based notes** (`file_io`): include the full template with YAML frontmatter.
 
@@ -129,7 +129,7 @@ Written by LLM-for-Zotero.
 
 ### How to apply the template
 
-- For **paper notes**, `{{paperTitle}}` is **the full title of the paper itself** (e.g., `"A toolbox for representational similarity analysis"`), looked up from Zotero metadata via `read_library({ sections:['metadata'] })`. Use the exact same value in both the `title:` frontmatter field and the `# heading`.
+- For **paper notes**, `{{paperTitle}}` is **the full title of the paper itself** (e.g., `"A toolbox for representational similarity analysis"`), looked up from Zotero metadata via `library_read({ sections:['metadata'] })`. Use the exact same value in both the `title:` frontmatter field and the `# heading`.
 - For **general notes**, `{{noteTitle}}` is the review topic or user-provided title. Use the same value in both `title:` frontmatter and `# heading`.
 - **Filename and `title:` are independent fields.** The filename uses its own three-part pattern (see Step 4b) that MAY include the note subtopic and date; frontmatter `title:` never does. Never copy any part of the filename into `title:`.
 - Fill in `{{created}}` with today's date in YYYY-MM-DD format. This is when the note was created, not when the paper was published (that's the `year` field).
@@ -154,9 +154,9 @@ Written by LLM-for-Zotero.
 
 **If the user asked about a specific figure, you MUST include that figure in the note.** For other notes, include figures when they genuinely aid understanding (result plots, diagrams, key tables).
 
-#### For Zotero notes (`edit_current_note`)
+#### For Zotero notes (`note_write`)
 
-- Use `![Caption](file:///{mineruCacheDir}/images/filename.png)`. The `edit_current_note` tool auto-imports `file://` images as Zotero embedded attachments.
+- Use `![Caption](file:///{mineruCacheDir}/images/filename.png)`. The `note_write` tool auto-imports `file://` images as Zotero embedded attachments.
 - Place figures inline near the relevant discussion.
 
 #### For file-based notes (`file_io`)
@@ -193,7 +193,7 @@ Write:        ![Figure 2. RSA toolbox schematic](../imgs/Nili2014/figure-2.jpg)
 
 **If the figure image cannot be found** in the MinerU cache, tell the user clearly. Do NOT fall back to `file:///`, absolute paths, or any of the negative examples above.
 
-### Step 4a — Write to Zotero (`edit_current_note`)
+### Step 4a — Write to Zotero (`note_write`)
 
 **Creating notes** (mode: `create`):
 
@@ -284,7 +284,7 @@ Any placeholder the user writes (`{citekey}`, `{firstauthor}`, `{year}`, `{doi}`
 
 ### Key rules
 
-- **Never** output the full note text in chat. Always use `edit_current_note` or `file_io`.
+- **Never** output the full note text in chat. Always use `note_write` or `file_io`.
 - Use the note template above — frontmatter is locked to the 7 fields shown; do not add or remove fields.
 - Use `[@citekey]` Pandoc syntax inline **only when `citekey` is non-empty**. When `citekey` is missing/empty, reference in prose (`First-Author et al. (Year)`) and rely on the full citation in `## References`. **Never emit `[@]`.** Adapt citation syntax to the target format (e.g., `[cite:@citekey]` for Org-mode) when citekey exists.
 - **Every note ends with the footer** `---\n\nWritten by LLM-for-Zotero.` — no exceptions, no omissions, regardless of destination or format.

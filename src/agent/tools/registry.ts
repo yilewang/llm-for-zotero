@@ -69,11 +69,16 @@ function normalizeExecutionOutput(
 export class AgentToolRegistry {
   private readonly tools = new Map<string, AgentToolDefinition<any, any>>();
 
+  private isModelVisibleTool(tool: AgentToolDefinition<any, any>): boolean {
+    return tool.spec.exposure !== "internal";
+  }
+
   private filterToolsForRequest(
     request: AgentRuntimeRequest,
   ): AgentToolDefinition<any, any>[] {
     return Array.from(this.tools.values()).filter(
       (tool) =>
+        this.isModelVisibleTool(tool) &&
         tool.isAvailable?.(request) !== false,
     );
   }
@@ -87,7 +92,9 @@ export class AgentToolRegistry {
   }
 
   listTools(): ToolSpec[] {
-    return Array.from(this.tools.values()).map((tool) => tool.spec);
+    return Array.from(this.tools.values())
+      .filter((tool) => this.isModelVisibleTool(tool))
+      .map((tool) => tool.spec);
   }
 
   listToolDefinitions(): AgentToolDefinition<any, any>[] {
