@@ -22,9 +22,15 @@ export function attachFontScaleShortcutController(panelDoc: Document): void {
     const standaloneRoot = panelDoc.getElementById(
       "llmforzotero-standalone-chat-root",
     ) as HTMLElement | null;
-    if (standaloneRoot) return panel;
     const target = event.target as Node | null;
     const activeEl = panelDoc.activeElement;
+    if (standaloneRoot) {
+      const inStandalone = Boolean(
+        (target && standaloneRoot.contains(target)) ||
+        (activeEl && standaloneRoot.contains(activeEl)),
+      );
+      return inStandalone ? panel : null;
+    }
     const inPanel = Boolean(
       (target && panel.contains(target)) ||
       (activeEl && panel.contains(activeEl)),
@@ -64,23 +70,22 @@ export function attachFontScaleShortcutController(panelDoc: Document): void {
       const keyboardEvent = event as KeyboardEvent;
       if (
         !(keyboardEvent.metaKey || keyboardEvent.ctrlKey) ||
+        !keyboardEvent.shiftKey ||
         keyboardEvent.altKey
       ) {
         return;
       }
 
       if (
-        keyboardEvent.key === "+" ||
-        keyboardEvent.key === "=" ||
-        keyboardEvent.code === "Equal" ||
-        keyboardEvent.code === "NumpadAdd"
+        keyboardEvent.key === ">" ||
+        keyboardEvent.key === "." ||
+        keyboardEvent.code === "Period"
       ) {
         applyDelta(keyboardEvent, FONT_SCALE_STEP_PERCENT);
       } else if (
-        keyboardEvent.key === "-" ||
-        keyboardEvent.key === "_" ||
-        keyboardEvent.code === "Minus" ||
-        keyboardEvent.code === "NumpadSubtract"
+        keyboardEvent.key === "<" ||
+        keyboardEvent.key === "," ||
+        keyboardEvent.code === "Comma"
       ) {
         applyDelta(keyboardEvent, -FONT_SCALE_STEP_PERCENT);
       } else if (
@@ -89,31 +94,6 @@ export function attachFontScaleShortcutController(panelDoc: Document): void {
         keyboardEvent.code === "Numpad0"
       ) {
         applyDelta(keyboardEvent, null, true);
-      }
-    },
-    true,
-  );
-
-  panelDoc.addEventListener(
-    "command",
-    (event: Event) => {
-      const target = event.target as Element | null;
-      const commandId = target?.id || "";
-      if (
-        commandId === "cmd_fullZoomEnlarge" ||
-        commandId === "cmd_textZoomEnlarge"
-      ) {
-        applyDelta(event, FONT_SCALE_STEP_PERCENT);
-      } else if (
-        commandId === "cmd_fullZoomReduce" ||
-        commandId === "cmd_textZoomReduce"
-      ) {
-        applyDelta(event, -FONT_SCALE_STEP_PERCENT);
-      } else if (
-        commandId === "cmd_fullZoomReset" ||
-        commandId === "cmd_textZoomReset"
-      ) {
-        applyDelta(event, null, true);
       }
     },
     true,
