@@ -909,9 +909,12 @@ export function setupHandlers(
   const updateClaudeSystemToggle = () => {
     if (!claudeSystemToggleBtn || !claudeSystemToggleIcon) return;
     const targetSystem = getPreferredTargetSystem();
-    const available = isNoteSession()
-      ? targetSystem === "codex" || isCodexConversationSystem()
-      : isClaudeModeAvailable() || isCodexModeAvailable();
+    const webChatActive = isWebChatModeActive();
+    const available =
+      !webChatActive &&
+      (isNoteSession()
+        ? targetSystem === "codex" || isCodexConversationSystem()
+        : isClaudeModeAvailable() || isCodexModeAvailable());
     claudeSystemToggleBtn.style.display = available ? "inline-flex" : "none";
     if (!available) return;
     const active = isRuntimeConversationSystem();
@@ -4319,7 +4322,7 @@ export function setupHandlers(
     if (modeChipBtn) {
       if (isWebChat) {
         // Resolve the target label from the current model name
-        let webchatChipLabel = "chatgpt.com";
+        let webchatChipLabel = "chatgpt";
         let webchatChipTitle = "WebChat Sync";
         try {
           const { currentModel } = getSelectedModelInfo();
@@ -4327,8 +4330,8 @@ export function setupHandlers(
             require("../../webchat/types") as typeof import("../../webchat/types");
           const entry = getWebChatTargetByModelName(currentModel || "");
           if (entry) {
-            webchatChipLabel = entry.modelName;
-            webchatChipTitle = `${entry.label} Web Sync`;
+            webchatChipLabel = entry.displayName;
+            webchatChipTitle = `${entry.label} Web Sync (${entry.modelName})`;
           }
         } catch {
           /* fallback to defaults */
@@ -4404,6 +4407,7 @@ export function setupHandlers(
     }
 
     updateRuntimeModeButton();
+    updateClaudeSystemToggle();
 
     // Notify standalone window (or other listeners) of webchat mode change
     hooks?.onWebChatModeChanged?.(isWebChat);

@@ -1262,6 +1262,7 @@ export function openStandaloneChat(options?: {
       const updateStandaloneWebChatUI = (isWebChat: boolean) => {
         if (cancelled) return;
         isInWebChatMode = isWebChat;
+        updateStandaloneSystemToggle();
 
         // Tab labels
         if (isWebChat) {
