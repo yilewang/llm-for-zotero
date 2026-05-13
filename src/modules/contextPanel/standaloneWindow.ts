@@ -68,9 +68,24 @@ import { removeConversationAttachmentFiles } from "./attachmentStorage";
 import { clearOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 import { chatHistory, loadedConversationKeys } from "./state";
 import {
+  loadAllConversationHistory,
   loadConversationHistoryScope,
 } from "./historyLoader";
-import { groupHistoryEntriesByDay } from "./setupHandlers/controllers/conversationHistoryController";
+import {
+  formatGlobalHistoryTimestamp,
+  groupHistoryEntriesByDay,
+  normalizeHistoryTitle,
+  type ConversationHistoryEntry,
+} from "./setupHandlers/controllers/conversationHistoryController";
+import {
+  appendHistorySearchHighlightedText,
+  buildHistorySearchResults,
+  createHistorySearchDocument,
+  createHistorySearchDocumentFingerprint,
+  normalizeHistorySearchQuery,
+  type HistorySearchDocument,
+  type HistorySearchResult,
+} from "./setupHandlers/controllers/historySearchController";
 import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
 import {
   findReusableStandaloneDraft,
@@ -128,6 +143,7 @@ import {
   upsertClaudeConversationSummary,
 } from "../../claudeCode/store";
 import {
+  loadAllClaudeConversationHistory,
   loadClaudeConversationHistoryScope,
 } from "../../claudeCode/historyLoader";
 import {
@@ -166,6 +182,7 @@ import {
   upsertCodexConversationSummary,
 } from "../../codexAppServer/store";
 import {
+  loadAllCodexConversationHistory,
   loadCodexConversationHistoryScope,
 } from "../../codexAppServer/historyLoader";
 
@@ -371,6 +388,11 @@ type SidebarConv = {
   sessionVersion?: number;
   paperItemID?: number;
   mode?: "open" | "paper";
+};
+
+type CachedStandaloneSearchDocument = {
+  fingerprint: string;
+  document: HistorySearchDocument;
 };
 
 // ---------------------------------------------------------------------------
@@ -1885,10 +1907,7 @@ export function openStandaloneChat(options?: {
       // -----------------------------------------------------------------------
       let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
       let searchSeq = 0;
-      const searchDocCache = new Map<
-        number,
-        { title: string; messages: string }
-      >();
+      const searchDocCache = new Map<number, CachedStandaloneSearchDocument>();
 
       const openSearchPopup = () => {
         searchOverlay.style.display = "flex";
@@ -1934,9 +1953,120 @@ export function openStandaloneChat(options?: {
         }
       };
 
+      const resolvePaperSearchScopeLabel = (
+        paperItemID: number | undefined,
+      ): string => {
+        if (!paperItemID) return t("Library chat");
+        try {
+          const paperItem = Zotero.Items.get(paperItemID);
+          const title = String(paperItem?.getField?.("title") || "").trim();
+          return title || resolvePaperLabel(paperItemID);
+        } catch {
+          return resolvePaperLabel(paperItemID);
+        }
+      };
+
+      const toStandaloneHistoryEntry = (
+        entry: SidebarConv,
+      ): ConversationHistoryEntry => {
+        const isPaper = entry.mode === "paper";
+        const title = normalizeHistoryTitle(entry.title) || t("Untitled chat");
+        return {
+          kind: isPaper ? "paper" : "global",
+          section: isPaper ? "paper" : "open",
+          sectionTitle: isPaper
+            ? resolvePaperSearchScopeLabel(entry.paperItemID)
+            : t("Library chat"),
+          conversationKey: entry.conversationKey,
+          title,
+          timestampText:
+            formatGlobalHistoryTimestamp(entry.lastActivityAt) ||
+            (isPaper ? t("Paper chat") : t("Library chat")),
+          deletable: true,
+          isDraft: false,
+          isPendingDelete: false,
+          lastActivityAt: entry.lastActivityAt,
+          paperItemID: entry.paperItemID,
+          sessionVersion: entry.sessionVersion,
+        };
+      };
+
+      const loadAllStandaloneSearchEntries = async (): Promise<
+        SidebarConv[]
+      > => {
+        const libraryID = getCurrentLibraryScopeID();
+        const limit = 100;
+        if (isClaudeConversationSystem()) {
+          return (await loadAllClaudeConversationHistory({ libraryID, limit }))
+            .map((entry) => ({
+              conversationKey: entry.conversationKey,
+              lastActivityAt: entry.lastActivityAt,
+              title: entry.title,
+              paperItemID: entry.paperItemID,
+              mode: entry.kind === "paper" ? "paper" : "open",
+            }));
+        }
+        if (isCodexConversationSystem()) {
+          return (await loadAllCodexConversationHistory({ libraryID, limit }))
+            .map((entry) => ({
+              conversationKey: entry.conversationKey,
+              lastActivityAt: entry.lastActivityAt,
+              title: entry.title,
+              paperItemID: entry.paperItemID,
+              mode: entry.kind === "paper" ? "paper" : "open",
+            }));
+        }
+        return (await loadAllConversationHistory({ libraryID, limit })).map(
+          (entry) => ({
+            conversationKey: entry.conversationKey,
+            lastActivityAt: entry.lastActivityAt,
+            title: entry.title,
+            sessionVersion: entry.sessionVersion,
+            paperItemID: entry.paperItemID,
+            mode: entry.mode,
+          }),
+        );
+      };
+
+      const loadStandaloneSearchDocument = async (
+        entry: ConversationHistoryEntry,
+      ): Promise<HistorySearchDocument> => {
+        const fingerprint = createHistorySearchDocumentFingerprint(entry);
+        const cached = searchDocCache.get(entry.conversationKey);
+        if (cached?.fingerprint === fingerprint) return cached.document;
+        const messages = isClaudeConversationSystem()
+          ? await loadClaudeConversation(entry.conversationKey, 200)
+          : isCodexConversationSystem()
+            ? await loadCodexConversation(entry.conversationKey, 200)
+            : await loadConversation(entry.conversationKey, 200);
+        const document = createHistorySearchDocument(entry, messages);
+        searchDocCache.set(entry.conversationKey, { fingerprint, document });
+        return document;
+      };
+
+      const selectStandalonePaperItem = async (
+        paperItemID: number,
+      ): Promise<void> => {
+        if (!Number.isFinite(paperItemID) || paperItemID <= 0) return;
+        try {
+          const pane = Zotero.getActiveZoteroPane?.() as
+            | _ZoteroTypes.ZoteroPane
+            | undefined;
+          if (!pane) return;
+          if (typeof pane.selectItems === "function") {
+            await pane.selectItems([paperItemID], true);
+          } else if (typeof pane.selectItem === "function") {
+            pane.selectItem(paperItemID, true);
+          }
+        } catch (err) {
+          ztoolkit.log("LLM: standalone search paper selection failed", err);
+        }
+      };
+
       const renderSearchResults = (
         entries: SidebarConv[],
         query: string,
+        searchResultsByKey = new Map<number, HistorySearchResult>(),
       ) => {
         searchResults.textContent = "";
 
@@ -2006,10 +2136,47 @@ export function openStandaloneChat(options?: {
               "span",
             ) as HTMLSpanElement;
             title.className = "llm-standalone-search-title";
-            title.textContent = entry.title || t("Untitled chat");
+            const displayTitle = entry.title || t("Untitled chat");
+            const searchResult = searchResultsByKey.get(entry.conversationKey);
+            if (searchResult?.titleRanges.length) {
+              appendHistorySearchHighlightedText(
+                title,
+                displayTitle,
+                searchResult.titleRanges,
+              );
+            } else {
+              title.textContent = displayTitle;
+            }
 
             textWrap.append(label, title);
             btn.append(textWrap);
+            const meta = doc.createElementNS(
+              HTML_NS,
+              "div",
+            ) as HTMLDivElement;
+            meta.className = "llm-standalone-search-meta";
+            const scopeLabel = isPaperEntry
+              ? resolvePaperSearchScopeLabel(entry.paperItemID)
+              : t("Library chat");
+            const timestamp =
+              formatGlobalHistoryTimestamp(entry.lastActivityAt) || "";
+            meta.textContent = timestamp
+              ? `${scopeLabel} · ${timestamp}`
+              : scopeLabel;
+            btn.append(meta);
+            if (searchResult?.previewText) {
+              const preview = doc.createElementNS(
+                HTML_NS,
+                "div",
+              ) as HTMLDivElement;
+              preview.className = "llm-standalone-search-preview";
+              appendHistorySearchHighlightedText(
+                preview,
+                searchResult.previewText,
+                searchResult.previewRanges,
+              );
+              btn.append(preview);
+            }
             btn.title = `${labelText}: ${entry.title || t("Untitled chat")}`;
             searchResults.appendChild(btn);
           }
@@ -2019,182 +2186,51 @@ export function openStandaloneChat(options?: {
       const runSearch = async (query: string) => {
         const thisSeq = ++searchSeq;
         try {
-          const allEntries: SidebarConv[] = await (async () => {
-            if (isClaudeConversationSystem()) {
-              if (standaloneMode === "open") {
-                return (await loadClaudeConversationHistoryScope({
-                  libraryID: getCurrentLibraryScopeID(),
-                  kind: "global",
-                  limit: 100,
-                })).map((entry) => ({
-                  conversationKey: entry.conversationKey,
-                  lastActivityAt: entry.lastActivityAt,
-                  title: entry.title,
-                  paperItemID: entry.paperItemID,
-                  mode: entry.kind === "paper" ? "paper" : "open",
-                }));
-              }
-              const paperID = Number(currentBasePaperItem?.id || 0);
-              const paperLibID = Number(currentBasePaperItem?.libraryID || getCurrentLibraryScopeID());
-              if (!Number.isFinite(paperID) || paperID <= 0 || !Number.isFinite(paperLibID) || paperLibID <= 0) {
-                return [];
-              }
-              return (await loadClaudeConversationHistoryScope({
-                libraryID: paperLibID,
-                kind: "paper",
-                paperItemID: paperID,
-                limit: 100,
-              })).map((entry) => ({
-                conversationKey: entry.conversationKey,
-                lastActivityAt: entry.lastActivityAt,
-                title: entry.title,
-                paperItemID: entry.paperItemID,
-                mode: entry.kind === "paper" ? "paper" : "open",
-              }));
-            }
-            if (isCodexConversationSystem()) {
-              if (standaloneMode === "open") {
-                return (await loadCodexConversationHistoryScope({
-                  libraryID: getCurrentLibraryScopeID(),
-                  kind: "global",
-                  limit: 100,
-                })).map((entry) => ({
-                  conversationKey: entry.conversationKey,
-                  lastActivityAt: entry.lastActivityAt,
-                  title: entry.title,
-                  paperItemID: entry.paperItemID,
-                  mode: entry.kind === "paper" ? "paper" : "open",
-                }));
-              }
-              const paperID = Number(currentBasePaperItem?.id || 0);
-              const paperLibID = Number(currentBasePaperItem?.libraryID || getCurrentLibraryScopeID());
-              if (!Number.isFinite(paperID) || paperID <= 0 || !Number.isFinite(paperLibID) || paperLibID <= 0) {
-                return [];
-              }
-              return (await loadCodexConversationHistoryScope({
-                libraryID: paperLibID,
-                kind: "paper",
-                paperItemID: paperID,
-                limit: 100,
-              })).map((entry) => ({
-                conversationKey: entry.conversationKey,
-                lastActivityAt: entry.lastActivityAt,
-                title: entry.title,
-                paperItemID: entry.paperItemID,
-                mode: entry.kind === "paper" ? "paper" : "open",
-              }));
-            }
-            if (standaloneMode === "open") {
-              return (await loadConversationHistoryScope({
-                mode: "open",
-                libraryID: getCurrentLibraryScopeID(),
-                limit: 100,
-              })).map((entry) => ({
-                conversationKey: entry.conversationKey,
-                lastActivityAt: entry.lastActivityAt,
-                title: entry.title,
-                sessionVersion: entry.sessionVersion,
-                paperItemID: entry.paperItemID,
-                mode: entry.mode,
-              }));
-            }
-            const paperID = Number(currentBasePaperItem?.id || 0);
-            const paperLibID = Number(currentBasePaperItem?.libraryID || getCurrentLibraryScopeID());
-            if (!Number.isFinite(paperID) || paperID <= 0 || !Number.isFinite(paperLibID) || paperLibID <= 0) {
-              return [];
-            }
-            return (await loadConversationHistoryScope({
-              mode: "paper",
-              libraryID: paperLibID,
-              paperItemID: paperID,
-              limit: 100,
-            })).map((entry) => ({
-              conversationKey: entry.conversationKey,
-              lastActivityAt: entry.lastActivityAt,
-              title: entry.title,
-              sessionVersion: entry.sessionVersion,
-              paperItemID: entry.paperItemID,
-              mode: entry.mode,
-            }));
-          })();
+          const allEntries: SidebarConv[] = await loadAllStandaloneSearchEntries();
           if (thisSeq !== searchSeq || cancelled) return;
 
           if (!query.trim()) {
-            // Show all entries when no query
             renderSearchResults(allEntries, "");
             return;
           }
 
-          const normalizedQuery = query.trim().toLocaleLowerCase();
-          const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
-
-          // First pass: filter by title (instant)
-          const titleMatches = allEntries.filter((entry) => {
-            const normalizedTitle = (entry.title || "").toLocaleLowerCase();
-            return tokens.every((token) => normalizedTitle.includes(token));
-          });
-
-          // Show title matches immediately
-          renderSearchResults(titleMatches, query);
-
-          // Second pass: search message content for entries not already matched
-          const titleMatchKeys = new Set(
-            titleMatches.map((e) => e.conversationKey),
-          );
-          const entriesToSearch = allEntries.filter(
-            (e) => !titleMatchKeys.has(e.conversationKey),
-          );
-
-          const contentMatches: SidebarConv[] = [];
-          for (const entry of entriesToSearch) {
-            if (thisSeq !== searchSeq || cancelled) return;
-
-            let doc_: { title: string; messages: string } | undefined =
-              searchDocCache.get(entry.conversationKey);
-            if (!doc_) {
+          const normalizedQuery = normalizeHistorySearchQuery(query);
+          const historyEntries = allEntries.map(toStandaloneHistoryEntry);
+          const documents = new Map<number, HistorySearchDocument>();
+          await Promise.all(
+            historyEntries.map(async (entry) => {
+              if (thisSeq !== searchSeq || cancelled) return;
               try {
-                const messages = isClaudeConversationSystem()
-                  ? await loadClaudeConversation(
-                      entry.conversationKey,
-                      200,
-                    )
-                  : isCodexConversationSystem()
-                    ? await loadCodexConversation(
-                        entry.conversationKey,
-                        200,
-                      )
-                  : await loadConversation(
-                      entry.conversationKey,
-                      200,
-                    );
-                const messageText = messages.map((m: any) => m.text || "").join(" ");
-                doc_ = { title: entry.title || "", messages: messageText };
-                searchDocCache.set(entry.conversationKey, doc_);
-              } catch {
-                continue;
+                documents.set(
+                  entry.conversationKey,
+                  await loadStandaloneSearchDocument(entry),
+                );
+              } catch (err) {
+                ztoolkit.log("LLM: standalone search indexing failed", {
+                  conversationKey: entry.conversationKey,
+                  error: err,
+                });
               }
-            }
-            if (thisSeq !== searchSeq || cancelled) return;
-
-            const normalizedMessages = doc_.messages.toLocaleLowerCase();
-            if (tokens.every((token) => normalizedMessages.includes(token))) {
-              contentMatches.push(entry);
-            }
-          }
-
+            }),
+          );
           if (thisSeq !== searchSeq || cancelled) return;
 
-          // Merge title matches + content matches, dedup by conversationKey
-          const dedupedMatches = new Map<number, SidebarConv>();
-          for (const entry of [...titleMatches, ...contentMatches]) {
-            const existing = dedupedMatches.get(entry.conversationKey);
-            if (!existing || entry.lastActivityAt > existing.lastActivityAt) {
-              dedupedMatches.set(entry.conversationKey, entry);
-            }
+          const rawResults = buildHistorySearchResults(
+            historyEntries,
+            normalizedQuery,
+            documents,
+          );
+          const resultsByKey = new Map<number, HistorySearchResult>();
+          for (const result of rawResults) {
+            resultsByKey.set(result.entry.conversationKey, result);
           }
-          const allMatches: SidebarConv[] = Array.from(dedupedMatches.values());
-          allMatches.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
-          renderSearchResults(allMatches, query);
+          const entriesByKey = new Map(
+            allEntries.map((entry) => [entry.conversationKey, entry]),
+          );
+          const matches = rawResults
+            .map((result) => entriesByKey.get(result.entry.conversationKey))
+            .filter((entry): entry is SidebarConv => Boolean(entry));
+          renderSearchResults(matches, query, resultsByKey);
         } catch (err) {
           ztoolkit.log("LLM: standalone search failed", err);
         }
@@ -2230,7 +2266,7 @@ export function openStandaloneChat(options?: {
         }
       });
 
-      searchResults.addEventListener("click", (e: Event) => {
+      searchResults.addEventListener("click", async (e: Event) => {
         const target = e.target as Element | null;
         if (!target) return;
         const btn = target.closest(
@@ -2258,6 +2294,7 @@ export function openStandaloneChat(options?: {
               paperItemId,
             ) as Zotero.Item | null;
             if (paperItem) {
+              await selectStandalonePaperItem(paperItemId);
               const sv = sessionVersion > 0 ? sessionVersion : 1;
               const portalItem = buildStandalonePortalItem({
                 mode: "paper",

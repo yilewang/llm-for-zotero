@@ -1,5 +1,10 @@
 import { assert } from "chai";
-import { loadConversationHistoryScope } from "../src/modules/contextPanel/historyLoader";
+import {
+  loadAllConversationHistory,
+  loadConversationHistoryScope,
+} from "../src/modules/contextPanel/historyLoader";
+import { loadAllClaudeConversationHistory } from "../src/claudeCode/historyLoader";
+import { loadAllCodexConversationHistory } from "../src/codexAppServer/historyLoader";
 import {
   createGlobalConversation,
   getLatestEmptyGlobalConversation,
@@ -142,6 +147,207 @@ describe("historyLoader", function () {
         paperItemID: 321,
       },
     ]);
+  });
+
+  it("loads all upstream conversations across paper and library chat", async function () {
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string) => {
+          if (
+            sql.includes("FROM llm_for_zotero_paper_conversations pc") &&
+            sql.includes("WHERE pc.library_id = ?") &&
+            !sql.includes("pc.paper_item_id = ?")
+          ) {
+            return [
+              {
+                conversationKey: 1_500_000_010,
+                libraryID: 1,
+                paperItemID: 10,
+                sessionVersion: 2,
+                createdAt: 100,
+                title: "Paper conversation",
+                lastActivityAt: 400,
+                userTurnCount: 1,
+              },
+            ];
+          }
+          if (sql.includes("FROM llm_for_zotero_global_conversations gc")) {
+            return [
+              {
+                conversationKey: 2_000_000_001,
+                libraryID: 1,
+                createdAt: 200,
+                title: "Library conversation",
+                lastActivityAt: 300,
+                userTurnCount: 1,
+              },
+            ];
+          }
+          return [];
+        },
+      },
+    };
+
+    const rows = await loadAllConversationHistory({ libraryID: 1, limit: 10 });
+
+    assert.deepEqual(
+      rows.map((row) => ({
+        mode: row.mode,
+        conversationKey: row.conversationKey,
+        paperItemID: row.paperItemID,
+      })),
+      [
+        {
+          mode: "paper",
+          conversationKey: 1_500_000_010,
+          paperItemID: 10,
+        },
+        {
+          mode: "open",
+          conversationKey: 2_000_000_001,
+          paperItemID: undefined,
+        },
+      ],
+    );
+  });
+
+  it("loads all Claude Code conversations across paper and global chat", async function () {
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string) => {
+          if (
+            sql.includes("FROM llm_for_zotero_claude_conversations c") &&
+            sql.includes("c.kind = 'paper'")
+          ) {
+            return [
+              {
+                conversationKey: 4_000_000_010,
+                libraryID: 1,
+                kind: "paper",
+                paperItemID: 10,
+                createdAt: 100,
+                updatedAt: 500,
+                title: "Claude paper conversation",
+                userTurnCount: 2,
+              },
+            ];
+          }
+          if (
+            sql.includes("FROM llm_for_zotero_claude_conversations c") &&
+            sql.includes("c.kind = 'global'")
+          ) {
+            return [
+              {
+                conversationKey: 3_000_000_001,
+                libraryID: 1,
+                kind: "global",
+                createdAt: 200,
+                updatedAt: 300,
+                title: "Claude global conversation",
+                userTurnCount: 1,
+              },
+            ];
+          }
+          return [];
+        },
+      },
+    };
+
+    const rows = await loadAllClaudeConversationHistory({
+      libraryID: 1,
+      limit: 10,
+    });
+
+    assert.deepEqual(
+      rows.map((row) => ({
+        kind: row.kind,
+        conversationKey: row.conversationKey,
+        paperItemID: row.paperItemID,
+      })),
+      [
+        {
+          kind: "paper",
+          conversationKey: 4_000_000_010,
+          paperItemID: 10,
+        },
+        {
+          kind: "global",
+          conversationKey: 3_000_000_001,
+          paperItemID: undefined,
+        },
+      ],
+    );
+  });
+
+  it("loads all Codex conversations across paper and global chat", async function () {
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string) => {
+          if (
+            sql.includes("FROM llm_for_zotero_codex_conversations c") &&
+            sql.includes("c.kind = 'paper'")
+          ) {
+            return [
+              {
+                conversationKey: 6_000_000_010,
+                libraryID: 1,
+                kind: "paper",
+                paperItemID: 10,
+                createdAt: 100,
+                updatedAt: 500,
+                title: "Codex paper conversation",
+                userTurnCount: 2,
+              },
+            ];
+          }
+          if (
+            sql.includes("FROM llm_for_zotero_codex_conversations c") &&
+            sql.includes("c.kind = 'global'")
+          ) {
+            return [
+              {
+                conversationKey: 5_000_000_001,
+                libraryID: 1,
+                kind: "global",
+                createdAt: 200,
+                updatedAt: 300,
+                title: "Codex global conversation",
+                userTurnCount: 1,
+              },
+            ];
+          }
+          return [];
+        },
+      },
+    };
+
+    const rows = await loadAllCodexConversationHistory({
+      libraryID: 1,
+      limit: 10,
+    });
+
+    assert.deepEqual(
+      rows.map((row) => ({
+        kind: row.kind,
+        conversationKey: row.conversationKey,
+        paperItemID: row.paperItemID,
+      })),
+      [
+        {
+          kind: "paper",
+          conversationKey: 6_000_000_010,
+          paperItemID: 10,
+        },
+        {
+          kind: "global",
+          conversationKey: 5_000_000_001,
+          paperItemID: undefined,
+        },
+      ],
+    );
   });
 
   it("creates a fresh global draft instead of reusing an older empty draft", async function () {

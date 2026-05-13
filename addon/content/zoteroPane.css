@@ -1044,22 +1044,28 @@
   outline-offset: 1px;
 }
 
-.llm-standalone-search-label {
+.llm-standalone-search-label,
+.llm-history-item-scope-chip {
   flex-shrink: 0;
   font-size: var(--llm-fs-10);
   font-weight: 500;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
   padding: 1px 6px;
   border-radius: 4px;
   line-height: 1.5;
 }
 
-.llm-standalone-search-label[data-label-type="paper"] {
+.llm-standalone-search-label[data-label-type="paper"],
+.llm-history-item-scope-chip[data-label-type="paper"] {
   color: #93c5fd;
   background: rgba(59, 130, 246, 0.15);
 }
 
-.llm-standalone-search-label[data-label-type="library"] {
+.llm-standalone-search-label[data-label-type="library"],
+.llm-history-item-scope-chip[data-label-type="library"] {
   color: #fdba74;
   background: rgba(249, 115, 22, 0.15);
 }
@@ -1070,6 +1076,20 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.llm-standalone-search-meta,
+.llm-standalone-search-preview {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  color: var(--fill-secondary);
+  font-size: var(--llm-fs-10);
+  line-height: 1.28;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
 }
 
 /* ── Skills popup ─────────────────────────────────────────────── */
@@ -1955,6 +1975,7 @@
 .llm-history-item-title-row {
   display: flex;
   align-items: center;
+  gap: 6px;
   min-width: 0;
   width: 100%;
   overflow: hidden;
@@ -1976,6 +1997,20 @@
   max-width: 100%;
   width: 100%;
   color: var(--fill-secondary);
+  font-size: var(--llm-fs-10);
+  line-height: 1.28;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
+}
+
+.llm-history-item-meta {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  color: var(--fill-tertiary);
   font-size: var(--llm-fs-10);
   line-height: 1.28;
   white-space: nowrap;

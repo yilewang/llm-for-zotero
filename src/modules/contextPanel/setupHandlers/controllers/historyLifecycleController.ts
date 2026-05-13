@@ -57,9 +57,18 @@ import {
   setGlobalConversationTitle,
   setPaperConversationTitle,
 } from "../../../../utils/chatStore";
-import { loadConversationHistoryScope } from "../../historyLoader";
-import { loadClaudeConversationHistoryScope } from "../../../../claudeCode/historyLoader";
-import { loadCodexConversationHistoryScope } from "../../../../codexAppServer/historyLoader";
+import {
+  loadAllConversationHistory,
+  loadConversationHistoryScope,
+} from "../../historyLoader";
+import {
+  loadAllClaudeConversationHistory,
+  loadClaudeConversationHistoryScope,
+} from "../../../../claudeCode/historyLoader";
+import {
+  loadAllCodexConversationHistory,
+  loadCodexConversationHistoryScope,
+} from "../../../../codexAppServer/historyLoader";
 import {
   buildClaudeScope,
   invalidateClaudeConversationSession,
@@ -370,6 +379,7 @@ export function createHistoryLifecycleController(
     historySearchQuery = "";
     historySearchExpanded = false;
     historySearchLoading = false;
+    historySearchEntries = [];
   };
   const closeHistoryRowMenu = () => {
     deps.closeHistoryRowMenu();
@@ -455,6 +465,7 @@ export function createHistoryLifecycleController(
   let historySearchQuery = "";
   let historySearchExpanded = false;
   let historySearchLoading = false;
+  let historySearchEntries: ConversationHistoryEntry[] = [];
   let historySearchLoadSeq = 0;
   const historySearchDocumentCache = new Map<
     number,
@@ -464,10 +475,7 @@ export function createHistoryLifecycleController(
     number,
     PendingHistorySearchDocumentTask
   >();
-  const historySearchDocumentCacheLimit = Math.max(
-    1,
-    Math.min(GLOBAL_HISTORY_LIMIT, 50),
-  );
+  const historySearchDocumentCacheLimit = Math.max(GLOBAL_HISTORY_LIMIT, 200);
   let globalHistoryLoadSeq = 0;
   let pendingHistoryDeletion: PendingHistoryDeletion | null = null;
   const pendingHistoryDeletionKeys = new Set<number>();
@@ -618,6 +626,180 @@ export function createHistoryLifecycleController(
       return activeConversationKey === entry.conversationKey;
     }
     return false;
+  };
+
+  const resolveHistoryPaperLabel = (paperItemID?: number): string => {
+    const normalizedPaperItemID =
+      Number.isFinite(Number(paperItemID)) && Number(paperItemID) > 0
+        ? Math.floor(Number(paperItemID))
+        : 0;
+    if (!normalizedPaperItemID) return "Paper chat";
+    try {
+      const paperItem = Zotero.Items.get(normalizedPaperItemID) || null;
+      const title = String(paperItem?.getField?.("title") || "").trim();
+      return title || "Paper chat";
+    } catch (_err) {
+      return "Paper chat";
+    }
+  };
+
+  const resolveHistoryScopeChipLabel = (
+    entry: ConversationHistoryEntry,
+  ): string => {
+    if (entry.kind !== "paper") return "Library chat";
+    const paperItemID = Number(entry.paperItemID || 0);
+    if (!Number.isFinite(paperItemID) || paperItemID <= 0) {
+      return "Paper chat";
+    }
+    try {
+      const paperItem = Zotero.Items.get(Math.floor(paperItemID)) || null;
+      let firstCreator = "";
+      let year = "";
+      try {
+        firstCreator = String(
+          paperItem?.getField?.("firstCreator") || "",
+        ).trim();
+      } catch (_err) {
+        firstCreator = "";
+      }
+      try {
+        year = String(paperItem?.getField?.("year") || "").trim();
+      } catch (_err) {
+        year = "";
+      }
+      if (firstCreator && year) return `${firstCreator}, ${year}`;
+      if (firstCreator) return firstCreator;
+      if (year) return year;
+      return "Paper chat";
+    } catch (_err) {
+      return "Paper chat";
+    }
+  };
+
+  const createHistorySearchEntry = (params: {
+    kind: "paper" | "global";
+    conversationKey: number;
+    title?: string;
+    createdAt?: number;
+    lastActivityAt: number;
+    isDraft?: boolean;
+    paperItemID?: number;
+    sessionVersion?: number;
+  }): ConversationHistoryEntry | null => {
+    const conversationKey = Number(params.conversationKey);
+    if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
+      return null;
+    }
+    const lastActivity = Number(params.lastActivityAt || params.createdAt || 0);
+    const normalizedLastActivity = Number.isFinite(lastActivity)
+      ? Math.floor(lastActivity)
+      : 0;
+    const isDraft = Boolean(params.isDraft);
+    const paperItemID =
+      params.kind === "paper" &&
+      Number.isFinite(Number(params.paperItemID)) &&
+      Number(params.paperItemID) > 0
+        ? Math.floor(Number(params.paperItemID))
+        : undefined;
+    return {
+      kind: params.kind,
+      section: params.kind === "paper" ? "paper" : "open",
+      sectionTitle:
+        params.kind === "paper"
+          ? resolveHistoryPaperLabel(paperItemID)
+          : "Library chat",
+      conversationKey: Math.floor(conversationKey),
+      title:
+        normalizeHistoryTitle(params.title) ||
+        (isDraft ? "New chat" : "Untitled chat"),
+      timestampText: isDraft
+        ? "Draft"
+        : formatGlobalHistoryTimestamp(normalizedLastActivity) ||
+          (params.kind === "paper" ? "Paper chat" : "Library chat"),
+      deletable: true,
+      isDraft,
+      isPendingDelete: false,
+      lastActivityAt: normalizedLastActivity,
+      paperItemID,
+      sessionVersion:
+        params.kind === "paper" &&
+        Number.isFinite(Number(params.sessionVersion)) &&
+        Number(params.sessionVersion) > 0
+          ? Math.floor(Number(params.sessionVersion))
+          : undefined,
+    };
+  };
+
+  const loadSearchableConversationHistory = async (
+    libraryID: number,
+  ): Promise<ConversationHistoryEntry[]> => {
+    const normalizedLibraryID =
+      Number.isFinite(libraryID) && libraryID > 0 ? Math.floor(libraryID) : 0;
+    if (!normalizedLibraryID) return [];
+    const searchLimit = Math.max(GLOBAL_HISTORY_LIMIT, 100);
+    const entries: ConversationHistoryEntry[] = [];
+
+    if (isClaudeConversationSystem()) {
+      const summaries = await loadAllClaudeConversationHistory({
+        libraryID: normalizedLibraryID,
+        limit: searchLimit,
+      });
+      for (const summary of summaries) {
+        const entry = createHistorySearchEntry({
+          kind: summary.kind === "paper" ? "paper" : "global",
+          conversationKey: summary.conversationKey,
+          title: summary.title,
+          createdAt: summary.createdAt,
+          lastActivityAt: summary.lastActivityAt,
+          isDraft: summary.isDraft,
+          paperItemID: summary.paperItemID,
+        });
+        if (entry) entries.push(entry);
+      }
+    } else if (isCodexConversationSystem()) {
+      const summaries = await loadAllCodexConversationHistory({
+        libraryID: normalizedLibraryID,
+        limit: searchLimit,
+      });
+      for (const summary of summaries) {
+        const entry = createHistorySearchEntry({
+          kind: summary.kind === "paper" ? "paper" : "global",
+          conversationKey: summary.conversationKey,
+          title: summary.title,
+          createdAt: summary.createdAt,
+          lastActivityAt: summary.lastActivityAt,
+          isDraft: summary.isDraft,
+          paperItemID: summary.paperItemID,
+        });
+        if (entry) entries.push(entry);
+      }
+    } else {
+      const summaries = await loadAllConversationHistory({
+        libraryID: normalizedLibraryID,
+        limit: searchLimit,
+      });
+      for (const summary of summaries) {
+        const entry = createHistorySearchEntry({
+          kind: summary.mode === "paper" ? "paper" : "global",
+          conversationKey: summary.conversationKey,
+          title: summary.title,
+          createdAt: summary.createdAt,
+          lastActivityAt: summary.lastActivityAt,
+          isDraft: summary.isDraft,
+          paperItemID: summary.paperItemID,
+          sessionVersion: summary.sessionVersion,
+        });
+        if (entry) entries.push(entry);
+      }
+    }
+
+    entries.sort((a, b) => {
+      if (b.lastActivityAt !== a.lastActivityAt) {
+        return b.lastActivityAt - a.lastActivityAt;
+      }
+      return b.conversationKey - a.conversationKey;
+    });
+    return entries;
   };
 
   const buildHistorySearchDocument = async (
@@ -775,21 +957,12 @@ export function createHistoryLifecycleController(
     const normalizedSearchQuery = normalizeHistorySearchQuery(searchQuery);
     const searchTokens = tokenizeHistorySearchQuery(normalizedSearchQuery);
     const searchActive = searchTokens.length > 0;
-    const allEntries = latestConversationHistory.filter(
+    const scopedEntries = latestConversationHistory.filter(
       (entry) => !entry.isPendingDelete,
     );
-    if (!allEntries.length) {
-      const emptyRow = createElement(
-        body.ownerDocument as Document,
-        "div",
-        "llm-history-menu-empty",
-        {
-          textContent: "No history yet",
-        },
-      );
-      historyMenu.appendChild(emptyRow);
-      return;
-    }
+    const allEntries = searchActive
+      ? historySearchEntries.filter((entry) => !entry.isPendingDelete)
+      : scopedEntries;
     const searchWrap = createElement(
       body.ownerDocument as Document,
       "div",
@@ -825,6 +998,32 @@ export function createHistoryLifecycleController(
       searchWrap.appendChild(searchTrigger);
     }
     historyMenu.appendChild(searchWrap);
+
+    if (searchActive && historySearchLoading) {
+      const loadingRow = createElement(
+        body.ownerDocument as Document,
+        "div",
+        "llm-history-menu-empty",
+        {
+          textContent: "Searching history...",
+        },
+      );
+      historyMenu.appendChild(loadingRow);
+      return;
+    }
+
+    if (!allEntries.length) {
+      const emptyRow = createElement(
+        body.ownerDocument as Document,
+        "div",
+        "llm-history-menu-empty",
+        {
+          textContent: searchActive ? "No matching history" : "No history yet",
+        },
+      );
+      historyMenu.appendChild(emptyRow);
+      return;
+    }
 
     const searchDocumentsReady = searchActive
       ? allEntries.every((entry) => hasUsableHistorySearchDocument(entry))
@@ -917,6 +1116,12 @@ export function createHistoryLifecycleController(
         item.dataset.conversationKey = `${entry.conversationKey}`;
         item.dataset.historyKind = entry.kind;
         item.dataset.historySection = entry.section;
+        if (entry.paperItemID) {
+          item.dataset.paperItemId = `${entry.paperItemID}`;
+        }
+        if (entry.sessionVersion) {
+          item.dataset.sessionVersion = `${entry.sessionVersion}`;
+        }
         if (isHistoryEntryActive(entry)) {
           item.classList.add("active");
         }
@@ -929,6 +1134,18 @@ export function createHistoryLifecycleController(
           "div",
           "llm-history-item-title-row",
         ) as HTMLDivElement;
+
+        if (searchActive) {
+          const scopeChip = createElement(
+            body.ownerDocument as Document,
+            "span",
+            "llm-history-item-scope-chip",
+            { textContent: resolveHistoryScopeChipLabel(entry) },
+          ) as HTMLSpanElement;
+          scopeChip.dataset.labelType =
+            entry.kind === "paper" ? "paper" : "library";
+          titleRow.appendChild(scopeChip);
+        }
 
         const titleSpan = createElement(
           body.ownerDocument as Document,
@@ -963,6 +1180,24 @@ export function createHistoryLifecycleController(
         }
 
         item.appendChild(titleRow);
+
+        if (searchActive) {
+          const metaParts = [
+            entry.kind === "paper"
+              ? entry.sectionTitle || "Paper chat"
+              : "Library chat",
+            entry.timestampText,
+          ].filter((part) => Boolean(String(part || "").trim()));
+          if (metaParts.length) {
+            const meta = createElement(
+              body.ownerDocument as Document,
+              "div",
+              "llm-history-item-meta",
+              { textContent: metaParts.join(" · ") },
+            );
+            item.appendChild(meta);
+          }
+        }
 
         // Search preview snippet
         if (searchResult && searchResult.previewText) {
@@ -1036,26 +1271,8 @@ export function createHistoryLifecycleController(
     const requestId = ++historySearchLoadSeq;
     const normalizedSearchQuery =
       normalizeHistorySearchQuery(historySearchQuery);
-    const entries = latestConversationHistory.filter(
-      (entry) => !entry.isPendingDelete,
-    );
     if (!normalizedSearchQuery) {
-      historySearchLoading = false;
-      renderGlobalHistoryMenu();
-      if (
-        historyToggleBtn &&
-        historyMenu &&
-        historyMenu.style.display !== "none"
-      ) {
-        positionMenuBelowButton(body, historyMenu, historyToggleBtn);
-      }
-      restoreHistorySearchInputFocus();
-      return;
-    }
-    const missingEntries = entries.filter(
-      (entry) => !hasUsableHistorySearchDocument(entry),
-    );
-    if (!missingEntries.length) {
+      historySearchEntries = [];
       historySearchLoading = false;
       renderGlobalHistoryMenu();
       if (
@@ -1078,6 +1295,38 @@ export function createHistoryLifecycleController(
       positionMenuBelowButton(body, historyMenu, historyToggleBtn);
     }
     restoreHistorySearchInputFocus();
+
+    let entries: ConversationHistoryEntry[] = [];
+    try {
+      const libraryID = getCurrentLibraryID();
+      entries = libraryID
+        ? await loadSearchableConversationHistory(libraryID)
+        : [];
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to load searchable conversation history", err);
+      entries = [];
+    }
+    if (requestId !== historySearchLoadSeq) return;
+    historySearchEntries = entries.filter(
+      (entry) => !pendingHistoryDeletionKeys.has(entry.conversationKey),
+    );
+
+    const missingEntries = historySearchEntries.filter(
+      (entry) => !hasUsableHistorySearchDocument(entry),
+    );
+    if (!missingEntries.length) {
+      historySearchLoading = false;
+      renderGlobalHistoryMenu();
+      if (
+        historyToggleBtn &&
+        historyMenu &&
+        historyMenu.style.display !== "none"
+      ) {
+        positionMenuBelowButton(body, historyMenu, historyToggleBtn);
+      }
+      restoreHistorySearchInputFocus();
+      return;
+    }
     await ensureHistorySearchDocuments(missingEntries);
     if (requestId !== historySearchLoadSeq) return;
     historySearchLoading = false;
@@ -1658,10 +1907,13 @@ export function createHistoryLifecycleController(
     void refreshGlobalHistoryHeader();
   };
 
-  const switchPaperConversation = async (nextConversationKey?: number) => {
+  const switchPaperConversation = async (
+    nextConversationKey?: number,
+    options?: { paperItem?: Zotero.Item | null },
+  ) => {
     if (!item || isNoteSession()) return;
     persistDraftInputForCurrentConversation();
-    const paperItem = resolveCurrentPaperBaseItem();
+    const paperItem = options?.paperItem || resolveCurrentPaperBaseItem();
     if (!paperItem) return;
     setBasePaperItem(paperItem);
     const libraryID = getCurrentLibraryID();
@@ -1879,6 +2131,50 @@ export function createHistoryLifecycleController(
       return;
     }
     await switchGlobalConversation(target.conversationKey);
+  };
+
+  const selectPaperItemFromHistoryEntry = async (
+    entry: ConversationHistoryEntry,
+  ): Promise<Zotero.Item | null> => {
+    const paperItemID = Number(entry.paperItemID || 0);
+    if (!Number.isFinite(paperItemID) || paperItemID <= 0) return null;
+    const paperItem = Zotero.Items.get(Math.floor(paperItemID)) || null;
+    if (!paperItem) return null;
+    try {
+      const pane = Zotero.getActiveZoteroPane?.() as
+        | _ZoteroTypes.ZoteroPane
+        | undefined;
+      if (pane) {
+        if (typeof pane.selectItems === "function") {
+          await pane.selectItems([paperItem.id], true);
+        } else if (typeof pane.selectItem === "function") {
+          pane.selectItem(paperItem.id, true);
+        }
+      }
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to select searched conversation paper", {
+        paperItemID,
+        error: err,
+      });
+    }
+    return paperItem;
+  };
+
+  const switchToHistoryEntry = async (
+    entry: ConversationHistoryEntry,
+  ): Promise<void> => {
+    if (entry.kind === "paper") {
+      const paperItem = await selectPaperItemFromHistoryEntry(entry);
+      if (!paperItem) {
+        if (status) {
+          setStatus(status, t("Could not find this paper"), "error");
+        }
+        return;
+      }
+      await switchPaperConversation(entry.conversationKey, { paperItem });
+      return;
+    }
+    await switchGlobalConversation(entry.conversationKey);
   };
 
   const resolveFallbackAfterPaperDelete = async (
@@ -2755,7 +3051,13 @@ export function createHistoryLifecycleController(
         (entry) =>
           entry.kind === historyKind &&
           entry.conversationKey === conversationKey,
-      ) || null
+      ) ||
+      historySearchEntries.find(
+        (entry) =>
+          entry.kind === historyKind &&
+          entry.conversationKey === conversationKey,
+      ) ||
+      null
     );
   };
 
@@ -3726,8 +4028,11 @@ export function createHistoryLifecycleController(
       }
       const historyKind =
         row.dataset.historyKind === "paper" ? "paper" : "global";
+      const entry = findHistoryEntryByKey(historyKind, parsedConversationKey);
       void (async () => {
-        if (historyKind === "paper") {
+        if (entry) {
+          await switchToHistoryEntry(entry);
+        } else if (historyKind === "paper") {
           await switchPaperConversation(parsedConversationKey);
         } else {
           await switchGlobalConversation(parsedConversationKey);

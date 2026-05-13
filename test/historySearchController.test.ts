@@ -13,11 +13,12 @@ function historyEntry(
   conversationKey: number,
   title: string,
   lastActivityAt: number,
+  kind: "global" | "paper" = "global",
 ): ConversationHistoryEntry {
   return {
-    kind: "global",
-    section: "open",
-    sectionTitle: "Open",
+    kind,
+    section: kind === "paper" ? "paper" : "open",
+    sectionTitle: kind === "paper" ? "Paper" : "Open",
     conversationKey,
     title,
     timestampText: "",
@@ -25,6 +26,7 @@ function historyEntry(
     isDraft: false,
     isPendingDelete: false,
     lastActivityAt,
+    paperItemID: kind === "paper" ? 42 : undefined,
   };
 }
 
@@ -102,5 +104,43 @@ describe("historySearchController", function () {
     assert.equal(results[0].matchCount, 3);
     assert.include(results[0].previewText.toLowerCase(), "zotero");
     assert.deepEqual(results[1].titleRanges, [{ start: 0, end: 6 }]);
+  });
+
+  it("searches mixed paper and global conversations with message previews", function () {
+    const paper = historyEntry(201, "Decoder margin", 300, "paper");
+    const global = historyEntry(202, "Library setup", 200, "global");
+    const documents = new Map([
+      [
+        paper.conversationKey,
+        createHistorySearchDocument(paper, [
+          { text: "The paper chat mentions global drift evidence twice: drift drift." },
+        ]),
+      ],
+      [
+        global.conversationKey,
+        createHistorySearchDocument(global, [
+          { text: "A library chat mentions drift once." },
+        ]),
+      ],
+    ]);
+
+    const results = buildHistorySearchResults(
+      [global, paper],
+      "drift",
+      documents,
+    );
+
+    assert.deepEqual(
+      results.map((result) => ({
+        key: result.entry.conversationKey,
+        kind: result.entry.kind,
+      })),
+      [
+        { key: 201, kind: "paper" },
+        { key: 202, kind: "global" },
+      ],
+    );
+    assert.include(results[0].previewText.toLowerCase(), "drift");
+    assert.isAtLeast(results[0].matchCount, 2);
   });
 });
