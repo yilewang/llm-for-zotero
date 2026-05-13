@@ -3425,20 +3425,16 @@ export function setupHandlers(
           setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
 
-          // Auto-correct PDF mode for models that don't support it (e.g. Copilot,
-          // non-qwen-long Qwen models).  Downgrade to text/mineru so the user
-          // doesn't end up with a broken send.
+          // Auto-correct PDF mode for models that don't support native full-PDF
+          // input. Downgrade to text/mineru so the user doesn't end up with a
+          // broken send.
           const newPdfSupport = getModelPdfSupport(
             entry.model,
             entry.providerProtocol,
             entry.authMode,
             entry.apiBase,
           );
-          const shouldDowngrade =
-            newPdfSupport === "none" ||
-            (newPdfSupport === "upload" &&
-              (entry.apiBase || "").toLowerCase().includes("dashscope") &&
-              !/^qwen-long(?:[.-]|$)/i.test(entry.model));
+          const shouldDowngrade = newPdfSupport !== "native";
           if (shouldDowngrade) {
             const papers = getManualPaperContextsForItem(
               item.id,
@@ -3462,7 +3458,7 @@ export function setupHandlers(
                 setStatus(
                   status,
                   t(
-                    "PDF mode is not supported by this model. Switched to Text/MD mode.",
+                    "Full PDF mode is only available for native PDF providers. Switched to Text/MinerU mode.",
                   ),
                   "warning",
                 );

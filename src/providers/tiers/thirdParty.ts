@@ -5,9 +5,9 @@ import type { ProviderCapabilities, ProviderParams } from "../types";
  *
  * OpenRouter, relay/proxy services (e.g. right.codes), and any other
  * provider using OpenAI/Anthropic/Gemini-compatible endpoints that are
- * NOT hosted by a native first-party provider.  PDFs are rendered to
- * regular page images before sending; raw PDF bytes are not sent through
- * image_url.
+ * NOT hosted by a native first-party provider. Full-PDF mode is disabled
+ * because compatible chat endpoints do not imply a compatible PDF/file
+ * input contract.
  */
 
 export function matches(params: ProviderParams): boolean {
@@ -26,6 +26,6 @@ export function matches(params: ProviderParams): boolean {
 export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
   tier: "third_party",
   label: "Third-party compatible",
-  pdf: "vision",
+  pdf: "none",
   images: true,
 };

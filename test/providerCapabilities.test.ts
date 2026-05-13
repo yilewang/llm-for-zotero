@@ -39,7 +39,7 @@ describe("provider capabilities", function () {
     }
   });
 
-  it("routes provider-upload PDF providers to upload support", function () {
+  it("blocks full-PDF mode for provider-upload endpoints", function () {
     for (const apiBase of [
       "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "https://api.moonshot.cn/v1",
@@ -51,7 +51,7 @@ describe("provider capabilities", function () {
           protocol: "openai_chat_compat",
         }),
         {
-          pdf: "upload",
+          pdf: "none",
           images: true,
           multimodal: true,
         },
@@ -59,7 +59,7 @@ describe("provider capabilities", function () {
     }
   });
 
-  it("routes third-party compatible protocols to PDF vision support", function () {
+  it("blocks full-PDF mode for third-party compatible protocols", function () {
     for (const entry of [
       {
         apiBase: "https://openrouter.ai/api/v1",
@@ -81,7 +81,33 @@ describe("provider capabilities", function () {
           protocol: entry.protocol,
         }),
         {
-          pdf: "vision",
+          pdf: "none",
+          images: true,
+          multimodal: true,
+        },
+      );
+    }
+  });
+
+  it("blocks full-PDF mode for Codex and ChatGPT auth transports", function () {
+    for (const entry of [
+      {
+        authMode: "codex_app_server",
+        protocol: "codex_responses",
+      },
+      {
+        authMode: "codex_auth",
+        protocol: "codex_responses",
+      },
+    ]) {
+      assert.deepInclude(
+        resolveProviderCapabilities({
+          model: "gpt-5.4",
+          authMode: entry.authMode,
+          protocol: entry.protocol,
+        }),
+        {
+          pdf: "none",
           images: true,
           multimodal: true,
         },

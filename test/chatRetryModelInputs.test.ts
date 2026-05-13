@@ -7,6 +7,7 @@ import type {
   ChatAttachment,
   Message,
 } from "../src/modules/contextPanel/types";
+import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../src/modules/contextPanel/pdfSupportMessages";
 
 describe("chat retry model inputs", function () {
   const visiblePdf: ChatAttachment = {
@@ -43,18 +44,23 @@ describe("chat retry model inputs", function () {
     };
   }
 
-  it("reuses the provider-safe split for same-provider vision PDF retry", async function () {
+  it("fails same-provider retries when the target no longer supports full PDF mode", async function () {
     const screenshotImages = ["data:image/png;base64,abc"];
 
-    const result = await resolveRetryModelInputsForTests({
-      userMessage: retryUserMessage(),
-      visibleAttachments: [visiblePdf],
-      screenshotImages,
-      effectiveRequestConfig: visionConfig,
-    });
-
-    assert.deepEqual(result.modelAttachments, []);
-    assert.deepEqual(result.screenshotImages, screenshotImages);
+    try {
+      await resolveRetryModelInputsForTests({
+        userMessage: retryUserMessage(),
+        visibleAttachments: [visiblePdf],
+        screenshotImages,
+        effectiveRequestConfig: visionConfig,
+      });
+      assert.fail("Expected non-native PDF retry to reject");
+    } catch (err) {
+      assert.equal(
+        err instanceof Error ? err.message : String(err),
+        FULL_PDF_UNSUPPORTED_MESSAGE,
+      );
+    }
   });
 
   it("recomputes PDF handling when retry switches to a native PDF provider", async function () {
@@ -79,7 +85,7 @@ describe("chat retry model inputs", function () {
     assert.equal(result.modelAttachments?.[0]?.category, "pdf");
   });
 
-  it("drops PDF model attachments when retry switches to a text-only model", async function () {
+  it("fails PDF retries when retry switches to a text-only model", async function () {
     const textOnlyConfig: EffectiveRequestConfig = {
       ...visionConfig,
       model: "deepseek-reasoner",
@@ -87,17 +93,23 @@ describe("chat retry model inputs", function () {
       modelProviderLabel: "DeepSeek",
     };
 
-    const result = await resolveRetryModelInputsForTests({
-      userMessage: retryUserMessage(),
-      visibleAttachments: [visiblePdf],
-      screenshotImages: [],
-      effectiveRequestConfig: textOnlyConfig,
-    });
-
-    assert.deepEqual(result.modelAttachments, []);
+    try {
+      await resolveRetryModelInputsForTests({
+        userMessage: retryUserMessage(),
+        visibleAttachments: [visiblePdf],
+        screenshotImages: [],
+        effectiveRequestConfig: textOnlyConfig,
+      });
+      assert.fail("Expected text-only PDF retry to reject");
+    } catch (err) {
+      assert.equal(
+        err instanceof Error ? err.message : String(err),
+        FULL_PDF_UNSUPPORTED_MESSAGE,
+      );
+    }
   });
 
-  it("fails upload-provider retries when a PDF paper attachment has no stored path", async function () {
+  it("fails Moonshot PDF retries before provider upload preparation", async function () {
     const missingStoredPathPdf: ChatAttachment = {
       id: "pdf-paper-123-1",
       name: "paper.pdf",
@@ -124,11 +136,11 @@ describe("chat retry model inputs", function () {
         screenshotImages: [],
         effectiveRequestConfig: uploadConfig,
       });
-      assert.fail("Expected missing storedPath to reject the retry");
+      assert.fail("Expected Moonshot PDF retry to reject");
     } catch (err) {
-      assert.match(
+      assert.equal(
         err instanceof Error ? err.message : String(err),
-        /missing its locally persisted PDF/,
+        FULL_PDF_UNSUPPORTED_MESSAGE,
       );
     }
   });

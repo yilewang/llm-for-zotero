@@ -49,6 +49,7 @@ import type {
   PaperContextRef,
   SelectedTextContext,
 } from "../../types";
+import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../../pdfSupportMessages";
 import { getModelPdfSupport } from "./modelReasoningController";
 import {
   removePinnedSelectedText,
@@ -433,7 +434,7 @@ export function attachComposePreviewInteractionController(
       if (contentSource === "pdf" && !deps.isWebChatMode()) {
         setStatus(
           t(
-            "PDF mode always sends the full file. Switch to TXT/MD for retrieval mode.",
+            "PDF mode always sends the full file. Switch to Text/MinerU for retrieval mode.",
           ),
           "warning",
         );
@@ -563,27 +564,9 @@ export function attachComposePreviewInteractionController(
           selectedProfile?.authMode,
           selectedProfile?.apiBase,
         );
-        if (pdfSupport === "none") {
-          setStatus(
-            t("PDF mode is not available for this model. Use Text or MD mode."),
-            "error",
-          );
+        if (pdfSupport !== "native") {
+          setStatus(t(FULL_PDF_UNSUPPORTED_MESSAGE), "error");
           return;
-        }
-        if (pdfSupport === "upload") {
-          const isQwen = (selectedProfile?.apiBase || "")
-            .toLowerCase()
-            .includes("dashscope");
-          const isQwenLong = /^qwen-long(?:[.-]|$)/i.test(modelName);
-          if (isQwen && !isQwenLong) {
-            setStatus(
-              t(
-                "Only qwen-long supports PDF upload on DashScope. Use Text or MD mode.",
-              ),
-              "error",
-            );
-            return;
-          }
         }
       }
       setPaperContentSourceOverride(item.id, paperContext, nextSource);

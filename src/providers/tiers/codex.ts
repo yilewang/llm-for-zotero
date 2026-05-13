@@ -3,9 +3,9 @@ import type { ProviderCapabilities, ProviderParams } from "../types";
 /**
  * Tier 5 — Codex / ChatGPT auth.
  *
- * Uses the Responses API format.  The ChatGPT backend validates MIME
- * types in input_image and rejects application/pdf, so PDFs must be
- * rendered as page images (vision mode) before sending.
+ * Uses the Responses API format. The current app-server/plugin transport
+ * does not expose a stable full-PDF turn-input contract, so PDF mode is
+ * disabled here. Users can still attach explicit page captures as images.
  */
 
 export function matches(params: ProviderParams): boolean {
@@ -17,6 +17,6 @@ export function matches(params: ProviderParams): boolean {
 export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
   tier: "codex",
   label: "Codex / ChatGPT",
-  pdf: "vision",
+  pdf: "none",
   images: true,
 };

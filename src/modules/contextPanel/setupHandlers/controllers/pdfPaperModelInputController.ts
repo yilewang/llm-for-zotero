@@ -1,7 +1,7 @@
-import { MAX_SELECTED_IMAGES } from "../../constants";
 import type { PdfSupport } from "../../../../providers";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
 import type { ChatAttachment, PaperContextRef } from "../../types";
+import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../../pdfSupportMessages";
 
 type StatusLevel = "ready" | "warning" | "error";
 
@@ -79,11 +79,6 @@ export function isPdfAttachment(attachment: ChatAttachment): boolean {
   );
 }
 
-function pdfFileNameForPaper(paperContext: PaperContextRef): string {
-  const raw = paperContext.attachmentTitle || paperContext.title || "document";
-  return /\.pdf$/i.test(raw) ? raw : `${raw}.pdf`;
-}
-
 function fail(
   deps: PdfPaperModelInputDeps,
   pdfSupport: PdfSupport,
@@ -109,11 +104,9 @@ export async function resolvePdfModeModelInputs(params: {
     deps,
     paperContexts,
     selectedBaseFiles,
-    selectedImageCountForBudget,
     profile,
     currentModelName,
     isWebChat = false,
-    useCodexAttachmentPolicy = false,
   } = params;
   const modelName = (profile?.model || currentModelName || "").trim();
   const selectedPdfFiles = selectedBaseFiles.filter(isPdfAttachment);
@@ -133,15 +126,15 @@ export async function resolvePdfModeModelInputs(params: {
   const pdfUploadSystemMessages: string[] = [];
   const hasProviderProcessedPdfs = paperContexts.length > 0 && !isWebChat;
 
-  if (hasProviderProcessedPdfs) {
-    if (pdfSupport === "none") {
-      return fail(
-        deps,
-        pdfSupport,
-        "This model does not support PDF or image input. Remove the PDF attachment or switch models.",
-      );
-    }
+  if (
+    !isWebChat &&
+    pdfSupport !== "native" &&
+    (paperContexts.length > 0 || selectedPdfFiles.length > 0)
+  ) {
+    return fail(deps, pdfSupport, FULL_PDF_UNSUPPORTED_MESSAGE);
+  }
 
+  if (hasProviderProcessedPdfs) {
     displayPdfPaperAttachments =
       await deps.resolvePdfPaperAttachments(paperContexts);
     if (displayPdfPaperAttachments.length !== paperContexts.length) {
@@ -152,112 +145,9 @@ export async function resolvePdfModeModelInputs(params: {
       );
     }
 
-    if (pdfSupport === "upload") {
-      if (!profile?.apiBase || !profile?.apiKey) {
-        return fail(
-          deps,
-          pdfSupport,
-          "PDF upload requires a configured provider API key.",
-        );
-      }
-      const isQwen = profile.apiBase.toLowerCase().includes("dashscope");
-      const isQwenLong = /^qwen-long(?:[.-]|$)/i.test(modelName);
-      if (isQwen && !isQwenLong) {
-        return fail(
-          deps,
-          pdfSupport,
-          `Only qwen-long supports PDF upload on DashScope. Current model: ${modelName}.`,
-        );
-      }
-      deps.setInputDisabled?.(true);
-      deps.setStatusMessage?.(`Uploading PDF to ${modelName}...`, "ready");
-      const uploadTargets = paperContexts.map((paperContext) => ({
-        label: `${paperContext.contextItemId}`,
-        fileName: pdfFileNameForPaper(paperContext),
-        bytes: () => deps.resolvePdfBytes(paperContext),
-      }));
-      for (const target of uploadTargets) {
-        try {
-          const result = await deps.uploadPdfForProvider({
-            apiBase: profile.apiBase,
-            apiKey: profile.apiKey,
-            pdfBytes: await target.bytes(),
-            fileName: target.fileName,
-          });
-          if (!result) {
-            return fail(deps, pdfSupport, "PDF upload failed.");
-          }
-          pdfUploadSystemMessages.push(result.systemMessageContent);
-          deps.setStatusMessage?.(`${result.label}`, "ready");
-        } catch (err) {
-          deps.logError?.("LLM: PDF upload failed for", target.label, err);
-          return fail(deps, pdfSupport, "PDF upload failed.");
-        }
-      }
-      modelPdfPaperAttachments = [];
-      deps.setInputDisabled?.(false);
-    } else if (pdfSupport === "vision") {
-      if (deps.isScreenshotUnsupportedModel(modelName)) {
-        return fail(
-          deps,
-          pdfSupport,
-          "This model does not support image input. Remove the PDF attachment or switch models.",
-        );
-      }
-      const maxPdfImages =
-        MAX_SELECTED_IMAGES - Math.max(0, selectedImageCountForBudget);
-      if (maxPdfImages <= 0) {
-        return fail(
-          deps,
-          pdfSupport,
-          `PDF page rendering needs image input capacity. Remove some screenshots or keep at most ${MAX_SELECTED_IMAGES} image inputs.`,
-        );
-      }
-      deps.setInputDisabled?.(true);
-      deps.setStatusMessage?.(
-        "This provider cannot read PDFs directly. Sending the Zotero PDF as page images.",
-        "warning",
-      );
-      try {
-        pdfPageImageDataUrls = (
-          await deps.renderPdfPagesAsImages(paperContexts, maxPdfImages)
-        ).slice(0, maxPdfImages);
-      } catch (err) {
-        deps.logError?.("LLM: PDF page rendering failed", err);
-        return fail(
-          deps,
-          pdfSupport,
-          err instanceof Error && err.message.trim()
-            ? err.message
-            : "PDF page rendering failed.",
-        );
-      }
-      if (!pdfPageImageDataUrls.length) {
-        return fail(deps, pdfSupport, "PDF page rendering failed.");
-      }
-      modelPdfPaperAttachments = [];
-      deps.setStatusMessage?.(
-        `Sending ${pdfPageImageDataUrls.length} PDF page image(s)...`,
-        "ready",
-      );
-      deps.setInputDisabled?.(false);
-    } else {
-      deps.setStatusMessage?.(`Sending native PDF to ${modelName}...`, "ready");
-      modelPdfPaperAttachments = displayPdfPaperAttachments;
-      modelSelectedPdfAttachments = selectedPdfFiles;
-    }
-  }
-
-  if (
-    selectedPdfFiles.length > 0 &&
-    pdfSupport === "vision" &&
-    !isWebChat &&
-    !useCodexAttachmentPolicy
-  ) {
-    deps.setStatusMessage?.(
-      "This provider may not read uploaded PDFs directly.",
-      "warning",
-    );
+    deps.setStatusMessage?.(`Sending native PDF to ${modelName}...`, "ready");
+    modelPdfPaperAttachments = displayPdfPaperAttachments;
+    modelSelectedPdfAttachments = selectedPdfFiles;
   }
 
   const selectedFiles = [

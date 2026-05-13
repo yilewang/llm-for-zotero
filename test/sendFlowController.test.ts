@@ -6,6 +6,7 @@ import type {
   SelectedTextContext,
 } from "../src/modules/contextPanel/types";
 import { createSendFlowController } from "../src/modules/contextPanel/setupHandlers/controllers/sendFlowController";
+import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../src/modules/contextPanel/pdfSupportMessages";
 
 describe("sendFlowController", function () {
   const item = { id: 101 } as unknown as Zotero.Item;
@@ -296,9 +297,11 @@ describe("sendFlowController", function () {
     assert.equal(getLastEditRuntimeMode(), "agent");
   });
 
-  it("passes provider-uploaded PDF context through latest-turn edit retries", async function () {
+  it("blocks provider-upload full-PDF mode in latest-turn edit retries", async function () {
     const {
       controller,
+      getCounts,
+      getLastStatus,
       getLastEditPdfUploadSystemMessages,
     } = createBaseDeps({
       getSelectedFiles: () => [],
@@ -313,7 +316,7 @@ describe("sendFlowController", function () {
         authMode: "api_key",
         providerProtocol: "openai_chat_compat",
       }),
-      getModelPdfSupport: () => "upload" as const,
+      getModelPdfSupport: () => "none" as const,
       resolvePdfPaperAttachments: async () => [
         {
           id: "pdf-paper-34-1",
@@ -345,12 +348,15 @@ describe("sendFlowController", function () {
 
     await controller.doSend();
 
-    assert.deepEqual(getLastEditPdfUploadSystemMessages(), [
-      "uploaded pdf context",
-    ]);
+    assert.equal(getCounts().editCalled, 0);
+    assert.deepEqual(getLastStatus(), {
+      message: FULL_PDF_UNSUPPORTED_MESSAGE,
+      level: "error",
+    });
+    assert.isUndefined(getLastEditPdfUploadSystemMessages());
   });
 
-  it("renders PDF-mode paper chips to page images for third-party providers while preserving the PDF attachment", async function () {
+  it("blocks PDF-mode paper chips for third-party providers", async function () {
     const pdfAttachment: ChatAttachment = {
       id: "pdf-paper-34-1",
       name: "paper.pdf",
@@ -359,7 +365,7 @@ describe("sendFlowController", function () {
       category: "pdf",
       storedPath: "/tmp/paper.pdf",
     };
-    const { controller, getCounts, getLastSend, getStatuses } = createBaseDeps({
+    const { controller, getCounts, getStatuses } = createBaseDeps({
       getSelectedFiles: () => [],
       getSelectedImages: () => [],
       getFullTextPaperContexts: () => [],
@@ -373,31 +379,23 @@ describe("sendFlowController", function () {
         authMode: "api_key",
         providerProtocol: "openai_chat_compat",
       }),
-      getModelPdfSupport: () => "vision" as const,
+      getModelPdfSupport: () => "none" as const,
       resolvePdfPaperAttachments: async () => [pdfAttachment],
-      renderPdfPagesAsImages: async () => ["data:image/png;base64,PAGE1"],
+      renderPdfPagesAsImages: async () => {
+        throw new Error("should not render full PDF pages");
+      },
     });
 
     await controller.doSend();
 
-    assert.equal(getCounts().sendCalled, 1);
-    assert.deepEqual(getLastSend().lastSentImages, [
-      "data:image/png;base64,PAGE1",
-    ]);
-    assert.deepEqual(getLastSend().lastSentAttachments, [pdfAttachment]);
-    assert.deepEqual(getLastSend().lastSentModelAttachments, []);
+    assert.equal(getCounts().sendCalled, 0);
     assert.deepInclude(getStatuses(), {
-      message:
-        "This provider cannot read PDFs directly. Sending the Zotero PDF as page images.",
-      level: "warning",
+      message: FULL_PDF_UNSUPPORTED_MESSAGE,
+      level: "error",
     });
-    assert.notInclude(
-      JSON.stringify(getLastSend().lastSentImages),
-      "data:application/pdf",
-    );
   });
 
-  it("sends direct uploaded PDFs on third-party providers with a warning and without page rendering", async function () {
+  it("blocks direct uploaded PDFs on third-party providers", async function () {
     const uploadedPdf: ChatAttachment = {
       id: "upload-1",
       name: "upload.pdf",
@@ -407,7 +405,7 @@ describe("sendFlowController", function () {
       storedPath: "/tmp/upload.pdf",
     };
     let renderAttachmentCalls = 0;
-    const { controller, getCounts, getLastSend, getStatuses } = createBaseDeps({
+    const { controller, getCounts, getStatuses } = createBaseDeps({
       getSelectedPaperContexts: () => [],
       getFullTextPaperContexts: () => [],
       getSelectedFiles: () => [uploadedPdf],
@@ -421,7 +419,7 @@ describe("sendFlowController", function () {
         authMode: "api_key",
         providerProtocol: "openai_chat_compat",
       }),
-      getModelPdfSupport: () => "vision" as const,
+      getModelPdfSupport: () => "none" as const,
       renderPdfPagesAsImages: async () => {
         renderAttachmentCalls += 1;
         return ["data:image/png;base64,SHOULD_NOT_RENDER"];
@@ -430,18 +428,15 @@ describe("sendFlowController", function () {
 
     await controller.doSend();
 
-    assert.equal(getCounts().sendCalled, 1);
-    assert.deepEqual(getLastSend().lastSentImages, []);
-    assert.deepEqual(getLastSend().lastSentAttachments, [uploadedPdf]);
-    assert.deepEqual(getLastSend().lastSentModelAttachments, [uploadedPdf]);
+    assert.equal(getCounts().sendCalled, 0);
     assert.equal(renderAttachmentCalls, 0);
     assert.deepInclude(getStatuses(), {
-      message: "This provider may not read uploaded PDFs directly.",
-      level: "warning",
+      message: FULL_PDF_UNSUPPORTED_MESSAGE,
+      level: "error",
     });
   });
 
-  it("keeps direct uploaded PDFs as model attachments when PDF-mode papers render as images", async function () {
+  it("blocks mixed direct and paper PDFs on third-party providers", async function () {
     const uploadedPdf: ChatAttachment = {
       id: "upload-1",
       name: "upload.pdf",
@@ -458,7 +453,7 @@ describe("sendFlowController", function () {
       category: "pdf",
       storedPath: "/tmp/paper.pdf",
     };
-    const { controller, getCounts, getLastSend, getStatuses } = createBaseDeps({
+    const { controller, getCounts, getStatuses } = createBaseDeps({
       getSelectedFiles: () => [uploadedPdf],
       getSelectedImages: () => [],
       getFullTextPaperContexts: () => [],
@@ -472,30 +467,19 @@ describe("sendFlowController", function () {
         authMode: "api_key",
         providerProtocol: "openai_chat_compat",
       }),
-      getModelPdfSupport: () => "vision" as const,
+      getModelPdfSupport: () => "none" as const,
       resolvePdfPaperAttachments: async () => [paperPdf],
-      renderPdfPagesAsImages: async () => ["data:image/png;base64,PAGE1"],
+      renderPdfPagesAsImages: async () => {
+        throw new Error("should not render full PDF pages");
+      },
     });
 
     await controller.doSend();
 
-    assert.equal(getCounts().sendCalled, 1);
-    assert.deepEqual(getLastSend().lastSentImages, [
-      "data:image/png;base64,PAGE1",
-    ]);
-    assert.deepEqual(getLastSend().lastSentAttachments, [
-      uploadedPdf,
-      paperPdf,
-    ]);
-    assert.deepEqual(getLastSend().lastSentModelAttachments, [uploadedPdf]);
+    assert.equal(getCounts().sendCalled, 0);
     assert.deepInclude(getStatuses(), {
-      message:
-        "This provider cannot read PDFs directly. Sending the Zotero PDF as page images.",
-      level: "warning",
-    });
-    assert.deepInclude(getStatuses(), {
-      message: "This provider may not read uploaded PDFs directly.",
-      level: "warning",
+      message: FULL_PDF_UNSUPPORTED_MESSAGE,
+      level: "error",
     });
   });
 
@@ -531,12 +515,12 @@ describe("sendFlowController", function () {
     assert.deepEqual(getLastSend().lastSentAttachments, [uploadedPdf]);
     assert.deepEqual(getLastSend().lastSentModelAttachments, [uploadedPdf]);
     assert.notDeepInclude(getStatuses(), {
-      message: "This provider may not read uploaded PDFs directly.",
-      level: "warning",
+      message: FULL_PDF_UNSUPPORTED_MESSAGE,
+      level: "error",
     });
   });
 
-  it("blocks PDF sends when the provider has no PDF or image support", async function () {
+  it("blocks PDF sends when the provider has no native PDF support", async function () {
     const { controller, inputBox, getCounts, getLastStatus } = createBaseDeps({
       getSelectedFiles: () => [],
       getFullTextPaperContexts: () => [],
@@ -559,13 +543,12 @@ describe("sendFlowController", function () {
     assert.equal(getCounts().editCalled, 0);
     assert.equal(inputBox.value, "ask question");
     assert.deepEqual(getLastStatus(), {
-      message:
-        "This model does not support PDF or image input. Remove the PDF attachment or switch models.",
+      message: FULL_PDF_UNSUPPORTED_MESSAGE,
       level: "error",
     });
   });
 
-  it("blocks PDF sends when third-party page rendering fails", async function () {
+  it("does not auto-render PDF-mode papers for third-party providers", async function () {
     const pdfAttachment: ChatAttachment = {
       id: "pdf-paper-34-1",
       name: "paper.pdf",
@@ -588,16 +571,18 @@ describe("sendFlowController", function () {
         authMode: "api_key",
         providerProtocol: "openai_chat_compat",
       }),
-      getModelPdfSupport: () => "vision" as const,
+      getModelPdfSupport: () => "none" as const,
       resolvePdfPaperAttachments: async () => [pdfAttachment],
-      renderPdfPagesAsImages: async () => [],
+      renderPdfPagesAsImages: async () => {
+        throw new Error("should not render full PDF pages");
+      },
     });
 
     await controller.doSend();
 
     assert.equal(getCounts().sendCalled, 0);
     assert.deepEqual(getLastStatus(), {
-      message: "PDF page rendering failed.",
+      message: FULL_PDF_UNSUPPORTED_MESSAGE,
       level: "error",
     });
   });
@@ -841,7 +826,7 @@ describe("sendFlowController", function () {
     });
   });
 
-  it("renders PDF-mode papers as page images in codex app server chat", async function () {
+  it("blocks PDF-mode papers in codex app server chat", async function () {
     const pdfAttachment: ChatAttachment = {
       id: "pdf-paper-34-1",
       name: "paper.pdf",
@@ -850,33 +835,36 @@ describe("sendFlowController", function () {
       category: "pdf",
       storedPath: "/tmp/paper.pdf",
     };
-    const pdfImage = "data:image/png;base64,PDFPAGE";
-    const { controller, getCounts, getLastSend, getStatuses } = createBaseDeps({
-      getSelectedTextContextEntries: () => [],
-      getSelectedFiles: () => [],
-      getSelectedImages: () => [],
-      getFullTextPaperContexts: () => [],
-      getPdfModePaperContexts: () => [selectedPaper],
-      getSelectedProfile: () => ({
-        entryId: "entry-1",
-        model: "gpt-5.4",
-        apiBase: "https://chatgpt.com/backend-api/codex/responses",
-        apiKey: "",
-        providerLabel: "Codex",
-        authMode: "codex_app_server",
-        providerProtocol: "codex_responses",
-      }),
-      getModelPdfSupport: () => "vision" as const,
-      resolvePdfPaperAttachments: async () => [pdfAttachment],
-      renderPdfPagesAsImages: async () => [pdfImage],
-    });
+    const { controller, getCounts, getLastStatus, getStatuses } =
+      createBaseDeps({
+        getSelectedTextContextEntries: () => [],
+        getSelectedFiles: () => [],
+        getSelectedImages: () => [],
+        getFullTextPaperContexts: () => [],
+        getPdfModePaperContexts: () => [selectedPaper],
+        getSelectedProfile: () => ({
+          entryId: "entry-1",
+          model: "gpt-5.4",
+          apiBase: "https://chatgpt.com/backend-api/codex/responses",
+          apiKey: "",
+          providerLabel: "Codex",
+          authMode: "codex_app_server",
+          providerProtocol: "codex_responses",
+        }),
+        getModelPdfSupport: () => "none" as const,
+        resolvePdfPaperAttachments: async () => [pdfAttachment],
+        renderPdfPagesAsImages: async () => {
+          throw new Error("should not render full PDF pages");
+        },
+      });
 
     await controller.doSend();
 
-    assert.equal(getCounts().sendCalled, 1);
-    assert.deepEqual(getLastSend().lastSentImages, [pdfImage]);
-    assert.deepEqual(getLastSend().lastSentAttachments, [pdfAttachment]);
-    assert.deepEqual(getLastSend().lastSentModelAttachments, []);
+    assert.equal(getCounts().sendCalled, 0);
+    assert.deepEqual(getLastStatus(), {
+      message: FULL_PDF_UNSUPPORTED_MESSAGE,
+      level: "error",
+    });
     assert.notInclude(
       getStatuses().map((status) => status.message),
       "Codex App Server chat does not support pinned PDF or binary file attachments (paper.pdf). Remove them and try again.",

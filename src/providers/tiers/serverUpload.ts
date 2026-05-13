@@ -5,7 +5,9 @@ import type { ProviderCapabilities, ProviderParams } from "../types";
  *
  * Qwen DashScope and Kimi Moonshot expose their own /files endpoints
  * that accept a PDF upload and return a file reference for use in
- * subsequent chat requests.
+ * subsequent chat requests. Those are provider-specific document
+ * extraction paths, not native full-PDF chat input, so normal PDF mode
+ * stays disabled until an explicit adapter is introduced.
  */
 
 export function matches(params: ProviderParams): boolean {
@@ -21,6 +23,6 @@ export function matches(params: ProviderParams): boolean {
 export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
   tier: "server_upload",
   label: "Server-side upload",
-  pdf: "upload",
+  pdf: "none",
   images: true,
 };

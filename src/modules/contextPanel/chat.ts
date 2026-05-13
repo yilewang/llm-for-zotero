@@ -163,6 +163,7 @@ import {
   normalizeAttachmentContentHash,
 } from "./normalizers";
 import { positionMenuAtPointer } from "./menuPositioning";
+import { FULL_PDF_UNSUPPORTED_MESSAGE } from "./pdfSupportMessages";
 import {
   getAvailableModelEntries,
   getLastReasoningExpanded,
@@ -3438,6 +3439,19 @@ function getPdfPaperAttachmentContextItemId(
     : null;
 }
 
+function isPdfChatAttachment(attachment: ChatAttachment): boolean {
+  const name = typeof attachment.name === "string" ? attachment.name : "";
+  const mime =
+    typeof attachment.mimeType === "string"
+      ? attachment.mimeType.trim().toLowerCase()
+      : "";
+  return (
+    attachment.category === "pdf" ||
+    mime === "application/pdf" ||
+    /\.pdf$/i.test(name)
+  );
+}
+
 function isSameRetryModelTarget(params: {
   userMessage: Message;
   previousAssistant?: Pick<
@@ -3537,21 +3551,33 @@ async function resolveRetryModelInputs(params: {
   screenshotImages: string[];
   pdfUploadSystemMessages?: string[];
 }> {
-  if (params.modelAttachmentsOverride !== undefined) {
-    return {
-      modelAttachments: params.modelAttachmentsOverride,
-      screenshotImages: params.screenshotImages,
-    };
-  }
   const visibleAttachments = normalizeEditableAttachments(
     params.visibleAttachments,
   );
+  const modelAttachmentsOverride =
+    params.modelAttachmentsOverride !== undefined
+      ? normalizeEditableAttachments(params.modelAttachmentsOverride)
+      : undefined;
   const pdfSupport = resolveProviderCapabilities({
     model: params.effectiveRequestConfig.model,
     protocol: params.effectiveRequestConfig.providerProtocol,
     authMode: params.effectiveRequestConfig.authMode,
     apiBase: params.effectiveRequestConfig.apiBase,
   }).pdf;
+  if (
+    params.effectiveRequestConfig.providerProtocol !== "web_sync" &&
+    pdfSupport !== "native" &&
+    (visibleAttachments.some(isPdfChatAttachment) ||
+      (modelAttachmentsOverride || []).some(isPdfChatAttachment))
+  ) {
+    throw new Error(FULL_PDF_UNSUPPORTED_MESSAGE);
+  }
+  if (modelAttachmentsOverride !== undefined) {
+    return {
+      modelAttachments: modelAttachmentsOverride,
+      screenshotImages: params.screenshotImages,
+    };
+  }
   const pdfPaperAttachments = visibleAttachments.filter(
     (attachment) => getPdfPaperAttachmentContextItemId(attachment) !== null,
   );
