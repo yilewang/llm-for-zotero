@@ -1,7 +1,4 @@
-import type {
-  AgentModelMessage,
-  AgentRuntimeRequest,
-} from "../types";
+import type { AgentModelMessage, AgentRuntimeRequest } from "../types";
 import type { PaperContextRef } from "../../shared/types";
 import {
   formatPaperCitationLabel,
@@ -92,6 +89,7 @@ const RESOURCE_DELTA_MAX_LINES = 12;
 const MAX_LEDGER_ENTRIES = 12;
 const MAX_RENDERED_LEDGER_ENTRIES = 8;
 const READ_TOOL_NAMES = new Set([
+  "paper_read",
   "read_paper",
   "search_paper",
   "view_pdf_pages",
@@ -196,7 +194,7 @@ function buildPaperResourceRecords(params: {
       .filter((entry) =>
         Boolean(
           normalizePositiveInt(entry.itemId) ||
-            normalizePositiveInt(entry.contextItemId),
+          normalizePositiveInt(entry.contextItemId),
         ),
       )
       .map((entry) => ({
@@ -355,11 +353,12 @@ function buildAgentBaseScopeSnapshot(
     activeItemId: normalizePositiveInt(request.activeItemId) || 0,
     activeNoteId: normalizePositiveInt(activeNote?.noteId) || 0,
     activeNoteKind: normalizeText(activeNote?.noteKind, 40),
-    activeNoteParentItemId:
-      normalizePositiveInt(activeNote?.parentItemId) || 0,
+    activeNoteParentItemId: normalizePositiveInt(activeNote?.parentItemId) || 0,
     activeNoteTitle: normalizeText(activeNote?.title, 240),
     activeNoteTextHash: activeNote ? hashText(activeNote.noteText || "") : "",
-    activeNoteHtmlHash: activeNote?.noteHtml ? hashText(activeNote.noteHtml) : "",
+    activeNoteHtmlHash: activeNote?.noteHtml
+      ? hashText(activeNote.noteHtml)
+      : "",
     scopeType: normalizeText(metadata.scopeType, 80),
     scopeId: normalizeText(metadata.scopeId, 160),
     scopeLabel: normalizeText(metadata.scopeLabel, 240),
@@ -464,11 +463,7 @@ function getAgentResourceDeltaCounts(
 }
 
 function isDeltaEligible(delta: AgentResourceDelta): boolean {
-  const changedRecords = [
-    ...delta.added,
-    ...delta.removed,
-    ...delta.changed,
-  ];
+  const changedRecords = [...delta.added, ...delta.removed, ...delta.changed];
   return changedRecords.every((record) =>
     DELTA_ELIGIBLE_GROUPS.has(record.group),
   );
@@ -503,10 +498,10 @@ export function resolveAgentResourceLifecycleState(params: {
 function requestHasContentfulResource(request: AgentRuntimeRequest): boolean {
   return Boolean(
     request.activeNoteContext ||
-      request.selectedTexts?.length ||
-      request.fullTextPaperContexts?.length ||
-      request.screenshots?.length ||
-      request.attachments?.length,
+    request.selectedTexts?.length ||
+    request.fullTextPaperContexts?.length ||
+    request.screenshots?.length ||
+    request.attachments?.length,
   );
 }
 
@@ -815,6 +810,16 @@ function findMineruPaperTarget(
 
 function buildReadDetail(toolName: string, args: unknown): string | undefined {
   const record = normalizeRecord(args);
+  if (toolName === "paper_read") {
+    const mode = normalizeText(record.mode, 40) || "overview";
+    const pieces = [`mode=${mode}`];
+    const query = normalizeText(record.query, 120);
+    if (query) pieces.push(`query="${query}"`);
+    if (Array.isArray(record.pages) && record.pages.length) {
+      pieces.push(`pages=${record.pages.join(", ")}`);
+    }
+    return pieces.join(", ");
+  }
   if (toolName === "search_paper") {
     const question = normalizeText(record.question, 120);
     return question ? `question="${question}"` : undefined;

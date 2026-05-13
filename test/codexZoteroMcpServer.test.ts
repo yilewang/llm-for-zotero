@@ -522,6 +522,108 @@ describe("Zotero MCP server", function () {
     }
   });
 
+  it("invalidates semantic read dedupe after successful writes", async function () {
+    let readExecuteCount = 0;
+    let writeExecuteCount = 0;
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "library_search",
+        description: "Search library",
+        inputSchema: { type: "object", additionalProperties: true },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async (input) => {
+        readExecuteCount += 1;
+        return { readExecuteCount, input };
+      },
+    });
+    registry.register({
+      spec: {
+        name: "library_update",
+        description: "Update library",
+        inputSchema: { type: "object", additionalProperties: true },
+        mutability: "write",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async () => {
+        writeExecuteCount += 1;
+        return { writeExecuteCount };
+      },
+    });
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const scoped = registerScopedZoteroMcpScope(
+      {
+        profileSignature: "profile-dedupe-write",
+        conversationKey: 790,
+        libraryID: 1,
+        kind: "global",
+        userText: "move and verify",
+      },
+      { token: "dedupe-write-scope-token" },
+    );
+
+    const token = getOrCreateZoteroMcpBearerToken();
+    const headers = { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token };
+    const readBody = (id: number) => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: {
+        name: "library_search",
+        arguments: {
+          entity: "items",
+          mode: "list",
+          filters: { unfiled: true },
+        },
+      },
+    });
+    const parseContent = (reply: EndpointReply) => {
+      const payload = JSON.parse(reply[2]);
+      return JSON.parse(payload.result.content[0].text);
+    };
+
+    try {
+      const firstContent = parseContent(
+        await invokeMcpEndpoint({ token, headers, body: readBody(1) }),
+      );
+      const secondContent = parseContent(
+        await invokeMcpEndpoint({ token, headers, body: readBody(2) }),
+      );
+      await invokeMcpEndpoint({
+        token,
+        headers,
+        body: {
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "library_update",
+            arguments: { kind: "collections", itemIds: [1] },
+          },
+        },
+      });
+      const thirdContent = parseContent(
+        await invokeMcpEndpoint({ token, headers, body: readBody(4) }),
+      );
+
+      assert.equal(firstContent.result.readExecuteCount, 1);
+      assert.equal(secondContent.duplicate, true);
+      assert.equal(secondContent.result.readExecuteCount, 1);
+      assert.equal(writeExecuteCount, 1);
+      assert.notProperty(thirdContent, "duplicate");
+      assert.equal(thirdContent.result.readExecuteCount, 2);
+    } finally {
+      scoped.clear();
+    }
+  });
+
   it("binds MCP tool context from the scoped header before the legacy active scope", async function () {
     const registry = new AgentToolRegistry();
     registry.register({

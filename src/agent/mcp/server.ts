@@ -75,9 +75,7 @@ const WRITE_TOOL_ANNOTATIONS = {
   openWorldHint: false,
   destructiveHint: false,
 } as const;
-const DESTRUCTIVE_WRITE_TOOL_NAMES = new Set<string>([
-  "library_delete",
-]);
+const DESTRUCTIVE_WRITE_TOOL_NAMES = new Set<string>(["library_delete"]);
 const DESTRUCTIVE_WRITE_TOOL_ANNOTATIONS = {
   ...WRITE_TOOL_ANNOTATIONS,
   destructiveHint: true,
@@ -562,6 +560,14 @@ function rememberMcpReadResult(
     expiresAt: Date.now() + MCP_READ_DEDUPE_TTL_MS,
     result,
   });
+}
+
+function clearMcpReadDedupeCacheAfterToolResult(
+  tool: ToolSpec,
+  result: McpToolCallResult,
+): void {
+  if (tool.mutability !== "write" || result.isError) return;
+  mcpReadDedupeCache.clear();
 }
 
 function isAuthorized(headers: Record<string, string> | undefined): boolean {
@@ -1135,6 +1141,7 @@ async function handleToolsCall(
         ok: !result.isError,
         error: extractToolCallErrorText(result),
       });
+      clearMcpReadDedupeCacheAfterToolResult(tool.spec, result);
       return result;
     }
     const result = formatToolResult(prepared.execution);
@@ -1142,6 +1149,7 @@ async function handleToolsCall(
       ok: !result.isError,
       error: extractToolCallErrorText(result),
     });
+    clearMcpReadDedupeCacheAfterToolResult(tool.spec, result);
     rememberMcpReadResult(readDedupeKey, result);
     return result;
   } catch (error) {

@@ -60,7 +60,9 @@ describe("semantic tool surface", function () {
       ["library_search"],
     );
     assert.deepEqual(
-      registry.listToolsForRequest(baseContext.request).map((tool) => tool.name),
+      registry
+        .listToolsForRequest(baseContext.request)
+        .map((tool) => tool.name),
       ["library_search"],
     );
     assert.exists(registry.getTool("query_library"));
@@ -104,7 +106,10 @@ describe("semantic tool surface", function () {
       "update_metadata",
     ]) {
       assert.notInclude(names, legacyName);
-      assert.exists(registry.getTool(legacyName), `${legacyName} remains internally callable`);
+      assert.exists(
+        registry.getTool(legacyName),
+        `${legacyName} remains internally callable`,
+      );
     }
     for (const name of ["file_io", "run_command", "zotero_script"]) {
       assert.equal(
@@ -226,7 +231,9 @@ describe("semantic tool surface", function () {
     const tool = createPaperReadTool(
       {
         getOverviewExcerpt: async () => {
-          throw new Error("No PDF attachment is available for this Zotero item");
+          throw new Error(
+            "No PDF attachment is available for this Zotero item",
+          );
         },
       } as never,
       {} as never,
@@ -263,6 +270,53 @@ describe("semantic tool surface", function () {
     assert.equal(result?.contentStatus, "no_pdf_attachment");
     assert.include(String(result?.warning || ""), "No PDF attachment");
     assert.equal(result?.sourceLabel, "(Charest, 2014)");
+  });
+
+  it("paper_read MinerU overview uses citation-compatible source labels", async function () {
+    const globalScope = globalThis as typeof globalThis & {
+      IOUtils?: { read?: unknown };
+    };
+    const originalIOUtils = globalScope.IOUtils;
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "MinerU Paper",
+      firstCreator: "Miller",
+      year: "2025",
+      mineruCacheDir: "/tmp/mineru-paper",
+    };
+    globalScope.IOUtils = {
+      read: async () =>
+        new TextEncoder().encode(
+          "# MinerU Paper\n\nAbstract text.\n\n# Discussion\n\nDiscussion text.",
+        ),
+    };
+    try {
+      const tool = createPaperReadTool(
+        {} as never,
+        {} as never,
+        {} as never,
+        {
+          listPaperContexts: () => [paperContext],
+          resolvePaperContextTarget: () => paperContext,
+        } as never,
+      );
+      const validated = tool.validate({ mode: "overview" });
+      assert.equal(validated.ok, true);
+      if (!validated.ok) return;
+      const output = await tool.execute(validated.value, baseContext);
+      const result = (output as { results?: Array<Record<string, unknown>> })
+        .results?.[0];
+      assert.equal(result?.backend, "mineru");
+      assert.equal(result?.citationLabel, "Miller, 2025");
+      assert.equal(result?.sourceLabel, "(Miller, 2025)");
+    } finally {
+      if (originalIOUtils === undefined) {
+        delete globalScope.IOUtils;
+      } else {
+        globalScope.IOUtils = originalIOUtils;
+      }
+    }
   });
 
   it("paper_read targeted returns grouped per-paper evidence while preserving flat results", async function () {
@@ -316,7 +370,10 @@ describe("semantic tool surface", function () {
     const validated = tool.validate({
       mode: "targeted",
       query: "methods methodology method section",
-      targets: [{ itemId: 11, contextItemId: 22 }, { itemId: 33, contextItemId: 44 }],
+      targets: [
+        { itemId: 11, contextItemId: 22 },
+        { itemId: 33, contextItemId: 44 },
+      ],
     });
     assert.equal(validated.ok, true);
     if (!validated.ok) return;
@@ -336,7 +393,10 @@ describe("semantic tool surface", function () {
     );
     assert.equal(output.papers?.[0]?.sourceLabel, "(Huys, 2016)");
     assert.equal(output.papers?.[0]?.passages?.[0]?.sectionLabel, "Methods");
-    assert.equal(output.papers?.[1]?.passages?.[0]?.text, "Second method passage.");
+    assert.equal(
+      output.papers?.[1]?.passages?.[0]?.text,
+      "Second method passage.",
+    );
   });
 
   it("paper_read targeted success text counts passages separately from papers", function () {
@@ -349,7 +409,9 @@ describe("semantic tool surface", function () {
         label: "Read Paper",
         content: {
           mode: "targeted",
-          results: Array.from({ length: 8 }, (_, index) => ({ chunkIndex: index })),
+          results: Array.from({ length: 8 }, (_, index) => ({
+            chunkIndex: index,
+          })),
           papers: [{ sourceLabel: "(Chandra et al., 2025)", passages: [] }],
         },
       }),
@@ -374,9 +436,15 @@ describe("semantic tool surface", function () {
       raw,
       "paper_read({ mode:'targeted', query:'methods methodology method section', targets:[...] })",
     );
-    assert.include(raw, "For method-section requests, do not call overview first");
+    assert.include(
+      raw,
+      "For method-section requests, do not call overview first",
+    );
     assert.include(raw, "include short blockquotes");
-    assert.include(raw, "Do not call visual/page tools, `file_io`, or `run_command`");
+    assert.include(
+      raw,
+      "Do not call visual/page tools, `file_io`, or `run_command`",
+    );
   });
 
   it("web_search returns cited URL results without fetching result pages", async function () {

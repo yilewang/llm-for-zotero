@@ -1585,13 +1585,13 @@ describe("AgentRuntime", function () {
     }
   });
 
-  it("records successful read tools as prior-read hints for later turns", async function () {
+  it("records successful paper_read calls as prior-read hints for later turns", async function () {
     const restoreDb = installMockDb();
     try {
       const registry = new AgentToolRegistry();
       registry.register({
         spec: {
-          name: "read_paper",
+          name: "paper_read",
           description: "read",
           inputSchema: { type: "object" },
           mutability: "read",
@@ -1630,12 +1630,13 @@ describe("AgentRuntime", function () {
                 calls: [
                   {
                     id: "call-read",
-                    name: "read_paper",
+                    name: "paper_read",
                     arguments: {
+                      mode: "targeted",
                       target: {
                         paperContext: request.selectedPaperContexts?.[0],
                       },
-                      chunkIndexes: [1],
+                      query: "abstract",
                     },
                   },
                 ],
@@ -1645,12 +1646,13 @@ describe("AgentRuntime", function () {
                   tool_calls: [
                     {
                       id: "call-read",
-                      name: "read_paper",
+                      name: "paper_read",
                       arguments: {
+                        mode: "targeted",
                         target: {
                           paperContext: request.selectedPaperContexts?.[0],
                         },
-                        chunkIndexes: [1],
+                        query: "abstract",
                       },
                     },
                   ],
@@ -1720,7 +1722,8 @@ describe("AgentRuntime", function () {
       );
       assert.include(secondInitialUserMessage, "Read Paper");
       assert.include(secondInitialUserMessage, "Ledger Paper");
-      assert.include(secondInitialUserMessage, "chunks=1");
+      assert.include(secondInitialUserMessage, "mode=targeted");
+      assert.include(secondInitialUserMessage, 'query="abstract"');
     } finally {
       restoreDb();
     }

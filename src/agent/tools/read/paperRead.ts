@@ -91,13 +91,19 @@ function readTextFile(filePath: string): Promise<string> {
   throw new Error("No file reader is available for MinerU markdown");
 }
 
-function selectMineruOverview(fullMd: string, maxChars: number): {
+function selectMineruOverview(
+  fullMd: string,
+  maxChars: number,
+): {
   text: string;
   sections: string[];
 } {
   const clean = fullMd.trim();
   const sections: string[] = ["frontmatter"];
-  const intro = clean.slice(0, Math.min(clean.length, Math.floor(maxChars * 0.6)));
+  const intro = clean.slice(
+    0,
+    Math.min(clean.length, Math.floor(maxChars * 0.6)),
+  );
   const headingPattern =
     /^#{1,6}\s+.*\b(discussion|conclusion|conclusions|summary|general discussion)\b.*$/gim;
   const matches = Array.from(clean.matchAll(headingPattern));
@@ -131,8 +137,8 @@ async function tryReadMineruOverview(
       filePath,
       text: selected.text,
       sections: selected.sections,
-      citationLabel: paperContext.title || `Paper ${paperContext.itemId}`,
-      sourceLabel: paperContext.title || `Paper ${paperContext.itemId}`,
+      citationLabel: formatPaperCitationLabel(paperContext),
+      sourceLabel: formatPaperSourceLabel(paperContext),
       paperContext,
     };
   } catch (error) {
@@ -208,11 +214,15 @@ function buildMetadataOverview(params: {
   const lines = [
     `Title: ${title}`,
     authors ? `Authors: ${authors}` : "",
-    normalizeMetadataValue(fields.date) ? `Date: ${normalizeMetadataValue(fields.date)}` : "",
+    normalizeMetadataValue(fields.date)
+      ? `Date: ${normalizeMetadataValue(fields.date)}`
+      : "",
     normalizeMetadataValue(fields.publicationTitle)
       ? `Publication: ${normalizeMetadataValue(fields.publicationTitle)}`
       : "",
-    normalizeMetadataValue(fields.DOI) ? `DOI: ${normalizeMetadataValue(fields.DOI)}` : "",
+    normalizeMetadataValue(fields.DOI)
+      ? `DOI: ${normalizeMetadataValue(fields.DOI)}`
+      : "",
     abstract ? `Abstract: ${abstract}` : "",
   ].filter(Boolean);
   if (!lines.length) return null;
@@ -261,7 +271,8 @@ function buildTargetedPaperGroups(
       citationLabel: normalizeString(result.citationLabel),
     };
     const chunkIndex = Number(result.chunkIndex);
-    if (Number.isFinite(chunkIndex)) passage.chunkIndex = Math.floor(chunkIndex);
+    if (Number.isFinite(chunkIndex))
+      passage.chunkIndex = Math.floor(chunkIndex);
     const score = Number(result.score);
     if (Number.isFinite(score)) passage.score = score;
     const sectionLabel = normalizeString(result.sectionLabel);
@@ -360,7 +371,8 @@ export function createPaperReadTool(
             args && typeof args === "object"
               ? String((args as Record<string, unknown>).mode || "overview")
               : "overview";
-          if (mode === "visual") return "Preparing paper pages for visual review";
+          if (mode === "visual")
+            return "Preparing paper pages for visual review";
           if (mode === "capture") return "Capturing current paper page";
           if (mode === "targeted") return "Reading targeted paper content";
           return "Reading paper overview";
@@ -379,7 +391,9 @@ export function createPaperReadTool(
               const paperLabel = papers === 1 ? "paper" : "papers";
               return `Read ${results} ${passageLabel} from ${papers} ${paperLabel}`;
             }
-            return results > 1 ? `Read ${results} passages` : "Read paper content";
+            return results > 1
+              ? `Read ${results} passages`
+              : "Read paper content";
           }
           return results > 1 ? `Read ${results} papers` : "Read paper content";
         },
