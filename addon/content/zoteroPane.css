@@ -4595,7 +4595,14 @@ label.llm-search-results-item:hover {
 .llm-bubble.assistant ul,
 .llm-bubble.assistant ol {
   margin: 8px 0;
-  padding-left: 20px;
+}
+
+.llm-bubble.assistant ul {
+  padding-left: 1.6em;
+}
+
+.llm-bubble.assistant ol {
+  padding-left: 2.35em;
 }
 
 .llm-bubble.assistant li {
