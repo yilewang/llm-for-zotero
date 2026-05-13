@@ -383,13 +383,16 @@ export async function registerMineruManagerScript(
   function renderSidebar(): void {
     if (!sidebar) return;
     sidebar.innerHTML = "";
-    sidebar.appendChild(
+    const inner = doc.createElement("div");
+    inner.style.cssText = "min-width: max-content;";
+    sidebar.appendChild(inner);
+    inner.appendChild(
       createSidebarEntry(t("My Library"), "all", 0, allItems.length),
     );
-    for (const root of collectionTree) renderSidebarNode(sidebar, root, 1);
+    for (const root of collectionTree) renderSidebarNode(inner, root, 1);
     const uc = allItems.filter((i) => i.collectionIds.length === 0).length;
     if (uc > 0)
-      sidebar.appendChild(
+      inner.appendChild(
         createSidebarEntry(t("Unfiled Items"), "unfiled", 0, uc),
       );
   }
@@ -413,7 +416,7 @@ export async function registerMineruManagerScript(
     row.appendChild(icon);
     const nm = doc.createElement("span");
     nm.style.cssText =
-      "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;";
+      "flex: 1; white-space: nowrap; font-size: 12px;";
     nm.style.fontWeight =
       key === "all" || activeCollectionId === key ? "600" : "400";
     nm.textContent = name;
@@ -472,7 +475,7 @@ export async function registerMineruManagerScript(
     row.appendChild(icon);
     const nm = doc.createElement("span");
     nm.style.cssText =
-      "flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px;";
+      "flex: 1; white-space: nowrap; font-size: 12px;";
     nm.style.fontWeight =
       activeCollectionId === node.collectionId ? "600" : "400";
     nm.textContent = node.name;
