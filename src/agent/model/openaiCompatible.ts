@@ -50,12 +50,15 @@ function isDeepseekChatModel(modelName?: string): boolean {
   return candidates.some((candidate) => /^deepseek(?:$|[-.])/.test(candidate));
 }
 
-function buildDeepseekReasoningContent(
+function buildReasoningContentForContinuation(
   modelName: string | undefined,
   reasoningText: string,
+  reasoningContentText = reasoningText,
 ): { reasoning_content?: string } {
-  if (!isDeepseekChatModel(modelName)) return {};
-  const trimmed = reasoningText.trim();
+  const textToEcho = isDeepseekChatModel(modelName)
+    ? reasoningText
+    : reasoningContentText;
+  const trimmed = textToEcho.trim();
   return trimmed ? { reasoning_content: trimmed } : {};
 }
 
@@ -100,14 +103,20 @@ async function buildMessagesPayload(messages: AgentModelMessage[]) {
       const parts: unknown[] = [];
       for (const rp of resolved) {
         switch (rp.type) {
-          case "text": parts.push({ type: "text", text: rp.text }); break;
+          case "text":
+            parts.push({ type: "text", text: rp.text });
+            break;
           case "image":
             if (rp.mimeType.trim().toLowerCase() === "application/pdf") {
               throw new Error(
                 "OpenAI-compatible chat cannot send PDF content as image_url.",
               );
             }
-            parts.push({ type: "image_url", image_url: { url: `data:${rp.mimeType};base64,${rp.base64}` } }); break;
+            parts.push({
+              type: "image_url",
+              image_url: { url: `data:${rp.mimeType};base64,${rp.base64}` },
+            });
+            break;
           case "pdf":
             throw new Error(
               "OpenAI-compatible chat cannot send PDF content as image_url.",
@@ -180,13 +189,22 @@ type StreamedToolCallAccumulator = {
 async function parseOpenAIChatCompletionStream(
   body: ReadableStream<Uint8Array>,
   onTextDelta?: (delta: string) => void | Promise<void>,
-  onReasoning?: (event: { summary?: string; details?: string }) => void | Promise<void>,
-): Promise<{ text: string; toolCalls: AgentToolCall[]; reasoningText: string }> {
+  onReasoning?: (event: {
+    summary?: string;
+    details?: string;
+  }) => void | Promise<void>,
+): Promise<{
+  text: string;
+  toolCalls: AgentToolCall[];
+  reasoningText: string;
+  reasoningContentText: string;
+}> {
   const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
   let fullText = "";
   let reasoningText = "";
+  let reasoningContentText = "";
   const toolCallMap = new Map<number, StreamedToolCallAccumulator>();
 
   try {
@@ -219,12 +237,19 @@ async function parseOpenAIChatCompletionStream(
           }
 
           // Reasoning (various provider field names)
+          const reasoningContentDelta =
+            typeof delta.reasoning_content === "string"
+              ? delta.reasoning_content
+              : "";
           const rDelta =
-            delta.reasoning_content ??
-            delta.reasoning ??
-            delta.thinking ??
-            delta.thought ??
+            reasoningContentDelta ||
+            delta.reasoning ||
+            delta.thinking ||
+            delta.thought ||
             "";
+          if (reasoningContentDelta) {
+            reasoningContentText += reasoningContentDelta;
+          }
           if (typeof rDelta === "string" && rDelta) {
             reasoningText += rDelta;
             if (onReasoning) await onReasoning({ details: rDelta });
@@ -237,15 +262,15 @@ async function parseOpenAIChatCompletionStream(
                 typeof tc.index === "number" ? tc.index : toolCallMap.size;
               if (!toolCallMap.has(idx)) {
                 toolCallMap.set(idx, {
-                  id:
-                    tc.id?.trim() || createFallbackToolCallId("tool", idx),
+                  id: tc.id?.trim() || createFallbackToolCallId("tool", idx),
                   name: tc.function?.name?.trim() || "",
                   argumentChunks: [],
                 });
               }
               const entry = toolCallMap.get(idx)!;
               if (tc.id?.trim()) entry.id = tc.id.trim();
-              if (tc.function?.name?.trim()) entry.name = tc.function.name.trim();
+              if (tc.function?.name?.trim())
+                entry.name = tc.function.name.trim();
               if (typeof tc.function?.arguments === "string") {
                 entry.argumentChunks.push(tc.function.arguments);
               }
@@ -270,7 +295,7 @@ async function parseOpenAIChatCompletionStream(
     });
   }
 
-  return { text: fullText, toolCalls, reasoningText };
+  return { text: fullText, toolCalls, reasoningText, reasoningContentText };
 }
 
 function isStreamingResponse(response: Response): boolean {
@@ -342,7 +367,9 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           ...(reasoningPayload.omitTemperature
             ? {}
             : {
-                temperature: normalizeTemperature(request.advanced?.temperature),
+                temperature: normalizeTemperature(
+                  request.advanced?.temperature,
+                ),
               }),
         };
       },
@@ -369,9 +396,10 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           assistantMessage: {
             role: "assistant",
             content: result.text,
-            ...buildDeepseekReasoningContent(
+            ...buildReasoningContentForContinuation(
               request.model,
               result.reasoningText,
+              result.reasoningContentText,
             ),
             tool_calls: result.toolCalls,
           },
@@ -388,13 +416,16 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
     }
 
     // Fallback: non-streaming JSON response
-    const data = (await response.json()) as { choices?: ChatCompletionChoice[] };
+    const data = (await response.json()) as {
+      choices?: ChatCompletionChoice[];
+    };
     const message = data.choices?.[0]?.message;
+    const reasoningContentText =
+      typeof message?.reasoning_content === "string"
+        ? message.reasoning_content
+        : "";
     const reasoningText =
-      message?.reasoning_content ||
-      message?.reasoning ||
-      message?.thinking ||
-      "";
+      reasoningContentText || message?.reasoning || message?.thinking || "";
     if (reasoningText && params.onReasoning) {
       await params.onReasoning({ details: reasoningText });
     }
@@ -406,7 +437,11 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
         assistantMessage: {
           role: "assistant",
           content: typeof message?.content === "string" ? message.content : "",
-          ...buildDeepseekReasoningContent(request.model, reasoningText),
+          ...buildReasoningContentForContinuation(
+            request.model,
+            reasoningText,
+            reasoningContentText,
+          ),
           tool_calls: toolCalls,
         },
       };

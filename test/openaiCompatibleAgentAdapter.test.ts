@@ -54,7 +54,8 @@ describe("OpenAICompatibleAgentAdapter", function () {
     assert.isTrue(
       adapter.supportsTools(
         makeRequest({
-          apiBase: "https://generativelanguage.googleapis.com/v1beta/openai/responses",
+          apiBase:
+            "https://generativelanguage.googleapis.com/v1beta/openai/responses",
         }),
       ),
     );
@@ -137,7 +138,10 @@ describe("OpenAICompatibleAgentAdapter", function () {
 
     assert.equal(firstStep.kind, "tool_calls");
     if (firstStep.kind !== "tool_calls") return;
-    assert.equal(firstStep.assistantMessage.reasoning_content, "Need the full text.");
+    assert.equal(
+      firstStep.assistantMessage.reasoning_content,
+      "Need the full text.",
+    );
 
     await adapter.runStep({
       request,
@@ -159,7 +163,90 @@ describe("OpenAICompatibleAgentAdapter", function () {
     assert.equal(secondMessages[0]?.reasoning_content, "Need the full text.");
   });
 
-  it("does not add reasoning_content to non-DeepSeek tool continuations", async function () {
+  it("round-trips provider-emitted reasoning_content for custom thinking models", async function () {
+    const requestBodies: Record<string, unknown>[] = [];
+    let callCount = 0;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          callCount += 1;
+          requestBodies.push(
+            JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
+          );
+          if (callCount === 1) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              headers: { get: () => "text/event-stream" },
+              body: makeSseStream([
+                'data: {"choices":[{"delta":{"reasoning_content":"Need the paper first. "}}]}\n\n',
+                'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read_paper","arguments":"{}"}}]}}]}\n\n',
+                "data: [DONE]\n\n",
+              ]),
+              json: async () => ({}),
+              text: async () => "",
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            headers: { get: () => "application/json" },
+            body: undefined,
+            json: async () => ({
+              choices: [{ message: { content: "Done" } }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const request = makeRequest({
+      model: "mimo-v2.5-pro",
+      apiBase: "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
+      providerProtocol: "openai_chat_compat",
+    });
+    const firstStep = await adapter.runStep({
+      request,
+      messages: [{ role: "user", content: "Write an Obsidian note" }],
+      tools,
+    });
+
+    assert.equal(firstStep.kind, "tool_calls");
+    if (firstStep.kind !== "tool_calls") return;
+    assert.equal(
+      firstStep.assistantMessage.reasoning_content,
+      "Need the paper first.",
+    );
+
+    await adapter.runStep({
+      request,
+      messages: [
+        firstStep.assistantMessage,
+        {
+          role: "tool",
+          tool_call_id: "call_read",
+          name: "read_paper",
+          content: '{"text":"full paper"}',
+        },
+      ],
+      tools,
+    });
+
+    const secondMessages = requestBodies[1]?.messages as Array<
+      Record<string, unknown>
+    >;
+    assert.equal(secondMessages[0]?.reasoning_content, "Need the paper first.");
+  });
+
+  it("does not add reasoning_content to non-DeepSeek generic reasoning aliases", async function () {
     let capturedSecondBody: Record<string, unknown> | null = null;
     let callCount = 0;
     (
@@ -183,7 +270,7 @@ describe("OpenAICompatibleAgentAdapter", function () {
               statusText: "OK",
               headers: { get: () => "text/event-stream" },
               body: makeSseStream([
-                'data: {"choices":[{"delta":{"reasoning_content":"Hidden reasoning."}}]}\n\n',
+                'data: {"choices":[{"delta":{"thinking":"Hidden reasoning."}}]}\n\n',
                 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_read","function":{"name":"read_paper","arguments":"{}"}}]}}]}\n\n',
                 "data: [DONE]\n\n",
               ]),
