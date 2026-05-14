@@ -83,6 +83,11 @@ import {
   formatFigureCountLabel,
   formatPaperCountLabel,
 } from "./constants";
+import {
+  createBlockStreamCoalescer,
+  type BlockStreamCoalescer,
+  type BlockStreamFlushReason,
+} from "./blockStreamCoalescer";
 import type { ConversationSystem } from "../../shared/types";
 import { ensureMineruCacheDirForAttachment } from "./mineruSync";
 import type {
@@ -2836,6 +2841,7 @@ function createCodexNativeActivityTraceController(
   const toolEventIndexes = new Map<string, number>();
   const mcpRequestToolItemIds = new Map<string, string>();
   const activatedSkillIds = new Set<string>();
+  const progressCoalescers = new Map<string, BlockStreamCoalescer>();
   let seq = 0;
   let lastAgentMessageItemId = "";
 
@@ -2916,6 +2922,34 @@ function createCodexNativeActivityTraceController(
       }),
     );
     return true;
+  };
+
+  const getProgressCoalescer = (itemId: string): BlockStreamCoalescer => {
+    let coalescer = progressCoalescers.get(itemId);
+    if (coalescer) return coalescer;
+    coalescer = createBlockStreamCoalescer({
+      onBlock: (block) => {
+        const changed = upsertProgressText(itemId, block, "append", "running");
+        if (changed) sync();
+      },
+    });
+    progressCoalescers.set(itemId, coalescer);
+    return coalescer;
+  };
+
+  const flushProgressCoalescer = (
+    itemId: string,
+    reason: "event" | "final" | "cancel" | "error",
+  ): void => {
+    progressCoalescers.get(itemId)?.flushNow(reason);
+  };
+
+  const flushAllProgressCoalescers = (
+    reason: "event" | "final" | "cancel" | "error",
+  ): void => {
+    for (const coalescer of progressCoalescers.values()) {
+      coalescer.flushNow(reason);
+    }
   };
 
   const findRecentCompatibleToolActivity = (
@@ -3033,6 +3067,7 @@ function createCodexNativeActivityTraceController(
   const noteSkillActivated = (skillId: string): void => {
     const cleanSkillId = sanitizeText(skillId || "").trim();
     if (!cleanSkillId || activatedSkillIds.has(cleanSkillId)) return;
+    flushAllProgressCoalescers("event");
     activatedSkillIds.add(cleanSkillId);
     events.push(
       createEvent({
@@ -3050,6 +3085,7 @@ function createCodexNativeActivityTraceController(
     phase: "started" | "completed",
   ): void => {
     if (isCodexNativeAgentMessageItem(event)) return;
+    flushAllProgressCoalescers("event");
     if (isCodexNativeToolItem(event)) {
       const itemId =
         sanitizeText(event.id || "").trim() || `codex-tool-${phase}-${seq + 1}`;
@@ -3089,19 +3125,14 @@ function createCodexNativeActivityTraceController(
   ): boolean => {
     const itemId = sanitizeText(event.itemId || "").trim();
     if (!itemId) return false;
-    const changed = upsertProgressText(
-      itemId,
-      event.delta,
-      "append",
-      "running",
-    );
-    if (changed) sync();
+    getProgressCoalescer(itemId).pushText(event.delta);
     return true;
   };
 
   const noteMcpToolActivity = (
     event: CodexNativeMcpToolActivityEvent,
   ): void => {
+    flushAllProgressCoalescers("event");
     const requestId = sanitizeText(event.requestId || "").trim();
     const existingItemId = requestId
       ? mcpRequestToolItemIds.get(requestId)
@@ -3134,6 +3165,7 @@ function createCodexNativeActivityTraceController(
   ): void => {
     const cleanRequestId = sanitizeText(requestId || "").trim();
     if (!cleanRequestId) return;
+    flushAllProgressCoalescers("event");
     events.push(
       createEvent({
         type: "confirmation_required",
@@ -3150,6 +3182,7 @@ function createCodexNativeActivityTraceController(
   ): void => {
     const cleanRequestId = sanitizeText(requestId || "").trim();
     if (!cleanRequestId) return;
+    flushAllProgressCoalescers("event");
     events.push(
       createEvent({
         type: "confirmation_resolved",
@@ -3168,6 +3201,7 @@ function createCodexNativeActivityTraceController(
     if (!isCodexNativeAgentMessageItem(event)) return;
     const itemId = sanitizeText(event.id || "").trim();
     if (!itemId) return;
+    flushProgressCoalescer(itemId, "event");
     lastAgentMessageItemId = itemId;
     const completedText = event.details || event.summary || "";
     if (completedText && !progressEventIndexes.has(itemId)) {
@@ -3178,6 +3212,7 @@ function createCodexNativeActivityTraceController(
   };
 
   const finish = (finalText: string): void => {
+    flushAllProgressCoalescers("final");
     let changed = false;
     if (lastAgentMessageItemId) {
       const finalIndex = progressEventIndexes.get(lastAgentMessageItemId);
@@ -4283,15 +4318,20 @@ export async function retryLatestAssistantResponse(
   }
 
   refreshChatSafely();
-  let streamedAnswer = "";
+  let responseStreamCoalescer: BlockStreamCoalescer | null = null;
+  const flushResponseStream = (reason: BlockStreamFlushReason) => {
+    responseStreamCoalescer?.flushNow(reason);
+  };
   let streamedReasoningSummary: string | undefined;
   let streamedReasoningDetails: string | undefined;
 
   const restoreOriginalAssistant = () => {
+    responseStreamCoalescer?.cancel();
     restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
     refreshChatSafely();
   };
   const finalizeCancelledAssistant = async () => {
+    flushResponseStream("cancel");
     finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
     const latestContextSnapshot = contextUsageSnapshots.get(conversationKey);
@@ -4521,14 +4561,19 @@ export async function retryLatestAssistantResponse(
     });
     renderContextUsageSnapshot(body, ui.tokenUsageEl, estimatedContextSnapshot);
 
+    responseStreamCoalescer = createBlockStreamCoalescer({
+      onBlock: (chunk) => {
+        assistantMessage.text += chunk;
+        queueRefresh();
+      },
+    });
     const handleDelta = (delta: string) => {
       const chunk = sanitizeText(delta);
       if (!chunk) return;
-      streamedAnswer += chunk;
-      assistantMessage.text += chunk;
-      queueRefresh();
+      responseStreamCoalescer?.pushText(chunk);
     };
     const handleReasoning = (reasoningEvent: ReasoningEvent) => {
+      flushResponseStream("event");
       if (reasoningEvent.summary) {
         assistantMessage.reasoningSummary = appendReasoningPart(
           assistantMessage.reasoningSummary,
@@ -4599,6 +4644,7 @@ export async function retryLatestAssistantResponse(
               attachments,
             }),
             onSkillActivated: (skillId) => {
+              flushResponseStream("event");
               codexActivityTrace?.noteSkillActivated(skillId);
               setStatusSafely(`Codex skill activated: ${skillId}`, "sending");
             },
@@ -4611,6 +4657,7 @@ export async function retryLatestAssistantResponse(
             onReasoning: handleReasoning,
             onUsage: handleUsage,
             onItemStarted: (event) => {
+              flushResponseStream("event");
               codexActivityTrace?.appendItemStatus(event, "started");
               const itemType = sanitizeText(event.type || "");
               if (itemType && !isCodexNativeAgentMessageItem(event)) {
@@ -4618,6 +4665,7 @@ export async function retryLatestAssistantResponse(
               }
             },
             onItemCompleted: (event) => {
+              flushResponseStream("event");
               codexActivityTrace?.noteAgentMessageCompleted(event);
               codexActivityTrace?.appendItemStatus(event, "completed");
               const itemType = sanitizeText(event.type || "");
@@ -4626,6 +4674,7 @@ export async function retryLatestAssistantResponse(
               }
             },
             onMcpToolActivity: (event) => {
+              flushResponseStream("event");
               codexActivityTrace?.noteMcpToolActivity(event);
               const label =
                 sanitizeText(event.toolLabel || "").trim() ||
@@ -4642,6 +4691,7 @@ export async function retryLatestAssistantResponse(
               }
             },
             onMcpConfirmationRequest: async ({ requestId, action }) => {
+              flushResponseStream("event");
               setStatusSafely(
                 action.mode === "review"
                   ? "Codex is waiting for your Zotero review"
@@ -4664,15 +4714,18 @@ export async function retryLatestAssistantResponse(
               return resolution;
             },
             onMcpSetupWarning: (message) => {
+              flushResponseStream("event");
               setStatusSafely(message, "error");
             },
             onDiagnostics: (diagnostics) => {
+              flushResponseStream("event");
               setStatusSafely(
                 formatCodexNativeDiagnosticsStatus(diagnostics),
                 "sending",
               );
             },
             onApprovalRequest: (request) => {
+              flushResponseStream("event");
               const decision = resolveCodexNativeApprovalRequest(request);
               if (decision.approved) {
                 setStatusSafely("Codex approved Zotero MCP access", "sending");
@@ -4709,8 +4762,11 @@ export async function retryLatestAssistantResponse(
       return;
     }
 
+    flushResponseStream("final");
     assistantMessage.text =
-      sanitizeText(answer) || streamedAnswer || "No response.";
+      sanitizeText(answer) ||
+      responseStreamCoalescer?.getFullText() ||
+      "No response.";
     codexActivityTrace?.finish(assistantMessage.text);
     assistantMessage.timestamp = Date.now();
     assistantMessage.modelName = effectiveRequestConfig.model;
@@ -5757,7 +5813,12 @@ export async function sendQuestion(
       webchatChatId: assistantMessage.webchatChatId,
     });
   };
+  let responseStreamCoalescer: BlockStreamCoalescer | null = null;
+  const flushResponseStream = (reason: BlockStreamFlushReason) => {
+    responseStreamCoalescer?.flushNow(reason);
+  };
   const markCancelled = async () => {
+    flushResponseStream("cancel");
     finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
     await persistAssistantOnce();
@@ -5966,6 +6027,12 @@ export async function sendQuestion(
     const codexActivityTrace = isCodexNativeTurn
       ? createCodexNativeActivityTraceController(assistantMessage, queueRefresh)
       : null;
+    responseStreamCoalescer = createBlockStreamCoalescer({
+      onBlock: (chunk) => {
+        assistantMessage.text += chunk;
+        queueRefresh();
+      },
+    });
 
     if (getCancelledRequestId(conversationKey) >= thisRequestId) {
       getAbortController(conversationKey)?.abort();
@@ -6021,10 +6088,12 @@ export async function sendQuestion(
     renderContextUsageSnapshot(body, ui.tokenUsageEl, estimatedContextSnapshot);
 
     const handleDelta = (delta: string) => {
-      assistantMessage.text += sanitizeText(delta);
-      queueRefresh();
+      const chunk = sanitizeText(delta);
+      if (!chunk) return;
+      responseStreamCoalescer?.pushText(chunk);
     };
     const handleReasoning = (reasoning: ReasoningEvent) => {
+      flushResponseStream("event");
       if (reasoning.summary) {
         assistantMessage.reasoningSummary = appendReasoningPart(
           assistantMessage.reasoningSummary,
@@ -6093,6 +6162,7 @@ export async function sendQuestion(
               attachments,
             }),
             onSkillActivated: (skillId) => {
+              flushResponseStream("event");
               codexActivityTrace?.noteSkillActivated(skillId);
               setStatusSafely(`Codex skill activated: ${skillId}`, "sending");
             },
@@ -6105,6 +6175,7 @@ export async function sendQuestion(
             onReasoning: handleReasoning,
             onUsage: handleUsage,
             onItemStarted: (event) => {
+              flushResponseStream("event");
               codexActivityTrace?.appendItemStatus(event, "started");
               const itemType = sanitizeText(event.type || "");
               if (itemType && !isCodexNativeAgentMessageItem(event)) {
@@ -6112,6 +6183,7 @@ export async function sendQuestion(
               }
             },
             onItemCompleted: (event) => {
+              flushResponseStream("event");
               codexActivityTrace?.noteAgentMessageCompleted(event);
               codexActivityTrace?.appendItemStatus(event, "completed");
               const itemType = sanitizeText(event.type || "");
@@ -6120,6 +6192,7 @@ export async function sendQuestion(
               }
             },
             onMcpToolActivity: (event) => {
+              flushResponseStream("event");
               codexActivityTrace?.noteMcpToolActivity(event);
               const label =
                 sanitizeText(event.toolLabel || "").trim() ||
@@ -6136,6 +6209,7 @@ export async function sendQuestion(
               }
             },
             onMcpConfirmationRequest: async ({ requestId, action }) => {
+              flushResponseStream("event");
               setStatusSafely(
                 action.mode === "review"
                   ? "Codex is waiting for your Zotero review"
@@ -6158,15 +6232,18 @@ export async function sendQuestion(
               return resolution;
             },
             onMcpSetupWarning: (message) => {
+              flushResponseStream("event");
               setStatusSafely(message, "error");
             },
             onDiagnostics: (diagnostics) => {
+              flushResponseStream("event");
               setStatusSafely(
                 formatCodexNativeDiagnosticsStatus(diagnostics),
                 "sending",
               );
             },
             onApprovalRequest: (request) => {
+              flushResponseStream("event");
               const decision = resolveCodexNativeApprovalRequest(request);
               if (decision.approved) {
                 setStatusSafely("Codex approved Zotero MCP access", "sending");
@@ -6203,6 +6280,7 @@ export async function sendQuestion(
       return;
     }
 
+    flushResponseStream("final");
     assistantMessage.text =
       sanitizeText(answer) || assistantMessage.text || "No response.";
     codexActivityTrace?.finish(assistantMessage.text);
@@ -6263,6 +6341,7 @@ export async function sendQuestion(
 
     const errMsg = (err as Error).message || "Error";
     const retryHint = resolveMultimodalRetryHint(errMsg, imageCount);
+    responseStreamCoalescer?.cancel();
     assistantMessage.text = `Error: ${errMsg}${retryHint}`;
     assistantMessage.streaming = false;
     refreshChatSafely();

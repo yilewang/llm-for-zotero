@@ -24,6 +24,10 @@ import {
 } from "../portalScope";
 import { mergeCitationPaperContexts } from "../citationContexts";
 import { renderPendingActionCard } from "../agentTrace/render";
+import {
+  createBlockStreamCoalescer,
+  type BlockStreamFlushReason,
+} from "../blockStreamCoalescer";
 
 function buildPendingAgentTraceEvents(body?: Element): AgentRunEventRecord[] {
   const now = Date.now();
@@ -151,6 +155,17 @@ function shouldSyncVisibleRollbackText(message: Message): boolean {
   return (
     isClaudeBlockStreamingEnabled() || message.modelProviderLabel === "Codex"
   );
+}
+
+function appendPendingFinalText(
+  message: Message,
+  text: string,
+  sanitizeText: (text: string) => string,
+): void {
+  const clean = sanitizeText(text);
+  if (!clean) return;
+  message.pendingFinalText = `${message.pendingFinalText || ""}${clean}`;
+  message.text = message.pendingFinalText || message.text;
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +756,15 @@ export async function sendAgentTurn(
     ui,
   );
   const queueRefresh = deps.createQueuedRefresh(refreshChatSafely);
+  const messageDeltaCoalescer = createBlockStreamCoalescer({
+    onBlock: (block) => {
+      appendPendingFinalText(assistantMessage, block, deps.sanitizeText);
+      queueRefresh();
+    },
+  });
+  const flushMessageDeltas = (reason: BlockStreamFlushReason) => {
+    messageDeltaCoalescer.flushNow(reason);
+  };
   const scheduleQueueDrain = () =>
     deps.scheduleQueuedInputDrain(body, {
       conversationSystem: deps.getConversationSystem(),
@@ -876,6 +900,7 @@ export async function sendAgentTurn(
     });
   };
   const markCancelled = async () => {
+    flushMessageDeltas("cancel");
     deps.finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
     await persistAssistantOnce();
@@ -937,6 +962,9 @@ export async function sendAgentTurn(
       onEvent: async (event) => {
         if (assistantMessage.agentRunId) {
           pushTraceEvent(assistantMessage.agentRunId, event);
+        }
+        if (event.type !== "message_delta") {
+          flushMessageDeltas(event.type === "final" ? "final" : "event");
         }
         switch (event.type) {
           case "provider_event":
@@ -1154,10 +1182,7 @@ export async function sendAgentTurn(
             );
             return;
           case "message_delta": {
-            assistantMessage.pendingFinalText = `${assistantMessage.pendingFinalText || ""}${deps.sanitizeText(event.text)}`;
-            assistantMessage.text =
-              assistantMessage.pendingFinalText || assistantMessage.text;
-            queueRefresh();
+            messageDeltaCoalescer.pushText(deps.sanitizeText(event.text));
             return;
           }
           case "message_rollback":
@@ -1290,6 +1315,7 @@ export async function sendAgentTurn(
       await markCancelled();
       return;
     }
+    messageDeltaCoalescer.cancel();
     const errMsg = (err as Error).message || "Error";
     const userFacingError =
       errMsg.includes("[ede_diagnostic]") &&
@@ -1403,6 +1429,15 @@ export async function retryAgentTurn(
     ui,
   );
   const queueRefresh = deps.createQueuedRefresh(refreshChatSafely);
+  const messageDeltaCoalescer = createBlockStreamCoalescer({
+    onBlock: (block) => {
+      appendPendingFinalText(assistantMessage, block, deps.sanitizeText);
+      queueRefresh();
+    },
+  });
+  const flushMessageDeltas = (reason: BlockStreamFlushReason) => {
+    messageDeltaCoalescer.flushNow(reason);
+  };
   const scheduleQueueDrain = () =>
     deps.scheduleQueuedInputDrain(body, {
       conversationSystem: deps.getConversationSystem(),
@@ -1488,6 +1523,7 @@ export async function retryAgentTurn(
     });
   };
   const markCancelled = async () => {
+    flushMessageDeltas("cancel");
     deps.finalizeCancelledAssistantMessage(assistantMessage);
     refreshChatSafely();
     await persistAssistantOnce();
@@ -1550,6 +1586,9 @@ export async function retryAgentTurn(
       onEvent: async (event) => {
         if (assistantMessage.agentRunId) {
           pushTraceEvent(assistantMessage.agentRunId, event);
+        }
+        if (event.type !== "message_delta") {
+          flushMessageDeltas(event.type === "final" ? "final" : "event");
         }
         switch (event.type) {
           case "provider_event":
@@ -1773,10 +1812,7 @@ export async function retryAgentTurn(
             );
             return;
           case "message_delta": {
-            assistantMessage.pendingFinalText = `${assistantMessage.pendingFinalText || ""}${deps.sanitizeText(event.text)}`;
-            assistantMessage.text =
-              assistantMessage.pendingFinalText || assistantMessage.text;
-            queueRefresh();
+            messageDeltaCoalescer.pushText(deps.sanitizeText(event.text));
             return;
           }
           case "message_rollback":
@@ -1897,6 +1933,7 @@ export async function retryAgentTurn(
       await markCancelled();
       return;
     }
+    messageDeltaCoalescer.cancel();
     const errMsg = (err as Error).message || "Error";
     const userFacingError =
       errMsg.includes("[ede_diagnostic]") &&
