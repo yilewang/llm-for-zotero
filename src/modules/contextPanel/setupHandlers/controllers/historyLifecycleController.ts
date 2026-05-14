@@ -171,9 +171,12 @@ import {
   formatGlobalHistoryTimestamp,
   formatHistoryRowDisplayTitle,
   groupHistoryEntriesByDay,
+  maybeSelectPaperHistoryTarget,
+  normalizeHistoryPaperItemID,
   normalizeConversationTitleSeed,
   normalizeHistoryTitle,
   resolveHistoryEntryPaperItem,
+  resolvePaperHistoryNavigationDecision,
   GLOBAL_HISTORY_UNDO_WINDOW_MS,
   type ConversationHistoryEntry,
   type HistorySwitchTarget,
@@ -2142,16 +2145,64 @@ export function createHistoryLifecycleController(
     );
   };
 
+  const getCurrentHistoryPaperItemID = (): number => {
+    return normalizeHistoryPaperItemID(resolveCurrentPaperBaseItem()?.id);
+  };
+
+  const maybeSelectHistoryEntryPaperItem = async (
+    decision: ReturnType<typeof resolvePaperHistoryNavigationDecision>,
+    paperItem: Zotero.Item,
+  ): Promise<boolean> => {
+    try {
+      return await maybeSelectPaperHistoryTarget({
+        decision,
+        paperItemID: paperItem.id,
+        getPane: () =>
+          Zotero.getActiveZoteroPane?.() as
+            | _ZoteroTypes.ZoteroPane
+            | undefined,
+      });
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to select searched conversation paper", {
+        paperItemID: paperItem.id,
+        error: err,
+      });
+      return false;
+    }
+  };
+
   const switchToHistoryEntry = async (
     entry: ConversationHistoryEntry,
   ): Promise<void> => {
     if (entry.kind === "paper") {
+      const navigationDecision = resolvePaperHistoryNavigationDecision({
+        entryPaperItemID: entry.paperItemID,
+        currentPaperItemID: getCurrentHistoryPaperItemID(),
+      });
+      if (navigationDecision === "missing-target-paper") {
+        if (status) {
+          setStatus(status, t("Could not find this paper"), "error");
+        }
+        return;
+      }
       const paperItem = resolvePaperItemFromHistoryEntry(entry);
       if (!paperItem) {
         if (status) {
           setStatus(status, t("Could not find this paper"), "error");
         }
         return;
+      }
+      if (navigationDecision === "select-target-paper") {
+        const selected = await maybeSelectHistoryEntryPaperItem(
+          navigationDecision,
+          paperItem,
+        );
+        if (!selected) {
+          if (status) {
+            setStatus(status, t("Could not focus this paper"), "error");
+          }
+          return;
+        }
       }
       await switchPaperConversation(entry.conversationKey, { paperItem });
       return;

@@ -38,6 +38,16 @@ export type PendingHistoryDeletion = {
   timeoutId: number | null;
 };
 
+export type PaperHistoryNavigationDecision =
+  | "load-in-place"
+  | "select-target-paper"
+  | "missing-target-paper";
+
+export type HistoryPaperPaneSelector = {
+  selectItems?: (itemIDs: number[], selectInLibrary?: boolean) => unknown;
+  selectItem?: (itemID: number, selectInLibrary?: boolean) => unknown;
+};
+
 export type HistoryDayGroup<T> = {
   label: string;
   items: T[];
@@ -158,4 +168,40 @@ export function resolveHistoryEntryPaperItem<T>(
   } catch (_err) {
     return null;
   }
+}
+
+export function resolvePaperHistoryNavigationDecision(params: {
+  entryPaperItemID?: unknown;
+  currentPaperItemID?: unknown;
+}): PaperHistoryNavigationDecision {
+  const entryPaperItemID = normalizeHistoryPaperItemID(params.entryPaperItemID);
+  if (!entryPaperItemID) return "missing-target-paper";
+  const currentPaperItemID = normalizeHistoryPaperItemID(
+    params.currentPaperItemID,
+  );
+  return currentPaperItemID === entryPaperItemID
+    ? "load-in-place"
+    : "select-target-paper";
+}
+
+export async function maybeSelectPaperHistoryTarget(params: {
+  decision: PaperHistoryNavigationDecision;
+  paperItemID?: unknown;
+  getPane: () => HistoryPaperPaneSelector | null | undefined;
+}): Promise<boolean> {
+  if (params.decision === "load-in-place") return true;
+  if (params.decision === "missing-target-paper") return false;
+  const paperItemID = normalizeHistoryPaperItemID(params.paperItemID);
+  if (!paperItemID) return false;
+  const pane = params.getPane();
+  if (!pane) return false;
+  if (typeof pane.selectItems === "function") {
+    await pane.selectItems([paperItemID], true);
+    return true;
+  }
+  if (typeof pane.selectItem === "function") {
+    await pane.selectItem(paperItemID, true);
+    return true;
+  }
+  return false;
 }

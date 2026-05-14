@@ -2,8 +2,10 @@ import { assert } from "chai";
 import {
   getHistoryDayGroupLabel,
   groupHistoryEntriesByDay,
+  maybeSelectPaperHistoryTarget,
   normalizeHistoryPaperItemID,
   resolveHistoryEntryPaperItem,
+  resolvePaperHistoryNavigationDecision,
 } from "../src/modules/contextPanel/setupHandlers/controllers/conversationHistoryController";
 
 describe("conversationHistoryController", function () {
@@ -66,5 +68,77 @@ describe("conversationHistoryController", function () {
     assert.deepEqual(resolved, { id: 42, title: "Paper" });
     assert.equal(resolveHistoryEntryPaperItem({}, () => ({ id: 1 })), null);
     assert.equal(normalizeHistoryPaperItemID("not-a-number"), 0);
+  });
+
+  it("decides whether paper history should load in place or select the target paper", function () {
+    assert.equal(
+      resolvePaperHistoryNavigationDecision({
+        entryPaperItemID: 101,
+        currentPaperItemID: 101,
+      }),
+      "load-in-place",
+    );
+    assert.equal(
+      resolvePaperHistoryNavigationDecision({
+        entryPaperItemID: 202,
+        currentPaperItemID: 101,
+      }),
+      "select-target-paper",
+    );
+    assert.equal(
+      resolvePaperHistoryNavigationDecision({
+        currentPaperItemID: 101,
+      }),
+      "missing-target-paper",
+    );
+  });
+
+  it("does not touch Zotero pane selection for same-paper history targets", async function () {
+    let paneRequested = false;
+    const selected = await maybeSelectPaperHistoryTarget({
+      decision: "load-in-place",
+      paperItemID: 101,
+      getPane: () => {
+        paneRequested = true;
+        return {
+          selectItems: () => {
+            throw new Error("selectItems should not be called");
+          },
+        };
+      },
+    });
+
+    assert.isTrue(selected);
+    assert.isFalse(paneRequested);
+  });
+
+  it("selects the target paper for different-paper history targets", async function () {
+    const calls: Array<{ ids: number[]; selectInLibrary?: boolean }> = [];
+    const selected = await maybeSelectPaperHistoryTarget({
+      decision: "select-target-paper",
+      paperItemID: 202,
+      getPane: () => ({
+        selectItems: (ids, selectInLibrary) => {
+          calls.push({ ids, selectInLibrary });
+        },
+      }),
+    });
+
+    assert.isTrue(selected);
+    assert.deepEqual(calls, [{ ids: [202], selectInLibrary: true }]);
+  });
+
+  it("does not select a paper for missing paper history metadata", async function () {
+    let paneRequested = false;
+    const selected = await maybeSelectPaperHistoryTarget({
+      decision: "missing-target-paper",
+      getPane: () => {
+        paneRequested = true;
+        return {};
+      },
+    });
+
+    assert.isFalse(selected);
+    assert.isFalse(paneRequested);
   });
 });
