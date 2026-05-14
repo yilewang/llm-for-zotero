@@ -7,7 +7,10 @@ import type {
   ChatAttachment,
   PaperContextRef,
 } from "../../shared/types";
-import { warmPageTextCache } from "../../modules/contextPanel/livePdfSelectionLocator";
+import {
+  warmPageTextCache,
+  warmPageTextCacheForAttachment,
+} from "../../modules/contextPanel/livePdfSelectionLocator";
 import type { AgentRuntimeRequest, AgentToolArtifact } from "../types";
 import { PdfService, resolveContextItemFromPaperContext } from "./pdfService";
 import { ZoteroGateway } from "./zoteroGateway";
@@ -891,6 +894,60 @@ export class PdfPageService {
     } finally {
       restoreNonReaderTab(savedTabId);
     }
+  }
+
+  async readPageTexts(params: PreparePdfPagesParams): Promise<{
+    target: ResolvedPdfTarget;
+    pages: Array<{
+      pageIndex: number;
+      pageLabel: string;
+      text: string;
+    }>;
+  }> {
+    const target = await this.resolveTarget(params);
+    if (target.source !== "library" || !target.contextItemId) {
+      throw new Error(
+        "Text-only page reads are currently supported for Zotero library PDFs.",
+      );
+    }
+    const basePages = Array.from(new Set(params.pages))
+      .filter((entry) => Number.isFinite(entry) && entry >= 0)
+      .map((entry) => Math.floor(entry))
+      .sort((left, right) => left - right);
+    if (!basePages.length) {
+      throw new Error("At least one PDF page is required");
+    }
+    const neighborPages = Number.isFinite(params.neighborPages)
+      ? Math.max(0, Math.min(1, Math.floor(params.neighborPages as number)))
+      : 0;
+    const allPages = new Set<number>();
+    for (const pageIndex of basePages) {
+      allPages.add(pageIndex);
+      for (let offset = 1; offset <= neighborPages; offset += 1) {
+        allPages.add(Math.max(0, pageIndex - offset));
+        allPages.add(pageIndex + offset);
+      }
+    }
+    const orderedPages = Array.from(allPages).sort((left, right) => left - right);
+    const textCache = await warmPageTextCacheForAttachment(target.contextItemId);
+    const textPages = textCache?.pages || [];
+    if (!textPages.length) {
+      throw new Error("Could not read page text from this PDF");
+    }
+    const textByPageIndex = new Map(
+      textPages.map((page) => [page.pageIndex, page]),
+    );
+    return {
+      target,
+      pages: orderedPages.map((pageIndex) => {
+        const entry = textByPageIndex.get(pageIndex);
+        return {
+          pageIndex,
+          pageLabel: getPageLabel(pageIndex, entry?.pageLabel),
+          text: sanitizeText(entry?.text),
+        };
+      }),
+    };
   }
 
   async preparePagesForModel(params: PreparePdfPagesParams): Promise<{

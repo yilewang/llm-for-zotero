@@ -5,6 +5,7 @@ import {
   normalizeStepFromPayload,
   parseResponsesStepStream,
 } from "../src/agent/model/codexResponses";
+import { OpenAIResponsesAgentAdapter } from "../src/agent/model/openaiResponses";
 import type { AgentRuntimeRequest } from "../src/agent/types";
 
 describe("CodexResponsesAgentAdapter", function () {
@@ -210,6 +211,66 @@ describe("CodexResponsesAgentAdapter", function () {
       ),
     );
     assert.deepEqual(capturedBody?.include, ["reasoning.encrypted_content"]);
+  });
+
+  it("forwards streamed OpenAI Responses usage including cached tokens", async function () {
+    const openaiAdapter = new OpenAIResponsesAgentAdapter();
+    const usage: unknown[] = [];
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async () => ({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              const encoder = new TextEncoder();
+              controller.enqueue(
+                encoder.encode(
+                  'data: {"type":"response.completed","response":{"id":"resp_usage","output_text":"Done.","usage":{"input_tokens":20,"output_tokens":5,"total_tokens":25,"input_tokens_details":{"cached_tokens":8}}}}\n',
+                ),
+              );
+              controller.close();
+            },
+          }),
+          json: async () => ({}),
+          text: async () => "",
+        });
+      },
+    };
+
+    const step = await openaiAdapter.runStep({
+      request: makeRequest({
+        apiBase: "https://api.openai.com/v1/responses",
+        authMode: "api_key",
+        apiKey: "test-token",
+      }),
+      messages: [{ role: "user", content: "Hello" }],
+      tools: [],
+      onUsage: async (event) => {
+        usage.push(event);
+      },
+    });
+
+    assert.equal(step.kind, "final");
+    assert.deepEqual(usage, [
+      {
+        promptTokens: 20,
+        completionTokens: 5,
+        totalTokens: 25,
+        cacheReadTokens: 8,
+        cacheMissTokens: 12,
+        cacheHitRatio: 0.4,
+        cacheProvider: "openai",
+        contextTokens: 20,
+        contextWindowIsAuthoritative: true,
+      },
+    ]);
   });
 
   it("preserves streamed encrypted reasoning items for follow-up turns", async function () {

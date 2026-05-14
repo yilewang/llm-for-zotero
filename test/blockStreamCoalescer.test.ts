@@ -92,4 +92,3 @@ describe("blockStreamCoalescer", function () {
     assert.equal(coalescer.getFullText(), "abandoned");
   });
 });
-

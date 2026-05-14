@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join, relative } from "path";
+import { createBuiltInToolRegistry } from "../src/agent/tools";
 
 const root = process.cwd();
 
@@ -96,6 +97,27 @@ describe("tool guidance contracts", function () {
         }
       }
     }
+    assert.deepEqual(failures, []);
+  });
+
+  it("does not expose hidden legacy call targets in model-visible guidance", function () {
+    const registry = createBuiltInToolRegistry({
+      zoteroGateway: {} as never,
+      pdfService: {} as never,
+      pdfPageService: {} as never,
+      retrievalService: {} as never,
+    });
+    const hiddenCallTarget =
+      /\b(edit_current_note|search_literature_online|manage_attachments|import_local_files|update_metadata)\b/;
+    const failures = registry
+      .listToolDefinitions()
+      .filter((tool) => tool.spec.exposure !== "internal")
+      .flatMap((tool) => {
+        const instruction = tool.guidance?.instruction || "";
+        return hiddenCallTarget.test(instruction)
+          ? [`${tool.spec.name}: ${instruction}`]
+          : [];
+      });
     assert.deepEqual(failures, []);
   });
 

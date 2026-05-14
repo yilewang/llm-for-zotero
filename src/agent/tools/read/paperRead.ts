@@ -164,13 +164,6 @@ function targetForPageTool(input: PaperReadInput): Record<string, unknown> {
   };
 }
 
-function targetForPageSearch(input: PaperReadInput): Record<string, unknown> {
-  const target = input.target || input.targets?.[0] || {};
-  return {
-    ...target,
-  };
-}
-
 function normalizeMetadataValue(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
 }
@@ -324,6 +317,20 @@ function countGroupedPassages(papers: unknown[]): number {
   }, 0);
 }
 
+function extractWarningText(value: unknown): string | undefined {
+  if (!validateObject<Record<string, unknown>>(value)) return undefined;
+  return normalizeString(value.warning);
+}
+
+function combineWarnings(
+  ...warnings: Array<string | undefined>
+): string | undefined {
+  const unique = Array.from(
+    new Set(warnings.map((entry) => normalizeString(entry)).filter(Boolean)),
+  );
+  return unique.length ? unique.join("; ") : undefined;
+}
+
 function formatSourcePhrase(
   sourceLabels: string[],
   fallbackPaperCount?: number,
@@ -335,6 +342,42 @@ function formatSourcePhrase(
     return `${fallbackPaperCount} ${paperLabel}`;
   }
   return null;
+}
+
+async function readExplicitPageTargets(params: {
+  input: PaperReadInput;
+  targets: NonNullable<PdfTarget["paperContext"]>[];
+  context: AgentToolContext;
+  pdfPageService: PdfPageService;
+}): Promise<Record<string, unknown>> {
+  const results: Array<Record<string, unknown>> = [];
+  for (const paperContext of params.targets) {
+    const pageResult = await params.pdfPageService.readPageTexts({
+      paperContext,
+      request: params.context.request,
+      pages: params.input.pages || [],
+      neighborPages: params.input.neighborPages,
+    });
+    for (const page of pageResult.pages) {
+      results.push({
+        paperContext,
+        text: page.text,
+        sourceKind: "paper_page_text",
+        chunkKind: "page",
+        pageIndex: page.pageIndex,
+        pageLabel: page.pageLabel,
+        sectionLabel: `Page ${page.pageLabel}`,
+        score: 1,
+        citationLabel: formatPaperCitationLabel(paperContext),
+        sourceLabel: formatPaperSourceLabel(paperContext),
+      });
+    }
+  }
+  return {
+    mode: params.input.mode,
+    results,
+    papers: buildTargetedPaperGroups(params.targets, results),
+  };
 }
 
 export function createPaperReadTool(
@@ -545,18 +588,20 @@ export function createPaperReadTool(
               await pdfService.getOverviewExcerpt({ paperContext, maxChars }),
             );
           } catch (error) {
-            if (mineru) {
-              results.push(mineru);
-              continue;
-            }
+            const warning = combineWarnings(
+              extractWarningText(mineru),
+              error instanceof Error ? error.message : String(error),
+            );
             const metadataOverview = buildMetadataOverview({
               paperContext,
               context,
               zoteroGateway,
-              warning: error instanceof Error ? error.message : String(error),
+              warning,
             });
             if (metadataOverview) {
               results.push(metadataOverview);
+            } else if (mineru) {
+              results.push(mineru);
             } else {
               throw error;
             }
@@ -568,19 +613,13 @@ export function createPaperReadTool(
         };
       }
 
-      if (input.pages?.length && !input.query && !input.sections?.length) {
-        const pageResult = await pdfPageService.searchPages({
-          ...targetForPageSearch(input),
-          request: context.request,
-          question: "requested pages",
-          pages: input.pages,
-          topK: input.topK,
+      if (input.pages?.length) {
+        return readExplicitPageTargets({
+          input,
+          targets,
+          context,
+          pdfPageService,
         });
-        return {
-          mode: input.mode,
-          target: pageResult.target,
-          results: pageResult.pages,
-        };
       }
 
       const question = [

@@ -220,6 +220,74 @@ describe("semantic tool surface", function () {
     assert.equal(result?.sourceLabel, "(Charest, 2014)");
   });
 
+  it("paper_read overview keeps MinerU failure warning while using Zotero metadata fallback", async function () {
+    const globalScope = globalThis as typeof globalThis & {
+      IOUtils?: { read?: unknown };
+    };
+    const originalIOUtils = globalScope.IOUtils;
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "Metadata After MinerU Failure",
+      firstCreator: "Charest",
+      year: "2014",
+      mineruCacheDir: "/tmp/missing-mineru-paper",
+    };
+    globalScope.IOUtils = {
+      read: async () => {
+        throw new Error("full.md disappeared");
+      },
+    };
+    try {
+      const tool = createPaperReadTool(
+        {
+          getOverviewExcerpt: async () => {
+            throw new Error("PDF text extraction failed");
+          },
+        } as never,
+        {} as never,
+        {} as never,
+        {
+          listPaperContexts: () => [paperContext],
+          resolvePaperContextTarget: () => paperContext,
+          resolveMetadataItem: () => ({ id: 11 }),
+          getEditableArticleMetadata: () => ({
+            itemId: 11,
+            itemType: "journalArticle",
+            title: "Metadata After MinerU Failure",
+            fields: {
+              title: "Metadata After MinerU Failure",
+              abstractNote: "Abstract fallback should still be available.",
+            },
+            creators: [
+              {
+                creatorType: "author",
+                firstName: "Iva",
+                lastName: "Charest",
+              },
+            ],
+          }),
+        } as never,
+      );
+      const validated = tool.validate({ mode: "overview" });
+      assert.equal(validated.ok, true);
+      if (!validated.ok) return;
+      const output = await tool.execute(validated.value, baseContext);
+      const result = (output as { results?: Array<Record<string, unknown>> })
+        .results?.[0];
+      assert.equal(result?.backend, "zotero_metadata");
+      assert.include(String(result?.text || ""), "Abstract fallback");
+      assert.include(String(result?.warning || ""), "full.md disappeared");
+      assert.include(String(result?.warning || ""), "PDF text extraction failed");
+    } finally {
+      if (originalIOUtils === undefined) {
+        delete globalScope.IOUtils;
+      } else {
+        globalScope.IOUtils = originalIOUtils;
+      }
+    }
+  });
+
   it("paper_read overview labels metadata fallback when no PDF is attached", async function () {
     const paperContext = {
       itemId: 11,
@@ -461,6 +529,172 @@ describe("semantic tool surface", function () {
       onSuccess({ label: "Read Paper", content: output }),
       "Read 2 passages from 2 sources",
     );
+  });
+
+  it("paper_read targeted honors explicit pages even when a query is present", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "Page Scoped Paper",
+      firstCreator: "Huys",
+      year: "2016",
+    };
+    let retrievalCalls = 0;
+    let requestedPages: number[] = [];
+    const tool = createPaperReadTool(
+      {
+        ensurePaperContext: async () => {
+          throw new Error("semantic retrieval should not prepare paper context");
+        },
+      } as never,
+      {
+        retrieveEvidence: async () => {
+          retrievalCalls += 1;
+          return [];
+        },
+      } as never,
+      {
+        readPageTexts: async ({ pages }: { pages: number[] }) => {
+          requestedPages = pages;
+          return {
+            target: {
+              source: "library",
+              title: "Page Scoped Paper",
+              mimeType: "application/pdf",
+              storedPath: "/tmp/page-scoped.pdf",
+              paperContext,
+              contextItemId: 22,
+              itemId: 11,
+            },
+            pages: [
+              {
+                pageIndex: 1,
+                pageLabel: "2",
+                text: "Only page two text should be returned.",
+              },
+            ],
+          };
+        },
+      } as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "targeted",
+      query: "hippocampal evidence",
+      pages: [2],
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, baseContext)) as {
+      results?: Array<Record<string, unknown>>;
+      papers?: Array<{
+        passages?: Array<{ pageLabel?: string; text?: string }>;
+      }>;
+    };
+    assert.equal(retrievalCalls, 0);
+    assert.deepEqual(requestedPages, [1]);
+    assert.lengthOf(output.results || [], 1);
+    assert.equal(output.results?.[0]?.pageLabel, "2");
+    assert.equal(
+      output.papers?.[0]?.passages?.[0]?.text,
+      "Only page two text should be returned.",
+    );
+    assert.equal(output.papers?.[0]?.passages?.[0]?.pageLabel, "2");
+  });
+
+  it("paper_read targeted groups explicit page reads across multiple targets", async function () {
+    const firstPaper = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "First Page Paper",
+      firstCreator: "Huys",
+      year: "2016",
+    };
+    const secondPaper = {
+      itemId: 33,
+      contextItemId: 44,
+      title: "Second Page Paper",
+      firstCreator: "Montague",
+      year: "2012",
+    };
+    const pageReadItemIds: number[] = [];
+    const tool = createPaperReadTool(
+      {} as never,
+      {
+        retrieveEvidence: async () => {
+          throw new Error("semantic retrieval should not run for explicit pages");
+        },
+      } as never,
+      {
+        readPageTexts: async ({
+          paperContext,
+        }: {
+          paperContext: typeof firstPaper;
+          pages: number[];
+        }) => {
+          pageReadItemIds.push(paperContext.itemId);
+          return {
+            target: {
+              source: "library",
+              title: paperContext.title,
+              mimeType: "application/pdf",
+              storedPath: `/tmp/${paperContext.itemId}.pdf`,
+              paperContext,
+              contextItemId: paperContext.contextItemId,
+              itemId: paperContext.itemId,
+            },
+            pages: [
+              {
+                pageIndex: 2,
+                pageLabel: "3",
+                text:
+                  paperContext.itemId === firstPaper.itemId
+                    ? "First page-scoped passage."
+                    : "Second page-scoped passage.",
+              },
+            ],
+          };
+        },
+      } as never,
+      {
+        listPaperContexts: () => [firstPaper, secondPaper],
+        resolvePaperContextTarget: ({ itemId }: { itemId?: number }) =>
+          itemId === firstPaper.itemId ? firstPaper : secondPaper,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "targeted",
+      pages: [3],
+      targets: [
+        { itemId: 11, contextItemId: 22 },
+        { itemId: 33, contextItemId: 44 },
+      ],
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, baseContext)) as {
+      results?: unknown[];
+      papers?: Array<{
+        sourceLabel?: string;
+        passages?: Array<{ text?: string; pageLabel?: string }>;
+      }>;
+    };
+    assert.deepEqual(pageReadItemIds, [11, 33]);
+    assert.lengthOf(output.results || [], 2);
+    assert.lengthOf(output.papers || [], 2);
+    assert.equal(output.papers?.[0]?.sourceLabel, "(Huys, 2016)");
+    assert.equal(
+      output.papers?.[0]?.passages?.[0]?.text,
+      "First page-scoped passage.",
+    );
+    assert.equal(
+      output.papers?.[1]?.passages?.[0]?.text,
+      "Second page-scoped passage.",
+    );
+    assert.equal(output.papers?.[1]?.passages?.[0]?.pageLabel, "3");
   });
 
   it("paper_read targeted dedupes duplicate default paper contexts", async function () {

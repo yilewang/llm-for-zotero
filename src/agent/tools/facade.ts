@@ -82,10 +82,12 @@ export function createRenamedTool<TInput, TResult>(params: {
   label?: string;
   exposure?: "model" | "internal";
   tier?: "normal" | "advanced";
+  guidance?: AgentToolDefinition<TInput, TResult>["guidance"];
 }): AgentToolDefinition<TInput, TResult> {
   const { tool } = params;
   return {
     ...tool,
+    guidance: params.guidance,
     spec: {
       ...tool.spec,
       name: params.name,
@@ -127,6 +129,7 @@ export function createDelegatingTool<TResult = unknown>(params: {
   label: string;
   summaries?: NonNullable<AgentToolDefinition["presentation"]>["summaries"];
   tier?: "normal" | "advanced";
+  guidance?: AgentToolDefinition<DelegatedInput<any>, TResult>["guidance"];
   chooseDelegate: (args: unknown) => AgentToolInputValidation<DelegateChoice>;
 }): AgentToolDefinition<DelegatedInput<any>, TResult> {
   return {
@@ -139,6 +142,7 @@ export function createDelegatingTool<TResult = unknown>(params: {
       exposure: "model",
       tier: params.tier || "normal",
     },
+    guidance: params.guidance,
     presentation: {
       label: params.label,
       summaries: params.summaries,
