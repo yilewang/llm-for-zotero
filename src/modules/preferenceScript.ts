@@ -3262,6 +3262,32 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     renderEmbeddingCard();
   }
 
+  const contextCacheReuseSelect = doc.querySelector(
+    `#${config.addonRef}-context-cache-reuse`,
+  ) as HTMLSelectElement | null;
+  if (contextCacheReuseSelect) {
+    const prefName = `${config.prefsPrefix}.contextCacheReuse`;
+    const readCachePref = () =>
+      (
+        Zotero.Prefs.get(prefName, true) ||
+        "auto"
+      ).toString().trim().toLowerCase();
+    const syncCachePref = () => {
+      const value = readCachePref();
+      contextCacheReuseSelect.value =
+        value === "off" || value === "pinned" ? value : "auto";
+    };
+    syncCachePref();
+    contextCacheReuseSelect.addEventListener("change", () => {
+      const value = contextCacheReuseSelect.value;
+      Zotero.Prefs.set(
+        prefName,
+        value === "off" || value === "pinned" ? value : "auto",
+        true,
+      );
+    });
+  }
+
   // ── MinerU settings ─────────────────────────────────────────────
 
   const mineruEnabledInput = doc.querySelector(

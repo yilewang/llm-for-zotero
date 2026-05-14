@@ -1,5 +1,6 @@
 import {
   buildReasoningPayload,
+  buildPromptCachePayloadHints,
   postWithReasoningFallback,
   resolveRequestAuthState,
 } from "../../utils/llmClient";
@@ -111,6 +112,7 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
           model: request.model,
           instructions,
           input: inputItems,
+          ...buildPromptCachePayloadHints(request.contextCache),
           include: ["reasoning.encrypted_content"],
           tools: buildResponsesFunctionTools(params.tools),
           tool_choice: "auto",

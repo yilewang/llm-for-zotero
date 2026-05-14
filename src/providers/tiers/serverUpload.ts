@@ -20,7 +20,10 @@ export function matches(params: ProviderParams): boolean {
   );
 }
 
-export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
+export const capabilities: Omit<
+  ProviderCapabilities,
+  "multimodal" | "promptCache"
+> = {
   tier: "server_upload",
   label: "Server-side upload",
   pdf: "none",

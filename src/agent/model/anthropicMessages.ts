@@ -539,11 +539,25 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
           anthropicModeOverride: reasoningOverride?.anthropicModeOverride,
         },
       );
+      const cacheControl =
+        request.contextCache?.enabled &&
+        request.contextCache.requestHints?.anthropicCacheControl
+          ? request.contextCache.requestHints.anthropicCacheControl
+          : undefined;
+      const system = cacheControl && this.systemPrompt
+        ? [
+            {
+              type: "text",
+              text: this.systemPrompt,
+              cache_control: cacheControl,
+            },
+          ]
+        : this.systemPrompt;
       return {
         model: request.model,
         max_tokens: maxTokens,
         messages,
-        system: this.systemPrompt,
+        system,
         tools: toolsPayload,
         tool_choice: { type: "auto" },
         stream: true,

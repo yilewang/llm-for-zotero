@@ -29,6 +29,7 @@ export function buildContextPlanSystemMessages(params: {
   const effects = params.inputCapEffects;
   if (
     (params.strategy === "paper-first-full" ||
+      params.strategy === "paper-cache-full" ||
       params.strategy === "paper-manual-full") &&
     effects &&
     (effects.documentContextTrimmed || effects.documentContextDropped)

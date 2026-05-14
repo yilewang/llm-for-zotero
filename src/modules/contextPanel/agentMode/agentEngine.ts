@@ -347,6 +347,11 @@ export type AgentEngineDeps = {
         contextTokens: number;
         contextWindow?: number;
         contextWindowIsAuthoritative?: boolean;
+        cacheReadTokens?: number;
+        cacheWriteTokens?: number;
+        cacheMissTokens?: number;
+        cacheHitRatio?: number;
+        cacheProvider?: string;
         estimated?: boolean;
         source?: "estimated" | "provider" | "persisted";
       }
@@ -357,6 +362,11 @@ export type AgentEngineDeps = {
       contextTokens: number;
       contextWindow?: number;
       contextWindowIsAuthoritative?: boolean;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+      cacheMissTokens?: number;
+      cacheHitRatio?: number;
+      cacheProvider?: string;
       estimated?: boolean;
       source?: "estimated" | "provider" | "persisted";
     },
@@ -366,7 +376,14 @@ export type AgentEngineDeps = {
     sessionTokens: number,
     contextWindow?: number,
     gaugeEl?: HTMLElement | null,
-    options?: { estimated?: boolean },
+    options?: {
+      estimated?: boolean;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+      cacheMissTokens?: number;
+      cacheHitRatio?: number;
+      cacheProvider?: string;
+    },
   ) => void;
   getConversationKey: (item: Zotero.Item) => number;
   buildLLMHistoryMessages: (history: Message[]) => ChatMessage[];
@@ -900,6 +917,26 @@ export async function sendAgentTurn(
                   contextWindow: nextWindow,
                   contextWindowIsAuthoritative:
                     usageRecord.contextWindowIsAuthoritative === true,
+                  cacheReadTokens:
+                    typeof usageRecord.cacheReadTokens === "number"
+                      ? usageRecord.cacheReadTokens
+                      : undefined,
+                  cacheWriteTokens:
+                    typeof usageRecord.cacheWriteTokens === "number"
+                      ? usageRecord.cacheWriteTokens
+                      : undefined,
+                  cacheMissTokens:
+                    typeof usageRecord.cacheMissTokens === "number"
+                      ? usageRecord.cacheMissTokens
+                      : undefined,
+                  cacheHitRatio:
+                    typeof usageRecord.cacheHitRatio === "number"
+                      ? usageRecord.cacheHitRatio
+                      : undefined,
+                  cacheProvider:
+                    typeof usageRecord.cacheProvider === "string"
+                      ? usageRecord.cacheProvider
+                      : undefined,
                   estimated: usageRecord.contextWindowIsAuthoritative !== true,
                   source:
                     usageRecord.contextWindowIsAuthoritative === true
@@ -916,6 +953,26 @@ export async function sendAgentTurn(
                   {
                     estimated:
                       usageRecord.contextWindowIsAuthoritative !== true,
+                    cacheReadTokens:
+                      typeof usageRecord.cacheReadTokens === "number"
+                        ? usageRecord.cacheReadTokens
+                        : undefined,
+                    cacheWriteTokens:
+                      typeof usageRecord.cacheWriteTokens === "number"
+                        ? usageRecord.cacheWriteTokens
+                        : undefined,
+                    cacheMissTokens:
+                      typeof usageRecord.cacheMissTokens === "number"
+                        ? usageRecord.cacheMissTokens
+                        : undefined,
+                    cacheHitRatio:
+                      typeof usageRecord.cacheHitRatio === "number"
+                        ? usageRecord.cacheHitRatio
+                        : undefined,
+                    cacheProvider:
+                      typeof usageRecord.cacheProvider === "string"
+                        ? usageRecord.cacheProvider
+                        : undefined,
                   },
                 );
               } else if (
@@ -1465,6 +1522,26 @@ export async function retryAgentTurn(
                   contextWindow: nextWindow,
                   contextWindowIsAuthoritative:
                     usageRecord.contextWindowIsAuthoritative === true,
+                  cacheReadTokens:
+                    typeof usageRecord.cacheReadTokens === "number"
+                      ? usageRecord.cacheReadTokens
+                      : undefined,
+                  cacheWriteTokens:
+                    typeof usageRecord.cacheWriteTokens === "number"
+                      ? usageRecord.cacheWriteTokens
+                      : undefined,
+                  cacheMissTokens:
+                    typeof usageRecord.cacheMissTokens === "number"
+                      ? usageRecord.cacheMissTokens
+                      : undefined,
+                  cacheHitRatio:
+                    typeof usageRecord.cacheHitRatio === "number"
+                      ? usageRecord.cacheHitRatio
+                      : undefined,
+                  cacheProvider:
+                    typeof usageRecord.cacheProvider === "string"
+                      ? usageRecord.cacheProvider
+                      : undefined,
                   estimated: usageRecord.contextWindowIsAuthoritative !== true,
                   source:
                     usageRecord.contextWindowIsAuthoritative === true
@@ -1481,6 +1558,26 @@ export async function retryAgentTurn(
                   {
                     estimated:
                       usageRecord.contextWindowIsAuthoritative !== true,
+                    cacheReadTokens:
+                      typeof usageRecord.cacheReadTokens === "number"
+                        ? usageRecord.cacheReadTokens
+                        : undefined,
+                    cacheWriteTokens:
+                      typeof usageRecord.cacheWriteTokens === "number"
+                        ? usageRecord.cacheWriteTokens
+                        : undefined,
+                    cacheMissTokens:
+                      typeof usageRecord.cacheMissTokens === "number"
+                        ? usageRecord.cacheMissTokens
+                        : undefined,
+                    cacheHitRatio:
+                      typeof usageRecord.cacheHitRatio === "number"
+                        ? usageRecord.cacheHitRatio
+                        : undefined,
+                    cacheProvider:
+                      typeof usageRecord.cacheProvider === "string"
+                        ? usageRecord.cacheProvider
+                        : undefined,
                   },
                 );
               } else if (

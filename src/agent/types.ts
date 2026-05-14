@@ -13,6 +13,7 @@ import type {
   ReasoningConfig as LLMReasoningConfig,
   UsageStats,
 } from "../shared/llm";
+import type { ContextCachePlan } from "../contextCache/manager";
 
 export type AgentRequest = {
   conversationKey: number;
@@ -445,6 +446,7 @@ export type AgentRuntimeRequest = AgentRequest & {
   libraryID?: number;
   activeNoteContext?: ActiveNoteContext;
   metadata?: Record<string, unknown>;
+  contextCache?: ContextCachePlan;
 };
 
 export type AgentRuntimeOutcome =

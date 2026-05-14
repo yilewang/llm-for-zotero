@@ -75,6 +75,7 @@ import {
   formatGlobalHistoryTimestamp,
   groupHistoryEntriesByDay,
   normalizeHistoryTitle,
+  resolveHistoryEntryPaperItem,
   type ConversationHistoryEntry,
 } from "./setupHandlers/controllers/conversationHistoryController";
 import {
@@ -2045,25 +2046,6 @@ export function openStandaloneChat(options?: {
         return document;
       };
 
-      const selectStandalonePaperItem = async (
-        paperItemID: number,
-      ): Promise<void> => {
-        if (!Number.isFinite(paperItemID) || paperItemID <= 0) return;
-        try {
-          const pane = Zotero.getActiveZoteroPane?.() as
-            | _ZoteroTypes.ZoteroPane
-            | undefined;
-          if (!pane) return;
-          if (typeof pane.selectItems === "function") {
-            await pane.selectItems([paperItemID], true);
-          } else if (typeof pane.selectItem === "function") {
-            pane.selectItem(paperItemID, true);
-          }
-        } catch (err) {
-          ztoolkit.log("LLM: standalone search paper selection failed", err);
-        }
-      };
-
       const renderSearchResults = (
         entries: SidebarConv[],
         query: string,
@@ -2291,11 +2273,11 @@ export function openStandaloneChat(options?: {
 
         try {
           if (mode === "paper" && paperItemId > 0) {
-            const paperItem = Zotero.Items.get(
-              paperItemId,
-            ) as Zotero.Item | null;
+            const paperItem = resolveHistoryEntryPaperItem(
+              { paperItemID: paperItemId },
+              (id) => Zotero.Items.get(id) as Zotero.Item | null,
+            );
             if (paperItem) {
-              await selectStandalonePaperItem(paperItemId);
               const sv = sessionVersion > 0 ? sessionVersion : 1;
               const portalItem = buildStandalonePortalItem({
                 mode: "paper",

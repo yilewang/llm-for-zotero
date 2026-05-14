@@ -111,6 +111,10 @@ import {
   type InputCapResult,
 } from "./modelInputCap";
 import { isTextOnlyModel } from "../providers/modelChecks";
+import {
+  extractContextCacheUsage,
+  type ContextCachePlan,
+} from "../contextCache/manager";
 
 // =============================================================================
 // Types
@@ -154,6 +158,8 @@ export type ChatParams = {
   systemMessages?: string[];
   /** Override provider protocol for this request */
   providerProtocol?: ProviderProtocol;
+  /** Provider-side prompt/context cache plan resolved by the context planner. */
+  contextCache?: ContextCachePlan;
 };
 
 export type ContextBudgetPlan = {
@@ -175,6 +181,7 @@ export type PreparedChatRequest = {
   messages: ChatMessage[];
   inputCap: InputCapResult;
   providerProtocol: ProviderProtocol;
+  contextCache?: ContextCachePlan;
 };
 
 interface StreamChoice {
@@ -1398,6 +1405,7 @@ export function prepareChatRequest(params: ChatParams): PreparedChatRequest {
     messages: inputCap.messages as ChatMessage[],
     inputCap,
     providerProtocol,
+    contextCache: params.contextCache,
   };
 }
 
@@ -2188,6 +2196,7 @@ function buildAnthropicMessagesPayload(params: {
   apiBase?: string;
   anthropicModeOverride?: AnthropicReasoningModeOverride;
   pdfParts?: NativePdfPart[];
+  contextCache?: ContextCachePlan;
 }): Record<string, unknown> {
   const systemParts = params.messages
     .filter((m) => m.role === "system")
@@ -2271,7 +2280,15 @@ function buildAnthropicMessagesPayload(params: {
   );
   Object.assign(payload, reasoningPayload.extra);
   if (systemParts.length > 0) {
-    payload.system = systemParts.join("\n\n");
+    const systemText = systemParts.join("\n\n");
+    const cacheControl =
+      params.contextCache?.enabled &&
+      params.contextCache.requestHints?.anthropicCacheControl
+        ? params.contextCache.requestHints.anthropicCacheControl
+        : undefined;
+    payload.system = cacheControl
+      ? [{ type: "text", text: systemText, cache_control: cacheControl }]
+      : systemText;
   }
   if (!reasoningPayload.omitTemperature) {
     payload.temperature = params.effectiveTemperature;
@@ -2285,6 +2302,7 @@ function buildAnthropicMessagesPayload(params: {
 async function parseAnthropicStreamResponse(
   body: ReadableStream<Uint8Array>,
   onDelta: (delta: string) => void,
+  onReasoning?: (event: ReasoningEvent) => void,
   onUsage?: (usage: UsageStats) => void,
 ): Promise<string> {
   const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
@@ -2311,10 +2329,15 @@ async function parseAnthropicStreamResponse(
         try {
           const parsed = JSON.parse(data) as {
             type?: string;
-            delta?: { type?: string; text?: string };
+            delta?: { type?: string; text?: string; thinking?: string };
             usage?: { output_tokens?: number };
             message?: {
-              usage?: { input_tokens?: number; output_tokens?: number };
+              usage?: {
+                input_tokens?: number;
+                output_tokens?: number;
+                cache_creation_input_tokens?: number;
+                cache_read_input_tokens?: number;
+              };
             };
           };
           if (
@@ -2326,6 +2349,14 @@ async function parseAnthropicStreamResponse(
             onDelta(parsed.delta.text);
           }
           if (
+            parsed.type === "content_block_delta" &&
+            parsed.delta?.type === "thinking_delta" &&
+            parsed.delta.thinking &&
+            onReasoning
+          ) {
+            onReasoning({ details: parsed.delta.thinking });
+          }
+          if (
             parsed.type === "message_start" &&
             parsed.message?.usage &&
             onUsage
@@ -2334,10 +2365,14 @@ async function parseAnthropicStreamResponse(
             const outputTokens = parsed.message.usage.output_tokens ?? 0;
             const totalTokens = inputTokens + outputTokens;
             if (inputTokens > 0 || totalTokens > 0) {
+              const cacheUsage = extractContextCacheUsage(
+                parsed.message.usage,
+              );
               onUsage({
                 promptTokens: inputTokens,
                 completionTokens: outputTokens,
                 totalTokens,
+                ...cacheUsage,
                 contextTokens: inputTokens,
                 contextWindowIsAuthoritative: inputTokens > 0,
               });
@@ -2432,6 +2467,21 @@ function buildGeminiNativePayload(params: {
   return payload;
 }
 
+export function buildPromptCachePayloadHints(
+  contextCache: ContextCachePlan | undefined,
+): Record<string, unknown> {
+  if (!contextCache?.enabled || !contextCache.requestHints) return {};
+  const hints: Record<string, unknown> = {};
+  if (contextCache.requestHints.promptCacheKey) {
+    hints.prompt_cache_key = contextCache.requestHints.promptCacheKey;
+  }
+  if (contextCache.requestHints.promptCacheRetention) {
+    hints.prompt_cache_retention =
+      contextCache.requestHints.promptCacheRetention;
+  }
+  return hints;
+}
+
 async function parseGeminiNativeStreamResponse(
   body: ReadableStream<Uint8Array>,
   onDelta: (delta: string) => void,
@@ -2465,6 +2515,7 @@ async function parseGeminiNativeStreamResponse(
               promptTokenCount?: number;
               candidatesTokenCount?: number;
               totalTokenCount?: number;
+              cachedContentTokenCount?: number;
             };
           };
           const text =
@@ -2478,11 +2529,15 @@ async function parseGeminiNativeStreamResponse(
           if (parsed.usageMetadata && onUsage) {
             const total = parsed.usageMetadata.totalTokenCount ?? 0;
             if (total > 0) {
+              const cacheUsage = extractContextCacheUsage(
+                parsed.usageMetadata,
+              );
               onUsage({
                 promptTokens: parsed.usageMetadata.promptTokenCount ?? 0,
                 completionTokens:
                   parsed.usageMetadata.candidatesTokenCount ?? 0,
                 totalTokens: total,
+                ...cacheUsage,
                 contextTokens: parsed.usageMetadata.promptTokenCount ?? 0,
                 contextWindowIsAuthoritative:
                   (parsed.usageMetadata.promptTokenCount ?? 0) > 0,
@@ -2512,6 +2567,7 @@ function createChatPayloadBuilder(params: {
   effectiveTemperature: number;
   effectiveMaxTokens: number;
   stream: boolean;
+  contextCache?: ContextCachePlan;
 }) {
   const {
     model,
@@ -2524,6 +2580,7 @@ function createChatPayloadBuilder(params: {
     effectiveTemperature,
     effectiveMaxTokens,
     stream,
+    contextCache,
   } = params;
   return (reasoningOverride: ReasoningConfig | undefined) => {
     const isCodexAuth = authMode === "codex_auth";
@@ -2579,11 +2636,13 @@ function createChatPayloadBuilder(params: {
     const temperatureParam = reasoningPayload.omitTemperature
       ? {}
       : { temperature: effectiveTemperature };
+    const cachePayloadHints = buildPromptCachePayloadHints(contextCache);
 
     const payload = useResponses
       ? {
           model,
           ...responsesInput,
+          ...cachePayloadHints,
           ...reasoningPayload.extra,
           ...temperatureParam,
           ...buildResponsesTokenParam(effectiveMaxTokens),
@@ -2591,6 +2650,7 @@ function createChatPayloadBuilder(params: {
       : {
           model,
           messages: chatMessages,
+          ...cachePayloadHints,
           ...reasoningPayload.extra,
           ...temperatureParam,
           ...buildTokenParam(model, effectiveMaxTokens),
@@ -3061,9 +3121,11 @@ async function callNativeProtocol(params: {
   effectiveTemperature: number;
   signal?: AbortSignal;
   onDelta?: (delta: string) => void;
+  onReasoning?: (event: ReasoningEvent) => void;
   onUsage?: (usage: UsageStats) => void;
   attachments?: ChatFileAttachment[];
   reasoning?: ReasoningConfig;
+  contextCache?: ContextCachePlan;
 }): Promise<string> {
   const {
     protocol,
@@ -3075,6 +3137,7 @@ async function callNativeProtocol(params: {
     effectiveTemperature,
     signal,
     onDelta,
+    onReasoning,
     onUsage,
   } = params;
   const isStreaming = Boolean(onDelta);
@@ -3116,6 +3179,7 @@ async function callNativeProtocol(params: {
           apiBase,
           anthropicModeOverride: reasoningOverride?.anthropicModeOverride,
           pdfParts: pdfParts.length ? pdfParts : undefined,
+          contextCache: params.contextCache,
         })
       : buildGeminiNativePayload({
           messages,
@@ -3142,7 +3206,7 @@ async function callNativeProtocol(params: {
   if (isStreaming) {
     if (!res.body) return callNativeProtocol({ ...params, onDelta: undefined });
     return protocol === "anthropic_messages"
-      ? parseAnthropicStreamResponse(res.body, onDelta!, onUsage)
+      ? parseAnthropicStreamResponse(res.body, onDelta!, onReasoning, onUsage)
       : parseGeminiNativeStreamResponse(res.body, onDelta!, onUsage);
   }
   if (protocol === "anthropic_messages") {
@@ -3280,6 +3344,7 @@ export async function callLLM(params: ChatParams): Promise<string> {
       signal: params.signal,
       attachments: params.attachments,
       reasoning: params.reasoning,
+      contextCache: params.contextCache,
     });
   }
   if (authMode === "codex_auth" || authMode === "codex_app_server") {
@@ -3353,6 +3418,7 @@ export async function callLLM(params: ChatParams): Promise<string> {
     effectiveTemperature,
     effectiveMaxTokens,
     stream: false,
+    contextCache: params.contextCache,
   });
   const res = await postWithReasoningFallback({
     url,
@@ -3411,9 +3477,11 @@ export async function callLLMStream(
       effectiveTemperature: normalizeTemperature(params.temperature),
       signal: params.signal,
       onDelta,
+      onReasoning,
       onUsage,
       attachments: params.attachments,
       reasoning: params.reasoning,
+      contextCache: params.contextCache,
     });
   }
   if (authMode === "codex_app_server") {
@@ -3501,6 +3569,7 @@ export async function callLLMStream(
     effectiveTemperature,
     effectiveMaxTokens,
     stream: true,
+    contextCache: params.contextCache,
   });
   const res = await postWithReasoningFallback({
     url,
@@ -3667,6 +3736,10 @@ export async function parseStreamResponse(
               prompt_tokens?: number;
               completion_tokens?: number;
               total_tokens?: number;
+              prompt_tokens_details?: { cached_tokens?: number };
+              prompt_cache_hit_tokens?: number;
+              prompt_cache_miss_tokens?: number;
+              cached_tokens?: number;
             };
           };
           if (parsed.usage && onUsage) {
@@ -3675,10 +3748,12 @@ export async function parseStreamResponse(
               (parsed.usage.prompt_tokens ?? 0) +
                 (parsed.usage.completion_tokens ?? 0);
             if (totalTokens > 0) {
+              const cacheUsage = extractContextCacheUsage(parsed.usage);
               onUsage({
                 promptTokens: parsed.usage.prompt_tokens ?? 0,
                 completionTokens: parsed.usage.completion_tokens ?? 0,
                 totalTokens,
+                ...cacheUsage,
                 contextTokens: parsed.usage.prompt_tokens ?? 0,
                 contextWindowIsAuthoritative:
                   (parsed.usage.prompt_tokens ?? 0) > 0,
@@ -3973,6 +4048,8 @@ async function parseResponsesStream(
                 input_tokens?: number;
                 output_tokens?: number;
                 total_tokens?: number;
+                input_tokens_details?: { cached_tokens?: number };
+                prompt_tokens_details?: { cached_tokens?: number };
               };
             };
           };
@@ -4169,10 +4246,12 @@ async function parseResponsesStream(
                 u.total_tokens ??
                 (u.input_tokens ?? 0) + (u.output_tokens ?? 0);
               if (total > 0) {
+                const cacheUsage = extractContextCacheUsage(u);
                 onUsage({
                   promptTokens: u.input_tokens ?? 0,
                   completionTokens: u.output_tokens ?? 0,
                   totalTokens: total,
+                  ...cacheUsage,
                   contextTokens: u.input_tokens ?? 0,
                   contextWindowIsAuthoritative: (u.input_tokens ?? 0) > 0,
                 });

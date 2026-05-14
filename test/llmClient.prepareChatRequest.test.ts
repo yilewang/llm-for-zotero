@@ -314,6 +314,93 @@ describe("llmClient prepareChatRequest", function () {
     assert.equal(capturedBody?.temperature, 0.3);
   });
 
+  it("sends OpenAI prompt cache hints for cache-aware full context", async function () {
+    let capturedBody: Record<string, unknown> | null = null;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+        string,
+        unknown
+      >;
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        body: makeSseStream([
+          'data: {"choices":[{"delta":{"content":"OK"}}]}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+        json: async () => ({}),
+        text: async () => "",
+      };
+    });
+
+    await callLLMStream(
+      {
+        prompt: "Say ok.",
+        context: "Stable paper text ".repeat(1200),
+        model: "gpt-5.4",
+        apiBase: "https://api.openai.com/v1",
+        apiKey: "openai-test",
+        providerProtocol: "openai_chat_compat",
+        contextCache: {
+          enabled: true,
+          mode: "stable_prefix",
+          provider: "openai",
+          providerLabel: "OpenAI prompt cache",
+          telemetry: "openai_cached_tokens",
+          cacheKey: "openai:gpt-5.4:paper:abc",
+          requestHints: {
+            promptCacheKey: "openai:gpt-5.4:paper:abc",
+            promptCacheRetention: "24h",
+          },
+        },
+      },
+      () => undefined,
+    );
+
+    assert.equal(capturedBody?.prompt_cache_key, "openai:gpt-5.4:paper:abc");
+    assert.equal(capturedBody?.prompt_cache_retention, "24h");
+  });
+
+  it("sends Anthropic cache_control on stable system context", async function () {
+    let capturedBody: Record<string, unknown> | null = null;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+        string,
+        unknown
+      >;
+      return anthropicOkStream();
+    });
+
+    await callLLMStream(
+      {
+        prompt: "Say ok.",
+        context: "Stable paper text ".repeat(1200),
+        model: "claude-sonnet-4-6",
+        apiBase: "https://api.anthropic.com/v1",
+        apiKey: "anthropic-test",
+        providerProtocol: "anthropic_messages",
+        contextCache: {
+          enabled: true,
+          mode: "anthropic_block",
+          provider: "anthropic",
+          providerLabel: "Anthropic prompt cache",
+          telemetry: "anthropic_read_write",
+          cacheKey: "anthropic:paper:abc",
+          requestHints: {
+            anthropicCacheControl: { type: "ephemeral" },
+          },
+        },
+      },
+      () => undefined,
+    );
+
+    assert.isArray(capturedBody?.system);
+    const system = capturedBody?.system as Array<Record<string, unknown>>;
+    assert.deepEqual(system[0]?.cache_control, { type: "ephemeral" });
+    assert.include(String(system[0]?.text || ""), "Document Context:");
+  });
+
   it("sends PDF attachments as Anthropic Messages document blocks", async function () {
     let capturedBody: Record<string, unknown> | null = null;
     mockFetch(async (_url, init) => {
@@ -507,6 +594,40 @@ describe("llmClient prepareChatRequest", function () {
     assert.deepEqual(capturedBody?.thinking, { type: "adaptive" });
     assert.deepEqual(capturedBody?.output_config, { effort: "xhigh" });
     assert.notNestedProperty(capturedBody || {}, "thinking.budget_tokens");
+  });
+
+  it("emits Anthropic-compatible thinking deltas for regular streaming chat", async function () {
+    mockFetch(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: makeSseStream([
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Plan first."}}\n\n',
+        'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Done"}}\n\n',
+        'data: {"type":"message_stop"}\n\n',
+      ]),
+      json: async () => ({}),
+      text: async () => "",
+    }));
+
+    const reasoningChunks: string[] = [];
+    const output = await callLLMStream(
+      {
+        prompt: "Think.",
+        model: "deepseek-v4-flash",
+        apiBase: "https://api.deepseek.com/anthropic",
+        apiKey: "deepseek-test",
+        providerProtocol: "anthropic_messages",
+        reasoning: { provider: "deepseek", level: "xhigh" },
+      },
+      () => undefined,
+      (event) => {
+        if (event.details) reasoningChunks.push(event.details);
+      },
+    );
+
+    assert.equal(output, "Done");
+    assert.deepEqual(reasoningChunks, ["Plan first."]);
   });
 
   it("does not leak Anthropic thinking fields into OpenAI-compatible Claude calls", async function () {

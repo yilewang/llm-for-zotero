@@ -23,7 +23,10 @@ export function matches(params: ProviderParams): boolean {
   );
 }
 
-export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
+export const capabilities: Omit<
+  ProviderCapabilities,
+  "multimodal" | "promptCache"
+> = {
   tier: "third_party",
   label: "Third-party compatible",
   pdf: "none",

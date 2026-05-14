@@ -12,7 +12,10 @@ export function matches(params: ProviderParams): boolean {
   return (params.authMode || "").toLowerCase() === "copilot_auth";
 }
 
-export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
+export const capabilities: Omit<
+  ProviderCapabilities,
+  "multimodal" | "promptCache"
+> = {
   tier: "copilot",
   label: "GitHub Copilot",
   pdf: "none",

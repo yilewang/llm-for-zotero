@@ -14,7 +14,10 @@ export function matches(params: ProviderParams): boolean {
   return auth === "codex_auth" || auth === "codex_app_server" || proto === "codex_responses";
 }
 
-export const capabilities: Omit<ProviderCapabilities, "multimodal"> = {
+export const capabilities: Omit<
+  ProviderCapabilities,
+  "multimodal" | "promptCache"
+> = {
   tier: "codex",
   label: "Codex / ChatGPT",
   pdf: "none",

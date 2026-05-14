@@ -34,6 +34,10 @@ import {
 import { pdfTextCache } from "./state";
 import { sanitizeText } from "./textUtils";
 import { tokenizeRetrievalDiversity } from "./retrievalTokenizer";
+import {
+  planContextCacheReuse,
+  shouldPreferCacheAwareFullContext,
+} from "../../contextCache/manager";
 
 // ── Cross-turn retrieval cache ──────────────────────────────────────────────
 // Caches chunk candidates returned by buildPaperRetrievalCandidates so that
@@ -1151,6 +1155,7 @@ export async function resolveMultiContextPlan(params: {
   advanced?: AdvancedModelParams;
   apiBase?: string;
   apiKey?: string;
+  authMode?: string;
   providerProtocol?: import("../../utils/providerProtocol").ProviderProtocol;
   systemPrompt?: string;
   signal?: AbortSignal;
@@ -1197,10 +1202,24 @@ export async function resolveMultiContextPlan(params: {
         collectionScopeTokens,
     ),
   };
+  const finalizePlan = (plan: MultiContextPlan): MultiContextPlan => ({
+    ...plan,
+    contextCache: planContextCacheReuse({
+      model: params.model,
+      apiBase: params.apiBase,
+      authMode: params.authMode,
+      protocol: params.providerProtocol,
+      mode: plan.mode,
+      strategy: plan.strategy,
+      contextText: plan.contextText,
+      paperContexts: params.paperContexts,
+      fullTextPaperContexts: params.fullTextPaperContexts,
+    }),
+  });
 
   if (!papers.length && !collectionPapers.length) {
     const contextText = prependCollectionScope("");
-    return {
+    return finalizePlan({
       mode: "retrieval",
       strategy: "general-retrieval",
       contextText,
@@ -1209,7 +1228,7 @@ export async function resolveMultiContextPlan(params: {
       selectedPaperCount: 0,
       selectedChunkCount: 0,
       citationPaperContexts: [],
-    };
+    });
   }
 
   if (!papers.length && collectionPapers.length) {
@@ -1220,7 +1239,7 @@ export async function resolveMultiContextPlan(params: {
       minChunksByPaper: new Map<string, number>(),
     });
     const contextText = prependCollectionScope(retrieved.contextText);
-    return {
+    return finalizePlan({
       mode: "retrieval",
       strategy: "general-retrieval",
       contextText,
@@ -1229,7 +1248,7 @@ export async function resolveMultiContextPlan(params: {
       selectedPaperCount: retrieved.selectedPaperCount,
       selectedChunkCount: retrieved.selectedChunkCount,
       citationPaperContexts: retrieved.citationPaperContexts,
-    };
+    });
   }
 
   const fullTextPapers = papers.filter((paper) => paper.pinKind !== "none");
@@ -1293,7 +1312,7 @@ export async function resolveMultiContextPlan(params: {
         ]),
       );
       const usedContextTokens = estimateTextTokens(combinedContext);
-      return {
+      return finalizePlan({
         mode: "full",
         strategy: firstPaperTurn ? "paper-first-full" : "paper-manual-full",
         contextText: combinedContext,
@@ -1307,7 +1326,77 @@ export async function resolveMultiContextPlan(params: {
           full.contextText ? pinnedPapers : [],
           extraRetrieved?.citationPaperContexts,
         ),
-      };
+      });
+    }
+
+    const cachePreferredFull = assembleFullMultiPaperContext({
+      papers: [activePaper, ...otherPinned],
+    });
+    if (
+      cachePreferredFull.contextText &&
+      selectContextAssemblyMode({
+        fullContextText: cachePreferredFull.contextText,
+        fullContextTokens: cachePreferredFull.estimatedTokens,
+        contextBudgetTokens: adjustedContextBudget.contextBudgetTokens,
+      }) === "full" &&
+      shouldPreferCacheAwareFullContext({
+        model: params.model,
+        apiBase: params.apiBase,
+        authMode: params.authMode,
+        protocol: params.providerProtocol,
+        candidateContextText: cachePreferredFull.contextText,
+        hasPinnedFullText: otherPinned.length > 0,
+      })
+    ) {
+      for (const paper of [activePaper, ...otherPinned]) {
+        preGenerateEmbeddings(
+          paper.pdfContext,
+          paper.paperContext.contextItemId,
+        );
+      }
+      let extraRetrieved: RetrievedAssembly | null = null;
+      const extraRetrievalPapers = [...otherUnpinned, ...collectionPapers];
+      const remainingTokens = Math.max(
+        0,
+        adjustedContextBudget.contextBudgetTokens -
+          cachePreferredFull.estimatedTokens,
+      );
+      if (remainingTokens > 0 && extraRetrievalPapers.length) {
+        const enrichedQuestion = buildEnrichedRetrievalQuery(
+          params.question,
+          params.history,
+        );
+        extraRetrieved = await assembleRetrievedMultiPaperContext({
+          papers: extraRetrievalPapers,
+          question: enrichedQuestion,
+          contextBudgetTokens: remainingTokens,
+          minChunksByPaper: buildMinChunkMapForRetrievedPapers(otherUnpinned),
+        });
+      }
+      const combinedContext = prependCollectionScope(
+        appendContextBlocks([
+          cachePreferredFull.contextText,
+          extraRetrieved?.selectedChunkCount ? extraRetrieved.contextText : "",
+        ]),
+      );
+      return finalizePlan({
+        mode: "full",
+        strategy: firstPaperTurn ? "paper-first-full" : "paper-cache-full",
+        contextText: combinedContext,
+        contextBudget: adjustedContextBudget,
+        usedContextTokens: estimateTextTokens(combinedContext),
+        selectedPaperCount:
+          1 +
+          otherPinned.length +
+          (extraRetrieved?.selectedChunkCount
+            ? extraRetrieved.selectedPaperCount
+            : 0),
+        selectedChunkCount: extraRetrieved?.selectedChunkCount || 0,
+        citationPaperContexts: mergePlannerCitationPaperContexts(
+          [activePaper, ...otherPinned],
+          extraRetrieved?.citationPaperContexts,
+        ),
+      });
     }
 
     // Enrich the retrieval query with the last assistant response so semantic
@@ -1335,7 +1424,7 @@ export async function resolveMultiContextPlan(params: {
     });
     const contextText = prependCollectionScope(retrieved.contextText);
     const usedContextTokens = estimateTextTokens(contextText);
-    return {
+    return finalizePlan({
       mode: "retrieval",
       strategy: firstPaperTurn
         ? "paper-explicit-retrieval"
@@ -1349,7 +1438,7 @@ export async function resolveMultiContextPlan(params: {
       assistantInstruction: firstPaperTurn
         ? undefined
         : buildPaperFollowupAssistantInstruction(params.question),
-    };
+    });
   }
 
   const fullPreferredPapers =
@@ -1399,7 +1488,7 @@ export async function resolveMultiContextPlan(params: {
         (extraUnpinned?.selectedChunkCount
           ? extraUnpinned.selectedPaperCount
           : 0);
-      return {
+      return finalizePlan({
         mode: "full",
         strategy: "general-full",
         contextText: combinedContext,
@@ -1411,7 +1500,7 @@ export async function resolveMultiContextPlan(params: {
           fullPreferredPapers,
           extraUnpinned?.citationPaperContexts,
         ),
-      };
+      });
     }
 
     const partialFull = assembleBestEffortFullMultiPaperContext({
@@ -1470,7 +1559,7 @@ export async function resolveMultiContextPlan(params: {
         (extraRetrieved?.selectedChunkCount
           ? extraRetrieved.selectedPaperCount
           : 0);
-      return {
+      return finalizePlan({
         mode: "full",
         strategy: "general-full",
         contextText: combinedContext,
@@ -1485,7 +1574,7 @@ export async function resolveMultiContextPlan(params: {
           ),
           extraRetrieved?.citationPaperContexts,
         ),
-      };
+      });
     }
   }
 
@@ -1495,7 +1584,7 @@ export async function resolveMultiContextPlan(params: {
   const retrievalPapers = [...directRetrievalPapers, ...collectionPapers];
   if (!retrievalPapers.length) {
     const contextText = prependCollectionScope("");
-    return {
+    return finalizePlan({
       mode: "retrieval",
       strategy: "general-retrieval",
       contextText,
@@ -1504,7 +1593,7 @@ export async function resolveMultiContextPlan(params: {
       selectedPaperCount: 0,
       selectedChunkCount: 0,
       citationPaperContexts: [],
-    };
+    });
   }
 
   const retrieved = await assembleRetrievedMultiPaperContext({
@@ -1515,7 +1604,7 @@ export async function resolveMultiContextPlan(params: {
   });
   const contextText = prependCollectionScope(retrieved.contextText);
   const usedContextTokens = estimateTextTokens(contextText);
-  return {
+  return finalizePlan({
     mode: "retrieval",
     strategy: "general-retrieval",
     contextText,
@@ -1524,5 +1613,5 @@ export async function resolveMultiContextPlan(params: {
     selectedPaperCount: retrieved.selectedPaperCount,
     selectedChunkCount: retrieved.selectedChunkCount,
     citationPaperContexts: retrieved.citationPaperContexts,
-  };
+  });
 }

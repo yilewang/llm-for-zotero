@@ -5,6 +5,7 @@ import * as serverUpload from "./tiers/serverUpload";
 import * as copilot from "./tiers/copilot";
 import * as codex from "./tiers/codex";
 import * as thirdParty from "./tiers/thirdParty";
+import { resolvePromptCacheCapability } from "../contextCache/manager";
 
 // Evaluate in priority order: auth-mode tiers (copilot, codex) must come
 // before protocol-based tiers (native) so that e.g. copilot+responses_api
@@ -28,6 +29,7 @@ export function resolveProviderCapabilities(
 
   return {
     ...base,
+    promptCache: resolvePromptCacheCapability(params),
     multimodal: !textOnly,
     ...(textOnly ? { pdf: "none" as const, images: false } : {}),
   };

@@ -9,6 +9,7 @@ import type {
 } from "./codexAppServerInput";
 import { getRuntimePlatformInfo } from "./runtimePlatform";
 import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
+import { extractContextCacheUsage } from "../contextCache/manager";
 
 const DEFAULT_CODEX_APP_SERVER_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 60_000;
@@ -971,6 +972,17 @@ export function waitForCodexAppServerTurnCompletion(params: {
         promptTokens: Math.max(0, usage.promptTokens || 0),
         completionTokens: Math.max(0, usage.completionTokens || 0),
         totalTokens: Math.max(0, usage.totalTokens || 0),
+        ...(usage.cacheReadTokens
+          ? { cacheReadTokens: usage.cacheReadTokens }
+          : {}),
+        ...(usage.cacheWriteTokens
+          ? { cacheWriteTokens: usage.cacheWriteTokens }
+          : {}),
+        ...(usage.cacheMissTokens
+          ? { cacheMissTokens: usage.cacheMissTokens }
+          : {}),
+        ...(usage.cacheHitRatio ? { cacheHitRatio: usage.cacheHitRatio } : {}),
+        ...(usage.cacheProvider ? { cacheProvider: usage.cacheProvider } : {}),
       };
       if (lastEmittedUsageTotals) {
         const deltaPrompt = Math.max(
@@ -985,6 +997,21 @@ export function waitForCodexAppServerTurnCompletion(params: {
           0,
           nextUsage.totalTokens - lastEmittedUsageTotals.totalTokens,
         );
+        const deltaCacheRead = Math.max(
+          0,
+          (nextUsage.cacheReadTokens || 0) -
+            (lastEmittedUsageTotals.cacheReadTokens || 0),
+        );
+        const deltaCacheWrite = Math.max(
+          0,
+          (nextUsage.cacheWriteTokens || 0) -
+            (lastEmittedUsageTotals.cacheWriteTokens || 0),
+        );
+        const deltaCacheMiss = Math.max(
+          0,
+          (nextUsage.cacheMissTokens || 0) -
+            (lastEmittedUsageTotals.cacheMissTokens || 0),
+        );
         lastEmittedUsageTotals = nextUsage;
         if (deltaTotal <= 0) return;
         Promise.resolve(
@@ -992,6 +1019,15 @@ export function waitForCodexAppServerTurnCompletion(params: {
             promptTokens: deltaPrompt,
             completionTokens: deltaCompletion,
             totalTokens: deltaTotal,
+            ...(deltaCacheRead ? { cacheReadTokens: deltaCacheRead } : {}),
+            ...(deltaCacheWrite ? { cacheWriteTokens: deltaCacheWrite } : {}),
+            ...(deltaCacheMiss ? { cacheMissTokens: deltaCacheMiss } : {}),
+            ...(nextUsage.cacheHitRatio
+              ? { cacheHitRatio: nextUsage.cacheHitRatio }
+              : {}),
+            ...(nextUsage.cacheProvider
+              ? { cacheProvider: nextUsage.cacheProvider }
+              : {}),
           }),
         ).catch(() => {
           // Ignore downstream consumer errors so the transport can finish cleanly.
@@ -1179,11 +1215,19 @@ export function waitForCodexAppServerTurnCompletion(params: {
               totalTokens?: unknown;
               inputTokens?: unknown;
               outputTokens?: unknown;
+              cachedTokens?: unknown;
+              cacheReadTokens?: unknown;
+              cacheWriteTokens?: unknown;
+              cacheMissTokens?: unknown;
             };
             total?: {
               totalTokens?: unknown;
               inputTokens?: unknown;
               outputTokens?: unknown;
+              cachedTokens?: unknown;
+              cacheReadTokens?: unknown;
+              cacheWriteTokens?: unknown;
+              cacheMissTokens?: unknown;
             };
           };
         };
@@ -1201,6 +1245,25 @@ export function waitForCodexAppServerTurnCompletion(params: {
           promptTokens,
           completionTokens,
           totalTokens,
+          ...extractContextCacheUsage({
+            inputTokens: promptTokens,
+            prompt_tokens_details:
+              typeof usage.cachedTokens === "number"
+                ? { cached_tokens: usage.cachedTokens }
+                : undefined,
+            cacheReadTokens:
+              typeof usage.cacheReadTokens === "number"
+                ? usage.cacheReadTokens
+                : undefined,
+            cacheWriteTokens:
+              typeof usage.cacheWriteTokens === "number"
+                ? usage.cacheWriteTokens
+                : undefined,
+            cacheMissTokens:
+              typeof usage.cacheMissTokens === "number"
+                ? usage.cacheMissTokens
+                : undefined,
+          }),
         });
       },
     );

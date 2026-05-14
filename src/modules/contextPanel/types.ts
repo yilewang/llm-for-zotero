@@ -170,6 +170,7 @@ export type PdfChunkMeta = {
 export type ContextAssemblyMode = "full" | "retrieval";
 export type ContextAssemblyStrategy =
   | "paper-first-full"
+  | "paper-cache-full"
   | "paper-manual-full"
   | "paper-explicit-retrieval"
   | "paper-followup-retrieval"
@@ -211,6 +212,7 @@ export type MultiContextPlan = {
   mode: ContextAssemblyMode;
   strategy: ContextAssemblyStrategy;
   contextText: string;
+  contextCache?: import("../../contextCache/manager").ContextCachePlan;
   contextBudget: ContextBudgetPlan;
   usedContextTokens: number;
   selectedPaperCount: number;

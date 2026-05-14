@@ -4,6 +4,12 @@ import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
 } from "../../modules/contextPanel/paperAttribution";
+import {
+  planContextCacheReuse,
+  resolveContextCachePreference,
+  resolvePromptCacheCapability,
+  type ContextCachePlan,
+} from "../../contextCache/manager";
 
 export type AgentResourceLifecycleState =
   | "setup-required"
@@ -50,6 +56,7 @@ export type AgentResourceContextPlan = {
   conversationKey: number;
   lifecycleState: AgentResourceLifecycleState;
   injection: AgentContextInjection;
+  contextCache?: ContextCachePlan;
   resourceSignature: string;
   resourceSnapshot: AgentResourceSnapshot;
   resourceDelta?: AgentResourceDelta;
@@ -495,7 +502,28 @@ export function resolveAgentResourceLifecycleState(params: {
   return isDeltaEligible(delta) ? "resources-delta" : "resources-changed";
 }
 
-function requestHasContentfulResource(request: AgentRuntimeRequest): boolean {
+function requestHasContentfulResource(params: {
+  request: AgentRuntimeRequest;
+  lifecycleState: AgentResourceLifecycleState;
+}): boolean {
+  const { request, lifecycleState } = params;
+  const capability = resolvePromptCacheCapability({
+    model: request.model || "",
+    apiBase: request.apiBase,
+    authMode: request.authMode,
+    protocol: request.providerProtocol,
+  });
+  const fullTextOnlyFollowup =
+    lifecycleState === "thin-followup" &&
+    resolveContextCachePreference() !== "off" &&
+    capability.stablePrefix &&
+    capability.kind !== "none" &&
+    Boolean(request.fullTextPaperContexts?.length) &&
+    !request.activeNoteContext &&
+    !request.selectedTexts?.length &&
+    !request.screenshots?.length &&
+    !request.attachments?.length;
+  if (fullTextOnlyFollowup) return false;
   return Boolean(
     request.activeNoteContext ||
     request.selectedTexts?.length ||
@@ -509,7 +537,7 @@ export function resolveAgentContextInjection(params: {
   request: AgentRuntimeRequest;
   lifecycleState: AgentResourceLifecycleState;
 }): AgentContextInjection {
-  if (requestHasContentfulResource(params.request)) return "full";
+  if (requestHasContentfulResource(params)) return "full";
   if (params.lifecycleState === "thin-followup") return "thin";
   if (params.lifecycleState === "resources-delta") return "delta";
   return "full";
@@ -535,10 +563,22 @@ export function buildAgentResourceContextPlan(
           current: snapshot,
         })
       : undefined;
+  const contextCache = planContextCacheReuse({
+    model: request.model,
+    apiBase: request.apiBase,
+    authMode: request.authMode,
+    protocol: request.providerProtocol,
+    mode: "full",
+    strategy: "general-full",
+    contextText: stableJson(snapshot),
+    paperContexts: request.selectedPaperContexts,
+    fullTextPaperContexts: request.fullTextPaperContexts,
+  });
   return {
     conversationKey,
     lifecycleState,
     injection: resolveAgentContextInjection({ request, lifecycleState }),
+    contextCache,
     resourceSignature: signature,
     resourceSnapshot: snapshot,
     resourceDelta: delta,

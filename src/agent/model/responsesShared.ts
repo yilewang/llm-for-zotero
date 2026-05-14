@@ -6,6 +6,7 @@ import {
 } from "./shared";
 import { stringifyMessageContent } from "./messageBuilder";
 import type { ReasoningEvent, UsageStats } from "../../utils/llmClient";
+import { extractContextCacheUsage } from "../../contextCache/manager";
 import type {
   AgentModelContentPart,
   AgentModelMessage,
@@ -750,6 +751,8 @@ export async function parseResponsesStepStream(
                         input_tokens?: unknown;
                         output_tokens?: unknown;
                         total_tokens?: unknown;
+                        input_tokens_details?: unknown;
+                        prompt_tokens_details?: unknown;
                       };
                     }
                   ).usage
@@ -764,6 +767,7 @@ export async function parseResponsesStepStream(
                     ? usage.output_tokens
                     : 0);
             if (onUsage && totalTokens > 0) {
+              const cacheUsage = extractContextCacheUsage(usage);
               await onUsage({
                 promptTokens:
                   typeof usage?.input_tokens === "number"
@@ -774,6 +778,7 @@ export async function parseResponsesStepStream(
                     ? usage.output_tokens
                     : 0,
                 totalTokens,
+                ...cacheUsage,
                 ...(typeof usage?.input_tokens === "number"
                   ? {
                       contextTokens: usage.input_tokens,

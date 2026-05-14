@@ -300,4 +300,26 @@ describe("agent resource lifecycle", function () {
       assert.equal(followup.injection, "full");
     }
   });
+
+  it("uses thin follow-ups for repeated full-text resources when prompt cache is available", async function () {
+    const initialReq = request({
+      model: "gpt-5.4",
+      apiBase: "https://api.openai.com/v1/responses",
+      providerProtocol: "responses_api",
+      fullTextPaperContexts: [paper(9, 90, "Full Text Paper")],
+    });
+    commitAgentResourceContextPlan(buildAgentResourceContextPlan(initialReq));
+
+    const followupReq = {
+      ...initialReq,
+      userText: "Now compare the implication.",
+    };
+    const followup = buildAgentResourceContextPlan(followupReq);
+    const text = await renderedUserMessage(followupReq, followup);
+
+    assert.equal(followup.lifecycleState, "thin-followup");
+    assert.equal(followup.injection, "thin");
+    assert.include(text, "same Zotero resources");
+    assert.notInclude(text, "Full-text paper refs for this turn:");
+  });
 });

@@ -375,7 +375,14 @@ export function setTokenUsage(
   sessionTokens: number,
   contextWindow?: number,
   gaugeEl?: HTMLElement | null,
-  options: { estimated?: boolean } = {},
+  options: {
+    estimated?: boolean;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    cacheMissTokens?: number;
+    cacheHitRatio?: number;
+    cacheProvider?: string;
+  } = {},
 ): void {
   const normalizedTokens = Math.max(0, sessionTokens);
   if (
@@ -391,12 +398,48 @@ export function setTokenUsage(
     const prefix = options.estimated
       ? "Estimated active context window usage"
       : "Active context window usage";
+    const cacheLines: string[] = [];
+    if (
+      typeof options.cacheReadTokens === "number" &&
+      options.cacheReadTokens > 0
+    ) {
+      const provider = options.cacheProvider
+        ? `${options.cacheProvider} `
+        : "";
+      cacheLines.push(
+        `${provider}cache read: ${formatTokenCount(options.cacheReadTokens)} input tokens`,
+      );
+    }
+    if (
+      typeof options.cacheMissTokens === "number" &&
+      options.cacheMissTokens > 0
+    ) {
+      cacheLines.push(
+        `Cache miss: ${formatTokenCount(options.cacheMissTokens)} input tokens`,
+      );
+    }
+    if (
+      typeof options.cacheWriteTokens === "number" &&
+      options.cacheWriteTokens > 0
+    ) {
+      cacheLines.push(
+        `Cache write: ${formatTokenCount(options.cacheWriteTokens)} input tokens`,
+      );
+    }
+    if (
+      typeof options.cacheHitRatio === "number" &&
+      Number.isFinite(options.cacheHitRatio)
+    ) {
+      cacheLines.push(
+        `Cache hit ratio: ${Math.round(options.cacheHitRatio * 100)}%`,
+      );
+    }
     const title =
       percentage > 80
         ? `${prefix}: ${formatTokenCount(normalizedTokens)} / ${formatTokenCount(contextWindow)} input tokens — approaching limit, run /compact`
         : `${prefix}: ${formatTokenCount(normalizedTokens)} / ${formatTokenCount(contextWindow)} input tokens`;
     el.textContent = `${formatTokenCount(normalizedTokens)} / ${formatTokenCount(contextWindow)} (${percentage}%)`;
-    el.title = title;
+    el.title = cacheLines.length ? `${title}\n${cacheLines.join("\n")}` : title;
     el.dataset.warning = percentage > 80 ? "true" : "false";
     el.style.display = "inline";
     if (gaugeEl) {

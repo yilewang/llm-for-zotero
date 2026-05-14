@@ -406,6 +406,43 @@ describe("multiContextPlanner", function () {
     );
   });
 
+  it("promotes paper follow-ups to cache-aware full context for prompt-cache providers", async function () {
+    const paper = registerMockPaper({
+      itemId: 16,
+      contextItemId: 17,
+      title: "Cache Paper",
+      firstCreator: "Kim",
+      year: "2026",
+      pdfContext: buildPdfContext("Cache Paper", [
+        "Abstract\n" + "cache stable context ".repeat(500).trim(),
+        "Methods\n" + "prefix reuse evidence ".repeat(500).trim(),
+        "Results\n" + "cache hit findings ".repeat(500).trim(),
+      ]),
+    });
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "paper",
+      activeContextItem: buildActiveAttachment(
+        paper.itemId,
+        paper.contextItemId,
+      ) as any,
+      question: "What do the results say?",
+      paperContexts: [],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [{ role: "user", content: "Summarize this paper." }],
+      model: "gpt-5.4",
+      apiBase: "https://api.openai.com/v1/responses",
+      providerProtocol: "responses_api",
+    });
+
+    assert.equal(plan.mode, "full");
+    assert.equal(plan.strategy, "paper-cache-full");
+    assert.isTrue(plan.contextCache?.enabled);
+    assert.equal(plan.contextCache?.provider, "openai");
+    assert.include(plan.contextText, "Full Paper Contexts:");
+    assert.notInclude(plan.contextText, "Retrieved Evidence:");
+  });
+
   it("keeps exactly one abstract anchor in paper-mode follow-up retrieval when available", async function () {
     const paper: PaperContextRef = {
       itemId: 30,

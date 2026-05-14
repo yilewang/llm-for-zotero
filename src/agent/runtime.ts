@@ -546,6 +546,7 @@ export class AgentRuntime {
     const classifiedSkillIds = await detectSkillIntent(request, getAllSkills());
     const matchedSkills = getMatchedSkillIds(request, classifiedSkillIds);
     const resourceContextPlan = buildAgentResourceContextPlan(request);
+    request.contextCache = resourceContextPlan.contextCache;
     await emit({
       type: "provider_event",
       providerType: "agent_resource_lifecycle",
@@ -764,6 +765,31 @@ export class AgentRuntime {
             typeof usageRecord.model === "string" && usageRecord.model.trim()
               ? usageRecord.model.trim()
               : undefined;
+          const cacheReadTokens =
+            typeof usageRecord.cacheReadTokens === "number" &&
+            Number.isFinite(usageRecord.cacheReadTokens)
+              ? Math.max(0, usageRecord.cacheReadTokens)
+              : undefined;
+          const cacheWriteTokens =
+            typeof usageRecord.cacheWriteTokens === "number" &&
+            Number.isFinite(usageRecord.cacheWriteTokens)
+              ? Math.max(0, usageRecord.cacheWriteTokens)
+              : undefined;
+          const cacheMissTokens =
+            typeof usageRecord.cacheMissTokens === "number" &&
+            Number.isFinite(usageRecord.cacheMissTokens)
+              ? Math.max(0, usageRecord.cacheMissTokens)
+              : undefined;
+          const cacheHitRatio =
+            typeof usageRecord.cacheHitRatio === "number" &&
+            Number.isFinite(usageRecord.cacheHitRatio)
+              ? Math.max(0, Math.min(1, usageRecord.cacheHitRatio))
+              : undefined;
+          const cacheProvider =
+            typeof usageRecord.cacheProvider === "string" &&
+            usageRecord.cacheProvider.trim()
+              ? usageRecord.cacheProvider.trim()
+              : undefined;
           if (
             totalTokens <= 0 &&
             promptTokens <= 0 &&
@@ -787,6 +813,17 @@ export class AgentRuntime {
             ...(typeof percentage === "number" ? { percentage } : {}),
             ...(sessionId ? { sessionId } : {}),
             ...(model ? { model } : {}),
+            ...(typeof cacheReadTokens === "number"
+              ? { cacheReadTokens }
+              : {}),
+            ...(typeof cacheWriteTokens === "number"
+              ? { cacheWriteTokens }
+              : {}),
+            ...(typeof cacheMissTokens === "number"
+              ? { cacheMissTokens }
+              : {}),
+            ...(typeof cacheHitRatio === "number" ? { cacheHitRatio } : {}),
+            ...(cacheProvider ? { cacheProvider } : {}),
           });
         },
         onToolCall: async (call) => {

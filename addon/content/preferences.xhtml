@@ -215,6 +215,36 @@
 
         <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:label
+            for="__addonRef__-context-cache-reuse"
+            style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+          >
+            Context Cache Reuse
+          </html:label>
+          <html:select
+            id="__addonRef__-context-cache-reuse"
+            style="
+              width: 260px;
+              padding: 4px 8px;
+              font-size: 12px;
+              border: 1px solid var(--stroke-secondary, #c8c8c8);
+              border-radius: 6px;
+              background: Field;
+              color: FieldText;
+            "
+          >
+            <html:option value="auto">Auto</html:option>
+            <html:option value="pinned">Pinned full text only</html:option>
+            <html:option value="off">Off</html:option>
+          </html:select>
+          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block; max-width: 560px;">
+            Reuses stable full-context prefixes when the selected provider has
+            prompt-cache support. Retrieval remains the fallback when full
+            context is not a good fit.
+          </html:span>
+        </html:div>
+
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:label
             for="__addonRef__-locale-select"
             style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
           >

@@ -2,6 +2,8 @@ import { assert } from "chai";
 import {
   getHistoryDayGroupLabel,
   groupHistoryEntriesByDay,
+  normalizeHistoryPaperItemID,
+  resolveHistoryEntryPaperItem,
 } from "../src/modules/contextPanel/setupHandlers/controllers/conversationHistoryController";
 
 describe("conversationHistoryController", function () {
@@ -48,5 +50,21 @@ describe("conversationHistoryController", function () {
         { label: "t:Yesterday", ids: [3] },
       ],
     );
+  });
+
+  it("resolves a paper history entry by item id without requiring Zotero pane selection", function () {
+    const calls: number[] = [];
+    const resolved = resolveHistoryEntryPaperItem(
+      { paperItemID: 42.9 },
+      (paperItemID) => {
+        calls.push(paperItemID);
+        return { id: paperItemID, title: "Paper" };
+      },
+    );
+
+    assert.deepEqual(calls, [42]);
+    assert.deepEqual(resolved, { id: 42, title: "Paper" });
+    assert.equal(resolveHistoryEntryPaperItem({}, () => ({ id: 1 })), null);
+    assert.equal(normalizeHistoryPaperItemID("not-a-number"), 0);
   });
 });

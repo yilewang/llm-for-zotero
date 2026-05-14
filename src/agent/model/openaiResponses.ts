@@ -1,5 +1,6 @@
 import {
   buildReasoningPayload,
+  buildPromptCachePayloadHints,
   postWithReasoningFallback,
   resolveRequestAuthState,
   uploadFilesForResponses,
@@ -118,6 +119,7 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
           model: request.model,
           instructions,
           input: inputItems,
+          ...buildPromptCachePayloadHints(request.contextCache),
           include: ["reasoning.encrypted_content"],
           tools: buildResponsesFunctionTools(params.tools),
           tool_choice: "auto",

@@ -45,6 +45,16 @@ export type UsageStats = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** Input tokens served from a provider-side prompt/context cache. */
+  cacheReadTokens?: number;
+  /** Input tokens written to a provider-side prompt/context cache. */
+  cacheWriteTokens?: number;
+  /** Input tokens billed/processed as non-cached prompt tokens when reported. */
+  cacheMissTokens?: number;
+  /** cacheReadTokens divided by prompt/input tokens, when computable. */
+  cacheHitRatio?: number;
+  /** Provider/runtime that emitted normalized cache telemetry. */
+  cacheProvider?: string;
   /** Active input/context tokens for the current model request. */
   contextTokens?: number;
   /** Input context window used for the current model request. */

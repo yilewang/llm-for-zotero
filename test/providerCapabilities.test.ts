@@ -39,6 +39,53 @@ describe("provider capabilities", function () {
     }
   });
 
+  it("reports prompt-cache capabilities for documented providers", function () {
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "gpt-5.4",
+        apiBase: "https://api.openai.com/v1/responses",
+        protocol: "responses_api",
+      }).promptCache,
+      {
+        kind: "automatic_prefix",
+        provider: "openai",
+      },
+    );
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "claude-sonnet-4-6",
+        apiBase: "https://api.anthropic.com/v1",
+        protocol: "anthropic_messages",
+      }).promptCache,
+      {
+        kind: "explicit_blocks",
+        provider: "anthropic",
+      },
+    );
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "deepseek-chat",
+        apiBase: "https://api.deepseek.com/v1",
+        protocol: "openai_chat_compat",
+      }).promptCache,
+      {
+        kind: "automatic_prefix",
+        provider: "deepseek",
+      },
+    );
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "gpt-5.4",
+        authMode: "codex_app_server",
+        protocol: "codex_responses",
+      }).promptCache,
+      {
+        kind: "opaque",
+        provider: "codex",
+      },
+    );
+  });
+
   it("blocks full-PDF mode for provider-upload endpoints", function () {
     for (const apiBase of [
       "https://dashscope.aliyuncs.com/compatible-mode/v1",

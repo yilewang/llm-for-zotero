@@ -141,3 +141,21 @@ export function formatHistoryRowDisplayTitle(title: string): string {
     "Untitled chat"
   );
 }
+
+export function normalizeHistoryPaperItemID(raw: unknown): number {
+  const parsed = Number(raw || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+export function resolveHistoryEntryPaperItem<T>(
+  entry: Pick<ConversationHistoryEntry, "paperItemID">,
+  getItem: (paperItemID: number) => T | null | undefined,
+): T | null {
+  const paperItemID = normalizeHistoryPaperItemID(entry.paperItemID);
+  if (!paperItemID) return null;
+  try {
+    return getItem(paperItemID) || null;
+  } catch (_err) {
+    return null;
+  }
+}

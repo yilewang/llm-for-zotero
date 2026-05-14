@@ -173,6 +173,7 @@ import {
   groupHistoryEntriesByDay,
   normalizeConversationTitleSeed,
   normalizeHistoryTitle,
+  resolveHistoryEntryPaperItem,
   GLOBAL_HISTORY_UNDO_WINDOW_MS,
   type ConversationHistoryEntry,
   type HistorySwitchTarget,
@@ -2133,38 +2134,19 @@ export function createHistoryLifecycleController(
     await switchGlobalConversation(target.conversationKey);
   };
 
-  const selectPaperItemFromHistoryEntry = async (
+  const resolvePaperItemFromHistoryEntry = (
     entry: ConversationHistoryEntry,
-  ): Promise<Zotero.Item | null> => {
-    const paperItemID = Number(entry.paperItemID || 0);
-    if (!Number.isFinite(paperItemID) || paperItemID <= 0) return null;
-    const paperItem = Zotero.Items.get(Math.floor(paperItemID)) || null;
-    if (!paperItem) return null;
-    try {
-      const pane = Zotero.getActiveZoteroPane?.() as
-        | _ZoteroTypes.ZoteroPane
-        | undefined;
-      if (pane) {
-        if (typeof pane.selectItems === "function") {
-          await pane.selectItems([paperItem.id], true);
-        } else if (typeof pane.selectItem === "function") {
-          pane.selectItem(paperItem.id, true);
-        }
-      }
-    } catch (err) {
-      ztoolkit.log("LLM: Failed to select searched conversation paper", {
-        paperItemID,
-        error: err,
-      });
-    }
-    return paperItem;
+  ): Zotero.Item | null => {
+    return resolveHistoryEntryPaperItem(entry, (paperItemID) =>
+      Zotero.Items.get(paperItemID) as Zotero.Item | null,
+    );
   };
 
   const switchToHistoryEntry = async (
     entry: ConversationHistoryEntry,
   ): Promise<void> => {
     if (entry.kind === "paper") {
-      const paperItem = await selectPaperItemFromHistoryEntry(entry);
+      const paperItem = resolvePaperItemFromHistoryEntry(entry);
       if (!paperItem) {
         if (status) {
           setStatus(status, t("Could not find this paper"), "error");

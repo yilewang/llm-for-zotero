@@ -236,6 +236,7 @@ import {
   SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY,
 } from "./queuedFollowUps";
 import { getConversationKey } from "./conversationIdentity";
+import { recordContextCacheTelemetry } from "../../contextCache/manager";
 
 export { getConversationKey } from "./conversationIdentity";
 
@@ -801,6 +802,11 @@ type ContextUsageSnapshot = {
   contextTokens: number;
   contextWindow?: number;
   contextWindowIsAuthoritative?: boolean;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  cacheMissTokens?: number;
+  cacheHitRatio?: number;
+  cacheProvider?: string;
   estimated?: boolean;
   source?: "estimated" | "provider" | "persisted";
 };
@@ -818,6 +824,30 @@ function setContextUsageSnapshot(
         : undefined,
     contextWindowIsAuthoritative:
       snapshot.contextWindowIsAuthoritative === true,
+    cacheReadTokens:
+      Number.isFinite(Number(snapshot.cacheReadTokens)) &&
+      Number(snapshot.cacheReadTokens) > 0
+        ? Math.floor(Number(snapshot.cacheReadTokens))
+        : undefined,
+    cacheWriteTokens:
+      Number.isFinite(Number(snapshot.cacheWriteTokens)) &&
+      Number(snapshot.cacheWriteTokens) > 0
+        ? Math.floor(Number(snapshot.cacheWriteTokens))
+        : undefined,
+    cacheMissTokens:
+      Number.isFinite(Number(snapshot.cacheMissTokens)) &&
+      Number(snapshot.cacheMissTokens) > 0
+        ? Math.floor(Number(snapshot.cacheMissTokens))
+        : undefined,
+    cacheHitRatio:
+      Number.isFinite(Number(snapshot.cacheHitRatio)) &&
+      Number(snapshot.cacheHitRatio) >= 0
+        ? Math.max(0, Math.min(1, Number(snapshot.cacheHitRatio)))
+        : undefined,
+    cacheProvider:
+      typeof snapshot.cacheProvider === "string" && snapshot.cacheProvider.trim()
+        ? snapshot.cacheProvider.trim()
+        : undefined,
     estimated: snapshot.estimated !== false,
     source: snapshot.source || "estimated",
   };
@@ -836,7 +866,14 @@ function renderContextUsageSnapshot(
     snapshot?.contextTokens || 0,
     snapshot?.contextWindow,
     body.querySelector("#llm-claude-context-gauge") as HTMLElement | null,
-    { estimated: snapshot?.estimated !== false },
+    {
+      estimated: snapshot?.estimated !== false,
+      cacheReadTokens: snapshot?.cacheReadTokens,
+      cacheWriteTokens: snapshot?.cacheWriteTokens,
+      cacheMissTokens: snapshot?.cacheMissTokens,
+      cacheHitRatio: snapshot?.cacheHitRatio,
+      cacheProvider: snapshot?.cacheProvider,
+    },
   );
 }
 
@@ -2170,6 +2207,7 @@ type ContextPlanForRequest = {
   combinedContext: string;
   strategy: ContextAssemblyStrategy;
   assistantInstruction?: string;
+  contextCache?: import("../../contextCache/manager").ContextCachePlan;
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   citationPaperContexts: PaperContextRef[];
@@ -2270,6 +2308,7 @@ async function buildContextPlanForRequest(params: {
     advanced: params.effectiveRequestConfig.advanced,
     apiBase: params.effectiveRequestConfig.apiBase,
     apiKey: params.effectiveRequestConfig.apiKey,
+    authMode: params.effectiveRequestConfig.authMode,
     providerProtocol: params.effectiveRequestConfig.providerProtocol,
     systemPrompt,
     signal: params.signal,
@@ -2284,13 +2323,17 @@ async function buildContextPlanForRequest(params: {
         ? " + semantic search"
         : "";
     const modeStatus =
-      plan.strategy === "paper-first-full"
-        ? "Using full paper text (first turn)"
-        : plan.strategy === "paper-followup-retrieval"
-          ? `Retrieval${semanticTag} (${plan.selectedChunkCount} chunks)`
-          : plan.mode === "full"
-            ? `Using full context (${plan.selectedPaperCount} papers)`
-            : `Retrieval${semanticTag} (${plan.selectedPaperCount} papers, ${plan.selectedChunkCount} chunks)`;
+      plan.contextCache?.enabled && plan.contextCache.statusLabel
+        ? plan.strategy === "paper-cache-full"
+          ? `${plan.contextCache.statusLabel} (${plan.selectedPaperCount} papers)`
+          : plan.contextCache.statusLabel
+        : plan.strategy === "paper-first-full"
+          ? "Using full paper text (first turn)"
+          : plan.strategy === "paper-followup-retrieval"
+            ? `Retrieval${semanticTag} (${plan.selectedChunkCount} chunks)`
+            : plan.mode === "full"
+              ? `Using full context (${plan.selectedPaperCount} papers)`
+              : `Retrieval${semanticTag} (${plan.selectedPaperCount} papers, ${plan.selectedChunkCount} chunks)`;
     params.setStatusSafely(modeStatus, "sending");
   }
   ztoolkit.log("LLM: Multi-context plan", {
@@ -2300,6 +2343,15 @@ async function buildContextPlanForRequest(params: {
     selectedChunkCount: plan.selectedChunkCount,
     contextBudgetTokens: plan.contextBudget.contextBudgetTokens,
     usedContextTokens: plan.usedContextTokens,
+    contextCache: plan.contextCache
+      ? {
+          enabled: plan.contextCache.enabled,
+          mode: plan.contextCache.mode,
+          provider: plan.contextCache.provider,
+          reason: plan.contextCache.reason,
+          contextTokens: plan.contextCache.contextTokens,
+        }
+      : undefined,
   });
   const noteContext = buildActiveNoteContextBlock(params.item).trim();
   const planContext = sanitizeText(plan.contextText || "").trim();
@@ -2360,6 +2412,7 @@ async function buildContextPlanForRequest(params: {
     combinedContext,
     strategy: plan.strategy,
     assistantInstruction: plan.assistantInstruction,
+    contextCache: plan.contextCache,
     paperContexts: params.paperContexts,
     fullTextPaperContexts: params.fullTextPaperContexts,
     citationPaperContexts: mergeCitationPaperContexts(
@@ -4441,6 +4494,7 @@ export async function retryLatestAssistantResponse(
       temperature: effectiveRequestConfig.advanced?.temperature,
       maxTokens: effectiveRequestConfig.advanced?.maxTokens,
       inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
+      contextCache: contextPlan.contextCache,
     };
     const previewSystemMessages = buildContextPlanSystemMessages({
       strategy: contextPlan.strategy,
@@ -4492,6 +4546,7 @@ export async function retryLatestAssistantResponse(
       queueRefresh();
     };
     const handleUsage = (usage: UsageStats) => {
+      recordContextCacheTelemetry(contextPlan.contextCache, usage);
       const contextTokens =
         typeof usage.contextTokens === "number" && usage.contextTokens > 0
           ? usage.contextTokens
@@ -4507,6 +4562,11 @@ export async function retryLatestAssistantResponse(
             ? "provider"
             : "estimated",
         contextWindowIsAuthoritative: usage.contextWindowIsAuthoritative,
+        cacheReadTokens: usage.cacheReadTokens,
+        cacheWriteTokens: usage.cacheWriteTokens,
+        cacheMissTokens: usage.cacheMissTokens,
+        cacheHitRatio: usage.cacheHitRatio,
+        cacheProvider: usage.cacheProvider,
       });
       renderContextUsageSnapshot(body, ui.tokenUsageEl, snapshot);
     };
@@ -5933,6 +5993,7 @@ export async function sendQuestion(
       temperature: effectiveRequestConfig.advanced?.temperature,
       maxTokens: effectiveRequestConfig.advanced?.maxTokens,
       inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
+      contextCache: contextPlan.contextCache,
     };
     const previewSystemMessages = buildContextPlanSystemMessages({
       strategy: contextPlan.strategy,
@@ -5979,6 +6040,7 @@ export async function sendQuestion(
       queueRefresh();
     };
     const handleUsage = (usage: UsageStats) => {
+      recordContextCacheTelemetry(contextPlan.contextCache, usage);
       const contextTokens =
         typeof usage.contextTokens === "number" && usage.contextTokens > 0
           ? usage.contextTokens
@@ -5994,6 +6056,11 @@ export async function sendQuestion(
             ? "provider"
             : "estimated",
         contextWindowIsAuthoritative: usage.contextWindowIsAuthoritative,
+        cacheReadTokens: usage.cacheReadTokens,
+        cacheWriteTokens: usage.cacheWriteTokens,
+        cacheMissTokens: usage.cacheMissTokens,
+        cacheHitRatio: usage.cacheHitRatio,
+        cacheProvider: usage.cacheProvider,
       });
       renderContextUsageSnapshot(body, ui.tokenUsageEl, snapshot);
     };

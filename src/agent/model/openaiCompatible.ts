@@ -1,6 +1,7 @@
 import { usesMaxCompletionTokens } from "../../utils/apiHelpers";
 import {
   buildReasoningPayload,
+  buildPromptCachePayloadHints,
   postWithReasoningFallback,
   resolveRequestAuthState,
 } from "../../utils/llmClient";
@@ -9,6 +10,7 @@ import {
   normalizeTemperature,
 } from "../../utils/normalization";
 import { resolveProviderTransportEndpoint } from "../../utils/providerTransport";
+import { extractContextCacheUsage } from "../../contextCache/manager";
 import type {
   AgentModelCapabilities,
   AgentModelMessage,
@@ -193,6 +195,7 @@ async function parseOpenAIChatCompletionStream(
     summary?: string;
     details?: string;
   }) => void | Promise<void>,
+  onUsage?: AgentStepParams["onUsage"],
 ): Promise<{
   text: string;
   toolCalls: AgentToolCall[];
@@ -224,6 +227,30 @@ async function parseOpenAIChatCompletionStream(
 
         try {
           const parsed = JSON.parse(data);
+          if (parsed?.usage && onUsage) {
+            const promptTokens =
+              typeof parsed.usage.prompt_tokens === "number"
+                ? parsed.usage.prompt_tokens
+                : 0;
+            const completionTokens =
+              typeof parsed.usage.completion_tokens === "number"
+                ? parsed.usage.completion_tokens
+                : 0;
+            const totalTokens =
+              typeof parsed.usage.total_tokens === "number"
+                ? parsed.usage.total_tokens
+                : promptTokens + completionTokens;
+            if (totalTokens > 0) {
+              await onUsage({
+                promptTokens,
+                completionTokens,
+                totalTokens,
+                ...extractContextCacheUsage(parsed.usage),
+                contextTokens: promptTokens,
+                contextWindowIsAuthoritative: promptTokens > 0,
+              });
+            }
+          }
           const choice = parsed?.choices?.[0];
           const delta = choice?.delta;
           if (!delta) continue;
@@ -347,9 +374,11 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
         return {
           model: request.model,
           messages: resolvedMessages,
+          ...buildPromptCachePayloadHints(request.contextCache),
           tools: buildOpenAIFunctionTools(params.tools),
           tool_choice: "auto",
           stream: true,
+          stream_options: { include_usage: true },
           ...(usesMaxCompletionTokens(request.model || "")
             ? {
                 max_completion_tokens: normalizeMaxTokensForModel(
@@ -388,6 +417,7 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
         response.body,
         params.onTextDelta,
         params.onReasoning,
+        params.onUsage,
       );
       if (result.toolCalls.length) {
         return {
@@ -418,7 +448,32 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
     // Fallback: non-streaming JSON response
     const data = (await response.json()) as {
       choices?: ChatCompletionChoice[];
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        total_tokens?: number;
+        prompt_tokens_details?: { cached_tokens?: number };
+        prompt_cache_hit_tokens?: number;
+        prompt_cache_miss_tokens?: number;
+        cached_tokens?: number;
+      };
     };
+    if (data.usage && params.onUsage) {
+      const promptTokens = data.usage.prompt_tokens ?? 0;
+      const completionTokens = data.usage.completion_tokens ?? 0;
+      const totalTokens =
+        data.usage.total_tokens ?? promptTokens + completionTokens;
+      if (totalTokens > 0) {
+        await params.onUsage({
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          ...extractContextCacheUsage(data.usage),
+          contextTokens: promptTokens,
+          contextWindowIsAuthoritative: promptTokens > 0,
+        });
+      }
+    }
     const message = data.choices?.[0]?.message;
     const reasoningContentText =
       typeof message?.reasoning_content === "string"
