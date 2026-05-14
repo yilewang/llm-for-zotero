@@ -957,22 +957,253 @@ function extractRenderedPageTexts(reader: any): {
 // so that subsequent quote lookups are instant (pure in-memory substring
 // search with zero async I/O).
 
-interface CachedPageTextIndex {
+export interface CachedPageTextIndex {
   pages: LivePdfPageText[];
   /** Pre-computed normalised text per page for O(1) reuse. */
   normalised: { pageIndex: number; pageLabel?: string; normalizedText: string }[];
 }
 
-let _pageTextCache: CachedPageTextIndex | null = null;
-let _pageTextCacheReaderKey: string | null = null;
-let _pageTextCachePromise: Promise<CachedPageTextIndex | null> | null = null;
+export type HiddenQuoteLocationCacheEntry = {
+  contextItemId: number;
+  pageIndex: number;
+  confidence: LivePdfSelectionLocateConfidence;
+  reason?: string;
+  matchedPageIndexes: number[];
+  pagesScanned: number;
+  debugSummary?: string[];
+};
 
-function getReaderCacheKey(reader: any): string | null {
+const pageTextCacheByKey = new Map<string, CachedPageTextIndex>();
+const pageTextCachePromisesByKey = new Map<
+  string,
+  Promise<CachedPageTextIndex | null>
+>();
+const hiddenQuoteLocationCache = new Map<string, HiddenQuoteLocationCacheEntry>();
+const hiddenQuoteLocationTasks = new Map<
+  string,
+  Promise<HiddenQuoteLocationCacheEntry | null>
+>();
+let anonymousReaderKeys = new WeakMap<object, string>();
+let anonymousReaderKeySequence = 0;
+let pageTextCacheGeneration = 0;
+
+function normalizePageTextCacheKey(value: unknown): string | null {
+  const key = sanitizeText(String(value || "")).trim();
+  return key ? key : null;
+}
+
+function uniqueCacheKeys(values: Array<string | null | undefined>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const key = normalizePageTextCacheKey(value);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+function getAttachmentPageTextCacheKey(contextItemId: number): string | null {
+  const itemId = Math.floor(Number(contextItemId));
+  return Number.isFinite(itemId) && itemId > 0 ? `item-${itemId}` : null;
+}
+
+function getReaderItemPageTextCacheKey(reader: any): string | null {
+  const itemId = Number(reader?._item?.id || reader?.itemID || 0);
+  return Number.isFinite(itemId) && itemId > 0
+    ? getAttachmentPageTextCacheKey(itemId)
+    : null;
+}
+
+function getReaderFingerprintCacheKey(reader: any): string | null {
   const app = getPdfViewerApplication(reader);
   const fp = app?.pdfDocument?.fingerprints;
-  if (Array.isArray(fp) && fp[0]) return String(fp[0]);
-  const id = reader?._item?.id || reader?.itemID;
-  return id ? `item-${id}` : null;
+  return Array.isArray(fp) && fp[0] ? `fingerprint-${String(fp[0])}` : null;
+}
+
+function getAnonymousReaderCacheKey(reader: any): string | null {
+  if (!reader) return null;
+  const type = typeof reader;
+  if (type !== "object" && type !== "function") return null;
+  const readerObject = reader as object;
+  let key = anonymousReaderKeys.get(readerObject);
+  if (!key) {
+    anonymousReaderKeySequence += 1;
+    key = `reader-${anonymousReaderKeySequence}`;
+    anonymousReaderKeys.set(readerObject, key);
+  }
+  return key;
+}
+
+function getReaderCacheKeys(reader: any): string[] {
+  return uniqueCacheKeys([
+    getReaderFingerprintCacheKey(reader),
+    getReaderItemPageTextCacheKey(reader),
+    getAnonymousReaderCacheKey(reader),
+  ]);
+}
+
+function getCachedPageTextIndex(keys: string[]): CachedPageTextIndex | null {
+  for (const key of keys) {
+    const cached = pageTextCacheByKey.get(key);
+    if (cached) return cached;
+  }
+  return null;
+}
+
+function getCachedPageTextPromise(
+  keys: string[],
+): Promise<CachedPageTextIndex | null> | null {
+  for (const key of keys) {
+    const task = pageTextCachePromisesByKey.get(key);
+    if (task) return task;
+  }
+  return null;
+}
+
+function storeCachedPageTextIndex(
+  keys: string[],
+  index: CachedPageTextIndex,
+): void {
+  for (const key of keys) {
+    pageTextCacheByKey.set(key, index);
+  }
+}
+
+function storeCachedPageTextPromise(
+  keys: string[],
+  task: Promise<CachedPageTextIndex | null>,
+): void {
+  for (const key of keys) {
+    pageTextCachePromisesByKey.set(key, task);
+  }
+}
+
+function clearCachedPageTextPromise(
+  keys: string[],
+  task?: Promise<CachedPageTextIndex | null>,
+): void {
+  for (const key of keys) {
+    if (task && pageTextCachePromisesByKey.get(key) !== task) continue;
+    pageTextCachePromisesByKey.delete(key);
+  }
+}
+
+function buildCachedPageTextIndex(
+  pages: LivePdfPageText[],
+): CachedPageTextIndex {
+  const normalised = pages.map((p) => ({
+    pageIndex: p.pageIndex,
+    pageLabel: p.pageLabel,
+    normalizedText: normalizeLocatorText(p.text),
+  }));
+  return { pages, normalised };
+}
+
+function buildHiddenQuoteLocationCacheKey(
+  contextItemId: number,
+  quoteText: string,
+): string | null {
+  const itemId = Math.floor(Number(contextItemId));
+  if (!Number.isFinite(itemId) || itemId <= 0) return null;
+  const normalizedQuote = normalizeLocatorText(stripBoundaryEllipsis(quoteText));
+  if (!normalizedQuote) return null;
+  return `${itemId}\u241f${normalizedQuote}`;
+}
+
+function toHiddenQuoteLocationCacheEntry(
+  contextItemId: number,
+  result: LivePdfSelectionLocateResult,
+): HiddenQuoteLocationCacheEntry | null {
+  if (result.status !== "resolved" || result.computedPageIndex === null) {
+    return null;
+  }
+  const pageIndex = Math.floor(result.computedPageIndex);
+  if (!Number.isFinite(pageIndex) || pageIndex < 0) return null;
+  return {
+    contextItemId: Math.floor(contextItemId),
+    pageIndex,
+    confidence: result.confidence,
+    reason: result.reason,
+    matchedPageIndexes: result.matchedPageIndexes.slice(),
+    pagesScanned: result.pagesScanned,
+    debugSummary: result.debugSummary?.slice(),
+  };
+}
+
+function locateQuoteLocationInCachedPages(
+  contextItemId: number,
+  quoteText: string,
+  cached: CachedPageTextIndex,
+): HiddenQuoteLocationCacheEntry | null {
+  const exactResult = locateQuoteInPageTexts(cached.pages, quoteText, null);
+  const exactLocation = toHiddenQuoteLocationCacheEntry(contextItemId, exactResult);
+  if (exactLocation) return exactLocation;
+
+  const rawPrefixResult = locateQuoteByRawPrefixInPages(
+    cached.pages,
+    quoteText,
+    null,
+  );
+  if (rawPrefixResult) {
+    const rawPrefixLocation = toHiddenQuoteLocationCacheEntry(
+      contextItemId,
+      rawPrefixResult,
+    );
+    if (rawPrefixLocation) return rawPrefixLocation;
+  }
+
+  const progressive = locateQuoteProgressivelyInPageTexts(
+    cached.pages,
+    quoteText,
+    null,
+  );
+  if (progressive.result) {
+    return toHiddenQuoteLocationCacheEntry(contextItemId, {
+      ...progressive.result,
+      debugSummary: progressive.debugSummary,
+    });
+  }
+
+  const segments = splitQuoteAtEllipsis(quoteText);
+  if (segments.length >= 2) {
+    for (const segment of segments) {
+      const segmentExact = locateQuoteInPageTexts(cached.pages, segment, null);
+      const segmentExactLocation = toHiddenQuoteLocationCacheEntry(
+        contextItemId,
+        segmentExact,
+      );
+      if (segmentExactLocation) return segmentExactLocation;
+
+      const segmentRaw = locateQuoteByRawPrefixInPages(
+        cached.pages,
+        segment,
+        null,
+      );
+      if (segmentRaw) {
+        const segmentRawLocation = toHiddenQuoteLocationCacheEntry(
+          contextItemId,
+          segmentRaw,
+        );
+        if (segmentRawLocation) return segmentRawLocation;
+      }
+
+      const segmentProgressive = locateQuoteProgressivelyInPageTexts(
+        cached.pages,
+        segment,
+        null,
+      );
+      if (segmentProgressive.result) {
+        return toHiddenQuoteLocationCacheEntry(contextItemId, {
+          ...segmentProgressive.result,
+          debugSummary: segmentProgressive.debugSummary,
+        });
+      }
+    }
+  }
+
+  return null;
 }
 
 // ── Text extraction strategies ──────────────────────────────────────
@@ -988,11 +1219,10 @@ function getReaderCacheKey(reader: any): string | null {
  * segments using cumulative offsets.  This requires NO iframe access
  * and is proven working in the codebase (pdfContext.ts).
  */
-async function extractPageTextsFromPdfWorker(
-  reader: any,
+async function extractPageTextsFromPdfWorkerItemId(
+  itemId: number,
 ): Promise<LivePdfPageText[] | null> {
   try {
-    const itemId = Number(reader?._item?.id || reader?.itemID || 0);
     if (!Number.isFinite(itemId) || itemId <= 0) {
       ztoolkit.log("LLM quote-locator: PDFWorker — no valid itemID on reader");
       return null;
@@ -1049,6 +1279,13 @@ async function extractPageTextsFromPdfWorker(
     ztoolkit.log("LLM quote-locator: PDFWorker strategy failed:", e);
     return null;
   }
+}
+
+async function extractPageTextsFromPdfWorker(
+  reader: any,
+): Promise<LivePdfPageText[] | null> {
+  const itemId = Number(reader?._item?.id || reader?.itemID || 0);
+  return extractPageTextsFromPdfWorkerItemId(itemId);
 }
 
 /**
@@ -1125,15 +1362,15 @@ async function extractPageTextsFromViewer(
 export async function warmPageTextCache(
   reader: any,
 ): Promise<CachedPageTextIndex | null> {
-  const key = getReaderCacheKey(reader);
-  if (key && key === _pageTextCacheReaderKey && _pageTextCache) {
-    return _pageTextCache;
-  }
-  if (key && key === _pageTextCacheReaderKey && _pageTextCachePromise) {
-    return _pageTextCachePromise;
-  }
-  _pageTextCacheReaderKey = key;
-  _pageTextCachePromise = (async () => {
+  const keys = getReaderCacheKeys(reader);
+  const cached = getCachedPageTextIndex(keys);
+  if (cached) return cached;
+  const cachedTask = getCachedPageTextPromise(keys);
+  if (cachedTask) return cachedTask;
+
+  const generation = pageTextCacheGeneration;
+  let task: Promise<CachedPageTextIndex | null> | null = null;
+  task = (async () => {
     try {
       // Strategy 0: Zotero PDFWorker — ALL pages via getFullText + pageChars
       let pages = await extractPageTextsFromPdfWorker(reader);
@@ -1159,27 +1396,112 @@ export async function warmPageTextCache(
         return null;
       }
 
-      const normalised = pages.map((p) => ({
-        pageIndex: p.pageIndex,
-        pageLabel: p.pageLabel,
-        normalizedText: normalizeLocatorText(p.text),
-      }));
-      const result: CachedPageTextIndex = { pages, normalised };
-      _pageTextCache = result;
+      const result = buildCachedPageTextIndex(pages);
+      if (generation !== pageTextCacheGeneration) return null;
+      storeCachedPageTextIndex(keys, result);
       return result;
     } catch (e) {
       ztoolkit.log("LLM quote-locator: warmPageTextCache error:", e);
       return null;
+    } finally {
+      if (task) clearCachedPageTextPromise(keys, task);
     }
   })();
-  return _pageTextCachePromise;
+  storeCachedPageTextPromise(keys, task);
+  return task;
+}
+
+export async function warmPageTextCacheForAttachment(
+  contextItemId: number,
+): Promise<CachedPageTextIndex | null> {
+  const key = getAttachmentPageTextCacheKey(contextItemId);
+  if (!key) return null;
+  const keys = [key];
+  const cached = getCachedPageTextIndex(keys);
+  if (cached) return cached;
+  const cachedTask = getCachedPageTextPromise(keys);
+  if (cachedTask) return cachedTask;
+
+  const itemId = Math.floor(Number(contextItemId));
+  const generation = pageTextCacheGeneration;
+  let task: Promise<CachedPageTextIndex | null> | null = null;
+  task = (async () => {
+    try {
+      const pages = await extractPageTextsFromPdfWorkerItemId(itemId);
+      if (!pages?.length) return null;
+      const result = buildCachedPageTextIndex(pages);
+      if (generation !== pageTextCacheGeneration) return null;
+      storeCachedPageTextIndex(keys, result);
+      return result;
+    } catch (e) {
+      ztoolkit.log("LLM quote-locator: warmPageTextCacheForAttachment error:", e);
+      return null;
+    } finally {
+      if (task) clearCachedPageTextPromise(keys, task);
+    }
+  })();
+  storeCachedPageTextPromise(keys, task);
+  return task;
+}
+
+export function lookupCachedQuoteLocationForAttachment(
+  contextItemId: number,
+  quoteText: string,
+): HiddenQuoteLocationCacheEntry | null {
+  const key = buildHiddenQuoteLocationCacheKey(contextItemId, quoteText);
+  return key ? hiddenQuoteLocationCache.get(key) || null : null;
+}
+
+export async function warmQuoteLocationCacheForAttachment(
+  contextItemId: number,
+  quoteText: string,
+): Promise<HiddenQuoteLocationCacheEntry | null> {
+  const key = buildHiddenQuoteLocationCacheKey(contextItemId, quoteText);
+  if (!key) return null;
+  const cached = hiddenQuoteLocationCache.get(key);
+  if (cached) return cached;
+  const existingTask = hiddenQuoteLocationTasks.get(key);
+  if (existingTask) return existingTask;
+
+  const itemId = Math.floor(Number(contextItemId));
+  const generation = pageTextCacheGeneration;
+  let task: Promise<HiddenQuoteLocationCacheEntry | null> | null = null;
+  task = (async () => {
+    try {
+      const pageTextCache = await warmPageTextCacheForAttachment(itemId);
+      if (!pageTextCache) return null;
+      if (generation !== pageTextCacheGeneration) return null;
+      const location = locateQuoteLocationInCachedPages(
+        itemId,
+        quoteText,
+        pageTextCache,
+      );
+      if (location && generation === pageTextCacheGeneration) {
+        hiddenQuoteLocationCache.set(key, location);
+      }
+      return location;
+    } catch (e) {
+      ztoolkit.log("LLM quote-locator: warmQuoteLocationCacheForAttachment error:", e);
+      return null;
+    } finally {
+      if (task && hiddenQuoteLocationTasks.get(key) === task) {
+        hiddenQuoteLocationTasks.delete(key);
+      }
+    }
+  })();
+  hiddenQuoteLocationTasks.set(key, task);
+  return task;
 }
 
 /** Clear cache (e.g. when switching documents). */
 export function clearPageTextCache(): void {
-  _pageTextCache = null;
-  _pageTextCacheReaderKey = null;
-  _pageTextCachePromise = null;
+  pageTextCacheGeneration += 1;
+  pageTextCacheByKey.clear();
+  pageTextCachePromisesByKey.clear();
+  hiddenQuoteLocationCache.clear();
+  hiddenQuoteLocationTasks.clear();
+  anonymousReaderKeys = new WeakMap<object, string>();
+  anonymousReaderKeySequence = 0;
 }
 
 /**

@@ -1,4 +1,7 @@
 import { assert } from "chai";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   clearCachedCitationPagesForTests,
   collectAssistantCitationCandidates,
@@ -7,11 +10,15 @@ import {
   extractBlockquoteTailCitation,
   extractStandalonePaperSourceLabel,
   formatSourceLabelWithPage,
+  formatUnverifiedCitationChipLabel,
   lookupCachedCitationPage,
   matchAssistantCitationCandidates,
   rememberCachedCitationPage,
+  INLINE_CITATION_SKIP_SELECTOR,
 } from "../src/modules/contextPanel/assistantCitationLinks";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
+
+const testDir = dirname(fileURLToPath(import.meta.url));
 
 describe("assistantCitationLinks", function () {
   afterEach(function () {
@@ -204,6 +211,47 @@ describe("assistantCitationLinks", function () {
 
     assert.lengthOf(matches, 1);
     assert.equal(matches[0].contextItemId, 22);
+  });
+
+  it("keeps parsed page labels out of initial citation display text", function () {
+    const extracted = extractStandalonePaperSourceLabel(
+      "(Chandra et al., 2025, page 11)",
+    );
+
+    assert.equal(extracted?.pageLabel, "11");
+    assert.equal(
+      formatUnverifiedCitationChipLabel(
+        extracted?.displayCitationLabel || "",
+      ),
+      "Chandra et al., 2025",
+    );
+    assert.notInclude(
+      formatUnverifiedCitationChipLabel(
+        extracted?.displayCitationLabel || "",
+      ),
+      "page 11",
+    );
+  });
+
+  it("strips unverified page suffixes from raw inline citation labels", function () {
+    assert.equal(
+      formatUnverifiedCitationChipLabel(
+        "(Chandra et al., 2025, page 11)",
+      ),
+      "(Chandra et al., 2025)",
+    );
+  });
+
+  it("skips already-decorated citation UI during inline decoration", function () {
+    for (const selector of [
+      ".llm-citation-row-container",
+      ".llm-citation-row",
+      ".llm-citation-inline-wrap",
+      ".llm-citation-text",
+      ".llm-citation-icon",
+    ]) {
+      assert.include(INLINE_CITATION_SKIP_SELECTOR, selector);
+    }
   });
 
   it("matches author-only citations with cue text to the correct paper", function () {
@@ -485,6 +533,74 @@ describe("citation page cache", function () {
 
     assert.isNull(pageLabel);
     assert.isNull(lookupCachedCitationPage(23, ""));
+  });
+
+  it("does not synthesize verified page labels from page indexes", function () {
+    const quote =
+      "Only reader-confirmed page labels should enter the citation cache.";
+    const pageLabel = rememberCachedCitationPage(23, quote, 10);
+
+    assert.isNull(pageLabel);
+    assert.isNull(lookupCachedCitationPage(23, quote));
+  });
+
+  it("does not keep the removed render-time PDFWorker page prelookup path", function () {
+    const source = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+      "utf8",
+    );
+
+    assert.notInclude(source, "resolvePageForCitationButton");
+    assert.notInclude(source, "PDFWorker.getFullText");
+    assert.include(source, "warmPageTextCache");
+  });
+
+  it("keeps idle cache warming separate from page label mutation", function () {
+    const source = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+      "utf8",
+    );
+    const start = source.indexOf("function startCitationPageTextCacheWarm");
+    const end = source.indexOf("function updateCitationButtonPage");
+    const warmSection = source.slice(start, end);
+
+    assert.isAtLeast(start, 0);
+    assert.isAbove(end, start);
+    assert.include(warmSection, "warmPageTextCache");
+    assert.include(warmSection, "requestIdleCallback");
+    assert.notInclude(warmSection, "updateCitationButtonPage");
+    assert.notInclude(warmSection, "rememberCachedCitationPage");
+  });
+
+  it("uses button-cached candidates before falling back to library search", function () {
+    const source = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+      "utf8",
+    );
+
+    assert.include(source, "new WeakMap<");
+    assert.include(source, "citationButtonCandidateCache.set(citationButton");
+    assert.include(source, "citationButtonCandidateCache.get(params.button)");
+    assert.include(source, "{ allowLibrarySearch: !staticCandidates.length }");
+    assert.include(source, "hasUsefulLocalCandidate");
+  });
+
+  it("uses hidden quote-location cache without mutating visible labels during warmup", function () {
+    const source = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+      "utf8",
+    );
+    const start = source.indexOf("function startCitationQuoteLocationCacheWarm");
+    const end = source.indexOf("function updateCitationButtonPage");
+    const warmSection = source.slice(start, end);
+
+    assert.isAtLeast(start, 0);
+    assert.isAbove(end, start);
+    assert.include(warmSection, "warmQuoteLocationCacheForAttachment");
+    assert.notInclude(warmSection, "updateCitationButtonPage");
+    assert.notInclude(warmSection, "rememberCachedCitationPage");
+    assert.include(source, "lookupCachedQuoteLocationForAttachment");
+    assert.include(source, "navigateToHiddenQuoteLocation");
   });
 });
 

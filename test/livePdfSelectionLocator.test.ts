@@ -1,5 +1,7 @@
 import { assert } from "chai";
 import {
+  clearPageTextCache,
+  lookupCachedQuoteLocationForAttachment,
   locateQuoteInPageTexts,
   locateSelectionInPageTexts,
   stripBoundaryEllipsis,
@@ -7,7 +9,39 @@ import {
   buildRawPrefixQueries,
   locateQuoteByRawPrefixInPages,
   scrollToExactQuoteInReader,
+  warmPageTextCacheForAttachment,
+  warmQuoteLocationCacheForAttachment,
 } from "../src/modules/contextPanel/livePdfSelectionLocator";
+
+function installPdfWorkerStub(
+  handler: (itemId: number) => Promise<{ text: string; pageChars: number[] } | null>,
+): () => void {
+  const originalZotero = (globalThis as any).Zotero;
+  const originalZtoolkit = (globalThis as any).ztoolkit;
+  (globalThis as any).Zotero = {
+    ...(originalZotero || {}),
+    PDFWorker: {
+      getFullText: handler,
+    },
+  };
+  (globalThis as any).ztoolkit = {
+    ...(originalZtoolkit || {}),
+    log: () => undefined,
+  };
+  return () => {
+    if (originalZotero === undefined) {
+      delete (globalThis as any).Zotero;
+    } else {
+      (globalThis as any).Zotero = originalZotero;
+    }
+    if (originalZtoolkit === undefined) {
+      delete (globalThis as any).ztoolkit;
+    } else {
+      (globalThis as any).ztoolkit = originalZtoolkit;
+    }
+    clearPageTextCache();
+  };
+}
 
 describe("livePdfSelectionLocator", function () {
   it("resolves a unique selection to the matching page", function () {
@@ -186,6 +220,166 @@ describe("livePdfSelectionLocator", function () {
 
     assert.equal(result.status, "resolved");
     assert.equal(result.computedPageIndex, 1);
+  });
+});
+
+describe("citation page cache warming", function () {
+  afterEach(function () {
+    clearPageTextCache();
+  });
+
+  it("warms page-text cache independently for different attachments", async function () {
+    clearPageTextCache();
+    const calls: number[] = [];
+    const restore = installPdfWorkerStub(async (itemId) => {
+      calls.push(itemId);
+      if (itemId === 101) {
+        return { text: "Attachment one target quote.", pageChars: [28] };
+      }
+      if (itemId === 202) {
+        return { text: "Attachment two different quote.", pageChars: [31] };
+      }
+      return null;
+    });
+
+    try {
+      const first = await warmPageTextCacheForAttachment(101);
+      const second = await warmPageTextCacheForAttachment(202);
+
+      assert.equal(first?.pages[0]?.text, "Attachment one target quote.");
+      assert.equal(second?.pages[0]?.text, "Attachment two different quote.");
+      assert.deepEqual(calls, [101, 202]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("dedupes repeated attachment warm calls while a PDFWorker read is pending", async function () {
+    clearPageTextCache();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const restore = installPdfWorkerStub(async () => {
+      calls += 1;
+      await pending;
+      return { text: "Only one worker call should run.", pageChars: [32] };
+    });
+
+    try {
+      const first = warmPageTextCacheForAttachment(303);
+      const second = warmPageTextCacheForAttachment(303);
+      await Promise.resolve();
+
+      assert.equal(calls, 1);
+      release();
+      await Promise.all([first, second]);
+      assert.equal(calls, 1);
+    } finally {
+      restore();
+    }
+  });
+
+  it("clears cached page text, promises, and hidden quote locations together", async function () {
+    clearPageTextCache();
+    let calls = 0;
+    const pageOne = "First page.";
+    const pageTwo = "The hidden quote lives on the second page.";
+    const restore = installPdfWorkerStub(async () => {
+      calls += 1;
+      return {
+        text: pageOne + pageTwo,
+        pageChars: [pageOne.length, pageTwo.length],
+      };
+    });
+
+    try {
+      await warmPageTextCacheForAttachment(404);
+      const hidden = await warmQuoteLocationCacheForAttachment(
+        404,
+        "The hidden quote lives on the second page.",
+      );
+      assert.equal(hidden?.pageIndex, 1);
+      assert.isNotNull(
+        lookupCachedQuoteLocationForAttachment(
+          404,
+          "The hidden quote lives on the second page.",
+        ),
+      );
+
+      clearPageTextCache();
+      assert.isNull(
+        lookupCachedQuoteLocationForAttachment(
+          404,
+          "The hidden quote lives on the second page.",
+        ),
+      );
+
+      await warmPageTextCacheForAttachment(404);
+      assert.equal(calls, 2);
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not let an in-flight warm repopulate cache after clear", async function () {
+    clearPageTextCache();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const restore = installPdfWorkerStub(async () => {
+      calls += 1;
+      await pending;
+      return {
+        text: "Delayed worker page text.",
+        pageChars: ["Delayed worker page text.".length],
+      };
+    });
+
+    try {
+      const first = warmPageTextCacheForAttachment(606);
+      await Promise.resolve();
+      clearPageTextCache();
+      release();
+      assert.isNull(await first);
+
+      await warmPageTextCacheForAttachment(606);
+      assert.equal(calls, 2);
+    } finally {
+      restore();
+    }
+  });
+
+  it("caches hidden quote locations without storing a visible page label", async function () {
+    clearPageTextCache();
+    const pageOne = "Opening page text.";
+    const pageTwo = "The quote to jump to is here with enough context.";
+    const restore = installPdfWorkerStub(async () => ({
+      text: pageOne + pageTwo,
+      pageChars: [pageOne.length, pageTwo.length],
+    }));
+
+    try {
+      const location = await warmQuoteLocationCacheForAttachment(
+        505,
+        "The quote to jump to is here with enough context.",
+      );
+
+      assert.equal(location?.pageIndex, 1);
+      assert.notProperty(location || {}, "pageLabel");
+      assert.equal(
+        lookupCachedQuoteLocationForAttachment(
+          505,
+          "The quote to jump to is here with enough context.",
+        )?.pageIndex,
+        1,
+      );
+    } finally {
+      restore();
+    }
   });
 });
 

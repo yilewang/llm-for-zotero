@@ -39,6 +39,7 @@ import {
   extractStandalonePaperSourceLabel,
   extractInlineCitationMentions,
   formatSourceLabelWithPage,
+  formatUnverifiedCitationChipLabel,
   matchAssistantCitationCandidates,
   lookupCachedCitationPage,
 } from "./assistantCitationLinks";
@@ -264,7 +265,7 @@ function injectCitationLinksIntoNoteHtml(
         bestCandidate.contextItemId,
         quoteText,
       );
-      const pageLabel = cachedPage ?? extracted?.pageLabel;
+      const pageLabel = cachedPage || undefined;
       const uri = buildZoteroPdfUri(bestCandidate.contextItemId, pageLabel);
       if (!uri) return _match;
       const visibleCitationText = pageLabel
@@ -320,10 +321,7 @@ function injectCitationLinksIntoNoteHtml(
         );
         if (!candidates.length) continue;
         const bestCandidate = candidates[0];
-        const uri = buildZoteroPdfUri(
-          bestCandidate.contextItemId,
-          mention.extractedCitation.pageLabel,
-        );
+        const uri = buildZoteroPdfUri(bestCandidate.contextItemId);
         if (!uri) continue;
 
         // Map plain-text offsets to HTML offsets.
@@ -331,7 +329,9 @@ function injectCitationLinksIntoNoteHtml(
         const htmlEnd = plainToHtmlMap[mention.end];
         if (htmlStart === undefined || htmlEnd === undefined) continue;
 
-        const citationHtml = modifiedHtml.slice(htmlStart, htmlEnd);
+        const citationHtml = mention.extractedCitation.pageLabel
+          ? escapeNoteHtml(formatUnverifiedCitationChipLabel(mention.rawText))
+          : modifiedHtml.slice(htmlStart, htmlEnd);
         const linked = `<a href="${escapeNoteHtml(uri)}">${citationHtml}</a>`;
         modifiedHtml =
           modifiedHtml.slice(0, htmlStart) +

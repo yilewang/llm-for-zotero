@@ -77,6 +77,44 @@ describe("notes citation page export", function () {
     assert.notInclude(result.noteHtml, "(Whittington et al., 2020, page 1)");
   });
 
+  it("does not export model-written blockquote pages without a verified cache", function () {
+    const quote =
+      "We choose Hebbian learning, not only for its biological plausibility, but to also allow rapid learning when entering a new environment.";
+    const paperContexts: PaperContextRef[] = [
+      {
+        itemId: 1,
+        contextItemId: 23,
+        title: "Whittington 2020",
+        firstCreator: "Whittington et al.",
+        year: "2020",
+      },
+    ];
+    const messages: Message[] = [
+      {
+        role: "user",
+        text: "Summarize the paper.",
+        timestamp: 1,
+        paperContexts,
+      },
+      {
+        role: "assistant",
+        text: `> ${quote}\n\n(Whittington et al., 2020, page 1)`,
+        timestamp: 2,
+        modelName: "Claude",
+      },
+    ];
+
+    const result = buildChatHistoryNotePayload(messages);
+
+    assert.include(
+      result.noteHtml,
+      'href="zotero://open-pdf/library/items/ATTACH23"',
+    );
+    assert.notInclude(result.noteHtml, "?page=1");
+    assert.include(result.noteHtml, "(Whittington et al., 2020)");
+    assert.notInclude(result.noteHtml, "(Whittington et al., 2020, page 1)");
+  });
+
   it("uses cached pages when the rendered blockquote escapes HTML entities", function () {
     const quote = "A & B < C can still appear in a quoted passage.";
     const paperContexts: PaperContextRef[] = [
@@ -146,5 +184,41 @@ describe("notes citation page export", function () {
       result.noteHtml,
       'href="zotero://open-pdf/library/items/ATTACH23"',
     );
+  });
+
+  it("does not export model-written inline citation pages", function () {
+    const paperContexts: PaperContextRef[] = [
+      {
+        itemId: 1,
+        contextItemId: 23,
+        title: "Whittington 2020",
+        firstCreator: "Whittington et al.",
+        year: "2020",
+      },
+    ];
+    const messages: Message[] = [
+      {
+        role: "user",
+        text: "Summarize the paper.",
+        timestamp: 1,
+        paperContexts,
+      },
+      {
+        role: "assistant",
+        text: "The paper emphasizes fast environment-specific learning (Whittington et al., 2020, page 11).",
+        timestamp: 2,
+        modelName: "Claude",
+      },
+    ];
+
+    const result = buildChatHistoryNotePayload(messages);
+
+    assert.include(
+      result.noteHtml,
+      'href="zotero://open-pdf/library/items/ATTACH23"',
+    );
+    assert.notInclude(result.noteHtml, "?page=11");
+    assert.include(result.noteHtml, "(Whittington et al., 2020)");
+    assert.notInclude(result.noteHtml, "(Whittington et al., 2020, page 11)");
   });
 });
