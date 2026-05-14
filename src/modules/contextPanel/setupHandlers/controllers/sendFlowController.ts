@@ -13,9 +13,9 @@ import type { SelectedTextSource } from "../../types";
 import type { EditLatestTurnMarker, EditLatestTurnResult } from "../../chat";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../../../utils/llmClient";
 import {
-  buildCodexAppServerAttachmentBlockMessage,
-  getBlockedCodexAppServerChatAttachments,
-  shouldApplyCodexAppServerChatAttachmentPolicy,
+  buildCodexAppServerNativeAttachmentBlockMessage,
+  getBlockedCodexAppServerNativeAttachments,
+  shouldApplyCodexAppServerNativeAttachmentPolicy,
 } from "../../codexAppServerAttachmentPolicy";
 import { resolvePdfModeModelInputs } from "./pdfPaperModelInputController";
 
@@ -239,9 +239,8 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         ? "agent"
         : "chat";
       const useCodexAttachmentPolicy =
-        shouldApplyCodexAppServerChatAttachmentPolicy({
+        shouldApplyCodexAppServerNativeAttachmentPolicy({
           authMode: earlyProfile?.authMode,
-          runtimeMode,
         });
       const earlyModelName = (
         earlyProfile?.model ||
@@ -251,10 +250,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const selectedBaseFiles = deps.getSelectedFiles(item.id);
       if (useCodexAttachmentPolicy) {
         const blockedAttachments =
-          getBlockedCodexAppServerChatAttachments(selectedBaseFiles);
+          getBlockedCodexAppServerNativeAttachments(selectedBaseFiles);
         if (blockedAttachments.length) {
           deps.setStatusMessage?.(
-            buildCodexAppServerAttachmentBlockMessage(blockedAttachments),
+            buildCodexAppServerNativeAttachmentBlockMessage(blockedAttachments),
             "error",
           );
           return;

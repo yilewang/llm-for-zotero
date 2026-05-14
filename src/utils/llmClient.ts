@@ -88,23 +88,6 @@ import { parseDataUrl } from "../shared/dataUrl";
 import { readFileRefAsBase64 } from "../agent/model/shared";
 import { buildMultipartRequest } from "./multipart";
 import {
-  extractCodexAppServerThreadId,
-  extractCodexAppServerTurnId,
-  getOrCreateCodexAppServerProcess,
-  isCodexAppServerThreadStartInstructionsUnsupportedError,
-  resolveCodexAppServerBinaryPath,
-  resolveCodexAppServerTurnInputWithFallback,
-  resolveCodexAppServerReasoningParams,
-  waitForCodexAppServerTurnCompletion,
-} from "./codexAppServerProcess";
-import {
-  buildLegacyCodexAppServerChatInput,
-  prepareCodexAppServerChatTurn,
-} from "./codexAppServerInput";
-import {
-  getEffectiveCodexAppServerBinaryPath,
-} from "../codexAppServer/binaryPath";
-import {
   applyModelInputTokenCap,
   estimateConversationTokens,
   getModelInputTokenLimit,
@@ -2482,6 +2465,16 @@ export function buildPromptCachePayloadHints(
   return hints;
 }
 
+function assertCodexAppServerUsesNativeRuntime(
+  authMode: ModelProviderAuthMode,
+): void {
+  if (authMode !== "codex_app_server") return;
+  throw new Error(
+    "Codex App Server is only supported through the native Codex conversation system. " +
+      "Use Codex Auth (Legacy) for the direct backend transport.",
+  );
+}
+
 async function parseGeminiNativeStreamResponse(
   body: ReadableStream<Uint8Array>,
   onDelta: (delta: string) => void,
@@ -3227,94 +3220,6 @@ async function callNativeProtocol(params: {
   );
 }
 
-async function callCodexAppServerChat(params: {
-  model: string;
-  messages: ChatMessage[];
-  reasoning?: ReasoningConfig;
-  signal?: AbortSignal;
-  onDelta?: (delta: string) => void;
-  onReasoning?: (event: ReasoningEvent) => void;
-  onUsage?: (usage: UsageStats) => void;
-  codexPath?: string;
-}): Promise<string> {
-  const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
-  const proc = await getOrCreateCodexAppServerProcess("codex_app_server_chat", {
-    codexPath,
-  });
-  return proc.runTurnExclusive(async () => {
-    const preparedTurn = await prepareCodexAppServerChatTurn(params.messages);
-    const threadStartParams: Record<string, unknown> = {
-      model: params.model,
-      ephemeral: true,
-      approvalPolicy: "never",
-    };
-    if (preparedTurn.developerInstructions) {
-      threadStartParams.developerInstructions =
-        preparedTurn.developerInstructions;
-    }
-    let shouldUseLegacyInput = false;
-    let threadResult: unknown;
-    try {
-      threadResult = await proc.sendRequest("thread/start", threadStartParams);
-    } catch (error) {
-      if (
-        !preparedTurn.developerInstructions ||
-        !isCodexAppServerThreadStartInstructionsUnsupportedError(error)
-      ) {
-        throw error;
-      }
-      shouldUseLegacyInput = true;
-      const fallbackParams = { ...threadStartParams };
-      delete fallbackParams.developerInstructions;
-      ztoolkit.log(
-        "Codex app-server chat: thread/start developerInstructions unsupported; using legacy flattened input",
-      );
-      threadResult = await proc.sendRequest("thread/start", fallbackParams);
-    }
-    const threadId = extractCodexAppServerThreadId(threadResult);
-    if (!threadId) {
-      throw new Error("Codex app-server did not return a thread ID");
-    }
-    const input = shouldUseLegacyInput
-      ? await buildLegacyCodexAppServerChatInput(params.messages)
-      : await resolveCodexAppServerTurnInputWithFallback({
-          proc,
-          threadId,
-          historyItemsToInject: preparedTurn.historyItemsToInject,
-          turnInput: preparedTurn.turnInput,
-          legacyInputFactory: () =>
-            buildLegacyCodexAppServerChatInput(params.messages, {
-              includeSystem: !preparedTurn.developerInstructions,
-            }),
-          logContext: "chat",
-        });
-    const appServerReasoning = resolveCodexAppServerReasoningParams(
-      params.reasoning,
-      params.model,
-    );
-    const turnResult = await proc.sendRequest("turn/start", {
-      threadId,
-      input,
-      model: params.model,
-      ...appServerReasoning,
-    });
-    const turnId = extractCodexAppServerTurnId(turnResult);
-    if (!turnId) {
-      throw new Error("Codex app-server did not return a turn ID");
-    }
-    return waitForCodexAppServerTurnCompletion({
-      proc,
-      turnId,
-      onTextDelta: params.onDelta,
-      onReasoning: params.onReasoning,
-      onUsage: params.onUsage,
-      signal: params.signal,
-      cacheKey: "codex_app_server_chat",
-      processOptions: { codexPath },
-    });
-  });
-}
-
 /**
  * Call LLM API (non-streaming)
  */
@@ -3347,7 +3252,8 @@ export async function callLLM(params: ChatParams): Promise<string> {
       contextCache: params.contextCache,
     });
   }
-  if (authMode === "codex_auth" || authMode === "codex_app_server") {
+  assertCodexAppServerUsesNativeRuntime(authMode);
+  if (authMode === "codex_auth") {
     let output = "";
     const streamed = await callLLMStream(
       params,
@@ -3484,23 +3390,7 @@ export async function callLLMStream(
       contextCache: params.contextCache,
     });
   }
-  if (authMode === "codex_app_server") {
-    if (Array.isArray(params.attachments) && params.attachments.length) {
-      throw new Error(
-        "codex app server currently does not support file attachments in the normal chat transport.",
-      );
-    }
-    return callCodexAppServerChat({
-      model,
-      messages,
-      reasoning: params.reasoning,
-      signal: params.signal,
-      onDelta,
-      onReasoning,
-      onUsage,
-      codexPath: getEffectiveCodexAppServerBinaryPath(apiBase),
-    });
-  }
+  assertCodexAppServerUsesNativeRuntime(authMode);
   const auth = await resolveRequestAuthState({
     authMode,
     apiKey,

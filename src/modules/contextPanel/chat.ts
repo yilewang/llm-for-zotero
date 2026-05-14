@@ -155,9 +155,9 @@ import {
   resolvePromptText,
 } from "./textUtils";
 import {
-  buildCodexAppServerAttachmentBlockMessage,
-  getBlockedCodexAppServerChatAttachments,
-  shouldApplyCodexAppServerChatAttachmentPolicy,
+  buildCodexAppServerNativeAttachmentBlockMessage,
+  getBlockedCodexAppServerNativeAttachments,
+  shouldApplyCodexAppServerNativeAttachmentPolicy,
 } from "./codexAppServerAttachmentPolicy";
 import {
   normalizeSelectedTextNoteContexts,
@@ -3425,9 +3425,8 @@ function normalizeModelFileAttachments(
   },
 ): ChatFileAttachment[] {
   if (
-    shouldApplyCodexAppServerChatAttachmentPolicy({
+    shouldApplyCodexAppServerNativeAttachmentPolicy({
       authMode: options?.authMode,
-      runtimeMode: options?.runtimeMode,
     })
   ) {
     return [];
@@ -4352,18 +4351,17 @@ export async function retryLatestAssistantResponse(
     setStatusSafely("Cancelled", "ready");
   };
   if (
-    shouldApplyCodexAppServerChatAttachmentPolicy({
+    shouldApplyCodexAppServerNativeAttachmentPolicy({
       authMode: effectiveRequestConfig.authMode,
-      runtimeMode: "chat",
     })
   ) {
     const blockedAttachments =
-      getBlockedCodexAppServerChatAttachments(attachments);
+      getBlockedCodexAppServerNativeAttachments(attachments);
     if (blockedAttachments.length) {
       restoreOriginalAssistant();
       restoreRequestUIIdle(body, conversationKey, thisRequestId);
       setStatusSafely(
-        buildCodexAppServerAttachmentBlockMessage(blockedAttachments),
+        buildCodexAppServerNativeAttachmentBlockMessage(blockedAttachments),
         "error",
       );
       return;

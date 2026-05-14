@@ -774,7 +774,7 @@ describe("sendFlowController", function () {
     });
   });
 
-  it("allows text-like pinned files in codex app server chat", async function () {
+  it("allows text-like pinned files in Codex native app-server", async function () {
     const { controller, getCounts, getLastStatus } = createBaseDeps({
       getSelectedProfile: () => ({
         entryId: "entry-1",
@@ -793,7 +793,7 @@ describe("sendFlowController", function () {
     assert.isNull(getLastStatus());
   });
 
-  it("blocks pinned PDFs in codex app server chat before sending", async function () {
+  it("blocks pinned PDFs in Codex native app-server before sending", async function () {
     const blockedAttachment: ChatAttachment = {
       id: "file-2",
       name: "paper.pdf",
@@ -821,12 +821,12 @@ describe("sendFlowController", function () {
     assert.equal(inputBox.value, "ask question");
     assert.deepEqual(getLastStatus(), {
       message:
-        "Codex App Server chat does not support pinned PDF or binary file attachments (paper.pdf). Remove them and try again.",
+        "Codex native app-server does not support pinned PDF or binary file attachments directly (paper.pdf). Remove them and try again.",
       level: "error",
     });
   });
 
-  it("blocks PDF-mode papers in codex app server chat", async function () {
+  it("blocks PDF-mode papers in Codex native app-server", async function () {
     const pdfAttachment: ChatAttachment = {
       id: "pdf-paper-34-1",
       name: "paper.pdf",
@@ -867,11 +867,11 @@ describe("sendFlowController", function () {
     });
     assert.notInclude(
       getStatuses().map((status) => status.message),
-      "Codex App Server chat does not support pinned PDF or binary file attachments (paper.pdf). Remove them and try again.",
+      "Codex native app-server does not support pinned PDF or binary file attachments directly (paper.pdf). Remove them and try again.",
     );
   });
 
-  it("blocks pinned binary files in codex app server latest-turn edit retries", async function () {
+  it("blocks pinned binary files in Codex native app-server latest-turn edit retries", async function () {
     const blockedAttachment: ChatAttachment = {
       id: "file-3",
       name: "archive.zip",
@@ -910,7 +910,7 @@ describe("sendFlowController", function () {
     assert.equal(getCounts().editCalled, 0);
     assert.deepEqual(getLastStatus(), {
       message:
-        "Codex App Server chat does not support pinned PDF or binary file attachments (archive.zip). Remove them and try again.",
+        "Codex native app-server does not support pinned PDF or binary file attachments directly (archive.zip). Remove them and try again.",
       level: "error",
     });
   });

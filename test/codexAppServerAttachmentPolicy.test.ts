@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { getBlockedCodexAppServerChatAttachments } from "../src/modules/contextPanel/codexAppServerAttachmentPolicy";
+import { getBlockedCodexAppServerNativeAttachments } from "../src/modules/contextPanel/codexAppServerAttachmentPolicy";
 import type { ChatAttachment } from "../src/modules/contextPanel/types";
 
 describe("codex app-server attachment policy", function () {
@@ -21,7 +21,7 @@ describe("codex app-server attachment policy", function () {
     };
 
     assert.deepEqual(
-      getBlockedCodexAppServerChatAttachments([directPdf, generatedPdfPaper]),
+      getBlockedCodexAppServerNativeAttachments([directPdf, generatedPdfPaper]),
       [directPdf],
     );
   });

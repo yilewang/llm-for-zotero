@@ -83,8 +83,9 @@ export function canUseSkillClassifierModel(
   request: Pick<AgentRuntimeRequest, "model" | "apiBase" | "authMode">,
 ): boolean {
   if (!request.model) return false;
+  if (request.authMode === "codex_app_server") return false;
   if (request.apiBase) return true;
-  return request.authMode === "codex_app_server";
+  return false;
 }
 
 function regexFallback(

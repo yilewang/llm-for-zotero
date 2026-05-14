@@ -1,8 +1,4 @@
-import type {
-  ChatAttachment,
-  ChatAttachmentCategory,
-  ChatRuntimeMode,
-} from "./types";
+import type { ChatAttachment, ChatAttachmentCategory } from "./types";
 
 const BLOCKED_CATEGORIES = new Set<ChatAttachmentCategory>(["pdf", "file"]);
 
@@ -28,16 +24,13 @@ function normalizeRelevantAttachments(
   );
 }
 
-export function shouldApplyCodexAppServerChatAttachmentPolicy(params: {
+export function shouldApplyCodexAppServerNativeAttachmentPolicy(params: {
   authMode?: string;
-  runtimeMode?: ChatRuntimeMode;
 }): boolean {
-  return (
-    params.authMode === "codex_app_server" && params.runtimeMode === "chat"
-  );
+  return params.authMode === "codex_app_server";
 }
 
-export function getBlockedCodexAppServerChatAttachments(
+export function getBlockedCodexAppServerNativeAttachments(
   attachments?: ChatAttachment[],
 ): ChatAttachment[] {
   return normalizeRelevantAttachments(attachments).filter((attachment) =>
@@ -45,15 +38,14 @@ export function getBlockedCodexAppServerChatAttachments(
   );
 }
 
-export function buildCodexAppServerAttachmentBlockMessage(
+export function buildCodexAppServerNativeAttachmentBlockMessage(
   attachments?: ChatAttachment[],
 ): string {
-  const blocked = getBlockedCodexAppServerChatAttachments(attachments);
+  const blocked = getBlockedCodexAppServerNativeAttachments(attachments);
   if (!blocked.length) {
-    return "Codex App Server chat does not support pinned PDF or binary file attachments.";
+    return "Codex native app-server does not support pinned PDF or binary file attachments directly.";
   }
   const names = blocked.map((attachment) => attachment.name.trim()).slice(0, 2);
-  const suffix =
-    blocked.length > names.length ? ", ..." : "";
-  return `Codex App Server chat does not support pinned PDF or binary file attachments (${names.join(", ")}${suffix}). Remove them and try again.`;
+  const suffix = blocked.length > names.length ? ", ..." : "";
+  return `Codex native app-server does not support pinned PDF or binary file attachments directly (${names.join(", ")}${suffix}). Remove them and try again.`;
 }

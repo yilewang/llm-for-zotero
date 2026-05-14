@@ -74,8 +74,8 @@ describe("parseClassifierResponse", function () {
     ]);
   });
 
-  it("allows blank apiBase for Codex app-server skill classification", function () {
-    assert.isTrue(
+  it("does not route Codex app-server skill classification through the generic LLM client", function () {
+    assert.isFalse(
       canUseSkillClassifierModel({
         model: "gpt-5.4",
         apiBase: "",
