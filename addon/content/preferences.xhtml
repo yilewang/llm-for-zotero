@@ -150,6 +150,40 @@
         </html:div>
 
         <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <html:label
+              for="__addonRef__-panel-font-scale"
+              style="font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);"
+            >
+              Plugin Font Size
+            </html:label>
+            <html:input
+              id="__addonRef__-panel-font-scale"
+              type="range"
+              min="80"
+              max="180"
+              step="10"
+              value="120"
+              style="width: 180px; cursor: pointer; flex-shrink: 0;"
+            ></html:input>
+            <html:span
+              id="__addonRef__-panel-font-scale-readout"
+              style="font-size: 11px; color: var(--fill-secondary, #888); min-width: 38px;"
+            >120%</html:span>
+            <html:button
+              id="__addonRef__-panel-font-scale-reset"
+              type="button"
+              style="font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--stroke-secondary, #c8c8c8); background: transparent; color: inherit; cursor: pointer;"
+            >Reset</html:button>
+          </html:div>
+          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
+            Adjusts text size in the chat panel and standalone window. You can also
+            use Cmd/Ctrl + and Cmd/Ctrl − while a panel is focused (Cmd/Ctrl 0 to
+            reset).
+          </html:span>
+        </html:div>
+
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:label
             style="
               display: inline-flex;

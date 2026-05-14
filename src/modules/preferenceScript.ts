@@ -48,6 +48,17 @@ import {
 } from "../utils/llmClient";
 import { resetEmbeddingFailedFlags } from "./contextPanel/pdfContext";
 import { clearRetrievalCandidateCache } from "./contextPanel/multiContextPlanner";
+import {
+  FONT_SCALE_DEFAULT_PERCENT,
+  FONT_SCALE_MAX_PERCENT,
+  FONT_SCALE_MIN_PERCENT,
+} from "./contextPanel/constants";
+import {
+  applyPanelFontScale,
+  getFontScalePref,
+  setFontScalePref,
+} from "./contextPanel/prefHelpers";
+import { setPanelFontScalePercent } from "./contextPanel/state";
 import { getAgentTraceExportPath } from "../agent/store/traceStore";
 import { joinLocalPath } from "../utils/localPath";
 import {
@@ -1952,6 +1963,84 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         true,
       );
     });
+  }
+
+  const fontScaleSlider = doc.querySelector(
+    `#${config.addonRef}-panel-font-scale`,
+  ) as HTMLInputElement | null;
+  const fontScaleReadout = doc.querySelector(
+    `#${config.addonRef}-panel-font-scale-readout`,
+  ) as HTMLSpanElement | null;
+  const fontScaleResetBtn = doc.querySelector(
+    `#${config.addonRef}-panel-font-scale-reset`,
+  ) as HTMLButtonElement | null;
+
+  if (fontScaleSlider) {
+    const collectFontScaleTargets = (): HTMLElement[] => {
+      const targets: HTMLElement[] = [];
+      const seen = new Set<HTMLElement>();
+      const push = (el: HTMLElement | null) => {
+        if (!el || seen.has(el)) return;
+        seen.add(el);
+        targets.push(el);
+      };
+      const wins =
+        ((Zotero as unknown as { getMainWindows?: () => Window[] })
+          .getMainWindows?.() || []) as Window[];
+      for (const w of wins) {
+        const d = w?.document;
+        if (!d) continue;
+        d.querySelectorAll("#llm-main").forEach((n: Element) =>
+          push(n as HTMLElement),
+        );
+        push(
+          d.getElementById(
+            "llmforzotero-standalone-chat-root",
+          ) as HTMLElement | null,
+        );
+      }
+      const standaloneWin = addon?.data?.standaloneWindow as
+        | Window
+        | undefined;
+      if (standaloneWin && standaloneWin.document) {
+        push(
+          standaloneWin.document.getElementById(
+            "llmforzotero-standalone-chat-root",
+          ) as HTMLElement | null,
+        );
+      }
+      return targets;
+    };
+
+    const applyFontScale = (value: number) => {
+      const clamped = Math.max(
+        FONT_SCALE_MIN_PERCENT,
+        Math.min(value, FONT_SCALE_MAX_PERCENT),
+      );
+      setPanelFontScalePercent(clamped);
+      setFontScalePref(clamped);
+      for (const target of collectFontScaleTargets()) {
+        applyPanelFontScale(target);
+      }
+      fontScaleSlider.value = String(clamped);
+      if (fontScaleReadout) fontScaleReadout.textContent = `${clamped}%`;
+    };
+
+    const initial = getFontScalePref();
+    fontScaleSlider.value = String(initial);
+    if (fontScaleReadout) fontScaleReadout.textContent = `${initial}%`;
+
+    fontScaleSlider.addEventListener("input", () => {
+      const next = Number(fontScaleSlider.value);
+      if (!Number.isFinite(next)) return;
+      applyFontScale(next);
+    });
+
+    if (fontScaleResetBtn) {
+      fontScaleResetBtn.addEventListener("click", () => {
+        applyFontScale(FONT_SCALE_DEFAULT_PERCENT);
+      });
+    }
   }
 
   const agentBackendModeSelect = doc.querySelector(
