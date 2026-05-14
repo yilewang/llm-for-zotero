@@ -8,6 +8,7 @@ import {
   clearAgentResourceLifecycleState,
 } from "../src/agent/context/resourceLifecycle";
 import { getAgentRunTrace } from "../src/agent/store/traceStore";
+import { clearAgentTranscriptStore } from "../src/agent/store/transcriptStore";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import {
   MAX_AGENT_ROUNDS,
@@ -128,6 +129,7 @@ describe("AgentRuntime", function () {
   beforeEach(function () {
     clearAgentResourceLifecycleState();
     clearAgentReadLedger();
+    clearAgentTranscriptStore();
   });
 
   it("falls back when the adapter does not support tools", async function () {
@@ -1740,6 +1742,196 @@ describe("AgentRuntime", function () {
       assert.include(secondInitialUserMessage, "mode=targeted");
       assert.include(secondInitialUserMessage, 'query="abstract"');
       assert.include(secondInitialUserMessage, "paper text");
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("reuses the local append-only transcript across agent turns", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const request: AgentRuntimeRequest = {
+        conversationKey: 7,
+        mode: "agent",
+        userText: "remember alpha",
+        model: "gpt-4o-mini",
+        apiBase: "https://api.openai.com/v1/chat/completions",
+        apiKey: "test",
+      };
+      const firstRuntime = new AgentRuntime({
+        registry: new AgentToolRegistry(),
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              {
+                kind: "final",
+                text: "Alpha is preserved.",
+                assistantMessage: {
+                  role: "assistant",
+                  content: "Alpha is preserved.",
+                },
+              },
+            ],
+            {
+              streaming: false,
+              toolCalls: true,
+              multimodal: false,
+              fileInputs: false,
+              reasoning: true,
+            },
+          ),
+      });
+      await firstRuntime.runTurn({ request });
+
+      let secondMessages: AgentModelMessage[] = [];
+      const secondRuntime = new AgentRuntime({
+        registry: new AgentToolRegistry(),
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+            fileInputs: false,
+            reasoning: true,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            secondMessages = params.messages;
+            return {
+              kind: "final",
+              text: "Used it.",
+              assistantMessage: {
+                role: "assistant",
+                content: "Used it.",
+              },
+            };
+          },
+        }),
+      });
+      await secondRuntime.runTurn({
+        request: {
+          ...request,
+          userText: "what did I ask you to remember?",
+        },
+      });
+
+      const serialized = JSON.stringify(secondMessages);
+      assert.include(serialized, "remember alpha");
+      assert.include(serialized, "Alpha is preserved.");
+    } finally {
+      restoreDb();
+    }
+  });
+
+  it("compacts the reusable transcript when /compact is requested", async function () {
+    const restoreDb = installMockDb();
+    try {
+      const request: AgentRuntimeRequest = {
+        conversationKey: 8,
+        mode: "agent",
+        userText: "seed",
+        model: "gpt-4o-mini",
+        apiBase: "https://api.openai.com/v1/chat/completions",
+        apiKey: "test",
+        advanced: { inputTokenCap: 256 },
+      };
+      const longAnswer = `Important older answer. ${"detail ".repeat(1200)}`;
+      for (let index = 0; index < 3; index += 1) {
+        const runtime = new AgentRuntime({
+          registry: new AgentToolRegistry(),
+          adapterFactory: () =>
+            new MockAdapter(
+              [
+                {
+                  kind: "final",
+                  text: `${longAnswer} ${index}`,
+                  assistantMessage: {
+                    role: "assistant",
+                    content: `${longAnswer} ${index}`,
+                  },
+                },
+              ],
+              {
+                streaming: false,
+                toolCalls: true,
+                multimodal: false,
+                fileInputs: false,
+                reasoning: true,
+              },
+            ),
+        });
+        await runtime.runTurn({
+          request: {
+            ...request,
+            userText: `seed ${index}`,
+          },
+        });
+      }
+
+      const compactEvents: AgentEvent[] = [];
+      const compactRuntime = new AgentRuntime({
+        registry: new AgentToolRegistry(),
+        adapterFactory: () =>
+          new MockAdapter([], {
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+            fileInputs: false,
+            reasoning: true,
+          }),
+      });
+      const compactOutcome = await compactRuntime.runTurn({
+        request: {
+          ...request,
+          userText: "/compact",
+        },
+        onEvent: (event) => compactEvents.push(event),
+      });
+
+      assert.equal(compactOutcome.kind, "completed");
+      assert.isTrue(
+        compactEvents.some(
+          (event) =>
+            event.type === "context_compacted" && event.automatic === false,
+        ),
+      );
+
+      let followupMessages: AgentModelMessage[] = [];
+      const followupRuntime = new AgentRuntime({
+        registry: new AgentToolRegistry(),
+        adapterFactory: () => ({
+          getCapabilities: () => ({
+            streaming: false,
+            toolCalls: true,
+            multimodal: false,
+            fileInputs: false,
+            reasoning: true,
+          }),
+          supportsTools: () => true,
+          async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+            followupMessages = params.messages;
+            return {
+              kind: "final",
+              text: "After compact.",
+              assistantMessage: {
+                role: "assistant",
+                content: "After compact.",
+              },
+            };
+          },
+        }),
+      });
+      await followupRuntime.runTurn({
+        request: {
+          ...request,
+          userText: "continue",
+        },
+      });
+
+      assert.include(
+        JSON.stringify(followupMessages),
+        "Agent transcript compact checkpoint",
+      );
     } finally {
       restoreDb();
     }

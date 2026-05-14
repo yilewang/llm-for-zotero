@@ -28,6 +28,7 @@ declare namespace _ZoteroTypes {
       "maxTokensQuaternary": string;
       "enableAgentMode": boolean;
       "contextCacheReuse": string;
+      "agentContextCompaction": string;
       "contextCacheTelemetry": string;
       "enableClaudeCodeMode": boolean;
       "agentBackendBridgeUrl": string;

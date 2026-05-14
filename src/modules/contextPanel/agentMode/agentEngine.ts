@@ -900,6 +900,7 @@ export async function sendAgentTurn(
       });
       deps.agentRunTraceCache.set(runId, list);
     };
+    let compactEventHandled = false;
 
     const outcome = await agentRuntime.runTurn({
       request: runtimeRequest,
@@ -1178,6 +1179,7 @@ export async function sendAgentTurn(
             }
             return;
           case "context_compacted": {
+            compactEventHandled = true;
             const compactMarker: Message = {
               role: "assistant",
               text: event.automatic
@@ -1195,6 +1197,10 @@ export async function sendAgentTurn(
               historyForRun.indexOf(assistantMessage),
             );
             historyForRun.splice(insertIndex, 0, compactMarker);
+            if (!event.automatic) {
+              const assistantIndex = historyForRun.indexOf(assistantMessage);
+              if (assistantIndex >= 0) historyForRun.splice(assistantIndex, 1);
+            }
             await deps.persistConversationMessage(conversationKey, {
               role: "assistant",
               text: compactMarker.text,
@@ -1252,7 +1258,9 @@ export async function sendAgentTurn(
     assistantMessage.waitingAnimationStartedAt = undefined;
     assistantMessage.streaming = false;
     refreshChatSafely();
-    await persistAssistantOnce();
+    if (!(isCompactCommand && compactEventHandled)) {
+      await persistAssistantOnce();
+    }
     if (deps.getConversationSystem?.() === "claude_code") {
       const conversationKind = resolveDisplayConversationKind(item);
       const baseItem = resolveConversationBaseItem(item);

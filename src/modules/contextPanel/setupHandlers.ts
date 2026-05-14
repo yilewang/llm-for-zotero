@@ -381,6 +381,10 @@ import {
   getOrCreateKeyedInFlightTask,
 } from "./setupHandlers/controllers/uiSchedulingController";
 import { clearAllAgentToolCaches } from "../../agent/tools";
+import { clearAgentMemory } from "../../agent/store/conversationMemory";
+import { clearAgentTranscript } from "../../agent/store/transcriptStore";
+import { clearPersistedAgentEvidence } from "../../agent/context/cacheManagement";
+import { clearAgentResourceLifecycleState } from "../../agent/context/resourceLifecycle";
 import { renderShortcuts } from "./shortcuts";
 import { loadConversationHistoryScope } from "./historyLoader";
 import { loadClaudeConversationHistoryScope } from "../../claudeCode/historyLoader";
@@ -5183,6 +5187,14 @@ export function setupHandlers(
     },
     scheduleAttachmentGc,
     clearAgentToolCaches: clearAllAgentToolCaches,
+    clearAgentConversationState: async (conversationKey) => {
+      await Promise.all([
+        clearAgentMemory(conversationKey),
+        clearAgentTranscript(conversationKey),
+        clearPersistedAgentEvidence(conversationKey),
+      ]);
+      clearAgentResourceLifecycleState(conversationKey);
+    },
     setStatusMessage: status
       ? (message, level) => {
           setStatus(status, message, level);

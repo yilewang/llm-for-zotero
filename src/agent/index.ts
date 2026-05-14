@@ -6,6 +6,7 @@ import { PdfPageService } from "./services/pdfPageService";
 import { RetrievalService } from "./services/retrievalService";
 import { initAgentTraceStore, getAgentRunTrace } from "./store/traceStore";
 import { initConversationMemoryStore } from "./store/conversationMemory";
+import { initAgentTranscriptStore } from "./store/transcriptStore";
 import { initAgentEvidenceStore } from "./context/cacheManagement";
 import { createAgentModelAdapter } from "./model/factory";
 import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
@@ -51,6 +52,7 @@ export async function initAgentSubsystem(): Promise<AgentRuntime> {
   if (runtime) return runtime;
   await initAgentTraceStore();
   await initConversationMemoryStore();
+  await initAgentTranscriptStore();
   await initAgentEvidenceStore();
   _toolRegistry = createToolRegistry();
   runtime = new AgentRuntime({

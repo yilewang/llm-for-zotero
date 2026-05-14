@@ -2,6 +2,12 @@ import { AgentToolRegistry } from "./tools/registry";
 import { readAttachmentBytes } from "../modules/contextPanel/attachmentStorage";
 import { encodeBytesBase64 } from "./model/shared";
 import { recordAgentTurn } from "./store/conversationMemory";
+import {
+  appendAgentTranscriptMessages,
+  buildAgentTranscriptCompatibilityKey,
+  loadAgentTranscriptSegment,
+  replaceAgentTranscriptSegment,
+} from "./store/transcriptStore";
 import type {
   AgentInheritedApproval,
   AgentModelCapabilities,
@@ -25,7 +31,10 @@ import type {
 } from "./model/adapter";
 import { resolveAgentLimits } from "./model/limits";
 import { classifyRequest } from "./model/requestClassifier";
-import { buildAgentInitialMessages } from "./model/messageBuilder";
+import {
+  buildAgentInitialMessages,
+  normalizeHistoryMessages,
+} from "./model/messageBuilder";
 import { detectSkillIntent } from "./model/skillClassifier";
 import { getAllSkills, getMatchedSkillIds } from "./skills";
 import {
@@ -43,6 +52,11 @@ import {
   estimateContextMessagesTokens,
   resolveContextWindowTokens,
 } from "../utils/modelInputCap";
+import {
+  buildAgentContextBudgetState,
+  resolveAgentContextBudgetPolicy,
+} from "./context/budgetPolicy";
+import { compactAgentTranscript } from "./context/transcriptCompactor";
 import {
   appendAgentRunEvent,
   createAgentRun,
@@ -341,6 +355,19 @@ function buildAdapterToolCallResult(
   };
 }
 
+function isManualCompactRequest(request: AgentRuntimeRequest): boolean {
+  return /^\/compact(?:\s|$)/i.test((request.userText || "").trim());
+}
+
+function buildTranscriptUserMessage(
+  request: AgentRuntimeRequest,
+): AgentModelMessage {
+  return {
+    role: "user",
+    content: `User request:\n${request.userText || ""}`,
+  };
+}
+
 type ExecutedToolCall = {
   toolResult: AgentToolResult;
   toolDefinition?: import("./types").AgentToolDefinition<any, any>;
@@ -531,6 +558,73 @@ export class AgentRuntime {
       input?: unknown;
     }> = [];
     const pendingReadActivities: AgentPendingReadActivity[] = [];
+    const toolDefinitions =
+      this.registry.listToolDefinitionsForRequest(request);
+    const toolSpecs = this.registry.listToolsForRequest(request);
+    await hydrateAgentEvidenceCache(request.conversationKey);
+    const resourceContextPlan = buildAgentResourceContextPlan(request);
+    request.contextCache = resourceContextPlan.contextCache;
+    const transcriptCompatibilityKey = buildAgentTranscriptCompatibilityKey({
+      request,
+      resourceSignature: resourceContextPlan.resourceSignature,
+      stableContextBlock: resourceContextPlan.stableContextBlock,
+      tools: toolSpecs,
+    });
+    let transcriptSegment = await loadAgentTranscriptSegment({
+      conversationKey: request.conversationKey,
+      compatibilityKey: transcriptCompatibilityKey,
+    });
+    let transcriptMessagesForPrompt = transcriptSegment.messages.length
+      ? transcriptSegment.messages
+      : normalizeHistoryMessages(request);
+
+    if (isManualCompactRequest(request)) {
+      const policy = resolveAgentContextBudgetPolicy();
+      if (policy.mode === "off") {
+        const text = "Agent context compaction is disabled.";
+        await emit({ type: "final", text });
+        await finishAgentRun(runId, "completed", text);
+        return {
+          kind: "completed",
+          runId,
+          text,
+          usedFallback: false,
+        };
+      }
+      const budget = buildAgentContextBudgetState({
+        messages: transcriptMessagesForPrompt,
+        model: request.model,
+        inputTokenCap: request.advanced?.inputTokenCap,
+        policy: { ...policy, mode: "auto" },
+        forceCompact: true,
+      });
+      const compacted = compactAgentTranscript({
+        messages: transcriptMessagesForPrompt,
+        budget,
+        force: true,
+      });
+      const text = compacted.compacted
+        ? "Conversation compacted"
+        : "Nothing to compact yet";
+      if (compacted.compacted) {
+        transcriptSegment = {
+          ...transcriptSegment,
+          messages: compacted.messages,
+          compactedAt: this.now(),
+        };
+        await replaceAgentTranscriptSegment(transcriptSegment);
+        await emit({ type: "context_compacted", automatic: false });
+      }
+      await emit({ type: "final", text });
+      await finishAgentRun(runId, "completed", text);
+      return {
+        kind: "completed",
+        runId,
+        text,
+        usedFallback: false,
+      };
+    }
+
     // Intent/skill selection runs ONCE per user turn, before the system
     // prompt is built. The flow:
     //   1. detectSkillIntent — one LLM call against the primary model,
@@ -546,9 +640,6 @@ export class AgentRuntime {
     // inside the agent loop — no per-step classification cost.
     const classifiedSkillIds = await detectSkillIntent(request, getAllSkills());
     const matchedSkills = getMatchedSkillIds(request, classifiedSkillIds);
-    await hydrateAgentEvidenceCache(request.conversationKey);
-    const resourceContextPlan = buildAgentResourceContextPlan(request);
-    request.contextCache = resourceContextPlan.contextCache;
     await emit({
       type: "provider_event",
       providerType: "agent_resource_lifecycle",
@@ -560,10 +651,54 @@ export class AgentRuntime {
     });
     const messages = (await buildAgentInitialMessages(
       request,
-      this.registry.listToolDefinitionsForRequest(request),
+      toolDefinitions,
       matchedSkills,
       resourceContextPlan,
+      {
+        transcriptMessages: transcriptMessagesForPrompt,
+      },
     )) as AgentModelMessage[];
+
+    const budgetState = buildAgentContextBudgetState({
+      messages,
+      model: request.model,
+      inputTokenCap: request.advanced?.inputTokenCap,
+      recentlyCompacted: Boolean(transcriptSegment.compactedAt),
+    });
+    if (budgetState.shouldCompact && transcriptMessagesForPrompt.length) {
+      await emit({ type: "status", text: "Compacting context…" });
+      const compacted = compactAgentTranscript({
+        messages: transcriptMessagesForPrompt,
+        budget: budgetState,
+      });
+      if (compacted.compacted) {
+        transcriptSegment = {
+          ...transcriptSegment,
+          messages: compacted.messages,
+          compactedAt: this.now(),
+        };
+        transcriptMessagesForPrompt = transcriptSegment.messages;
+        await replaceAgentTranscriptSegment(transcriptSegment);
+        await emit({ type: "context_compacted", automatic: true });
+        messages.splice(
+          0,
+          messages.length,
+          ...((await buildAgentInitialMessages(
+            request,
+            toolDefinitions,
+            matchedSkills,
+            resourceContextPlan,
+            {
+              transcriptMessages: transcriptMessagesForPrompt,
+            },
+          )) as AgentModelMessage[]),
+        );
+      }
+    }
+    const newTranscriptMessages: AgentModelMessage[] = [
+      ...(transcriptSegment.messages.length ? [] : transcriptMessagesForPrompt),
+      buildTranscriptUserMessage(request),
+    ];
 
     for (const skillId of matchedSkills) {
       await emit({ type: "status", text: `Skill activated: ${skillId}` });
@@ -604,6 +739,11 @@ export class AgentRuntime {
           conversationKey: request.conversationKey,
           activities: pendingReadActivities,
           resourceSignature: resourceContextPlan.resourceSignature,
+        });
+        await appendAgentTranscriptMessages({
+          conversationKey: request.conversationKey,
+          compatibilityKey: transcriptCompatibilityKey,
+          messages: newTranscriptMessages,
         });
         if (finalText) {
           await recordAgentTurn(
@@ -654,6 +794,12 @@ export class AgentRuntime {
           currentAnswerText = finalText;
         }
       }
+      newTranscriptMessages.push(
+        step.assistantMessage ?? {
+          role: "assistant",
+          content: finalText,
+        },
+      );
       return completeRun(finalText, "completed");
     };
     const runModelStep = async (
@@ -714,7 +860,7 @@ export class AgentRuntime {
       const step = await adapter.runStep({
         request,
         messages,
-        tools: this.registry.listToolsForRequest(request),
+        tools: toolSpecs,
         signal: params.signal,
         onTextDelta: async (delta) => {
           if (!delta) return;
@@ -830,6 +976,26 @@ export class AgentRuntime {
           const outcome = await executeToolWorkflow(call, round, {
             modelCallId: call.id,
           });
+          newTranscriptMessages.push({
+            role: "assistant",
+            content: "",
+            tool_calls: [call],
+          });
+          if (outcome.delivery) {
+            newTranscriptMessages.push({
+              role: "tool",
+              tool_call_id: outcome.delivery.callId,
+              name: outcome.delivery.name,
+              content: JSON.stringify(outcome.delivery.content ?? {}, null, 2),
+            });
+            newTranscriptMessages.push(...outcome.delivery.followupMessages);
+          }
+          if (outcome.stopRun && outcome.finalText) {
+            newTranscriptMessages.push({
+              role: "assistant",
+              content: outcome.finalText,
+            });
+          }
           return buildAdapterToolCallResult(outcome);
         },
       });
@@ -1142,17 +1308,21 @@ export class AgentRuntime {
           await rollbackCommittedStreamedText(stepStreamedText);
           if (!noteWriteCorrectionUsed) {
             noteWriteCorrectionUsed = true;
-            messages.push(
+            const assistantCorrectionMessage: AgentModelMessage =
               step.assistantMessage ?? {
                 role: "assistant",
                 content: stepStreamedText,
-              },
-            );
-            messages.push({
+              };
+            const userCorrectionMessage: AgentModelMessage = {
               role: "user",
               content:
                 'Correction for this turn: the user\'s request requires writing a Markdown note to the configured notes directory. Call `file_io` with `action: "write"` now, using the configured notes directory/default target path and a clear `.md` filename. Do not put the note body in chat. If a write is impossible, explain the setup problem briefly.',
-            });
+            };
+            messages.push(assistantCorrectionMessage, userCorrectionMessage);
+            newTranscriptMessages.push(
+              assistantCorrectionMessage,
+              userCorrectionMessage,
+            );
             continue;
           }
           const nickname = getNotesDirectoryNickname().trim();
@@ -1172,33 +1342,42 @@ export class AgentRuntime {
       await rollbackCommittedStreamedText(stepStreamedText);
 
       const calls = step.calls.slice(0, maxToolCallsPerRound);
-      messages.push({
+      const assistantToolMessage: AgentModelMessage = {
         ...step.assistantMessage,
         tool_calls: Array.isArray(step.assistantMessage.tool_calls)
           ? step.assistantMessage.tool_calls.slice(0, maxToolCallsPerRound)
           : step.assistantMessage.tool_calls,
-      });
+      };
+      messages.push(assistantToolMessage);
+      newTranscriptMessages.push(assistantToolMessage);
       if (!calls.length) break;
       for (const call of calls) {
         const outcome = await executeToolWorkflow(call, round, {
           modelCallId: call.id,
         });
         if (outcome.delivery) {
-          messages.push({
+          const toolMessage: AgentModelMessage = {
             role: "tool",
             tool_call_id: outcome.delivery.callId,
             name: outcome.delivery.name,
             content: JSON.stringify(outcome.delivery.content ?? {}, null, 2),
-          });
+          };
+          messages.push(toolMessage);
+          newTranscriptMessages.push(toolMessage);
           for (const followupMessage of outcome.delivery.followupMessages) {
             messages.push(followupMessage);
+            newTranscriptMessages.push(followupMessage);
           }
         }
         if (outcome.stopRun) {
-          return completeRun(
-            outcome.finalText || currentAnswerText,
-            "completed",
-          );
+          const stopFinalText = outcome.finalText || currentAnswerText;
+          if (stopFinalText) {
+            newTranscriptMessages.push({
+              role: "assistant",
+              content: stopFinalText,
+            });
+          }
+          return completeRun(stopFinalText, "completed");
         }
         if (consecutiveToolErrors >= 3) {
           const finalText =

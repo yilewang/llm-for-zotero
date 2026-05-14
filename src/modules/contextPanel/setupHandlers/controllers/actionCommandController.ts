@@ -977,6 +977,14 @@ export function createActionCommandController(
       await deps.getDoSend()?.();
       return;
     }
+    if (actionName === "compact") {
+      if (deps.getCurrentRuntimeMode() !== "agent" && getAgentModeEnabled()) {
+        deps.setCurrentRuntimeMode("agent");
+      }
+      inputBox.value = "/compact";
+      await deps.getDoSend()?.();
+      return;
+    }
     if (
       actionName === "library_statistics" ||
       actionName === "literature_review"
@@ -1228,6 +1236,38 @@ export function createActionCommandController(
     baseLabel.setAttribute("data-slash-section", "base");
     baseLabel.textContent = t("Base actions");
     list.insertBefore(baseLabel, baseAnchor);
+    const compactAction: ActionPickerItem = {
+      name: "compact",
+      description: "Compact the current agent context.",
+      inputSchema: { type: "object", properties: {} },
+    };
+    if (
+      !query ||
+      compactAction.name.includes(query) ||
+      compactAction.description.toLowerCase().includes(query)
+    ) {
+      const button = mkAgentEl(
+        "button",
+        "llm-action-picker-item",
+      ) as HTMLButtonElement;
+      button.type = "button";
+      button.title = compactAction.description;
+      const titleEl = ownerDoc.createElement("span");
+      titleEl.className = "llm-action-picker-title";
+      titleEl.textContent = "/compact";
+      const descEl = ownerDoc.createElement("span");
+      descEl.className = "llm-action-picker-description";
+      descEl.textContent = compactAction.description;
+      button.append(titleEl, descEl);
+      button.addEventListener("click", (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        consumeActiveActionToken();
+        closeSlashMenu();
+        insertCommandToken(compactAction);
+      });
+      list.insertBefore(button, baseAnchor);
+    }
     const agentLabel = mkAgentEl("div", "llm-slash-menu-section");
     agentLabel.setAttribute("aria-hidden", "true");
     agentLabel.textContent = t("Agent actions");

@@ -25,6 +25,7 @@ type ClearConversationControllerDeps = {
   refreshGlobalHistoryHeader: () => void | Promise<void>;
   scheduleAttachmentGc: () => void;
   clearAgentToolCaches?: (conversationKey: number) => void;
+  clearAgentConversationState?: (conversationKey: number) => Promise<void>;
   setStatusMessage?: (message: string, level: StatusLevel) => void;
   logError?: (message: string, error: unknown) => void;
   isWebChatActive?: () => boolean; // [webchat]
@@ -66,6 +67,12 @@ export function createClearConversationController(
     deps.markConversationLoaded(normalizedConversationKey);
     deps.clearAgentToolCaches?.(normalizedConversationKey);
     deps.resetComposePreviewUI();
+
+    try {
+      await deps.clearAgentConversationState?.(normalizedConversationKey);
+    } catch (err) {
+      deps.logError?.("LLM: Failed to clear agent conversation state", err);
+    }
 
     try {
       await deps.invalidateConversationSession?.(normalizedConversationKey);

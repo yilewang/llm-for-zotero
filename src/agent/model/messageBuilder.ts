@@ -69,7 +69,7 @@ function selectAgentHistoryWindow(
   return [...firstPair, ...tail];
 }
 
-function normalizeHistoryMessages(
+export function normalizeHistoryMessages(
   request: AgentRuntimeRequest,
 ): AgentModelMessage[] {
   const raw = Array.isArray(request.history) ? request.history : [];
@@ -381,6 +381,9 @@ export async function buildAgentInitialMessages(
   tools: AgentToolDefinition<any, any>[],
   matchedSkillIds: ReadonlyArray<string>,
   resourceContextPlan?: AgentResourceContextPlan,
+  options: {
+    transcriptMessages?: AgentModelMessage[];
+  } = {},
 ): Promise<AgentModelMessage[]> {
   const memoryBlock = await buildAgentMemoryBlock(request.conversationKey);
   const autoReadInstruction = buildAutoReadInstruction(
@@ -442,7 +445,9 @@ export async function buildAgentInitialMessages(
           },
         ]
       : []),
-    ...normalizeHistoryMessages(request),
+    ...(options.transcriptMessages?.length
+      ? options.transcriptMessages
+      : normalizeHistoryMessages(request)),
     buildUserMessage(request, resourceContextPlan, {
       memoryBlock,
       turnGuidanceBlock,

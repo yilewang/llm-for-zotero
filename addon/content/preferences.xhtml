@@ -245,6 +245,36 @@
 
         <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:label
+            for="__addonRef__-agent-context-compaction"
+            style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+          >
+            Agent Context Compaction
+          </html:label>
+          <html:select
+            id="__addonRef__-agent-context-compaction"
+            style="
+              width: 260px;
+              padding: 4px 8px;
+              font-size: 12px;
+              border: 1px solid var(--stroke-secondary, #c8c8c8);
+              border-radius: 6px;
+              background: Field;
+              color: FieldText;
+            "
+          >
+            <html:option value="auto">Auto</html:option>
+            <html:option value="manual">Manual only</html:option>
+            <html:option value="off">Off</html:option>
+          </html:select>
+          <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block; max-width: 560px;">
+            Keeps agent conversation continuity within the model context
+            window. Manual mode keeps the /compact command available without
+            automatic compaction.
+          </html:span>
+        </html:div>
+
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:label
             for="__addonRef__-locale-select"
             style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
           >

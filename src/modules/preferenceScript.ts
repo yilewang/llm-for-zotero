@@ -3288,6 +3288,32 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  const agentContextCompactionSelect = doc.querySelector(
+    `#${config.addonRef}-agent-context-compaction`,
+  ) as HTMLSelectElement | null;
+  if (agentContextCompactionSelect) {
+    const prefName = `${config.prefsPrefix}.agentContextCompaction`;
+    const readCompactionPref = () =>
+      (
+        Zotero.Prefs.get(prefName, true) ||
+        "auto"
+      ).toString().trim().toLowerCase();
+    const syncCompactionPref = () => {
+      const value = readCompactionPref();
+      agentContextCompactionSelect.value =
+        value === "manual" || value === "off" ? value : "auto";
+    };
+    syncCompactionPref();
+    agentContextCompactionSelect.addEventListener("change", () => {
+      const value = agentContextCompactionSelect.value;
+      Zotero.Prefs.set(
+        prefName,
+        value === "manual" || value === "off" ? value : "auto",
+        true,
+      );
+    });
+  }
+
   // ── MinerU settings ─────────────────────────────────────────────
 
   const mineruEnabledInput = doc.querySelector(

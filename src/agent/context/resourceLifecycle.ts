@@ -579,8 +579,14 @@ export function commitAgentResourceContextPlan(
   });
 }
 
-export function clearAgentResourceLifecycleState(): void {
-  resourceLifecycleState.clear();
+export function clearAgentResourceLifecycleState(
+  conversationKey?: number,
+): void {
+  if (conversationKey === undefined) {
+    resourceLifecycleState.clear();
+    return;
+  }
+  resourceLifecycleState.delete(lifecycleKey(conversationKey));
 }
 
 function buildScopeIdentityLines(request: AgentRuntimeRequest): string[] {
