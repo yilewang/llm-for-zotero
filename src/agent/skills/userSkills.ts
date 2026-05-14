@@ -622,7 +622,7 @@ match: /your regex pattern here/i
   - match: regex patterns that trigger this skill (OR semantics)
   - version: increment when you make significant changes
 
-  The text below is injected into the agent's system prompt when
+  The text below is injected into the agent's current-turn guidance when
   the skill activates. Edit it to define how the agent should behave.
 -->
 

@@ -3,8 +3,8 @@
  *
  * Each skill is a `.md` file with frontmatter match patterns and a body
  * instruction. When a user's message matches a skill's patterns, the
- * instruction is injected into the agent system prompt alongside tool
- * guidances.
+ * instruction is injected into the agent's current-turn guidance alongside
+ * tool context.
  *
  * Built-in skills are bundled at compile time and copied to the user's
  * data directory on first run. The user folder is the sole source of
@@ -47,7 +47,9 @@ export const BUILTIN_SKILL_FILES: Record<string, string> = {
 };
 
 /** Set of filenames that are built-in (shipped with the plugin). */
-export const BUILTIN_SKILL_FILENAMES = new Set(Object.keys(BUILTIN_SKILL_FILES));
+export const BUILTIN_SKILL_FILENAMES = new Set(
+  Object.keys(BUILTIN_SKILL_FILES),
+);
 
 /**
  * Returns the parsed instruction body of a shipped built-in skill.
@@ -120,7 +122,7 @@ function computeContextForcedSkillIds(
  * Returns the IDs of all skills that should activate for the given request.
  * Called once per user turn (NOT per model inference inside the agent loop).
  * The result is (a) fed into messageBuilder to filter which skill
- * instructions get injected into the system prompt, and (b) emitted as
+ * instructions get injected into current-turn guidance, and (b) emitted as
  * trace events.
  *
  * Sources of activation, unioned:
@@ -131,7 +133,10 @@ function computeContextForcedSkillIds(
  *      result is available.
  */
 export function getMatchedSkillIds(
-  request: Pick<import("../types").AgentRuntimeRequest, "userText" | "forcedSkillIds">,
+  request: Pick<
+    import("../types").AgentRuntimeRequest,
+    "userText" | "forcedSkillIds"
+  >,
   classifiedIds?: ReadonlyArray<string>,
 ): string[] {
   const forcedIds = new Set(request.forcedSkillIds || []);

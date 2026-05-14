@@ -83,11 +83,69 @@ import type {
   PaperContextRef,
   SelectedTextSource,
 } from "../../../shared/types";
+import type { UsageStats } from "../../../shared/llm";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../../utils/llmClient";
 import type { ChatMessage } from "../../../utils/llmClient";
 import type { StoredChatMessage } from "../../../utils/chatStore";
 import type { Message } from "../types";
 import { isClaudeBlockStreamingEnabled } from "../../../claudeCode/prefs";
+import { recordContextCacheTelemetry } from "../../../contextCache/manager";
+
+function readUsageNumber(record: Record<string, unknown>, key: string): number {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, value)
+    : 0;
+}
+
+function normalizeAgentUsageForCacheTelemetry(
+  event: Extract<AgentEvent, { type: "usage" }>,
+): UsageStats {
+  const record = event as unknown as Record<string, unknown>;
+  const promptTokens =
+    readUsageNumber(record, "promptTokens") ||
+    readUsageNumber(record, "inputTokens") ||
+    readUsageNumber(record, "contextTokens");
+  const completionTokens =
+    readUsageNumber(record, "completionTokens") ||
+    readUsageNumber(record, "outputTokens");
+  const totalTokens =
+    readUsageNumber(record, "totalTokens") || promptTokens + completionTokens;
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    cacheReadTokens:
+      typeof record.cacheReadTokens === "number"
+        ? Math.max(0, record.cacheReadTokens)
+        : undefined,
+    cacheWriteTokens:
+      typeof record.cacheWriteTokens === "number"
+        ? Math.max(0, record.cacheWriteTokens)
+        : undefined,
+    cacheMissTokens:
+      typeof record.cacheMissTokens === "number"
+        ? Math.max(0, record.cacheMissTokens)
+        : undefined,
+    cacheHitRatio:
+      typeof record.cacheHitRatio === "number"
+        ? Math.max(0, Math.min(1, record.cacheHitRatio))
+        : undefined,
+    cacheProvider:
+      typeof record.cacheProvider === "string"
+        ? record.cacheProvider
+        : undefined,
+    contextTokens:
+      typeof record.contextTokens === "number"
+        ? Math.max(0, record.contextTokens)
+        : undefined,
+    contextWindow:
+      typeof record.contextWindow === "number"
+        ? Math.max(0, record.contextWindow)
+        : undefined,
+    contextWindowIsAuthoritative: record.contextWindowIsAuthoritative === true,
+  };
+}
 
 function shouldSyncVisibleRollbackText(message: Message): boolean {
   return (
@@ -884,12 +942,13 @@ export async function sendAgentTurn(
             applyResolvedClaudeEffortDisplay(body, event);
             break;
           case "usage": {
+            const usageEvent = event as Extract<AgentEvent, { type: "usage" }>;
+            recordContextCacheTelemetry(
+              runtimeRequest.contextCache,
+              normalizeAgentUsageForCacheTelemetry(usageEvent),
+            );
             if (ui.tokenUsageEl) {
               const previous = deps.getContextUsageSnapshot?.(conversationKey);
-              const usageEvent = event as Extract<
-                AgentEvent,
-                { type: "usage" }
-              >;
               const usageRecord = usageEvent as unknown as Record<
                 string,
                 unknown
@@ -1489,12 +1548,13 @@ export async function retryAgentTurn(
             applyResolvedClaudeEffortDisplay(body, event);
             break;
           case "usage": {
+            const usageEvent = event as Extract<AgentEvent, { type: "usage" }>;
+            recordContextCacheTelemetry(
+              runtimeRequest.contextCache,
+              normalizeAgentUsageForCacheTelemetry(usageEvent),
+            );
             if (ui.tokenUsageEl) {
               const previous = deps.getContextUsageSnapshot?.(conversationKey);
-              const usageEvent = event as Extract<
-                AgentEvent,
-                { type: "usage" }
-              >;
               const usageRecord = usageEvent as unknown as Record<
                 string,
                 unknown

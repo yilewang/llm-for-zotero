@@ -2,7 +2,7 @@ import type { AgentRuntimeRequest } from "../types";
 
 /**
  * A skill is a file-driven guidance instruction that gets injected into the
- * agent system prompt when the user's message matches one of its patterns.
+ * agent current-turn guidance when the user's message matches one of its patterns.
  *
  * Skills are defined as `.md` files with frontmatter:
  *
@@ -13,7 +13,7 @@ import type { AgentRuntimeRequest } from "../types";
  * match: /another pattern/i
  * ---
  *
- * Instruction body (markdown) injected into the system prompt.
+ * Instruction body (markdown) injected into current-turn guidance.
  * ```
  */
 export type AgentSkill = {
@@ -88,7 +88,14 @@ export function parseSkill(raw: string): AgentSkill {
 
   const instruction = lines.slice(frontmatterEnd).join("\n").trim();
 
-  return { id, description, version, patterns, instruction, source: "personal" };
+  return {
+    id,
+    description,
+    version,
+    patterns,
+    instruction,
+    source: "personal",
+  };
 }
 
 /**

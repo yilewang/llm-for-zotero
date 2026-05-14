@@ -3,9 +3,9 @@
  *
  * Architecture note: when the user sends a message, this module is called
  * exactly once (before the agent loop starts) to decide which skills apply.
- * The returned skill IDs flow into the system prompt, and that system prompt
- * is reused across every model inference the agent performs to fulfil the
- * request. There is no per-model-call classifier cost.
+ * The returned skill IDs flow into current-turn guidance, and that guidance is
+ * reused across every model inference the agent performs to fulfil the request.
+ * There is no per-model-call classifier cost.
  *
  * The classifier uses the user's configured primary model (via
  * `request.model` / `request.apiBase` / `request.apiKey`) and a small

@@ -19,6 +19,7 @@ export type ContextCacheAssemblyStrategy =
   | "paper-manual-full"
   | "paper-explicit-retrieval"
   | "paper-followup-retrieval"
+  | "agent-evidence-full"
   | "general-full"
   | "general-retrieval";
 
@@ -296,8 +297,8 @@ function supportsProviderRequestHints(
 ): boolean {
   return Boolean(
     capability.supportsPromptCacheKey ||
-      capability.supportsRetentionHint ||
-      capability.supportsAnthropicCacheControl,
+    capability.supportsRetentionHint ||
+    capability.supportsAnthropicCacheControl,
   );
 }
 
@@ -342,7 +343,8 @@ export function planContextCacheReuse(params: {
   if (capability.kind === "none") return disabled("provider-unsupported");
   if (!contextText.trim()) return disabled("empty-context");
   if (params.mode !== "full") return disabled("retrieval-mode");
-  if (contextTokens < CACHE_MIN_TOKENS) return disabled("below-cache-threshold");
+  if (contextTokens < CACHE_MIN_TOKENS)
+    return disabled("below-cache-threshold");
   if (
     preference === "pinned" &&
     !(params.fullTextPaperContexts && params.fullTextPaperContexts.length)
@@ -361,7 +363,10 @@ export function planContextCacheReuse(params: {
   if (capability.supportsPromptCacheKey) {
     requestHints.promptCacheKey = cacheKey.slice(0, 128);
   }
-  if (capability.supportsRetentionHint && shouldUseRetentionHint(params.model)) {
+  if (
+    capability.supportsRetentionHint &&
+    shouldUseRetentionHint(params.model)
+  ) {
     requestHints.promptCacheRetention = "24h";
   }
   if (capability.supportsAnthropicCacheControl) {
@@ -436,9 +441,7 @@ function readNestedNumber(
   return readNumber(nested as Record<string, unknown>, nestedKey);
 }
 
-export function extractContextCacheUsage(
-  usage: unknown,
-): Partial<UsageStats> {
+export function extractContextCacheUsage(usage: unknown): Partial<UsageStats> {
   if (!usage || typeof usage !== "object" || Array.isArray(usage)) return {};
   const u = usage as Record<string, unknown>;
   const inputTokens =
@@ -468,8 +471,7 @@ export function extractContextCacheUsage(
       cacheReadTokens: anthropicRead,
       cacheWriteTokens: anthropicWrite,
       cacheMissTokens: Math.max(0, inputTokens - anthropicRead),
-      cacheHitRatio:
-        denominator > 0 ? anthropicRead / denominator : undefined,
+      cacheHitRatio: denominator > 0 ? anthropicRead / denominator : undefined,
       cacheProvider: "anthropic",
     };
   }
@@ -514,8 +516,7 @@ export function extractContextCacheUsage(
       cacheReadTokens: genericRead,
       cacheWriteTokens: genericWrite,
       cacheMissTokens: genericMiss,
-      cacheHitRatio:
-        denominator > 0 ? genericRead / denominator : undefined,
+      cacheHitRatio: denominator > 0 ? genericRead / denominator : undefined,
       cacheProvider: "codex",
     };
   }

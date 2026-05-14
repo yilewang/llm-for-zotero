@@ -1601,7 +1601,22 @@ describe("AgentRuntime", function () {
           label: "Read Paper",
         },
         validate: (args: unknown) => ({ ok: true, value: args }),
-        execute: async () => ({ excerpt: "paper text" }),
+        execute: async () => ({
+          mode: "targeted",
+          papers: [
+            {
+              paperContext: request.selectedPaperContexts?.[0],
+              sourceKind: "paper_text",
+              passages: [
+                {
+                  text: "paper text",
+                  sourceLabel: "(Ledger, 2024)",
+                },
+              ],
+            },
+          ],
+          results: [],
+        }),
       });
 
       const request: AgentRuntimeRequest = {
@@ -1718,12 +1733,13 @@ describe("AgentRuntime", function () {
 
       assert.include(
         secondInitialUserMessage,
-        "Already inspected in this agent conversation:",
+        "Preserved evidence from prior agent tool reads:",
       );
       assert.include(secondInitialUserMessage, "Read Paper");
       assert.include(secondInitialUserMessage, "Ledger Paper");
       assert.include(secondInitialUserMessage, "mode=targeted");
       assert.include(secondInitialUserMessage, 'query="abstract"');
+      assert.include(secondInitialUserMessage, "paper text");
     } finally {
       restoreDb();
     }

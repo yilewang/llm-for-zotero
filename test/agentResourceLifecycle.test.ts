@@ -1,18 +1,30 @@
 import { assert } from "chai";
 import {
+  buildAgentPriorReadContextBlock,
   buildAgentResourceContextPlan,
   buildAgentResourceSignatureFromSnapshot,
   buildAgentResourceSnapshot,
   clearAgentReadLedger,
   clearAgentResourceLifecycleState,
+  commitAgentReadActivities,
   commitAgentResourceContextPlan,
   diffAgentResourceSnapshots,
   resolveAgentResourceLifecycleState,
 } from "../src/agent/context/resourceLifecycle";
+import {
+  clearPersistedAgentEvidence,
+  hydrateAgentEvidenceCache,
+} from "../src/agent/context/cacheManagement";
 import { buildAgentInitialMessages } from "../src/agent/model/messageBuilder";
+import {
+  clearAgentMemory,
+  recordAgentTurn,
+} from "../src/agent/store/conversationMemory";
+import { parseSkill, setUserSkills } from "../src/agent/skills";
 import type {
   AgentModelMessage,
   AgentRuntimeRequest,
+  AgentToolDefinition,
 } from "../src/agent/types";
 import type { PaperContextRef } from "../src/shared/types";
 
@@ -52,6 +64,73 @@ function messageText(message: AgentModelMessage): string {
     .join("\n");
 }
 
+function installEvidenceMockDb() {
+  type EvidenceRow = {
+    conversationKey: number;
+    evidenceKey: string;
+    resourceSignature?: string;
+    entryJson: string;
+    firstSeenAt: number;
+    lastSeenAt: number;
+  };
+  const rows = new Map<string, EvidenceRow>();
+  const originalZotero = (
+    globalThis as typeof globalThis & { Zotero?: unknown }
+  ).Zotero;
+  (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+    DB: {
+      queryAsync: async (sql: string, params: unknown[] = []) => {
+        if (!sql.includes("llm_for_zotero_agent_evidence")) return [];
+        if (sql.includes("INSERT INTO")) {
+          const conversationKey = Number(params[0]);
+          const evidenceKey = String(params[1] || "");
+          rows.set(`${conversationKey}:${evidenceKey}`, {
+            conversationKey,
+            evidenceKey,
+            resourceSignature:
+              typeof params[2] === "string" ? params[2] : undefined,
+            entryJson: String(params[3] || ""),
+            firstSeenAt: Number(params[4]) || 0,
+            lastSeenAt: Number(params[5]) || 0,
+          });
+          return [];
+        }
+        if (sql.includes("SELECT entry_json AS entryJson")) {
+          const conversationKey = Number(params[0]);
+          const limit = Math.max(0, Number(params[1]) || rows.size);
+          return Array.from(rows.values())
+            .filter((row) => row.conversationKey === conversationKey)
+            .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+            .slice(0, limit)
+            .map((row) => ({
+              entryJson: row.entryJson,
+              resourceSignature: row.resourceSignature,
+            }));
+        }
+        if (sql.includes("DELETE FROM")) {
+          if (sql.includes("evidence_key NOT IN")) return [];
+          if (sql.includes("WHERE conversation_key = ?")) {
+            const conversationKey = Number(params[0]);
+            for (const key of Array.from(rows.keys())) {
+              if (rows.get(key)?.conversationKey === conversationKey) {
+                rows.delete(key);
+              }
+            }
+          } else {
+            rows.clear();
+          }
+          return [];
+        }
+        return [];
+      },
+    },
+  };
+  return () => {
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+      originalZotero;
+  };
+}
+
 async function renderedUserMessage(
   req: AgentRuntimeRequest,
   plan = buildAgentResourceContextPlan(req),
@@ -61,9 +140,11 @@ async function renderedUserMessage(
 }
 
 describe("agent resource lifecycle", function () {
-  beforeEach(function () {
+  beforeEach(async function () {
     clearAgentResourceLifecycleState();
     clearAgentReadLedger();
+    await clearAgentMemory(101);
+    await clearAgentMemory(202);
   });
 
   it("builds deterministic resource signatures", function () {
@@ -173,8 +254,7 @@ describe("agent resource lifecycle", function () {
       resolveAgentResourceLifecycleState({
         lifecycleEntry,
         resourceSnapshot: changedBase,
-        resourceSignature:
-          buildAgentResourceSignatureFromSnapshot(changedBase),
+        resourceSignature: buildAgentResourceSignatureFromSnapshot(changedBase),
       }),
       "resources-changed",
     );
@@ -255,7 +335,10 @@ describe("agent resource lifecycle", function () {
 
     assert.equal(second.lifecycleState, "resources-delta");
     assert.equal(second.injection, "delta");
-    assert.include(text, "Zotero resource update for this continued agent turn");
+    assert.include(
+      text,
+      "Zotero resource update for this continued agent turn",
+    );
     assert.include(text, "New Paper");
     assert.include(text, "Old Collection");
     assert.include(text, "New Collection");
@@ -321,5 +404,241 @@ describe("agent resource lifecycle", function () {
     assert.equal(followup.injection, "thin");
     assert.include(text, "same Zotero resources");
     assert.notInclude(text, "Full-text paper refs for this turn:");
+  });
+
+  it("preserves paper_read evidence snippets for cache-friendly follow-ups", async function () {
+    const req = request({
+      conversationKey: 202,
+      model: "gpt-5.4",
+      apiBase: "https://api.openai.com/v1/responses",
+      providerProtocol: "responses_api",
+      selectedPaperContexts: [paper(1, 10, "Baseline Paper")],
+    });
+    await commitAgentReadActivities({
+      conversationKey: req.conversationKey,
+      activities: [
+        {
+          toolName: "paper_read",
+          toolLabel: "Read Paper",
+          input: {
+            mode: "targeted",
+            query: "What is the key mechanism?",
+            target: { itemId: 1, contextItemId: 10, title: "Baseline Paper" },
+          },
+          content: {
+            mode: "targeted",
+            papers: [
+              {
+                paperContext: paper(1, 10, "Baseline Paper"),
+                sourceKind: "paper_text",
+                passages: [
+                  {
+                    text: "The intervention selectively changed the readout while preserving the measured evidence.",
+                    sourceLabel: "(Smith, 2024)",
+                    citationLabel: "Smith, 2024",
+                    sectionLabel: "Results",
+                    pageLabel: "p. 4",
+                    chunkIndex: 2,
+                  },
+                ],
+              },
+            ],
+            results: [],
+          },
+          request: req,
+          timestamp: 1,
+        },
+      ],
+    });
+
+    const block = buildAgentPriorReadContextBlock({
+      conversationKey: req.conversationKey,
+    });
+    assert.include(block, "Preserved evidence from prior agent tool reads");
+    assert.include(block, "Baseline Paper");
+    assert.include(block, "source=(Smith, 2024)");
+    assert.include(block, "intervention selectively changed");
+
+    const plan = buildAgentResourceContextPlan(req);
+    const text = await renderedUserMessage(req, plan);
+    assert.include(text, "Preserved evidence from prior agent tool reads");
+    assert.include(text, "intervention selectively changed");
+    assert.isAbove(plan.contextCache?.contextTokens || 0, 0);
+  });
+
+  it("keeps conversation memory and skill guidance out of the system prompt", async function () {
+    const req = request({
+      conversationKey: 101,
+      userText: "Summarize this paper",
+    });
+    await recordAgentTurn(
+      req.conversationKey,
+      "Earlier question",
+      ["paper_read"],
+      "Earlier answer",
+    );
+
+    setUserSkills([
+      parseSkill(
+        [
+          "---",
+          "id: simple-paper-qa",
+          "description: test skill",
+          "---",
+          "Use one paper_read overview before answering.",
+        ].join("\n"),
+      ),
+    ]);
+    const guidedTool: AgentToolDefinition<unknown, unknown> = {
+      spec: {
+        name: "guided_tool",
+        description: "guided test tool",
+        inputSchema: { type: "object" },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      guidance: {
+        matches: () => true,
+        instruction: "Use the mock guided tool only for this test.",
+      },
+      validate: () => ({ ok: true, value: {} }),
+      execute: async () => ({}),
+    };
+    let messages!: AgentModelMessage[];
+    try {
+      messages = await buildAgentInitialMessages(
+        req,
+        [guidedTool],
+        ["simple-paper-qa"],
+        buildAgentResourceContextPlan(req),
+      );
+    } finally {
+      setUserSkills([]);
+    }
+    const systemText = messageText(messages[0]);
+    const userText = messageText(messages[messages.length - 1]);
+
+    assert.notInclude(systemText, "Conversation continuity notes");
+    assert.notInclude(systemText, "Skill guidance loaded for this turn");
+    assert.notInclude(systemText, "mock guided tool");
+    assert.include(userText, "Conversation continuity notes");
+    assert.include(userText, "Skill guidance loaded for this turn");
+    assert.include(userText, "Use one paper_read overview before answering.");
+    assert.include(userText, "Use the mock guided tool only for this test.");
+    assert.include(userText, "Current-turn dynamic agent guidance");
+  });
+
+  it("persists, hydrates, and filters evidence snippets by resource scope", async function () {
+    const restoreDb = installEvidenceMockDb();
+    try {
+      const req = request({
+        conversationKey: 303,
+        selectedPaperContexts: [paper(1, 10, "Persisted Paper")],
+      });
+      const signature = buildAgentResourceContextPlan(req).resourceSignature;
+      await clearPersistedAgentEvidence(req.conversationKey);
+      await commitAgentReadActivities({
+        conversationKey: req.conversationKey,
+        resourceSignature: signature,
+        activities: [
+          {
+            toolName: "paper_read",
+            toolLabel: "Read Paper",
+            input: {
+              mode: "targeted",
+              query: "persistent evidence",
+              target: {
+                itemId: 1,
+                contextItemId: 10,
+                title: "Persisted Paper",
+              },
+            },
+            content: {
+              mode: "targeted",
+              papers: [
+                {
+                  paperContext: paper(1, 10, "Persisted Paper"),
+                  sourceKind: "paper_text",
+                  passages: [
+                    {
+                      text: "Persisted evidence survives a plugin restart.",
+                      sourceLabel: "(Persisted, 2024)",
+                      sectionLabel: "Discussion",
+                      pageLabel: "p. 9",
+                    },
+                  ],
+                },
+              ],
+            },
+            request: req,
+            timestamp: 2,
+          },
+        ],
+      });
+
+      clearAgentReadLedger();
+      await hydrateAgentEvidenceCache(req.conversationKey);
+      const hydrated = buildAgentPriorReadContextBlock({
+        conversationKey: req.conversationKey,
+        request: req,
+        resourceSignature: signature,
+      });
+      assert.include(hydrated, "Persisted Paper");
+      assert.include(hydrated, "Persisted evidence survives");
+      assert.include(hydrated, "source=(Persisted, 2024)");
+      assert.include(hydrated, "section=Discussion");
+      assert.include(hydrated, "page=p. 9");
+
+      const staleReq = request({
+        conversationKey: req.conversationKey,
+        activeItemId: 2,
+        selectedPaperContexts: [paper(2, 20, "Different Paper")],
+      });
+      const staleSignature =
+        buildAgentResourceContextPlan(staleReq).resourceSignature;
+      const stale = buildAgentPriorReadContextBlock({
+        conversationKey: req.conversationKey,
+        request: staleReq,
+        resourceSignature: staleSignature,
+      });
+      assert.notInclude(stale, "Persisted evidence survives");
+    } finally {
+      restoreDb();
+      clearAgentReadLedger();
+    }
+  });
+
+  it("filters untargeted evidence by resource signature", async function () {
+    const req = request({
+      conversationKey: 404,
+      activeItemId: undefined,
+      selectedPaperContexts: [],
+    });
+    await commitAgentReadActivities({
+      conversationKey: req.conversationKey,
+      resourceSignature: "resource-a",
+      activities: [
+        {
+          toolName: "read_attachment",
+          toolLabel: "Read Attachment",
+          input: {},
+          content: { text: "Untargeted attachment evidence" },
+          request: req,
+          timestamp: 3,
+        },
+      ],
+    });
+
+    const matching = buildAgentPriorReadContextBlock({
+      conversationKey: req.conversationKey,
+      resourceSignature: "resource-a",
+    });
+    assert.include(matching, "Untargeted attachment evidence");
+
+    const mismatched = buildAgentPriorReadContextBlock({
+      conversationKey: req.conversationKey,
+      resourceSignature: "resource-b",
+    });
+    assert.notInclude(mismatched, "Untargeted attachment evidence");
   });
 });

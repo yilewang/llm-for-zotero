@@ -5,11 +5,20 @@ import {
   formatPaperSourceLabel,
 } from "../../modules/contextPanel/paperAttribution";
 import {
-  planContextCacheReuse,
   resolveContextCachePreference,
   resolvePromptCacheCapability,
   type ContextCachePlan,
 } from "../../contextCache/manager";
+import {
+  buildAgentEvidenceContextBlock,
+  clearAgentEvidenceCache,
+  commitAgentCacheEvidenceActivities,
+  hydrateAgentEvidenceCache,
+  planAgentContextCache,
+  type AgentCacheEvidenceActivity,
+} from "./cacheManagement";
+
+export { hydrateAgentEvidenceCache };
 
 export type AgentResourceLifecycleState =
   | "setup-required"
@@ -70,45 +79,15 @@ export type AgentResourceLifecycleEntry = {
   lastCompletedAt: number;
 };
 
-type AgentReadLedgerEntry = {
-  key: string;
-  toolName: string;
-  label: string;
-  targetLabel?: string;
-  detail?: string;
-  itemId?: number;
-  contextItemId?: number;
-  filePath?: string;
-  count: number;
-  firstSeenAt: number;
-  lastSeenAt: number;
-};
-
-export type AgentPendingReadActivity = {
-  toolName: string;
-  toolLabel?: string;
-  input?: unknown;
-  request: AgentRuntimeRequest;
-  timestamp: number;
-};
+export type AgentPendingReadActivity = AgentCacheEvidenceActivity;
 
 const RESOURCE_DELTA_MAX_LINES = 12;
-const MAX_LEDGER_ENTRIES = 12;
-const MAX_RENDERED_LEDGER_ENTRIES = 8;
-const READ_TOOL_NAMES = new Set([
-  "paper_read",
-  "read_paper",
-  "search_paper",
-  "view_pdf_pages",
-  "read_attachment",
-]);
 const DELTA_ELIGIBLE_GROUPS = new Set<AgentResourceGroup>([
   "selectedPapers",
   "collections",
 ]);
 
 const resourceLifecycleState = new Map<string, AgentResourceLifecycleEntry>();
-const readLedger = new Map<string, Map<string, AgentReadLedgerEntry>>();
 
 function normalizeText(value: unknown, maxLength = 160): string {
   if (typeof value !== "string") return "";
@@ -563,16 +542,15 @@ export function buildAgentResourceContextPlan(
           current: snapshot,
         })
       : undefined;
-  const contextCache = planContextCacheReuse({
-    model: request.model,
-    apiBase: request.apiBase,
-    authMode: request.authMode,
-    protocol: request.providerProtocol,
-    mode: "full",
-    strategy: "general-full",
-    contextText: stableJson(snapshot),
-    paperContexts: request.selectedPaperContexts,
-    fullTextPaperContexts: request.fullTextPaperContexts,
+  const priorReadBlock = buildAgentEvidenceContextBlock({
+    conversationKey,
+    request,
+    resourceSignature: signature,
+  });
+  const contextCache = planAgentContextCache({
+    request,
+    resourceSnapshot: snapshot,
+    evidenceBlock: priorReadBlock,
   });
   return {
     conversationKey,
@@ -583,7 +561,7 @@ export function buildAgentResourceContextPlan(
     resourceSnapshot: snapshot,
     resourceDelta: delta,
     resourceDeltaCounts: getAgentResourceDeltaCounts(delta),
-    priorReadBlock: buildAgentPriorReadContextBlock({ conversationKey }),
+    priorReadBlock,
   };
 }
 
@@ -673,9 +651,12 @@ function buildAgentResourceDeltaBlock(delta: AgentResourceDelta): string {
 export function renderAgentResourceContextPlan(
   plan: AgentResourceContextPlan,
   request: AgentRuntimeRequest,
+  options: { memoryBlock?: string; turnGuidanceBlock?: string } = {},
 ): AgentModelMessage {
   const lines = buildScopeIdentityLines(request);
   if (plan.priorReadBlock) lines.push(plan.priorReadBlock);
+  if (options.memoryBlock) lines.push(options.memoryBlock);
+  if (options.turnGuidanceBlock) lines.push(options.turnGuidanceBlock);
   if (plan.injection === "thin") {
     lines.push(
       "This is a continued agent turn with the same Zotero resources as the previous completed agent turn.",
@@ -692,350 +673,22 @@ export function renderAgentResourceContextPlan(
   };
 }
 
-function formatTargetLabel(target: {
-  title?: string;
-  itemId?: number;
-  contextItemId?: number;
-}): string {
-  const parts: string[] = [];
-  if (target.itemId) parts.push(`itemId=${target.itemId}`);
-  if (target.contextItemId) parts.push(`contextItemId=${target.contextItemId}`);
-  const title = normalizeText(target.title, 100);
-  if (title) return `${title}${parts.length ? ` [${parts.join(", ")}]` : ""}`;
-  if (parts.length) return parts.join(", ");
-  return "";
-}
-
-function normalizePaperContext(
-  value: unknown,
-): Partial<PaperContextRef> | undefined {
-  const record = normalizeRecord(value);
-  const itemId = normalizePositiveInt(record.itemId);
-  const contextItemId = normalizePositiveInt(record.contextItemId);
-  const title = normalizeText(record.title, 120);
-  if (!itemId && !contextItemId) return undefined;
-  return {
-    itemId,
-    contextItemId,
-    title: title || undefined,
-    attachmentTitle: normalizeText(record.attachmentTitle, 120) || undefined,
-    citationKey: normalizeText(record.citationKey, 80) || undefined,
-    firstCreator: normalizeText(record.firstCreator, 80) || undefined,
-    year: normalizeText(record.year, 32) || undefined,
-    mineruCacheDir: normalizeText(record.mineruCacheDir, 512) || undefined,
-  };
-}
-
-function targetFromRecord(value: unknown): {
-  itemId?: number;
-  contextItemId?: number;
-  title?: string;
-} {
-  const record = normalizeRecord(value);
-  const paperContext = normalizePaperContext(record.paperContext);
-  return {
-    itemId: normalizePositiveInt(record.itemId) || paperContext?.itemId,
-    contextItemId:
-      normalizePositiveInt(record.contextItemId) ||
-      normalizePositiveInt(record.attachmentId) ||
-      paperContext?.contextItemId,
-    title:
-      normalizeText(record.title, 120) ||
-      normalizeText(record.name, 120) ||
-      paperContext?.title,
-  };
-}
-
-function collectRequestPaperContexts(
-  request: AgentRuntimeRequest,
-): PaperContextRef[] {
-  const out: PaperContextRef[] = [];
-  const seen = new Set<string>();
-  const push = (entry: PaperContextRef | undefined) => {
-    if (
-      !entry ||
-      !Number.isFinite(entry.itemId) ||
-      !Number.isFinite(entry.contextItemId)
-    ) {
-      return;
-    }
-    const key = paperKey(entry);
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(entry);
-  };
-  for (const entry of request.selectedTextPaperContexts || []) push(entry);
-  for (const entry of request.selectedPaperContexts || []) push(entry);
-  for (const entry of request.fullTextPaperContexts || []) push(entry);
-  for (const entry of request.pinnedPaperContexts || []) push(entry);
-  return out;
-}
-
-function defaultScopeTarget(request: AgentRuntimeRequest): {
-  itemId?: number;
-  contextItemId?: number;
-  title?: string;
-} {
-  const paper = collectRequestPaperContexts(request)[0];
-  return {
-    itemId: paper?.itemId || request.activeItemId,
-    contextItemId: paper?.contextItemId,
-    title: paper?.title,
-  };
-}
-
-function extractTargets(
-  args: unknown,
-  request: AgentRuntimeRequest,
-): Array<{ itemId?: number; contextItemId?: number; title?: string }> {
-  const record = normalizeRecord(args);
-  const rawTargets = Array.isArray(record.targets) ? record.targets : [];
-  const targets = rawTargets
-    .map(targetFromRecord)
-    .filter((target) =>
-      Boolean(target.itemId || target.contextItemId || target.title),
-    );
-  const target = targetFromRecord(record.target);
-  if (target.itemId || target.contextItemId || target.title) {
-    targets.push(target);
-  }
-  if (targets.length) return targets;
-  const fallback = defaultScopeTarget(request);
-  return fallback.itemId || fallback.contextItemId || fallback.title
-    ? [fallback]
-    : [];
-}
-
-function fileNameForPath(filePath: string): string {
-  return filePath.split(/[\\/]/).pop() || filePath;
-}
-
-function normalizePathForPrefix(value: string): string {
-  return value.replace(/\\/g, "/").replace(/\/+$/g, "");
-}
-
-function isLikelyMineruReadPath(filePath: string): boolean {
-  const normalized = filePath.toLowerCase();
-  if (!normalized.includes("mineru")) return false;
-  return (
-    /\.(?:md|json)$/i.test(filePath) ||
-    /\.(?:png|jpe?g|gif|webp|svg)$/i.test(filePath)
-  );
-}
-
-function findMineruPaperTarget(
-  filePath: string,
-  request: AgentRuntimeRequest,
-): { itemId?: number; contextItemId?: number; title?: string } {
-  const normalizedFilePath = normalizePathForPrefix(filePath);
-  for (const paper of collectRequestPaperContexts(request)) {
-    const cacheDir =
-      typeof paper.mineruCacheDir === "string"
-        ? normalizePathForPrefix(paper.mineruCacheDir)
-        : "";
-    if (!cacheDir) continue;
-    if (
-      normalizedFilePath === cacheDir ||
-      normalizedFilePath.startsWith(`${cacheDir}/`)
-    ) {
-      return {
-        itemId: paper.itemId,
-        contextItemId: paper.contextItemId,
-        title: paper.title,
-      };
-    }
-  }
-  return defaultScopeTarget(request);
-}
-
-function buildReadDetail(toolName: string, args: unknown): string | undefined {
-  const record = normalizeRecord(args);
-  if (toolName === "paper_read") {
-    const mode = normalizeText(record.mode, 40) || "overview";
-    const pieces = [`mode=${mode}`];
-    const query = normalizeText(record.query, 120);
-    if (query) pieces.push(`query="${query}"`);
-    if (Array.isArray(record.pages) && record.pages.length) {
-      pieces.push(`pages=${record.pages.join(", ")}`);
-    }
-    return pieces.join(", ");
-  }
-  if (toolName === "search_paper") {
-    const question = normalizeText(record.question, 120);
-    return question ? `question="${question}"` : undefined;
-  }
-  if (toolName === "read_paper" && Array.isArray(record.chunkIndexes)) {
-    const chunks = record.chunkIndexes
-      .map((value) => normalizePositiveInt(value))
-      .filter(Boolean)
-      .join(", ");
-    return chunks ? `chunks=${chunks}` : undefined;
-  }
-  if (toolName === "view_pdf_pages") {
-    if (record.capture === true) return "captured current page";
-    if (Array.isArray(record.pages) && record.pages.length) {
-      return `pages=${record.pages.join(", ")}`;
-    }
-    const question = normalizeText(record.question, 120);
-    return question ? `question="${question}"` : undefined;
-  }
-  if (toolName === "read_attachment") {
-    return record.attachFile === true ? "attached full file" : undefined;
-  }
-  return undefined;
-}
-
-function buildFileIoEntry(
-  activity: AgentPendingReadActivity,
-): AgentReadLedgerEntry | null {
-  const record = normalizeRecord(activity.input);
-  if (record.action !== "read") return null;
-  const filePath = normalizeText(record.filePath, 1024);
-  if (!filePath || !isLikelyMineruReadPath(filePath)) return null;
-  const target = findMineruPaperTarget(filePath, activity.request);
-  const offset = normalizePositiveInt(record.offset);
-  const length = normalizePositiveInt(record.length);
-  const fileName = fileNameForPath(filePath);
-  const detail =
-    offset !== undefined || length !== undefined
-      ? [
-          offset !== undefined ? `offset=${offset}` : "",
-          length ? `length=${length}` : "",
-        ]
-          .filter(Boolean)
-          .join(", ")
-      : undefined;
-  return {
-    key: [
-      "file_io",
-      filePath,
-      offset || "",
-      length || "",
-      target.itemId || "",
-      target.contextItemId || "",
-    ].join(":"),
-    toolName: "file_io",
-    label:
-      fileName === "full.md"
-        ? "Read MinerU full.md"
-        : fileName === "manifest.json"
-          ? "Read MinerU manifest"
-          : /\.(?:png|jpe?g|gif|webp|svg)$/i.test(fileName)
-            ? "Read MinerU figure/file"
-            : "Read MinerU file",
-    targetLabel: formatTargetLabel(target),
-    detail,
-    itemId: target.itemId,
-    contextItemId: target.contextItemId,
-    filePath,
-    count: 1,
-    firstSeenAt: activity.timestamp,
-    lastSeenAt: activity.timestamp,
-  };
-}
-
-function buildReadLedgerEntries(
-  activity: AgentPendingReadActivity,
-): AgentReadLedgerEntry[] {
-  if (activity.toolName === "file_io") {
-    const entry = buildFileIoEntry(activity);
-    return entry ? [entry] : [];
-  }
-  if (!READ_TOOL_NAMES.has(activity.toolName)) return [];
-  const detail = buildReadDetail(activity.toolName, activity.input);
-  const targets = extractTargets(activity.input, activity.request);
-  const effectiveTargets = targets.length
-    ? targets
-    : [defaultScopeTarget(activity.request)];
-  return effectiveTargets.map((target, index) => ({
-    key: [
-      activity.toolName,
-      target.itemId || "",
-      target.contextItemId || "",
-      target.title || "",
-      detail || "",
-      index,
-    ].join(":"),
-    toolName: activity.toolName,
-    label: activity.toolLabel || activity.toolName.replace(/_/g, " "),
-    targetLabel: formatTargetLabel(target),
-    detail,
-    itemId: target.itemId,
-    contextItemId: target.contextItemId,
-    count: 1,
-    firstSeenAt: activity.timestamp,
-    lastSeenAt: activity.timestamp,
-  }));
-}
-
-function upsertReadEntry(
-  ledger: Map<string, AgentReadLedgerEntry>,
-  entry: AgentReadLedgerEntry,
-): void {
-  const existing = ledger.get(entry.key);
-  if (existing) {
-    existing.count += 1;
-    existing.lastSeenAt = Math.max(existing.lastSeenAt, entry.lastSeenAt);
-    return;
-  }
-  ledger.set(entry.key, entry);
-  if (ledger.size <= MAX_LEDGER_ENTRIES) return;
-  const oldest = Array.from(ledger.values()).sort(
-    (a, b) => a.lastSeenAt - b.lastSeenAt,
-  )[0];
-  if (oldest) ledger.delete(oldest.key);
-}
-
 export function commitAgentReadActivities(params: {
   conversationKey: number;
   activities: AgentPendingReadActivity[];
-}): void {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
-  if (!conversationKey || !params.activities.length) return;
-  let ledger = readLedger.get(lifecycleKey(conversationKey));
-  if (!ledger) {
-    ledger = new Map();
-    readLedger.set(lifecycleKey(conversationKey), ledger);
-  }
-  for (const activity of params.activities) {
-    for (const entry of buildReadLedgerEntries(activity)) {
-      upsertReadEntry(ledger, entry);
-    }
-  }
+  resourceSignature?: string;
+}): Promise<void> {
+  return commitAgentCacheEvidenceActivities(params);
 }
 
 export function clearAgentReadLedger(): void {
-  readLedger.clear();
-}
-
-function truncateMiddle(value: string, maxLength = 96): string {
-  if (value.length <= maxLength) return value;
-  const head = value.slice(0, Math.floor(maxLength / 2) - 2);
-  const tail = value.slice(value.length - Math.floor(maxLength / 2) + 1);
-  return `${head}...${tail}`;
-}
-
-function formatReadLedgerLine(entry: AgentReadLedgerEntry): string {
-  const pieces = [entry.label];
-  if (entry.targetLabel) pieces.push(entry.targetLabel);
-  if (entry.detail) pieces.push(entry.detail);
-  if (entry.filePath) pieces.push(`path=${truncateMiddle(entry.filePath)}`);
-  if (entry.count > 1) pieces.push(`${entry.count}x`);
-  return `- ${pieces.join(" - ")}`;
+  clearAgentEvidenceCache();
 }
 
 export function buildAgentPriorReadContextBlock(params: {
   conversationKey: number;
+  request?: AgentRuntimeRequest;
+  resourceSignature?: string;
 }): string {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
-  if (!conversationKey) return "";
-  const ledger = readLedger.get(lifecycleKey(conversationKey));
-  if (!ledger?.size) return "";
-  const entries = Array.from(ledger.values())
-    .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
-    .slice(0, MAX_RENDERED_LEDGER_ENTRIES);
-  return [
-    "Already inspected in this agent conversation:",
-    ...entries.map(formatReadLedgerLine),
-  ].join("\n");
+  return buildAgentEvidenceContextBlock(params);
 }

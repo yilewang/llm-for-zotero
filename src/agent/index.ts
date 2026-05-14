@@ -4,11 +4,9 @@ import { ZoteroGateway } from "./services/zoteroGateway";
 import { PdfService } from "./services/pdfService";
 import { PdfPageService } from "./services/pdfPageService";
 import { RetrievalService } from "./services/retrievalService";
-import {
-  initAgentTraceStore,
-  getAgentRunTrace,
-} from "./store/traceStore";
+import { initAgentTraceStore, getAgentRunTrace } from "./store/traceStore";
 import { initConversationMemoryStore } from "./store/conversationMemory";
+import { initAgentEvidenceStore } from "./context/cacheManagement";
 import { createAgentModelAdapter } from "./model/factory";
 import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
 import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
@@ -23,7 +21,10 @@ import {
   isClaudeCodeModeEnabled,
 } from "../claudeCode/prefs";
 import { getClaudeCommandCatalog } from "../claudeCode/commandCatalog";
-import { getClaudeBridgeRuntime, resetClaudeBridgeRuntime } from "../claudeCode/runtime";
+import {
+  getClaudeBridgeRuntime,
+  resetClaudeBridgeRuntime,
+} from "../claudeCode/runtime";
 import { clearCodexZoteroMcpPreflightCache } from "../codexAppServer/mcpSetup";
 
 let runtime: AgentRuntime | null = null;
@@ -50,6 +51,7 @@ export async function initAgentSubsystem(): Promise<AgentRuntime> {
   if (runtime) return runtime;
   await initAgentTraceStore();
   await initConversationMemoryStore();
+  await initAgentEvidenceStore();
   _toolRegistry = createToolRegistry();
   runtime = new AgentRuntime({
     registry: _toolRegistry,
@@ -84,7 +86,10 @@ export function getCoreAgentRuntime(): AgentRuntime {
 
 export function getAgentRuntime(): AgentRuntime {
   const coreRuntime = getCoreAgentRuntime();
-  if (getConversationSystemPref() === "claude_code" && isClaudeCodeModeEnabled()) {
+  if (
+    getConversationSystemPref() === "claude_code" &&
+    isClaudeCodeModeEnabled()
+  ) {
     return getClaudeBridgeRuntime(coreRuntime) as unknown as AgentRuntime;
   }
   return coreRuntime;
@@ -190,11 +195,13 @@ export function getAgentApi() {
      * List all registered actions (name, description, inputSchema).
      */
     listActions: (mode?: "paper" | "library") => {
-      if (!_actionRegistry) throw new Error("Agent subsystem is not initialized");
+      if (!_actionRegistry)
+        throw new Error("Agent subsystem is not initialized");
       return _actionRegistry.listActions(mode);
     },
     getPaperScopedActionProfile: (name: string) => {
-      if (!_actionRegistry) throw new Error("Agent subsystem is not initialized");
+      if (!_actionRegistry)
+        throw new Error("Agent subsystem is not initialized");
       return _actionRegistry.getPaperScopedActionProfile(name);
     },
 
@@ -230,11 +237,14 @@ export function getAgentApi() {
         llm?: import("./actions").ActionLLMConfig;
       } = {},
     ) => {
-      if (!_actionRegistry || !_toolRegistry) throw new Error("Agent subsystem is not initialized");
-      if (!_zoteroGateway) throw new Error("Agent subsystem is not initialized");
+      if (!_actionRegistry || !_toolRegistry)
+        throw new Error("Agent subsystem is not initialized");
+      if (!_zoteroGateway)
+        throw new Error("Agent subsystem is not initialized");
       const libraryID =
         opts.libraryID ??
-        (Zotero as unknown as { Libraries: { userLibraryID: number } }).Libraries.userLibraryID;
+        (Zotero as unknown as { Libraries: { userLibraryID: number } })
+          .Libraries.userLibraryID;
       const ctx: import("./actions").ActionExecutionContext = {
         registry: _toolRegistry,
         zoteroGateway: _zoteroGateway,
@@ -242,7 +252,8 @@ export function getAgentApi() {
         libraryID,
         confirmationMode: opts.confirmationMode ?? "native_ui",
         onProgress: opts.onProgress ?? (() => {}),
-        requestConfirmation: opts.requestConfirmation ?? (async () => ({ approved: true })),
+        requestConfirmation:
+          opts.requestConfirmation ?? (async () => ({ approved: true })),
         llm: opts.llm,
         requestContext: opts.requestContext,
       };

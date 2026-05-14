@@ -106,7 +106,11 @@ function normalizeHistoryMessages(
 
 function buildFullUserMessage(
   request: AgentRuntimeRequest,
-  options: { priorReadBlock?: string } = {},
+  options: {
+    priorReadBlock?: string;
+    memoryBlock?: string;
+    turnGuidanceBlock?: string;
+  } = {},
 ): AgentModelMessage {
   const fullTextPaperKeySet = new Set(
     (request.fullTextPaperContexts || []).map(
@@ -226,6 +230,12 @@ function buildFullUserMessage(
   if (options.priorReadBlock) {
     contextLines.push(options.priorReadBlock);
   }
+  if (options.memoryBlock) {
+    contextLines.push(options.memoryBlock);
+  }
+  if (options.turnGuidanceBlock) {
+    contextLines.push(options.turnGuidanceBlock);
+  }
 
   const promptText = `${contextLines.join("\n")}\n\nUser request:\n${request.userText}`;
   const screenshots = Array.isArray(request.screenshots)
@@ -267,16 +277,23 @@ function buildFullUserMessage(
 function buildUserMessage(
   request: AgentRuntimeRequest,
   resourceContextPlan?: AgentResourceContextPlan,
+  options: { memoryBlock?: string; turnGuidanceBlock?: string } = {},
 ): AgentModelMessage {
   if (
     resourceContextPlan &&
     (resourceContextPlan.injection === "thin" ||
       resourceContextPlan.injection === "delta")
   ) {
-    return renderAgentResourceContextPlan(resourceContextPlan, request);
+    return renderAgentResourceContextPlan(
+      resourceContextPlan,
+      request,
+      options,
+    );
   }
   return buildFullUserMessage(request, {
     priorReadBlock: resourceContextPlan?.priorReadBlock,
+    memoryBlock: options.memoryBlock,
+    turnGuidanceBlock: options.turnGuidanceBlock,
   });
 }
 
@@ -293,10 +310,9 @@ function buildSystemPrompt(sections: PromptSection[]): string {
     .join("\n\n");
 }
 
-function collectGuidanceInstructions(
+function collectToolGuidanceInstructions(
   request: AgentRuntimeRequest,
   tools: AgentToolDefinition<any, any>[],
-  matchedSkillIds: ReadonlyArray<string>,
 ): string[] {
   const instructions = new Set<string>();
   for (const tool of tools) {
@@ -307,11 +323,19 @@ function collectGuidanceInstructions(
     if (instruction) instructions.add(instruction);
   }
 
-  // Inject only the skills that the caller (runtime.ts) pre-selected for
-  // this user turn. Skill selection happens once in getMatchedSkillIds,
-  // before this function is called — its result gates which instruction
-  // bodies ship in the system prompt so unrelated skills don't flood the
-  // context.
+  if (!instructions.size) return [];
+  return [
+    "The following stable tool guidance is provided because the user's message may be relevant to these capabilities. " +
+      "Use your judgement: only invoke a tool if it directly addresses what the user is asking for. " +
+      "Do NOT invoke a tool just because its guidance appears here — the user's actual intent takes priority.",
+    ...instructions,
+  ];
+}
+
+function collectSkillGuidanceInstructions(
+  matchedSkillIds: ReadonlyArray<string>,
+): string[] {
+  const instructions = new Set<string>();
   const activeSkillIds = new Set(matchedSkillIds);
   for (const skill of getAllSkills()) {
     if (!activeSkillIds.has(skill.id)) continue;
@@ -319,12 +343,13 @@ function collectGuidanceInstructions(
     if (instruction) instructions.add(instruction);
   }
   if (!instructions.size) return [];
-  return [
-    "The following tool guidance is provided because the user's message may be relevant to these capabilities. " +
-      "Use your judgement: only invoke a tool if it directly addresses what the user is asking for. " +
-      "Do NOT invoke a tool just because its guidance appears here — the user's actual intent takes priority.",
-    ...instructions,
-  ];
+  return ["Skill guidance loaded for this turn:", ...instructions];
+}
+
+function buildTurnGuidanceBlock(instructions: string[]): string {
+  const lines = instructions.map((entry) => entry.trim()).filter(Boolean);
+  if (!lines.length) return "";
+  return ["Current-turn dynamic agent guidance:", ...lines].join("\n\n");
 }
 
 function buildAutoReadInstruction(
@@ -453,6 +478,12 @@ export async function buildAgentInitialMessages(
     buildFigureMineruInstruction(request, matchedSkillIds),
     buildWriteNoteFileInstruction(request, matchedSkillIds),
   ].filter(Boolean);
+  const turnGuidanceBlock = buildTurnGuidanceBlock([
+    autoReadInstruction,
+    ...workflowParityInstructions,
+    ...collectToolGuidanceInstructions(request, tools),
+    ...collectSkillGuidanceInstructions(matchedSkillIds),
+  ]);
 
   const sections: PromptSection[] = [
     {
@@ -479,22 +510,6 @@ export async function buildAgentInitialMessages(
       id: "notes-directory-config",
       lines: [buildNotesDirectoryConfigSection()],
     },
-    {
-      id: "tool-guidance",
-      lines: collectGuidanceInstructions(request, tools, matchedSkillIds),
-    },
-    {
-      id: "agent-memory",
-      lines: [memoryBlock],
-    },
-    {
-      id: "auto-read",
-      lines: [autoReadInstruction],
-    },
-    {
-      id: "workflow-parity",
-      lines: workflowParityInstructions,
-    },
   ];
 
   return [
@@ -503,6 +518,9 @@ export async function buildAgentInitialMessages(
       content: buildSystemPrompt(sections),
     },
     ...normalizeHistoryMessages(request),
-    buildUserMessage(request, resourceContextPlan),
+    buildUserMessage(request, resourceContextPlan, {
+      memoryBlock,
+      turnGuidanceBlock,
+    }),
   ];
 }

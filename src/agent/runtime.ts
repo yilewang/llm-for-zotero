@@ -32,6 +32,7 @@ import {
   buildAgentResourceContextPlan,
   commitAgentReadActivities,
   commitAgentResourceContextPlan,
+  hydrateAgentEvidenceCache,
   type AgentPendingReadActivity,
 } from "./context/resourceLifecycle";
 import {
@@ -539,12 +540,13 @@ export class AgentRuntime {
     //      forcedSkillIds (slash menu) and runtime-context forces
     //      (e.g. notes-directory nickname mention).
     //   3. matchedSkills is threaded into buildAgentInitialMessages so
-    //      only those skills' instructions ship in the system prompt,
+    //      only those skills' instructions ship in current-turn guidance,
     //      and emitted as trace events for UI visibility.
-    // The resulting system prompt is reused across every model inference
+    // The resulting prompt package is reused across every model inference
     // inside the agent loop — no per-step classification cost.
     const classifiedSkillIds = await detectSkillIntent(request, getAllSkills());
     const matchedSkills = getMatchedSkillIds(request, classifiedSkillIds);
+    await hydrateAgentEvidenceCache(request.conversationKey);
     const resourceContextPlan = buildAgentResourceContextPlan(request);
     request.contextCache = resourceContextPlan.contextCache;
     await emit({
@@ -598,9 +600,10 @@ export class AgentRuntime {
       await finishAgentRun(runId, status, finalText);
       if (status === "completed") {
         commitAgentResourceContextPlan(resourceContextPlan);
-        commitAgentReadActivities({
+        await commitAgentReadActivities({
           conversationKey: request.conversationKey,
           activities: pendingReadActivities,
+          resourceSignature: resourceContextPlan.resourceSignature,
         });
         if (finalText) {
           await recordAgentTurn(
@@ -813,15 +816,11 @@ export class AgentRuntime {
             ...(typeof percentage === "number" ? { percentage } : {}),
             ...(sessionId ? { sessionId } : {}),
             ...(model ? { model } : {}),
-            ...(typeof cacheReadTokens === "number"
-              ? { cacheReadTokens }
-              : {}),
+            ...(typeof cacheReadTokens === "number" ? { cacheReadTokens } : {}),
             ...(typeof cacheWriteTokens === "number"
               ? { cacheWriteTokens }
               : {}),
-            ...(typeof cacheMissTokens === "number"
-              ? { cacheMissTokens }
-              : {}),
+            ...(typeof cacheMissTokens === "number" ? { cacheMissTokens } : {}),
             ...(typeof cacheHitRatio === "number" ? { cacheHitRatio } : {}),
             ...(cacheProvider ? { cacheProvider } : {}),
           });
@@ -929,6 +928,8 @@ export class AgentRuntime {
               ? executedCall.toolDefinition.presentation.label
               : undefined,
           input: executedCall.input,
+          content: toolResult.content,
+          artifacts: toolResult.artifacts,
           request,
           timestamp: this.now(),
         });
