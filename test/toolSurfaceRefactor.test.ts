@@ -319,6 +319,63 @@ describe("semantic tool surface", function () {
     }
   });
 
+  it("paper_read overview dedupes default paper contexts and traces the source label", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "Memory Palace Paper",
+      firstCreator: "Chandra et al.",
+      year: "2025",
+    };
+    let overviewCalls = 0;
+    const tool = createPaperReadTool(
+      {
+        getOverviewExcerpt: async () => {
+          overviewCalls += 1;
+          return {
+            backend: "pdf",
+            text: "Overview text.",
+            citationLabel: "Chandra et al., 2025",
+            sourceLabel: "(Chandra et al., 2025)",
+            paperContext,
+          };
+        },
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [paperContext, { ...paperContext }],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({ mode: "overview" });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = await tool.execute(validated.value, baseContext);
+    assert.equal(overviewCalls, 1);
+    assert.lengthOf((output as { results?: unknown[] }).results || [], 1);
+    const onSuccess = tool.presentation?.summaries?.onSuccess;
+    assert.isFunction(onSuccess);
+    if (typeof onSuccess !== "function") return;
+    assert.equal(
+      onSuccess({ label: "Read Paper", content: output }),
+      "Read paper overview from (Chandra et al., 2025)",
+    );
+    assert.equal(
+      onSuccess({
+        label: "Read Paper",
+        content: {
+          mode: "overview",
+          results: [
+            { sourceLabel: "(Chandra et al., 2025)" },
+            { sourceLabel: "(Miller, 2024)" },
+          ],
+        },
+      }),
+      "Read paper overviews from 2 sources",
+    );
+  });
+
   it("paper_read targeted returns grouped per-paper evidence while preserving flat results", async function () {
     const firstPaper = {
       itemId: 11,
@@ -397,6 +454,141 @@ describe("semantic tool surface", function () {
       output.papers?.[1]?.passages?.[0]?.text,
       "Second method passage.",
     );
+    const onSuccess = tool.presentation?.summaries?.onSuccess;
+    assert.isFunction(onSuccess);
+    if (typeof onSuccess !== "function") return;
+    assert.equal(
+      onSuccess({ label: "Read Paper", content: output }),
+      "Read 2 passages from 2 sources",
+    );
+  });
+
+  it("paper_read targeted dedupes duplicate default paper contexts", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "Memory Palace Paper",
+      firstCreator: "Chandra et al.",
+      year: "2025",
+    };
+    let retrievedPapers: unknown[] = [];
+    const tool = createPaperReadTool(
+      {
+        ensurePaperContext: async () => ({ chunks: ["memory"] }),
+      } as never,
+      {
+        retrieveEvidence: async ({
+          papers,
+        }: {
+          papers: (typeof paperContext)[];
+        }) => {
+          retrievedPapers = papers;
+          return [
+            {
+              paperContext,
+              chunkIndex: 1,
+              sectionLabel: "Results",
+              text: "First memory palace passage.",
+              score: 4.5,
+              citationLabel: "Chandra et al., 2025",
+              sourceLabel: "(Chandra et al., 2025)",
+            },
+            {
+              paperContext,
+              chunkIndex: 2,
+              sectionLabel: "Discussion",
+              text: "Second memory palace passage.",
+              score: 3.5,
+              citationLabel: "Chandra et al., 2025",
+              sourceLabel: "(Chandra et al., 2025)",
+            },
+          ];
+        },
+      } as never,
+      {} as never,
+      {
+        listPaperContexts: () => [paperContext, { ...paperContext }],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "targeted",
+      query: "memory palace",
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, baseContext)) as {
+      results?: unknown[];
+      papers?: unknown[];
+    };
+    assert.lengthOf(retrievedPapers, 1);
+    assert.lengthOf(output.results || [], 2);
+    assert.lengthOf(output.papers || [], 1);
+    const onSuccess = tool.presentation?.summaries?.onSuccess;
+    assert.isFunction(onSuccess);
+    if (typeof onSuccess !== "function") return;
+    assert.equal(
+      onSuccess({ label: "Read Paper", content: output }),
+      "Read 2 passages from (Chandra et al., 2025)",
+    );
+  });
+
+  it("paper_read targeted dedupes duplicate explicit targets", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "Memory Palace Paper",
+      firstCreator: "Chandra et al.",
+      year: "2025",
+    };
+    let retrievedPapers: unknown[] = [];
+    const tool = createPaperReadTool(
+      {
+        ensurePaperContext: async () => ({ chunks: ["memory"] }),
+      } as never,
+      {
+        retrieveEvidence: async ({
+          papers,
+        }: {
+          papers: (typeof paperContext)[];
+        }) => {
+          retrievedPapers = papers;
+          return [
+            {
+              paperContext,
+              chunkIndex: 1,
+              sectionLabel: "Results",
+              text: "Memory palace passage.",
+              score: 4.5,
+              citationLabel: "Chandra et al., 2025",
+              sourceLabel: "(Chandra et al., 2025)",
+            },
+          ];
+        },
+      } as never,
+      {} as never,
+      {
+        listPaperContexts: () => [],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "targeted",
+      query: "memory palace",
+      targets: [
+        { itemId: 11, contextItemId: 22 },
+        { itemId: 11, contextItemId: 22 },
+      ],
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, baseContext)) as {
+      results?: unknown[];
+      papers?: unknown[];
+    };
+    assert.lengthOf(retrievedPapers, 1);
+    assert.lengthOf(output.results || [], 1);
+    assert.lengthOf(output.papers || [], 1);
   });
 
   it("paper_read targeted success text counts passages separately from papers", function () {
@@ -415,7 +607,38 @@ describe("semantic tool surface", function () {
           papers: [{ sourceLabel: "(Chandra et al., 2025)", passages: [] }],
         },
       }),
-      "Read 8 passages from 1 paper",
+      "Read 8 passages from (Chandra et al., 2025)",
+    );
+    assert.equal(
+      onSuccess({
+        label: "Read Paper",
+        content: {
+          mode: "targeted",
+          results: Array.from({ length: 4 }, (_, index) => ({
+            chunkIndex: index,
+          })),
+          papers: [
+            { sourceLabel: "(Chandra et al., 2025)", passages: [] },
+            { sourceLabel: "(Miller, 2024)", passages: [] },
+          ],
+        },
+      }),
+      "Read 4 passages from 2 sources",
+    );
+    assert.equal(
+      onSuccess({
+        label: "Read Paper",
+        content: {
+          mode: "targeted",
+          papers: [
+            {
+              sourceLabel: "(Chandra et al., 2025)",
+              passages: [{ text: "one" }, { text: "two" }],
+            },
+          ],
+        },
+      }),
+      "Read 2 passages from (Chandra et al., 2025)",
     );
   });
 

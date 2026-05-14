@@ -299,6 +299,44 @@ function buildTargetedPaperGroups(
   });
 }
 
+function getUniqueSourceLabels(entries: unknown[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const record = validateObject<Record<string, unknown>>(entry)
+      ? entry
+      : null;
+    const sourceLabel = normalizeString(record?.sourceLabel);
+    if (!sourceLabel || seen.has(sourceLabel)) continue;
+    seen.add(sourceLabel);
+    out.push(sourceLabel);
+  }
+  return out;
+}
+
+function countGroupedPassages(papers: unknown[]): number {
+  return papers.reduce<number>((count, paper) => {
+    const record = validateObject<Record<string, unknown>>(paper)
+      ? paper
+      : null;
+    const passages = Array.isArray(record?.passages) ? record.passages : [];
+    return count + passages.length;
+  }, 0);
+}
+
+function formatSourcePhrase(
+  sourceLabels: string[],
+  fallbackPaperCount?: number,
+): string | null {
+  if (sourceLabels.length === 1) return sourceLabels[0];
+  if (sourceLabels.length > 1) return `${sourceLabels.length} sources`;
+  if (fallbackPaperCount && fallbackPaperCount > 0) {
+    const paperLabel = fallbackPaperCount === 1 ? "paper" : "papers";
+    return `${fallbackPaperCount} ${paperLabel}`;
+  }
+  return null;
+}
+
 export function createPaperReadTool(
   pdfService: PdfService,
   retrievalService: RetrievalService,
@@ -383,19 +421,37 @@ export function createPaperReadTool(
         onSuccess: ({ content }) => {
           const c = content as Record<string, unknown> | null;
           const mode = typeof c?.mode === "string" ? c.mode : undefined;
-          const results = Array.isArray(c?.results) ? c.results.length : 1;
-          const papers = Array.isArray(c?.papers) ? c.papers.length : undefined;
+          const results = Array.isArray(c?.results) ? c.results : undefined;
+          const papers = Array.isArray(c?.papers) ? c.papers : undefined;
           if (mode === "targeted") {
-            if (papers !== undefined) {
-              const passageLabel = results === 1 ? "passage" : "passages";
-              const paperLabel = papers === 1 ? "paper" : "papers";
-              return `Read ${results} ${passageLabel} from ${papers} ${paperLabel}`;
+            const passageCount =
+              results?.length ?? (papers ? countGroupedPassages(papers) : 0);
+            if (passageCount > 0) {
+              const passageLabel = passageCount === 1 ? "passage" : "passages";
+              const sourcePhrase = formatSourcePhrase(
+                getUniqueSourceLabels(papers || results || []),
+                papers?.length,
+              );
+              return sourcePhrase
+                ? `Read ${passageCount} ${passageLabel} from ${sourcePhrase}`
+                : `Read ${passageCount} ${passageLabel}`;
             }
-            return results > 1
-              ? `Read ${results} passages`
-              : "Read paper content";
+            return "Read paper content";
           }
-          return results > 1 ? `Read ${results} papers` : "Read paper content";
+          if (mode === "overview" && results?.length) {
+            const sourcePhrase = formatSourcePhrase(
+              getUniqueSourceLabels(results),
+            );
+            if (sourcePhrase) {
+              const overviewLabel =
+                results.length === 1 ? "paper overview" : "paper overviews";
+              return `Read ${overviewLabel} from ${sourcePhrase}`;
+            }
+          }
+          const resultCount = results?.length ?? 1;
+          return resultCount > 1
+            ? `Read ${resultCount} papers`
+            : "Read paper content";
         },
       },
     },

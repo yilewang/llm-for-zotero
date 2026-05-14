@@ -91,6 +91,29 @@ function resolveTarget(
   return null;
 }
 
+function dedupePaperContextRefs(
+  paperContexts: PaperContextRef[],
+): PaperContextRef[] {
+  const out: PaperContextRef[] = [];
+  const seen = new Set<string>();
+  for (const paperContext of paperContexts) {
+    if (
+      !paperContext ||
+      !Number.isFinite(paperContext.itemId) ||
+      !Number.isFinite(paperContext.contextItemId)
+    ) {
+      continue;
+    }
+    const key = `${Math.floor(Number(paperContext.itemId))}:${Math.floor(
+      Number(paperContext.contextItemId),
+    )}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(paperContext);
+  }
+  return out;
+}
+
 /**
  * Resolve paper contexts from the tool input, falling back to the
  * request-level paper contexts when no explicit target is provided.
@@ -113,7 +136,7 @@ export function resolveDefaultTargets(
       }
       resolved.push(paperContext);
     }
-    return resolved.slice(0, maxCount);
+    return dedupePaperContextRefs(resolved).slice(0, maxCount);
   }
   if (target) {
     const paperContext = resolveTarget(target, zoteroGateway);
@@ -122,7 +145,9 @@ export function resolveDefaultTargets(
     }
     return [paperContext];
   }
-  return zoteroGateway.listPaperContexts(context.request).slice(0, maxCount);
+  return dedupePaperContextRefs(
+    zoteroGateway.listPaperContexts(context.request),
+  ).slice(0, maxCount);
 }
 
 // ---------------------------------------------------------------------------
