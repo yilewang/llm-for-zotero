@@ -1,6 +1,7 @@
 import type { AgentModelMessage, AgentRuntimeRequest } from "../types";
 import type { PaperContextRef } from "../../shared/types";
 import {
+  buildPaperQuoteCitationGuidance,
   formatPaperCitationLabel,
   formatPaperSourceLabel,
 } from "../../modules/contextPanel/paperAttribution";
@@ -67,6 +68,7 @@ export type AgentResourceContextPlan = {
   injection: AgentContextInjection;
   contextCache?: ContextCachePlan;
   resourceSignature: string;
+  stableContextBlock: string;
   resourceSnapshot: AgentResourceSnapshot;
   resourceDelta?: AgentResourceDelta;
   resourceDeltaCounts?: AgentResourceDeltaCounts;
@@ -547,10 +549,10 @@ export function buildAgentResourceContextPlan(
     request,
     resourceSignature: signature,
   });
+  const stableContextBlock = buildAgentStableResourceContextBlock(request);
   const contextCache = planAgentContextCache({
     request,
-    resourceSnapshot: snapshot,
-    evidenceBlock: priorReadBlock,
+    stableContextText: stableContextBlock,
   });
   return {
     conversationKey,
@@ -558,6 +560,7 @@ export function buildAgentResourceContextPlan(
     injection: resolveAgentContextInjection({ request, lifecycleState }),
     contextCache,
     resourceSignature: signature,
+    stableContextBlock,
     resourceSnapshot: snapshot,
     resourceDelta: delta,
     resourceDeltaCounts: getAgentResourceDeltaCounts(delta),
@@ -598,6 +601,77 @@ function buildScopeIdentityLines(request: AgentRuntimeRequest): string[] {
     }
   }
   return lines;
+}
+
+export function buildAgentStableResourceContextBlock(
+  request: AgentRuntimeRequest,
+): string {
+  const fullTextPaperKeySet = new Set(
+    (request.fullTextPaperContexts || []).map((entry) => paperKey(entry)),
+  );
+  const retrievalOnlyPapers = (request.selectedPaperContexts || []).filter(
+    (entry) => !fullTextPaperKeySet.has(paperKey(entry)),
+  );
+  const citationPaperRefs = [
+    ...(request.selectedTextPaperContexts || []).filter(
+      (entry): entry is PaperContextRef => Boolean(entry),
+    ),
+    ...retrievalOnlyPapers,
+    ...(request.fullTextPaperContexts || []),
+  ];
+  const lines = [
+    "Stable Zotero resource context:",
+    ...buildScopeIdentityLines(request),
+  ];
+
+  if (citationPaperRefs.length) {
+    lines.push(
+      "Citation/source label rule: for direct quotes and substantive paper-grounded claims, use the exact sourceLabel shown for the relevant paper.",
+    );
+  }
+  if (retrievalOnlyPapers.length) {
+    lines.push(
+      "Retrieval-only paper refs:",
+      ...retrievalOnlyPapers.map((entry) =>
+        formatPaperResourceLine("Retrieval paper", entry),
+      ),
+    );
+  }
+  if (request.fullTextPaperContexts?.length) {
+    lines.push(
+      "Full-text paper refs for this turn:",
+      ...request.fullTextPaperContexts.map((entry) =>
+        formatPaperResourceLine("Full-text paper", entry),
+      ),
+      ...request.fullTextPaperContexts
+        .flatMap((entry) => buildPaperQuoteCitationGuidance(entry))
+        .filter(Boolean),
+    );
+  }
+  if (request.selectedCollectionContexts?.length) {
+    lines.push(
+      "Selected Zotero collection scopes:",
+      ...request.selectedCollectionContexts.map(
+        (entry, index) =>
+          `- Collection ${index + 1}: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
+      ),
+      "Treat these collections as scoped candidate sets. Use library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
+      "If the user explicitly asks to read or analyze the full text of every paper in a collection, plan a batch workflow: enumerate papers, read/process them in bounded batches, create compact per-paper digests with evidence, then synthesize.",
+    );
+  }
+
+  const resourceRecords = [
+    ...buildAttachmentResourceRecords(request),
+    ...buildScreenshotResourceRecords(request),
+  ];
+  if (resourceRecords.length) {
+    lines.push(
+      "Current attached visual/file resources:",
+      ...resourceRecords.map((record) => record.line),
+    );
+  }
+
+  return lines.filter(Boolean).join("\n");
 }
 
 function appendBoundedDeltaSection(params: {
@@ -653,7 +727,7 @@ export function renderAgentResourceContextPlan(
   request: AgentRuntimeRequest,
   options: { memoryBlock?: string; turnGuidanceBlock?: string } = {},
 ): AgentModelMessage {
-  const lines = buildScopeIdentityLines(request);
+  const lines: string[] = [];
   if (plan.priorReadBlock) lines.push(plan.priorReadBlock);
   if (options.memoryBlock) lines.push(options.memoryBlock);
   if (options.turnGuidanceBlock) lines.push(options.turnGuidanceBlock);
@@ -665,9 +739,10 @@ export function renderAgentResourceContextPlan(
   } else if (plan.injection === "delta" && plan.resourceDelta) {
     lines.push(buildAgentResourceDeltaBlock(plan.resourceDelta));
   }
+  const contextText = lines.filter(Boolean).join("\n");
   return {
     role: "user",
-    content: `${lines.filter(Boolean).join("\n")}\n\nUser request:\n${
+    content: `${contextText ? `${contextText}\n\n` : ""}User request:\n${
       request.userText
     }`,
   };

@@ -275,6 +275,11 @@ describe("codexAppServerInput", function () {
         content: "Follow Zotero-specific tool guidance.",
       },
       {
+        role: "system",
+        content: "Stable Zotero resource context.",
+        cachePolicy: "stable-prefix",
+      },
+      {
         role: "assistant",
         content: "I can inspect your library.",
       },
@@ -294,7 +299,7 @@ describe("codexAppServerInput", function () {
 
     assert.equal(
       prepared.developerInstructions,
-      "Follow Zotero-specific tool guidance.",
+      "Follow Zotero-specific tool guidance.\n\nStable Zotero resource context.",
     );
     assert.deepEqual(prepared.historyItemsToInject, [
       {

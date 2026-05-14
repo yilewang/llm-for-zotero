@@ -11,13 +11,9 @@ import { resolveProviderCapabilities } from "../../providers";
 import type { ProviderCapabilities } from "../../providers";
 import { buildNotesDirectoryConfigSection } from "../../utils/notesDirectoryConfig";
 import { buildRuntimePlatformGuidanceText } from "../../utils/runtimePlatform";
+import { formatPaperSourceLabel } from "../../modules/contextPanel/paperAttribution";
 import {
-  buildPaperQuoteCitationGuidance,
-  formatPaperCitationLabel,
-  formatPaperSourceLabel,
-} from "../../modules/contextPanel/paperAttribution";
-import type { PaperContextRef } from "../../shared/types";
-import {
+  buildAgentStableResourceContextBlock,
   renderAgentResourceContextPlan,
   type AgentResourceContextPlan,
 } from "../context/resourceLifecycle";
@@ -37,22 +33,6 @@ function resolveRequestProviderCapabilities(
     authMode: request.authMode,
     apiBase: request.apiBase,
   });
-}
-
-function formatPaperRefLine(
-  prefix: string,
-  entry: PaperContextRef,
-  index: number,
-): string {
-  const metadata = [
-    `itemId=${entry.itemId}`,
-    `contextItemId=${entry.contextItemId}`,
-    `citationLabel=${formatPaperCitationLabel(entry)}`,
-    `sourceLabel=${formatPaperSourceLabel(entry)}`,
-    entry.citationKey ? `citationKey=${entry.citationKey}` : "",
-    entry.mineruCacheDir ? `mineruCacheDir=${entry.mineruCacheDir}` : "",
-  ].filter(Boolean);
-  return `- ${prefix} ${index + 1}: ${entry.title} [${metadata.join(", ")}]`;
 }
 
 export function stringifyMessageContent(
@@ -112,30 +92,9 @@ function buildFullUserMessage(
     turnGuidanceBlock?: string;
   } = {},
 ): AgentModelMessage {
-  const fullTextPaperKeySet = new Set(
-    (request.fullTextPaperContexts || []).map(
-      (entry) => `${entry.itemId}:${entry.contextItemId}`,
-    ),
-  );
-  const retrievalOnlyPapers = (request.selectedPaperContexts || []).filter(
-    (entry) =>
-      !fullTextPaperKeySet.has(`${entry.itemId}:${entry.contextItemId}`),
-  );
-  const contextLines: string[] = [
-    "Current Zotero context summary:",
-    `- Conversation key: ${request.conversationKey}`,
-  ];
-  if (request.activeItemId) {
-    contextLines.push(`- Active item ID: ${request.activeItemId}`);
-  }
+  const contextLines: string[] = [];
   if (request.activeNoteContext) {
     const note = request.activeNoteContext;
-    contextLines.push(
-      `- Active note: ${note.title} [noteId=${note.noteId}, kind=${note.noteKind}]`,
-    );
-    if (note.parentItemId) {
-      contextLines.push(`- Active note parent item ID: ${note.parentItemId}`);
-    }
     contextLines.push(
       `Current note content for this turn:\n"""\n${note.noteText}\n"""`,
     );
@@ -165,54 +124,6 @@ function buildFullUserMessage(
       .join("\n\n");
     contextLines.push(selectedTextBlock);
   }
-  const citationPaperRefs = [
-    ...(request.selectedTextPaperContexts || []).filter(
-      (entry): entry is PaperContextRef => Boolean(entry),
-    ),
-    ...retrievalOnlyPapers,
-    ...(request.fullTextPaperContexts || []),
-  ];
-  if (citationPaperRefs.length) {
-    contextLines.push(
-      "Citation/source label rule: for direct quotes and substantive paper-grounded claims, use the exact sourceLabel shown for the relevant paper.",
-    );
-  }
-  if (retrievalOnlyPapers.length) {
-    contextLines.push(
-      "Retrieval-only paper refs:",
-      ...retrievalOnlyPapers.map((entry, index) =>
-        formatPaperRefLine("Retrieval paper", entry, index),
-      ),
-    );
-  }
-  if (
-    Array.isArray(request.fullTextPaperContexts) &&
-    request.fullTextPaperContexts.length
-  ) {
-    contextLines.push(
-      "Full-text paper refs for this turn:",
-      ...request.fullTextPaperContexts.map((entry, index) =>
-        formatPaperRefLine("Full-text paper", entry, index),
-      ),
-      ...request.fullTextPaperContexts
-        .flatMap((entry) => buildPaperQuoteCitationGuidance(entry))
-        .filter(Boolean),
-    );
-  }
-  if (
-    Array.isArray(request.selectedCollectionContexts) &&
-    request.selectedCollectionContexts.length
-  ) {
-    contextLines.push(
-      "Selected Zotero collection scopes:",
-      ...request.selectedCollectionContexts.map(
-        (entry, index) =>
-          `- Collection ${index + 1}: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
-      ),
-      "Treat these collections as scoped candidate sets. Use library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
-      "If the user explicitly asks to read or analyze the full text of every paper in a collection, plan a batch workflow: enumerate papers, read/process them in bounded batches, create compact per-paper digests with evidence, then synthesize.",
-    );
-  }
   const pdfAttachments = (request.attachments || []).filter(
     (a) =>
       a.category === "pdf" &&
@@ -237,7 +148,9 @@ function buildFullUserMessage(
     contextLines.push(options.turnGuidanceBlock);
   }
 
-  const promptText = `${contextLines.join("\n")}\n\nUser request:\n${request.userText}`;
+  const promptText = `${
+    contextLines.length ? `${contextLines.join("\n")}\n\n` : ""
+  }User request:\n${request.userText}`;
   const screenshots = Array.isArray(request.screenshots)
     ? request.screenshots.filter((entry) => Boolean(entry))
     : [];
@@ -511,12 +424,24 @@ export async function buildAgentInitialMessages(
       lines: [buildNotesDirectoryConfigSection()],
     },
   ];
+  const stableResourceBlock =
+    resourceContextPlan?.stableContextBlock ||
+    buildAgentStableResourceContextBlock(request);
 
   return [
     {
       role: "system",
       content: buildSystemPrompt(sections),
     },
+    ...(stableResourceBlock
+      ? [
+          {
+            role: "system" as const,
+            content: stableResourceBlock,
+            cachePolicy: "stable-prefix" as const,
+          },
+        ]
+      : []),
     ...normalizeHistoryMessages(request),
     buildUserMessage(request, resourceContextPlan, {
       memoryBlock,

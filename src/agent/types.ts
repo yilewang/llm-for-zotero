@@ -395,6 +395,7 @@ export type AgentModelContentPart =
 export type AgentSystemMessage = {
   role: "system";
   content: string | AgentModelContentPart[];
+  cachePolicy?: "stable-prefix";
 };
 
 export type AgentUserMessage = {

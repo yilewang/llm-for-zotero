@@ -488,17 +488,17 @@ function splitAgentContent(content: AgentModelMessage["content"]): {
   };
 }
 
-function extractFirstAgentSystemInstruction(
+function extractAgentSystemInstructions(
   messages: readonly AgentModelMessage[],
 ): string | undefined {
+  const instructionParts: string[] = [];
   for (const message of messages) {
     if (message.role !== "system") continue;
     const { text } = splitAgentContent(message.content);
     const normalized = text.trim();
-    if (normalized) return normalized;
-    return undefined;
+    if (normalized) instructionParts.push(normalized);
   }
-  return undefined;
+  return instructionParts.length ? instructionParts.join("\n\n") : undefined;
 }
 
 function getAgentRoleLabel(
@@ -601,7 +601,7 @@ export async function prepareCodexAppServerAgentTurn(
     (message): message is Exclude<AgentModelMessage, { role: "tool" }> =>
       message.role !== "tool",
   );
-  const developerInstructions = extractFirstAgentSystemInstruction(messages);
+  const developerInstructions = extractAgentSystemInstructions(messages);
   const visibleHistoryMessages = seededMessages.filter(
     (message) => message.role !== "system",
   );

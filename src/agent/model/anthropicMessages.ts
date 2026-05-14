@@ -43,6 +43,11 @@ type AnthropicMessage = {
   content: AnthropicContentBlock[];
 };
 
+type AnthropicSystemBlock = {
+  text: string;
+  cachePolicy?: "stable-prefix";
+};
+
 type AnthropicResponse = {
   id?: unknown;
   content?: unknown[];
@@ -163,16 +168,21 @@ async function buildInitialAnthropicMessages(
   messages: AgentModelMessage[],
   options: AnthropicBuildOptions,
 ): Promise<{
-  system?: string;
+  systemBlocks: AnthropicSystemBlock[];
   messages: AnthropicMessage[];
 }> {
-  const systemParts: string[] = [];
+  const systemBlocks: AnthropicSystemBlock[] = [];
   const anthropicMessages: AnthropicMessage[] = [];
   for (const message of messages) {
     if (message.role === "tool") continue;
     if (message.role === "system") {
       const text = stringifyMessageContent(message.content);
-      if (text) systemParts.push(text);
+      if (text) {
+        systemBlocks.push({
+          text,
+          cachePolicy: message.cachePolicy,
+        });
+      }
       continue;
     }
     if (message.role === "assistant") {
@@ -198,9 +208,34 @@ async function buildInitialAnthropicMessages(
     });
   }
   return {
-    system: systemParts.length ? systemParts.join("\n\n") : undefined,
+    systemBlocks,
     messages: anthropicMessages,
   };
+}
+
+function buildAnthropicSystemPayload(
+  systemBlocks: AnthropicSystemBlock[] | undefined,
+  cacheControl:
+    | {
+        type: "ephemeral";
+        ttl?: "5m" | "1h";
+      }
+    | undefined,
+): string | AnthropicContentBlock[] | undefined {
+  const blocks = (systemBlocks || []).filter((block) => block.text.trim());
+  if (!blocks.length) return undefined;
+  if (!cacheControl) {
+    return blocks.map((block) => block.text).join("\n\n");
+  }
+  const stableIndex = blocks.findIndex(
+    (block) => block.cachePolicy === "stable-prefix",
+  );
+  const targetIndex = stableIndex >= 0 ? stableIndex : blocks.length - 1;
+  return blocks.map((block, index) => ({
+    type: "text",
+    text: block.text,
+    ...(index === targetIndex ? { cache_control: cacheControl } : {}),
+  }));
 }
 
 async function buildAnthropicContinuationMessages(
@@ -482,7 +517,7 @@ function buildAssistantConversationMessage(step: {
 
 export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
   private conversationMessages: AnthropicMessage[] | null = null;
-  private systemPrompt: string | undefined;
+  private systemBlocks: AnthropicSystemBlock[] | undefined;
 
   getCapabilities(request: AgentRuntimeRequest): AgentModelCapabilities {
     return {
@@ -510,7 +545,7 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
     );
     if (!this.conversationMessages) {
       this.conversationMessages = initial.messages;
-      this.systemPrompt = initial.system;
+      this.systemBlocks = initial.systemBlocks;
     }
     const continuation = await buildAnthropicContinuationMessages(
       getToolContinuationMessages(params.messages),
@@ -544,15 +579,10 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
         request.contextCache.requestHints?.anthropicCacheControl
           ? request.contextCache.requestHints.anthropicCacheControl
           : undefined;
-      const system = cacheControl && this.systemPrompt
-        ? [
-            {
-              type: "text",
-              text: this.systemPrompt,
-              cache_control: cacheControl,
-            },
-          ]
-        : this.systemPrompt;
+      const system = buildAnthropicSystemPayload(
+        this.systemBlocks,
+        cacheControl,
+      );
       return {
         model: request.model,
         max_tokens: maxTokens,

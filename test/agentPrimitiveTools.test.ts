@@ -15,7 +15,7 @@ import { createApplyTagsTool } from "../src/agent/tools/write/applyTags";
 import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
 import { createUndoLastActionTool } from "../src/agent/tools/write/undoLastAction";
 import { createZoteroScriptTool } from "../src/agent/tools/write/zoteroScript";
-import type { AgentToolContext } from "../src/agent/types";
+import type { AgentModelMessage, AgentToolContext } from "../src/agent/types";
 import type { PaperContextRef } from "../src/shared/types";
 import type { PdfContext } from "../src/modules/contextPanel/types";
 
@@ -53,6 +53,24 @@ function makePdfContext(chunks: string[]): PdfContext {
       : 0,
     fullLength: chunks.join("\n\n").length,
   };
+}
+
+function messageText(message: AgentModelMessage | undefined): string {
+  if (!message) return "";
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("\n");
+}
+
+function stableSystemText(messages: AgentModelMessage[]): string {
+  return messages
+    .filter(
+      (message) =>
+        message.role === "system" && message.cachePolicy === "stable-prefix",
+    )
+    .map(messageText)
+    .join("\n\n");
 }
 
 function createFakeZoteroItem() {
@@ -453,21 +471,21 @@ describe("primitive agent tools", function () {
       [],
       [],
     );
-    const userMessage = messages[messages.length - 1];
-    const userText =
-      typeof userMessage?.content === "string" ? userMessage.content : "";
+    const resourceText = stableSystemText(messages);
+    const userText = messageText(messages[messages.length - 1]);
 
-    assert.include(userText, "Selected Zotero collection scopes:");
-    assert.include(userText, "Methods [collectionId=55, libraryID=1]");
+    assert.include(resourceText, "Selected Zotero collection scopes:");
+    assert.include(resourceText, "Methods [collectionId=55, libraryID=1]");
     assert.include(
-      userText,
+      resourceText,
       "library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } })",
     );
     assert.include(
-      userText,
+      resourceText,
       "Do not assume all full text has already been read.",
     );
-    assert.include(userText, "plan a batch workflow");
+    assert.include(resourceText, "plan a batch workflow");
+    assert.include(userText, "User request:\nCompare the papers");
   });
 
   it("adds exact source labels to agent selected-text and paper refs", async function () {
@@ -499,15 +517,14 @@ describe("primitive agent tools", function () {
       [],
       [],
     );
-    const userMessage = messages[messages.length - 1];
-    const userText =
-      typeof userMessage?.content === "string" ? userMessage.content : "";
+    const resourceText = stableSystemText(messages);
+    const userText = messageText(messages[messages.length - 1]);
 
     assert.include(userText, "source_label=(Smith, 2021)");
-    assert.include(userText, "citationLabel=Smith, 2021");
-    assert.include(userText, "sourceLabel=(Lee, 2022)");
+    assert.include(resourceText, "citationLabel=Smith, 2021");
+    assert.include(resourceText, "sourceLabel=(Lee, 2022)");
     assert.include(
-      userText,
+      resourceText,
       "for direct quotes and substantive paper-grounded claims",
     );
   });
@@ -1231,11 +1248,10 @@ await item.saveTx();
       [],
       [],
     );
-    const userMessage = messages[messages.length - 1];
-    const userText =
-      typeof userMessage?.content === "string" ? userMessage.content : "";
-    assert.include(userText, "Active note: Draft Note");
-    assert.include(userText, "Active note parent item ID: 9");
+    const resourceText = stableSystemText(messages);
+    const userText = messageText(messages[messages.length - 1]);
+    assert.include(resourceText, "Active note: Draft Note");
+    assert.include(resourceText, "Active note parent item ID: 9");
     assert.include(userText, "Current note content for this turn");
     assert.include(userText, "Current note body");
     assert.include(
@@ -1263,10 +1279,9 @@ await item.saveTx();
       [],
       [],
     );
-    const userMessage = messages[messages.length - 1];
-    const userText =
-      typeof userMessage?.content === "string" ? userMessage.content : "";
-    assert.include(userText, "Active note: Draft Note");
+    const resourceText = stableSystemText(messages);
+    const userText = messageText(messages[messages.length - 1]);
+    assert.include(resourceText, "Active note: Draft Note");
     assert.include(userText, "Current note content for this turn");
     assert.include(userText, "Current note body");
     assert.notInclude(userText, "Selected text 1");

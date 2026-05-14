@@ -19,7 +19,7 @@ export type ContextCacheAssemblyStrategy =
   | "paper-manual-full"
   | "paper-explicit-retrieval"
   | "paper-followup-retrieval"
-  | "agent-evidence-full"
+  | "agent-stable-resources"
   | "general-full"
   | "general-retrieval";
 

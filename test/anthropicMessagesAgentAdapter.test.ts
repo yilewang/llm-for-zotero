@@ -104,6 +104,67 @@ describe("AnthropicMessagesAgentAdapter", function () {
     assert.deepEqual(step.calls[0].arguments, { query: "methods" });
   });
 
+  it("applies cache_control to the marked stable system block", async function () {
+    const adapter = new AnthropicMessagesAgentAdapter();
+    let capturedBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              content: [{ type: "text", text: "OK" }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    await adapter.runStep({
+      request: makeRequest({
+        contextCache: {
+          enabled: true,
+          mode: "anthropic_block",
+          provider: "anthropic",
+          providerLabel: "Anthropic prompt cache",
+          telemetry: "anthropic_read_write",
+          requestHints: {
+            anthropicCacheControl: { type: "ephemeral" },
+          },
+        },
+      }),
+      messages: [
+        { role: "system", content: "Base system instructions" },
+        {
+          role: "system",
+          content: "Stable Zotero resource context",
+          cachePolicy: "stable-prefix",
+        },
+        { role: "user", content: "Search methods" },
+      ],
+      tools,
+    });
+
+    assert.isArray(capturedBody?.system);
+    const system = capturedBody?.system as Array<Record<string, unknown>>;
+    assert.notProperty(system[0] || {}, "cache_control");
+    assert.deepEqual(system[1]?.cache_control, { type: "ephemeral" });
+    assert.equal(system[1]?.text, "Stable Zotero resource context");
+  });
+
   it("streams text deltas from native messages SSE", async function () {
     const adapter = new AnthropicMessagesAgentAdapter();
     const deltas: string[] = [];

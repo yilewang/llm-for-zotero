@@ -139,6 +139,27 @@ async function renderedUserMessage(
   return messageText(messages[messages.length - 1]);
 }
 
+async function renderedInitialMessages(
+  req: AgentRuntimeRequest,
+  plan = buildAgentResourceContextPlan(req),
+): Promise<AgentModelMessage[]> {
+  return buildAgentInitialMessages(req, [], [], plan);
+}
+
+function stableSystemText(messages: AgentModelMessage[]): string {
+  const message = messages.find(
+    (entry) => entry.role === "system" && entry.cachePolicy === "stable-prefix",
+  );
+  return message ? messageText(message) : "";
+}
+
+function allSystemText(messages: AgentModelMessage[]): string {
+  return messages
+    .filter((message) => message.role === "system")
+    .map(messageText)
+    .join("\n\n");
+}
+
 describe("agent resource lifecycle", function () {
   beforeEach(async function () {
     clearAgentResourceLifecycleState();
@@ -285,14 +306,66 @@ describe("agent resource lifecycle", function () {
   it("renders full context on first turns", async function () {
     const req = request();
     const plan = buildAgentResourceContextPlan(req);
-    const text = await renderedUserMessage(req, plan);
+    const messages = await renderedInitialMessages(req, plan);
+    const stableText = stableSystemText(messages);
+    const userText = messageText(messages[messages.length - 1]);
 
     assert.equal(plan.lifecycleState, "setup-required");
     assert.equal(plan.injection, "full");
-    assert.include(text, "Current Zotero context summary:");
-    assert.include(text, "Retrieval-only paper refs:");
-    assert.include(text, "Baseline Paper");
-    assert.include(text, "User request:\nWhat should I do next?");
+    assert.include(stableText, "Stable Zotero resource context:");
+    assert.include(stableText, "Current Zotero context summary:");
+    assert.include(stableText, "Retrieval-only paper refs:");
+    assert.include(stableText, "Baseline Paper");
+    assert.notInclude(userText, "Retrieval-only paper refs:");
+    assert.include(userText, "User request:\nWhat should I do next?");
+  });
+
+  it("places stable resource context before volatile history and current guidance", async function () {
+    const req = request({
+      userText: "Current volatile request",
+      history: [
+        { role: "user", content: "Older volatile question" },
+        { role: "assistant", content: "Older volatile answer" },
+      ],
+    });
+    const guidedTool: AgentToolDefinition<unknown, unknown> = {
+      spec: {
+        name: "guided_tool",
+        description: "guided test tool",
+        inputSchema: { type: "object" },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      guidance: {
+        matches: () => true,
+        instruction: "Current-turn volatile guidance.",
+      },
+      validate: () => ({ ok: true, value: {} }),
+      execute: async () => ({}),
+    };
+
+    const messages = await buildAgentInitialMessages(
+      req,
+      [guidedTool],
+      [],
+      buildAgentResourceContextPlan(req),
+    );
+
+    assert.equal(messages[0].role, "system");
+    assert.equal(messages[1].role, "system");
+    assert.equal(messages[1].cachePolicy, "stable-prefix");
+    assert.include(messageText(messages[1]), "Baseline Paper");
+    assert.equal(messages[2].role, "user");
+    assert.include(messageText(messages[2]), "Older volatile question");
+    assert.equal(messages[messages.length - 1].role, "user");
+    assert.include(
+      messageText(messages[messages.length - 1]),
+      "Current-turn volatile guidance.",
+    );
+    assert.notInclude(
+      allSystemText(messages),
+      "Current-turn volatile guidance",
+    );
   });
 
   it("renders thin context for same-resource follow-ups", async function () {
@@ -515,7 +588,7 @@ describe("agent resource lifecycle", function () {
     } finally {
       setUserSkills([]);
     }
-    const systemText = messageText(messages[0]);
+    const systemText = allSystemText(messages);
     const userText = messageText(messages[messages.length - 1]);
 
     assert.notInclude(systemText, "Conversation continuity notes");
@@ -526,6 +599,79 @@ describe("agent resource lifecycle", function () {
     assert.include(userText, "Use one paper_read overview before answering.");
     assert.include(userText, "Use the mock guided tool only for this test.");
     assert.include(userText, "Current-turn dynamic agent guidance");
+  });
+
+  it("keys prompt-cache planning to stable resources instead of evidence or history", async function () {
+    const manyPapers = Array.from({ length: 70 }, (_, index) =>
+      paper(
+        1000 + index,
+        2000 + index,
+        `Stable cache paper ${index} with a deliberately long title for token threshold ${"context ".repeat(
+          8,
+        )}`,
+      ),
+    );
+    const req = request({
+      conversationKey: 505,
+      model: "gpt-5.4",
+      apiBase: "https://api.openai.com/v1/responses",
+      providerProtocol: "responses_api",
+      selectedPaperContexts: manyPapers,
+      userText: "First volatile question",
+      history: [{ role: "user", content: "old history" }],
+    });
+    const first = buildAgentResourceContextPlan(req);
+    assert.isTrue(first.contextCache?.enabled);
+    assert.isAbove(first.contextCache?.contextTokens || 0, 1024);
+
+    await commitAgentReadActivities({
+      conversationKey: req.conversationKey,
+      resourceSignature: first.resourceSignature,
+      activities: [
+        {
+          toolName: "paper_read",
+          toolLabel: "Read Paper",
+          input: {
+            mode: "targeted",
+            query: "volatile evidence",
+            target: {
+              itemId: manyPapers[0].itemId,
+              contextItemId: manyPapers[0].contextItemId,
+              title: manyPapers[0].title,
+            },
+          },
+          content: {
+            mode: "targeted",
+            papers: [
+              {
+                paperContext: manyPapers[0],
+                passages: [
+                  { text: "New evidence should not re-key resources." },
+                ],
+              },
+            ],
+          },
+          request: req,
+          timestamp: 4,
+        },
+      ],
+    });
+
+    const second = buildAgentResourceContextPlan({
+      ...req,
+      userText: "Second volatile question",
+      history: [{ role: "user", content: "different history" }],
+    });
+
+    assert.equal(second.stableContextBlock, first.stableContextBlock);
+    assert.equal(
+      second.contextCache?.contentHash,
+      first.contextCache?.contentHash,
+    );
+    assert.include(
+      second.priorReadBlock || "",
+      "New evidence should not re-key",
+    );
   });
 
   it("persists, hydrates, and filters evidence snippets by resource scope", async function () {

@@ -989,21 +989,16 @@ export function buildAgentEvidenceContextBlock(params: {
 
 export function planAgentContextCache(params: {
   request: AgentRuntimeRequest;
-  resourceSnapshot: unknown;
-  evidenceBlock?: string;
+  stableContextText: string;
 }): ContextCachePlan {
-  const contextText = stableJson({
-    resourceSnapshot: params.resourceSnapshot,
-    evidenceBlock: params.evidenceBlock || "",
-  });
   return planContextCacheReuse({
     model: params.request.model,
     apiBase: params.request.apiBase,
     authMode: params.request.authMode,
     protocol: params.request.providerProtocol,
     mode: "full",
-    strategy: "agent-evidence-full",
-    contextText,
+    strategy: "agent-stable-resources",
+    contextText: params.stableContextText,
     paperContexts: params.request.selectedPaperContexts,
     fullTextPaperContexts: params.request.fullTextPaperContexts,
   });
