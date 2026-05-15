@@ -3453,8 +3453,8 @@
 }
 
 .llm-agent-process-message-markdown {
-  font-size: var(--llm-fs-13);
-  line-height: 1.55;
+  font-size: var(--llm-fs-12);
+  line-height: 1.5;
 }
 
 .llm-agent-process-message-markdown > p:first-child {
@@ -3474,8 +3474,8 @@
 
 .llm-agent-inline-text {
   color: var(--fill-primary);
-  font-size: var(--llm-fs-13);
-  line-height: 1.55;
+  font-size: var(--llm-fs-12);
+  line-height: 1.5;
   white-space: normal;
   overflow-wrap: break-word;
   word-break: normal;
