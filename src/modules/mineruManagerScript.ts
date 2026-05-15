@@ -28,6 +28,7 @@ import {
   pauseAutoWatch,
   resumeAutoWatch,
   onAutoWatchProgress,
+  type AutoWatchStatus,
 } from "./mineruAutoWatch";
 import {
   getMineruAvailabilityForAttachmentId,
@@ -354,6 +355,29 @@ export async function registerMineruManagerScript(
     }
   }
 
+  function getAutoWatchStatusMessage(status: AutoWatchStatus): string {
+    if (status.statusMessage) return status.statusMessage;
+    if (status.isPaused && status.queueLength > 0) {
+      return `${t("MinerU auto-parse paused")} (${status.queueLength} ${t("queued")})`;
+    }
+    if (status.isProcessing && status.currentItem) {
+      return `${t("Auto-parsing")}: ${status.currentItem}`;
+    }
+    if (status.queueLength > 0) {
+      return `${t("Queued for MinerU auto-parse")} (${status.queueLength})`;
+    }
+    return "";
+  }
+
+  function syncUIFromAutoWatchStatus(status: AutoWatchStatus): boolean {
+    const msg = getAutoWatchStatusMessage(status);
+    if (!statusEl || !msg) return false;
+    statusEl.textContent = msg;
+    statusEl.title = msg;
+    statusEl.style.color = status.isPaused ? "#b45309" : "";
+    return true;
+  }
+
   // ── Build index maps ───────────────────────────────────────────────────────
   function buildCollectionMaps(): void {
     directItemsMap.clear();
@@ -659,6 +683,15 @@ export async function registerMineruManagerScript(
     return label;
   }
 
+  function renderHeaderStatusDot(label: HTMLSpanElement): void {
+    label.textContent = "";
+    const marker = doc.createElement("span");
+    marker.setAttribute("aria-hidden", "true");
+    marker.style.cssText =
+      "display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: 0 0 auto;";
+    label.appendChild(marker);
+  }
+
   function getHeaderHandlePlacements(key: SortKey): ResizeHandlePlacement[] {
     if (key === "title") {
       return [{ boundary: "title|firstCreator", side: "right" }];
@@ -686,6 +719,13 @@ export async function registerMineruManagerScript(
       label.style.textAlign = key === "cached" ? "center" : "left";
       label.style.paddingLeft =
         key === "title" ? `${TITLE_CONTENT_OFFSET}px` : "0";
+      if (key === "cached") {
+        label.style.display = "inline-flex";
+        label.style.alignItems = "center";
+        label.style.justifyContent = "center";
+        label.style.overflow = "visible";
+        label.style.textOverflow = "clip";
+      }
       setColumnWidthStyle(cell, key);
 
       const placements = getHeaderHandlePlacements(key);
@@ -740,7 +780,11 @@ export async function registerMineruManagerScript(
         }
         sp.style.color = "FieldText";
       } else {
-        labelEl.textContent = label || "";
+        if (key === "cached") {
+          renderHeaderStatusDot(labelEl);
+        } else {
+          labelEl.textContent = label || "";
+        }
         sp.style.color = "#888";
       }
     }
@@ -1390,6 +1434,8 @@ export async function registerMineruManagerScript(
         statusEl.textContent = s.statusMessage;
         statusEl.title = s.statusMessage;
         statusEl.style.color = "";
+      } else if (syncUIFromAutoWatchStatus(getAutoWatchStatus())) {
+        // Auto-parse uses a separate queue from manual batch processing.
       } else if (s.failedCount > 0 && s.lastFailedMessage) {
         // Not actively processing, but there were failures — show error reason
         // Error reason goes first (actionable); count provides context
@@ -1729,7 +1775,10 @@ export async function registerMineruManagerScript(
     /* Notifier not available */
   }
 
-  const unsubscribeAutoWatch = onAutoWatchProgress(() => {
+  const unsubscribeAutoWatch = onAutoWatchProgress((status) => {
+    if (!syncUIFromAutoWatchStatus(status)) {
+      syncUIFromState(getMineruBatchState());
+    }
     updateButtons();
   });
 

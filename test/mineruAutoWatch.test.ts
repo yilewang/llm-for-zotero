@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { zipSync } from "fflate";
 import {
   flushAutoWatchReadinessRetryForTests,
+  getAutoWatchStatus,
   getAutoWatchReadinessRetryCountForTests,
   getAutoWatchQueueSnapshotForTests,
   handleAutoWatchNotificationForTests,
@@ -240,6 +241,10 @@ describe("mineruAutoWatch", function () {
     assert.lengthOf(queue, 1);
     assert.equal(queue[0].attachmentId, pdf.id);
     assert.isTrue(isAutoWatchQueueEntryCurrentForTests(queue[0]));
+    assert.include(
+      getAutoWatchStatus().statusMessage,
+      "Queued for MinerU auto-parse",
+    );
   });
 
   it("does not enqueue a duplicate PDF while that PDF is actively parsing", async function () {
@@ -274,6 +279,10 @@ describe("mineruAutoWatch", function () {
       const processing = processAutoWatchQueueForTests();
       await fetchStartedPromise;
       assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
+      assert.include(
+        getAutoWatchStatus().statusMessage,
+        "Uploading to local server",
+      );
 
       await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
       assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);

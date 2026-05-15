@@ -38,11 +38,12 @@ type QueueValidationResult =
 
 type ProgressListener = (status: AutoWatchStatus) => void;
 
-type AutoWatchStatus = {
+export type AutoWatchStatus = {
   isProcessing: boolean;
   isPaused: boolean;
   currentItem: string;
   queueLength: number;
+  statusMessage: string;
   lastCompleted?: string;
   lastError?: string;
 };
@@ -57,6 +58,7 @@ let isPaused = false;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let currentAbort: AbortController | null = null;
 let currentItemTitle = "";
+let currentStatusMessage = "";
 let currentAttachmentId: number | null = null;
 const staleAbortAttachmentIds = new Set<number>();
 const progressListeners = new Set<ProgressListener>();
@@ -85,6 +87,7 @@ function notifyProgress(): void {
     isPaused,
     currentItem: currentItemTitle,
     queueLength: processingQueue.length + readinessRetryTimers.size,
+    statusMessage: currentStatusMessage,
   };
   for (const listener of progressListeners) {
     try {
@@ -245,11 +248,19 @@ function scheduleReadinessRetry(entry: QueueEntry, reason: string): boolean {
   }, delay);
   readinessRetryTimers.set(entry.attachmentId, { timer, entry: retryEntry });
   setItemProcessing(entry.attachmentId);
+  currentStatusMessage = `Waiting for Zotero file readiness: ${entry.title}`;
   ztoolkit.log(
     `MinerU auto-parse: PDF ${entry.attachmentId} not ready (${reason}); retrying in ${Math.round(delay / 1000)}s`,
   );
   notifyProgress();
   return true;
+}
+
+function getReadinessRetryStatusMessage(): string {
+  const pending = readinessRetryTimers.values().next().value;
+  return pending
+    ? `Waiting for Zotero file readiness: ${pending.entry.title}`
+    : "Waiting for Zotero file readiness.";
 }
 
 function removeDeletedAttachmentsFromQueue(ids: number[]): void {
@@ -283,6 +294,14 @@ function removeDeletedAttachmentsFromQueue(ids: number[]): void {
     );
   }
 
+  if (
+    processingQueue.length === 0 &&
+    readinessRetryTimers.size === 0 &&
+    currentAttachmentId === null
+  ) {
+    currentStatusMessage = "";
+  }
+
   notifyProgress();
 }
 
@@ -291,6 +310,7 @@ async function processQueue(): Promise<void> {
 
   isProcessing = true;
   isPaused = false;
+  currentStatusMessage = "Starting MinerU auto-parse...";
   notifyProgress();
 
   let processedCount = 0;
@@ -302,6 +322,7 @@ async function processQueue(): Promise<void> {
     }
     const entry = processingQueue.shift()!;
     currentItemTitle = entry.title;
+    currentStatusMessage = `Starting: ${entry.title}`;
     notifyProgress();
 
     const validation = validateQueueItem(entry);
@@ -369,6 +390,8 @@ async function processQueue(): Promise<void> {
         pdfPath as string,
         (stage) => {
           lastProgressStage = stage;
+          currentStatusMessage = `${stage} — ${entry.title}`;
+          notifyProgress();
         },
         abort?.signal,
       );
@@ -400,6 +423,8 @@ async function processQueue(): Promise<void> {
         // next query picks up MinerU-quality chunks and re-generates embeddings.
         invalidateCachedContextText(entry.attachmentId);
         processedCount++;
+        currentStatusMessage = `Cached: ${entry.title}`;
+        notifyProgress();
         ztoolkit.log(`MinerU auto-parse: cached ${entry.title}`);
       } else {
         const reason = lastProgressStage || "No content returned";
@@ -423,6 +448,7 @@ async function processQueue(): Promise<void> {
         ztoolkit.log(`MinerU auto-parse: cancelled ${entry.title}`);
         setItemFailed(entry.attachmentId, "Cancelled");
         processingQueue.unshift(entry);
+        currentStatusMessage = `Paused: ${entry.title}`;
         break;
       }
       if (e instanceof MineruRateLimitError) {
@@ -432,10 +458,12 @@ async function processQueue(): Promise<void> {
         );
         setItemFailed(entry.attachmentId, "Rate limited");
         processingQueue.unshift(entry);
+        isPaused = true;
         showNotification(
           "MinerU Auto-Parse Paused",
           "Daily quota reached. Resume tomorrow.",
         );
+        currentStatusMessage = "MinerU auto-parse paused: daily quota reached.";
         break;
       }
       errorCount++;
@@ -455,6 +483,12 @@ async function processQueue(): Promise<void> {
   currentAttachmentId = null;
   currentItemTitle = "";
   isProcessing = false;
+  currentStatusMessage =
+    isPaused && processingQueue.length > 0
+      ? currentStatusMessage || "MinerU auto-parse paused."
+      : readinessRetryTimers.size > 0
+        ? getReadinessRetryStatusMessage()
+        : "";
   notifyProgress();
 
   if (processedCount > 0) {
@@ -485,6 +519,9 @@ function enqueueForProcessing(
     parentItemId,
     readinessRetryCount,
   });
+  if (!isProcessing) {
+    currentStatusMessage = `Queued for MinerU auto-parse: ${title}`;
+  }
   notifyProgress();
 
   if (debounceTimer) clearTimeout(debounceTimer);
@@ -649,6 +686,9 @@ export function pauseAutoWatch(): void {
     currentAbort.abort();
     currentAbort = null;
   }
+  currentStatusMessage = currentItemTitle
+    ? `Pausing MinerU auto-parse: ${currentItemTitle}`
+    : "Pausing MinerU auto-parse.";
   notifyProgress();
   ztoolkit.log("MinerU auto-parse: paused");
 }
@@ -656,6 +696,7 @@ export function pauseAutoWatch(): void {
 export function resumeAutoWatch(): void {
   if (!isPaused) return;
   isPaused = false;
+  currentStatusMessage = "Resuming MinerU auto-parse...";
   notifyProgress();
   if (processingQueue.length > 0) {
     void processQueue();
@@ -677,6 +718,7 @@ export function stopAutoWatch(): void {
   isProcessing = false;
   isPaused = false;
   currentItemTitle = "";
+  currentStatusMessage = "";
   currentAttachmentId = null;
   staleAbortAttachmentIds.clear();
 
@@ -709,6 +751,7 @@ export function getAutoWatchStatus(): AutoWatchStatus {
     isPaused,
     currentItem: currentItemTitle,
     queueLength: processingQueue.length + readinessRetryTimers.size,
+    statusMessage: currentStatusMessage,
   };
 }
 
@@ -768,6 +811,7 @@ export function resetAutoWatchForTests(): void {
   isProcessing = false;
   isPaused = false;
   currentItemTitle = "";
+  currentStatusMessage = "";
   currentAttachmentId = null;
   staleAbortAttachmentIds.clear();
 
