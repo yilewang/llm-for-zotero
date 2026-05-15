@@ -35,6 +35,17 @@ import {
   repairMineruCaches,
   type MineruCacheRepairResult,
 } from "./contextPanel/mineruSync";
+import {
+  buildMineruTagIndex,
+  computeMineruTagAvailability,
+  filterMineruItemsForFolderAndTagView,
+  filterMineruItemsForTagView,
+  getSortedMineruTagInfos,
+  normalizeMineruTagName,
+  type MineruFolderScope,
+  type MineruTagInfo,
+  type MineruTagScope,
+} from "./mineruTagIndex";
 
 /** Show a confirm dialog with a custom title using ztoolkit.Dialog. */
 async function confirmDialog(message: string): Promise<boolean> {
@@ -98,12 +109,51 @@ const MIN_COLUMN_WIDTHS = {
   year: 34,
   dateAdded: 64,
 } as const;
+const SIDEBAR_MIN_WIDTH = 180;
+const SIDEBAR_MAX_WIDTH = 520;
 const MINERU_STATUS_DOT_COLORS: Record<MineruStatus, string> = {
   cached: "#10b981",
   processing: "#f59e0b",
   failed: "#ef4444",
   idle: "#d1d5db",
 };
+
+export type MineruManagerActionLabelInput = {
+  batchRunning: boolean;
+  batchPaused: boolean;
+  autoProcessing: boolean;
+  autoPaused: boolean;
+  selectedCount: number;
+  filteredCount: number;
+  filterActive: boolean;
+};
+
+export function getMineruManagerActionLabels(
+  input: MineruManagerActionLabelInput,
+): { startLabel: string; deleteLabel: string } {
+  let startLabel: string;
+  if (
+    (input.batchRunning && !input.batchPaused) ||
+    (input.autoProcessing && !input.autoPaused)
+  ) {
+    startLabel = t("Pause");
+  } else if (input.selectedCount > 0) {
+    startLabel = `${t("Start Selected")} (${input.selectedCount})`;
+  } else if (input.filterActive) {
+    startLabel = `${t("Start Filtered")} (${input.filteredCount})`;
+  } else {
+    startLabel = t("Start All");
+  }
+
+  const deleteLabel =
+    input.selectedCount > 0
+      ? `${t("Delete Cache")} (${input.selectedCount})`
+      : input.filterActive
+        ? `${t("Delete Filtered Cache")} (${input.filteredCount})`
+        : t("Delete All Cache");
+
+  return { startLabel, deleteLabel };
+}
 
 export type MineruParentStatusChild = Pick<
   MineruItemEntry,
@@ -159,15 +209,24 @@ export async function registerMineruManagerScript(
   const contextMenuId = `${idPrefix}-mineru-mgr-context-menu`;
 
   if (!sidebar || !itemsList) return;
+  const sidebarInitialCssText = sidebar.style.cssText;
 
   // ── Data ───────────────────────────────────────────────────────────────────
   let allItems: MineruItemEntry[] = [];
   let collectionTree: MineruCollectionNode[] = [];
   const directItemsMap = new Map<number, Set<number>>();
   const recursiveItemsMap = new Map<number, Set<number>>();
+  let tagIndex = new Map<string, MineruTagInfo>();
 
   // ── UI state ───────────────────────────────────────────────────────────────
-  let activeCollectionId: number | "all" | "unfiled" = "all";
+  let activeCollectionId: MineruFolderScope = "all";
+  let tagScope: MineruTagScope = "all";
+  const selectedTags = new Set<string>();
+  let tagFilterQuery = "";
+  let showAutomaticTags = false;
+  let tagFilterMenuOpen = false;
+  let sidebarFolderPaneRatio = 0.42;
+  let sidebarWidthPx: number | null = null;
   let contextMenuItemId: number | null = null;
   const dotElements = new Map<number, HTMLSpanElement>();
   let localTotalCount = 0;
@@ -258,15 +317,126 @@ export async function registerMineruManagerScript(
     void updateParentDotForAttachment(attachmentId);
   }
 
-  function getVisibleItems(): MineruItemEntry[] {
-    let items: MineruItemEntry[];
-    if (activeCollectionId === "all") items = allItems;
-    else if (activeCollectionId === "unfiled")
-      items = allItems.filter((i) => i.collectionIds.length === 0);
-    else {
-      const ids = recursiveItemsMap.get(activeCollectionId as number);
-      items = ids ? allItems.filter((i) => ids.has(i.attachmentId)) : [];
+  function resolveTagColor(name: string): string | null {
+    try {
+      const color = (
+        Zotero as unknown as {
+          Tags?: { getColor?: (libraryID: number, name: string) => unknown };
+          Libraries?: { userLibraryID?: number };
+        }
+      ).Tags?.getColor?.(Zotero.Libraries.userLibraryID, name);
+      if (typeof color === "string") return color;
+      if (
+        color &&
+        typeof color === "object" &&
+        typeof (color as { color?: unknown }).color === "string"
+      ) {
+        return (color as { color: string }).color;
+      }
+    } catch {
+      /* ignore */
     }
+    return null;
+  }
+
+  function rebuildTagIndex(): void {
+    tagIndex = buildMineruTagIndex(allItems, {
+      includeAutomatic: showAutomaticTags,
+      getColor: resolveTagColor,
+    });
+    pruneSelectedTags();
+  }
+
+  function pruneSelectedTags(): void {
+    for (const tag of [...selectedTags]) {
+      if (!tagIndex.has(tag)) selectedTags.delete(tag);
+    }
+  }
+
+  function isFolderFilterActive(): boolean {
+    return activeCollectionId !== "all";
+  }
+
+  function isTagFilterActive(): boolean {
+    return (
+      selectedTags.size > 0 ||
+      tagScope === "allTagged" ||
+      tagScope === "untagged"
+    );
+  }
+
+  function getActiveFolderItemIdSet(): ReadonlySet<number> | undefined {
+    if (typeof activeCollectionId !== "number") return undefined;
+    return recursiveItemsMap.get(activeCollectionId);
+  }
+
+  function getFolderScopedItems(): MineruItemEntry[] {
+    return filterMineruItemsForFolderAndTagView(allItems, {
+      folderScope: activeCollectionId,
+      folderItemIds: getActiveFolderItemIdSet(),
+      tagScope: "all",
+      includeAutomatic: showAutomaticTags,
+    });
+  }
+
+  function getCombinedFilteredItems(): MineruItemEntry[] {
+    return filterMineruItemsForFolderAndTagView(allItems, {
+      folderScope: activeCollectionId,
+      folderItemIds: getActiveFolderItemIdSet(),
+      tagScope,
+      selectedTags,
+      includeAutomatic: showAutomaticTags,
+    });
+  }
+
+  function getFilteredItemIds(): number[] {
+    return getCombinedFilteredItems().map((item) => item.attachmentId);
+  }
+
+  function isCombinedFilterActive(): boolean {
+    return isFolderFilterActive() || isTagFilterActive();
+  }
+
+  function findCollectionName(
+    nodes: readonly MineruCollectionNode[],
+    collectionId: number,
+  ): string | null {
+    for (const node of nodes) {
+      if (node.collectionId === collectionId) return node.name;
+      const child = findCollectionName(node.children, collectionId);
+      if (child) return child;
+    }
+    return null;
+  }
+
+  function getActiveFolderFilterSummary(): string {
+    if (activeCollectionId === "all") return "";
+    if (activeCollectionId === "unfiled") return t("Unfiled Items");
+    return (
+      findCollectionName(collectionTree, activeCollectionId) ||
+      `Collection ${activeCollectionId}`
+    );
+  }
+
+  function getTagFilterSummary(): string {
+    if (selectedTags.size > 0) {
+      return [...selectedTags].sort((a, b) => a.localeCompare(b)).join(" + ");
+    }
+    if (tagScope === "allTagged") return t("All Tagged");
+    if (tagScope === "untagged") return t("Untagged");
+    return "";
+  }
+
+  function getCombinedFilterSummary(): string {
+    const parts = [
+      getActiveFolderFilterSummary(),
+      getTagFilterSummary(),
+    ].filter(Boolean);
+    return parts.join(" + ");
+  }
+
+  function getVisibleItems(): MineruItemEntry[] {
+    const items = getCombinedFilteredItems();
     // Sort
     const copy = [...items];
     const dir = sortDir === "asc" ? 1 : -1;
@@ -300,40 +470,25 @@ export async function registerMineruManagerScript(
     return groups;
   }
 
-  function isSubfolder(): boolean {
-    return activeCollectionId !== "all" && activeCollectionId !== "unfiled";
-  }
-
-  function getFolderItemIds(): number[] {
-    if (activeCollectionId === "unfiled")
-      return allItems
-        .filter((i) => i.collectionIds.length === 0)
-        .map((i) => i.attachmentId);
-    if (typeof activeCollectionId === "number") {
-      const s = recursiveItemsMap.get(activeCollectionId);
-      return s ? [...s] : [];
-    }
-    return [];
-  }
-
   // ── Update contextual buttons ──────────────────────────────────────────────
   function updateButtons(): void {
     const s = getMineruBatchState();
     const aw = getAutoWatchStatus();
-    const hasSelection = selectedIds.size > 0;
-    const inFolder = isSubfolder() || activeCollectionId === "unfiled";
+    const filterActive = isCombinedFilterActive();
+    const filteredCount = filterActive ? getFilteredItemIds().length : 0;
+    const labels = getMineruManagerActionLabels({
+      batchRunning: s.running,
+      batchPaused: s.paused,
+      autoProcessing: aw.isProcessing,
+      autoPaused: aw.isPaused,
+      selectedCount: selectedIds.size,
+      filteredCount,
+      filterActive,
+    });
 
     if (startBtn) {
       startBtn.disabled = isRepairing;
-      if ((s.running && !s.paused) || (aw.isProcessing && !aw.isPaused)) {
-        startBtn.textContent = t("Pause");
-      } else if (hasSelection) {
-        startBtn.textContent = `${t("Start Selected")} (${selectedIds.size})`;
-      } else if (inFolder) {
-        startBtn.textContent = t("Start Folder");
-      } else {
-        startBtn.textContent = t("Start All");
-      }
+      startBtn.textContent = labels.startLabel;
     }
 
     if (repairBtn) {
@@ -345,13 +500,7 @@ export async function registerMineruManagerScript(
 
     if (deleteBtn) {
       deleteBtn.disabled = isRepairing;
-      if (hasSelection) {
-        deleteBtn.textContent = `${t("Delete Cache")} (${selectedIds.size})`;
-      } else if (inFolder) {
-        deleteBtn.textContent = t("Delete Folder Cache");
-      } else {
-        deleteBtn.textContent = t("Delete All Cache");
-      }
+      deleteBtn.textContent = labels.deleteLabel;
     }
   }
 
@@ -404,12 +553,161 @@ export async function registerMineruManagerScript(
   }
 
   // ── Sidebar ────────────────────────────────────────────────────────────────
+  function getSidebarFolderPaneBasis(): string {
+    return `${Math.round(sidebarFolderPaneRatio * 1000) / 10}%`;
+  }
+
+  function clampSidebarFolderPaneRatio(value: number): number {
+    return Math.min(0.72, Math.max(0.24, value));
+  }
+
+  function clampSidebarWidth(value: number): number {
+    return Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, value));
+  }
+
+  function applySidebarWidth(width: number): void {
+    if (!sidebar) return;
+    const nextWidth = clampSidebarWidth(width);
+    sidebarWidthPx = nextWidth;
+    sidebar.style.width = `${nextWidth}px`;
+    sidebar.style.minWidth = `${SIDEBAR_MIN_WIDTH}px`;
+    sidebar.style.maxWidth = `${SIDEBAR_MAX_WIDTH}px`;
+  }
+
+  function startSidebarWidthResize(event: MouseEvent): void {
+    if (!sidebar) return;
+    event.preventDefault();
+    event.stopPropagation();
+    stopActiveResize?.();
+
+    const startX = event.clientX;
+    const startWidth =
+      sidebar.getBoundingClientRect().width || SIDEBAR_MIN_WIDTH;
+    const rootEl = doc.documentElement as HTMLElement;
+    const previousCursor = rootEl.style.cursor;
+    const previousUserSelect = rootEl.style.userSelect;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      moveEvent.preventDefault();
+      applySidebarWidth(startWidth + moveEvent.clientX - startX);
+      applyColumnLayout(colHeaders?.parentElement ?? itemsList ?? doc);
+    };
+
+    const onMouseUp = () => {
+      cleanup();
+    };
+
+    const cleanup = () => {
+      win.removeEventListener("mousemove", onMouseMove, true);
+      win.removeEventListener("mouseup", onMouseUp, true);
+      rootEl.style.cursor = previousCursor;
+      rootEl.style.userSelect = previousUserSelect;
+      if (stopActiveResize === cleanup) {
+        stopActiveResize = null;
+      }
+    };
+
+    stopActiveResize = cleanup;
+    rootEl.style.cursor = "col-resize";
+    rootEl.style.userSelect = "none";
+    win.addEventListener("mousemove", onMouseMove, true);
+    win.addEventListener("mouseup", onMouseUp, true);
+  }
+
+  function startSidebarPaneResize(
+    event: MouseEvent,
+    folderPane: HTMLElement,
+  ): void {
+    if (!sidebar) return;
+    event.preventDefault();
+    event.stopPropagation();
+    stopActiveResize?.();
+
+    const sidebarRect = sidebar.getBoundingClientRect();
+    const rootEl = doc.documentElement as HTMLElement;
+    const previousCursor = rootEl.style.cursor;
+    const previousUserSelect = rootEl.style.userSelect;
+
+    const updateFromClientY = (clientY: number) => {
+      const nextRatio = clampSidebarFolderPaneRatio(
+        (clientY - sidebarRect.top) / Math.max(1, sidebarRect.height),
+      );
+      sidebarFolderPaneRatio = nextRatio;
+      folderPane.style.flex = `0 0 ${getSidebarFolderPaneBasis()}`;
+    };
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      moveEvent.preventDefault();
+      updateFromClientY(moveEvent.clientY);
+    };
+
+    const onMouseUp = () => {
+      cleanup();
+    };
+
+    const cleanup = () => {
+      win.removeEventListener("mousemove", onMouseMove, true);
+      win.removeEventListener("mouseup", onMouseUp, true);
+      rootEl.style.cursor = previousCursor;
+      rootEl.style.userSelect = previousUserSelect;
+      if (stopActiveResize === cleanup) {
+        stopActiveResize = null;
+      }
+    };
+
+    stopActiveResize = cleanup;
+    rootEl.style.cursor = "row-resize";
+    rootEl.style.userSelect = "none";
+    win.addEventListener("mousemove", onMouseMove, true);
+    win.addEventListener("mouseup", onMouseUp, true);
+  }
+
   function renderSidebar(): void {
     if (!sidebar) return;
+    sidebar.style.cssText = `${sidebarInitialCssText}; display: flex; flex-direction: column; overflow: hidden; padding: 0; position: relative;`;
+    sidebar.style.minWidth = `${SIDEBAR_MIN_WIDTH}px`;
+    sidebar.style.maxWidth = `${SIDEBAR_MAX_WIDTH}px`;
+    if (sidebarWidthPx !== null) applySidebarWidth(sidebarWidthPx);
     sidebar.innerHTML = "";
+    const folderPane = doc.createElement("div");
+    folderPane.style.cssText = `flex: 0 0 ${getSidebarFolderPaneBasis()}; min-height: 96px; max-height: 72%; overflow: auto; padding: 4px 0;`;
+    sidebar.appendChild(folderPane);
+
+    renderFolderSidebar(folderPane);
+
+    const separator = doc.createElement("div");
+    separator.style.cssText =
+      "position: relative; flex: 0 0 7px; cursor: row-resize; z-index: 1;";
+    const separatorLine = doc.createElement("div");
+    separatorLine.style.cssText =
+      "position: absolute; left: 0; right: 0; top: 3px; border-top: 1px solid rgba(128,128,128,0.24); pointer-events: none;";
+    separator.appendChild(separatorLine);
+    separator.addEventListener("mousedown", (event) =>
+      startSidebarPaneResize(event as MouseEvent, folderPane),
+    );
+    sidebar.appendChild(separator);
+
+    const tagPane = doc.createElement("div");
+    tagPane.style.cssText =
+      "flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column;";
+    sidebar.appendChild(tagPane);
+    renderTagPanel(tagPane);
+
+    const sidebarResizeHandle = doc.createElement("div");
+    sidebarResizeHandle.title = "Resize sidebar";
+    sidebarResizeHandle.setAttribute("aria-label", "Resize sidebar");
+    sidebarResizeHandle.style.cssText =
+      "position: absolute; top: 0; right: -4px; bottom: 0; width: 8px; cursor: col-resize; z-index: 3;";
+    sidebarResizeHandle.addEventListener("mousedown", (event) =>
+      startSidebarWidthResize(event as MouseEvent),
+    );
+    sidebar.appendChild(sidebarResizeHandle);
+  }
+
+  function renderFolderSidebar(parent: HTMLElement): void {
     const inner = doc.createElement("div");
     inner.style.cssText = "min-width: max-content;";
-    sidebar.appendChild(inner);
+    parent.appendChild(inner);
     inner.appendChild(
       createSidebarEntry(t("My Library"), "all", 0, allItems.length),
     );
@@ -419,6 +717,350 @@ export async function registerMineruManagerScript(
       inner.appendChild(
         createSidebarEntry(t("Unfiled Items"), "unfiled", 0, uc),
       );
+  }
+
+  function getAllTaggedCount(baseItems: readonly MineruItemEntry[]): number {
+    return filterMineruItemsForTagView(baseItems, {
+      scope: "allTagged",
+      includeAutomatic: showAutomaticTags,
+    }).length;
+  }
+
+  function getUntaggedCount(baseItems: readonly MineruItemEntry[]): number {
+    return filterMineruItemsForTagView(baseItems, {
+      scope: "untagged",
+      includeAutomatic: showAutomaticTags,
+    }).length;
+  }
+
+  function renderTagPanel(panel: HTMLElement): void {
+    panel.innerHTML = "";
+    panel.style.background = "transparent";
+    const baseItems = getFolderScopedItems();
+    const baseTagIndex = buildMineruTagIndex(baseItems, {
+      includeAutomatic: showAutomaticTags,
+      getColor: resolveTagColor,
+    });
+
+    const header = doc.createElement("div");
+    header.style.cssText =
+      "display: flex; align-items: center; gap: 8px; padding: 8px 10px 6px; font-size: 12px; font-weight: 600; border-bottom: 1px solid rgba(128,128,128,0.16);";
+    const headerLabel = doc.createElement("span");
+    headerLabel.textContent = t("Tags");
+    headerLabel.style.cssText = "flex: 1; min-width: 0;";
+    header.appendChild(headerLabel);
+    const headerCount = doc.createElement("span");
+    headerCount.textContent = String(baseItems.length);
+    headerCount.style.cssText =
+      "font-size: 11px; color: var(--fill-secondary, #888); font-weight: 500;";
+    header.appendChild(headerCount);
+    panel.appendChild(header);
+
+    const scopes = doc.createElement("div");
+    scopes.style.cssText =
+      "display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px 0;";
+    panel.appendChild(scopes);
+    scopes.appendChild(
+      createTagScopePill(
+        "allTagged",
+        `${t("All Tagged")} ${getAllTaggedCount(baseItems)}`,
+      ),
+    );
+    scopes.appendChild(
+      createTagScopePill(
+        "untagged",
+        `${t("Untagged")} ${getUntaggedCount(baseItems)}`,
+      ),
+    );
+
+    const scroll = doc.createElement("div");
+    scroll.style.cssText =
+      "flex: 1; min-height: 0; overflow: auto; padding: 8px 10px 10px;";
+    panel.appendChild(scroll);
+
+    const tagInfos = getSortedMineruTagInfos(tagIndex)
+      .map((info) => {
+        const baseInfo = baseTagIndex.get(info.name);
+        return {
+          ...info,
+          count: baseInfo?.count ?? 0,
+          itemIds: baseInfo ? new Set(baseInfo.itemIds) : new Set<number>(),
+        };
+      })
+      .sort((a, b) => {
+        const countDelta = b.count - a.count;
+        return countDelta || a.name.localeCompare(b.name);
+      })
+      .filter((info) => {
+      if (!tagFilterQuery.trim()) return true;
+      return info.name
+        .toLowerCase()
+        .includes(tagFilterQuery.trim().toLowerCase());
+      });
+    const filteredItems = getCombinedFilteredItems();
+    const availability = computeMineruTagAvailability(
+      getSortedMineruTagInfos(tagIndex),
+      filteredItems,
+      selectedTags,
+      showAutomaticTags,
+    );
+
+    const selectedLine = doc.createElement("div");
+    selectedLine.style.cssText =
+      "display: flex; flex-wrap: wrap; align-items: center; gap: 4px 5px; min-height: 22px;";
+    scroll.appendChild(selectedLine);
+
+    if (selectedTags.size > 0) {
+      for (const tagName of [...selectedTags].sort((a, b) =>
+        a.localeCompare(b),
+      )) {
+        const info = tagIndex.get(tagName);
+        selectedLine.appendChild(createTagChip(tagName, info, true, true));
+      }
+    }
+
+    const cloud = doc.createElement("div");
+    cloud.style.cssText =
+      "display: flex; flex-wrap: wrap; align-content: flex-start; align-items: flex-start; gap: 4px 6px; padding-top: 4px;";
+    scroll.appendChild(cloud);
+
+    for (const info of tagInfos) {
+      if (selectedTags.has(info.name)) continue;
+      const state = availability.get(info.name);
+      cloud.appendChild(
+        createTagChip(info.name, info, false, !!state?.available),
+      );
+    }
+
+    if (tagInfos.length === 0) {
+      const empty = doc.createElement("div");
+      empty.textContent =
+        tagFilterQuery.trim().length > 0
+          ? t("No matching tags.")
+          : t("No tags found. Add tags to your items in Zotero.");
+      empty.style.cssText =
+        "font-size: 11.5px; color: var(--fill-secondary, #888); line-height: 1.35; padding: 4px 0;";
+      cloud.appendChild(empty);
+    }
+
+    const meta = doc.createElement("div");
+    meta.style.cssText =
+      "border-top: 1px solid rgba(128,128,128,0.16); padding: 6px 10px 7px; font-size: 11px; color: var(--fill-secondary, #888); line-height: 1.35;";
+    if (selectedTags.size > 0) {
+      const clearRow = doc.createElement("div");
+      clearRow.style.cssText =
+        "display: flex; align-items: center; gap: 8px; margin-bottom: 3px;";
+      const selectedText = doc.createElement("span");
+      selectedText.textContent = `${selectedTags.size} ${t("selected")}`;
+      selectedText.style.cssText = "flex: 1; min-width: 0;";
+      clearRow.appendChild(selectedText);
+      const clear = doc.createElement("button");
+      clear.type = "button";
+      clear.textContent = `× ${t("clear")}`;
+      clear.style.cssText =
+        "border: none; background: transparent; color: var(--fill-secondary, #888); padding: 0 2px; font-size: 11px; cursor: pointer;";
+      clear.addEventListener("click", () => {
+        selectedTags.clear();
+        tagScope = "all";
+        selectedIds.clear();
+        lastClickedId = null;
+        renderSidebar();
+        renderItemsList();
+        updateButtons();
+      });
+      clearRow.appendChild(clear);
+      meta.appendChild(clearRow);
+    }
+
+    if (isCombinedFilterActive()) {
+      const match = doc.createElement("div");
+      match.textContent = `${filteredItems.length} ${t("papers match")} ${getCombinedFilterSummary()}`;
+      match.title = match.textContent;
+      match.style.cssText =
+        "white-space: normal; overflow-wrap: anywhere; color: FieldText;";
+      meta.appendChild(match);
+    }
+    panel.appendChild(meta);
+    panel.appendChild(createTagFilterBar());
+  }
+
+  function createTagScopePill(
+    scope: MineruTagScope,
+    label: string,
+  ): HTMLElement {
+    const pill = doc.createElement("button");
+    pill.type = "button";
+    pill.textContent = label;
+    pill.style.cssText =
+      "border: none; border-radius: 4px; padding: 2px 5px; font-size: 11px; line-height: 1.35; cursor: pointer; background: transparent; color: var(--fill-secondary, #888);";
+    if (tagScope === scope && selectedTags.size === 0) {
+      pill.style.background = "color-mix(in srgb, FieldText 18%, transparent)";
+      pill.style.color = "FieldText";
+    }
+    pill.addEventListener("click", () => {
+      tagScope = tagScope === scope && selectedTags.size === 0 ? "all" : scope;
+      selectedTags.clear();
+      selectedIds.clear();
+      lastClickedId = null;
+      renderSidebar();
+      renderItemsList();
+      updateButtons();
+    });
+    return pill;
+  }
+
+  function createTagChip(
+    name: string,
+    info: MineruTagInfo | undefined,
+    selected: boolean,
+    available: boolean,
+  ): HTMLElement {
+    const chip = doc.createElement("button");
+    chip.type = "button";
+    chip.title = info ? `${name} (${info.count})` : name;
+    const color = info?.color || "";
+    const label = selected || available ? name : `(${name})`;
+    chip.textContent = label;
+    chip.style.cssText =
+      "border: none; border-radius: 4px; padding: 2px 4px; font-size: 12px; line-height: 1.35; background: transparent; color: FieldText; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+    if (color) {
+      chip.style.borderLeft = `3px solid ${color}`;
+      chip.style.paddingLeft = "5px";
+    }
+    if (selected) {
+      chip.style.background = "color-mix(in srgb, FieldText 32%, transparent)";
+      chip.style.color = "FieldText";
+      chip.style.fontWeight = "500";
+    } else if (!available) {
+      chip.style.color = "var(--fill-secondary, #888)";
+      chip.style.opacity = "0.62";
+      chip.disabled = true;
+      chip.style.cursor = "default";
+    }
+    chip.addEventListener("click", () => {
+      const normalized = normalizeMineruTagName(name);
+      if (!normalized) return;
+      tagScope = "all";
+      if (selectedTags.has(normalized)) selectedTags.delete(normalized);
+      else selectedTags.add(normalized);
+      selectedIds.clear();
+      lastClickedId = null;
+      renderSidebar();
+      renderItemsList();
+      updateButtons();
+    });
+    return chip;
+  }
+
+  function createTagFilterIcon(): SVGSVGElement {
+    const svg = doc.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "svg",
+    ) as unknown as SVGSVGElement;
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "19");
+    svg.setAttribute("height", "19");
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.cssText = "display: block;";
+
+    const path = doc.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "path",
+    ) as unknown as SVGPathElement;
+    path.setAttribute("d", "M5 6.5h14l-5.4 6.2v4.5l-3.2 2.3v-6.8L5 6.5z");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.65");
+    path.setAttribute("stroke-linejoin", "round");
+    path.setAttribute("stroke-linecap", "round");
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function createTagFilterBar(): HTMLElement {
+    const bar = doc.createElement("div");
+    bar.style.cssText =
+      "border-top: 1px solid rgba(128,128,128,0.16); padding: 8px 6px 7px; display: flex; align-items: center; gap: 6px;";
+
+    const input = doc.createElement("input");
+    input.type = "search";
+    input.placeholder = t("Filter Tags");
+    input.value = tagFilterQuery;
+    input.style.cssText =
+      "flex: 1; min-width: 0; height: 30px; border: 1px solid rgba(0,0,0,0.16); border-radius: 7px; padding: 3px 10px; font-size: 12px; background: rgba(0,0,0,0.28); color: FieldText; box-shadow: inset 0 1px 1px rgba(0,0,0,0.18);";
+    input.addEventListener("input", () => {
+      tagFilterQuery = input.value;
+      const selectionStart = input.selectionStart ?? tagFilterQuery.length;
+      renderSidebar();
+      const next = doc.querySelector(
+        `#${idPrefix}-mineru-mgr-tag-filter`,
+      ) as HTMLInputElement | null;
+      next?.focus();
+      next?.setSelectionRange(selectionStart, selectionStart);
+    });
+    input.id = `${idPrefix}-mineru-mgr-tag-filter`;
+    bar.appendChild(input);
+
+    const menuWrap = doc.createElement("div");
+    menuWrap.style.cssText =
+      "position: relative; flex: 0 0 auto; display: flex; align-items: center; gap: 1px;";
+    const menuBtn = doc.createElement("button");
+    menuBtn.type = "button";
+    menuBtn.title = t("Show automatic tags");
+    menuBtn.setAttribute("aria-label", t("Show automatic tags"));
+    menuBtn.appendChild(createTagFilterIcon());
+    menuBtn.style.cssText =
+      "height: 30px; width: 25px; border: none; border-radius: 5px; background: transparent; color: var(--fill-secondary, #9ca3af); display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer;";
+    menuBtn.addEventListener("click", () => {
+      tagFilterMenuOpen = !tagFilterMenuOpen;
+      renderSidebar();
+    });
+    menuWrap.appendChild(menuBtn);
+
+    const chevronBtn = doc.createElement("button");
+    chevronBtn.type = "button";
+    chevronBtn.title = t("Show automatic tags");
+    chevronBtn.setAttribute("aria-label", t("Show automatic tags"));
+    chevronBtn.textContent = "⌄";
+    chevronBtn.style.cssText =
+      "height: 30px; width: 11px; border: none; border-radius: 4px; background: transparent; color: var(--fill-secondary, #9ca3af); font-size: 13px; line-height: 1; padding: 0; cursor: pointer;";
+    chevronBtn.addEventListener("click", () => {
+      tagFilterMenuOpen = !tagFilterMenuOpen;
+      renderSidebar();
+    });
+    menuWrap.appendChild(chevronBtn);
+
+    if (tagFilterMenuOpen) {
+      const menu = doc.createElement("div");
+      menu.style.cssText =
+        "position: absolute; right: 0; bottom: 28px; min-width: 160px; background: Field; color: FieldText; border: 1px solid rgba(128,128,128,0.28); border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.18); padding: 4px 0; z-index: 4;";
+      const row = doc.createElement("label");
+      row.style.cssText =
+        "display: flex; align-items: center; gap: 6px; padding: 5px 9px; font-size: 11.5px; cursor: pointer; white-space: nowrap;";
+      const cb = doc.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = showAutomaticTags;
+      cb.style.cssText = "margin: 0;";
+      cb.addEventListener("change", () => {
+        showAutomaticTags = cb.checked;
+        tagFilterMenuOpen = false;
+        selectedIds.clear();
+        lastClickedId = null;
+        rebuildTagIndex();
+        renderSidebar();
+        renderItemsList();
+        updateButtons();
+      });
+      row.appendChild(cb);
+      const text = doc.createElement("span");
+      text.textContent = t("Show automatic tags");
+      row.appendChild(text);
+      menu.appendChild(row);
+      menuWrap.appendChild(menu);
+    }
+
+    bar.appendChild(menuWrap);
+    return bar;
   }
 
   function createSidebarEntry(
@@ -439,8 +1081,7 @@ export async function registerMineruManagerScript(
     icon.textContent = key === "all" ? "\uD83D\uDCDA" : "\uD83D\uDCC1";
     row.appendChild(icon);
     const nm = doc.createElement("span");
-    nm.style.cssText =
-      "flex: 1; white-space: nowrap; font-size: 12px;";
+    nm.style.cssText = "flex: 1; white-space: nowrap; font-size: 12px;";
     nm.style.fontWeight =
       key === "all" || activeCollectionId === key ? "600" : "400";
     nm.textContent = name;
@@ -498,8 +1139,7 @@ export async function registerMineruManagerScript(
     icon.textContent = "\uD83D\uDCC1";
     row.appendChild(icon);
     const nm = doc.createElement("span");
-    nm.style.cssText =
-      "flex: 1; white-space: nowrap; font-size: 12px;";
+    nm.style.cssText = "flex: 1; white-space: nowrap; font-size: 12px;";
     nm.style.fontWeight =
       activeCollectionId === node.collectionId ? "600" : "400";
     nm.textContent = node.name;
@@ -1555,8 +2195,8 @@ export async function registerMineruManagerScript(
         lastClickedId = null;
         void processSelectedItems(ids);
         renderItemsList();
-      } else if (isSubfolder() || activeCollectionId === "unfiled") {
-        const ids = getFolderItemIds();
+      } else if (isCombinedFilterActive()) {
+        const ids = getFilteredItemIds();
         if (ids.length > 0) void processSelectedItems(ids);
       } else {
         void startBatchProcessing();
@@ -1638,11 +2278,11 @@ export async function registerMineruManagerScript(
         ).length;
         updateProgressBar();
         renderItemsList();
-      } else if (isSubfolder() || activeCollectionId === "unfiled") {
-        const ids = getFolderItemIds();
+      } else if (isCombinedFilterActive()) {
+        const ids = getFilteredItemIds();
         if (
           !(await confirmDialog(
-            `${t("Delete MinerU cache for")} ${ids.length} ${t("item(s) in this folder?")}`,
+            `${t("Delete MinerU cache for")} ${ids.length} ${t("item(s) in this filter?")}`,
           ))
         )
           return;
@@ -1686,6 +2326,7 @@ export async function registerMineruManagerScript(
       collectionTree = [];
     }
     buildCollectionMaps();
+    rebuildTagIndex();
     const actionableItems = allItems.filter((i) => !i.excluded);
     localTotalCount = actionableItems.length;
     localProcessedCount = actionableItems.filter(isMineruAvailable).length;
@@ -1761,13 +2402,15 @@ export async function registerMineruManagerScript(
                   event,
                 )) ||
               (type === "collection" &&
+                ["add", "modify", "delete", "remove"].includes(event)) ||
+              (type === "tag" &&
                 ["add", "modify", "delete", "remove"].includes(event))
             ) {
               debouncedRefresh();
             }
           },
         },
-        ["item", "collection"],
+        ["item", "collection", "tag"],
         "mineruManager",
       );
     }

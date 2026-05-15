@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  getMineruManagerActionLabels,
   getMineruParentDisplayStatus,
   type MineruParentStatusChild,
 } from "../src/modules/mineruManagerScript";
@@ -16,6 +17,52 @@ function child(
 }
 
 describe("mineruManagerScript", function () {
+  describe("getMineruManagerActionLabels", function () {
+    it("shows filtered labels for folder or tag scopes", function () {
+      const labels = getMineruManagerActionLabels({
+        batchRunning: false,
+        batchPaused: false,
+        autoProcessing: false,
+        autoPaused: false,
+        selectedCount: 0,
+        filteredCount: 18,
+        filterActive: true,
+      });
+
+      assert.equal(labels.startLabel, "Start Filtered (18)");
+      assert.equal(labels.deleteLabel, "Delete Filtered Cache (18)");
+    });
+
+    it("lets selected rows override filtered labels", function () {
+      const labels = getMineruManagerActionLabels({
+        batchRunning: false,
+        batchPaused: false,
+        autoProcessing: false,
+        autoPaused: false,
+        selectedCount: 3,
+        filteredCount: 18,
+        filterActive: true,
+      });
+
+      assert.equal(labels.startLabel, "Start Selected (3)");
+      assert.equal(labels.deleteLabel, "Delete Cache (3)");
+    });
+
+    it("keeps pause label while processing", function () {
+      const labels = getMineruManagerActionLabels({
+        batchRunning: true,
+        batchPaused: false,
+        autoProcessing: false,
+        autoPaused: false,
+        selectedCount: 0,
+        filteredCount: 18,
+        filterActive: true,
+      });
+
+      assert.equal(labels.startLabel, "Pause");
+    });
+  });
+
   describe("getMineruParentDisplayStatus", function () {
     it("shows processing when one child is processing", function () {
       assert.equal(

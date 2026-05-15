@@ -14,6 +14,9 @@ type MockItem = {
   isRegularItem?: () => boolean;
   getAttachments?: () => number[];
   getCollections?: () => number[];
+  getTags?: () => Array<
+    string | { tag?: string; name?: string; type?: number }
+  >;
   getField?: (field: string) => string;
 };
 
@@ -121,7 +124,12 @@ describe("mineruBatchProcessor", function () {
       isRegularItem: () => false,
       getField: (field) => (field === "title" ? "Child PDF" : ""),
     };
-    setupZotero(new Map<number, MockItem>([[parent.id, parent], [pdf.id, pdf]]));
+    setupZotero(
+      new Map<number, MockItem>([
+        [parent.id, parent],
+        [pdf.id, pdf],
+      ]),
+    );
 
     const list = await getMineruItemList();
 
@@ -129,5 +137,56 @@ describe("mineruBatchProcessor", function () {
     assert.equal(list[0].attachmentId, pdf.id);
     assert.equal(list[0].parentItemId, parent.id);
     assert.equal(list[0].title, "Parent Paper");
+  });
+
+  it("populates manual and automatic tags from the parent item before falling back to the attachment", async function () {
+    const parent: MockItem = {
+      id: 301,
+      key: "PARENTTAGS",
+      libraryID: 1,
+      itemType: "journalArticle",
+      attachmentIDs: [302],
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments() {
+        return this.attachmentIDs || [];
+      },
+      getCollections: () => [],
+      getTags: () => [
+        { tag: "ACC", type: 0 },
+        { tag: "Auto Parent", type: 1 },
+      ],
+      getField: (field) => (field === "title" ? "Tagged Parent Paper" : ""),
+    };
+    const pdf: MockItem = {
+      id: 302,
+      key: "PDFTAGS",
+      libraryID: 1,
+      parentID: parent.id,
+      itemType: "attachment",
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "tagged.pdf",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getTags: () => [{ tag: "Attachment Only", type: 0 }],
+      getField: (field) => (field === "title" ? "Tagged PDF" : ""),
+    };
+    setupZotero(
+      new Map<number, MockItem>([
+        [parent.id, parent],
+        [pdf.id, pdf],
+      ]),
+    );
+
+    const list = await getMineruItemList();
+
+    assert.deepEqual(list[0].tags, ["ACC"]);
+    assert.deepEqual(list[0].tagsAuto, ["Auto Parent"]);
+
+    parent.getTags = () => [];
+    const fallback = await getMineruItemList();
+
+    assert.deepEqual(fallback[0].tags, ["Attachment Only"]);
+    assert.deepEqual(fallback[0].tagsAuto, []);
   });
 });
