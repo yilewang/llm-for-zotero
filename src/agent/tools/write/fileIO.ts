@@ -10,6 +10,7 @@ import {
 } from "../../../modules/contextPanel/paperAttribution";
 import { ok, fail, validateObject } from "../shared";
 import { getLocalParentPath } from "../../../utils/localPath";
+import { pushUndoEntry } from "../../store/undoStore";
 
 type FileIOInput = {
   action: "read" | "write";
@@ -18,27 +19,45 @@ type FileIOInput = {
   encoding?: string;
   offset?: number;
   length?: number;
+  allowOverwrite?: boolean;
 };
-
-const fileIoAutoApprovedConversations = new Set<number>();
-
-export function isFileIoAutoApproved(conversationKey: number): boolean {
-  return fileIoAutoApprovedConversations.has(conversationKey);
-}
-
-export function setFileIoAutoApproved(
-  conversationKey: number,
-  value: boolean,
-): void {
-  if (value) {
-    fileIoAutoApprovedConversations.add(conversationKey);
-  } else {
-    fileIoAutoApprovedConversations.delete(conversationKey);
-  }
-}
 
 function normalizePathForPrefix(value: string): string {
   return value.replace(/\\/g, "/").replace(/\/+$/g, "");
+}
+
+async function fileExists(filePath: string): Promise<boolean | null> {
+  const IOUtils = (globalThis as any).IOUtils;
+  if (IOUtils?.exists) {
+    try {
+      return Boolean(await IOUtils.exists(filePath));
+    } catch {
+      return null;
+    }
+  }
+  const OSFile = (globalThis as any).OS?.File;
+  if (OSFile?.exists) {
+    try {
+      return Boolean(await OSFile.exists(filePath));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function removeFileIfExists(filePath: string): Promise<void> {
+  const IOUtils = (globalThis as any).IOUtils;
+  if (IOUtils?.remove) {
+    await IOUtils.remove(filePath, { ignoreAbsent: true });
+    return;
+  }
+  const OSFile = (globalThis as any).OS?.File;
+  if (OSFile?.remove) {
+    await OSFile.remove(filePath, { ignoreAbsent: true });
+    return;
+  }
+  throw new Error("File removal is not available in this Zotero environment");
 }
 
 function collectRequestPaperContexts(
@@ -332,16 +351,6 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
 
     createPendingAction(input) {
       const fileName = input.filePath.split(/[\\/]/).pop() || input.filePath;
-      const approvalField = {
-        type: "select" as const,
-        id: "approvalMode",
-        label: "Approval mode",
-        value: "ask",
-        options: [
-          { id: "ask", label: "Ask every time" },
-          { id: "auto", label: "Auto accept this tool for this chat" },
-        ],
-      };
       if (input.action === "read") {
         return {
           toolName: "file_io",
@@ -356,7 +365,6 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
               label: "File",
               value: input.filePath,
             },
-            approvalField,
           ],
         };
       }
@@ -385,25 +393,24 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
             label: "Content preview",
             value: preview,
           },
-          approvalField,
         ],
       };
     },
 
-    shouldRequireConfirmation(input, context) {
+    async shouldRequireConfirmation(input, _context) {
       // Read operations are safe — auto-approve
       if (input.action === "read") return false;
-      // Write operations require confirmation unless user opted into auto-approve
-      return !isFileIoAutoApproved(context.request.conversationKey);
+      const exists = await fileExists(input.filePath);
+      // New file writes are reversible by deleting the created file, so they
+      // can run directly. Unknown existence is treated like an overwrite.
+      if (exists === false) return false;
+      // Existing files are overwrites and always require review, even if this
+      // conversation previously enabled file_io auto-accept.
+      return true;
     },
 
-    applyConfirmation(input, resolutionData, context) {
-      if (validateObject<Record<string, unknown>>(resolutionData)) {
-        if (resolutionData.approvalMode === "auto") {
-          setFileIoAutoApproved(context.request.conversationKey, true);
-        }
-      }
-      return ok(input);
+    applyConfirmation(input) {
+      return ok({ ...input, allowOverwrite: true });
     },
 
     async execute(input, context) {
@@ -505,11 +512,47 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
 
       // write
       try {
+        const existedBeforeWrite = await fileExists(input.filePath);
+        if (existedBeforeWrite === true && !input.allowOverwrite) {
+          return {
+            action: "write",
+            filePath: input.filePath,
+            error:
+              "Refusing to overwrite an existing file without confirmation",
+          };
+        }
+        const previousContent =
+          existedBeforeWrite === true
+            ? await readFile(input.filePath, input.encoding || "utf-8")
+            : null;
         await writeFile(
           input.filePath,
           input.content || "",
           input.encoding || "utf-8",
         );
+        if (existedBeforeWrite === false) {
+          pushUndoEntry(context.request.conversationKey, {
+            id: `file-create-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            toolName: "file_io",
+            description: `Delete created file: ${input.filePath}`,
+            revert: async () => {
+              await removeFileIfExists(input.filePath);
+            },
+          });
+        } else if (previousContent !== null) {
+          pushUndoEntry(context.request.conversationKey, {
+            id: `file-overwrite-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            toolName: "file_io",
+            description: `Restore overwritten file: ${input.filePath}`,
+            revert: async () => {
+              await writeFile(
+                input.filePath,
+                previousContent,
+                input.encoding || "utf-8",
+              );
+            },
+          });
+        }
         return {
           action: "write",
           filePath: input.filePath,

@@ -679,8 +679,29 @@ describe("primitive agent tools", function () {
     }
   });
 
-  it("file_io read and write confirmation follows scoped file auto-accept", async function () {
+  it("file_io writes new files directly, confirms overwrites, and records undo", async function () {
     const tool = createFileIOTool();
+    const existingPaths = new Set<string>(["/tmp/existing.md"]);
+    const fileContent = new Map<string, string>([
+      ["/tmp/existing.md", "Original note."],
+    ]);
+    const removedPaths: string[] = [];
+    const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async (path: string) => existingPaths.has(path),
+      read: async (path: string) =>
+        new TextEncoder().encode(fileContent.get(path) || ""),
+      write: async (path: string, bytes: Uint8Array) => {
+        existingPaths.add(path);
+        fileContent.set(path, new TextDecoder().decode(bytes));
+      },
+      makeDirectory: async () => undefined,
+      remove: async (path: string) => {
+        existingPaths.delete(path);
+        fileContent.delete(path);
+        removedPaths.push(path);
+      },
+    };
     const context: AgentToolContext = {
       ...baseContext,
       request: {
@@ -688,36 +709,178 @@ describe("primitive agent tools", function () {
         conversationKey: 43_001,
       },
     };
-    const read = tool.validate({
-      action: "read",
-      filePath: "/tmp/source.md",
-    });
-    assert.isTrue(read.ok);
-    if (!read.ok) return;
-    assert.isFalse(await tool.shouldRequireConfirmation?.(read.value, context));
 
-    const write = tool.validate({
-      action: "write",
-      filePath: "/tmp/output.md",
-      content: "Saved note.",
-    });
-    assert.isTrue(write.ok);
-    if (!write.ok) return;
-    assert.isTrue(await tool.shouldRequireConfirmation?.(write.value, context));
+    try {
+      const read = tool.validate({
+        action: "read",
+        filePath: "/tmp/source.md",
+      });
+      assert.isTrue(read.ok);
+      if (!read.ok) return;
+      assert.isFalse(
+        await tool.shouldRequireConfirmation?.(read.value, context),
+      );
 
-    const approved = tool.applyConfirmation?.(
-      write.value,
-      { approvalMode: "auto" },
-      context,
-    );
-    assert.isTrue(approved?.ok);
-    assert.isFalse(
-      await tool.shouldRequireConfirmation?.(write.value, context),
-    );
+      const write = tool.validate({
+        action: "write",
+        filePath: "/tmp/output.md",
+        content: "Saved note.",
+      });
+      assert.isTrue(write.ok);
+      if (!write.ok) return;
+      assert.isFalse(
+        await tool.shouldRequireConfirmation?.(write.value, context),
+      );
+      await tool.execute(write.value, context);
+      assert.equal(fileContent.get("/tmp/output.md"), "Saved note.");
+      await peekUndoEntry(context.request.conversationKey)?.revert();
+      assert.deepEqual(removedPaths, ["/tmp/output.md"]);
+
+      const overwrite = tool.validate({
+        action: "write",
+        filePath: "/tmp/existing.md",
+        content: "Updated note.",
+      });
+      assert.isTrue(overwrite.ok);
+      if (!overwrite.ok) return;
+      assert.isTrue(
+        await tool.shouldRequireConfirmation?.(overwrite.value, context),
+      );
+
+      const deniedBypass = await tool.execute(overwrite.value, context);
+      assert.include(
+        String((deniedBypass as { error?: unknown }).error || ""),
+        "without confirmation",
+      );
+      assert.equal(fileContent.get("/tmp/existing.md"), "Original note.");
+
+      const approved = tool.applyConfirmation?.(overwrite.value, {}, context);
+      assert.isTrue(approved?.ok);
+      if (!approved?.ok) return;
+      await tool.execute(approved.value, context);
+      assert.equal(fileContent.get("/tmp/existing.md"), "Updated note.");
+      await peekUndoEntry(context.request.conversationKey)?.revert();
+      assert.equal(fileContent.get("/tmp/existing.md"), "Original note.");
+    } finally {
+      clearUndoStack(context.request.conversationKey);
+      (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
+    }
   });
 
-  it("run_command confirmation keeps read-only commands direct and destructive commands gated after auto-accept", async function () {
+  it("file_io treats new Obsidian note writes as direct writes and existing notes as overwrites", async function () {
+    const tool = createFileIOTool();
+    const existingPaths = new Set<string>([
+      "/tmp/obsidian-vault/Zotero Notes/existing.md",
+    ]);
+    const originalPrefs = globalScope.Zotero?.Prefs;
+    const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
+    if (!globalScope.Zotero) {
+      throw new Error("Zotero test stub was not initialized");
+    }
+    globalScope.Zotero.Prefs = {
+      get: (key: string) =>
+        key.endsWith(".obsidianVaultPath") ? "/tmp/obsidian-vault" : "",
+      set: () => undefined,
+    };
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async (path: string) => existingPaths.has(path),
+    };
+
+    try {
+      const context: AgentToolContext = {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          conversationKey: 43_005,
+        },
+      };
+      const newNote = tool.validate({
+        action: "write",
+        filePath: "/tmp/obsidian-vault/Zotero Notes/new-note.md",
+        content: "New note.",
+      });
+      const existingNote = tool.validate({
+        action: "write",
+        filePath: "/tmp/obsidian-vault/Zotero Notes/existing.md",
+        content: "Overwrite note.",
+      });
+      const outsideVault = tool.validate({
+        action: "write",
+        filePath: "/tmp/outside-vault/new-note.md",
+        content: "Outside note.",
+      });
+      const nonMarkdown = tool.validate({
+        action: "write",
+        filePath: "/tmp/obsidian-vault/Zotero Notes/data.json",
+        content: "{}",
+      });
+      assert.isTrue(newNote.ok);
+      assert.isTrue(existingNote.ok);
+      assert.isTrue(outsideVault.ok);
+      assert.isTrue(nonMarkdown.ok);
+      if (
+        !newNote.ok ||
+        !existingNote.ok ||
+        !outsideVault.ok ||
+        !nonMarkdown.ok
+      )
+        return;
+
+      assert.isFalse(
+        await tool.shouldRequireConfirmation?.(newNote.value, context),
+      );
+      assert.isTrue(
+        await tool.shouldRequireConfirmation?.(existingNote.value, context),
+      );
+      assert.isFalse(
+        await tool.shouldRequireConfirmation?.(outsideVault.value, context),
+      );
+      assert.isFalse(
+        await tool.shouldRequireConfirmation?.(nonMarkdown.value, context),
+      );
+    } finally {
+      globalScope.Zotero.Prefs = originalPrefs;
+      (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
+    }
+  });
+
+  it("run_command confirmation keeps read-only and simple new writes direct while destructive and unknown writes stay gated", async function () {
     const tool = createRunCommandTool();
+    const existingPaths = new Set<string>(["/tmp/existing.md"]);
+    const removedPaths: string[] = [];
+    const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
+    const originalChromeUtils = (globalThis as { ChromeUtils?: unknown })
+      .ChromeUtils;
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async (path: string) => existingPaths.has(path),
+      remove: async (path: string) => {
+        removedPaths.push(path);
+      },
+    };
+    (globalThis as { ChromeUtils?: unknown }).ChromeUtils = {
+      importESModule: () => ({
+        Subprocess: {
+          call: async () => {
+            const pipe = () => {
+              let done = false;
+              return {
+                async readString() {
+                  if (done) return "";
+                  done = true;
+                  return "";
+                },
+              };
+            };
+            return {
+              stdout: pipe(),
+              stderr: pipe(),
+              wait: async () => ({ exitCode: 0 }),
+              kill: () => undefined,
+            };
+          },
+        },
+      }),
+    };
     const context: AgentToolContext = {
       ...baseContext,
       request: {
@@ -726,41 +889,84 @@ describe("primitive agent tools", function () {
       },
     };
 
-    const readOnly = tool.validate({ command: 'rg "notes" src' });
-    assert.isTrue(readOnly.ok);
-    if (!readOnly.ok) return;
-    assert.isFalse(
-      await tool.shouldRequireConfirmation?.(readOnly.value, context),
-    );
+    try {
+      const readOnly = tool.validate({ command: 'rg "notes" src' });
+      assert.isTrue(readOnly.ok);
+      if (!readOnly.ok) return;
+      assert.isFalse(
+        await tool.shouldRequireConfirmation?.(readOnly.value, context),
+      );
 
-    const commandWrite = tool.validate({ command: "python3 analyze.py" });
-    assert.isTrue(commandWrite.ok);
-    if (!commandWrite.ok) return;
-    assert.isTrue(
-      await tool.shouldRequireConfirmation?.(commandWrite.value, context),
-    );
+      const dateRead = tool.validate({ command: "date +%F" });
+      assert.isTrue(dateRead.ok);
+      if (!dateRead.ok) return;
+      assert.isFalse(
+        await tool.shouldRequireConfirmation?.(dateRead.value, context),
+      );
 
-    const approved = tool.applyConfirmation?.(
-      commandWrite.value,
-      { approvalMode: "auto" },
-      context,
-    );
-    assert.isTrue(approved?.ok);
-    assert.isFalse(
-      await tool.shouldRequireConfirmation?.(commandWrite.value, context),
-    );
+      const newRedirect = tool.validate({
+        command: 'printf "note" > "/tmp/new-note.md"',
+      });
+      assert.isTrue(newRedirect.ok);
+      if (!newRedirect.ok) return;
+      assert.isFalse(
+        await tool.shouldRequireConfirmation?.(newRedirect.value, context),
+      );
+      await tool.execute(newRedirect.value, context);
+      await peekUndoEntry(context.request.conversationKey)?.revert();
+      assert.deepEqual(removedPaths, ["/tmp/new-note.md"]);
 
-    const destructive = tool.validate({ command: "rm -rf /tmp/example" });
-    assert.isTrue(destructive.ok);
-    if (!destructive.ok) return;
-    assert.isTrue(
-      await tool.shouldRequireConfirmation?.(destructive.value, context),
-    );
+      const overwriteRedirect = tool.validate({
+        command: 'printf "note" > "/tmp/existing.md"',
+      });
+      assert.isTrue(overwriteRedirect.ok);
+      if (!overwriteRedirect.ok) return;
+      assert.isTrue(
+        await tool.shouldRequireConfirmation?.(
+          overwriteRedirect.value,
+          context,
+        ),
+      );
+
+      const dateSet = tool.validate({ command: "date -s 2026-05-15" });
+      assert.isTrue(dateSet.ok);
+      if (!dateSet.ok) return;
+      assert.isTrue(
+        await tool.shouldRequireConfirmation?.(dateSet.value, context),
+      );
+
+      const commandWrite = tool.validate({ command: "python3 analyze.py" });
+      assert.isTrue(commandWrite.ok);
+      if (!commandWrite.ok) return;
+      assert.isTrue(
+        await tool.shouldRequireConfirmation?.(commandWrite.value, context),
+      );
+
+      const destructive = tool.validate({ command: "rm -rf /tmp/example" });
+      assert.isTrue(destructive.ok);
+      if (!destructive.ok) return;
+      assert.isTrue(
+        await tool.shouldRequireConfirmation?.(destructive.value, context),
+      );
+    } finally {
+      clearUndoStack(context.request.conversationKey);
+      (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
+      (globalThis as { ChromeUtils?: unknown }).ChromeUtils =
+        originalChromeUtils;
+    }
   });
 
-  it("run_command and file_io auto-accept scopes are independent", async function () {
+  it("run_command and file_io keep unknown writes gated after confirmation", async function () {
     const commandTool = createRunCommandTool();
     const fileTool = createFileIOTool();
+    const existingPaths = new Set<string>([
+      "/tmp/from-command-context.md",
+      "/tmp/from-file-context.md",
+    ]);
+    const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      exists: async (path: string) => existingPaths.has(path),
+    };
 
     const commandContext: AgentToolContext = {
       ...baseContext,
@@ -778,56 +984,52 @@ describe("primitive agent tools", function () {
     assert.isTrue(command.ok);
     assert.isTrue(fileForCommandContext.ok);
     if (!command.ok || !fileForCommandContext.ok) return;
-    commandTool.applyConfirmation?.(
-      command.value,
-      { approvalMode: "auto" },
-      commandContext,
-    );
-    assert.isFalse(
-      await commandTool.shouldRequireConfirmation?.(
-        command.value,
-        commandContext,
-      ),
-    );
-    assert.isTrue(
-      await fileTool.shouldRequireConfirmation?.(
-        fileForCommandContext.value,
-        commandContext,
-      ),
-    );
+    try {
+      commandTool.applyConfirmation?.(command.value, {}, commandContext);
+      assert.isTrue(
+        await commandTool.shouldRequireConfirmation?.(
+          command.value,
+          commandContext,
+        ),
+      );
+      assert.isTrue(
+        await fileTool.shouldRequireConfirmation?.(
+          fileForCommandContext.value,
+          commandContext,
+        ),
+      );
 
-    const fileContext: AgentToolContext = {
-      ...baseContext,
-      request: {
-        ...baseContext.request,
-        conversationKey: 43_004,
-      },
-    };
-    const file = fileTool.validate({
-      action: "write",
-      filePath: "/tmp/from-file-context.md",
-      content: "Content",
-    });
-    const commandForFileContext = commandTool.validate({
-      command: "python3 analyze.py",
-    });
-    assert.isTrue(file.ok);
-    assert.isTrue(commandForFileContext.ok);
-    if (!file.ok || !commandForFileContext.ok) return;
-    fileTool.applyConfirmation?.(
-      file.value,
-      { approvalMode: "auto" },
-      fileContext,
-    );
-    assert.isFalse(
-      await fileTool.shouldRequireConfirmation?.(file.value, fileContext),
-    );
-    assert.isTrue(
-      await commandTool.shouldRequireConfirmation?.(
-        commandForFileContext.value,
-        fileContext,
-      ),
-    );
+      const fileContext: AgentToolContext = {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          conversationKey: 43_004,
+        },
+      };
+      const file = fileTool.validate({
+        action: "write",
+        filePath: "/tmp/from-file-context.md",
+        content: "Content",
+      });
+      const commandForFileContext = commandTool.validate({
+        command: "python3 analyze.py",
+      });
+      assert.isTrue(file.ok);
+      assert.isTrue(commandForFileContext.ok);
+      if (!file.ok || !commandForFileContext.ok) return;
+      fileTool.applyConfirmation?.(file.value, {}, fileContext);
+      assert.isTrue(
+        await fileTool.shouldRequireConfirmation?.(file.value, fileContext),
+      );
+      assert.isTrue(
+        await commandTool.shouldRequireConfirmation?.(
+          commandForFileContext.value,
+          fileContext,
+        ),
+      );
+    } finally {
+      (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
+    }
   });
 
   it("read_paper returns citation and source labels", async function () {

@@ -8,11 +8,19 @@
 import type { AgentToolDefinition } from "../../types";
 import { getRuntimePlatformInfo } from "../../../utils/runtimePlatform";
 import { ok, fail, validateObject } from "../shared";
+import { pushUndoEntry } from "../../store/undoStore";
 
 type RunCommandInput = {
   command: string;
   cwd?: string;
   timeoutMs: number;
+  allowUnsafe?: boolean;
+};
+
+type ReversibleCommandWrite = {
+  kind: "file" | "directory";
+  path: string;
+  description: string;
 };
 
 /**
@@ -226,27 +234,9 @@ async function executeCommand(params: {
   }
 }
 
-// Per-conversation auto-approve state for run_command.
-const commandAutoApprovedConversations = new Set<number>();
-
-export function isCommandAutoApproved(conversationKey: number): boolean {
-  return commandAutoApprovedConversations.has(conversationKey);
-}
-
-export function setCommandAutoApproved(
-  conversationKey: number,
-  value: boolean,
-): void {
-  if (value) {
-    commandAutoApprovedConversations.add(conversationKey);
-  } else {
-    commandAutoApprovedConversations.delete(conversationKey);
-  }
-}
-
 /** Patterns that indicate a command only reads data (safe to auto-approve). */
 const READ_ONLY_COMMANDS =
-  /^\s*(?:cat|head|tail|less|more|ls|dir|find|file|wc|du|stat|which|where|type|echo|printf|grep|rg|awk|sed\s+-n|sort|uniq|diff|strings|xxd|hexdump|md5|shasum|sha256sum|tesseract|swift|node\s+-e|python3?\s+[-\/])/i;
+  /^\s*(?:cat|head|tail|less|more|ls|dir|find|file|wc|du|stat|which|where|type|pwd|echo|printf|grep|rg|awk|sed\s+-n|sort|uniq|diff|strings|xxd|hexdump|md5|shasum|sha256sum|tesseract|swift|node\s+-e|python3?\s+[-\/])/i;
 
 /** Patterns that indicate a command mutates state (always require confirmation). */
 const DESTRUCTIVE_COMMANDS =
@@ -255,14 +245,129 @@ const DESTRUCTIVE_COMMANDS =
 /** Redirect to file (overwrite or append) — but not heredoc `<<`. */
 const REDIRECT_PATTERN = /(?:^|[^<])\s*>{1,2}\s*[^\s&]/;
 
+async function pathExists(path: string): Promise<boolean | null> {
+  const IOUtils = (globalThis as any).IOUtils;
+  if (IOUtils?.exists) {
+    try {
+      return Boolean(await IOUtils.exists(path));
+    } catch {
+      return null;
+    }
+  }
+  const OSFile = (globalThis as any).OS?.File;
+  if (OSFile?.exists) {
+    try {
+      return Boolean(await OSFile.exists(path));
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function removePathIfExists(path: string): Promise<void> {
+  const IOUtils = (globalThis as any).IOUtils;
+  if (IOUtils?.remove) {
+    await IOUtils.remove(path, { ignoreAbsent: true });
+    return;
+  }
+  const OSFile = (globalThis as any).OS?.File;
+  if (OSFile?.remove) {
+    await OSFile.remove(path, { ignoreAbsent: true });
+    return;
+  }
+  throw new Error("Path removal is not available in this Zotero environment");
+}
+
+function parseSimpleShellWords(value: string): string[] | null {
+  const words: string[] = [];
+  const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value))) {
+    const token = match[1] ?? match[2] ?? match[3] ?? "";
+    if (!token) continue;
+    if (/[;&|<>]/.test(token)) return null;
+    words.push(token.replace(/\\"/g, '"'));
+  }
+  return words;
+}
+
+function hasGlobPattern(value: string): boolean {
+  return /[*?\[\]{}]/.test(value);
+}
+
+function parseRedirectTarget(command: string): ReversibleCommandWrite | null {
+  const match = command.match(
+    /^\s*((?:echo|printf|cat)\b[\s\S]*?)\s*(?:>{1,2})\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s*$/i,
+  );
+  if (!match) return null;
+  const producer = match[1] || "";
+  const path = (match[2] || match[3] || match[4] || "").trim();
+  if (!path || hasGlobPattern(path) || /[;&|<>]/.test(producer)) return null;
+  return {
+    kind: "file",
+    path,
+    description: `Delete created file from shell redirect: ${path}`,
+  };
+}
+
+function parseReversibleCommandWrite(
+  command: string,
+): ReversibleCommandWrite | null {
+  const trimmed = command.trim();
+  const redirect = parseRedirectTarget(trimmed);
+  if (redirect) return redirect;
+
+  const words = parseSimpleShellWords(trimmed);
+  if (!words?.length) return null;
+  const [program, ...args] = words;
+  if (program === "mkdir") {
+    const paths = args.filter((arg) => arg !== "-p");
+    if (paths.length !== 1 || hasGlobPattern(paths[0])) return null;
+    return {
+      kind: "directory",
+      path: paths[0],
+      description: `Remove created directory: ${paths[0]}`,
+    };
+  }
+  if (program === "touch" && args.length === 1 && !hasGlobPattern(args[0])) {
+    return {
+      kind: "file",
+      path: args[0],
+      description: `Delete created file: ${args[0]}`,
+    };
+  }
+  if (
+    program === "cp" &&
+    args.length === 2 &&
+    !args.some((arg) => arg.startsWith("-") || hasGlobPattern(arg))
+  ) {
+    return {
+      kind: "file",
+      path: args[1],
+      description: `Delete copied file: ${args[1]}`,
+    };
+  }
+  return null;
+}
+
 function isDestructiveCommand(command: string): boolean {
   return DESTRUCTIVE_COMMANDS.test(command.trim());
+}
+
+function isReadOnlyDateCommand(command: string): boolean {
+  const trimmed = command.trim();
+  return /^date(?:\s+(?:-u|--utc|\+\S+|"\+[^"]*"|'\+[^']*'))*\s*$/i.test(
+    trimmed,
+  );
 }
 
 function isReadOnlyCommand(command: string): boolean {
   const trimmed = command.trim();
   // Destructive commands always need confirmation
   if (isDestructiveCommand(trimmed)) return false;
+  // Date reads are common for note templates; setting system time is not.
+  if (isReadOnlyDateCommand(trimmed)) return true;
   // File redirects are writes
   if (REDIRECT_PATTERN.test(trimmed)) return false;
   // Known read-only commands are safe
@@ -373,13 +478,17 @@ export function createRunCommandTool(): AgentToolDefinition<
       });
     },
 
-    shouldRequireConfirmation(input, context) {
+    async shouldRequireConfirmation(input, _context) {
+      const reversibleWrite = parseReversibleCommandWrite(input.command);
+      if (reversibleWrite) {
+        const exists = await pathExists(reversibleWrite.path);
+        if (exists === false) return false;
+        return true;
+      }
       // Destructive commands always need confirmation.
       if (isDestructiveCommand(input.command)) return true;
       // Auto-approve read-only commands (analysis, inspection, listing)
       if (isReadOnlyCommand(input.command)) return false;
-      // Skip confirmation if user already approved commands in this conversation.
-      if (isCommandAutoApproved(context.request.conversationKey)) return false;
       return true;
     },
 
@@ -407,35 +516,63 @@ export function createRunCommandTool(): AgentToolDefinition<
                 },
               ]
             : []),
-          {
-            type: "select" as const,
-            id: "approvalMode",
-            label: "Approval mode",
-            value: "ask",
-            options: [
-              { id: "ask", label: "Ask every time" },
-              { id: "auto", label: "Auto accept this tool for this chat" },
-            ],
-          },
         ],
       };
     },
 
-    applyConfirmation(input, resolutionData, context) {
-      if (validateObject<Record<string, unknown>>(resolutionData)) {
-        if (resolutionData.approvalMode === "auto") {
-          setCommandAutoApproved(context.request.conversationKey, true);
-        }
-      }
-      return ok(input);
+    applyConfirmation(input) {
+      return ok({ ...input, allowUnsafe: true });
     },
 
     async execute(input, context) {
+      const reversibleWrite = parseReversibleCommandWrite(input.command);
+      const existedBeforeWrite = reversibleWrite
+        ? await pathExists(reversibleWrite.path)
+        : null;
+      if (
+        reversibleWrite &&
+        existedBeforeWrite !== false &&
+        !input.allowUnsafe
+      ) {
+        return {
+          exitCode: -1,
+          stdout: "",
+          stderr: "Refusing to overwrite an existing path without confirmation",
+          command: input.command,
+        };
+      }
+      if (
+        !reversibleWrite &&
+        !isReadOnlyCommand(input.command) &&
+        !input.allowUnsafe
+      ) {
+        return {
+          exitCode: -1,
+          stdout: "",
+          stderr:
+            "Refusing to run a mutating shell command without confirmation",
+          command: input.command,
+        };
+      }
       const result = await executeCommand({
         command: input.command,
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
       });
+      if (
+        result.exitCode === 0 &&
+        reversibleWrite &&
+        existedBeforeWrite === false
+      ) {
+        pushUndoEntry(context.request.conversationKey, {
+          id: `command-write-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+          toolName: "run_command",
+          description: reversibleWrite.description,
+          revert: async () => {
+            await removePathIfExists(reversibleWrite.path);
+          },
+        });
+      }
 
       const maxLen = 8000;
       const stdout =

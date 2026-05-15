@@ -135,6 +135,7 @@ Written by LLM-for-Zotero.
 - For **general notes**, `{{noteTitle}}` is the review topic or user-provided title. Use the same value in both `title:` frontmatter and `# heading`.
 - **Filename and `title:` are independent fields.** The filename uses its own three-part pattern (see Step 4b) that MAY include the note subtopic and date; frontmatter `title:` never does. Never copy any part of the filename into `title:`.
 - Fill in `{{created}}` with today's date in YYYY-MM-DD format. This is when the note was created, not when the paper was published (that's the `year` field).
+- Use the current local date from the runtime platform section for `{{created}}` and filename `{date}`. Do not call `run_command` just to retrieve the date/time.
 - **Required fields that must always be present**: `title`, `created`, `tags`. Never omit these.
 - **Look-up fields**: `citekey`, `doi`, `journal`, `year`. If a value is genuinely missing in Zotero metadata, use an empty string (e.g., `doi: ""`) rather than omitting the key — keep the frontmatter shape consistent.
 - For **non-paper notes**: use the general template. Do not add paper-specific metadata fields (doi, journal, citekey, year).

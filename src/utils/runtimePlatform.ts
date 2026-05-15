@@ -13,8 +13,9 @@ export type RuntimePlatformInfo = {
 };
 
 function resolveRuntimePlatform(): RuntimePlatform {
-  const zotero = (globalThis as { Zotero?: { isWin?: boolean; isMac?: boolean } })
-    .Zotero;
+  const zotero = (
+    globalThis as { Zotero?: { isWin?: boolean; isMac?: boolean } }
+  ).Zotero;
   if (zotero?.isWin) return "windows";
   if (zotero?.isMac) return "macos";
 
@@ -24,9 +25,8 @@ function resolveRuntimePlatform(): RuntimePlatform {
     if (navPlatform.includes("mac")) return "macos";
   }
 
-  const processPlatform = (
-    globalThis as { process?: { platform?: string } }
-  ).process?.platform;
+  const processPlatform = (globalThis as { process?: { platform?: string } })
+    .process?.platform;
   if (processPlatform === "win32") return "windows";
   if (processPlatform === "darwin") return "macos";
   return "linux";
@@ -90,12 +90,20 @@ export function getRuntimePlatformInfo(): RuntimePlatformInfo {
     pathSeparator: "/",
     homeReference: "~",
     listFilesExample: "ls ~/Desktop",
-    findPdfExample: "find ~/Desktop -name \"*.pdf\"",
+    findPdfExample: 'find ~/Desktop -name "*.pdf"',
   };
+}
+
+function formatLocalDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export function buildRuntimePlatformGuidanceText(
   info: RuntimePlatformInfo = getRuntimePlatformInfo(),
+  now: Date = new Date(),
 ): string {
   return [
     "Local shell environment:",
@@ -103,6 +111,7 @@ export function buildRuntimePlatformGuidanceText(
     `- Shell: ${info.shellPath} (${info.shellName})`,
     `- Native path separator: ${info.pathSeparator}`,
     `- Home path shorthand: ${info.homeReference}`,
+    `- Current local date: ${formatLocalDate(now)}`,
     `- Example directory listing: ${info.listFilesExample}`,
     `- Example PDF discovery: ${info.findPdfExample}`,
     "Use the native shell syntax and native path separators for this platform when working with local files.",
