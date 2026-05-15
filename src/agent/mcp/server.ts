@@ -420,7 +420,10 @@ function normalizeActiveScope(
 function pruneExpiredScopedMcpScopes(): void {
   const now = Date.now();
   for (const [token, entry] of scopedZoteroMcpScopes) {
-    if (entry.expiresAt <= now) scopedZoteroMcpScopes.delete(token);
+    if (entry.expiresAt <= now) {
+      scopedZoteroMcpScopes.delete(token);
+      clearMcpReadDedupeCacheForScopeToken(token);
+    }
   }
 }
 
@@ -443,6 +446,7 @@ export function registerScopedZoteroMcpScope(
     token,
     clear: () => {
       scopedZoteroMcpScopes.delete(token);
+      clearMcpReadDedupeCacheForScopeToken(token);
     },
   };
 }
@@ -492,6 +496,17 @@ function pruneExpiredMcpReadDedupeCache(): void {
   }
 }
 
+function mcpReadDedupeScopePrefix(scopeToken: string): string {
+  return `token:${JSON.stringify(scopeToken)}:`;
+}
+
+function clearMcpReadDedupeCacheForScopeToken(scopeToken: string): void {
+  const prefix = mcpReadDedupeScopePrefix(scopeToken);
+  for (const key of mcpReadDedupeCache.keys()) {
+    if (key.startsWith(prefix)) mcpReadDedupeCache.delete(key);
+  }
+}
+
 function buildMcpReadDedupeKey(params: {
   toolName: string;
   toolArgs: unknown;
@@ -499,18 +514,10 @@ function buildMcpReadDedupeKey(params: {
 }): string | null {
   if (!MCP_READ_DEDUPE_TOOL_NAMES.has(params.toolName)) return null;
   const scopeToken = getHeader(params.headers, ZOTERO_MCP_SCOPE_HEADER).trim();
-  const scope = resolveScopedMcpScope(params.headers);
-  const scopeKey = scopeToken
-    ? `token:${scopeToken}`
-    : [
-        "scope",
-        scope?.profileSignature || "",
-        scope?.conversationKey || "",
-        scope?.libraryID || "",
-        scope?.kind || "",
-        normalizeText(scope?.userText, 512) || "",
-      ].join(":");
-  return `${scopeKey}:${params.toolName}:${stableStringify(params.toolArgs || {})}`;
+  if (!scopeToken) return null;
+  pruneExpiredScopedMcpScopes();
+  if (!scopedZoteroMcpScopes.has(scopeToken)) return null;
+  return `${mcpReadDedupeScopePrefix(scopeToken)}${params.toolName}:${stableStringify(params.toolArgs || {})}`;
 }
 
 function cloneMcpResultWithDuplicateMarker(

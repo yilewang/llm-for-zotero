@@ -215,6 +215,36 @@ type PendingHistorySearchDocumentTask = {
   task: Promise<HistorySearchDocument>;
 };
 
+export type HistoryDeletionAgentStateDeps = {
+  clearAgentToolCaches?: (conversationKey: number) => void;
+  clearAgentConversationState?: (conversationKey: number) => Promise<void>;
+  log: (message: string, ...args: unknown[]) => void;
+};
+
+export async function clearDeletedAgentConversationState(
+  deps: HistoryDeletionAgentStateDeps,
+  conversationKey: number,
+  kind: "global" | "paper",
+): Promise<boolean> {
+  let hasError = false;
+  try {
+    deps.clearAgentToolCaches?.(conversationKey);
+  } catch (err) {
+    hasError = true;
+    deps.log(`LLM: Failed to clear deleted ${kind} agent tool caches`, err);
+  }
+  try {
+    await deps.clearAgentConversationState?.(conversationKey);
+  } catch (err) {
+    hasError = true;
+    deps.log(
+      `LLM: Failed to clear deleted ${kind} agent conversation state`,
+      err,
+    );
+  }
+  return hasError;
+}
+
 export type HistoryLifecycleControllerDeps = {
   body: Element;
   inputBox: HTMLTextAreaElement;
@@ -302,6 +332,8 @@ export type HistoryLifecycleControllerDeps = {
   setActiveEditSession: (value: any) => void;
   getCoreAgentRuntime: () => ReturnType<typeof getCoreAgentRuntime>;
   clearPendingRequestForConversation?: (conversationKey: number) => void;
+  clearAgentToolCaches?: (conversationKey: number) => void;
+  clearAgentConversationState?: (conversationKey: number) => Promise<void>;
   setStatusMessage?: (message: string, level: StatusLevel) => void;
   log: (message: string, ...args: unknown[]) => void;
 };
@@ -2658,6 +2690,12 @@ export function createHistoryLifecycleController(
     }
     clearPendingDeletionCaches(conversationKey);
     let hasError = false;
+    hasError =
+      (await clearDeletedAgentConversationState(
+        deps,
+        conversationKey,
+        "global",
+      )) || hasError;
     if (isClaudeConversationSystem()) {
       try {
         await invalidateClaudeConversationForDeletion(conversationKey, {
@@ -2830,6 +2868,12 @@ export function createHistoryLifecycleController(
     }
     clearPendingDeletionCaches(conversationKey);
     let hasError = false;
+    hasError =
+      (await clearDeletedAgentConversationState(
+        deps,
+        conversationKey,
+        "paper",
+      )) || hasError;
     if (isClaudeConversationSystem()) {
       try {
         await invalidateClaudeConversationForDeletion(conversationKey, {

@@ -3129,6 +3129,16 @@ export function setupHandlers(
     updateSelectedTextPreviewPreservingScroll();
   };
 
+  const clearAgentConversationState = async (conversationKey: number) => {
+    await Promise.all([
+      clearAgentMemory(conversationKey),
+      clearAgentTranscript(conversationKey),
+      clearPersistedAgentEvidence(conversationKey),
+      clearPersistedAgentCoverage(conversationKey),
+    ]);
+    clearAgentResourceLifecycleState(conversationKey);
+  };
+
   const historyLifecycleController = createHistoryLifecycleController({
     body,
     inputBox,
@@ -3213,6 +3223,8 @@ export function setupHandlers(
       activeEditSession = value;
     },
     getCoreAgentRuntime,
+    clearAgentToolCaches: clearAllAgentToolCaches,
+    clearAgentConversationState,
     setStatusMessage: status
       ? (message, level) => {
           setStatus(status, message, level);
@@ -5206,15 +5218,7 @@ export function setupHandlers(
     },
     scheduleAttachmentGc,
     clearAgentToolCaches: clearAllAgentToolCaches,
-    clearAgentConversationState: async (conversationKey) => {
-      await Promise.all([
-        clearAgentMemory(conversationKey),
-        clearAgentTranscript(conversationKey),
-        clearPersistedAgentEvidence(conversationKey),
-        clearPersistedAgentCoverage(conversationKey),
-      ]);
-      clearAgentResourceLifecycleState(conversationKey);
-    },
+    clearAgentConversationState,
     setStatusMessage: status
       ? (message, level) => {
           setStatus(status, message, level);

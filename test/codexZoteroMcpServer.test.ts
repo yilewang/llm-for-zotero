@@ -582,6 +582,141 @@ describe("Zotero MCP server", function () {
     }
   });
 
+  it("does not deduplicate semantic reads without a scoped MCP token", async function () {
+    let executeCount = 0;
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "paper_read",
+        description: "Read paper",
+        inputSchema: { type: "object", additionalProperties: true },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async (input) => {
+        executeCount += 1;
+        return { executeCount, input };
+      },
+    });
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const clearActiveScope = setActiveZoteroMcpScope({
+      profileSignature: "profile-active-dedupe",
+      conversationKey: 791,
+      libraryID: 1,
+      kind: "paper",
+      userText: "compare methods",
+    });
+
+    try {
+      const token = getOrCreateZoteroMcpBearerToken();
+      const body = {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "paper_read",
+          arguments: { mode: "targeted", query: "methods" },
+        },
+      };
+      const firstResponse = await invokeMcpEndpoint({ token, body });
+      const secondResponse = await invokeMcpEndpoint({
+        token,
+        body: { ...body, id: 2 },
+      });
+
+      const firstPayload = JSON.parse(firstResponse[2]);
+      const firstContent = JSON.parse(firstPayload.result.content[0].text);
+      const secondPayload = JSON.parse(secondResponse[2]);
+      const secondContent = JSON.parse(secondPayload.result.content[0].text);
+      assert.equal(firstContent.result.executeCount, 1);
+      assert.notProperty(secondContent, "duplicate");
+      assert.equal(secondContent.result.executeCount, 2);
+      assert.equal(executeCount, 2);
+    } finally {
+      clearActiveScope();
+    }
+  });
+
+  it("clears semantic read dedupe when the scoped MCP turn is cleared", async function () {
+    let executeCount = 0;
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "paper_read",
+        description: "Read paper",
+        inputSchema: { type: "object", additionalProperties: true },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async (input) => {
+        executeCount += 1;
+        return { executeCount, input };
+      },
+    });
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const scoped = registerScopedZoteroMcpScope(
+      {
+        profileSignature: "profile-dedupe-clear",
+        conversationKey: 792,
+        libraryID: 1,
+        kind: "paper",
+        userText: "compare methods",
+      },
+      { token: "dedupe-clear-scope-token" },
+    );
+    const token = getOrCreateZoteroMcpBearerToken();
+    const headers = { [ZOTERO_MCP_SCOPE_HEADER]: scoped.token };
+    const body = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: {
+        name: "paper_read",
+        arguments: { mode: "targeted", query: "methods" },
+      },
+    };
+
+    const firstResponse = await invokeMcpEndpoint({ token, headers, body });
+    scoped.clear();
+    const nextScoped = registerScopedZoteroMcpScope(
+      {
+        profileSignature: "profile-dedupe-clear",
+        conversationKey: 793,
+        libraryID: 1,
+        kind: "paper",
+        userText: "compare methods",
+      },
+      { token: scoped.token },
+    );
+
+    try {
+      const secondResponse = await invokeMcpEndpoint({
+        token,
+        headers,
+        body: { ...body, id: 2 },
+      });
+
+      const firstPayload = JSON.parse(firstResponse[2]);
+      const firstContent = JSON.parse(firstPayload.result.content[0].text);
+      const secondPayload = JSON.parse(secondResponse[2]);
+      const secondContent = JSON.parse(secondPayload.result.content[0].text);
+      assert.equal(firstContent.result.executeCount, 1);
+      assert.notProperty(secondContent, "duplicate");
+      assert.equal(secondContent.result.executeCount, 2);
+      assert.equal(executeCount, 2);
+    } finally {
+      nextScoped.clear();
+    }
+  });
+
   it("invalidates semantic read dedupe after successful writes", async function () {
     let readExecuteCount = 0;
     let writeExecuteCount = 0;
