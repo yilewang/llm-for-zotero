@@ -21,7 +21,7 @@ describe("standalone system toggle", function () {
     assert.deepEqual(calls, ["codex"]);
   });
 
-  it("does not reuse an active empty Codex global draft when forced fresh", function () {
+  it("reuses an active empty Codex global draft even when forced fresh", function () {
     const draft = {
       conversationKey: 5_000_000_001,
       kind: "global",
@@ -29,7 +29,7 @@ describe("standalone system toggle", function () {
       userTurnCount: 0,
     };
 
-    assert.isFalse(
+    assert.isTrue(
       isReusableStandaloneDraft({
         forceFresh: true,
         summary: draft,
@@ -47,7 +47,7 @@ describe("standalone system toggle", function () {
     );
   });
 
-  it("does not reuse an active empty Codex paper draft when forced fresh", function () {
+  it("reuses an active empty Codex paper draft even when forced fresh", function () {
     const draft = {
       conversationKey: 6_000_000_001,
       kind: "paper",
@@ -55,7 +55,7 @@ describe("standalone system toggle", function () {
       userTurnCount: 0,
     };
 
-    assert.isFalse(
+    assert.isTrue(
       isReusableStandaloneDraft({
         forceFresh: true,
         summary: draft,
@@ -71,7 +71,7 @@ describe("standalone system toggle", function () {
     );
   });
 
-  it("only reuses listed empty drafts when not forced fresh", function () {
+  it("reuses listed empty drafts even when forced fresh", function () {
     const drafts = [
       {
         conversationKey: 5_000_000_010,
@@ -87,11 +87,12 @@ describe("standalone system toggle", function () {
       },
     ];
 
-    assert.isNull(
+    assert.equal(
       findReusableStandaloneDraft({
         forceFresh: true,
         summaries: drafts,
-      }),
+      })?.conversationKey,
+      5_000_000_011,
     );
     assert.equal(
       findReusableStandaloneDraft({

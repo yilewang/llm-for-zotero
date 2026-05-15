@@ -9,6 +9,9 @@ import {
   createGlobalConversation,
   getLatestEmptyGlobalConversation,
   listGlobalConversations,
+  listPaperConversations,
+  touchEmptyGlobalConversation,
+  touchEmptyPaperConversation,
 } from "../src/utils/chatStore";
 
 describe("historyLoader", function () {
@@ -430,5 +433,125 @@ describe("historyLoader", function () {
     assert.equal(oldDraft?.conversationKey, 2_000_000_001);
     assert.isAbove(newKey, 2_000_000_001);
     assert.equal(rows[0]?.conversationKey, newKey);
+  });
+
+  it("touches an empty global draft so it sorts as the latest draft", async function () {
+    const conversations = [
+      {
+        conversationKey: 2_000_000_001,
+        libraryID: 1,
+        createdAt: 100,
+        title: "",
+      },
+      {
+        conversationKey: 2_000_000_002,
+        libraryID: 1,
+        createdAt: 300,
+        title: "",
+      },
+    ];
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string, params?: unknown[]) => {
+          const normalizedParams = Array.isArray(params) ? params : [];
+          if (
+            sql.includes("UPDATE llm_for_zotero_global_conversations") &&
+            sql.includes("NOT EXISTS")
+          ) {
+            const row = conversations.find(
+              (entry) => entry.conversationKey === Number(normalizedParams[1]),
+            );
+            if (row) row.createdAt = Number(normalizedParams[0]);
+            return [];
+          }
+          if (sql.includes("FROM llm_for_zotero_global_conversations gc")) {
+            return conversations
+              .filter((row) => row.libraryID === Number(normalizedParams[0]))
+              .sort((a, b) => b.createdAt - a.createdAt)
+              .map((row) => ({
+                conversationKey: row.conversationKey,
+                libraryID: row.libraryID,
+                createdAt: row.createdAt,
+                title: row.title,
+                lastActivityAt: row.createdAt,
+                userTurnCount: 0,
+              }));
+          }
+          return [];
+        },
+      },
+    };
+
+    await touchEmptyGlobalConversation(2_000_000_001, 500);
+    const rows = await listGlobalConversations(1, 10, true);
+
+    assert.equal(rows[0]?.conversationKey, 2_000_000_001);
+    assert.equal(rows[0]?.lastActivityAt, 500);
+  });
+
+  it("touches an empty paper draft so it sorts as the latest draft", async function () {
+    const conversations = [
+      {
+        conversationKey: 1_500_000_001,
+        libraryID: 1,
+        paperItemID: 42,
+        sessionVersion: 1,
+        createdAt: 100,
+        title: "",
+      },
+      {
+        conversationKey: 1_500_000_002,
+        libraryID: 1,
+        paperItemID: 42,
+        sessionVersion: 1,
+        createdAt: 300,
+        title: "",
+      },
+    ];
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string, params?: unknown[]) => {
+          const normalizedParams = Array.isArray(params) ? params : [];
+          if (
+            sql.includes("UPDATE llm_for_zotero_paper_conversations") &&
+            sql.includes("NOT EXISTS")
+          ) {
+            const row = conversations.find(
+              (entry) => entry.conversationKey === Number(normalizedParams[1]),
+            );
+            if (row) row.createdAt = Number(normalizedParams[0]);
+            return [];
+          }
+          if (sql.includes("FROM llm_for_zotero_paper_conversations pc")) {
+            return conversations
+              .filter(
+                (row) =>
+                  row.libraryID === Number(normalizedParams[0]) &&
+                  row.paperItemID === Number(normalizedParams[1]),
+              )
+              .sort((a, b) => b.createdAt - a.createdAt)
+              .map((row) => ({
+                conversationKey: row.conversationKey,
+                libraryID: row.libraryID,
+                paperItemID: row.paperItemID,
+                sessionVersion: row.sessionVersion,
+                createdAt: row.createdAt,
+                title: row.title,
+                lastActivityAt: row.createdAt,
+                userTurnCount: 0,
+              }));
+          }
+          return [];
+        },
+      },
+    };
+
+    await touchEmptyPaperConversation(1_500_000_001, 500);
+    const rows = await listPaperConversations(1, 42, 10, true);
+
+    assert.equal(rows[0]?.conversationKey, 1_500_000_001);
+    assert.equal(rows[0]?.lastActivityAt, 500);
   });
 });

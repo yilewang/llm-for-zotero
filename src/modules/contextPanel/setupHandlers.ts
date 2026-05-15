@@ -527,8 +527,12 @@ export function setupHandlers(
   const resolvedInitialState = resolveInitialPanelItemState(initialItem, {
     conversationSystem: preferredConversationSystem,
   });
+  const rawPanelItem =
+    activeContextPanelRawItems.get(body) || initialItem || null;
   let item = resolvedInitialState.item;
-  let basePaperItem = resolvedInitialState.basePaperItem;
+  let basePaperItem =
+    resolvedInitialState.basePaperItem ||
+    resolveConversationBaseItem(rawPanelItem);
   const buildPaperStateKey = (libraryID: number, paperItemID: number): string =>
     `${Math.floor(libraryID)}:${Math.floor(paperItemID)}`;
   const resolveLibraryIdFromItem = (

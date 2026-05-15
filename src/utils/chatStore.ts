@@ -1727,6 +1727,29 @@ export async function deletePaperConversation(
   );
 }
 
+export async function touchEmptyPaperConversation(
+  conversationKey: number,
+  timestamp = Date.now(),
+): Promise<void> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey) return;
+  const normalizedTimestamp = Number.isFinite(timestamp)
+    ? Math.floor(timestamp)
+    : Date.now();
+  await Zotero.DB.queryAsync(
+    `UPDATE ${PAPER_CONVERSATIONS_TABLE}
+     SET created_at = ?
+     WHERE conversation_key = ?
+       AND NOT EXISTS (
+         SELECT 1
+         FROM ${CHAT_MESSAGES_TABLE}
+         WHERE conversation_key = ?
+           AND role = 'user'
+       )`,
+    [normalizedTimestamp, normalizedKey, normalizedKey],
+  );
+}
+
 /**
  * Ensure a global conversation row exists in the DB for the given key.
  * Uses INSERT OR IGNORE so it's safe to call repeatedly.
@@ -1830,6 +1853,29 @@ export async function getGlobalConversationUserTurnCount(
   )) as Array<{ userTurnCount?: unknown }> | undefined;
   const count = Number(rows?.[0]?.userTurnCount);
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+}
+
+export async function touchEmptyGlobalConversation(
+  conversationKey: number,
+  timestamp = Date.now(),
+): Promise<void> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey || !isUpstreamGlobalConversationKey(normalizedKey)) return;
+  const normalizedTimestamp = Number.isFinite(timestamp)
+    ? Math.floor(timestamp)
+    : Date.now();
+  await Zotero.DB.queryAsync(
+    `UPDATE ${GLOBAL_CONVERSATIONS_TABLE}
+     SET created_at = ?
+     WHERE conversation_key = ?
+       AND NOT EXISTS (
+         SELECT 1
+         FROM ${CHAT_MESSAGES_TABLE}
+         WHERE conversation_key = ?
+           AND role = 'user'
+       )`,
+    [normalizedTimestamp, normalizedKey, normalizedKey],
+  );
 }
 
 export async function getLatestEmptyGlobalConversation(

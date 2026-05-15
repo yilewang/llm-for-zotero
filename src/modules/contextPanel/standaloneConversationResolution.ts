@@ -21,7 +21,6 @@ export function isReusableStandaloneDraft(params: {
   kind: "global" | "paper";
   libraryID?: number | null;
 }): boolean {
-  if (params.forceFresh) return false;
   const summary = params.summary;
   if (!summary) return false;
   if (summary.kind !== params.kind) return false;
@@ -38,6 +37,5 @@ export function isReusableStandaloneDraft(params: {
 export function findReusableStandaloneDraft<
   T extends StandaloneDraftSummary,
 >(params: { forceFresh?: boolean; summaries: readonly T[] }): T | null {
-  if (params.forceFresh) return null;
   return params.summaries.find((summary) => hasNoUserTurns(summary)) || null;
 }

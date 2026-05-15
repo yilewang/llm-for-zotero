@@ -56,6 +56,8 @@ import {
   ensurePaperV1Conversation,
   setGlobalConversationTitle,
   setPaperConversationTitle,
+  touchEmptyGlobalConversation,
+  touchEmptyPaperConversation,
 } from "../../../../utils/chatStore";
 import {
   loadAllConversationHistory,
@@ -462,6 +464,49 @@ export function createHistoryLifecycleController(
   const isCodexConversationDraft = async (conversationKey: number) => {
     const summary = await getCodexConversationSummary(conversationKey);
     return !summary || (summary.userTurnCount || 0) <= 0;
+  };
+  const touchEmptyDraftActivity = async (
+    conversationKey: number,
+    kind: "global" | "paper",
+  ): Promise<void> => {
+    const normalizedKey = Number.isFinite(conversationKey)
+      ? Math.floor(conversationKey)
+      : 0;
+    if (normalizedKey <= 0) return;
+    const now = Date.now();
+    if (isClaudeConversationSystem()) {
+      const summary = await getClaudeConversationSummary(normalizedKey);
+      if (!summary || (summary.userTurnCount || 0) > 0) return;
+      await touchClaudeConversation(normalizedKey, { updatedAt: now });
+      return;
+    }
+    if (isCodexConversationSystem()) {
+      const summary = await getCodexConversationSummary(normalizedKey);
+      if (!summary || (summary.userTurnCount || 0) > 0) return;
+      await upsertCodexConversationSummary({
+        conversationKey: summary.conversationKey,
+        libraryID: summary.libraryID,
+        kind: summary.kind,
+        paperItemID: summary.paperItemID,
+        createdAt: summary.createdAt,
+        updatedAt: now,
+        title: summary.title,
+        providerSessionId: summary.providerSessionId,
+        scopedConversationKey: summary.scopedConversationKey,
+        scopeType: summary.scopeType,
+        scopeId: summary.scopeId,
+        scopeLabel: summary.scopeLabel,
+        cwd: summary.cwd,
+        model: summary.model,
+        effort: summary.effort,
+      });
+      return;
+    }
+    if (kind === "global") {
+      await touchEmptyGlobalConversation(normalizedKey, now);
+      return;
+    }
+    await touchEmptyPaperConversation(normalizedKey, now);
   };
   let latestConversationHistory: ConversationHistoryEntry[] = [];
   let explicitNewChatInFlight = false;
@@ -3269,7 +3314,7 @@ export function createHistoryLifecycleController(
       setStatus(status, t("Conversation deleted. Undo available."), "ready");
   };
 
-  const createAndSwitchGlobalConversation = async (forceFresh = false) => {
+  const createAndSwitchGlobalConversation = async (_forceFresh = false) => {
     if (!item || isNoteSession()) return;
     closeHistoryNewMenu();
     const libraryID = getCurrentLibraryID();
@@ -3290,17 +3335,15 @@ export function createHistoryLifecycleController(
     if (isClaudeConversationSystem()) {
       const currentCandidate = isGlobalMode()
         ? getConversationKey(item)
-        : forceFresh
-          ? 0
-          : Number(
-              activeClaudeGlobalConversationByLibrary.get(
-                buildClaudeLibraryStateKey(libraryID),
-              ) || 0,
-            );
+        : Number(
+            activeClaudeGlobalConversationByLibrary.get(
+              buildClaudeLibraryStateKey(libraryID),
+            ) || 0,
+          );
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (!forceFresh && normalizedCurrentCandidate > 0) {
+      if (normalizedCurrentCandidate > 0) {
         try {
           const currentSummary = await getClaudeConversationSummary(
             normalizedCurrentCandidate,
@@ -3316,7 +3359,7 @@ export function createHistoryLifecycleController(
           );
         }
       }
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const summaries = await listClaudeGlobalConversations(
             libraryID,
@@ -3363,17 +3406,15 @@ export function createHistoryLifecycleController(
     } else if (isCodexConversationSystem()) {
       const currentCandidate = isGlobalMode()
         ? getConversationKey(item)
-        : forceFresh
-          ? 0
-          : Number(
-              activeCodexGlobalConversationByLibrary.get(
-                buildCodexLibraryStateKey(libraryID),
-              ) || 0,
-            );
+        : Number(
+            activeCodexGlobalConversationByLibrary.get(
+              buildCodexLibraryStateKey(libraryID),
+            ) || 0,
+          );
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (!forceFresh && normalizedCurrentCandidate > 0) {
+      if (normalizedCurrentCandidate > 0) {
         try {
           if (await isCodexConversationDraft(normalizedCurrentCandidate)) {
             targetConversationKey = normalizedCurrentCandidate;
@@ -3386,7 +3427,7 @@ export function createHistoryLifecycleController(
           );
         }
       }
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const summaries = await listCodexGlobalConversations(
             libraryID,
@@ -3436,13 +3477,11 @@ export function createHistoryLifecycleController(
         isGlobalMode() &&
         isUpstreamGlobalConversationKey(Number(getConversationKey(item) || 0))
           ? getConversationKey(item)
-          : forceFresh
-            ? 0
-            : Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
+          : Number(activeGlobalConversationByLibrary.get(libraryID) || 0);
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (!forceFresh && normalizedCurrentCandidate > 0) {
+      if (normalizedCurrentCandidate > 0) {
         try {
           const turnCount = await getGlobalConversationUserTurnCount(
             normalizedCurrentCandidate,
@@ -3459,7 +3498,7 @@ export function createHistoryLifecycleController(
         }
       }
 
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const latestEmpty = await getLatestEmptyGlobalConversation(libraryID);
           const latestEmptyKey = Number(latestEmpty?.conversationKey || 0);
@@ -3497,6 +3536,9 @@ export function createHistoryLifecycleController(
       action: reuseReason ? "reuse" : "create",
       reason: reuseReason || "new",
     });
+    if (reuseReason) {
+      await touchEmptyDraftActivity(targetConversationKey, "global");
+    }
     await switchGlobalConversation(targetConversationKey);
     if (status) {
       setStatus(
@@ -3510,7 +3552,7 @@ export function createHistoryLifecycleController(
     inputBox.focus({ preventScroll: true });
   };
 
-  const createAndSwitchPaperConversation = async (forceFresh = false) => {
+  const createAndSwitchPaperConversation = async (_forceFresh = false) => {
     if (!item || isNoteSession()) return;
     closeHistoryNewMenu();
     const paperItem = resolveCurrentPaperBaseItem();
@@ -3535,7 +3577,7 @@ export function createHistoryLifecycleController(
 
     if (isClaudeConversationSystem()) {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
+      if (Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getClaudeConversationSummary(currentKey);
           if (
@@ -3553,7 +3595,7 @@ export function createHistoryLifecycleController(
           );
         }
       }
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const summaries = await listClaudePaperConversations(
             libraryID,
@@ -3599,7 +3641,7 @@ export function createHistoryLifecycleController(
       }
     } else if (isCodexConversationSystem()) {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
+      if (Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getCodexConversationSummary(currentKey);
           if (
@@ -3617,7 +3659,7 @@ export function createHistoryLifecycleController(
           );
         }
       }
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const summaries = await listCodexPaperConversations(
             libraryID,
@@ -3663,7 +3705,7 @@ export function createHistoryLifecycleController(
       }
     } else {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
+      if (Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getPaperConversation(currentKey);
           if (currentSummary && currentSummary.userTurnCount === 0) {
@@ -3678,7 +3720,7 @@ export function createHistoryLifecycleController(
         }
       }
 
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const summaries = await listPaperConversations(
             libraryID,
@@ -3728,6 +3770,9 @@ export function createHistoryLifecycleController(
       reason: reuseReason || "new",
     });
 
+    if (reuseReason) {
+      await touchEmptyDraftActivity(targetConversationKey, "paper");
+    }
     await switchPaperConversation(targetConversationKey);
     if (status) {
       setStatus(
@@ -3821,7 +3866,9 @@ export function createHistoryLifecycleController(
         return;
       }
 
-      // Create a truly fresh session in whichever mode is currently active.
+      // Reuse an existing blank draft in the active mode, or create one if none
+      // exists. Webchat above is the only mode where "+" always requests a new
+      // remote conversation.
       void runExplicitNewChatAction(async () => {
         if (isGlobalMode()) {
           await createAndSwitchGlobalConversation(true);
