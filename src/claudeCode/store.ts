@@ -4,6 +4,7 @@ import type {
   ClaudeConversationSummary,
   ClaudeConversationKind,
   NoteContextRef,
+  QuoteCitation,
   SelectedTextSource,
 } from "../shared/types";
 import {
@@ -12,6 +13,7 @@ import {
   normalizeSelectedTextSource,
   normalizePaperContextRefs,
 } from "../modules/contextPanel/normalizers";
+import { normalizeQuoteCitations } from "../modules/contextPanel/quoteCitations";
 import type { StoredChatMessage } from "../utils/chatStore";
 import {
   CLAUDE_HISTORY_LIMIT,
@@ -217,6 +219,7 @@ export async function initClaudeCodeStore(): Promise<void> {
         paper_contexts_json TEXT,
         full_text_paper_contexts_json TEXT,
         citation_paper_contexts_json TEXT,
+        quote_citations_json TEXT,
         screenshot_images TEXT,
         attachments_json TEXT,
         model_name TEXT,
@@ -268,6 +271,15 @@ export async function initClaudeCodeStore(): Promise<void> {
       await Zotero.DB.queryAsync(
         `ALTER TABLE ${CLAUDE_MESSAGES_TABLE}
          ADD COLUMN citation_paper_contexts_json TEXT`,
+      );
+    }
+    const hasQuoteCitationsJsonColumn = Boolean(
+      columns?.some((column) => column?.name === "quote_citations_json"),
+    );
+    if (!hasQuoteCitationsJsonColumn) {
+      await Zotero.DB.queryAsync(
+        `ALTER TABLE ${CLAUDE_MESSAGES_TABLE}
+         ADD COLUMN quote_citations_json TEXT`,
       );
     }
     await Zotero.DB.queryAsync(
@@ -348,6 +360,7 @@ export async function appendClaudeMessage(
   const citationPaperContexts = normalizePaperContextRefs(
     message.citationPaperContexts,
   );
+  const quoteCitations = normalizeQuoteCitations(message.quoteCitations);
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim()))
     : [];
@@ -359,8 +372,8 @@ export async function appendClaudeMessage(
 
   await Zotero.DB.queryAsync(
     `INSERT INTO ${CLAUDE_MESSAGES_TABLE}
-      (conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, screenshot_images, attachments_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, screenshot_images, attachments_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       normalizedKey,
       message.role,
@@ -380,6 +393,7 @@ export async function appendClaudeMessage(
       paperContexts.length ? JSON.stringify(paperContexts) : null,
       fullTextPaperContexts.length ? JSON.stringify(fullTextPaperContexts) : null,
       citationPaperContexts.length ? JSON.stringify(citationPaperContexts) : null,
+      quoteCitations.length ? JSON.stringify(quoteCitations) : null,
       screenshotImages.length ? JSON.stringify(screenshotImages) : null,
       attachments.length ? JSON.stringify(attachments) : null,
       message.modelName || null,
@@ -420,6 +434,7 @@ export async function loadClaudeConversation(
             paper_contexts_json AS paperContextsJson,
             full_text_paper_contexts_json AS fullTextPaperContextsJson,
             citation_paper_contexts_json AS citationPaperContextsJson,
+            quote_citations_json AS quoteCitationsJson,
             screenshot_images AS screenshotImages,
             attachments_json AS attachmentsJson,
             model_name AS modelName,
@@ -526,6 +541,16 @@ export async function loadClaudeConversation(
         return undefined;
       }
     })();
+    const quoteCitations: QuoteCitation[] | undefined = (() => {
+      if (typeof row.quoteCitationsJson !== "string" || !row.quoteCitationsJson) return undefined;
+      try {
+        const parsed = JSON.parse(row.quoteCitationsJson) as unknown;
+        const normalized = normalizeQuoteCitations(parsed);
+        return normalized.length ? normalized : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
     const screenshotImages = (() => {
       if (typeof row.screenshotImages !== "string" || !row.screenshotImages) return undefined;
       try {
@@ -571,6 +596,7 @@ export async function loadClaudeConversation(
       paperContexts,
       fullTextPaperContexts,
       citationPaperContexts,
+      quoteCitations,
       screenshotImages,
       attachments,
       modelName: typeof row.modelName === "string" ? row.modelName : undefined,
@@ -787,10 +813,12 @@ export async function updateLatestClaudeAssistantMessage(
     | "compactMarker"
     | "contextTokens"
     | "contextWindow"
+    | "quoteCitations"
   >,
 ): Promise<void> {
   const normalizedKey = normalizeConversationKey(conversationKey);
   if (!normalizedKey) return;
+  const quoteCitations = normalizeQuoteCitations(message.quoteCitations);
   await Zotero.DB.queryAsync(
     `UPDATE ${CLAUDE_MESSAGES_TABLE}
      SET text = ?,
@@ -805,6 +833,7 @@ export async function updateLatestClaudeAssistantMessage(
          reasoning_summary = ?,
          reasoning_details = ?,
          compact_marker = ?,
+         quote_citations_json = ?,
          context_tokens = COALESCE(?, context_tokens),
          context_window = COALESCE(?, context_window)
      WHERE id = (
@@ -827,6 +856,7 @@ export async function updateLatestClaudeAssistantMessage(
       message.reasoningSummary || null,
       message.reasoningDetails || null,
       message.compactMarker ? 1 : 0,
+      quoteCitations.length ? JSON.stringify(quoteCitations) : null,
       Number.isFinite(Number(message.contextTokens)) && Number(message.contextTokens) > 0
         ? Math.floor(Number(message.contextTokens))
         : null,

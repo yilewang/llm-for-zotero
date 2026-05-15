@@ -70,17 +70,14 @@ describe("patchSkillFrontmatter", function () {
   });
 
   it("returns null when on-disk version is already current or newer", function () {
-    const onDisk =
-      "---\nid: foo\nversion: 3\ndescription: x\n---\nbody";
-    const shipped =
-      "---\nid: foo\nversion: 2\ndescription: y\n---\nbody";
+    const onDisk = "---\nid: foo\nversion: 3\ndescription: x\n---\nbody";
+    const shipped = "---\nid: foo\nversion: 2\ndescription: y\n---\nbody";
     assert.isNull(patchSkillFrontmatter(onDisk, shipped));
   });
 
   it("returns null when the file has no frontmatter block", function () {
     const onDisk = "Just body, no markers at all.\n";
-    const shipped =
-      "---\nid: foo\nversion: 2\ndescription: y\n---\nbody";
+    const shipped = "---\nid: foo\nversion: 2\ndescription: y\n---\nbody";
     assert.isNull(patchSkillFrontmatter(onDisk, shipped));
   });
 
@@ -133,5 +130,43 @@ describe("patchSkillFrontmatter", function () {
     assert.include(patched, "match: /only user pattern/i");
     assert.notInclude(patched, "match: /shipped pattern A/i");
     assert.notInclude(patched, "match: /shipped pattern B/i");
+  });
+
+  it("adds missing shipped contexts without replacing user-defined contexts", function () {
+    const onDisk = [
+      "---",
+      "id: foo",
+      "version: 1",
+      "description: old",
+      "match: /user pattern/i",
+      "---",
+      "body",
+    ].join("\n");
+    const shipped = [
+      "---",
+      "id: foo",
+      "version: 2",
+      "description: new",
+      "contexts: single-paper",
+      "activation: auto",
+      "match: /shipped pattern/i",
+      "---",
+      "body",
+    ].join("\n");
+
+    const patched = patchSkillFrontmatter(onDisk, shipped) as string;
+    assert.include(patched, "contexts: single-paper");
+    assert.include(patched, "match: /user pattern/i");
+
+    const customContexts = onDisk.replace(
+      "match: /user pattern/i",
+      "contexts: paper-set\nmatch: /user pattern/i",
+    );
+    const customPatched = patchSkillFrontmatter(
+      customContexts,
+      shipped,
+    ) as string;
+    assert.include(customPatched, "contexts: paper-set");
+    assert.notInclude(customPatched, "contexts: single-paper");
   });
 });

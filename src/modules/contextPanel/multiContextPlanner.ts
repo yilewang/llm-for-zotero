@@ -29,8 +29,9 @@ import {
   preGenerateEmbeddings,
   ensurePDFTextCached,
   ensureNoteTextCached,
-  renderEvidencePack,
+  buildEvidencePack,
 } from "./pdfContext";
+import { mergeQuoteCitations } from "./quoteCitations";
 import { pdfTextCache } from "./state";
 import { sanitizeText } from "./textUtils";
 import { tokenizeRetrievalDiversity } from "./retrievalTokenizer";
@@ -130,6 +131,7 @@ import type {
   PaperContextCandidate,
   PaperContextRef,
   PdfContext,
+  QuoteCitation,
 } from "./types";
 
 type PlannerPaperEntry = {
@@ -601,6 +603,7 @@ type RetrievedAssembly = {
   selectedChunkCount: number;
   selectedPaperCount: number;
   citationPaperContexts: PaperContextRef[];
+  quoteCitations: QuoteCitation[];
 };
 
 type RetrievedAssemblyOptions = {
@@ -776,6 +779,7 @@ export async function assembleRetrievedMultiPaperContext(params: {
       selectedChunkCount: 0,
       selectedPaperCount: 0,
       citationPaperContexts: [],
+      quoteCitations: [],
     };
   }
 
@@ -819,6 +823,7 @@ export async function assembleRetrievedMultiPaperContext(params: {
       selectedChunkCount: 0,
       selectedPaperCount: papers.length,
       citationPaperContexts: mergePlannerCitationPaperContexts(papers),
+      quoteCitations: [],
     };
   }
 
@@ -976,11 +981,13 @@ export async function assembleRetrievedMultiPaperContext(params: {
     return a.chunkIndex - b.chunkIndex;
   });
 
+  const evidencePack = buildEvidencePack({
+    papers: papers.map((paper) => paper.paperContext),
+    candidates: selectedCandidates,
+  });
   const contextText =
-    renderEvidencePack({
-      papers: papers.map((paper) => paper.paperContext),
-      candidates: selectedCandidates,
-    }) || buildMetadataOnlyFallback(papers.map((entry) => entry.paperContext));
+    evidencePack.contextText ||
+    buildMetadataOnlyFallback(papers.map((entry) => entry.paperContext));
 
   return {
     contextText,
@@ -994,6 +1001,7 @@ export async function assembleRetrievedMultiPaperContext(params: {
           new Set(selectedCandidates.map((candidate) => candidate.paperKey)),
         )
       : mergePlannerCitationPaperContexts(papers),
+    quoteCitations: selectedCandidates.length ? evidencePack.quoteCitations : [],
   };
 }
 
@@ -1204,6 +1212,7 @@ export async function resolveMultiContextPlan(params: {
   };
   const finalizePlan = (plan: MultiContextPlan): MultiContextPlan => ({
     ...plan,
+    quoteCitations: mergeQuoteCitations(plan.quoteCitations),
     contextCache: planContextCacheReuse({
       model: params.model,
       apiBase: params.apiBase,
@@ -1228,6 +1237,7 @@ export async function resolveMultiContextPlan(params: {
       selectedPaperCount: 0,
       selectedChunkCount: 0,
       citationPaperContexts: [],
+      quoteCitations: [],
     });
   }
 
@@ -1248,6 +1258,7 @@ export async function resolveMultiContextPlan(params: {
       selectedPaperCount: retrieved.selectedPaperCount,
       selectedChunkCount: retrieved.selectedChunkCount,
       citationPaperContexts: retrieved.citationPaperContexts,
+      quoteCitations: retrieved.quoteCitations,
     });
   }
 
@@ -1326,6 +1337,7 @@ export async function resolveMultiContextPlan(params: {
           full.contextText ? pinnedPapers : [],
           extraRetrieved?.citationPaperContexts,
         ),
+        quoteCitations: extraRetrieved?.quoteCitations || [],
       });
     }
 
@@ -1395,6 +1407,7 @@ export async function resolveMultiContextPlan(params: {
           [activePaper, ...otherPinned],
           extraRetrieved?.citationPaperContexts,
         ),
+        quoteCitations: extraRetrieved?.quoteCitations || [],
       });
     }
 
@@ -1434,6 +1447,7 @@ export async function resolveMultiContextPlan(params: {
       selectedPaperCount: retrieved.selectedPaperCount,
       selectedChunkCount: retrieved.selectedChunkCount,
       citationPaperContexts: retrieved.citationPaperContexts,
+      quoteCitations: retrieved.quoteCitations,
       assistantInstruction: firstPaperTurn
         ? undefined
         : buildPaperFollowupAssistantInstruction(params.question),
@@ -1499,6 +1513,7 @@ export async function resolveMultiContextPlan(params: {
           fullPreferredPapers,
           extraUnpinned?.citationPaperContexts,
         ),
+        quoteCitations: extraUnpinned?.quoteCitations || [],
       });
     }
 
@@ -1573,6 +1588,7 @@ export async function resolveMultiContextPlan(params: {
           ),
           extraRetrieved?.citationPaperContexts,
         ),
+        quoteCitations: extraRetrieved?.quoteCitations || [],
       });
     }
   }
@@ -1592,6 +1608,7 @@ export async function resolveMultiContextPlan(params: {
       selectedPaperCount: 0,
       selectedChunkCount: 0,
       citationPaperContexts: [],
+      quoteCitations: [],
     });
   }
 
@@ -1612,5 +1629,6 @@ export async function resolveMultiContextPlan(params: {
     selectedPaperCount: retrieved.selectedPaperCount,
     selectedChunkCount: retrieved.selectedChunkCount,
     citationPaperContexts: retrieved.citationPaperContexts,
+    quoteCitations: retrieved.quoteCitations,
   });
 }

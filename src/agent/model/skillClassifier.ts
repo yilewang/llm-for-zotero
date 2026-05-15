@@ -14,6 +14,7 @@
  * the per-skill regex `match:` patterns so the agent still works.
  */
 import { callLLM } from "../../utils/llmClient";
+import { resolveSkillRequestContext } from "../skills/contextEligibility";
 import { matchesSkill } from "../skills/skillLoader";
 import type { AgentSkill } from "../skills/skillLoader";
 import type { AgentRuntimeRequest } from "../types";
@@ -104,16 +105,18 @@ function buildClassifierPrompt(
   const skillList = [
     `- ${UNMATCHED_ID}: Select this when the user's task is a direct Zotero operation (running a script, editing metadata, tagging, moving items) or otherwise does not clearly require any skill's specific playbook. Prefer this over a speculative match.`,
     ...skills.map(
-      (skill) => `- ${skill.id}: ${skill.description || "(no description)"}`,
+      (skill) =>
+        `- ${skill.id}: ${skill.description || "(no description)"} [contexts: ${(skill.contexts || ["any"]).join(",")}]`,
     ),
   ].join("\n");
 
   const context: string[] = [];
+  const resolvedContext = resolveSkillRequestContext(request);
   context.push(
-    request.activeItemId
-      ? "- Active paper: yes (paper-chat mode)"
-      : "- Active paper: no (library-chat mode)",
+    `- Unique papers in context: ${resolvedContext.uniquePaperCount}`,
   );
+  if (resolvedContext.hasLibraryCorpus)
+    context.push("- Library/corpus context: yes");
   if (request.activeNoteContext) context.push("- Active note present: yes");
   if (request.selectedTexts?.length)
     context.push(`- Selected text snippets: ${request.selectedTexts.length}`);

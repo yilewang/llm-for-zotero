@@ -16,6 +16,10 @@
 import { matchesSkill, parseSkill } from "./skillLoader";
 import type { AgentSkill } from "./skillLoader";
 import {
+  isSkillContextEligible,
+  type SkillRoutingRequest,
+} from "./contextEligibility";
+import {
   isNotesDirectoryConfigured,
   getNotesDirectoryNickname,
 } from "../../utils/notesDirectoryConfig";
@@ -29,7 +33,21 @@ import literatureReviewRaw from "./literature-review.md";
 import importCitedReferenceRaw from "./import-cited-reference.md";
 
 export { matchesSkill, parseSkill } from "./skillLoader";
-export type { AgentSkill } from "./skillLoader";
+export {
+  getSkillContextEligibility,
+  isSkillContextEligible,
+  resolveSkillRequestContext,
+} from "./contextEligibility";
+export type {
+  AgentSkill,
+  SkillActivationMode,
+  SkillContextKind,
+} from "./skillLoader";
+export type {
+  SkillContextEligibility,
+  SkillRequestContext,
+  SkillRoutingRequest,
+} from "./contextEligibility";
 
 /**
  * Built-in skill files bundled at compile time.
@@ -70,8 +88,11 @@ export function getBuiltinSkillInstruction(
 let skills: AgentSkill[] = [];
 
 const SIMPLE_PAPER_QA_SKILL_ID = "simple-paper-qa";
+const LIBRARY_ANALYSIS_SKILL_ID = "library-analysis";
 const SIMPLE_PAPER_QA_INTENT_PATTERN =
   /\b(understand|explain|walk me through|help me understand)\b.*\b(paper|ppaer|article|study)\b/i;
+const COLLECTION_ANALYSIS_INTENT_PATTERN =
+  /\b(summarize|summarise|summary|overview|statistics|stats|analy[sz]e|breakdown|survey|audit)\b/i;
 
 /**
  * Replace the current set of skills.
@@ -98,7 +119,7 @@ export function getAllSkills(): AgentSkill[] {
  * - Notes-directory nickname mentioned in userText → force `write-note`.
  */
 function computeContextForcedSkillIds(
-  request: Pick<import("../types").AgentRuntimeRequest, "userText">,
+  request: SkillRoutingRequest,
 ): Set<string> {
   const forced = new Set<string>();
   const nickname = getNotesDirectoryNickname().trim();
@@ -114,6 +135,12 @@ function computeContextForcedSkillIds(
   }
   if (SIMPLE_PAPER_QA_INTENT_PATTERN.test(request.userText || "")) {
     forced.add(SIMPLE_PAPER_QA_SKILL_ID);
+  }
+  if (
+    request.selectedCollectionContexts?.length &&
+    COLLECTION_ANALYSIS_INTENT_PATTERN.test(request.userText || "")
+  ) {
+    forced.add(LIBRARY_ANALYSIS_SKILL_ID);
   }
   return forced;
 }
@@ -133,10 +160,8 @@ function computeContextForcedSkillIds(
  *      result is available.
  */
 export function getMatchedSkillIds(
-  request: Pick<
-    import("../types").AgentRuntimeRequest,
-    "userText" | "forcedSkillIds"
-  >,
+  request: SkillRoutingRequest &
+    Pick<import("../types").AgentRuntimeRequest, "forcedSkillIds">,
   classifiedIds?: ReadonlyArray<string>,
 ): string[] {
   const forcedIds = new Set(request.forcedSkillIds || []);
@@ -150,11 +175,14 @@ export function getMatchedSkillIds(
             .map((skill) => skill.id),
         );
   return getAllSkills()
-    .filter(
-      (skill) =>
-        forcedIds.has(skill.id) ||
-        contextForced.has(skill.id) ||
-        baseMatched.has(skill.id),
-    )
+    .filter((skill) => {
+      if (forcedIds.has(skill.id)) {
+        return isSkillContextEligible(skill, request);
+      }
+      const isAutoMatched =
+        contextForced.has(skill.id) || baseMatched.has(skill.id);
+      if (!isAutoMatched || skill.activation === "manual") return false;
+      return isSkillContextEligible(skill, request);
+    })
     .map((skill) => skill.id);
 }

@@ -27,6 +27,11 @@ import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
 } from "./paperAttribution";
+import {
+  buildQuoteAnchorPromptBlock,
+  buildQuoteCitation,
+  mergeQuoteCitations,
+} from "./quoteCitations";
 import { readNoteSnapshot } from "./notes";
 import { pdfTextCache, pdfTextLoadingTasks } from "./state";
 import {
@@ -44,6 +49,7 @@ import type {
   PaperContextCandidate,
   PdfChunkMeta,
   PdfChunkKind,
+  QuoteCitation,
 } from "./types";
 import { config } from "./constants";
 
@@ -1909,12 +1915,15 @@ function formatMarkdownBlockquote(text: string): string {
     .join("\n");
 }
 
-export function renderEvidencePack(params: {
+export function buildEvidencePack(params: {
   papers: PaperContextRef[];
   candidates: PaperContextCandidate[];
-}): string {
+}): {
+  contextText: string;
+  quoteCitations: QuoteCitation[];
+} {
   const { papers, candidates } = params;
-  if (!papers.length) return "";
+  if (!papers.length) return { contextText: "", quoteCitations: [] };
 
   const deduped = new Map<string, PaperContextCandidate>();
   for (const candidate of candidates) {
@@ -1931,10 +1940,30 @@ export function renderEvidencePack(params: {
     byPaper.set(candidate.paperKey, list);
   }
 
+  const quoteCitations: QuoteCitation[] = [];
+  for (const paper of papers) {
+    const paperKey = buildPaperKey(paper);
+    for (const candidate of byPaper.get(paperKey) || []) {
+      const citation = buildQuoteCitation({
+        quoteText: buildEvidenceQuoteText(candidate),
+        citationLabel: formatPaperSourceLabel(paper),
+        contextItemId: paper.contextItemId,
+        itemId: paper.itemId,
+      });
+      if (citation) quoteCitations.push(citation);
+    }
+  }
+  const normalizedQuoteCitations = mergeQuoteCitations(quoteCitations);
+  const quoteAnchorGuidance = buildQuoteAnchorPromptBlock(
+    normalizedQuoteCitations,
+  );
+
   const blocks: string[] = [
     [
       "Retrieved Evidence:",
       "",
+      ...quoteAnchorGuidance,
+      ...(quoteAnchorGuidance.length ? [""] : []),
       ...buildPaperQuoteCitationGuidance(),
       "The full paper remains available in paper chat.",
       "For this reply, prioritize these retrieved snippets as the primary evidence pack.",
@@ -1966,8 +1995,18 @@ export function renderEvidencePack(params: {
     blocks.push(lines.join("\n").trimEnd());
   }
 
-  if (blocks.length <= 1) return "";
-  return blocks.join("\n\n---\n\n");
+  if (blocks.length <= 1) return { contextText: "", quoteCitations: [] };
+  return {
+    contextText: blocks.join("\n\n---\n\n"),
+    quoteCitations: normalizedQuoteCitations,
+  };
+}
+
+export function renderEvidencePack(params: {
+  papers: PaperContextRef[];
+  candidates: PaperContextCandidate[];
+}): string {
+  return buildEvidencePack(params).contextText;
 }
 
 export function renderClaimEvidencePack(params: {
@@ -1976,9 +2015,24 @@ export function renderClaimEvidencePack(params: {
 }): string {
   const { paper, candidates } = params;
   if (!candidates.length) return "";
+  const quoteCitations = mergeQuoteCitations(
+    candidates
+      .map((candidate) =>
+        buildQuoteCitation({
+          quoteText: buildEvidenceQuoteText(candidate),
+          citationLabel: formatPaperSourceLabel(paper),
+          contextItemId: paper.contextItemId,
+          itemId: paper.itemId,
+        }),
+      )
+      .filter((entry): entry is QuoteCitation => Boolean(entry)),
+  );
+  const quoteAnchorGuidance = buildQuoteAnchorPromptBlock(quoteCitations);
   const lines = [
     "Claim Evidence:",
     "",
+    ...quoteAnchorGuidance,
+    ...(quoteAnchorGuidance.length ? [""] : []),
     ...buildPaperQuoteCitationGuidance(),
     "The full paper remains available in paper chat.",
     "Use the evidence snippets below as the primary grounding for this claim assessment.",

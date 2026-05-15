@@ -6,7 +6,7 @@ import type {
 } from "../shared/types";
 import type { AgentRuntimeRequest } from "../agent/types";
 import type { AgentSkill } from "../agent/skills";
-import { getAllSkills, getMatchedSkillIds, matchesSkill } from "../agent/skills";
+import { getAllSkills, getMatchedSkillIds } from "../agent/skills";
 import { detectSkillIntent } from "../agent/model/skillClassifier";
 import {
   getCodexNativeSkillRoutingModePref,
@@ -138,9 +138,6 @@ export function resolveDeterministicCodexNativeSkillIds(params: {
   const allSkills = params.allSkills || getAllSkills();
   if (!allSkills.length) return [];
   const matched = new Set(getMatchedSkillIds(params.request));
-  for (const skill of allSkills) {
-    if (matchesSkill(skill, params.request)) matched.add(skill.id);
-  }
   if (
     inferCodexNativeNoteIntent(params.request) &&
     allSkills.some((skill) => skill.id === WRITE_NOTE_SKILL_ID)

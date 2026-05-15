@@ -43,6 +43,14 @@ export type PaperContextRef = {
   mineruCacheDir?: string;
 };
 
+export type QuoteCitation = {
+  id: string;
+  quoteText: string;
+  citationLabel: string;
+  contextItemId?: number;
+  itemId?: number;
+};
+
 /** A Zotero note (item note or standalone) selected as a reference context. */
 export type NoteContextRef = {
   libraryID: number;

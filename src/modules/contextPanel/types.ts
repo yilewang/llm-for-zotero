@@ -6,6 +6,7 @@ import type {
   AdvancedModelParams,
   ActiveNoteSession,
   PaperContextRef,
+  QuoteCitation,
   NoteContextRef,
   OtherContextRef,
   CollectionContextRef,
@@ -20,6 +21,7 @@ export type {
   AdvancedModelParams,
   ActiveNoteSession,
   PaperContextRef,
+  QuoteCitation,
   NoteContextRef,
   OtherContextRef,
   CollectionContextRef,
@@ -54,6 +56,7 @@ export interface Message {
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
+  quoteCitations?: QuoteCitation[];
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   collectionContextsExpanded?: boolean;
@@ -218,6 +221,7 @@ export type MultiContextPlan = {
   selectedPaperCount: number;
   selectedChunkCount: number;
   citationPaperContexts?: PaperContextRef[];
+  quoteCitations?: QuoteCitation[];
   assistantInstruction?: string;
 };
 

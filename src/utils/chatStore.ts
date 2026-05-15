@@ -3,6 +3,7 @@ import type {
   NoteContextRef,
   SelectedTextSource,
   PaperContextRef,
+  QuoteCitation,
   GlobalConversationSummary,
   PaperConversationSummary,
 } from "../shared/types";
@@ -17,6 +18,7 @@ import {
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
 } from "../modules/contextPanel/normalizers";
+import { normalizeQuoteCitations } from "../modules/contextPanel/quoteCitations";
 
 export type StoredChatAttachment = {
   id: string;
@@ -44,6 +46,7 @@ export type StoredChatMessage = {
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
+  quoteCitations?: QuoteCitation[];
   selectedCollectionContexts?: CollectionContextRef[];
   screenshotImages?: string[];
   attachments?: StoredChatAttachment[];
@@ -425,6 +428,7 @@ export async function initChatStore(): Promise<void> {
         paper_contexts_json TEXT,
         full_text_paper_contexts_json TEXT,
         citation_paper_contexts_json TEXT,
+        quote_citations_json TEXT,
         collection_contexts_json TEXT,
         screenshot_images TEXT,
         attachments_json TEXT,
@@ -604,6 +608,15 @@ export async function initChatStore(): Promise<void> {
     const hasCollectionContextsJsonColumn = Boolean(
       columns?.some((column) => column?.name === "collection_contexts_json"),
     );
+    const hasQuoteCitationsJsonColumn = Boolean(
+      columns?.some((column) => column?.name === "quote_citations_json"),
+    );
+    if (!hasQuoteCitationsJsonColumn) {
+      await Zotero.DB.queryAsync(
+        `ALTER TABLE ${CHAT_MESSAGES_TABLE}
+         ADD COLUMN quote_citations_json TEXT`,
+      );
+    }
     if (!hasCollectionContextsJsonColumn) {
       await Zotero.DB.queryAsync(
         `ALTER TABLE ${CHAT_MESSAGES_TABLE}
@@ -718,6 +731,7 @@ export async function loadConversation(
             paper_contexts_json AS paperContextsJson,
             full_text_paper_contexts_json AS fullTextPaperContextsJson,
             citation_paper_contexts_json AS citationPaperContextsJson,
+            quote_citations_json AS quoteCitationsJson,
             collection_contexts_json AS collectionContextsJson,
             screenshot_images AS screenshotImages,
             attachments_json AS attachmentsJson,
@@ -751,6 +765,7 @@ export async function loadConversation(
         paperContextsJson?: unknown;
         fullTextPaperContextsJson?: unknown;
         citationPaperContextsJson?: unknown;
+        quoteCitationsJson?: unknown;
         collectionContextsJson?: unknown;
         screenshotImages?: unknown;
         attachmentsJson?: unknown;
@@ -896,6 +911,18 @@ export async function loadConversation(
         citationPaperContexts = undefined;
       }
     }
+    let quoteCitations: QuoteCitation[] | undefined;
+    if (typeof row.quoteCitationsJson === "string" && row.quoteCitationsJson) {
+      try {
+        const parsed = JSON.parse(row.quoteCitationsJson) as unknown;
+        const normalized = normalizeQuoteCitations(parsed);
+        if (normalized.length) {
+          quoteCitations = normalized;
+        }
+      } catch (_err) {
+        quoteCitations = undefined;
+      }
+    }
     let selectedCollectionContexts: CollectionContextRef[] | undefined;
     if (
       typeof row.collectionContextsJson === "string" &&
@@ -971,6 +998,7 @@ export async function loadConversation(
       paperContexts,
       fullTextPaperContexts,
       citationPaperContexts,
+      quoteCitations,
       selectedCollectionContexts,
       screenshotImages,
       attachments,
@@ -1051,6 +1079,7 @@ export async function appendMessage(
   const citationPaperContexts = normalizePaperContextRefs(
     message.citationPaperContexts,
   );
+  const quoteCitations = normalizeQuoteCitations(message.quoteCitations);
   const selectedCollectionContexts = normalizeCollectionContextRefs(
     message.selectedCollectionContexts,
   );
@@ -1065,8 +1094,8 @@ export async function appendMessage(
   const modelAttachments = normalizeStoredAttachments(message.modelAttachments);
   await Zotero.DB.queryAsync(
     `INSERT INTO ${CHAT_MESSAGES_TABLE}
-      (conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, collection_contexts_json, screenshot_images, attachments_json, model_attachments_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, screenshot_images, attachments_json, model_attachments_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       normalizedKey,
       message.role,
@@ -1090,6 +1119,7 @@ export async function appendMessage(
       citationPaperContexts.length
         ? JSON.stringify(citationPaperContexts)
         : null,
+      quoteCitations.length ? JSON.stringify(quoteCitations) : null,
       selectedCollectionContexts.length
         ? JSON.stringify(selectedCollectionContexts)
         : null,
@@ -1262,12 +1292,14 @@ export async function updateLatestAssistantMessage(
     | "compactMarker"
     | "contextTokens"
     | "contextWindow"
+    | "quoteCitations"
   >,
 ): Promise<void> {
   const normalizedKey = normalizeConversationKey(conversationKey);
   if (!normalizedKey) return;
 
   const timestamp = Number(message.timestamp);
+  const quoteCitations = normalizeQuoteCitations(message.quoteCitations);
   await Zotero.DB.queryAsync(
     `UPDATE ${CHAT_MESSAGES_TABLE}
      SET text = ?,
@@ -1281,6 +1313,7 @@ export async function updateLatestAssistantMessage(
          webchat_completion_reason = ?,
          reasoning_summary = ?,
          reasoning_details = ?,
+         quote_citations_json = ?,
          context_tokens = ?,
          context_window = ?
      WHERE id = (
@@ -1302,6 +1335,7 @@ export async function updateLatestAssistantMessage(
       message.webchatCompletionReason || null,
       message.reasoningSummary || null,
       message.reasoningDetails || null,
+      quoteCitations.length ? JSON.stringify(quoteCitations) : null,
       Number.isFinite(Number(message.contextTokens))
         ? Math.floor(Number(message.contextTokens))
         : null,

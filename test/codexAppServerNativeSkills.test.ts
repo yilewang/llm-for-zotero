@@ -5,7 +5,11 @@ import {
   clearCodexNativeSkillClassifierCache,
   resolveCodexNativeSkills,
 } from "../src/codexAppServer/nativeSkills";
-import { setUserSkills } from "../src/agent/skills";
+import {
+  BUILTIN_SKILL_FILES,
+  parseSkill,
+  setUserSkills,
+} from "../src/agent/skills";
 import type { AgentSkill } from "../src/agent/skills/skillLoader";
 
 function makeSkill(
@@ -18,6 +22,8 @@ function makeSkill(
     description: `${id} description`,
     version: 1,
     patterns: [pattern],
+    contexts: ["any"],
+    activation: "auto",
     instruction,
     source: "system",
   };
@@ -133,6 +139,40 @@ describe("Codex native skills", function () {
 
     assert.deepEqual(resolved.matchedSkillIds, []);
     assert.equal(resolved.instructionBlock, "");
+  });
+
+  it("uses the same context-count eligibility for native paper and library turns", async function () {
+    setUserSkills([
+      parseSkill(BUILTIN_SKILL_FILES["simple-paper-qa.md"]),
+      parseSkill(BUILTIN_SKILL_FILES["library-analysis.md"]),
+    ]);
+
+    const paperTurn = await resolveCodexNativeSkills({
+      scope: {
+        conversationKey: 1,
+        libraryID: 7,
+        kind: "paper",
+        paperItemID: 42,
+        activeContextItemId: 99,
+        paperTitle: "Paper",
+      },
+      userText: "summarize this paper",
+      model: "",
+      apiBase: "",
+    });
+    assert.deepEqual(paperTurn.matchedSkillIds, ["simple-paper-qa"]);
+
+    const libraryTurn = await resolveCodexNativeSkills({
+      scope: {
+        conversationKey: 1,
+        libraryID: 7,
+        kind: "global",
+      },
+      userText: "summarize my library",
+      model: "",
+      apiBase: "",
+    });
+    assert.deepEqual(libraryTurn.matchedSkillIds, ["library-analysis"]);
   });
 
   it("builds native request context from scope and UI context", function () {

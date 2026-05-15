@@ -631,6 +631,8 @@ export function buildAgentStableResourceContextBlock(
   if (citationPaperRefs.length) {
     lines.push(
       "Citation/source label rule: for direct quotes and substantive paper-grounded claims, use the exact sourceLabel shown for the relevant paper.",
+      "If quote anchors like [[quote:Q_x7a2]] are provided, use the anchor token for direct quotes instead of manually copying the quote or citation label.",
+      "If no quote anchor is provided for a direct quote, keep the source label attached to the quote: put it on the next non-empty line after the blockquote, before any commentary.",
     );
   }
   if (retrievalOnlyPapers.length) {
@@ -659,7 +661,8 @@ export function buildAgentStableResourceContextBlock(
         (entry, index) =>
           `- Collection ${index + 1}: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
       ),
-      "Treat these collections as scoped candidate sets. Use library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
+      "Treat collection membership as the scope boundary. Use library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
+      "When reading papers from a collection, first enumerate the collection, then pass explicit itemId/contextItemId targets to library_read or paper_read. Do not use the active reader paper as an implicit collection member.",
       "If the user explicitly asks to read or analyze the full text of every paper in a collection, plan a batch workflow: enumerate papers, read/process them in bounded batches, create compact per-paper digests with evidence, then synthesize.",
     );
   }

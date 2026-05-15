@@ -1082,6 +1082,12 @@ export class ZoteroGateway {
       ...normalizePaperContexts(request.fullTextPaperContexts),
       ...normalizePaperContexts(request.pinnedPaperContexts),
     ];
+    const allowAmbientActivePaper =
+      request.conversationKind !== "global" &&
+      !request.selectedCollectionContexts?.length;
+    if (!allowAmbientActivePaper) {
+      return out;
+    }
     const activeItem = this.getItem(request.activeItemId);
     const activeContext = this.getActivePaperContext(activeItem);
     if (activeContext) {

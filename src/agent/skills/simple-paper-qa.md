@@ -1,7 +1,9 @@
 ---
 id: simple-paper-qa
 description: Answer open-ended natural-language questions about the content of one specific paper (what it argues, how it compares to X, what figure 3 means). Not for Zotero operations like editing metadata, tagging, or running scripts.
-version: 5
+version: 6
+contexts: single-paper
+activation: auto
 match: /\b(what|who|when|where|which|tell me|explain)\b.*\b(about|paper|article|study|wrote|author|publish|year|journal|abstract|topic|field|contribution|finding|claim|conclusion|argue)\b/i
 match: /\bsummar(y|ize|ise)\b/i
 match: /\b(what is|what are|what does|what do)\b.*\b(this paper|this article|this study|the paper|the article)\b/i
@@ -34,4 +36,6 @@ Use Zotero paper tools as resources, not a ritual.
 - If overview reports `contentStatus:'no_pdf_attachment'`, answer from Zotero metadata/abstract if sufficient; otherwise one external lookup is allowed and must be labeled as external.
 - If overview reports `contentStatus:'no_extractable_pdf_text'`, answer from metadata/abstract and state the limitation.
 - When `paper_read` returns exact passages, include 1-3 short blockquotes from those passages when useful for grounding the explanation.
+- If `paper_read` provides quote anchors like `[[quote:Q_x7a2]]`, use those anchor tokens for direct quotes instead of copying the quote/citation manually.
+- If no quote anchor is provided for a direct quote, put the provided `sourceLabel` on the next non-empty line after the blockquote, before any commentary.
 - Do not call visual/page tools, `file_io`, or `run_command` just to improve citation anchors or page numbers. Use the provided `sourceLabel`; the UI can bind citations after rendering.

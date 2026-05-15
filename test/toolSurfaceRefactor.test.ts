@@ -153,6 +153,144 @@ describe("semantic tool surface", function () {
     }
   });
 
+  it("paper_read refuses active-reader fallback in collection-scoped library chat", async function () {
+    const activeReaderPaper = {
+      itemId: 99,
+      contextItemId: 199,
+      title: "Chandra Paper",
+    };
+    const tool = createPaperReadTool(
+      {
+        getOverviewExcerpt: async () => ({
+          text: "should not be read",
+          paperContext: activeReaderPaper,
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: (request: AgentToolContext["request"]) =>
+          request.conversationKind === "global" ||
+          request.selectedCollectionContexts?.length
+            ? []
+            : [activeReaderPaper],
+        resolvePaperContextTarget: () => activeReaderPaper,
+      } as never,
+    );
+    const validated = tool.validate({ mode: "overview" });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+
+    try {
+      await tool.execute(validated.value, {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          conversationKind: "global",
+          activeItemId: activeReaderPaper.itemId,
+          selectedCollectionContexts: [
+            { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
+          ],
+        },
+      });
+      assert.fail("Expected library chat to require explicit paper targets");
+    } catch (error) {
+      assert.include(
+        error instanceof Error ? error.message : String(error),
+        "No paper target in library chat",
+      );
+    }
+  });
+
+  it("paper_read keeps active-paper fallback in paper chat", async function () {
+    const activeReaderPaper = {
+      itemId: 99,
+      contextItemId: 199,
+      title: "Active Paper",
+    };
+    const tool = createPaperReadTool(
+      {
+        getOverviewExcerpt: async ({
+          paperContext,
+        }: {
+          paperContext: unknown;
+        }) => ({
+          backend: "pdf",
+          text: "active paper overview",
+          paperContext,
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [activeReaderPaper],
+        resolvePaperContextTarget: () => activeReaderPaper,
+      } as never,
+    );
+    const validated = tool.validate({ mode: "overview" });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+
+    const output = await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKind: "paper",
+        activeItemId: activeReaderPaper.itemId,
+      },
+    });
+    const first = (output as { results: Array<Record<string, unknown>> })
+      .results[0];
+    assert.deepEqual(first.paperContext, activeReaderPaper);
+  });
+
+  it("paper_read still accepts explicit collection-enumerated targets in library chat", async function () {
+    const collectionPaper = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "Collection Paper",
+    };
+    const tool = createPaperReadTool(
+      {
+        getOverviewExcerpt: async ({
+          paperContext,
+        }: {
+          paperContext: unknown;
+        }) => ({
+          backend: "pdf",
+          text: "collection paper overview",
+          paperContext,
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [],
+        resolvePaperContextTarget: () => collectionPaper,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "overview",
+      targets: [{ itemId: 11, contextItemId: 22 }],
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+
+    const output = await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKind: "global",
+        selectedCollectionContexts: [
+          { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
+        ],
+      },
+    });
+    const first = (output as { results: Array<Record<string, unknown>> })
+      .results[0];
+    assert.deepEqual(first.paperContext, collectionPaper);
+  });
+
   it("paper_read overview falls back to Zotero metadata when PDF text is unavailable", async function () {
     const paperContext = {
       itemId: 11,
@@ -504,10 +642,15 @@ describe("semantic tool surface", function () {
     if (!validated.ok) return;
     const output = (await tool.execute(validated.value, baseContext)) as {
       results?: unknown[];
+      quoteCitations?: Array<{ id: string; quoteText: string; citationLabel: string }>;
       papers?: Array<{
         status?: string;
         sourceLabel?: string;
-        passages?: Array<{ text?: string; sectionLabel?: string }>;
+        passages?: Array<{
+          text?: string;
+          sectionLabel?: string;
+          quoteCitationId?: string;
+        }>;
       }>;
     };
     assert.lengthOf(output.results || [], 2);
@@ -521,6 +664,13 @@ describe("semantic tool surface", function () {
     assert.equal(
       output.papers?.[1]?.passages?.[0]?.text,
       "Second method passage.",
+    );
+    assert.lengthOf(output.quoteCitations || [], 2);
+    assert.equal(output.quoteCitations?.[0]?.quoteText, "First method passage.");
+    assert.equal(output.quoteCitations?.[0]?.citationLabel, "(Huys, 2016)");
+    assert.equal(
+      output.papers?.[0]?.passages?.[0]?.quoteCitationId,
+      output.quoteCitations?.[0]?.id,
     );
     const onSuccess = tool.presentation?.summaries?.onSuccess;
     assert.isFunction(onSuccess);
@@ -590,6 +740,7 @@ describe("semantic tool surface", function () {
     if (!validated.ok) return;
     const output = (await tool.execute(validated.value, baseContext)) as {
       results?: Array<Record<string, unknown>>;
+      quoteCitations?: Array<{ quoteText: string; citationLabel: string }>;
       papers?: Array<{
         passages?: Array<{ pageLabel?: string; text?: string }>;
       }>;
@@ -603,6 +754,12 @@ describe("semantic tool surface", function () {
       "Only page two text should be returned.",
     );
     assert.equal(output.papers?.[0]?.passages?.[0]?.pageLabel, "2");
+    assert.lengthOf(output.quoteCitations || [], 1);
+    assert.equal(
+      output.quoteCitations?.[0]?.quoteText,
+      "Only page two text should be returned.",
+    );
+    assert.equal(output.quoteCitations?.[0]?.citationLabel, "(Huys, 2016)");
   });
 
   it("paper_read targeted groups explicit page reads across multiple targets", async function () {
@@ -881,6 +1038,9 @@ describe("semantic tool surface", function () {
     assert.include(
       getMatchedSkillIds({
         userText: "can you help me understand this ppaer",
+        selectedPaperContexts: [
+          { itemId: 1, contextItemId: 2, title: "Paper" },
+        ],
       }),
       "simple-paper-qa",
     );

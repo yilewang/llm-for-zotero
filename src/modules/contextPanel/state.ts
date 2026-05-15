@@ -7,6 +7,7 @@ import type {
   ChatAttachment,
   SelectedTextContext,
   PaperContextRef,
+  QuoteCitation,
   OtherContextRef,
   CollectionContextRef,
   ChatRuntimeMode,
@@ -127,6 +128,7 @@ export let responseMenuTarget: {
   userTimestamp?: number;
   assistantTimestamp?: number;
   paperContexts?: PaperContextRef[];
+  quoteCitations?: QuoteCitation[];
 } | null = null;
 export function setResponseMenuTarget(value: typeof responseMenuTarget) {
   responseMenuTarget = value;

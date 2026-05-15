@@ -177,7 +177,7 @@ describe("Codex app-server native client", function () {
     assert.include(manifest, "You are Codex");
     assert.include(manifest, "Zotero resources and MCP tools are available when useful");
     assert.include(manifest, "Use tools only when they materially improve the answer");
-    assert.include(manifest, "include 1-3 short blockquotes");
+    assert.include(manifest, "quote anchors like [[quote:Q_x7a2]]");
     assert.include(manifest, "Do not call tools solely to discover quotes or page numbers");
     assert.notInclude(manifest, "page N");
     assert.notInclude(manifest, "use shell creatively");

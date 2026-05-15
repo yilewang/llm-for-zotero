@@ -33,6 +33,13 @@ function uniqueNumbers(values: number[]): number[] {
   return Array.from(new Set(values.filter((value) => Number.isFinite(value) && value > 0)));
 }
 
+function canUseActiveItemFallback(request: AgentRuntimeRequest): boolean {
+  return (
+    request.conversationKind !== "global" &&
+    !request.selectedCollectionContexts?.length
+  );
+}
+
 export class LibraryReadService {
   constructor(private readonly zoteroGateway: ZoteroGateway) {}
 
@@ -41,12 +48,18 @@ export class LibraryReadService {
     itemIds?: number[];
     paperContexts?: PaperContextRef[];
   }): number[] {
-    const itemIds = [
+    const explicitItemIds = [
       ...(params.itemIds || []),
       ...(params.paperContexts || []).map((entry) => entry.itemId),
-      ...this.zoteroGateway.listPaperContexts(params.request).map((entry) => entry.itemId),
-      Number(params.request.activeItemId) || 0,
     ];
+    const explicit = uniqueNumbers(explicitItemIds);
+    if (explicit.length) return explicit;
+    const itemIds = this.zoteroGateway
+      .listPaperContexts(params.request)
+      .map((entry) => entry.itemId);
+    if (canUseActiveItemFallback(params.request)) {
+      itemIds.push(Number(params.request.activeItemId) || 0);
+    }
     return uniqueNumbers(itemIds);
   }
 

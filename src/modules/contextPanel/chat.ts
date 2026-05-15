@@ -88,7 +88,7 @@ import {
   type BlockStreamCoalescer,
   type BlockStreamFlushReason,
 } from "./blockStreamCoalescer";
-import type { ConversationSystem } from "../../shared/types";
+import type { ConversationSystem, QuoteCitation } from "../../shared/types";
 import { ensureMineruCacheDirForAttachment } from "./mineruSync";
 import type {
   Message,
@@ -209,11 +209,19 @@ import { canEditUserPromptTurn } from "./editability";
 import { renderAgentTrace, renderPendingActionCard } from "./agentTrace/render";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
-import { decorateAssistantCitationLinks } from "./assistantCitationLinks";
+import {
+  decorateAssistantCitationLinks,
+  renderQuoteCitationPlaceholders,
+} from "./assistantCitationLinks";
 import {
   getMessageCitationPaperContexts,
   mergeCitationPaperContexts,
 } from "./citationContexts";
+import {
+  buildSelectedTextQuoteCitations,
+  extractQuoteCitationsFromToolContent,
+  mergeQuoteCitations,
+} from "./quoteCitations";
 import { getAgentApi, getCoreAgentRuntime } from "../../agent/index";
 import { getClaudeReasoningModePref } from "../../claudeCode/prefs";
 import { getAgentRunTrace } from "../../agent/store/traceStore";
@@ -732,6 +740,7 @@ function attachAssistantResponseContextMenu(params: {
         pairedUserMessage?.role === "user"
           ? getMessageCitationPaperContexts(pairedUserMessage)
           : undefined,
+      quoteCitations: message.quoteCitations,
     });
     positionMenuAtPointer(body, responseMenu, me.clientX, me.clientY);
   });
@@ -1306,6 +1315,7 @@ function toPanelMessage(message: StoredChatMessage): Message {
     compactMarker: Boolean((message as StoredChatMessage).compactMarker),
     webchatRunState: message.webchatRunState,
     webchatCompletionReason: message.webchatCompletionReason,
+    quoteCitations: message.quoteCitations,
   };
 }
 
@@ -2216,6 +2226,7 @@ type ContextPlanForRequest = {
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   citationPaperContexts: PaperContextRef[];
+  quoteCitations: QuoteCitation[];
   recentPaperContexts: PaperContextRef[];
   mineruImages: string[];
 };
@@ -2247,6 +2258,7 @@ function buildLightCodexNativeMcpContextPlan(params: {
       params.paperContexts,
       params.fullTextPaperContexts,
     ),
+    quoteCitations: [],
     recentPaperContexts: params.recentPaperContexts,
     mineruImages: [],
   };
@@ -2425,6 +2437,7 @@ async function buildContextPlanForRequest(params: {
       params.fullTextPaperContexts,
       plan.citationPaperContexts,
     ),
+    quoteCitations: plan.quoteCitations || [],
     recentPaperContexts: params.recentPaperContexts,
     mineruImages,
   };
@@ -2590,6 +2603,7 @@ type AssistantMessageSnapshot = Pick<
   | "reasoningOpen"
   | "webchatRunState"
   | "webchatCompletionReason"
+  | "quoteCitations"
 >;
 
 export function findLatestRetryPair(
@@ -2625,6 +2639,9 @@ function takeAssistantSnapshot(message: Message): AssistantMessageSnapshot {
     reasoningOpen: message.reasoningOpen,
     webchatRunState: message.webchatRunState,
     webchatCompletionReason: message.webchatCompletionReason,
+    quoteCitations: message.quoteCitations
+      ? message.quoteCitations.map((entry) => ({ ...entry }))
+      : undefined,
   };
 }
 
@@ -2648,6 +2665,9 @@ function restoreAssistantSnapshot(
   message.reasoningOpen = snapshot.reasoningOpen;
   message.webchatRunState = snapshot.webchatRunState;
   message.webchatCompletionReason = snapshot.webchatCompletionReason;
+  message.quoteCitations = snapshot.quoteCitations
+    ? snapshot.quoteCitations.map((entry) => ({ ...entry }))
+    : undefined;
   message.streaming = false;
 }
 
@@ -2702,6 +2722,7 @@ type CodexNativeMcpToolActivityEvent = {
   arguments?: unknown;
   ok?: boolean;
   error?: string;
+  quoteCitations?: QuoteCitation[];
 };
 
 function isCodexNativeAgentMessageItem(
@@ -4023,6 +4044,11 @@ export async function editLatestUserMessageAndRetry(
       selectedTextPaperContexts,
       selectedTextsForMessage.length,
     );
+  const selectedTextQuoteCitationsForMessage = buildSelectedTextQuoteCitations(
+    selectedTextsForMessage,
+    selectedTextSourcesForMessage,
+    selectedTextPaperContextsForMessage,
+  );
   const selectedTextNoteContextsForMessage =
     normalizeSelectedTextNoteContextsByIndex(
       selectedTextNoteContexts,
@@ -4251,6 +4277,11 @@ export async function retryLatestAssistantResponse(
   assistantMessage.agentRunId = undefined;
   assistantMessage.pendingAgentTraceEvents = undefined;
   assistantMessage.streaming = true;
+  assistantMessage.quoteCitations = buildSelectedTextQuoteCitations(
+    retryPair.userMessage.selectedTexts,
+    retryPair.userMessage.selectedTextSources,
+    retryPair.userMessage.selectedTextPaperContexts,
+  );
   const effectiveRequestConfig = resolveEffectiveRequestConfig({
     item,
     model,
@@ -4347,6 +4378,7 @@ export async function retryLatestAssistantResponse(
       compactMarker: assistantMessage.compactMarker,
       contextTokens: latestContextSnapshot?.contextTokens,
       contextWindow: latestContextSnapshot?.contextWindow,
+      quoteCitations: assistantMessage.quoteCitations,
     });
     setStatusSafely("Cancelled", "ready");
   };
@@ -4456,6 +4488,10 @@ export async function retryLatestAssistantResponse(
           setStatusSafely,
         });
     let combinedContext = contextPlan.combinedContext;
+    assistantMessage.quoteCitations = mergeQuoteCitations(
+      assistantMessage.quoteCitations,
+      contextPlan.quoteCitations,
+    );
     retryPair.userMessage.paperContexts = contextPlan.paperContexts.length
       ? contextPlan.paperContexts
       : undefined;
@@ -4674,6 +4710,10 @@ export async function retryLatestAssistantResponse(
             onMcpToolActivity: (event) => {
               flushResponseStream("event");
               codexActivityTrace?.noteMcpToolActivity(event);
+              assistantMessage.quoteCitations = mergeQuoteCitations(
+                assistantMessage.quoteCitations,
+                event.quoteCitations,
+              );
               const label =
                 sanitizeText(event.toolLabel || "").trim() ||
                 sanitizeText(event.toolName || "")
@@ -4797,6 +4837,7 @@ export async function retryLatestAssistantResponse(
       compactMarker: assistantMessage.compactMarker,
       contextTokens: latestContextSnapshot?.contextTokens,
       contextWindow: latestContextSnapshot?.contextWindow,
+      quoteCitations: assistantMessage.quoteCitations,
     });
 
     setStatusSafely("Ready", "ready");
@@ -5234,6 +5275,7 @@ async function buildAgentRuntimeRequest(
     conversationKey: params.conversationKey,
     mode: "agent",
     userText: params.userText,
+    conversationKind: resolveDisplayConversationKind(params.item) || undefined,
     activeItemId: params.item.id,
     selectedTexts: params.selectedTexts,
     selectedTextSources: params.selectedTextSources,
@@ -5809,6 +5851,7 @@ export async function sendQuestion(
       webchatCompletionReason: assistantMessage.webchatCompletionReason,
       webchatChatUrl: assistantMessage.webchatChatUrl,
       webchatChatId: assistantMessage.webchatChatId,
+      quoteCitations: assistantMessage.quoteCitations,
     });
   };
   let responseStreamCoalescer: BlockStreamCoalescer | null = null;
@@ -5984,6 +6027,10 @@ export async function sendQuestion(
           setStatusSafely,
         });
     let combinedContext = contextPlan.combinedContext;
+    assistantMessage.quoteCitations = mergeQuoteCitations(
+      assistantMessage.quoteCitations,
+      contextPlan.quoteCitations,
+    );
     userMessage.paperContexts = contextPlan.paperContexts.length
       ? contextPlan.paperContexts
       : undefined;
@@ -6192,6 +6239,10 @@ export async function sendQuestion(
             onMcpToolActivity: (event) => {
               flushResponseStream("event");
               codexActivityTrace?.noteMcpToolActivity(event);
+              assistantMessage.quoteCitations = mergeQuoteCitations(
+                assistantMessage.quoteCitations,
+                event.quoteCitations,
+              );
               const label =
                 sanitizeText(event.toolLabel || "").trim() ||
                 sanitizeText(event.toolName || "")
@@ -7381,6 +7432,13 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
               "pairedPaperContexts =",
               pairedUserMessage?.paperContexts?.length ?? "none",
             );
+            renderQuoteCitationPlaceholders({
+              body,
+              panelItem: item,
+              bubble,
+              assistantMessage: msg,
+              pairedUserMessage,
+            });
             decorateAssistantCitationLinks({
               body,
               panelItem: item,
@@ -7531,6 +7589,13 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
             "pairedPaperContexts =",
             previousUserMessage?.paperContexts?.length ?? "none",
           );
+          renderQuoteCitationPlaceholders({
+            body,
+            panelItem: item,
+            bubble,
+            assistantMessage: msg,
+            pairedUserMessage: previousUserMessage,
+          });
           decorateAssistantCitationLinks({
             body,
             panelItem: item,

@@ -19,6 +19,7 @@ export type AgentRequest = {
   conversationKey: number;
   mode: "agent";
   userText: string;
+  conversationKind?: "global" | "paper";
   activeItemId?: number;
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];

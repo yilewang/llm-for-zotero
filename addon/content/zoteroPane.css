@@ -4758,6 +4758,20 @@ label.llm-search-results-item:hover {
   font-style: italic;
 }
 
+.llm-quote-citation-anchor {
+  margin: 8px 0;
+}
+
+.llm-quote-citation-anchor blockquote {
+  margin-bottom: 4px;
+}
+
+.llm-quote-citation-missing {
+  display: inline-block;
+  color: var(--fill-secondary);
+  font-style: italic;
+}
+
 .llm-bubble.assistant strong {
   font-weight: 600;
 }
@@ -5726,7 +5740,7 @@ label.llm-search-results-item:hover {
   min-width: 0;
 }
 
-.llm-action-picker-item:hover {
+.llm-action-picker-item:hover:not(:disabled) {
   background: color-mix(
     in srgb,
     var(--material-background) 84%,
@@ -5735,7 +5749,12 @@ label.llm-search-results-item:hover {
   border-color: var(--stroke-secondary, rgba(120, 120, 120, 0.35));
 }
 
-.llm-action-picker-item[aria-selected="true"] {
+.llm-action-picker-item:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.llm-action-picker-item[aria-selected="true"]:not(:disabled) {
   background: var(--color-accent10, rgba(53, 132, 228, 0.14));
   border-color: var(--color-accent, #3584e4);
 }

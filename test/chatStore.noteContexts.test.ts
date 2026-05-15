@@ -75,9 +75,9 @@ describe("chatStore note contexts", function () {
       contextWindow: 200000,
     });
 
-    assert.lengthOf(capturedParams, 27);
-    assert.equal(capturedParams[25], 1234);
-    assert.equal(capturedParams[26], 200000);
+    assert.lengthOf(capturedParams, 28);
+    assert.equal(capturedParams[26], 1234);
+    assert.equal(capturedParams[27], 200000);
   });
 
   it("persists an explicit empty model attachment split", async function () {
@@ -112,7 +112,7 @@ describe("chatStore note contexts", function () {
     });
 
     assert.include(capturedQuery, "model_attachments_json");
-    assert.equal(capturedParams[17], JSON.stringify([]));
+    assert.equal(capturedParams[18], JSON.stringify([]));
   });
 
   it("persists selectedCollectionContexts when appending a message", async function () {
@@ -144,7 +144,7 @@ describe("chatStore note contexts", function () {
 
     assert.include(capturedQuery, "collection_contexts_json");
     assert.equal(
-      capturedParams[14],
+      capturedParams[15],
       JSON.stringify([
         {
           collectionId: 55,

@@ -10,7 +10,12 @@ import {
   PAPER_CONTEXT_REF_SCHEMA,
   validateObject,
 } from "../shared";
-import { normalizeTarget, normalizeTargets, resolveDefaultTargets } from "./pdfToolUtils";
+import {
+  describeNoDefaultPaperTarget,
+  normalizeTarget,
+  normalizeTargets,
+  resolveDefaultTargets,
+} from "./pdfToolUtils";
 import type { PdfTarget } from "./pdfToolUtils";
 
 type ReadPaperInput = {
@@ -137,7 +142,7 @@ export function createReadPaperTool(
           input.target?.paperContext ||
           resolveDefaultTargets(input.target, input.targets, context, zoteroGateway, 1)[0];
         if (!paperContext) {
-          throw new Error("No paper context available for chunk reading");
+          throw new Error(describeNoDefaultPaperTarget(context.request));
         }
         return {
           results: await Promise.all(
@@ -157,7 +162,7 @@ export function createReadPaperTool(
         MAX_TARGETS,
       );
       if (!papers.length) {
-        throw new Error("No paper context available for reading");
+        throw new Error(describeNoDefaultPaperTarget(context.request));
       }
       const results = [];
       for (const paperContext of papers) {

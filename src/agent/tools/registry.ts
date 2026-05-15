@@ -132,9 +132,16 @@ export class AgentToolRegistry {
     }
     const validation = tool.validate(call.arguments);
     if (!validation.ok) {
+      const validationError =
+        call.name === "library_search" &&
+        context.request.selectedCollectionContexts?.length &&
+        validation.error.includes("entity and mode are required")
+          ? `${validation.error} For selected collections, use ` +
+            "{ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }."
+          : validation.error;
       return createSyntheticErrorResult(
         call,
-        `Invalid tool input for ${call.name}: ${validation.error}`,
+        `Invalid tool input for ${call.name}: ${validationError}`,
       );
     }
 

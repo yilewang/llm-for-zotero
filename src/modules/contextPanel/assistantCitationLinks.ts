@@ -9,6 +9,10 @@ import {
   normalizeSelectedTextPaperContexts,
 } from "./normalizers";
 import {
+  normalizeQuoteCitations,
+  QUOTE_CITATION_PATTERN,
+} from "./quoteCitations";
+import {
   getActiveReaderForSelectedTab,
   resolveContextSourceItem,
 } from "./contextResolution";
@@ -25,7 +29,7 @@ import {
 } from "./livePdfSelectionLocator";
 import { resolveConversationBaseItem } from "./portalScope";
 import { searchPaperCandidates } from "./paperSearch";
-import type { Message, PaperContextRef } from "./types";
+import type { Message, PaperContextRef, QuoteCitation } from "./types";
 
 type CitationParagraphJumpNavigation = {
   pageIndex: number;
@@ -95,6 +99,8 @@ export const INLINE_CITATION_SKIP_SELECTOR = [
   ".llm-citation-inline-wrap",
   ".llm-citation-text",
   ".llm-citation-icon",
+  ".llm-quote-citation-anchor",
+  ".llm-quote-citation-missing",
 ].join(", ");
 
 const INLINE_CITATION_PATTERN =
@@ -2308,6 +2314,177 @@ function createCitationButton(params: {
   return container;
 }
 
+function resolveQuoteCitationCandidates(
+  citation: QuoteCitation,
+  extractedCitation: ExtractedCitationLabel | null,
+  candidates: AssistantCitationPaperCandidate[],
+): AssistantCitationPaperCandidate[] {
+  const contextItemId = Number(citation.contextItemId || 0);
+  const itemId = Number(citation.itemId || 0);
+  if (Number.isFinite(contextItemId) && contextItemId > 0) {
+    const matches = candidates.filter(
+      (candidate) => candidate.contextItemId === Math.floor(contextItemId),
+    );
+    if (matches.length) return matches;
+  }
+  if (Number.isFinite(itemId) && itemId > 0) {
+    const matches = candidates.filter(
+      (candidate) => candidate.paperContext.itemId === Math.floor(itemId),
+    );
+    if (matches.length) return matches;
+  }
+  return extractedCitation
+    ? resolveMatchingCandidatesForExtractedCitation(extractedCitation, candidates)
+    : [];
+}
+
+function createQuoteCitationUnavailableElement(
+  ownerDoc: Document,
+  quoteId: string,
+): HTMLElement {
+  const missing = ownerDoc.createElement("span");
+  missing.className = "llm-quote-citation-missing";
+  missing.textContent = `[quote unavailable: ${quoteId}]`;
+  return missing;
+}
+
+function createQuoteCitationAnchorElement(params: {
+  ownerDoc: Document;
+  body: Element;
+  panelItem: Zotero.Item;
+  candidates: AssistantCitationPaperCandidate[];
+  quoteCitation: QuoteCitation;
+}): HTMLElement {
+  const wrapper = params.ownerDoc.createElement("div");
+  wrapper.className = "llm-quote-citation-anchor";
+  wrapper.dataset.quoteCitationId = params.quoteCitation.id;
+
+  const blockquote = params.ownerDoc.createElement("blockquote");
+  blockquote.textContent = params.quoteCitation.quoteText;
+  wrapper.appendChild(blockquote);
+
+  const citationRow = params.ownerDoc.createElement("div");
+  citationRow.className = "llm-citation-row-container";
+  const extractedCitation = extractStandalonePaperSourceLabel(
+    params.quoteCitation.citationLabel,
+  );
+  if (extractedCitation) {
+    const matchingCandidates = resolveQuoteCitationCandidates(
+      params.quoteCitation,
+      extractedCitation,
+      params.candidates,
+    );
+    citationRow.appendChild(
+      createCitationButton({
+        ownerDoc: params.ownerDoc,
+        body: params.body,
+        panelItem: params.panelItem,
+        candidates: matchingCandidates,
+        extractedCitation,
+        quoteText: params.quoteCitation.quoteText,
+        rawCitationText: params.quoteCitation.citationLabel,
+      }),
+    );
+  } else {
+    citationRow.textContent = params.quoteCitation.citationLabel;
+  }
+  wrapper.appendChild(citationRow);
+  return wrapper;
+}
+
+function textContainsQuoteCitationPlaceholder(text: string): boolean {
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  const matched = QUOTE_CITATION_PATTERN.test(text);
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  return matched;
+}
+
+export function renderQuoteCitationPlaceholders(params: {
+  body: Element;
+  panelItem: Zotero.Item;
+  bubble: HTMLDivElement;
+  assistantMessage: Message;
+  pairedUserMessage?: Message | null;
+}): void {
+  const quoteCitations = normalizeQuoteCitations(
+    params.assistantMessage.quoteCitations,
+  );
+  if (!textContainsQuoteCitationPlaceholder(params.bubble.textContent || "")) {
+    return;
+  }
+  const byId = new Map(
+    quoteCitations.map((citation) => [citation.id, citation]),
+  );
+  const ownerDoc = params.bubble.ownerDocument;
+  if (!ownerDoc) return;
+  const candidates = collectAssistantCitationCandidates(
+    params.panelItem,
+    params.pairedUserMessage,
+  );
+  const targets: Text[] = [];
+  const walk = (node: Node): void => {
+    if (node.nodeType === 3) {
+      const textNode = node as Text;
+      const parent = textNode.parentElement;
+      if (!parent || shouldSkipInlineCitationNode(parent)) return;
+      const text = textNode.nodeValue || "";
+      if (textContainsQuoteCitationPlaceholder(text)) targets.push(textNode);
+      return;
+    }
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      walk(child);
+    }
+  };
+  walk(params.bubble);
+
+  for (const textNode of targets) {
+    const text = textNode.nodeValue || "";
+    QUOTE_CITATION_PATTERN.lastIndex = 0;
+    const matches = Array.from(text.matchAll(QUOTE_CITATION_PATTERN));
+    QUOTE_CITATION_PATTERN.lastIndex = 0;
+    if (!matches.length) continue;
+    const fragment = ownerDoc.createDocumentFragment();
+    let cursor = 0;
+    for (const match of matches) {
+      const start = match.index || 0;
+      const end = start + match[0].length;
+      if (start > cursor) {
+        fragment.appendChild(ownerDoc.createTextNode(text.slice(cursor, start)));
+      }
+      const quoteId = match[1];
+      const quoteCitation = byId.get(quoteId);
+      fragment.appendChild(
+        quoteCitation
+          ? createQuoteCitationAnchorElement({
+              ownerDoc,
+              body: params.body,
+              panelItem: params.panelItem,
+              candidates,
+              quoteCitation,
+            })
+          : createQuoteCitationUnavailableElement(ownerDoc, quoteId),
+      );
+      cursor = end;
+    }
+    if (cursor < text.length) {
+      fragment.appendChild(ownerDoc.createTextNode(text.slice(cursor)));
+    }
+
+    const parent = textNode.parentElement;
+    const trimmed = text.trim();
+    if (
+      parent?.tagName.toLowerCase() === "p" &&
+      parent.childNodes.length === 1 &&
+      matches.length === 1 &&
+      trimmed === matches[0][0]
+    ) {
+      parent.replaceWith(fragment);
+    } else {
+      textNode.parentNode?.replaceChild(fragment, textNode);
+    }
+  }
+}
+
 function shouldSkipInlineCitationNode(element: Element | null): boolean {
   if (!element) return true;
   if (element.closest(INLINE_CITATION_SKIP_SELECTOR)) {
@@ -2442,6 +2619,7 @@ export function decorateAssistantCitationLinks(params: {
     params.bubble.childElementCount,
   );
   for (const blockquote of blockquotes) {
+    if (blockquote.closest(".llm-quote-citation-anchor")) continue;
     let quoteText = sanitizeText(blockquote.textContent || "").trim();
     if (!quoteText) continue;
     let citationEl = getNextElementSibling(blockquote);

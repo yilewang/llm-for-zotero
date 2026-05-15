@@ -1,7 +1,9 @@
 ---
 id: evidence-based-qa
 description: Locate specific passages in one or more papers that support a given claim, returning quoted evidence with page and section citations. Not for general questions — use simple-paper-qa for those.
-version: 2
+version: 3
+contexts: single-paper,paper-set
+activation: auto
 match: /\b(what method|what approach|what technique|what model|how did they|how does it|what results?|what data|what dataset|what experiment|what metric|what performance|what accuracy|what baseline)\b/i
 match: /\b(find|locate|where|which section|which page|quote|passage|excerpt|evidence|proof|support|mention)\b.*\b(paper|article|study|text|document)\b/i
 match: /\b(does (this|the) paper|do the authors?)\b.*\b(mention|discuss|address|cover|report|describe|analyze|analyse|use|propose|introduce|present|evaluate|compare)\b/i
@@ -42,6 +44,12 @@ Call `paper_read({ mode:'targeted', query:'<the specific question>' })` with a f
 Do NOT make additional retrieval calls. If the evidence does not fully answer
 the question, say what you found and what is missing rather than making
 more tool calls.
+
+If `paper_read` provides quote anchors like `[[quote:Q_x7a2]]`, use those
+anchor tokens for direct quotes instead of copying the quote/citation manually.
+If no quote anchor is provided for a direct quote, put the provided
+`sourceLabel` on the next non-empty line after the blockquote, before any
+commentary.
 
 ### Budget
 

@@ -2,7 +2,8 @@ import { parseSkill } from "./skillLoader";
 
 /**
  * Patch an on-disk skill file's frontmatter: update `description` and
- * `version` to the shipped values in place, preserving every other line
+ * `version` to the shipped values in place, add missing shipped routing
+ * metadata such as `contexts` / `activation`, preserving every other line
  * (user-customized `match:` patterns, any custom frontmatter keys, the
  * instruction body). If `description:` or `version:` are missing on disk,
  * they are inserted at the top of the frontmatter.
@@ -39,6 +40,8 @@ export function patchSkillFrontmatter(
   const fmLines = lines.slice(fmStart + 1, fmEnd);
   let sawDescription = false;
   let sawVersion = false;
+  let sawContexts = false;
+  let sawActivation = false;
   const patchedFm = fmLines.map((line) => {
     const trimmed = line.trim();
     if (/^description:/.test(trimmed)) {
@@ -49,11 +52,27 @@ export function patchSkillFrontmatter(
       sawVersion = true;
       return `version: ${shipped.version}`;
     }
+    if (/^contexts:/.test(trimmed)) {
+      sawContexts = true;
+      return line;
+    }
+    if (/^activation:/.test(trimmed)) {
+      sawActivation = true;
+      return line;
+    }
     return line;
   });
   if (!sawVersion) patchedFm.unshift(`version: ${shipped.version}`);
-  if (!sawDescription)
-    patchedFm.unshift(`description: ${shipped.description}`);
+  if (!sawDescription) patchedFm.unshift(`description: ${shipped.description}`);
+  if (!sawActivation && shipped.activation !== "auto") {
+    patchedFm.push(`activation: ${shipped.activation}`);
+  }
+  if (
+    !sawContexts &&
+    !(shipped.contexts.length === 1 && shipped.contexts[0] === "any")
+  ) {
+    patchedFm.push(`contexts: ${shipped.contexts.join(",")}`);
+  }
 
   const header = lines.slice(0, fmStart + 1);
   const body = lines.slice(fmEnd);

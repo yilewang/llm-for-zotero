@@ -9,6 +9,10 @@ import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
 } from "./paperAttribution";
+import {
+  buildQuoteAnchorPromptBlock,
+  buildSelectedTextQuoteCitations,
+} from "./quoteCitations";
 export { normalizeSelectedTextSource } from "./normalizers";
 
 export const DEFAULT_SELECTED_TEXT_PROMPT =
@@ -230,11 +234,26 @@ export function buildQuestionWithSelectedTextContexts(
       : "";
     return `Text Context ${index + 1} [source=${sourceLabel}]${paperPart}${citationPart}:\n"""\n${text}\n"""`;
   });
-  const guidance =
+  const selectedTextQuoteCitations = includePaperAttribution
+    ? buildSelectedTextQuoteCitations(
+        normalizedTexts,
+        normalizedSources,
+        selectedTextPaperContexts,
+      )
+    : [];
+  const anchorGuidance = buildQuoteAnchorPromptBlock(selectedTextQuoteCitations);
+  const guidanceLines =
     includePaperAttribution &&
     selectedTextPaperContexts.some((entry) => !!entry)
-      ? `${buildPaperQuoteCitationGuidance().join("\n")}\n\n`
-      : "";
+      ? [
+          ...anchorGuidance,
+          ...(anchorGuidance.length ? [""] : []),
+          ...buildPaperQuoteCitationGuidance(),
+        ]
+      : [];
+  const guidance = guidanceLines.length
+    ? `${guidanceLines.join("\n")}\n\n`
+    : "";
   return `Selected text contexts with explicit sources:\n${guidance}${contextBlocks.join(
     "\n\n",
   )}\n\nUser question:\n${normalizedPrompt}`;

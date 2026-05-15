@@ -47,6 +47,24 @@ describe("paperAttribution", function () {
       buildPaperQuoteCitationGuidance(paper).join("\n"),
       "include short blockquotes",
     );
+    assert.include(
+      buildPaperQuoteCitationGuidance(paper).join("\n"),
+      "next non-empty line after the blockquote, before any commentary",
+    );
+    assert.include(
+      buildPaperQuoteCitationGuidance(paper).join("\n"),
+      "If quote anchors are provided, use the exact [[quote:<id>]] token",
+    );
+  });
+
+  it("keeps generic quote guidance citation-adjacent", function () {
+    const guidance = buildPaperQuoteCitationGuidance().join("\n");
+
+    assert.include(guidance, "> quoted text from the paper\n\n(Author, Year)");
+    assert.include(
+      guidance,
+      "next non-empty line after the blockquote, before any commentary",
+    );
   });
 
   it("falls back deterministically when metadata is missing", function () {

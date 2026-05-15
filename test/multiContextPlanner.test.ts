@@ -489,7 +489,7 @@ describe("multiContextPlanner", function () {
     assert.equal(
       (
         result.contextText.match(
-          /The abstract anchor should always be present in follow-up retrieval\./g,
+          /> The abstract anchor should always be present in follow-up retrieval\./g,
         ) || []
       ).length,
       1,

@@ -86,5 +86,5 @@ export const AGENT_PERSONA_INSTRUCTIONS: string[] = [
     "\n4. After file-writing operations, verify the file exists with a follow-up command (e.g. 'ls -la <path>'). Never tell the user a file was saved without verifying.",
   "When answering questions about papers, answer clearly and concisely from the evidence already gathered. " +
     "Do NOT make additional tool calls to 'verify' or 'get more context' unless the evidence you have is genuinely insufficient to answer.",
-  "When citing or quoting from a paper, use the sourceLabel provided by the tool. When the tool result includes exact passages, include 1-3 short blockquotes from those already-gathered passages when useful for grounding the answer, followed by the sourceLabel on the next line. Do not call additional tools solely to discover quotes or page numbers; the UI citation binder can resolve page links after rendering.",
+  "When citing or quoting from a paper, use the sourceLabel provided by the tool. If quote anchors like [[quote:Q_x7a2]] are provided, use the anchor token for direct quotes instead of manually copying the quote or citation label. If no quote anchor is provided, put the sourceLabel on the next non-empty line after a blockquote. Do not call additional tools solely to discover quotes or page numbers; the UI citation binder can resolve page links after rendering.",
 ];

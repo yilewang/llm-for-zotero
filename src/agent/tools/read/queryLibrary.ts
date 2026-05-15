@@ -134,11 +134,35 @@ function normalizeLegacyQueryLibraryArgs(
     typeof normalized.query === "string" && normalized.query.trim()
       ? normalized.query.trim()
       : "";
+  const text =
+    typeof normalized.text === "string" && normalized.text.trim()
+      ? normalized.text.trim()
+      : "";
+  const topLevelCollectionId = normalizePositiveInt(normalized.collectionId);
+
+  if (topLevelCollectionId) {
+    const filters = validateObject<Record<string, unknown>>(normalized.filters)
+      ? { ...normalized.filters }
+      : {};
+    if (!normalizePositiveInt(filters.collectionId)) {
+      filters.collectionId = topLevelCollectionId;
+    }
+    normalized.filters = filters;
+    delete normalized.collectionId;
+    if (!normalized.entity && normalized.mode === "list") {
+      normalized.entity = "items";
+    }
+  }
 
   if (!normalized.entity && !normalized.mode && query) {
     normalized.entity = "items";
     normalized.mode = "search";
     normalized.text = query;
+  }
+  if (normalized.mode === "query" && (query || text)) {
+    if (!normalized.entity) normalized.entity = "items";
+    normalized.mode = "search";
+    normalized.text = text || query;
   }
   if (!normalized.entity && normalized.mode === "duplicates") {
     normalized.entity = "items";
@@ -315,8 +339,8 @@ export function createQueryLibraryTool(
               : "library";
           const mode =
             args && typeof args === "object"
-              ? String((args as { mode?: unknown }).mode || "query")
-              : "query";
+              ? String((args as { mode?: unknown }).mode || "unspecified")
+              : "unspecified";
           return `Querying ${entity} (${mode})`;
         },
         onSuccess: ({ content }) => {

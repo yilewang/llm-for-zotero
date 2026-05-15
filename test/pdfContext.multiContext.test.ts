@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   buildChunkMetadata,
+  buildEvidencePack,
   buildFullPaperContext,
   buildPaperKey,
   buildPaperRetrievalCandidates,
@@ -397,6 +398,31 @@ describe("pdfContext multi-context helpers", function () {
     assert.include(rendered, "Source label: (Paper 2)");
     assert.include(rendered, "> Shared claim B");
     assert.notInclude(rendered, "[P1-C4]");
+
+    const pack = buildEvidencePack({
+      papers: [paperA, paperB],
+      candidates: [
+        {
+          paperKey: buildPaperKey(paperA),
+          itemId: 1,
+          contextItemId: 11,
+          title: "Paper A",
+          firstCreator: "Zheng et al.",
+          year: "2026",
+          chunkIndex: 3,
+          chunkText:
+            "Abstract\nDespite global representational drift, the relative geometry remained stable across conditions.",
+          estimatedTokens: 8,
+          bm25Score: 0.7,
+          embeddingScore: 0.1,
+          hybridScore: 0.4,
+          evidenceScore: 1.3,
+        },
+      ],
+    });
+    assert.lengthOf(pack.quoteCitations, 1);
+    assert.match(pack.quoteCitations[0].id, /^Q_/);
+    assert.include(pack.contextText, `[[quote:${pack.quoteCitations[0].id}]]`);
   });
 
   it("builds chunk metadata with section labels and cleaned anchors", function () {

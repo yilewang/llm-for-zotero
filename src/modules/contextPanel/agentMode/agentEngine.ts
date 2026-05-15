@@ -85,6 +85,7 @@ import type {
   CollectionContextRef,
   NoteContextRef,
   PaperContextRef,
+  QuoteCitation,
   SelectedTextSource,
 } from "../../../shared/types";
 import type { UsageStats } from "../../../shared/llm";
@@ -94,6 +95,11 @@ import type { StoredChatMessage } from "../../../utils/chatStore";
 import type { Message } from "../types";
 import { isClaudeBlockStreamingEnabled } from "../../../claudeCode/prefs";
 import { recordContextCacheTelemetry } from "../../../contextCache/manager";
+import {
+  buildSelectedTextQuoteCitations,
+  extractQuoteCitationsFromToolContent,
+  mergeQuoteCitations,
+} from "../quoteCitations";
 
 function readUsageNumber(record: Record<string, unknown>, key: string): number {
   const value = record[key];
@@ -640,6 +646,11 @@ export async function sendAgentTurn(
       selectedTextNoteContexts,
       selectedTextsForMessage.length,
     );
+  const selectedTextQuoteCitationsForMessage = buildSelectedTextQuoteCitations(
+    selectedTextsForMessage,
+    selectedTextSourcesForMessage,
+    selectedTextPaperContextsForMessage,
+  );
   const shownQuestion = displayQuestion || question;
   const screenshotImagesForMessage = Array.isArray(images)
     ? images
@@ -747,6 +758,9 @@ export async function sendAgentTurn(
         ? buildPendingAgentTraceEvents(body)
         : undefined,
     reasoningOpen: false,
+    quoteCitations: selectedTextQuoteCitationsForMessage.length
+      ? selectedTextQuoteCitationsForMessage
+      : undefined,
   };
   historyForRun.push(assistantMessage);
   const { refreshChatSafely, setStatusSafely } = deps.createPanelUpdateHelpers(
@@ -897,6 +911,7 @@ export async function sendAgentTurn(
       modelProviderLabel: assistantMessage.modelProviderLabel,
       contextTokens: snapshot?.contextTokens,
       contextWindow: snapshot?.contextWindow,
+      quoteCitations: assistantMessage.quoteCitations,
     });
   };
   const markCancelled = async () => {
@@ -1077,6 +1092,16 @@ export async function sendAgentTurn(
           }
           case "tool_result": {
             if (!event.ok) break;
+            const toolQuoteCitations = mergeQuoteCitations(
+              extractQuoteCitationsFromToolContent(event.content),
+              extractQuoteCitationsFromToolContent(event.artifacts),
+            );
+            if (toolQuoteCitations.length) {
+              assistantMessage.quoteCitations = mergeQuoteCitations(
+                assistantMessage.quoteCitations,
+                toolQuoteCitations,
+              );
+            }
             const toolPaperContexts = deps.normalizePaperContexts([
               ...extractPaperContextCandidatesFromToolContent(event.content),
               ...extractPaperContextCandidatesFromToolContent(event.artifacts),
@@ -1473,6 +1498,11 @@ export async function retryAgentTurn(
       retryPair.userMessage.selectedTextPaperContexts,
       selectedTextsRaw.length,
     );
+  assistantMessage.quoteCitations = buildSelectedTextQuoteCitations(
+    selectedTextsRaw,
+    selectedTextSourcesRaw,
+    selectedTextPaperContextsRaw,
+  );
 
   const historyForLLM = deps.buildLLMHistoryMessages(
     history.slice(0, retryPair.userIndex),
@@ -1520,6 +1550,7 @@ export async function retryAgentTurn(
       modelProviderLabel: assistantMessage.modelProviderLabel,
       contextTokens: snapshot?.contextTokens,
       contextWindow: snapshot?.contextWindow,
+      quoteCitations: assistantMessage.quoteCitations,
     });
   };
   const markCancelled = async () => {
@@ -1701,6 +1732,16 @@ export async function retryAgentTurn(
           }
           case "tool_result": {
             if (!event.ok) break;
+            const toolQuoteCitations = mergeQuoteCitations(
+              extractQuoteCitationsFromToolContent(event.content),
+              extractQuoteCitationsFromToolContent(event.artifacts),
+            );
+            if (toolQuoteCitations.length) {
+              assistantMessage.quoteCitations = mergeQuoteCitations(
+                assistantMessage.quoteCitations,
+                toolQuoteCitations,
+              );
+            }
             const toolPaperContexts = deps.normalizePaperContexts([
               ...extractPaperContextCandidatesFromToolContent(event.content),
               ...extractPaperContextCandidatesFromToolContent(event.artifacts),

@@ -14,7 +14,7 @@ import { isGlobalPortalItem } from "../../portalScope";
 import { isClaudeGlobalPortalItem } from "../../../../claudeCode/portal";
 import { positionMenuBelowButton } from "../../menuPositioning";
 import { setStatus } from "../../textUtils";
-import type { ConversationSystem } from "../../../../shared/types";
+import type { ConversationSystem, QuoteCitation } from "../../../../shared/types";
 import type { ChatRuntimeMode, Message } from "../../types";
 
 type ResponseMenuTarget = {
@@ -25,6 +25,7 @@ type ResponseMenuTarget = {
   userTimestamp?: number;
   assistantTimestamp?: number;
   paperContexts?: import("../../types").PaperContextRef[];
+  quoteCitations?: QuoteCitation[];
 } | null;
 
 type PromptMenuTarget = {
@@ -131,6 +132,7 @@ export function attachMenuActionController(
         contentText,
         modelName,
         paperContexts,
+        quoteCitations,
       } = target;
       if (!targetItem || !contentText) {
         deps.logError("LLM: Note save - missing item or contentText", null);
@@ -152,6 +154,7 @@ export function attachMenuActionController(
             contentText,
             modelName,
             paperContexts,
+            quoteCitations,
           );
           setStatusMessage(t("Created a new note"), "ready");
           return;
@@ -164,6 +167,7 @@ export function attachMenuActionController(
           {
             appendToTrackedNote: true,
             rememberCreatedNote: true,
+            quoteCitations,
           },
         );
         setStatusMessage(

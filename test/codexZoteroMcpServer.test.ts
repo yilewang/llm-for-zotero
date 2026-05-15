@@ -325,6 +325,66 @@ describe("Zotero MCP server", function () {
     );
   });
 
+  it("includes paper_read quote citations in completed MCP activity", async function () {
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "paper_read",
+        description: "Read paper",
+        inputSchema: { type: "object", additionalProperties: true },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async () => ({
+        quoteCitations: [
+          {
+            id: "Q_test",
+            quoteText: "A quoted passage.",
+            citationLabel: "(Smith, 2024)",
+            contextItemId: 23,
+          },
+        ],
+      }),
+    });
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const events: Array<{ phase: string; quoteCitations?: unknown[] }> = [];
+    const unregister = addZoteroMcpToolActivityObserver((event) => {
+      events.push({
+        phase: event.phase,
+        quoteCitations: event.quoteCitations,
+      });
+    });
+
+    try {
+      await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        body: {
+          jsonrpc: "2.0",
+          id: "quote-call",
+          method: "tools/call",
+          params: {
+            name: "paper_read",
+            arguments: { mode: "targeted" },
+          },
+        },
+      });
+    } finally {
+      unregister();
+    }
+
+    const completed = events.find((event) => event.phase === "completed");
+    assert.deepInclude(completed?.quoteCitations?.[0] as object, {
+      id: "Q_test",
+      quoteText: "A quoted passage.",
+      citationLabel: "(Smith, 2024)",
+      contextItemId: 23,
+    });
+  });
+
   it("uses explicit MCP scope args as context defaults without passing them to validators", async function () {
     const registry = new AgentToolRegistry();
     registry.register({

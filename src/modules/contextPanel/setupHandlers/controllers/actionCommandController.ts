@@ -1,4 +1,8 @@
-import { getAllSkills } from "../../../../agent/skills";
+import {
+  getAllSkills,
+  getSkillContextEligibility,
+  type SkillRoutingRequest,
+} from "../../../../agent/skills";
 import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import {
   getAgentApi,
@@ -181,6 +185,7 @@ export function createActionCommandController(
     return Array.from(
       slashMenu.querySelectorAll(".llm-action-picker-item"),
     ).filter((element) => {
+      if ((element as HTMLButtonElement).disabled) return false;
       const style = win?.getComputedStyle(element as Element);
       return style ? style.display !== "none" : true;
     }) as HTMLButtonElement[];
@@ -822,7 +827,30 @@ export function createActionCommandController(
     }
   };
 
+  const buildSkillRoutingRequest = (): SkillRoutingRequest => {
+    const currentItem = deps.getItem();
+    const selectedPaperContexts = currentItem
+      ? deps.getAllEffectivePaperContexts(currentItem)
+      : [];
+    const selectedCollectionContexts = currentItem
+      ? selectedCollectionContextCache.get(currentItem.id) || []
+      : [];
+    return {
+      userText: inputBox.value || "",
+      selectedPaperContexts,
+      selectedCollectionContexts,
+    };
+  };
+
   const handleSkillSelection = (skill: AgentSkill): void => {
+    const eligibility = getSkillContextEligibility(
+      skill,
+      buildSkillRoutingRequest(),
+    );
+    if (!eligibility.eligible) {
+      setStatus(`/${skill.id}: ${eligibility.reason}`, "warning");
+      return;
+    }
     clearForcedSkill();
     clearCommandChip();
     forcedSkillId = skill.id;
@@ -1059,6 +1087,7 @@ export function createActionCommandController(
     clearSkillSlashItems();
     const allSkills = getAllSkills();
     if (!allSkills.length) return;
+    const skillRoutingRequest = buildSkillRoutingRequest();
     const filtered = query
       ? allSkills.filter(
           (skill: AgentSkill) =>
@@ -1082,18 +1111,31 @@ export function createActionCommandController(
     sectionLabel.textContent = t("Skills");
     list.insertBefore(sectionLabel, baseAnchor);
     filtered.forEach((skill: AgentSkill) => {
+      const eligibility = getSkillContextEligibility(
+        skill,
+        skillRoutingRequest,
+      );
       const button = mkSkillEl(
         "button",
         "llm-action-picker-item",
       ) as HTMLButtonElement;
       button.type = "button";
-      button.title = skill.description || skill.id;
+      button.disabled = !eligibility.eligible;
+      button.setAttribute(
+        "aria-disabled",
+        eligibility.eligible ? "false" : "true",
+      );
+      button.title = eligibility.eligible
+        ? skill.description || skill.id
+        : `${skill.description || skill.id} (${eligibility.reason})`;
       const titleEl = ownerDoc.createElement("span");
       titleEl.className = "llm-action-picker-title";
       titleEl.textContent = skill.id;
       const descEl = ownerDoc.createElement("span");
       descEl.className = "llm-action-picker-description";
-      descEl.textContent = skill.description;
+      descEl.textContent = eligibility.eligible
+        ? skill.description
+        : eligibility.reason;
       const badgeEl = ownerDoc.createElement("span");
       badgeEl.className = "llm-action-picker-badge";
       badgeEl.textContent = t(

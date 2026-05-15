@@ -21,16 +21,60 @@ export type AgentSkill = {
   description: string;
   version: number;
   patterns: RegExp[];
+  contexts: SkillContextKind[];
+  activation: SkillActivationMode;
   instruction: string;
   /** Set at load time by userSkills.ts based on filename + content comparison. */
   source: "system" | "customized" | "personal";
 };
+
+export type SkillContextKind =
+  | "any"
+  | "single-paper"
+  | "paper-set"
+  | "library-corpus"
+  | "note";
+
+export type SkillActivationMode = "auto" | "manual" | "both";
+
+const VALID_CONTEXTS = new Set<SkillContextKind>([
+  "any",
+  "single-paper",
+  "paper-set",
+  "library-corpus",
+  "note",
+]);
+
+const VALID_ACTIVATIONS = new Set<SkillActivationMode>([
+  "auto",
+  "manual",
+  "both",
+]);
+
+function parseSkillContexts(raw: string): SkillContextKind[] {
+  const contexts = raw
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .filter((part): part is SkillContextKind =>
+      VALID_CONTEXTS.has(part as SkillContextKind),
+    );
+  return contexts.length ? Array.from(new Set(contexts)) : ["any"];
+}
+
+function parseSkillActivation(raw: string): SkillActivationMode {
+  const normalized = raw.trim().toLowerCase();
+  return VALID_ACTIVATIONS.has(normalized as SkillActivationMode)
+    ? (normalized as SkillActivationMode)
+    : "auto";
+}
 
 /**
  * Parse a raw `.md` skill file into an AgentSkill.
  * Frontmatter is delimited by `---` lines. Supported keys:
  * - `id: <string>`          — unique skill identifier
  * - `match: /<regex>/<flags>` — pattern to match against userText (repeatable, OR semantics)
+ * - `contexts: <context>[,<context>]` — request contexts where the skill is valid
+ * - `activation: auto|manual|both` — whether the skill can activate automatically
  */
 export function parseSkill(raw: string): AgentSkill {
   const lines = raw.split("\n");
@@ -56,6 +100,8 @@ export function parseSkill(raw: string): AgentSkill {
   let id = "unknown";
   let description = "";
   let version = 0;
+  let contexts: SkillContextKind[] = ["any"];
+  let activation: SkillActivationMode = "auto";
   const patterns: RegExp[] = [];
 
   for (const line of fmLines) {
@@ -72,6 +118,16 @@ export function parseSkill(raw: string): AgentSkill {
     const versionMatch = line.match(/^version:\s*(\d+)$/);
     if (versionMatch) {
       version = parseInt(versionMatch[1], 10);
+      continue;
+    }
+    const contextsMatch = line.match(/^contexts:\s*(.+)$/);
+    if (contextsMatch) {
+      contexts = parseSkillContexts(contextsMatch[1]);
+      continue;
+    }
+    const activationMatch = line.match(/^activation:\s*(.+)$/);
+    if (activationMatch) {
+      activation = parseSkillActivation(activationMatch[1]);
       continue;
     }
     // Skip name: lines (legacy, no longer used)
@@ -93,6 +149,8 @@ export function parseSkill(raw: string): AgentSkill {
     description,
     version,
     patterns,
+    contexts,
+    activation,
     instruction,
     source: "personal",
   };

@@ -1,7 +1,9 @@
 ---
 id: compare-papers
 description: Compare multiple papers by theme, methodology, or findings
-version: 4
+version: 5
+contexts: paper-set
+activation: auto
 match: /\b(compare|contrast|difference|differ|similarities|similarity)\b.*\b(papers?|articles?|studies|works?)\b/i
 match: /\b(papers?|articles?|studies)\b.*\b(compare|contrast|difference|differ|similarities|similarity)\b/i
 match: /\bcomparative\s+(analysis|review|study)\b/i
@@ -33,5 +35,7 @@ Use Zotero paper tools as resources, not a ritual. Batch selected papers in `tar
 - For broad requests like "compare these papers" with no dimension, call `paper_read({ mode:'overview', targets:[...] })` once, then answer or make one focused targeted call if a specific gap remains.
 - For method-section requests, do not call overview first unless the targeted result is clearly insufficient.
 - When `paper_read` returns exact passages, include short blockquotes from the already-returned passages when useful for grounding the comparison.
+- If `paper_read` provides quote anchors like `[[quote:Q_x7a2]]`, use those anchor tokens for direct quotes instead of copying the quote/citation manually.
+- If no quote anchor is provided for a direct quote, put the provided `sourceLabel` on the next non-empty line after the blockquote, before any commentary.
 - Do not call visual/page tools, `file_io`, or `run_command` just to improve citation anchors or page numbers. Use the provided `sourceLabel`; the UI can bind citations after rendering.
 - Stop after the first useful batched result when it covers the selected papers. Make at most one follow-up `paper_read({ mode:'targeted', ... })` for a concrete missing dimension.

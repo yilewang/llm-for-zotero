@@ -114,6 +114,21 @@ function dedupePaperContextRefs(
   return out;
 }
 
+export function describeNoDefaultPaperTarget(
+  request: AgentRuntimeRequest,
+): string {
+  if (
+    request.conversationKind === "global" ||
+    request.selectedCollectionContexts?.length
+  ) {
+    return (
+      "No paper target in library chat. Use library_search with the selected " +
+      "collection and pass explicit targets to paper_read."
+    );
+  }
+  return "No paper context available for paper_read";
+}
+
 /**
  * Resolve paper contexts from the tool input, falling back to the
  * request-level paper contexts when no explicit target is provided.

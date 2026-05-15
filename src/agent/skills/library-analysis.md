@@ -1,7 +1,9 @@
 ---
 id: library-analysis
 description: Analyze your whole library or collection with statistics
-version: 2
+version: 3
+contexts: library-corpus
+activation: auto
 match: /\b(summarize|summarise|summary|overview|statistics|stats|analyze|analyse|breakdown|survey|audit)\b.*\b(library|collection|all papers|all items|my papers|entire|whole)\b/i
 match: /\b(my library|whole library|entire library|all my)\b.*\b(summarize|summarise|summary|overview|analyze|analyse|statistics|stats|topics?|themes?|trends?|breakdown)\b/i
 match: /\bhow many\b.*\b(papers?|items?|articles?|books?)\b/i

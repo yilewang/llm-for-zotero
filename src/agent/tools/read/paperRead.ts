@@ -14,6 +14,10 @@ import {
   formatPaperSourceLabel,
 } from "../../../modules/contextPanel/paperAttribution";
 import {
+  buildQuoteCitation,
+  mergeQuoteCitations,
+} from "../../../modules/contextPanel/quoteCitations";
+import {
   fail,
   normalizePositiveInt,
   ok,
@@ -25,6 +29,7 @@ import {
   inferPdfMode,
   normalizeTarget,
   normalizeTargets,
+  describeNoDefaultPaperTarget,
   resolveDefaultTargets,
 } from "./pdfToolUtils";
 import type { PdfTarget } from "./pdfToolUtils";
@@ -274,6 +279,8 @@ function buildTargetedPaperGroups(
     if (chunkKind) passage.chunkKind = chunkKind;
     const pageLabel = normalizeString(result.pageLabel);
     if (pageLabel) passage.pageLabel = pageLabel;
+    const quoteCitation = buildQuoteCitationFromResult(result);
+    if (quoteCitation) passage.quoteCitationId = quoteCitation.id;
     const entries = groups.get(key) || [];
     entries.push(passage);
     groups.set(key, entries);
@@ -290,6 +297,34 @@ function buildTargetedPaperGroups(
       passages,
     };
   });
+}
+
+function buildQuoteCitationFromResult(
+  result: Record<string, unknown>,
+): ReturnType<typeof buildQuoteCitation> {
+  const paperContext = validateObject<Record<string, unknown>>(
+    result.paperContext,
+  )
+    ? result.paperContext
+    : undefined;
+  return buildQuoteCitation({
+    quoteText: result.text,
+    citationLabel:
+      normalizeString(result.sourceLabel) || normalizeString(result.citationLabel),
+    contextItemId: paperContext?.contextItemId,
+    itemId: paperContext?.itemId,
+  });
+}
+
+function buildQuoteCitationsForResults(
+  results: Array<Record<string, unknown>>,
+) {
+  const citations: NonNullable<ReturnType<typeof buildQuoteCitation>>[] = [];
+  for (const result of results) {
+    const citation = buildQuoteCitationFromResult(result);
+    if (citation) citations.push(citation);
+  }
+  return mergeQuoteCitations(citations);
 }
 
 function getUniqueSourceLabels(entries: unknown[]): string[] {
@@ -377,6 +412,7 @@ async function readExplicitPageTargets(params: {
     mode: params.input.mode,
     results,
     papers: buildTargetedPaperGroups(params.targets, results),
+    quoteCitations: buildQuoteCitationsForResults(results),
   };
 }
 
@@ -572,7 +608,7 @@ export function createPaperReadTool(
         input.mode === "overview" ? MAX_OVERVIEW_TARGETS : MAX_TARGETED_TARGETS,
       );
       if (!targets.length) {
-        throw new Error("No paper context available for paper_read");
+        throw new Error(describeNoDefaultPaperTarget(context.request));
       }
       if (input.mode === "overview") {
         const maxChars = input.maxChars || 6000;
@@ -646,6 +682,9 @@ export function createPaperReadTool(
         results,
         papers: buildTargetedPaperGroups(
           targets,
+          results as Array<Record<string, unknown>>,
+        ),
+        quoteCitations: buildQuoteCitationsForResults(
           results as Array<Record<string, unknown>>,
         ),
       };

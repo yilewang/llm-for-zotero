@@ -1,7 +1,9 @@
 ---
 id: literature-review
 description: Structured scientific review with thematic synthesis and citations
-version: 2
+version: 3
+contexts: paper-set,library-corpus
+activation: auto
 match: /\b(literature review|lit review|review of (the )?literature)\b/i
 match: /\b(conduct|write|create|generate|draft)\b.*\b(review|synthesis|survey)\b.*\b(on|about|regarding|of)\b/i
 match: /\bconduct a literature review\b/i
@@ -86,6 +88,7 @@ If key figures from deep-read papers would strengthen a thematic point, embed th
 - Use `(Author, Year)` for single-author papers, `(Author & Author, Year)` for two, `(Author et al., Year)` for three or more.
 - The citation label should match the Zotero item metadata (use `creators` and `date` fields).
 - Do NOT invent citations or cite papers not in the user's library.
+- If a deep-read passage provides a quote anchor like `[[quote:Q_x7a2]]`, use that anchor token for the direct quote. If no quote anchor is provided, put the source label on the next non-empty line after the blockquote.
 
 ### After writing
 

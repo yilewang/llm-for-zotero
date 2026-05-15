@@ -1,7 +1,9 @@
 ---
 id: analyze-figures
 description: Analyze figures, tables, and diagrams from papers
-version: 3
+version: 4
+contexts: single-paper
+activation: auto
 match: /\b(figure|fig\.?|table|diagram|chart|graph|plot|schematic|illustration)\s*\d/i
 match: /\banalyze?\b.*\b(figure|fig\.?|table|diagram|image|chart)\b/i
 match: /\b(figure|fig\.?|table|diagram)\b.*\b(about|explain|describe|show|mean|depict)\b/i

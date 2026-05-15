@@ -612,6 +612,8 @@ export async function createSkillTemplate(): Promise<string | null> {
 id: my-custom-skill
 description: Describe what this skill does
 version: 1
+contexts: any
+activation: auto
 match: /your regex pattern here/i
 ---
 
@@ -620,6 +622,8 @@ match: /your regex pattern here/i
 
   - name/description: shown in the "/" slash menu
   - match: regex patterns that trigger this skill (OR semantics)
+  - contexts: any, single-paper, paper-set, library-corpus, or note
+  - activation: auto, manual, or both
   - version: increment when you make significant changes
 
   The text below is injected into the agent's current-turn guidance when

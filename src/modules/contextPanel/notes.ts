@@ -28,6 +28,7 @@ import type {
   ChatAttachment,
   Message,
   PaperContextRef,
+  QuoteCitation,
   SelectedTextSource,
 } from "./types";
 import {
@@ -60,6 +61,7 @@ import {
   resolveCodexPaperPortalBaseItem,
 } from "../../codexAppServer/portal";
 import { getMessageCitationPaperContexts } from "./citationContexts";
+import { replaceQuoteCitationPlaceholdersForMarkdown } from "./quoteCitations";
 
 export { readNoteSnapshot, stripNoteHtml, type NoteSnapshot };
 
@@ -379,10 +381,12 @@ function buildAssistantNoteHtml(
   contentText: string,
   modelName: string,
   paperContexts?: PaperContextRef[],
+  quoteCitations?: QuoteCitation[],
 ): string {
-  const response = sanitizeText(
-    stripTrailingPluginFooter(contentText || ""),
-  ).trim();
+  const response = replaceQuoteCitationPlaceholdersForMarkdown(
+    sanitizeText(stripTrailingPluginFooter(contentText || "")).trim(),
+    quoteCitations,
+  );
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
   let responseHtml = renderRawNoteHtml(response);
@@ -390,8 +394,14 @@ function buildAssistantNoteHtml(
   return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p><p><strong>${escapeNoteHtml(source)}:</strong></p><div>${responseHtml}</div>${NOTE_FOOTER_HTML}`;
 }
 
-function renderChatMessageHtmlForNote(text: string): string {
-  const safeText = sanitizeText(text || "").trim();
+function renderChatMessageHtmlForNote(
+  text: string,
+  quoteCitations?: QuoteCitation[],
+): string {
+  const safeText = replaceQuoteCitationPlaceholdersForMarkdown(
+    sanitizeText(text || "").trim(),
+    quoteCitations,
+  );
   if (!safeText) return "";
   // Reuse the same markdown-to-note rendering path as single-response save.
   return renderRawNoteHtml(safeText);
@@ -695,6 +705,7 @@ export function buildChatHistoryNotePayload(messages: Message[]): {
       msg.role === "user" ? buildFileListHtmlForNote(fileAttachments) : "";
     let rendered = renderChatMessageHtmlForNote(
       msg.role === "user" ? htmlTextWithContext : textWithContext,
+      msg.role === "assistant" ? msg.quoteCitations : undefined,
     );
     // For assistant messages, inject citation links using the preceding
     // user message's paper contexts so citations become clickable in the note.
@@ -741,6 +752,7 @@ export async function createNoteFromAssistantText(
   options: {
     appendToTrackedNote?: boolean;
     rememberCreatedNote?: boolean;
+    quoteCitations?: QuoteCitation[];
   } = {},
 ): Promise<"created" | "appended"> {
   const parentItem = resolveParentItemForNoteTarget(item);
@@ -755,7 +767,12 @@ export async function createNoteFromAssistantText(
   // of injecting rendered DOM HTML from the bubble was fragile — KaTeX
   // span trees and sanitised classless wrappers were mostly dropped by
   // ProseMirror.)
-  const html = buildAssistantNoteHtml(contentText, modelName, paperContexts);
+  const html = buildAssistantNoteHtml(
+    contentText,
+    modelName,
+    paperContexts,
+    options.quoteCitations,
+  );
 
   if (options.appendToTrackedNote) {
     // Try to find an existing tracked note for this parent item.
@@ -813,6 +830,7 @@ export async function createStandaloneNoteFromAssistantText(
   contentText: string,
   modelName: string,
   paperContexts?: PaperContextRef[],
+  quoteCitations?: QuoteCitation[],
 ): Promise<"created"> {
   const normalizedLibraryID = Number.isFinite(libraryID)
     ? Math.floor(libraryID)
@@ -820,7 +838,12 @@ export async function createStandaloneNoteFromAssistantText(
   if (normalizedLibraryID <= 0) {
     throw new Error("Invalid library ID for standalone note creation");
   }
-  const html = buildAssistantNoteHtml(contentText, modelName, paperContexts);
+  const html = buildAssistantNoteHtml(
+    contentText,
+    modelName,
+    paperContexts,
+    quoteCitations,
+  );
   const note = new Zotero.Item("note");
   note.libraryID = normalizedLibraryID;
   note.setNote(html);

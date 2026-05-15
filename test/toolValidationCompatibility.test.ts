@@ -63,6 +63,47 @@ describe("tool validation compatibility", function () {
     assert.equal(legacyTopic.value.mode, "search");
     assert.equal(legacyTopic.value.text, "hippocampus");
 
+    const legacyQueryMode = tool.validate({
+      mode: "query",
+      query: "hippocampus",
+    });
+    assert.isTrue(legacyQueryMode.ok);
+    if (!legacyQueryMode.ok) return;
+    assert.equal(legacyQueryMode.value.entity, "items");
+    assert.equal(legacyQueryMode.value.mode, "search");
+    assert.equal(legacyQueryMode.value.text, "hippocampus");
+
+    const legacyTextQueryMode = tool.validate({
+      mode: "query",
+      text: "computational psychiatry",
+    });
+    assert.isTrue(legacyTextQueryMode.ok);
+    if (!legacyTextQueryMode.ok) return;
+    assert.equal(legacyTextQueryMode.value.entity, "items");
+    assert.equal(legacyTextQueryMode.value.mode, "search");
+    assert.equal(legacyTextQueryMode.value.text, "computational psychiatry");
+
+    const topLevelCollectionId = tool.validate({
+      entity: "items",
+      mode: "list",
+      collectionId: 4,
+    });
+    assert.isTrue(topLevelCollectionId.ok);
+    if (!topLevelCollectionId.ok) return;
+    assert.equal(topLevelCollectionId.value.entity, "items");
+    assert.equal(topLevelCollectionId.value.mode, "list");
+    assert.equal(topLevelCollectionId.value.filters?.collectionId, 4);
+
+    const listCollectionIdWithoutEntity = tool.validate({
+      mode: "list",
+      collectionId: 4,
+    });
+    assert.isTrue(listCollectionIdWithoutEntity.ok);
+    if (!listCollectionIdWithoutEntity.ok) return;
+    assert.equal(listCollectionIdWithoutEntity.value.entity, "items");
+    assert.equal(listCollectionIdWithoutEntity.value.mode, "list");
+    assert.equal(listCollectionIdWithoutEntity.value.filters?.collectionId, 4);
+
     const legacyDuplicates = tool.validate({ mode: "duplicates" });
     assert.isTrue(legacyDuplicates.ok);
     if (!legacyDuplicates.ok) return;

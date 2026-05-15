@@ -424,6 +424,92 @@ describe("primitive agent tools", function () {
     ]);
   });
 
+  it("read_library does not use active reader fallback in collection-scoped library chat", async function () {
+    let requestedTargets: number[] = [];
+    const fakeItem = {
+      id: 99,
+      getDisplayTitle: () => "Chandra Paper",
+    } as any;
+    const tool = createReadLibraryTool({
+      listPaperContexts: () => [],
+      getPaperTargetsByItemIds: (itemIds: number[]) => {
+        requestedTargets = itemIds;
+        return [];
+      },
+      getItem: (itemId: number) => (itemId === 99 ? fakeItem : null),
+      resolveMetadataItem: ({ itemId }: { itemId?: number }) =>
+        itemId === 99 ? fakeItem : null,
+      getEditableArticleMetadata: () =>
+        makeMetadataSnapshot(99, "Chandra Paper"),
+      getPaperNotes: () => [],
+      getPaperAnnotations: () => [],
+      getAllChildAttachmentInfos: async () => [],
+      getCollectionSummary: () => null,
+    } as never);
+
+    const validated = tool.validate({ sections: ["metadata"] });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const result = await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKind: "global",
+        activeItemId: 99,
+        selectedCollectionContexts: [
+          { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
+        ],
+      },
+    });
+    assert.deepEqual(requestedTargets, []);
+    assert.deepEqual(
+      (result as { results: Record<string, unknown> }).results,
+      {},
+    );
+  });
+
+  it("read_library keeps explicit item IDs in collection-scoped library chat", async function () {
+    const fakeItem = {
+      id: 7,
+      getDisplayTitle: () => "Collection Paper",
+    } as any;
+    const tool = createReadLibraryTool({
+      listPaperContexts: () => [],
+      getPaperTargetsByItemIds: () => [],
+      getItem: (itemId: number) => (itemId === 7 ? fakeItem : null),
+      resolveMetadataItem: ({ itemId }: { itemId?: number }) =>
+        itemId === 7 ? fakeItem : null,
+      getEditableArticleMetadata: () =>
+        makeMetadataSnapshot(7, "Collection Paper"),
+      getPaperNotes: () => [],
+      getPaperAnnotations: () => [],
+      getAllChildAttachmentInfos: async () => [],
+      getCollectionSummary: () => null,
+    } as never);
+
+    const validated = tool.validate({
+      itemIds: [7],
+      sections: ["metadata"],
+    });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+
+    const result = await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKind: "global",
+        activeItemId: 99,
+        selectedCollectionContexts: [
+          { collectionId: 4, name: "Computational_Psychiatry", libraryID: 1 },
+        ],
+      },
+    });
+    const entry = (result as { results: Record<string, any> }).results["7"];
+    assert.equal(entry.title, "Collection Paper");
+  });
+
   it("builds system instructions around semantic tool names", async function () {
     const messages = await buildAgentInitialMessages(
       {

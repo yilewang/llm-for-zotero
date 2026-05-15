@@ -99,18 +99,27 @@ export function buildPaperQuoteCitationGuidance(
   if (paperContext) {
     return [
       "Answer format when quoting this paper:",
+      "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
       "> quoted text from the paper",
+      "",
       formatPaperSourceLabel(paperContext),
+      "",
       "- If exact passages are available, include short blockquotes when useful for grounding the answer.",
+      "- Put the source label on the next non-empty line after the blockquote, before any commentary.",
+      "- Never put headings, bullets, interpretation, or other prose between a quoted passage and its source label; clickable quote citations depend on this adjacency.",
       "- Use the EXACT source label above. Do NOT translate or romanize author names.",
     ];
   }
   return [
     "Paper-grounded citation format for the final answer:",
+    "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
     "> quoted text from the paper",
+    "",
     "(Author, Year)",
+    "",
     "- If exact passages are available, include short blockquotes when useful for grounding the answer.",
-    "- Put the source label on the line immediately after the quote.",
+    "- Put the source label on the next non-empty line after the blockquote, before any commentary.",
+    "- Never put headings, bullets, interpretation, or other prose between a quoted passage and its source label; clickable quote citations depend on this adjacency.",
     "- Use the EXACT source label provided for each paper. Do NOT translate or romanize author names.",
     "- Do not cite raw chunk ids, citation keys, or invented page numbers.",
   ];

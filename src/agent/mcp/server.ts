@@ -7,8 +7,9 @@
  */
 
 import { config } from "../../../package.json";
-import type { PaperContextRef } from "../../shared/types";
+import type { PaperContextRef, QuoteCitation } from "../../shared/types";
 import { readNoteSnapshot } from "../../modules/contextPanel/noteSnapshot";
+import { extractQuoteCitationsFromToolContent } from "../../modules/contextPanel/quoteCitations";
 import type { AgentToolRegistry } from "../tools/registry";
 import type { ZoteroGateway } from "../services/zoteroGateway";
 import type {
@@ -160,6 +161,7 @@ export type ZoteroMcpToolActivityEvent = {
   conversationKey?: number;
   libraryID?: number;
   kind?: "global" | "paper";
+  quoteCitations?: QuoteCitation[];
   timestamp: number;
 };
 
@@ -841,6 +843,7 @@ function buildMcpToolActivityEvent(params: {
   args?: unknown;
   ok?: boolean;
   error?: string;
+  quoteCitations?: QuoteCitation[];
   headers?: Record<string, string>;
 }): ZoteroMcpToolActivityEvent {
   const scope = resolveMcpToolActivityScope(params.headers);
@@ -853,6 +856,7 @@ function buildMcpToolActivityEvent(params: {
     arguments: params.args,
     ok: params.ok,
     error: params.error,
+    quoteCitations: params.quoteCitations,
     profileSignature: scope?.profileSignature,
     conversationKey: scope?.conversationKey,
     libraryID: scope?.libraryID,
@@ -1074,7 +1078,11 @@ async function handleToolsCall(
     }),
   );
 
-  const completeActivity = (result: { ok: boolean; error?: string }) => {
+  const completeActivity = (result: {
+    ok: boolean;
+    error?: string;
+    quoteCitations?: QuoteCitation[];
+  }) => {
     emitZoteroMcpToolActivity(
       buildMcpToolActivityEvent({
         id,
@@ -1084,6 +1092,7 @@ async function handleToolsCall(
         args: scopeArgs.toolArgs,
         ok: result.ok,
         error: result.error,
+        quoteCitations: result.quoteCitations,
         headers,
       }),
     );
@@ -1114,7 +1123,10 @@ async function handleToolsCall(
         : null;
     const cachedReadResult = getCachedMcpReadResult(readDedupeKey);
     if (cachedReadResult) {
-      completeActivity({ ok: true });
+      completeActivity({
+        ok: true,
+        quoteCitations: extractQuoteCitationsFromToolContent(cachedReadResult),
+      });
       return cachedReadResult;
     }
 
@@ -1148,6 +1160,9 @@ async function handleToolsCall(
     completeActivity({
       ok: !result.isError,
       error: extractToolCallErrorText(result),
+      quoteCitations: extractQuoteCitationsFromToolContent(
+        prepared.execution.result.content,
+      ),
     });
     clearMcpReadDedupeCacheAfterToolResult(tool.spec, result);
     rememberMcpReadResult(readDedupeKey, result);

@@ -13,6 +13,10 @@ import { buildNotesDirectoryConfigSection } from "../../utils/notesDirectoryConf
 import { buildRuntimePlatformGuidanceText } from "../../utils/runtimePlatform";
 import { formatPaperSourceLabel } from "../../modules/contextPanel/paperAttribution";
 import {
+  buildQuoteAnchorPromptBlock,
+  buildSelectedTextQuoteCitations,
+} from "../../modules/contextPanel/quoteCitations";
+import {
   buildAgentStableResourceContextBlock,
   renderAgentResourceContextPlan,
   type AgentResourceContextPlan,
@@ -105,6 +109,13 @@ function buildFullUserMessage(
     }
   }
   if (Array.isArray(request.selectedTexts) && request.selectedTexts.length) {
+    const selectedTextQuoteAnchors = buildQuoteAnchorPromptBlock(
+      buildSelectedTextQuoteCitations(
+        request.selectedTexts,
+        request.selectedTextSources,
+        request.selectedTextPaperContexts,
+      ),
+    );
     const selectedTextBlock = request.selectedTexts
       .map((entry, index) => {
         const source = request.selectedTextSources?.[index];
@@ -124,7 +135,11 @@ function buildFullUserMessage(
         return `Selected text ${index + 1} [source=${sourceLabel}${sourceMeta}]:\n"""\n${entry}\n"""`;
       })
       .join("\n\n");
-    contextLines.push(selectedTextBlock);
+    contextLines.push(
+      [...selectedTextQuoteAnchors, selectedTextBlock]
+        .filter(Boolean)
+        .join("\n\n"),
+    );
   }
   const pdfAttachments = (request.attachments || []).filter(
     (a) =>
