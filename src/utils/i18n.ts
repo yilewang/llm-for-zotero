@@ -214,8 +214,11 @@ const zhCN: Record<string, string> = {
   "Delete Cache": "删除缓存",
   "Delete MinerU cache for": "删除 MinerU 缓存，共",
   "selected item(s)?": "个所选条目？",
+  "selected item(s) are skipped by MinerU parsing filters. Parse anyway?":
+    "个所选条目被 MinerU 解析过滤器跳过。仍要解析吗？",
   "item(s) in this filter?": "个筛选出的条目？",
   "Delete all MinerU cached files? This cannot be undone.": "删除所有 MinerU 缓存文件？此操作无法撤销。",
+  Skipped: "已跳过",
   "Manage Files": "管理文件",
   "Tags": "标签",
   "All Tagged": "有标签",

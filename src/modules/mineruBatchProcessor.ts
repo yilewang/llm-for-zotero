@@ -1,4 +1,3 @@
-import { isFilenameExcluded } from "../utils/mineruConfig";
 import {
   parsePdfWithMineru,
   MineruRateLimitError,
@@ -22,6 +21,14 @@ import {
   type MineruAvailabilityStatus,
 } from "./contextPanel/mineruSync";
 import { normalizeMineruTagName } from "./mineruTagIndex";
+import {
+  getMineruParseEligibility,
+  type MineruParseExclusionReason,
+} from "./mineruParseEligibility";
+import {
+  buildMineruFilenameMatcher,
+  type MineruFilenameMatcher,
+} from "../utils/mineruConfig";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -253,14 +260,17 @@ async function buildQueue(): Promise<void> {
     return db > da ? 1 : db < da ? -1 : 0;
   });
 
-  // Build queue — skip items already cached or excluded by filename pattern
+  // Build queue — skip items already cached or excluded by parse filters
   queue = [];
   let processed = 0;
+  let totalEligible = 0;
+  const filenameMatcher = buildMineruFilenameMatcher();
   for (const { parentItem, pdfAtt, siblingPdfs } of candidates) {
-    const pdfFilename =
-      (pdfAtt as unknown as { attachmentFilename?: string })
-        .attachmentFilename || "";
-    if (isFilenameExcluded(pdfFilename)) continue;
+    const eligibility = await getMineruParseEligibility(parentItem, pdfAtt, {
+      filenameMatcher,
+    });
+    if (eligibility.excluded) continue;
+    totalEligible++;
     const availability = await getMineruAvailabilityForAttachment(pdfAtt, {
       validateSyncedPackage: false,
     });
@@ -284,7 +294,7 @@ async function buildQueue(): Promise<void> {
     }
   }
 
-  state.totalCount = candidates.length;
+  state.totalCount = totalEligible;
   state.processedCount = processed;
   queueBuilt = true;
   notify();
@@ -468,21 +478,28 @@ export async function startBatchProcessing(): Promise<void> {
  */
 export async function processSelectedItems(
   attachmentIds: number[],
+  options: {
+    filenameMatcher?: MineruFilenameMatcher;
+    overrideEligibility?: boolean;
+  } = {},
 ): Promise<void> {
   if (state.running) return;
   if (attachmentIds.length === 0) return;
 
-  // Build a queue from the selected IDs — skip excluded filenames
+  // Build a queue from the selected IDs. Manager-confirmed selections can
+  // override parse filters; bulk/filter actions should keep them.
   queue = [];
+  const filenameMatcher =
+    options.filenameMatcher || buildMineruFilenameMatcher();
   for (const attId of attachmentIds) {
     const pdfItem = Zotero.Items.get(attId);
     if (!pdfItem) continue;
-    const pdfFilename =
-      (pdfItem as unknown as { attachmentFilename?: string })
-        .attachmentFilename || "";
-    if (isFilenameExcluded(pdfFilename)) continue;
     const parentId = pdfItem.parentID;
     const parentItem = parentId ? Zotero.Items.get(parentId) : null;
+    const eligibility = await getMineruParseEligibility(parentItem, pdfItem, {
+      filenameMatcher,
+    });
+    if (eligibility.excluded && !options.overrideEligibility) continue;
     const title = parentItem?.getField?.("title") || `Item ${attId}`;
     queue.push({ parentItemId: parentId || attId, attachmentId: attId, title });
   }
@@ -589,6 +606,9 @@ export type MineruItemEntry = {
   syncedPackage: boolean;
   availability: MineruAvailabilityStatus;
   excluded: boolean;
+  exclusionReason: MineruParseExclusionReason | null;
+  exclusionLabel: string;
+  pageCount: number | null;
   collectionIds: number[];
   tags: string[];
   tagsAuto: string[];
@@ -646,6 +666,7 @@ export async function getMineruItemList(): Promise<MineruItemEntry[]> {
   );
 
   const results: MineruItemEntry[] = [];
+  const filenameMatcher = buildMineruFilenameMatcher();
 
   for (const { parentItem, pdfAtt } of collectMineruPdfCandidates(allItems)) {
     try {
@@ -694,10 +715,12 @@ export async function getMineruItemList(): Promise<MineruItemEntry[]> {
       });
       const cached = availability.status !== "missing";
       const pdfTitle = getPdfAttachmentDisplayTitle(pdfAtt);
-      const pdfFilename =
-        (pdfAtt as unknown as { attachmentFilename?: string })
-          .attachmentFilename || pdfTitle;
-      const excluded = isFilenameExcluded(pdfFilename);
+      // Keep manager opening cheap. Page-count checks read PDF bytes, so they
+      // are deferred to enqueue/processing paths instead of every row load.
+      const eligibility = await getMineruParseEligibility(parentItem, pdfAtt, {
+        filenameMatcher,
+        inspectPageCount: false,
+      });
       const tagNames = getCandidateTagNames(parentItem, pdfAtt);
       results.push({
         parentItemId: parentItem?.id || pdfAtt.id,
@@ -711,7 +734,10 @@ export async function getMineruItemList(): Promise<MineruItemEntry[]> {
         localCached: availability.localCached,
         syncedPackage: availability.syncedPackage,
         availability: availability.status,
-        excluded,
+        excluded: eligibility.excluded,
+        exclusionReason: eligibility.primaryReason,
+        exclusionLabel: eligibility.reasonLabel,
+        pageCount: eligibility.pageCount,
         collectionIds,
         tags: tagNames.manual,
         tagsAuto: tagNames.automatic,

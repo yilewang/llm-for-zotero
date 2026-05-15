@@ -1168,33 +1168,70 @@
               ></html:span>
             </html:div>
 
-            <!-- ── Filename Exclusion Patterns ── -->
-            <html:div style="display: flex; flex-direction: column; gap: 4px; margin-top: 8px;">
-              <html:label
-                for="__addonRef__-mineru-exclude-patterns"
-                style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
-              >
-                Exclude PDFs by Filename
-              </html:label>
-              <html:input
-                id="__addonRef__-mineru-exclude-patterns"
-                type="text"
-                placeholder="e.g. 翻译, _translated, /\btranslat(ed|ion)\b/"
-                style="
-                  width: 100%;
-                  padding: 6px 10px;
-                  font-size: 13px;
-                  border: 1px solid var(--stroke-secondary, #c8c8c8);
-                  border-radius: 6px;
-                  box-sizing: border-box;
-                  background: Field;
-                  color: FieldText;
-                "
-              ></html:input>
-              <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
-                Comma-separated patterns. PDFs with matching filenames will be skipped. Wrap in /slashes/ for regex.
-              </html:span>
-            </html:div>
+            <!-- ── Advanced MinerU parsing filters ── -->
+            <html:details style="margin-top: 8px;">
+              <html:summary style="font-size: 12px; font-weight: 600; cursor: pointer;">
+                Advanced parsing filters
+              </html:summary>
+              <html:div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background: color-mix(in srgb, Field 94%, CanvasText 6%);">
+                <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                  <html:div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fill-primary, inherit);">
+                    <html:label for="__addonRef__-mineru-max-auto-pages" style="font-weight: 600;">
+                      Skip files over
+                    </html:label>
+                    <html:input
+                      id="__addonRef__-mineru-max-auto-pages"
+                      type="text"
+                      inputmode="numeric"
+                      pattern="[0-9]*"
+                      placeholder="100"
+                      style="
+                        width: 46px;
+                        padding: 3px 6px;
+                        font-size: 13px;
+                        border: 1px solid var(--stroke-secondary, #c8c8c8);
+                        border-radius: 5px;
+                        box-sizing: border-box;
+                        background: Field;
+                        color: FieldText;
+                        text-align: right;
+                      "
+                    ></html:input>
+                    <html:span style="font-weight: 600;">pages</html:span>
+                  </html:div>
+                  <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888);">
+                    Start All, Start Filtered, Start Selected, and auto-parse skip PDFs above this page count.
+                  </html:span>
+                </html:div>
+
+                <html:div style="display: flex; flex-direction: column; gap: 4px;">
+                  <html:label
+                    for="__addonRef__-mineru-exclude-patterns"
+                    style="display: block; font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit); margin-bottom: 2px;"
+                  >
+                    Exclude PDFs by Filename
+                  </html:label>
+                  <html:input
+                    id="__addonRef__-mineru-exclude-patterns"
+                    type="text"
+                    placeholder="e.g. 翻译, _translated, /\btranslat(ed|ion)\b/"
+                    style="
+                      width: 100%;
+                      padding: 6px 10px;
+                      font-size: 13px;
+                      border: 1px solid var(--stroke-secondary, #c8c8c8);
+                      border-radius: 6px;
+                      box-sizing: border-box;
+                      background: Field;
+                      color: FieldText;
+                    "
+                  ></html:input>
+                  <html:span style="font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 1px;">
+                    Comma-separated patterns. Matching filenames are skipped by your rule. Wrap in /slashes/ for regex.
+                  </html:span>
+                </html:div>
+              </html:div>
+            </html:details>
 
             <!-- ── Embedded MinerU manager ── -->
           <html:div style="margin-top: 8px; border-top: 1px solid var(--stroke-secondary, rgba(128,128,128,0.25)); padding-top: 12px;">

@@ -79,6 +79,9 @@ import {
   setGlobalAutoParseEnabled,
   isMineruSyncEnabled,
   setMineruSyncEnabled,
+  getMineruMaxAutoPages,
+  normalizeMineruMaxAutoPages,
+  setMineruMaxAutoPages,
   getMineruExcludePatterns,
   setMineruExcludePatterns,
 } from "../utils/mineruConfig";
@@ -3574,7 +3577,31 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     mineruTestBtn.addEventListener("command", () => void runMineruTest());
   }
 
-  // ── Filename exclusion patterns ────────────────────────────────
+  // ── MinerU advanced parse filters ──────────────────────────────
+  const mineruMaxAutoPagesInput = doc.querySelector(
+    `#${config.addonRef}-mineru-max-auto-pages`,
+  ) as HTMLInputElement | null;
+  if (mineruMaxAutoPagesInput) {
+    const maxPages = getMineruMaxAutoPages();
+    mineruMaxAutoPagesInput.value = String(maxPages);
+    const saveMaxAutoPages = () => {
+      const digitsOnly = mineruMaxAutoPagesInput.value.replace(/[^\d]/g, "");
+      if (mineruMaxAutoPagesInput.value !== digitsOnly) {
+        mineruMaxAutoPagesInput.value = digitsOnly;
+      }
+      const normalized = normalizeMineruMaxAutoPages(digitsOnly);
+      setMineruMaxAutoPages(normalized);
+      return normalized;
+    };
+    mineruMaxAutoPagesInput.addEventListener("input", () => {
+      saveMaxAutoPages();
+    });
+    mineruMaxAutoPagesInput.addEventListener("blur", () => {
+      const normalized = saveMaxAutoPages();
+      mineruMaxAutoPagesInput.value = String(normalized);
+    });
+  }
+
   const mineruExcludePatternsInput = doc.querySelector(
     `#${config.addonRef}-mineru-exclude-patterns`,
   ) as HTMLInputElement | null;

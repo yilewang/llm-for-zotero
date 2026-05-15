@@ -68,6 +68,7 @@ declare namespace _ZoteroTypes {
       "mineruAutoWatchCollections": string;
       "mineruGlobalAutoParse": boolean;
       "mineruSyncEnabled": boolean;
+      "mineruMaxAutoPages": number;
       "mineruExcludePatterns": string;
     };
   }

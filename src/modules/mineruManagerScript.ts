@@ -46,6 +46,11 @@ import {
   type MineruTagInfo,
   type MineruTagScope,
 } from "./mineruTagIndex";
+import { getMineruParseEligibility } from "./mineruParseEligibility";
+import {
+  buildMineruFilenameMatcher,
+  type MineruFilenameMatcher,
+} from "../utils/mineruConfig";
 
 /** Show a confirm dialog with a custom title using ztoolkit.Dialog. */
 async function confirmDialog(message: string): Promise<boolean> {
@@ -125,6 +130,7 @@ export type MineruManagerActionLabelInput = {
   autoPaused: boolean;
   selectedCount: number;
   filteredCount: number;
+  deleteFilteredCount?: number;
   filterActive: boolean;
 };
 
@@ -149,7 +155,9 @@ export function getMineruManagerActionLabels(
     input.selectedCount > 0
       ? `${t("Delete Cache")} (${input.selectedCount})`
       : input.filterActive
-        ? `${t("Delete Filtered Cache")} (${input.filteredCount})`
+        ? `${t("Delete Filtered Cache")} (${
+            input.deleteFilteredCount ?? input.filteredCount
+          })`
         : t("Delete All Cache");
 
   return { startLabel, deleteLabel };
@@ -165,14 +173,21 @@ export type MineruParentStatusChild = Pick<
 export function getMineruParentDisplayStatus(
   children: readonly MineruParentStatusChild[],
 ): MineruStatus {
-  const actionableChildren = children.filter((child) => !child.excluded);
-  if (!actionableChildren.length) return "idle";
-
-  if (actionableChildren.some((child) => child.status === "processing")) {
+  if (children.some((child) => child.status === "processing")) {
     return "processing";
   }
-  if (actionableChildren.some((child) => child.status === "failed")) {
+  if (children.some((child) => child.status === "failed")) {
     return "failed";
+  }
+  const actionableChildren = children.filter((child) => !child.excluded);
+  if (!actionableChildren.length) {
+    return children.length > 0 &&
+      children.every(
+        (child) =>
+          child.status === "cached" || child.availability !== "missing",
+      )
+      ? "cached"
+      : "idle";
   }
   if (
     actionableChildren.every(
@@ -393,6 +408,12 @@ export async function registerMineruManagerScript(
     return getCombinedFilteredItems().map((item) => item.attachmentId);
   }
 
+  function getProcessableFilteredItemIds(): number[] {
+    return getCombinedFilteredItems()
+      .filter((item) => !item.excluded && !isMineruAvailable(item))
+      .map((item) => item.attachmentId);
+  }
+
   function isCombinedFilterActive(): boolean {
     return isFolderFilterActive() || isTagFilterActive();
   }
@@ -475,7 +496,10 @@ export async function registerMineruManagerScript(
     const s = getMineruBatchState();
     const aw = getAutoWatchStatus();
     const filterActive = isCombinedFilterActive();
-    const filteredCount = filterActive ? getFilteredItemIds().length : 0;
+    const filteredCount = filterActive
+      ? getProcessableFilteredItemIds().length
+      : 0;
+    const deleteFilteredCount = filterActive ? getFilteredItemIds().length : 0;
     const labels = getMineruManagerActionLabels({
       batchRunning: s.running,
       batchPaused: s.paused,
@@ -483,6 +507,7 @@ export async function registerMineruManagerScript(
       autoPaused: aw.isPaused,
       selectedCount: selectedIds.size,
       filteredCount,
+      deleteFilteredCount,
       filterActive,
     });
 
@@ -1539,6 +1564,34 @@ export async function registerMineruManagerScript(
     setDotDisplayStatus(dot, await getMineruStatus(attachmentId));
   }
 
+  function getSkippedLabel(item: MineruItemEntry): string {
+    return item.excluded && item.exclusionLabel
+      ? `${t("Skipped")}: ${item.exclusionLabel}`
+      : "";
+  }
+
+  function getParentSkippedLabel(group: MineruParentGroup): string {
+    const excludedChildren = group.children.filter((child) => child.excluded);
+    if (!excludedChildren.length) return "";
+    if (excludedChildren.length !== group.children.length) return "";
+    const labels = new Set(
+      excludedChildren.map((child) => child.exclusionLabel).filter(Boolean),
+    );
+    if (labels.size === 1) {
+      return `${t("Skipped")}: ${[...labels][0]}`;
+    }
+    return t("Skipped");
+  }
+
+  function appendSkippedBadge(row: HTMLDivElement, label: string): void {
+    if (!label) return;
+    const badge = doc.createElement("span");
+    badge.style.cssText =
+      "flex-shrink: 0; font-size: 10.5px; color: #a16207; background: rgba(245,158,11,0.12); border-radius: 3px; padding: 1px 4px; white-space: nowrap;";
+    badge.textContent = label;
+    row.appendChild(badge);
+  }
+
   /** Build a standard item row (reused for parent, child, and single-PDF rows). */
   function buildItemRow(
     item: MineruItemEntry,
@@ -1580,6 +1633,7 @@ export async function registerMineruManagerScript(
     }
     setColumnWidthStyle(titleSpan, "title");
     row.appendChild(titleSpan);
+    appendSkippedBadge(row, getSkippedLabel(item));
 
     const authorSpan = doc.createElement("span");
     authorSpan.style.cssText =
@@ -1746,6 +1800,7 @@ export async function registerMineruManagerScript(
       titleSpan.title = group.title;
       setColumnWidthStyle(titleSpan, "title");
       parentRow.appendChild(titleSpan);
+      appendSkippedBadge(parentRow, getParentSkippedLabel(group));
 
       // Badge (multi-PDF only)
       if (isMultiPdf) {
@@ -1979,6 +2034,48 @@ export async function registerMineruManagerScript(
     });
   }
 
+  async function countExcludedIdsForProcessing(
+    ids: readonly number[],
+    filenameMatcher: MineruFilenameMatcher,
+  ): Promise<number> {
+    let count = 0;
+    for (const id of ids) {
+      const pdfItem = Zotero.Items.get(id);
+      if (!pdfItem) continue;
+      const parentId = Number(pdfItem.parentID);
+      const parentItem =
+        Number.isFinite(parentId) && parentId > 0
+          ? Zotero.Items.get(Math.floor(parentId))
+          : null;
+      const eligibility = await getMineruParseEligibility(parentItem, pdfItem, {
+        filenameMatcher,
+      });
+      if (eligibility.excluded) count++;
+    }
+    return count;
+  }
+
+  async function processSelectionWithOptionalOverride(
+    ids: number[],
+  ): Promise<void> {
+    if (!ids.length) return;
+    const filenameMatcher = buildMineruFilenameMatcher();
+    const excludedCount = await countExcludedIdsForProcessing(
+      ids,
+      filenameMatcher,
+    );
+    const overrideEligibility =
+      excludedCount > 0
+        ? await confirmDialog(
+            `${excludedCount} ${t(
+              "selected item(s) are skipped by MinerU parsing filters. Parse anyway?",
+            )}`,
+          )
+        : false;
+    if (excludedCount > 0 && !overrideEligibility) return;
+    await processSelectedItems(ids, { filenameMatcher, overrideEligibility });
+  }
+
   if (ctxProcessBtn) {
     ctxProcessBtn.addEventListener("click", () => {
       const ids =
@@ -1988,7 +2085,7 @@ export async function registerMineruManagerScript(
             ? [contextMenuItemId]
             : [];
       hideContextMenu();
-      if (ids.length > 0) void processSelectedItems(ids);
+      if (ids.length > 0) void processSelectionWithOptionalOverride(ids);
     });
     addHover(ctxProcessBtn);
   }
@@ -2193,10 +2290,10 @@ export async function registerMineruManagerScript(
         const ids = [...selectedIds];
         selectedIds.clear();
         lastClickedId = null;
-        void processSelectedItems(ids);
+        void processSelectionWithOptionalOverride(ids);
         renderItemsList();
       } else if (isCombinedFilterActive()) {
-        const ids = getFilteredItemIds();
+        const ids = getProcessableFilteredItemIds();
         if (ids.length > 0) void processSelectedItems(ids);
       } else {
         void startBatchProcessing();

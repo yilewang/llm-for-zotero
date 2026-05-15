@@ -95,6 +95,16 @@ describe("mineruManagerScript", function () {
       );
     });
 
+    it("still shows cached when every excluded child is already available", function () {
+      assert.equal(
+        getMineruParentDisplayStatus([
+          child("cached", "local", true),
+          child("idle", "synced", true),
+        ]),
+        "cached",
+      );
+    });
+
     it("shows idle when any actionable child is missing and idle", function () {
       assert.equal(
         getMineruParentDisplayStatus([child("cached"), child("idle")]),

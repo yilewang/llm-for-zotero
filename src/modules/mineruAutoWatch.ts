@@ -1,7 +1,8 @@
 import { config } from "../../package.json";
 import {
+  buildMineruFilenameMatcher,
   isGlobalAutoParseEnabled,
-  isFilenameExcluded,
+  type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
 import {
   parsePdfWithMineru,
@@ -24,6 +25,7 @@ import {
   getMineruAvailabilityForAttachment,
   publishMineruCachePackageForAttachment,
 } from "./contextPanel/mineruSync";
+import { getMineruParseEligibility } from "./mineruParseEligibility";
 
 type QueueEntry = {
   attachmentId: number;
@@ -546,15 +548,19 @@ async function enqueuePdfIfEligible(
   title: string,
   parentItemId: number | undefined,
   event: "add" | "modify",
+  filenameMatcher: MineruFilenameMatcher,
 ): Promise<void> {
   if (event === "modify" && !shouldConsiderModifiedPdf(pdf.id)) return;
 
-  const pdfFilename =
-    (pdf as unknown as { attachmentFilename?: string }).attachmentFilename ||
-    "";
-  if (isFilenameExcluded(pdfFilename)) {
+  const parentItem = parentItemId ? Zotero.Items.get(parentItemId) : null;
+  const eligibility = await getMineruParseEligibility(parentItem, pdf, {
+    filenameMatcher,
+  });
+  if (eligibility.excluded) {
     ztoolkit.log(
-      `MinerU auto-parse: PDF ${pdf.id} excluded by filename pattern`,
+      `MinerU auto-parse: PDF ${pdf.id} excluded by parse filter (${
+        eligibility.reasonLabel || "unknown reason"
+      })`,
     );
     return;
   }
@@ -598,6 +604,8 @@ async function handleItemNotification(
     `MinerU auto-parse: handling ${itemIds.length} ${event} item(s)`,
   );
 
+  const filenameMatcher = buildMineruFilenameMatcher();
+
   for (const itemId of itemIds) {
     const item = Zotero.Items.get(itemId);
     if (!item) continue;
@@ -611,7 +619,7 @@ async function handleItemNotification(
       ztoolkit.log(`MinerU auto-parse: found ${pdfs.length} PDF attachment(s)`);
       for (const pdf of pdfs) {
         const title = item.getField?.("title") || `Item ${pdf.id}`;
-        await enqueuePdfIfEligible(pdf, title, item.id, event);
+        await enqueuePdfIfEligible(pdf, title, item.id, event, filenameMatcher);
       }
     } else if (isPdfAttachment(item)) {
       const parentItem = item.parentID ? Zotero.Items.get(item.parentID) : null;
@@ -624,6 +632,7 @@ async function handleItemNotification(
         title,
         item.parentID || undefined,
         event,
+        filenameMatcher,
       );
     }
   }

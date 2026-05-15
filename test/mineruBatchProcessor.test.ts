@@ -1,5 +1,13 @@
 import { assert } from "chai";
-import { getMineruItemList } from "../src/modules/mineruBatchProcessor";
+import {
+  getMineruBatchState,
+  getMineruItemList,
+  processSelectedItems,
+  startBatchProcessing,
+} from "../src/modules/mineruBatchProcessor";
+import { writeMineruCacheFiles } from "../src/modules/contextPanel/mineruCache";
+
+const encoder = new TextEncoder();
 
 type MockItem = {
   id: number;
@@ -9,6 +17,7 @@ type MockItem = {
   itemType?: string;
   attachmentContentType?: string;
   attachmentFilename?: string;
+  attachmentSyncedHash?: string;
   attachmentIDs?: number[];
   isAttachment: () => boolean;
   isRegularItem?: () => boolean;
@@ -18,14 +27,39 @@ type MockItem = {
     string | { tag?: string; name?: string; type?: number }
   >;
   getField?: (field: string) => string;
+  getFilePathAsync?: () => Promise<string | false>;
 };
 
-function setupZotero(items: Map<number, MockItem>): void {
+function pdfText(pageCount: number): string {
+  return `%PDF-1.7
+1 0 obj
+<< /Type /Pages /Count ${pageCount} /Kids [] >>
+endobj`;
+}
+
+function setupZotero(
+  items: Map<number, MockItem>,
+  options: {
+    pref?: (key: string) => unknown;
+    files?: Record<string, string | Uint8Array>;
+  } = {},
+): void {
+  const files = new Map<string, Uint8Array>();
+  for (const [path, value] of Object.entries(options.files || {})) {
+    files.set(path, typeof value === "string" ? encoder.encode(value) : value);
+  }
   (globalThis as unknown as { Zotero: unknown }).Zotero = {
     DataDirectory: { dir: "/tmp/zotero" },
     Libraries: { userLibraryID: 1 },
     Prefs: {
-      get: () => false,
+      get: (key: string) => {
+        const override = options.pref?.(key);
+        if (override !== undefined) return override;
+        if (key.endsWith(".mineruMaxAutoPages")) return 100;
+        if (key.endsWith(".mineruExcludePatterns")) return "";
+        if (key.endsWith(".mineruSyncEnabled")) return false;
+        return false;
+      },
       set: () => {},
     },
     Items: {
@@ -38,11 +72,17 @@ function setupZotero(items: Map<number, MockItem>): void {
     log: () => {},
   };
   (globalThis as unknown as { IOUtils: unknown }).IOUtils = {
-    exists: async () => false,
-    read: async () => {
+    exists: async (path: string) => files.has(path),
+    read: async (path: string) => {
+      const value = files.get(path);
+      if (value) return value;
       throw new Error("missing");
     },
     getChildren: async () => [],
+    makeDirectory: async () => {},
+    write: async (path: string, data: Uint8Array) => {
+      files.set(path, data);
+    },
   };
 }
 
@@ -188,5 +228,285 @@ describe("mineruBatchProcessor", function () {
 
     assert.deepEqual(fallback[0].tags, ["Attachment Only"]);
     assert.deepEqual(fallback[0].tagsAuto, []);
+  });
+
+  it("does not exclude book rows by item type and defers page-count checks during manager load", async function () {
+    const book: MockItem = {
+      id: 401,
+      key: "BOOK",
+      libraryID: 1,
+      itemType: "book",
+      attachmentIDs: [402],
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments() {
+        return this.attachmentIDs || [];
+      },
+      getCollections: () => [],
+      getField: (field) => (field === "title" ? "Book Parent" : ""),
+    };
+    const bookPdf: MockItem = {
+      id: 402,
+      key: "BOOKPDF",
+      libraryID: 1,
+      parentID: book.id,
+      itemType: "attachment",
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "book.pdf",
+      attachmentSyncedHash: "book-hash",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: (field) => (field === "title" ? "Book PDF" : ""),
+      getFilePathAsync: async () => "/tmp/book.pdf",
+    };
+    const article: MockItem = {
+      id: 403,
+      key: "ARTICLE",
+      libraryID: 1,
+      itemType: "journalArticle",
+      attachmentIDs: [404],
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments() {
+        return this.attachmentIDs || [];
+      },
+      getCollections: () => [],
+      getField: (field) => (field === "title" ? "Long Article" : ""),
+    };
+    const longPdf: MockItem = {
+      id: 404,
+      key: "LONGPDF",
+      libraryID: 1,
+      parentID: article.id,
+      itemType: "attachment",
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "long.pdf",
+      attachmentSyncedHash: "long-hash",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: (field) => (field === "title" ? "Long PDF" : ""),
+      getFilePathAsync: async () => "/tmp/long.pdf",
+    };
+    setupZotero(
+      new Map<number, MockItem>([
+        [book.id, book],
+        [bookPdf.id, bookPdf],
+        [article.id, article],
+        [longPdf.id, longPdf],
+      ]),
+      {
+        files: {
+          "/tmp/book.pdf": pdfText(35),
+          "/tmp/long.pdf": pdfText(412),
+        },
+      },
+    );
+
+    const list = await getMineruItemList();
+    const bookEntry = list.find((item) => item.attachmentId === bookPdf.id);
+    const longEntry = list.find((item) => item.attachmentId === longPdf.id);
+
+    assert.isFalse(bookEntry?.excluded);
+    assert.equal(bookEntry?.exclusionLabel, "");
+    assert.isNull(bookEntry?.pageCount);
+    assert.isFalse(longEntry?.excluded);
+    assert.equal(longEntry?.exclusionLabel, "");
+    assert.isNull(longEntry?.pageCount);
+  });
+
+  it("keeps cached filename-excluded rows visible as cached", async function () {
+    const parent: MockItem = {
+      id: 501,
+      key: "CACHEDARTICLE",
+      libraryID: 1,
+      itemType: "journalArticle",
+      attachmentIDs: [502],
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments() {
+        return this.attachmentIDs || [];
+      },
+      getCollections: () => [],
+      getField: (field) => (field === "title" ? "Cached Article" : ""),
+    };
+    const pdf: MockItem = {
+      id: 502,
+      key: "CACHEDARTICLEPDF",
+      libraryID: 1,
+      parentID: parent.id,
+      itemType: "attachment",
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "cached_translated.pdf",
+      attachmentSyncedHash: "cached-article-hash",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: (field) => (field === "title" ? "Cached Translated PDF" : ""),
+      getFilePathAsync: async () => "/tmp/cached-translated.pdf",
+    };
+    setupZotero(
+      new Map<number, MockItem>([
+        [parent.id, parent],
+        [pdf.id, pdf],
+      ]),
+      {
+        files: { "/tmp/cached-translated.pdf": pdfText(42) },
+        pref: (key) =>
+          key.endsWith(".mineruExcludePatterns")
+            ? JSON.stringify(["translated"])
+            : undefined,
+      },
+    );
+    await writeMineruCacheFiles(pdf.id, "# Cached article", [
+      { relativePath: "content_list.json", data: encoder.encode("[]") },
+    ]);
+
+    const list = await getMineruItemList();
+
+    assert.isTrue(list[0].excluded);
+    assert.equal(list[0].exclusionLabel, "filename rule");
+    assert.isTrue(list[0].cached);
+    assert.isTrue(list[0].localCached);
+  });
+
+  it("skips over-limit and filename-excluded PDFs in Start All batch processing", async function () {
+    const parent: MockItem = {
+      id: 601,
+      key: "LONGSTARTALL",
+      libraryID: 1,
+      itemType: "journalArticle",
+      attachmentIDs: [602, 604],
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments() {
+        return this.attachmentIDs || [];
+      },
+      getCollections: () => [],
+      getField: (field) => (field === "title" ? "Long Start All" : ""),
+    };
+    const pdf: MockItem = {
+      id: 602,
+      key: "LONGSTARTALLPDF",
+      libraryID: 1,
+      parentID: parent.id,
+      itemType: "attachment",
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "long-start-all.pdf",
+      attachmentSyncedHash: "long-start-all-hash",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: (field) => (field === "title" ? "Long Start All PDF" : ""),
+      getFilePathAsync: async () => "/tmp/long-start-all.pdf",
+    };
+    const translatedPdf: MockItem = {
+      id: 604,
+      key: "TRANSLATEDSTARTALLPDF",
+      libraryID: 1,
+      parentID: parent.id,
+      itemType: "attachment",
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "short_translated.pdf",
+      attachmentSyncedHash: "translated-start-all-hash",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: (field) =>
+        field === "title" ? "Translated Start All PDF" : "",
+      getFilePathAsync: async () => "/tmp/short-translated.pdf",
+    };
+    setupZotero(
+      new Map<number, MockItem>([
+        [parent.id, parent],
+        [pdf.id, pdf],
+        [translatedPdf.id, translatedPdf],
+      ]),
+      {
+        files: {
+          "/tmp/long-start-all.pdf": pdfText(412),
+          "/tmp/short-translated.pdf": pdfText(12),
+        },
+        pref: (key) =>
+          key.endsWith(".mineruExcludePatterns")
+            ? JSON.stringify(["translated"])
+            : undefined,
+      },
+    );
+
+    await startBatchProcessing();
+
+    const state = getMineruBatchState();
+    assert.isFalse(state.running);
+    assert.equal(state.totalCount, 0);
+    assert.equal(state.processedCount, 0);
+    assert.isNull(state.currentItemId);
+  });
+
+  it("skips over-limit and filename-excluded PDFs in selected processing by default", async function () {
+    const parent: MockItem = {
+      id: 701,
+      key: "LONGSELECTED",
+      libraryID: 1,
+      itemType: "journalArticle",
+      attachmentIDs: [702, 704],
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments() {
+        return this.attachmentIDs || [];
+      },
+      getCollections: () => [],
+      getField: (field) => (field === "title" ? "Long Selected" : ""),
+    };
+    const pdf: MockItem = {
+      id: 702,
+      key: "LONGSELECTEDPDF",
+      libraryID: 1,
+      parentID: parent.id,
+      itemType: "attachment",
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "long-selected.pdf",
+      attachmentSyncedHash: "long-selected-hash",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: (field) => (field === "title" ? "Long Selected PDF" : ""),
+      getFilePathAsync: async () => "/tmp/long-selected.pdf",
+    };
+    const translatedPdf: MockItem = {
+      id: 704,
+      key: "TRANSLATEDSELECTEDPDF",
+      libraryID: 1,
+      parentID: parent.id,
+      itemType: "attachment",
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "selected_translated.pdf",
+      attachmentSyncedHash: "translated-selected-hash",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: (field) =>
+        field === "title" ? "Translated Selected PDF" : "",
+      getFilePathAsync: async () => "/tmp/selected-translated.pdf",
+    };
+    setupZotero(
+      new Map<number, MockItem>([
+        [parent.id, parent],
+        [pdf.id, pdf],
+        [translatedPdf.id, translatedPdf],
+      ]),
+      {
+        files: {
+          "/tmp/long-selected.pdf": pdfText(412),
+          "/tmp/selected-translated.pdf": pdfText(12),
+        },
+        pref: (key) =>
+          key.endsWith(".mineruExcludePatterns")
+            ? JSON.stringify(["translated"])
+            : undefined,
+      },
+    );
+
+    await processSelectedItems([pdf.id, translatedPdf.id]);
+
+    const state = getMineruBatchState();
+    assert.isFalse(state.running);
+    assert.equal(state.totalCount, 0);
+    assert.equal(state.processedCount, 0);
+    assert.isNull(state.currentItemId);
   });
 });

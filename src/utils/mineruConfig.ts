@@ -8,13 +8,25 @@ const MINERU_LOCAL_BACKEND_KEY = `${config.prefsPrefix}.mineruLocalBackend`;
 const MINERU_AUTO_WATCH_KEY = `${config.prefsPrefix}.mineruAutoWatchCollections`;
 const MINERU_GLOBAL_AUTO_PARSE_KEY = `${config.prefsPrefix}.mineruGlobalAutoParse`;
 const MINERU_SYNC_ENABLED_KEY = `${config.prefsPrefix}.mineruSyncEnabled`;
+const MINERU_MAX_AUTO_PAGES_KEY = `${config.prefsPrefix}.mineruMaxAutoPages`;
+const MINERU_EXCLUDE_PATTERNS_KEY = `${config.prefsPrefix}.mineruExcludePatterns`;
 
 export const DEFAULT_MINERU_LOCAL_API_BASE = "http://127.0.0.1:8000";
 export const DEFAULT_MINERU_LOCAL_BACKEND: MineruLocalBackend = "pipeline";
+export const DEFAULT_MINERU_MAX_AUTO_PAGES = 100;
+export const MAX_MINERU_FILENAME_PATTERN_LENGTH = 256;
 
 export type MineruMode = "cloud" | "local";
 
 export type MineruLocalBackend = "pipeline" | "vlm" | "hybrid";
+
+export type MineruFilenameMatcher = {
+  matches: (filename: string) => boolean;
+};
+
+type MineruFilenamePatternRule =
+  | { kind: "substring"; value: string }
+  | { kind: "regex"; value: RegExp };
 
 export const MINERU_LOCAL_BACKENDS: readonly MineruLocalBackend[] = [
   "pipeline",
@@ -124,6 +136,33 @@ export function setGlobalAutoParseEnabled(value: boolean): void {
   Zotero.Prefs.set(MINERU_GLOBAL_AUTO_PARSE_KEY, value, true);
 }
 
+// ── Automatic/Bulk Parse Filters ────────────────────────────────────────────
+
+export function normalizeMineruMaxAutoPages(value: unknown): number {
+  if (value === undefined || value === null || value === false) {
+    return DEFAULT_MINERU_MAX_AUTO_PAGES;
+  }
+  const raw = typeof value === "string" ? value.trim() : value;
+  if (raw === "") return DEFAULT_MINERU_MAX_AUTO_PAGES;
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0) return DEFAULT_MINERU_MAX_AUTO_PAGES;
+  return Math.floor(num);
+}
+
+export function getMineruMaxAutoPages(): number {
+  return normalizeMineruMaxAutoPages(
+    Zotero.Prefs.get(MINERU_MAX_AUTO_PAGES_KEY, true),
+  );
+}
+
+export function setMineruMaxAutoPages(value: number): void {
+  Zotero.Prefs.set(
+    MINERU_MAX_AUTO_PAGES_KEY,
+    normalizeMineruMaxAutoPages(value),
+    true,
+  );
+}
+
 // ── Zotero File Sync Configuration ──────────────────────────────────────────
 
 export function isMineruSyncEnabled(): boolean {
@@ -171,8 +210,6 @@ export function isAutoWatchCollection(collectionId: number): boolean {
 
 // ── Filename Exclusion Patterns ─────────────────────────────────────────────
 
-const MINERU_EXCLUDE_PATTERNS_KEY = `${config.prefsPrefix}.mineruExcludePatterns`;
-
 export function getMineruExcludePatterns(): string[] {
   const raw = Zotero.Prefs.get(MINERU_EXCLUDE_PATTERNS_KEY, true);
   const str = typeof raw === "string" ? raw : "";
@@ -192,20 +229,44 @@ export function setMineruExcludePatterns(patterns: string[]): void {
   Zotero.Prefs.set(MINERU_EXCLUDE_PATTERNS_KEY, JSON.stringify(patterns), true);
 }
 
-export function isFilenameExcluded(filename: string): boolean {
-  const patterns = getMineruExcludePatterns();
-  if (patterns.length === 0) return false;
-  const lower = filename.toLowerCase();
+export function buildMineruFilenameMatcher(
+  patterns: string[] = getMineruExcludePatterns(),
+): MineruFilenameMatcher {
+  const rules: MineruFilenamePatternRule[] = [];
   for (const pat of patterns) {
-    if (pat.startsWith("/") && pat.endsWith("/") && pat.length > 2) {
+    const trimmed = pat.trim();
+    if (!trimmed || trimmed.length > MAX_MINERU_FILENAME_PATTERN_LENGTH) {
+      continue;
+    }
+    if (trimmed.startsWith("/") && trimmed.endsWith("/") && trimmed.length > 2) {
       try {
-        if (new RegExp(pat.slice(1, -1), "i").test(filename)) return true;
+        rules.push({
+          kind: "regex",
+          value: new RegExp(trimmed.slice(1, -1), "i"),
+        });
       } catch {
         /* invalid regex — skip */
       }
     } else {
-      if (lower.includes(pat.toLowerCase())) return true;
+      rules.push({ kind: "substring", value: trimmed.toLowerCase() });
     }
   }
-  return false;
+  return {
+    matches(filename: string): boolean {
+      if (!filename || rules.length === 0) return false;
+      const lower = filename.toLowerCase();
+      for (const rule of rules) {
+        if (rule.kind === "substring") {
+          if (lower.includes(rule.value)) return true;
+        } else if (rule.value.test(filename)) {
+          return true;
+        }
+      }
+      return false;
+    },
+  };
+}
+
+export function isFilenameExcluded(filename: string): boolean {
+  return buildMineruFilenameMatcher().matches(filename);
 }

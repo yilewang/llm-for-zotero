@@ -21,6 +21,7 @@ import {
   readCachedMineruMd,
   writeMineruCacheFiles,
 } from "../src/modules/contextPanel/mineruCache";
+import { clearMineruEligibilityCacheForTests } from "../src/modules/mineruParseEligibility";
 
 const encoder = new TextEncoder();
 
@@ -44,6 +45,13 @@ type MockItem = {
 
 function bytes(value: string): Uint8Array {
   return encoder.encode(value);
+}
+
+function pdfText(pageCount: number): string {
+  return `%PDF-1.7
+1 0 obj
+<< /Type /Pages /Count ${pageCount} /Kids [] >>
+endobj`;
 }
 
 function normalizePath(path: string): string {
@@ -85,6 +93,8 @@ function setupZotero(
         if (override !== undefined) return override;
         if (key.endsWith(".mineruGlobalAutoParse")) return true;
         if (key.endsWith(".mineruSyncEnabled")) return false;
+        if (key.endsWith(".mineruMaxAutoPages")) return 100;
+        if (key.endsWith(".mineruExcludePatterns")) return "";
         return "";
       },
       set: () => {},
@@ -181,6 +191,7 @@ function createMineruZip(markdown: string): Uint8Array {
 describe("mineruAutoWatch", function () {
   afterEach(function () {
     resetAutoWatchForTests();
+    clearMineruEligibilityCacheForTests();
     clearAllStatuses();
     delete (globalThis as unknown as { Zotero?: unknown }).Zotero;
     delete (globalThis as unknown as { ztoolkit?: unknown }).ztoolkit;
@@ -245,6 +256,59 @@ describe("mineruAutoWatch", function () {
       getAutoWatchStatus().statusMessage,
       "Queued for MinerU auto-parse",
     );
+  });
+
+  it("auto-enqueues Zotero book PDFs when they are under the page limit", async function () {
+    const parent = createParent();
+    parent.itemType = "book";
+    const pdf = createPdf();
+    const items = new Map<number, MockItem>([
+      [parent.id, parent],
+      [pdf.id, pdf],
+    ]);
+    const io = setupZotero(items);
+    io.files.set("/tmp/paper.pdf", bytes(pdfText(42)));
+
+    await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
+
+    const queue = getAutoWatchQueueSnapshotForTests();
+    assert.lengthOf(queue, 1);
+    assert.equal(queue[0].attachmentId, pdf.id);
+  });
+
+  it("does not auto-enqueue filename-excluded PDFs", async function () {
+    const parent = createParent();
+    const pdf = createPdf();
+    pdf.attachmentFilename = "paper_translated.pdf";
+    const items = new Map<number, MockItem>([
+      [parent.id, parent],
+      [pdf.id, pdf],
+    ]);
+    setupZotero(items, {
+      pref: (key) =>
+        key.endsWith(".mineruExcludePatterns")
+          ? JSON.stringify(["translated"])
+          : undefined,
+    });
+
+    await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
+
+    assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
+  });
+
+  it("does not auto-enqueue PDFs over the configured page limit", async function () {
+    const parent = createParent();
+    const pdf = createPdf();
+    const items = new Map<number, MockItem>([
+      [parent.id, parent],
+      [pdf.id, pdf],
+    ]);
+    const io = setupZotero(items);
+    io.files.set("/tmp/paper.pdf", bytes(pdfText(412)));
+
+    await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
+
+    assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 0);
   });
 
   it("does not enqueue a duplicate PDF while that PDF is actively parsing", async function () {
