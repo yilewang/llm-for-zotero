@@ -32,6 +32,7 @@ import {
 } from "./shared";
 import { resolveContentParts } from "./adapterUtils";
 import { isTextOnlyModel } from "../../providers";
+import type { AnthropicPromptCacheControl } from "../../contextCache/manager";
 
 type AnthropicContentBlock = {
   type: string;
@@ -69,11 +70,26 @@ type AnthropicBuildOptions = {
   modelName?: string;
 };
 
-function buildAnthropicTools(tools: ToolSpec[]) {
-  return tools.map((tool) => ({
+function findLastStableSystemBlockIndex(
+  blocks: AnthropicSystemBlock[],
+): number {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    if (blocks[index].cachePolicy === "stable-prefix") return index;
+  }
+  return -1;
+}
+
+function buildAnthropicTools(
+  tools: ToolSpec[],
+  cacheControl?: AnthropicPromptCacheControl,
+) {
+  return tools.map((tool, index) => ({
     name: tool.name,
     description: tool.description,
     input_schema: tool.inputSchema,
+    ...(cacheControl && index === tools.length - 1
+      ? { cache_control: cacheControl }
+      : {}),
   }));
 }
 
@@ -215,21 +231,14 @@ async function buildInitialAnthropicMessages(
 
 function buildAnthropicSystemPayload(
   systemBlocks: AnthropicSystemBlock[] | undefined,
-  cacheControl:
-    | {
-        type: "ephemeral";
-        ttl?: "5m" | "1h";
-      }
-    | undefined,
+  cacheControl: AnthropicPromptCacheControl | undefined,
 ): string | AnthropicContentBlock[] | undefined {
   const blocks = (systemBlocks || []).filter((block) => block.text.trim());
   if (!blocks.length) return undefined;
   if (!cacheControl) {
     return blocks.map((block) => block.text).join("\n\n");
   }
-  const stableIndex = blocks.findIndex(
-    (block) => block.cachePolicy === "stable-prefix",
-  );
+  const stableIndex = findLastStableSystemBlockIndex(blocks);
   const targetIndex = stableIndex >= 0 ? stableIndex : blocks.length - 1;
   return blocks.map((block, index) => ({
     type: "text",
@@ -559,7 +568,6 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
       request.advanced?.maxTokens,
       request.model,
     );
-    const toolsPayload = buildAnthropicTools(params.tools);
     const buildPayload = (
       reasoningOverride: ReasoningSelection | undefined,
     ) => {
@@ -574,15 +582,26 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
           anthropicModeOverride: reasoningOverride?.anthropicModeOverride,
         },
       );
-      const cacheControl =
+      const systemCacheControl =
         request.contextCache?.enabled &&
-        request.contextCache.requestHints?.anthropicCacheControl
-          ? request.contextCache.requestHints.anthropicCacheControl
+        request.contextCache.requestHints?.anthropicBlockCacheControl
+          ? request.contextCache.requestHints.anthropicBlockCacheControl
+          : undefined;
+      const toolCacheControl =
+        request.contextCache?.enabled &&
+        request.contextCache.requestHints?.anthropicToolCacheControl
+          ? request.contextCache.requestHints.anthropicToolCacheControl
+          : undefined;
+      const requestCacheControl =
+        request.contextCache?.enabled &&
+        request.contextCache.requestHints?.anthropicRequestCacheControl
+          ? request.contextCache.requestHints.anthropicRequestCacheControl
           : undefined;
       const system = buildAnthropicSystemPayload(
         this.systemBlocks,
-        cacheControl,
+        systemCacheControl,
       );
+      const toolsPayload = buildAnthropicTools(params.tools, toolCacheControl);
       return {
         model: request.model,
         max_tokens: maxTokens,
@@ -590,6 +609,7 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
         system,
         tools: toolsPayload,
         tool_choice: { type: "auto" },
+        ...(requestCacheControl ? { cache_control: requestCacheControl } : {}),
         stream: true,
         ...reasoningPayload.extra,
         ...(reasoningPayload.omitTemperature

@@ -364,7 +364,7 @@ describe("llmClient prepareChatRequest", function () {
           telemetry: "anthropic_read_write",
           cacheKey: "anthropic:paper:abc",
           requestHints: {
-            anthropicCacheControl: { type: "ephemeral" },
+            anthropicBlockCacheControl: { type: "ephemeral" },
           },
         },
       },

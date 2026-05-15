@@ -28,8 +28,12 @@ export type ContextCachePlanMode =
   | "retrieval_fallback"
   | "stable_prefix"
   | "anthropic_block"
-  | "explicit_resource"
   | "opaque_prefix";
+
+export type AnthropicPromptCacheControl = {
+  type: "ephemeral";
+  ttl?: "5m" | "1h";
+};
 
 export type ContextCachePlan = {
   enabled: boolean;
@@ -45,7 +49,9 @@ export type ContextCachePlan = {
   requestHints?: {
     promptCacheKey?: string;
     promptCacheRetention?: "in_memory" | "24h";
-    anthropicCacheControl?: { type: "ephemeral"; ttl?: "5m" | "1h" };
+    anthropicBlockCacheControl?: AnthropicPromptCacheControl;
+    anthropicToolCacheControl?: AnthropicPromptCacheControl;
+    anthropicRequestCacheControl?: AnthropicPromptCacheControl;
   };
 };
 
@@ -61,6 +67,7 @@ export type ContextCacheTelemetryRecord = {
 };
 
 const CACHE_MIN_TOKENS = 1024;
+const ANTHROPIC_1H_CACHE_MIN_TOKENS = 16000;
 const TELEMETRY_PREF_NAME = "contextCacheTelemetry";
 const MAX_PERSISTED_TELEMETRY_RECORDS = 100;
 const telemetryByCacheKey = new Map<string, ContextCacheTelemetryRecord>();
@@ -204,7 +211,22 @@ export function resolvePromptCacheCapability(
       label: "Anthropic prompt cache",
       telemetry: "anthropic_read_write",
       stablePrefix: true,
-      supportsAnthropicCacheControl: true,
+      supportsAnthropicBlockCacheControl: true,
+      supportsAnthropicToolCacheControl: true,
+      supportsAnthropicRequestCacheControl: true,
+      supportsAnthropicCacheTtl1h: true,
+    };
+  }
+
+  if (preset === "minimax" && protocol === "anthropic_messages") {
+    return {
+      kind: "explicit_blocks",
+      provider: "minimax",
+      label: "MiniMax prompt cache",
+      telemetry: "anthropic_read_write",
+      stablePrefix: true,
+      supportsAnthropicBlockCacheControl: true,
+      supportsAnthropicToolCacheControl: true,
     };
   }
 
@@ -225,7 +247,6 @@ export function resolvePromptCacheCapability(
       label: "Gemini context cache",
       telemetry: "gemini_cached_content",
       stablePrefix: true,
-      supportsExplicitResource: protocol === "gemini_native",
     };
   }
 
@@ -298,13 +319,30 @@ function supportsProviderRequestHints(
   return Boolean(
     capability.supportsPromptCacheKey ||
     capability.supportsRetentionHint ||
-    capability.supportsAnthropicCacheControl,
+    capability.supportsAnthropicBlockCacheControl ||
+    capability.supportsAnthropicToolCacheControl ||
+    capability.supportsAnthropicRequestCacheControl,
   );
 }
 
 function shouldUseRetentionHint(model: string | undefined): boolean {
   const normalized = normalizeModelForCacheKey(model);
-  return /^gpt-(?:5|4\.1)(?:$|[-._])/.test(normalized);
+  return /^(?:gpt-5|o[134])(?:$|[-._])/.test(normalized);
+}
+
+function shouldUseAnthropic1hCache(params: {
+  capability: ProviderPromptCacheCapability;
+  contextTokens: number;
+  cacheKey: string;
+}): boolean {
+  if (!params.capability.supportsAnthropicCacheTtl1h) return false;
+  if (params.contextTokens < ANTHROPIC_1H_CACHE_MIN_TOKENS) return false;
+  loadPersistedTelemetry();
+  const record = telemetryByCacheKey.get(params.cacheKey);
+  if (!record) return false;
+  if (record.hits < 1 || record.reads <= 0) return false;
+  if (record.writes > record.reads) return false;
+  return typeof record.lastHitRatio === "number" && record.lastHitRatio >= 0.5;
 }
 
 export function planContextCacheReuse(params: {
@@ -369,18 +407,35 @@ export function planContextCacheReuse(params: {
   ) {
     requestHints.promptCacheRetention = "24h";
   }
-  if (capability.supportsAnthropicCacheControl) {
-    requestHints.anthropicCacheControl = { type: "ephemeral" };
+  const anthropicCacheControl: AnthropicPromptCacheControl = {
+    type: "ephemeral",
+    ...(shouldUseAnthropic1hCache({
+      capability,
+      contextTokens,
+      cacheKey,
+    })
+      ? { ttl: "1h" as const }
+      : {}),
+  };
+  if (capability.supportsAnthropicBlockCacheControl) {
+    requestHints.anthropicBlockCacheControl = anthropicCacheControl;
+  }
+  if (capability.supportsAnthropicToolCacheControl) {
+    requestHints.anthropicToolCacheControl = anthropicCacheControl;
+  }
+  if (
+    capability.supportsAnthropicRequestCacheControl &&
+    params.strategy === "agent-stable-resources"
+  ) {
+    requestHints.anthropicRequestCacheControl = anthropicCacheControl;
   }
 
   const mode: ContextCachePlanMode =
     capability.kind === "explicit_blocks"
       ? "anthropic_block"
-      : capability.kind === "explicit_resource"
-        ? "explicit_resource"
-        : capability.kind === "opaque"
-          ? "opaque_prefix"
-          : "stable_prefix";
+      : capability.kind === "opaque"
+        ? "opaque_prefix"
+        : "stable_prefix";
 
   return {
     enabled: true,
@@ -564,6 +619,15 @@ export function getContextCacheTelemetry(
 ): ContextCacheTelemetryRecord | undefined {
   loadPersistedTelemetry();
   return cacheKey ? telemetryByCacheKey.get(cacheKey) : undefined;
+}
+
+export function listContextCacheTelemetry(
+  limit = 10,
+): ContextCacheTelemetryRecord[] {
+  loadPersistedTelemetry();
+  return [...telemetryByCacheKey.values()]
+    .sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt)
+    .slice(0, Math.max(0, Math.floor(limit)));
 }
 
 export function clearContextCacheTelemetry(): void {

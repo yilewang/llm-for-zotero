@@ -58,6 +58,10 @@ import {
   getFontScalePref,
   setFontScalePref,
 } from "./contextPanel/prefHelpers";
+import {
+  clearContextCacheTelemetry,
+  listContextCacheTelemetry,
+} from "../contextCache/manager";
 import { setPanelFontScalePercent } from "./contextPanel/state";
 import { getAgentTraceExportPath } from "../agent/store/traceStore";
 import { joinLocalPath } from "../utils/localPath";
@@ -3286,6 +3290,84 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         true,
       );
     });
+  }
+
+  const contextCacheTelemetryMount = doc.querySelector(
+    `#${config.addonRef}-context-cache-telemetry`,
+  ) as HTMLElement | null;
+  if (contextCacheTelemetryMount) {
+    const formatCacheTokens = (tokens: number) => {
+      const normalized = Math.max(0, Math.floor(Number(tokens) || 0));
+      if (normalized >= 1_000_000) {
+        return `${(normalized / 1_000_000).toFixed(1)}M`;
+      }
+      if (normalized >= 10_000) {
+        return `${Math.round(normalized / 1000)}K`;
+      }
+      if (normalized >= 1000) {
+        return `${(normalized / 1000).toFixed(1)}K`;
+      }
+      return normalized.toString();
+    };
+    const renderCacheTelemetry = () => {
+      contextCacheTelemetryMount.textContent = "";
+      const records = listContextCacheTelemetry(5);
+      const title = el(
+        doc,
+        "div",
+        "font-size: 11px; font-weight: 600; color: var(--fill-primary, inherit); margin-bottom: 4px;",
+        t("Recent context-cache telemetry"),
+      );
+      contextCacheTelemetryMount.appendChild(title);
+      if (!records.length) {
+        contextCacheTelemetryMount.appendChild(
+          el(
+            doc,
+            "div",
+            "font-size: 11px; color: var(--fill-secondary, #888); margin-bottom: 4px;",
+            t("No cache telemetry recorded yet."),
+          ),
+        );
+      } else {
+        for (const record of records) {
+          const writeHeavy =
+            record.writes >= 1024 && record.writes > record.reads;
+          const hitRatio =
+            typeof record.lastHitRatio === "number"
+              ? `${Math.round(record.lastHitRatio * 100)}%`
+              : "n/a";
+          const row = el(
+            doc,
+            "div",
+            "font-size: 11px; color: var(--fill-secondary, #666); line-height: 1.35; word-break: break-word;",
+          );
+          row.textContent = `${record.provider}: ${record.hits} hits / ${record.misses} misses, read ${formatCacheTokens(record.reads)}, write ${formatCacheTokens(record.writes)}, last hit ${hitRatio}`;
+          if (writeHeavy) {
+            row.textContent += " - write-heavy";
+            row.style.color = "var(--color-red, #a40000)";
+          }
+          row.title = record.cacheKey;
+          contextCacheTelemetryMount.appendChild(row);
+        }
+      }
+      const resetButton = el(
+        doc,
+        "button",
+        "margin-top: 6px; padding: 3px 8px; font-size: 11px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 4px; background: ButtonFace; color: ButtonText;",
+        t("Reset cache telemetry"),
+      ) as HTMLButtonElement;
+      resetButton.type = "button";
+      resetButton.addEventListener("click", () => {
+        clearContextCacheTelemetry();
+        renderCacheTelemetry();
+      });
+      resetButton.addEventListener("command", () => {
+        clearContextCacheTelemetry();
+        renderCacheTelemetry();
+      });
+      contextCacheTelemetryMount.appendChild(resetButton);
+    };
+    renderCacheTelemetry();
   }
 
   const agentContextCompactionSelect = doc.querySelector(

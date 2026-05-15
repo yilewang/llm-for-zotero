@@ -142,7 +142,7 @@ describe("AnthropicMessagesAgentAdapter", function () {
           providerLabel: "Anthropic prompt cache",
           telemetry: "anthropic_read_write",
           requestHints: {
-            anthropicCacheControl: { type: "ephemeral" },
+            anthropicBlockCacheControl: { type: "ephemeral" },
           },
         },
       }),
@@ -163,6 +163,147 @@ describe("AnthropicMessagesAgentAdapter", function () {
     assert.notProperty(system[0] || {}, "cache_control");
     assert.deepEqual(system[1]?.cache_control, { type: "ephemeral" });
     assert.equal(system[1]?.text, "Stable Zotero resource context");
+  });
+
+  it("applies agent request and tool cache_control hints", async function () {
+    const adapter = new AnthropicMessagesAgentAdapter();
+    let capturedBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              content: [{ type: "text", text: "OK" }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    await adapter.runStep({
+      request: makeRequest({
+        contextCache: {
+          enabled: true,
+          mode: "anthropic_block",
+          provider: "anthropic",
+          providerLabel: "Anthropic prompt cache",
+          telemetry: "anthropic_read_write",
+          requestHints: {
+            anthropicBlockCacheControl: { type: "ephemeral", ttl: "1h" },
+            anthropicToolCacheControl: { type: "ephemeral", ttl: "1h" },
+            anthropicRequestCacheControl: { type: "ephemeral", ttl: "1h" },
+          },
+        },
+      }),
+      messages: [
+        { role: "system", content: "Base system instructions" },
+        {
+          role: "system",
+          content: "Stable Zotero resource context",
+          cachePolicy: "stable-prefix",
+        },
+        { role: "user", content: "Search methods" },
+      ],
+      tools: [
+        ...tools,
+        {
+          name: "search_paper",
+          description: "search",
+          inputSchema: { type: "object" },
+          mutability: "read",
+          requiresConfirmation: false,
+        },
+      ],
+    });
+
+    assert.deepEqual(capturedBody?.cache_control, {
+      type: "ephemeral",
+      ttl: "1h",
+    });
+    const bodyTools = capturedBody?.tools as Array<Record<string, unknown>>;
+    assert.notProperty(bodyTools[0] || {}, "cache_control");
+    assert.deepEqual(bodyTools[1]?.cache_control, {
+      type: "ephemeral",
+      ttl: "1h",
+    });
+  });
+
+  it("places cache_control on the last stable system block", async function () {
+    const adapter = new AnthropicMessagesAgentAdapter();
+    let capturedBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              content: [{ type: "text", text: "OK" }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    await adapter.runStep({
+      request: makeRequest({
+        contextCache: {
+          enabled: true,
+          mode: "anthropic_block",
+          provider: "anthropic",
+          providerLabel: "Anthropic prompt cache",
+          telemetry: "anthropic_read_write",
+          requestHints: {
+            anthropicBlockCacheControl: { type: "ephemeral" },
+          },
+        },
+      }),
+      messages: [
+        { role: "system", content: "Base system instructions" },
+        {
+          role: "system",
+          content: "Stable Zotero resource context 1",
+          cachePolicy: "stable-prefix",
+        },
+        {
+          role: "system",
+          content: "Stable Zotero resource context 2",
+          cachePolicy: "stable-prefix",
+        },
+        { role: "user", content: "Search methods" },
+      ],
+      tools,
+    });
+
+    const system = capturedBody?.system as Array<Record<string, unknown>>;
+    assert.notProperty(system[1] || {}, "cache_control");
+    assert.deepEqual(system[2]?.cache_control, { type: "ephemeral" });
   });
 
   it("streams text deltas from native messages SSE", async function () {

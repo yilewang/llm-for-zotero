@@ -2266,8 +2266,8 @@ function buildAnthropicMessagesPayload(params: {
     const systemText = systemParts.join("\n\n");
     const cacheControl =
       params.contextCache?.enabled &&
-      params.contextCache.requestHints?.anthropicCacheControl
-        ? params.contextCache.requestHints.anthropicCacheControl
+      params.contextCache.requestHints?.anthropicBlockCacheControl
+        ? params.contextCache.requestHints.anthropicBlockCacheControl
         : undefined;
     payload.system = cacheControl
       ? [{ type: "text", text: systemText, cache_control: cacheControl }]

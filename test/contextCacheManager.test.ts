@@ -3,6 +3,7 @@ import {
   clearContextCacheTelemetry,
   extractContextCacheUsage,
   getContextCacheTelemetry,
+  listContextCacheTelemetry,
   planContextCacheReuse,
   recordContextCacheTelemetry,
   resolvePromptCacheCapability,
@@ -50,8 +51,40 @@ describe("context cache manager", function () {
         kind: "explicit_blocks",
         provider: "anthropic",
         telemetry: "anthropic_read_write",
-        supportsAnthropicCacheControl: true,
+        supportsAnthropicBlockCacheControl: true,
+        supportsAnthropicToolCacheControl: true,
+        supportsAnthropicRequestCacheControl: true,
       },
+    );
+    assert.deepInclude(
+      resolvePromptCacheCapability({
+        model: "minimax-m2",
+        apiBase: "https://api.minimax.io/anthropic",
+        protocol: "anthropic_messages",
+      }),
+      {
+        kind: "explicit_blocks",
+        provider: "minimax",
+        telemetry: "anthropic_read_write",
+        supportsAnthropicBlockCacheControl: true,
+        supportsAnthropicToolCacheControl: true,
+      },
+    );
+    assert.notProperty(
+      resolvePromptCacheCapability({
+        model: "deepseek-chat",
+        apiBase: "https://api.deepseek.com/anthropic",
+        protocol: "anthropic_messages",
+      }),
+      "supportsAnthropicBlockCacheControl",
+    );
+    assert.notProperty(
+      resolvePromptCacheCapability({
+        model: "glm-4.6",
+        apiBase: "https://open.bigmodel.cn/api/anthropic",
+        protocol: "anthropic_messages",
+      }),
+      "supportsAnthropicBlockCacheControl",
     );
     assert.equal(
       resolvePromptCacheCapability({
@@ -98,6 +131,26 @@ describe("context cache manager", function () {
     assert.equal(plan.mode, "stable_prefix");
     assert.isString(plan.requestHints?.promptCacheKey);
     assert.equal(plan.requestHints?.promptCacheRetention, "24h");
+
+    const legacyPlan = planContextCacheReuse({
+      model: "gpt-4.1",
+      apiBase: "https://api.openai.com/v1/responses",
+      protocol: "responses_api",
+      mode: "full",
+      strategy: "paper-cache-full",
+      contextText,
+    });
+    assert.isUndefined(legacyPlan.requestHints?.promptCacheRetention);
+
+    const oSeriesPlan = planContextCacheReuse({
+      model: "o3",
+      apiBase: "https://api.openai.com/v1/responses",
+      protocol: "responses_api",
+      mode: "full",
+      strategy: "paper-cache-full",
+      contextText,
+    });
+    assert.equal(oSeriesPlan.requestHints?.promptCacheRetention, "24h");
 
     const retrievalPlan = planContextCacheReuse({
       model: "gpt-5.4",
@@ -194,6 +247,7 @@ describe("context cache manager", function () {
       reads: 1600,
       misses: 0,
     });
+    assert.lengthOf(listContextCacheTelemetry(5), 1);
     assert.isTrue(
       shouldPreferCacheAwareFullContext({
         model: "gpt-5.4",
@@ -202,5 +256,87 @@ describe("context cache manager", function () {
         candidateContextText: "stable paper text ".repeat(1200),
       }),
     );
+  });
+
+  it("uses Anthropic 1h cache TTL only for warm large official contexts", function () {
+    const contextText = "stable paper text ".repeat(5000);
+    const coldPlan = planContextCacheReuse({
+      model: "claude-sonnet-4-6",
+      apiBase: "https://api.anthropic.com/v1",
+      protocol: "anthropic_messages",
+      mode: "full",
+      strategy: "agent-stable-resources",
+      contextText,
+    });
+    assert.isTrue(coldPlan.enabled);
+    assert.deepEqual(coldPlan.requestHints?.anthropicBlockCacheControl, {
+      type: "ephemeral",
+    });
+    assert.deepEqual(coldPlan.requestHints?.anthropicToolCacheControl, {
+      type: "ephemeral",
+    });
+    assert.deepEqual(coldPlan.requestHints?.anthropicRequestCacheControl, {
+      type: "ephemeral",
+    });
+
+    recordContextCacheTelemetry(coldPlan, {
+      promptTokens: 22000,
+      completionTokens: 100,
+      totalTokens: 22100,
+      cacheReadTokens: 18000,
+      cacheWriteTokens: 4000,
+      cacheHitRatio: 0.82,
+    });
+    const warmPlan = planContextCacheReuse({
+      model: "claude-sonnet-4-6",
+      apiBase: "https://api.anthropic.com/v1",
+      protocol: "anthropic_messages",
+      mode: "full",
+      strategy: "agent-stable-resources",
+      contextText,
+    });
+    assert.deepEqual(warmPlan.requestHints?.anthropicBlockCacheControl, {
+      type: "ephemeral",
+      ttl: "1h",
+    });
+    assert.deepEqual(warmPlan.requestHints?.anthropicToolCacheControl, {
+      type: "ephemeral",
+      ttl: "1h",
+    });
+    assert.deepEqual(warmPlan.requestHints?.anthropicRequestCacheControl, {
+      type: "ephemeral",
+      ttl: "1h",
+    });
+  });
+
+  it("keeps Anthropic 1h TTL off for write-heavy warm contexts", function () {
+    const contextText = "stable paper text ".repeat(5000);
+    const plan = planContextCacheReuse({
+      model: "claude-sonnet-4-6",
+      apiBase: "https://api.anthropic.com/v1",
+      protocol: "anthropic_messages",
+      mode: "full",
+      strategy: "agent-stable-resources",
+      contextText,
+    });
+    recordContextCacheTelemetry(plan, {
+      promptTokens: 22000,
+      completionTokens: 100,
+      totalTokens: 22100,
+      cacheReadTokens: 2000,
+      cacheWriteTokens: 9000,
+      cacheHitRatio: 0.7,
+    });
+    const nextPlan = planContextCacheReuse({
+      model: "claude-sonnet-4-6",
+      apiBase: "https://api.anthropic.com/v1",
+      protocol: "anthropic_messages",
+      mode: "full",
+      strategy: "agent-stable-resources",
+      contextText,
+    });
+    assert.deepEqual(nextPlan.requestHints?.anthropicBlockCacheControl, {
+      type: "ephemeral",
+    });
   });
 });

@@ -27,13 +27,13 @@ export type ProviderPromptCacheKind =
   | "none"
   | "automatic_prefix"
   | "explicit_blocks"
-  | "explicit_resource"
   | "opaque";
 
 export type ProviderPromptCacheProvider =
   | "openai"
   | "deepseek"
   | "anthropic"
+  | "minimax"
   | "gemini"
   | "kimi"
   | "codex"
@@ -56,6 +56,8 @@ export type ProviderPromptCacheCapability = {
   stablePrefix: boolean;
   supportsPromptCacheKey?: boolean;
   supportsRetentionHint?: boolean;
-  supportsAnthropicCacheControl?: boolean;
-  supportsExplicitResource?: boolean;
+  supportsAnthropicBlockCacheControl?: boolean;
+  supportsAnthropicToolCacheControl?: boolean;
+  supportsAnthropicRequestCacheControl?: boolean;
+  supportsAnthropicCacheTtl1h?: boolean;
 };
