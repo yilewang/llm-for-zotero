@@ -1,5 +1,6 @@
 export type MineruTagScope = "all" | "allTagged" | "untagged";
 export type MineruFolderScope = number | "all" | "unfiled";
+export type MineruTagMatchMode = "and" | "or";
 
 export type MineruTagIndexItem = {
   attachmentId: number;
@@ -126,10 +127,12 @@ export function filterMineruItemsForTagView<T extends MineruTagIndexItem>(
     scope?: MineruTagScope;
     selectedTags?: Iterable<string>;
     includeAutomatic?: boolean;
+    matchMode?: MineruTagMatchMode;
   } = {},
 ): T[] {
   const scope = options.scope ?? "all";
   const includeAutomatic = options.includeAutomatic ?? false;
+  const matchMode = options.matchMode ?? "and";
   const selectedTags = uniqueSortedTags(
     [...(options.selectedTags || [])]
       .map(normalizeMineruTagName)
@@ -141,6 +144,9 @@ export function filterMineruItemsForTagView<T extends MineruTagIndexItem>(
     if (scope === "allTagged" && tags.length === 0) return false;
     if (scope === "untagged" && tags.length > 0) return false;
     if (selectedTags.length > 0) {
+      if (matchMode === "or") {
+        return selectedTags.some((tag) => tags.includes(tag));
+      }
       return selectedTags.every((tag) => tags.includes(tag));
     }
     return true;
@@ -178,6 +184,7 @@ export function filterMineruItemsForFolderAndTagView<
     tagScope?: MineruTagScope;
     selectedTags?: Iterable<string>;
     includeAutomatic?: boolean;
+    tagMatchMode?: MineruTagMatchMode;
   } = {},
 ): T[] {
   return filterMineruItemsForTagView(
@@ -189,6 +196,7 @@ export function filterMineruItemsForFolderAndTagView<
       scope: options.tagScope,
       selectedTags: options.selectedTags,
       includeAutomatic: options.includeAutomatic,
+      matchMode: options.tagMatchMode,
     },
   );
 }

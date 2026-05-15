@@ -78,6 +78,24 @@ describe("mineruTagIndex", function () {
     );
   });
 
+  it("filters tag view with OR semantics when requested", function () {
+    assert.sameMembers(
+      filterMineruItemsForTagView(items, {
+        selectedTags: ["ACC", "Data"],
+        matchMode: "or",
+      }).map((item) => item.attachmentId),
+      [1, 2, 3],
+    );
+    assert.sameMembers(
+      filterMineruItemsForTagView(items, {
+        selectedTags: ["Algorithm", "AutoOnly"],
+        includeAutomatic: true,
+        matchMode: "or",
+      }).map((item) => item.attachmentId),
+      [1, 2, 3, 4],
+    );
+  });
+
   it("marks incompatible tags unavailable while keeping selected tags active", function () {
     const index = buildMineruTagIndex(items);
     const tagInfos = [...index.values()];
@@ -118,6 +136,14 @@ describe("mineruTagIndex", function () {
         selectedTags: ["ACC", "Data"],
       }).map((item) => item.attachmentId),
       [1],
+    );
+    assert.sameMembers(
+      filterMineruItemsForFolderAndTagView(folderItems, {
+        folderScope: 10,
+        selectedTags: ["ACC", "Data"],
+        tagMatchMode: "or",
+      }).map((item) => item.attachmentId),
+      [1, 2],
     );
     assert.sameMembers(
       filterMineruItemsForFolderAndTagView(folderItems, {

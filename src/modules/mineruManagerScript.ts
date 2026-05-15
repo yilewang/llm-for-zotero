@@ -43,6 +43,7 @@ import {
   getSortedMineruTagInfos,
   normalizeMineruTagName,
   type MineruFolderScope,
+  type MineruTagMatchMode,
   type MineruTagInfo,
   type MineruTagScope,
 } from "./mineruTagIndex";
@@ -238,6 +239,7 @@ export async function registerMineruManagerScript(
   let tagScope: MineruTagScope = "all";
   const selectedTags = new Set<string>();
   let tagFilterQuery = "";
+  let tagMatchMode: MineruTagMatchMode = "and";
   let showAutomaticTags = false;
   let tagFilterMenuOpen = false;
   let sidebarFolderPaneRatio = 0.42;
@@ -401,6 +403,7 @@ export async function registerMineruManagerScript(
       tagScope,
       selectedTags,
       includeAutomatic: showAutomaticTags,
+      tagMatchMode,
     });
   }
 
@@ -441,7 +444,10 @@ export async function registerMineruManagerScript(
 
   function getTagFilterSummary(): string {
     if (selectedTags.size > 0) {
-      return [...selectedTags].sort((a, b) => a.localeCompare(b)).join(" + ");
+      const separator = tagMatchMode === "or" ? ` ${t("OR")} ` : " + ";
+      return [...selectedTags]
+        .sort((a, b) => a.localeCompare(b))
+        .join(separator);
     }
     if (tagScope === "allTagged") return t("All Tagged");
     if (tagScope === "untagged") return t("Untagged");
@@ -817,43 +823,38 @@ export async function registerMineruManagerScript(
         return countDelta || a.name.localeCompare(b.name);
       })
       .filter((info) => {
-      if (!tagFilterQuery.trim()) return true;
-      return info.name
-        .toLowerCase()
-        .includes(tagFilterQuery.trim().toLowerCase());
+        if (!tagFilterQuery.trim()) return true;
+        return info.name
+          .toLowerCase()
+          .includes(tagFilterQuery.trim().toLowerCase());
       });
     const filteredItems = getCombinedFilteredItems();
+    const availabilityItems =
+      tagMatchMode === "or" && selectedTags.size > 0
+        ? baseItems
+        : filteredItems;
     const availability = computeMineruTagAvailability(
       getSortedMineruTagInfos(tagIndex),
-      filteredItems,
+      availabilityItems,
       selectedTags,
       showAutomaticTags,
     );
 
-    const selectedLine = doc.createElement("div");
-    selectedLine.style.cssText =
-      "display: flex; flex-wrap: wrap; align-items: center; gap: 4px 5px; min-height: 22px;";
-    scroll.appendChild(selectedLine);
-
-    if (selectedTags.size > 0) {
-      for (const tagName of [...selectedTags].sort((a, b) =>
-        a.localeCompare(b),
-      )) {
-        const info = tagIndex.get(tagName);
-        selectedLine.appendChild(createTagChip(tagName, info, true, true));
-      }
-    }
-
     const cloud = doc.createElement("div");
     cloud.style.cssText =
-      "display: flex; flex-wrap: wrap; align-content: flex-start; align-items: flex-start; gap: 4px 6px; padding-top: 4px;";
+      "display: flex; flex-wrap: wrap; align-content: flex-start; align-items: flex-start; gap: 4px 6px;";
     scroll.appendChild(cloud);
 
     for (const info of tagInfos) {
-      if (selectedTags.has(info.name)) continue;
+      const selected = selectedTags.has(info.name);
       const state = availability.get(info.name);
       cloud.appendChild(
-        createTagChip(info.name, info, false, !!state?.available),
+        createTagChip(
+          info.name,
+          info,
+          selected,
+          selected || !!state?.available,
+        ),
       );
     }
 
@@ -947,14 +948,14 @@ export async function registerMineruManagerScript(
     const label = selected || available ? name : `(${name})`;
     chip.textContent = label;
     chip.style.cssText =
-      "border: none; border-radius: 4px; padding: 2px 4px; font-size: 12px; line-height: 1.35; background: transparent; color: FieldText; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+      "border: none; border-radius: 5px; padding: 1px 5px; font-size: 12px; line-height: 1.35; background: transparent; color: FieldText; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
     if (color) {
       chip.style.borderLeft = `3px solid ${color}`;
       chip.style.paddingLeft = "5px";
     }
     if (selected) {
-      chip.style.background = "color-mix(in srgb, FieldText 32%, transparent)";
-      chip.style.color = "FieldText";
+      chip.style.background = "color-mix(in srgb, FieldText 58%, transparent)";
+      chip.style.color = "Field";
       chip.style.fontWeight = "500";
     } else if (!available) {
       chip.style.color = "var(--fill-secondary, #888)";
@@ -1005,14 +1006,14 @@ export async function registerMineruManagerScript(
   function createTagFilterBar(): HTMLElement {
     const bar = doc.createElement("div");
     bar.style.cssText =
-      "border-top: 1px solid rgba(128,128,128,0.16); padding: 8px 6px 7px; display: flex; align-items: center; gap: 6px;";
+      "border-top: 1px solid rgba(128,128,128,0.16); padding: 6px 7px 6px; display: flex; align-items: center; gap: 2px;";
 
     const input = doc.createElement("input");
     input.type = "search";
     input.placeholder = t("Filter Tags");
     input.value = tagFilterQuery;
     input.style.cssText =
-      "flex: 1; min-width: 0; height: 30px; border: 1px solid rgba(0,0,0,0.16); border-radius: 7px; padding: 3px 10px; font-size: 12px; background: rgba(0,0,0,0.28); color: FieldText; box-shadow: inset 0 1px 1px rgba(0,0,0,0.18);";
+      "flex: 1; min-width: 0; height: 27px; border: 1px solid rgba(0,0,0,0.16); border-radius: 7px; padding: 2px 9px; font-size: 12px; background: rgba(0,0,0,0.28); color: FieldText; box-shadow: inset 0 1px 1px rgba(0,0,0,0.18);";
     input.addEventListener("input", () => {
       tagFilterQuery = input.value;
       const selectionStart = input.selectionStart ?? tagFilterQuery.length;
@@ -1028,14 +1029,14 @@ export async function registerMineruManagerScript(
 
     const menuWrap = doc.createElement("div");
     menuWrap.style.cssText =
-      "position: relative; flex: 0 0 auto; display: flex; align-items: center; gap: 1px;";
+      "position: relative; flex: 0 0 auto; display: flex; align-items: center; gap: 0;";
     const menuBtn = doc.createElement("button");
     menuBtn.type = "button";
-    menuBtn.title = t("Show automatic tags");
-    menuBtn.setAttribute("aria-label", t("Show automatic tags"));
+    menuBtn.title = t("Tag filter options");
+    menuBtn.setAttribute("aria-label", t("Tag filter options"));
     menuBtn.appendChild(createTagFilterIcon());
     menuBtn.style.cssText =
-      "height: 30px; width: 25px; border: none; border-radius: 5px; background: transparent; color: var(--fill-secondary, #9ca3af); display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer;";
+      "height: 27px; width: 24px; border: none; border-radius: 5px; background: transparent; color: var(--fill-secondary, #9ca3af); display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer;";
     menuBtn.addEventListener("click", () => {
       tagFilterMenuOpen = !tagFilterMenuOpen;
       renderSidebar();
@@ -1044,11 +1045,11 @@ export async function registerMineruManagerScript(
 
     const chevronBtn = doc.createElement("button");
     chevronBtn.type = "button";
-    chevronBtn.title = t("Show automatic tags");
-    chevronBtn.setAttribute("aria-label", t("Show automatic tags"));
+    chevronBtn.title = t("Tag filter options");
+    chevronBtn.setAttribute("aria-label", t("Tag filter options"));
     chevronBtn.textContent = "⌄";
     chevronBtn.style.cssText =
-      "height: 30px; width: 11px; border: none; border-radius: 4px; background: transparent; color: var(--fill-secondary, #9ca3af); font-size: 13px; line-height: 1; padding: 0; cursor: pointer;";
+      "height: 27px; width: 10px; border: none; border-radius: 4px; background: transparent; color: var(--fill-secondary, #9ca3af); font-size: 13px; line-height: 1; padding: 0; cursor: pointer;";
     chevronBtn.addEventListener("click", () => {
       tagFilterMenuOpen = !tagFilterMenuOpen;
       renderSidebar();
@@ -1058,16 +1059,41 @@ export async function registerMineruManagerScript(
     if (tagFilterMenuOpen) {
       const menu = doc.createElement("div");
       menu.style.cssText =
-        "position: absolute; right: 0; bottom: 28px; min-width: 160px; background: Field; color: FieldText; border: 1px solid rgba(128,128,128,0.28); border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.18); padding: 4px 0; z-index: 4;";
-      const row = doc.createElement("label");
-      row.style.cssText =
-        "display: flex; align-items: center; gap: 6px; padding: 5px 9px; font-size: 11.5px; cursor: pointer; white-space: nowrap;";
-      const cb = doc.createElement("input");
-      cb.type = "checkbox";
-      cb.checked = showAutomaticTags;
-      cb.style.cssText = "margin: 0;";
-      cb.addEventListener("change", () => {
-        showAutomaticTags = cb.checked;
+        "position: absolute; right: 0; bottom: 26px; min-width: 164px; background: Field; color: FieldText; border: 1px solid rgba(128,128,128,0.28); border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.18); padding: 4px 0; z-index: 4;";
+      const addCheckboxRow = (
+        label: string,
+        checked: boolean,
+        onChange: (checked: boolean) => void,
+      ) => {
+        const row = doc.createElement("label");
+        row.style.cssText =
+          "display: flex; align-items: center; gap: 6px; padding: 5px 9px; font-size: 11.5px; cursor: pointer; white-space: nowrap;";
+        const cb = doc.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = checked;
+        cb.style.cssText = "margin: 0;";
+        cb.addEventListener("change", () => onChange(cb.checked));
+        row.appendChild(cb);
+        const text = doc.createElement("span");
+        text.textContent = label;
+        row.appendChild(text);
+        menu.appendChild(row);
+      };
+      addCheckboxRow(t("Use OR rule"), tagMatchMode === "or", (checked) => {
+        tagMatchMode = checked ? "or" : "and";
+        tagFilterMenuOpen = false;
+        selectedIds.clear();
+        lastClickedId = null;
+        renderSidebar();
+        renderItemsList();
+        updateButtons();
+      });
+      const divider = doc.createElement("div");
+      divider.style.cssText =
+        "border-top: 1px solid rgba(128,128,128,0.16); margin: 3px 0;";
+      menu.appendChild(divider);
+      addCheckboxRow(t("Show automatic tags"), showAutomaticTags, (checked) => {
+        showAutomaticTags = checked;
         tagFilterMenuOpen = false;
         selectedIds.clear();
         lastClickedId = null;
@@ -1076,11 +1102,6 @@ export async function registerMineruManagerScript(
         renderItemsList();
         updateButtons();
       });
-      row.appendChild(cb);
-      const text = doc.createElement("span");
-      text.textContent = t("Show automatic tags");
-      row.appendChild(text);
-      menu.appendChild(row);
       menuWrap.appendChild(menu);
     }
 
