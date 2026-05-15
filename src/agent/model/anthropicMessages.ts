@@ -114,6 +114,163 @@ function normalizeAnthropicContentBlock(
   };
 }
 
+function isToolUseBlock(block: AnthropicContentBlock): boolean {
+  return block.type.toLowerCase() === "tool_use";
+}
+
+function isToolResultBlock(block: AnthropicContentBlock): boolean {
+  return block.type.toLowerCase() === "tool_result";
+}
+
+function isEmptyTextBlock(block: AnthropicContentBlock): boolean {
+  return (
+    block.type.toLowerCase() === "text" &&
+    typeof block.text === "string" &&
+    !block.text.trim()
+  );
+}
+
+function getBlockStringField(
+  block: AnthropicContentBlock,
+  key: string,
+): string {
+  const value = block[key];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
+}
+
+function buildAnthropicToolUseBlocks(
+  toolCalls: readonly AgentToolCall[],
+): AnthropicContentBlock[] {
+  return toolCalls.map((call) => ({
+    type: "tool_use" as const,
+    id: call.id,
+    name: call.name,
+    input: call.arguments ?? {},
+  }));
+}
+
+function buildAnthropicToolResultBlocks(
+  toolMessages: readonly Extract<AgentModelMessage, { role: "tool" }>[],
+): AnthropicContentBlock[] {
+  return toolMessages.map((message) => ({
+    type: "tool_result" as const,
+    tool_use_id: message.tool_call_id,
+    content: message.content,
+  }));
+}
+
+function collectConsecutiveToolMessages(
+  messages: AgentModelMessage[],
+  startIndex: number,
+): Extract<AgentModelMessage, { role: "tool" }>[] {
+  const toolMessages: Extract<AgentModelMessage, { role: "tool" }>[] = [];
+  for (let index = startIndex; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role !== "tool") break;
+    toolMessages.push(message);
+  }
+  return toolMessages;
+}
+
+function toolUseIdsFromMessage(
+  message: AnthropicMessage | undefined,
+): Set<string> {
+  const ids = new Set<string>();
+  if (!message || message.role !== "assistant") return ids;
+  for (const block of message.content) {
+    if (!isToolUseBlock(block)) continue;
+    const id = getBlockStringField(block, "id");
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+function buildLooseToolResultSummaryMessage(
+  toolMessages: readonly Extract<AgentModelMessage, { role: "tool" }>[],
+): AnthropicMessage | null {
+  if (!toolMessages.length) return null;
+  return {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text: toolMessages
+          .map(
+            (message) =>
+              `Tool result (${message.name}, id=${message.tool_call_id}):\n${message.content}`,
+          )
+          .join("\n\n"),
+      },
+    ],
+  };
+}
+
+function collectToolResultIds(
+  messages: readonly AnthropicMessage[],
+): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (!isToolResultBlock(block)) continue;
+      const id = getBlockStringField(block, "tool_use_id");
+      if (id) ids.add(id);
+    }
+  }
+  return ids;
+}
+
+function cloneAnthropicMessage(message: AnthropicMessage): AnthropicMessage {
+  return {
+    role: message.role,
+    content: message.content.map((block) => cloneAnthropicContentBlock(block)),
+  };
+}
+
+function reconcileCachedConversationForContinuation(
+  cachedMessages: readonly AnthropicMessage[],
+  fallbackBaseMessages: readonly AnthropicMessage[],
+  continuationMessages: readonly AnthropicMessage[],
+): AnthropicMessage[] {
+  const expectedToolResultIds = collectToolResultIds(continuationMessages);
+  if (!expectedToolResultIds.size) {
+    return cachedMessages.map((message) => cloneAnthropicMessage(message));
+  }
+
+  for (let index = cachedMessages.length - 1; index >= 0; index -= 1) {
+    const message = cachedMessages[index];
+    if (message.role !== "assistant") continue;
+    const toolUseBlocks = message.content.filter(isToolUseBlock);
+    if (!toolUseBlocks.length) continue;
+
+    const filteredContent = message.content.filter((block) => {
+      if (!isToolUseBlock(block)) return true;
+      const id = getBlockStringField(block, "id");
+      return id ? expectedToolResultIds.has(id) : false;
+    });
+    const keptToolUseIds = toolUseIdsFromMessage({
+      role: "assistant",
+      content: filteredContent,
+    });
+    const keepsEveryExpectedResult = Array.from(expectedToolResultIds).every(
+      (id) => keptToolUseIds.has(id),
+    );
+    if (!keepsEveryExpectedResult) break;
+
+    return cachedMessages.map((entry, entryIndex) =>
+      entryIndex === index
+        ? {
+            role: "assistant",
+            content: filteredContent.map((block) =>
+              cloneAnthropicContentBlock(block),
+            ),
+          }
+        : cloneAnthropicMessage(entry),
+    );
+  }
+
+  return fallbackBaseMessages.map((message) => cloneAnthropicMessage(message));
+}
+
 async function buildAnthropicParts(
   message: AgentModelMessage,
   options: AnthropicBuildOptions,
@@ -189,8 +346,30 @@ async function buildInitialAnthropicMessages(
 }> {
   const systemBlocks: AnthropicSystemBlock[] = [];
   const anthropicMessages: AnthropicMessage[] = [];
-  for (const message of messages) {
-    if (message.role === "tool") continue;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role === "tool") {
+      const toolMessages = collectConsecutiveToolMessages(messages, index);
+      index += toolMessages.length - 1;
+      const previousToolUseIds = toolUseIdsFromMessage(
+        anthropicMessages[anthropicMessages.length - 1],
+      );
+      const matched = toolMessages.filter((toolMessage) =>
+        previousToolUseIds.has(toolMessage.tool_call_id),
+      );
+      const unmatched = toolMessages.filter(
+        (toolMessage) => !previousToolUseIds.has(toolMessage.tool_call_id),
+      );
+      if (matched.length) {
+        anthropicMessages.push({
+          role: "user",
+          content: buildAnthropicToolResultBlocks(matched),
+        });
+      }
+      const summary = buildLooseToolResultSummaryMessage(unmatched);
+      if (summary) anthropicMessages.push(summary);
+      continue;
+    }
     if (message.role === "system") {
       const text = stringifyMessageContent(message.content);
       if (text) {
@@ -202,19 +381,25 @@ async function buildInitialAnthropicMessages(
       continue;
     }
     if (message.role === "assistant") {
+      const followingToolMessages = collectConsecutiveToolMessages(
+        messages,
+        index + 1,
+      );
+      const followingToolResultIds = new Set(
+        followingToolMessages.map((toolMessage) => toolMessage.tool_call_id),
+      );
+      const toolCalls =
+        Array.isArray(message.tool_calls) && followingToolResultIds.size
+          ? message.tool_calls.filter((call) => followingToolResultIds.has(call.id))
+          : [];
+      const content = [
+        ...(await buildAnthropicParts(message, options)),
+        ...buildAnthropicToolUseBlocks(toolCalls),
+      ].filter((block) => !isEmptyTextBlock(block));
+      if (!content.length) continue;
       anthropicMessages.push({
         role: "assistant",
-        content: [
-          ...(await buildAnthropicParts(message, options)),
-          ...(Array.isArray(message.tool_calls)
-            ? message.tool_calls.map((call) => ({
-                type: "tool_use" as const,
-                id: call.id,
-                name: call.name,
-                input: call.arguments ?? {},
-              }))
-            : []),
-        ],
+        content,
       });
       continue;
     }
@@ -257,11 +442,7 @@ async function buildAnthropicContinuationMessages(
   if (toolMessages.length) {
     anthropicMessages.push({
       role: "user",
-      content: toolMessages.map((message) => ({
-        type: "tool_result",
-        tool_use_id: message.tool_call_id,
-        content: message.content,
-      })),
+      content: buildAnthropicToolResultBlocks(toolMessages),
     });
   }
   for (const message of followupUserMessages) {
@@ -514,12 +695,7 @@ function buildAssistantConversationMessage(step: {
     role: "assistant",
     content: [
       ...(step.text ? [{ type: "text" as const, text: step.text }] : []),
-      ...step.toolCalls.map((call) => ({
-        type: "tool_use" as const,
-        id: call.id,
-        name: call.name,
-        input: call.arguments ?? {},
-      })),
+      ...buildAnthropicToolUseBlocks(step.toolCalls),
     ],
   };
 }
@@ -552,18 +728,35 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
       params.messages,
       buildOptions,
     );
-    if (!this.conversationMessages) {
+    const cachedConversationMessages = this.conversationMessages;
+    if (!cachedConversationMessages) {
       this.conversationMessages = initial.messages;
       this.systemBlocks = initial.systemBlocks;
     }
+    const continuationSource = cachedConversationMessages
+      ? getToolContinuationMessages(params.messages)
+      : [];
     const continuation = await buildAnthropicContinuationMessages(
-      getToolContinuationMessages(params.messages),
+      continuationSource,
       buildOptions,
     );
-    const messages =
-      continuation.length && this.conversationMessages
-        ? [...this.conversationMessages, ...continuation]
-        : this.conversationMessages || initial.messages;
+    const fallbackBaseMessages = continuation.length
+      ? initial.messages.slice(
+          0,
+          Math.max(0, initial.messages.length - continuation.length),
+        )
+      : initial.messages;
+    const conversationBase =
+      continuation.length && cachedConversationMessages
+        ? reconcileCachedConversationForContinuation(
+            cachedConversationMessages,
+            fallbackBaseMessages,
+            continuation,
+          )
+        : cachedConversationMessages || initial.messages;
+    const messages = continuation.length
+      ? [...conversationBase, ...continuation]
+      : conversationBase;
     const maxTokens = normalizeMaxTokensForModel(
       request.advanced?.maxTokens,
       request.model,

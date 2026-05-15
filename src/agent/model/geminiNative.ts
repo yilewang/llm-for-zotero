@@ -241,30 +241,243 @@ function extractGeminiResponseParts(data: GeminiResponse): GeminiPart[] {
     .map((part) => ({ ...part }));
 }
 
+function isGeminiFunctionCallPart(part: GeminiPart): boolean {
+  return Boolean(part.functionCall && typeof part.functionCall === "object");
+}
+
+function isGeminiFunctionResponsePart(part: GeminiPart): boolean {
+  return Boolean(
+    part.functionResponse && typeof part.functionResponse === "object",
+  );
+}
+
+function getGeminiFunctionCallName(part: GeminiPart): string {
+  if (!isGeminiFunctionCallPart(part)) return "";
+  const functionCall = part.functionCall as { name?: unknown };
+  return typeof functionCall.name === "string" && functionCall.name.trim()
+    ? functionCall.name.trim()
+    : "";
+}
+
+function getGeminiFunctionResponseName(part: GeminiPart): string {
+  if (!isGeminiFunctionResponsePart(part)) return "";
+  const functionResponse = part.functionResponse as { name?: unknown };
+  return typeof functionResponse.name === "string" &&
+    functionResponse.name.trim()
+    ? functionResponse.name.trim()
+    : "";
+}
+
+function buildGeminiFunctionCallParts(
+  toolCalls: readonly AgentToolCall[],
+): GeminiPart[] {
+  return toolCalls.map((call) => ({
+    functionCall: {
+      name: call.name,
+      args: call.arguments ?? {},
+    },
+  }));
+}
+
+function parseGeminiToolResponseContent(message: Extract<AgentModelMessage, { role: "tool" }>): unknown {
+  try {
+    return JSON.parse(message.content);
+  } catch (_error) {
+    return { content: message.content };
+  }
+}
+
+function buildGeminiFunctionResponseParts(
+  toolMessages: readonly Extract<AgentModelMessage, { role: "tool" }>[],
+): GeminiPart[] {
+  return toolMessages.map((message) => ({
+    functionResponse: {
+      name: message.name,
+      response: parseGeminiToolResponseContent(message),
+    },
+  }));
+}
+
+function collectConsecutiveToolMessages(
+  messages: AgentModelMessage[],
+  startIndex: number,
+): Extract<AgentModelMessage, { role: "tool" }>[] {
+  const toolMessages: Extract<AgentModelMessage, { role: "tool" }>[] = [];
+  for (let index = startIndex; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role !== "tool") break;
+    toolMessages.push(message);
+  }
+  return toolMessages;
+}
+
+function buildLooseToolResultSummaryMessage(
+  toolMessages: readonly Extract<AgentModelMessage, { role: "tool" }>[],
+): GeminiMessage | null {
+  if (!toolMessages.length) return null;
+  return {
+    role: "user",
+    parts: [
+      {
+        text: toolMessages
+          .map(
+            (message) =>
+              `Tool result (${message.name}, id=${message.tool_call_id}):\n${message.content}`,
+          )
+          .join("\n\n"),
+      },
+    ],
+  };
+}
+
+function cloneGeminiMessage(message: GeminiMessage): GeminiMessage {
+  return {
+    role: message.role,
+    parts: message.parts.map((part) => ({ ...part })),
+  };
+}
+
+function getFunctionCallNamesFromMessage(
+  message: GeminiMessage | undefined,
+): string[] {
+  if (!message || message.role !== "model") return [];
+  return message.parts.map(getGeminiFunctionCallName).filter(Boolean);
+}
+
+function getFunctionResponseNames(messages: readonly GeminiMessage[]): string[] {
+  return messages.flatMap((message) =>
+    message.parts.map(getGeminiFunctionResponseName).filter(Boolean),
+  );
+}
+
+function splitToolMessagesByPreviousFunctionCalls(
+  toolMessages: readonly Extract<AgentModelMessage, { role: "tool" }>[],
+  previousMessage: GeminiMessage | undefined,
+): {
+  matched: Extract<AgentModelMessage, { role: "tool" }>[];
+  unmatched: Extract<AgentModelMessage, { role: "tool" }>[];
+} {
+  const expectedNames = getFunctionCallNamesFromMessage(previousMessage);
+  const matched: Extract<AgentModelMessage, { role: "tool" }>[] = [];
+  const unmatched: Extract<AgentModelMessage, { role: "tool" }>[] = [];
+  let expectedIndex = 0;
+  for (const message of toolMessages) {
+    if (
+      expectedIndex < expectedNames.length &&
+      message.name === expectedNames[expectedIndex]
+    ) {
+      matched.push(message);
+      expectedIndex += 1;
+      continue;
+    }
+    unmatched.push(message);
+  }
+  return { matched, unmatched };
+}
+
+function filterGeminiFunctionCallsByExpectedNames(
+  parts: readonly GeminiPart[],
+  expectedNames: readonly string[],
+): { parts: GeminiPart[]; matchedCount: number } {
+  let expectedIndex = 0;
+  const filtered = parts.filter((part) => {
+    if (!isGeminiFunctionCallPart(part)) return true;
+    const name = getGeminiFunctionCallName(part);
+    if (expectedIndex < expectedNames.length && name === expectedNames[expectedIndex]) {
+      expectedIndex += 1;
+      return true;
+    }
+    return false;
+  });
+  return {
+    parts: filtered.map((part) => ({ ...part })),
+    matchedCount: expectedIndex,
+  };
+}
+
+function reconcileCachedGeminiConversationForContinuation(
+  cachedMessages: readonly GeminiMessage[],
+  fallbackBaseMessages: readonly GeminiMessage[],
+  continuationMessages: readonly GeminiMessage[],
+): GeminiMessage[] {
+  const expectedNames = getFunctionResponseNames(continuationMessages);
+  if (!expectedNames.length) {
+    return cachedMessages.map((message) => cloneGeminiMessage(message));
+  }
+
+  for (let index = cachedMessages.length - 1; index >= 0; index -= 1) {
+    const message = cachedMessages[index];
+    if (message.role !== "model") continue;
+    if (!message.parts.some(isGeminiFunctionCallPart)) continue;
+
+    const filtered = filterGeminiFunctionCallsByExpectedNames(
+      message.parts,
+      expectedNames,
+    );
+    if (filtered.matchedCount !== expectedNames.length) break;
+    return cachedMessages.map((entry, entryIndex) =>
+      entryIndex === index
+        ? { role: "model", parts: filtered.parts }
+        : cloneGeminiMessage(entry),
+    );
+  }
+
+  return fallbackBaseMessages.map((message) => cloneGeminiMessage(message));
+}
+
 async function buildInitialGeminiMessages(
   messages: AgentModelMessage[],
 ): Promise<{ systemInstruction?: { parts: Array<{ text: string }> }; contents: GeminiMessage[] }> {
   const systemParts: string[] = [];
   const contents: GeminiMessage[] = [];
-  for (const message of messages) {
-    if (message.role === "tool") continue;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role === "tool") {
+      const toolMessages = collectConsecutiveToolMessages(messages, index);
+      index += toolMessages.length - 1;
+      const { matched, unmatched } = splitToolMessagesByPreviousFunctionCalls(
+        toolMessages,
+        contents[contents.length - 1],
+      );
+      if (matched.length) {
+        contents.push({
+          role: "user",
+          parts: buildGeminiFunctionResponseParts(matched),
+        });
+      }
+      const summary = buildLooseToolResultSummaryMessage(unmatched);
+      if (summary) contents.push(summary);
+      continue;
+    }
     if (message.role === "system") {
       const text = stringifyMessageContent(message.content);
       if (text) systemParts.push(text);
       continue;
     }
     if (message.role === "assistant") {
+      const followingToolMessages = collectConsecutiveToolMessages(
+        messages,
+        index + 1,
+      );
+      const followingToolResultIds = new Set(
+        followingToolMessages.map((toolMessage) => toolMessage.tool_call_id),
+      );
+      const toolCalls =
+        Array.isArray(message.tool_calls) && followingToolResultIds.size
+          ? message.tool_calls.filter((call) => followingToolResultIds.has(call.id))
+          : [];
       const parts = [
         ...(await buildGeminiParts(message)),
-        ...(Array.isArray(message.tool_calls)
-          ? message.tool_calls.map((call) => ({
-              functionCall: {
-                name: call.name,
-                args: call.arguments ?? {},
-              },
-            }))
-          : []),
-      ];
+        ...buildGeminiFunctionCallParts(toolCalls),
+      ].filter(
+        (part) =>
+          !(
+            typeof part.text === "string" &&
+            !part.text.trim() &&
+            !isGeminiFunctionCallPart(part)
+          ),
+      );
+      if (!parts.length) continue;
       contents.push({
         role: "model",
         parts,
@@ -294,20 +507,7 @@ async function buildGeminiContinuationMessages(
   if (toolMessages.length) {
     contents.push({
       role: "user",
-      parts: toolMessages.map((message) => {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(message.content);
-        } catch (_error) {
-          parsed = { content: message.content };
-        }
-        return {
-          functionResponse: {
-            name: message.name,
-            response: parsed,
-          },
-        };
-      }),
+      parts: buildGeminiFunctionResponseParts(toolMessages),
     });
   }
   for (const message of followupUserMessages) {
@@ -483,12 +683,7 @@ function buildAssistantConversationMessage(step: {
     role: "model",
     parts: [
       ...(step.text ? [{ text: step.text }] : []),
-      ...step.toolCalls.map((call) => ({
-        functionCall: {
-          name: call.name,
-          args: call.arguments ?? {},
-        },
-      })),
+      ...buildGeminiFunctionCallParts(step.toolCalls),
     ],
   };
 }
@@ -514,17 +709,34 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
     const request = params.request;
     const initial = await buildInitialGeminiMessages(params.messages);
-    if (!this.conversationMessages) {
+    const cachedConversationMessages = this.conversationMessages;
+    if (!cachedConversationMessages) {
       this.conversationMessages = initial.contents;
       this.systemInstruction = initial.systemInstruction;
     }
+    const continuationSource = cachedConversationMessages
+      ? getToolContinuationMessages(params.messages)
+      : [];
     const continuation = await buildGeminiContinuationMessages(
-      getToolContinuationMessages(params.messages),
+      continuationSource,
     );
-    const contents =
-      continuation.length && this.conversationMessages
-        ? [...this.conversationMessages, ...continuation]
-        : this.conversationMessages || initial.contents;
+    const fallbackBaseMessages = continuation.length
+      ? initial.contents.slice(
+          0,
+          Math.max(0, initial.contents.length - continuation.length),
+        )
+      : initial.contents;
+    const conversationBase =
+      continuation.length && cachedConversationMessages
+        ? reconcileCachedGeminiConversationForContinuation(
+            cachedConversationMessages,
+            fallbackBaseMessages,
+            continuation,
+          )
+        : cachedConversationMessages || initial.contents;
+    const contents = continuation.length
+      ? [...conversationBase, ...continuation]
+      : conversationBase;
 
     const payload = {
       ...(this.systemInstruction

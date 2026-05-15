@@ -148,6 +148,35 @@ export type ResponsesFilePartResolver = (
   signal?: AbortSignal,
 ) => Promise<ResponsesInputContentPart[]>;
 
+function collectConsecutiveToolMessages(
+  messages: AgentModelMessage[],
+  startIndex: number,
+): Extract<AgentModelMessage, { role: "tool" }>[] {
+  const toolMessages: Extract<AgentModelMessage, { role: "tool" }>[] = [];
+  for (let index = startIndex; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role !== "tool") break;
+    toolMessages.push(message);
+  }
+  return toolMessages;
+}
+
+function buildResponsesToolResultSummaryMessage(
+  toolMessages: readonly Extract<AgentModelMessage, { role: "tool" }>[],
+): ResponsesInputItem | null {
+  if (!toolMessages.length) return null;
+  return {
+    type: "message",
+    role: "user",
+    content: toolMessages
+      .map(
+        (message) =>
+          `Previous tool result (${message.name}, call_id=${message.tool_call_id}):\n${message.content}`,
+      )
+      .join("\n\n"),
+  };
+}
+
 async function buildResponsesContentParts(
   parts: AgentModelContentPart[],
   options: {
@@ -185,11 +214,27 @@ export async function buildResponsesInitialInput(
   const instructionsParts: string[] = [];
   const input: ResponsesInputItem[] = [];
 
-  for (const message of messages) {
-    if (message.role === "tool") continue;
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role === "tool") {
+      const toolMessages = collectConsecutiveToolMessages(messages, index);
+      index += toolMessages.length - 1;
+      const summary = buildResponsesToolResultSummaryMessage(toolMessages);
+      if (summary) input.push(summary);
+      continue;
+    }
     if (message.role === "system") {
       const text = stringifyMessageContent(message.content);
       if (text) instructionsParts.push(text);
+      continue;
+    }
+    if (
+      message.role === "assistant" &&
+      typeof message.content === "string" &&
+      !message.content.trim() &&
+      Array.isArray(message.tool_calls) &&
+      message.tool_calls.length
+    ) {
       continue;
     }
     if (typeof message.content === "string") {

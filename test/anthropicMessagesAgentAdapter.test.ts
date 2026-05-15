@@ -475,6 +475,186 @@ describe("AnthropicMessagesAgentAdapter", function () {
     });
   });
 
+  it("serializes reusable transcript tool results directly after tool uses", async function () {
+    const adapter = new AnthropicMessagesAgentAdapter();
+    let capturedBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              content: [{ type: "text", text: "Done" }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    await adapter.runStep({
+      request: makeRequest(),
+      messages: [
+        { role: "user", content: "Earlier paper question" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            { id: "toolu_1", name: "read_paper", arguments: { query: "a" } },
+            { id: "toolu_2", name: "read_paper", arguments: { query: "b" } },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "toolu_1",
+          name: "read_paper",
+          content: '{"matches":["a"]}',
+        },
+        {
+          role: "tool",
+          tool_call_id: "toolu_2",
+          name: "read_paper",
+          content: '{"matches":["b"]}',
+        },
+        { role: "user", content: "Use those results now" },
+      ],
+      tools,
+    });
+
+    const bodyMessages = capturedBody?.messages as Array<{
+      role?: string;
+      content?: Array<Record<string, unknown>>;
+    }>;
+    assert.deepEqual(
+      bodyMessages.map((message) => message.role),
+      ["user", "assistant", "user", "user"],
+    );
+    assert.deepEqual(
+      bodyMessages[1]?.content
+        ?.filter((block) => block.type === "tool_use")
+        .map((block) => block.id),
+      ["toolu_1", "toolu_2"],
+    );
+    assert.deepEqual(
+      bodyMessages[2]?.content?.map((block) => ({
+        type: block.type,
+        tool_use_id: block.tool_use_id,
+      })),
+      [
+        { type: "tool_result", tool_use_id: "toolu_1" },
+        { type: "tool_result", tool_use_id: "toolu_2" },
+      ],
+    );
+    assert.equal(bodyMessages[3]?.content?.[0]?.text, "Use those results now");
+  });
+
+  it("filters cached native tool uses to the executed continuation ids", async function () {
+    const adapter = new AnthropicMessagesAgentAdapter();
+    const requestBodies: Record<string, unknown>[] = [];
+    let callCount = 0;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          callCount += 1;
+          requestBodies.push(
+            JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
+          );
+          if (callCount === 1) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              body: makeSseStream([
+                'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}\n\n',
+                'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Plan first"}}\n\n',
+                'data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_paper","input":{"query":"a"}}}\n\n',
+                'data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_2","name":"read_paper","input":{"query":"b"}}}\n\n',
+              ]),
+              json: async () => ({}),
+              text: async () => "",
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              content: [{ type: "text", text: "Done" }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const firstStep = await adapter.runStep({
+      request: makeRequest(),
+      messages: [{ role: "user", content: "Search methods" }],
+      tools,
+    });
+
+    assert.equal(firstStep.kind, "tool_calls");
+    if (firstStep.kind !== "tool_calls") return;
+
+    await adapter.runStep({
+      request: makeRequest(),
+      messages: [
+        {
+          ...firstStep.assistantMessage,
+          tool_calls: firstStep.calls.slice(0, 1),
+        },
+        {
+          role: "tool",
+          tool_call_id: "toolu_1",
+          name: "read_paper",
+          content: '{"matches":["a"]}',
+        },
+      ],
+      tools,
+    });
+
+    const secondRequestMessages = requestBodies[1]?.messages as Array<{
+      role?: string;
+      content?: Array<Record<string, unknown>>;
+    }>;
+    const assistantContent = secondRequestMessages[1]?.content || [];
+    assert.deepEqual(assistantContent[0], {
+      type: "thinking",
+      thinking: "Plan first",
+    });
+    assert.deepEqual(
+      assistantContent
+        .filter((block) => block.type === "tool_use")
+        .map((block) => block.id),
+      ["toolu_1"],
+    );
+    assert.deepEqual(
+      secondRequestMessages[2]?.content?.map((block) => ({
+        type: block.type,
+        tool_use_id: block.tool_use_id,
+      })),
+      [{ type: "tool_result", tool_use_id: "toolu_1" }],
+    );
+  });
+
   it("uses DeepSeek Anthropic-style thinking effort payloads", async function () {
     const adapter = new AnthropicMessagesAgentAdapter();
     let capturedBody: Record<string, unknown> | null = null;

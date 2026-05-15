@@ -4641,6 +4641,20 @@ export function setupHandlers(
     body,
     getItem: () => item,
     getCurrentModel: () => getSelectedModelInfo().currentModel,
+    getCurrentPdfSupport: () => {
+      const profile = getSelectedProfile();
+      const modelName = (
+        profile?.model ||
+        getSelectedModelInfo().currentModel ||
+        ""
+      ).trim();
+      return getModelPdfSupport(
+        modelName,
+        profile?.providerProtocol,
+        profile?.authMode,
+        profile?.apiBase,
+      );
+    },
     isScreenshotUnsupportedModel,
     optimizeImageDataUrl,
     persistAttachmentBlob,

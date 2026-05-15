@@ -473,4 +473,225 @@ describe("GeminiNativeAgentAdapter", function () {
     const functionCall = modelParts[0]?.functionCall as Record<string, unknown>;
     assert.equal(functionCall?.thoughtSignature, "sig-123");
   });
+
+  it("serializes reusable transcript function responses after function calls", async function () {
+    const adapter = new GeminiNativeAgentAdapter();
+    let capturedBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              candidates: [{ content: { parts: [{ text: "Done." }] } }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    await adapter.runStep({
+      request: makeRequest(),
+      messages: [
+        { role: "user", content: "Earlier collection question" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call_1",
+              name: "query_library",
+              arguments: { filters: { collectionId: 55 } },
+            },
+            {
+              id: "call_2",
+              name: "query_library",
+              arguments: { filters: { collectionId: 56 } },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "call_1",
+          name: "query_library",
+          content: '{"results":[{"itemId":101}]}',
+        },
+        {
+          role: "tool",
+          tool_call_id: "call_2",
+          name: "query_library",
+          content: '{"results":[{"itemId":102}]}',
+        },
+        { role: "user", content: "Use those collection results now" },
+      ],
+      tools,
+    });
+
+    const contents = (capturedBody?.contents as Array<{
+      role?: string;
+      parts?: Array<Record<string, unknown>>;
+    }>) || [];
+    assert.deepEqual(
+      contents.map((content) => content.role),
+      ["user", "model", "user", "user"],
+    );
+    assert.deepEqual(
+      contents[1]?.parts
+        ?.map((part) => part.functionCall as Record<string, unknown>)
+        .filter(Boolean)
+        .map((call) => ({
+          name: call.name,
+          args: call.args,
+        })),
+      [
+        { name: "query_library", args: { filters: { collectionId: 55 } } },
+        { name: "query_library", args: { filters: { collectionId: 56 } } },
+      ],
+    );
+    assert.deepEqual(
+      contents[2]?.parts
+        ?.map((part) => part.functionResponse as Record<string, unknown>)
+        .filter(Boolean)
+        .map((response) => ({
+          name: response.name,
+          response: response.response,
+        })),
+      [
+        { name: "query_library", response: { results: [{ itemId: 101 }] } },
+        { name: "query_library", response: { results: [{ itemId: 102 }] } },
+      ],
+    );
+    assert.equal(contents[3]?.parts?.[0]?.text, "Use those collection results now");
+  });
+
+  it("filters cached Gemini function calls to executed continuation responses", async function () {
+    const adapter = new GeminiNativeAgentAdapter();
+    const requestBodies: Record<string, unknown>[] = [];
+    let callCount = 0;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          callCount += 1;
+          requestBodies.push(
+            JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
+          );
+          if (callCount === 1) {
+            return {
+              ok: true,
+              status: 200,
+              statusText: "OK",
+              body: undefined,
+              json: async () => ({
+                candidates: [
+                  {
+                    content: {
+                      parts: [
+                        {
+                          text: "Plan first.",
+                          thought: true,
+                          thoughtSignature: "sig-plan",
+                        },
+                        {
+                          functionCall: {
+                            name: "query_library",
+                            args: { filters: { collectionId: 55 } },
+                          },
+                        },
+                        {
+                          functionCall: {
+                            name: "query_library",
+                            args: { filters: { collectionId: 56 } },
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }),
+              text: async () => "",
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              candidates: [{ content: { parts: [{ text: "Done." }] } }],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const firstStep = await adapter.runStep({
+      request: makeRequest(),
+      messages: [{ role: "user", content: "List papers" }],
+      tools,
+    });
+
+    assert.equal(firstStep.kind, "tool_calls");
+    if (firstStep.kind !== "tool_calls") return;
+
+    await adapter.runStep({
+      request: makeRequest(),
+      messages: [
+        {
+          ...firstStep.assistantMessage,
+          tool_calls: firstStep.calls.slice(0, 1),
+        },
+        {
+          role: "tool",
+          tool_call_id: firstStep.calls[0].id,
+          name: firstStep.calls[0].name,
+          content: '{"results":[{"itemId":101}]}',
+        },
+      ],
+      tools,
+    });
+
+    const secondContents = (requestBodies[1]?.contents as Array<{
+      role?: string;
+      parts?: Array<Record<string, unknown>>;
+    }>) || [];
+    const modelParts = secondContents[1]?.parts || [];
+    assert.deepEqual(modelParts[0], {
+      text: "Plan first.",
+      thought: true,
+      thoughtSignature: "sig-plan",
+    });
+    assert.deepEqual(
+      modelParts
+        .map((part) => part.functionCall as Record<string, unknown>)
+        .filter(Boolean)
+        .map((call) => call.args),
+      [{ filters: { collectionId: 55 } }],
+    );
+    assert.deepEqual(
+      secondContents[2]?.parts
+        ?.map((part) => part.functionResponse as Record<string, unknown>)
+        .filter(Boolean)
+        .map((response) => response.response),
+      [{ results: [{ itemId: 101 }] }],
+    );
+  });
 });

@@ -2,6 +2,8 @@ import {
   MAX_SELECTED_IMAGES,
   MAX_UPLOAD_PDF_SIZE_BYTES,
 } from "../../constants";
+import type { PdfSupport } from "../../../../providers";
+import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../../pdfSupportMessages";
 import type { ChatAttachment } from "../../types";
 
 type StatusLevel = "ready" | "warning" | "error";
@@ -10,6 +12,7 @@ type FileIntakeControllerDeps = {
   body: Element;
   getItem: () => Zotero.Item | null;
   getCurrentModel: () => string;
+  getCurrentPdfSupport: () => PdfSupport;
   isScreenshotUnsupportedModel: (modelName: string) => boolean;
   optimizeImageDataUrl: (win: Window, dataUrl: string) => Promise<string>;
   persistAttachmentBlob: (
@@ -187,9 +190,11 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
     const nextFiles = [...(deps.selectedFileAttachmentCache.get(item.id) || [])];
     let addedCount = 0;
     let replacedCount = 0;
+    let blockedPdfCount = 0;
     let rejectedPdfCount = 0;
     let skippedImageCount = 0;
     let failedPersistCount = 0;
+    const pdfSupport = deps.getCurrentPdfSupport();
 
     for (const [index, file] of incomingFiles.entries()) {
       const fileName =
@@ -197,6 +202,10 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
       const lowerName = fileName.toLowerCase();
       const isPdf =
         file.type === "application/pdf" || lowerName.endsWith(".pdf");
+      if (isPdf && pdfSupport !== "native") {
+        blockedPdfCount += 1;
+        continue;
+      }
       if (isPdf && file.size > MAX_UPLOAD_PDF_SIZE_BYTES) {
         rejectedPdfCount += 1;
         continue;
@@ -299,11 +308,18 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
     if (!deps.setStatusMessage) return;
     if (
       (addedCount > 0 || replacedCount > 0) &&
-      (rejectedPdfCount > 0 || skippedImageCount > 0 || failedPersistCount > 0)
+      (blockedPdfCount > 0 ||
+        rejectedPdfCount > 0 ||
+        skippedImageCount > 0 ||
+        failedPersistCount > 0)
     ) {
       const replaceText = replacedCount > 0 ? `, replaced ${replacedCount}` : "";
+      const blockedText =
+        blockedPdfCount > 0
+          ? `, skipped ${blockedPdfCount} unsupported PDF(s)`
+          : "";
       deps.setStatusMessage(
-        `Uploaded ${addedCount} attachment(s)${replaceText}, skipped ${rejectedPdfCount} PDF(s) > 50MB, ${skippedImageCount} image(s), ${failedPersistCount} file(s) not persisted`,
+        `Uploaded ${addedCount} attachment(s)${replaceText}${blockedText}, skipped ${rejectedPdfCount} PDF(s) > 50MB, ${skippedImageCount} image(s), ${failedPersistCount} file(s) not persisted`,
         "warning",
       );
       return;
@@ -314,6 +330,10 @@ export function createFileIntakeController(deps: FileIntakeControllerDeps): {
         `Uploaded ${addedCount} attachment(s)${replaceText}`,
         "ready",
       );
+      return;
+    }
+    if (blockedPdfCount > 0) {
+      deps.setStatusMessage(FULL_PDF_UNSUPPORTED_MESSAGE, "error");
       return;
     }
     if (rejectedPdfCount > 0) {

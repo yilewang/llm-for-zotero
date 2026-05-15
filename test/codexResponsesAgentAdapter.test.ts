@@ -213,6 +213,83 @@ describe("CodexResponsesAgentAdapter", function () {
     assert.deepEqual(capturedBody?.include, ["reasoning.encrypted_content"]);
   });
 
+  it("preserves reusable transcript tool results as safe input evidence", async function () {
+    const freshAdapter = new CodexResponsesAgentAdapter();
+    let capturedBody: Record<string, unknown> | null = null;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          capturedBody = JSON.parse(String(init?.body || "{}")) as Record<
+            string,
+            unknown
+          >;
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({
+              output: [
+                {
+                  type: "message",
+                  content: [{ type: "output_text", text: "OK" }],
+                },
+              ],
+            }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    await freshAdapter.runStep({
+      request: makeRequest({
+        authMode: "api_key",
+        apiKey: "test-token",
+      }),
+      messages: [
+        { role: "user", content: "Earlier collection question" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call_1",
+              name: "library_search",
+              arguments: { filters: { collectionId: 55 } },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "call_1",
+          name: "library_search",
+          content: '{"results":[{"itemId":101,"title":"Paper A"}]}',
+        },
+        { role: "user", content: "Use those results now" },
+      ],
+      tools: [],
+    });
+
+    const input = (capturedBody?.input as Array<Record<string, unknown>>) || [];
+    assert.deepEqual(
+      input.map((item) => item.type),
+      ["message", "message", "message"],
+    );
+    assert.notInclude(JSON.stringify(input), "function_call_output");
+    assert.include(
+      String(input[1]?.content || ""),
+      "Previous tool result (library_search, call_id=call_1)",
+    );
+    assert.include(String(input[1]?.content || ""), "Paper A");
+    assert.equal(input[2]?.content, "Use those results now");
+  });
+
   it("forwards streamed OpenAI Responses usage including cached tokens", async function () {
     const openaiAdapter = new OpenAIResponsesAgentAdapter();
     const usage: unknown[] = [];
