@@ -15,6 +15,7 @@ import {
   clearPersistedAgentEvidence,
   hydrateAgentEvidenceCache,
 } from "../src/agent/context/cacheManagement";
+import { clearAgentCoverageLedger } from "../src/agent/context/coverageLedger";
 import { buildAgentInitialMessages } from "../src/agent/model/messageBuilder";
 import {
   clearAgentMemory,
@@ -164,6 +165,7 @@ describe("agent resource lifecycle", function () {
   beforeEach(async function () {
     clearAgentResourceLifecycleState();
     clearAgentReadLedger();
+    clearAgentCoverageLedger();
     await clearAgentMemory(101);
     await clearAgentMemory(202);
   });

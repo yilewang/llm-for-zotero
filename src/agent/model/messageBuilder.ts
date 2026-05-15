@@ -17,6 +17,7 @@ import {
   renderAgentResourceContextPlan,
   type AgentResourceContextPlan,
 } from "../context/resourceLifecycle";
+import { buildAgentCoverageContextBlock } from "../context/coverageLedger";
 
 export function isMultimodalRequestSupported(
   request: AgentRuntimeRequest,
@@ -88,6 +89,7 @@ function buildFullUserMessage(
   request: AgentRuntimeRequest,
   options: {
     priorReadBlock?: string;
+    coverageBlock?: string;
     memoryBlock?: string;
     turnGuidanceBlock?: string;
   } = {},
@@ -141,6 +143,9 @@ function buildFullUserMessage(
   if (options.priorReadBlock) {
     contextLines.push(options.priorReadBlock);
   }
+  if (options.coverageBlock) {
+    contextLines.push(options.coverageBlock);
+  }
   if (options.memoryBlock) {
     contextLines.push(options.memoryBlock);
   }
@@ -190,7 +195,11 @@ function buildFullUserMessage(
 function buildUserMessage(
   request: AgentRuntimeRequest,
   resourceContextPlan?: AgentResourceContextPlan,
-  options: { memoryBlock?: string; turnGuidanceBlock?: string } = {},
+  options: {
+    coverageBlock?: string;
+    memoryBlock?: string;
+    turnGuidanceBlock?: string;
+  } = {},
 ): AgentModelMessage {
   if (
     resourceContextPlan &&
@@ -205,6 +214,7 @@ function buildUserMessage(
   }
   return buildFullUserMessage(request, {
     priorReadBlock: resourceContextPlan?.priorReadBlock,
+    coverageBlock: options.coverageBlock,
     memoryBlock: options.memoryBlock,
     turnGuidanceBlock: options.turnGuidanceBlock,
   });
@@ -400,6 +410,10 @@ export async function buildAgentInitialMessages(
     ...collectToolGuidanceInstructions(request, tools),
     ...collectSkillGuidanceInstructions(matchedSkillIds),
   ]);
+  const coverageBlock = buildAgentCoverageContextBlock({
+    conversationKey: request.conversationKey,
+    request,
+  });
 
   const sections: PromptSection[] = [
     {
@@ -449,6 +463,7 @@ export async function buildAgentInitialMessages(
       ? options.transcriptMessages
       : normalizeHistoryMessages(request)),
     buildUserMessage(request, resourceContextPlan, {
+      coverageBlock,
       memoryBlock,
       turnGuidanceBlock,
     }),

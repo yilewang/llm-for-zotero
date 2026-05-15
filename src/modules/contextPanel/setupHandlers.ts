@@ -384,6 +384,7 @@ import { clearAllAgentToolCaches } from "../../agent/tools";
 import { clearAgentMemory } from "../../agent/store/conversationMemory";
 import { clearAgentTranscript } from "../../agent/store/transcriptStore";
 import { clearPersistedAgentEvidence } from "../../agent/context/cacheManagement";
+import { clearPersistedAgentCoverage } from "../../agent/context/coverageLedger";
 import { clearAgentResourceLifecycleState } from "../../agent/context/resourceLifecycle";
 import { renderShortcuts } from "./shortcuts";
 import { loadConversationHistoryScope } from "./historyLoader";
@@ -5196,6 +5197,7 @@ export function setupHandlers(
         clearAgentMemory(conversationKey),
         clearAgentTranscript(conversationKey),
         clearPersistedAgentEvidence(conversationKey),
+        clearPersistedAgentCoverage(conversationKey),
       ]);
       clearAgentResourceLifecycleState(conversationKey);
     },

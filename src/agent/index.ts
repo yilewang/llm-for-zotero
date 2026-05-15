@@ -8,6 +8,7 @@ import { initAgentTraceStore, getAgentRunTrace } from "./store/traceStore";
 import { initConversationMemoryStore } from "./store/conversationMemory";
 import { initAgentTranscriptStore } from "./store/transcriptStore";
 import { initAgentEvidenceStore } from "./context/cacheManagement";
+import { initAgentCoverageStore } from "./context/coverageLedger";
 import { createAgentModelAdapter } from "./model/factory";
 import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
 import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
@@ -54,6 +55,7 @@ export async function initAgentSubsystem(): Promise<AgentRuntime> {
   await initConversationMemoryStore();
   await initAgentTranscriptStore();
   await initAgentEvidenceStore();
+  await initAgentCoverageStore();
   _toolRegistry = createToolRegistry();
   runtime = new AgentRuntime({
     registry: _toolRegistry,

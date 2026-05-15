@@ -7,6 +7,7 @@ import {
   clearAgentReadLedger,
   clearAgentResourceLifecycleState,
 } from "../src/agent/context/resourceLifecycle";
+import { clearAgentCoverageLedger } from "../src/agent/context/coverageLedger";
 import { getAgentRunTrace } from "../src/agent/store/traceStore";
 import { clearAgentTranscriptStore } from "../src/agent/store/transcriptStore";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
@@ -129,6 +130,7 @@ describe("AgentRuntime", function () {
   beforeEach(function () {
     clearAgentResourceLifecycleState();
     clearAgentReadLedger();
+    clearAgentCoverageLedger();
     clearAgentTranscriptStore();
   });
 

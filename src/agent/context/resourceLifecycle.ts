@@ -729,10 +729,15 @@ function buildAgentResourceDeltaBlock(delta: AgentResourceDelta): string {
 export function renderAgentResourceContextPlan(
   plan: AgentResourceContextPlan,
   request: AgentRuntimeRequest,
-  options: { memoryBlock?: string; turnGuidanceBlock?: string } = {},
+  options: {
+    coverageBlock?: string;
+    memoryBlock?: string;
+    turnGuidanceBlock?: string;
+  } = {},
 ): AgentModelMessage {
   const lines: string[] = [];
   if (plan.priorReadBlock) lines.push(plan.priorReadBlock);
+  if (options.coverageBlock) lines.push(options.coverageBlock);
   if (options.memoryBlock) lines.push(options.memoryBlock);
   if (options.turnGuidanceBlock) lines.push(options.turnGuidanceBlock);
   if (plan.injection === "thin") {

@@ -45,6 +45,10 @@ import {
   type AgentPendingReadActivity,
 } from "./context/resourceLifecycle";
 import {
+  commitAgentCoverageActivities,
+  hydrateAgentCoverageLedger,
+} from "./context/coverageLedger";
+import {
   getNotesDirectoryNickname,
   isNotesDirectoryConfigured,
 } from "../utils/notesDirectoryConfig";
@@ -562,6 +566,10 @@ export class AgentRuntime {
       this.registry.listToolDefinitionsForRequest(request);
     const toolSpecs = this.registry.listToolsForRequest(request);
     await hydrateAgentEvidenceCache(request.conversationKey);
+    await hydrateAgentCoverageLedger({
+      conversationKey: request.conversationKey,
+      request,
+    });
     const resourceContextPlan = buildAgentResourceContextPlan(request);
     request.contextCache = resourceContextPlan.contextCache;
     const transcriptCompatibilityKey = buildAgentTranscriptCompatibilityKey({
@@ -728,6 +736,10 @@ export class AgentRuntime {
           conversationKey: request.conversationKey,
           activities: pendingReadActivities,
           resourceSignature: resourceContextPlan.resourceSignature,
+        });
+        await commitAgentCoverageActivities({
+          conversationKey: request.conversationKey,
+          activities: pendingReadActivities,
         });
         await appendAgentTranscriptMessages({
           conversationKey: request.conversationKey,
