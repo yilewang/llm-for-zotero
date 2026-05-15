@@ -18,8 +18,6 @@ pref("maxTokensTertiary", "4096");
 pref("temperatureQuaternary", "0.3");
 pref("maxTokensQuaternary", "4096");
 pref("enableAgentMode", false);
-pref("contextCacheReuse", "auto");
-pref("agentContextCompaction", "auto");
 pref("contextCacheTelemetry", "");
 pref("enableClaudeCodeMode", false);
 pref("agentBackendBridgeUrl", "http://127.0.0.1:19787");

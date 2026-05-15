@@ -10,8 +10,6 @@ import type {
   ProviderPromptCacheProvider,
 } from "../providers/types";
 
-export type ContextCachePreference = "auto" | "off" | "pinned";
-
 export type ContextCacheAssemblyMode = "full" | "retrieval";
 export type ContextCacheAssemblyStrategy =
   | "paper-first-full"
@@ -104,15 +102,6 @@ function setZoteroPref(key: string, value: unknown): void {
   } catch (_err) {
     // Preference persistence is best-effort; cache planning still works without it.
   }
-}
-
-export function resolveContextCachePreference(): ContextCachePreference {
-  const raw = getZoteroPref("contextCacheReuse");
-  const normalized = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (normalized === "off" || normalized === "pinned") {
-    return normalized;
-  }
-  return "auto";
 }
 
 function loadPersistedTelemetry(): void {
@@ -355,7 +344,6 @@ export function planContextCacheReuse(params: {
   contextText: string;
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
-  preference?: ContextCachePreference;
 }): ContextCachePlan {
   const capability = resolvePromptCacheCapability({
     model: params.model || "",
@@ -363,7 +351,6 @@ export function planContextCacheReuse(params: {
     authMode: params.authMode,
     protocol: params.protocol,
   });
-  const preference = params.preference || resolveContextCachePreference();
   const contextText = params.contextText || "";
   const contextTokens = estimateTextTokens(contextText);
 
@@ -377,18 +364,11 @@ export function planContextCacheReuse(params: {
     reason,
   });
 
-  if (preference === "off") return disabled("disabled-by-preference");
   if (capability.kind === "none") return disabled("provider-unsupported");
   if (!contextText.trim()) return disabled("empty-context");
   if (params.mode !== "full") return disabled("retrieval-mode");
   if (contextTokens < CACHE_MIN_TOKENS)
     return disabled("below-cache-threshold");
-  if (
-    preference === "pinned" &&
-    !(params.fullTextPaperContexts && params.fullTextPaperContexts.length)
-  ) {
-    return disabled("not-pinned");
-  }
 
   const { cacheKey, contentHash } = buildContextCacheKey({
     capability,
@@ -462,12 +442,7 @@ export function shouldPreferCacheAwareFullContext(params: {
   authMode?: string;
   protocol?: ProviderProtocol;
   candidateContextText: string;
-  hasPinnedFullText?: boolean;
-  preference?: ContextCachePreference;
 }): boolean {
-  const preference = params.preference || resolveContextCachePreference();
-  if (preference === "off") return false;
-  if (preference === "pinned" && !params.hasPinnedFullText) return false;
   const capability = resolvePromptCacheCapability({
     model: params.model || "",
     apiBase: params.apiBase,

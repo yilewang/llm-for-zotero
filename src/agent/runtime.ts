@@ -580,22 +580,11 @@ export class AgentRuntime {
 
     if (isManualCompactRequest(request)) {
       const policy = resolveAgentContextBudgetPolicy();
-      if (policy.mode === "off") {
-        const text = "Agent context compaction is disabled.";
-        await emit({ type: "final", text });
-        await finishAgentRun(runId, "completed", text);
-        return {
-          kind: "completed",
-          runId,
-          text,
-          usedFallback: false,
-        };
-      }
       const budget = buildAgentContextBudgetState({
         messages: transcriptMessagesForPrompt,
         model: request.model,
         inputTokenCap: request.advanced?.inputTokenCap,
-        policy: { ...policy, mode: "auto" },
+        policy,
         forceCompact: true,
       });
       const compacted = compactAgentTranscript({

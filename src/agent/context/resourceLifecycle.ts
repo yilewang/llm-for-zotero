@@ -6,7 +6,6 @@ import {
   formatPaperSourceLabel,
 } from "../../modules/contextPanel/paperAttribution";
 import {
-  resolveContextCachePreference,
   resolvePromptCacheCapability,
   type ContextCachePlan,
 } from "../../contextCache/manager";
@@ -496,7 +495,6 @@ function requestHasContentfulResource(params: {
   });
   const fullTextOnlyFollowup =
     lifecycleState === "thin-followup" &&
-    resolveContextCachePreference() !== "off" &&
     capability.stablePrefix &&
     capability.kind !== "none" &&
     Boolean(request.fullTextPaperContexts?.length) &&

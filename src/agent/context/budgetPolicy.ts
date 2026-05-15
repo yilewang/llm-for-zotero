@@ -1,14 +1,10 @@
-import { config } from "../../../package.json";
 import {
   estimateContextMessagesTokens,
   resolveContextWindowTokens,
   type ContextEstimateMessage,
 } from "../../utils/modelInputCap";
 
-export type AgentCompactionMode = "auto" | "manual" | "off";
-
 export type AgentContextBudgetPolicy = {
-  mode: AgentCompactionMode;
   warningRatio: number;
   compactRatio: number;
   hardRatio: number;
@@ -35,7 +31,6 @@ export type AgentContextBudgetState = {
 };
 
 const DEFAULT_POLICY: AgentContextBudgetPolicy = {
-  mode: "auto",
   warningRatio: 0.72,
   compactRatio: 0.84,
   hardRatio: 0.92,
@@ -46,28 +41,6 @@ const DEFAULT_POLICY: AgentContextBudgetPolicy = {
   hysteresisRatio: 0.08,
   minRecentMessages: 4,
 };
-
-function getPrefName(key: string): string | null {
-  const prefsPrefix = config?.prefsPrefix;
-  return prefsPrefix ? `${prefsPrefix}.${key}` : null;
-}
-
-function getZoteroPref(key: string): unknown {
-  try {
-    const prefName = getPrefName(key);
-    if (!prefName) return undefined;
-    return Zotero.Prefs.get(prefName, true);
-  } catch (_err) {
-    return undefined;
-  }
-}
-
-export function resolveAgentCompactionMode(): AgentCompactionMode {
-  const raw = getZoteroPref("agentContextCompaction");
-  const normalized = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (normalized === "manual" || normalized === "off") return normalized;
-  return "auto";
-}
 
 function clampRatio(value: number, fallback: number): number {
   if (!Number.isFinite(value) || value <= 0 || value >= 1) return fallback;
@@ -80,7 +53,6 @@ export function resolveAgentContextBudgetPolicy(
   const policy = {
     ...DEFAULT_POLICY,
     ...overrides,
-    mode: overrides.mode || resolveAgentCompactionMode(),
   };
   const warningRatio = clampRatio(
     policy.warningRatio,
@@ -140,8 +112,7 @@ export function buildAgentContextBudgetState(params: {
     ? policy.compactRatio + policy.hysteresisRatio
     : policy.compactRatio;
   const shouldCompact =
-    policy.mode === "auto" &&
-    (params.forceCompact === true || ratio >= compactThreshold);
+    params.forceCompact === true || ratio >= compactThreshold;
   return {
     policy,
     contextTokens,

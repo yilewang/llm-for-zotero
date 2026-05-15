@@ -1345,7 +1345,6 @@ export async function resolveMultiContextPlan(params: {
         authMode: params.authMode,
         protocol: params.providerProtocol,
         candidateContextText: cachePreferredFull.contextText,
-        hasPinnedFullText: otherPinned.length > 0,
       })
     ) {
       for (const paper of [activePaper, ...otherPinned]) {
