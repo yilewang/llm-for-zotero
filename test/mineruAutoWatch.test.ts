@@ -1,5 +1,8 @@
 import { assert } from "chai";
+import { zipSync } from "fflate";
 import {
+  flushAutoWatchReadinessRetryForTests,
+  getAutoWatchReadinessRetryCountForTests,
   getAutoWatchQueueSnapshotForTests,
   handleAutoWatchNotificationForTests,
   isAutoWatchQueueEntryCurrentForTests,
@@ -14,6 +17,7 @@ import {
 } from "../src/modules/mineruProcessingStatus";
 import {
   hasCachedMineruMd,
+  readCachedMineruMd,
   writeMineruCacheFiles,
 } from "../src/modules/contextPanel/mineruCache";
 
@@ -166,6 +170,13 @@ function createPdf(id = 202, parentID = 201): MockItem {
   };
 }
 
+function createMineruZip(markdown: string): Uint8Array {
+  return zipSync({
+    "full.md": bytes(markdown),
+    "content_list.json": bytes("[]"),
+  });
+}
+
 describe("mineruAutoWatch", function () {
   afterEach(function () {
     resetAutoWatchForTests();
@@ -270,6 +281,85 @@ describe("mineruAutoWatch", function () {
       assert.exists(resolveFetch);
       resolveFetch?.(new Response("failed", { status: 500 }));
       await processing;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("retries a newly added PDF when Zotero has not resolved its file path yet", async function () {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(createMineruZip("# Parsed after retry"), {
+        status: 200,
+      })) as typeof fetch;
+
+    try {
+      const parent = createParent();
+      const pdf = createPdf();
+      let fileReady = false;
+      pdf.getFilePathAsync = async () => (fileReady ? "/tmp/paper.pdf" : false);
+      const items = new Map<number, MockItem>([
+        [parent.id, parent],
+        [pdf.id, pdf],
+      ]);
+      const io = setupZotero(items, {
+        pref: (key) => (key.endsWith(".mineruMode") ? "local" : undefined),
+      });
+      io.files.set("/tmp/paper.pdf", bytes("%PDF-1.7"));
+
+      await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
+      await processAutoWatchQueueForTests();
+
+      assert.equal(getAutoWatchReadinessRetryCountForTests(), 1);
+      assert.deepEqual(getAllFailedIds(), []);
+      assert.equal(getItemStatus(pdf.id)?.status, "processing");
+
+      fileReady = true;
+      assert.isTrue(flushAutoWatchReadinessRetryForTests(pdf.id));
+      await processAutoWatchQueueForTests();
+
+      assert.isTrue(await hasCachedMineruMd(pdf.id));
+      assert.equal(await readCachedMineruMd(pdf.id), "# Parsed after retry");
+      assert.equal(getAutoWatchReadinessRetryCountForTests(), 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("uses a later modify notification to retry a pending file-readiness failure", async function () {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(createMineruZip("# Parsed after modify"), {
+        status: 200,
+      })) as typeof fetch;
+
+    try {
+      const parent = createParent();
+      const pdf = createPdf();
+      let fileReady = false;
+      pdf.getFilePathAsync = async () => (fileReady ? "/tmp/paper.pdf" : false);
+      const items = new Map<number, MockItem>([
+        [parent.id, parent],
+        [pdf.id, pdf],
+      ]);
+      const io = setupZotero(items, {
+        pref: (key) => (key.endsWith(".mineruMode") ? "local" : undefined),
+      });
+      io.files.set("/tmp/paper.pdf", bytes("%PDF-1.7"));
+
+      await handleAutoWatchNotificationForTests("add", "item", [pdf.id]);
+      await processAutoWatchQueueForTests();
+      assert.equal(getAutoWatchReadinessRetryCountForTests(), 1);
+
+      fileReady = true;
+      await handleAutoWatchNotificationForTests("modify", "item", [pdf.id]);
+      assert.equal(getAutoWatchReadinessRetryCountForTests(), 0);
+      assert.lengthOf(getAutoWatchQueueSnapshotForTests(), 1);
+
+      await processAutoWatchQueueForTests();
+
+      assert.isTrue(await hasCachedMineruMd(pdf.id));
+      assert.equal(await readCachedMineruMd(pdf.id), "# Parsed after modify");
     } finally {
       globalThis.fetch = originalFetch;
     }

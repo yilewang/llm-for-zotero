@@ -18,6 +18,7 @@ import {
   setItemCached,
   setItemFailed,
   clearItemStatus,
+  getItemStatus,
 } from "./mineruProcessingStatus";
 import {
   getMineruAvailabilityForAttachment,
@@ -28,7 +29,12 @@ type QueueEntry = {
   attachmentId: number;
   title: string;
   parentItemId?: number;
+  readinessRetryCount?: number;
 };
+
+type QueueValidationResult =
+  | { item: Zotero.Item }
+  | { item: null; reason: string; retryable: boolean };
 
 type ProgressListener = (status: AutoWatchStatus) => void;
 
@@ -42,6 +48,7 @@ type AutoWatchStatus = {
 };
 
 const DEBOUNCE_MS = 3000;
+const READINESS_RETRY_DELAYS_MS = [5000, 15000, 30000, 60000] as const;
 
 let notifierId: string | null = null;
 let processingQueue: QueueEntry[] = [];
@@ -53,6 +60,10 @@ let currentItemTitle = "";
 let currentAttachmentId: number | null = null;
 const staleAbortAttachmentIds = new Set<number>();
 const progressListeners = new Set<ProgressListener>();
+const readinessRetryTimers = new Map<
+  number,
+  { timer: ReturnType<typeof setTimeout>; entry: QueueEntry }
+>();
 
 function getAbortControllerCtor(): (new () => AbortController) | null {
   return (
@@ -73,7 +84,7 @@ function notifyProgress(): void {
     isProcessing,
     isPaused,
     currentItem: currentItemTitle,
-    queueLength: processingQueue.length,
+    queueLength: processingQueue.length + readinessRetryTimers.size,
   };
   for (const listener of progressListeners) {
     try {
@@ -136,9 +147,19 @@ function normalizeNotifierId(id: string | number): number | null {
   return Number.isFinite(itemId) ? itemId : null;
 }
 
-function getValidatedQueueItem(entry: QueueEntry): Zotero.Item | null {
+function validateQueueItem(entry: QueueEntry): QueueValidationResult {
   const item = Zotero.Items.get(entry.attachmentId);
-  if (!item || !isPdfAttachment(item)) return null;
+  if (!item) {
+    return {
+      item: null,
+      reason: "attachment no longer exists",
+      retryable: false,
+    };
+  }
+
+  if (!isPdfAttachment(item)) {
+    return { item: null, reason: "attachment is not a PDF", retryable: false };
+  }
 
   const itemParentId = Number(item.parentID);
   const normalizedItemParentId =
@@ -147,23 +168,88 @@ function getValidatedQueueItem(entry: QueueEntry): Zotero.Item | null {
       : null;
 
   if (entry.parentItemId && normalizedItemParentId !== entry.parentItemId) {
-    return null;
+    return {
+      item: null,
+      reason: "attachment parent changed",
+      retryable: false,
+    };
   }
 
   if (normalizedItemParentId) {
     const parentItem = Zotero.Items.get(normalizedItemParentId);
+    if (!parentItem) {
+      return {
+        item: null,
+        reason: "parent item is not ready",
+        retryable: true,
+      };
+    }
     const attachmentIds = parentItem?.getAttachments?.() || [];
-    if (!attachmentIds.includes(entry.attachmentId)) return null;
+    if (!attachmentIds.includes(entry.attachmentId)) {
+      return {
+        item: null,
+        reason: "parent attachment list is not ready",
+        retryable: true,
+      };
+    }
   }
 
-  return item;
+  return { item };
+}
+
+function getValidatedQueueItem(entry: QueueEntry): Zotero.Item | null {
+  return validateQueueItem(entry).item;
+}
+
+function clearReadinessRetryTimer(attachmentId: number): void {
+  const pending = readinessRetryTimers.get(attachmentId);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  readinessRetryTimers.delete(attachmentId);
+  notifyProgress();
 }
 
 function discardStaleEntry(entry: QueueEntry, reason: string): void {
+  clearReadinessRetryTimer(entry.attachmentId);
   clearItemStatus(entry.attachmentId);
   ztoolkit.log(
     `MinerU auto-parse: skipping stale PDF ${entry.attachmentId} (${reason})`,
   );
+}
+
+function scheduleReadinessRetry(entry: QueueEntry, reason: string): boolean {
+  const retryCount = entry.readinessRetryCount || 0;
+  const delay = READINESS_RETRY_DELAYS_MS[retryCount];
+  if (delay == null) {
+    setItemFailed(entry.attachmentId, reason);
+    ztoolkit.log(
+      `MinerU auto-parse: PDF ${entry.attachmentId} still not ready after ${retryCount} retry attempt(s): ${reason}`,
+    );
+    return false;
+  }
+
+  if (readinessRetryTimers.has(entry.attachmentId)) return true;
+
+  const retryEntry: QueueEntry = {
+    ...entry,
+    readinessRetryCount: retryCount + 1,
+  };
+  const timer = setTimeout(() => {
+    readinessRetryTimers.delete(entry.attachmentId);
+    enqueueForProcessing(
+      retryEntry.attachmentId,
+      retryEntry.title,
+      retryEntry.parentItemId,
+      retryEntry.readinessRetryCount,
+    );
+  }, delay);
+  readinessRetryTimers.set(entry.attachmentId, { timer, entry: retryEntry });
+  setItemProcessing(entry.attachmentId);
+  ztoolkit.log(
+    `MinerU auto-parse: PDF ${entry.attachmentId} not ready (${reason}); retrying in ${Math.round(delay / 1000)}s`,
+  );
+  notifyProgress();
+  return true;
 }
 
 function removeDeletedAttachmentsFromQueue(ids: number[]): void {
@@ -174,6 +260,7 @@ function removeDeletedAttachmentsFromQueue(ids: number[]): void {
   );
 
   for (const id of deletedIds) {
+    clearReadinessRetryTimer(id);
     clearItemStatus(id);
   }
 
@@ -217,11 +304,19 @@ async function processQueue(): Promise<void> {
     currentItemTitle = entry.title;
     notifyProgress();
 
-    const entryItem = getValidatedQueueItem(entry);
-    if (!entryItem) {
-      discardStaleEntry(entry, "attachment no longer current");
+    const validation = validateQueueItem(entry);
+    if (!validation.item) {
+      if (validation.retryable) {
+        if (scheduleReadinessRetry(entry, validation.reason)) {
+          continue;
+        }
+        errorCount++;
+        continue;
+      }
+      discardStaleEntry(entry, validation.reason);
       continue;
     }
+    const entryItem = validation.item;
 
     if (
       (
@@ -260,14 +355,21 @@ async function processQueue(): Promise<void> {
         ztoolkit.log(
           `MinerU auto-parse: no file path for ${entry.attachmentId}`,
         );
+        if (scheduleReadinessRetry(entry, "No file path")) {
+          continue;
+        }
+        errorCount++;
         setItemFailed(entry.attachmentId, "No file path");
         continue;
       }
 
       ztoolkit.log(`MinerU auto-parse: processing ${entry.title}`);
+      let lastProgressStage = "";
       const result = await parsePdfWithMineru(
         pdfPath as string,
-        undefined,
+        (stage) => {
+          lastProgressStage = stage;
+        },
         abort?.signal,
       );
 
@@ -300,9 +402,15 @@ async function processQueue(): Promise<void> {
         processedCount++;
         ztoolkit.log(`MinerU auto-parse: cached ${entry.title}`);
       } else {
+        const reason = lastProgressStage || "No content returned";
+        if (scheduleReadinessRetry(entry, reason)) {
+          continue;
+        }
         errorCount++;
-        setItemFailed(entry.attachmentId, "No content returned");
-        ztoolkit.log(`MinerU auto-parse: no content for ${entry.title}`);
+        setItemFailed(entry.attachmentId, reason);
+        ztoolkit.log(
+          `MinerU auto-parse: no content for ${entry.title}: ${reason}`,
+        );
       }
     } catch (e) {
       if (e instanceof MineruCancelledError) {
@@ -366,10 +474,17 @@ function enqueueForProcessing(
   attachmentId: number,
   title: string,
   parentItemId?: number,
+  readinessRetryCount = 0,
 ): void {
+  clearReadinessRetryTimer(attachmentId);
   if (currentAttachmentId === attachmentId) return;
   if (processingQueue.some((e) => e.attachmentId === attachmentId)) return;
-  processingQueue.push({ attachmentId, title, parentItemId });
+  processingQueue.push({
+    attachmentId,
+    title,
+    parentItemId,
+    readinessRetryCount,
+  });
   notifyProgress();
 
   if (debounceTimer) clearTimeout(debounceTimer);
@@ -377,6 +492,49 @@ function enqueueForProcessing(
     debounceTimer = null;
     void processQueue();
   }, DEBOUNCE_MS);
+}
+
+function shouldConsiderModifiedPdf(attachmentId: number): boolean {
+  if (currentAttachmentId === attachmentId) return false;
+  if (processingQueue.some((entry) => entry.attachmentId === attachmentId)) {
+    return false;
+  }
+  if (readinessRetryTimers.has(attachmentId)) return true;
+  const status = getItemStatus(attachmentId)?.status;
+  return status === "failed" || status === "processing";
+}
+
+async function enqueuePdfIfEligible(
+  pdf: Zotero.Item,
+  title: string,
+  parentItemId: number | undefined,
+  event: "add" | "modify",
+): Promise<void> {
+  if (event === "modify" && !shouldConsiderModifiedPdf(pdf.id)) return;
+
+  const pdfFilename =
+    (pdf as unknown as { attachmentFilename?: string }).attachmentFilename ||
+    "";
+  if (isFilenameExcluded(pdfFilename)) {
+    ztoolkit.log(
+      `MinerU auto-parse: PDF ${pdf.id} excluded by filename pattern`,
+    );
+    return;
+  }
+
+  if (
+    (
+      await getMineruAvailabilityForAttachment(pdf, {
+        validateSyncedPackage: false,
+      })
+    ).status !== "missing"
+  ) {
+    ztoolkit.log(`MinerU auto-parse: PDF ${pdf.id} already available`);
+    return;
+  }
+
+  ztoolkit.log(`MinerU auto-parse: enqueuing ${title}`);
+  enqueueForProcessing(pdf.id, title, parentItemId);
 }
 
 async function handleItemNotification(
@@ -395,11 +553,13 @@ async function handleItemNotification(
     return;
   }
 
-  if (event !== "add") return;
+  if (event !== "add" && event !== "modify") return;
 
   if (!isGlobalAutoParseEnabled()) return;
 
-  ztoolkit.log(`MinerU auto-parse: handling ${itemIds.length} added item(s)`);
+  ztoolkit.log(
+    `MinerU auto-parse: handling ${itemIds.length} ${event} item(s)`,
+  );
 
   for (const itemId of itemIds) {
     const item = Zotero.Items.get(itemId);
@@ -413,56 +573,21 @@ async function handleItemNotification(
       const pdfs = getPdfAttachments(item);
       ztoolkit.log(`MinerU auto-parse: found ${pdfs.length} PDF attachment(s)`);
       for (const pdf of pdfs) {
-        const pdfFilename =
-          (pdf as unknown as { attachmentFilename?: string })
-            .attachmentFilename || "";
-        if (isFilenameExcluded(pdfFilename)) {
-          ztoolkit.log(
-            `MinerU auto-parse: PDF ${pdf.id} excluded by filename pattern`,
-          );
-          continue;
-        }
-        if (
-          (
-            await getMineruAvailabilityForAttachment(pdf, {
-              validateSyncedPackage: false,
-            })
-          ).status !== "missing"
-        ) {
-          ztoolkit.log(`MinerU auto-parse: PDF ${pdf.id} already available`);
-          continue;
-        }
         const title = item.getField?.("title") || `Item ${pdf.id}`;
-        ztoolkit.log(`MinerU auto-parse: enqueuing ${title}`);
-        enqueueForProcessing(pdf.id, title, item.id);
+        await enqueuePdfIfEligible(pdf, title, item.id, event);
       }
     } else if (isPdfAttachment(item)) {
-      const pdfFilename =
-        (item as unknown as { attachmentFilename?: string })
-          .attachmentFilename || "";
-      if (isFilenameExcluded(pdfFilename)) {
-        ztoolkit.log(
-          `MinerU auto-parse: PDF ${item.id} excluded by filename pattern`,
-        );
-        continue;
-      }
-      if (
-        (
-          await getMineruAvailabilityForAttachment(item, {
-            validateSyncedPackage: false,
-          })
-        ).status !== "missing"
-      ) {
-        ztoolkit.log(`MinerU auto-parse: PDF ${item.id} already available`);
-        continue;
-      }
       const parentItem = item.parentID ? Zotero.Items.get(item.parentID) : null;
       const title =
         parentItem?.getField?.("title") ||
         item.getField?.("title") ||
         `PDF ${item.id}`;
-      ztoolkit.log(`MinerU auto-parse: enqueuing standalone PDF ${title}`);
-      enqueueForProcessing(item.id, title, item.parentID || undefined);
+      await enqueuePdfIfEligible(
+        item,
+        title,
+        item.parentID || undefined,
+        event,
+      );
     }
   }
 }
@@ -545,6 +670,10 @@ export function stopAutoWatch(): void {
   }
 
   processingQueue = [];
+  for (const { timer } of readinessRetryTimers.values()) {
+    clearTimeout(timer);
+  }
+  readinessRetryTimers.clear();
   isProcessing = false;
   isPaused = false;
   currentItemTitle = "";
@@ -579,7 +708,7 @@ export function getAutoWatchStatus(): AutoWatchStatus {
     isProcessing,
     isPaused,
     currentItem: currentItemTitle,
-    queueLength: processingQueue.length,
+    queueLength: processingQueue.length + readinessRetryTimers.size,
   };
 }
 
@@ -599,6 +728,26 @@ export function getAutoWatchQueueSnapshotForTests(): QueueEntry[] {
   return processingQueue.map((entry) => ({ ...entry }));
 }
 
+export function getAutoWatchReadinessRetryCountForTests(): number {
+  return readinessRetryTimers.size;
+}
+
+export function flushAutoWatchReadinessRetryForTests(
+  attachmentId: number,
+): boolean {
+  const pending = readinessRetryTimers.get(attachmentId);
+  if (!pending) return false;
+  clearTimeout(pending.timer);
+  readinessRetryTimers.delete(attachmentId);
+  enqueueForProcessing(
+    pending.entry.attachmentId,
+    pending.entry.title,
+    pending.entry.parentItemId,
+    pending.entry.readinessRetryCount,
+  );
+  return true;
+}
+
 export function isAutoWatchQueueEntryCurrentForTests(
   entry: QueueEntry,
 ): boolean {
@@ -612,6 +761,10 @@ export function resetAutoWatchForTests(): void {
   }
 
   processingQueue = [];
+  for (const { timer } of readinessRetryTimers.values()) {
+    clearTimeout(timer);
+  }
+  readinessRetryTimers.clear();
   isProcessing = false;
   isPaused = false;
   currentItemTitle = "";
