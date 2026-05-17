@@ -47,6 +47,7 @@ import {
   deleteGlobalConversation,
   deletePaperConversation,
   ensureGlobalConversationExists,
+  getGlobalConversation,
   getGlobalConversationUserTurnCount,
   getLatestEmptyGlobalConversation,
   loadConversation,
@@ -195,6 +196,7 @@ import {
   type HistorySearchResult,
 } from "./historySearchController";
 import {
+  collapseDuplicateReusableConversationDrafts,
   findReusableConversationDraft,
   isReusableConversationDraft,
 } from "../../standaloneConversationResolution";
@@ -492,14 +494,6 @@ export function createHistoryLifecycleController(
       title: params.title || "",
     });
     return getCodexConversationSummary(params.conversationKey);
-  };
-  const isClaudeConversationDraft = async (conversationKey: number) => {
-    const summary = await getClaudeConversationSummary(conversationKey);
-    return !summary || (summary.userTurnCount || 0) <= 0;
-  };
-  const isCodexConversationDraft = async (conversationKey: number) => {
-    const summary = await getCodexConversationSummary(conversationKey);
-    return Boolean(summary && (summary.userTurnCount || 0) <= 0);
   };
   const touchEmptyDraftActivity = async (
     conversationKey: number,
@@ -1515,6 +1509,7 @@ export function createHistoryLifecycleController(
                 section: "paper",
                 sectionTitle: "Paper Chat",
                 conversationKey: normalizedKey,
+                libraryID,
                 title: summary.title,
                 timestampText: isDraft
                   ? "Draft"
@@ -1525,7 +1520,10 @@ export function createHistoryLifecycleController(
                 lastActivityAt: Number.isFinite(lastActivity)
                   ? Math.floor(lastActivity)
                   : 0,
+                userTurnCount: summary.userTurnCount,
                 paperItemID,
+                providerSessionId: summary.providerSessionId,
+                scopedConversationKey: summary.scopedConversationKey,
               });
             }
           } else if (isCodexConversationSystem()) {
@@ -1575,6 +1573,7 @@ export function createHistoryLifecycleController(
                 section: "paper",
                 sectionTitle: "Paper Chat",
                 conversationKey: normalizedKey,
+                libraryID,
                 title: summary.title,
                 timestampText: isDraft
                   ? "Draft"
@@ -1585,7 +1584,10 @@ export function createHistoryLifecycleController(
                 lastActivityAt: Number.isFinite(lastActivity)
                   ? Math.floor(lastActivity)
                   : 0,
+                userTurnCount: summary.userTurnCount,
                 paperItemID,
+                providerSessionId: summary.providerSessionId,
+                scopedConversationKey: summary.scopedConversationKey,
               });
             }
           } else {
@@ -1624,6 +1626,7 @@ export function createHistoryLifecycleController(
                 section: "paper",
                 sectionTitle: "Paper Chat",
                 conversationKey: normalizedKey,
+                libraryID,
                 title: summary.title,
                 timestampText: isDraft
                   ? "Draft"
@@ -1634,6 +1637,7 @@ export function createHistoryLifecycleController(
                 lastActivityAt: Number.isFinite(lastActivity)
                   ? Math.floor(lastActivity)
                   : 0,
+                userTurnCount: summary.userTurnCount,
                 paperItemID,
                 sessionVersion: Math.floor(sessionVersion),
               });
@@ -1648,6 +1652,14 @@ export function createHistoryLifecycleController(
           }
           return b.conversationKey - a.conversationKey;
         });
+        paperEntries.splice(
+          0,
+          paperEntries.length,
+          ...collapseDuplicateReusableConversationDrafts({
+            entries: paperEntries,
+            activeConversationKey: item ? getConversationKey(item) : null,
+          }),
+        );
       }
     }
 
@@ -1722,6 +1734,7 @@ export function createHistoryLifecycleController(
             section: "open",
             sectionTitle: "Library Chat",
             conversationKey: normalizedKey,
+            libraryID,
             title: entry.title || (isDraft ? "New Claude chat" : ""),
             timestampText: isDraft
               ? "Draft"
@@ -1732,6 +1745,9 @@ export function createHistoryLifecycleController(
             lastActivityAt: Number.isFinite(lastActivity)
               ? Math.floor(lastActivity)
               : 0,
+            userTurnCount: entry.userTurnCount,
+            providerSessionId: entry.providerSessionId,
+            scopedConversationKey: entry.scopedConversationKey,
           });
         }
       } else if (isCodexConversationSystem()) {
@@ -1798,6 +1814,7 @@ export function createHistoryLifecycleController(
             section: "open",
             sectionTitle: "Library Chat",
             conversationKey: normalizedKey,
+            libraryID,
             title: entry.title || (isDraft ? "New Codex chat" : ""),
             timestampText: isDraft
               ? "Draft"
@@ -1808,6 +1825,9 @@ export function createHistoryLifecycleController(
             lastActivityAt: Number.isFinite(lastActivity)
               ? Math.floor(lastActivity)
               : 0,
+            userTurnCount: entry.userTurnCount,
+            providerSessionId: entry.providerSessionId,
+            scopedConversationKey: entry.scopedConversationKey,
           });
         }
       } else {
@@ -1865,6 +1885,7 @@ export function createHistoryLifecycleController(
             section: "open",
             sectionTitle: "Library Chat",
             conversationKey: normalizedKey,
+            libraryID,
             title: entry.title,
             timestampText: entry.isDraft
               ? "Draft"
@@ -1875,6 +1896,7 @@ export function createHistoryLifecycleController(
             lastActivityAt: Number.isFinite(lastActivity)
               ? Math.floor(lastActivity)
               : 0,
+            userTurnCount: entry.userTurnCount,
           });
         }
       }
@@ -1895,7 +1917,14 @@ export function createHistoryLifecycleController(
         }
         return b.conversationKey - a.conversationKey;
       });
-      globalEntries.splice(0, globalEntries.length, ...dedupedGlobalEntries);
+      globalEntries.splice(
+        0,
+        globalEntries.length,
+        ...collapseDuplicateReusableConversationDrafts({
+          entries: dedupedGlobalEntries,
+          activeConversationKey: item ? getConversationKey(item) : null,
+        }),
+      );
     }
 
     const activeHistorySection = isGlobalMode() ? "open" : "paper";
@@ -3391,7 +3420,7 @@ export function createHistoryLifecycleController(
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (!forceFresh && normalizedCurrentCandidate > 0) {
+      if (normalizedCurrentCandidate > 0) {
         try {
           const currentSummary = await getClaudeConversationSummary(
             normalizedCurrentCandidate,
@@ -3414,7 +3443,7 @@ export function createHistoryLifecycleController(
           );
         }
       }
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const summaries = await listClaudeGlobalConversations(
             libraryID,
@@ -3472,9 +3501,19 @@ export function createHistoryLifecycleController(
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (!forceFresh && normalizedCurrentCandidate > 0) {
+      if (normalizedCurrentCandidate > 0) {
         try {
-          if (await isCodexConversationDraft(normalizedCurrentCandidate)) {
+          const currentSummary = await getCodexConversationSummary(
+            normalizedCurrentCandidate,
+          );
+          if (
+            isReusableConversationDraft({
+              forceFresh,
+              summary: currentSummary,
+              kind: "global",
+              libraryID,
+            })
+          ) {
             targetConversationKey = normalizedCurrentCandidate;
             reuseReason = "active-draft";
           }
@@ -3485,7 +3524,7 @@ export function createHistoryLifecycleController(
           );
         }
       }
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const summaries = await listCodexGlobalConversations(
             libraryID,
@@ -3542,12 +3581,21 @@ export function createHistoryLifecycleController(
       const normalizedCurrentCandidate = Number.isFinite(currentCandidate)
         ? Math.floor(currentCandidate)
         : 0;
-      if (!forceFresh && normalizedCurrentCandidate > 0) {
+      if (normalizedCurrentCandidate > 0) {
         try {
-          const turnCount = await getGlobalConversationUserTurnCount(
+          const currentSummary = await getGlobalConversation(
             normalizedCurrentCandidate,
           );
-          if (turnCount === 0) {
+          if (
+            isReusableConversationDraft({
+              forceFresh,
+              summary: currentSummary
+                ? { ...currentSummary, kind: "global" as const }
+                : null,
+              kind: "global",
+              libraryID,
+            })
+          ) {
             targetConversationKey = normalizedCurrentCandidate;
             reuseReason = "active-draft";
           }
@@ -3559,11 +3607,22 @@ export function createHistoryLifecycleController(
         }
       }
 
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const latestEmpty = await getLatestEmptyGlobalConversation(libraryID);
           const latestEmptyKey = Number(latestEmpty?.conversationKey || 0);
-          if (Number.isFinite(latestEmptyKey) && latestEmptyKey > 0) {
+          if (
+            Number.isFinite(latestEmptyKey) &&
+            latestEmptyKey > 0 &&
+            isReusableConversationDraft({
+              forceFresh,
+              summary: latestEmpty
+                ? { ...latestEmpty, kind: "global" as const }
+                : null,
+              kind: "global",
+              libraryID,
+            })
+          ) {
             targetConversationKey = Math.floor(latestEmptyKey);
             reuseReason = "latest-draft";
           }
@@ -3638,7 +3697,7 @@ export function createHistoryLifecycleController(
 
     if (isClaudeConversationSystem()) {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
+      if (Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getClaudeConversationSummary(currentKey);
           if (
@@ -3646,6 +3705,7 @@ export function createHistoryLifecycleController(
               forceFresh,
               summary: currentSummary,
               kind: "paper",
+              paperItemID,
             })
           ) {
             targetConversationKey = currentKey;
@@ -3658,7 +3718,7 @@ export function createHistoryLifecycleController(
           );
         }
       }
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const summaries = await listClaudePaperConversations(
             libraryID,
@@ -3669,6 +3729,7 @@ export function createHistoryLifecycleController(
             forceFresh,
             summaries,
             kind: "paper",
+            paperItemID,
           });
           if (emptyEntry?.conversationKey) {
             targetConversationKey = emptyEntry.conversationKey;
@@ -3706,7 +3767,7 @@ export function createHistoryLifecycleController(
       }
     } else if (isCodexConversationSystem()) {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
+      if (Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getCodexConversationSummary(currentKey);
           if (
@@ -3714,6 +3775,7 @@ export function createHistoryLifecycleController(
               forceFresh,
               summary: currentSummary,
               kind: "paper",
+              paperItemID,
             })
           ) {
             targetConversationKey = currentKey;
@@ -3726,7 +3788,7 @@ export function createHistoryLifecycleController(
           );
         }
       }
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const summaries = await listCodexPaperConversations(
             libraryID,
@@ -3737,6 +3799,7 @@ export function createHistoryLifecycleController(
             forceFresh,
             summaries,
             kind: "paper",
+            paperItemID,
           });
           if (emptyEntry?.conversationKey) {
             targetConversationKey = emptyEntry.conversationKey;
@@ -3774,10 +3837,19 @@ export function createHistoryLifecycleController(
       }
     } else {
       const currentKey = Number(getConversationKey(item) || 0);
-      if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
+      if (Number.isFinite(currentKey) && currentKey > 0) {
         try {
           const currentSummary = await getPaperConversation(currentKey);
-          if (currentSummary && currentSummary.userTurnCount === 0) {
+          if (
+            isReusableConversationDraft({
+              forceFresh,
+              summary: currentSummary
+                ? { ...currentSummary, kind: "paper" as const }
+                : null,
+              kind: "paper",
+              paperItemID,
+            })
+          ) {
             targetConversationKey = currentKey;
             reuseReason = "active-draft";
           }
@@ -3789,14 +3861,22 @@ export function createHistoryLifecycleController(
         }
       }
 
-      if (!forceFresh && targetConversationKey <= 0) {
+      if (targetConversationKey <= 0) {
         try {
           const summaries = await listPaperConversations(
             libraryID,
             paperItemID,
             50,
           );
-          const emptyEntry = summaries.find((s) => s.userTurnCount === 0);
+          const emptyEntry = findReusableConversationDraft({
+            forceFresh,
+            summaries: summaries.map((summary) => ({
+              ...summary,
+              kind: "paper" as const,
+            })),
+            kind: "paper",
+            paperItemID,
+          });
           if (emptyEntry?.conversationKey) {
             targetConversationKey = emptyEntry.conversationKey;
             reuseReason = "existing-draft";

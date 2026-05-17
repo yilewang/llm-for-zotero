@@ -10,14 +10,18 @@ export type ConversationHistoryEntry = {
   section: "paper" | "open";
   sectionTitle: string;
   conversationKey: number;
+  libraryID?: number;
   title: string;
   timestampText: string;
   deletable: boolean;
   isDraft: boolean;
   isPendingDelete: boolean;
   lastActivityAt: number;
+  userTurnCount?: number;
   paperItemID?: number;
   sessionVersion?: number;
+  providerSessionId?: string;
+  scopedConversationKey?: string;
 };
 
 export type HistorySwitchTarget =

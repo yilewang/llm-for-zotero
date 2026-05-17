@@ -58,7 +58,7 @@ import {
   clearConversation as clearStoredConversation,
   deleteGlobalConversation,
   deletePaperConversation,
-  getGlobalConversationUserTurnCount,
+  getGlobalConversation,
   getLatestEmptyGlobalConversation,
   getPaperConversation,
   listPaperConversations,
@@ -91,6 +91,7 @@ import {
 } from "./setupHandlers/controllers/historySearchController";
 import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
 import {
+  collapseDuplicateReusableConversationDrafts,
   findReusableStandaloneDraft,
   isReusableStandaloneDraft,
 } from "./standaloneConversationResolution";
@@ -387,10 +388,15 @@ export function renderStandalonePlaceholder(body: Element): void {
 
 type SidebarConv = {
   conversationKey: number;
+  kind?: "global" | "paper";
+  libraryID?: number;
   lastActivityAt: number;
   title?: string;
+  userTurnCount?: number;
   sessionVersion?: number;
   paperItemID?: number;
+  providerSessionId?: string;
+  scopedConversationKey?: string;
   mode?: "open" | "paper";
 };
 
@@ -1696,8 +1702,12 @@ export function openStandaloneChat(options?: {
       // -----------------------------------------------------------------------
       const renderSidebarItems = (conversations: SidebarConv[]) => {
         clearSidebarList();
+        const visibleConversations = collapseDuplicateReusableConversationDrafts({
+          entries: conversations,
+          activeConversationKey,
+        });
 
-        if (conversations.length === 0) {
+        if (visibleConversations.length === 0) {
           const emptyMsg = doc.createElementNS(
             HTML_NS,
             "div",
@@ -1708,7 +1718,7 @@ export function openStandaloneChat(options?: {
           return;
         }
 
-        const groups = groupHistoryEntriesByDay(conversations, { translate: t });
+        const groups = groupHistoryEntriesByDay(visibleConversations, { translate: t });
         for (const group of groups) {
           const dayLabel = doc.createElementNS(
             HTML_NS,
@@ -1782,8 +1792,13 @@ export function openStandaloneChat(options?: {
                 limit: 50,
               })).map((entry) => ({
                 conversationKey: entry.conversationKey,
+                kind: "global" as const,
+                libraryID: getCurrentLibraryScopeID(),
                 lastActivityAt: entry.lastActivityAt,
                 title: entry.title,
+                userTurnCount: entry.userTurnCount,
+                providerSessionId: entry.providerSessionId,
+                scopedConversationKey: entry.scopedConversationKey,
                 mode: "open" as const,
               }));
             } else if (isCodexConversationSystem()) {
@@ -1800,8 +1815,13 @@ export function openStandaloneChat(options?: {
                 limit: 50,
               })).map((entry) => ({
                 conversationKey: entry.conversationKey,
+                kind: "global" as const,
+                libraryID: getCurrentLibraryScopeID(),
                 lastActivityAt: entry.lastActivityAt,
                 title: entry.title,
+                userTurnCount: entry.userTurnCount,
+                providerSessionId: entry.providerSessionId,
+                scopedConversationKey: entry.scopedConversationKey,
                 mode: "open" as const,
               }));
             } else {
@@ -1812,8 +1832,11 @@ export function openStandaloneChat(options?: {
                 limit: 50,
               })).map((entry) => ({
                 conversationKey: entry.conversationKey,
+                kind: "global" as const,
+                libraryID: getCurrentLibraryScopeID(),
                 lastActivityAt: entry.lastActivityAt,
                 title: entry.title,
+                userTurnCount: entry.userTurnCount,
                 sessionVersion: entry.sessionVersion,
                 paperItemID: entry.paperItemID,
                 mode: entry.mode,
@@ -1857,9 +1880,14 @@ export function openStandaloneChat(options?: {
                 limit: 50,
               })).map((entry) => ({
                 conversationKey: entry.conversationKey,
+                kind: "paper" as const,
+                libraryID: paperLibID,
                 lastActivityAt: entry.lastActivityAt,
                 title: entry.title,
+                userTurnCount: entry.userTurnCount,
                 paperItemID: entry.paperItemID,
+                providerSessionId: entry.providerSessionId,
+                scopedConversationKey: entry.scopedConversationKey,
                 mode: "paper" as const,
               }));
             } else if (isCodexConversationSystem()) {
@@ -1878,9 +1906,14 @@ export function openStandaloneChat(options?: {
                 limit: 50,
               })).map((entry) => ({
                 conversationKey: entry.conversationKey,
+                kind: "paper" as const,
+                libraryID: paperLibID,
                 lastActivityAt: entry.lastActivityAt,
                 title: entry.title,
+                userTurnCount: entry.userTurnCount,
                 paperItemID: entry.paperItemID,
+                providerSessionId: entry.providerSessionId,
+                scopedConversationKey: entry.scopedConversationKey,
                 mode: "paper" as const,
               }));
             } else {
@@ -1891,8 +1924,11 @@ export function openStandaloneChat(options?: {
                 limit: 50,
               })).map((entry) => ({
                 conversationKey: entry.conversationKey,
+                kind: "paper" as const,
+                libraryID: paperLibID,
                 lastActivityAt: entry.lastActivityAt,
                 title: entry.title,
+                userTurnCount: entry.userTurnCount,
                 sessionVersion: entry.sessionVersion,
                 paperItemID: entry.paperItemID,
                 mode: entry.mode,
@@ -3125,6 +3161,8 @@ export function openStandaloneChat(options?: {
             const latestEmpty = findReusableStandaloneDraft({
               forceFresh,
               summaries,
+              kind: "global",
+              libraryID: currentLibraryID,
             });
             if (latestEmpty?.conversationKey) {
               return Math.floor(latestEmpty.conversationKey);
@@ -3161,6 +3199,8 @@ export function openStandaloneChat(options?: {
             const latestEmpty = findReusableStandaloneDraft({
               forceFresh,
               summaries,
+              kind: "global",
+              libraryID: currentLibraryID,
             });
             if (latestEmpty?.conversationKey) {
               return Math.floor(latestEmpty.conversationKey);
@@ -3173,25 +3213,35 @@ export function openStandaloneChat(options?: {
           );
         }
         const currentKey = Number(activeConversationKey || 0);
-        if (!forceFresh && isUpstreamGlobalConversationKey(currentKey)) {
+        if (isUpstreamGlobalConversationKey(currentKey)) {
           try {
-            const turnCount = await getGlobalConversationUserTurnCount(currentKey);
-            if (turnCount === 0) {
+            const currentSummary = await getGlobalConversation(currentKey);
+            if (isReusableStandaloneDraft({
+              forceFresh,
+              summary: currentSummary
+                ? { ...currentSummary, kind: "global" as const }
+                : null,
+              kind: "global",
+              libraryID: currentLibraryID,
+            })) {
               return Math.floor(currentKey);
             }
           } catch (err) {
             ztoolkit.log("LLM: standalone failed to inspect active global draft", err);
           }
         }
-        if (!forceFresh) {
-          try {
-            const latestEmpty = await getLatestEmptyGlobalConversation(currentLibraryID);
-            if (latestEmpty?.conversationKey) {
-              return Math.floor(latestEmpty.conversationKey);
-            }
-          } catch (err) {
-            ztoolkit.log("LLM: standalone failed to load latest global draft", err);
+        try {
+          const latestEmpty = await getLatestEmptyGlobalConversation(currentLibraryID);
+          if (latestEmpty?.conversationKey && isReusableStandaloneDraft({
+            forceFresh,
+            summary: { ...latestEmpty, kind: "global" as const },
+            kind: "global",
+            libraryID: currentLibraryID,
+          })) {
+            return Math.floor(latestEmpty.conversationKey);
           }
+        } catch (err) {
+          ztoolkit.log("LLM: standalone failed to load latest global draft", err);
         }
         return await createGlobalConversation(currentLibraryID);
       };
@@ -3216,6 +3266,7 @@ export function openStandaloneChat(options?: {
                 forceFresh,
                 summary: currentSummary,
                 kind: "paper",
+                paperItemID: paperId,
               })) {
                 return { conversationKey: Math.floor(currentKey) };
               }
@@ -3232,6 +3283,8 @@ export function openStandaloneChat(options?: {
             const emptyEntry = findReusableStandaloneDraft({
               forceFresh,
               summaries,
+              kind: "paper",
+              paperItemID: paperId,
             });
             if (emptyEntry?.conversationKey) {
               return { conversationKey: Math.floor(emptyEntry.conversationKey) };
@@ -3255,6 +3308,7 @@ export function openStandaloneChat(options?: {
                 forceFresh,
                 summary: currentSummary,
                 kind: "paper",
+                paperItemID: paperId,
               })) {
                 return { conversationKey: Math.floor(currentKey) };
               }
@@ -3271,6 +3325,8 @@ export function openStandaloneChat(options?: {
             const emptyEntry = findReusableStandaloneDraft({
               forceFresh,
               summaries,
+              kind: "paper",
+              paperItemID: paperId,
             });
             if (emptyEntry?.conversationKey) {
               return { conversationKey: Math.floor(emptyEntry.conversationKey) };
@@ -3286,32 +3342,42 @@ export function openStandaloneChat(options?: {
           };
         }
         const currentKey = Number(activeConversationKey || 0);
-        if (!forceFresh && Number.isFinite(currentKey) && currentKey > 0) {
+        if (Number.isFinite(currentKey) && currentKey > 0) {
           try {
             const currentSummary = await getPaperConversation(currentKey);
-            if (currentSummary && currentSummary.userTurnCount === 0) {
+            if (isReusableStandaloneDraft({
+              forceFresh,
+              summary: currentSummary
+                ? { ...currentSummary, kind: "paper" as const }
+                : null,
+              kind: "paper",
+              paperItemID: paperId,
+            })) {
               return { conversationKey: Math.floor(currentKey) };
             }
           } catch (err) {
             ztoolkit.log("LLM: standalone failed to inspect active paper draft", err);
           }
         }
-        if (!forceFresh) {
-          try {
-            const summaries = await listPaperConversations(paperLibraryID, paperId, 50);
-            const emptyEntry = findReusableStandaloneDraft({
-              forceFresh,
-              summaries,
-            });
-            if (emptyEntry?.conversationKey) {
-              return {
-                conversationKey: Math.floor(emptyEntry.conversationKey),
-                sessionVersion: emptyEntry.sessionVersion,
-              };
-            }
-          } catch (err) {
-            ztoolkit.log("LLM: standalone failed to list paper drafts", err);
+        try {
+          const summaries = await listPaperConversations(paperLibraryID, paperId, 50);
+          const emptyEntry = findReusableStandaloneDraft({
+            forceFresh,
+            summaries: summaries.map((summary) => ({
+              ...summary,
+              kind: "paper" as const,
+            })),
+            kind: "paper",
+            paperItemID: paperId,
+          });
+          if (emptyEntry?.conversationKey) {
+            return {
+              conversationKey: Math.floor(emptyEntry.conversationKey),
+              sessionVersion: emptyEntry.sessionVersion,
+            };
           }
+        } catch (err) {
+          ztoolkit.log("LLM: standalone failed to list paper drafts", err);
         }
         const summary = await createPaperConversation(paperLibraryID, paperId);
         return {
