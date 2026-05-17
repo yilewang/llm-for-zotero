@@ -5060,10 +5060,13 @@ label.llm-search-results-item:hover {
 }
 
 .llm-context-previews {
+  --llm-context-preview-row-gap: 8px;
+  --llm-context-preview-column-gap: 4px;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--llm-context-preview-row-gap)
+    var(--llm-context-preview-column-gap);
   width: 100%;
   container-type: inline-size;
   position: relative;
