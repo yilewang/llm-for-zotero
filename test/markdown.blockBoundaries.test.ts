@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   normalizeBlockBoundaries,
   renderMarkdown,
+  renderMarkdownForNote,
 } from "../src/utils/markdown";
 
 describe("normalizeBlockBoundaries", function () {
@@ -300,5 +301,84 @@ describe("renderMarkdown with inline block tokens", function () {
       '<annotation encoding="application/x-tex">x</annotation>',
     );
     assert.include(html, " costs $5 in the toy example.");
+  });
+});
+
+describe("renderMarkdown code block presentation", function () {
+  it("renders normal fenced code as escaped code inside the polished shell", function () {
+    const input = "```ts\nconst label = '<svg>';\n```";
+    const html = renderMarkdown(input);
+    assert.include(html, "llm-codeblock-shell");
+    assert.include(html, "llm-codeblock-header");
+    assert.include(html, "llm-codeblock-lang");
+    assert.include(html, 'data-code-lang="ts"');
+    assert.include(html, "hljs-keyword");
+    assert.include(html, "&lt;svg&gt;");
+    assert.notInclude(html, "llm-svg-preview");
+  });
+
+  it("syntax-highlights known fenced languages without changing copy source", function () {
+    const input = [
+      "```python",
+      "def top_k(nums):",
+      "    return sorted(nums)",
+      "```",
+    ].join("\n");
+    const html = renderMarkdown(input);
+    assert.include(html, 'data-code-lang="python"');
+    assert.include(html, "language-python");
+    assert.include(html, "hljs-keyword");
+    assert.include(html, 'data-llm-copy-source="```python&#10;');
+  });
+
+  it("renders safe fenced SVG as a bounded preview while keeping source code", function () {
+    const input = [
+      "```svg",
+      '<svg width="120" height="80">',
+      '  <circle cx="40" cy="40" r="24" fill="red"/>',
+      "</svg>",
+      "```",
+    ].join("\n");
+    const html = renderMarkdown(input);
+    assert.include(html, "llm-codeblock-shell");
+    assert.include(html, 'data-code-lang="svg"');
+    assert.include(html, "llm-svg-preview");
+    assert.include(html, "data:image/svg+xml;charset=utf-8,");
+    assert.include(html, "&lt;circle");
+    assert.include(html, 'data-llm-copy-source="```svg&#10;');
+  });
+
+  it("falls back to a normal code block for unsafe SVG", function () {
+    const input = [
+      "```svg",
+      '<svg width="120" height="80">',
+      '  <script>alert("x")</script>',
+      "</svg>",
+      "```",
+    ].join("\n");
+    const html = renderMarkdown(input);
+    assert.notInclude(html, "llm-svg-preview");
+    assert.notInclude(html, "data:image/svg+xml");
+    assert.include(html, "&lt;script&gt;");
+  });
+
+  it("keeps raw inline SVG escaped instead of rendering it as HTML", function () {
+    const html = renderMarkdown('<svg><circle cx="4" cy="4" r="2"/></svg>');
+    assert.include(html, "&lt;svg&gt;");
+    assert.notInclude(html, "llm-svg-preview");
+    assert.notInclude(html, "<svg><circle");
+  });
+
+  it("does not add chat SVG preview chrome for Zotero note rendering", function () {
+    const input = [
+      "```svg",
+      '<svg width="120" height="80"><circle cx="40" cy="40" r="24"/></svg>',
+      "```",
+    ].join("\n");
+    const html = renderMarkdownForNote(input);
+    assert.notInclude(html, "llm-codeblock-shell");
+    assert.notInclude(html, "llm-svg-preview");
+    assert.include(html, '<pre class="lang-svg"><code>');
+    assert.include(html, "&lt;svg");
   });
 });

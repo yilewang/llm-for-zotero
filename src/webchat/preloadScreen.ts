@@ -73,7 +73,7 @@ function el(
   cls: string,
   props?: Record<string, unknown>,
 ): HTMLElement {
-  return createElement(doc, tag, cls, props as any);
+  return createElement(doc, tag, cls, props as any) as HTMLElement;
 }
 
 function sleep(ms: number): Promise<void> {

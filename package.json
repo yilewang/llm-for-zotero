@@ -34,6 +34,7 @@
   },
   "dependencies": {
     "fflate": "^0.8.2",
+    "highlight.js": "^11.11.1",
     "katex": "^0.16.28",
     "zotero-plugin-toolkit": "^5.1.0-beta.13"
   },

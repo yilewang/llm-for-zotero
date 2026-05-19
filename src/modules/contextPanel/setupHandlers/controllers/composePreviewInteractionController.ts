@@ -979,7 +979,7 @@ export function attachComposePreviewInteractionController(
   }
 
   const bodyWithPinnedDismiss = body as Element & {
-    __llmPinnedContextDismissHandler?: (event: MouseEvent) => void;
+    __llmPinnedContextDismissHandler?: EventListener;
   };
   if (bodyWithPinnedDismiss.__llmPinnedContextDismissHandler) {
     body.removeEventListener(
@@ -988,11 +988,12 @@ export function attachComposePreviewInteractionController(
       true,
     );
   }
-  const dismissPinnedContextPanels = (event: MouseEvent) => {
-    if (event.button !== 0) return;
+  const dismissPinnedContextPanels: EventListener = (event) => {
+    const mouseEvent = event as MouseEvent;
+    if (mouseEvent.button !== 0) return;
     const item = getItem();
     if (!item) return;
-    const target = event.target as Node | null;
+    const target = mouseEvent.target as Node | null;
     const clickedInsideTextPanel = Boolean(
       selectedContextList && target && selectedContextList.contains(target),
     );

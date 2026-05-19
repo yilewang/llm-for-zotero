@@ -13,7 +13,7 @@ export type MultipartFileField = {
 export type MultipartField = MultipartTextField | MultipartFileField;
 
 export type MultipartRequest = {
-  body: BodyInit;
+  body: FormData | Uint8Array;
   contentType?: string;
   mode: "formdata" | "manual";
 };
@@ -114,7 +114,7 @@ export function buildMultipartRequest(
     const body = new FormDataCtor();
     for (const field of fields) {
       if ("data" in field) {
-        const blob = new BlobCtor([field.data], {
+        const blob = new BlobCtor([field.data as unknown as BlobPart], {
           type: field.contentType || "application/octet-stream",
         });
         body.append(

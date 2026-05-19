@@ -3088,9 +3088,10 @@ export function openStandaloneChat(options?: {
         activeConversationKey = key;
 
         // Update active class
-        for (const el of sidebarList.querySelectorAll(
-          ".llm-standalone-conv-item",
-        )) {
+        const conversationItems = Array.from(
+          sidebarList.querySelectorAll(".llm-standalone-conv-item"),
+        ) as HTMLElement[];
+        for (const el of conversationItems) {
           el.classList.remove("active");
         }
         target.classList.add("active");

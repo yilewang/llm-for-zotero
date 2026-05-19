@@ -2084,9 +2084,9 @@ function refreshAllCitationButtonPages(
   try {
     const doc = body.ownerDocument;
     if (!doc) return;
-    const buttons = doc.querySelectorAll(
-      "button.llm-citation-icon",
-    ) as NodeListOf<HTMLButtonElement>;
+    const buttons = Array.from(
+      doc.querySelectorAll("button.llm-citation-icon"),
+    ) as HTMLButtonElement[];
     for (const button of buttons) {
       if (!button.isConnected) continue;
       const syncKey = sanitizeText(button.dataset.citationSyncKey || "").trim();

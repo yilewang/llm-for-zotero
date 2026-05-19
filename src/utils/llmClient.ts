@@ -1135,7 +1135,7 @@ function buildUploadRequest(params: {
   mimeType: string;
   bytes: Uint8Array;
 }): { body: BodyInit; contentType?: string; mode: "formdata" | "manual" } {
-  return buildMultipartRequest(
+  const request = buildMultipartRequest(
     [
       { name: "purpose", value: params.purpose || "assistants" },
       {
@@ -1151,6 +1151,16 @@ function buildUploadRequest(params: {
       preferFormData: true,
     },
   );
+  return {
+    ...request,
+    body:
+      request.body instanceof Uint8Array
+        ? (request.body.buffer.slice(
+            request.body.byteOffset,
+            request.body.byteOffset + request.body.byteLength,
+          ) as ArrayBuffer)
+        : request.body,
+  };
 }
 
 async function uploadAttachmentForResponses(params: {

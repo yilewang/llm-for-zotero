@@ -362,9 +362,9 @@ async function fetchArxivSearch(
   const domParser = new (
     globalThis as typeof globalThis & { DOMParser: new () => XmlDomParser }
   ).DOMParser();
-  let doc;
+  let doc: XmlDocument;
   try {
-    doc = domParser.parseFromString(cleanXml, "text/xml");
+    doc = domParser.parseFromString(cleanXml, "text/xml") as unknown as XmlDocument;
   } catch (parseError) {
     throw new Error(
       `Failed to parse arXiv XML response: ${parseError instanceof Error ? parseError.message : String(parseError)}`,

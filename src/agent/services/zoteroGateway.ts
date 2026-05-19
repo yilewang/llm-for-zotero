@@ -2682,7 +2682,11 @@ export class ZoteroGateway {
       const mimeType = mimeMap[ext] || "image/png";
 
       // Create blob
-      const blob = new Blob([bytes], { type: mimeType });
+      const blobPart = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer;
+      const blob = new Blob([blobPart], { type: mimeType });
 
       // Import as embedded image attachment
       const Attachments = (Zotero as any).Attachments;

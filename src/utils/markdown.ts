@@ -19,6 +19,18 @@
  */
 
 import katex from "katex";
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import css from "highlight.js/lib/languages/css";
+import javascript from "highlight.js/lib/languages/javascript";
+import json from "highlight.js/lib/languages/json";
+import markdown from "highlight.js/lib/languages/markdown";
+import python from "highlight.js/lib/languages/python";
+import shell from "highlight.js/lib/languages/shell";
+import sql from "highlight.js/lib/languages/sql";
+import typescript from "highlight.js/lib/languages/typescript";
+import xml from "highlight.js/lib/languages/xml";
+import yaml from "highlight.js/lib/languages/yaml";
 
 // =============================================================================
 // Types
@@ -52,6 +64,18 @@ interface TextBlock {
 let zoteroNoteMode = false;
 let activeImageResolver: ((src: string) => string | null) | null = null;
 
+hljs.registerLanguage("bash", bash);
+hljs.registerLanguage("css", css);
+hljs.registerLanguage("javascript", javascript);
+hljs.registerLanguage("json", json);
+hljs.registerLanguage("markdown", markdown);
+hljs.registerLanguage("python", python);
+hljs.registerLanguage("shell", shell);
+hljs.registerLanguage("sql", sql);
+hljs.registerLanguage("typescript", typescript);
+hljs.registerLanguage("xml", xml);
+hljs.registerLanguage("yaml", yaml);
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -77,6 +101,7 @@ const HTML_ESCAPE_MAP: Record<string, string> = {
 };
 
 const HARD_BREAK_TOKEN = "@@LLMHARDBREAK@@";
+const SVG_PREVIEW_MAX_CHARS = 80_000;
 
 // =============================================================================
 // Utility Functions
@@ -117,6 +142,117 @@ function countOccurrences(text: string, pattern: string | RegExp): number {
 /** Escape special regex characters */
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeFenceLanguage(raw: string | undefined): string {
+  return (raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_+#.-]/g, "")
+    .slice(0, 32);
+}
+
+function highlightLanguageForFence(lang: string): string | null {
+  const normalized = normalizeFenceLanguage(lang);
+  const aliases: Record<string, string> = {
+    "": "",
+    bash: "bash",
+    css: "css",
+    html: "xml",
+    javascript: "javascript",
+    js: "javascript",
+    json: "json",
+    jsx: "javascript",
+    markdown: "markdown",
+    md: "markdown",
+    py: "python",
+    python: "python",
+    shell: "shell",
+    sh: "shell",
+    sql: "sql",
+    svg: "xml",
+    ts: "typescript",
+    tsx: "typescript",
+    typescript: "typescript",
+    xml: "xml",
+    yaml: "yaml",
+    yml: "yaml",
+  };
+  const language = aliases[normalized] || "";
+  return language && hljs.getLanguage(language) ? language : null;
+}
+
+function renderCodeHtml(code: string, lang: string): string {
+  const trimmedCode = code.trim();
+  const langClass = lang ? ` class="lang-${lang}"` : "";
+  const highlightLanguage = highlightLanguageForFence(lang);
+  if (!highlightLanguage) {
+    return `<pre${langClass}><code>${escapeHtml(trimmedCode)}</code></pre>`;
+  }
+  try {
+    const highlighted = hljs.highlight(trimmedCode, {
+      language: highlightLanguage,
+      ignoreIllegals: true,
+    }).value;
+    return `<pre${langClass}><code class="hljs language-${highlightLanguage}">${highlighted}</code></pre>`;
+  } catch {
+    return `<pre${langClass}><code>${escapeHtml(trimmedCode)}</code></pre>`;
+  }
+}
+
+function trimSvgLeadingMetadata(svg: string): string {
+  let result = svg.trim().replace(/^\uFEFF/, "");
+  let previous = "";
+  while (previous !== result) {
+    previous = result;
+    result = result
+      .replace(/^<\?xml[\s\S]*?\?>\s*/i, "")
+      .replace(/^<!--[\s\S]*?-->\s*/i, "");
+  }
+  return result;
+}
+
+function hasUnsafeSvgUrl(svg: string): boolean {
+  const attrPattern = /\b(?:href|src|xlink:href)\s*=\s*(["'])([\s\S]*?)\1/gi;
+  let attrMatch: RegExpExecArray | null;
+  while ((attrMatch = attrPattern.exec(svg)) !== null) {
+    const value = attrMatch[2].trim();
+    if (value && !value.startsWith("#")) return true;
+  }
+
+  const cssUrlPattern = /url\(\s*(["']?)([^)"']+)\1\s*\)/gi;
+  let cssMatch: RegExpExecArray | null;
+  while ((cssMatch = cssUrlPattern.exec(svg)) !== null) {
+    const value = cssMatch[2].trim();
+    if (value && !value.startsWith("#")) return true;
+  }
+
+  return false;
+}
+
+export function buildSafeSvgDataUri(code: string): string | null {
+  if (!code || code.length > SVG_PREVIEW_MAX_CHARS) return null;
+
+  let svg = trimSvgLeadingMetadata(code);
+  if (!/^<svg\b[\s\S]*(?:<\/svg>|\/>)\s*$/i.test(svg)) return null;
+
+  const unsafePatterns = [
+    /<!doctype\b/i,
+    /<!entity\b/i,
+    /<\s*(?:script|foreignObject|iframe|object|embed|link|meta|base)\b/i,
+    /\bon[a-z]+\s*=/i,
+    /\bjavascript\s*:/i,
+    /@import\b/i,
+  ];
+  if (unsafePatterns.some((pattern) => pattern.test(svg))) return null;
+  if (hasUnsafeSvgUrl(svg)) return null;
+
+  const openingTag = svg.match(/^<svg\b[^>]*>/i)?.[0] || "";
+  if (!/\sxmlns\s*=/.test(openingTag)) {
+    svg = svg.replace(/^<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
 
 function hasUnescapedPipe(text: string, start: number, end: number): boolean {
@@ -803,11 +939,26 @@ function renderBlock(block: TextBlock): string {
 /** Render fenced code block */
 function renderCodeBlock(code: string, raw: string): string {
   // Extract language from raw if present
-  const langMatch = raw.match(/^```(\w*)/);
-  const lang = langMatch?.[1] || "";
-  const langClass = lang ? ` class="lang-${lang}"` : "";
-  const html = `<pre${langClass}><code>${escapeHtml(code.trim())}</code></pre>`;
-  if (zoteroNoteMode) return html;
+  const langMatch = raw.match(/^```([^\s`]*)/);
+  const lang = normalizeFenceLanguage(langMatch?.[1]);
+  const label = lang || "text";
+  if (zoteroNoteMode) {
+    const langClass = lang ? ` class="lang-${lang}"` : "";
+    return `<pre${langClass}><code>${escapeHtml(code.trim())}</code></pre>`;
+  }
+  const codeHtml = renderCodeHtml(code, lang);
+
+  const svgPreviewUri = lang === "svg" ? buildSafeSvgDataUri(code) : null;
+  const svgPreview = svgPreviewUri
+    ? `<div class="llm-svg-preview" aria-label="SVG preview"><img src="${escapeAttribute(svgPreviewUri)}" alt="SVG preview" /></div>`
+    : "";
+  const html = [
+    `<div class="llm-codeblock-shell" data-code-lang="${escapeAttribute(label)}">`,
+    `<div class="llm-codeblock-header"><span class="llm-codeblock-lang">${escapeHtml(label)}</span></div>`,
+    svgPreview,
+    `<div class="llm-codeblock-body">${codeHtml}</div>`,
+    `</div>`,
+  ].join("");
   return wrapCopyable(html, raw.trim(), "code");
 }
 

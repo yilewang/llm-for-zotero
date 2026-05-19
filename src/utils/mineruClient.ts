@@ -647,7 +647,7 @@ function buildLocalFileParseBody(params: {
   pdfBytes: Uint8Array;
   backend: MineruLocalBackend;
 }): { body: BodyInit; contentType?: string; mode: "formdata" | "manual" } {
-  return buildMultipartRequest(
+  const request = buildMultipartRequest(
     [
       {
         name: "files",
@@ -671,6 +671,16 @@ function buildLocalFileParseBody(params: {
       preferFormData: true,
     },
   );
+  return {
+    ...request,
+    body:
+      request.body instanceof Uint8Array
+        ? (request.body.buffer.slice(
+            request.body.byteOffset,
+            request.body.byteOffset + request.body.byteLength,
+          ) as ArrayBuffer)
+        : request.body,
+  };
 }
 
 async function parsePdfViaLocalFileParse(

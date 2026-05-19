@@ -4710,6 +4710,11 @@ label.llm-search-results-item:hover {
   vertical-align: middle;
 }
 
+.llm-bubble.assistant .llm-copyable-code {
+  margin: 8px 0;
+  border-radius: 8px;
+}
+
 .llm-bubble.assistant .llm-render-copy-btn {
   appearance: none;
   -moz-appearance: none;
@@ -4775,6 +4780,40 @@ label.llm-search-results-item:hover {
   font-size: 9px;
 }
 
+.llm-bubble.assistant .llm-copyable-code > .llm-render-copy-btn {
+  top: 5px;
+  right: 14px;
+  min-width: 24px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: color-mix(in srgb, #fff 72%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 15px;
+  font-weight: 600;
+  opacity: 1;
+  transform: translateY(0);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.llm-bubble.assistant .llm-copyable-code > .llm-render-copy-btn:hover {
+  background: transparent;
+  color: #f3f4f6;
+}
+
+.llm-bubble.assistant
+  .llm-copyable-code[data-copy-feedback="copied"]
+  > .llm-render-code-copy-btn {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+  color: #7dd3a8;
+}
+
 .llm-bubble.assistant pre {
   background: rgba(0, 0, 0, 0.15);
   padding: 10px 12px;
@@ -4790,6 +4829,110 @@ label.llm-search-results-item:hover {
   line-height: 1.4;
   overflow-wrap: normal;
   word-break: normal;
+}
+
+.llm-bubble.assistant .llm-codeblock-shell {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, #fff 8%, transparent);
+  border-radius: 8px;
+  background: #202020;
+  box-shadow: none;
+}
+
+.llm-bubble.assistant .llm-codeblock-header {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 34px;
+  min-height: 0;
+  padding: 0 48px 0 18px;
+}
+
+.llm-bubble.assistant .llm-codeblock-lang {
+  color: color-mix(in srgb, #fff 68%, transparent);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.llm-bubble.assistant .llm-codeblock-body pre {
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 22px 18px 24px;
+}
+
+.llm-bubble.assistant .llm-codeblock-body pre code {
+  display: block;
+  min-width: max-content;
+  color: #d8d8d8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.48;
+}
+
+.llm-bubble.assistant .llm-codeblock-body .hljs {
+  background: transparent;
+  color: #d8d8d8;
+}
+
+.llm-bubble.assistant .llm-codeblock-body .hljs-keyword,
+.llm-bubble.assistant .llm-codeblock-body .hljs-selector-tag,
+.llm-bubble.assistant .llm-codeblock-body .hljs-built_in {
+  color: #ff8ac9;
+}
+
+.llm-bubble.assistant .llm-codeblock-body .hljs-title,
+.llm-bubble.assistant .llm-codeblock-body .hljs-title.function_,
+.llm-bubble.assistant .llm-codeblock-body .hljs-name,
+.llm-bubble.assistant .llm-codeblock-body .hljs-tag {
+  color: #52e3e6;
+}
+
+.llm-bubble.assistant .llm-codeblock-body .hljs-string,
+.llm-bubble.assistant .llm-codeblock-body .hljs-attr,
+.llm-bubble.assistant .llm-codeblock-body .hljs-attribute {
+  color: #f3e77b;
+}
+
+.llm-bubble.assistant .llm-codeblock-body .hljs-number,
+.llm-bubble.assistant .llm-codeblock-body .hljs-literal,
+.llm-bubble.assistant .llm-codeblock-body .hljs-variable,
+.llm-bubble.assistant .llm-codeblock-body .hljs-symbol {
+  color: #9b8cff;
+}
+
+.llm-bubble.assistant .llm-codeblock-body .hljs-comment,
+.llm-bubble.assistant .llm-codeblock-body .hljs-quote {
+  color: #8a8f98;
+  font-style: italic;
+}
+
+.llm-bubble.assistant .llm-codeblock-body .hljs-meta,
+.llm-bubble.assistant .llm-codeblock-body .hljs-doctag,
+.llm-bubble.assistant .llm-codeblock-body .hljs-section {
+  color: #7dd3a8;
+}
+
+.llm-bubble.assistant .llm-svg-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 18px 10px;
+  min-height: 140px;
+  max-height: 260px;
+  padding: 14px;
+  overflow: auto;
+  border-radius: 7px;
+  background: #f4f5f7;
+}
+
+.llm-bubble.assistant .llm-svg-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 230px;
+  object-fit: contain;
 }
 
 .llm-bubble.assistant blockquote {

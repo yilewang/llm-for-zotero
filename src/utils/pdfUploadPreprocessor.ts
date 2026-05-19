@@ -43,11 +43,18 @@ export function detectPdfUploadProvider(apiBase: string): PdfUploadProvider {
 
 function buildPdfUploadMultipartBody(
   fields: MultipartField[],
-): { contentType: string; body: Uint8Array } {
-  return buildManualMultipartBody(fields, {
+): { contentType: string; body: BodyInit } {
+  const manual = buildManualMultipartBody(fields, {
     boundaryPrefix: "FormBoundary",
     fallbackName: "field",
   });
+  return {
+    contentType: manual.contentType,
+    body: manual.body.buffer.slice(
+      manual.body.byteOffset,
+      manual.body.byteOffset + manual.body.byteLength,
+    ) as ArrayBuffer,
+  };
 }
 
 // ── Qwen (DashScope) ────────────────────────────────────────────────────────

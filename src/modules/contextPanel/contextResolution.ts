@@ -135,8 +135,11 @@ function getZoteroTabsStateWithSource(): {
 
   let activePaneWindow: any = null;
   try {
-    activePaneWindow =
-      Zotero.getActiveZoteroPane?.()?.document?.defaultView || null;
+    const activePane = Zotero.getActiveZoteroPane?.() as
+      | { document?: Document }
+      | null
+      | undefined;
+    activePaneWindow = activePane?.document?.defaultView || null;
   } catch (_error) {
     void _error;
   }
