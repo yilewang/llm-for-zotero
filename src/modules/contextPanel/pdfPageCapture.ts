@@ -167,6 +167,61 @@ async function waitForRenderedPageCanvas(
   return null;
 }
 
+async function renderPdfPageToDataUrl(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reader: any,
+  pageNumber: number,
+): Promise<string | null> {
+  const canvasDoc =
+    getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
+  if (!canvasDoc) return null;
+
+  const pdfDocument = unwrapWrappedJsObject(
+    app.pdfDocument as { getPage?: (n: number) => Promise<unknown> },
+  );
+  if (
+    typeof (pdfDocument as { getPage?: unknown }).getPage !== "function"
+  ) {
+    return null;
+  }
+
+  try {
+    const rawPage = await (
+      pdfDocument as { getPage: (n: number) => Promise<unknown> }
+    ).getPage(pageNumber);
+    const pdfPage = resolveRenderablePdfPage(rawPage);
+    if (!pdfPage) return null;
+
+    const viewport = pdfPage.getViewport({ scale: 1.8 });
+    const offscreen = canvasDoc.createElement("canvas") as HTMLCanvasElement;
+    offscreen.width = Math.max(1, Math.ceil(viewport.width));
+    offscreen.height = Math.max(1, Math.ceil(viewport.height));
+    const context = offscreen.getContext("2d") as CanvasRenderingContext2D | null;
+    if (!context) return null;
+
+    const renderTask = pdfPage.render({ canvasContext: context, viewport });
+    if (
+      renderTask &&
+      typeof renderTask === "object" &&
+      "promise" in renderTask &&
+      (renderTask as { promise: Promise<unknown> }).promise
+    ) {
+      await (renderTask as { promise: Promise<unknown> }).promise;
+    } else if (
+      renderTask &&
+      typeof (renderTask as { then?: unknown }).then === "function"
+    ) {
+      await renderTask;
+    }
+
+    return offscreen.toDataURL("image/png");
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Captures the currently visible PDF page in the active Zotero reader as a
  * PNG data URL, or returns null if no PDF is open / rendering fails.
@@ -204,47 +259,7 @@ export async function captureCurrentPdfPage(): Promise<string | null> {
   }
 
   // Fallback: render the page off-screen via the PDF.js API.
-  const canvasDoc =
-    getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
-  if (!canvasDoc) return null;
-
-  const pdfDocument = unwrapWrappedJsObject(
-    app.pdfDocument as { getPage?: (n: number) => Promise<unknown> },
-  );
-  if (
-    typeof (pdfDocument as { getPage?: unknown }).getPage !== "function"
-  ) {
-    return null;
-  }
-  const rawPage = await (
-    pdfDocument as { getPage: (n: number) => Promise<unknown> }
-  ).getPage(pageNumber);
-  const pdfPage = resolveRenderablePdfPage(rawPage);
-  if (!pdfPage) return null;
-
-  const viewport = pdfPage.getViewport({ scale: 1.8 });
-  const offscreen = canvasDoc.createElement("canvas") as HTMLCanvasElement;
-  offscreen.width = Math.max(1, Math.ceil(viewport.width));
-  offscreen.height = Math.max(1, Math.ceil(viewport.height));
-  const context = offscreen.getContext("2d") as CanvasRenderingContext2D | null;
-  if (!context) return null;
-
-  const renderTask = pdfPage.render({ canvasContext: context, viewport });
-  if (
-    renderTask &&
-    typeof renderTask === "object" &&
-    "promise" in renderTask &&
-    (renderTask as { promise: Promise<unknown> }).promise
-  ) {
-    await (renderTask as { promise: Promise<unknown> }).promise;
-  } else if (
-    renderTask &&
-    typeof (renderTask as { then?: unknown }).then === "function"
-  ) {
-    await renderTask;
-  }
-
-  return offscreen.toDataURL("image/png");
+  return renderPdfPageToDataUrl(app, reader, pageNumber);
 }
 
 /**
@@ -315,8 +330,8 @@ async function navigateReaderToPage(reader: any, pageIndex: number): Promise<boo
 
 /**
  * Captures the rendered canvas for a given page (1-indexed) as a PNG data URL.
- * Navigates the reader to that page, waits for the canvas to render, and grabs it.
- * Falls back to off-screen PDF.js rendering if the canvas grab fails.
+ * Navigates the reader to that page, then renders it off-screen via PDF.js.
+ * Falls back to the reader canvas only if the off-screen render fails.
  */
 async function capturePageByNavigation(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -328,7 +343,10 @@ async function capturePageByNavigation(
   const pageIndex = pageNumber - 1;
   await navigateReaderToPage(reader, pageIndex);
 
-  // Fast path: grab the rendered canvas
+  const offscreenDataUrl = await renderPdfPageToDataUrl(app, reader, pageNumber);
+  if (offscreenDataUrl) return offscreenDataUrl;
+
+  // Fallback: grab the rendered canvas if off-screen rendering failed.
   const rendered = await waitForRenderedPageCanvas(app, reader, pageNumber);
   if (rendered && rendered.width > 0 && rendered.height > 0) {
     try {
@@ -353,50 +371,7 @@ async function capturePageByNavigation(
     }
   }
 
-  // Fallback: render off-screen via PDF.js API
-  const canvasDoc =
-    getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
-  if (!canvasDoc) return null;
-
-  const pdfDocument = unwrapWrappedJsObject(
-    app.pdfDocument as { getPage?: (n: number) => Promise<unknown> },
-  );
-  if (typeof (pdfDocument as { getPage?: unknown }).getPage !== "function") {
-    return null;
-  }
-  try {
-    const rawPage = await (
-      pdfDocument as { getPage: (n: number) => Promise<unknown> }
-    ).getPage(pageNumber);
-    const pdfPage = resolveRenderablePdfPage(rawPage);
-    if (!pdfPage) return null;
-
-    const viewport = pdfPage.getViewport({ scale: 1.8 });
-    const offscreen = canvasDoc.createElement("canvas") as HTMLCanvasElement;
-    offscreen.width = Math.max(1, Math.ceil(viewport.width));
-    offscreen.height = Math.max(1, Math.ceil(viewport.height));
-    const context = offscreen.getContext("2d") as CanvasRenderingContext2D | null;
-    if (!context) return null;
-
-    const renderTask = pdfPage.render({ canvasContext: context, viewport });
-    if (
-      renderTask &&
-      typeof renderTask === "object" &&
-      "promise" in renderTask &&
-      (renderTask as { promise: Promise<unknown> }).promise
-    ) {
-      await (renderTask as { promise: Promise<unknown> }).promise;
-    } else if (
-      renderTask &&
-      typeof (renderTask as { then?: unknown }).then === "function"
-    ) {
-      await renderTask;
-    }
-
-    return offscreen.toDataURL("image/png");
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 /**
