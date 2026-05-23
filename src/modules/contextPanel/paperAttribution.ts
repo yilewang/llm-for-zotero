@@ -2,7 +2,7 @@ import {
   resolveTextAttachmentSourceModeFromMetadata,
   type TextAttachmentSourceMode,
 } from "./textAttachmentExtraction";
-import type { PaperContextRef } from "./types";
+import type { PaperContentSourceMode, PaperContextRef } from "./types";
 
 function normalizeText(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -64,6 +64,44 @@ function resolveTextAttachmentSourceMode(
   });
 }
 
+export function isTextLikeAttachmentSourceMode(
+  mode: PaperContentSourceMode | undefined | null,
+): mode is TextAttachmentSourceMode {
+  return (
+    mode === "markdown" || mode === "html" || mode === "txt" || mode === "docx"
+  );
+}
+
+export function formatAttachmentSourceType(
+  mode: PaperContentSourceMode | undefined | null,
+): string {
+  if (mode === "markdown") return "Markdown attachment";
+  if (mode === "html") return "HTML attachment";
+  if (mode === "txt") return "TXT attachment";
+  if (mode === "docx") return "DOCX attachment";
+  return "Attachment";
+}
+
+export function formatPaperAttachmentTitle(
+  paperContext: PaperContextRef | null | undefined,
+): string {
+  if (!paperContext) return "selected attachment";
+  let filename = "";
+  if (typeof Zotero !== "undefined") {
+    const attachment = (
+      Zotero as unknown as {
+        Items?: { get?: (itemId: number) => Zotero.Item | null | undefined };
+      }
+    ).Items?.get?.(paperContext.contextItemId);
+    filename = getAttachmentFilename(attachment || null);
+  }
+  return (
+    filename ||
+    normalizeText(paperContext.attachmentTitle || "") ||
+    `Attachment ${Math.floor(Number(paperContext.contextItemId || 0)) || ""}`.trim()
+  );
+}
+
 function extractYearValue(value: unknown): string | undefined {
   const text = normalizeText(value);
   if (!text) return undefined;
@@ -122,7 +160,8 @@ export function formatPaperCitationLabel(
   const fallbackId =
     Number.isFinite(paperContext.itemId) && paperContext.itemId > 0
       ? Math.floor(paperContext.itemId)
-      : Number.isFinite(paperContext.contextItemId) && paperContext.contextItemId > 0
+      : Number.isFinite(paperContext.contextItemId) &&
+          paperContext.contextItemId > 0
         ? Math.floor(paperContext.contextItemId)
         : 0;
   return fallbackId > 0 ? `Paper ${fallbackId}` : "Paper";
@@ -131,6 +170,11 @@ export function formatPaperCitationLabel(
 export function formatPaperSourceLabel(
   paperContext: PaperContextRef | null | undefined,
 ): string {
+  if (isTextLikeAttachmentSourceMode(paperContext?.contentSourceMode)) {
+    const attachmentTitle = formatPaperAttachmentTitle(paperContext);
+    const parentLabel = formatPaperCitationLabel(paperContext);
+    return `(${attachmentTitle}, attachment under ${parentLabel})`;
+  }
   return `(${formatPaperCitationLabel(paperContext)})`;
 }
 
@@ -138,6 +182,20 @@ export function buildPaperQuoteCitationGuidance(
   paperContext?: PaperContextRef | null,
 ): string[] {
   if (paperContext) {
+    if (isTextLikeAttachmentSourceMode(paperContext.contentSourceMode)) {
+      return [
+        "Answer format when quoting this selected attachment:",
+        "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
+        "> quoted text from the selected attachment",
+        "",
+        formatPaperSourceLabel(paperContext),
+        "",
+        "- If exact passages are available, include short blockquotes when useful for grounding the answer.",
+        "- Put the source label on the next non-empty line after the blockquote, before any commentary.",
+        "- Never put headings, bullets, interpretation, or other prose between a quoted passage and its source label; clickable quote citations depend on this adjacency.",
+        "- Use the EXACT source label above. Do NOT translate or romanize author names.",
+      ];
+    }
     return [
       "Answer format when quoting this paper:",
       "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
@@ -162,6 +220,22 @@ export function buildPaperQuoteCitationGuidance(
     "- Put the source label on the next non-empty line after the blockquote, before any commentary.",
     "- Never put headings, bullets, interpretation, or other prose between a quoted passage and its source label; clickable quote citations depend on this adjacency.",
     "- Use the EXACT source label provided for each paper. Do NOT translate or romanize author names.",
+    "- Do not cite raw chunk ids, citation keys, or invented page numbers.",
+  ];
+}
+
+export function buildGenericSourceQuoteCitationGuidance(): string[] {
+  return [
+    "Source-grounded citation format for the final answer:",
+    "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
+    "> quoted text from the selected source",
+    "",
+    "(Source label)",
+    "",
+    "- If exact passages are available, include short blockquotes when useful for grounding the answer.",
+    "- Put the source label on the next non-empty line after the blockquote, before any commentary.",
+    "- Never put headings, bullets, interpretation, or other prose between a quoted passage and its source label; clickable quote citations depend on this adjacency.",
+    "- Use the EXACT source label provided for each source. Do NOT translate or romanize author names.",
     "- Do not cite raw chunk ids, citation keys, or invented page numbers.",
   ];
 }
@@ -236,7 +310,9 @@ export function resolvePaperContextRefFromAttachment(
         `Paper ${normalizedPaperItemId}`,
     ),
   );
-  const citationKey = normalizeText(String(paperItem.getField("citationKey") || ""));
+  const citationKey = normalizeText(
+    String(paperItem.getField("citationKey") || ""),
+  );
   const attachmentTitle = getAttachmentDisplayTitle(contextItem);
   const firstCreator = normalizeText(
     String(
@@ -300,11 +376,16 @@ export function resolvePaperContextRefFromItem(
   );
   const citationKey = normalizeText(String(item.getField("citationKey") || ""));
   const firstCreator = normalizeText(
-    String(item.getField("firstCreator") || (item as Zotero.Item).firstCreator || ""),
+    String(
+      item.getField("firstCreator") || (item as Zotero.Item).firstCreator || "",
+    ),
   );
   const year = normalizeText(
     String(
-      item.getField("year") || item.getField("date") || item.getField("issued") || "",
+      item.getField("year") ||
+        item.getField("date") ||
+        item.getField("issued") ||
+        "",
     ),
   );
   return {

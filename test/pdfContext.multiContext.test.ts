@@ -400,6 +400,51 @@ describe("pdfContext multi-context helpers", function () {
     assert.include(text, "Paper Text:");
   });
 
+  it("renders text-like child attachments as selected attachment sources", function () {
+    const paper: PaperContextRef = {
+      itemId: 2,
+      contextItemId: 23,
+      title: "Episodic and associative memory from spatial scaffolds",
+      attachmentTitle: "paper_ocr.md",
+      firstCreator: "Chandra et al.",
+      year: "2025",
+      contentSourceMode: "markdown",
+    };
+    const context = buildPdfContext([
+      "This OCR markdown says spatial scaffolds organize memory retrieval.",
+    ]);
+    const text = buildFullPaperContext(paper, context);
+
+    assert.include(text, "Parent Zotero Item:");
+    assert.include(
+      text,
+      "Title: Episodic and associative memory from spatial scaffolds",
+    );
+    assert.include(text, "Selected Source:");
+    assert.include(text, "Type: Markdown attachment");
+    assert.include(text, "Attachment title: paper_ocr.md");
+    assert.include(
+      text,
+      "Relationship: Child attachment under the parent item; it may be user OCR, a translated file, supplement, notes, or another related file.",
+    );
+    assert.include(
+      text,
+      "Source label: (paper_ocr.md, attachment under Chandra et al., 2025)",
+    );
+    assert.include(text, "Selected attachment guidance:");
+    assert.include(
+      text,
+      "Treat this selected attachment as the primary evidence source",
+    );
+    assert.include(text, "Selected Attachment Text:");
+    assert.include(
+      text,
+      "This OCR markdown says spatial scaffolds organize memory retrieval.",
+    );
+    assert.notInclude(text, "Paper Text:");
+    assert.notInclude(text, "[No extractable PDF text available.");
+  });
+
   it("renders evidence pack with quote-plus-source formatting", function () {
     const paperA: PaperContextRef = {
       itemId: 1,
@@ -486,6 +531,54 @@ describe("pdfContext multi-context helpers", function () {
     assert.lengthOf(pack.quoteCitations, 1);
     assert.match(pack.quoteCitations[0].id, /^Q_/);
     assert.include(pack.contextText, `[[quote:${pack.quoteCitations[0].id}]]`);
+  });
+
+  it("labels retrieved evidence from text-like attachments as attachment-derived", function () {
+    const attachmentPaper: PaperContextRef = {
+      itemId: 7,
+      contextItemId: 70,
+      title: "Parent Paper",
+      attachmentTitle: "translation.md",
+      firstCreator: "Rivera",
+      year: "2024",
+      contentSourceMode: "markdown",
+    };
+    const pack = buildEvidencePack({
+      papers: [attachmentPaper],
+      candidates: [
+        {
+          paperKey: buildPaperKey(attachmentPaper),
+          itemId: 7,
+          contextItemId: 70,
+          title: "Parent Paper",
+          chunkIndex: 0,
+          chunkText: "Translated passage about the main experiment.",
+          estimatedTokens: 6,
+          bm25Score: 0.5,
+          embeddingScore: 0.1,
+          hybridScore: 0.3,
+          evidenceScore: 0.8,
+        },
+      ],
+    });
+
+    assert.lengthOf(pack.quoteCitations, 1);
+    assert.equal(
+      pack.quoteCitations[0].citationLabel,
+      "(translation.md, attachment under Rivera, 2024)",
+    );
+    assert.include(
+      pack.contextText,
+      "Source-grounded citation format for the final answer:",
+    );
+    assert.include(
+      pack.contextText,
+      "Source label: (translation.md, attachment under Rivera, 2024)",
+    );
+    assert.include(
+      pack.contextText,
+      "The full paper or selected attachment source remains available in paper chat.",
+    );
   });
 
   it("builds chunk metadata with section labels and cleaned anchors", function () {

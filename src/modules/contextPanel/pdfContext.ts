@@ -23,9 +23,13 @@ import {
   tokenizeRetrievalText,
 } from "./retrievalTokenizer";
 import {
+  buildGenericSourceQuoteCitationGuidance,
   buildPaperQuoteCitationGuidance,
+  formatAttachmentSourceType,
+  formatPaperAttachmentTitle,
   formatPaperCitationLabel,
   formatPaperSourceLabel,
+  isTextLikeAttachmentSourceMode,
 } from "./paperAttribution";
 import {
   buildQuoteAnchorPromptBlock,
@@ -1671,6 +1675,32 @@ function formatPaperMetadataLines(ref: PaperContextRef): string[] {
   return lines;
 }
 
+function formatSelectedAttachmentMetadataLines(ref: PaperContextRef): string[] {
+  const lines = ["Parent Zotero Item:", `Title: ${ref.title}`];
+  if (ref.citationKey) lines.push(`Citation key: ${ref.citationKey}`);
+  if (ref.firstCreator) lines.push(`Author: ${ref.firstCreator}`);
+  if (ref.year) lines.push(`Year: ${ref.year}`);
+  lines.push(
+    "",
+    "Selected Source:",
+    `Type: ${formatAttachmentSourceType(ref.contentSourceMode)}`,
+    `Attachment title: ${formatPaperAttachmentTitle(ref)}`,
+    "Relationship: Child attachment under the parent item; it may be user OCR, a translated file, supplement, notes, or another related file.",
+    `Source label: ${formatPaperSourceLabel(ref)}`,
+  );
+  return lines;
+}
+
+function formatSelectedAttachmentGuidanceLines(): string[] {
+  return [
+    "Selected attachment guidance:",
+    "- Treat this selected attachment as the primary evidence source for the current chat.",
+    "- Use parent item metadata for bibliographic/contextual grounding, but do not override the selected attachment text with inferences from the parent title.",
+    "- Do not infer that the attachment failed or is corrupted merely because its content differs from the parent title.",
+    '- If the user asks about "this paper", state that the current source is the selected attachment under the parent item and answer from this source.',
+  ];
+}
+
 function formatPerPaperQuoteGuidanceLines(ref: PaperContextRef): string[] {
   return buildPaperQuoteCitationGuidance(ref);
 }
@@ -1679,22 +1709,36 @@ export function buildFullPaperContext(
   paperContext: PaperContextRef,
   pdfContext: PdfContext | undefined,
 ): string {
-  const metadata = formatPaperMetadataLines(paperContext);
+  const isSelectedAttachment = isTextLikeAttachmentSourceMode(
+    paperContext.contentSourceMode,
+  );
+  const metadata = isSelectedAttachment
+    ? formatSelectedAttachmentMetadataLines(paperContext)
+    : formatPaperMetadataLines(paperContext);
+  const guidance = isSelectedAttachment
+    ? [
+        ...formatSelectedAttachmentGuidanceLines(),
+        "",
+        ...formatPerPaperQuoteGuidanceLines(paperContext),
+      ]
+    : formatPerPaperQuoteGuidanceLines(paperContext);
   if (!pdfContext || !pdfContext.chunks.length) {
     return [
       ...metadata,
       "",
-      ...formatPerPaperQuoteGuidanceLines(paperContext),
+      ...guidance,
       "",
-      "[No extractable PDF text available. Using metadata only.]",
+      isSelectedAttachment
+        ? "[No extractable selected attachment text available. Using metadata only.]"
+        : "[No extractable PDF text available. Using metadata only.]",
     ].join("\n");
   }
   return [
     ...metadata,
     "",
-    ...formatPerPaperQuoteGuidanceLines(paperContext),
+    ...guidance,
     "",
-    "Paper Text:",
+    isSelectedAttachment ? "Selected Attachment Text:" : "Paper Text:",
     pdfContext.chunks.join("\n\n"),
   ].join("\n");
 }
@@ -1709,14 +1753,28 @@ export function buildTruncatedFullPaperContext(
   truncated: boolean;
   fullLength: number;
 } {
-  const metadata = formatPaperMetadataLines(paperContext);
+  const isSelectedAttachment = isTextLikeAttachmentSourceMode(
+    paperContext.contentSourceMode,
+  );
+  const metadata = isSelectedAttachment
+    ? formatSelectedAttachmentMetadataLines(paperContext)
+    : formatPaperMetadataLines(paperContext);
+  const guidance = isSelectedAttachment
+    ? [
+        ...formatSelectedAttachmentGuidanceLines(),
+        "",
+        ...formatPerPaperQuoteGuidanceLines(paperContext),
+      ]
+    : formatPerPaperQuoteGuidanceLines(paperContext);
   if (!pdfContext || !pdfContext.chunks.length) {
     const text = [
       ...metadata,
       "",
-      ...formatPerPaperQuoteGuidanceLines(paperContext),
+      ...guidance,
       "",
-      "[No extractable PDF text available. Using metadata only.]",
+      isSelectedAttachment
+        ? "[No extractable selected attachment text available. Using metadata only.]"
+        : "[No extractable PDF text available. Using metadata only.]",
     ].join("\n");
     return {
       text,
@@ -1730,9 +1788,9 @@ export function buildTruncatedFullPaperContext(
   const parts = [
     ...metadata,
     "",
-    ...formatPerPaperQuoteGuidanceLines(paperContext),
+    ...guidance,
     "",
-    "Paper Text:",
+    isSelectedAttachment ? "Selected Attachment Text:" : "Paper Text:",
   ];
   let text = parts.join("\n");
   let estimatedTokens = estimateTextTokens(text);
@@ -2142,6 +2200,9 @@ export function buildEvidencePack(params: {
   const quoteAnchorGuidance = buildQuoteAnchorPromptBlock(
     normalizedQuoteCitations,
   );
+  const hasSelectedAttachmentSource = papers.some((paper) =>
+    isTextLikeAttachmentSourceMode(paper.contentSourceMode),
+  );
 
   const blocks: string[] = [
     [
@@ -2149,8 +2210,12 @@ export function buildEvidencePack(params: {
       "",
       ...quoteAnchorGuidance,
       ...(quoteAnchorGuidance.length ? [""] : []),
-      ...buildPaperQuoteCitationGuidance(),
-      "The full paper remains available in paper chat.",
+      ...(hasSelectedAttachmentSource
+        ? buildGenericSourceQuoteCitationGuidance()
+        : buildPaperQuoteCitationGuidance()),
+      hasSelectedAttachmentSource
+        ? "The full paper or selected attachment source remains available in paper chat."
+        : "The full paper remains available in paper chat.",
       "For this reply, prioritize these retrieved snippets as the primary evidence pack.",
       "Do not use snippets from references as empirical evidence.",
       "If support is weak or indirect, say so instead of overstating the claim.",
@@ -2213,13 +2278,20 @@ export function renderClaimEvidencePack(params: {
       .filter((entry): entry is QuoteCitation => Boolean(entry)),
   );
   const quoteAnchorGuidance = buildQuoteAnchorPromptBlock(quoteCitations);
+  const hasSelectedAttachmentSource = isTextLikeAttachmentSourceMode(
+    paper.contentSourceMode,
+  );
   const lines = [
     "Claim Evidence:",
     "",
     ...quoteAnchorGuidance,
     ...(quoteAnchorGuidance.length ? [""] : []),
-    ...buildPaperQuoteCitationGuidance(),
-    "The full paper remains available in paper chat.",
+    ...(hasSelectedAttachmentSource
+      ? buildGenericSourceQuoteCitationGuidance()
+      : buildPaperQuoteCitationGuidance()),
+    hasSelectedAttachmentSource
+      ? "The full paper or selected attachment source remains available in paper chat."
+      : "The full paper remains available in paper chat.",
     "Use the evidence snippets below as the primary grounding for this claim assessment.",
     "Do not treat references or background citations as direct empirical evidence.",
     "If the evidence is indirect or mixed, say so explicitly.",

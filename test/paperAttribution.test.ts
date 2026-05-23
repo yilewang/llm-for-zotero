@@ -57,6 +57,31 @@ describe("paperAttribution", function () {
     );
   });
 
+  it("formats child attachment source labels and quote guidance", function () {
+    const attachmentContext = {
+      itemId: 1,
+      contextItemId: 2,
+      title: "Parent Paper",
+      attachmentTitle: "test.md",
+      firstCreator: "Chandra et al.",
+      year: "2025",
+      contentSourceMode: "markdown" as const,
+    };
+
+    assert.equal(
+      formatPaperSourceLabel(attachmentContext),
+      "(test.md, attachment under Chandra et al., 2025)",
+    );
+    const guidance =
+      buildPaperQuoteCitationGuidance(attachmentContext).join("\n");
+    assert.include(guidance, "quoting this selected attachment");
+    assert.include(guidance, "> quoted text from the selected attachment");
+    assert.include(
+      guidance,
+      "(test.md, attachment under Chandra et al., 2025)",
+    );
+  });
+
   it("keeps generic quote guidance citation-adjacent", function () {
     const guidance = buildPaperQuoteCitationGuidance().join("\n");
 

@@ -455,7 +455,11 @@ export function openStandaloneChat(options?: {
   const mainWin = Zotero.getMainWindow();
   if (!mainWin) return;
 
-  const sourceItem = options?.initialItem || null;
+  const sourceRawContextItem =
+    options?.sourceBody && options.sourceBody.isConnected
+      ? activeContextPanelRawItems.get(options.sourceBody) || null
+      : null;
+  const sourceItem = sourceRawContextItem || options?.initialItem || null;
   const explicitConversationSystem = options?.initialConversationSystem
     ? resolvePreferredConversationSystem({
         item: null,
@@ -623,6 +627,8 @@ export function openStandaloneChat(options?: {
   let activeItem: Zotero.Item = initialMountedItem;
   let currentPaperItem: Zotero.Item | null = initialPaperItem;
   let currentBasePaperItem: Zotero.Item | null = initialBasePaperItem;
+  let currentRawContextItem: Zotero.Item | null =
+    sourceItemForResolution || sourceItem || initialMountedItem;
   let isInWebChatMode = false;
   let currentChatHooks: SetupHandlersHooks | null = null;
   let standaloneSidebarRenderQueued = false;
@@ -1633,12 +1639,21 @@ export function openStandaloneChat(options?: {
         }, 0);
       };
 
-      const mountChatPanel = (nextItem: Zotero.Item) => {
+      const mountChatPanel = (
+        nextItem: Zotero.Item,
+        rawContextItem?: Zotero.Item | null,
+      ) => {
         const resolvedState = resolveInitialPanelItemState(nextItem, {
           conversationSystem: currentConversationSystem,
         });
         const mountedItem = resolvedState.item || nextItem;
+        const rawItemForPanel =
+          rawContextItem ||
+          currentRawContextItem ||
+          resolveConversationBaseItem(mountedItem) ||
+          mountedItem;
         try {
+          currentRawContextItem = rawItemForPanel;
           activeItem = mountedItem;
           currentConversationSystem =
             resolveConversationSystemForItem(mountedItem) || currentConversationSystem;
@@ -1702,7 +1717,7 @@ export function openStandaloneChat(options?: {
           if (llmMain) llmMain.dataset.standalone = "true";
 
           activeContextPanels.set(contentArea, () => activeItem);
-          activeContextPanelRawItems.set(contentArea, mountedItem);
+          activeContextPanelRawItems.set(contentArea, rawItemForPanel);
           void retainClaudeRuntimeForBody(contentArea, mountedItem);
           const chatHooks: SetupHandlersHooks = {
             onConversationHistoryChanged: () => {
@@ -3767,10 +3782,12 @@ export function openStandaloneChat(options?: {
           }
           return;
         }
-        const nextRawItem = getSelectedZoteroItem() || currentBasePaperItem || currentPaperItem;
+        const nextRawItem =
+          getSelectedZoteroItem() || currentBasePaperItem || currentPaperItem;
         const resolved = resolveInitialPanelItemState(nextRawItem, {
           conversationSystem: nextSystem,
         });
+        currentRawContextItem = nextRawItem || currentRawContextItem;
         currentBasePaperItem = resolved.basePaperItem || currentBasePaperItem;
         currentPaperItem = resolved.item || currentPaperItem;
         if (forceFresh) {
@@ -3789,7 +3806,7 @@ export function openStandaloneChat(options?: {
             : createPaperPortalItem(paperItem, newKey, sessionVersion || 1);
           activeConversationKey = newKey;
           currentPaperItem = paperItem;
-          mountChatPanel(freshItem as Zotero.Item);
+          mountChatPanel(freshItem as Zotero.Item, currentRawContextItem);
           scheduleStandaloneSidebarRender();
           void renderShortcuts(contentArea, freshItem as Zotero.Item, "paper");
           updateStandaloneSystemToggle();
@@ -3798,7 +3815,7 @@ export function openStandaloneChat(options?: {
         if (switchSeq !== systemSwitchSeq) return;
         const nextItem = resolved.item || nextRawItem;
         if (nextItem) {
-          mountChatPanel(nextItem);
+          mountChatPanel(nextItem, currentRawContextItem);
           scheduleStandaloneSidebarRender();
           void renderShortcuts(
             contentArea,
@@ -3946,6 +3963,7 @@ export function openStandaloneChat(options?: {
         const resolved = resolveInitialPanelItemState(rawItem, {
           conversationSystem: currentConversationSystem,
         });
+        currentRawContextItem = rawItem || currentRawContextItem;
         currentBasePaperItem =
           resolved.basePaperItem ||
           (rawItem ? resolveConversationBaseItem(rawItem) : null) ||
@@ -3968,7 +3986,7 @@ export function openStandaloneChat(options?: {
                 sessionVersion,
               });
               if (item) {
-                mountChatPanel(item);
+                mountChatPanel(item, currentRawContextItem);
                 scheduleStandaloneSidebarRender();
                 return;
               }
@@ -4071,11 +4089,24 @@ export function openStandaloneChat(options?: {
         // Skip if same paper
         const newPaperID = Number(newBasePaper.id || 0);
         const oldPaperID = Number(currentBasePaperItem?.id || 0);
-        if (newPaperID > 0 && newPaperID === oldPaperID) return;
+        if (newPaperID > 0 && newPaperID === oldPaperID) {
+          const newRawContextID = Number(rawItem?.id || 0);
+          const oldRawContextID = Number(currentRawContextItem?.id || 0);
+          if (newRawContextID > 0 && newRawContextID !== oldRawContextID) {
+            currentRawContextItem = rawItem;
+            mountChatPanel(
+              activeItem || currentPaperItem || newBasePaper,
+              rawItem,
+            );
+            scheduleStandaloneSidebarRender();
+          }
+          return;
+        }
         // Switch to the new paper
         currentBasePaperItem = newBasePaper;
+        currentRawContextItem = rawItem || newBasePaper;
         currentPaperItem = resolved.item || newBasePaper;
-        mountChatPanel(currentPaperItem);
+        mountChatPanel(currentPaperItem, currentRawContextItem);
         scheduleStandaloneSidebarRender();
       };
 
@@ -4086,7 +4117,7 @@ export function openStandaloneChat(options?: {
         "itemId=" + (initialMountedItem?.id ?? "null"),
         "convKey=" + getConversationKey(initialMountedItem),
       );
-      mountChatPanel(initialMountedItem);
+      mountChatPanel(initialMountedItem, currentRawContextItem);
 
       // Load sidebar initially
       ztoolkit.log(
