@@ -207,6 +207,26 @@ describe("agent coverage ledger", function () {
       request: req,
       timestamp: 4,
     });
+    const attachmentEntries = buildAgentCoverageEntriesForActivity({
+      toolName: "read_attachment",
+      input: { target: { contextItemId: 77 } },
+      content: {
+        attachmentId: 77,
+        title: "translation.md",
+        sourceLabel: "(translation.md, attachment under Smith, 2024)",
+        textContent: "Translated attachment evidence.",
+        paperContext: {
+          itemId: 1,
+          contextItemId: 77,
+          title: "Coverage Paper",
+          firstCreator: "Smith",
+          year: "2024",
+          contentSourceMode: "markdown",
+        },
+      },
+      request: req,
+      timestamp: 5,
+    });
 
     assert.isTrue(
       libraryEntries.some(
@@ -231,6 +251,12 @@ describe("agent coverage ledger", function () {
       resourceKey: "paper:1:10",
       sourceKind: "pdf_visual",
       granularity: "visual_page",
+    });
+    assert.deepInclude(attachmentEntries[0], {
+      resourceKey: "paper:1:77",
+      sourceKind: "attachment_text",
+      granularity: "attachment",
+      coverage: "targeted",
     });
   });
 

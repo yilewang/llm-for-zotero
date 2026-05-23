@@ -202,6 +202,87 @@ describe("agent resource lifecycle", function () {
     );
   });
 
+  it("includes available sibling attachments as metadata-only lifecycle resources", async function () {
+    const req = request({
+      fullTextPaperContexts: [
+        {
+          ...paper(1, 10, "Baseline Paper"),
+          contentSourceMode: "markdown",
+          attachmentTitle: "paper_ocr.md",
+        },
+      ],
+      availableAttachmentResources: [
+        {
+          lifecycleState: "available",
+          parentItemId: 1,
+          parentTitle: "Baseline Paper",
+          contextItemId: 10,
+          title: "paper_ocr.md",
+          contentType: "text/markdown",
+          attachmentType: "markdown",
+          readableVia: "read_attachment",
+          contentSourceMode: "markdown",
+          isPrimary: true,
+        },
+        {
+          lifecycleState: "available",
+          parentItemId: 1,
+          parentTitle: "Baseline Paper",
+          contextItemId: 11,
+          title: "translation.docx",
+          contentType:
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          attachmentType: "docx",
+          readableVia: "read_attachment",
+          contentSourceMode: "docx",
+        },
+      ],
+    });
+
+    const text = stableSystemText(await renderedInitialMessages(req));
+    assert.include(text, "Attachment resource lifecycle:");
+    assert.include(text, "metadata-only until the user explicitly asks");
+    assert.include(text, "paper_ocr.md under Baseline Paper");
+    assert.include(text, "primary=true");
+    assert.include(text, "translation.docx under Baseline Paper");
+    assert.include(text, "readableVia=read_attachment");
+    assert.include(text, "sourceMode=markdown");
+  });
+
+  it("summarizes collection attachment pools by type without listing filenames", async function () {
+    const req = request({
+      selectedPaperContexts: [],
+      fullTextPaperContexts: [],
+      selectedCollectionContexts: [
+        { collectionId: 7, libraryID: 1, name: "Folder" },
+      ],
+      attachmentResourceSummaries: [
+        {
+          scope: "selected-collection",
+          collectionId: 7,
+          libraryID: 1,
+          collectionName: "Folder",
+          parentItemCount: 3,
+          attachmentCounts: {
+            pdf: 3,
+            markdown: 2,
+            docx: 1,
+            unsupported: 4,
+          },
+        },
+      ],
+    });
+
+    const text = stableSystemText(await renderedInitialMessages(req));
+    assert.include(text, "Attachment pool summary: Folder");
+    assert.include(text, "PDF=3");
+    assert.include(text, "MD=2");
+    assert.include(text, "DOCX=1");
+    assert.include(text, "unsupported=4");
+    assert.include(text, "enumerate item attachments with library_search plus library_read");
+    assert.notInclude(text, "translation.docx");
+  });
+
   it("diffs added, removed, changed, and unchanged resources", function () {
     const previous = buildAgentResourceSnapshot(
       request({
@@ -788,5 +869,61 @@ describe("agent resource lifecycle", function () {
       resourceSignature: "resource-b",
     });
     assert.notInclude(mismatched, "Untargeted attachment evidence");
+  });
+
+  it("remembers read_attachment text with attachment-aware source labels", async function () {
+    const req = request({
+      availableAttachmentResources: [
+        {
+          lifecycleState: "available",
+          parentItemId: 1,
+          parentTitle: "Baseline Paper",
+          contextItemId: 77,
+          title: "translation.md",
+          contentType: "text/markdown",
+          attachmentType: "markdown",
+          readableVia: "read_attachment",
+          contentSourceMode: "markdown",
+        },
+      ],
+    });
+    await commitAgentReadActivities({
+      conversationKey: req.conversationKey,
+      resourceSignature: buildAgentResourceContextPlan(req).resourceSignature,
+      activities: [
+        {
+          toolName: "read_attachment",
+          toolLabel: "Read Attachment",
+          input: { target: { contextItemId: 77 } },
+          content: {
+            attachmentId: 77,
+            title: "translation.md",
+            sourceType: "Markdown attachment",
+            sourceLabel: "(translation.md, attachment under Smith, 2024)",
+            textContent: "Translated attachment evidence.",
+            paperContext: {
+              itemId: 1,
+              contextItemId: 77,
+              title: "Baseline Paper",
+              firstCreator: "Smith",
+              year: "2024",
+              contentSourceMode: "markdown",
+            },
+          },
+          request: req,
+          timestamp: 4,
+        },
+      ],
+    });
+
+    const block = buildAgentPriorReadContextBlock({
+      conversationKey: req.conversationKey,
+      request: req,
+      resourceSignature: buildAgentResourceContextPlan(req).resourceSignature,
+    });
+    assert.include(block, "Read Attachment");
+    assert.include(block, "sourceKind=attachment_text");
+    assert.include(block, "Translated attachment evidence.");
+    assert.include(block, "source=(translation.md, attachment under Smith, 2024)");
   });
 });

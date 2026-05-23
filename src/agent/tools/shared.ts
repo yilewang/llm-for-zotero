@@ -3,6 +3,7 @@ import type {
 } from "../types";
 import type {
   ChatAttachment,
+  PaperContentSourceMode,
   PaperContextRef,
 } from "../../shared/types";
 
@@ -46,6 +47,25 @@ export function normalizeStringArray(value: unknown): string[] | null {
   return Array.from(new Set(out));
 }
 
+function normalizePaperContentSourceMode(
+  value: unknown,
+): PaperContentSourceMode | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  switch (normalized) {
+    case "text":
+    case "mineru":
+    case "pdf":
+    case "markdown":
+    case "html":
+    case "txt":
+    case "docx":
+      return normalized;
+    default:
+      return undefined;
+  }
+}
+
 export function normalizeToolPaperContext(
   value: Record<string, unknown> | null | undefined,
 ): PaperContextRef | null {
@@ -76,6 +96,7 @@ export function normalizeToolPaperContext(
       typeof value.year === "string" && value.year.trim()
         ? value.year.trim()
         : undefined,
+    contentSourceMode: normalizePaperContentSourceMode(value.contentSourceMode),
     mineruCacheDir:
       typeof value.mineruCacheDir === "string" && value.mineruCacheDir.trim()
         ? value.mineruCacheDir.trim()
@@ -102,6 +123,16 @@ export const PAPER_CONTEXT_REF_SCHEMA = {
       description: "Zotero attachment/context item ID",
     },
     title: { type: "string" as const },
+    attachmentTitle: { type: "string" as const },
+    citationKey: { type: "string" as const },
+    firstCreator: { type: "string" as const },
+    year: { type: "string" as const },
+    contentSourceMode: {
+      type: "string" as const,
+      enum: ["text", "mineru", "pdf", "markdown", "html", "txt", "docx"],
+      description:
+        "Selected source mode for this Zotero context item. Preserve it from context summaries.",
+    },
     mineruCacheDir: {
       type: "string" as const,
       description:

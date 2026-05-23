@@ -318,7 +318,7 @@ export function createBuiltInToolRegistry(
       name: "library_read",
       label: "Read Library",
       description:
-        "Read structured Zotero item state: metadata, notes, annotations, attachments, collection membership, and note content. Use paper_read for PDF/paper content.",
+        "Read structured Zotero item state: metadata, notes, annotations, attachments, collection membership, and note content. Use paper_read for primary PDF/paper content. For explicit child-attachment requests, enumerate attachments then use read_attachment for Markdown/HTML/TXT/DOCX.",
     }),
   );
   registry.register(

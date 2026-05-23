@@ -1,4 +1,9 @@
-import type { AgentModelMessage, AgentRuntimeRequest } from "../types";
+import type {
+  AgentAttachmentResource,
+  AgentAttachmentResourceSummary,
+  AgentModelMessage,
+  AgentRuntimeRequest,
+} from "../types";
 import type { PaperContextRef } from "../../shared/types";
 import {
   buildPaperQuoteCitationGuidance,
@@ -34,7 +39,8 @@ export type AgentResourceGroup =
   | "collections"
   | "selectedTexts"
   | "screenshots"
-  | "attachments";
+  | "attachments"
+  | "attachmentPool";
 
 export type AgentResourceRecord = {
   group: AgentResourceGroup;
@@ -165,6 +171,7 @@ function formatPaperResourceLine(
     `contextItemId=${entry.contextItemId}`,
     `citationLabel=${formatPaperCitationLabel(entry)}`,
     `sourceLabel=${formatPaperSourceLabel(entry)}`,
+    entry.contentSourceMode ? `sourceMode=${entry.contentSourceMode}` : "",
     entry.citationKey ? `citationKey=${entry.citationKey}` : "",
     entry.mineruCacheDir ? `mineruCacheDir=${entry.mineruCacheDir}` : "",
   ].filter(Boolean);
@@ -195,6 +202,7 @@ function buildPaperResourceRecords(params: {
           citationKey: normalizeText(entry.citationKey, 120),
           firstCreator: normalizeText(entry.firstCreator, 120),
           year: normalizeText(entry.year, 40),
+          contentSourceMode: normalizeText(entry.contentSourceMode, 40),
           mineruCacheDir: normalizeText(entry.mineruCacheDir, 1024),
         }),
         line: formatPaperResourceLine(params.label, entry),
@@ -329,6 +337,94 @@ function buildAttachmentResourceRecords(
   );
 }
 
+function formatAttachmentPoolCountSummary(
+  counts: AgentAttachmentResourceSummary["attachmentCounts"],
+): string {
+  const labels: Array<[AgentAttachmentResource["attachmentType"], string]> = [
+    ["pdf", "PDF"],
+    ["markdown", "MD"],
+    ["html", "HTML"],
+    ["txt", "TXT"],
+    ["docx", "DOCX"],
+    ["unsupported", "unsupported"],
+  ];
+  return labels
+    .map(([key, label]) => {
+      const count = counts[key] || 0;
+      return count ? `${label}=${count}` : "";
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+function buildAvailableAttachmentResourceLine(
+  resource: AgentAttachmentResource,
+): string {
+  const metadata = [
+    `parentItemId=${resource.parentItemId}`,
+    `contextItemId=${resource.contextItemId}`,
+    `type=${resource.attachmentType}`,
+    `readableVia=${resource.readableVia}`,
+    resource.contentSourceMode
+      ? `sourceMode=${resource.contentSourceMode}`
+      : "",
+    resource.isPrimary ? "primary=true" : "",
+  ].filter(Boolean);
+  return `- Available attachment: ${resource.title} under ${resource.parentTitle} [${metadata.join(", ")}]`;
+}
+
+function buildAttachmentPoolResourceRecords(
+  request: AgentRuntimeRequest,
+): AgentResourceRecord[] {
+  const records: AgentResourceRecord[] = [];
+  for (const resource of request.availableAttachmentResources || []) {
+    if (
+      !normalizePositiveInt(resource.parentItemId) ||
+      !normalizePositiveInt(resource.contextItemId)
+    ) {
+      continue;
+    }
+    records.push({
+      group: "attachmentPool",
+      key: `resource:${resource.parentItemId}:${resource.contextItemId}`,
+      signature: stableJson({
+        lifecycleState: resource.lifecycleState,
+        parentItemId: normalizePositiveInt(resource.parentItemId),
+        parentTitle: normalizeText(resource.parentTitle, 240),
+        contextItemId: normalizePositiveInt(resource.contextItemId),
+        title: normalizeText(resource.title, 240),
+        contentType: normalizeText(resource.contentType, 120),
+        attachmentType: normalizeText(resource.attachmentType, 40),
+        readableVia: normalizeText(resource.readableVia, 40),
+        contentSourceMode: normalizeText(resource.contentSourceMode, 40),
+        isPrimary: resource.isPrimary === true,
+      }),
+      line: buildAvailableAttachmentResourceLine(resource),
+    });
+  }
+  for (const summary of request.attachmentResourceSummaries || []) {
+    const counts = formatAttachmentPoolCountSummary(summary.attachmentCounts);
+    records.push({
+      group: "attachmentPool",
+      key: `summary:${summary.libraryID}:${summary.collectionId}`,
+      signature: stableJson({
+        scope: summary.scope,
+        collectionId: normalizePositiveInt(summary.collectionId),
+        libraryID: normalizePositiveInt(summary.libraryID),
+        collectionName: normalizeText(summary.collectionName, 240),
+        parentItemCount: normalizePositiveInt(summary.parentItemCount) || 0,
+        attachmentCounts: summary.attachmentCounts,
+      }),
+      line:
+        `- Attachment pool summary: ${summary.collectionName} ` +
+        `[collectionId=${summary.collectionId}, parentItems=${summary.parentItemCount}${
+          counts ? `, ${counts}` : ""
+        }]`,
+    });
+  }
+  return sortResourceRecords(records);
+}
+
 function buildAgentBaseScopeSnapshot(
   request: AgentRuntimeRequest,
 ): Record<string, unknown> {
@@ -372,6 +468,7 @@ export function buildAgentResourceSnapshot(
       selectedTexts: buildSelectedTextResourceRecords(request),
       screenshots: buildScreenshotResourceRecords(request),
       attachments: buildAttachmentResourceRecords(request),
+      attachmentPool: buildAttachmentPoolResourceRecords(request),
     },
   };
 }
@@ -654,6 +751,18 @@ export function buildAgentStableResourceContextBlock(
         .filter(Boolean),
     );
   }
+  const attachmentPoolRecords = buildAttachmentPoolResourceRecords(request);
+  if (attachmentPoolRecords.length) {
+    lines.push(
+      "Attachment resource lifecycle:",
+      "Primary paper refs above are the default evidence source. Available sibling attachments below are metadata-only until the user explicitly asks for an attachment by name, type, or scope.",
+      "For normal summarize, compare, and literature-review requests, keep using primary documents and current MinerU/best-attachment policy. Do not read sibling attachments just because they are listed.",
+      "For explicit attachment requests, fuzzy-match within the active parent first, then selected paper or collection scope. Ask only if matches are genuinely tied or risky.",
+      "Use read_attachment for Markdown/HTML/TXT/DOCX attachments, paper_read for PDF attachments, and report unsupported formats as visible but not directly readable.",
+      "Available attachment resources:",
+      ...attachmentPoolRecords.map((record) => record.line),
+    );
+  }
   if (request.selectedCollectionContexts?.length) {
     lines.push(
       "Selected Zotero collection scopes:",
@@ -664,6 +773,7 @@ export function buildAgentStableResourceContextBlock(
       "Treat collection membership as the scope boundary. Use library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) or collection-scoped actions when the user asks to inspect or operate on them. Do not assume all full text has already been read.",
       "When reading papers from a collection, first enumerate the collection, then pass explicit itemId/contextItemId targets to library_read or paper_read. Do not use the active reader paper as an implicit collection member.",
       "If the user explicitly asks to read or analyze the full text of every paper in a collection, plan a batch workflow: enumerate papers, read/process them in bounded batches, create compact per-paper digests with evidence, then synthesize.",
+      "If the user explicitly asks to include or only read child attachments in this collection, enumerate item attachments with library_search plus library_read sections:['attachments']; otherwise ignore sibling attachments for primary-document workflows.",
     );
   }
 

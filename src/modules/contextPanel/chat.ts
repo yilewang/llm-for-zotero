@@ -235,6 +235,8 @@ import {
   clearConversationSummary,
 } from "./conversationSummaryCache";
 import type {
+  AgentAttachmentResource,
+  AgentAttachmentResourceSummary,
   AgentConfirmationResolution,
   AgentEvent,
   AgentPendingAction,
@@ -254,6 +256,7 @@ import {
 } from "./queuedFollowUps";
 import { getConversationKey } from "./conversationIdentity";
 import { recordContextCacheTelemetry } from "../../contextCache/manager";
+import { resolveTextAttachmentSourceModeFromMetadata } from "./textAttachmentExtraction";
 
 export { getConversationKey } from "./conversationIdentity";
 export { renderAssistantMarkdownHtmlForChat } from "./renderedMarkdown";
@@ -5334,6 +5337,237 @@ async function enrichCodexNativeConversationScopeWithMineruCache(
   return { ...scope, paperContext };
 }
 
+function normalizeAttachmentResourceText(value: unknown): string {
+  return typeof value === "string" ? sanitizeText(value).trim() : "";
+}
+
+function getAttachmentFilename(item: Zotero.Item | null | undefined): string {
+  return normalizeAttachmentResourceText(
+    (item as unknown as { attachmentFilename?: unknown })?.attachmentFilename,
+  );
+}
+
+function getAttachmentContentType(item: Zotero.Item | null | undefined): string {
+  return normalizeAttachmentResourceText(
+    (item as unknown as { attachmentContentType?: unknown })
+      ?.attachmentContentType,
+  ).toLowerCase();
+}
+
+function getAttachmentDisplayTitle(item: Zotero.Item): string {
+  return (
+    normalizeAttachmentResourceText(item.getField?.("title")) ||
+    getAttachmentFilename(item) ||
+    `Attachment ${item.id}`
+  );
+}
+
+function getAttachmentResourceType(input: {
+  contentType: string;
+  filename: string;
+}): AgentAttachmentResource["attachmentType"] {
+  const contentType = input.contentType.toLowerCase();
+  const filename = input.filename.toLowerCase();
+  if (contentType === "application/pdf" || filename.endsWith(".pdf")) {
+    return "pdf";
+  }
+  const textSourceMode = resolveTextAttachmentSourceModeFromMetadata(input);
+  return textSourceMode || "unsupported";
+}
+
+function getAttachmentReadableVia(
+  attachmentType: AgentAttachmentResource["attachmentType"],
+): AgentAttachmentResource["readableVia"] {
+  if (attachmentType === "pdf") return "paper_read";
+  if (
+    attachmentType === "markdown" ||
+    attachmentType === "html" ||
+    attachmentType === "txt" ||
+    attachmentType === "docx"
+  ) {
+    return "read_attachment";
+  }
+  return "unsupported";
+}
+
+function getParentTitle(item: Zotero.Item): string {
+  return (
+    normalizeAttachmentResourceText(item.getField?.("title")) ||
+    normalizeAttachmentResourceText(item.getDisplayTitle?.()) ||
+    `Item ${item.id}`
+  );
+}
+
+function buildAttachmentResourceForChild(params: {
+  parentItem: Zotero.Item;
+  attachmentItem: Zotero.Item;
+  primaryContextItemIds: Set<number>;
+}): AgentAttachmentResource | null {
+  if (!params.parentItem.isRegularItem?.()) return null;
+  if (!params.attachmentItem.isAttachment?.()) return null;
+  const contextItemId = Number(params.attachmentItem.id);
+  const parentItemId = Number(params.parentItem.id);
+  if (!Number.isFinite(contextItemId) || !Number.isFinite(parentItemId)) {
+    return null;
+  }
+  const filename = getAttachmentFilename(params.attachmentItem);
+  const contentType =
+    getAttachmentContentType(params.attachmentItem) ||
+    "application/octet-stream";
+  const attachmentType = getAttachmentResourceType({ contentType, filename });
+  const readableVia = getAttachmentReadableVia(attachmentType);
+  const contentSourceMode =
+    attachmentType === "pdf" ||
+    attachmentType === "markdown" ||
+    attachmentType === "html" ||
+    attachmentType === "txt" ||
+    attachmentType === "docx"
+      ? attachmentType
+      : undefined;
+  return {
+    lifecycleState: "available",
+    parentItemId: Math.floor(parentItemId),
+    parentTitle: getParentTitle(params.parentItem),
+    contextItemId: Math.floor(contextItemId),
+    title: getAttachmentDisplayTitle(params.attachmentItem),
+    contentType,
+    attachmentType,
+    readableVia,
+    contentSourceMode,
+    isPrimary: params.primaryContextItemIds.has(Math.floor(contextItemId)),
+  };
+}
+
+function collectAttachmentResourcesForParent(params: {
+  parentItem: Zotero.Item | null | undefined;
+  primaryContextItemIds: Set<number>;
+}): AgentAttachmentResource[] {
+  const parentItem = params.parentItem;
+  if (!parentItem?.isRegularItem?.()) return [];
+  const attachmentIds = parentItem.getAttachments?.() || [];
+  const resources: AgentAttachmentResource[] = [];
+  for (const attachmentId of attachmentIds) {
+    const attachmentItem = Zotero.Items.get(attachmentId) || null;
+    const resource = attachmentItem
+      ? buildAttachmentResourceForChild({
+          parentItem,
+          attachmentItem,
+          primaryContextItemIds: params.primaryContextItemIds,
+        })
+      : null;
+    if (resource) resources.push(resource);
+  }
+  return resources;
+}
+
+function collectUniqueParentItemsForPapers(
+  papers: PaperContextRef[],
+): Zotero.Item[] {
+  const out: Zotero.Item[] = [];
+  const seen = new Set<number>();
+  for (const paper of papers) {
+    const itemId = Number(paper.itemId);
+    if (!Number.isFinite(itemId) || itemId <= 0) continue;
+    const normalized = Math.floor(itemId);
+    if (seen.has(normalized)) continue;
+    const item = Zotero.Items.get(normalized) || null;
+    if (!item?.isRegularItem?.()) continue;
+    seen.add(normalized);
+    out.push(item);
+  }
+  return out;
+}
+
+function incrementAttachmentCount(
+  counts: AgentAttachmentResourceSummary["attachmentCounts"],
+  attachmentType: AgentAttachmentResource["attachmentType"],
+): void {
+  counts[attachmentType] = (counts[attachmentType] || 0) + 1;
+}
+
+function buildCollectionAttachmentResourceSummary(
+  collectionContext: CollectionContextRef,
+): AgentAttachmentResourceSummary | null {
+  const collection = Zotero.Collections.get(collectionContext.collectionId);
+  if (!collection) return null;
+  const parentItemIds = new Set<number>();
+  const rawChildIds = collection.getChildItems?.(true, false) || [];
+  for (const rawId of rawChildIds) {
+    const itemId = Number(rawId);
+    if (!Number.isFinite(itemId) || itemId <= 0) continue;
+    const item = Zotero.Items.get(Math.floor(itemId)) || null;
+    if (!item?.isRegularItem?.()) continue;
+    parentItemIds.add(Math.floor(itemId));
+  }
+  const attachmentCounts: AgentAttachmentResourceSummary["attachmentCounts"] =
+    {};
+  for (const parentItemId of parentItemIds) {
+    const parentItem = Zotero.Items.get(parentItemId) || null;
+    if (!parentItem?.isRegularItem?.()) continue;
+    for (const attachmentId of parentItem.getAttachments?.() || []) {
+      const attachmentItem = Zotero.Items.get(attachmentId) || null;
+      if (!attachmentItem?.isAttachment?.()) continue;
+      const contentType =
+        getAttachmentContentType(attachmentItem) ||
+        "application/octet-stream";
+      const filename = getAttachmentFilename(attachmentItem);
+      incrementAttachmentCount(
+        attachmentCounts,
+        getAttachmentResourceType({ contentType, filename }),
+      );
+    }
+  }
+  return {
+    scope: "selected-collection",
+    collectionId: collectionContext.collectionId,
+    libraryID: collectionContext.libraryID,
+    collectionName:
+      normalizeAttachmentResourceText(collectionContext.name) ||
+      normalizeAttachmentResourceText(collection.name) ||
+      `Collection ${collectionContext.collectionId}`,
+    parentItemCount: parentItemIds.size,
+    attachmentCounts,
+  };
+}
+
+function buildAgentAttachmentResourcePool(params: {
+  paperContexts?: PaperContextRef[];
+  fullTextPaperContexts?: PaperContextRef[];
+  selectedCollectionContexts?: CollectionContextRef[];
+}): {
+  resources?: AgentAttachmentResource[];
+  summaries?: AgentAttachmentResourceSummary[];
+} {
+  const papers = normalizePaperContexts([
+    ...(params.paperContexts || []),
+    ...(params.fullTextPaperContexts || []),
+  ]);
+  const primaryContextItemIds = new Set(
+    papers
+      .map((paper) => Number(paper.contextItemId))
+      .filter((id) => Number.isFinite(id) && id > 0)
+      .map((id) => Math.floor(id)),
+  );
+  const resources = collectUniqueParentItemsForPapers(papers).flatMap(
+    (parentItem) =>
+      collectAttachmentResourcesForParent({
+        parentItem,
+        primaryContextItemIds,
+      }),
+  );
+  const summaries = normalizeCollectionContexts(
+    params.selectedCollectionContexts,
+  )
+    .map(buildCollectionAttachmentResourceSummary)
+    .filter(
+      (summary): summary is AgentAttachmentResourceSummary => Boolean(summary),
+    );
+  return {
+    resources: resources.length ? resources : undefined,
+    summaries: summaries.length ? summaries : undefined,
+  };
+}
+
 async function buildAgentRuntimeRequest(
   params: BuildAgentRuntimeRequestParams,
 ): Promise<AgentRuntimeRequest> {
@@ -5341,6 +5575,11 @@ async function buildAgentRuntimeRequest(
     enrichPaperContextsWithMineruCache(params.paperContexts),
     enrichPaperContextsWithMineruCache(params.fullTextPaperContexts),
   ]);
+  const attachmentResourcePool = buildAgentAttachmentResourcePool({
+    paperContexts: enrichedPaperContexts,
+    fullTextPaperContexts: enrichedFullTextPapers,
+    selectedCollectionContexts: params.selectedCollectionContexts,
+  });
   return {
     conversationKey: params.conversationKey,
     mode: "agent",
@@ -5355,6 +5594,8 @@ async function buildAgentRuntimeRequest(
     selectedCollectionContexts: normalizeCollectionContexts(
       params.selectedCollectionContexts,
     ),
+    availableAttachmentResources: attachmentResourcePool.resources,
+    attachmentResourceSummaries: attachmentResourcePool.summaries,
     attachments: params.attachments,
     screenshots: params.screenshots,
     forcedSkillIds: params.forcedSkillIds,

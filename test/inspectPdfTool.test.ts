@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { strToU8, zipSync } from "fflate";
 import { createSearchPaperTool } from "../src/agent/tools/read/searchPaper";
 import { createReadAttachmentTool } from "../src/agent/tools/read/readAttachment";
 import { createViewPdfPagesTool } from "../src/agent/tools/read/viewPdfPages";
@@ -223,6 +224,170 @@ describe("read_attachment tool", function () {
     assert.exists(pending);
     assert.equal(pending?.toolName, "read_attachment");
     assert.equal(pending?.confirmLabel, "Send to model");
+  });
+
+  it("reads markdown child attachments with parent-aware source metadata", async function () {
+    const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      read: async () => new TextEncoder().encode("Translated markdown content."),
+    };
+    try {
+      const parent = {
+        id: 1,
+        isRegularItem: () => true,
+        getField: (field: string) =>
+          field === "title"
+            ? "Episodic memory paper"
+            : field === "firstCreator"
+              ? "Chandra et al."
+              : field === "date"
+                ? "2025"
+                : "",
+        getDisplayTitle: () => "Episodic memory paper",
+      };
+      const attachment = {
+        id: 77,
+        isAttachment: () => true,
+        getFilePath: () => "/tmp/translation.md",
+      };
+      const tool = createReadAttachmentTool(
+        {
+          getAttachmentInfo: () => ({
+            attachmentId: 77,
+            parentItemId: 1,
+            title: "translation.md",
+            contentType: "text/markdown",
+            filename: "translation.md",
+            hasFile: true,
+            linkMode: "imported_file",
+          }),
+          getItem: (itemId: number) =>
+            itemId === 1 ? parent : itemId === 77 ? attachment : null,
+        } as never,
+        {} as never,
+      );
+
+      const validated = tool.validate({ target: { contextItemId: 77 } });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      const result = (await tool.execute(validated.value, baseContext)) as Record<
+        string,
+        unknown
+      >;
+      assert.equal(result.textContent, "Translated markdown content.");
+      assert.equal(result.sourceMode, "markdown");
+      assert.equal(result.sourceType, "Markdown attachment");
+      assert.equal(
+        result.sourceLabel,
+        "(translation.md, attachment under Chandra et al., 2025)",
+      );
+      assert.deepInclude(result.parentItem as Record<string, unknown>, {
+        itemId: 1,
+        title: "Episodic memory paper",
+      });
+      assert.include(String(result.relationship), "translated file");
+      assert.deepInclude(result.paperContext as Record<string, unknown>, {
+        itemId: 1,
+        contextItemId: 77,
+        contentSourceMode: "markdown",
+      });
+    } finally {
+      (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
+    }
+  });
+
+  it("extracts plain text from DOCX child attachments", async function () {
+    const docxBytes = zipSync({
+      "word/document.xml": strToU8(
+        '<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>Alpha</w:t></w:r></w:p><w:p><w:r><w:t>Beta</w:t></w:r></w:p></w:body></w:document>',
+      ),
+    });
+    const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      read: async () => docxBytes,
+    };
+    try {
+      const parent = {
+        id: 2,
+        isRegularItem: () => true,
+        getField: (field: string) =>
+          field === "title"
+            ? "Word Parent"
+            : field === "firstCreator"
+              ? "Rivera"
+              : field === "year"
+                ? "2024"
+                : "",
+        getDisplayTitle: () => "Word Parent",
+      };
+      const attachment = {
+        id: 88,
+        isAttachment: () => true,
+        getFilePath: () => "/tmp/notes.docx",
+      };
+      const tool = createReadAttachmentTool(
+        {
+          getAttachmentInfo: () => ({
+            attachmentId: 88,
+            parentItemId: 2,
+            title: "notes.docx",
+            contentType:
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            filename: "notes.docx",
+            hasFile: true,
+            linkMode: "imported_file",
+          }),
+          getItem: (itemId: number) =>
+            itemId === 2 ? parent : itemId === 88 ? attachment : null,
+        } as never,
+        {} as never,
+      );
+
+      const validated = tool.validate({ target: { contextItemId: 88 } });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      const result = (await tool.execute(validated.value, baseContext)) as Record<
+        string,
+        unknown
+      >;
+      assert.equal(result.textContent, "Alpha\nBeta");
+      assert.equal(result.sourceMode, "docx");
+      assert.equal(result.sourceType, "DOCX attachment");
+      assert.equal(
+        result.sourceLabel,
+        "(notes.docx, attachment under Rivera, 2024)",
+      );
+    } finally {
+      (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
+    }
+  });
+
+  it("keeps PDF attachments on the explicit PDF tool path", async function () {
+    const tool = createReadAttachmentTool(
+      {
+        getAttachmentInfo: () => ({
+          attachmentId: 99,
+          parentItemId: 2,
+          title: "Main PDF",
+          contentType: "application/pdf",
+          filename: "paper.pdf",
+          hasFile: true,
+          linkMode: "imported_file",
+        }),
+      } as never,
+      {} as never,
+    );
+
+    const validated = tool.validate({ target: { contextItemId: 99 } });
+    assert.isTrue(validated.ok);
+    if (!validated.ok) return;
+    const result = (await tool.execute(validated.value, baseContext)) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(result.category, "pdf");
+    assert.include(String(result.note), "Use read_paper");
+    assert.notProperty(result, "textContent");
   });
 });
 

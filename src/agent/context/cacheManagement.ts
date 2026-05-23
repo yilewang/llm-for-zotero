@@ -627,11 +627,61 @@ function collectGenericSnippets(content: unknown): AgentEvidenceSnippet[] {
       .filter((entry): entry is AgentEvidenceSnippet => Boolean(entry))
       .slice(0, MAX_SNIPPETS_PER_ENTRY);
   }
-  const text =
-    typeof content === "string"
-      ? normalizeEvidenceText(content)
-      : normalizeEvidenceText(record.text || record.content || record.summary);
-  return text ? [{ text }] : [];
+  const directSnippet = snippetFromRecord({
+    ...record,
+    text:
+      typeof content === "string"
+        ? content
+        : record.text || record.content || record.summary || record.textContent,
+  });
+  return directSnippet ? [directSnippet] : [];
+}
+
+function buildReadAttachmentEvidenceEntry(
+  activity: AgentCacheEvidenceActivity,
+): AgentEvidenceEntry | null {
+  const content = normalizeRecord(activity.content);
+  const text = normalizeEvidenceText(content.textContent);
+  if (!text) return null;
+  const paperContext = normalizePaperContext(content.paperContext);
+  const parentItem = normalizeRecord(content.parentItem);
+  const attachmentId = normalizePositiveInt(content.attachmentId);
+  const target = {
+    itemId:
+      paperContext.itemId ||
+      normalizePositiveInt(parentItem.itemId),
+    contextItemId: paperContext.contextItemId || attachmentId,
+    title:
+      normalizeText(content.title, 120) ||
+      paperContext.title ||
+      normalizeText(content.attachmentTitle, 120),
+  };
+  const sourceLabel = normalizeText(content.sourceLabel, 120);
+  const snippet = snippetFromRecord({
+    text,
+    sourceLabel,
+    citationLabel: content.citationLabel,
+  }) || { text, ...(sourceLabel ? { sourceLabel } : {}) };
+  const detail =
+    normalizeText(content.sourceType, 80) ||
+    normalizeText(content.sourceMode, 40) ||
+    buildReadDetail(activity.toolName, activity.input);
+  return {
+    key: buildEvidenceKey(activity.toolName, target, detail, [snippet]),
+    toolName: activity.toolName,
+    label: activity.toolLabel || "Read Attachment",
+    targetLabel: formatTargetLabel(target),
+    detail,
+    sourceKind: "attachment_text",
+    itemId: target.itemId,
+    contextItemId: target.contextItemId,
+    title: target.title,
+    snippets: [snippet],
+    contentHash: hashText(stableJson(snippet)),
+    count: 1,
+    firstSeenAt: activity.timestamp,
+    lastSeenAt: activity.timestamp,
+  };
 }
 
 function buildEvidenceKey(
@@ -660,6 +710,10 @@ function buildEvidenceEntries(
   if (activity.toolName === "paper_read") {
     const entries = buildPaperReadEvidenceEntries(activity);
     if (entries.length) return entries;
+  }
+  if (activity.toolName === "read_attachment") {
+    const entry = buildReadAttachmentEvidenceEntry(activity);
+    if (entry) return [entry];
   }
   return buildGenericReadEvidenceEntries(activity);
 }
@@ -924,6 +978,13 @@ function buildRequestEvidenceScope(request: AgentRuntimeRequest): {
       itemId: paper.itemId,
       contextItemId: paper.contextItemId,
       title: paper.title,
+    });
+  }
+  for (const attachment of request.availableAttachmentResources || []) {
+    addTarget({
+      itemId: attachment.parentItemId,
+      contextItemId: attachment.contextItemId,
+      title: attachment.title,
     });
   }
   if (request.activeItemId) addTarget({ itemId: request.activeItemId });

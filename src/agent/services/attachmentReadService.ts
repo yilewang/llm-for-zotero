@@ -1,4 +1,15 @@
 import { readAttachmentBytes } from "../../modules/contextPanel/attachmentStorage";
+import {
+  extractTextAttachmentContent,
+  resolveTextAttachmentSourceModeFromMetadata,
+  type TextAttachmentSourceMode,
+} from "../../modules/contextPanel/textAttachmentExtraction";
+import {
+  formatAttachmentSourceType,
+  formatPaperCitationLabel,
+  formatPaperSourceLabel,
+} from "../../modules/contextPanel/paperAttribution";
+import type { PaperContextRef } from "../../shared/types";
 import type { ZoteroGateway } from "./zoteroGateway";
 
 export type AttachmentContentCategory = "text" | "image" | "pdf" | "binary";
@@ -12,6 +23,20 @@ export type AttachmentReadResult = {
   textContent?: string;
   imageDataUrl?: string;
   wordCount?: number;
+  sourceMode?: TextAttachmentSourceMode;
+  sourceType?: string;
+  sourceLabel?: string;
+  citationLabel?: string;
+  parentItem?: {
+    itemId: number;
+    title: string;
+    firstCreator?: string;
+    year?: string;
+  };
+  attachmentTitle?: string;
+  relationship?: string;
+  readingGuidance?: string[];
+  paperContext?: PaperContextRef;
   note?: string;
 };
 
@@ -36,6 +61,14 @@ function categorizeContentType(contentType: string): AttachmentContentCategory {
   if (TEXT_MIME_PREFIXES.some((prefix) => ct.startsWith(prefix))) return "text";
   if (TEXT_MIME_EXACT.has(ct)) return "text";
   return "binary";
+}
+
+function normalizeText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function encodeBase64(bytes: Uint8Array): string {
@@ -81,6 +114,68 @@ function stripHtml(html: string): string {
 export class AttachmentReadService {
   constructor(private readonly zoteroGateway: ZoteroGateway) {}
 
+  private buildPaperContextForAttachment(
+    info: NonNullable<ReturnType<ZoteroGateway["getAttachmentInfo"]>>,
+    sourceMode: TextAttachmentSourceMode,
+  ): PaperContextRef | null {
+    if (!info.parentItemId) return null;
+    const parentItem = this.zoteroGateway.getItem(info.parentItemId);
+    if (!parentItem?.isRegularItem?.()) return null;
+    const title =
+      normalizeText(parentItem.getField?.("title")) ||
+      normalizeText(parentItem.getDisplayTitle?.()) ||
+      `Item ${parentItem.id}`;
+    const firstCreator =
+      normalizeText(parentItem.getField?.("firstCreator")) ||
+      normalizeText((parentItem as Zotero.Item).firstCreator) ||
+      undefined;
+    const year =
+      normalizeText(parentItem.getField?.("year")) ||
+      normalizeText(parentItem.getField?.("date")) ||
+      normalizeText(parentItem.getField?.("issued")) ||
+      undefined;
+    return {
+      itemId: parentItem.id,
+      contextItemId: info.attachmentId,
+      title,
+      attachmentTitle: info.filename || info.title || undefined,
+      citationKey: normalizeText(parentItem.getField?.("citationKey")) || undefined,
+      firstCreator,
+      year,
+      contentSourceMode: sourceMode,
+    };
+  }
+
+  private buildAttachmentAttribution(
+    info: NonNullable<ReturnType<ZoteroGateway["getAttachmentInfo"]>>,
+    sourceMode: TextAttachmentSourceMode | null,
+  ): Partial<AttachmentReadResult> {
+    if (!sourceMode) return {};
+    const paperContext = this.buildPaperContextForAttachment(info, sourceMode);
+    if (!paperContext) return { sourceMode, sourceType: formatAttachmentSourceType(sourceMode) };
+    return {
+      sourceMode,
+      sourceType: formatAttachmentSourceType(sourceMode),
+      sourceLabel: formatPaperSourceLabel(paperContext),
+      citationLabel: formatPaperCitationLabel(paperContext),
+      parentItem: {
+        itemId: paperContext.itemId,
+        title: paperContext.title,
+        firstCreator: paperContext.firstCreator,
+        year: paperContext.year,
+      },
+      attachmentTitle: paperContext.attachmentTitle || info.title,
+      relationship:
+        "Child attachment under the parent item; it may be user OCR, a translated file, supplement, notes, or another related file.",
+      readingGuidance: [
+        "Answer primarily from this selected attachment content.",
+        "Use parent metadata only for bibliographic or contextual grounding.",
+        "Do not infer attachment loading failed just because the attachment text differs from the parent title.",
+      ],
+      paperContext,
+    };
+  }
+
   async readAttachmentContent(params: {
     attachmentId: number;
     maxChars?: number;
@@ -92,12 +187,20 @@ export class AttachmentReadService {
       throw new Error(`Attachment ${params.attachmentId} not found`);
     }
 
-    const category = categorizeContentType(info.contentType);
+    const sourceMode = resolveTextAttachmentSourceModeFromMetadata({
+      contentType: info.contentType,
+      filename: info.filename || info.title,
+    });
+    const category = sourceMode
+      ? "text"
+      : categorizeContentType(info.contentType);
+    const attribution = this.buildAttachmentAttribution(info, sourceMode);
     const baseResult = {
       attachmentId: info.attachmentId,
       title: info.title,
       contentType: info.contentType,
       category,
+      ...attribution,
     };
 
     if (category === "pdf") {
@@ -139,12 +242,14 @@ export class AttachmentReadService {
         };
       }
 
-      // text category
-      const rawText = decodeUtf8(bytes);
+      const rawText = sourceMode
+        ? extractTextAttachmentContent(bytes, sourceMode)
+        : decodeUtf8(bytes);
       const isHtml =
-        info.contentType.includes("html") ||
-        rawText.trimStart().startsWith("<!DOCTYPE") ||
-        rawText.trimStart().startsWith("<html");
+        !sourceMode &&
+        (info.contentType.includes("html") ||
+          rawText.trimStart().startsWith("<!DOCTYPE") ||
+          rawText.trimStart().startsWith("<html"));
       const text = isHtml ? stripHtml(rawText) : rawText;
       const maxChars =
         Number.isFinite(params.maxChars) && (params.maxChars as number) > 0
@@ -155,6 +260,9 @@ export class AttachmentReadService {
         ...baseWithPath,
         textContent: truncated,
         wordCount: truncated.split(/\s+/).filter(Boolean).length,
+        ...(sourceMode === "docx" && !truncated.trim()
+          ? { note: "No plain text could be extracted from this DOCX attachment." }
+          : {}),
       };
     } catch (error) {
       return {

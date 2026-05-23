@@ -23,7 +23,7 @@ import { resolvePaperContextRefFromAttachment } from "../../modules/contextPanel
 import { invalidateCachedContextText } from "../../modules/contextPanel/pdfContext";
 import { ensureMineruCacheDirForAttachment } from "../../modules/contextPanel/mineruSync";
 import type { AgentRuntimeRequest } from "../types";
-import type { PaperContextRef } from "../../shared/types";
+import type { PaperContentSourceMode, PaperContextRef } from "../../shared/types";
 import {
   isGlobalPortalItem,
   isPaperPortalItem,
@@ -270,6 +270,20 @@ function normalizeCreatorForSnapshot(
   };
 }
 
+function isPaperContentSourceMode(
+  value: unknown,
+): value is PaperContentSourceMode {
+  return (
+    value === "text" ||
+    value === "mineru" ||
+    value === "pdf" ||
+    value === "markdown" ||
+    value === "html" ||
+    value === "txt" ||
+    value === "docx"
+  );
+}
+
 function normalizePaperContexts(
   entries: PaperContextRef[] | undefined,
 ): PaperContextRef[] {
@@ -290,6 +304,12 @@ function normalizePaperContexts(
       firstCreator: entry.firstCreator?.trim() || undefined,
       year: entry.year?.trim() || undefined,
     };
+    if (isPaperContentSourceMode(entry.contentSourceMode)) {
+      normalized.contentSourceMode = entry.contentSourceMode;
+    }
+    if (entry.mineruCacheDir?.trim()) {
+      normalized.mineruCacheDir = entry.mineruCacheDir.trim();
+    }
     const key = `${normalized.itemId}:${normalized.contextItemId}`;
     if (seen.has(key)) continue;
     seen.add(key);

@@ -9,6 +9,7 @@ export type AgentCoverageSourceKind =
   | "mineru"
   | "embedding_retrieval"
   | "pdf_visual"
+  | "attachment_text"
   | "note"
   | "annotation"
   | "web_literature";
@@ -478,6 +479,11 @@ function collectRequestResourceKeys(request: AgentRuntimeRequest): Set<string> {
   for (const attachment of request.attachments || []) {
     add(normalizeText(attachment.id, 180) ? `attachment:${attachment.id}` : "");
   }
+  for (const attachment of request.availableAttachmentResources || []) {
+    add(itemResourceKey(attachment.parentItemId));
+    add(attachmentResourceKey(attachment.contextItemId));
+    add(`paper:${attachment.parentItemId}:${attachment.contextItemId}`);
+  }
   return keys;
 }
 
@@ -750,6 +756,41 @@ function buildFileIoCoverageEntries(
   return entry ? [entry] : [];
 }
 
+function buildReadAttachmentCoverageEntries(
+  activity: AgentCacheEvidenceActivity,
+): AgentCoverageEntry[] {
+  const input = normalizeRecord(activity.input);
+  const targetInput = normalizeRecord(input.target);
+  const content = normalizeRecord(activity.content);
+  const paper = paperContextFromRecord(content.paperContext);
+  const attachmentId =
+    normalizePositiveInt(content.attachmentId) ||
+    normalizePositiveInt(targetInput.contextItemId) ||
+    normalizePositiveInt(input.contextItemId);
+  const resourceKey =
+    paperResourceKey(paper) || attachmentResourceKey(attachmentId);
+  const text = normalizeText(content.textContent, 1200);
+  const sourceLabel = normalizeText(content.sourceLabel, 160);
+  const title =
+    normalizeText(content.title, 120) ||
+    normalizeText(content.attachmentTitle, 120);
+  const entry = createCoverageEntry({
+    resourceKey,
+    resourceLabel: sourceLabel || title || getPaperLabel(paper),
+    sourceKind: "attachment_text",
+    topic: normalizeTopic(input.query, activity.request.userText),
+    granularity: "attachment",
+    coverage: text ? "targeted" : "partial",
+    confidence: text ? "high" : "medium",
+    contentHash: text ? activityContentHash(activity, { resourceKey, text }) : undefined,
+    toolName: activity.toolName,
+    evidenceRefs: [evidenceRefFor(activity, { attachmentId, title })],
+    durable: Boolean(resourceKey && text),
+    updatedAt: activity.timestamp,
+  });
+  return entry ? [entry] : [];
+}
+
 function buildLibrarySearchCoverageEntries(
   activity: AgentCacheEvidenceActivity,
 ): AgentCoverageEntry[] {
@@ -905,6 +946,9 @@ export function buildAgentCoverageEntriesForActivity(
   }
   if (activity.toolName === "file_io") {
     return buildFileIoCoverageEntries(activity);
+  }
+  if (activity.toolName === "read_attachment") {
+    return buildReadAttachmentCoverageEntries(activity);
   }
   if (
     activity.toolName === "library_search" ||

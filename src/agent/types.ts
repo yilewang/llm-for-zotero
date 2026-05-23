@@ -5,6 +5,7 @@ import type {
   ActiveNoteContext,
   ChatAttachment,
   CollectionContextRef,
+  PaperContentSourceMode,
   PaperContextRef,
   SelectedTextSource,
 } from "../shared/types";
@@ -28,6 +29,8 @@ export type AgentRequest = {
   fullTextPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
+  availableAttachmentResources?: AgentAttachmentResource[];
+  attachmentResourceSummaries?: AgentAttachmentResourceSummary[];
   attachments?: ChatAttachment[];
   screenshots?: string[];
   /** Skill IDs to force-activate regardless of regex matching (from slash menu selection). */
@@ -449,6 +452,41 @@ export type AgentRuntimeRequest = AgentRequest & {
   activeNoteContext?: ActiveNoteContext;
   metadata?: Record<string, unknown>;
   contextCache?: ContextCachePlan;
+};
+
+export type AgentAttachmentReadableVia =
+  | "read_attachment"
+  | "paper_read"
+  | "unsupported";
+
+export type AgentAttachmentType =
+  | "pdf"
+  | "markdown"
+  | "html"
+  | "txt"
+  | "docx"
+  | "unsupported";
+
+export type AgentAttachmentResource = {
+  lifecycleState: "available";
+  parentItemId: number;
+  parentTitle: string;
+  contextItemId: number;
+  title: string;
+  contentType: string;
+  attachmentType: AgentAttachmentType;
+  readableVia: AgentAttachmentReadableVia;
+  contentSourceMode?: PaperContentSourceMode;
+  isPrimary?: boolean;
+};
+
+export type AgentAttachmentResourceSummary = {
+  scope: "selected-collection";
+  collectionId: number;
+  libraryID: number;
+  collectionName: string;
+  parentItemCount: number;
+  attachmentCounts: Partial<Record<AgentAttachmentType, number>>;
 };
 
 export type AgentRuntimeOutcome =
