@@ -55,6 +55,7 @@ import type {
 } from "./types";
 import {
   extractTextAttachmentContent,
+  resolveTextAttachmentSourceModeFromMetadata,
   type TextAttachmentSourceMode,
 } from "./textAttachmentExtraction";
 import { config } from "./constants";
@@ -283,33 +284,10 @@ export function resolveTextAttachmentSourceMode(
   item: Zotero.Item | null | undefined,
 ): TextAttachmentSourceMode | null {
   if (!item?.isAttachment?.()) return null;
-  const contentType = getAttachmentContentType(item);
-  const filename = getAttachmentFilename(item).toLowerCase();
-  if (
-    contentType === "text/markdown" ||
-    contentType === "text/x-markdown" ||
-    /\.(md|markdown)$/i.test(filename)
-  ) {
-    return "markdown";
-  }
-  if (
-    contentType === "text/html" ||
-    contentType === "application/xhtml+xml" ||
-    /\.html?$/i.test(filename)
-  ) {
-    return "html";
-  }
-  if (contentType === "text/plain" || /\.txt$/i.test(filename)) {
-    return "txt";
-  }
-  if (
-    contentType ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-    /\.docx$/i.test(filename)
-  ) {
-    return "docx";
-  }
-  return null;
+  return resolveTextAttachmentSourceModeFromMetadata({
+    contentType: getAttachmentContentType(item),
+    filename: getAttachmentFilename(item),
+  });
 }
 
 function sourceTypeForTextAttachment(

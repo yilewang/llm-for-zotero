@@ -1,3 +1,7 @@
+import {
+  resolveTextAttachmentSourceModeFromMetadata,
+  type TextAttachmentSourceMode,
+} from "./textAttachmentExtraction";
 import type { PaperContextRef } from "./types";
 
 function normalizeText(value: unknown): string {
@@ -14,13 +18,50 @@ function getAttachmentDisplayTitle(
   if (!contextItem?.isAttachment?.()) return "";
   const title = normalizeText(String(contextItem.getField("title") || ""));
   if (title) return title;
-  const filename = normalizeText(
+  return getAttachmentFilename(contextItem);
+}
+
+function getAttachmentFilename(
+  contextItem: Zotero.Item | null | undefined,
+): string {
+  if (!contextItem?.isAttachment?.()) return "";
+  return normalizeText(
     String(
       (contextItem as unknown as { attachmentFilename?: string })
         .attachmentFilename || "",
     ),
   );
-  return filename;
+}
+
+function getAttachmentContentType(
+  contextItem: Zotero.Item | null | undefined,
+): string {
+  if (!contextItem?.isAttachment?.()) return "";
+  return normalizeText(
+    String(
+      (contextItem as unknown as { attachmentContentType?: string })
+        .attachmentContentType || "",
+    ),
+  ).toLowerCase();
+}
+
+function isPdfAttachment(
+  contextItem: Zotero.Item | null | undefined,
+): contextItem is Zotero.Item {
+  if (!contextItem?.isAttachment?.()) return false;
+  const contentType = getAttachmentContentType(contextItem);
+  const filename = getAttachmentFilename(contextItem).toLowerCase();
+  return contentType === "application/pdf" || filename.endsWith(".pdf");
+}
+
+function resolveTextAttachmentSourceMode(
+  contextItem: Zotero.Item | null | undefined,
+): TextAttachmentSourceMode | null {
+  if (!contextItem?.isAttachment?.()) return null;
+  return resolveTextAttachmentSourceModeFromMetadata({
+    contentType: getAttachmentContentType(contextItem),
+    filename: getAttachmentFilename(contextItem),
+  });
 }
 
 function extractYearValue(value: unknown): string | undefined {
@@ -167,13 +208,12 @@ export function resolvePaperContextRefFromNote(
 export function resolvePaperContextRefFromAttachment(
   contextItem: Zotero.Item | null | undefined,
 ): PaperContextRef | null {
-  if (
-    !contextItem ||
-    !contextItem.isAttachment?.() ||
-    contextItem.attachmentContentType !== "application/pdf"
-  ) {
+  if (!contextItem?.isAttachment?.()) {
     return null;
   }
+  const textSourceMode = resolveTextAttachmentSourceMode(contextItem);
+  if (!isPdfAttachment(contextItem) && !textSourceMode) return null;
+
   const parentItem = contextItem.parentID
     ? Zotero.Items.get(contextItem.parentID) || null
     : null;
@@ -222,6 +262,7 @@ export function resolvePaperContextRefFromAttachment(
     citationKey: citationKey || undefined,
     firstCreator: firstCreator || undefined,
     year: year || undefined,
+    contentSourceMode: textSourceMode || undefined,
   };
 }
 

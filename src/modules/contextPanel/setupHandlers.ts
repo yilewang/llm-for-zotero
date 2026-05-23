@@ -2159,7 +2159,7 @@ export function setupHandlers(
     if (activeReaderAttachment) return activeReaderAttachment;
     if (
       sourceItem?.isAttachment?.() &&
-      sourceItem.attachmentContentType === "application/pdf"
+      resolvePaperContextRefFromAttachment(sourceItem)
     ) {
       return sourceItem;
     }

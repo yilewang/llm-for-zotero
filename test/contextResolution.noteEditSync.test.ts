@@ -5,6 +5,7 @@ import {
   setSelectedTextContextEntries,
   syncSelectedTextContextForSource,
 } from "../src/modules/contextPanel/contextResolution";
+import { resolvePaperContextRefFromAttachment } from "../src/modules/contextPanel/paperAttribution";
 
 describe("contextResolution note-edit sync", function () {
   const itemId = 777;
@@ -168,6 +169,129 @@ describe("contextResolution note-edit sync", function () {
       await resolveContextSourceItemIdAsync(parentItem as unknown as Zotero.Item),
       152,
     );
+  });
+
+  it("uses the library-pane selected child Markdown before Zotero best attachment", async function () {
+    const parentItem = {
+      id: 170,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments: () => [171, 172],
+      getField: (field: string) =>
+        field === "firstCreator"
+          ? "Chandra et al."
+          : field === "year"
+            ? "2025"
+            : "Parent Paper",
+      getBestAttachment: async () => mainPdf,
+    };
+    const mainPdf = {
+      id: 171,
+      parentID: 170,
+      attachmentContentType: "application/pdf",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: () => "Main PDF",
+    };
+    const selectedMarkdown = {
+      id: 172,
+      parentID: 170,
+      attachmentContentType: "text/markdown",
+      attachmentFilename: "test.md",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: () => "test",
+    };
+    const items = new Map<number, unknown>([
+      [170, parentItem],
+      [171, mainPdf],
+      [172, selectedMarkdown],
+    ]);
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      Items: {
+        get: (id: number) => items.get(id) || null,
+      },
+      Tabs: {
+        selectedType: "library",
+        selectedID: "library",
+        _tabs: [],
+      },
+      getActiveZoteroPane: () => ({
+        getSelectedItems: () => [selectedMarkdown],
+      }),
+    };
+
+    assert.equal(
+      await resolveContextSourceItemIdAsync(
+        parentItem as unknown as Zotero.Item,
+      ),
+      172,
+    );
+    const paperContext = resolvePaperContextRefFromAttachment(
+      selectedMarkdown as unknown as Zotero.Item,
+    );
+    assert.equal(paperContext?.itemId, 170);
+    assert.equal(paperContext?.contextItemId, 172);
+    assert.equal(paperContext?.contentSourceMode, "markdown");
+  });
+
+  it("uses a supported selected DOCX attachment directly", async function () {
+    const parentItem = {
+      id: 180,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments: () => [181, 182],
+      getField: () => "Parent Paper",
+      getBestAttachment: async () => mainPdf,
+    };
+    const mainPdf = {
+      id: 181,
+      parentID: 180,
+      attachmentContentType: "application/pdf",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: () => "Main PDF",
+    };
+    const selectedDocx = {
+      id: 182,
+      parentID: 180,
+      attachmentContentType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      attachmentFilename: "notes.docx",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: () => "notes",
+    };
+    const items = new Map<number, unknown>([
+      [180, parentItem],
+      [181, mainPdf],
+      [182, selectedDocx],
+    ]);
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      Items: {
+        get: (id: number) => items.get(id) || null,
+      },
+      Tabs: {
+        selectedType: "library",
+        selectedID: "library",
+        _tabs: [],
+      },
+    };
+
+    assert.equal(
+      await resolveContextSourceItemIdAsync(
+        selectedDocx as unknown as Zotero.Item,
+      ),
+      182,
+    );
+    const paperContext = resolvePaperContextRefFromAttachment(
+      selectedDocx as unknown as Zotero.Item,
+    );
+    assert.equal(paperContext?.itemId, 180);
+    assert.equal(paperContext?.contextItemId, 182);
+    assert.equal(paperContext?.contentSourceMode, "docx");
   });
 
   it("uses the active reader attachment over the parent item source", async function () {

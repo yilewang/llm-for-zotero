@@ -7,6 +7,43 @@ export type TextAttachmentSourceMode = Extract<
   "markdown" | "html" | "txt" | "docx"
 >;
 
+function normalizeMetadataText(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+export function resolveTextAttachmentSourceModeFromMetadata(input: {
+  contentType?: unknown;
+  filename?: unknown;
+}): TextAttachmentSourceMode | null {
+  const contentType = normalizeMetadataText(input.contentType);
+  const filename = normalizeMetadataText(input.filename);
+  if (
+    contentType === "text/markdown" ||
+    contentType === "text/x-markdown" ||
+    /\.(md|markdown)$/i.test(filename)
+  ) {
+    return "markdown";
+  }
+  if (
+    contentType === "text/html" ||
+    contentType === "application/xhtml+xml" ||
+    /\.html?$/i.test(filename)
+  ) {
+    return "html";
+  }
+  if (contentType === "text/plain" || /\.txt$/i.test(filename)) {
+    return "txt";
+  }
+  if (
+    contentType ===
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    /\.docx$/i.test(filename)
+  ) {
+    return "docx";
+  }
+  return null;
+}
+
 const HTML_ENTITY_MAP: Record<string, string> = {
   "&amp;": "&",
   "&lt;": "<",

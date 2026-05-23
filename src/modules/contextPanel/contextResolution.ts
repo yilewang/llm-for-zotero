@@ -32,6 +32,7 @@ import {
   resolveActiveNoteSession,
 } from "./portalScope";
 import { formatPaperCitationLabel } from "./paperAttribution";
+import { resolveTextAttachmentSourceModeFromMetadata } from "./textAttachmentExtraction";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
@@ -296,13 +297,54 @@ export function getActiveContextAttachmentFromTabs(): Zotero.Item | null {
   return null;
 }
 
+function getAttachmentFilename(item: Zotero.Item | null | undefined): string {
+  if (!item?.isAttachment?.()) return "";
+  return sanitizeText(
+    String(
+      (item as unknown as { attachmentFilename?: unknown })
+        .attachmentFilename || "",
+    ),
+  )
+    .trim()
+    .toLowerCase();
+}
+
+function getAttachmentContentType(
+  item: Zotero.Item | null | undefined,
+): string {
+  if (!item?.isAttachment?.()) return "";
+  return sanitizeText(String(item.attachmentContentType || ""))
+    .trim()
+    .toLowerCase();
+}
+
+function isSupportedPdfContextAttachment(
+  item: Zotero.Item | null | undefined,
+): item is Zotero.Item {
+  if (!item?.isAttachment?.()) return false;
+  const contentType = getAttachmentContentType(item);
+  const filename = getAttachmentFilename(item);
+  return contentType === "application/pdf" || filename.endsWith(".pdf");
+}
+
+function isSupportedTextContextAttachment(
+  item: Zotero.Item | null | undefined,
+): item is Zotero.Item {
+  if (!item?.isAttachment?.()) return false;
+  return Boolean(
+    resolveTextAttachmentSourceModeFromMetadata({
+      contentType: getAttachmentContentType(item),
+      filename: getAttachmentFilename(item),
+    }),
+  );
+}
+
 function isSupportedContextAttachment(
   item: Zotero.Item | null | undefined,
 ): item is Zotero.Item {
-  return Boolean(
-    item &&
-    item.isAttachment() &&
-    item.attachmentContentType === "application/pdf",
+  return (
+    isSupportedPdfContextAttachment(item) ||
+    isSupportedTextContextAttachment(item)
   );
 }
 
@@ -319,7 +361,7 @@ function getFirstPdfChildAttachment(
   const attachments = item.getAttachments();
   for (const attachmentId of attachments) {
     const attachment = Zotero.Items.get(attachmentId);
-    if (isSupportedContextAttachment(attachment)) {
+    if (isSupportedPdfContextAttachment(attachment)) {
       return attachment;
     }
   }
@@ -332,7 +374,7 @@ async function getBestPdfAttachment(
   if (!item || item.isAttachment?.() || !item.isRegularItem?.()) return null;
   try {
     const attachment = await item.getBestAttachment();
-    return attachment && isSupportedContextAttachment(attachment)
+    return attachment && isSupportedPdfContextAttachment(attachment)
       ? attachment
       : null;
   } catch (_error) {
@@ -341,7 +383,7 @@ async function getBestPdfAttachment(
   }
 }
 
-function getSelectedPdfAttachmentFromLibraryPane(): Zotero.Item | null {
+function getSelectedSupportedAttachmentFromLibraryPane(): Zotero.Item | null {
   const panes: unknown[] = [];
   try {
     panes.push(Zotero.getActiveZoteroPane?.());
@@ -359,8 +401,9 @@ function getSelectedPdfAttachmentFromLibraryPane(): Zotero.Item | null {
     void _error;
   }
   for (const pane of panes) {
-    const selectedItems = (pane as { getSelectedItems?: () => Zotero.Item[] })
-      ?.getSelectedItems?.();
+    const selectedItems = (
+      pane as { getSelectedItems?: () => Zotero.Item[] }
+    )?.getSelectedItems?.();
     if (!Array.isArray(selectedItems)) continue;
     for (const item of selectedItems) {
       if (isSupportedContextAttachment(item)) return item;
@@ -425,29 +468,25 @@ export function resolveContextSourceItem(
     };
   }
 
-  const selectedPdfAttachment = getSelectedPdfAttachmentFromLibraryPane();
+  const selectedAttachment = getSelectedSupportedAttachmentFromLibraryPane();
   const panelParentItem =
     panelItem.isAttachment() && panelItem.parentID
       ? Zotero.Items.get(panelItem.parentID) || null
       : panelItem;
   if (
-    selectedPdfAttachment &&
-    (selectedPdfAttachment.id === panelItem.id ||
-      (panelParentItem &&
-        selectedPdfAttachment.parentID === panelParentItem.id))
+    selectedAttachment &&
+    (selectedAttachment.id === panelItem.id ||
+      (panelParentItem && selectedAttachment.parentID === panelParentItem.id))
   ) {
-    const label = getContextItemLabel(selectedPdfAttachment);
+    const label = getContextItemLabel(selectedAttachment);
     return {
-      contextItem: selectedPdfAttachment,
+      contextItem: selectedAttachment,
       statusText: `using the selected ${label} as context`,
       sourceKind: "selected-child",
     };
   }
 
-  if (
-    panelItem.isAttachment() &&
-    panelItem.attachmentContentType === "application/pdf"
-  ) {
+  if (isSupportedContextAttachment(panelItem)) {
     const label = getContextItemLabel(panelItem);
     return {
       contextItem: panelItem,
@@ -543,29 +582,25 @@ export async function resolveContextSourceItemAsync(
     };
   }
 
-  const selectedPdfAttachment = getSelectedPdfAttachmentFromLibraryPane();
+  const selectedAttachment = getSelectedSupportedAttachmentFromLibraryPane();
   const panelParentItem =
     panelItem.isAttachment() && panelItem.parentID
       ? Zotero.Items.get(panelItem.parentID) || null
       : panelItem;
   if (
-    selectedPdfAttachment &&
-    (selectedPdfAttachment.id === panelItem.id ||
-      (panelParentItem &&
-        selectedPdfAttachment.parentID === panelParentItem.id))
+    selectedAttachment &&
+    (selectedAttachment.id === panelItem.id ||
+      (panelParentItem && selectedAttachment.parentID === panelParentItem.id))
   ) {
-    const label = getContextItemLabel(selectedPdfAttachment);
+    const label = getContextItemLabel(selectedAttachment);
     return {
-      contextItem: selectedPdfAttachment,
+      contextItem: selectedAttachment,
       statusText: `using the selected ${label} as context`,
       sourceKind: "selected-child",
     };
   }
 
-  if (
-    panelItem.isAttachment() &&
-    panelItem.attachmentContentType === "application/pdf"
-  ) {
+  if (isSupportedContextAttachment(panelItem)) {
     const label = getContextItemLabel(panelItem);
     return {
       contextItem: panelItem,
@@ -626,7 +661,7 @@ export function getItemSelectionCacheKeys(
       const attachments = item.getAttachments();
       for (const attId of attachments) {
         const att = Zotero.Items.get(attId);
-        if (att && att.attachmentContentType === "application/pdf") {
+        if (isSupportedContextAttachment(att)) {
           keys.add(att.id);
         }
       }
