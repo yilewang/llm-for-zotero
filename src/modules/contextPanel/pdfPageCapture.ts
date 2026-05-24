@@ -175,8 +175,11 @@ async function renderPdfPageToDataUrl(
   pageNumber: number,
 ): Promise<string | null> {
   const canvasDoc =
-    getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
+    Zotero.getMainWindow?.()?.document || getReaderDocument(reader);
   if (!canvasDoc) return null;
+
+  let pdfPage: (RenderablePdfPage & { cleanup?: () => void }) | null = null;
+  let offscreen: HTMLCanvasElement | null = null;
 
   const pdfDocument = unwrapWrappedJsObject(
     app.pdfDocument as { getPage?: (n: number) => Promise<unknown> },
@@ -191,11 +194,13 @@ async function renderPdfPageToDataUrl(
     const rawPage = await (
       pdfDocument as { getPage: (n: number) => Promise<unknown> }
     ).getPage(pageNumber);
-    const pdfPage = resolveRenderablePdfPage(rawPage);
+    pdfPage = resolveRenderablePdfPage(rawPage) as
+      | (RenderablePdfPage & { cleanup?: () => void })
+      | null;
     if (!pdfPage) return null;
 
     const viewport = pdfPage.getViewport({ scale: 1.8 });
-    const offscreen = canvasDoc.createElement("canvas") as HTMLCanvasElement;
+    offscreen = canvasDoc.createElement("canvas") as HTMLCanvasElement;
     offscreen.width = Math.max(1, Math.ceil(viewport.width));
     offscreen.height = Math.max(1, Math.ceil(viewport.height));
     const context = offscreen.getContext("2d") as CanvasRenderingContext2D | null;
@@ -219,6 +224,16 @@ async function renderPdfPageToDataUrl(
     return offscreen.toDataURL("image/png");
   } catch {
     return null;
+  } finally {
+    try {
+      pdfPage?.cleanup?.();
+    } catch {
+      // PDF.js cleanup is best-effort only.
+    }
+    if (offscreen) {
+      offscreen.width = 0;
+      offscreen.height = 0;
+    }
   }
 }
 
@@ -309,75 +324,10 @@ export function parsePageRanges(input: string, maxPage: number): number[] {
 }
 
 /**
- * Navigates the reader to a specific page index (0-based).
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function navigateReaderToPage(reader: any, pageIndex: number): Promise<boolean> {
-  if (typeof reader?.navigate !== "function") return false;
-  const idx = Math.max(0, Math.floor(pageIndex));
-  try {
-    await reader.navigate({ pageIndex: idx, pageLabel: `${idx + 1}` });
-    return true;
-  } catch {
-    try {
-      await reader.navigate({ pageIndex: idx });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
-
-/**
- * Captures the rendered canvas for a given page (1-indexed) as a PNG data URL.
- * Navigates the reader to that page, then renders it off-screen via PDF.js.
- * Falls back to the reader canvas only if the off-screen render fails.
- */
-async function capturePageByNavigation(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  app: any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  reader: any,
-  pageNumber: number,
-): Promise<string | null> {
-  const pageIndex = pageNumber - 1;
-  await navigateReaderToPage(reader, pageIndex);
-
-  const offscreenDataUrl = await renderPdfPageToDataUrl(app, reader, pageNumber);
-  if (offscreenDataUrl) return offscreenDataUrl;
-
-  // Fallback: grab the rendered canvas if off-screen rendering failed.
-  const rendered = await waitForRenderedPageCanvas(app, reader, pageNumber);
-  if (rendered && rendered.width > 0 && rendered.height > 0) {
-    try {
-      return rendered.toDataURL("image/png");
-    } catch {
-      // Canvas may be tainted — try copying to a temp canvas
-      const doc = rendered.ownerDocument || getReaderDocument(reader);
-      if (doc) {
-        const temp = doc.createElement("canvas") as HTMLCanvasElement;
-        temp.width = rendered.width;
-        temp.height = rendered.height;
-        const ctx = temp.getContext("2d") as CanvasRenderingContext2D | null;
-        if (ctx) {
-          ctx.drawImage(rendered, 0, 0);
-          try {
-            return temp.toDataURL("image/png");
-          } catch {
-            // fall through to PDF.js fallback
-          }
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
  * Captures specific PDF pages (1-indexed) as high-quality PNG data URLs.
- * Navigates the reader to each page and captures the rendered canvas,
- * then restores the original page position.
+ * Each requested page is rendered into a fresh off-screen canvas via PDF.js.
+ * The multi-page flow intentionally avoids depending on reader navigation or
+ * visible reader-canvas capture.
  */
 export async function capturePdfPages(
   pageNumbers: number[],
@@ -391,28 +341,25 @@ export async function capturePdfPages(
   const app = getPdfViewerApplication(reader);
   if (!app?.pdfDocument) return [];
 
-  // Remember original page so we can restore it after
-  const originalPageNumber = Number(
-    app?.pdfViewer?.currentPageNumber ||
-      app?.pdfViewer?.currentPageLabel ||
-      app?.page ||
-      1,
-  );
-
   const results: string[] = [];
+  const failedPages: number[] = [];
   const total = pageNumbers.length;
-  try {
-    for (let idx = 0; idx < total; idx++) {
-      opts?.onProgress?.(idx + 1, total);
-      const dataUrl = await capturePageByNavigation(app, reader, pageNumbers[idx]);
-      if (dataUrl) {
-        results.push(dataUrl);
-      }
+  for (let idx = 0; idx < total; idx++) {
+    opts?.onProgress?.(idx + 1, total);
+    const pageNumber = pageNumbers[idx];
+    const dataUrl = await renderPdfPageToDataUrl(app, reader, pageNumber);
+    if (dataUrl) {
+      results.push(dataUrl);
+    } else {
+      failedPages.push(pageNumber);
     }
-  } finally {
-    // Restore original page position
-    const restoreIndex = Math.max(0, Math.floor(originalPageNumber) - 1);
-    await navigateReaderToPage(reader, restoreIndex);
   }
+
+  if (failedPages.length) {
+    throw new Error(
+      `Failed to render PDF pages off-screen: ${failedPages.join(", ")}`,
+    );
+  }
+
   return results;
 }
