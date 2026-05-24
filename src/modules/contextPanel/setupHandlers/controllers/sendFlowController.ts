@@ -299,6 +299,8 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         pdfPageImageDataUrls,
         pdfUploadSystemMessages,
       } = pdfInputs;
+      const hasImageInputs =
+        selectedImages.length > 0 || pdfPageImageDataUrls.length > 0;
       if (isWebChat && selectedCollectionContexts.length) {
         deps.setStatusMessage?.(
           "Web chat does not support Zotero collection context. Remove the collection and try again.",
@@ -316,7 +318,8 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         !primarySelectedText &&
         !selectedPaperContexts.length &&
         !selectedCollectionContexts.length &&
-        !selectedFiles.length
+        !selectedFiles.length &&
+        !hasImageInputs
       ) {
         return;
       }
