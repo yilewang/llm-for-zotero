@@ -574,7 +574,11 @@ export function attachComposeCaptureController(
           }
         } catch (error) {
           deps.log("PDF multiple pages capture error:", error);
-          setStatus(t("PDF page capture failed"), "error");
+          const errorMessage =
+            error instanceof Error && error.message
+              ? error.message
+              : t("PDF page capture failed");
+          setStatus(errorMessage, "error");
           deps.updateImagePreviewPreservingScroll();
         }
       },
