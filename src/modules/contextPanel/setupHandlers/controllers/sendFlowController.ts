@@ -329,19 +329,26 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         primarySelectedText,
         selectedFiles.length > 0 ||
           selectedPaperContexts.length > 0 ||
-          selectedCollectionContexts.length > 0,
+          selectedCollectionContexts.length > 0 ||
+          hasImageInputs,
       );
-      if (!promptText) return;
+      let resolvedPromptText = promptText;
+      if (!resolvedPromptText && hasImageInputs) {
+        resolvedPromptText = "Please analyze the attached images.";
+      }
+      if (!resolvedPromptText) return;
 
-      const resolvedPromptText =
+      if (
         !text &&
         !primarySelectedText &&
         selectedPaperContexts.length + selectedCollectionContexts.length > 0 &&
-        !selectedFiles.length
-          ? selectedPaperContexts.length
-            ? "Please analyze selected papers."
-            : "Please analyze selected collection."
-          : promptText;
+        !selectedFiles.length &&
+        !hasImageInputs
+      ) {
+        resolvedPromptText = selectedPaperContexts.length
+          ? "Please analyze selected papers."
+          : "Please analyze selected collection.";
+      }
 
       const composedQuestionBase = primarySelectedText
         ? deps.buildQuestionWithSelectedTextContexts(

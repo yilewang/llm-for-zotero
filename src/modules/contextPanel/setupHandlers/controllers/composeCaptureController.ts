@@ -567,18 +567,21 @@ export function attachComposeCaptureController(
               nextImages.length - 1,
             );
             deps.updateImagePreviewPreservingScroll();
-            setStatus(`${dataUrls.length} pages captured`, "ready");
+            if (dataUrls.length < pageNumbers.length) {
+              setStatus(
+                `${dataUrls.length}/${pageNumbers.length} pages captured`,
+                "warning",
+              );
+            } else {
+              setStatus(`${dataUrls.length} pages captured`, "ready");
+            }
           } else {
             setStatus(t("PDF page capture failed"), "error");
             deps.updateImagePreviewPreservingScroll();
           }
         } catch (error) {
           deps.log("PDF multiple pages capture error:", error);
-          const errorMessage =
-            error instanceof Error && error.message
-              ? error.message
-              : t("PDF page capture failed");
-          setStatus(errorMessage, "error");
+          setStatus(t("PDF page capture failed"), "error");
           deps.updateImagePreviewPreservingScroll();
         }
       },
