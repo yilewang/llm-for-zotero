@@ -510,9 +510,13 @@ function scopeViewportForRender(
   reader: any,
 ): ViewportLike {
   try {
-    const renderWindow = unwrapWrappedJsObject(
-      canvasDoc.defaultView || reader?._iframeWindow || null,
+    const iframeWindow = unwrapWrappedJsObject(
+      reader?._iframeWindow || null,
     ) as Window | null;
+    const canvasWindow = unwrapWrappedJsObject(
+      canvasDoc.defaultView || null,
+    ) as Window | null;
+    const renderWindow = iframeWindow || canvasWindow;
     const cloneIntoFn = getCloneInto();
     const payload = {
       viewBox: Array.isArray(viewport.viewBox) ? [...viewport.viewBox] : viewport.viewBox,
@@ -678,9 +682,13 @@ async function renderPdfPageToDataUrl(
         canvasContext: rawContext,
         viewport: renderViewport,
       };
-      const renderWindow = unwrapWrappedJsObject(
-        canvasDoc.defaultView || reader?._iframeWindow || null,
+      const iframeWindow = unwrapWrappedJsObject(
+        reader?._iframeWindow || null,
       ) as Window | null;
+      const canvasWindow = unwrapWrappedJsObject(
+        canvasDoc.defaultView || null,
+      ) as Window | null;
+      const renderWindow = iframeWindow || canvasWindow;
       const cloneIntoFn = getCloneInto();
       if (renderWindow && typeof cloneIntoFn === "function") {
         try {
