@@ -64,6 +64,7 @@ export type PanelDomRefs = {
   actionPicker: HTMLDivElement | null;
   actionPickerList: HTMLDivElement | null;
   actionHitlPanel: HTMLDivElement | null;
+  shortcutMenu: HTMLDivElement | null;
   commandRow: HTMLDivElement | null;
   commandRowBadge: HTMLSpanElement | null;
   queueBar: HTMLDivElement | null;
@@ -257,6 +258,9 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     ) as HTMLDivElement | null,
     actionHitlPanel: body.querySelector(
       "#llm-action-hitl-panel",
+    ) as HTMLDivElement | null,
+    shortcutMenu: body.querySelector(
+      "#llm-shortcut-menu",
     ) as HTMLDivElement | null,
     commandRow: body.querySelector(
       "#llm-command-row",

@@ -175,6 +175,7 @@ import {
   type HistorySearchDocument,
   type HistorySearchResult,
 } from "./historySearchController";
+import { createHistorySearchPopupController } from "./historySearchPopupController";
 import {
   collapseDuplicateReusableConversationDrafts,
   findReusableConversationDraft,
@@ -2291,6 +2292,26 @@ export function createHistoryLifecycleController(
     await switchGlobalConversation(entry.conversationKey);
   };
 
+  const historySearchPopupController = createHistorySearchPopupController({
+    parent: panelRoot || (body as HTMLElement),
+    loadEntries: async () => {
+      const libraryID = getCurrentLibraryID();
+      return libraryID ? await loadSearchableConversationHistory(libraryID) : [];
+    },
+    loadDocument: (entry) => ensureHistorySearchDocument(entry),
+    onSelect: async (entry) => {
+      await switchToHistoryEntry(entry);
+      if (status) setStatus(status, t("Conversation loaded"), "ready");
+    },
+    translate: t,
+    log: (...args) => ztoolkit.log("LLM: history search popup", args),
+    resolveLabel: (entry) => resolveHistoryScopeChipLabel(entry),
+    resolveScopeLabel: (entry) =>
+      entry.kind === "paper"
+        ? resolveHistoryPaperLabel(entry.paperItemID)
+        : t("Library chat"),
+  });
+
   const clearPendingDeletionCaches = (conversationKey: number) => {
     invalidateHistorySearchDocument(conversationKey);
   };
@@ -3625,7 +3646,8 @@ export function createHistoryLifecycleController(
       if (searchTrigger) {
         e.preventDefault();
         e.stopPropagation();
-        expandHistorySearch();
+        closeHistoryMenu();
+        historySearchPopupController.open();
         return;
       }
 

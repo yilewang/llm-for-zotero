@@ -1,4 +1,5 @@
 import { copyTextToClipboard, refreshConversationPanels } from "../../chat";
+import { closeShortcutMenu, isShortcutMenuVisible } from "../../shortcuts";
 import { setPromptMenuTarget, setResponseMenuTarget } from "../../state";
 import {
   MODEL_MENU_OPEN_CLASS,
@@ -22,6 +23,7 @@ type FloatingMenuInteractionControllerDeps = {
   historyNewMenu: HTMLDivElement | null;
   historyRowMenu: HTMLDivElement | null;
   promptMenu: HTMLDivElement | null;
+  shortcutMenu: HTMLDivElement | null;
   paperPicker: HTMLDivElement | null;
   getPaperChipMenu: () => HTMLDivElement | null;
   getPaperChipMenuSticky: () => boolean;
@@ -61,6 +63,7 @@ export function attachFloatingMenuInteractionController(
     historyNewMenu,
     historyRowMenu,
     promptMenu,
+    shortcutMenu,
     paperPicker,
   } = deps;
 
@@ -71,6 +74,7 @@ export function attachFloatingMenuInteractionController(
     slashMenu,
     historyMenu,
     historyNewMenu,
+    shortcutMenu,
   ]) {
     if (!menu) continue;
     menu.addEventListener("pointerdown", (event: Event) => {
@@ -202,6 +206,35 @@ export function attachFloatingMenuInteractionController(
   );
   bodyWithPaperChipDismiss.__llmPaperChipDismissHandler =
     dismissPaperChipOnOutsidePointerDown;
+
+  const bodyWithShortcutMenuDismiss = body as Element & {
+    __llmShortcutMenuDismissHandler?: (event: KeyboardEvent) => void;
+  };
+  if (bodyWithShortcutMenuDismiss.__llmShortcutMenuDismissHandler) {
+    panelDoc.removeEventListener(
+      "keydown",
+      bodyWithShortcutMenuDismiss.__llmShortcutMenuDismissHandler,
+      true,
+    );
+  }
+  const dismissShortcutMenuOnEscape = (event: KeyboardEvent) => {
+    if (event.key !== "Escape") return;
+    let closed = false;
+    const shortcutMenus = Array.from(
+      panelDoc.querySelectorAll("#llm-shortcut-menu"),
+    ) as HTMLDivElement[];
+    for (const shortcutMenuEl of shortcutMenus) {
+      if (!isShortcutMenuVisible(shortcutMenuEl)) continue;
+      closeShortcutMenu(shortcutMenuEl);
+      closed = true;
+    }
+    if (!closed) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  panelDoc.addEventListener("keydown", dismissShortcutMenuOnEscape, true);
+  bodyWithShortcutMenuDismiss.__llmShortcutMenuDismissHandler =
+    dismissShortcutMenuOnEscape;
 
   if (chatBox) {
     chatBox.addEventListener("click", (event: Event) => {
@@ -341,6 +374,9 @@ export function attachFloatingMenuInteractionController(
       const historyRowMenus = Array.from(
         panelDoc.querySelectorAll("#llm-history-row-menu"),
       ) as HTMLDivElement[];
+      const shortcutMenus = Array.from(
+        panelDoc.querySelectorAll("#llm-shortcut-menu"),
+      ) as HTMLDivElement[];
 
       for (const modelMenuEl of modelMenus) {
         if (!isFloatingMenuOpen(modelMenuEl)) continue;
@@ -393,6 +429,16 @@ export function attachFloatingMenuInteractionController(
           deps.clearRetryMenuAnchor();
         }
       }
+
+      for (const shortcutMenuEl of shortcutMenus) {
+        if (!isShortcutMenuVisible(shortcutMenuEl)) continue;
+        if (target && shortcutMenuEl.contains(target)) continue;
+        const panelRoot = shortcutMenuEl.closest("#llm-main");
+        const shortcutsEl = panelRoot?.querySelector("#llm-shortcuts");
+        if (target && shortcutsEl?.contains(target)) continue;
+        closeShortcutMenu(shortcutMenuEl);
+      }
+
       if (mouseEvent.button !== 0) return;
 
       let responseMenuClosed = false;

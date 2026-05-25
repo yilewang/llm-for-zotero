@@ -70,14 +70,11 @@ import {
   type ConversationHistoryEntry,
 } from "./setupHandlers/controllers/conversationHistoryController";
 import {
-  appendHistorySearchHighlightedText,
-  buildHistorySearchResults,
   createHistorySearchDocument,
   createHistorySearchDocumentFingerprint,
-  normalizeHistorySearchQuery,
   type HistorySearchDocument,
-  type HistorySearchResult,
 } from "./setupHandlers/controllers/historySearchController";
+import { createHistorySearchPopupController } from "./setupHandlers/controllers/historySearchPopupController";
 import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
 import {
   collapseDuplicateReusableConversationDrafts,
@@ -424,11 +421,6 @@ type PendingStandaloneHistoryDeletion = {
 type StandaloneCreateConversationOptions = {
   forceFresh?: boolean;
   excludeConversationKey?: number;
-};
-
-type CachedStandaloneSearchDocument = {
-  fingerprint: string;
-  document: HistorySearchDocument;
 };
 
 // ---------------------------------------------------------------------------
@@ -1103,52 +1095,6 @@ export function openStandaloneChat(options?: {
       contentWrapper.append(tabRow, contentTitleBar, contentArea);
       lowerArea.append(sidebar, contentWrapper);
 
-      // -- Search overlay (Claude.ai-style centered popup) --
-      const searchOverlay = doc.createElementNS(
-        HTML_NS,
-        "div",
-      ) as HTMLDivElement;
-      searchOverlay.className = "llm-standalone-search-overlay";
-      searchOverlay.style.display = "none";
-
-      const searchPopup = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
-      searchPopup.className = "llm-standalone-search-popup";
-
-      const searchHeader = doc.createElementNS(
-        HTML_NS,
-        "div",
-      ) as HTMLDivElement;
-      searchHeader.className = "llm-standalone-search-header";
-
-      const searchInput = doc.createElementNS(
-        HTML_NS,
-        "input",
-      ) as HTMLInputElement;
-      searchInput.className = "llm-standalone-search-input";
-      searchInput.type = "text";
-      searchInput.placeholder = t("Search history");
-      searchInput.setAttribute("autocomplete", "off");
-      searchInput.setAttribute("spellcheck", "false");
-
-      const searchCloseBtn = doc.createElementNS(
-        HTML_NS,
-        "button",
-      ) as HTMLButtonElement;
-      searchCloseBtn.className = "llm-standalone-search-close";
-      searchCloseBtn.type = "button";
-      searchCloseBtn.textContent = "\u00D7";
-
-      searchHeader.append(searchInput, searchCloseBtn);
-
-      const searchResults = doc.createElementNS(
-        HTML_NS,
-        "div",
-      ) as HTMLDivElement;
-      searchResults.className = "llm-standalone-search-results";
-
-      searchPopup.append(searchHeader, searchResults);
-      searchOverlay.appendChild(searchPopup);
-
       // -- Skills overlay (popup for managing agent skills) --
       const skillOverlay = doc.createElementNS(
         HTML_NS,
@@ -1236,7 +1182,6 @@ export function openStandaloneChat(options?: {
       root.append(
         lowerArea,
         exportPopup,
-        searchOverlay,
         skillOverlay,
         skillCtxMenu,
       );
@@ -2063,27 +2008,10 @@ export function openStandaloneChat(options?: {
       // -----------------------------------------------------------------------
       // Search popup logic
       // -----------------------------------------------------------------------
-      let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-      let searchSeq = 0;
-      const searchDocCache = new Map<number, CachedStandaloneSearchDocument>();
-
-      const openSearchPopup = () => {
-        searchOverlay.style.display = "flex";
-        searchInput.value = "";
-        searchResults.textContent = "";
-        searchInput.focus();
-        void runSearch("");
-      };
-
-      const closeSearchPopup = () => {
-        searchOverlay.style.display = "none";
-        searchInput.value = "";
-        searchResults.textContent = "";
-        if (searchDebounceTimer !== null) {
-          clearTimeout(searchDebounceTimer);
-          searchDebounceTimer = null;
-        }
-      };
+      const searchDocCache = new Map<
+        number,
+        { fingerprint: string; document: HistorySearchDocument }
+      >();
 
       const resolvePaperLabel = (paperItemID: number | undefined): string => {
         if (!paperItemID) return t("Library chat");
@@ -2150,12 +2078,13 @@ export function openStandaloneChat(options?: {
       };
 
       const loadAllStandaloneSearchEntries = async (): Promise<
-        SidebarConv[]
+        ConversationHistoryEntry[]
       > => {
         const libraryID = getCurrentLibraryScopeID();
         const limit = 100;
+        let entries: SidebarConv[];
         if (isClaudeConversationSystem()) {
-          return (await loadAllClaudeConversationHistory({ libraryID, limit }))
+          entries = (await loadAllClaudeConversationHistory({ libraryID, limit }))
             .map((entry) => ({
               conversationKey: entry.conversationKey,
               lastActivityAt: entry.lastActivityAt,
@@ -2163,9 +2092,8 @@ export function openStandaloneChat(options?: {
               paperItemID: entry.paperItemID,
               mode: entry.kind === "paper" ? "paper" : "open",
             }));
-        }
-        if (isCodexConversationSystem()) {
-          return (await loadAllCodexConversationHistory({ libraryID, limit }))
+        } else if (isCodexConversationSystem()) {
+          entries = (await loadAllCodexConversationHistory({ libraryID, limit }))
             .map((entry) => ({
               conversationKey: entry.conversationKey,
               lastActivityAt: entry.lastActivityAt,
@@ -2173,17 +2101,19 @@ export function openStandaloneChat(options?: {
               paperItemID: entry.paperItemID,
               mode: entry.kind === "paper" ? "paper" : "open",
             }));
+        } else {
+          entries = (await loadAllConversationHistory({ libraryID, limit })).map(
+            (entry) => ({
+              conversationKey: entry.conversationKey,
+              lastActivityAt: entry.lastActivityAt,
+              title: entry.title,
+              sessionVersion: entry.sessionVersion,
+              paperItemID: entry.paperItemID,
+              mode: entry.mode,
+            }),
+          );
         }
-        return (await loadAllConversationHistory({ libraryID, limit })).map(
-          (entry) => ({
-            conversationKey: entry.conversationKey,
-            lastActivityAt: entry.lastActivityAt,
-            title: entry.title,
-            sessionVersion: entry.sessionVersion,
-            paperItemID: entry.paperItemID,
-            mode: entry.mode,
-          }),
-        );
+        return entries.map(toStandaloneHistoryEntry);
       };
 
       const loadStandaloneSearchDocument = async (
@@ -2202,242 +2132,21 @@ export function openStandaloneChat(options?: {
         return document;
       };
 
-      const renderSearchResults = (
-        entries: SidebarConv[],
-        query: string,
-        searchResultsByKey = new Map<number, HistorySearchResult>(),
+      const selectStandaloneSearchEntry = async (
+        entry: ConversationHistoryEntry,
       ) => {
-        searchResults.textContent = "";
-
-        if (!entries.length) {
-          const empty = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
-          empty.className = "llm-standalone-search-empty";
-          empty.textContent = query
-            ? t("No matching history")
-            : t("No conversations yet");
-          searchResults.appendChild(empty);
-          return;
-        }
-
-        const groups = groupHistoryEntriesByDay(entries, { translate: t });
-
-        const entryMap = new Map<number, SidebarConv>();
-        for (const e of entries) entryMap.set(e.conversationKey, e);
-
-        for (const group of groups) {
-          const dayLabel = doc.createElementNS(
-            HTML_NS,
-            "div",
-          ) as HTMLDivElement;
-          dayLabel.className = "llm-standalone-search-day-label";
-          dayLabel.textContent = group.label;
-          searchResults.appendChild(dayLabel);
-
-          for (const conv of group.items) {
-            const entry = entryMap.get(conv.conversationKey);
-            if (!entry) continue;
-
-            const btn = doc.createElementNS(
-              HTML_NS,
-              "button",
-            ) as HTMLButtonElement;
-            btn.className = "llm-standalone-search-item";
-            btn.type = "button";
-            btn.dataset.conversationKey = String(entry.conversationKey);
-            btn.dataset.mode = entry.mode;
-            if (entry.paperItemID) {
-              btn.dataset.paperItemId = String(entry.paperItemID);
-            }
-            if (entry.sessionVersion !== undefined) {
-              btn.dataset.sessionVersion = String(entry.sessionVersion);
-            }
-
-            const textWrap = doc.createElementNS(
-              HTML_NS,
-              "div",
-            ) as HTMLDivElement;
-            textWrap.className = "llm-standalone-search-text";
-
-            const label = doc.createElementNS(
-              HTML_NS,
-              "span",
-            ) as HTMLSpanElement;
-            label.className = "llm-standalone-search-label";
-            const isPaperEntry = entry.mode === "paper";
-            label.dataset.labelType = isPaperEntry ? "paper" : "library";
-            const labelText = isPaperEntry
-              ? resolvePaperLabel(entry.paperItemID)
-              : t("Library chat");
-            label.textContent = labelText;
-
-            const title = doc.createElementNS(
-              HTML_NS,
-              "span",
-            ) as HTMLSpanElement;
-            title.className = "llm-standalone-search-title";
-            const displayTitle = entry.title || t("Untitled chat");
-            const searchResult = searchResultsByKey.get(entry.conversationKey);
-            if (searchResult?.titleRanges.length) {
-              appendHistorySearchHighlightedText(
-                title,
-                displayTitle,
-                searchResult.titleRanges,
-              );
-            } else {
-              title.textContent = displayTitle;
-            }
-
-            textWrap.append(label, title);
-            btn.append(textWrap);
-            const meta = doc.createElementNS(
-              HTML_NS,
-              "div",
-            ) as HTMLDivElement;
-            meta.className = "llm-standalone-search-meta";
-            const scopeLabel = isPaperEntry
-              ? resolvePaperSearchScopeLabel(entry.paperItemID)
-              : t("Library chat");
-            const timestamp =
-              formatGlobalHistoryTimestamp(entry.lastActivityAt) || "";
-            meta.textContent = timestamp
-              ? `${scopeLabel} · ${timestamp}`
-              : scopeLabel;
-            btn.append(meta);
-            if (searchResult?.previewText) {
-              const preview = doc.createElementNS(
-                HTML_NS,
-                "div",
-              ) as HTMLDivElement;
-              preview.className = "llm-standalone-search-preview";
-              appendHistorySearchHighlightedText(
-                preview,
-                searchResult.previewText,
-                searchResult.previewRanges,
-              );
-              btn.append(preview);
-            }
-            btn.title = `${labelText}: ${entry.title || t("Untitled chat")}`;
-            searchResults.appendChild(btn);
-          }
-        }
-      };
-
-      const runSearch = async (query: string) => {
-        const thisSeq = ++searchSeq;
         try {
-          const allEntries: SidebarConv[] = await loadAllStandaloneSearchEntries();
-          if (thisSeq !== searchSeq || cancelled) return;
-
-          if (!query.trim()) {
-            renderSearchResults(allEntries, "");
-            return;
-          }
-
-          const normalizedQuery = normalizeHistorySearchQuery(query);
-          const historyEntries = allEntries.map(toStandaloneHistoryEntry);
-          const documents = new Map<number, HistorySearchDocument>();
-          await Promise.all(
-            historyEntries.map(async (entry) => {
-              if (thisSeq !== searchSeq || cancelled) return;
-              try {
-                documents.set(
-                  entry.conversationKey,
-                  await loadStandaloneSearchDocument(entry),
-                );
-              } catch (err) {
-                ztoolkit.log("LLM: standalone search indexing failed", {
-                  conversationKey: entry.conversationKey,
-                  error: err,
-                });
-              }
-            }),
-          );
-          if (thisSeq !== searchSeq || cancelled) return;
-
-          const rawResults = buildHistorySearchResults(
-            historyEntries,
-            normalizedQuery,
-            documents,
-          );
-          const resultsByKey = new Map<number, HistorySearchResult>();
-          for (const result of rawResults) {
-            resultsByKey.set(result.entry.conversationKey, result);
-          }
-          const entriesByKey = new Map(
-            allEntries.map((entry) => [entry.conversationKey, entry]),
-          );
-          const matches = rawResults
-            .map((result) => entriesByKey.get(result.entry.conversationKey))
-            .filter((entry): entry is SidebarConv => Boolean(entry));
-          renderSearchResults(matches, query, resultsByKey);
-        } catch (err) {
-          ztoolkit.log("LLM: standalone search failed", err);
-        }
-      };
-
-      // Search popup event handlers
-      iconSearch.addEventListener("click", () => {
-        if (searchOverlay.style.display !== "none") {
-          closeSearchPopup();
-        } else {
-          openSearchPopup();
-        }
-      });
-
-      searchCloseBtn.addEventListener("click", () => closeSearchPopup());
-
-      searchOverlay.addEventListener("click", (e: Event) => {
-        if (e.target === searchOverlay) closeSearchPopup();
-      });
-
-      searchInput.addEventListener("input", () => {
-        if (searchDebounceTimer !== null) clearTimeout(searchDebounceTimer);
-        searchDebounceTimer = setTimeout(() => {
-          searchDebounceTimer = null;
-          void runSearch(searchInput.value);
-        }, 300);
-      });
-
-      searchInput.addEventListener("keydown", (e: Event) => {
-        if ((e as KeyboardEvent).key === "Escape") {
-          e.preventDefault();
-          closeSearchPopup();
-        }
-      });
-
-      searchResults.addEventListener("click", async (e: Event) => {
-        const target = e.target as Element | null;
-        if (!target) return;
-        const btn = target.closest(
-          ".llm-standalone-search-item",
-        ) as HTMLButtonElement | null;
-        if (!btn) return;
-        e.preventDefault();
-        e.stopPropagation();
-
-        const convKey = Number.parseInt(btn.dataset.conversationKey || "", 10);
-        const mode = btn.dataset.mode || "paper";
-        const paperItemId = Number.parseInt(btn.dataset.paperItemId || "0", 10);
-        const sessionVersion = Number.parseInt(
-          btn.dataset.sessionVersion || "0",
-          10,
-        );
-
-        if (!Number.isFinite(convKey) || convKey <= 0) return;
-
-        closeSearchPopup();
-
-        try {
-          if (mode === "paper" && paperItemId > 0) {
+          if (entry.kind === "paper" && Number(entry.paperItemID || 0) > 0) {
             const paperItem = resolveHistoryEntryPaperItem(
-              { paperItemID: paperItemId },
+              { paperItemID: entry.paperItemID },
               (id) => Zotero.Items.get(id) as Zotero.Item | null,
             );
             if (paperItem) {
+              const sessionVersion = Number(entry.sessionVersion || 0);
               const sv = sessionVersion > 0 ? sessionVersion : 1;
               const portalItem = buildStandalonePortalItem({
                 mode: "paper",
-                conversationKey: convKey,
+                conversationKey: entry.conversationKey,
                 paperItem,
                 sessionVersion: sv,
               });
@@ -2456,7 +2165,7 @@ export function openStandaloneChat(options?: {
             openTab.classList.add("active");
             const portalItem = buildStandalonePortalItem({
               mode: "open",
-              conversationKey: convKey,
+              conversationKey: entry.conversationKey,
             });
             if (!portalItem) return;
             mountChatPanel(portalItem);
@@ -2464,6 +2173,27 @@ export function openStandaloneChat(options?: {
         } catch (err) {
           ztoolkit.log("LLM: standalone search navigate failed", err);
         }
+      };
+
+      const searchPopupController = createHistorySearchPopupController({
+        parent: root,
+        loadEntries: loadAllStandaloneSearchEntries,
+        loadDocument: loadStandaloneSearchDocument,
+        onSelect: selectStandaloneSearchEntry,
+        translate: t,
+        log: (...args) => ztoolkit.log("LLM: standalone search popup", args),
+        resolveLabel: (entry) =>
+          entry.kind === "paper"
+            ? resolvePaperLabel(entry.paperItemID)
+            : t("Library chat"),
+        resolveScopeLabel: (entry) =>
+          entry.kind === "paper"
+            ? resolvePaperSearchScopeLabel(entry.paperItemID)
+            : t("Library chat"),
+      });
+
+      iconSearch.addEventListener("click", () => {
+        searchPopupController.toggle();
       });
 
       // ----------------------------------------------------------------

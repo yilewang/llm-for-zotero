@@ -30,6 +30,18 @@ import { setStatus } from "./textUtils";
 
 const shortcutRenderGeneration = new WeakMap<Element, number>();
 
+export function closeShortcutMenu(menu: HTMLDivElement | null): void {
+  if (!menu) return;
+  menu.style.display = "none";
+  menu.dataset.menuKind = "";
+  menu.dataset.shortcutId = "";
+  menu.dataset.shortcutKind = "";
+}
+
+export function isShortcutMenuVisible(menu: HTMLDivElement | null): boolean {
+  return Boolean(menu && menu.style.display !== "none");
+}
+
 export async function loadShortcutText(file: string): Promise<string> {
   if (shortcutTextCache.has(file)) {
     return shortcutTextCache.get(file)!;
@@ -661,10 +673,7 @@ export async function renderShortcuts(
         const clickedShortcutButton = Boolean(
           targetEl?.closest(".llm-shortcut-btn"),
         );
-        menu.style.display = "none";
-        menu.dataset.menuKind = "";
-        menu.dataset.shortcutId = "";
-        menu.dataset.shortcutKind = "";
+        closeShortcutMenu(menu);
         if (
           shortcutMoveModeState.get(body) === true &&
           !clickedShortcutButton
@@ -689,6 +698,11 @@ export async function renderShortcuts(
         (e: Event) => {
           const keyEvent = e as KeyboardEvent;
           if (keyEvent.key !== "Escape") return;
+          if (isShortcutMenuVisible(menu)) {
+            keyEvent.preventDefault();
+            closeShortcutMenu(menu);
+            return;
+          }
           if (shortcutMoveModeState.get(body) !== true) return;
           keyEvent.preventDefault();
           shortcutMoveModeState.set(body, false);
