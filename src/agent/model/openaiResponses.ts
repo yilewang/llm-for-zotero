@@ -69,6 +69,10 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
     return true;
   }
 
+  resetState(): void {
+    this.conversationItems = null;
+  }
+
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
     const request = params.request;
     const auth = await resolveRequestAuthState({

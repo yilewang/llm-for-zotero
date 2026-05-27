@@ -706,6 +706,11 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
     return true;
   }
 
+  resetState(): void {
+    this.conversationMessages = null;
+    this.systemInstruction = undefined;
+  }
+
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
     const request = params.request;
     const initial = await buildInitialGeminiMessages(params.messages);

@@ -54,14 +54,14 @@ import {
   isNotesDirectoryConfigured,
 } from "../utils/notesDirectoryConfig";
 import {
-  estimateContextMessagesTokens,
-  resolveContextWindowTokens,
-} from "../utils/modelInputCap";
-import {
   buildAgentContextBudgetState,
   resolveAgentContextBudgetPolicy,
 } from "./context/budgetPolicy";
 import { compactAgentTranscript } from "./context/transcriptCompactor";
+import {
+  AgentPromptBudgetError,
+  enforceAgentPromptBudget,
+} from "./context/promptBudget";
 import {
   appendAgentRunEvent,
   createAgentRun,
@@ -859,11 +859,29 @@ export class AgentRuntime {
         stepStreamedText = "";
         stepPendingDelta = "";
       };
-      const stepContextWindow = resolveContextWindowTokens(
-        request.model || "",
-        request.advanced?.inputTokenCap,
-      );
-      const stepContextTokens = estimateContextMessagesTokens(messages);
+      const preflight = enforceAgentPromptBudget({
+        messages,
+        model: request.model,
+        inputTokenCap: request.advanced?.inputTokenCap,
+      });
+      if (preflight.changed) {
+        messages.splice(0, messages.length, ...preflight.messages);
+        adapter.resetState?.();
+        await emit({
+          type: "provider_event",
+          providerType: "agent_context_budget",
+          payload: {
+            action: "compacted_model_prompt",
+            beforeTokens: preflight.estimatedBeforeTokens,
+            afterTokens: preflight.estimatedAfterTokens,
+            softLimitTokens: preflight.softLimitTokens,
+            contextWindow: preflight.contextWindow,
+            reductions: preflight.reductions,
+          },
+        });
+      }
+      const stepContextWindow = preflight.contextWindow;
+      const stepContextTokens = preflight.estimatedAfterTokens;
       if (stepContextTokens > 0 && stepContextWindow > 0) {
         await emit({
           type: "usage",
@@ -1312,12 +1330,21 @@ export class AgentRuntime {
       });
     };
     for (let round = 1; round <= maxRounds; round += 1) {
-      const { step, stepStreamedText } = await runModelStep(
-        round,
-        round === 1
-          ? "Running agent"
-          : `Continuing agent (${round}/${maxRounds})`,
-      );
+      let stepResult: { step: AgentModelStep; stepStreamedText: string };
+      try {
+        stepResult = await runModelStep(
+          round,
+          round === 1
+            ? "Running agent"
+            : `Continuing agent (${round}/${maxRounds})`,
+        );
+      } catch (err) {
+        if (err instanceof AgentPromptBudgetError) {
+          return completeRun(err.message, "failed");
+        }
+        throw err;
+      }
+      const { step, stepStreamedText } = stepResult;
       if (step.kind === "final") {
         if (
           requiresFileNoteWrite &&

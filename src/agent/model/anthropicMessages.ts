@@ -718,6 +718,11 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
     return true;
   }
 
+  resetState(): void {
+    this.conversationMessages = null;
+    this.systemBlocks = undefined;
+  }
+
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
     const request = params.request;
     const buildOptions = {

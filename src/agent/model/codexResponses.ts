@@ -55,6 +55,10 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
     return this.getCapabilities(request).toolCalls;
   }
 
+  resetState(): void {
+    this.conversationItems = null;
+  }
+
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
     const request = params.request;
     const auth = await resolveRequestAuthState({

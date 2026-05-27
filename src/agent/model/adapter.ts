@@ -33,5 +33,6 @@ export type AgentStepParams = {
 export interface AgentModelAdapter {
   getCapabilities(request: AgentRuntimeRequest): AgentModelCapabilities;
   supportsTools(request: AgentRuntimeRequest): boolean;
+  resetState?(): void;
   runStep(params: AgentStepParams): Promise<AgentModelStep>;
 }
