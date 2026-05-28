@@ -261,6 +261,10 @@ import {
   validateConversationScope,
   type ConversationRegistryScope,
 } from "../../shared/conversationRegistry";
+import {
+  provisionConversationScopeForItem,
+  resolveConversationStorageSystemForItem,
+} from "./conversationProvisioning";
 
 export { getConversationKey } from "./conversationIdentity";
 export { renderAssistantMarkdownHtmlForChat } from "./renderedMarkdown";
@@ -277,6 +281,8 @@ function getAbortControllerCtor(): new () => AbortController {
   );
 }
 
+const blockedConversationLoadKeys = new Set<number>();
+
 function normalizeConversationScopeInt(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -291,8 +297,8 @@ function buildConversationRegistryScopeForItem(
   const normalizedConversationKey =
     normalizeConversationScopeInt(conversationKey);
   if (!normalizedConversationKey) return null;
-  const storageSystem = resolveConversationStorageSystem({
-    conversationKey: normalizedConversationKey,
+  const storageSystem = resolveConversationStorageSystemForItem({
+    item,
     conversationSystem,
   });
   if (!storageSystem) return null;
@@ -326,6 +332,10 @@ async function validateConversationScopeForItem(params: {
   conversationKey: number;
   conversationSystem?: ConversationSystem | null;
 }): Promise<boolean> {
+  await provisionConversationScopeForItem({
+    item: params.item,
+    conversationSystem: params.conversationSystem,
+  });
   const scope = buildConversationRegistryScopeForItem(
     params.item,
     params.conversationKey,
@@ -1493,9 +1503,16 @@ export async function ensureConversationLoaded(
   const conversationSystem = resolveConversationSystemForItem(item);
 
   if (loadedConversationKeys.has(conversationKey)) return;
-  if (chatHistory.has(conversationKey)) {
+  if (
+    chatHistory.has(conversationKey) &&
+    !blockedConversationLoadKeys.has(conversationKey)
+  ) {
     loadedConversationKeys.add(conversationKey);
     return;
+  }
+  if (blockedConversationLoadKeys.has(conversationKey)) {
+    chatHistory.delete(conversationKey);
+    blockedConversationLoadKeys.delete(conversationKey);
   }
 
   const existingTask = loadingConversationTasks.get(conversationKey);
@@ -1505,6 +1522,7 @@ export async function ensureConversationLoaded(
   }
 
   const task = (async () => {
+    let shouldMarkLoaded = false;
     try {
       const validScope = await validateConversationScopeForItem({
         item,
@@ -1512,6 +1530,7 @@ export async function ensureConversationLoaded(
         conversationSystem,
       });
       if (!validScope) {
+        blockedConversationLoadKeys.add(conversationKey);
         chatHistory.set(conversationKey, []);
         return;
       }
@@ -1524,6 +1543,7 @@ export async function ensureConversationLoaded(
         ztoolkit.log(
           `LLM: Refused to render conversation ${conversationKey} because stored paper contexts do not include the active paper.`,
         );
+        blockedConversationLoadKeys.add(conversationKey);
         chatHistory.set(conversationKey, []);
         return;
       }
@@ -1545,14 +1565,21 @@ export async function ensureConversationLoaded(
           source: "persisted",
         });
       }
+      blockedConversationLoadKeys.delete(conversationKey);
       chatHistory.set(conversationKey, panelMessages);
+      shouldMarkLoaded = true;
     } catch (err) {
       ztoolkit.log("LLM: Failed to load chat history", err);
       if (!chatHistory.has(conversationKey)) {
         chatHistory.set(conversationKey, []);
       }
+      shouldMarkLoaded = true;
     } finally {
-      loadedConversationKeys.add(conversationKey);
+      if (shouldMarkLoaded) {
+        loadedConversationKeys.add(conversationKey);
+      } else {
+        loadedConversationKeys.delete(conversationKey);
+      }
       loadingConversationTasks.delete(conversationKey);
     }
   })();
@@ -4269,6 +4296,11 @@ export async function editLatestUserMessageAndRetry(
     providerProtocol: retryRequestConfig.providerProtocol,
     modelProviderLabel: retryRequestConfig.modelProviderLabel,
   });
+  const retryStorageSystem =
+    resolveConversationStorageSystemForItem({
+      item,
+      conversationSystem: retryConversationSystem,
+    }) || retryConversationSystem;
   const retryRuntimeMode: ChatRuntimeMode =
     retryConversationSystem === "codex"
       ? "chat"
@@ -4437,13 +4469,13 @@ export async function editLatestUserMessageAndRetry(
         modelEntryId: retryPair.userMessage.modelEntryId,
         modelProviderLabel: retryPair.userMessage.modelProviderLabel,
       },
-      retryConversationSystem,
+      retryStorageSystem,
     );
 
     const storedMessages = await loadStoredConversationByKey(
       conversationKey,
       PERSISTED_HISTORY_LIMIT,
-      retryConversationSystem,
+      retryStorageSystem,
     );
     const attachmentHashes =
       collectAttachmentHashesFromStoredMessages(storedMessages);
@@ -4558,6 +4590,11 @@ export async function retryLatestAssistantResponse(
     providerProtocol: effectiveRequestConfig.providerProtocol,
     modelProviderLabel: effectiveRequestConfig.modelProviderLabel,
   });
+  const effectiveStorageSystem =
+    resolveConversationStorageSystemForItem({
+      item,
+      conversationSystem: effectiveConversationSystem,
+    }) || effectiveConversationSystem;
   const isCodexNativeTurn =
     effectiveConversationSystem === "codex" &&
     effectiveRequestConfig.authMode === "codex_app_server";
@@ -4640,7 +4677,7 @@ export async function retryLatestAssistantResponse(
         contextWindow: latestContextSnapshot?.contextWindow,
         quoteCitations: assistantMessage.quoteCitations,
       },
-      effectiveConversationSystem,
+      effectiveStorageSystem,
     );
     setStatusSafely("Cancelled", "ready");
   };
@@ -4793,7 +4830,7 @@ export async function retryLatestAssistantResponse(
         modelEntryId: retryPair.userMessage.modelEntryId,
         modelProviderLabel: retryPair.userMessage.modelProviderLabel,
       },
-      effectiveConversationSystem,
+      effectiveStorageSystem,
     );
     if (getCancelledRequestId(conversationKey) >= thisRequestId) {
       getAbortController(conversationKey)?.abort();
@@ -5102,7 +5139,7 @@ export async function retryLatestAssistantResponse(
         contextWindow: latestContextSnapshot?.contextWindow,
         quoteCitations: assistantMessage.quoteCitations,
       },
-      effectiveConversationSystem,
+      effectiveStorageSystem,
     );
 
     setStatusSafely("Ready", "ready");
@@ -5249,6 +5286,11 @@ export async function editUserTurnAndRetry(opts: {
     providerProtocol: retryRequestConfig.providerProtocol,
     modelProviderLabel: retryRequestConfig.modelProviderLabel,
   });
+  const retryStorageSystem =
+    resolveConversationStorageSystemForItem({
+      item,
+      conversationSystem: retryConversationSystem,
+    }) || retryConversationSystem;
   const retryRuntimeMode: ChatRuntimeMode =
     retryConversationSystem === "codex"
       ? "chat"
@@ -5276,7 +5318,7 @@ export async function editUserTurnAndRetry(opts: {
     try {
       const storageSystem = resolveConversationStorageSystem({
         conversationKey,
-        conversationSystem: retryConversationSystem,
+        conversationSystem: retryStorageSystem,
       });
       if (!storageSystem) {
         continue;
@@ -5426,7 +5468,7 @@ export async function editUserTurnAndRetry(opts: {
         modelEntryId: userMsg.modelEntryId,
         modelProviderLabel: userMsg.modelProviderLabel,
       },
-      retryConversationSystem,
+      retryStorageSystem,
     );
   } catch (err) {
     ztoolkit.log("LLM: Failed to persist edited user message", err);
@@ -5906,6 +5948,12 @@ function buildAgentEngineDeps(
     appendReasoningPart,
     persistConversationMessage: async (conversationKey, message) => {
       const system = getEffectiveConversationSystem();
+      const storageSystem = currentItem
+        ? resolveConversationStorageSystemForItem({
+            item: currentItem,
+            conversationSystem: system,
+          })
+        : system;
       if (
         currentItem &&
         !(await validateConversationScopeForItem({
@@ -5916,10 +5964,16 @@ function buildAgentEngineDeps(
       ) {
         return;
       }
-      await persistConversationMessage(conversationKey, message, system);
+      await persistConversationMessage(conversationKey, message, storageSystem);
     },
     updateStoredLatestUserMessage: async (conversationKey, data) => {
       const system = getEffectiveConversationSystem();
+      const storageSystem = currentItem
+        ? resolveConversationStorageSystemForItem({
+            item: currentItem,
+            conversationSystem: system,
+          })
+        : system;
       if (
         currentItem &&
         !(await validateConversationScopeForItem({
@@ -5932,12 +5986,20 @@ function buildAgentEngineDeps(
       }
       await updateStoredLatestUserMessageByConversation(
         conversationKey,
-        data as Parameters<typeof updateStoredLatestUserMessageByConversation>[1],
-        system,
+        data as Parameters<
+          typeof updateStoredLatestUserMessageByConversation
+        >[1],
+        storageSystem,
       );
     },
     updateStoredLatestAssistantMessage: async (conversationKey, data) => {
       const system = getEffectiveConversationSystem();
+      const storageSystem = currentItem
+        ? resolveConversationStorageSystemForItem({
+            item: currentItem,
+            conversationSystem: system,
+          })
+        : system;
       if (
         currentItem &&
         !(await validateConversationScopeForItem({
@@ -5950,8 +6012,10 @@ function buildAgentEngineDeps(
       }
       await updateStoredLatestAssistantMessageByConversation(
         conversationKey,
-        data as Parameters<typeof updateStoredLatestAssistantMessageByConversation>[1],
-        system,
+        data as Parameters<
+          typeof updateStoredLatestAssistantMessageByConversation
+        >[1],
+        storageSystem,
       );
     },
     sendChatFallback: sendQuestion,
@@ -6110,6 +6174,11 @@ export async function sendQuestion(
     providerProtocol: opts.providerProtocol,
     modelProviderLabel: opts.modelProviderLabel,
   });
+  const effectiveStorageSystem =
+    resolveConversationStorageSystemForItem({
+      item,
+      conversationSystem: effectiveConversationSystem,
+    }) || effectiveConversationSystem;
   const effectiveRuntimeMode: ChatRuntimeMode =
     effectiveConversationSystem === "claude_code"
       ? "agent"
@@ -6328,7 +6397,7 @@ export async function sendQuestion(
           modelEntryId: compactMessage.modelEntryId,
           modelProviderLabel: compactMessage.modelProviderLabel,
         },
-        effectiveConversationSystem,
+        effectiveStorageSystem,
       );
     };
 
@@ -6371,7 +6440,7 @@ export async function sendQuestion(
           modelProviderLabel: compactMessage.modelProviderLabel,
           compactMarker: true,
         },
-        effectiveConversationSystem,
+        effectiveStorageSystem,
       );
       setStatusSafely("Ready", "ready");
     } catch (err) {
@@ -6549,7 +6618,7 @@ export async function sendQuestion(
       modelEntryId: userMessage.modelEntryId,
       modelProviderLabel: userMessage.modelProviderLabel,
     },
-    effectiveConversationSystem,
+    effectiveStorageSystem,
   );
 
   const assistantMessage: Message = {
@@ -6607,7 +6676,7 @@ export async function sendQuestion(
         quoteCitations: assistantMessage.quoteCitations,
         compactMarker: assistantMessage.compactMarker,
       },
-      effectiveConversationSystem,
+      effectiveStorageSystem,
     );
   };
   let responseStreamCoalescer: BlockStreamCoalescer | null = null;
@@ -6820,7 +6889,7 @@ export async function sendQuestion(
         modelEntryId: userMessage.modelEntryId,
         modelProviderLabel: userMessage.modelProviderLabel,
       },
-      effectiveConversationSystem,
+      effectiveStorageSystem,
     );
 
     if (getCancelledRequestId(conversationKey) >= thisRequestId) {
