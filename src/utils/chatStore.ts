@@ -40,6 +40,10 @@ import {
   refreshConversationSearchIndexForConversation,
 } from "../shared/conversationSearchIndex";
 import {
+  CONVERSATION_ID_TRANSITION_MIGRATION_ID,
+  hasConversationSchemaMigration,
+} from "../shared/conversationSchemaMigrations";
+import {
   normalizeSelectedTextNoteContexts,
   normalizeSelectedTextPaperContexts,
   normalizeSelectedTextSource,
@@ -980,6 +984,8 @@ async function backfillUpstreamConversationRegistry(): Promise<void> {
 }
 
 export async function initChatStore(): Promise<void> {
+  const conversationIDTransitionAlreadyApplied =
+    await hasConversationSchemaMigration(CONVERSATION_ID_TRANSITION_MIGRATION_ID);
   await Zotero.DB.executeTransaction(async () => {
     await initConversationRegistryStore();
     await migrateLegacyChatStore();
@@ -1378,11 +1384,13 @@ export async function initChatStore(): Promise<void> {
        ON ${PAPER_CONVERSATIONS_TABLE} (conversation_id)`,
     );
 
-    await reconcileConversationCatalogs();
-    await migrateSharedGlobalDefaultConversationKey();
-    await backfillUpstreamConversationIDs();
-    await backfillUpstreamConversationRegistry();
-    await refreshUpstreamConversationCatalogSummary();
+    if (!conversationIDTransitionAlreadyApplied) {
+      await reconcileConversationCatalogs();
+      await migrateSharedGlobalDefaultConversationKey();
+      await backfillUpstreamConversationIDs();
+      await backfillUpstreamConversationRegistry();
+      await refreshUpstreamConversationCatalogSummary();
+    }
   });
 }
 

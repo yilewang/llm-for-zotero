@@ -64,6 +64,10 @@ import {
   deleteConversationSearchIndexRow,
   refreshConversationSearchIndexForConversation,
 } from "../shared/conversationSearchIndex";
+import {
+  CONVERSATION_ID_TRANSITION_MIGRATION_ID,
+  hasConversationSchemaMigration,
+} from "../shared/conversationSchemaMigrations";
 
 const CLAUDE_MESSAGES_TABLE = "llm_for_zotero_claude_messages";
 const CLAUDE_MESSAGES_INDEX = "llm_for_zotero_claude_messages_conversation_idx";
@@ -728,6 +732,8 @@ export async function repairClaudeConversationIdentityRegistry(): Promise<void> 
 }
 
 export async function initClaudeCodeStore(): Promise<void> {
+  const conversationIDTransitionAlreadyApplied =
+    await hasConversationSchemaMigration(CONVERSATION_ID_TRANSITION_MIGRATION_ID);
   await Zotero.DB.executeTransaction(async () => {
     await initConversationRegistryStore();
     await Zotero.DB.queryAsync(
@@ -860,7 +866,9 @@ export async function initClaudeCodeStore(): Promise<void> {
       `PRAGMA table_info(${CLAUDE_CONVERSATIONS_TABLE})`,
     )) as Array<{ name?: unknown }> | undefined;
     await ensureClaudeConversationCatalogColumns(conversationColumns);
-    await backfillClaudeConversationTimestamps();
+    if (!conversationIDTransitionAlreadyApplied) {
+      await backfillClaudeConversationTimestamps();
+    }
     await Zotero.DB.queryAsync(
       `CREATE INDEX IF NOT EXISTS ${CLAUDE_CONVERSATIONS_KIND_INDEX}
        ON ${CLAUDE_CONVERSATIONS_TABLE} (library_id, kind, paper_item_id, updated_at DESC, conversation_key DESC)`,
@@ -873,10 +881,12 @@ export async function initClaudeCodeStore(): Promise<void> {
       `CREATE UNIQUE INDEX IF NOT EXISTS ${CLAUDE_CONVERSATIONS_ID_INDEX}
        ON ${CLAUDE_CONVERSATIONS_TABLE} (conversation_id)`,
     );
-    await migrateLegacyClaudeConversationKeys();
-    await backfillClaudeConversationIDs();
-    await repairClaudeConversationIdentityRegistry();
-    await refreshClaudeConversationCatalogSummary();
+    if (!conversationIDTransitionAlreadyApplied) {
+      await migrateLegacyClaudeConversationKeys();
+      await backfillClaudeConversationIDs();
+      await repairClaudeConversationIdentityRegistry();
+      await refreshClaudeConversationCatalogSummary();
+    }
   });
 }
 

@@ -67,6 +67,10 @@ import {
   deleteConversationSearchIndexRow,
   refreshConversationSearchIndexForConversation,
 } from "../shared/conversationSearchIndex";
+import {
+  CONVERSATION_ID_TRANSITION_MIGRATION_ID,
+  hasConversationSchemaMigration,
+} from "../shared/conversationSchemaMigrations";
 
 const CODEX_MESSAGES_TABLE = "llm_for_zotero_codex_messages";
 const CODEX_MESSAGES_INDEX = "llm_for_zotero_codex_messages_conversation_idx";
@@ -924,6 +928,8 @@ export async function repairCodexConversationIdentityRegistry(): Promise<void> {
 }
 
 export async function initCodexAppServerStore(): Promise<void> {
+  const conversationIDTransitionAlreadyApplied =
+    await hasConversationSchemaMigration(CONVERSATION_ID_TRANSITION_MIGRATION_ID);
   await Zotero.DB.executeTransaction(async () => {
     await initConversationRegistryStore();
     await Zotero.DB.queryAsync(
@@ -1056,7 +1062,9 @@ export async function initCodexAppServerStore(): Promise<void> {
       `PRAGMA table_info(${CODEX_CONVERSATIONS_TABLE})`,
     )) as Array<{ name?: unknown }> | undefined;
     await ensureCodexConversationCatalogColumns(conversationColumns);
-    await backfillCodexConversationTimestamps();
+    if (!conversationIDTransitionAlreadyApplied) {
+      await backfillCodexConversationTimestamps();
+    }
     await Zotero.DB.queryAsync(
       `CREATE INDEX IF NOT EXISTS ${CODEX_CONVERSATIONS_KIND_INDEX}
        ON ${CODEX_CONVERSATIONS_TABLE} (library_id, kind, paper_item_id, updated_at DESC, conversation_key DESC)`,
@@ -1069,11 +1077,13 @@ export async function initCodexAppServerStore(): Promise<void> {
       `CREATE UNIQUE INDEX IF NOT EXISTS ${CODEX_CONVERSATIONS_ID_INDEX}
        ON ${CODEX_CONVERSATIONS_TABLE} (conversation_id)`,
     );
-    await repairMisroutedCodexConversationRows();
-    await migrateLegacyCodexConversationKeys();
-    await backfillCodexConversationIDs();
-    await repairCodexConversationIdentityRegistry();
-    await refreshCodexConversationCatalogSummary();
+    if (!conversationIDTransitionAlreadyApplied) {
+      await repairMisroutedCodexConversationRows();
+      await migrateLegacyCodexConversationKeys();
+      await backfillCodexConversationIDs();
+      await repairCodexConversationIdentityRegistry();
+      await refreshCodexConversationCatalogSummary();
+    }
   });
   cleanupRememberedConversationKeyPrefs();
 }

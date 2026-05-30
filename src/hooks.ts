@@ -1,7 +1,7 @@
 import { initLocale } from "./utils/locale";
 import { initI18n } from "./utils/i18n";
 import { registerPrefsScripts } from "./modules/preferenceScript";
-import { PREFERENCES_PANE_ID } from "./modules/contextPanel/constants";
+import { config, PREFERENCES_PANE_ID } from "./modules/contextPanel/constants";
 import {
   registerReaderContextPanel,
   registerLLMStyles,
@@ -15,39 +15,241 @@ import { initChatStore } from "./utils/chatStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
 import {
-  auditConversationIntegrity,
-  repairConversationCatalogSummaries,
-} from "./shared/conversationIntegrity";
-import { refreshConversationSearchIndex } from "./shared/conversationSearchIndex";
-import { markConversationIDTransitionMigrationApplied } from "./shared/conversationSchemaMigrations";
-import { ensureClaudeProjectBootstrapIfEnabled } from "./claudeCode/bootstrapGate";
-import {
-  initAttachmentRefStore,
-  reconcileNoteAttachmentRefsFromNoteContent,
-  collectAndDeleteUnreferencedBlobs,
-  ATTACHMENT_GC_MIN_AGE_MS,
-} from "./utils/attachmentRefStore";
-import { runLegacyMigrations } from "./utils/migrations";
+  runDeferredLegacyMigrations,
+  runStartupPreferenceMigrations,
+} from "./utils/migrations";
 import { createZToolkit } from "./utils/ztoolkit";
-import {
-  getAgentApi,
-  initAgentSubsystem,
-  shutdownAgentSubsystem,
-} from "./agent";
-import { pauseBatchProcessing } from "./modules/mineruBatchProcessor";
-import { startAutoWatch, stopAutoWatch } from "./modules/mineruAutoWatch";
 import { clearAllState, initFontScale } from "./modules/contextPanel/state";
 import { clearQueuedFollowUpState } from "./modules/contextPanel/queuedFollowUps";
 
-async function onStartup() {
-  await Promise.all([
-    Zotero.initializationPromise,
-    Zotero.unlockPromise,
-    Zotero.uiReadyPromise,
-  ]);
+type ConversationStoreReadiness = {
+  chatStoreReady: boolean;
+  claudeStoreReady: boolean;
+  codexStoreReady: boolean;
+};
+
+let startupUserSkillsLoadTask: Promise<void> | null = null;
+
+function getStartupPrefKey(key: string): string {
+  return `${config.prefsPrefix}.${key}`;
+}
+
+function getStartupBoolPref(key: string, defaultValue = false): boolean {
+  const value = Zotero.Prefs.get(getStartupPrefKey(key), true);
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  return defaultValue;
+}
+
+function shouldInitializeAgentSubsystem(): boolean {
+  return (
+    getStartupBoolPref("enableAgentMode") ||
+    getStartupBoolPref("enableClaudeCodeMode") ||
+    getStartupBoolPref("enableCodexAppServerMode")
+  );
+}
+
+async function measureStartupPhase<T>(
+  label: string,
+  task: () => Promise<T> | T,
+): Promise<T> {
+  const start = Date.now();
+  try {
+    return await task();
+  } finally {
+    ztoolkit.log(`LLM startup: ${label} completed in ${Date.now() - start}ms`);
+  }
+}
+
+function runDeferredStartupTask(
+  label: string,
+  task: () => Promise<void> | void,
+): void {
+  void (async () => {
+    const start = Date.now();
+    try {
+      await task();
+      ztoolkit.log(
+        `LLM startup deferred: ${label} completed in ${Date.now() - start}ms`,
+      );
+    } catch (err) {
+      ztoolkit.log(`LLM: Deferred startup task failed: ${label}`, err);
+    }
+  })();
+}
+
+async function ensureStartupUserSkillsLoaded(): Promise<void> {
+  if (!startupUserSkillsLoadTask) {
+    startupUserSkillsLoadTask = (async () => {
+      const { initUserSkills, loadUserSkills } = await import(
+        "./agent/skills/userSkills"
+      );
+      const { setUserSkills } = await import("./agent/skills");
+      await initUserSkills();
+      setUserSkills(await loadUserSkills());
+    })();
+  }
+  await startupUserSkillsLoadTask;
+}
+
+async function initializeConversationStoresForStartup(): Promise<ConversationStoreReadiness> {
+  const readiness: ConversationStoreReadiness = {
+    chatStoreReady: false,
+    claudeStoreReady: false,
+    codexStoreReady: false,
+  };
 
   try {
-    await runLegacyMigrations();
+    await measureStartupPhase("upstream chat store", initChatStore);
+    readiness.chatStoreReady = true;
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to initialize chat store", err);
+  }
+  try {
+    await measureStartupPhase("Claude Code store", initClaudeCodeStore);
+    readiness.claudeStoreReady = true;
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to initialize Claude Code store", err);
+  }
+  try {
+    await measureStartupPhase("Codex App Server store", initCodexAppServerStore);
+    readiness.codexStoreReady = true;
+  } catch (err) {
+    ztoolkit.log("LLM: Failed to initialize Codex App Server store", err);
+  }
+
+  return readiness;
+}
+
+function allConversationStoresReady(readiness: ConversationStoreReadiness): boolean {
+  return (
+    readiness.chatStoreReady &&
+    readiness.claudeStoreReady &&
+    readiness.codexStoreReady
+  );
+}
+
+function scheduleConversationMaintenance(
+  readiness: ConversationStoreReadiness,
+): void {
+  if (!allConversationStoresReady(readiness)) return;
+
+  runDeferredStartupTask("conversation catalog maintenance", async () => {
+    const { repairConversationCatalogSummaries } = await import(
+      "./shared/conversationIntegrity"
+    );
+    const { markConversationIDTransitionMigrationApplied } = await import(
+      "./shared/conversationSchemaMigrations"
+    );
+    await repairConversationCatalogSummaries();
+    await markConversationIDTransitionMigrationApplied();
+  });
+
+  runDeferredStartupTask("conversation search index refresh", async () => {
+    const { refreshConversationSearchIndex } = await import(
+      "./shared/conversationSearchIndex"
+    );
+    await refreshConversationSearchIndex();
+  });
+}
+
+function scheduleConversationIntegrityAudit(): void {
+  runDeferredStartupTask("conversation integrity audit", async () => {
+    const { auditConversationIntegrity } = await import(
+      "./shared/conversationIntegrity"
+    );
+    const report = await auditConversationIntegrity();
+    if (!report.ok) {
+      ztoolkit.log("LLM: Conversation history integrity audit found issues", report);
+    }
+  });
+}
+
+function scheduleClaudeProjectBootstrapIfEnabled(): void {
+  if (!getStartupBoolPref("enableClaudeCodeMode")) return;
+  runDeferredStartupTask("Claude project bootstrap", async () => {
+    const { ensureClaudeProjectBootstrapIfEnabled } = await import(
+      "./claudeCode/bootstrapGate"
+    );
+    await ensureClaudeProjectBootstrapIfEnabled();
+  });
+}
+
+function scheduleAgentSubsystemIfEnabled(): void {
+  if (!shouldInitializeAgentSubsystem()) return;
+  runDeferredStartupTask("agent subsystem", async () => {
+    const { getAgentApi, initAgentSubsystem } = await import("./agent");
+    await initAgentSubsystem();
+    addon.api.agent = getAgentApi();
+    await ensureStartupUserSkillsLoaded();
+  });
+}
+
+function scheduleUserSkillsLoad(): void {
+  runDeferredStartupTask("user skills", async () => {
+    await ensureStartupUserSkillsLoaded();
+  });
+}
+
+function scheduleAttachmentMaintenance(): void {
+  runDeferredStartupTask("attachment reference maintenance", async () => {
+    const {
+      ATTACHMENT_GC_MIN_AGE_MS,
+      collectAndDeleteUnreferencedBlobs,
+      initAttachmentRefStore,
+      reconcileNoteAttachmentRefsFromNoteContent,
+    } = await import("./utils/attachmentRefStore");
+    await initAttachmentRefStore();
+    await reconcileNoteAttachmentRefsFromNoteContent();
+    await collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS);
+  });
+}
+
+function scheduleWebChatRelayRegistration(): void {
+  runDeferredStartupTask("webchat relay registration", async () => {
+    const { registerWebChatRelay } = await import("./webchat/relayServer");
+    registerWebChatRelay();
+  });
+}
+
+function scheduleMineruAutoWatchRegistration(): void {
+  runDeferredStartupTask("MinerU auto-watch", async () => {
+    const { startAutoWatch } = await import("./modules/mineruAutoWatch");
+    startAutoWatch();
+  });
+}
+
+function scheduleDeferredStartupWork(
+  readiness: ConversationStoreReadiness,
+): void {
+  runDeferredStartupTask("legacy cache migrations", runDeferredLegacyMigrations);
+  scheduleConversationMaintenance(readiness);
+  scheduleConversationIntegrityAudit();
+  scheduleClaudeProjectBootstrapIfEnabled();
+  scheduleAgentSubsystemIfEnabled();
+  scheduleUserSkillsLoad();
+  scheduleAttachmentMaintenance();
+  scheduleWebChatRelayRegistration();
+  scheduleMineruAutoWatchRegistration();
+}
+
+async function onStartup() {
+  await measureStartupPhase("Zotero readiness", () =>
+    Promise.all([
+      Zotero.initializationPromise,
+      Zotero.unlockPromise,
+      Zotero.uiReadyPromise,
+    ]),
+  );
+
+  try {
+    await measureStartupPhase("startup preference migrations", () => {
+      runStartupPreferenceMigrations();
+    });
   } catch (err) {
     ztoolkit.log("LLM: Failed to run legacy migration", err);
   }
@@ -56,110 +258,20 @@ async function onStartup() {
   initI18n();
   initFontScale();
 
-  let chatStoreReady = false;
-  let claudeStoreReady = false;
-  let codexStoreReady = false;
-  try {
-    await initChatStore();
-    chatStoreReady = true;
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize chat store", err);
-  }
-  try {
-    await initClaudeCodeStore();
-    claudeStoreReady = true;
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize Claude Code store", err);
-  }
-  try {
-    await initCodexAppServerStore();
-    codexStoreReady = true;
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize Codex App Server store", err);
-  }
-  if (chatStoreReady && claudeStoreReady && codexStoreReady) {
-    try {
-      await repairConversationCatalogSummaries();
-    } catch (err) {
-      ztoolkit.log("LLM: Failed to repair conversation catalog summaries", err);
-    }
-    try {
-      await markConversationIDTransitionMigrationApplied();
-    } catch (err) {
-      ztoolkit.log("LLM: Failed to mark conversation schema migration", err);
-    }
-    void refreshConversationSearchIndex().catch((err) => {
-      ztoolkit.log("LLM: Failed to refresh conversation search index", err);
-    });
-  }
-  try {
-    const report = await auditConversationIntegrity();
-    if (!report.ok) {
-      ztoolkit.log("LLM: Conversation history integrity audit found issues", report);
-    }
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to audit conversation history integrity", err);
-  }
-  try {
-    await ensureClaudeProjectBootstrapIfEnabled();
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to bootstrap Claude project config", err);
-  }
-  try {
-    await initAgentSubsystem();
-    addon.api.agent = getAgentApi();
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize agent subsystem", err);
-  }
-  try {
-    const { initUserSkills, loadUserSkills } = await import(
-      "./agent/skills/userSkills"
-    );
-    const { setUserSkills } = await import("./agent/skills");
-    await initUserSkills();
-    const userSkills = await loadUserSkills();
-    setUserSkills(userSkills);
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to load user skills", err);
-  }
-  try {
-    await initAttachmentRefStore();
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to initialize attachment reference store", err);
-  }
-
-  void (async () => {
-    try {
-      await reconcileNoteAttachmentRefsFromNoteContent();
-      await collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS);
-    } catch (err) {
-      ztoolkit.log("LLM: Attachment ref reconciliation/GC failed", err);
-    }
-  })();
-
-  // Register webchat relay endpoints on Zotero's embedded HTTP server
-  try {
-    const { registerWebChatRelay } = await import("./webchat/relayServer");
-    registerWebChatRelay();
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to register webchat relay", err);
-  }
-
-  try {
-    startAutoWatch();
-  } catch (err) {
-    ztoolkit.log("LLM: Failed to start MinerU auto-watch", err);
-  }
+  const conversationStoreReadiness =
+    await initializeConversationStoresForStartup();
 
   registerPrefsPane();
 
-  await Promise.all(
-    Zotero.getMainWindows().map((win) => onMainWindowLoad(win)),
+  await measureStartupPhase("main window panel registration", () =>
+    Promise.all(Zotero.getMainWindows().map((win) => onMainWindowLoad(win))),
   );
 
   // Mark initialized as true to confirm plugin loading status
   // outside of the plugin (e.g. scaffold testing process)
   addon.data.initialized = true;
+
+  scheduleDeferredStartupWork(conversationStoreReadiness);
 }
 
 async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
@@ -236,9 +348,24 @@ function onShutdown(): void {
   } catch {
     /* ignore if module not loaded */
   }
-  pauseBatchProcessing();
-  stopAutoWatch();
-  shutdownAgentSubsystem();
+  try {
+    const { pauseBatchProcessing } = require("./modules/mineruBatchProcessor");
+    pauseBatchProcessing();
+  } catch {
+    /* ignore if module not loaded */
+  }
+  try {
+    const { stopAutoWatch } = require("./modules/mineruAutoWatch");
+    stopAutoWatch();
+  } catch {
+    /* ignore if module not loaded */
+  }
+  try {
+    const { shutdownAgentSubsystem } = require("./agent");
+    shutdownAgentSubsystem();
+  } catch {
+    /* ignore if module not loaded */
+  }
   clearQueuedFollowUpState();
   clearAllState();
   // Remove addon object

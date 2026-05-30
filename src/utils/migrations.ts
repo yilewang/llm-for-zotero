@@ -254,11 +254,19 @@ function migrateAttachmentsVaultRelative(): void {
   Zotero.Prefs.set(PREF_ATTACHMENTS_VAULT_RELATIVE, true, true);
 }
 
-export async function runLegacyMigrations(): Promise<void> {
+export function runStartupPreferenceMigrations(): void {
   migrateLegacyPrefs();
   migrateNickname();
   migrateAttachmentsVaultRelative();
+}
+
+export async function runDeferredLegacyMigrations(): Promise<void> {
   await migrateMineruContentMdCleanup();
   // Run manifest build in background — non-blocking
   migrateMineruManifestBuild().catch(() => {});
+}
+
+export async function runLegacyMigrations(): Promise<void> {
+  runStartupPreferenceMigrations();
+  await runDeferredLegacyMigrations();
 }
