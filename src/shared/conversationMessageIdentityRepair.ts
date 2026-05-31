@@ -1,5 +1,5 @@
 import {
-  inferSinglePaperItemIdFromContextRows,
+  getPaperContextOwnershipEvidenceFromRows,
   type ConversationRegistryRow,
   type PaperContextJsonColumns,
 } from "./conversationRegistry";
@@ -120,19 +120,20 @@ export async function repairRecoverableMessageConversationIDs(params: {
   }
 
   if (registered.kind === "paper") {
-    const inferredPaperItemID = inferSinglePaperItemIdFromContextRows(
+    const evidence = getPaperContextOwnershipEvidenceFromRows(
       await params.getPaperContextRows(registered.conversationKey),
     );
-    if (inferredPaperItemID === "ambiguous") {
-      return refused(params, "ambiguous paper context evidence");
-    }
+    const registeredPaperItemID = registered.paperItemID || 0;
     if (
-      inferredPaperItemID &&
-      inferredPaperItemID !== (registered.paperItemID || 0)
+      evidence.paperItemIDs.length > 0 &&
+      registeredPaperItemID &&
+      !evidence.paperItemIDs.includes(registeredPaperItemID)
     ) {
       return refused(
         params,
-        `message context points to paper ${inferredPaperItemID}, not ${registered.paperItemID || ""}`,
+        evidence.singlePaperItemID
+          ? `message context points to paper ${evidence.singlePaperItemID}, not ${registeredPaperItemID}`
+          : `message context does not include registered paper ${registeredPaperItemID}`,
       );
     }
   }

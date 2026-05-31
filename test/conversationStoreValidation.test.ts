@@ -240,7 +240,7 @@ describe("conversation store key validation", function () {
     }
   });
 
-  it("does not list a missing-registry Codex row under the wrong paper after context repair", async function () {
+  it("lists missing-registry Codex rows under the catalog primary paper", async function () {
     const conversationKey = CODEX_PAPER_CONVERSATION_KEY_BASE + 3342;
     const { queries, restore } = installQueryRecorder(async (sql) => {
       if (
@@ -276,13 +276,13 @@ describe("conversation store key validation", function () {
     try {
       const entries = await listCodexPaperConversations(1, 3342, 10);
 
-      assert.lengthOf(entries, 0);
+      assert.lengthOf(entries, 1);
+      assert.equal(entries[0]?.paperItemID, 3342);
       const repairUpdate = queries.find((query) =>
         query.sql.includes("UPDATE llm_for_zotero_codex_conversations") &&
         query.sql.includes("paper_item_id = ?"),
       );
-      assert.equal(repairUpdate?.params[1], 3326);
-      assert.equal(repairUpdate?.params[2], conversationKey);
+      assert.equal(repairUpdate, undefined);
     } finally {
       restore();
     }
@@ -1197,7 +1197,7 @@ describe("chat history startup schema compatibility", function () {
 describe("Claude conversation identity repair", function () {
   const conversationKey = CLAUDE_PAPER_CONVERSATION_KEY_BASE + 3340;
 
-  it("selects every summary alias while restoring a wrong-paper Claude catalog row", async function () {
+  it("keeps the Claude catalog primary paper while repairing registry rows", async function () {
     const { queries, restore } = installQueryRecorder(async (sql) => {
       if (
         sql.includes("FROM llm_for_zotero_claude_conversations c") &&
@@ -1247,11 +1247,82 @@ describe("Claude conversation identity repair", function () {
         query.sql.includes("UPDATE llm_for_zotero_claude_conversations") &&
         query.sql.includes("paper_item_id = ?"),
       );
-      assert.equal(repairUpdate?.params[1], 3196);
-      assert.equal(repairUpdate?.params[2], conversationKey);
+      assert.equal(repairUpdate, undefined);
+      assert.isFalse(
+        queries.some(
+          (query) =>
+            query.sql.includes("FROM llm_for_zotero_claude_messages") &&
+            query.sql.includes("paper_contexts_json AS paperContextsJson"),
+        ),
+      );
+      const registryInsert = queries.find((query) =>
+        query.sql.includes("INSERT INTO llm_for_zotero_conversation_registry"),
+      );
+      assert.equal(registryInsert?.params[6], 3340);
+    } finally {
+      restore();
+    }
+  });
+
+  it("migrates legacy ambiguous Claude registry invalidation when a primary paper exists", async function () {
+    const primaryPaperItemID = 3196;
+    const key = CLAUDE_PAPER_CONVERSATION_KEY_BASE + primaryPaperItemID;
+    const conversationID = `lfz:profile-test:claude_code:paper:lib-1:paper-${primaryPaperItemID}:legacy-${key}`;
+    const { queries, restore } = installQueryRecorder(async (sql, params) => {
+      if (
+        sql.includes("FROM llm_for_zotero_claude_conversations c") &&
+        (sql.includes("WHERE c.conversation_key = ?") ||
+          sql.includes("c.kind = 'paper'"))
+      ) {
+        return [
+          strictConversationSummaryRow({
+            conversationID,
+            conversationKey: key,
+            libraryID: 1,
+            kind: "paper",
+            paperItemID: primaryPaperItemID,
+            title: "Legacy multi-paper chat",
+            userTurnCount: 1,
+          }),
+        ];
+      }
+      if (
+        sql.includes("FROM llm_for_zotero_conversation_registry") &&
+        sql.includes("WHERE legacy_conversation_key = ?") &&
+        params?.[0] === key
+      ) {
+        return [
+          {
+            conversationID,
+            conversationKey: key,
+            system: "claude_code",
+            kind: "paper",
+            profileSignature: "profile-test",
+            libraryID: 1,
+            paperItemID: primaryPaperItemID,
+            valid: 0,
+            invalidReason: "ambiguous paper context evidence",
+          },
+        ];
+      }
+      return [];
+    });
+    try {
+      const entries = await listClaudePaperConversations(
+        1,
+        primaryPaperItemID,
+        10,
+      );
+
+      assert.lengthOf(entries, 1);
+      assert.equal(entries[0]?.paperItemID, primaryPaperItemID);
       assert.isTrue(
-        queries.some((query) =>
-          query.sql.includes("INSERT INTO llm_for_zotero_conversation_registry"),
+        queries.some(
+          (query) =>
+            query.sql.includes("llm_for_zotero_conversation_registry") &&
+            query.sql.includes("valid = 1") &&
+            query.sql.includes("invalid_reason = NULL") &&
+            query.params.includes(key),
         ),
       );
     } finally {
@@ -1263,7 +1334,7 @@ describe("Claude conversation identity repair", function () {
 describe("Codex conversation identity repair", function () {
   const conversationKey = CODEX_PAPER_CONVERSATION_KEY_BASE + 3340;
 
-  it("selects every summary alias while restoring a wrong-paper Codex catalog row", async function () {
+  it("keeps the Codex catalog primary paper while repairing registry rows", async function () {
     const { queries, restore } = installQueryRecorder(async (sql) => {
       if (
         sql.includes("FROM llm_for_zotero_codex_conversations c") &&
@@ -1317,11 +1388,82 @@ describe("Codex conversation identity repair", function () {
         query.sql.includes("UPDATE llm_for_zotero_codex_conversations") &&
         query.sql.includes("paper_item_id = ?"),
       );
-      assert.equal(repairUpdate?.params[1], 3196);
-      assert.equal(repairUpdate?.params[2], conversationKey);
+      assert.equal(repairUpdate, undefined);
+      assert.isFalse(
+        queries.some(
+          (query) =>
+            query.sql.includes("FROM llm_for_zotero_codex_messages") &&
+            query.sql.includes("paper_contexts_json AS paperContextsJson"),
+        ),
+      );
+      const registryInsert = queries.find((query) =>
+        query.sql.includes("INSERT INTO llm_for_zotero_conversation_registry"),
+      );
+      assert.equal(registryInsert?.params[6], 3340);
+    } finally {
+      restore();
+    }
+  });
+
+  it("migrates legacy ambiguous Codex registry invalidation when a primary paper exists", async function () {
+    const primaryPaperItemID = 3196;
+    const key = CODEX_PAPER_CONVERSATION_KEY_BASE + primaryPaperItemID;
+    const conversationID = `lfz:profile-test:codex:paper:lib-1:paper-${primaryPaperItemID}:legacy-${key}`;
+    const { queries, restore } = installQueryRecorder(async (sql, params) => {
+      if (
+        sql.includes("FROM llm_for_zotero_codex_conversations c") &&
+        (sql.includes("WHERE c.conversation_key = ?") ||
+          sql.includes("c.kind = 'paper'"))
+      ) {
+        return [
+          strictConversationSummaryRow({
+            conversationID,
+            conversationKey: key,
+            libraryID: 1,
+            kind: "paper",
+            paperItemID: primaryPaperItemID,
+            title: "Legacy multi-paper chat",
+            userTurnCount: 1,
+          }),
+        ];
+      }
+      if (
+        sql.includes("FROM llm_for_zotero_conversation_registry") &&
+        sql.includes("WHERE legacy_conversation_key = ?") &&
+        params?.[0] === key
+      ) {
+        return [
+          {
+            conversationID,
+            conversationKey: key,
+            system: "codex",
+            kind: "paper",
+            profileSignature: "profile-test",
+            libraryID: 1,
+            paperItemID: primaryPaperItemID,
+            valid: 0,
+            invalidReason: "ambiguous paper context evidence",
+          },
+        ];
+      }
+      return [];
+    });
+    try {
+      const entries = await listCodexPaperConversations(
+        1,
+        primaryPaperItemID,
+        10,
+      );
+
+      assert.lengthOf(entries, 1);
+      assert.equal(entries[0]?.paperItemID, primaryPaperItemID);
       assert.isTrue(
-        queries.some((query) =>
-          query.sql.includes("INSERT INTO llm_for_zotero_conversation_registry"),
+        queries.some(
+          (query) =>
+            query.sql.includes("llm_for_zotero_conversation_registry") &&
+            query.sql.includes("valid = 1") &&
+            query.sql.includes("invalid_reason = NULL") &&
+            query.params.includes(key),
         ),
       );
     } finally {

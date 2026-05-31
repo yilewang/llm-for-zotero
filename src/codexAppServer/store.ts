@@ -40,7 +40,6 @@ import {
   getLastAllocatedCodexGlobalConversationKey,
   getLastAllocatedCodexPaperConversationKey,
   isConversationKeyInRange,
-  removeLastUsedCodexPaperConversationKey,
   setLastAllocatedCodexGlobalConversationKey,
   setLastAllocatedCodexPaperConversationKey,
   setLastUsedCodexConversationMode,
@@ -48,14 +47,15 @@ import {
   setLastUsedCodexPaperConversationKey,
 } from "./prefs";
 import {
+  AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON,
   buildConversationID,
+  canMigrateLegacyAmbiguousPaperRegistryScope,
+  getConversationScopeValidationDetails,
+  getPaperContextOwnershipEvidenceFromRows,
   getRegisteredConversationScope,
-  inferSinglePaperItemIdFromContextRows,
   initConversationRegistryStore,
-  invalidateRegisteredConversationScope,
   registerConversationScope,
   repairRegisteredConversationScope,
-  validateConversationScope,
   type ConversationRegistryRow,
   type PaperContextJsonColumns,
 } from "../shared/conversationRegistry";
@@ -848,12 +848,17 @@ export async function repairCodexConversationIdentityRegistry(): Promise<void> {
     const summary = toCodexConversationSummary(row);
     if (!summary) continue;
     if (summary.kind === "paper") {
-      const contextRows = await getCodexMessagePaperContextRows(
+      const registered = await getRegisteredConversationScope(
         summary.conversationKey,
       );
-      const inferredPaperItemID =
-        inferSinglePaperItemIdFromContextRows(contextRows);
-      if (inferredPaperItemID === "ambiguous") {
+      if (
+        canMigrateLegacyAmbiguousPaperRegistryScope(registered, {
+          system: "codex",
+          kind: summary.kind,
+          libraryID: summary.libraryID,
+          paperItemID: summary.paperItemID,
+        })
+      ) {
         await repairRegisteredConversationScope({
           conversationID: summary.conversationID,
           conversationKey: summary.conversationKey,
@@ -865,17 +870,17 @@ export async function repairCodexConversationIdentityRegistry(): Promise<void> {
           updatedAt: summary.updatedAt,
           title: summary.title,
         });
-        await invalidateRegisteredConversationScope(
-          summary.conversationKey,
-          "ambiguous paper context evidence",
+        logCodexScopeWarning(
+          `Migrated Codex conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
         );
         continue;
       }
-      if (
-        inferredPaperItemID &&
-        summary.paperItemID &&
-        inferredPaperItemID !== summary.paperItemID
-      ) {
+      if (!summary.paperItemID) {
+        const evidence = getPaperContextOwnershipEvidenceFromRows(
+          await getCodexMessagePaperContextRows(summary.conversationKey),
+        );
+        const inferredPaperItemID = evidence.singlePaperItemID;
+        if (!inferredPaperItemID) continue;
         const repairedConversationID = buildCodexConversationID({
           conversationKey: summary.conversationKey,
           kind: "paper",
@@ -891,13 +896,9 @@ export async function repairCodexConversationIdentityRegistry(): Promise<void> {
         );
         await Zotero.DB.queryAsync(
           `UPDATE ${CODEX_MESSAGES_TABLE}
-           SET conversation_id = ?
+          SET conversation_id = ?
            WHERE conversation_key = ?`,
           [repairedConversationID, summary.conversationKey],
-        );
-        removeLastUsedCodexPaperConversationKey(
-          summary.libraryID,
-          summary.paperItemID,
         );
         setLastUsedCodexPaperConversationKey(
           summary.libraryID,
@@ -915,7 +916,7 @@ export async function repairCodexConversationIdentityRegistry(): Promise<void> {
           title: summary.title,
         });
         logCodexScopeWarning(
-          `Repaired Codex conversation ${summary.conversationKey} from paper ${summary.paperItemID} to paper ${inferredPaperItemID} based on stored paper contexts.`,
+          `Repaired Codex conversation ${summary.conversationKey} to paper ${inferredPaperItemID} based on stored paper contexts.`,
         );
         continue;
       }
@@ -1873,7 +1874,7 @@ async function filterValidCodexConversationSummaries(
 async function validateOrRepairCodexConversationSummary(
   summary: CodexConversationSummary,
 ): Promise<CodexConversationSummary | null> {
-  const valid = await validateConversationScope({
+  const validation = await getConversationScopeValidationDetails({
     conversationID: summary.conversationID,
     conversationKey: summary.conversationKey,
     system: "codex",
@@ -1881,11 +1882,35 @@ async function validateOrRepairCodexConversationSummary(
     libraryID: summary.libraryID,
     paperItemID: summary.paperItemID,
   });
-  if (valid) return summary;
+  if (validation.valid) return summary;
 
-  const registered = await getRegisteredConversationScope(
-    summary.conversationKey,
-  );
+  const registered =
+    validation.registered ||
+    (await getRegisteredConversationScope(summary.conversationKey));
+  if (
+    canMigrateLegacyAmbiguousPaperRegistryScope(registered, {
+      system: "codex",
+      kind: summary.kind,
+      libraryID: summary.libraryID,
+      paperItemID: summary.paperItemID,
+    })
+  ) {
+    await repairRegisteredConversationScope({
+      conversationID: summary.conversationID,
+      conversationKey: summary.conversationKey,
+      system: "codex",
+      kind: "paper",
+      libraryID: summary.libraryID,
+      paperItemID: summary.paperItemID,
+      createdAt: summary.createdAt,
+      updatedAt: summary.updatedAt,
+      title: summary.title,
+    });
+    logCodexScopeWarning(
+      `Migrated Codex conversation ${summary.conversationKey} from legacy ${AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON} invalidation to primary paper ${summary.paperItemID}.`,
+    );
+    return summary;
+  }
   if (registered) return null;
 
   if (summary.kind === "global") {
@@ -1903,12 +1928,8 @@ async function validateOrRepairCodexConversationSummary(
     return registeredMissingGlobal ? summary : null;
   }
 
-  const contextRows = await getCodexMessagePaperContextRows(
-    summary.conversationKey,
-  );
-  const inferredPaperItemID = inferSinglePaperItemIdFromContextRows(contextRows);
-  if (inferredPaperItemID === "ambiguous") {
-    await repairRegisteredConversationScope({
+  if (summary.paperItemID) {
+    const registeredMissingPaper = await registerConversationScope({
       conversationID: summary.conversationID,
       conversationKey: summary.conversationKey,
       system: "codex",
@@ -1919,18 +1940,14 @@ async function validateOrRepairCodexConversationSummary(
       updatedAt: summary.updatedAt,
       title: summary.title,
     });
-    await invalidateRegisteredConversationScope(
-      summary.conversationKey,
-      "ambiguous paper context evidence",
-    );
-    return null;
+    return registeredMissingPaper ? summary : null;
   }
 
-  if (
-    inferredPaperItemID &&
-    summary.paperItemID &&
-    inferredPaperItemID !== summary.paperItemID
-  ) {
+  const evidence = getPaperContextOwnershipEvidenceFromRows(
+    await getCodexMessagePaperContextRows(summary.conversationKey),
+  );
+  const inferredPaperItemID = evidence.singlePaperItemID;
+  if (inferredPaperItemID) {
     const repairedConversationID = buildCodexConversationID({
       conversationKey: summary.conversationKey,
       kind: "paper",
@@ -1950,10 +1967,6 @@ async function validateOrRepairCodexConversationSummary(
        WHERE conversation_key = ?`,
       [repairedConversationID, summary.conversationKey],
     );
-    removeLastUsedCodexPaperConversationKey(
-      summary.libraryID,
-      summary.paperItemID,
-    );
     setLastUsedCodexPaperConversationKey(
       summary.libraryID,
       inferredPaperItemID,
@@ -1970,7 +1983,7 @@ async function validateOrRepairCodexConversationSummary(
       title: summary.title,
     });
     logCodexScopeWarning(
-      `Repaired Codex conversation ${summary.conversationKey} from paper ${summary.paperItemID} to paper ${inferredPaperItemID} while loading history.`,
+      `Repaired Codex conversation ${summary.conversationKey} to paper ${inferredPaperItemID} while loading history.`,
     );
     return {
       ...summary,
@@ -1979,18 +1992,7 @@ async function validateOrRepairCodexConversationSummary(
     };
   }
 
-  const registeredMissingPaper = await registerConversationScope({
-    conversationID: summary.conversationID,
-    conversationKey: summary.conversationKey,
-    system: "codex",
-    kind: "paper",
-    libraryID: summary.libraryID,
-    paperItemID: summary.paperItemID,
-    createdAt: summary.createdAt,
-    updatedAt: summary.updatedAt,
-    title: summary.title,
-  });
-  return registeredMissingPaper ? summary : null;
+  return null;
 }
 
 export async function getCodexConversationSummary(

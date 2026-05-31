@@ -1,6 +1,9 @@
 import { assert } from "chai";
 import { conversationRepository } from "../src/core/conversations/repository";
-import { CODEX_GLOBAL_CONVERSATION_KEY_BASE } from "../src/shared/conversationKeySpace";
+import {
+  CODEX_GLOBAL_CONVERSATION_KEY_BASE,
+  CODEX_PAPER_CONVERSATION_KEY_BASE,
+} from "../src/shared/conversationKeySpace";
 import { buildConversationID } from "../src/shared/conversationRegistry";
 
 describe("conversationRepository", function () {
@@ -286,6 +289,178 @@ describe("conversationRepository", function () {
           sql.includes("INSERT INTO llm_for_zotero_conversation_registry") &&
           params?.[0] === conversationID &&
           params?.[1] === conversationKey,
+      ),
+    );
+  });
+
+  it("does not clear unrelated invalid runtime registry rows while ensuring Codex catalog rows", async function () {
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    const conversationKey = CODEX_GLOBAL_CONVERSATION_KEY_BASE + 45;
+    const conversationID = buildConversationID({
+      conversationKey,
+      system: "codex",
+      kind: "global",
+      libraryID: 1,
+      profileSignature: "profile-default",
+    });
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      Profile: {
+        dir: "/tmp/llm-for-zotero-test-profile",
+      },
+      DB: {
+        queryAsync: async (sql: string, params?: unknown[]) => {
+          queries.push({ sql, params });
+          if (
+            sql.includes("FROM llm_for_zotero_codex_conversations c") &&
+            sql.includes("WHERE c.conversation_key = ?")
+          ) {
+            return [
+              {
+                conversationID,
+                conversationKey,
+                libraryID: 1,
+                kind: "global",
+                paperItemID: null,
+                createdAt: 100,
+                updatedAt: 200,
+                title: "Invalid Codex chat",
+                providerSessionId: null,
+                scopedConversationKey: null,
+                scopeType: null,
+                scopeId: null,
+                scopeLabel: null,
+                cwd: null,
+                modelName: null,
+                effort: null,
+                userTurnCount: 1,
+              },
+            ];
+          }
+          if (
+            sql.includes("FROM llm_for_zotero_conversation_registry") &&
+            sql.includes("WHERE legacy_conversation_key = ?")
+          ) {
+            return [
+              {
+                conversationID,
+                conversationKey,
+                system: "codex",
+                kind: "global",
+                profileSignature: "profile-default",
+                libraryID: 1,
+                paperItemID: null,
+                valid: 0,
+                invalidReason: "manual invalidation",
+              },
+            ];
+          }
+          return [];
+        },
+      },
+    };
+
+    const entry = await conversationRepository.ensureCatalogEntry({
+      system: "codex",
+      kind: "global",
+      conversationKey,
+      libraryID: 1,
+    });
+
+    assert.equal(entry?.conversationKey, conversationKey);
+    assert.isFalse(
+      queries.some(
+        ({ sql }) =>
+          sql.includes("llm_for_zotero_conversation_registry") &&
+          sql.includes("invalid_reason = NULL"),
+      ),
+    );
+  });
+
+  it("migrates legacy ambiguous invalid registry rows while ensuring Codex paper catalog rows", async function () {
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    const paperItemID = 3196;
+    const conversationKey = CODEX_PAPER_CONVERSATION_KEY_BASE + paperItemID;
+    const conversationID = buildConversationID({
+      conversationKey,
+      system: "codex",
+      kind: "paper",
+      libraryID: 1,
+      paperItemID,
+      profileSignature: "profile-default",
+    });
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      Profile: {
+        dir: "/tmp/llm-for-zotero-test-profile",
+      },
+      DB: {
+        queryAsync: async (sql: string, params?: unknown[]) => {
+          queries.push({ sql, params });
+          if (
+            sql.includes("FROM llm_for_zotero_codex_conversations c") &&
+            sql.includes("WHERE c.conversation_key = ?")
+          ) {
+            return [
+              {
+                conversationID,
+                conversationKey,
+                libraryID: 1,
+                kind: "paper",
+                paperItemID,
+                createdAt: 100,
+                updatedAt: 200,
+                title: "Legacy multi-paper chat",
+                providerSessionId: null,
+                scopedConversationKey: null,
+                scopeType: null,
+                scopeId: null,
+                scopeLabel: null,
+                cwd: null,
+                modelName: null,
+                effort: null,
+                userTurnCount: 1,
+              },
+            ];
+          }
+          if (
+            sql.includes("FROM llm_for_zotero_conversation_registry") &&
+            sql.includes("WHERE legacy_conversation_key = ?")
+          ) {
+            return [
+              {
+                conversationID,
+                conversationKey,
+                system: "codex",
+                kind: "paper",
+                profileSignature: "profile-default",
+                libraryID: 1,
+                paperItemID,
+                valid: 0,
+                invalidReason: "ambiguous paper context evidence",
+              },
+            ];
+          }
+          return [];
+        },
+      },
+    };
+
+    const entry = await conversationRepository.ensureCatalogEntry({
+      system: "codex",
+      kind: "paper",
+      conversationKey,
+      libraryID: 1,
+      paperItemID,
+    });
+
+    assert.equal(entry?.conversationKey, conversationKey);
+    assert.isTrue(
+      queries.some(
+        ({ sql }) =>
+          sql.includes("llm_for_zotero_conversation_registry") &&
+          sql.includes("valid = 1") &&
+          sql.includes("invalid_reason = NULL"),
       ),
     );
   });

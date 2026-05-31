@@ -2,10 +2,12 @@ import { assert } from "chai";
 import {
   buildConversationID,
   getConversationScopeValidationDetails,
+  getPaperContextOwnershipEvidenceFromRows,
   inferSinglePaperItemIdFromContextRows,
   registerConversationScope,
   validateConversationScope,
 } from "../src/shared/conversationRegistry";
+import { repairRecoverableMessageConversationIDs } from "../src/shared/conversationMessageIdentityRepair";
 
 describe("conversation registry", function () {
   const globalScope = globalThis as typeof globalThis & {
@@ -324,7 +326,19 @@ describe("conversation registry", function () {
     );
   });
 
-  it("infers only unambiguous paper ownership from stored context JSON", function () {
+  it("reports multi-paper message context as referenced-paper evidence", function () {
+    assert.deepEqual(
+      getPaperContextOwnershipEvidenceFromRows([
+        {
+          paperContextsJson: JSON.stringify([{ itemId: 3196 }]),
+          citationPaperContextsJson: JSON.stringify([{ itemId: 3340 }]),
+        },
+      ]),
+      {
+        paperItemIDs: [3196, 3340],
+        singlePaperItemID: null,
+      },
+    );
     assert.equal(
       inferSinglePaperItemIdFromContextRows([
         {
@@ -338,14 +352,89 @@ describe("conversation registry", function () {
       ]),
       3196,
     );
-    assert.equal(
-      inferSinglePaperItemIdFromContextRows([
+  });
+
+  it("repairs stale message ids when referenced papers include the primary paper", async function () {
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    const result = await repairRecoverableMessageConversationIDs({
+      queryAsync: async (sql: string, params?: unknown[]) => {
+        queries.push({ sql, params });
+        if (sql.includes("SELECT DISTINCT conversation_id AS conversationID")) {
+          return [
+            { conversationID: "canonical-id" },
+            { conversationID: "legacy-stale-id" },
+          ];
+        }
+        return [];
+      },
+      tableName: "llm_for_zotero_test_messages",
+      registered: {
+        conversationID: "canonical-id",
+        conversationKey: 123,
+        system: "codex",
+        kind: "paper",
+        profileSignature: "profile-dev",
+        libraryID: 1,
+        paperItemID: 3196,
+        valid: true,
+      },
+      getPaperContextRows: async () => [
         {
-          paperContextsJson: JSON.stringify([{ itemId: 3196 }]),
-          citationPaperContextsJson: JSON.stringify([{ itemId: 3340 }]),
+          paperContextsJson: JSON.stringify([
+            { itemId: 3196 },
+            { itemId: 3340 },
+          ]),
         },
-      ]),
-      "ambiguous",
+      ],
+      storeLabel: "test",
+    });
+
+    assert.equal(result.status, "repaired");
+    assert.isTrue(
+      queries.some((query) =>
+        query.sql.includes("UPDATE llm_for_zotero_test_messages"),
+      ),
+    );
+  });
+
+  it("refuses stale message id repair when message context points to a different primary paper", async function () {
+    const queries: Array<{ sql: string; params?: unknown[] }> = [];
+    const result = await repairRecoverableMessageConversationIDs({
+      queryAsync: async (sql: string, params?: unknown[]) => {
+        queries.push({ sql, params });
+        if (sql.includes("SELECT DISTINCT conversation_id AS conversationID")) {
+          return [
+            { conversationID: "canonical-id" },
+            { conversationID: "legacy-stale-id" },
+          ];
+        }
+        return [];
+      },
+      tableName: "llm_for_zotero_test_messages",
+      registered: {
+        conversationID: "canonical-id",
+        conversationKey: 123,
+        system: "codex",
+        kind: "paper",
+        profileSignature: "profile-dev",
+        libraryID: 1,
+        paperItemID: 3196,
+        valid: true,
+      },
+      getPaperContextRows: async () => [
+        {
+          paperContextsJson: JSON.stringify([{ itemId: 3340 }]),
+        },
+      ],
+      storeLabel: "test",
+    });
+
+    assert.equal(result.status, "refused");
+    assert.match(result.reason || "", /paper 3340, not 3196/);
+    assert.isFalse(
+      queries.some((query) =>
+        query.sql.includes("UPDATE llm_for_zotero_test_messages"),
+      ),
     );
   });
 });

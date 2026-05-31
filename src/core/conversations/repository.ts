@@ -36,6 +36,8 @@ import {
 } from "../../codexAppServer/store";
 import { isConversationKeyForKind } from "../../shared/conversationKeySpace";
 import {
+  canMigrateLegacyAmbiguousPaperRegistryScope,
+  getRegisteredConversationScope,
   repairRegisteredConversationScope,
 } from "../../shared/conversationRegistry";
 import type {
@@ -298,6 +300,19 @@ async function repairRuntimeRegistryFromSummary(
   system: "claude_code" | "codex",
   summary: ClaudeConversationSummary | CodexConversationSummary,
 ): Promise<void> {
+  const existing = await getRegisteredConversationScope(summary.conversationKey);
+  if (
+    existing &&
+    !existing.valid &&
+    !canMigrateLegacyAmbiguousPaperRegistryScope(existing, {
+      system,
+      kind: summary.kind,
+      libraryID: summary.libraryID,
+      paperItemID: summary.paperItemID,
+    })
+  ) {
+    return;
+  }
   await repairRegisteredConversationScope({
     conversationID: summary.conversationID,
     conversationKey: summary.conversationKey,

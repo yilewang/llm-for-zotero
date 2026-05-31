@@ -50,6 +50,14 @@ export type PaperContextJsonColumns = {
   citationPaperContextsJson?: unknown;
 };
 
+export type PaperContextOwnershipEvidence = {
+  paperItemIDs: number[];
+  singlePaperItemID: number | null;
+};
+
+export const AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON =
+  "ambiguous paper context evidence";
+
 const CONVERSATION_REGISTRY_TABLE = "llm_for_zotero_conversation_registry";
 const CONVERSATION_REGISTRY_SCOPE_INDEX =
   "llm_for_zotero_conversation_registry_scope_idx";
@@ -585,6 +593,38 @@ export async function getConversationScopeValidationDetails(
   return { valid: true, target, registered: existing };
 }
 
+export function isLegacyAmbiguousPaperContextInvalidReason(
+  reason: unknown,
+): boolean {
+  return (
+    normalizeText(reason, 256).toLowerCase() ===
+    AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON
+  );
+}
+
+export function canMigrateLegacyAmbiguousPaperRegistryScope(
+  registered: ConversationRegistryRow | null | undefined,
+  scope: Pick<
+    ConversationRegistryScope,
+    "system" | "kind" | "libraryID" | "paperItemID"
+  >,
+): boolean {
+  const libraryID = normalizePositiveInt(scope.libraryID);
+  const paperItemID = normalizePositiveInt(scope.paperItemID);
+  return Boolean(
+    registered &&
+      !registered.valid &&
+      isLegacyAmbiguousPaperContextInvalidReason(registered.invalidReason) &&
+      scope.kind === "paper" &&
+      libraryID &&
+      paperItemID &&
+      registered.system === scope.system &&
+      registered.kind === "paper" &&
+      registered.libraryID === libraryID &&
+      (registered.paperItemID || 0) === paperItemID,
+  );
+}
+
 function collectPaperIdsFromValue(value: unknown, out: Set<number>): void {
   if (typeof value !== "string" || !value.trim()) return;
   try {
@@ -606,6 +646,15 @@ function collectPaperIdsFromValue(value: unknown, out: Set<number>): void {
 export function inferSinglePaperItemIdFromContextRows(
   rows: PaperContextJsonColumns[],
 ): number | "ambiguous" | null {
+  const evidence = getPaperContextOwnershipEvidenceFromRows(rows);
+  if (evidence.paperItemIDs.length === 0) return null;
+  if (evidence.paperItemIDs.length > 1) return "ambiguous";
+  return evidence.singlePaperItemID;
+}
+
+export function getPaperContextOwnershipEvidenceFromRows(
+  rows: PaperContextJsonColumns[],
+): PaperContextOwnershipEvidence {
   const ids = new Set<number>();
   for (const row of rows) {
     collectPaperIdsFromValue(row.paperContextsJson, ids);
@@ -613,7 +662,9 @@ export function inferSinglePaperItemIdFromContextRows(
     collectPaperIdsFromValue(row.selectedTextPaperContextsJson, ids);
     collectPaperIdsFromValue(row.citationPaperContextsJson, ids);
   }
-  if (ids.size === 0) return null;
-  if (ids.size > 1) return "ambiguous";
-  return Array.from(ids)[0];
+  const paperItemIDs = Array.from(ids).sort((left, right) => left - right);
+  return {
+    paperItemIDs,
+    singlePaperItemID: paperItemIDs.length === 1 ? paperItemIDs[0] : null,
+  };
 }
