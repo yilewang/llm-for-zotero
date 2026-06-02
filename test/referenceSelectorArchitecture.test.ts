@@ -8,6 +8,7 @@ import {
 } from "../src/modules/contextPanel/contextSelectionActions";
 import { MAX_SELECTED_PAPER_CONTEXTS } from "../src/modules/contextPanel/constants";
 import {
+  buildReferenceSelectorTagContextKey,
   createReferenceSelectorState,
   buildReferenceSelectorViewModel,
   resolveReferenceSelectorAttachmentSelectionState,
@@ -76,6 +77,7 @@ function makeTag(name: string): PaperSearchTagCandidate {
     name,
     normalizedName: name,
     count: 1,
+    includeAutomatic: false,
     isAutomatic: false,
     score: 1,
   };
@@ -223,6 +225,34 @@ describe("reference selector model", function () {
       }),
       "coveredByTag",
     );
+    assert.equal(
+      resolveReferenceSelectorAttachmentSelectionState({
+        state,
+        group,
+        attachment,
+        selectedTags: [
+          {
+            name: "Stable",
+            normalizedName: "stable",
+            libraryID: 1,
+            includeAutomatic: false,
+          },
+        ],
+      }),
+      "coveredByTag",
+    );
+    assert.equal(
+      buildReferenceSelectorTagContextKey({
+        name: "Stable",
+        normalizedName: "Stable",
+        libraryID: 1,
+      }),
+      buildReferenceSelectorTagContextKey({
+        name: "stable",
+        normalizedName: "stable",
+        libraryID: 1,
+      }),
+    );
   });
 });
 
@@ -363,6 +393,33 @@ describe("context selection actions", function () {
     });
     assert.isUndefined(selectedCollectionContextCache.get(ownerItemId));
     assert.isUndefined(selectedTagContextCache.get(ownerItemId));
+  });
+
+  it("toggles persisted lowercase tag contexts from picker-cased tags", function () {
+    selectedTagContextCache.set(ownerItemId, [
+      {
+        name: "Stable",
+        normalizedName: "stable",
+        libraryID: 1,
+        includeAutomatic: false,
+      },
+    ]);
+    selectedPaperContextCache.delete(ownerItemId);
+
+    const result = toggleTagContext({
+      deps: makeDeps(),
+      ref: {
+        name: "Stable",
+        normalizedName: "Stable",
+        libraryID: 1,
+        includeAutomatic: false,
+      },
+      libraryID: 1,
+    });
+
+    assert.isTrue(result.changed);
+    assert.isUndefined(selectedTagContextCache.get(ownerItemId));
+    assert.isUndefined(selectedPaperContextCache.get(ownerItemId));
   });
 
   it("preserves the selected paper capacity status", function () {

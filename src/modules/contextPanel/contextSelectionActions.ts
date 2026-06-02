@@ -14,7 +14,10 @@ import type {
   PaperSearchGroupCandidate,
 } from "./paperSearch";
 import { buildPaperKey } from "./pdfContext";
-import { buildReferenceSelectorTagContextKey } from "./referenceSelector/model";
+import {
+  buildReferenceSelectorTagContextKey,
+  normalizeReferenceSelectorTagIdentityName,
+} from "./referenceSelector/model";
 import {
   selectedCollectionContextCache,
   selectedOtherRefContextCache,
@@ -29,7 +32,6 @@ import type {
   PaperContextRef,
   TagContextRef,
 } from "./types";
-import { normalizeMineruTagName } from "../mineruTagIndex";
 import { resolvePaperContextDisplayMetadata } from "./setupHandlers/controllers/composeContextController";
 
 export type ContextSelectionStatusLevel = "ready" | "warning" | "error";
@@ -396,10 +398,10 @@ export function normalizeTagContextRef(
     libraryID,
     name: ref.name.trim(),
     normalizedName: ref.normalizedName
-      ? normalizeMineruTagName(ref.normalizedName) || undefined
+      ? normalizeReferenceSelectorTagIdentityName(ref.normalizedName) || undefined
       : ref.scope
         ? undefined
-        : normalizeMineruTagName(ref.name) || undefined,
+        : normalizeReferenceSelectorTagIdentityName(ref.name) || undefined,
   };
   if (
     !normalizedRef.name ||

@@ -41,6 +41,7 @@ export type PaperSearchTagCandidate = {
   name: string;
   normalizedName: string;
   count: number;
+  includeAutomatic: boolean;
   isAutomatic: boolean;
   score: number;
 };
@@ -1392,6 +1393,7 @@ export async function searchTagCandidates(
       name: entry.name,
       normalizedName: entry.name,
       count: entry.itemIds.size,
+      includeAutomatic: entry.automaticItemIds.size > 0,
       isAutomatic:
         entry.automaticItemIds.size > 0 && entry.manualItemIds.size === 0,
       score: entry.score,

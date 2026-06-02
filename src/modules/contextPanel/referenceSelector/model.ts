@@ -584,7 +584,12 @@ export function buildReferenceSelectorTagContextKey(ref: TagContextRef): string 
       ref.includeAutomatic ? "auto" : "manual"
     }`;
   }
-  return `${libraryID}:tag:${normalizeMineruTagName(ref.normalizedName || ref.name)}`;
+  return `${libraryID}:tag:${normalizeReferenceSelectorTagIdentityName(ref.normalizedName || ref.name)}`;
+}
+
+export function normalizeReferenceSelectorTagIdentityName(value: unknown): string {
+  const name = normalizeMineruTagName(value);
+  return name ? name.toLowerCase() : "";
 }
 
 export function isReferenceSelectorGroupCoveredBySelectedCollection(
@@ -634,21 +639,42 @@ export function isReferenceSelectorGroupCoveredBySelectedTag(
       }
       continue;
     }
-    const normalizedName = normalizeMineruTagName(
+    const normalizedName = normalizeReferenceSelectorTagIdentityName(
       tagRef.normalizedName || tagRef.name,
     );
     if (
       normalizedName &&
-      filterReferenceSelectorGroupsForTagView([group], {
-        selectedTags: [normalizedName],
-        includeAutomatic,
-        tagMatchMode: "and",
-      }).length
+      getReferenceSelectorGroupTagIdentityNames(
+        group,
+        includeAutomatic === true,
+      ).has(normalizedName)
     ) {
       return true;
     }
   }
   return false;
+}
+
+function getReferenceSelectorGroupTagIdentityNames(
+  group: PaperSearchGroupCandidate,
+  includeAutomatic: boolean,
+): Set<string> {
+  const names = new Set<string>();
+  const addTagName = (tagName: string) => {
+    const normalizedName = normalizeReferenceSelectorTagIdentityName(tagName);
+    if (normalizedName) {
+      names.add(normalizedName);
+    }
+  };
+  for (const tagName of group.tags || []) {
+    addTagName(tagName);
+  }
+  if (includeAutomatic) {
+    for (const tagName of group.tagsAuto || []) {
+      addTagName(tagName);
+    }
+  }
+  return names;
 }
 
 export function resolveReferenceSelectorAttachmentSelectionState(params: {

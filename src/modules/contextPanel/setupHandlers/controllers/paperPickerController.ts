@@ -782,7 +782,7 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
         name: tag.name,
         normalizedName: tag.normalizedName,
         libraryID: deps.getCurrentLibraryID(),
-        includeAutomatic: tag.isAutomatic,
+        includeAutomatic: tag.includeAutomatic,
       });
     }
     if (row.kind === "attachment") {
@@ -1896,7 +1896,7 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
             name: tag.name,
             normalizedName: tag.normalizedName,
             libraryID: deps.getCurrentLibraryID(),
-            includeAutomatic: tag.isAutomatic,
+            includeAutomatic: tag.includeAutomatic,
           };
           const isTagSelected = item
             ? isPaperPickerTagContextSelected(tagRef)
