@@ -137,7 +137,8 @@ function computeContextForcedSkillIds(
     forced.add(SIMPLE_PAPER_QA_SKILL_ID);
   }
   if (
-    request.selectedCollectionContexts?.length &&
+    (request.selectedCollectionContexts?.length ||
+      request.selectedTagContexts?.length) &&
     COLLECTION_ANALYSIS_INTENT_PATTERN.test(request.userText || "")
   ) {
     forced.add(LIBRARY_ANALYSIS_SKILL_ID);

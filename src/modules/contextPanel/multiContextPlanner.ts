@@ -147,6 +147,7 @@ import type {
   PaperContextRef,
   PdfContext,
   QuoteCitation,
+  TagContextRef,
 } from "./types";
 
 type PlannerPaperEntry = {
@@ -397,6 +398,65 @@ function collectCollectionItemIds(
   return Array.from(out);
 }
 
+function getTagContextItemTagNames(
+  item: Zotero.Item,
+  includeAutomatic: boolean,
+): string[] {
+  try {
+    const rawTags = (item as { getTags?: () => unknown[] }).getTags?.();
+    if (!Array.isArray(rawTags)) return [];
+    const out = new Set<string>();
+    for (const entry of rawTags) {
+      let name = "";
+      let type: unknown;
+      if (typeof entry === "string") {
+        name = entry;
+      } else if (entry && typeof entry === "object") {
+        const typed = entry as { tag?: unknown; name?: unknown; type?: unknown };
+        name =
+          typeof typed.tag === "string"
+            ? typed.tag
+            : typeof typed.name === "string"
+              ? typed.name
+              : "";
+        type = typed.type;
+      }
+      const normalized = sanitizeText(name).trim();
+      if (!normalized) continue;
+      if (type === 1 && !includeAutomatic) continue;
+      out.add(normalized);
+    }
+    return Array.from(out);
+  } catch (_err) {
+    return [];
+  }
+}
+
+async function collectTagContextItems(
+  tagContext: TagContextRef,
+): Promise<Zotero.Item[]> {
+  const libraryID = Math.floor(Number(tagContext.libraryID) || 0);
+  if (libraryID <= 0) return [];
+  const allItems = await Promise.resolve(
+    (Zotero.Items as any).getAll?.(libraryID, true, false, false) || [],
+  );
+  if (!Array.isArray(allItems)) return [];
+  const includeAutomatic = tagContext.includeAutomatic === true;
+  const tagName = sanitizeText(
+    tagContext.normalizedName || tagContext.name || "",
+  ).trim();
+  const tagNameLower = tagName.toLowerCase();
+  return allItems.filter((item): item is Zotero.Item => {
+    if (!item?.isRegularItem?.()) return false;
+    const tags = getTagContextItemTagNames(item, includeAutomatic);
+    if (tagContext.scope === "allTagged") return tags.length > 0;
+    if (tagContext.scope === "untagged") return tags.length === 0;
+    return tags.some(
+      (tag) => tag === tagName || tag.toLowerCase() === tagNameLower,
+    );
+  });
+}
+
 type CollectionScopeResolution = {
   papers: PlannerPaperEntry[];
   manifestText: string;
@@ -433,10 +493,10 @@ function buildCollectionManifestText(params: {
   candidates: CollectionPaperCandidate[];
 }): string {
   const lines = [
-    "Selected Zotero collection scopes:",
+    "Selected Zotero context scopes:",
     ...params.scopeLines,
     "",
-    "Collection manifest (PDF-backed papers):",
+    "Scope manifest (PDF-backed papers):",
   ];
   if (!params.candidates.length) {
     lines.push("(No PDF-backed regular items found.)");
@@ -450,6 +510,7 @@ function buildCollectionManifestText(params: {
 
 async function resolveCollectionScopePapers(params: {
   collectionContexts?: CollectionContextRef[];
+  tagContexts?: TagContextRef[];
   question: string;
   queryPlan?: RetrievalQueryPlan;
   excludePaperKeys: Set<string>;
@@ -458,7 +519,8 @@ async function resolveCollectionScopePapers(params: {
   const collectionContexts = Array.isArray(params.collectionContexts)
     ? params.collectionContexts
     : [];
-  if (!collectionContexts.length) {
+  const tagContexts = Array.isArray(params.tagContexts) ? params.tagContexts : [];
+  if (!collectionContexts.length && !tagContexts.length) {
     return {
       papers: [],
       manifestText: "",
@@ -517,6 +579,44 @@ async function resolveCollectionScopePapers(params: {
     totalPaperCount += collectionPaperCount;
     scopeLines.push(
       `- ${collectionName} [collectionId=${collectionId}, libraryID=${collectionContext.libraryID}, papers=${collectionPaperCount}]`,
+    );
+  }
+
+  for (const tagContext of tagContexts) {
+    const tagName = sanitizeText(tagContext.name).trim();
+    if (!tagName) continue;
+    const items = await collectTagContextItems(tagContext);
+    let tagPaperCount = 0;
+    for (const item of items) {
+      const paperContext = buildPaperRefFromRegularItem(item);
+      if (!paperContext) continue;
+      tagPaperCount += 1;
+      const paperKey = buildPaperKey(paperContext);
+      if (manifestSeenPaperKeys.has(paperKey)) continue;
+      manifestSeenPaperKeys.add(paperKey);
+      const title = paperContext.title;
+      const creators = readItemCreators(item);
+      const year = paperContext.year || readItemField(item, "date");
+      const abstractNote = readItemField(item, "abstractNote");
+      candidates.push({
+        paperContext,
+        score: scoreCollectionPaperMetadata({
+          questionTokens,
+          title,
+          creators,
+          year,
+          abstractNote,
+          collectionName: tagName,
+        }),
+        modifiedAt: readModifiedTimestamp(item),
+      });
+    }
+    totalPaperCount += tagPaperCount;
+    const scopeKind = tagContext.scope
+      ? `tagScope=${tagContext.scope}`
+      : `tag=${tagName}`;
+    scopeLines.push(
+      `- ${tagName} [${scopeKind}, libraryID=${tagContext.libraryID}, papers=${tagPaperCount}]`,
     );
   }
 
@@ -1201,6 +1301,7 @@ export async function resolveMultiContextPlan(params: {
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   collectionContexts?: CollectionContextRef[];
+  tagContexts?: TagContextRef[];
   historyPaperContexts?: PaperContextRef[];
   history?: ChatMessage[];
   images?: string[];
@@ -1228,11 +1329,12 @@ export async function resolveMultiContextPlan(params: {
   const firstPaperTurn =
     params.conversationMode === "paper" && isFirstPaperTurn(params.history);
   const hasCollectionContext = Boolean(params.collectionContexts?.length);
+  const hasTagContext = Boolean(params.tagContexts?.length);
   const queryPlan = await resolveRetrievalQueryPlan({
     query: params.question,
     hasRetrievalContext:
-      Boolean(papers.length || hasCollectionContext) &&
-      (!firstPaperTurn || hasCollectionContext),
+      Boolean(papers.length || hasCollectionContext || hasTagContext) &&
+      (!firstPaperTurn || hasCollectionContext || hasTagContext),
     model: params.model,
     apiBase: params.apiBase,
     apiKey: params.apiKey,
@@ -1251,6 +1353,7 @@ export async function resolveMultiContextPlan(params: {
         });
   const collectionScope = await resolveCollectionScopePapers({
     collectionContexts: params.collectionContexts,
+    tagContexts: params.tagContexts,
     question: params.question,
     queryPlan,
     excludePaperKeys: new Set(papers.map((paper) => paper.paperKey)),

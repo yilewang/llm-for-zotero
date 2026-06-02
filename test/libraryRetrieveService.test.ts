@@ -15,7 +15,7 @@ function makeItem(
   itemId: number,
   title: string,
   abstractNote = "",
-  options: { hasPdf?: boolean; collectionIds?: number[] } = {},
+  options: { hasPdf?: boolean; collectionIds?: number[]; tags?: string[] } = {},
 ): {
   target: LibraryItemTarget;
   metadata: EditableArticleMetadataSnapshot;
@@ -38,7 +38,7 @@ function makeItem(
             },
           ]
         : [],
-      tags: [],
+      tags: options.tags || [],
       collectionIds: options.collectionIds || [],
     },
     metadata: {
@@ -116,7 +116,11 @@ function makeGateway(
   options: {
     collectionItems?: ReturnType<typeof makeItem>[];
     quicksearchItemIds?: number[] | ((query: string | undefined) => number[]);
-    quicksearchCalls?: Array<{ limit?: number; query?: string }>;
+    quicksearchCalls?: Array<{
+      limit?: number;
+      query?: string;
+      filters?: Record<string, unknown>;
+    }>;
   } = {},
 ) {
   const byItemId = new Map(
@@ -164,6 +168,40 @@ function makeGateway(
         .slice(0, limit || collectionItems.length),
       totalCount: collectionItems.length,
     }),
+    listTagItemTargets: async ({
+      tagContext,
+      limit,
+    }: {
+      tagContext: {
+        name: string;
+        normalizedName?: string;
+        scope?: "allTagged" | "untagged";
+      };
+      limit?: number;
+    }) => {
+      const normalizedName = (
+        tagContext.normalizedName || tagContext.name
+      ).toLowerCase();
+      const tagItems = entries.filter((entry) => {
+        if (tagContext.scope === "allTagged") {
+          return entry.target.tags.length > 0;
+        }
+        if (tagContext.scope === "untagged") {
+          return entry.target.tags.length === 0;
+        }
+        return entry.target.tags.some(
+          (tag) =>
+            tag === tagContext.name || tag.toLowerCase() === normalizedName,
+        );
+      });
+      return {
+        tagName: tagContext.name,
+        items: tagItems
+          .map((entry) => entry.target)
+          .slice(0, limit || tagItems.length),
+        totalCount: tagItems.length,
+      };
+    },
     getBibliographicItemTargetsByItemIds: (itemIds: number[]) =>
       itemIds
         .map((itemId) => byItemId.get(itemId)?.target)
@@ -171,6 +209,7 @@ function makeGateway(
     searchAllLibraryItems: async (params: {
       limit?: number;
       query?: string;
+      filters?: Record<string, unknown>;
     }) => {
       options.quicksearchCalls?.push(params);
       const quicksearchIds =
@@ -178,11 +217,16 @@ function makeGateway(
           ? options.quicksearchItemIds(params.query)
           : options.quicksearchItemIds || [];
       const limit = params.limit || quicksearchIds.length;
+      const tagFilter =
+        typeof params.filters?.tag === "string" ? params.filters.tag : "";
       return {
         items: quicksearchIds
           .slice(0, limit)
           .map((itemId) => byItemId.get(itemId)?.target)
-          .filter((entry): entry is LibraryItemTarget => Boolean(entry)),
+          .filter((entry): entry is LibraryItemTarget => Boolean(entry))
+          .filter((entry) =>
+            tagFilter ? entry.tags.includes(tagFilter) : true,
+          ),
         totalCount: quicksearchIds.length,
       };
     },
@@ -685,6 +729,127 @@ describe("LibraryRetrieveService", function () {
     assert.deepEqual(
       result.candidates.map((candidate) => candidate.itemId),
       ["7"],
+    );
+  });
+
+  it("defaults to selected tag scope instead of active-reader fallback", async function () {
+    const active = makeItem(99, "Active reader paper", "active", {
+      hasPdf: true,
+    });
+    const scoped = makeItem(7, "Scoped tag paper", "tagged indexed evidence", {
+      hasPdf: true,
+      tags: ["Stable"],
+    });
+    const outside = makeItem(8, "Outside tag paper", "outside", {
+      hasPdf: true,
+      tags: ["Other"],
+    });
+    const quicksearchCalls: Array<{
+      limit?: number;
+      query?: string;
+      filters?: Record<string, unknown>;
+    }> = [];
+    const service = new LibraryRetrieveService(
+      makeGateway([active, scoped, outside], {
+        quicksearchCalls,
+        quicksearchItemIds: [7, 8],
+      }) as any,
+      { ensurePaperContext: async () => makePdfContext([]) } as any,
+      async () => [],
+    );
+
+    const result = await service.retrieve({
+      query: "indexed evidence",
+      intent: "enumerate",
+      depth: "evidence",
+      methods: ["metadata", "fts"],
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText: "Search this tag",
+        libraryID: 1,
+        conversationKind: "global",
+        activeItemId: 99,
+        selectedTagContexts: [
+          {
+            name: "Stable",
+            normalizedName: "stable",
+            libraryID: 1,
+          },
+        ],
+      },
+    });
+
+    assert.equal(result.resourcePool.type, "tag");
+    assert.deepEqual(result.resourcePool.scope.tagNames, ["Stable"]);
+    assert.equal(result.resourcePool.totalItems, 1);
+    assert.deepEqual(
+      result.candidates.map((candidate) => candidate.itemId),
+      ["7"],
+    );
+    assert.equal(quicksearchCalls[0]?.filters?.tag, "Stable");
+    assert.equal(result.resourcePool.queryCoverage.indexedTextMatched, 1);
+  });
+
+  it("unions selected collection and tag scopes while deduping overlapping papers", async function () {
+    const collectionOnly = makeItem(4, "Collection-only paper", "collection evidence", {
+      hasPdf: true,
+      collectionIds: [4],
+    });
+    const overlap = makeItem(7, "Overlapping paper", "shared evidence", {
+      hasPdf: true,
+      collectionIds: [4],
+      tags: ["Stable"],
+    });
+    const tagOnly = makeItem(8, "Tag-only paper", "tag evidence", {
+      hasPdf: true,
+      tags: ["Stable"],
+    });
+    const outside = makeItem(9, "Outside paper", "outside", {
+      hasPdf: true,
+      tags: ["Other"],
+    });
+    const service = new LibraryRetrieveService(
+      makeGateway([collectionOnly, overlap, tagOnly, outside], {
+        collectionItems: [collectionOnly, overlap],
+      }) as any,
+      { ensurePaperContext: async () => makePdfContext([]) } as any,
+      async () => [],
+    );
+
+    const result = await service.retrieve({
+      query: "evidence",
+      intent: "enumerate",
+      depth: "metadata",
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText: "Search the selected collection and tag",
+        libraryID: 1,
+        selectedCollectionContexts: [
+          { collectionId: 4, name: "Collection 4", libraryID: 1 },
+        ],
+        selectedTagContexts: [
+          {
+            name: "Stable",
+            normalizedName: "stable",
+            libraryID: 1,
+          },
+        ],
+      },
+    });
+
+    assert.equal(result.resourcePool.type, "mixed");
+    assert.deepEqual(result.resourcePool.scope.collectionIds, [4]);
+    assert.deepEqual(result.resourcePool.scope.tagNames, ["Stable"]);
+    assert.equal(result.resourcePool.totalItems, 3);
+    assert.deepEqual(
+      result.candidates.map((candidate) => candidate.itemId).sort(),
+      ["4", "7", "8"],
+    );
+    assert.include(
+      result.warnings,
+      "Selected collection and tag totals may include overlapping items; retrieval uses unique item IDs.",
     );
   });
 

@@ -3,10 +3,12 @@ import type {
   LibraryItemTarget,
   LibraryPaperTarget,
 } from "../services/zoteroGateway";
+import type { TagContextRef } from "../../shared/types";
 import type {
   PaperScopedActionCollectionCandidate,
   PaperScopedActionInput,
   PaperScopedActionProfile,
+  PaperScopedActionTagCandidate,
 } from "./paperScopeTypes";
 
 export type {
@@ -17,6 +19,7 @@ export type {
   PaperScopedActionPaperRequirement,
   PaperScopedActionProfile,
   PaperScopedActionPromptOption,
+  PaperScopedActionTagCandidate,
   PaperScopedActionTargetMode,
 } from "./paperScopeTypes";
 
@@ -28,6 +31,7 @@ export type ResolvePaperScopedCommandInputResult =
 export type PaperScopedSelection = {
   itemIds: number[];
   collectionIds: number[];
+  tagContexts: TagContextRef[];
 };
 
 export type PaperScopedActionTarget = {
@@ -71,6 +75,102 @@ export function applyLimit<T>(values: T[], limit: number | undefined): T[] {
   return values.slice(0, limit);
 }
 
+function normalizeStringArray(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const label = value.trim();
+    const key = normalizeText(label);
+    if (!label || seen.has(key)) continue;
+    seen.add(key);
+    out.push(label);
+  }
+  return out;
+}
+
+function normalizeTagScopes(
+  values: unknown,
+): Array<"allTagged" | "untagged"> {
+  if (!Array.isArray(values)) return [];
+  const out: Array<"allTagged" | "untagged"> = [];
+  for (const value of values) {
+    if ((value === "allTagged" || value === "untagged") && !out.includes(value)) {
+      out.push(value);
+    }
+  }
+  return out;
+}
+
+function normalizeTagContext(ref: TagContextRef | undefined): TagContextRef | null {
+  if (!ref) return null;
+  const libraryID = Number.isFinite(ref.libraryID)
+    ? Math.floor(ref.libraryID)
+    : 0;
+  const scope =
+    ref.scope === "allTagged" || ref.scope === "untagged"
+      ? ref.scope
+      : undefined;
+  const name =
+    (ref.name || "").trim() ||
+    (scope === "allTagged"
+      ? "All Tagged"
+      : scope === "untagged"
+        ? "Untagged"
+        : "");
+  if (!libraryID || !name) return null;
+  const normalizedName =
+    (ref.normalizedName || name).trim().toLowerCase() || undefined;
+  return {
+    name,
+    libraryID,
+    normalizedName,
+    scope,
+    includeAutomatic: ref.includeAutomatic === true || undefined,
+  };
+}
+
+function tagContextKey(ref: TagContextRef): string {
+  if (ref.scope) {
+    return `${ref.libraryID}:scope:${ref.scope}:${ref.includeAutomatic ? "auto" : "manual"}`;
+  }
+  return `${ref.libraryID}:tag:${ref.normalizedName || ref.name.toLowerCase()}`;
+}
+
+function buildTagContextsFromInput(
+  input: PaperScopedActionInput,
+  libraryID: number,
+): TagContextRef[] {
+  const out: TagContextRef[] = [];
+  const seen = new Set<string>();
+  const add = (ref: TagContextRef): void => {
+    const normalized = normalizeTagContext(ref);
+    if (!normalized) return;
+    const key = tagContextKey(normalized);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(normalized);
+  };
+  for (const name of input.tagNames || []) {
+    add({
+      name,
+      normalizedName: normalizeText(name),
+      libraryID,
+      includeAutomatic: input.includeAutomaticTags === true || undefined,
+    });
+  }
+  for (const scope of input.tagScopes || []) {
+    add({
+      name: scope === "allTagged" ? "All Tagged" : "Untagged",
+      libraryID,
+      scope,
+      includeAutomatic: input.includeAutomaticTags === true || undefined,
+    });
+  }
+  return out;
+}
+
 export function normalizePaperScopedActionInput(
   input: PaperScopedActionInput | undefined,
 ): PaperScopedActionInput {
@@ -85,7 +185,16 @@ export function normalizePaperScopedActionInput(
   const normalized: PaperScopedActionInput = {};
   if (itemIds.length) normalized.itemIds = itemIds;
   if (collectionIds.length) normalized.collectionIds = collectionIds;
-  if (input?.scope === "all" || input?.scope === "collection") {
+  const tagNames = normalizeStringArray(input?.tagNames);
+  const tagScopes = normalizeTagScopes(input?.tagScopes);
+  if (tagNames.length) normalized.tagNames = tagNames;
+  if (tagScopes.length) normalized.tagScopes = tagScopes;
+  if (input?.includeAutomaticTags === true) normalized.includeAutomaticTags = true;
+  if (
+    input?.scope === "all" ||
+    input?.scope === "collection" ||
+    input?.scope === "tag"
+  ) {
     normalized.scope = input.scope;
   }
   const limit = normalizeLimit(input?.limit);
@@ -105,24 +214,53 @@ export function resolvePaperScopedSelection(
       (entry) => entry.collectionId,
     ),
   );
-  return { itemIds, collectionIds };
+  const tagContexts: TagContextRef[] = [];
+  const seenTags = new Set<string>();
+  for (const entry of requestContext?.selectedTagContexts || []) {
+    const normalized = normalizeTagContext(entry);
+    if (!normalized) continue;
+    const key = tagContextKey(normalized);
+    if (seenTags.has(key)) continue;
+    seenTags.add(key);
+    tagContexts.push(normalized);
+  }
+  return { itemIds, collectionIds, tagContexts };
 }
 
 function buildSelectionScopeInput(
   requestContext: ActionRequestContext | undefined,
 ): PaperScopedActionInput | null {
   const selection = resolvePaperScopedSelection(requestContext);
-  if (!selection.itemIds.length && !selection.collectionIds.length) {
+  if (
+    !selection.itemIds.length &&
+    !selection.collectionIds.length &&
+    !selection.tagContexts.length
+  ) {
     return null;
   }
   const input: PaperScopedActionInput = {};
   if (selection.itemIds.length) input.itemIds = selection.itemIds;
   if (selection.collectionIds.length) input.collectionIds = selection.collectionIds;
+  const tagNames = selection.tagContexts
+    .filter((entry) => !entry.scope)
+    .map((entry) => entry.name);
+  const tagScopes = selection.tagContexts
+    .map((entry) => entry.scope)
+    .filter((scope): scope is "allTagged" | "untagged" => Boolean(scope));
+  if (tagNames.length) input.tagNames = tagNames;
+  if (tagScopes.length) input.tagScopes = tagScopes;
+  if (selection.tagContexts.some((entry) => entry.includeAutomatic === true)) {
+    input.includeAutomaticTags = true;
+  }
   return input;
 }
 
 function describeCollection(candidate: PaperScopedActionCollectionCandidate): string {
   return candidate.path || candidate.name;
+}
+
+function describeTag(candidate: PaperScopedActionTagCandidate): string {
+  return candidate.name;
 }
 
 function resolveCollectionScopeInput(
@@ -173,6 +311,77 @@ function resolveCollectionScopeInput(
     kind: "input",
     input: {
       collectionIds: [partialMatches[0].collectionId],
+    },
+  };
+}
+
+function resolveTagScopeInput(
+  rawName: string,
+  tags: PaperScopedActionTagCandidate[],
+): ResolvePaperScopedCommandInputResult {
+  const normalizedQuery = normalizeText(rawName);
+  if (!normalizedQuery) {
+    return {
+      kind: "error",
+      error: "Specify a tag name after the tag scope.",
+    };
+  }
+  if (
+    normalizedQuery === "all tagged" ||
+    normalizedQuery === "all-tagged" ||
+    normalizedQuery === "tagged"
+  ) {
+    return {
+      kind: "input",
+      input: { tagScopes: ["allTagged"], scope: "tag" },
+    };
+  }
+  if (normalizedQuery === "untagged" || normalizedQuery === "no tags") {
+    return {
+      kind: "input",
+      input: { tagScopes: ["untagged"], scope: "tag" },
+    };
+  }
+  if (!tags.length) {
+    return {
+      kind: "input",
+      input: { tagNames: [rawName.trim()], scope: "tag" },
+    };
+  }
+
+  const exactMatches = tags.filter(
+    (candidate) => normalizeText(candidate.name) === normalizedQuery,
+  );
+  const partialMatches = exactMatches.length
+    ? exactMatches
+    : tags.filter((candidate) =>
+        normalizeText(candidate.name).includes(normalizedQuery),
+      );
+
+  if (!partialMatches.length) {
+    return {
+      kind: "error",
+      error: `No tag matches "${rawName.trim()}".`,
+    };
+  }
+
+  if (partialMatches.length > 1) {
+    const options = partialMatches
+      .slice(0, 3)
+      .map((candidate) => describeTag(candidate))
+      .join(", ");
+    const suffix = partialMatches.length > 3 ? ", ..." : "";
+    return {
+      kind: "error",
+      error: `Tag "${rawName.trim()}" is ambiguous: ${options}${suffix}.`,
+    };
+  }
+
+  return {
+    kind: "input",
+    input: {
+      tagNames: [partialMatches[0].name],
+      scope: "tag",
     },
   };
 }
@@ -237,6 +446,9 @@ function buildUnsupportedScopeError(
   if (profile.allowedScopes.includes("collection")) {
     suggestions.push('"collection <name>"');
   }
+  if (profile.allowedScopes.includes("tag")) {
+    suggestions.push('"tag <name>"');
+  }
   const message = suggestions.length
     ? `Unsupported scope. Use ${suggestions.join(", ")}.`
     : "Unsupported scope for this action.";
@@ -248,6 +460,7 @@ export function resolvePaperScopedCommandInput(
   requestContext: ActionRequestContext | undefined,
   profile: PaperScopedActionProfile,
   collections: PaperScopedActionCollectionCandidate[],
+  tags: PaperScopedActionTagCandidate[] = [],
 ): ResolvePaperScopedCommandInputResult {
   const trimmed = params.trim();
   if (!trimmed) {
@@ -278,7 +491,8 @@ export function resolvePaperScopedCommandInput(
     normalized === "selection" ||
     normalized === "selected papers" ||
     normalized === "selected items" ||
-    normalized === "selected collections"
+    normalized === "selected collections" ||
+    normalized === "selected tags"
   ) {
     if (!profile.allowedScopes.includes("selection")) {
       return buildUnsupportedScopeError(profile);
@@ -287,7 +501,7 @@ export function resolvePaperScopedCommandInput(
     if (!selectionInput) {
       return {
         kind: "error",
-        error: "No paper or collection context is selected in this chat.",
+        error: "No paper, collection, or tag context is selected in this chat.",
       };
     }
     return { kind: "input", input: selectionInput };
@@ -329,6 +543,14 @@ export function resolvePaperScopedCommandInput(
       return buildUnsupportedScopeError(profile);
     }
     return resolveCollectionScopeInput(collectionMatch[1], collections);
+  }
+
+  const tagMatch = /^(?:for\s+)?tag\s+(.+)$/i.exec(trimmed);
+  if (tagMatch) {
+    if (!profile.allowedScopes.includes("tag")) {
+      return buildUnsupportedScopeError(profile);
+    }
+    return resolveTagScopeInput(tagMatch[1], tags);
   }
 
   return buildUnsupportedScopeError(profile);
@@ -394,20 +616,80 @@ function getTargetsByItemIds(
     .map(mapBibliographicTarget);
 }
 
+function filterTargetsByRequirement(
+  targets: PaperScopedActionTarget[],
+  profile: PaperScopedActionProfile,
+): PaperScopedActionTarget[] {
+  if (profile.paperRequirement !== "pdf_backed") return targets;
+  return targets.filter((target) => target.hasPdf);
+}
+
+function dedupeTargets(
+  targets: PaperScopedActionTarget[],
+): PaperScopedActionTarget[] {
+  const out: PaperScopedActionTarget[] = [];
+  const seen = new Set<number>();
+  for (const target of targets) {
+    if (seen.has(target.itemId)) continue;
+    seen.add(target.itemId);
+    out.push(target);
+  }
+  return out;
+}
+
+async function listTargetsForTagContexts(
+  tagContexts: TagContextRef[],
+  ctx: ActionExecutionContext,
+  profile: PaperScopedActionProfile,
+): Promise<PaperScopedActionTarget[]> {
+  const targets: PaperScopedActionTarget[] = [];
+  for (const tagContext of tagContexts) {
+    const result = await ctx.zoteroGateway.listTagItemTargets({
+      libraryID: ctx.libraryID,
+      tagContext,
+    });
+    targets.push(
+      ...filterTargetsByRequirement(
+        result.items.map(mapBibliographicTarget),
+        profile,
+      ),
+    );
+  }
+  return targets;
+}
+
 async function resolveTargetsForSelection(
   selection: PaperScopedSelection,
   limit: number | undefined,
   ctx: ActionExecutionContext,
   profile: PaperScopedActionProfile,
 ): Promise<PaperScopedActionTarget[]> {
-  const itemIdSet = new Set(selection.itemIds);
-  const collectionIdSet = new Set(selection.collectionIds);
-  const allTargets = await listAllTargets(ctx, profile, undefined);
-  const filtered = allTargets.filter((target) =>
-    itemIdSet.has(target.itemId) ||
-    target.collectionIds.some((collectionId) => collectionIdSet.has(collectionId)),
-  );
-  return applyLimit(filtered, limit);
+  const filtered: PaperScopedActionTarget[] = [];
+  if (selection.itemIds.length) {
+    filtered.push(
+      ...filterTargetsByRequirement(
+        getTargetsByItemIds(ctx, profile, selection.itemIds),
+        profile,
+      ),
+    );
+  }
+  if (selection.collectionIds.length) {
+    const collectionIdSet = new Set(selection.collectionIds);
+    const allTargets = await listAllTargets(ctx, profile, undefined);
+    filtered.push(
+      ...allTargets.filter((target) =>
+        target.collectionIds.some((collectionId) =>
+          collectionIdSet.has(collectionId),
+        ),
+      ),
+    );
+  }
+  if (selection.tagContexts.length) {
+    filtered.push(
+      ...(await listTargetsForTagContexts(selection.tagContexts, ctx, profile)),
+    );
+  }
+  return applyLimit(dedupeTargets(filtered), limit);
 }
 
 function applyTargetMode(
@@ -436,24 +718,20 @@ export async function resolvePaperScopedActionTargets(
 ): Promise<PaperScopedActionTarget[]> {
   const normalized = normalizePaperScopedActionInput(input);
   const limit = normalizeLimit(normalized.limit);
-
-  if (normalized.itemIds?.length) {
-    return applyTargetMode(
-      getTargetsByItemIds(ctx, profile, normalized.itemIds),
-      profile,
-      limit,
-    );
-  }
-
   const collectionIds = normalizePositiveIntArray(normalized.collectionIds);
-  if (collectionIds.length) {
+  const explicitSelection: PaperScopedSelection = {
+    itemIds: normalizePositiveIntArray(normalized.itemIds),
+    collectionIds,
+    tagContexts: buildTagContextsFromInput(normalized, ctx.libraryID),
+  };
+
+  if (
+    explicitSelection.itemIds.length ||
+    explicitSelection.collectionIds.length ||
+    explicitSelection.tagContexts.length
+  ) {
     return applyTargetMode(
-      await resolveTargetsForSelection(
-        { itemIds: [], collectionIds },
-        limit,
-        ctx,
-        profile,
-      ),
+      await resolveTargetsForSelection(explicitSelection, limit, ctx, profile),
       profile,
       limit,
     );

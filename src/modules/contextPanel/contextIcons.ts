@@ -8,6 +8,7 @@ export const CONTEXT_ICON_NAMES = [
   "image",
   "file",
   "collection",
+  "tag",
   "text",
   "model",
   "model-chip",

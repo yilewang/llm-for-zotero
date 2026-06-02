@@ -33,6 +33,7 @@ function buildToolContext(
       selectedPaperContexts: ctx.requestContext?.selectedPaperContexts,
       fullTextPaperContexts: ctx.requestContext?.fullTextPaperContexts,
       selectedCollectionContexts: ctx.requestContext?.selectedCollectionContexts,
+      selectedTagContexts: ctx.requestContext?.selectedTagContexts,
     },
     item: syntheticItem,
     currentAnswerText: "",

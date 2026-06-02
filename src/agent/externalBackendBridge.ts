@@ -176,6 +176,7 @@ type ContextEnvelope = {
   selectedTextCount: number;
   selectedPaperCount: number;
   selectedCollectionCount: number;
+  selectedTagCount: number;
   fullTextPaperCount: number;
   pinnedPaperCount: number;
   attachmentCount: number;
@@ -196,6 +197,13 @@ type ContextEnvelope = {
     collectionId: number;
     name: string;
     libraryID: number;
+  }>;
+  selectedTags: Array<{
+    name: string;
+    libraryID: number;
+    normalizedName?: string;
+    scope?: "allTagged" | "untagged";
+    includeAutomatic?: boolean;
   }>;
   fullTextPapers: Array<{
     itemId: number;
@@ -250,6 +258,14 @@ type BridgeCollectionContext = {
   collectionId?: number;
   name?: string;
   libraryID?: number;
+};
+
+type BridgeTagContext = {
+  name?: string;
+  libraryID?: number;
+  normalizedName?: string;
+  scope?: "allTagged" | "untagged";
+  includeAutomatic?: boolean;
 };
 
 type BridgeScopeType =
@@ -322,6 +338,7 @@ type BridgeRuntimeRequest = {
   fullTextPaperContexts?: BridgePaperContext[];
   pinnedPaperContexts?: BridgePaperContext[];
   selectedCollectionContexts?: BridgeCollectionContext[];
+  selectedTagContexts?: BridgeTagContext[];
   attachments?: BridgeAttachment[];
   screenshots?: string[];
   history?: Array<{ role: string; content: string }>;
@@ -1033,6 +1050,60 @@ function normalizeCollectionRefs(list: unknown, limit = 8): Array<{
   return refs;
 }
 
+function normalizeTagRefs(list: unknown, limit = 8): Array<{
+  name: string;
+  libraryID: number;
+  normalizedName?: string;
+  scope?: "allTagged" | "untagged";
+  includeAutomatic?: boolean;
+}> {
+  if (!Array.isArray(list)) return [];
+  const refs: Array<{
+    name: string;
+    libraryID: number;
+    normalizedName?: string;
+    scope?: "allTagged" | "untagged";
+    includeAutomatic?: boolean;
+  }> = [];
+  const seen = new Set<string>();
+  for (const entry of list) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const libraryID =
+      typeof record.libraryID === "number" ? Math.floor(record.libraryID) : 0;
+    const scope =
+      record.scope === "allTagged" || record.scope === "untagged"
+        ? record.scope
+        : undefined;
+    const name =
+      trimText(record.name, 180) ||
+      (scope === "allTagged"
+        ? "All Tagged"
+        : scope === "untagged"
+          ? "Untagged"
+          : "");
+    if (!libraryID || !name) continue;
+    const normalizedName = trimText(record.normalizedName || record.name, 180)
+      .toLowerCase()
+      .trim();
+    const includeAutomatic = record.includeAutomatic === true;
+    const key = scope
+      ? `${libraryID}:scope:${scope}:${includeAutomatic ? "auto" : "manual"}`
+      : `${libraryID}:tag:${normalizedName || name.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push({
+      name,
+      libraryID,
+      normalizedName: normalizedName || undefined,
+      scope,
+      includeAutomatic: includeAutomatic || undefined,
+    });
+    if (refs.length >= limit) break;
+  }
+  return refs;
+}
+
 function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
   const selectedTexts = Array.isArray(request.selectedTexts) ? request.selectedTexts : [];
   const selectedSources = Array.isArray(request.selectedTextSources)
@@ -1066,6 +1137,7 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     request.selectedCollectionContexts,
     8,
   );
+  const selectedTags = normalizeTagRefs(request.selectedTagContexts, 8);
   const attachments = (Array.isArray(request.attachments) ? request.attachments : [])
     .slice(0, 10)
     .map((attachment) => ({
@@ -1095,6 +1167,9 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     selectedCollectionCount: Array.isArray(request.selectedCollectionContexts)
       ? request.selectedCollectionContexts.length
       : 0,
+    selectedTagCount: Array.isArray(request.selectedTagContexts)
+      ? request.selectedTagContexts.length
+      : 0,
     fullTextPaperCount: Array.isArray(request.fullTextPaperContexts)
       ? request.fullTextPaperContexts.length
       : 0,
@@ -1106,6 +1181,7 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     selectedTexts: selectedTextRows,
     selectedPapers,
     selectedCollections,
+    selectedTags,
     fullTextPapers,
     pinnedPapers,
     attachments,
@@ -1313,6 +1389,7 @@ async function buildBridgeRuntimeRequest(
       request.selectedCollectionContexts,
       20,
     ),
+    selectedTagContexts: normalizeTagRefs(request.selectedTagContexts, 20),
     attachments: attachments.length ? attachments : undefined,
     screenshots: screenshots.length ? screenshots : undefined,
     activeNoteContext: request.activeNoteContext
@@ -1346,17 +1423,34 @@ function signatureForContextEnvelope(envelope: ContextEnvelope): string {
     selectedTextCount: envelope.selectedTextCount,
     selectedPaperCount: envelope.selectedPaperCount,
     selectedCollectionCount: envelope.selectedCollectionCount,
+    selectedTagCount: envelope.selectedTagCount,
     fullTextPaperCount: envelope.fullTextPaperCount,
     pinnedPaperCount: envelope.pinnedPaperCount,
     attachmentCount: envelope.attachmentCount,
     screenshotCount: envelope.screenshotCount,
     selectedPaperIds: envelope.selectedPapers.map((paper) => paper.contextItemId).sort(),
     selectedCollectionIds: envelope.selectedCollections.map((collection) => collection.collectionId).sort(),
+    selectedTags: envelope.selectedTags
+      .map((tag) =>
+        [
+          tag.libraryID,
+          tag.scope || "",
+          tag.normalizedName || tag.name.toLowerCase(),
+          tag.includeAutomatic === true ? "auto" : "manual",
+        ].join(":"),
+      )
+      .sort(),
     fullTextPaperIds: envelope.fullTextPapers.map((paper) => paper.contextItemId).sort(),
     pinnedPaperIds: envelope.pinnedPapers.map((paper) => paper.contextItemId).sort(),
     selectedTextFingerprints: envelope.selectedTexts.map((row) => row.text.slice(0, 80)),
     activeNoteId: envelope.activeNote?.noteId,
   });
+}
+
+export function buildExternalBridgeContextSignatureForTests(
+  request: AgentRuntimeRequest,
+): string {
+  return signatureForContextEnvelope(buildContextEnvelope(request));
 }
 
 async function fetchExternalTools(

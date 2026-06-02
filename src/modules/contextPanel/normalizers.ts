@@ -4,6 +4,7 @@ import type {
   PaperContentSourceMode,
   PaperContextRef,
   SelectedTextSource,
+  TagContextRef,
 } from "./types";
 
 type TextSanitizer = (value: string) => string;
@@ -267,6 +268,48 @@ export function normalizeCollectionContextRefs(
       collectionId,
       name,
       libraryID,
+    });
+  }
+  return out;
+}
+
+export function normalizeTagContextRefs(
+  value: unknown,
+  options?: {
+    sanitizeText?: TextSanitizer;
+  },
+): TagContextRef[] {
+  if (!Array.isArray(value)) return [];
+  const sanitize = options?.sanitizeText;
+  const out: TagContextRef[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const typed = entry as Record<string, unknown>;
+    const libraryID = normalizePositiveInt(typed.libraryID);
+    if (!libraryID) continue;
+    const name = normalizeText(typed.name, sanitize);
+    const rawScope = typed.scope;
+    const scope =
+      rawScope === "allTagged" || rawScope === "untagged"
+        ? rawScope
+        : undefined;
+    const normalizedName = normalizeText(typed.normalizedName, sanitize)
+      .toLowerCase()
+      .trim();
+    if (!name || (!scope && !normalizedName)) continue;
+    const includeAutomatic = typed.includeAutomatic === true;
+    const key = scope
+      ? `${libraryID}:scope:${scope}:${includeAutomatic ? "auto" : "manual"}`
+      : `${libraryID}:tag:${normalizedName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      name,
+      libraryID,
+      normalizedName: scope ? undefined : normalizedName,
+      scope,
+      includeAutomatic,
     });
   }
   return out;

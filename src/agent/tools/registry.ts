@@ -134,10 +134,12 @@ export class AgentToolRegistry {
     if (!validation.ok) {
       const validationError =
         call.name === "library_search" &&
-        context.request.selectedCollectionContexts?.length &&
+        (context.request.selectedCollectionContexts?.length ||
+          context.request.selectedTagContexts?.length) &&
         validation.error.includes("entity and mode are required")
-          ? `${validation.error} For selected collections, use ` +
-            "{ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }."
+          ? `${validation.error} For selected collection/tag scopes, use ` +
+            "{ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } } or " +
+            "{ entity:'items', mode:'list', filters:{ tag:'<tag>' } }."
           : validation.error;
       return createSyntheticErrorResult(
         call,

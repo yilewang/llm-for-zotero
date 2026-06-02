@@ -87,6 +87,7 @@ import type {
   PaperContextRef,
   QuoteCitation,
   SelectedTextSource,
+  TagContextRef,
 } from "../../../shared/types";
 import type { UsageStats } from "../../../shared/llm";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../../utils/llmClient";
@@ -345,6 +346,7 @@ type BuildAgentRuntimeRequestParamsShape = {
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
+  selectedTagContexts?: TagContextRef[];
   attachments: ChatAttachment[] | undefined;
   screenshots: string[] | undefined;
   forcedSkillIds?: string[];
@@ -365,6 +367,7 @@ type ReconstructedRetryPayload = {
   fullTextPaperContexts: PaperContextRef[];
   citationPaperContexts?: PaperContextRef[];
   selectedCollectionContexts: CollectionContextRef[];
+  selectedTagContexts: TagContextRef[];
 };
 
 // ---------------------------------------------------------------------------
@@ -596,6 +599,7 @@ export async function sendAgentTurn(
     paperContexts?: PaperContextRef[];
     fullTextPaperContexts?: PaperContextRef[];
     selectedCollectionContexts?: CollectionContextRef[];
+    selectedTagContexts?: TagContextRef[];
     attachments?: ChatAttachment[];
     modelAttachments?: ChatAttachment[];
     forcedSkillIds?: string[];
@@ -625,6 +629,7 @@ export async function sendAgentTurn(
     paperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
+    selectedTagContexts,
     attachments,
     modelAttachments,
     forcedSkillIds,
@@ -703,6 +708,9 @@ export async function sendAgentTurn(
     selectedCollectionContexts: selectedCollectionContexts?.length
       ? selectedCollectionContexts
       : undefined,
+    selectedTagContexts: selectedTagContexts?.length
+      ? selectedTagContexts
+      : undefined,
   };
   if (modelAttachments !== undefined) {
     userMessage.modelAttachments = modelAttachments;
@@ -721,6 +729,7 @@ export async function sendAgentTurn(
       selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
       citationPaperContexts: userMessage.citationPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
+      selectedTagContexts: userMessage.selectedTagContexts,
       screenshotImages: userMessage.screenshotImages,
       attachments: userMessage.attachments,
       modelAttachments: userMessage.modelAttachments,
@@ -837,6 +846,7 @@ export async function sendAgentTurn(
       fullTextPaperContexts: userMessage.fullTextPaperContexts,
       citationPaperContexts: userMessage.citationPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
+      selectedTagContexts: userMessage.selectedTagContexts,
       screenshotImages: userMessage.screenshotImages,
       attachments: userMessage.attachments,
       modelAttachments: userMessage.modelAttachments,
@@ -855,6 +865,7 @@ export async function sendAgentTurn(
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
     selectedCollectionContexts,
+    selectedTagContexts,
     attachments: modelAttachments ?? attachments,
     screenshots: images,
     forcedSkillIds,
@@ -891,6 +902,7 @@ export async function sendAgentTurn(
         paperContexts,
         fullTextPaperContexts,
         selectedCollectionContexts,
+        selectedTagContexts,
         attachments,
         modelAttachments,
         runtimeMode: "agent",
@@ -972,6 +984,7 @@ export async function sendAgentTurn(
             fullTextPaperContexts: userMessage.fullTextPaperContexts,
             citationPaperContexts: userMessage.citationPaperContexts,
             selectedCollectionContexts: userMessage.selectedCollectionContexts,
+            selectedTagContexts: userMessage.selectedTagContexts,
             attachments: userMessage.attachments,
             modelAttachments: userMessage.modelAttachments,
             modelName: userMessage.modelName,
@@ -1137,6 +1150,7 @@ export async function sendAgentTurn(
                 citationPaperContexts: userMessage.citationPaperContexts,
                 selectedCollectionContexts:
                   userMessage.selectedCollectionContexts,
+                selectedTagContexts: userMessage.selectedTagContexts,
                 screenshotImages: userMessage.screenshotImages,
                 attachments: userMessage.attachments,
                 modelAttachments: userMessage.modelAttachments,
@@ -1483,6 +1497,7 @@ export async function retryAgentTurn(
     paperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
+    selectedTagContexts,
   } = deps.reconstructRetryPayload(retryPair.userMessage);
   if (!question.trim()) {
     setStatusSafely("Nothing to retry for latest turn", "error");
@@ -1535,6 +1550,7 @@ export async function retryAgentTurn(
     paperContexts,
     fullTextPaperContexts,
     selectedCollectionContexts,
+    selectedTagContexts,
     attachments: retryModelAttachments,
     screenshots: screenshotImages,
     effectiveRequestConfig,
@@ -1613,6 +1629,7 @@ export async function retryAgentTurn(
           citationPaperContexts: retryPair.userMessage.citationPaperContexts,
           selectedCollectionContexts:
             retryPair.userMessage.selectedCollectionContexts,
+          selectedTagContexts: retryPair.userMessage.selectedTagContexts,
           attachments: retryPair.userMessage.attachments,
           modelAttachments: retryPair.userMessage.modelAttachments,
           modelName: retryPair.userMessage.modelName,
@@ -1784,6 +1801,7 @@ export async function retryAgentTurn(
                 retryPair.userMessage.citationPaperContexts,
               selectedCollectionContexts:
                 retryPair.userMessage.selectedCollectionContexts,
+              selectedTagContexts: retryPair.userMessage.selectedTagContexts,
               screenshotImages: retryPair.userMessage.screenshotImages,
               attachments: retryPair.userMessage.attachments,
               modelAttachments: retryPair.userMessage.modelAttachments,

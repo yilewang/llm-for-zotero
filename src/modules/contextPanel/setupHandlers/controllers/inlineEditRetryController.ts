@@ -4,6 +4,7 @@ import type {
   SelectedTextContext,
   SelectedTextSource,
   NoteContextRef,
+  TagContextRef,
 } from "../../types";
 
 export type InlineEditRetryContextSnapshot = {
@@ -12,11 +13,13 @@ export type InlineEditRetryContextSnapshot = {
   selectedTextPaperContexts: (PaperContextRef | undefined)[];
   selectedTextNoteContexts: (NoteContextRef | undefined)[];
   selectedCollectionContexts: CollectionContextRef[];
+  selectedTagContexts: TagContextRef[];
 };
 
 export function buildInlineEditRetryContextSnapshot(params: {
   selectedContexts?: SelectedTextContext[];
   selectedCollectionContexts?: CollectionContextRef[];
+  selectedTagContexts?: TagContextRef[];
 }): InlineEditRetryContextSnapshot {
   const selectedContexts = Array.isArray(params.selectedContexts)
     ? params.selectedContexts
@@ -33,6 +36,9 @@ export function buildInlineEditRetryContextSnapshot(params: {
     ),
     selectedCollectionContexts: Array.isArray(params.selectedCollectionContexts)
       ? params.selectedCollectionContexts.slice()
+      : [],
+    selectedTagContexts: Array.isArray(params.selectedTagContexts)
+      ? params.selectedTagContexts.slice()
       : [],
   };
 }

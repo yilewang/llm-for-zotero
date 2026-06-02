@@ -1,5 +1,7 @@
 import { assert } from "chai";
 import {
+  buildCodexNativeResourceContextBlockForTests,
+  buildCodexNativeResourceSignatureForTests,
   buildZoteroEnvironmentManifest,
   compactCodexAppServerConversation,
   compactCodexAppServerThread,
@@ -263,6 +265,63 @@ describe("Codex app-server native client", function () {
     assert.include(manifest, "Do not call tools solely to discover quotes or page numbers");
     assert.notInclude(manifest, "page N");
     assert.notInclude(manifest, "use shell creatively");
+  });
+
+  it("describes selected tag resources in Codex native context", function () {
+    const block = buildCodexNativeResourceContextBlockForTests({
+      selectedTagContexts: [
+        {
+          name: "Stable",
+          normalizedName: "stable",
+          libraryID: 1,
+        },
+        {
+          name: "Untagged",
+          libraryID: 1,
+          scope: "untagged",
+        },
+      ],
+    });
+
+    assert.include(block, "Selected Zotero tag resources available this turn");
+    assert.include(block, 'name="Stable"');
+    assert.include(block, 'scope="untagged"');
+    assert.include(
+      block,
+      "Treat tag membership as the selected resource pool",
+    );
+    assert.notInclude(block, "Selected Zotero collection resources");
+  });
+
+  it("includes selected tags in Codex native resource signatures", function () {
+    const scope = {
+      conversationKey: 1,
+      libraryID: 1,
+      kind: "global" as const,
+    };
+    const baseSignature = buildCodexNativeResourceSignatureForTests({
+      scope,
+      profileSignature: "profile-native-tag-test",
+      skillContext: {},
+    });
+    const tagSignature = buildCodexNativeResourceSignatureForTests({
+      scope,
+      profileSignature: "profile-native-tag-test",
+      skillContext: {
+        selectedTagContexts: [
+          {
+            name: "Stable",
+            normalizedName: "stable",
+            libraryID: 1,
+          },
+        ],
+      },
+    });
+
+    assert.notEqual(baseSignature, tagSignature);
+    assert.include(tagSignature, '"tags"');
+    assert.include(tagSignature, "Stable");
+    assert.include(tagSignature, '"tag:1:stable"');
   });
 
   it("records successful native paper reads for context reuse hints", function () {

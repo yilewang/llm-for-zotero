@@ -456,6 +456,8 @@ describe("Zotero MCP server", function () {
           libraryID: context.request.libraryID,
           activeItemId: context.request.activeItemId,
           selectedPaperContexts: context.request.selectedPaperContexts,
+          selectedCollectionContexts: context.request.selectedCollectionContexts,
+          selectedTagContexts: context.request.selectedTagContexts,
         },
       }),
     });
@@ -478,6 +480,20 @@ describe("Zotero MCP server", function () {
         firstCreator: "Ng",
         year: "2026",
       },
+      selectedCollectionContexts: [
+        {
+          collectionId: 9,
+          libraryID: 7,
+          name: "Scoped Collection",
+        },
+      ],
+      selectedTagContexts: [
+        {
+          name: "Stable",
+          normalizedName: "stable",
+          libraryID: 7,
+        },
+      ],
     });
     try {
       const response = await invokeMcpEndpoint({
@@ -508,7 +524,89 @@ describe("Zotero MCP server", function () {
             year: "2026",
           },
         ],
+        selectedCollectionContexts: [
+          {
+            collectionId: 9,
+            libraryID: 7,
+            name: "Scoped Collection",
+          },
+        ],
+        selectedTagContexts: [
+          {
+            name: "Stable",
+            normalizedName: "stable",
+            libraryID: 7,
+          },
+        ],
       });
+    } finally {
+      clearScope();
+    }
+  });
+
+  it("passes selected tags to omitted-scope library_retrieve MCP calls", async function () {
+    const registry = new AgentToolRegistry();
+    registry.register({
+      spec: {
+        name: "library_retrieve",
+        description: "Retrieve from library",
+        inputSchema: { type: "object", additionalProperties: true },
+        mutability: "read",
+        requiresConfirmation: false,
+      },
+      validate: (args) => ({ ok: true, value: args ?? {} }),
+      execute: async (input, context: AgentToolContext) => ({
+        input,
+        selectedTagContexts: context.request.selectedTagContexts,
+      }),
+    });
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+
+    const clearScope = setActiveZoteroMcpScope({
+      conversationKey: 456,
+      libraryID: 7,
+      kind: "global",
+      selectedTagContexts: [
+        {
+          name: "Stable",
+          normalizedName: "stable",
+          libraryID: 7,
+        },
+      ],
+    });
+    try {
+      const response = await invokeMcpEndpoint({
+        token: getOrCreateZoteroMcpBearerToken(),
+        body: {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "library_retrieve",
+            arguments: {
+              query: "what papers are here?",
+              intent: "enumerate",
+            },
+          },
+        },
+      });
+      const payload = JSON.parse(response[2]);
+      const content = JSON.parse(payload.result.content[0].text);
+      assert.equal(content.ok, true);
+      assert.deepEqual(content.result.input, {
+        query: "what papers are here?",
+        intent: "enumerate",
+      });
+      assert.deepEqual(content.result.selectedTagContexts, [
+        {
+          name: "Stable",
+          normalizedName: "stable",
+          libraryID: 7,
+        },
+      ]);
     } finally {
       clearScope();
     }

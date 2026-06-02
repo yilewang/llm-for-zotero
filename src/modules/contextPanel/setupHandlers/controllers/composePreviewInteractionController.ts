@@ -42,6 +42,7 @@ import {
   selectedOtherRefContextCache,
   selectedPaperContextCache,
   selectedPaperPreviewExpandedCache,
+  selectedTagContextCache,
 } from "../../state";
 import type {
   PaperContentSourceMode,
@@ -366,6 +367,27 @@ export function attachComposePreviewInteractionController(
           }
           deps.updatePaperPreviewPreservingScroll();
           setStatus(t("Collection context removed."), "ready");
+        }
+        return;
+      }
+
+      const tagClearBtn = target.closest(
+        ".llm-tag-clear",
+      ) as HTMLButtonElement | null;
+      if (tagClearBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        const index = Number.parseInt(tagClearBtn.dataset.tagIndex || "", 10);
+        const tags = selectedTagContextCache.get(item.id) || [];
+        if (Number.isFinite(index) && index >= 0 && index < tags.length) {
+          const next = tags.filter((_, itemIndex) => itemIndex !== index);
+          if (next.length) {
+            selectedTagContextCache.set(item.id, next);
+          } else {
+            selectedTagContextCache.delete(item.id);
+          }
+          deps.updatePaperPreviewPreservingScroll();
+          setStatus(t("Tag context removed."), "ready");
         }
         return;
       }

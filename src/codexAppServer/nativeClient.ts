@@ -13,6 +13,7 @@ import type {
   CollectionContextRef,
   PaperContextRef,
   SelectedTextSource,
+  TagContextRef,
 } from "../shared/types";
 import {
   addZoteroMcpToolActivityObserver,
@@ -188,6 +189,7 @@ type CodexNativeResourceSnapshot = {
     selectedPapers: CodexNativeResourceRecord[];
     fullTextPapers: CodexNativeResourceRecord[];
     collections: CodexNativeResourceRecord[];
+    tags: CodexNativeResourceRecord[];
     selectedTexts: CodexNativeResourceRecord[];
     screenshots: CodexNativeResourceRecord[];
     attachments: CodexNativeResourceRecord[];
@@ -396,6 +398,46 @@ function buildCollectionResourceRecords(
   );
 }
 
+function buildTagResourceRecords(
+  tags: TagContextRef[] | undefined,
+): CodexNativeResourceRecord[] {
+  return sortNativeResourceRecords(
+    (Array.isArray(tags) ? tags : []).map((tag) => {
+      const libraryID = normalizePositiveInt(tag.libraryID) || 0;
+      const name = normalizeNonEmptyString(tag.name);
+      const normalizedName = normalizeNonEmptyString(
+        tag.normalizedName || tag.name,
+      ).toLowerCase();
+      const scope =
+        tag.scope === "allTagged" || tag.scope === "untagged"
+          ? tag.scope
+          : "";
+      const includeAutomatic = tag.includeAutomatic === true;
+      const key = scope
+        ? `tag-scope:${libraryID}:${scope}:${includeAutomatic ? "auto" : "manual"}`
+        : `tag:${libraryID}:${normalizedName}`;
+      return makeNativeResourceRecord({
+        key,
+        label: scope ? "Selected tag scope" : "Selected tag",
+        signature: {
+          libraryID,
+          name,
+          normalizedName,
+          scope,
+          includeAutomatic,
+        },
+        fields: [
+          ["libraryID", libraryID],
+          ["name", name],
+          ["normalizedName", normalizedName],
+          ["scope", scope],
+          ["includeAutomatic", includeAutomatic || undefined],
+        ],
+      });
+    }),
+  );
+}
+
 function buildSelectedTextResourceRecords(
   skillContext: CodexNativeSkillContext | undefined,
 ): CodexNativeResourceRecord[] {
@@ -546,6 +588,7 @@ function buildCodexNativeResourceSnapshot(params: {
       collections: buildCollectionResourceRecords(
         skillContext?.selectedCollectionContexts,
       ),
+      tags: buildTagResourceRecords(skillContext?.selectedTagContexts),
       selectedTexts: buildSelectedTextResourceRecords(skillContext),
       screenshots: buildScreenshotResourceRecords(skillContext?.screenshots),
       attachments: buildAttachmentResourceRecords(skillContext?.attachments),
@@ -557,6 +600,16 @@ function buildCodexNativeResourceSignatureFromSnapshot(
   snapshot: CodexNativeResourceSnapshot,
 ): string {
   return JSON.stringify(snapshot);
+}
+
+export function buildCodexNativeResourceSignatureForTests(params: {
+  scope: CodexNativeConversationScope;
+  profileSignature: string;
+  skillContext?: CodexNativeSkillContext;
+}): string {
+  return buildCodexNativeResourceSignatureFromSnapshot(
+    buildCodexNativeResourceSnapshot(params),
+  );
 }
 
 function flattenCodexNativeResourceSnapshot(
@@ -1078,6 +1131,18 @@ function formatPaperResourceLine(paper: PaperContextRef): string {
   return `- ${pieces.join(", ")}`;
 }
 
+function formatTagResourceLine(tag: TagContextRef): string {
+  const pieces = [`libraryID=${tag.libraryID}`];
+  if (tag.scope) {
+    pieces.push(`scope="${tag.scope}"`);
+  } else {
+    pieces.push(`name="${tag.name}"`);
+  }
+  if (tag.normalizedName) pieces.push(`normalizedName="${tag.normalizedName}"`);
+  if (tag.includeAutomatic) pieces.push("includeAutomatic=true");
+  return `- ${pieces.join(", ")}`;
+}
+
 function buildSelectedTextResourceLine(params: {
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];
@@ -1100,7 +1165,7 @@ function buildSelectedTextResourceLine(params: {
   return `- Selected non-model text contexts: ${sources.length} (${sourceLabel})`;
 }
 
-function buildCodexNativeResourceContextBlock(
+export function buildCodexNativeResourceContextBlockForTests(
   skillContext: CodexNativeSkillContext | undefined,
 ): string {
   if (!skillContext) return "";
@@ -1132,6 +1197,14 @@ function buildCodexNativeResourceContextBlock(
           .filter(Boolean)
           .join(", "),
       ),
+    );
+  }
+  const tags = skillContext.selectedTagContexts || [];
+  if (tags.length) {
+    lines.push(
+      "Selected Zotero tag resources available this turn:",
+      ...tags.map(formatTagResourceLine),
+      "Treat tag membership as the selected resource pool. When using Zotero MCP tools, omit scope arguments to use this selected tag by default, or pass scope:{ tagNames:[...] } / scope:{ tagScopes:[...] } explicitly when the user names a different tag scope.",
     );
   }
   const selectedTextLine = buildSelectedTextResourceLine({
@@ -1166,6 +1239,9 @@ function buildCodexNativeResourceContextBlock(
     ? ["Additional Zotero/user resources for this turn:", ...lines].join("\n")
     : "";
 }
+
+const buildCodexNativeResourceContextBlock =
+  buildCodexNativeResourceContextBlockForTests;
 
 function appendBoundedResourceDeltaSection(params: {
   lines: string[];
@@ -1969,6 +2045,8 @@ export async function runCodexAppServerNativeTurn(params: {
       ? registerScopedZoteroMcpScope({
           ...scopeWithProfile,
           userText: latestUserText,
+          selectedCollectionContexts: params.skillContext?.selectedCollectionContexts,
+          selectedTagContexts: params.skillContext?.selectedTagContexts,
         })
       : null;
     const mcpThreadConfig = scopedMcp
@@ -1991,6 +2069,8 @@ export async function runCodexAppServerNativeTurn(params: {
           ...params.scope,
           profileSignature,
           userText: latestUserText,
+          selectedCollectionContexts: params.skillContext?.selectedCollectionContexts,
+          selectedTagContexts: params.skillContext?.selectedTagContexts,
         })
       : () => undefined;
     const clearMcpConfirmationHandler =
@@ -2000,6 +2080,9 @@ export async function runCodexAppServerNativeTurn(params: {
               ...params.scope,
               profileSignature,
               userText: latestUserText,
+              selectedCollectionContexts:
+                params.skillContext?.selectedCollectionContexts,
+              selectedTagContexts: params.skillContext?.selectedTagContexts,
             },
             params.onMcpConfirmationRequest,
           )

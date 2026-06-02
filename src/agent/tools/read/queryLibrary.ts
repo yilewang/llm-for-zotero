@@ -197,7 +197,8 @@ function resolveReferenceItemId(
   }
   if (
     context.request.conversationKind === "global" ||
-    context.request.selectedCollectionContexts?.length
+    context.request.selectedCollectionContexts?.length ||
+    context.request.selectedTagContexts?.length
   ) {
     return null;
   }

@@ -7,7 +7,12 @@
  */
 
 import { config } from "../../../package.json";
-import type { PaperContextRef, QuoteCitation } from "../../shared/types";
+import type {
+  CollectionContextRef,
+  PaperContextRef,
+  QuoteCitation,
+  TagContextRef,
+} from "../../shared/types";
 import { readNoteSnapshot } from "../../modules/contextPanel/noteSnapshot";
 import { extractQuoteCitationsFromToolContent } from "../../modules/contextPanel/quoteCitations";
 import type { AgentToolRegistry } from "../tools/registry";
@@ -119,6 +124,8 @@ export type ZoteroMcpActiveScope = {
   title?: string;
   userText?: string;
   paperContext?: PaperContextRef;
+  selectedCollectionContexts?: CollectionContextRef[];
+  selectedTagContexts?: TagContextRef[];
 };
 
 type McpServerDeps = {
@@ -385,6 +392,65 @@ function normalizePaperContext(
   };
 }
 
+function normalizeCollectionContexts(
+  values: CollectionContextRef[] | undefined,
+): CollectionContextRef[] | undefined {
+  if (!Array.isArray(values)) return undefined;
+  const out: CollectionContextRef[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const collectionId = normalizePositiveInt(value?.collectionId);
+    const libraryID = normalizePositiveInt(value?.libraryID);
+    const name = normalizeText(value?.name);
+    if (!collectionId || !libraryID || !name) continue;
+    const key = `${libraryID}:${collectionId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ collectionId, libraryID, name });
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeTagContexts(
+  values: TagContextRef[] | undefined,
+): TagContextRef[] | undefined {
+  if (!Array.isArray(values)) return undefined;
+  const out: TagContextRef[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const libraryID = normalizePositiveInt(value?.libraryID);
+    const scope =
+      value?.scope === "allTagged" || value?.scope === "untagged"
+        ? value.scope
+        : undefined;
+    const name =
+      normalizeText(value?.name) ||
+      (scope === "allTagged"
+        ? "All Tagged"
+        : scope === "untagged"
+          ? "Untagged"
+          : undefined);
+    if (!libraryID || !name) continue;
+    const normalizedName = normalizeText(
+      value?.normalizedName || value?.name,
+    )?.toLowerCase();
+    const includeAutomatic = value?.includeAutomatic === true;
+    const key = scope
+      ? `${libraryID}:scope:${scope}:${includeAutomatic ? "auto" : "manual"}`
+      : `${libraryID}:tag:${normalizedName || name.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      name,
+      libraryID,
+      normalizedName: normalizedName || undefined,
+      scope,
+      includeAutomatic: includeAutomatic || undefined,
+    });
+  }
+  return out.length ? out : undefined;
+}
+
 function normalizeNoteKind(value: unknown): "item" | "standalone" | undefined {
   return value === "item" || value === "standalone" ? value : undefined;
 }
@@ -415,6 +481,10 @@ function normalizeActiveScope(
     title: normalizeText(scope.title),
     userText: normalizeText(scope.userText, 4000),
     paperContext,
+    selectedCollectionContexts: normalizeCollectionContexts(
+      scope.selectedCollectionContexts,
+    ),
+    selectedTagContexts: normalizeTagContexts(scope.selectedTagContexts),
   };
 }
 
@@ -957,6 +1027,8 @@ function createToolContext(
     authMode: "codex_app_server",
     selectedPaperContexts: paperContext ? [paperContext] : undefined,
     fullTextPaperContexts: paperContext ? [paperContext] : undefined,
+    selectedCollectionContexts: scope?.selectedCollectionContexts,
+    selectedTagContexts: scope?.selectedTagContexts,
     activeNoteContext,
   };
   return {

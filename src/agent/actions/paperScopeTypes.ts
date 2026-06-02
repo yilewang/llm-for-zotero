@@ -3,6 +3,7 @@ export type PaperScopedActionAllowedScope =
   | "current"
   | "selection"
   | "collection"
+  | "tag"
   | "all";
 export type PaperScopedActionDefaultEmptyInput =
   | "current"
@@ -15,7 +16,10 @@ export type PaperScopedActionInput = {
   itemIds?: number[];
   collectionId?: number;
   collectionIds?: number[];
-  scope?: "all" | "collection";
+  tagNames?: string[];
+  tagScopes?: Array<"allTagged" | "untagged">;
+  includeAutomaticTags?: boolean;
+  scope?: "all" | "collection" | "tag";
   limit?: number;
 };
 
@@ -40,4 +44,9 @@ export type PaperScopedActionCollectionCandidate = {
   collectionId: number;
   name: string;
   path?: string;
+};
+
+export type PaperScopedActionTagCandidate = {
+  name: string;
+  type?: number;
 };

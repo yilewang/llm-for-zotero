@@ -131,6 +131,9 @@ function buildClassifierPrompt(
       `- Selected collection scopes: ${request.selectedCollectionContexts.length}`,
     );
   }
+  if (request.selectedTagContexts?.length) {
+    context.push(`- Selected tag scopes: ${request.selectedTagContexts.length}`);
+  }
 
   return [
     "You are a skill router for a Zotero research-assistant agent. Return a JSON array of skill IDs drawn from the list below.",

@@ -1,4 +1,4 @@
-import type { PaperContextRef } from "../../shared/types";
+import type { PaperContextRef, TagContextRef } from "../../shared/types";
 import type { AgentRuntimeRequest } from "../types";
 import type { AgentCacheEvidenceActivity } from "./cacheManagement";
 
@@ -224,6 +224,15 @@ function collectionResourceKey(value: {
   if (!collectionId) return "";
   const libraryID = normalizePositiveInt(value.libraryID) || 0;
   return `collection:${libraryID}:${collectionId}`;
+}
+
+function tagResourceKey(value: Partial<TagContextRef>): string {
+  const libraryID = normalizePositiveInt(value.libraryID) || 0;
+  if (value.scope) return `tag:${libraryID}:scope:${value.scope}`;
+  const name = normalizeText(value.normalizedName || value.name, 180)
+    .toLowerCase()
+    .trim();
+  return name ? `tag:${libraryID}:${name}` : "";
 }
 
 function libraryResourceKey(libraryID: unknown): string {
@@ -475,6 +484,10 @@ function collectRequestResourceKeys(request: AgentRuntimeRequest): Set<string> {
   for (const collection of request.selectedCollectionContexts || []) {
     add(collectionResourceKey(collection));
     add(libraryResourceKey(collection.libraryID));
+  }
+  for (const tag of request.selectedTagContexts || []) {
+    add(tagResourceKey(tag));
+    add(libraryResourceKey(tag.libraryID));
   }
   for (const attachment of request.attachments || []) {
     add(normalizeText(attachment.id, 180) ? `attachment:${attachment.id}` : "");
@@ -962,11 +975,24 @@ function buildLibraryRetrieveCoverageEntries(
   const firstCollectionId = collectionIds
     .map((value) => normalizePositiveInt(value))
     .find(Boolean);
+  const tagNames = Array.isArray(scope.tagNames) ? scope.tagNames : [];
+  const tagScopes = Array.isArray(scope.tagScopes) ? scope.tagScopes : [];
   const libraryID =
     normalizePositiveInt(scope.libraryID) || activity.request.libraryID;
+  const firstTagKey = tagScopes.length
+    ? tagResourceKey({ libraryID, scope: tagScopes[0] })
+    : tagNames.length
+      ? tagResourceKey({ libraryID, name: normalizeText(tagNames[0], 180) })
+      : "";
   const resourceKey =
-    normalizeText(pool.type, 40) === "collection" && firstCollectionId
+    (normalizeText(pool.type, 40) === "collection" ||
+      normalizeText(pool.type, 40) === "mixed") &&
+    firstCollectionId
       ? collectionResourceKey({ collectionId: firstCollectionId, libraryID })
+      : (normalizeText(pool.type, 40) === "tag" ||
+            normalizeText(pool.type, 40) === "mixed") &&
+          firstTagKey
+        ? firstTagKey
       : libraryResourceKey(libraryID);
   const entries: AgentCoverageEntry[] = [];
   const scopeEntry = createCoverageEntry({
@@ -975,6 +1001,10 @@ function buildLibraryRetrieveCoverageEntries(
       normalizeText(pool.name, 120) ||
       (normalizeText(pool.type, 40) === "collection"
         ? "collection resource pool"
+        : normalizeText(pool.type, 40) === "tag"
+          ? "tag resource pool"
+          : normalizeText(pool.type, 40) === "mixed"
+            ? "mixed resource pool"
         : "library resource pool"),
     sourceKind: "zotero_metadata",
     topic,

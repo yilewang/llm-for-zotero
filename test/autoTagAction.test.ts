@@ -203,6 +203,87 @@ describe("autoTag action", function () {
     });
   });
 
+  it("uses selected tag context by default in library chat and preserves the requested limit", async function () {
+    const registry = new AgentToolRegistry();
+    let applyArgs: Record<string, unknown> | null = null;
+    let tagContextName = "";
+
+    registry.register(
+      createStubTool(
+        {
+          name: "apply_tags",
+          description: "apply tags",
+          inputSchema: { type: "object" },
+          mutability: "write",
+          requiresConfirmation: false,
+        },
+        (args) => ok(args as Record<string, unknown>),
+        async (input) => {
+          applyArgs = input;
+          return {
+            result: {
+              updatedCount: 2,
+            },
+          };
+        },
+      ),
+    );
+
+    const { ctx } = createActionContext(registry, {
+      zoteroGateway: {
+        listTagItemTargets: async ({
+          tagContext,
+        }: {
+          tagContext: { name: string };
+        }) => {
+          tagContextName = tagContext.name;
+          return {
+            tagName: tagContext.name,
+            totalCount: 3,
+            items: [
+              makeBibliographicTarget(31, "Newest Stable Paper", ["Stable"]),
+              makeBibliographicTarget(22, "Middle Stable Paper", ["Stable"]),
+              makeBibliographicTarget(11, "Older Stable Paper", ["Stable"]),
+            ],
+          };
+        },
+        getEditableArticleMetadata: () => ({
+          fields: {
+            abstractNote: "Tag-scoped abstract",
+          },
+        }),
+        getItem: (itemId: number) => ({ id: itemId }),
+      } as never,
+      requestContext: {
+        mode: "library",
+        selectedTagContexts: [
+          {
+            name: "Stable",
+            normalizedName: "stable",
+            libraryID: 1,
+          },
+        ],
+      },
+    });
+
+    const result = await autoTagAction.execute({ limit: 2 }, ctx);
+
+    assert.isTrue(result.ok);
+    if (!result.ok) return;
+    assert.equal(tagContextName, "Stable");
+    assert.deepEqual(
+      (applyArgs?.assignments as Array<Record<string, unknown>>).map(
+        (entry) => entry.itemId,
+      ),
+      [31, 22],
+    );
+    assert.deepEqual(result.output, {
+      targeted: 2,
+      tagged: 2,
+      skipped: 0,
+    });
+  });
+
   it("defaults to the active paper in paper chat even when other refs are present", async function () {
     const registry = new AgentToolRegistry();
     let applyArgs: Record<string, unknown> | null = null;

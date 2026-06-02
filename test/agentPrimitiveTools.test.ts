@@ -640,6 +640,39 @@ describe("primitive agent tools", function () {
     assert.include(userText, "User request:\nCompare the papers");
   });
 
+  it("adds selected tag scopes to the agent user context summary", async function () {
+    const messages = await buildAgentInitialMessages(
+      {
+        conversationKey: 3,
+        mode: "agent",
+        userText: "How many papers are in this tag?",
+        selectedTagContexts: [
+          {
+            name: "new",
+            normalizedName: "new",
+            libraryID: 1,
+          },
+        ],
+      },
+      [],
+      [],
+    );
+    const resourceText = stableSystemText(messages);
+    const userText = messageText(messages[messages.length - 1]);
+
+    assert.include(resourceText, "Selected Zotero tag scopes:");
+    assert.include(resourceText, "Tag 1: new [tag=new, libraryID=1]");
+    assert.include(
+      resourceText,
+      "Do not ask which tag the user means when a selected tag scope is listed here.",
+    );
+    assert.include(
+      resourceText,
+      "library_retrieve({ scope:{ tagNames:['<tag>'] }, query:'...', intent:'enumerate' })",
+    );
+    assert.include(userText, "User request:\nHow many papers");
+  });
+
   it("adds exact source labels to agent selected-text and paper refs", async function () {
     const selectedPaper: PaperContextRef = {
       itemId: 10,

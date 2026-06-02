@@ -77,6 +77,7 @@ type MockItem = {
   }>;
   getField: (field: string) => string;
   getAttachments: () => number[];
+  getTags?: () => Array<{ tag: string; type?: number }>;
 };
 
 type MockCollection = {
@@ -101,6 +102,7 @@ function registerMockPaper(params: {
   citationKey?: string;
   abstractNote?: string;
   dateModified?: string;
+  tags?: Array<{ tag: string; type?: number }>;
   pdfContext: PdfContext;
 }): PaperContextRef {
   const parent: MockItem = {
@@ -132,6 +134,7 @@ function registerMockPaper(params: {
       }
     },
     getAttachments: () => [params.contextItemId],
+    getTags: () => params.tags || [],
   };
   const attachment: MockItem = {
     id: params.contextItemId,
@@ -193,6 +196,11 @@ describe("multiContextPlanner", function () {
       Items: {
         get(id: number) {
           return zoteroItems.get(id) || null;
+        },
+        getAll(libraryID: number) {
+          return Array.from(zoteroItems.values()).filter(
+            (item) => item.libraryID === libraryID && item.isRegularItem(),
+          );
         },
       },
       Collections: {
@@ -713,10 +721,10 @@ describe("multiContextPlanner", function () {
     });
 
     assert.equal(plan.mode, "retrieval");
-    assert.include(plan.contextText, "Selected Zotero collection scopes:");
+    assert.include(plan.contextText, "Selected Zotero context scopes:");
     assert.include(
       plan.contextText,
-      "Collection manifest (PDF-backed papers):",
+      "Scope manifest (PDF-backed papers):",
     );
     assert.include(plan.contextText, "metadata-ranked shortlist");
     assert.include(
@@ -741,6 +749,72 @@ describe("multiContextPlanner", function () {
     assert.notInclude(
       (plan.citationPaperContexts || []).map((paper) => paper.title),
       "Calibration Drift Paper 120",
+    );
+  });
+
+  it("metadata-ranks selected tag scopes and builds a tag manifest", async function () {
+    for (let index = 1; index <= 8; index += 1) {
+      registerMockPaper({
+        itemId: 5_000 + index,
+        contextItemId: 6_000 + index,
+        title: `Stable Tag Paper ${index}`,
+        firstCreator: "Tagger",
+        year: "2026",
+        abstractNote:
+          index <= 2
+            ? "This abstract discusses stable oscillation retrieval."
+            : "This abstract is unrelated filler.",
+        tags: [{ tag: "Stable", type: 0 }],
+        pdfContext: buildPdfContext(`Stable Tag Paper ${index}`, [
+          `${"stable oscillation ".repeat(80)}paper ${index}`.trim(),
+        ]),
+      });
+    }
+    registerMockPaper({
+      itemId: 5_100,
+      contextItemId: 6_100,
+      title: "Outside Tag Paper",
+      firstCreator: "Other",
+      year: "2026",
+      abstractNote: "Outside scope.",
+      tags: [{ tag: "Other", type: 0 }],
+      pdfContext: buildPdfContext("Outside Tag Paper", ["Outside scope."]),
+    });
+
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "open",
+      activeContextItem: null,
+      question: "What does stable oscillation retrieval say?",
+      tagContexts: [
+        {
+          name: "Stable",
+          normalizedName: "stable",
+          libraryID: 1,
+        },
+      ],
+      paperContexts: [],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      advanced: {
+        temperature: 0.2,
+        maxTokens: 512,
+        inputTokenCap: 8_000,
+      },
+    });
+
+    assert.equal(plan.mode, "retrieval");
+    assert.include(plan.contextText, "Selected Zotero context scopes:");
+    assert.include(plan.contextText, "- Stable [tag=Stable, libraryID=1, papers=8]");
+    assert.include(plan.contextText, "Scope manifest (PDF-backed papers):");
+    assert.include(plan.contextText, "Title: Stable Tag Paper 1");
+    assert.include(plan.contextText, "itemId=5001");
+    assert.notInclude(plan.contextText, "Outside Tag Paper");
+    assert.isAtLeast(plan.selectedPaperCount, 1);
+    assert.include(
+      (plan.citationPaperContexts || []).map((paper) => paper.title),
+      "Stable Tag Paper 1",
     );
   });
 
@@ -857,7 +931,7 @@ describe("multiContextPlanner", function () {
     assert.equal(plan.mode, "retrieval");
     assert.include(
       plan.contextText,
-      "Collection manifest (PDF-backed papers):",
+      "Scope manifest (PDF-backed papers):",
     );
     assert.include(plan.contextText, "Citation key: SmallKey1");
     for (let index = 1; index <= 6; index += 1) {

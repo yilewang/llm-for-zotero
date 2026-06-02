@@ -8,6 +8,7 @@ import type {
   PaperContentSourceMode,
   PaperContextRef,
   SelectedTextSource,
+  TagContextRef,
 } from "../shared/types";
 import type {
   ChatMessage,
@@ -29,6 +30,7 @@ export type AgentRequest = {
   fullTextPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
+  selectedTagContexts?: TagContextRef[];
   availableAttachmentResources?: AgentAttachmentResource[];
   attachmentResourceSummaries?: AgentAttachmentResourceSummary[];
   attachments?: ChatAttachment[];

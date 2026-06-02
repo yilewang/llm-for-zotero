@@ -4,6 +4,7 @@ import type {
   CollectionContextRef,
   PaperContextRef,
   SelectedTextContext,
+  TagContextRef,
 } from "../src/modules/contextPanel/types";
 import { createSendFlowController } from "../src/modules/contextPanel/setupHandlers/controllers/sendFlowController";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../src/modules/contextPanel/pdfSupportMessages";
@@ -28,6 +29,11 @@ describe("sendFlowController", function () {
   const selectedCollection: CollectionContextRef = {
     collectionId: 55,
     name: "Methods",
+    libraryID: 1,
+  };
+  const selectedTag: TagContextRef = {
+    name: "Stable",
+    normalizedName: "stable",
     libraryID: 1,
   };
 
@@ -62,7 +68,9 @@ describe("sendFlowController", function () {
     let lastEditPdfUploadSystemMessages: string[] | undefined;
     let lastEditContextSourceItem: Zotero.Item | null | undefined;
     let lastSentCollectionContexts: CollectionContextRef[] | undefined;
+    let lastSentTagContexts: TagContextRef[] | undefined;
     let lastEditCollectionContexts: CollectionContextRef[] | undefined;
+    let lastEditTagContexts: TagContextRef[] | undefined;
     let lastStatus: { message: string; level: string } | null = null;
     const statuses: Array<{ message: string; level: string }> = [];
 
@@ -76,6 +84,7 @@ describe("sendFlowController", function () {
       getSelectedTextContextEntries: () => selectedTextContexts,
       getSelectedPaperContexts: () => [selectedPaper],
       getSelectedCollectionContexts: () => [],
+      getSelectedTagContexts: () => [],
       getFullTextPaperContexts: () => [selectedPaper],
       getPdfModePaperContexts: () => [],
       resolvePdfPaperAttachments: async () => [],
@@ -123,6 +132,7 @@ describe("sendFlowController", function () {
         lastEditModelAttachments = opts.modelAttachments;
         lastEditPdfUploadSystemMessages = opts.pdfUploadSystemMessages;
         lastEditCollectionContexts = opts.selectedCollectionContexts;
+        lastEditTagContexts = opts.selectedTagContexts;
         lastEditContextSourceItem = opts.contextSourceItem;
         return "ok" as const;
       },
@@ -137,6 +147,7 @@ describe("sendFlowController", function () {
         lastSentAttachments = opts.attachments;
         lastSentModelAttachments = opts.modelAttachments;
         lastSentCollectionContexts = opts.selectedCollectionContexts;
+        lastSentTagContexts = opts.selectedTagContexts;
         lastSentContextSourceItem = opts.contextSourceItem;
       },
       retainPinnedImageState: () => {
@@ -200,6 +211,7 @@ describe("sendFlowController", function () {
         lastSentAttachments,
         lastSentModelAttachments,
         lastSentCollectionContexts,
+        lastSentTagContexts,
         lastSentContextSourceItem,
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
@@ -208,6 +220,7 @@ describe("sendFlowController", function () {
       getLastEditModelAttachments: () => lastEditModelAttachments,
       getLastEditPdfUploadSystemMessages: () => lastEditPdfUploadSystemMessages,
       getLastEditCollectionContexts: () => lastEditCollectionContexts,
+      getLastEditTagContexts: () => lastEditTagContexts,
       getLastEditContextSourceItem: () => lastEditContextSourceItem,
       getLastStatus: () => lastStatus,
       getStatuses: () => statuses.slice(),
@@ -776,6 +789,17 @@ describe("sendFlowController", function () {
     ]);
   });
 
+  it("passes selected tags through mixed paper sends", async function () {
+    const { controller, getLastSend } = createBaseDeps({
+      getSelectedTagContexts: () => [selectedTag],
+    });
+
+    await controller.doSend();
+
+    assert.equal(getLastSend().lastRuntimeMode, "chat");
+    assert.deepEqual(getLastSend().lastSentTagContexts, [selectedTag]);
+  });
+
   it("passes selected collections through latest-turn edit retries", async function () {
     const { controller, getLastEditCollectionContexts } = createBaseDeps({
       getSelectedCollectionContexts: () => [selectedCollection],
@@ -796,6 +820,28 @@ describe("sendFlowController", function () {
     await controller.doSend();
 
     assert.deepEqual(getLastEditCollectionContexts(), [selectedCollection]);
+  });
+
+  it("passes selected tags through latest-turn edit retries", async function () {
+    const { controller, getLastEditTagContexts } = createBaseDeps({
+      getSelectedTagContexts: () => [selectedTag],
+      getActiveEditSession: () => ({
+        conversationKey: item.id,
+        userTimestamp: 10,
+        assistantTimestamp: 20,
+      }),
+      getLatestEditablePair: async () => ({
+        conversationKey: item.id,
+        pair: {
+          userMessage: { timestamp: 10 },
+          assistantMessage: { timestamp: 20, streaming: false },
+        },
+      }),
+    });
+
+    await controller.doSend();
+
+    assert.deepEqual(getLastEditTagContexts(), [selectedTag]);
   });
 
   it("blocks collection context for webchat sends", async function () {
@@ -819,7 +865,7 @@ describe("sendFlowController", function () {
     assert.equal(inputBox.value, "ask question");
     assert.deepEqual(getLastStatus(), {
       message:
-        "Web chat does not support Zotero collection context. Remove the collection and try again.",
+        "Web chat does not support Zotero collection or tag context. Remove the scope chip and try again.",
       level: "error",
     });
   });

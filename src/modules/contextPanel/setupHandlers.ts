@@ -54,6 +54,7 @@ import {
   selectedPaperContextCache,
   selectedOtherRefContextCache,
   selectedCollectionContextCache,
+  selectedTagContextCache,
   paperContextModeOverrides,
   selectedPaperPreviewExpandedCache,
   pinnedSelectedTextKeys,
@@ -257,6 +258,7 @@ import type {
   PaperContextRef,
   OtherContextRef,
   CollectionContextRef,
+  TagContextRef,
   PaperContextSendMode,
   PaperContentSourceMode,
   SelectedTextContext,
@@ -3688,6 +3690,50 @@ export function setupHandlers(
     list.appendChild(chip);
   };
 
+  const appendTagChip = (
+    ownerDoc: Document,
+    list: HTMLDivElement,
+    ref: TagContextRef,
+    removableIndex: number,
+  ) => {
+    const chip = createElement(
+      ownerDoc,
+      "div",
+      "llm-selected-context llm-tag-context-chip",
+    );
+    chip.dataset.tagIndex = `${removableIndex}`;
+    chip.classList.add("collapsed");
+
+    const chipHeader = createElement(
+      ownerDoc,
+      "div",
+      "llm-image-preview-header llm-selected-context-header llm-tag-chip-header",
+    );
+    const chipLabel = createElement(ownerDoc, "span", "llm-tag-chip-label", {
+      title: `Tag: ${ref.name}`,
+    });
+    const chipIcon = createContextIcon(ownerDoc, "tag", "llm-tag-chip-icon");
+    const chipTitle = createElement(ownerDoc, "span", "llm-tag-chip-title", {
+      textContent: ref.name,
+    });
+    chipLabel.append(chipIcon, chipTitle);
+    const removeBtn = createElement(
+      ownerDoc,
+      "button",
+      "llm-remove-img-btn llm-tag-clear",
+      {
+        type: "button",
+        textContent: "\u00D7",
+        title: `Remove ${ref.name}`,
+      },
+    ) as HTMLButtonElement;
+    removeBtn.dataset.tagIndex = `${removableIndex}`;
+    removeBtn.setAttribute("aria-label", `Remove ${ref.name}`);
+    chipHeader.append(chipLabel, removeBtn);
+    chip.appendChild(chipHeader);
+    list.appendChild(chip);
+  };
+
   const updatePaperPreview = () => {
     if (!item || !paperPreview || !paperPreviewList) return;
     closePaperChipMenu();
@@ -3700,10 +3746,12 @@ export function setupHandlers(
     const selectedOtherRefs = selectedOtherRefContextCache.get(itemId) || [];
     const selectedCollections =
       selectedCollectionContextCache.get(itemId) || [];
+    const selectedTags = selectedTagContextCache.get(itemId) || [];
     const hasAnyContext =
       selectedPapers.length > 0 ||
       selectedOtherRefs.length > 0 ||
       selectedCollections.length > 0 ||
+      selectedTags.length > 0 ||
       !!autoLoadedPaperContext;
     if (!hasAnyContext) {
       paperPreview.style.display = "none";
@@ -3756,6 +3804,9 @@ export function setupHandlers(
     });
     selectedCollections.forEach((ref, index) => {
       appendCollectionChip(ownerDoc, paperPreviewList, ref, index);
+    });
+    selectedTags.forEach((ref, index) => {
+      appendTagChip(ownerDoc, paperPreviewList, ref, index);
     });
   };
 
@@ -6014,6 +6065,8 @@ export function setupHandlers(
       ),
     getSelectedCollectionContexts: (itemId) =>
       selectedCollectionContextCache.get(itemId) || [],
+    getSelectedTagContexts: (itemId) =>
+      selectedTagContextCache.get(itemId) || [],
     getFullTextPaperContexts: (currentItem, selectedPaperContexts) =>
       getEffectiveFullTextPaperContexts(currentItem, selectedPaperContexts),
     getPdfModePaperContexts: (currentItem, selectedPaperContexts) =>
@@ -6262,11 +6315,13 @@ export function setupHandlers(
         selectedTextPaperContexts,
         selectedTextNoteContexts,
         selectedCollectionContexts,
+        selectedTagContexts,
       } = buildInlineEditRetryContextSnapshot({
         selectedContexts,
         selectedCollectionContexts: selectedCollectionContextCache.get(
           currentItem.id,
         ),
+        selectedTagContexts: selectedTagContextCache.get(currentItem.id),
       });
       const contextSourceItem = await resolveAutoLoadedContextSourceItemAsync();
       const allPaperContexts = getManualPaperContextsForItem(
@@ -6370,6 +6425,7 @@ export function setupHandlers(
           selectedTextPaperContexts,
           selectedTextNoteContexts,
           selectedCollectionContexts,
+          selectedTagContexts,
           screenshotImages: images,
           paperContexts: selectedPaperContexts,
           fullTextPaperContexts,

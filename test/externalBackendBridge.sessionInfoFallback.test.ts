@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { describe, it } from "mocha";
 import {
+  buildExternalBridgeContextSignatureForTests,
   buildExternalBridgeContextEnvelopeForTests,
   fetchExternalBridgeSessionInfo,
 } from "../src/agent/externalBackendBridge";
@@ -90,5 +91,79 @@ describe("external bridge session-info fallback", function () {
       envelope.fullTextPapers[MAX_FULL_TEXT_PAPER_CONTEXTS - 1].contextItemId,
       paper(MAX_FULL_TEXT_PAPER_CONTEXTS).contextItemId,
     );
+  });
+
+  it("includes selected tag contexts in the bridge envelope without expanding papers", function () {
+    const envelope = buildExternalBridgeContextEnvelopeForTests({
+      conversationKey: 1,
+      mode: "agent",
+      userText: "Use this tag.",
+      selectedTagContexts: [
+        {
+          name: "Stable",
+          normalizedName: "stable",
+          libraryID: 1,
+        },
+        {
+          name: "All Tagged",
+          libraryID: 1,
+          scope: "allTagged",
+          includeAutomatic: true,
+        },
+      ],
+    });
+
+    assert.equal(envelope.selectedTagCount, 2);
+    assert.deepEqual(envelope.selectedTags, [
+      {
+        name: "Stable",
+        libraryID: 1,
+        normalizedName: "stable",
+        scope: undefined,
+        includeAutomatic: undefined,
+      },
+      {
+        name: "All Tagged",
+        libraryID: 1,
+        normalizedName: "all tagged",
+        scope: "allTagged",
+        includeAutomatic: true,
+      },
+    ]);
+    assert.equal(envelope.selectedPaperCount, 0);
+    assert.lengthOf(envelope.selectedPapers, 0);
+  });
+
+  it("keeps bridge context signatures stable for selected tag order", function () {
+    const first = buildExternalBridgeContextSignatureForTests({
+      conversationKey: 1,
+      mode: "agent",
+      userText: "Use these tags.",
+      selectedTagContexts: [
+        { name: "Stable", normalizedName: "stable", libraryID: 1 },
+        { name: "Data", normalizedName: "data", libraryID: 1 },
+      ],
+    });
+    const second = buildExternalBridgeContextSignatureForTests({
+      conversationKey: 1,
+      mode: "agent",
+      userText: "Use these tags.",
+      selectedTagContexts: [
+        { name: "Data", normalizedName: "data", libraryID: 1 },
+        { name: "Stable", normalizedName: "stable", libraryID: 1 },
+      ],
+    });
+    const changed = buildExternalBridgeContextSignatureForTests({
+      conversationKey: 1,
+      mode: "agent",
+      userText: "Use these tags.",
+      selectedTagContexts: [
+        { name: "Stable", normalizedName: "stable", libraryID: 1 },
+        { name: "new", normalizedName: "new", libraryID: 1 },
+      ],
+    });
+
+    assert.equal(first, second);
+    assert.notEqual(first, changed);
   });
 });

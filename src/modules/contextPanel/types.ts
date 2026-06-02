@@ -12,6 +12,7 @@ import type {
   NoteContextRef,
   OtherContextRef,
   CollectionContextRef,
+  TagContextRef,
   GlobalConversationSummary,
   PaperConversationSummary,
 } from "../../shared/types";
@@ -29,6 +30,7 @@ export type {
   NoteContextRef,
   OtherContextRef,
   CollectionContextRef,
+  TagContextRef,
   GlobalConversationSummary,
   PaperConversationSummary,
 } from "../../shared/types";
@@ -63,7 +65,9 @@ export interface Message {
   quoteCitations?: QuoteCitation[];
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
+  selectedTagContexts?: TagContextRef[];
   collectionContextsExpanded?: boolean;
+  tagContextsExpanded?: boolean;
   paperContextsExpanded?: boolean;
   attachments?: ChatAttachment[];
   modelAttachments?: ChatAttachment[];
@@ -395,6 +399,7 @@ export type SendQuestionOptions = {
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
+  selectedTagContexts?: TagContextRef[];
   /** Attachments shown in chat history. */
   attachments?: ChatAttachment[];
   /** Provider-resolved attachments sent to the model. Defaults to `attachments`. */
@@ -428,6 +433,7 @@ export type EditRetryOptions = {
   paperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
+  selectedTagContexts?: TagContextRef[];
   /** Attachments shown in chat history. */
   attachments?: ChatAttachment[];
   /** Provider-resolved attachments sent to the retry request. Defaults to `attachments`. */

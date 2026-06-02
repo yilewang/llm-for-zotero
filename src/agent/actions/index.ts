@@ -34,6 +34,7 @@ export type {
   PaperScopedActionProfile,
   PaperScopedActionInput,
   PaperScopedActionCollectionCandidate,
+  PaperScopedActionTagCandidate,
   PaperScopedActionTarget,
 } from "./paperScope";
 export {

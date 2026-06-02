@@ -119,11 +119,12 @@ export function describeNoDefaultPaperTarget(
 ): string {
   if (
     request.conversationKind === "global" ||
-    request.selectedCollectionContexts?.length
+    request.selectedCollectionContexts?.length ||
+    request.selectedTagContexts?.length
   ) {
     return (
       "No paper target in library chat. Use library_search with the selected " +
-      "collection and pass explicit targets to paper_read."
+      "collection/tag and pass explicit targets to paper_read."
     );
   }
   return "No paper context available for paper_read";

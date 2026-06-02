@@ -4,10 +4,11 @@ import type {
   CollectionContextRef,
   PaperContextRef,
   SelectedTextContext,
+  TagContextRef,
 } from "../src/modules/contextPanel/types";
 
 describe("inlineEditRetryController", function () {
-  it("carries selected collection contexts through inline edit retry", function () {
+  it("carries selected collection and tag contexts through inline edit retry", function () {
     const paperContext: PaperContextRef = {
       itemId: 12,
       contextItemId: 34,
@@ -27,10 +28,18 @@ describe("inlineEditRetryController", function () {
         name: "Computational_Psychiatry",
       },
     ];
+    const selectedTagContexts: TagContextRef[] = [
+      {
+        name: "Stable",
+        normalizedName: "stable",
+        libraryID: 1,
+      },
+    ];
 
     const snapshot = buildInlineEditRetryContextSnapshot({
       selectedContexts,
       selectedCollectionContexts,
+      selectedTagContexts,
     });
 
     assert.deepEqual(snapshot.selectedTexts, ["quoted passage"]);
@@ -43,5 +52,7 @@ describe("inlineEditRetryController", function () {
       snapshot.selectedCollectionContexts,
       selectedCollectionContexts,
     );
+    assert.deepEqual(snapshot.selectedTagContexts, selectedTagContexts);
+    assert.notStrictEqual(snapshot.selectedTagContexts, selectedTagContexts);
   });
 });

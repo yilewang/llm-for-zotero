@@ -10,6 +10,7 @@ import type {
   QuoteCitation,
   OtherContextRef,
   CollectionContextRef,
+  TagContextRef,
   ChatRuntimeMode,
   PaperContextSendMode,
   PaperContentSourceMode,
@@ -153,6 +154,7 @@ export const selectedFilePreviewExpandedCache = new Map<number, boolean>();
 export const selectedPaperContextCache = new Map<number, PaperContextRef[]>();
 export const selectedOtherRefContextCache = new Map<number, OtherContextRef[]>();
 export const selectedCollectionContextCache = new Map<number, CollectionContextRef[]>();
+export const selectedTagContextCache = new Map<number, TagContextRef[]>();
 // Flat override maps: key = "ownerItemId:paperItemId:contextItemId"
 export const paperContextModeOverrides = new Map<string, PaperContextSendMode>();
 export const paperContentSourceOverrides = new Map<string, PaperContentSourceMode>();

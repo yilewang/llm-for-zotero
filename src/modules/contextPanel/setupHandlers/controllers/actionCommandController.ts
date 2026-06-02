@@ -29,11 +29,19 @@ import {
   resolvePaperScopedCommandInput,
   type PaperScopedActionCollectionCandidate,
   type PaperScopedActionProfile,
+  type PaperScopedActionTagCandidate,
 } from "../../paperScopeCommand";
 import { resolveSlashActionChatMode } from "../../slashMenuBehavior";
 import { resolveDisplayConversationKind } from "../../portalScope";
-import { selectedCollectionContextCache } from "../../state";
-import type { CollectionContextRef, PaperContextRef } from "../../types";
+import {
+  selectedCollectionContextCache,
+  selectedTagContextCache,
+} from "../../state";
+import type {
+  CollectionContextRef,
+  PaperContextRef,
+  TagContextRef,
+} from "../../types";
 import {
   isFloatingMenuOpen,
   setFloatingMenuOpen,
@@ -512,6 +520,7 @@ export function createActionCommandController(
         selectedPaperContexts: [],
         fullTextPaperContexts: [],
         selectedCollectionContexts: [],
+        selectedTagContexts: [],
       };
     }
     const allPaperContexts = deps.getAllEffectivePaperContexts(item);
@@ -536,6 +545,9 @@ export function createActionCommandController(
       selectedCollectionContexts: [
         ...(selectedCollectionContextCache.get(item.id) || []),
       ] as CollectionContextRef[],
+      selectedTagContexts: [
+        ...(selectedTagContextCache.get(item.id) || []),
+      ] as TagContextRef[],
     };
   };
 
@@ -553,6 +565,19 @@ export function createActionCommandController(
         }));
     };
 
+  const getPaperScopedTagCandidates =
+    async (): Promise<PaperScopedActionTagCandidate[]> => {
+      const libraryID = deps.getCurrentLibraryID();
+      if (!libraryID) return [];
+      const tags = await getAgentApi().getZoteroGateway().listLibraryTags({
+        libraryID,
+      });
+      return tags.map((entry) => ({
+        name: entry.name,
+        type: entry.type,
+      }));
+    };
+
   const resolvePaperScopedActionInput = async (
     actionName: string,
     params: string,
@@ -565,6 +590,7 @@ export function createActionCommandController(
         buildActionRequestContext(),
         profile,
         getPaperScopedCollectionCandidates(),
+        await getPaperScopedTagCandidates(),
       );
       if (result.kind === "error") {
         setStatus(result.error, "error");
@@ -834,10 +860,14 @@ export function createActionCommandController(
     const selectedCollectionContexts = currentItem
       ? selectedCollectionContextCache.get(currentItem.id) || []
       : [];
+    const selectedTagContexts = currentItem
+      ? selectedTagContextCache.get(currentItem.id) || []
+      : [];
     return {
       userText: inputBox.value || "",
       selectedPaperContexts,
       selectedCollectionContexts,
+      selectedTagContexts,
     };
   };
 

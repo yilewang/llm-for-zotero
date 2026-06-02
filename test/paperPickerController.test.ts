@@ -2,16 +2,27 @@ import { assert } from "chai";
 import { describe, it } from "mocha";
 import {
   createPaperPickerController,
+  filterPaperPickerGroupsForTagView,
   positionPaperPickerForAnchor,
 } from "../src/modules/contextPanel/setupHandlers/controllers/paperPickerController";
 import { MAX_SELECTED_PAPER_CONTEXTS } from "../src/modules/contextPanel/constants";
-import { invalidatePaperSearchCache } from "../src/modules/contextPanel/paperSearch";
 import {
+  getPaperSearchItemTagNames,
+  invalidatePaperSearchCache,
+  type PaperSearchGroupCandidate,
+} from "../src/modules/contextPanel/paperSearch";
+import {
+  selectedCollectionContextCache,
   paperContextModeOverrides,
   selectedPaperContextCache,
   selectedPaperPreviewExpandedCache,
+  selectedTagContextCache,
 } from "../src/modules/contextPanel/state";
-import type { PaperContextRef } from "../src/modules/contextPanel/types";
+import type {
+  CollectionContextRef,
+  PaperContextRef,
+  TagContextRef,
+} from "../src/modules/contextPanel/types";
 
 function makeRegularItem(index: number): Zotero.Item {
   const itemId = 1_000 + index;
@@ -118,6 +129,10 @@ class FakeElement {
   readonly children: FakeElement[] = [];
   parentElement: FakeElement | null = null;
   private rect: DOMRect = makeRect();
+  private readonly eventListeners = new Map<
+    string,
+    Array<(event: Event) => void>
+  >();
 
   constructor(
     readonly ownerDocument: FakeDocument,
@@ -153,8 +168,26 @@ class FakeElement {
     this.attributes.set(name, value);
   }
 
-  addEventListener(): void {
-    // The selector toggle test drives the controller method directly.
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+  ): void {
+    const listeners = this.eventListeners.get(type) || [];
+    listeners.push((event: Event) => {
+      if (typeof listener === "function") {
+        listener.call(this, event);
+      } else {
+        listener.handleEvent(event);
+      }
+    });
+    this.eventListeners.set(type, listeners);
+  }
+
+  dispatchEvent(event: Event): boolean {
+    for (const listener of this.eventListeners.get(event.type) || []) {
+      listener(event);
+    }
+    return !(event as { defaultPrevented?: boolean }).defaultPrevented;
   }
 
   scrollIntoView(): void {
@@ -222,6 +255,15 @@ function waitForPickerSearch(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 160));
 }
 
+function fireFakeMouseDown(target: FakeElement): void {
+  target.dispatchEvent({
+    type: "mousedown",
+    button: 0,
+    preventDefault: () => undefined,
+    stopPropagation: () => undefined,
+  } as unknown as Event);
+}
+
 describe("paper picker placement", function () {
   function makePlacementFixture(viewportHeight: number) {
     const fakeDocument = new FakeDocument();
@@ -267,7 +309,7 @@ describe("paper picker placement", function () {
     assert.isFalse(paperPicker.classList.contains("llm-paper-picker-below"));
     assert.equal(
       paperPicker.style.getPropertyValue("--llm-paper-picker-max-height"),
-      "280px",
+      "480px",
     );
   });
 
@@ -305,12 +347,71 @@ describe("paper picker placement", function () {
     assert.isTrue(paperPicker.classList.contains("llm-paper-picker-below"));
     assert.equal(
       paperPicker.style.getPropertyValue("--llm-paper-picker-max-height"),
-      "240px",
+      "280px",
     );
   });
 });
 
 describe("paper picker controller", function () {
+  it("extracts manual and automatic Zotero tags for picker metadata", function () {
+    const tagNames = getPaperSearchItemTagNames({
+      getTags: () => [
+        { tag: "ACC" },
+        { name: "Algorithm" },
+        { tag: "AutoOnly", type: 1 },
+        "Data",
+        { tag: "  " },
+        { tag: "ACC" },
+      ],
+    } as unknown as Zotero.Item);
+
+    assert.deepEqual(tagNames.manual, ["ACC", "Algorithm", "Data"]);
+    assert.deepEqual(tagNames.automatic, ["AutoOnly"]);
+  });
+
+  it("filters reference candidates with the MinerU tag semantics", function () {
+    const makeGroup = (
+      itemId: number,
+      tags: string[],
+      tagsAuto: string[] = [],
+    ): PaperSearchGroupCandidate => ({
+      itemId,
+      title: `Paper ${itemId}`,
+      attachments: [],
+      score: 0,
+      modifiedAt: 0,
+      addedAt: 0,
+      collectionIds: [],
+      tags,
+      tagsAuto,
+    });
+    const groups = [
+      makeGroup(1, ["ACC", "Data"]),
+      makeGroup(2, ["ACC"], ["AutoOnly"]),
+      makeGroup(3, []),
+    ];
+
+    assert.deepEqual(
+      filterPaperPickerGroupsForTagView(groups, {
+        selectedTags: ["ACC", "Data"],
+      }).map((group) => group.itemId),
+      [1],
+    );
+    assert.deepEqual(
+      filterPaperPickerGroupsForTagView(groups, {
+        tagScope: "untagged",
+      }).map((group) => group.itemId),
+      [3],
+    );
+    assert.deepEqual(
+      filterPaperPickerGroupsForTagView(groups, {
+        selectedTags: ["AutoOnly"],
+        includeAutomatic: true,
+      }).map((group) => group.itemId),
+      [2],
+    );
+  });
+
   it("allows 30 manually selected paper contexts and rejects the 31st", function () {
     const originalZotero = (
       globalThis as typeof globalThis & { Zotero?: unknown }
@@ -469,7 +570,7 @@ describe("paper picker controller", function () {
       controller.selectActiveRow();
       assert.isUndefined(selectedPaperContextCache.get(itemId));
       assert.deepInclude(statuses, {
-        message: "Paper context removed (0)",
+        message: "Reference context removed.",
         level: "ready",
       });
     } finally {
@@ -478,6 +579,679 @@ describe("paper picker controller", function () {
       paperContextModeOverrides.delete(
         `${itemId}:${paper.id}:${attachment.id}`,
       );
+      invalidatePaperSearchCache(1);
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+      (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit =
+        originalToolkit;
+    }
+  });
+
+  it("adds a folder action as collection context, not individual paper chips", async function () {
+    const originalZotero = (
+      globalThis as typeof globalThis & { Zotero?: unknown }
+    ).Zotero;
+    const originalToolkit = (
+      globalThis as typeof globalThis & { ztoolkit?: any }
+    ).ztoolkit;
+    const itemId = 44;
+    const collectionId = 501;
+    const paper = makeRegularItem(1) as Zotero.Item & {
+      getCollections: () => number[];
+    };
+    paper.getCollections = () => [collectionId];
+    const attachment = makeAttachment(1);
+    const items = new Map<number, Zotero.Item>([
+      [paper.id, paper],
+      [attachment.id, attachment],
+    ]);
+    const collection = {
+      id: collectionId,
+      name: "Systems",
+      parentID: 0,
+      getChildCollections: () => [],
+      getChildItems: () => [paper.id],
+    } as unknown as Zotero.Collection;
+    const statuses: Array<{ message: string; level: string }> = [];
+    const fakeDocument = new FakeDocument();
+    const paperPicker = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as HTMLDivElement;
+    const paperPickerList = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as HTMLDivElement;
+    const body = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as Element;
+    const inputBox = makeFakeInput("@");
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      Items: {
+        getAll: async () => [paper],
+        get: (id: number) => items.get(id) || null,
+      },
+      Collections: {
+        getByLibrary: () => [collection],
+      },
+      Libraries: {
+        getName: () => "My Library",
+      },
+    };
+    (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit = {
+      log: () => undefined,
+    };
+    invalidatePaperSearchCache(1);
+    selectedCollectionContextCache.delete(itemId);
+    selectedPaperContextCache.delete(itemId);
+    selectedPaperPreviewExpandedCache.delete(itemId);
+
+    try {
+      const controller = createPaperPickerController({
+        body,
+        panelRoot: body as HTMLElement,
+        inputBox,
+        paperPicker,
+        paperPickerList,
+        getItem: () => ({ id: itemId }) as Zotero.Item,
+        getCurrentLibraryID: () => 1,
+        isWebChatMode: () => false,
+        resolveAutoLoadedPaperContext: () => null,
+        getManualPaperContextsForItem: () =>
+          selectedPaperContextCache.get(itemId) || [],
+        isPaperContextMineru: () => false,
+        getTextContextConversationKey: () => null,
+        persistDraftInputForCurrentConversation: () => undefined,
+        updatePaperPreviewPreservingScroll: () => undefined,
+        updateSelectedTextPreviewPreservingScroll: () => undefined,
+        setStatusMessage: (message, level) => statuses.push({ message, level }),
+        log: () => undefined,
+      });
+
+      controller.schedulePaperPickerSearch();
+      await waitForPickerSearch();
+
+      const root = paperPickerList as unknown as FakeElement;
+      const shell = root.children[0];
+      const folderPanel = shell.children[0];
+      const folderPane = folderPanel.children[2];
+      const libraryRow = folderPane.children[0];
+      const collectionRow = folderPane.children[1];
+      const collectionAction = collectionRow.children[4];
+
+      assert.lengthOf(libraryRow.children, 4);
+      assert.equal(collectionAction.textContent, "+");
+      fireFakeMouseDown(collectionAction);
+
+      assert.deepInclude(
+        selectedCollectionContextCache.get(itemId) as CollectionContextRef[],
+        {
+          collectionId,
+          name: "Systems",
+          libraryID: 1,
+        },
+      );
+      assert.isUndefined(selectedPaperContextCache.get(itemId));
+      assert.deepInclude(statuses, {
+        message: "Collection context added.",
+        level: "ready",
+      });
+    } finally {
+      selectedCollectionContextCache.delete(itemId);
+      selectedPaperContextCache.delete(itemId);
+      selectedPaperPreviewExpandedCache.delete(itemId);
+      invalidatePaperSearchCache(1);
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+      (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit =
+        originalToolkit;
+    }
+  });
+
+  it("adds a tag action as tag context, not individual paper chips", async function () {
+    const originalZotero = (
+      globalThis as typeof globalThis & { Zotero?: unknown }
+    ).Zotero;
+    const originalToolkit = (
+      globalThis as typeof globalThis & { ztoolkit?: any }
+    ).ztoolkit;
+    const itemId = 44;
+    const paper = makeRegularItem(1) as Zotero.Item & {
+      getTags: () => Array<{ tag: string; type?: number }>;
+    };
+    paper.getTags = () => [{ tag: "Stable" }];
+    const attachment = makeAttachment(1);
+    const items = new Map<number, Zotero.Item>([
+      [paper.id, paper],
+      [attachment.id, attachment],
+    ]);
+    const fakeDocument = new FakeDocument();
+    const paperPicker = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as HTMLDivElement;
+    const paperPickerList = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as HTMLDivElement;
+    const body = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as Element;
+    const inputBox = makeFakeInput("@");
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      Items: {
+        getAll: async () => [paper],
+        get: (id: number) => items.get(id) || null,
+      },
+      Collections: {
+        getByLibrary: () => [],
+      },
+      Libraries: {
+        getName: () => "My Library",
+      },
+    };
+    (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit = {
+      log: () => undefined,
+    };
+    invalidatePaperSearchCache(1);
+    selectedPaperContextCache.delete(itemId);
+    selectedPaperPreviewExpandedCache.delete(itemId);
+    selectedTagContextCache.delete(itemId);
+
+    try {
+      const controller = createPaperPickerController({
+        body,
+        panelRoot: body as HTMLElement,
+        inputBox,
+        paperPicker,
+        paperPickerList,
+        getItem: () => ({ id: itemId }) as Zotero.Item,
+        getCurrentLibraryID: () => 1,
+        isWebChatMode: () => false,
+        resolveAutoLoadedPaperContext: () => null,
+        getManualPaperContextsForItem: () =>
+          selectedPaperContextCache.get(itemId) || [],
+        isPaperContextMineru: () => false,
+        getTextContextConversationKey: () => null,
+        persistDraftInputForCurrentConversation: () => undefined,
+        updatePaperPreviewPreservingScroll: () => undefined,
+        updateSelectedTextPreviewPreservingScroll: () => undefined,
+        setStatusMessage: () => undefined,
+        log: () => undefined,
+      });
+
+      controller.schedulePaperPickerSearch();
+      await waitForPickerSearch();
+
+      let shell = (paperPickerList as unknown as FakeElement).children[0];
+      let tagPanel = shell.children[2];
+      fireFakeMouseDown(tagPanel.children[0].children[0]);
+      shell = (paperPickerList as unknown as FakeElement).children[0];
+      tagPanel = shell.children[2];
+      const tagCloud = tagPanel.children[3];
+      const stableTagWrap = tagCloud.children[0];
+      const stableTagAction = stableTagWrap.children[1];
+      assert.equal(stableTagAction.textContent, "+");
+
+      fireFakeMouseDown(stableTagAction);
+
+      const selectedTags = selectedTagContextCache.get(
+        itemId,
+      ) as TagContextRef[];
+      assert.lengthOf(selectedTags, 1);
+      assert.equal(selectedTags[0].name, "Stable");
+      assert.equal(selectedTags[0].normalizedName, "Stable");
+      assert.equal(selectedTags[0].libraryID, 1);
+      assert.equal(selectedTags[0].includeAutomatic, false);
+      assert.isUndefined(selectedPaperContextCache.get(itemId));
+
+      shell = (paperPickerList as unknown as FakeElement).children[0];
+      tagPanel = shell.children[2];
+      const selectedStableTagAction = tagPanel.children[3].children[0].children[1];
+      assert.equal(selectedStableTagAction.textContent, "✓");
+      fireFakeMouseDown(selectedStableTagAction);
+
+      assert.isUndefined(selectedTagContextCache.get(itemId));
+
+      shell = (paperPickerList as unknown as FakeElement).children[0];
+      let referencePanel = shell.children[1];
+      let rowHost = referencePanel.children[2];
+      assert.equal(rowHost.children[0].children[1].textContent, "+");
+
+      fireFakeMouseDown(rowHost.children[0].children[1]);
+
+      shell = (paperPickerList as unknown as FakeElement).children[0];
+      referencePanel = shell.children[1];
+      rowHost = referencePanel.children[2];
+      assert.equal(rowHost.children[0].children[1].textContent, "✓");
+    } finally {
+      selectedPaperContextCache.delete(itemId);
+      selectedPaperPreviewExpandedCache.delete(itemId);
+      selectedTagContextCache.delete(itemId);
+      invalidatePaperSearchCache(1);
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+      (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit =
+        originalToolkit;
+    }
+  });
+
+  it("keeps folder clicks open while tag starts collapsed and panels toggle independently", async function () {
+    const originalZotero = (
+      globalThis as typeof globalThis & { Zotero?: unknown }
+    ).Zotero;
+    const originalToolkit = (
+      globalThis as typeof globalThis & { ztoolkit?: any }
+    ).ztoolkit;
+    const itemId = 45;
+    const collectionId = 502;
+    const paper = makeRegularItem(1) as Zotero.Item & {
+      getCollections: () => number[];
+    };
+    paper.getCollections = () => [collectionId];
+    const attachment = makeAttachment(1);
+    const items = new Map<number, Zotero.Item>([
+      [paper.id, paper],
+      [attachment.id, attachment],
+    ]);
+    const collection = {
+      id: collectionId,
+      name: "Geometry",
+      parentID: 0,
+      getChildCollections: () => [],
+      getChildItems: () => [paper.id],
+    } as unknown as Zotero.Collection;
+    const fakeDocument = new FakeDocument();
+    const paperPicker = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as HTMLDivElement;
+    const paperPickerList = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as HTMLDivElement;
+    const body = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as Element;
+    const inputBox = makeFakeInput("@");
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      Items: {
+        getAll: async () => [paper],
+        get: (id: number) => items.get(id) || null,
+      },
+      Collections: {
+        getByLibrary: () => [collection],
+      },
+      Libraries: {
+        getName: () => "My Library",
+      },
+    };
+    (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit = {
+      log: () => undefined,
+    };
+    invalidatePaperSearchCache(1);
+
+    try {
+      const controller = createPaperPickerController({
+        body,
+        panelRoot: body as HTMLElement,
+        inputBox,
+        paperPicker,
+        paperPickerList,
+        getItem: () => ({ id: itemId }) as Zotero.Item,
+        getCurrentLibraryID: () => 1,
+        isWebChatMode: () => false,
+        resolveAutoLoadedPaperContext: () => null,
+        getManualPaperContextsForItem: () =>
+          selectedPaperContextCache.get(itemId) || [],
+        isPaperContextMineru: () => false,
+        getTextContextConversationKey: () => null,
+        persistDraftInputForCurrentConversation: () => undefined,
+        updatePaperPreviewPreservingScroll: () => undefined,
+        updateSelectedTextPreviewPreservingScroll: () => undefined,
+        setStatusMessage: () => undefined,
+        log: () => undefined,
+      });
+
+      controller.schedulePaperPickerSearch();
+      await waitForPickerSearch();
+
+      const getPanels = () => {
+        const shell = (paperPickerList as unknown as FakeElement).children[0];
+        return {
+          folderPanel: shell.children[0],
+          referencePanel: shell.children[1],
+          tagPanel: shell.children[2],
+        };
+      };
+
+      let { folderPanel, tagPanel, referencePanel } = getPanels();
+      assert.lengthOf(folderPanel.children, 4);
+      assert.include(tagPanel.className, "llm-paper-picker-panel-collapsed");
+      assert.lengthOf(tagPanel.children, 1);
+      assert.lengthOf(referencePanel.children, 3);
+      assert.equal(folderPanel.children[1].children[1].textContent, "Folders");
+      assert.equal(tagPanel.children[0].children[1].textContent, "Tags");
+      assert.equal(referencePanel.children[1].children[1].textContent, "Items");
+      assert.include(
+        referencePanel.children[2].children[0].children[1].className,
+        "llm-paper-picker-scope-action",
+      );
+
+      fireFakeMouseDown(folderPanel.children[2].children[1]);
+      ({ folderPanel, tagPanel, referencePanel } = getPanels());
+      assert.notInclude(
+        folderPanel.className,
+        "llm-paper-picker-panel-collapsed",
+      );
+      assert.lengthOf(folderPanel.children, 4);
+      assert.lengthOf(tagPanel.children, 1);
+      assert.lengthOf(referencePanel.children, 3);
+
+      fireFakeMouseDown(folderPanel.children[1]);
+      ({ folderPanel, tagPanel, referencePanel } = getPanels());
+      assert.include(folderPanel.className, "llm-paper-picker-panel-collapsed");
+      assert.lengthOf(folderPanel.children, 1);
+      assert.lengthOf(tagPanel.children, 1);
+      assert.lengthOf(referencePanel.children, 3);
+
+      fireFakeMouseDown(tagPanel.children[0]);
+      ({ folderPanel, tagPanel, referencePanel } = getPanels());
+      assert.notInclude(tagPanel.className, "llm-paper-picker-panel-collapsed");
+      assert.lengthOf(folderPanel.children, 1);
+      assert.lengthOf(tagPanel.children, 5);
+      assert.lengthOf(referencePanel.children, 3);
+
+      const referenceHeader = referencePanel.children[1];
+      fireFakeMouseDown(referenceHeader);
+      ({ folderPanel, tagPanel, referencePanel } = getPanels());
+      assert.include(
+        referencePanel.className,
+        "llm-paper-picker-panel-collapsed",
+      );
+      assert.lengthOf(folderPanel.children, 1);
+      assert.lengthOf(tagPanel.children, 5);
+      assert.lengthOf(referencePanel.children, 1);
+    } finally {
+      selectedCollectionContextCache.delete(itemId);
+      selectedPaperContextCache.delete(itemId);
+      selectedPaperPreviewExpandedCache.delete(itemId);
+      invalidatePaperSearchCache(1);
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+      (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit =
+        originalToolkit;
+    }
+  });
+
+  it("adds the default attachment from a multi-file item action without expanding", async function () {
+    const originalZotero = (
+      globalThis as typeof globalThis & { Zotero?: unknown }
+    ).Zotero;
+    const originalToolkit = (
+      globalThis as typeof globalThis & { ztoolkit?: any }
+    ).ztoolkit;
+    const itemId = 46;
+    const paper = makeRegularItem(1) as Zotero.Item & {
+      getAttachments: () => number[];
+    };
+    const firstAttachment = makeAttachment(1);
+    const secondAttachment = {
+      ...makeAttachment(2),
+      key: "ATTACH-2001B",
+      parentID: paper.id,
+      getField: (field: string) => (field === "title" ? "Second PDF" : ""),
+    } as unknown as Zotero.Item;
+    paper.getAttachments = () => [firstAttachment.id, secondAttachment.id];
+    const items = new Map<number, Zotero.Item>([
+      [paper.id, paper],
+      [firstAttachment.id, firstAttachment],
+      [secondAttachment.id, secondAttachment],
+    ]);
+    const fakeDocument = new FakeDocument();
+    const paperPicker = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as HTMLDivElement;
+    const paperPickerList = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as HTMLDivElement;
+    const body = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as Element;
+    const inputBox = makeFakeInput("@");
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      Items: {
+        getAll: async () => [paper],
+        get: (id: number) => items.get(id) || null,
+      },
+      Collections: {
+        getByLibrary: () => [],
+      },
+      Libraries: {
+        getName: () => "My Library",
+      },
+    };
+    (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit = {
+      log: () => undefined,
+    };
+    invalidatePaperSearchCache(1);
+    selectedPaperContextCache.delete(itemId);
+    selectedPaperPreviewExpandedCache.delete(itemId);
+
+    try {
+      const controller = createPaperPickerController({
+        body,
+        panelRoot: body as HTMLElement,
+        inputBox,
+        paperPicker,
+        paperPickerList,
+        getItem: () => ({ id: itemId }) as Zotero.Item,
+        getCurrentLibraryID: () => 1,
+        isWebChatMode: () => false,
+        resolveAutoLoadedPaperContext: () => null,
+        getManualPaperContextsForItem: () =>
+          selectedPaperContextCache.get(itemId) || [],
+        isPaperContextMineru: () => false,
+        getTextContextConversationKey: () => null,
+        persistDraftInputForCurrentConversation: () => undefined,
+        updatePaperPreviewPreservingScroll: () => undefined,
+        updateSelectedTextPreviewPreservingScroll: () => undefined,
+        setStatusMessage: () => undefined,
+        log: () => undefined,
+      });
+
+      controller.schedulePaperPickerSearch();
+      await waitForPickerSearch();
+
+      const root = paperPickerList as unknown as FakeElement;
+      let shell = root.children[0];
+      let referencePanel = shell.children[1];
+      let rowHost = referencePanel.children[2];
+      assert.lengthOf(rowHost.children, 1);
+      const firstRowAction = rowHost.children[0].children[1];
+
+      fireFakeMouseDown(firstRowAction);
+
+      const selected = selectedPaperContextCache.get(
+        itemId,
+      ) as PaperContextRef[];
+      assert.lengthOf(selected, 1);
+      assert.equal(selected[0].contextItemId, firstAttachment.id);
+
+      shell = root.children[0];
+      referencePanel = shell.children[1];
+      rowHost = referencePanel.children[2];
+      assert.lengthOf(rowHost.children, 1);
+      const selectedRowAction = rowHost.children[0].children[1];
+      assert.equal(selectedRowAction.textContent, "✓");
+      fireFakeMouseDown(selectedRowAction);
+
+      assert.isUndefined(selectedPaperContextCache.get(itemId));
+
+      shell = root.children[0];
+      referencePanel = shell.children[1];
+      rowHost = referencePanel.children[2];
+      assert.lengthOf(rowHost.children, 1);
+      assert.equal(rowHost.children[0].children[1].textContent, "+");
+    } finally {
+      selectedPaperContextCache.delete(itemId);
+      selectedPaperPreviewExpandedCache.delete(itemId);
+      invalidatePaperSearchCache(1);
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+      (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit =
+        originalToolkit;
+    }
+  });
+
+  it("expands a multi-file parent row without moving the item view", async function () {
+    const originalZotero = (
+      globalThis as typeof globalThis & { Zotero?: unknown }
+    ).Zotero;
+    const originalToolkit = (
+      globalThis as typeof globalThis & { ztoolkit?: any }
+    ).ztoolkit;
+    const itemId = 47;
+    const firstPaper = makeRegularItem(1);
+    const firstPaperAttachment = makeAttachment(1);
+    const multiPaper = makeRegularItem(2) as Zotero.Item & {
+      getAttachments: () => number[];
+    };
+    const firstMultiAttachment = makeAttachment(2);
+    const secondMultiAttachment = {
+      ...makeAttachment(3),
+      key: "ATTACH-2002B",
+      id: 3_002,
+      parentID: multiPaper.id,
+      getField: (field: string) => (field === "title" ? "Second PDF" : ""),
+    } as unknown as Zotero.Item;
+    multiPaper.getAttachments = () => [
+      firstMultiAttachment.id,
+      secondMultiAttachment.id,
+    ];
+    const items = new Map<number, Zotero.Item>([
+      [firstPaper.id, firstPaper],
+      [firstPaperAttachment.id, firstPaperAttachment],
+      [multiPaper.id, multiPaper],
+      [firstMultiAttachment.id, firstMultiAttachment],
+      [secondMultiAttachment.id, secondMultiAttachment],
+    ]);
+    const fakeDocument = new FakeDocument();
+    const paperPicker = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as HTMLDivElement;
+    const paperPickerList = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as HTMLDivElement;
+    const body = fakeDocument.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "div",
+    ) as unknown as Element;
+    const inputBox = makeFakeInput("@");
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      Items: {
+        getAll: async () => [firstPaper, multiPaper],
+        get: (id: number) => items.get(id) || null,
+      },
+      Collections: {
+        getByLibrary: () => [],
+      },
+      Libraries: {
+        getName: () => "My Library",
+      },
+    };
+    (globalThis as typeof globalThis & { ztoolkit?: unknown }).ztoolkit = {
+      log: () => undefined,
+    };
+    invalidatePaperSearchCache(1);
+    selectedPaperContextCache.delete(itemId);
+    selectedPaperPreviewExpandedCache.delete(itemId);
+
+    try {
+      const controller = createPaperPickerController({
+        body,
+        panelRoot: body as HTMLElement,
+        inputBox,
+        paperPicker,
+        paperPickerList,
+        getItem: () => ({ id: itemId }) as Zotero.Item,
+        getCurrentLibraryID: () => 1,
+        isWebChatMode: () => false,
+        resolveAutoLoadedPaperContext: () => null,
+        getManualPaperContextsForItem: () =>
+          selectedPaperContextCache.get(itemId) || [],
+        isPaperContextMineru: () => false,
+        getTextContextConversationKey: () => null,
+        persistDraftInputForCurrentConversation: () => undefined,
+        updatePaperPreviewPreservingScroll: () => undefined,
+        updateSelectedTextPreviewPreservingScroll: () => undefined,
+        setStatusMessage: () => undefined,
+        log: () => undefined,
+      });
+
+      controller.schedulePaperPickerSearch();
+      await waitForPickerSearch();
+
+      const root = paperPickerList as unknown as FakeElement;
+      let shell = root.children[0];
+      let referencePanel = shell.children[1];
+      let rowHost = referencePanel.children[2];
+      assert.lengthOf(rowHost.children, 2);
+      rowHost.scrollTop = 73;
+
+      fireFakeMouseDown(rowHost.children[1]);
+
+      shell = root.children[0];
+      referencePanel = shell.children[1];
+      rowHost = referencePanel.children[2];
+      assert.equal(rowHost.scrollTop, 73);
+      assert.lengthOf(rowHost.children, 4);
+      assert.equal(rowHost.children[1].attributes.get("aria-selected"), "true");
+      assert.equal(rowHost.children[2].attributes.get("aria-selected"), "false");
+
+      rowHost.scrollTop = 91;
+      fireFakeMouseDown(rowHost.children[1]);
+
+      shell = root.children[0];
+      referencePanel = shell.children[1];
+      rowHost = referencePanel.children[2];
+      assert.equal(rowHost.scrollTop, 91);
+      assert.lengthOf(rowHost.children, 2);
+      assert.equal(rowHost.children[1].attributes.get("aria-selected"), "true");
+
+      rowHost.scrollTop = 127;
+      fireFakeMouseDown(rowHost.children[1]);
+
+      shell = root.children[0];
+      referencePanel = shell.children[1];
+      rowHost = referencePanel.children[2];
+      assert.equal(rowHost.scrollTop, 127);
+      assert.lengthOf(rowHost.children, 4);
+
+      rowHost.scrollTop = 143;
+      fireFakeMouseDown(rowHost.children[2].children[1]);
+
+      shell = root.children[0];
+      referencePanel = shell.children[1];
+      rowHost = referencePanel.children[2];
+      assert.equal(rowHost.scrollTop, 143);
+      assert.equal(rowHost.children[2].children[1].textContent, "✓");
+    } finally {
+      selectedPaperContextCache.delete(itemId);
+      selectedPaperPreviewExpandedCache.delete(itemId);
       invalidatePaperSearchCache(1);
       (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
         originalZotero;

@@ -10,6 +10,7 @@ import type { ProviderProtocol } from "../../utils/providerProtocol";
 import type {
   CollectionContextRef,
   PaperContextRef,
+  TagContextRef,
 } from "../../shared/types";
 import type { PaperScopedActionProfile } from "./paperScopeTypes";
 
@@ -57,6 +58,7 @@ export type ActionRequestContext = {
   selectedPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
+  selectedTagContexts?: TagContextRef[];
 };
 
 export type ActionExecutionContext = {

@@ -4,7 +4,7 @@ import type {
   AgentModelMessage,
   AgentRuntimeRequest,
 } from "../types";
-import type { PaperContextRef } from "../../shared/types";
+import type { PaperContextRef, TagContextRef } from "../../shared/types";
 import {
   buildPaperQuoteCitationGuidance,
   formatPaperCitationLabel,
@@ -37,6 +37,7 @@ export type AgentResourceGroup =
   | "selectedPapers"
   | "fullTextPapers"
   | "collections"
+  | "tags"
   | "selectedTexts"
   | "screenshots"
   | "attachments"
@@ -228,6 +229,54 @@ function buildCollectionResourceRecords(
         }),
         line: `- Collection: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
       })),
+  );
+}
+
+function tagScopeKey(entry: TagContextRef): string {
+  const libraryID = normalizePositiveInt(entry.libraryID) || 0;
+  if (entry.scope) {
+    return `${libraryID}:scope:${entry.scope}:${
+      entry.includeAutomatic ? "auto" : "manual"
+    }`;
+  }
+  return `${libraryID}:tag:${normalizeText(
+    entry.normalizedName || entry.name,
+    240,
+  ).toLowerCase()}`;
+}
+
+function formatTagScopeLine(entry: TagContextRef, index: number): string {
+  const scopeLabel =
+    entry.scope === "allTagged"
+      ? "All tagged"
+      : entry.scope === "untagged"
+        ? "Untagged"
+        : "Tag";
+  const tagDetail = entry.scope
+    ? `tagScope=${entry.scope}`
+    : `tag=${entry.name}`;
+  const automaticText = entry.includeAutomatic
+    ? ", includes automatic tags"
+    : "";
+  return `- ${scopeLabel} ${index + 1}: ${entry.name} [${tagDetail}, libraryID=${entry.libraryID}${automaticText}]`;
+}
+
+function buildTagResourceRecords(
+  request: AgentRuntimeRequest,
+): AgentResourceRecord[] {
+  return sortResourceRecords(
+    (request.selectedTagContexts || []).map((entry, index) => ({
+      group: "tags" as const,
+      key: tagScopeKey(entry),
+      signature: stableJson({
+        libraryID: normalizePositiveInt(entry.libraryID) || 0,
+        name: normalizeText(entry.name, 240),
+        normalizedName: normalizeText(entry.normalizedName, 240).toLowerCase(),
+        scope: entry.scope || "",
+        includeAutomatic: entry.includeAutomatic === true,
+      }),
+      line: formatTagScopeLine(entry, index),
+    })),
   );
 }
 
@@ -465,6 +514,7 @@ export function buildAgentResourceSnapshot(
         papers: request.fullTextPaperContexts,
       }),
       collections: buildCollectionResourceRecords(request),
+      tags: buildTagResourceRecords(request),
       selectedTexts: buildSelectedTextResourceRecords(request),
       screenshots: buildScreenshotResourceRecords(request),
       attachments: buildAttachmentResourceRecords(request),
@@ -775,6 +825,17 @@ export function buildAgentStableResourceContextBlock(
       "When reading papers from a collection, prefer library_retrieve for staged resource-pool search. It maps metadata, scans indexed/searchable text, returns a paper-level frontier, and expands snippets only for selected branches; use paper_read only for close reading explicit itemId/contextItemId targets returned by search/retrieval. Do not use the active reader paper as an implicit collection member.",
       "If the user explicitly asks to read or analyze the full text of every paper in a collection, use library_retrieve or plan a batch workflow: enumerate papers, read/process them in bounded batches, create compact per-paper digests with evidence, then synthesize.",
       "If the user explicitly asks to include or only read child attachments in this collection, enumerate item attachments with library_search plus library_read sections:['attachments']; otherwise ignore sibling attachments for primary-document workflows.",
+    );
+  }
+  if (request.selectedTagContexts?.length) {
+    lines.push(
+      "Selected Zotero tag scopes:",
+      ...request.selectedTagContexts.map((entry, index) =>
+        formatTagScopeLine(entry, index),
+      ),
+      "Treat tag membership as the scope boundary. Use library_retrieve({ query:'...', queryVariants:[...], intent:'enumerate'|'summarize', depth:'metadata'|'evidence' }) to search the selected tag pool by default, library_retrieve({ scope:{ tagNames:['<tag>'] }, query:'...', intent:'enumerate' }) for an explicit named tag scope, or library_search({ entity:'items', mode:'list', filters:{ tag:'<tag>' } }) for catalog listing. Do not ask which tag the user means when a selected tag scope is listed here.",
+      "When reading papers from a tag, prefer library_retrieve for staged resource-pool search. It maps metadata, scans indexed/searchable text inside the tag where possible, returns a paper-level frontier, and expands snippets only for selected branches; use paper_read only for close reading explicit itemId/contextItemId targets returned by search/retrieval. Do not use the active reader paper as an implicit tag member.",
+      "If the user explicitly asks to analyze the full text of every paper in a tag, use library_retrieve or plan a bounded batch workflow: enumerate papers, read/process them in batches, create compact per-paper digests with evidence, then synthesize.",
     );
   }
 

@@ -92,9 +92,9 @@ describe("chatStore note contexts", function () {
     });
 
     const insert = findChatMessageInsert(queries);
-    assert.lengthOf(insert.params, 30);
-    assert.equal(insert.params[28], 1234);
-    assert.equal(insert.params[29], 200000);
+    assert.lengthOf(insert.params, 31);
+    assert.equal(insert.params[29], 1234);
+    assert.equal(insert.params[30], 200000);
   });
 
   it("persists an explicit empty model attachment split", async function () {
@@ -119,7 +119,7 @@ describe("chatStore note contexts", function () {
 
     const insert = findChatMessageInsert(queries);
     assert.include(insert.sql, "model_attachments_json");
-    assert.equal(insert.params[19], JSON.stringify([]));
+    assert.include(insert.params, JSON.stringify([]));
   });
 
   it("persists generated assistant images separately from screenshots", async function () {
@@ -143,7 +143,7 @@ describe("chatStore note contexts", function () {
     const insert = findChatMessageInsert(queries);
     assert.include(insert.sql, "generated_images_json");
     assert.equal(
-      insert.params[20],
+      insert.params[21],
       JSON.stringify([
         {
           id: "img-1",
@@ -154,7 +154,7 @@ describe("chatStore note contexts", function () {
       ]),
     );
     assert.equal(
-      insert.params[17],
+      insert.params[18],
       JSON.stringify(["data:image/png;base64,user-input"]),
     );
   });
@@ -227,7 +227,7 @@ describe("chatStore note contexts", function () {
     ]);
   });
 
-  it("persists selectedCollectionContexts when appending a message", async function () {
+  it("persists selected collection and tag contexts when appending a message", async function () {
     const queries = installAppendMessageDbFixture();
 
     await appendMessage(42, {
@@ -241,10 +241,18 @@ describe("chatStore note contexts", function () {
           libraryID: 1,
         },
       ],
+      selectedTagContexts: [
+        {
+          name: "Stability",
+          libraryID: 1,
+          normalizedName: "stability",
+        },
+      ],
     });
 
     const insert = findChatMessageInsert(queries);
     assert.include(insert.sql, "collection_contexts_json");
+    assert.include(insert.sql, "tag_contexts_json");
     assert.equal(
       insert.params[16],
       JSON.stringify([
@@ -252,6 +260,17 @@ describe("chatStore note contexts", function () {
           collectionId: 55,
           name: "Methods",
           libraryID: 1,
+        },
+      ]),
+    );
+    assert.equal(
+      insert.params[17],
+      JSON.stringify([
+        {
+          name: "Stability",
+          libraryID: 1,
+          normalizedName: "stability",
+          includeAutomatic: false,
         },
       ]),
     );
@@ -281,6 +300,13 @@ describe("chatStore note contexts", function () {
                 collectionId: 55,
                 name: "Methods",
                 libraryID: 1,
+              },
+            ]),
+            tagContextsJson: JSON.stringify([
+              {
+                name: "Stability",
+                libraryID: 1,
+                normalizedName: "stability",
               },
             ]),
             modelAttachmentsJson: JSON.stringify([]),
@@ -317,6 +343,15 @@ describe("chatStore note contexts", function () {
         collectionId: 55,
         name: "Methods",
         libraryID: 1,
+      },
+    ]);
+    assert.deepEqual(messages[0]?.selectedTagContexts, [
+      {
+        name: "Stability",
+        libraryID: 1,
+        normalizedName: "stability",
+        scope: undefined,
+        includeAutomatic: false,
       },
     ]);
     assert.deepEqual(messages[0]?.modelAttachments, []);

@@ -17,6 +17,7 @@ import type {
 import {
   selectedPaperContextCache,
   selectedCollectionContextCache,
+  selectedTagContextCache,
   selectedOtherRefContextCache,
   paperContextModeOverrides,
   paperContentSourceOverrides,
@@ -108,6 +109,7 @@ export function clearSelectedPaperState(itemId: number): void {
 export function clearAllRefContextState(itemId: number): void {
   clearSelectedPaperState(itemId);
   selectedCollectionContextCache.delete(itemId);
+  selectedTagContextCache.delete(itemId);
   selectedOtherRefContextCache.delete(itemId);
 }
 

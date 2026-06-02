@@ -8,6 +8,7 @@ import {
 import type {
   CollectionContextRef,
   PaperContextRef,
+  TagContextRef,
 } from "../src/shared/types";
 
 const paperA: PaperContextRef = {
@@ -24,6 +25,11 @@ const collection: CollectionContextRef = {
   collectionId: 5,
   libraryID: 1,
   name: "Collection",
+};
+const tag: TagContextRef = {
+  name: "Stable",
+  normalizedName: "stable",
+  libraryID: 1,
 };
 
 function loadBuiltInSkills(): void {
@@ -77,6 +83,14 @@ describe("skill context eligibility", function () {
     });
     assert.include(collectionTargeted, "library-analysis");
     assert.notInclude(collectionTargeted, "simple-paper-qa");
+
+    const tagTargeted = getMatchedSkillIds({
+      userText: "summarize this tag",
+      selectedPaperContexts: [paperA],
+      selectedTagContexts: [tag],
+    });
+    assert.include(tagTargeted, "library-analysis");
+    assert.notInclude(tagTargeted, "simple-paper-qa");
   });
 
   it("routes paper sets and library corpora to their matching skills", function () {
@@ -107,6 +121,13 @@ describe("skill context eligibility", function () {
       getMatchedSkillIds({
         userText: "give me statistics",
         selectedCollectionContexts: [collection],
+      }),
+      "library-analysis",
+    );
+    assert.include(
+      getMatchedSkillIds({
+        userText: "give me statistics",
+        selectedTagContexts: [tag],
       }),
       "library-analysis",
     );

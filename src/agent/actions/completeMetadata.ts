@@ -53,7 +53,7 @@ type UpdateCandidate = {
 
 const completeMetadataPaperScopeProfile: PaperScopedActionProfile = {
   targetMode: "single_or_multi",
-  allowedScopes: ["current", "selection", "collection", "all"],
+  allowedScopes: ["current", "selection", "collection", "tag", "all"],
   defaultEmptyInput: "selection_or_prompt",
   paperRequirement: "bibliographic",
   supportsLimit: true,
@@ -94,8 +94,8 @@ export const completeMetadataAction: AgentAction<
       },
       scope: {
         type: "string",
-        enum: ["all", "collection"],
-        description: "Which papers to consider when explicit itemIds/collectionIds are not provided.",
+        enum: ["all", "collection", "tag"],
+        description: "Which papers to consider when explicit itemIds, collectionIds, or tagNames are not provided.",
       },
       collectionId: {
         type: "number",
@@ -105,6 +105,20 @@ export const completeMetadataAction: AgentAction<
         type: "array",
         items: { type: "number" },
         description: "Collection IDs to target.",
+      },
+      tagNames: {
+        type: "array",
+        items: { type: "string" },
+        description: "Tag names whose matching papers should be targeted.",
+      },
+      tagScopes: {
+        type: "array",
+        items: { type: "string", enum: ["allTagged", "untagged"] },
+        description: "Special tag scopes whose matching papers should be targeted.",
+      },
+      includeAutomaticTags: {
+        type: "boolean",
+        description: "Include automatic Zotero tags when resolving tag scopes.",
       },
       limit: {
         type: "number",

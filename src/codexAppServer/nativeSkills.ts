@@ -3,6 +3,7 @@ import type {
   CollectionContextRef,
   PaperContextRef,
   SelectedTextSource,
+  TagContextRef,
 } from "../shared/types";
 import type { AgentRuntimeRequest } from "../agent/types";
 import type { AgentSkill } from "../agent/skills";
@@ -52,6 +53,7 @@ export type CodexNativeSkillContext = {
   fullTextPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
+  selectedTagContexts?: TagContextRef[];
   screenshots?: string[];
   attachments?: ChatAttachment[];
 };
@@ -157,6 +159,7 @@ function isAmbiguousSkillCandidate(request: AgentRuntimeRequest): boolean {
       request.fullTextPaperContexts?.length ||
       request.pinnedPaperContexts?.length ||
       request.selectedCollectionContexts?.length ||
+      request.selectedTagContexts?.length ||
       request.screenshots?.length ||
       request.attachments?.length,
   );
@@ -214,6 +217,7 @@ export function buildCodexNativeSkillClassifierCacheKey(params: {
       fullTextPaperCount: request.fullTextPaperContexts?.length || 0,
       pinnedPaperCount: request.pinnedPaperContexts?.length || 0,
       collectionCount: request.selectedCollectionContexts?.length || 0,
+      tagCount: request.selectedTagContexts?.length || 0,
       screenshotCount: request.screenshots?.length || 0,
       attachmentTypes: Array.from(
         new Set((request.attachments || []).map((attachment) => attachment.category)),
@@ -290,6 +294,7 @@ export function buildCodexNativeSkillRequest(
     selectedCollectionContexts: normalizeList(
       skillContext?.selectedCollectionContexts,
     ),
+    selectedTagContexts: normalizeList(skillContext?.selectedTagContexts),
     attachments: normalizeList(skillContext?.attachments),
     screenshots: normalizeList(skillContext?.screenshots),
     forcedSkillIds: normalizeList(skillContext?.forcedSkillIds),

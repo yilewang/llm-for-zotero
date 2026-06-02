@@ -240,6 +240,19 @@ export async function registerMineruManagerScript(
 
   if (!sidebar || !itemsList) return;
   const sidebarInitialCssText = sidebar.style.cssText;
+  const folderClosedIconUrl = `chrome://${idPrefix}/content/icons/folder-closed.svg`;
+  const folderOpenIconUrl = `chrome://${idPrefix}/content/icons/folder-open.svg`;
+
+  function createSidebarSvgIcon(kind: "library" | "folder"): HTMLSpanElement {
+    const icon = doc.createElement("span");
+    const url = kind === "library" ? folderOpenIconUrl : folderClosedIconUrl;
+    icon.setAttribute("aria-hidden", "true");
+    icon.style.cssText =
+      "width: 13px; height: 13px; flex-shrink: 0; display: inline-block; background: currentColor; color: #888; mask-repeat: no-repeat; mask-position: center; mask-size: contain; -webkit-mask-repeat: no-repeat; -webkit-mask-position: center; -webkit-mask-size: contain;";
+    icon.style.maskImage = `url("${url}")`;
+    icon.style.setProperty("-webkit-mask-image", `url("${url}")`);
+    return icon;
+  }
 
   // ── Data ───────────────────────────────────────────────────────────────────
   let allItems: MineruItemEntry[] = [];
@@ -418,12 +431,15 @@ export async function registerMineruManagerScript(
   }
 
   function getFolderScopedItems(): MineruItemEntry[] {
-    return filterMineruItemsForFolderAndTagView(getManagerVisibleSourceItems(), {
-      folderScope: activeCollectionId,
-      folderItemIds: getActiveFolderItemIdSet(),
-      tagScope: "all",
-      includeAutomatic: showAutomaticTags,
-    });
+    return filterMineruItemsForFolderAndTagView(
+      getManagerVisibleSourceItems(),
+      {
+        folderScope: activeCollectionId,
+        folderItemIds: getActiveFolderItemIdSet(),
+        tagScope: "all",
+        includeAutomatic: showAutomaticTags,
+      },
+    );
   }
 
   function getCombinedFilteredItems(): MineruItemEntry[] {
@@ -1158,10 +1174,7 @@ export async function registerMineruManagerScript(
     if (activeCollectionId === key)
       row.style.background =
         "color-mix(in srgb, var(--color-accent, #2563eb) 15%, transparent)";
-    const icon = doc.createElement("span");
-    icon.style.cssText = "font-size: 12px; flex-shrink: 0;";
-    icon.textContent = key === "all" ? "\uD83D\uDCDA" : "\uD83D\uDCC1";
-    row.appendChild(icon);
+    row.appendChild(createSidebarSvgIcon(key === "all" ? "library" : "folder"));
     const nm = doc.createElement("span");
     nm.style.cssText = "flex: 1; white-space: nowrap; font-size: 12px;";
     nm.style.fontWeight =
@@ -1216,10 +1229,7 @@ export async function registerMineruManagerScript(
       sp.style.cssText = "width: 10px; flex-shrink: 0;";
       row.appendChild(sp);
     }
-    const icon = doc.createElement("span");
-    icon.style.cssText = "font-size: 12px; flex-shrink: 0;";
-    icon.textContent = "\uD83D\uDCC1";
-    row.appendChild(icon);
+    row.appendChild(createSidebarSvgIcon("folder"));
     const nm = doc.createElement("span");
     nm.style.cssText = "flex: 1; white-space: nowrap; font-size: 12px;";
     nm.style.fontWeight =

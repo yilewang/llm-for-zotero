@@ -14,6 +14,7 @@
   --llm-context-icon-text-color: var(--color-accent, #3584e4);
   --llm-context-icon-image-color: #06b6d4;
   --llm-context-icon-collection-color: #f59e0b;
+  --llm-context-icon-tag-color: #14b8a6;
   --llm-context-icon-note-color: #eab308;
   --llm-context-icon-file-color: #64748b;
   --llm-context-icon-model-color: #a855f7;
@@ -3489,6 +3490,15 @@
   justify-content: flex-start;
 }
 
+.llm-user-tag-context-chip .llm-tag-chip-label {
+  color: var(--fill-secondary);
+  padding-left: 0;
+}
+
+.llm-user-tag-context-chip .llm-tag-chip-header {
+  padding-right: 0;
+}
+
 .llm-message-wrapper.user .llm-message-meta {
   margin-right: 8px;
 }
@@ -6296,14 +6306,16 @@ label.llm-search-results-item:hover {
 }
 
 /* Collection context chip */
-.llm-collection-context-chip {
+.llm-collection-context-chip,
+.llm-tag-context-chip {
   --llm-context-chip-icon-size: 18px;
   flex: 0 0 auto;
   max-width: 100%;
   width: fit-content;
 }
 
-.llm-collection-chip-label {
+.llm-collection-chip-label,
+.llm-tag-chip-label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -6320,31 +6332,43 @@ label.llm-search-results-item:hover {
   text-overflow: ellipsis;
 }
 
-.llm-collection-chip-icon {
+.llm-collection-chip-icon,
+.llm-tag-chip-icon {
   width: var(--llm-context-chip-icon-size);
   height: var(--llm-context-chip-icon-size);
-  color: var(--llm-context-icon-collection-color);
   opacity: 1;
 }
 
-.llm-collection-chip-title {
+.llm-collection-chip-icon {
+  color: var(--llm-context-icon-collection-color);
+}
+
+.llm-tag-chip-icon {
+  color: var(--llm-context-icon-tag-color);
+}
+
+.llm-collection-chip-title,
+.llm-tag-chip-title {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.llm-collection-context-chip:hover .llm-collection-chip-label {
+.llm-collection-context-chip:hover .llm-collection-chip-label,
+.llm-tag-context-chip:hover .llm-tag-chip-label {
   color: var(--fill-primary);
 }
 
-.llm-collection-chip-header {
+.llm-collection-chip-header,
+.llm-tag-chip-header {
   gap: 0;
   padding-right: 4px;
   cursor: default;
 }
 
-.llm-collection-chip-header .llm-collection-clear {
+.llm-collection-chip-header .llm-collection-clear,
+.llm-tag-chip-header .llm-tag-clear {
   display: grid;
   place-items: center;
   align-self: center;
@@ -6433,10 +6457,24 @@ label.llm-search-results-item:hover {
   color: var(--llm-context-icon-file-color);
 }
 
-.llm-context-icon-collection {
+.llm-context-icon-collection,
+.llm-paper-picker-icon-collection {
   mask-image: url("icons/folder-closed.svg");
   -webkit-mask-image: url("icons/folder-closed.svg");
+}
+
+.llm-context-icon-collection {
   color: var(--llm-context-icon-collection-color);
+}
+
+.llm-context-icon-tag,
+.llm-paper-picker-icon-tag {
+  mask-image: url("icons/tag.svg");
+  -webkit-mask-image: url("icons/tag.svg");
+}
+
+.llm-context-icon-tag {
+  color: var(--llm-context-icon-tag-color);
 }
 
 .llm-context-icon-text {
@@ -6661,8 +6699,10 @@ label.llm-search-results-item:hover {
   top: auto;
   bottom: calc(100% + 8px);
   z-index: 30;
-  max-height: var(--llm-paper-picker-max-height, min(40vh, 280px));
-  overflow-y: auto;
+  height: auto;
+  min-height: 0;
+  max-height: var(--llm-paper-picker-max-height, min(82vh, 720px));
+  overflow: hidden;
   border: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.35));
   border-radius: 12px;
   background: var(--material-background, #fff);
@@ -6676,7 +6716,14 @@ label.llm-search-results-item:hover {
 }
 
 .llm-paper-picker-list {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  max-height: inherit;
+  overflow: hidden;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-auto-flow: row;
   gap: 3px;
   padding: 6px;
@@ -6940,7 +6987,7 @@ label.llm-search-results-item:hover {
 }
 
 .llm-paper-picker-attachment-row {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 24px;
   align-items: start;
   padding-left: 9px;
 }
@@ -6970,7 +7017,7 @@ label.llm-search-results-item:hover {
   color: var(--fill-primary);
   font-size: var(--llm-fs-11);
   font-weight: 600;
-  line-height: 1.3;
+  line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6997,6 +7044,506 @@ label.llm-search-results-item:hover {
 
 .llm-paper-picker-attachment-main .llm-paper-picker-item-icon {
   margin-top: 1px;
+}
+
+.llm-paper-picker-shell {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  max-height: inherit;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.llm-paper-picker-folder-panel,
+.llm-paper-picker-tag-panel,
+.llm-paper-picker-main {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  overflow: hidden;
+  resize: none;
+  transition:
+    height 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    min-height 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.llm-paper-picker-folder-panel.llm-paper-picker-panel-resizing,
+.llm-paper-picker-tag-panel.llm-paper-picker-panel-resizing,
+.llm-paper-picker-main.llm-paper-picker-panel-resizing {
+  transition: none;
+}
+
+.llm-paper-picker-folder-panel.llm-paper-picker-panel-collapsed,
+.llm-paper-picker-tag-panel.llm-paper-picker-panel-collapsed,
+.llm-paper-picker-main.llm-paper-picker-panel-collapsed {
+  height: 28px;
+  min-height: 28px;
+  grid-template-rows: auto;
+  resize: none;
+}
+
+.llm-paper-picker-folder-panel.llm-paper-picker-panel-collapsed,
+.llm-paper-picker-tag-panel.llm-paper-picker-panel-collapsed {
+  border-bottom: 0;
+}
+
+.llm-paper-picker-folder-panel {
+  flex: 0 0 auto;
+  height: 190px;
+  min-height: 165px;
+  max-height: 420px;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: color-mix(
+    in srgb,
+    var(--material-background, #fff) 94%,
+    var(--fill-quinary, rgba(120, 120, 120, 0.12))
+  );
+}
+
+.llm-paper-picker-tag-panel {
+  flex: 0 0 auto;
+  height: 180px;
+  min-height: 150px;
+  max-height: 300px;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  background: color-mix(
+    in srgb,
+    var(--material-background, #fff) 96%,
+    var(--fill-quinary, rgba(120, 120, 120, 0.12))
+  );
+}
+
+.llm-paper-picker-folder-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 4px 5px;
+}
+
+.llm-paper-picker-sidebar-row {
+  box-sizing: border-box;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 12px 14px minmax(0, 1fr) 36px 24px;
+  align-items: center;
+  column-gap: 5px;
+  padding: 4px 5px;
+  padding-left: calc(5px + var(--llm-paper-picker-sidebar-depth, 0) * 14px);
+  border-radius: 6px;
+  color: var(--fill-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.llm-paper-picker-sidebar-row:hover,
+.llm-paper-picker-sidebar-row-active {
+  background: var(--color-accent10, rgba(53, 132, 228, 0.14));
+  color: var(--fill-primary);
+}
+
+.llm-paper-picker-sidebar-chevron {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fill-tertiary);
+}
+
+.llm-paper-picker-sidebar-chevron {
+  width: 12px;
+  height: 14px;
+  font-size: var(--llm-fs-11);
+  line-height: 1;
+}
+
+.llm-paper-picker-sidebar-folder-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--fill-tertiary);
+}
+
+.llm-paper-picker-sidebar-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--llm-fs-11);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.llm-paper-picker-sidebar-count {
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-10);
+  justify-self: end;
+}
+
+.llm-paper-picker-folder-header,
+.llm-paper-picker-tag-header,
+.llm-paper-picker-item-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: var(--llm-fs-10);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.llm-paper-picker-folder-header:hover,
+.llm-paper-picker-tag-header:hover,
+.llm-paper-picker-item-header:hover {
+  background: color-mix(in srgb, var(--fill-secondary) 8%, transparent);
+}
+
+.llm-paper-picker-panel-toggle {
+  all: unset;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-12);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.llm-paper-picker-panel-toggle:hover {
+  background: color-mix(in srgb, var(--fill-secondary) 12%, transparent);
+  color: var(--fill-primary);
+}
+
+.llm-paper-picker-panel-separator {
+  box-sizing: border-box;
+  position: relative;
+  height: 9px;
+  margin: 0 18px;
+  cursor: ns-resize;
+  user-select: none;
+  touch-action: none;
+}
+
+.llm-paper-picker-panel-separator::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: var(--stroke-secondary, rgba(120, 120, 120, 0.32));
+}
+
+.llm-paper-picker-panel-separator:hover::before,
+.llm-paper-picker-panel-separator:active::before {
+  background: var(--stroke-secondary, rgba(120, 120, 120, 0.4));
+}
+
+.llm-paper-picker-folder-title,
+.llm-paper-picker-tag-title,
+.llm-paper-picker-item-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.llm-paper-picker-folder-count,
+.llm-paper-picker-tag-count,
+.llm-paper-picker-item-count {
+  color: var(--fill-tertiary);
+  font-weight: 500;
+}
+
+.llm-paper-picker-tag-scopes,
+.llm-paper-picker-tag-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: flex-start;
+}
+
+.llm-paper-picker-tag-scopes {
+  gap: 4px;
+  padding: 0 8px 5px;
+}
+
+.llm-paper-picker-tag-scope-wrap,
+.llm-paper-picker-tag-chip-wrap {
+  box-sizing: border-box;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.llm-paper-picker-tag-scope,
+.llm-paper-picker-tag-chip,
+.llm-paper-picker-scope-action {
+  all: unset;
+  box-sizing: border-box;
+  max-width: 100%;
+  border-radius: 5px;
+  color: var(--fill-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.llm-paper-picker-tag-scope {
+  padding: 1px 4px;
+  font-size: var(--llm-fs-10);
+  line-height: 1.35;
+}
+
+.llm-paper-picker-tag-scope-active {
+  background: color-mix(in srgb, var(--fill-primary) 14%, transparent);
+  color: var(--fill-primary);
+}
+
+.llm-paper-picker-tag-cloud {
+  min-height: 0;
+  overflow: auto;
+  gap: 4px 5px;
+  padding: 2px 8px 7px;
+}
+
+.llm-paper-picker-tag-chip {
+  padding: 1px 5px;
+  font-size: var(--llm-fs-11);
+  line-height: 1.35;
+  color: var(--fill-primary);
+}
+
+.llm-paper-picker-tag-chip-label {
+  min-width: 0;
+}
+
+.llm-paper-picker-tag-chip-colored {
+  border-left: 3px solid var(--llm-paper-picker-tag-color);
+  padding-left: 5px;
+}
+
+.llm-paper-picker-tag-chip-selected {
+  background: color-mix(in srgb, var(--fill-primary) 52%, transparent);
+  color: var(--material-background, #fff);
+  font-weight: 600;
+}
+
+.llm-paper-picker-tag-chip-unavailable {
+  color: var(--fill-tertiary);
+  opacity: 0.62;
+  cursor: default;
+}
+
+.llm-paper-picker-scope-action {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-11);
+  font-weight: 700;
+  cursor: pointer;
+  justify-self: center;
+}
+
+.llm-paper-picker-scope-action:hover {
+  background: color-mix(in srgb, var(--fill-secondary) 12%, transparent);
+  color: var(--fill-primary);
+}
+
+.llm-paper-picker-scope-action:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.llm-paper-picker-tag-empty,
+.llm-paper-picker-tag-summary {
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-10);
+  line-height: 1.35;
+}
+
+.llm-paper-picker-tag-summary {
+  border-top: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.18));
+  padding: 5px 8px;
+  color: var(--fill-secondary);
+}
+
+.llm-paper-picker-folder-filter-bar,
+.llm-paper-picker-tag-filter-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-top: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.18));
+  padding: 6px 7px;
+}
+
+.llm-paper-picker-folder-filter,
+.llm-paper-picker-tag-filter {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  border: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.28));
+  border-radius: 7px;
+  padding: 2px 8px;
+  background: color-mix(in srgb, var(--material-background) 84%, transparent);
+  color: var(--fill-primary);
+  font: inherit;
+  font-size: var(--llm-fs-11);
+}
+
+.llm-paper-picker-tag-menu-wrap {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.llm-paper-picker-tag-menu-button {
+  all: unset;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  color: var(--fill-secondary);
+  cursor: pointer;
+}
+
+.llm-paper-picker-tag-menu-button:hover {
+  background: color-mix(in srgb, var(--fill-secondary) 12%, transparent);
+  color: var(--fill-primary);
+}
+
+.llm-paper-picker-tag-menu {
+  position: absolute;
+  right: 0;
+  bottom: 28px;
+  z-index: 2;
+  min-width: 154px;
+  padding: 4px 0;
+  border: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.32));
+  border-radius: 7px;
+  background: var(--material-background, #fff);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.22);
+}
+
+.llm-paper-picker-tag-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  font-size: var(--llm-fs-11);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.llm-paper-picker-main {
+  width: 100%;
+  flex: 1 0 auto;
+  height: 360px;
+  min-height: 240px;
+  max-height: 520px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.llm-paper-picker-main.llm-paper-picker-panel-collapsed {
+  flex: 0 0 auto;
+}
+
+.llm-paper-picker-main-full {
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 120px;
+}
+
+.llm-paper-picker-table-row {
+  box-sizing: border-box;
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  align-items: center;
+  column-gap: 6px;
+  min-width: 0;
+}
+
+.llm-paper-picker-table-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 9px 5px;
+  border-bottom: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.22));
+  background: var(--material-background, #fff);
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-10);
+  font-weight: 600;
+}
+
+.llm-paper-picker-row-host {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  padding: 5px;
+}
+
+.llm-paper-picker-table-row {
+  grid-template-columns: minmax(0, 1fr) 24px;
+  padding-top: 5px;
+  padding-right: 5px;
+  padding-bottom: 5px;
+}
+
+.llm-paper-picker-table-row.llm-paper-picker-selected {
+  --llm-paper-picker-selection-gutter: 0px;
+  opacity: 0.64;
+}
+
+.llm-paper-picker-table-row.llm-paper-picker-selected::before {
+  content: none;
+}
+
+.llm-paper-picker-cell-title,
+.llm-paper-picker-cell-action {
+  min-width: 0;
+}
+
+.llm-paper-picker-row-meta-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-10);
+  line-height: 1.3;
+}
+
+.llm-paper-picker-cell-action {
+  text-align: center;
+}
+
+.llm-paper-picker-row-action {
+  justify-self: center;
 }
 
 /* ── Action picker ──────────────────────────────────────────────────────── */

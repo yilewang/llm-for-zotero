@@ -14,6 +14,7 @@ export type SkillRoutingRequest = Pick<
   | "fullTextPaperContexts"
   | "pinnedPaperContexts"
   | "selectedCollectionContexts"
+  | "selectedTagContexts"
 >;
 
 export type SkillRequestContext = {
@@ -31,10 +32,10 @@ export type SkillContextEligibility =
   | { eligible: false; reason: string };
 
 const CORPUS_TARGET_PATTERN =
-  /\b(?:this|the|current|selected)\s+collection\b|\bmy\s+library\b|\b(?:whole|entire)\s+library\b|\ball\s+(?:papers?|items?|articles?|studies)\b|\b(?:literature|lit)\s+review\b|\breview\s+of\s+(?:the\s+)?literature\b|\b(?:synthesi[sz]e|survey)\b.*\b(?:papers?|articles?|studies|findings?|research|literature|collection|library)\b|\b(?:these|selected)\s+(?:papers?|articles?|studies)\b/i;
+  /\b(?:this|the|current|selected)\s+(?:collection|tag)\b|\bmy\s+library\b|\b(?:whole|entire)\s+library\b|\ball\s+(?:papers?|items?|articles?|studies)\b|\b(?:literature|lit)\s+review\b|\breview\s+of\s+(?:the\s+)?literature\b|\b(?:synthesi[sz]e|survey)\b.*\b(?:papers?|articles?|studies|findings?|research|literature|collection|tag|library)\b|\b(?:these|selected)\s+(?:papers?|articles?|studies)\b/i;
 
 const LIBRARY_CORPUS_INTENT_PATTERN =
-  /\b(?:library|collection|all papers?|all items?|my papers?|whole|entire)\b|\b(?:literature|lit)\s+review\b|\breview\s+of\s+(?:the\s+)?literature\b|\b(?:synthesi[sz]e|survey)\b.*\b(?:research|papers?|articles?|studies|findings?|literature)\b/i;
+  /\b(?:library|collection|tag|all papers?|all items?|my papers?|whole|entire)\b|\b(?:literature|lit)\s+review\b|\breview\s+of\s+(?:the\s+)?literature\b|\b(?:synthesi[sz]e|survey)\b.*\b(?:research|papers?|articles?|studies|findings?|literature)\b/i;
 
 const SINGLE_PAPER_TARGET_PATTERN =
   /\b(?:this|the|current|selected)\s+(?:paper|article|study|document)\b/i;
@@ -83,6 +84,7 @@ export function resolveSkillRequestContext(
   const singlePaperTargetedByText = SINGLE_PAPER_TARGET_PATTERN.test(userText);
   const hasLibraryCorpus = Boolean(
     request.selectedCollectionContexts?.length ||
+    request.selectedTagContexts?.length ||
     LIBRARY_CORPUS_INTENT_PATTERN.test(userText),
   );
   const hasNoteContext = Boolean(

@@ -63,6 +63,16 @@ function normalizeStringArray(value: unknown): string[] | undefined {
   return entries.length ? Array.from(new Set(entries)) : undefined;
 }
 
+function normalizeTagScopes(
+  value: unknown,
+): Array<"allTagged" | "untagged"> | undefined {
+  const entries = normalizeStringArray(value)?.filter(
+    (entry): entry is "allTagged" | "untagged" =>
+      entry === "allTagged" || entry === "untagged",
+  );
+  return entries?.length ? entries : undefined;
+}
+
 function normalizeIntent(value: unknown): LibraryRetrieveIntent | undefined {
   if (value === "discover") return "enumerate";
   return typeof value === "string" &&
@@ -82,12 +92,25 @@ function normalizeScope(value: unknown): LibraryRetrieveInput["scope"] {
   const libraryID = normalizePositiveInt(value.libraryID);
   const collectionIds =
     normalizePositiveIntArray(value.collectionIds) || undefined;
+  const tagNames = normalizeStringArray(value.tagNames);
+  const tagScopes = normalizeTagScopes(value.tagScopes);
+  const includeAutomaticTags =
+    value.includeAutomaticTags === true ? true : undefined;
   const itemIds = normalizePositiveIntArray(value.itemIds) || undefined;
-  if (!libraryID && !collectionIds?.length && !itemIds?.length)
+  if (
+    !libraryID &&
+    !collectionIds?.length &&
+    !tagNames?.length &&
+    !tagScopes?.length &&
+    !itemIds?.length
+  )
     return undefined;
   return {
     libraryID,
     collectionIds,
+    tagNames,
+    tagScopes,
+    includeAutomaticTags,
     itemIds,
   };
 }
@@ -141,7 +164,7 @@ export function createLibraryRetrieveTool(
     spec: {
       name: "library_retrieve",
       description:
-        "Comprehensively search a Zotero library, collection, or explicit item pool as a lazy resource tree. Use this for broad folder/library evidence questions: it maps metadata broadly, scans indexed/searchable text for paper-level matches, expands selected snippets, returns a ranked paper-level ledger/frontier, and reports coverage. Query variants are standard search probes for translations, acronyms, notation variants, or technical equivalents. Use library_search for catalog lookup and paper_read for close reading one known paper.",
+        "Comprehensively search a Zotero library, collection, tag, or explicit item pool as a lazy resource tree. Use this for broad folder/tag/library evidence questions: it maps metadata broadly, scans indexed/searchable text for paper-level matches, expands selected snippets, returns a ranked paper-level ledger/frontier, and reports coverage. Query variants are standard search probes for translations, acronyms, notation variants, or technical equivalents. Use library_search for catalog lookup and paper_read for close reading one known paper.",
       inputSchema: {
         type: "object",
         required: ["query"],
@@ -156,13 +179,25 @@ export function createLibraryRetrieveTool(
                 type: "array",
                 items: { type: "number" },
               },
+              tagNames: {
+                type: "array",
+                items: { type: "string" },
+              },
+              tagScopes: {
+                type: "array",
+                items: {
+                  type: "string",
+                  enum: ["allTagged", "untagged"],
+                },
+              },
+              includeAutomaticTags: { type: "boolean" },
               itemIds: {
                 type: "array",
                 items: { type: "number" },
               },
             },
             description:
-              "Optional search pool. Omit to use selected collection scope when present, otherwise the active library.",
+              "Optional search pool. Omit to use selected collection/tag scope when present, otherwise the active library.",
           },
           query: {
             type: "string",
@@ -288,6 +323,12 @@ export function createLibraryRetrieveTool(
           : [];
         if (collectionIds.length) {
           chips.push({ label: `${collectionIds.length} collections` });
+        }
+        const tagNames = Array.isArray(scope.tagNames) ? scope.tagNames : [];
+        const tagScopes = Array.isArray(scope.tagScopes) ? scope.tagScopes : [];
+        const tagCount = tagNames.length + tagScopes.length;
+        if (tagCount) {
+          chips.push({ label: `${tagCount} tags` });
         }
         return chips;
       },
