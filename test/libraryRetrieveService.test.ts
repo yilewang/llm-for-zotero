@@ -765,6 +765,7 @@ describe("LibraryRetrieveService", function () {
       limit?: number;
       query?: string;
       filters?: Record<string, unknown>;
+      allowedItemIds?: number[];
     }> = [];
     const service = new LibraryRetrieveService(
       makeGateway([active, scoped, outside], {
@@ -804,8 +805,103 @@ describe("LibraryRetrieveService", function () {
       result.candidates.map((candidate) => candidate.itemId),
       ["7"],
     );
-    assert.equal(quicksearchCalls[0]?.filters?.tag, "Stable");
+    assert.deepEqual(quicksearchCalls[0]?.allowedItemIds, [7]);
+    assert.isUndefined(quicksearchCalls[0]?.filters);
     assert.equal(result.resourcePool.queryCoverage.indexedTextMatched, 1);
+  });
+
+  it("treats explicit library scope as whole-library even when a tag is selected", async function () {
+    const tagged = makeItem(7, "Tagged paper", "shared evidence", {
+      hasPdf: true,
+      tags: ["Stable"],
+    });
+    const outside = makeItem(8, "Whole library paper", "shared evidence", {
+      hasPdf: true,
+      tags: ["Other"],
+    });
+    const service = new LibraryRetrieveService(
+      makeGateway([tagged, outside]) as any,
+      { ensurePaperContext: async () => makePdfContext([]) } as any,
+      async () => [],
+    );
+
+    const result = await service.retrieve({
+      scope: { libraryID: 1 },
+      query: "shared evidence",
+      intent: "enumerate",
+      depth: "metadata",
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText: "Search the whole library",
+        libraryID: 1,
+        selectedTagContexts: [
+          {
+            name: "Stable",
+            normalizedName: "stable",
+            libraryID: 1,
+          },
+        ],
+      },
+    });
+
+    assert.equal(result.resourcePool.type, "library");
+    assert.equal(result.resourcePool.totalItems, 2);
+    assert.deepEqual(result.resourcePool.scope.tagNames, []);
+    assert.deepEqual(
+      result.candidates.map((candidate) => candidate.itemId).sort(),
+      ["7", "8"],
+    );
+  });
+
+  it("uses resolved tag item IDs for explicit tag quicksearch", async function () {
+    const scoped = makeItem(7, "Stable tag paper", "", {
+      hasPdf: true,
+      tags: ["Stable"],
+    });
+    const outside = makeItem(8, "Outside tag paper", "", {
+      hasPdf: true,
+      tags: ["Other"],
+    });
+    const quicksearchCalls: Array<{
+      limit?: number;
+      query?: string;
+      filters?: Record<string, unknown>;
+      allowedItemIds?: number[];
+    }> = [];
+    const service = new LibraryRetrieveService(
+      makeGateway([scoped, outside], {
+        quicksearchCalls,
+        quicksearchItemIds: [7, 8],
+      }) as any,
+      { ensurePaperContext: async () => makePdfContext([]) } as any,
+      async () => [],
+    );
+
+    const result = await service.retrieve({
+      scope: { libraryID: 1, tagNames: ["stable"] },
+      query: "indexed evidence",
+      intent: "enumerate",
+      depth: "evidence",
+      methods: ["metadata", "fts"],
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText: "Search stable tag",
+        libraryID: 1,
+      },
+    });
+
+    assert.equal(result.resourcePool.type, "tag");
+    assert.deepEqual(result.resourcePool.scope.tagNames, ["stable"]);
+    assert.equal(result.resourcePool.totalItems, 1);
+    assert.deepEqual(quicksearchCalls[0]?.allowedItemIds, [7]);
+    assert.isUndefined(quicksearchCalls[0]?.filters);
+    assert.equal(result.resourcePool.queryCoverage.indexedTextMatched, 1);
+    assert.deepEqual(
+      result.candidates.map((candidate) => candidate.itemId),
+      ["7"],
+    );
   });
 
   it("unions selected collection and tag scopes while deduping overlapping papers", async function () {
@@ -929,7 +1025,8 @@ describe("LibraryRetrieveService", function () {
 
     assert.lengthOf(quicksearchCalls, 2);
     assert.equal(quicksearchCalls[0]?.filters?.collectionId, 4);
-    assert.equal(quicksearchCalls[1]?.filters?.tag, "Stable");
+    assert.deepEqual(quicksearchCalls[1]?.allowedItemIds, [7, 8]);
+    assert.isUndefined(quicksearchCalls[1]?.filters);
     assert.equal(result.resourcePool.type, "mixed");
     assert.equal(result.resourcePool.queryCoverage.indexedTextMatched, 1);
     assert.deepEqual(

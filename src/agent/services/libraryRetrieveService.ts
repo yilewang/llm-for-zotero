@@ -259,6 +259,7 @@ type ScopeResolution = {
   libraryID: number;
   collectionIds: number[];
   tagContexts: TagContextRef[];
+  tagItemIds: number[];
   explicitItemIds: number[];
   items: LibraryItemTarget[];
   totalItems: number;
@@ -1265,7 +1266,8 @@ export class LibraryRetrieveService {
     const warnings: string[] = [];
     const explicitScope = input.scope || {};
     const hasExplicitScope = Boolean(
-      explicitScope.collectionIds?.length ||
+      explicitScope.libraryID ||
+        explicitScope.collectionIds?.length ||
         explicitScope.itemIds?.length ||
         explicitScope.tagNames?.length ||
         explicitScope.tagScopes?.length,
@@ -1336,6 +1338,7 @@ export class LibraryRetrieveService {
         libraryID,
         collectionIds: [],
         tagContexts: [],
+        tagItemIds: [],
         explicitItemIds,
         items,
         totalItems: items.length,
@@ -1345,6 +1348,7 @@ export class LibraryRetrieveService {
 
     if (collectionIds.length || tagContexts.length) {
       const byItemId = new Map<number, LibraryItemTarget>();
+      const tagItemIds = new Set<number>();
       let totalItems = 0;
       const names: string[] = [];
       for (const collectionId of collectionIds) {
@@ -1386,6 +1390,7 @@ export class LibraryRetrieveService {
             continue;
           }
           byItemId.set(target.itemId, target);
+          tagItemIds.add(target.itemId);
         }
       }
       if (tagContexts.length > 1 && byItemId.size < totalItems) {
@@ -1411,6 +1416,7 @@ export class LibraryRetrieveService {
         libraryID,
         collectionIds,
         tagContexts,
+        tagItemIds: Array.from(tagItemIds),
         explicitItemIds: [],
         items: Array.from(byItemId.values()),
         totalItems: isMetadataCapped ? totalItems : byItemId.size,
@@ -1428,6 +1434,7 @@ export class LibraryRetrieveService {
       libraryID,
       collectionIds: [],
       tagContexts: [],
+      tagItemIds: [],
       explicitItemIds: [],
       items: result.items,
       totalItems: result.totalCount,
@@ -1559,13 +1566,10 @@ export class LibraryRetrieveService {
       }
       if (scope.tagContexts.length) {
         for (const query of input.queryPlan.effectiveQueries) {
-          for (const tagContext of scope.tagContexts) {
-            await runQuicksearch(
-              query,
-              tagContext.scope
-                ? { allowedItemIds: allRecordItemIds }
-                : { filters: { tag: tagContext.name } },
-            );
+          if (scope.tagItemIds.length) {
+            await runQuicksearch(query, {
+              allowedItemIds: scope.tagItemIds,
+            });
           }
         }
       }

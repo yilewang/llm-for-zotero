@@ -95,6 +95,24 @@ describe("autoTag command resolution", function () {
     });
   });
 
+  it("does not resolve tag-only selection for the legacy no-tag profile", function () {
+    const result = resolveAutoTagCommandInput("selection", {
+      mode: "library",
+      selectedTagContexts: [
+        {
+          name: "Stable",
+          normalizedName: "stable",
+          libraryID: 1,
+        },
+      ],
+    }, collectionCandidates);
+
+    assert.deepEqual(result, {
+      kind: "error",
+      error: "No supported paper or collection context is selected in this chat.",
+    });
+  });
+
   it("resolves the first-N papers phrase", function () {
     const result = resolveAutoTagCommandInput("first 20 papers", {
       mode: "library",

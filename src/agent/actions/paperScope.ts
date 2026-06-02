@@ -229,30 +229,50 @@ export function resolvePaperScopedSelection(
 
 function buildSelectionScopeInput(
   requestContext: ActionRequestContext | undefined,
+  profile: PaperScopedActionProfile,
 ): PaperScopedActionInput | null {
   const selection = resolvePaperScopedSelection(requestContext);
+  const includeTags = profile.allowedScopes.includes("tag");
   if (
     !selection.itemIds.length &&
     !selection.collectionIds.length &&
-    !selection.tagContexts.length
+    (!includeTags || !selection.tagContexts.length)
   ) {
     return null;
   }
   const input: PaperScopedActionInput = {};
   if (selection.itemIds.length) input.itemIds = selection.itemIds;
   if (selection.collectionIds.length) input.collectionIds = selection.collectionIds;
-  const tagNames = selection.tagContexts
-    .filter((entry) => !entry.scope)
-    .map((entry) => entry.name);
-  const tagScopes = selection.tagContexts
-    .map((entry) => entry.scope)
-    .filter((scope): scope is "allTagged" | "untagged" => Boolean(scope));
-  if (tagNames.length) input.tagNames = tagNames;
-  if (tagScopes.length) input.tagScopes = tagScopes;
-  if (selection.tagContexts.some((entry) => entry.includeAutomatic === true)) {
-    input.includeAutomaticTags = true;
+  if (includeTags) {
+    const tagNames = selection.tagContexts
+      .filter((entry) => !entry.scope)
+      .map((entry) => entry.name);
+    const tagScopes = selection.tagContexts
+      .map((entry) => entry.scope)
+      .filter((scope): scope is "allTagged" | "untagged" => Boolean(scope));
+    if (tagNames.length) input.tagNames = tagNames;
+    if (tagScopes.length) input.tagScopes = tagScopes;
+    if (selection.tagContexts.some((entry) => entry.includeAutomatic === true)) {
+      input.includeAutomaticTags = true;
+    }
   }
   return input;
+}
+
+function buildMissingSelectionError(
+  requestContext: ActionRequestContext | undefined,
+  profile: PaperScopedActionProfile,
+): string {
+  const selection = resolvePaperScopedSelection(requestContext);
+  if (
+    selection.tagContexts.length &&
+    !selection.itemIds.length &&
+    !selection.collectionIds.length &&
+    !profile.allowedScopes.includes("tag")
+  ) {
+    return "No supported paper or collection context is selected in this chat.";
+  }
+  return "No paper, collection, or tag context is selected in this chat.";
 }
 
 function describeCollection(candidate: PaperScopedActionCollectionCandidate): string {
@@ -377,13 +397,12 @@ function resolveTagScopeInput(
     };
   }
 
-  return {
-    kind: "input",
-    input: {
-      tagNames: [partialMatches[0].name],
-      scope: "tag",
-    },
+  const input: PaperScopedActionInput = {
+    tagNames: [partialMatches[0].name],
+    scope: "tag",
   };
+  if (partialMatches[0].type === 1) input.includeAutomaticTags = true;
+  return { kind: "input", input };
 }
 
 function resolveDefaultInput(
@@ -406,7 +425,7 @@ function resolveDefaultInput(
     profile.defaultEmptyInput === "selection_or_prompt" &&
     profile.allowedScopes.includes("selection")
   ) {
-    const selectionInput = buildSelectionScopeInput(requestContext);
+    const selectionInput = buildSelectionScopeInput(requestContext, profile);
     if (selectionInput) {
       return {
         kind: "input",
@@ -497,11 +516,11 @@ export function resolvePaperScopedCommandInput(
     if (!profile.allowedScopes.includes("selection")) {
       return buildUnsupportedScopeError(profile);
     }
-    const selectionInput = buildSelectionScopeInput(requestContext);
+    const selectionInput = buildSelectionScopeInput(requestContext, profile);
     if (!selectionInput) {
       return {
         kind: "error",
-        error: "No paper, collection, or tag context is selected in this chat.",
+        error: buildMissingSelectionError(requestContext, profile),
       };
     }
     return { kind: "input", input: selectionInput };
