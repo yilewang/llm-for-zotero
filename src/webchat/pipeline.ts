@@ -91,7 +91,7 @@ export type WebChatSendOptions = {
   images?: string[];
   /** ChatGPT mode: "instant", "thinking_standard", or "thinking_extended". */
   chatgptMode?: string;
-  /** Which webchat target to use: "chatgpt" | "deepseek". */
+  /** Which webchat target to use: "chatgpt" | "deepseek" | "gemini". */
   target?: string;
   signal?: AbortSignal;
   onAnswerSnapshot: (text: string, snapshot: WebChatAnswerSnapshot) => void;
