@@ -9,6 +9,10 @@
   --llm-fs-14: calc(14px * var(--llm-font-scale));
   --llm-fs-16: calc(16px * var(--llm-font-scale));
   --llm-fs-32: calc(32px * var(--llm-font-scale));
+  --llm-message-line-height: 1.5;
+  --llm-message-paragraph-spacing: 8px;
+  --llm-message-word-spacing: 0px;
+  --llm-message-font-family: inherit;
   --llm-screenshot-thumb-size: 56px;
   --llm-file-card-min-width: 184px;
   --llm-context-icon-text-color: var(--color-accent, #3584e4);
@@ -916,6 +920,10 @@
   --llm-fs-12: calc(12px * var(--llm-font-scale));
   --llm-fs-13: calc(13px * var(--llm-font-scale));
   --llm-fs-14: calc(14px * var(--llm-font-scale));
+  --llm-message-line-height: 1.5;
+  --llm-message-paragraph-spacing: 8px;
+  --llm-message-word-spacing: 0px;
+  --llm-message-font-family: inherit;
   --llm-popup-surface-bg: color-mix(
     in srgb,
     var(--material-sidepane, var(--material-background, #ffffff)) 94%,
@@ -2943,6 +2951,9 @@
   color: white;
   border-radius: 6px;
   border-bottom-right-radius: 2px;
+  font-family: var(--llm-message-font-family, inherit);
+  line-height: var(--llm-message-line-height, 1.5);
+  word-spacing: var(--llm-message-word-spacing, normal);
 }
 
 /* Editable user bubble — shows a pointer and subtle hover feedback */
@@ -5098,7 +5109,15 @@ label.llm-search-results-item:hover {
 }
 
 .llm-rendered-markdown p {
-  margin: 0 0 8px 0;
+  margin: 0 0 var(--llm-message-paragraph-spacing, 8px) 0;
+}
+
+.llm-rendered-markdown > p,
+.llm-rendered-markdown li,
+.llm-rendered-markdown > blockquote {
+  font-family: var(--llm-message-font-family, inherit);
+  line-height: var(--llm-message-line-height, 1.5);
+  word-spacing: var(--llm-message-word-spacing, normal);
 }
 
 .llm-rendered-markdown p:last-child {
@@ -5107,7 +5126,7 @@ label.llm-search-results-item:hover {
 
 .llm-rendered-markdown ul,
 .llm-rendered-markdown ol {
-  margin: 8px 0;
+  margin: var(--llm-message-paragraph-spacing, 8px) 0;
 }
 
 .llm-rendered-markdown ul {
@@ -5128,6 +5147,7 @@ label.llm-search-results-item:hover {
   border-radius: 4px;
   font-family: monospace;
   font-size: var(--llm-fs-11);
+  word-spacing: normal;
   overflow-wrap: break-word;
   word-break: normal;
 }
@@ -5267,6 +5287,7 @@ label.llm-search-results-item:hover {
   border-radius: 6px;
   overflow-x: auto;
   margin: 8px 0;
+  word-spacing: normal;
 }
 
 .llm-rendered-markdown pre code {
@@ -5689,7 +5710,7 @@ label.llm-search-results-item:hover {
 
 .llm-rendered-markdown blockquote {
   border-left: 3px solid var(--color-accent);
-  margin: 8px 0;
+  margin: var(--llm-message-paragraph-spacing, 8px) 0;
   padding-left: 12px;
   color: var(--fill-secondary);
   font-style: italic;
@@ -6040,6 +6061,8 @@ label.llm-search-results-item:hover {
   border-collapse: collapse;
   margin: 8px 0;
   font-size: var(--llm-fs-11);
+  line-height: 1.5;
+  word-spacing: normal;
 }
 
 .llm-rendered-markdown th,
@@ -6048,6 +6071,8 @@ label.llm-search-results-item:hover {
   padding: 6px 8px;
   text-align: left;
   vertical-align: top;
+  line-height: 1.5;
+  word-spacing: normal;
 }
 
 .llm-rendered-markdown thead th {
@@ -8444,6 +8469,7 @@ label.llm-search-results-item:hover {
   font-size: 0.92em;
   font-weight: 500;
   line-height: 1.4;
+  word-spacing: normal;
   white-space: nowrap;
   vertical-align: baseline;
 }

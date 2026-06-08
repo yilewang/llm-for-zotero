@@ -8,10 +8,26 @@ import {
   FONT_SCALE_MIN_PERCENT,
   FONT_SCALE_MAX_PERCENT,
   GLOBAL_CONVERSATION_KEY_BASE,
+  MESSAGE_LINE_SPACING_DEFAULT_PERCENT,
+  MESSAGE_LINE_SPACING_MIN_PERCENT,
+  MESSAGE_LINE_SPACING_MAX_PERCENT,
+  MESSAGE_PARAGRAPH_SPACING_DEFAULT_PX,
+  MESSAGE_PARAGRAPH_SPACING_MIN_PX,
+  MESSAGE_PARAGRAPH_SPACING_MAX_PX,
+  MESSAGE_WORD_SPACING_DEFAULT_PX,
+  MESSAGE_WORD_SPACING_MIN_PX,
+  MESSAGE_WORD_SPACING_MAX_PX,
   isUpstreamGlobalConversationKey,
 } from "./constants";
 import type { CustomShortcut, ReasoningLevelSelection } from "./types";
-import { selectedModelCache, panelFontScalePercent } from "./state";
+import {
+  selectedModelCache,
+  panelFontScalePercent,
+  messageLineSpacingPercent,
+  messageParagraphSpacingPx,
+  messageWordSpacingPx,
+  messageFontFamily,
+} from "./state";
 import {
   deriveProviderLabel,
   getDefaultModelEntry,
@@ -68,6 +84,24 @@ const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";
 const PANEL_FONT_SCALE_PREF_KEY = "panelFontScale";
 const SHORTCUT_DEFAULTS_MIGRATION_PREF_KEY = "shortcutDefaultsMigrationVersion";
 const SHORTCUT_DEFAULTS_MIGRATION_VERSION = 2;
+const MESSAGE_LINE_SPACING_PREF_KEY = "messageLineSpacing";
+const MESSAGE_PARAGRAPH_SPACING_PREF_KEY = "messageParagraphSpacing";
+const MESSAGE_WORD_SPACING_PREF_KEY = "messageWordSpacing";
+const MESSAGE_FONT_FAMILY_PREF_KEY = "messageFontFamily";
+const GENERIC_FONT_FAMILIES = new Set([
+  "serif",
+  "sans-serif",
+  "monospace",
+  "cursive",
+  "fantasy",
+  "system-ui",
+  "ui-serif",
+  "ui-sans-serif",
+  "ui-monospace",
+  "emoji",
+  "math",
+  "fangsong",
+]);
 const REASONING_LEVEL_SELECTIONS = new Set<ReasoningLevelSelection>([
   "none",
   "default",
@@ -325,6 +359,22 @@ export function getProviderLabelForSettings(
 export function applyPanelFontScale(panel: HTMLElement | null): void {
   if (!panel) return;
   panel.style.setProperty("--llm-font-scale", `${panelFontScalePercent / 100}`);
+  panel.style.setProperty(
+    "--llm-message-line-height",
+    `${messageLineSpacingPercent / 100}`,
+  );
+  panel.style.setProperty(
+    "--llm-message-paragraph-spacing",
+    `${messageParagraphSpacingPx}px`,
+  );
+  panel.style.setProperty(
+    "--llm-message-word-spacing",
+    `${messageWordSpacingPx}px`,
+  );
+  panel.style.setProperty(
+    "--llm-message-font-family",
+    formatMessageFontFamilyCssValue(messageFontFamily),
+  );
 }
 
 export function getFontScalePref(): number {
@@ -347,6 +397,135 @@ export function setFontScalePref(value: number): void {
     clamped,
     true,
   );
+}
+
+export function getMessageLineSpacingPref(): number {
+  const raw = getZoteroPrefs()?.get?.(
+    `${config.prefsPrefix}.${MESSAGE_LINE_SPACING_PREF_KEY}`,
+    true,
+  );
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return MESSAGE_LINE_SPACING_DEFAULT_PERCENT;
+  return Math.max(
+    MESSAGE_LINE_SPACING_MIN_PERCENT,
+    Math.min(n, MESSAGE_LINE_SPACING_MAX_PERCENT),
+  );
+}
+
+export function setMessageLineSpacingPref(value: number): void {
+  const clamped = Math.max(
+    MESSAGE_LINE_SPACING_MIN_PERCENT,
+    Math.min(value, MESSAGE_LINE_SPACING_MAX_PERCENT),
+  );
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${MESSAGE_LINE_SPACING_PREF_KEY}`,
+    clamped,
+    true,
+  );
+}
+
+export function getMessageParagraphSpacingPref(): number {
+  const raw = getZoteroPrefs()?.get?.(
+    `${config.prefsPrefix}.${MESSAGE_PARAGRAPH_SPACING_PREF_KEY}`,
+    true,
+  );
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return MESSAGE_PARAGRAPH_SPACING_DEFAULT_PX;
+  return Math.max(
+    MESSAGE_PARAGRAPH_SPACING_MIN_PX,
+    Math.min(n, MESSAGE_PARAGRAPH_SPACING_MAX_PX),
+  );
+}
+
+export function setMessageParagraphSpacingPref(value: number): void {
+  const clamped = Math.max(
+    MESSAGE_PARAGRAPH_SPACING_MIN_PX,
+    Math.min(value, MESSAGE_PARAGRAPH_SPACING_MAX_PX),
+  );
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${MESSAGE_PARAGRAPH_SPACING_PREF_KEY}`,
+    clamped,
+    true,
+  );
+}
+
+export function getMessageWordSpacingPref(): number {
+  const raw = getZoteroPrefs()?.get?.(
+    `${config.prefsPrefix}.${MESSAGE_WORD_SPACING_PREF_KEY}`,
+    true,
+  );
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return MESSAGE_WORD_SPACING_DEFAULT_PX;
+  return Math.max(
+    MESSAGE_WORD_SPACING_MIN_PX,
+    Math.min(n, MESSAGE_WORD_SPACING_MAX_PX),
+  );
+}
+
+export function setMessageWordSpacingPref(value: number): void {
+  const clamped = Math.max(
+    MESSAGE_WORD_SPACING_MIN_PX,
+    Math.min(value, MESSAGE_WORD_SPACING_MAX_PX),
+  );
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${MESSAGE_WORD_SPACING_PREF_KEY}`,
+    clamped,
+    true,
+  );
+}
+
+export function getMessageFontFamilyPref(): string {
+  const raw = getZoteroPrefs()?.get?.(
+    `${config.prefsPrefix}.${MESSAGE_FONT_FAMILY_PREF_KEY}`,
+    true,
+  );
+  return typeof raw === "string" ? raw : "";
+}
+
+export function setMessageFontFamilyPref(value: string): void {
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${MESSAGE_FONT_FAMILY_PREF_KEY}`,
+    value,
+    true,
+  );
+}
+
+function stripFontFamilyQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 2) return trimmed;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if ((first === `"` && last === `"`) || (first === "'" && last === "'")) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function formatFontFamilyToken(raw: string): string | null {
+  const token = stripFontFamilyQuotes(
+    raw
+      .replace(/[\n\r;]/g, " ")
+      .replace(/[{}]/g, "")
+      .trim(),
+  );
+  if (!token) return null;
+  const lower = token.toLowerCase();
+  if (GENERIC_FONT_FAMILIES.has(lower)) return lower;
+  if (/^-?[A-Za-z_][A-Za-z0-9_-]*$/.test(token)) return token;
+  return `"${token.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+export function formatMessageFontFamilyCssValue(value: string): string {
+  const tokens = value
+    .split(",")
+    .map(formatFontFamilyToken)
+    .filter((token): token is string => Boolean(token));
+  if (!tokens.length) return "inherit";
+  const hasGenericFallback = tokens.some((token) =>
+    GENERIC_FONT_FAMILIES.has(token.toLowerCase()),
+  );
+  if (!hasGenericFallback) tokens.push("sans-serif");
+  return tokens.join(", ");
 }
 
 /** Get/set JSON preferences with error handling */

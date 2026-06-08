@@ -52,13 +52,36 @@ import {
   FONT_SCALE_DEFAULT_PERCENT,
   FONT_SCALE_MAX_PERCENT,
   FONT_SCALE_MIN_PERCENT,
+  MESSAGE_LINE_SPACING_DEFAULT_PERCENT,
+  MESSAGE_LINE_SPACING_MAX_PERCENT,
+  MESSAGE_LINE_SPACING_MIN_PERCENT,
+  MESSAGE_PARAGRAPH_SPACING_DEFAULT_PX,
+  MESSAGE_PARAGRAPH_SPACING_MAX_PX,
+  MESSAGE_PARAGRAPH_SPACING_MIN_PX,
+  MESSAGE_WORD_SPACING_DEFAULT_PX,
+  MESSAGE_WORD_SPACING_MAX_PX,
+  MESSAGE_WORD_SPACING_MIN_PX,
 } from "./contextPanel/constants";
 import {
   applyPanelFontScale,
   getFontScalePref,
+  getMessageFontFamilyPref,
+  getMessageLineSpacingPref,
+  getMessageParagraphSpacingPref,
+  getMessageWordSpacingPref,
   setFontScalePref,
+  setMessageFontFamilyPref,
+  setMessageLineSpacingPref,
+  setMessageParagraphSpacingPref,
+  setMessageWordSpacingPref,
 } from "./contextPanel/prefHelpers";
-import { setPanelFontScalePercent } from "./contextPanel/state";
+import {
+  setPanelFontScalePercent,
+  setMessageFontFamily,
+  setMessageLineSpacingPercent,
+  setMessageParagraphSpacingPx,
+  setMessageWordSpacingPx,
+} from "./contextPanel/state";
 import { getAgentTraceExportPath } from "../agent/store/traceStore";
 import { joinLocalPath } from "../utils/localPath";
 import {
@@ -2029,42 +2052,84 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const fontScaleResetBtn = doc.querySelector(
     `#${config.addonRef}-panel-font-scale-reset`,
   ) as HTMLButtonElement | null;
+  const messageLineSpacingSlider = doc.querySelector(
+    `#${config.addonRef}-message-line-spacing`,
+  ) as HTMLInputElement | null;
+  const messageLineSpacingReadout = doc.querySelector(
+    `#${config.addonRef}-message-line-spacing-readout`,
+  ) as HTMLSpanElement | null;
+  const messageLineSpacingResetBtn = doc.querySelector(
+    `#${config.addonRef}-message-line-spacing-reset`,
+  ) as HTMLButtonElement | null;
+  const messageParagraphSpacingSlider = doc.querySelector(
+    `#${config.addonRef}-message-paragraph-spacing`,
+  ) as HTMLInputElement | null;
+  const messageParagraphSpacingReadout = doc.querySelector(
+    `#${config.addonRef}-message-paragraph-spacing-readout`,
+  ) as HTMLSpanElement | null;
+  const messageParagraphSpacingResetBtn = doc.querySelector(
+    `#${config.addonRef}-message-paragraph-spacing-reset`,
+  ) as HTMLButtonElement | null;
+  const messageWordSpacingSlider = doc.querySelector(
+    `#${config.addonRef}-message-word-spacing`,
+  ) as HTMLInputElement | null;
+  const messageWordSpacingReadout = doc.querySelector(
+    `#${config.addonRef}-message-word-spacing-readout`,
+  ) as HTMLSpanElement | null;
+  const messageWordSpacingResetBtn = doc.querySelector(
+    `#${config.addonRef}-message-word-spacing-reset`,
+  ) as HTMLButtonElement | null;
+  const messageFontFamilyInput = doc.querySelector(
+    `#${config.addonRef}-message-font-family`,
+  ) as HTMLInputElement | null;
+  const messageFontFamilyResetBtn = doc.querySelector(
+    `#${config.addonRef}-message-font-family-reset`,
+  ) as HTMLButtonElement | null;
+
+  const collectTypographyTargets = (): HTMLElement[] => {
+    const targets: HTMLElement[] = [];
+    const seen = new Set<HTMLElement>();
+    const push = (el: HTMLElement | null) => {
+      if (!el || seen.has(el)) return;
+      seen.add(el);
+      targets.push(el);
+    };
+    const wins = ((
+      Zotero as unknown as { getMainWindows?: () => Window[] }
+    ).getMainWindows?.() || []) as Window[];
+    for (const w of wins) {
+      const d = w?.document;
+      if (!d) continue;
+      d.querySelectorAll("#llm-main").forEach((n: Element) =>
+        push(n as HTMLElement),
+      );
+      push(
+        d.getElementById(
+          "llmforzotero-standalone-chat-root",
+        ) as HTMLElement | null,
+      );
+    }
+    const standaloneWin = addon?.data?.standaloneWindow as Window | undefined;
+    if (standaloneWin && standaloneWin.document) {
+      standaloneWin.document.querySelectorAll("#llm-main").forEach((n: Element) =>
+        push(n as HTMLElement),
+      );
+      push(
+        standaloneWin.document.getElementById(
+          "llmforzotero-standalone-chat-root",
+        ) as HTMLElement | null,
+      );
+    }
+    return targets;
+  };
+
+  const applyTypographyTargets = () => {
+    for (const target of collectTypographyTargets()) {
+      applyPanelFontScale(target);
+    }
+  };
 
   if (fontScaleSlider) {
-    const collectFontScaleTargets = (): HTMLElement[] => {
-      const targets: HTMLElement[] = [];
-      const seen = new Set<HTMLElement>();
-      const push = (el: HTMLElement | null) => {
-        if (!el || seen.has(el)) return;
-        seen.add(el);
-        targets.push(el);
-      };
-      const wins = ((
-        Zotero as unknown as { getMainWindows?: () => Window[] }
-      ).getMainWindows?.() || []) as Window[];
-      for (const w of wins) {
-        const d = w?.document;
-        if (!d) continue;
-        d.querySelectorAll("#llm-main").forEach((n: Element) =>
-          push(n as HTMLElement),
-        );
-        push(
-          d.getElementById(
-            "llmforzotero-standalone-chat-root",
-          ) as HTMLElement | null,
-        );
-      }
-      const standaloneWin = addon?.data?.standaloneWindow as Window | undefined;
-      if (standaloneWin && standaloneWin.document) {
-        push(
-          standaloneWin.document.getElementById(
-            "llmforzotero-standalone-chat-root",
-          ) as HTMLElement | null,
-        );
-      }
-      return targets;
-    };
-
     const applyFontScale = (value: number) => {
       const clamped = Math.max(
         FONT_SCALE_MIN_PERCENT,
@@ -2072,9 +2137,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
       setPanelFontScalePercent(clamped);
       setFontScalePref(clamped);
-      for (const target of collectFontScaleTargets()) {
-        applyPanelFontScale(target);
-      }
+      applyTypographyTargets();
       fontScaleSlider.value = String(clamped);
       if (fontScaleReadout) fontScaleReadout.textContent = `${clamped}%`;
     };
@@ -2092,6 +2155,134 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     if (fontScaleResetBtn) {
       fontScaleResetBtn.addEventListener("click", () => {
         applyFontScale(FONT_SCALE_DEFAULT_PERCENT);
+      });
+    }
+  }
+
+  if (messageLineSpacingSlider) {
+    const applyMessageLineSpacing = (value: number) => {
+      const clamped = Math.max(
+        MESSAGE_LINE_SPACING_MIN_PERCENT,
+        Math.min(value, MESSAGE_LINE_SPACING_MAX_PERCENT),
+      );
+      setMessageLineSpacingPercent(clamped);
+      setMessageLineSpacingPref(clamped);
+      applyTypographyTargets();
+      messageLineSpacingSlider.value = String(clamped);
+      if (messageLineSpacingReadout) {
+        messageLineSpacingReadout.textContent = `${clamped}%`;
+      }
+    };
+
+    const initial = getMessageLineSpacingPref();
+    messageLineSpacingSlider.value = String(initial);
+    if (messageLineSpacingReadout) {
+      messageLineSpacingReadout.textContent = `${initial}%`;
+    }
+
+    messageLineSpacingSlider.addEventListener("input", () => {
+      const next = Number(messageLineSpacingSlider.value);
+      if (!Number.isFinite(next)) return;
+      applyMessageLineSpacing(next);
+    });
+
+    if (messageLineSpacingResetBtn) {
+      messageLineSpacingResetBtn.addEventListener("click", () => {
+        applyMessageLineSpacing(MESSAGE_LINE_SPACING_DEFAULT_PERCENT);
+      });
+    }
+  }
+
+  if (messageParagraphSpacingSlider) {
+    const formatParagraphSpacing = (value: number) =>
+      `${Number.isInteger(value) ? String(value) : value.toFixed(1)}px`;
+    const applyMessageParagraphSpacing = (value: number) => {
+      const clamped = Math.max(
+        MESSAGE_PARAGRAPH_SPACING_MIN_PX,
+        Math.min(value, MESSAGE_PARAGRAPH_SPACING_MAX_PX),
+      );
+      setMessageParagraphSpacingPx(clamped);
+      setMessageParagraphSpacingPref(clamped);
+      applyTypographyTargets();
+      messageParagraphSpacingSlider.value = String(clamped);
+      if (messageParagraphSpacingReadout) {
+        messageParagraphSpacingReadout.textContent =
+          formatParagraphSpacing(clamped);
+      }
+    };
+
+    const initial = getMessageParagraphSpacingPref();
+    messageParagraphSpacingSlider.value = String(initial);
+    if (messageParagraphSpacingReadout) {
+      messageParagraphSpacingReadout.textContent =
+        formatParagraphSpacing(initial);
+    }
+
+    messageParagraphSpacingSlider.addEventListener("input", () => {
+      const next = Number(messageParagraphSpacingSlider.value);
+      if (!Number.isFinite(next)) return;
+      applyMessageParagraphSpacing(next);
+    });
+
+    if (messageParagraphSpacingResetBtn) {
+      messageParagraphSpacingResetBtn.addEventListener("click", () => {
+        applyMessageParagraphSpacing(MESSAGE_PARAGRAPH_SPACING_DEFAULT_PX);
+      });
+    }
+  }
+
+  if (messageWordSpacingSlider) {
+    const formatWordSpacing = (value: number) =>
+      `${Number.isInteger(value) ? String(value) : value.toFixed(1)}px`;
+    const applyMessageWordSpacing = (value: number) => {
+      const clamped = Math.max(
+        MESSAGE_WORD_SPACING_MIN_PX,
+        Math.min(value, MESSAGE_WORD_SPACING_MAX_PX),
+      );
+      setMessageWordSpacingPx(clamped);
+      setMessageWordSpacingPref(clamped);
+      applyTypographyTargets();
+      messageWordSpacingSlider.value = String(clamped);
+      if (messageWordSpacingReadout) {
+        messageWordSpacingReadout.textContent = formatWordSpacing(clamped);
+      }
+    };
+
+    const initial = getMessageWordSpacingPref();
+    messageWordSpacingSlider.value = String(initial);
+    if (messageWordSpacingReadout) {
+      messageWordSpacingReadout.textContent = formatWordSpacing(initial);
+    }
+
+    messageWordSpacingSlider.addEventListener("input", () => {
+      const next = Number(messageWordSpacingSlider.value);
+      if (!Number.isFinite(next)) return;
+      applyMessageWordSpacing(next);
+    });
+
+    if (messageWordSpacingResetBtn) {
+      messageWordSpacingResetBtn.addEventListener("click", () => {
+        applyMessageWordSpacing(MESSAGE_WORD_SPACING_DEFAULT_PX);
+      });
+    }
+  }
+
+  if (messageFontFamilyInput) {
+    const applyMessageFontFamily = (value: string) => {
+      setMessageFontFamily(value);
+      setMessageFontFamilyPref(value);
+      applyTypographyTargets();
+      messageFontFamilyInput.value = value;
+    };
+
+    messageFontFamilyInput.value = getMessageFontFamilyPref();
+    messageFontFamilyInput.addEventListener("input", () => {
+      applyMessageFontFamily(messageFontFamilyInput.value);
+    });
+
+    if (messageFontFamilyResetBtn) {
+      messageFontFamilyResetBtn.addEventListener("click", () => {
+        applyMessageFontFamily("");
       });
     }
   }

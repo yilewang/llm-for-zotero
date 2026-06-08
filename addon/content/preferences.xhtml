@@ -183,6 +183,60 @@
           </html:span>
         </html:div>
 
+        <html:details style="display: block;">
+          <html:summary style="font-size: 11px; color: var(--fill-secondary, #888); cursor: pointer; user-select: none;">
+            Message typography
+          </html:summary>
+          <html:div style="display: flex; flex-direction: column; gap: 10px; margin-top: 8px; padding-left: 14px;">
+            <html:div style="display: flex; flex-direction: column; gap: 4px">
+              <html:div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <html:label for="__addonRef__-message-paragraph-spacing" style="font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">Message Paragraph Spacing</html:label>
+                <html:input id="__addonRef__-message-paragraph-spacing" type="range" min="0" max="32" step="1" value="8" style="width: 180px; cursor: pointer; flex-shrink: 0;"></html:input>
+                <html:span id="__addonRef__-message-paragraph-spacing-readout" style="font-size: 11px; color: var(--fill-secondary, #888); min-width: 38px;">8px</html:span>
+                <html:button id="__addonRef__-message-paragraph-spacing-reset" type="button" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--stroke-secondary, #c8c8c8); background: transparent; color: inherit; cursor: pointer;">Reset</html:button>
+              </html:div>
+              <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
+                Adjusts spacing between normal rendered message paragraphs only. Tables and code blocks keep their current spacing.
+              </html:span>
+            </html:div>
+
+            <html:div style="display: flex; flex-direction: column; gap: 4px">
+              <html:div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <html:label for="__addonRef__-message-line-spacing" style="font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">Message Line Spacing</html:label>
+                <html:input id="__addonRef__-message-line-spacing" type="range" min="150" max="250" step="5" value="150" style="width: 180px; cursor: pointer; flex-shrink: 0;"></html:input>
+                <html:span id="__addonRef__-message-line-spacing-readout" style="font-size: 11px; color: var(--fill-secondary, #888); min-width: 38px;">150%</html:span>
+                <html:button id="__addonRef__-message-line-spacing-reset" type="button" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--stroke-secondary, #c8c8c8); background: transparent; color: inherit; cursor: pointer;">Reset</html:button>
+              </html:div>
+              <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
+                Adjusts line height inside normal rendered message paragraphs. Tables and code blocks keep their current spacing.
+              </html:span>
+            </html:div>
+
+            <html:div style="display: flex; flex-direction: column; gap: 4px">
+              <html:div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <html:label for="__addonRef__-message-word-spacing" style="font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">Message Word Spacing</html:label>
+                <html:input id="__addonRef__-message-word-spacing" type="range" min="0" max="8" step="0.5" value="0" style="width: 180px; cursor: pointer; flex-shrink: 0;"></html:input>
+                <html:span id="__addonRef__-message-word-spacing-readout" style="font-size: 11px; color: var(--fill-secondary, #888); min-width: 38px;">0px</html:span>
+                <html:button id="__addonRef__-message-word-spacing-reset" type="button" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--stroke-secondary, #c8c8c8); background: transparent; color: inherit; cursor: pointer;">Reset</html:button>
+              </html:div>
+              <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
+                Adjusts spacing between words in normal rendered message text only.
+              </html:span>
+            </html:div>
+
+            <html:div style="display: flex; flex-direction: column; gap: 4px">
+              <html:label for="__addonRef__-message-font-family" style="font-weight: 600; font-size: 12px; color: var(--fill-primary, inherit);">Message Font Family</html:label>
+              <html:div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <html:input id="__addonRef__-message-font-family" type="text" placeholder='System default, or e.g. "Atkinson Hyperlegible", system-ui, sans-serif' style="flex: 1 1 320px; min-width: 220px; max-width: 520px; padding: 5px 8px; font-size: 12px; border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 6px; background: Field; color: FieldText;" />
+                <html:button id="__addonRef__-message-font-family-reset" type="button" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--stroke-secondary, #c8c8c8); background: transparent; color: inherit; cursor: pointer;">Reset</html:button>
+              </html:div>
+              <html:span style="font-size: 11px; color: var(--fill-secondary, #888); margin-top: 1px; display: block;">
+                Comma-separated font family fallback stack. Leave empty to use the plugin default.
+              </html:span>
+            </html:div>
+          </html:div>
+        </html:details>
+
         <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:label
             style="
