@@ -5,6 +5,7 @@ import {
   getSelectedTextContextEntries,
   setSelectedTextContextEntries,
 } from "./contextResolution";
+import { resolveContextAttachmentSupportFromMetadata } from "./contextAttachmentSupport";
 import { setPaperModeOverride } from "./contexts/paperContextState";
 import { isSamePaperContextRef } from "./modeBehavior";
 import { readNoteSnapshot } from "./notes";
@@ -38,6 +39,7 @@ export type ContextSelectionStatusLevel = "ready" | "warning" | "error";
 export type ReferenceAttachmentContextKind =
   | "pdf"
   | "note"
+  | "text"
   | "figure"
   | "other";
 
@@ -209,19 +211,27 @@ export function upsertReferenceAttachmentContext(params: {
   kind: ReferenceAttachmentContextKind;
 }): ContextSelectionActionResult {
   const { deps, selectedGroup, selectedAttachment, kind } = params;
-  if (kind === "pdf") {
+  if (kind === "note") {
+    return upsertNoteTextContext(deps, selectedAttachment.contextItemId);
+  }
+  const attachmentSupport = resolveContextAttachmentSupportFromMetadata({
+    contentType: selectedAttachment.contentType,
+    filename: selectedAttachment.title,
+  });
+  if (attachmentSupport || kind === "pdf" || kind === "text") {
     return upsertPaperContext(deps, {
       itemId: selectedGroup.itemId,
       contextItemId: selectedAttachment.contextItemId,
       title: selectedGroup.title,
       attachmentTitle: selectedAttachment.title,
+      contentSourceMode:
+        attachmentSupport?.kind === "text"
+          ? attachmentSupport.contentSourceMode
+          : undefined,
       citationKey: selectedGroup.citationKey,
       firstCreator: selectedGroup.firstCreator,
       year: selectedGroup.year,
     });
-  }
-  if (kind === "note") {
-    return upsertNoteTextContext(deps, selectedAttachment.contextItemId);
   }
   return upsertOtherRefContext(deps, {
     contextItemId: selectedAttachment.contextItemId,
@@ -246,7 +256,11 @@ export function removeReferenceAttachmentContext(params: {
   const item = deps.item;
   if (!item) return unchanged();
   let removed = false;
-  if (kind === "pdf") {
+  const attachmentSupport = resolveContextAttachmentSupportFromMetadata({
+    contentType: selectedAttachment.contentType,
+    filename: selectedAttachment.title,
+  });
+  if (attachmentSupport || kind === "pdf" || kind === "text") {
     const existing = selectedPaperContextCache.get(item.id) || [];
     const removedPapers = existing.filter(
       (paper) =>

@@ -1,4 +1,5 @@
 import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient";
+import type { ContextAttachmentSupport } from "./contextAttachmentSupport";
 import type {
   SelectedTextSource,
   ChatAttachmentCategory,
@@ -135,6 +136,8 @@ export type CustomShortcut = {
 };
 export type ResolvedContextSource = {
   contextItem: Zotero.Item | null;
+  paperContext?: PaperContextRef | null;
+  support?: ContextAttachmentSupport | null;
   statusText: string;
   sourceKind?:
     | "none"
@@ -373,8 +376,8 @@ import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClien
 export type SendQuestionOptions = {
   body: Element;
   item: Zotero.Item;
-  /** Raw Zotero item selected in the panel; may be a child PDF under item. */
-  contextSourceItem?: Zotero.Item | null;
+  /** Resolved panel/source context selected by compose UI. */
+  contextSource?: ResolvedContextSource | null;
   question: string;
   images?: string[];
   model?: string;
@@ -422,8 +425,8 @@ export type SendQuestionOptions = {
 export type EditRetryOptions = {
   body: Element;
   item: Zotero.Item;
-  /** Raw Zotero item selected in the panel; may be a child PDF under item. */
-  contextSourceItem?: Zotero.Item | null;
+  /** Resolved panel/source context selected by compose UI. */
+  contextSource?: ResolvedContextSource | null;
   displayQuestion: string;
   selectedTexts?: string[];
   selectedTextSources?: SelectedTextSource[];

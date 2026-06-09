@@ -4,6 +4,12 @@ import {
   resolvePaperContextDisplayMetadata as resolvePaperContextDisplayMetadataShared,
 } from "../../paperAttribution";
 import { isPdfContextAttachment } from "../../contextAttachmentSupport";
+import {
+  getContextSourceModeBadgeLabel,
+  getContextSourceModeSourceTitle,
+  isContextSourceModeReaderNavigable,
+  isContextSourceModeTextLikeAttachment,
+} from "../../contextSourceModes";
 import { sanitizeText } from "../../textUtils";
 import type { PaperContextRef, PaperContentSourceMode } from "../../types";
 
@@ -38,7 +44,7 @@ export function isPaperContextFullTextOnlySourceMode(
 export function isPaperContextReaderFocusableSourceMode(
   mode?: PaperContentSourceMode | null,
 ): boolean {
-  return !isPaperContextFullTextOnlySourceMode(mode);
+  return isContextSourceModeReaderNavigable(mode);
 }
 
 export function hasPaperChipSourceMenuOption(
@@ -169,14 +175,7 @@ function buildCreatorYearBase(paperContext: PaperContextRef): string {
 function getPaperContextChipSourceLabel(
   contentSourceMode?: PaperContentSourceMode,
 ): string | null {
-  if (contentSourceMode === "text") return "Text";
-  if (contentSourceMode === "mineru") return "MD";
-  if (contentSourceMode === "pdf") return "PDF";
-  if (contentSourceMode === "markdown") return "MD";
-  if (contentSourceMode === "html") return "HTML";
-  if (contentSourceMode === "txt") return "TXT";
-  if (contentSourceMode === "docx") return "DOCX";
-  return null;
+  return getContextSourceModeBadgeLabel(contentSourceMode);
 }
 
 export function formatPaperContextChipLabel(
@@ -207,12 +206,7 @@ export function formatPaperContextCardAttachmentLine(
       fallback: "full.md",
     });
   }
-  if (
-    contentSourceMode === "markdown" ||
-    contentSourceMode === "html" ||
-    contentSourceMode === "txt" ||
-    contentSourceMode === "docx"
-  ) {
+  if (isContextSourceModeTextLikeAttachment(contentSourceMode)) {
     return resolvePaperContextAttachmentLabel(paperContext);
   }
   return "";
@@ -226,22 +220,7 @@ export function formatPaperContextChipTitle(
   const meta = [metadata.firstCreator || "", metadata.year || ""]
     .filter(Boolean)
     .join(" · ");
-  const modeLabel =
-    contentSourceMode === "text"
-      ? "Source: Extracted text"
-      : contentSourceMode === "mineru"
-        ? "Source: MinerU (enhanced markdown)"
-        : contentSourceMode === "pdf"
-          ? "Source: PDF file"
-          : contentSourceMode === "markdown"
-            ? "Source: Markdown attachment"
-            : contentSourceMode === "html"
-              ? "Source: HTML attachment"
-              : contentSourceMode === "txt"
-                ? "Source: TXT attachment"
-                : contentSourceMode === "docx"
-                  ? "Source: Word attachment"
-                  : "";
+  const modeLabel = getContextSourceModeSourceTitle(contentSourceMode);
   const attachmentTitle = formatPaperContextCardAttachmentLine(
     paperContext,
     contentSourceMode,

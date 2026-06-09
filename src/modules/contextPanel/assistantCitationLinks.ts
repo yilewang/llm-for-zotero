@@ -19,6 +19,7 @@ import {
   getActiveReaderForSelectedTab,
   resolveContextSourceItem,
 } from "./contextResolution";
+import { isPdfContextAttachment } from "./contextAttachmentSupport";
 import {
   type ExactQuoteJumpResult,
   flashPageInLivePdfReader,
@@ -427,6 +428,30 @@ function getReaderItemId(reader: any): number {
   const raw = Number(reader?._item?.id || reader?.itemID || 0);
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
 }
+
+function isPdfBackedCitationCandidate(
+  candidate: AssistantCitationPaperCandidate,
+): boolean {
+  if (
+    isTextLikeAttachmentSourceMode(candidate.paperContext.contentSourceMode) ||
+    isTextLikeAttachmentSourceMode(
+      candidate.displayPaperContext.contentSourceMode,
+    )
+  ) {
+    return false;
+  }
+  try {
+    return isPdfContextAttachment(
+      Zotero.Items.get(Math.floor(Number(candidate.contextItemId))) || null,
+    );
+  } catch (_err) {
+    void _err;
+    return false;
+  }
+}
+
+export const isPdfBackedCitationCandidateForTests =
+  isPdfBackedCitationCandidate;
 
 function getSelectedTextCount(message: Message | null | undefined): number {
   const selectedTexts = Array.isArray(message?.selectedTexts)
@@ -1409,6 +1434,7 @@ function startCitationQuoteLocationCacheWarm(
   if (!normalizedQuoteText || !candidates.length) return;
   const seen = new Set<number>();
   for (const candidate of candidates) {
+    if (!isPdfBackedCitationCandidate(candidate)) continue;
     const contextItemId = Math.floor(Number(candidate.contextItemId));
     if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
     if (seen.has(contextItemId)) continue;
@@ -1573,6 +1599,7 @@ function lookupVerifiedCachedCitationPageForButton(
   const normalizedQuoteText = sanitizeText(quoteText || "").trim();
   if (!normalizedQuoteText) return undefined;
   for (const candidate of candidates) {
+    if (!isPdfBackedCitationCandidate(candidate)) continue;
     const cached = citationPageCache.get(
       buildCitationCacheKey(candidate.contextItemId, normalizedQuoteText),
     );
@@ -1934,10 +1961,16 @@ async function resolveAndNavigateAssistantCitation(params: {
     // General inline citations may not have a quote snippet to page-locate.
     // In that case, open the best matching paper directly.
     if (!normalizedQuoteText) {
-      const firstCandidate = orderedCandidates[0];
+      const firstCandidate = orderedCandidates.find((candidate) =>
+        isPdfBackedCitationCandidate(candidate),
+      );
       if (!firstCandidate) {
         if (status)
-          setStatus(status, "No matching cited paper was found.", "error");
+          setStatus(
+            status,
+            "Cited source is not a PDF; page jump is unavailable.",
+            "error",
+          );
         return;
       }
       const opened = await openReaderForItem(firstCandidate.contextItemId);
@@ -1958,6 +1991,7 @@ async function resolveAndNavigateAssistantCitation(params: {
     // Cache check — skip rank-0 candidates to avoid stale entries from
     // whatever PDF happens to be open winning over the actual cited paper.
     for (const candidate of orderedCandidates) {
+      if (!isPdfBackedCitationCandidate(candidate)) continue;
       if (rankCandidateForCitation(extractedCitation, candidate) === 0)
         continue;
       const cached = await navigateToCachedCitationPage(
@@ -2007,6 +2041,7 @@ async function resolveAndNavigateAssistantCitation(params: {
     // navigation jump to the likely page immediately before FindController
     // verifies/refines the paragraph and page label.
     for (const candidate of orderedCandidates) {
+      if (!isPdfBackedCitationCandidate(candidate)) continue;
       if (rankCandidateForCitation(extractedCitation, candidate) === 0)
         continue;
       const hiddenLocation = lookupCachedQuoteLocationForAttachment(
@@ -2060,7 +2095,9 @@ async function resolveAndNavigateAssistantCitation(params: {
     ).trim();
     if (explicitPageLabel) {
       const bestRanked = orderedCandidates.find(
-        (c) => rankCandidateForCitation(extractedCitation, c) > 0,
+        (c) =>
+          isPdfBackedCitationCandidate(c) &&
+          rankCandidateForCitation(extractedCitation, c) > 0,
       );
       if (bestRanked) {
         const target = await openReaderForItem(bestRanked.contextItemId);
@@ -2171,6 +2208,7 @@ async function resolveAndNavigateAssistantCitation(params: {
     // candidate exists.
     for (const pass of [1, 2] as const) {
       for (const candidate of orderedCandidates) {
+        if (!isPdfBackedCitationCandidate(candidate)) continue;
         const rank = rankCandidateForCitation(extractedCitation, candidate);
         if (pass === 1 && rank === 0) continue;
         if (pass === 2 && rank !== 0) continue;

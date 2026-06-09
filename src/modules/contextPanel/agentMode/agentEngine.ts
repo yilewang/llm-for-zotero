@@ -89,6 +89,7 @@ import type {
   SelectedTextSource,
   TagContextRef,
 } from "../../../shared/types";
+import type { ResolvedContextSource } from "../types";
 import type { UsageStats } from "../../../shared/llm";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../../utils/llmClient";
 import type { ChatMessage } from "../../../utils/llmClient";
@@ -517,7 +518,7 @@ export type AgentEngineDeps = {
     paperContexts?: PaperContextRef[],
     fullTextPaperContexts?: PaperContextRef[],
     excludePaperKeys?: Set<string>,
-    contextSourceItem?: Zotero.Item | null,
+    contextSource?: ResolvedContextSource | null,
   ) => {
     paperContexts: PaperContextRef[];
     fullTextPaperContexts: PaperContextRef[];
@@ -568,7 +569,7 @@ export async function sendAgentTurn(
   opts: {
     body: Element;
     item: Zotero.Item;
-    contextSourceItem?: Zotero.Item | null;
+    contextSource?: ResolvedContextSource | null;
     question: string;
     images?: string[];
     model?: string;
@@ -609,7 +610,7 @@ export async function sendAgentTurn(
   const {
     body,
     item,
-    contextSourceItem,
+    contextSource,
     question,
     images,
     model,
@@ -819,7 +820,7 @@ export async function sendAgentTurn(
     normalizedPaperContexts,
     normalizedFullTextPaperContexts,
     undefined,
-    contextSourceItem,
+    contextSource,
   );
   userMessage.paperContexts = paperContextsForMessage.length
     ? paperContextsForMessage

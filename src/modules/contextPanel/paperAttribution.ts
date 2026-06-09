@@ -2,6 +2,7 @@ import {
   isPdfContextAttachment,
   resolveContextAttachmentSupport,
 } from "./contextAttachmentSupport";
+import { formatContextAttachmentSourceType } from "./contextSourceModes";
 import type { TextAttachmentSourceMode } from "./textAttachmentExtraction";
 import type { PaperContentSourceMode, PaperContextRef } from "./types";
 
@@ -163,11 +164,7 @@ export function isTextLikeAttachmentSourceMode(
 export function formatAttachmentSourceType(
   mode: PaperContentSourceMode | undefined | null,
 ): string {
-  if (mode === "markdown") return "Markdown attachment";
-  if (mode === "html") return "HTML attachment";
-  if (mode === "txt") return "TXT attachment";
-  if (mode === "docx") return "DOCX attachment";
-  return "Attachment";
+  return formatContextAttachmentSourceType(mode);
 }
 
 export function resolvePaperContextDisplayRef(

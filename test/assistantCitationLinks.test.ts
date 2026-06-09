@@ -11,6 +11,7 @@ import {
   extractStandalonePaperSourceLabel,
   formatSourceLabelWithPage,
   formatUnverifiedCitationChipLabel,
+  isPdfBackedCitationCandidateForTests,
   lookupCachedCitationPage,
   matchAssistantCitationCandidates,
   rememberCachedCitationPage,
@@ -27,11 +28,13 @@ function makeZoteroItem(params: {
   fields?: Record<string, unknown>;
   parentID?: number;
   attachmentFilename?: string;
+  attachmentContentType?: string;
 }): Zotero.Item {
   return {
     id: params.id,
     parentID: params.parentID,
     attachmentFilename: params.attachmentFilename,
+    attachmentContentType: params.attachmentContentType,
     isRegularItem: () => params.kind === "regular",
     isAttachment: () => params.kind === "attachment",
     getField: (field: string) => params.fields?.[field] || "",
@@ -187,6 +190,66 @@ describe("assistantCitationLinks", function () {
     assert.sameMembers(
       candidates.map((entry) => entry.sourceLabel),
       ["(Garcia, 2024)", "(Patel, 2025)"],
+    );
+  });
+
+  it("classifies only PDF-backed citation candidates as page-locatable", function () {
+    installZoteroItems({
+      11: makeZoteroItem({
+        id: 11,
+        kind: "attachment",
+        parentID: 1,
+        attachmentFilename: "paper.pdf",
+        attachmentContentType: "application/pdf",
+      }),
+      22: makeZoteroItem({
+        id: 22,
+        kind: "attachment",
+        parentID: 2,
+        attachmentFilename: "test.md",
+        attachmentContentType: "text/markdown",
+      }),
+    });
+    const pdfContext: PaperContextRef = {
+      itemId: 1,
+      contextItemId: 11,
+      title: "PDF paper",
+    };
+    const markdownContext: PaperContextRef = {
+      itemId: 2,
+      contextItemId: 22,
+      title: "Markdown paper",
+      attachmentTitle: "test",
+      contentSourceMode: "markdown",
+    };
+    const makeCandidate = (paperContext: PaperContextRef) => ({
+      paperContext,
+      displayPaperContext: paperContext,
+      contextItemId: paperContext.contextItemId,
+      sourceLabel: "(Paper)",
+      citationLabel: "Paper",
+      displaySourceLabel: "(Paper)",
+      displayCitationLabel: "Paper",
+      normalizedSourceLabel: "paper",
+      normalizedCitationLabel: "paper",
+      normalizedDisplaySourceLabel: "paper",
+      normalizedDisplayCitationLabel: "paper",
+    });
+
+    assert.isTrue(
+      isPdfBackedCitationCandidateForTests(makeCandidate(pdfContext)),
+    );
+    assert.isFalse(
+      isPdfBackedCitationCandidateForTests(makeCandidate(markdownContext)),
+    );
+    assert.isFalse(
+      isPdfBackedCitationCandidateForTests(
+        makeCandidate({
+          itemId: 2,
+          contextItemId: 22,
+          title: "Missing mode markdown",
+        }),
+      ),
     );
   });
 
@@ -783,6 +846,7 @@ describe("citation page cache", function () {
     assert.isAtLeast(start, 0);
     assert.isAbove(end, start);
     assert.include(warmSection, "warmQuoteLocationCacheForAttachment");
+    assert.include(warmSection, "isPdfBackedCitationCandidate");
     assert.notInclude(warmSection, "updateCitationButtonPage");
     assert.notInclude(warmSection, "rememberCachedCitationPage");
     assert.include(source, "lookupCachedQuoteLocationForAttachment");

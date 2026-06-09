@@ -3,9 +3,11 @@ import type {
   ChatAttachment,
   CollectionContextRef,
   PaperContextRef,
+  ResolvedContextSource,
   SelectedTextContext,
   TagContextRef,
 } from "../src/modules/contextPanel/types";
+import { includeAutoLoadedPaperContextForTests } from "../src/modules/contextPanel/chat";
 import { createSendFlowController } from "../src/modules/contextPanel/setupHandlers/controllers/sendFlowController";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../src/modules/contextPanel/pdfSupportMessages";
 
@@ -37,6 +39,56 @@ describe("sendFlowController", function () {
     libraryID: 1,
   };
 
+  it("uses explicit Markdown source context before ambient reader context", function () {
+    const currentItem = {
+      id: 707,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+    } as unknown as Zotero.Item;
+    const activePdfReaderItem = {
+      id: 909,
+      parentID: 707,
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "active.pdf",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: () => "active.pdf",
+    } as unknown as Zotero.Item;
+    const markdownContext: PaperContextRef = {
+      itemId: 707,
+      contextItemId: 808,
+      title: "Parent paper",
+      attachmentTitle: "test",
+      contentSourceMode: "markdown",
+    };
+
+    const result = includeAutoLoadedPaperContextForTests(
+      currentItem,
+      [],
+      undefined,
+      undefined,
+      {
+        contextItem: activePdfReaderItem,
+        paperContext: markdownContext,
+        statusText: "using the selected Markdown attachment as context",
+      },
+    );
+
+    assert.lengthOf(result.paperContexts, 1);
+    assert.equal(result.paperContexts[0].itemId, markdownContext.itemId);
+    assert.equal(
+      result.paperContexts[0].contextItemId,
+      markdownContext.contextItemId,
+    );
+    assert.equal(result.paperContexts[0].contentSourceMode, "markdown");
+    assert.lengthOf(result.fullTextPaperContexts, 1);
+    assert.equal(
+      result.fullTextPaperContexts[0].contextItemId,
+      markdownContext.contextItemId,
+    );
+    assert.equal(result.fullTextPaperContexts[0].contentSourceMode, "markdown");
+  });
+
   function createBaseDeps(overrides: Record<string, unknown> = {}) {
     const inputBox = {
       value: "ask question",
@@ -60,13 +112,13 @@ describe("sendFlowController", function () {
     let lastSentImages: string[] | undefined;
     let lastSentAttachments: ChatAttachment[] | undefined;
     let lastSentModelAttachments: ChatAttachment[] | undefined;
-    let lastSentContextSourceItem: Zotero.Item | null | undefined;
+    let lastSentContextSource: ResolvedContextSource | null | undefined;
     let lastEditRuntimeMode = "";
     let lastEditImages: string[] | undefined;
     let lastEditAttachments: ChatAttachment[] | undefined;
     let lastEditModelAttachments: ChatAttachment[] | undefined;
     let lastEditPdfUploadSystemMessages: string[] | undefined;
-    let lastEditContextSourceItem: Zotero.Item | null | undefined;
+    let lastEditContextSource: ResolvedContextSource | null | undefined;
     let lastSentCollectionContexts: CollectionContextRef[] | undefined;
     let lastSentTagContexts: TagContextRef[] | undefined;
     let lastEditCollectionContexts: CollectionContextRef[] | undefined;
@@ -78,7 +130,11 @@ describe("sendFlowController", function () {
       body: {} as Element,
       inputBox,
       getItem: () => item,
-      resolveContextSourceItem: async () => item,
+      resolveContextSource: async () => ({
+        contextItem: item,
+        paperContext: null,
+        statusText: "",
+      }),
       closeSlashMenu: () => undefined,
       closePaperPicker: () => undefined,
       getSelectedTextContextEntries: () => selectedTextContexts,
@@ -133,7 +189,7 @@ describe("sendFlowController", function () {
         lastEditPdfUploadSystemMessages = opts.pdfUploadSystemMessages;
         lastEditCollectionContexts = opts.selectedCollectionContexts;
         lastEditTagContexts = opts.selectedTagContexts;
-        lastEditContextSourceItem = opts.contextSourceItem;
+        lastEditContextSource = opts.contextSource;
         return "ok" as const;
       },
       sendQuestion: async (opts: any) => {
@@ -148,7 +204,7 @@ describe("sendFlowController", function () {
         lastSentModelAttachments = opts.modelAttachments;
         lastSentCollectionContexts = opts.selectedCollectionContexts;
         lastSentTagContexts = opts.selectedTagContexts;
-        lastSentContextSourceItem = opts.contextSourceItem;
+        lastSentContextSource = opts.contextSource;
       },
       retainPinnedImageState: () => {
         retainImageCalled += 1;
@@ -212,7 +268,7 @@ describe("sendFlowController", function () {
         lastSentModelAttachments,
         lastSentCollectionContexts,
         lastSentTagContexts,
-        lastSentContextSourceItem,
+        lastSentContextSource,
       }),
       getLastEditRuntimeMode: () => lastEditRuntimeMode,
       getLastEditImages: () => lastEditImages,
@@ -221,7 +277,7 @@ describe("sendFlowController", function () {
       getLastEditPdfUploadSystemMessages: () => lastEditPdfUploadSystemMessages,
       getLastEditCollectionContexts: () => lastEditCollectionContexts,
       getLastEditTagContexts: () => lastEditTagContexts,
-      getLastEditContextSourceItem: () => lastEditContextSourceItem,
+      getLastEditContextSource: () => lastEditContextSource,
       getLastStatus: () => lastStatus,
       getStatuses: () => statuses.slice(),
     };
@@ -243,10 +299,14 @@ describe("sendFlowController", function () {
   });
 
   it("awaits the resolved context source before selecting paper contexts", async function () {
-    const resolvedContextSource = { id: 404 } as unknown as Zotero.Item;
+    const resolvedContextSource: ResolvedContextSource = {
+      contextItem: { id: 404 } as unknown as Zotero.Item,
+      paperContext: null,
+      statusText: "resolved",
+    };
     let resolverFinished = false;
     const { controller, getLastSend } = createBaseDeps({
-      resolveContextSourceItem: async () => {
+      resolveContextSource: async () => {
         await Promise.resolve();
         resolverFinished = true;
         return resolvedContextSource;
@@ -259,13 +319,20 @@ describe("sendFlowController", function () {
 
     await controller.doSend();
 
-    assert.equal(getLastSend().lastSentContextSourceItem, resolvedContextSource);
+    assert.deepEqual(
+      getLastSend().lastSentContextSource,
+      resolvedContextSource,
+    );
   });
 
   it("passes the resolved context source into latest-turn edit retries", async function () {
-    const resolvedContextSource = { id: 505 } as unknown as Zotero.Item;
-    const { controller, getLastEditContextSourceItem } = createBaseDeps({
-      resolveContextSourceItem: async () => resolvedContextSource,
+    const resolvedContextSource: ResolvedContextSource = {
+      contextItem: { id: 505 } as unknown as Zotero.Item,
+      paperContext: null,
+      statusText: "resolved",
+    };
+    const { controller, getLastEditContextSource } = createBaseDeps({
+      resolveContextSource: async () => resolvedContextSource,
       getActiveEditSession: () => ({
         conversationKey: item.id,
         userTimestamp: 10,
@@ -282,7 +349,57 @@ describe("sendFlowController", function () {
 
     await controller.doSend();
 
-    assert.equal(getLastEditContextSourceItem(), resolvedContextSource);
+    assert.deepEqual(getLastEditContextSource(), resolvedContextSource);
+  });
+
+  it("passes explicit Markdown source context through sends and edit retries", async function () {
+    const markdownItem = { id: 808 } as unknown as Zotero.Item;
+    const markdownContext: PaperContextRef = {
+      itemId: 707,
+      contextItemId: 808,
+      title: "Parent paper",
+      attachmentTitle: "test",
+      contentSourceMode: "markdown",
+    };
+    const markdownSource: ResolvedContextSource = {
+      contextItem: markdownItem,
+      paperContext: markdownContext,
+      statusText: "using the selected Markdown attachment as context",
+    };
+    const sendCase = createBaseDeps({
+      resolveContextSource: async () => markdownSource,
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+    });
+
+    await sendCase.controller.doSend();
+
+    assert.deepEqual(
+      sendCase.getLastSend().lastSentContextSource,
+      markdownSource,
+    );
+
+    const editCase = createBaseDeps({
+      resolveContextSource: async () => markdownSource,
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+      getActiveEditSession: () => ({
+        conversationKey: item.id,
+        userTimestamp: 10,
+        assistantTimestamp: 20,
+      }),
+      getLatestEditablePair: async () => ({
+        conversationKey: item.id,
+        pair: {
+          userMessage: { timestamp: 10 },
+          assistantMessage: { timestamp: 20, streaming: false },
+        },
+      }),
+    });
+
+    await editCase.controller.doSend();
+
+    assert.deepEqual(editCase.getLastEditContextSource(), markdownSource);
   });
 
   it("sends override text while preserving the current draft", async function () {
@@ -309,20 +426,21 @@ describe("sendFlowController", function () {
   });
 
   it("uses retain-pinned callbacks for edit-latest flow", async function () {
-    const { controller, inputBox, getCounts, getLastEditRuntimeMode } = createBaseDeps({
-      getActiveEditSession: () => ({
-        conversationKey: item.id,
-        userTimestamp: 10,
-        assistantTimestamp: 20,
-      }),
-      getLatestEditablePair: async () => ({
-        conversationKey: item.id,
-        pair: {
-          userMessage: { timestamp: 10 },
-          assistantMessage: { timestamp: 20, streaming: false },
-        },
-      }),
-    });
+    const { controller, inputBox, getCounts, getLastEditRuntimeMode } =
+      createBaseDeps({
+        getActiveEditSession: () => ({
+          conversationKey: item.id,
+          userTimestamp: 10,
+          assistantTimestamp: 20,
+        }),
+        getLatestEditablePair: async () => ({
+          conversationKey: item.id,
+          pair: {
+            userMessage: { timestamp: 10 },
+            assistantMessage: { timestamp: 20, streaming: false },
+          },
+        }),
+      });
     await controller.doSend();
     const counts = getCounts();
 
@@ -770,7 +888,10 @@ describe("sendFlowController", function () {
     await controller.doSend();
 
     assert.equal(getCounts().sendCalled, 1);
-    assert.equal(getLastSend().lastSentQuestion, "Please analyze selected collection.");
+    assert.equal(
+      getLastSend().lastSentQuestion,
+      "Please analyze selected collection.",
+    );
     assert.deepEqual(getLastSend().lastSentCollectionContexts, [
       selectedCollection,
     ]);

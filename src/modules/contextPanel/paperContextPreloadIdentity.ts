@@ -49,6 +49,7 @@ export function isAutoLoadedSnapshotForCurrentPaper(params: {
   snapshotContextItemId?: number | null;
   currentContentSourceMode?: string | null;
   snapshotContentSourceMode?: string | null;
+  allowExplicitContextOverride?: boolean;
 }): boolean {
   if (
     !params.currentOwnerItemId ||
@@ -56,6 +57,9 @@ export function isAutoLoadedSnapshotForCurrentPaper(params: {
     params.currentOwnerItemId !== params.snapshotOwnerItemId
   ) {
     return false;
+  }
+  if (params.allowExplicitContextOverride) {
+    return true;
   }
   if (
     params.currentContextItemId &&

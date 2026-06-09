@@ -18,6 +18,7 @@ import {
 } from "../../state";
 import { getSelectedTextContextEntries } from "../../contextResolution";
 import { resolveContextAttachmentSupportFromMetadata } from "../../contextAttachmentSupport";
+import { getContextSourceModeBadgeLabel } from "../../contextSourceModes";
 import {
   browseAllItemCandidates,
   normalizePaperSearchText,
@@ -38,10 +39,7 @@ import {
   type MineruTagMatchMode,
   type MineruTagScope,
 } from "../../../mineruTagIndex";
-import type {
-  PaperContextRef,
-  TagContextRef,
-} from "../../types";
+import type { PaperContextRef, TagContextRef } from "../../types";
 import {
   buildReferenceSelectorTagIndexItems,
   buildReferenceSelectorTagViewModel,
@@ -84,6 +82,7 @@ import {
 
 type StatusLevel = ContextSelectionStatusLevel;
 type ActiveSlashToken = PaperSearchSlashToken;
+type PickerAttachmentKind = "pdf" | "note" | "text" | "figure" | "other";
 type PaperPickerRenderOptions = {
   preserveReferenceScroll?: boolean;
   skipActiveScroll?: boolean;
@@ -172,7 +171,8 @@ export function positionPaperPickerForAnchor(params: {
       Math.min(
         REFERENCE_SELECTOR_MAX_HEIGHT,
         (viewportHeight ||
-          REFERENCE_SELECTOR_MAX_HEIGHT / REFERENCE_SELECTOR_VIEWPORT_FRACTION) *
+          REFERENCE_SELECTOR_MAX_HEIGHT /
+            REFERENCE_SELECTOR_VIEWPORT_FRACTION) *
           REFERENCE_SELECTOR_VIEWPORT_FRACTION,
       ),
     ),
@@ -301,24 +301,19 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
   function resolvePickerItemKind(
     contentType?: string,
     filename?: string,
-  ): "pdf" | "note" | "figure" | "other" {
-    if (!contentType) return "other";
-    if (
-      resolveContextAttachmentSupportFromMetadata({
-        contentType,
-        filename,
-      })?.kind === "pdf"
-    ) {
-      return "pdf";
-    }
+  ): PickerAttachmentKind {
     if (contentType === ZOTERO_NOTE_CONTENT_TYPE) return "note";
-    if (contentType.startsWith("image/")) return "figure";
+    const support = resolveContextAttachmentSupportFromMetadata({
+      contentType,
+      filename,
+    });
+    if (support?.kind === "pdf") return "pdf";
+    if (support?.kind === "text") return "text";
+    if (contentType?.startsWith("image/")) return "figure";
     return "other";
   }
 
-  function resolvePickerKindIcon(
-    kind: "pdf" | "note" | "figure" | "other",
-  ): PickerIconName {
+  function resolvePickerKindIcon(kind: PickerAttachmentKind): PickerIconName {
     if (kind === "pdf") return "pdf";
     if (kind === "note") return "note";
     if (kind === "figure") return "image";
@@ -327,15 +322,28 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
 
   function resolvePickerAttachmentKind(
     attachment: PaperSearchAttachmentCandidate,
-  ): "pdf" | "note" | "figure" | "other" {
+  ): PickerAttachmentKind {
     return resolvePickerItemKind(attachment.contentType, attachment.title);
   }
 
-  function resolvePickerKindLabel(
-    kind: "pdf" | "note" | "figure" | "other",
+  function resolvePickerAttachmentLabel(
+    attachment: PaperSearchAttachmentCandidate,
+    kind = resolvePickerAttachmentKind(attachment),
   ): string {
     if (kind === "pdf") return "PDF";
     if (kind === "note") return "Note";
+    if (kind === "text") {
+      const support = resolveContextAttachmentSupportFromMetadata({
+        contentType: attachment.contentType,
+        filename: attachment.title,
+      });
+      if (support?.kind === "text") {
+        return (
+          getContextSourceModeBadgeLabel(support.contentSourceMode) || "Text"
+        );
+      }
+      return "Text";
+    }
     if (kind === "figure") return "Figure";
     return "File";
   }
@@ -377,8 +385,8 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     if (normalizedTitle) return normalizedTitle;
     const kind = resolvePickerAttachmentKind(attachment);
     return group.attachments.length > 1
-      ? `${resolvePickerKindLabel(kind)} ${attachmentIndex + 1}`
-      : resolvePickerKindLabel(kind);
+      ? `${resolvePickerAttachmentLabel(attachment, kind)} ${attachmentIndex + 1}`
+      : resolvePickerAttachmentLabel(attachment, kind);
   };
 
   const getPaperPickerGroupByItemId = (itemId: number) =>
@@ -503,7 +511,10 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
   };
 
   const findPaperPickerParentRowIndex = (index: number): number => {
-    return findReferenceSelectorParentRowIndex(referenceSelectorState.rows, index);
+    return findReferenceSelectorParentRowIndex(
+      referenceSelectorState.rows,
+      index,
+    );
   };
 
   const findPaperPickerFirstChildRowIndex = (index: number): number => {
@@ -640,10 +651,7 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
 
   const addZoteroItemsAsPaperContext = (zoteroItems: Zotero.Item[]): void => {
     applyContextSelectionResult(
-      addZoteroItemsAsContext(
-        getContextSelectionActionDeps(),
-        zoteroItems,
-      ),
+      addZoteroItemsAsContext(getContextSelectionActionDeps(), zoteroItems),
     );
   };
 
@@ -717,7 +725,10 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     if (isReferenceSelectorDirectSelection(selectionState)) {
       removePaperPickerAttachmentContext(selectedGroup, selectedAttachment);
     } else if (isReferenceSelectorSelected(selectionState)) {
-      setStatus(getPaperPickerAttachmentSelectionTitle(selectionState), "warning");
+      setStatus(
+        getPaperPickerAttachmentSelectionTitle(selectionState),
+        "warning",
+      );
     } else {
       upsertPaperPickerAttachmentContext(selectedGroup, selectedAttachment);
     }
@@ -833,7 +844,9 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
   };
 
   const handleArrowRight = () => {
-    const activeRow = getPaperPickerRowAt(referenceSelectorState.activeRowIndex);
+    const activeRow = getPaperPickerRowAt(
+      referenceSelectorState.activeRowIndex,
+    );
     if (!activeRow) return;
     if (activeRow.kind === "collection") {
       if (!isPaperPickerCollectionExpanded(activeRow.collectionId)) {
@@ -861,14 +874,19 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     const firstChildIndex = findPaperPickerFirstAttachmentRowIndex(
       activeRow.itemId,
     );
-    if (firstChildIndex >= 0 && firstChildIndex !== referenceSelectorState.activeRowIndex) {
+    if (
+      firstChildIndex >= 0 &&
+      firstChildIndex !== referenceSelectorState.activeRowIndex
+    ) {
       referenceSelectorState.activeRowIndex = firstChildIndex;
       renderPaperPicker();
     }
   };
 
   const handleArrowLeft = () => {
-    const activeRow = getPaperPickerRowAt(referenceSelectorState.activeRowIndex);
+    const activeRow = getPaperPickerRowAt(
+      referenceSelectorState.activeRowIndex,
+    );
     if (!activeRow) return;
     if (activeRow.kind === "collection") {
       if (isPaperPickerCollectionExpanded(activeRow.collectionId)) {
@@ -887,7 +905,10 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     }
     if (activeRow.kind === "attachment") {
       const parentIndex = findPaperPickerPaperRowIndex(activeRow.itemId);
-      if (parentIndex >= 0 && parentIndex !== referenceSelectorState.activeRowIndex) {
+      if (
+        parentIndex >= 0 &&
+        parentIndex !== referenceSelectorState.activeRowIndex
+      ) {
         referenceSelectorState.activeRowIndex = parentIndex;
         renderPaperPicker();
       }
@@ -978,8 +999,7 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     ownerDoc: Document,
     key: PaperPickerPanelKey,
     panel: HTMLElement,
-  ): HTMLElement =>
-    panelLayout.createPanelSeparator(ownerDoc, key, panel);
+  ): HTMLElement => panelLayout.createPanelSeparator(ownerDoc, key, panel);
 
   const isPaperPickerPanelCollapsed = (key: PaperPickerPanelKey): boolean =>
     panelLayout.isCollapsed(key);
@@ -997,9 +1017,10 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
   const capturePaperPickerPanelHeights = (): void =>
     panelLayout.capturePanelHeights();
 
-  const capturePaperPickerRenderedPanelHeights =
-    (): Map<PaperPickerPanelKey, number> =>
-      panelLayout.captureRenderedPanelHeights();
+  const capturePaperPickerRenderedPanelHeights = (): Map<
+    PaperPickerPanelKey,
+    number
+  > => panelLayout.captureRenderedPanelHeights();
 
   const fitPaperPickerPanelsToAvailableHeight = (): void =>
     panelLayout.fitPanelsToAvailableHeight();
@@ -1102,7 +1123,9 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     collection: PaperBrowseCollectionCandidate,
     depth: number,
   ): void => {
-    const folderQuery = referenceSelectorState.folderFilterQuery.trim().toLowerCase();
+    const folderQuery = referenceSelectorState.folderFilterQuery
+      .trim()
+      .toLowerCase();
     const isFilteringFolders = folderQuery.length > 0;
     if (
       isFilteringFolders &&
@@ -1318,13 +1341,15 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     button.type = "button";
     button.classList.toggle(
       "llm-paper-picker-tag-scope-active",
-      referenceSelectorState.tagScope === scope && referenceSelectorState.selectedTags.size === 0,
+      referenceSelectorState.tagScope === scope &&
+        referenceSelectorState.selectedTags.size === 0,
     );
     button.addEventListener("mousedown", (event: Event) => {
       event.preventDefault();
       event.stopPropagation();
       referenceSelectorState.tagScope =
-        referenceSelectorState.tagScope === scope && referenceSelectorState.selectedTags.size === 0
+        referenceSelectorState.tagScope === scope &&
+        referenceSelectorState.selectedTags.size === 0
           ? "all"
           : scope;
       referenceSelectorState.selectedTags.clear();
@@ -1591,7 +1616,8 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     menuButton.addEventListener("mousedown", (event: Event) => {
       event.preventDefault();
       event.stopPropagation();
-      referenceSelectorState.tagFilterMenuOpen = !referenceSelectorState.tagFilterMenuOpen;
+      referenceSelectorState.tagFilterMenuOpen =
+        !referenceSelectorState.tagFilterMenuOpen;
       renderPaperPicker();
     });
     menuWrap.appendChild(menuButton);
@@ -1705,7 +1731,8 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     const rowHost = createElement(ownerDoc, "div", "llm-paper-picker-row-host");
     const renderedOptions: HTMLElement[] = [];
     const referencesCollapsed =
-      referenceSelectorState.mode === "browse" && isPaperPickerPanelCollapsed("references");
+      referenceSelectorState.mode === "browse" &&
+      isPaperPickerPanelCollapsed("references");
     const shouldRenderReferenceRows = !referencesCollapsed;
     if (referenceSelectorState.mode === "browse") {
       const shell = createElement(ownerDoc, "div", "llm-paper-picker-shell");
@@ -2032,7 +2059,7 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
             }),
             createElement(ownerDoc, "span", "llm-paper-picker-meta", {
               textContent: [
-                `${resolvePickerKindLabel(attachmentKind)} attachment`,
+                `${resolvePickerAttachmentLabel(attachment, attachmentKind)} attachment`,
                 group.firstCreator,
                 group.year,
               ]
@@ -2101,7 +2128,8 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
       rowHost.scrollTop = preservedReferenceScrollTop;
     }
     if (options.skipActiveScroll) return;
-    const activeOption = renderedOptions[referenceSelectorState.activeRowIndex] || null;
+    const activeOption =
+      renderedOptions[referenceSelectorState.activeRowIndex] || null;
     if (referenceSelectorState.activeRowIndex <= 0) {
       paperPicker.scrollTop = 0;
     } else {
@@ -2185,7 +2213,9 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
   const moveActiveRow = (delta: number) => {
     if (!referenceSelectorState.rows.length) return;
     referenceSelectorState.activeRowIndex =
-      (referenceSelectorState.activeRowIndex + delta + referenceSelectorState.rows.length) %
+      (referenceSelectorState.activeRowIndex +
+        delta +
+        referenceSelectorState.rows.length) %
       referenceSelectorState.rows.length;
     renderPaperPicker();
   };

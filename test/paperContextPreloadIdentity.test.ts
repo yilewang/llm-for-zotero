@@ -98,6 +98,31 @@ describe("paperContextPreloadIdentity", function () {
     );
   });
 
+  it("keeps an explicit source-menu attachment selection over the active reader", function () {
+    assert.isTrue(
+      isAutoLoadedSnapshotForCurrentPaper({
+        currentOwnerItemId: 84,
+        snapshotOwnerItemId: 84,
+        currentContextItemId: 251,
+        snapshotContextItemId: 252,
+        currentContentSourceMode: "mineru",
+        snapshotContentSourceMode: "markdown",
+        allowExplicitContextOverride: true,
+      }),
+    );
+    assert.isFalse(
+      isAutoLoadedSnapshotForCurrentPaper({
+        currentOwnerItemId: 84,
+        snapshotOwnerItemId: 42,
+        currentContextItemId: 251,
+        snapshotContextItemId: 252,
+        currentContentSourceMode: "mineru",
+        snapshotContentSourceMode: "markdown",
+        allowExplicitContextOverride: true,
+      }),
+    );
+  });
+
   it("refreshes paper context when switching from library chat back to paper chat", function () {
     const source = readFileSync(
       resolve(

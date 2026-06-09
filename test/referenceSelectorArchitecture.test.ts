@@ -5,6 +5,7 @@ import {
   toggleCollectionContext,
   toggleTagContext,
   upsertPaperContext,
+  upsertReferenceAttachmentContext,
 } from "../src/modules/contextPanel/contextSelectionActions";
 import { MAX_SELECTED_PAPER_CONTEXTS } from "../src/modules/contextPanel/constants";
 import {
@@ -20,6 +21,7 @@ import {
 import { createReferenceSelectorPanelLayout } from "../src/modules/contextPanel/referenceSelector/panelLayout";
 import {
   selectedCollectionContextCache,
+  selectedOtherRefContextCache,
   selectedPaperContextCache,
   selectedPaperPreviewExpandedCache,
   selectedTagContextCache,
@@ -32,12 +34,16 @@ import type {
 } from "../src/modules/contextPanel/paperSearch";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 
-function makeAttachment(id: number): PaperSearchAttachmentCandidate {
+function makeAttachment(
+  id: number,
+  options: Partial<PaperSearchAttachmentCandidate> = {},
+): PaperSearchAttachmentCandidate {
   return {
     contextItemId: id,
     title: `Attachment ${id}`,
     score: 1,
     contentType: "application/pdf",
+    ...options,
   };
 }
 
@@ -327,6 +333,7 @@ describe("context selection actions", function () {
 
   it("adds and removes explicit paper context through centralized actions", function () {
     selectedPaperContextCache.delete(ownerItemId);
+    selectedOtherRefContextCache.delete(ownerItemId);
     selectedPaperPreviewExpandedCache.delete(ownerItemId);
     const paper: PaperContextRef = {
       itemId: 1,
@@ -346,6 +353,65 @@ describe("context selection actions", function () {
     });
     assert.isTrue(result.changed);
     assert.isUndefined(selectedPaperContextCache.get(ownerItemId));
+  });
+
+  it("routes stale-kind text attachments into paper context state", function () {
+    const cases: Array<{
+      title: string;
+      contentType: string;
+      mode: PaperContextRef["contentSourceMode"];
+    }> = [
+      { title: "test.md", contentType: "text/markdown", mode: "markdown" },
+      { title: "page.html", contentType: "text/html", mode: "html" },
+      { title: "notes.txt", contentType: "text/plain", mode: "txt" },
+      {
+        title: "summary.docx",
+        contentType:
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        mode: "docx",
+      },
+    ];
+
+    for (const [index, entry] of cases.entries()) {
+      selectedPaperContextCache.delete(ownerItemId);
+      selectedOtherRefContextCache.delete(ownerItemId);
+      selectedPaperPreviewExpandedCache.delete(ownerItemId);
+      const attachment = makeAttachment(2_000 + index, {
+        title: entry.title,
+        contentType: entry.contentType,
+      });
+      const group = makeGroup(1_000 + index, {
+        attachments: [attachment],
+        title: `Paper ${index}`,
+      });
+
+      const result = upsertReferenceAttachmentContext({
+        deps: makeDeps(),
+        selectedGroup: group,
+        selectedAttachment: attachment,
+        kind: "other",
+      });
+
+      assert.isTrue(result.changed);
+      const selectedPapers = selectedPaperContextCache.get(ownerItemId) || [];
+      assert.lengthOf(selectedPapers, 1);
+      assert.equal(selectedPapers[0].itemId, group.itemId);
+      assert.equal(selectedPapers[0].contextItemId, attachment.contextItemId);
+      assert.equal(selectedPapers[0].attachmentTitle, entry.title);
+      assert.equal(selectedPapers[0].contentSourceMode, entry.mode);
+      assert.isUndefined(selectedOtherRefContextCache.get(ownerItemId));
+
+      const removed = removeReferenceAttachmentContext({
+        deps: makeDeps(),
+        selectedGroup: group,
+        selectedAttachment: attachment,
+        kind: "other",
+      });
+
+      assert.isTrue(removed.changed);
+      assert.isUndefined(selectedPaperContextCache.get(ownerItemId));
+      assert.isUndefined(selectedOtherRefContextCache.get(ownerItemId));
+    }
   });
 
   it("toggles collection and tag contexts without creating paper chips", function () {

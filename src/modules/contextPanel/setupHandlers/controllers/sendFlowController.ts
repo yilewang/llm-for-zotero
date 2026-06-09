@@ -7,6 +7,7 @@ import type {
   ChatRuntimeMode,
   CollectionContextRef,
   PaperContextRef,
+  ResolvedContextSource,
   SelectedTextContext,
   TagContextRef,
 } from "../../types";
@@ -54,7 +55,7 @@ type SendFlowControllerDeps = {
   body: Element;
   inputBox: HTMLTextAreaElement;
   getItem: () => Zotero.Item | null;
-  resolveContextSourceItem: () => Promise<Zotero.Item | null>;
+  resolveContextSource: () => Promise<ResolvedContextSource | null>;
   closeSlashMenu: () => void;
   closePaperPicker: () => void;
   getSelectedTextContextEntries: (itemId: number) => SelectedTextContext[];
@@ -211,7 +212,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         (entry) => entry.noteContext,
       );
       const primarySelectedText = selectedTexts[0] || "";
-      const contextSourceItem = await deps.resolveContextSourceItem();
+      const contextSource = await deps.resolveContextSource();
       const allSelectedPaperContexts = deps.getSelectedPaperContexts(item.id);
       const selectedCollectionContexts = deps.getSelectedCollectionContexts(
         item.id,
@@ -465,7 +466,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         const editResult = await deps.editLatestUserMessageAndRetry({
           body: deps.body,
           item,
-          contextSourceItem,
+          contextSource,
           displayQuestion,
           selectedTexts: selectedTexts.length ? selectedTexts : undefined,
           selectedTextSources: selectedTexts.length
@@ -573,7 +574,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const sendTask = deps.sendQuestion({
         body: deps.body,
         item,
-        contextSourceItem,
+        contextSource,
         question: composedQuestion,
         images,
         model: selectedProfile?.model,
