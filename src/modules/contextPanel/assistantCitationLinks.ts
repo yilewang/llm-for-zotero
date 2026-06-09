@@ -453,6 +453,14 @@ function isPdfBackedCitationCandidate(
 export const isPdfBackedCitationCandidateForTests =
   isPdfBackedCitationCandidate;
 
+function buildCitationCandidateKey(
+  candidate: AssistantCitationPaperCandidate,
+): string {
+  return `${Math.floor(candidate.paperContext.itemId)}:${Math.floor(
+    candidate.contextItemId,
+  )}`;
+}
+
 function getSelectedTextCount(message: Message | null | undefined): number {
   const selectedTexts = Array.isArray(message?.selectedTexts)
     ? message!.selectedTexts!.filter(
@@ -1781,7 +1789,7 @@ function mergeCitationCandidates(
   const seen = new Set<string>();
   for (const set of candidateSets) {
     for (const candidate of set) {
-      const key = `${Math.floor(candidate.paperContext.itemId)}:${Math.floor(candidate.contextItemId)}`;
+      const key = buildCitationCandidateKey(candidate);
       if (seen.has(key)) continue;
       seen.add(key);
       merged.push(candidate);
@@ -1891,15 +1899,12 @@ async function buildOrderedCitationCandidates(
   // otherwise be outranked by an unrelated library result with a matching
   // romanized name.
   const staticKeySet = new Set(
-    staticCandidates.map(
-      (c) =>
-        `${Math.floor(c.paperContext.itemId)}:${Math.floor(c.contextItemId)}`,
-    ),
+    staticCandidates.map((candidate) => buildCitationCandidateKey(candidate)),
   );
   const activeReaderItemId = getReaderItemId(getActiveReaderForSelectedTab());
   return effectiveCandidates.slice().sort((left, right) => {
-    const leftKey = `${Math.floor(left.paperContext.itemId)}:${Math.floor(left.contextItemId)}`;
-    const rightKey = `${Math.floor(right.paperContext.itemId)}:${Math.floor(right.contextItemId)}`;
+    const leftKey = buildCitationCandidateKey(left);
+    const rightKey = buildCitationCandidateKey(right);
     const leftIsContext = staticKeySet.has(leftKey);
     const rightIsContext = staticKeySet.has(rightKey);
     const leftRank =
@@ -1923,6 +1928,29 @@ async function buildOrderedCitationCandidates(
     );
   });
 }
+
+function resolveAuthoritativeNonPdfCitationCandidate(input: {
+  orderedCandidates: AssistantCitationPaperCandidate[];
+  staticCandidates: AssistantCitationPaperCandidate[];
+  extractedCitation: ExtractedCitationLabel | null;
+}): AssistantCitationPaperCandidate | null {
+  const topCandidate = input.orderedCandidates[0];
+  if (!topCandidate || isPdfBackedCitationCandidate(topCandidate)) return null;
+  const staticCandidateKeys = new Set(
+    input.staticCandidates.map((candidate) =>
+      buildCitationCandidateKey(candidate),
+    ),
+  );
+  if (staticCandidateKeys.has(buildCitationCandidateKey(topCandidate))) {
+    return topCandidate;
+  }
+  return rankCandidateForCitation(input.extractedCitation, topCandidate) > 0
+    ? topCandidate
+    : null;
+}
+
+export const resolveAuthoritativeNonPdfCitationCandidateForTests =
+  resolveAuthoritativeNonPdfCitationCandidate;
 
 async function resolveAndNavigateAssistantCitation(params: {
   body: Element;
@@ -1958,6 +1986,20 @@ async function resolveAndNavigateAssistantCitation(params: {
       staticCandidates,
       { allowLibrarySearch: !staticCandidates.length },
     );
+    const nonPdfCandidate = resolveAuthoritativeNonPdfCitationCandidate({
+      orderedCandidates,
+      staticCandidates,
+      extractedCitation,
+    });
+    if (nonPdfCandidate) {
+      if (status)
+        setStatus(
+          status,
+          "Cited source is not a PDF; page jump is unavailable.",
+          "error",
+        );
+      return;
+    }
     // General inline citations may not have a quote snippet to page-locate.
     // In that case, open the best matching paper directly.
     if (!normalizedQuoteText) {
