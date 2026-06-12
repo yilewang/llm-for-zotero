@@ -98,6 +98,7 @@ export function parseSkill(raw: string): AgentSkill {
   }
 
   let id = "unknown";
+  let name = "";
   let description = "";
   let version = 0;
   let contexts: SkillContextKind[] = ["any"];
@@ -108,6 +109,11 @@ export function parseSkill(raw: string): AgentSkill {
     const idMatch = line.match(/^id:\s*(.+)$/);
     if (idMatch) {
       id = idMatch[1].trim();
+      continue;
+    }
+    const nameMatch = line.match(/^name:\s*(.+)$/);
+    if (nameMatch) {
+      name = nameMatch[1].trim();
       continue;
     }
     const descMatch = line.match(/^description:\s*(.+)$/);
@@ -140,6 +146,9 @@ export function parseSkill(raw: string): AgentSkill {
         // Skip invalid regex
       }
     }
+  }
+  if (id === "unknown" && name) {
+    id = name;
   }
 
   const instruction = lines.slice(frontmatterEnd).join("\n").trim();

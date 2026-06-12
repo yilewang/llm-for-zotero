@@ -17,6 +17,7 @@ export type CodexNativeSkillRoutingMode =
   | "hybrid"
   | "deterministic"
   | "classifier";
+export type CodexNativeSkillMode = "native" | "legacy" | "off";
 
 type ZoteroPrefsAPI = {
   get?: (key: string, global?: boolean) => unknown;
@@ -177,6 +178,17 @@ export function setCodexNativeSkillRoutingModePref(
     return;
   }
   setPref("codexNativeSkillRoutingMode", mode);
+}
+
+export function getCodexNativeSkillModePref(): CodexNativeSkillMode {
+  const raw = getStringPref("codexNativeSkillMode").trim().toLowerCase();
+  if (raw === "legacy" || raw === "off") return raw;
+  return "native";
+}
+
+export function setCodexNativeSkillModePref(mode: CodexNativeSkillMode): void {
+  if (mode !== "native" && mode !== "legacy" && mode !== "off") return;
+  setPref("codexNativeSkillMode", mode);
 }
 
 export function getLastUsedCodexConversationMode(

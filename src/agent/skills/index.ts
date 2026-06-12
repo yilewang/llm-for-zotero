@@ -1,8 +1,8 @@
 /**
  * Agent Skills — file-driven guidance instructions.
  *
- * Each skill is a `.md` file with frontmatter match patterns and a body
- * instruction. When a user's message matches a skill's patterns, the
+ * Each skill is a native Agent Skill `SKILL.md` file with frontmatter match
+ * patterns and a body instruction. When a user's message matches a skill's patterns, the
  * instruction is injected into the agent's current-turn guidance alongside
  * tool context.
  *
@@ -10,8 +10,8 @@
  * data directory on first run. The user folder is the sole source of
  * truth — the agent reads only from there.
  *
- * Users can create, edit, or delete skills by managing `.md` files in:
- *   {Zotero data directory}/llm-for-zotero/skills/
+ * Users can create, edit, or delete skills by managing:
+ *   {Zotero profile runtime root}/.agents/skills/<skill-id>/SKILL.md
  */
 import { matchesSkill, parseSkill } from "./skillLoader";
 import type { AgentSkill } from "./skillLoader";
@@ -178,7 +178,7 @@ export function getMatchedSkillIds(
   return getAllSkills()
     .filter((skill) => {
       if (forcedIds.has(skill.id)) {
-        return isSkillContextEligible(skill, request);
+        return true;
       }
       const isAutoMatched =
         contextForced.has(skill.id) || baseMatched.has(skill.id);

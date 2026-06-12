@@ -10,6 +10,7 @@ import type {
 import { includeAutoLoadedPaperContextForTests } from "../src/modules/contextPanel/chat";
 import { createSendFlowController } from "../src/modules/contextPanel/setupHandlers/controllers/sendFlowController";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../src/modules/contextPanel/pdfSupportMessages";
+import { setUserSkills, type AgentSkill } from "../src/agent/skills";
 
 describe("sendFlowController", function () {
   const item = { id: 101 } as unknown as Zotero.Item;
@@ -38,6 +39,23 @@ describe("sendFlowController", function () {
     normalizedName: "stable",
     libraryID: 1,
   };
+
+  afterEach(function () {
+    setUserSkills([]);
+  });
+
+  function makeTestSkill(id: string): AgentSkill {
+    return {
+      id,
+      description: `${id} description`,
+      version: 1,
+      patterns: [],
+      contexts: ["any"],
+      activation: "auto",
+      instruction: `${id} instructions`,
+      source: "personal",
+    };
+  }
 
   it("uses explicit Markdown source context before ambient reader context", function () {
     const currentItem = {
@@ -862,9 +880,7 @@ describe("sendFlowController", function () {
     assert.equal(lastSend.lastSentQuestion, "ask question");
     assert.equal(lastSend.lastRuntimeMode, "agent");
     assert.equal(lastSend.lastSentModelProviderLabel, "Claude Code");
-    assert.deepEqual(lastSend.lastSentCollectionContexts, [
-      selectedCollection,
-    ]);
+    assert.deepEqual(lastSend.lastSentCollectionContexts, [selectedCollection]);
     assert.deepEqual(lastSend.lastSentTagContexts, [selectedTag]);
   });
 
@@ -898,6 +914,69 @@ describe("sendFlowController", function () {
     assert.equal(lastSend.lastSentAuthMode, "codex_app_server");
     assert.equal(lastSend.lastSentProviderProtocol, "codex_responses");
     assert.equal(lastSend.lastSentModelProviderLabel, "Codex");
+  });
+
+  it("converts slash skill sends to native $skill mentions for Codex app-server", async function () {
+    setUserSkills([makeTestSkill("write-note")]);
+    const { controller, inputBox, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      isAgentMode: () => true,
+      isCodexConversationSystem: () => true,
+      getSelectedProfile: () => ({
+        entryId: "codex_app_server::gpt-5.4",
+        model: "gpt-5.4",
+        apiBase: "",
+        apiKey: "",
+        providerLabel: "Codex",
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+      }),
+      resolvePromptText: (text: string) => text,
+      buildModelPromptWithFileContext: (question: string) => question,
+    });
+    inputBox.value = "/write-note please draft this note";
+
+    await controller.doSend();
+
+    assert.equal(
+      getLastSend().lastSentQuestion,
+      "$write-note\n\nplease draft this note",
+    );
+  });
+
+  it("keeps slash skill text unchanged outside Codex app-server mode", async function () {
+    setUserSkills([makeTestSkill("write-note")]);
+    const { controller, inputBox, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      isAgentMode: () => true,
+      getSelectedProfile: () => ({
+        entryId: "openai::gpt-4.1",
+        model: "gpt-4.1",
+        apiBase: "https://api.openai.com/v1",
+        apiKey: "test-key",
+        providerLabel: "OpenAI",
+        authMode: "api_key",
+        providerProtocol: "responses_api",
+      }),
+      resolvePromptText: (text: string) => text,
+      buildModelPromptWithFileContext: (question: string) => question,
+    });
+    inputBox.value = "/write-note please draft this note";
+
+    await controller.doSend();
+
+    assert.equal(
+      getLastSend().lastSentQuestion,
+      "/write-note please draft this note",
+    );
   });
 
   it("allows collection-only sends and uses the default collection prompt", async function () {

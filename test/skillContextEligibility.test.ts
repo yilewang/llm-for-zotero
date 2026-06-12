@@ -153,4 +153,16 @@ describe("skill context eligibility", function () {
       "custom-summary",
     );
   });
+
+  it("always honors explicitly forced slash skills", function () {
+    loadBuiltInSkills();
+
+    assert.deepEqual(
+      getMatchedSkillIds({
+        userText: "answer this without any attached paper context",
+        forcedSkillIds: ["evidence-based-qa"],
+      }),
+      ["evidence-based-qa"],
+    );
+  });
 });

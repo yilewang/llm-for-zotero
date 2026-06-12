@@ -20,6 +20,7 @@ import {
   shouldApplyCodexAppServerNativeAttachmentPolicy,
 } from "../../codexAppServerAttachmentPolicy";
 import { resolvePdfModeModelInputs } from "./pdfPaperModelInputController";
+import { getAllSkills } from "../../../../agent/skills";
 
 type StatusLevel = "ready" | "warning" | "error";
 
@@ -179,6 +180,21 @@ type SendFlowControllerDeps = {
   consumeWebChatForceNewChatIntent?: () => boolean;
 };
 
+function normalizeCodexNativeSkillText(
+  text: string,
+  authMode?: SelectedProfile["authMode"],
+): string {
+  if (authMode !== "codex_app_server") return text;
+  const match = /^\/([A-Za-z0-9][A-Za-z0-9_-]*)(?:\s+([\s\S]*))?$/.exec(
+    text.trim(),
+  );
+  if (!match) return text;
+  const skillId = match[1];
+  if (!getAllSkills().some((skill) => skill.id === skillId)) return text;
+  const rest = (match[2] || "").trim();
+  return rest ? `$${skillId}\n\n${rest}` : `$${skillId}`;
+}
+
 export function createSendFlowController(deps: SendFlowControllerDeps): {
   doSend: (options?: {
     overrideText?: string;
@@ -199,7 +215,11 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
     try {
       const textContextConversationKey = deps.getConversationKey(item);
       const draftText = deps.inputBox.value.trim();
-      const text = (options?.overrideText ?? draftText).trim();
+      const earlyProfile = deps.getSelectedProfile();
+      const text = normalizeCodexNativeSkillText(
+        (options?.overrideText ?? draftText).trim(),
+        earlyProfile?.authMode,
+      );
       const selectedContexts = deps.getSelectedTextContextEntries(
         textContextConversationKey,
       );
@@ -240,7 +260,6 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       );
       // Resolve PDFs based on model capability. The visible chip/attachment state
       // stays unchanged; these variables are the provider-specific model inputs.
-      const earlyProfile = deps.getSelectedProfile();
       const isWebChat = earlyProfile?.authMode === "webchat";
       const runtimeMode: ChatRuntimeMode = usesPluginAgentMode
         ? "agent"

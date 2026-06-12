@@ -4,10 +4,7 @@ import {
   type SkillRoutingRequest,
 } from "../../../../agent/skills";
 import type { AgentSkill } from "../../../../agent/skills/skillLoader";
-import {
-  getAgentApi,
-  initAgentSubsystem,
-} from "../../../../agent";
+import { getAgentApi, initAgentSubsystem } from "../../../../agent";
 import type { ActionRequestContext } from "../../../../agent/actions";
 import type {
   AgentConfirmationResolution,
@@ -565,18 +562,19 @@ export function createActionCommandController(
         }));
     };
 
-  const getPaperScopedTagCandidates =
-    async (): Promise<PaperScopedActionTagCandidate[]> => {
-      const libraryID = deps.getCurrentLibraryID();
-      if (!libraryID) return [];
-      const tags = await getAgentApi().getZoteroGateway().listLibraryTags({
-        libraryID,
-      });
-      return tags.map((entry) => ({
-        name: entry.name,
-        type: entry.type,
-      }));
-    };
+  const getPaperScopedTagCandidates = async (): Promise<
+    PaperScopedActionTagCandidate[]
+  > => {
+    const libraryID = deps.getCurrentLibraryID();
+    if (!libraryID) return [];
+    const tags = await getAgentApi().getZoteroGateway().listLibraryTags({
+      libraryID,
+    });
+    return tags.map((entry) => ({
+      name: entry.name,
+      type: entry.type,
+    }));
+  };
 
   const resolvePaperScopedActionInput = async (
     actionName: string,
@@ -871,13 +869,29 @@ export function createActionCommandController(
     };
   };
 
+  const dispatchComposerInput = (): void => {
+    const EventCtor =
+      (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
+    inputBox.dispatchEvent(new EventCtor("input", { bubbles: true }));
+  };
+
+  const insertCodexNativeSkillMention = (skill: AgentSkill): void => {
+    clearForcedSkill();
+    clearCommandChip();
+    const existing = inputBox.value.trim();
+    inputBox.value = existing
+      ? `$${skill.id}\n\n${existing}`
+      : `$${skill.id}\n\n`;
+    inputBox.focus({ preventScroll: true });
+    const pos = inputBox.value.length;
+    inputBox.setSelectionRange(pos, pos);
+    deps.persistDraftInputForCurrentConversation();
+    dispatchComposerInput();
+  };
+
   const handleSkillSelection = (skill: AgentSkill): void => {
-    const eligibility = getSkillContextEligibility(
-      skill,
-      buildSkillRoutingRequest(),
-    );
-    if (!eligibility.eligible) {
-      setStatus(`/${skill.id}: ${eligibility.reason}`, "warning");
+    if (deps.getSelectedProfile()?.authMode === "codex_app_server") {
+      insertCodexNativeSkillMention(skill);
       return;
     }
     clearForcedSkill();
@@ -899,9 +913,7 @@ export function createActionCommandController(
     inputBox.placeholder = "";
     inputBox.value = "";
     inputBox.focus({ preventScroll: true });
-    const EventCtor =
-      (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
-    inputBox.dispatchEvent(new EventCtor("input", { bubbles: true }));
+    dispatchComposerInput();
   };
 
   const insertCommandToken = (action: ActionPickerItem): void => {
@@ -921,9 +933,7 @@ export function createActionCommandController(
     inputBox.placeholder = "";
     inputBox.value = "";
     inputBox.focus({ preventScroll: true });
-    const EventCtor =
-      (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
-    inputBox.dispatchEvent(new EventCtor("input", { bubbles: true }));
+    dispatchComposerInput();
   };
 
   const parseCommandParams = (
@@ -1227,9 +1237,7 @@ export function createActionCommandController(
         loading.textContent = t("Loading Claude commands...");
         list.insertBefore(loading, firstBase);
         void initAgentSubsystem()
-          .then((coreRuntime) =>
-            refreshClaudeSlashCommands(coreRuntime, false),
-          )
+          .then((coreRuntime) => refreshClaudeSlashCommands(coreRuntime, false))
           .then(() => {
             renderAgentActionsInSlashMenu(query);
           })

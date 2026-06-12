@@ -19,6 +19,11 @@ import {
   MAX_AGENT_ROUNDS,
   MAX_AGENT_TOOL_CALLS_PER_ROUND,
 } from "../src/agent/model/limits";
+import {
+  BUILTIN_SKILL_FILES,
+  parseSkill,
+  setUserSkills,
+} from "../src/agent/skills";
 import type {
   AgentEvent,
   AgentModelCapabilities,
@@ -170,6 +175,68 @@ describe("AgentRuntime", function () {
         type: "fallback",
       });
     } finally {
+      restoreDb();
+    }
+  });
+
+  it("emits explicitly forced slash skills alongside auto-detected skills", async function () {
+    const restoreDb = installMockDb();
+    setUserSkills(
+      Object.values(BUILTIN_SKILL_FILES).map((raw) => parseSkill(raw)),
+    );
+    try {
+      const runtime = new AgentRuntime({
+        registry: new AgentToolRegistry(),
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              {
+                kind: "final",
+                text: "Done.",
+                assistantMessage: {
+                  role: "assistant",
+                  content: "Done.",
+                },
+              },
+            ],
+            {
+              streaming: false,
+              toolCalls: true,
+              multimodal: false,
+            },
+          ),
+      });
+      const events: AgentEvent[] = [];
+
+      await runtime.runTurn({
+        request: {
+          conversationKey: 1,
+          mode: "agent",
+          userText: "help me understand this paper",
+          selectedPaperContexts: [
+            { itemId: 10, contextItemId: 11, title: "Paper" },
+          ],
+          forcedSkillIds: ["evidence-based-qa"],
+          model: "gpt-5.4",
+          apiBase: "",
+          apiKey: "test",
+        },
+        onEvent: (event) => {
+          events.push(event);
+        },
+      });
+
+      const statusTexts = events
+        .filter((event): event is Extract<AgentEvent, { type: "status" }> =>
+          event.type === "status",
+        )
+        .map((event) => event.text);
+      assert.includeMembers(statusTexts, [
+        "Skill activated: simple-paper-qa",
+        "Skill activated: evidence-based-qa",
+      ]);
+    } finally {
+      setUserSkills([]);
       restoreDb();
     }
   });

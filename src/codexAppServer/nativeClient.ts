@@ -7,10 +7,7 @@ import type {
   UsageStats,
 } from "../shared/llm";
 import type { AgentConfirmationResolution } from "../agent/types";
-import type {
-  CodexConversationKind,
-  PaperContextRef,
-} from "../shared/types";
+import type { CodexConversationKind, PaperContextRef } from "../shared/types";
 import {
   addZoteroMcpToolActivityObserver,
   addZoteroMcpConfirmationHandler,
@@ -43,7 +40,10 @@ import {
   getCodexConversationSummary,
   upsertCodexConversationSummary,
 } from "./store";
-import { isCodexZoteroMcpToolsEnabled } from "./prefs";
+import {
+  getCodexNativeSkillModePref,
+  isCodexZoteroMcpToolsEnabled,
+} from "./prefs";
 import { getCodexProfileSignature } from "./constants";
 import {
   assertRequiredCodexZoteroMcpToolsReady,
@@ -61,11 +61,20 @@ import {
 } from "./nativeContextLedger";
 import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
 import { buildVisibleTurnContextBlock } from "../agent/context/turnContextEnvelope";
+import { getUserSkillsRuntimeRootDir } from "../agent/skills/userSkills";
 
 export const CODEX_APP_SERVER_NATIVE_PROCESS_KEY = "codex_app_server_native";
 const CODEX_APP_SERVER_SERVICE_NAME = "llm_for_zotero";
 export const NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE =
   "No Codex context to compact yet. Send a message first.";
+
+function resolveCodexNativeRuntimeCwd(): string | undefined {
+  try {
+    return getUserSkillsRuntimeRootDir();
+  } catch {
+    return undefined;
+  }
+}
 
 export type CodexNativeConversationScope = {
   profileSignature?: string;
@@ -863,6 +872,7 @@ async function startNativeThread(params: {
   model: string;
   developerInstructions?: string;
   config?: Record<string, unknown>;
+  cwd?: string;
 }): Promise<{
   threadId: string;
   developerInstructionsAccepted: boolean;
@@ -874,6 +884,7 @@ async function startNativeThread(params: {
     persistExtendedHistory: true,
     ...CODEX_APP_SERVER_NATIVE_APPROVAL_PARAMS,
     serviceName: CODEX_APP_SERVER_SERVICE_NAME,
+    ...(params.cwd ? { cwd: params.cwd } : {}),
     ...(params.config ? { config: params.config } : {}),
     ...(params.developerInstructions
       ? { developerInstructions: params.developerInstructions }
@@ -921,6 +932,7 @@ async function resumeNativeThread(params: {
   model: string;
   developerInstructions?: string;
   config?: Record<string, unknown>;
+  cwd?: string;
 }): Promise<{
   threadId: string;
   developerInstructionsAccepted: boolean;
@@ -931,6 +943,7 @@ async function resumeNativeThread(params: {
     model: params.model,
     persistExtendedHistory: true,
     ...CODEX_APP_SERVER_NATIVE_APPROVAL_PARAMS,
+    ...(params.cwd ? { cwd: params.cwd } : {}),
     ...(params.config ? { config: params.config } : {}),
     ...(params.developerInstructions
       ? { developerInstructions: params.developerInstructions }
@@ -980,6 +993,7 @@ async function resolveNativeThread(params: {
   developerInstructions?: string;
   newThreadDeveloperInstructions?: string;
   config?: Record<string, unknown>;
+  cwd?: string;
   hooks?: CodexNativeStoreHooks;
   storedThreadId?: string | null;
 }): Promise<NativeThreadResolution> {
@@ -998,6 +1012,7 @@ async function resolveNativeThread(params: {
         model: params.model,
         developerInstructions: params.developerInstructions,
         config: params.config,
+        cwd: params.cwd,
       });
       if (resumedThread.threadId !== storedThreadId) {
         await persistProviderSessionId({
@@ -1023,6 +1038,7 @@ async function resolveNativeThread(params: {
     developerInstructions:
       params.newThreadDeveloperInstructions ?? params.developerInstructions,
     config: params.config,
+    cwd: params.cwd,
   });
   await persistProviderSessionId({
     scope: params.scope,
@@ -1366,6 +1382,11 @@ export async function runCodexAppServerNativeTurn(params: {
         shell_tool: false,
       },
     };
+    const codexNativeSkillMode = getCodexNativeSkillModePref();
+    const codexNativeRuntimeCwd =
+      codexNativeSkillMode === "native"
+        ? resolveCodexNativeRuntimeCwd()
+        : undefined;
     let mcpReady = !mcpEnabled;
     let mcpWarning = "";
     let mcpStatus: CodexNativeMcpSetupStatus | undefined;
@@ -1430,6 +1451,7 @@ export async function runCodexAppServerNativeTurn(params: {
             threadId: args.thread.threadId,
             input: args.input,
             model: params.model,
+            ...(codexNativeRuntimeCwd ? { cwd: codexNativeRuntimeCwd } : {}),
             ...CODEX_APP_SERVER_NATIVE_APPROVAL_PARAMS,
             ...reasoningParams,
           });
@@ -1484,14 +1506,17 @@ export async function runCodexAppServerNativeTurn(params: {
         conversationKey: params.scope.conversationKey,
         threadId: storedThreadId,
       });
-      const resolvedSkills = await resolveCodexNativeSkills({
-        scope: scopeWithProfile,
-        userText: latestUserText,
-        model: params.model,
-        apiBase: params.codexPath,
-        signal: params.signal,
-        skillContext: params.skillContext,
-      });
+      const resolvedSkills =
+        codexNativeSkillMode === "legacy"
+          ? await resolveCodexNativeSkills({
+              scope: scopeWithProfile,
+              userText: latestUserText,
+              model: params.model,
+              apiBase: params.codexPath,
+              signal: params.signal,
+              skillContext: params.skillContext,
+            })
+          : { matchedSkillIds: [], instructionBlock: "" };
       for (const skillId of resolvedSkills.matchedSkillIds) {
         params.onSkillActivated?.(skillId);
       }
@@ -1543,6 +1568,7 @@ export async function runCodexAppServerNativeTurn(params: {
         effort: reasoningParams.effort,
         developerInstructions: developerPreparedTurn.developerInstructions,
         config: threadConfig,
+        cwd: codexNativeRuntimeCwd,
         hooks: params.hooks,
         storedThreadId: storedThreadId || null,
       });

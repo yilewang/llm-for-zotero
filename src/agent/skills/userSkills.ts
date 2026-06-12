@@ -30,6 +30,14 @@ import {
 } from "./managedBlock";
 import { joinLocalPath } from "../../utils/localPath";
 import { patchSkillFrontmatter } from "./frontmatterPatcher";
+import {
+  getCanonicalSkillDir,
+  getCanonicalSkillFilePath,
+  getCanonicalUserSkillsDir,
+  getLegacyUserSkillsDir,
+  getZoteroAgentRuntimeRootDir,
+  NATIVE_SKILL_FILE_NAME,
+} from "./nativeSkillPaths";
 
 // Re-export for callers that previously imported these from this module.
 export { extractManagedBlock, spliceManagedBlock } from "./managedBlock";
@@ -214,29 +222,176 @@ type IOUtilsLike = {
     options?: { createAncestors?: boolean; ignoreExisting?: boolean },
   ) => Promise<void>;
   getChildren?: (path: string) => Promise<string[]>;
-  remove?: (path: string) => Promise<void>;
+  remove?: (
+    path: string,
+    options?: { recursive?: boolean; ignoreAbsent?: boolean },
+  ) => Promise<void>;
 };
 
 function getIOUtils(): IOUtilsLike | undefined {
   return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
 }
 
-function getBaseDir(): string {
-  const zotero = Zotero as unknown as {
-    DataDirectory?: { dir?: string };
-    Profile?: { dir?: string };
-  };
-  const dataDir = zotero.DataDirectory?.dir;
-  if (typeof dataDir === "string" && dataDir.trim()) return dataDir.trim();
-  const profileDir = zotero.Profile?.dir;
-  if (typeof profileDir === "string" && profileDir.trim())
-    return profileDir.trim();
-  throw new Error("Cannot resolve Zotero data directory for user skills");
-}
-
 /** Returns the directory path where user skill files are stored. */
 export function getUserSkillsDir(): string {
-  return joinLocalPath(getBaseDir(), "llm-for-zotero", "skills");
+  return getCanonicalUserSkillsDir();
+}
+
+/** Returns the root directory Codex can use as cwd to discover `.agents/skills`. */
+export function getUserSkillsRuntimeRootDir(): string {
+  return getZoteroAgentRuntimeRootDir();
+}
+
+/** Legacy flat skill folder, retained only as a migration source. */
+export function getLegacySkillsDir(): string {
+  return getLegacyUserSkillsDir();
+}
+
+function basename(path: string): string {
+  return path.split(/[/\\]/).pop() || path;
+}
+
+function dirname(path: string): string {
+  return path.replace(/[\\/][^\\/]*$/, "");
+}
+
+function resolveBuiltinFilenameForSkillId(skillId: string): string | null {
+  for (const [filename, raw] of Object.entries(BUILTIN_SKILL_FILES)) {
+    try {
+      if (parseSkill(raw).id === skillId) return filename;
+    } catch {
+      /* ignore malformed shipped skill */
+    }
+  }
+  return null;
+}
+
+function resolveBuiltinFilename(value: string): string | null {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  if (BUILTIN_SKILL_FILES[trimmed] !== undefined) return trimmed;
+  if (BUILTIN_SKILL_FILES[`${trimmed}.md`] !== undefined) {
+    return `${trimmed}.md`;
+  }
+  return resolveBuiltinFilenameForSkillId(trimmed);
+}
+
+function ensureNativeSkillName(raw: string, skill: AgentSkill): string {
+  if (/^name:\s*.+$/m.test(raw)) return raw;
+  const lines = raw.split("\n");
+  const start = lines.findIndex((line) => line.trim() === "---");
+  if (start < 0) return raw;
+  lines.splice(start + 1, 0, `name: ${skill.id}`);
+  return lines.join("\n");
+}
+
+async function readSkillFile(
+  io: IOUtilsLike,
+  filePath: string,
+): Promise<{ raw: string; skill: AgentSkill } | null> {
+  const raw = await readFileText(io, filePath);
+  if (!raw) return null;
+  try {
+    return { raw, skill: parseSkill(raw) };
+  } catch {
+    return null;
+  }
+}
+
+async function listCanonicalSkillFiles(io: IOUtilsLike): Promise<string[]> {
+  if (!io.exists || !io.getChildren) return [];
+  const skillsDir = getUserSkillsDir();
+  try {
+    if (!(await io.exists(skillsDir))) return [];
+    const children = await io.getChildren(skillsDir);
+    const files: string[] = [];
+    for (const child of children) {
+      if (child.endsWith(".md")) continue;
+      const skillFile = joinLocalPath(child, NATIVE_SKILL_FILE_NAME);
+      if (await io.exists(skillFile).catch(() => false)) {
+        files.push(skillFile);
+      }
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+async function normalizeCanonicalSkillFrontmatter(
+  io: IOUtilsLike,
+): Promise<void> {
+  if (!io.read || !io.write) return;
+  for (const filePath of await listCanonicalSkillFiles(io)) {
+    const loaded = await readSkillFile(io, filePath);
+    if (!loaded || loaded.skill.id === "unknown") continue;
+    const next = ensureNativeSkillName(loaded.raw, loaded.skill);
+    if (next === loaded.raw) continue;
+    await io.write(filePath, new TextEncoder().encode(next));
+  }
+}
+
+async function migrateLegacyFlatSkills(
+  io: IOUtilsLike,
+  seeded: Set<string>,
+): Promise<void> {
+  if (
+    !io.exists ||
+    !io.read ||
+    !io.write ||
+    !io.getChildren ||
+    !io.makeDirectory
+  ) {
+    return;
+  }
+  const legacyDir = getLegacySkillsDir();
+  try {
+    if (!(await io.exists(legacyDir))) return;
+  } catch {
+    return;
+  }
+
+  let entries: string[];
+  try {
+    entries = await io.getChildren(legacyDir);
+  } catch {
+    return;
+  }
+
+  for (const filePath of entries.filter((entry) => entry.endsWith(".md"))) {
+    try {
+      const loaded = await readSkillFile(io, filePath);
+      if (!loaded) continue;
+      const { raw, skill } = loaded;
+      const filename = basename(filePath);
+      if (
+        skill.id === "unknown" ||
+        OBSOLETE_SKILL_FILENAMES.has(filename) ||
+        OBSOLETE_SKILL_IDS.has(skill.id)
+      ) {
+        continue;
+      }
+      const targetFile = getCanonicalSkillFilePath(skill.id);
+      if (await io.exists(targetFile).catch(() => false)) {
+        continue;
+      }
+      await io.makeDirectory(getCanonicalSkillDir(skill.id), {
+        createAncestors: true,
+        ignoreExisting: true,
+      });
+      await io.write(targetFile, new TextEncoder().encode(raw));
+      if (BUILTIN_SKILL_FILENAMES.has(filename)) {
+        seeded.add(filename);
+      }
+      Zotero.debug?.(
+        `[llm-for-zotero] Migrated skill ${filename} to ${targetFile}`,
+      );
+    } catch (err) {
+      Zotero.debug?.(
+        `[llm-for-zotero] Skill migration warning for ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +480,9 @@ export async function initUserSkills(): Promise<void> {
   const bodyHashes = getBodyHashes();
   const encoder = new TextEncoder();
 
-  // ── Step 1: Remove obsolete skill files ─────────────────────────────────
+  await migrateLegacyFlatSkills(io, seeded);
+
+  // ── Step 1: Remove obsolete canonical skill files ───────────────────────
   // Old note skills were consolidated into write-note.md. Delete only if:
   //   (a) we have a stored hash proving the file is unmodified, OR
   //   (b) bootstrap — no stored hash (pre-hash install) AND the raw file
@@ -334,7 +491,8 @@ export async function initUserSkills(): Promise<void> {
   if (io.read && io.remove) {
     for (const { filename: file, bootstrapRawHashes } of OBSOLETE_SKILL_FILES) {
       try {
-        const filePath = joinLocalPath(dir, file);
+        const obsoleteSkillId = file.replace(/\.md$/i, "");
+        const filePath = getCanonicalSkillFilePath(obsoleteSkillId);
         if (!(await io.exists(filePath))) {
           delete bodyHashes[file];
           seeded.delete(file);
@@ -391,8 +549,8 @@ export async function initUserSkills(): Promise<void> {
   for (const [filename, shippedContent] of Object.entries(
     BUILTIN_SKILL_FILES,
   )) {
-    const filePath = joinLocalPath(dir, filename);
     const shippedSkill = parseSkill(shippedContent);
+    const filePath = getCanonicalSkillFilePath(shippedSkill.id);
     const shippedHash = hashSkillForUpgrade(
       shippedContent,
       shippedSkill.instruction,
@@ -405,6 +563,10 @@ export async function initUserSkills(): Promise<void> {
       if (!fileExists) {
         if (seeded.has(filename)) continue; // User deleted it — respect that
 
+        await io.makeDirectory(getCanonicalSkillDir(shippedSkill.id), {
+          createAncestors: true,
+          ignoreExisting: true,
+        });
         await io.write(filePath, encoder.encode(shippedContent));
         bodyHashes[filename] = shippedHash;
         seeded.add(filename);
@@ -522,7 +684,8 @@ export async function initUserSkills(): Promise<void> {
     for (const [filename, shippedContent] of Object.entries(
       BUILTIN_SKILL_FILES,
     )) {
-      const filePath = joinLocalPath(dir, filename);
+      const shippedSkill = parseSkill(shippedContent);
+      const filePath = getCanonicalSkillFilePath(shippedSkill.id);
       try {
         if (!(await io.exists(filePath))) continue;
         const onDiskRaw = await readFileText(io, filePath);
@@ -545,6 +708,8 @@ export async function initUserSkills(): Promise<void> {
       }
     }
   }
+
+  await normalizeCanonicalSkillFrontmatter(io);
 }
 
 // ---------------------------------------------------------------------------
@@ -561,26 +726,10 @@ export async function loadUserSkills(): Promise<AgentSkill[]> {
   if (!io?.exists || !io?.read || !io?.getChildren) return [];
 
   const dir = getUserSkillsDir();
-
-  try {
-    if (!(await io.exists(dir))) return [];
-  } catch {
-    return [];
-  }
-
-  let entries: string[];
-  try {
-    entries = await io.getChildren(dir);
-  } catch {
-    return [];
-  }
-
-  const mdFiles = entries.filter((entry) => entry.endsWith(".md"));
-  if (mdFiles.length === 0) return [];
-
+  const skillFiles = await listCanonicalSkillFiles(io);
   const skills: AgentSkill[] = [];
 
-  for (const filePath of mdFiles) {
+  for (const filePath of skillFiles) {
     try {
       const data = await io.read(filePath);
       const bytes =
@@ -588,7 +737,8 @@ export async function loadUserSkills(): Promise<AgentSkill[]> {
       const raw = new TextDecoder("utf-8").decode(bytes);
 
       const skill = parseSkill(raw);
-      const filename = filePath.split(/[/\\]/).pop() || "";
+      const filename =
+        resolveBuiltinFilenameForSkillId(skill.id) || basename(filePath);
 
       if (
         OBSOLETE_SKILL_FILENAMES.has(filename) ||
@@ -642,15 +792,7 @@ export async function loadUserSkills(): Promise<AgentSkill[]> {
 export async function listSkillFiles(): Promise<string[]> {
   const io = getIOUtils();
   if (!io?.exists || !io?.getChildren) return [];
-
-  const dir = getUserSkillsDir();
-  try {
-    if (!(await io.exists(dir))) return [];
-    const entries = await io.getChildren(dir);
-    return entries.filter((entry) => entry.endsWith(".md"));
-  } catch {
-    return [];
-  }
+  return listCanonicalSkillFiles(io);
 }
 
 export async function deleteSkillFile(filePath: string): Promise<boolean> {
@@ -658,7 +800,10 @@ export async function deleteSkillFile(filePath: string): Promise<boolean> {
   if (!io?.remove) return false;
 
   try {
-    await io.remove(filePath);
+    const target = /[\\/]SKILL\.md$/i.test(filePath)
+      ? dirname(filePath)
+      : filePath;
+    await io.remove(target, { recursive: true, ignoreAbsent: true });
     return true;
   } catch (err) {
     Zotero.debug?.(
@@ -684,6 +829,7 @@ export async function createSkillTemplate(): Promise<string | null> {
   }
   const encoder = new TextEncoder();
   const template = `---
+name: my-custom-skill
 id: my-custom-skill
 description: Describe what this skill does
 version: 1
@@ -695,7 +841,7 @@ match: /your regex pattern here/i
 <!--
   Custom skill template.
 
-  - name/description: shown in the "/" slash menu
+  - name/id/description: shown in the "/" slash menu and native skill pickers
   - match: regex patterns that trigger this skill (OR semantics)
   - contexts: any, single-paper, paper-set, library-corpus, or note
   - activation: auto, manual, or both
@@ -711,7 +857,7 @@ Describe when and how the agent should behave when this skill matches.
   let index = 1;
   let filePath: string;
   while (true) {
-    filePath = joinLocalPath(dir, `custom-skill-${index}.md`);
+    filePath = getCanonicalSkillFilePath(`custom-skill-${index}`);
     try {
       const exists = await io.exists(filePath);
       if (!exists) break;
@@ -723,6 +869,10 @@ Describe when and how the agent should behave when this skill matches.
   }
 
   try {
+    await io.makeDirectory(dirname(filePath), {
+      createAncestors: true,
+      ignoreExisting: true,
+    });
     await io.write(filePath, encoder.encode(template));
     return filePath;
   } catch (err) {
@@ -764,24 +914,10 @@ export async function getSkillListing(): Promise<SkillListingEntry[]> {
   const io = getIOUtils();
   if (!io?.exists || !io?.read || !io?.getChildren) return [];
 
-  const dir = getUserSkillsDir();
-  try {
-    if (!(await io.exists(dir))) return [];
-  } catch {
-    return [];
-  }
-
-  let entries: string[];
-  try {
-    entries = await io.getChildren(dir);
-  } catch {
-    return [];
-  }
-
-  const mdFiles = entries.filter((entry) => entry.endsWith(".md"));
+  const skillFiles = await listCanonicalSkillFiles(io);
   const listing: SkillListingEntry[] = [];
 
-  for (const filePath of mdFiles) {
+  for (const filePath of skillFiles) {
     try {
       const data = await io.read(filePath);
       const bytes =
@@ -790,8 +926,11 @@ export async function getSkillListing(): Promise<SkillListingEntry[]> {
       const skill = parseSkill(raw);
       if (skill.id === "unknown") continue;
 
-      const filename = filePath.split(/[/\\]/).pop() || "";
-      const shippedContent = BUILTIN_SKILL_FILES[filename];
+      const filename = skill.id;
+      const shippedFilename = resolveBuiltinFilenameForSkillId(skill.id);
+      const shippedContent = shippedFilename
+        ? BUILTIN_SKILL_FILES[shippedFilename]
+        : undefined;
 
       let source: "system" | "customized" | "personal";
       let shippedVersion: number | null = null;
@@ -844,15 +983,18 @@ export async function getSkillListing(): Promise<SkillListingEntry[]> {
  * or I/O failed.
  */
 export async function restoreSkillToDefault(
-  filename: string,
+  filenameOrSkillId: string,
 ): Promise<boolean> {
+  const filename = resolveBuiltinFilename(filenameOrSkillId);
+  if (!filename) return false;
   const shippedContent = BUILTIN_SKILL_FILES[filename];
   if (shippedContent === undefined) return false;
 
   const io = getIOUtils();
   if (!io?.write || !io?.makeDirectory) return false;
 
-  const dir = getUserSkillsDir();
+  const shippedSkill = parseSkill(shippedContent);
+  const dir = getCanonicalSkillDir(shippedSkill.id);
   try {
     await io.makeDirectory(dir, {
       createAncestors: true,
@@ -862,15 +1004,19 @@ export async function restoreSkillToDefault(
     /* */
   }
 
-  const filePath = joinLocalPath(dir, filename);
-  const shippedSkill = parseSkill(shippedContent);
+  const filePath = getCanonicalSkillFilePath(shippedSkill.id);
   const shippedHash = hashSkillForUpgrade(
     shippedContent,
     shippedSkill.instruction,
   );
 
   try {
-    await io.write(filePath, new TextEncoder().encode(shippedContent));
+    await io.write(
+      filePath,
+      new TextEncoder().encode(
+        ensureNativeSkillName(shippedContent, shippedSkill),
+      ),
+    );
     const bodyHashes = getBodyHashes();
     bodyHashes[filename] = shippedHash;
     setBodyHashes(bodyHashes);
@@ -892,15 +1038,18 @@ export async function restoreSkillToDefault(
  * preview. Returns null if the skill is not a built-in or I/O failed.
  */
 export async function getSkillDiff(
-  filename: string,
+  filenameOrSkillId: string,
 ): Promise<{ onDisk: string; shipped: string } | null> {
+  const filename = resolveBuiltinFilename(filenameOrSkillId);
+  if (!filename) return null;
   const shippedContent = BUILTIN_SKILL_FILES[filename];
   if (shippedContent === undefined) return null;
 
   const io = getIOUtils();
   if (!io?.exists || !io?.read) return null;
 
-  const filePath = joinLocalPath(getUserSkillsDir(), filename);
+  const shippedSkill = parseSkill(shippedContent);
+  const filePath = getCanonicalSkillFilePath(shippedSkill.id);
   try {
     if (!(await io.exists(filePath))) return null;
     const onDisk = await readFileText(io, filePath);

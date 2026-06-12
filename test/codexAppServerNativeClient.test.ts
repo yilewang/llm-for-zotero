@@ -22,6 +22,7 @@ import {
   CodexAppServerProcess,
   destroyCachedCodexAppServerProcess,
 } from "../src/utils/codexAppServerProcess";
+import { getUserSkillsRuntimeRootDir } from "../src/agent/skills/userSkills";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -468,8 +469,7 @@ describe("Codex app-server native client", function () {
           },
           {
             role: "user",
-            content:
-              "does it make the two papers connected to each other?",
+            content: "does it make the two papers connected to each other?",
           },
         ],
         skillContext: {
@@ -524,6 +524,123 @@ describe("Codex app-server native client", function () {
     assert.notInclude(inputText, "SECRET SYSTEM PROMPT");
     assert.notInclude(inputText, "Zotero environment for this turn");
     assert.notInclude(inputText, "Notes directory configuration");
+  });
+
+  it("starts native Codex turns from the profile-scoped skills workspace and omits legacy skill injection", async function () {
+    const processKey = "native-skills-cwd-turn-test";
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const originalZotero = globalThis.Zotero;
+    let proc!: CodexAppServerProcess;
+    let threadStartParams: Record<string, unknown> | undefined;
+    let turnStartParams: Record<string, unknown> | undefined;
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      DataDirectory: { dir: "/tmp/lfz-native-skills-data" },
+      Profile: { dir: "/tmp/lfz-native-skills-profile" },
+      Prefs: {
+        get: (key: string) =>
+          key.endsWith(".codexAppServerZoteroMcpToolsEnabled")
+            ? false
+            : undefined,
+      },
+    };
+    const expectedCwd = getUserSkillsRuntimeRootDir();
+
+    proc = CodexAppServerProcess.forTest({
+      stdin: {
+        write: (chunk: string) => {
+          const request = JSON.parse(chunk) as {
+            id: number;
+            method: string;
+            params?: Record<string, unknown>;
+          };
+          const handleMessage = (
+            proc as unknown as {
+              handleMessage: (msg: Record<string, unknown>) => void;
+            }
+          ).handleMessage.bind(proc);
+          if (request.method === "thread/start") {
+            threadStartParams = request.params;
+            setTimeout(
+              () =>
+                handleMessage({
+                  id: request.id,
+                  result: { thread: { id: "thread-skills-cwd" } },
+                }),
+              0,
+            );
+            return;
+          }
+          if (request.method === "turn/start") {
+            turnStartParams = request.params;
+            setTimeout(
+              () =>
+                handleMessage({
+                  id: request.id,
+                  result: { turn: { id: "turn-skills-cwd" } },
+                }),
+              0,
+            );
+            setTimeout(
+              () =>
+                handleMessage({
+                  method: "turn/completed",
+                  params: {
+                    turn: { id: "turn-skills-cwd", status: "completed" },
+                  },
+                }),
+              5,
+            );
+            return;
+          }
+          if (request.method === "thread/read") {
+            setTimeout(
+              () => handleMessage({ id: request.id, result: { turns: [] } }),
+              0,
+            );
+          }
+        },
+      },
+      kill: () => {},
+    });
+    CodexAppServerProcess.spawn = async () => proc;
+
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-native-skills-cwd-test",
+          conversationKey: 6_000_000_031,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "$write-note\n\nDraft a note." }],
+        hooks: {
+          loadProviderSessionId: async () => undefined,
+          persistProviderSessionId: async () => undefined,
+        },
+        processKey,
+      });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+    }
+
+    assert.equal(threadStartParams?.cwd, expectedCwd);
+    assert.equal(turnStartParams?.cwd, expectedCwd);
+    assert.include(String(threadStartParams?.cwd), "/agent-runtime/");
+    const threadStartText = JSON.stringify(threadStartParams);
+    const turnStartText = JSON.stringify(turnStartParams);
+    assert.notInclude(
+      threadStartText,
+      "LLM-for-Zotero skills active for this turn",
+    );
+    assert.notInclude(
+      turnStartText,
+      "LLM-for-Zotero skills active for this turn",
+    );
   });
 
   it("does not contain the removed Codex native resource lifecycle states", function () {

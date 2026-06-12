@@ -1,4 +1,9 @@
 import { assert } from "chai";
+import {
+  getCanonicalSkillFilePath,
+  getCanonicalUserSkillsDir,
+  getLegacyUserSkillsDir,
+} from "../src/agent/skills/nativeSkillPaths";
 import { loadUserSkills } from "../src/agent/skills/userSkills";
 
 const globalScope = globalThis as typeof globalThis & {
@@ -26,9 +31,16 @@ describe("obsolete user skills", function () {
 
   it("preserves obsolete files on disk but does not load them as active skills", async function () {
     const baseDir = "/tmp/llm-for-zotero-test";
-    const skillsDir = `${baseDir}/llm-for-zotero/skills`;
+    globalScope.Zotero = {
+      DataDirectory: { dir: baseDir },
+      debug: () => undefined,
+    };
+    const legacySkillsDir = getLegacyUserSkillsDir();
+    const canonicalSkillsDir = getCanonicalUserSkillsDir();
+    const customSkillFile = getCanonicalSkillFilePath("custom-skill");
+    const customSkillDir = customSkillFile.replace(/[\\/]SKILL\.md$/i, "");
+    const skillsDir = legacySkillsDir;
     const noteFromPaperPath = `${skillsDir}/note-from-paper.md`;
-    const customPath = `${skillsDir}/custom-skill.md`;
     const files: Record<string, string> = {
       [noteFromPaperPath]: [
         "---",
@@ -40,8 +52,9 @@ describe("obsolete user skills", function () {
         "",
         "Old obsolete guidance with file_io(read, '{mineruCacheDir}/full.md').",
       ].join("\n"),
-      [customPath]: [
+      [customSkillFile]: [
         "---",
+        "name: custom-skill",
         "id: custom-skill",
         "description: Custom still loads",
         "version: 1",
@@ -52,13 +65,11 @@ describe("obsolete user skills", function () {
       ].join("\n"),
     };
 
-    globalScope.Zotero = {
-      DataDirectory: { dir: baseDir },
-      debug: () => undefined,
-    };
     globalScope.IOUtils = {
-      exists: async () => true,
-      getChildren: async () => [noteFromPaperPath, customPath],
+      exists: async (path: string) =>
+        path === canonicalSkillsDir || path === customSkillDir || path in files,
+      getChildren: async (path: string) =>
+        path === canonicalSkillsDir ? [customSkillDir] : [],
       read: async (path: string) => new TextEncoder().encode(files[path] || ""),
     };
 

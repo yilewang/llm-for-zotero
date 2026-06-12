@@ -3,6 +3,10 @@ import { BUILTIN_SKILL_FILES } from "../src/agent/skills";
 import { patchSkillFrontmatter } from "../src/agent/skills/frontmatterPatcher";
 import { hashSkillForUpgrade } from "../src/agent/skills/managedBlock";
 import { parseSkill } from "../src/agent/skills/skillLoader";
+import {
+  getCanonicalSkillFilePath,
+  getLegacyUserSkillsDir,
+} from "../src/agent/skills/nativeSkillPaths";
 import { initUserSkills } from "../src/agent/skills/userSkills";
 
 const globalScope = globalThis as typeof globalThis & {
@@ -11,6 +15,7 @@ const globalScope = globalThis as typeof globalThis & {
     exists?: (path: string) => Promise<boolean>;
     read?: (path: string) => Promise<Uint8Array>;
     write?: (path: string, data: Uint8Array) => Promise<number>;
+    getChildren?: (path: string) => Promise<string[]>;
     makeDirectory?: (
       path: string,
       options?: { createAncestors?: boolean; ignoreExisting?: boolean },
@@ -128,7 +133,7 @@ function installMockSkillEnvironment(
   files: Record<string, string>,
   prefs: Map<string, string>,
 ): void {
-  const skillsDir = `${baseDir}/llm-for-zotero/skills`;
+  const dirs = new Set<string>([`${baseDir}/llm-for-zotero/skills`]);
   const encoder = new TextEncoder();
   const decoder = new TextDecoder("utf-8");
 
@@ -141,8 +146,26 @@ function installMockSkillEnvironment(
     debug: () => undefined,
   };
   globalScope.IOUtils = {
-    exists: async (path: string) => path === skillsDir || path in files,
-    makeDirectory: async () => undefined,
+    exists: async (path: string) => dirs.has(path) || path in files,
+    makeDirectory: async (path: string) => {
+      dirs.add(path);
+    },
+    getChildren: async (path: string) => {
+      const normalized = path.replace(/\/$/, "");
+      const children = new Set<string>();
+      for (const filePath of Object.keys(files)) {
+        const parent = filePath.replace(/[\\/][^\\/]*$/, "");
+        if (parent === normalized) {
+          children.add(filePath);
+          continue;
+        }
+        const grandparent = parent.replace(/[\\/][^\\/]*$/, "");
+        if (grandparent === normalized) {
+          children.add(parent);
+        }
+      }
+      return [...children];
+    },
     read: async (path: string) => encoder.encode(files[path] || ""),
     write: async (path: string, data: Uint8Array) => {
       files[path] = decoder.decode(data);
@@ -167,7 +190,8 @@ describe("user skill bootstrap upgrades", function () {
 
   it("upgrades unmodified historical compare/evidence skills with no stored hashes", async function () {
     const baseDir = "/tmp/llm-for-zotero-bootstrap-test";
-    const skillsDir = `${baseDir}/llm-for-zotero/skills`;
+    installMockSkillEnvironment(baseDir, {}, new Map<string, string>());
+    const skillsDir = getLegacyUserSkillsDir();
     const comparePath = `${skillsDir}/compare-papers.md`;
     const evidencePath = `${skillsDir}/evidence-based-qa.md`;
     const files: Record<string, string> = {
@@ -180,21 +204,32 @@ describe("user skill bootstrap upgrades", function () {
 
     await initUserSkills();
 
-    assert.equal(files[comparePath], BUILTIN_SKILL_FILES["compare-papers.md"]);
+    const canonicalCompare = files[getCanonicalSkillFilePath("compare-papers")];
+    const canonicalEvidence =
+      files[getCanonicalSkillFilePath("evidence-based-qa")];
+    assert.include(canonicalCompare, "name: compare-papers");
+    assert.include(canonicalEvidence, "name: evidence-based-qa");
     assert.equal(
-      files[evidencePath],
-      BUILTIN_SKILL_FILES["evidence-based-qa.md"],
+      parseSkill(canonicalCompare).instruction,
+      parseSkill(BUILTIN_SKILL_FILES["compare-papers.md"]).instruction,
     );
-    assert.include(files[comparePath], "contexts: paper-set,library-corpus");
+    assert.equal(
+      parseSkill(canonicalEvidence).instruction,
+      parseSkill(BUILTIN_SKILL_FILES["evidence-based-qa.md"]).instruction,
+    );
+    assert.include(canonicalCompare, "contexts: paper-set,library-corpus");
     assert.include(
-      files[evidencePath],
+      canonicalEvidence,
       "contexts: single-paper,paper-set,library-corpus",
     );
+    assert.equal(files[comparePath], OLD_COMPARE_PAPERS);
+    assert.equal(files[evidencePath], OLD_EVIDENCE_BASED_QA);
   });
 
   it("recovers a default skill body already tracked by the failed bootstrap path", async function () {
     const baseDir = "/tmp/llm-for-zotero-bootstrap-recovery-test";
-    const skillsDir = `${baseDir}/llm-for-zotero/skills`;
+    installMockSkillEnvironment(baseDir, {}, new Map<string, string>());
+    const skillsDir = getLegacyUserSkillsDir();
     const comparePath = `${skillsDir}/compare-papers.md`;
     const metadataPatchedOldDefault = patchSkillFrontmatter(
       OLD_COMPARE_PAPERS,
@@ -221,12 +256,18 @@ describe("user skill bootstrap upgrades", function () {
 
     await initUserSkills();
 
-    assert.equal(files[comparePath], BUILTIN_SKILL_FILES["compare-papers.md"]);
+    const canonicalCompare = files[getCanonicalSkillFilePath("compare-papers")];
+    assert.include(canonicalCompare, "name: compare-papers");
+    assert.equal(
+      parseSkill(canonicalCompare).instruction,
+      parseSkill(BUILTIN_SKILL_FILES["compare-papers.md"]).instruction,
+    );
   });
 
   it("preserves a customized tracked body while patching old shipped contexts", async function () {
     const baseDir = "/tmp/llm-for-zotero-bootstrap-customized-test";
-    const skillsDir = `${baseDir}/llm-for-zotero/skills`;
+    installMockSkillEnvironment(baseDir, {}, new Map<string, string>());
+    const skillsDir = getLegacyUserSkillsDir();
     const comparePath = `${skillsDir}/compare-papers.md`;
     const metadataPatchedOldDefault = patchSkillFrontmatter(
       OLD_COMPARE_PAPERS,
@@ -257,14 +298,10 @@ describe("user skill bootstrap upgrades", function () {
 
     await initUserSkills();
 
-    assert.notEqual(
-      files[comparePath],
-      BUILTIN_SKILL_FILES["compare-papers.md"],
-    );
-    assert.include(
-      files[comparePath],
-      "Use my customized comparison workflow.",
-    );
-    assert.include(files[comparePath], "contexts: paper-set,library-corpus");
+    const canonicalCompare = files[getCanonicalSkillFilePath("compare-papers")];
+    assert.notEqual(canonicalCompare, BUILTIN_SKILL_FILES["compare-papers.md"]);
+    assert.include(canonicalCompare, "Use my customized comparison workflow.");
+    assert.include(canonicalCompare, "contexts: paper-set,library-corpus");
+    assert.include(canonicalCompare, "name: compare-papers");
   });
 });
