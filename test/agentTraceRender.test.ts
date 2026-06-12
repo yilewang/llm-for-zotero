@@ -675,6 +675,28 @@ describe("agentTrace render", function () {
     assert.notInclude(rendered, "[quote unavailable]");
   });
 
+  it("omits translated source-backed blockquotes in agent trace markdown", function () {
+    const rendered = buildAgentTraceMarkdownForRender(
+      "证据：\n\n> 记忆痕迹在巩固过程中具有高度动态性。\n\n(Tomé, 2024)\n\n继续。",
+      {
+        quoteCitations: [
+          {
+            id: "Q_trace",
+            quoteText:
+              "Memory engrams are highly dynamic during consolidation.",
+            citationLabel: "(Tomé, 2024)",
+            contextItemId: 51,
+          },
+        ],
+      },
+    );
+
+    assert.include(rendered, "证据");
+    assert.include(rendered, "继续");
+    assert.notInclude(rendered, "记忆痕迹在巩固过程中");
+    assert.notInclude(rendered, "(Tomé, 2024)");
+  });
+
   it("uses rendered Markdown HTML for streaming assistant text", function () {
     const html = renderAssistantMarkdownHtmlForChat(
       [

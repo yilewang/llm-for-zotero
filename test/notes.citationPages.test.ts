@@ -51,6 +51,13 @@ describe("notes citation page export", function () {
         year: "2020",
       },
     ];
+    const quoteCitation = buildQuoteCitation({
+      quoteText: quote,
+      citationLabel: "(Whittington et al., 2020)",
+      contextItemId: 23,
+      itemId: 1,
+    });
+    assert.isDefined(quoteCitation);
     const messages: Message[] = [
       {
         role: "user",
@@ -63,6 +70,7 @@ describe("notes citation page export", function () {
         text: `> ${quote}\n\n(Whittington et al., 2020, page 1)`,
         timestamp: 2,
         modelName: "Claude",
+        quoteCitations: [quoteCitation!],
       },
     ];
 
@@ -149,7 +157,7 @@ describe("notes citation page export", function () {
     assert.notInclude(result.noteHtml, "[quote unavailable]");
   });
 
-  it("does not export leaked source metadata markers into chat-history text", function () {
+  it("omits untrusted leaked source metadata quotes from chat-history text", function () {
     const messages: Message[] = [
       {
         role: "assistant",
@@ -162,8 +170,10 @@ describe("notes citation page export", function () {
 
     const result = buildChatHistoryNotePayload(messages);
 
-    assert.include(result.noteText, "> our results provide evidence");
-    assert.include(result.noteText, "(Tomé, 2024)");
+    assert.notInclude(result.noteText, "our results provide evidence");
+    assert.notInclude(result.noteText, "(Tomé, 2024)");
+    assert.notInclude(result.noteHtml, "our results provide evidence");
+    assert.notInclude(result.noteHtml, "(Tomé, 2024)");
     assert.notInclude(result.noteText, "[[source=");
     assert.notInclude(result.noteText, "section=");
     assert.notInclude(result.noteText, "chunk=");
@@ -184,6 +194,13 @@ describe("notes citation page export", function () {
         year: "2020",
       },
     ];
+    const quoteCitation = buildQuoteCitation({
+      quoteText: quote,
+      citationLabel: "(Whittington et al., 2020)",
+      contextItemId: 23,
+      itemId: 1,
+    });
+    assert.isDefined(quoteCitation);
     const messages: Message[] = [
       {
         role: "user",
@@ -196,6 +213,7 @@ describe("notes citation page export", function () {
         text: `> ${quote}\n\n(Whittington et al., 2020, page 1)`,
         timestamp: 2,
         modelName: "Claude",
+        quoteCitations: [quoteCitation!],
       },
     ];
 
@@ -261,6 +279,13 @@ describe("notes citation page export", function () {
         year: "2020",
       },
     ];
+    const quoteCitation = buildQuoteCitation({
+      quoteText: quote,
+      citationLabel: "(Whittington et al., 2020)",
+      contextItemId: 23,
+      itemId: 1,
+    });
+    assert.isDefined(quoteCitation);
     const messages: Message[] = [
       {
         role: "user",
@@ -273,6 +298,7 @@ describe("notes citation page export", function () {
         text: `> ${quote}\n\n(Whittington et al., 2020, page 1)`,
         timestamp: 2,
         modelName: "Claude",
+        quoteCitations: [quoteCitation!],
       },
     ];
 

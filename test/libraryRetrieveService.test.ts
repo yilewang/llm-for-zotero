@@ -439,6 +439,18 @@ describe("LibraryRetrieveService", function () {
     assert.equal(result.intent, "verify");
     assert.lengthOf(result.snippets, 1);
     assert.equal(result.snippets[0].matchMethod, "exact");
+    assert.isString(result.snippets[0].quoteCitationId);
+    assert.equal(result.snippets[0].sourceLabel, "(Smith, 2024)");
+    assert.lengthOf(result.quoteCitations || [], 1);
+    assert.equal(
+      result.snippets[0].quoteCitationId,
+      result.quoteCitations?.[0]?.id,
+    );
+    assert.include(
+      result.quoteCitations?.[0]?.quoteText || "",
+      "calcium imaging analysis pipeline",
+    );
+    assert.equal(result.quoteCitations?.[0]?.citationLabel, "(Smith, 2024)");
     assert.include(result.methodsUsed, "exact");
   });
 

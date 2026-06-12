@@ -88,32 +88,26 @@ describe("chat retry model inputs", function () {
     assert.notInclude(payload!.renderedHtml, "[quote unavailable]");
   });
 
-  it("sanitizes leaked source metadata markers before assistant rendering", function () {
+  it("omits untrusted leaked source metadata quotes before assistant rendering", function () {
     const rendered = buildAssistantDisplayMarkdownForRender({
       text: '"our results provide evidence that the activity of dynamic engrams..." [[source=(Tomé, 2024), section=Dynamic and selective engrams emerge with memory consolidation, chunk=28]]',
       quoteCitations: [],
     });
 
-    assert.include(rendered, "> our results provide evidence");
-    assert.include(rendered, "(Tomé, 2024)");
+    assert.notInclude(rendered, "our results provide evidence");
+    assert.notInclude(rendered, "(Tomé, 2024)");
     assert.notInclude(rendered, "[[source=");
     assert.notInclude(rendered, "section=");
     assert.notInclude(rendered, "chunk=");
   });
 
-  it("sanitizes leaked source metadata markers in clipboard payloads", function () {
+  it("omits untrusted leaked source metadata quotes in clipboard payloads", function () {
     const payload = buildRenderedMarkdownClipboardPayload(
       '"our model predicted that memory engrams are highly dynamic" [[source=(Tomé, 2024), section=Dynamic and selective engrams emerge with memory consolidation, chunk=8]]',
       [],
     );
 
-    assert.isNotNull(payload);
-    assert.include(payload!.plainText, "> our model predicted");
-    assert.include(payload!.plainText, "(Tomé, 2024)");
-    assert.notInclude(payload!.plainText, "[[source=");
-    assert.notInclude(payload!.plainText, "section=");
-    assert.notInclude(payload!.plainText, "chunk=");
-    assert.notInclude(payload!.renderedHtml, "[[source=");
+    assert.isNull(payload);
   });
 
   const visionConfig: EffectiveRequestConfig = {

@@ -616,6 +616,7 @@ export function buildAgentStableResourceContextBlock(
     lines.push(
       "Citation/source label rule: for direct quotes and substantive paper-grounded claims, use the exact sourceLabel shown for the relevant paper.",
       "If quote anchors like [[quote:Q_x7a2]] are provided, use the anchor token for direct quotes instead of manually copying the quote or citation label.",
+      "Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. Put any translation outside the blockquote as explanation.",
       "If no quote anchor is provided for a direct quote, keep the source label attached to the quote: put it on the next non-empty line after the blockquote, before any commentary.",
       "Do not write [[source=...]], section=..., or chunk=... metadata in the final answer; those fields are internal context only.",
     );

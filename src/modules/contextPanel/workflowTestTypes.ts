@@ -1,4 +1,5 @@
 import type { ResolvedContextSource, SendQuestionOptions } from "./types";
+import type { QuoteCitation } from "../../shared/types";
 
 export type WorkflowTestFixture = {
   parentItemId: number;
@@ -30,6 +31,11 @@ export type WorkflowTestDiagnostics = {
   lastSend: SendQuestionOptions | null;
 };
 
+export type WorkflowTestAssistantRenderResult = {
+  renderedText: string;
+  quoteCardBodies: string[];
+};
+
 export type WorkflowTestStandaloneDiagnostics = {
   activeTab?: "paper" | "open" | null;
   conversationKey?: number;
@@ -59,6 +65,13 @@ export type WorkflowTestApi = {
   }) => Promise<WorkflowTestAttachmentFixture>;
   renderPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
   ask: (panelId: string, text: string) => Promise<SendQuestionOptions>;
+  renderAssistantForPanel: (
+    panelId: string,
+    input: {
+      text: string;
+      quoteCitations?: QuoteCitation[];
+    },
+  ) => Promise<WorkflowTestAssistantRenderResult>;
   openStandaloneForItem: (
     itemId: number,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;

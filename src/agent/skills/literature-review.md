@@ -88,7 +88,7 @@ If key figures from deep-read papers would strengthen a thematic point, embed th
 - Use `(Author, Year)` for single-author papers, `(Author & Author, Year)` for two, `(Author et al., Year)` for three or more.
 - The citation label should match the Zotero item metadata (use `creators` and `date` fields).
 - Do NOT invent citations or cite papers not in the user's library.
-- If a deep-read passage provides a quote anchor like `[[quote:Q_x7a2]]`, use that anchor token for the direct quote. If no quote anchor is provided, put the source label on the next non-empty line after the blockquote.
+- If a deep-read passage provides a quote anchor like `[[quote:Q_x7a2]]`, use that anchor token for the direct quote. Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. Put any translation outside the blockquote as explanation. If no quote anchor is provided, put the source label on the next non-empty line after the blockquote.
 - Do not write `[[source=...]]`, `section=...`, or `chunk=...` metadata in the final answer.
 
 ### After writing

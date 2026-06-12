@@ -12,6 +12,7 @@ import {
   normalizeSelectedTextPaperContexts,
 } from "./normalizers";
 import {
+  findMatchingTrustedQuoteCitation,
   normalizeQuoteCitations,
   QUOTE_CITATION_PATTERN,
 } from "./quoteCitations";
@@ -2931,6 +2932,9 @@ export function decorateAssistantCitationLinks(params: {
   if (!params.assistantMessage.text.trim()) return;
   const ownerDoc = params.bubble.ownerDocument;
   if (!ownerDoc) return;
+  const quoteCitations = normalizeQuoteCitations(
+    params.assistantMessage.quoteCitations,
+  );
   const activeReader = getActiveReaderForSelectedTab();
   if (activeReader) {
     scheduleCitationPageTextCacheWarm(activeReader, ownerDoc);
@@ -3045,8 +3049,27 @@ export function decorateAssistantCitationLinks(params: {
       extractedCitation.sourceLabel,
     );
 
-    // Try to match the citation label against known paper candidates.
-    const matchingCandidates = resolveMatchingCandidatesForExtractedCitation(
+    const trustedQuoteCitation = findMatchingTrustedQuoteCitation({
+      quoteText,
+      citationLabel: extractedCitation.sourceLabel,
+      quoteCitations,
+    });
+    if (!trustedQuoteCitation) {
+      ztoolkit.log(
+        "LLM citation decoration: skipped untrusted source-backed blockquote",
+        "source =",
+        extractedCitation.sourceLabel,
+        "quote =",
+        quoteText.slice(0, 120),
+      );
+      continue;
+    }
+    quoteText = trustedQuoteCitation.quoteText;
+    replaceBlockquoteText(blockquote, quoteText);
+
+    // Try to match the trusted quote citation against known paper candidates.
+    const matchingCandidates = resolveQuoteCitationCandidates(
+      trustedQuoteCitation,
       extractedCitation,
       candidates,
     );
@@ -3064,6 +3087,7 @@ export function decorateAssistantCitationLinks(params: {
     const quoteCard = createQuoteCardElement({
       ownerDoc,
       quoteText,
+      quoteCitationId: trustedQuoteCitation.id,
       citationContent: citationElement,
     });
     const blockquoteParent = blockquote.parentNode;

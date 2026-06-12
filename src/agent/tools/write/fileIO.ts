@@ -304,7 +304,7 @@ function buildCodexMineruPaperSourceMetadata(
         sourceLabel,
         citationInstruction:
           `This file is parsed paper text for ${paperContext.title}. ` +
-          `When using this content in the answer, include a short verbatim blockquote and put ${sourceLabel} on the next non-empty line after the blockquote, before any commentary. Never put interpretation between the quote and ${sourceLabel}. A bare parenthetical citation alone is not enough.`,
+          `When using this content in the answer, include a short verbatim blockquote in the original source language and put ${sourceLabel} on the next non-empty line after the blockquote, before any commentary. Never translate quote text to match the user's language; put any translation outside the blockquote as explanation. Never put interpretation between the quote and ${sourceLabel}. A bare parenthetical citation alone is not enough.`,
       };
     }
   }

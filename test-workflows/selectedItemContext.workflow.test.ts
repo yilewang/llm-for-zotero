@@ -161,4 +161,32 @@ describe("workflow: selected item context send", function () {
       );
     });
   });
+
+  it("renders quote anchors as original-language quote cards in Chinese answers", async function () {
+    fixture = await api.createPaperWithPdfFixture({
+      title: "Original Language Quote Workflow Paper",
+      pdfTitle: "Original Language Quote Workflow PDF",
+    });
+
+    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const quoteText =
+      "Memory engrams are highly dynamic during consolidation.";
+    const result = await api.renderAssistantForPanel(panel.panelId, {
+      text: `中文回答：\n\n[[quote:Q_workflow_original_language]]\n\n这句话说明上面的原文证据。`,
+      quoteCitations: [
+        {
+          id: "Q_workflow_original_language",
+          quoteText,
+          citationLabel: "(Workflow, 2026)",
+          itemId: fixture.parentItemId,
+          contextItemId: fixture.pdfAttachmentId,
+        },
+      ],
+    });
+
+    assert.include(result.renderedText, quoteText);
+    assert.include(result.renderedText, "中文回答");
+    assert.deepEqual(result.quoteCardBodies, [quoteText]);
+    assert.notInclude(result.renderedText, "记忆痕迹");
+  });
 });

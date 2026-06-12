@@ -69,6 +69,87 @@ describe("quoteCitations", function () {
     assert.notInclude(rendered, "[[quote:");
   });
 
+  it("renders anchored quotes in the original source language inside Chinese answers", function () {
+    const citation = buildQuoteCitation({
+      quoteText: "Memory engrams are highly dynamic during consolidation.",
+      citationLabel: "(Tomé, 2024)",
+      contextItemId: 22,
+    });
+    assert.isDefined(citation);
+
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      `中文解释：\n\n[[quote:${citation!.id}]]\n\n这说明记忆痕迹会变化。`,
+      [citation!],
+    );
+
+    assert.include(
+      rendered,
+      "> Memory engrams are highly dynamic during consolidation.",
+    );
+    assert.include(rendered, "中文解释");
+    assert.notInclude(rendered, "> 记忆痕迹");
+  });
+
+  it("preserves Chinese quotes when Chinese is the original source text", function () {
+    const citation = buildQuoteCitation({
+      quoteText: "记忆痕迹在巩固过程中具有高度动态性。",
+      citationLabel: "(王, 2024)",
+      contextItemId: 22,
+    });
+    assert.isDefined(citation);
+
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      `证据：\n\n[[quote:${citation!.id}]]`,
+      [citation!],
+    );
+
+    assert.include(rendered, "> 记忆痕迹在巩固过程中具有高度动态性。");
+    assert.include(rendered, "(王, 2024)");
+  });
+
+  it("omits translated source-backed blockquotes that do not match trusted quote text", function () {
+    const citation = buildQuoteCitation({
+      quoteText: "Memory engrams are highly dynamic during consolidation.",
+      citationLabel: "(Tomé, 2024)",
+      contextItemId: 22,
+    });
+    assert.isDefined(citation);
+
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      "解释：\n\n> 记忆痕迹在巩固过程中具有高度动态性。\n\n(Tomé, 2024)\n\n继续。",
+      [citation!],
+    );
+
+    assert.include(rendered, "解释");
+    assert.include(rendered, "继续");
+    assert.notInclude(rendered, "记忆痕迹在巩固过程中");
+    assert.notInclude(rendered, "(Tomé, 2024)");
+  });
+
+  it("canonicalizes exact manual source-backed blockquotes through trusted anchors", function () {
+    const citation = buildQuoteCitation({
+      quoteText: "Memory engrams are highly dynamic during consolidation.",
+      citationLabel: "(Tomé, 2024)",
+      contextItemId: 22,
+    });
+    assert.isDefined(citation);
+
+    const display = replaceQuoteCitationPlaceholdersForMarkdown(
+      "Evidence:\n\n> Memory engrams are highly dynamic during consolidation.\n\n(Tomé, 2024)",
+      [citation!],
+      { resolved: "preserve" },
+    );
+    const exported = replaceQuoteCitationPlaceholdersForMarkdown(
+      "Evidence:\n\n> Memory engrams are highly dynamic during consolidation.\n\n(Tomé, 2024)",
+      [citation!],
+    );
+
+    assert.include(display, `[[quote:${citation!.id}]]`);
+    assert.notInclude(display, "> Memory engrams");
+    assert.include(exported, "> Memory engrams are highly dynamic");
+    assert.include(exported, "(Tomé, 2024)");
+  });
+
   it("does not double-blockquote anchored quotes already wrapped in quote syntax", function () {
     const citation = buildQuoteCitation({
       quoteText: "First source paragraph.\n\nSecond source paragraph.",

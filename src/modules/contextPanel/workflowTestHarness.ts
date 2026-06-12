@@ -8,14 +8,25 @@ import {
 import type { ResolvedContextSource, SendQuestionOptions } from "./types";
 import type {
   WorkflowTestApi,
+  WorkflowTestAssistantRenderResult,
   WorkflowTestAttachmentFixture,
   WorkflowTestDiagnostics,
   WorkflowTestFixture,
   WorkflowTestPanel,
   WorkflowTestStandaloneDiagnostics,
 } from "./workflowTestTypes";
-import { ensureConversationLoaded, getConversationKey } from "./chat";
+import type { Message } from "./types";
+import {
+  buildAssistantDisplayMarkdownForRender,
+  ensureConversationLoaded,
+  getConversationKey,
+} from "./chat";
 import { resolveContextSourceItemAsync } from "./contextResolution";
+import {
+  decorateAssistantCitationLinks,
+  renderQuoteCitationPlaceholders,
+} from "./assistantCitationLinks";
+import { renderRenderedMarkdownInto } from "./renderedMarkdown";
 import {
   notifyStandaloneItemChanged as notifyStandaloneItemChangedRuntime,
   openStandaloneChat,
@@ -268,6 +279,64 @@ async function ask(
   if (!sendBtn) throw new Error("Workflow test send button was not rendered");
   sendBtn.click();
   return waitForLastSend();
+}
+
+async function renderAssistantForPanel(
+  panelId: string,
+  input: {
+    text: string;
+    quoteCitations?: Message["quoteCitations"];
+  },
+): Promise<WorkflowTestAssistantRenderResult> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const doc = panel.body.ownerDocument;
+  const bubble = doc.createElement("div") as HTMLDivElement;
+  bubble.className = "llm-message-content";
+  panel.body.appendChild(bubble);
+
+  const assistantMessage: Message = {
+    role: "assistant",
+    text: input.text,
+    timestamp: Date.now(),
+    quoteCitations: input.quoteCitations,
+  };
+  const paperContext = panel.contextSnapshot?.paperContext;
+  const pairedUserMessage: Message = {
+    role: "user",
+    text: "中文问题：请解释这篇论文。",
+    timestamp: assistantMessage.timestamp - 1,
+    paperContexts: paperContext ? [paperContext] : undefined,
+    fullTextPaperContexts: paperContext ? [paperContext] : undefined,
+    citationPaperContexts: paperContext ? [paperContext] : undefined,
+  };
+
+  renderRenderedMarkdownInto(
+    bubble,
+    buildAssistantDisplayMarkdownForRender(assistantMessage),
+    doc,
+  );
+  renderQuoteCitationPlaceholders({
+    body: panel.body,
+    panelItem: panel.item,
+    bubble,
+    assistantMessage,
+    pairedUserMessage,
+  });
+  decorateAssistantCitationLinks({
+    body: panel.body,
+    panelItem: panel.item,
+    bubble,
+    assistantMessage,
+    pairedUserMessage,
+  });
+
+  return {
+    renderedText: bubble.textContent || "",
+    quoteCardBodies: Array.from(
+      bubble.querySelectorAll(".llm-quote-card-body"),
+    ).map((node) => ((node as Element).textContent || "").trim()),
+  };
 }
 
 function parsePositiveInt(value: unknown): number | undefined {
@@ -537,6 +606,7 @@ export function installWorkflowTestHarness(targetAddon: {
     createStandaloneAttachmentFixture,
     renderPanelForItem,
     ask,
+    renderAssistantForPanel,
     openStandaloneForItem,
     clickStandaloneTab,
     askStandalone,

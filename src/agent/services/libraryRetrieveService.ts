@@ -9,7 +9,19 @@ import type {
   PdfContext,
 } from "../../modules/contextPanel/types";
 import type { AgentRuntimeRequest } from "../types";
-import type { PaperContextRef, TagContextRef } from "../../shared/types";
+import type {
+  PaperContextRef,
+  QuoteCitation,
+  TagContextRef,
+} from "../../shared/types";
+import {
+  formatPaperCitationLabel,
+  formatPaperSourceLabel,
+} from "../../modules/contextPanel/paperAttribution";
+import {
+  buildQuoteCitation,
+  mergeQuoteCitations,
+} from "../../modules/contextPanel/quoteCitations";
 import type {
   AgentLibraryFilters,
   EditableArticleMetadataSnapshot,
@@ -155,12 +167,15 @@ export type LibraryRetrieveSnippet = {
   contextItemId?: string;
   chunkIndex?: number;
   title: string;
+  citationLabel?: string;
+  sourceLabel?: string;
   sourceKind: LibraryRetrieveSourceKind;
   matchMethod: LibraryRetrieveMatchMethod;
   sectionLabel?: string;
   pageLabel?: string;
   charStart?: number;
   charEnd?: number;
+  quoteCitationId?: string;
   snippet: string;
   surroundingText?: string;
   score: number;
@@ -212,6 +227,7 @@ export type LibraryRetrieveResult = {
   frontier: LibraryRetrieveFrontier;
   answerContract: LibraryRetrieveAnswerContract;
   snippets: LibraryRetrieveSnippet[];
+  quoteCitations?: QuoteCitation[];
   warnings: string[];
 };
 
@@ -232,6 +248,50 @@ export const LIBRARY_RETRIEVE_HARD_CAPS = {
   perPaperTopK: 5,
   maxTotalSnippets: 200,
 } as const;
+
+function buildSnippetQuoteCitation(
+  snippet: LibraryRetrieveSnippet,
+): QuoteCitation | undefined {
+  const itemId = Number(snippet.itemId);
+  const contextItemId = Number(snippet.contextItemId);
+  if (
+    !Number.isFinite(itemId) ||
+    itemId <= 0 ||
+    !Number.isFinite(contextItemId) ||
+    contextItemId <= 0
+  ) {
+    return undefined;
+  }
+  const citationLabel = snippet.sourceLabel || snippet.citationLabel;
+  return buildQuoteCitation({
+    quoteText: snippet.snippet,
+    citationLabel,
+    contextItemId,
+    itemId,
+  });
+}
+
+function attachQuoteCitationsToSnippets(
+  snippets: LibraryRetrieveSnippet[],
+): {
+  snippets: LibraryRetrieveSnippet[];
+  quoteCitations: QuoteCitation[];
+} {
+  const quoteCitations: QuoteCitation[] = [];
+  const pairedSnippets = snippets.map((snippet) => {
+    const citation = buildSnippetQuoteCitation(snippet);
+    if (!citation) return snippet;
+    quoteCitations.push(citation);
+    return {
+      ...snippet,
+      quoteCitationId: citation.id,
+    };
+  });
+  return {
+    snippets: pairedSnippets,
+    quoteCitations: mergeQuoteCitations(quoteCitations),
+  };
+}
 
 type NormalizedLibraryRetrieveInput = Required<
   Pick<
@@ -1150,10 +1210,12 @@ export class LibraryRetrieveService {
       }
     }
 
-    const dedupedSnippets = this.dedupeAndRankSnippets(snippets).slice(
+    const dedupedRawSnippets = this.dedupeAndRankSnippets(snippets).slice(
       0,
       input.maxTotalSnippets,
     );
+    const snippetQuotePack = attachQuoteCitationsToSnippets(dedupedRawSnippets);
+    const dedupedSnippets = snippetQuotePack.snippets;
     const snippetPaperKeys = new Set(
       dedupedSnippets.map(
         (snippet) => `${snippet.itemId}:${snippet.contextItemId || ""}`,
@@ -1254,6 +1316,9 @@ export class LibraryRetrieveService {
       frontier,
       answerContract,
       snippets: dedupedSnippets,
+      quoteCitations: snippetQuotePack.quoteCitations.length
+        ? snippetQuotePack.quoteCitations
+        : undefined,
       warnings,
     };
   }
@@ -1622,6 +1687,8 @@ export class LibraryRetrieveService {
     if (!pdfContext?.chunks.length) return [];
     params.record.queryState.add("content_loaded");
     const sourceKind = sourceKindFromPdfContext(pdfContext, paperContext);
+    const citationLabel = formatPaperCitationLabel(paperContext);
+    const sourceLabel = formatPaperSourceLabel(paperContext);
     const snippets: LibraryRetrieveSnippet[] = [];
     if (params.input.methods.includes("exact") || params.input.requireExact) {
       params.methodsUsed.add("exact");
@@ -1679,6 +1746,8 @@ export class LibraryRetrieveService {
           contextItemId: String(candidate.contextItemId),
           chunkIndex: candidate.chunkIndex,
           title: candidate.title,
+          citationLabel,
+          sourceLabel,
           sourceKind,
           matchMethod,
           sectionLabel: candidate.sectionLabel,
@@ -1721,6 +1790,8 @@ export class LibraryRetrieveService {
         contextItemId: String(params.paperContext.contextItemId),
         chunkIndex: index,
         title: params.paperContext.title,
+        citationLabel: formatPaperCitationLabel(params.paperContext),
+        sourceLabel: formatPaperSourceLabel(params.paperContext),
         sourceKind: params.sourceKind,
         matchMethod: "exact",
         sectionLabel: meta?.sectionLabel,

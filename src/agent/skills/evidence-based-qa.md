@@ -50,6 +50,9 @@ more tool calls.
 
 If `paper_read` provides quote anchors like `[[quote:Q_x7a2]]`, use those
 anchor tokens for direct quotes instead of copying the quote/citation manually.
+Direct quote text must be copied verbatim in the original source language;
+never translate quote text to match the user's language. Put any translation
+outside the blockquote as explanation.
 If no quote anchor is provided for a direct quote, put the provided
 `sourceLabel` on the next non-empty line after the blockquote, before any
 commentary. Do not write `[[source=...]]`, `section=...`, or `chunk=...`
