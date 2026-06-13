@@ -1,7 +1,7 @@
 import { t } from "../../../../utils/i18n";
 import {
   copyGeneratedImageToClipboard,
-  copyRenderedMarkdownToClipboard,
+  buildPlainMarkdownClipboardText,
   copyTextToClipboard,
   resolveAssistantResponseMenuContent,
 } from "../../chat";
@@ -15,6 +15,7 @@ import {
 import { isGlobalPortalItem } from "../../portalScope";
 import { isClaudeGlobalPortalItem } from "../../../../claudeCode/portal";
 import { positionMenuBelowButton } from "../../menuPositioning";
+import { renderMermaidSourceToSvg } from "../../renderedMarkdown";
 import { setStatus } from "../../textUtils";
 import type {
   ConversationSystem,
@@ -177,42 +178,6 @@ export function buildResponseActionTargetFromHistory(params: {
   };
 }
 
-function getResponseActionKind(
-  value: string | undefined,
-): ResponseActionKind | null {
-  if (value === "copy" || value === "note" || value === "delete") {
-    return value;
-  }
-  return null;
-}
-
-function getResponseTurnReferenceFromButton(
-  button: HTMLButtonElement,
-): ResponseTurnReference | null {
-  return normalizeResponseTurnReference({
-    conversationKey: Number(button.dataset.conversationKey || 0),
-    userTimestamp: Number(button.dataset.userTimestamp || 0),
-    assistantTimestamp: Number(button.dataset.assistantTimestamp || 0),
-  });
-}
-
-function buildToolbarResponseActionTarget(
-  deps: MenuActionControllerDeps,
-  button: HTMLButtonElement,
-): ResponseMenuTarget {
-  const item = deps.getItem();
-  const reference = getResponseTurnReferenceFromButton(button);
-  if (!item || !reference) return null;
-  if (deps.getConversationKey(item) !== reference.conversationKey) return null;
-  return buildResponseActionTargetFromHistory({
-    item,
-    history: deps.getHistory(reference.conversationKey),
-    conversationKey: reference.conversationKey,
-    userTimestamp: reference.userTimestamp,
-    assistantTimestamp: reference.assistantTimestamp,
-  });
-}
-
 async function copyResponseTarget(
   deps: MenuActionControllerDeps,
   target: ResponseMenuTarget,
@@ -222,12 +187,12 @@ async function copyResponseTarget(
   ) => void,
 ): Promise<void> {
   if (!target) return;
-  if (target.contentText.trim()) {
-    await copyRenderedMarkdownToClipboard(
-      deps.body,
-      target.contentText,
-      target.quoteCitations,
-    );
+  const markdownText = buildPlainMarkdownClipboardText(
+    target.contentText,
+    target.quoteCitations,
+  );
+  if (markdownText) {
+    await copyTextToClipboard(deps.body, markdownText);
     setStatusMessage(t("Copied response"), "ready");
   } else if (target.generatedImages?.length) {
     const result = await copyGeneratedImageToClipboard(
@@ -239,6 +204,49 @@ async function copyResponseTarget(
       "ready",
     );
   }
+}
+
+function buildNoteFigureRenderOptions(deps: MenuActionControllerDeps) {
+  const doc = deps.body.ownerDocument || null;
+  const body = deps.body as HTMLElement | null;
+  return doc
+    ? {
+        doc,
+        omitUnconvertedVisualFences: true,
+        renderMermaidSvg: async (
+          source: string,
+          renderDoc: Document,
+          anchor?: HTMLElement,
+        ) =>
+          findRenderedMermaidSvgForSource(deps.body, source) ||
+          renderMermaidSourceToSvg(
+            source,
+            renderDoc,
+            anchor || body || undefined,
+          ),
+      }
+    : undefined;
+}
+
+function findRenderedMermaidSvgForSource(
+  root: ParentNode,
+  source: string,
+): string | null {
+  const normalizedSource = source.trim();
+  if (!normalizedSource || typeof root.querySelectorAll !== "function") {
+    return null;
+  }
+  const previews = Array.from(
+    root.querySelectorAll(".llm-mermaid-preview[data-llm-mermaid-source]"),
+  ) as HTMLElement[];
+  for (const preview of previews) {
+    if ((preview.dataset.llmMermaidSource || "").trim() !== normalizedSource) {
+      continue;
+    }
+    const renderedSvg = (preview.dataset.llmRenderedSvg || "").trim();
+    if (renderedSvg) return renderedSvg;
+  }
+  return null;
 }
 
 async function saveResponseTargetAsNote(
@@ -267,6 +275,7 @@ async function saveResponseTargetAsNote(
     return;
   }
   try {
+    const figureRender = buildNoteFigureRenderOptions(deps);
     const targetNoteSession = deps.resolveActiveNoteSession(targetItem);
     if (
       deps.isGlobalMode() ||
@@ -286,6 +295,7 @@ async function saveResponseTargetAsNote(
         paperContexts,
         quoteCitations,
         generatedImages,
+        figureRender,
       });
       setStatusMessage(t("Created a new note"), "ready");
       return;
@@ -298,6 +308,7 @@ async function saveResponseTargetAsNote(
       paperContexts,
       quoteCitations,
       generatedImages,
+      figureRender,
     });
     setStatusMessage(t("Created a new note"), "ready");
   } catch (err) {
@@ -336,62 +347,29 @@ async function queueResponseTurnDeletion(
   await deps.queueTurnDeletion(normalized);
 }
 
-function getToolbarResponseActionButton(
-  target: EventTarget | null,
-): HTMLButtonElement | null {
-  const element = target as Element | null;
-  if (!element || typeof element.closest !== "function") return null;
-  return element.closest(".llm-message-action") as HTMLButtonElement | null;
-}
-
-function attachToolbarResponseActions(
+export async function runResponseMenuAction(
   deps: MenuActionControllerDeps,
+  action: ResponseActionKind,
+  target: ResponseMenuTarget,
   setStatusMessage: (
     message: string,
     level: "ready" | "warning" | "error",
   ) => void,
-): void {
-  const body = deps.body as Element & {
-    __llmResponseActionListenerAttached?: boolean;
-  };
-  if (body.__llmResponseActionListenerAttached) return;
-  body.__llmResponseActionListenerAttached = true;
-  deps.body.addEventListener("click", async (event: Event) => {
-    const button = getToolbarResponseActionButton(event.target);
-    if (!button || button.disabled) return;
-    const action = getResponseActionKind(button.dataset.responseAction);
-    if (!action) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    if (typeof event.stopImmediatePropagation === "function") {
-      event.stopImmediatePropagation();
+): Promise<void> {
+  try {
+    if (action === "copy") {
+      await copyResponseTarget(deps, target, setStatusMessage);
+      return;
     }
-    deps.closeResponseMenu();
-    deps.closePromptMenu();
-    deps.closeExportMenu();
-
-    try {
-      if (action === "delete") {
-        await queueResponseTurnDeletion(
-          deps,
-          getResponseTurnReferenceFromButton(button),
-          setStatusMessage,
-        );
-        return;
-      }
-      const target = buildToolbarResponseActionTarget(deps, button);
-      if (!target) return;
-      if (action === "copy") {
-        await copyResponseTarget(deps, target, setStatusMessage);
-      } else {
-        await saveResponseTargetAsNote(deps, target, setStatusMessage);
-      }
-    } catch (err) {
-      deps.logError("Response action failed:", err);
-      setStatusMessage(t("Response action failed"), "error");
+    if (action === "note") {
+      await saveResponseTargetAsNote(deps, target, setStatusMessage);
+      return;
     }
-  });
+    await queueResponseTurnDeletion(deps, target, setStatusMessage);
+  } catch (err) {
+    deps.logError("Response action failed:", err);
+    setStatusMessage(t("Response action failed"), "error");
+  }
 }
 
 export function attachMenuActionController(
@@ -403,8 +381,6 @@ export function attachMenuActionController(
   ) => {
     if (deps.status) setStatus(deps.status, message, level);
   };
-
-  attachToolbarResponseActions(deps, setStatusMessage);
 
   if (
     deps.responseMenu &&
@@ -419,21 +395,21 @@ export function attachMenuActionController(
       e.stopPropagation();
       const target = deps.getResponseMenuTarget();
       deps.closeResponseMenu();
-      await copyResponseTarget(deps, target, setStatusMessage);
+      await runResponseMenuAction(deps, "copy", target, setStatusMessage);
     });
     deps.responseMenuNoteBtn.addEventListener("click", async (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
       const target = deps.getResponseMenuTarget();
       deps.closeResponseMenu();
-      await saveResponseTargetAsNote(deps, target, setStatusMessage);
+      await runResponseMenuAction(deps, "note", target, setStatusMessage);
     });
     deps.responseMenuDeleteBtn?.addEventListener("click", async (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
       const target = deps.getResponseMenuTarget();
       deps.closeResponseMenu();
-      await queueResponseTurnDeletion(deps, target, setStatusMessage);
+      await runResponseMenuAction(deps, "delete", target, setStatusMessage);
     });
   }
 
@@ -507,9 +483,13 @@ export function attachMenuActionController(
           return;
         }
         if (deps.isGlobalMode()) {
-          await createStandaloneNoteFromChatHistory(currentLibraryID, history);
+          await createStandaloneNoteFromChatHistory(currentLibraryID, history, {
+            figureRender: buildNoteFigureRenderOptions(deps),
+          });
         } else {
-          await createNoteFromChatHistory(currentItem, history);
+          await createNoteFromChatHistory(currentItem, history, {
+            figureRender: buildNoteFigureRenderOptions(deps),
+          });
         }
         setStatusMessage(t("Saved chat history to new note"), "ready");
       } catch (err) {

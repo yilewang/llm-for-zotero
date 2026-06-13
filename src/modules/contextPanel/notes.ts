@@ -67,6 +67,10 @@ import {
   formatGeneratedImagesMarkdownForNote,
   normalizeEmbeddableGeneratedImages,
 } from "./noteImages";
+import {
+  replaceVisualFigureFencesWithNoteImages,
+  type NoteFigureRenderOptions,
+} from "./figureExport";
 
 export { readNoteSnapshot, stripNoteHtml, type NoteSnapshot };
 
@@ -150,6 +154,36 @@ export function renderRawNoteHtml(contentText: string): string {
   } catch (err) {
     ztoolkit.log("Note markdown render error:", err);
     return escapeNoteHtml(raw).replace(/\n/g, "<br/>");
+  }
+}
+
+async function renderRawNoteHtmlForSave(
+  contentText: string,
+  options: {
+    noteId?: number;
+    figureRender?: NoteFigureRenderOptions;
+  } = {},
+): Promise<string> {
+  const raw = normalizeNoteSourceText(contentText);
+  if (!raw) return "<p></p>";
+  let noteSource = raw;
+  if (options.noteId && options.figureRender?.doc) {
+    try {
+      noteSource = await replaceVisualFigureFencesWithNoteImages(
+        raw,
+        options.noteId,
+        options.figureRender,
+      );
+    } catch (err) {
+      ztoolkit.log("Note figure render error:", err);
+      noteSource = raw;
+    }
+  }
+  try {
+    return renderMarkdownForNote(noteSource);
+  } catch (err) {
+    ztoolkit.log("Note markdown render error:", err);
+    return escapeNoteHtml(noteSource).replace(/\n/g, "<br/>");
   }
 }
 
@@ -416,6 +450,46 @@ function buildAssistantNoteHtml(
   return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
 }
 
+async function buildAssistantNoteHtmlForSave(
+  contentText: string,
+  modelName: string,
+  paperContexts?: PaperContextRef[],
+  quoteCitations?: QuoteCitation[],
+  generatedImagesHtml = "",
+  queryText = "",
+  options: {
+    noteId?: number;
+    figureRender?: NoteFigureRenderOptions;
+  } = {},
+): Promise<string> {
+  const query = replaceQuoteCitationPlaceholdersForMarkdown(
+    sanitizeText(queryText || "").trim(),
+    quoteCitations,
+    { unresolved: "omit" },
+  );
+  const response = replaceQuoteCitationPlaceholdersForMarkdown(
+    sanitizeText(stripTrailingPluginFooter(contentText || "")).trim(),
+    quoteCitations,
+    { unresolved: "omit" },
+  );
+  const source = modelName.trim() || "unknown";
+  const timestamp = getCurrentLocalTimestamp();
+  let queryHtml = query ? await renderRawNoteHtmlForSave(query, options) : "";
+  let responseHtml = response
+    ? await renderRawNoteHtmlForSave(response, options)
+    : "";
+  if (queryHtml) {
+    queryHtml = injectCitationLinksIntoNoteHtml(queryHtml, paperContexts);
+  }
+  if (responseHtml) {
+    responseHtml = injectCitationLinksIntoNoteHtml(responseHtml, paperContexts);
+  }
+  const queryBlock = queryHtml
+    ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
+    : "";
+  return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
+}
+
 function renderChatMessageHtmlForNote(
   text: string,
   quoteCitations?: QuoteCitation[],
@@ -428,6 +502,24 @@ function renderChatMessageHtmlForNote(
   if (!safeText) return "";
   // Reuse the same markdown-to-note rendering path as single-response save.
   return renderRawNoteHtml(safeText);
+}
+
+async function renderChatMessageHtmlForNoteSave(
+  text: string,
+  noteId: number | undefined,
+  figureRender: NoteFigureRenderOptions | undefined,
+  quoteCitations?: QuoteCitation[],
+): Promise<string> {
+  const safeText = replaceQuoteCitationPlaceholdersForMarkdown(
+    sanitizeText(text || "").trim(),
+    quoteCitations,
+    { unresolved: "omit" },
+  );
+  if (!safeText) return "";
+  return renderRawNoteHtmlForSave(safeText, {
+    noteId,
+    figureRender,
+  });
 }
 
 function normalizeScreenshotImagesForNote(images: unknown): string[] {
@@ -801,6 +893,155 @@ export function buildChatHistoryNotePayload(
   };
 }
 
+async function buildChatHistoryNotePayloadForSave(
+  messages: Message[],
+  options: {
+    noteId: number;
+    generatedImageHtmlByMessageIndex?: Map<number, string>;
+    figureRender?: NoteFigureRenderOptions;
+  },
+): Promise<{
+  noteHtml: string;
+  noteText: string;
+}> {
+  const timestamp = getCurrentLocalTimestamp();
+  const textLines: string[] = [];
+  const htmlBlocks: string[] = [];
+  let lastUserPaperContexts: PaperContextRef[] | undefined;
+  for (
+    let messageIndex = 0;
+    messageIndex < messages.length;
+    messageIndex += 1
+  ) {
+    const msg = messages[messageIndex]!;
+    const rawText = msg.text || "";
+    const textPreStripped =
+      msg.role === "assistant" ? stripTrailingPluginFooter(rawText) : rawText;
+    const text = sanitizeText(textPreStripped).trim();
+    const selectedTextContexts = normalizeSelectedTextsForNote(
+      msg.selectedTexts,
+      msg.selectedText,
+      msg.selectedTextSources,
+    );
+    const screenshotImages = normalizeScreenshotImagesForNote(
+      msg.screenshotImages,
+    );
+    const fileAttachments = normalizeFileAttachmentsForNote(msg.attachments);
+    const generatedImages =
+      msg.role === "assistant"
+        ? normalizeEmbeddableGeneratedImages(msg.generatedImages)
+        : [];
+    const generatedImageText =
+      msg.role === "assistant"
+        ? formatGeneratedImagesMarkdownForNote(generatedImages)
+        : "";
+    const generatedImageHtml =
+      msg.role === "assistant"
+        ? options.generatedImageHtmlByMessageIndex?.get(messageIndex) || ""
+        : "";
+    const screenshotCount = screenshotImages.length;
+    if (
+      !text &&
+      !selectedTextContexts.length &&
+      !screenshotCount &&
+      !fileAttachments.length &&
+      !generatedImageText &&
+      !generatedImageHtml
+    )
+      continue;
+    let textWithContext = text;
+    let htmlTextWithContext = text;
+    if (msg.role === "user") {
+      const userBlocks: string[] = [];
+      const userHtmlBlocks: string[] = [];
+      if (selectedTextContexts.length === 1) {
+        const entry = selectedTextContexts[0];
+        const label = formatSelectedTextLabel(
+          entry.source,
+          0,
+          selectedTextContexts.length,
+        );
+        userBlocks.push(formatSelectedTextQuoteMarkdown(entry.text, label));
+        userHtmlBlocks.push(formatSelectedTextQuoteMarkdown(entry.text, label));
+      } else if (selectedTextContexts.length > 1) {
+        selectedTextContexts.forEach((entry, index) => {
+          const label = formatSelectedTextLabel(
+            entry.source,
+            index,
+            selectedTextContexts.length,
+          );
+          userBlocks.push(formatSelectedTextQuoteMarkdown(entry.text, label));
+          userHtmlBlocks.push(
+            formatSelectedTextQuoteMarkdown(entry.text, label),
+          );
+        });
+      }
+      if (screenshotCount) {
+        userBlocks.push(formatScreenshotEmbeddedLabel(screenshotCount));
+      }
+      if (fileAttachments.length) {
+        userBlocks.push(formatFileEmbeddedLabel(fileAttachments));
+      }
+      if (text) {
+        userBlocks.push(text);
+        userHtmlBlocks.push(text);
+      }
+      textWithContext = userBlocks.join("\n\n");
+      htmlTextWithContext = userHtmlBlocks.join("\n\n");
+    } else if (generatedImageText) {
+      textWithContext = [textWithContext, generatedImageText]
+        .filter(Boolean)
+        .join("\n\n");
+    }
+    const speaker =
+      msg.role === "user"
+        ? "user"
+        : sanitizeText(msg.modelName || "").trim() || "model";
+    const screenshotHtml =
+      msg.role === "user"
+        ? buildScreenshotImagesHtmlForNote(screenshotImages)
+        : "";
+    const fileHtml =
+      msg.role === "user" ? buildFileListHtmlForNote(fileAttachments) : "";
+    let rendered = await renderChatMessageHtmlForNoteSave(
+      htmlTextWithContext,
+      options.noteId,
+      options.figureRender,
+      msg.role === "assistant" ? msg.quoteCitations : undefined,
+    );
+    if (msg.role === "assistant" && rendered) {
+      rendered = injectCitationLinksIntoNoteHtml(
+        rendered,
+        lastUserPaperContexts,
+      );
+    }
+    const exportedText =
+      msg.role === "assistant"
+        ? replaceQuoteCitationPlaceholdersForMarkdown(
+            textWithContext,
+            msg.quoteCitations,
+            { unresolved: "omit" },
+          )
+        : textWithContext;
+    if (msg.role === "user") {
+      lastUserPaperContexts = getMessageCitationPaperContexts(msg);
+    }
+    if (!rendered && !screenshotHtml && !fileHtml && !generatedImageHtml)
+      continue;
+    textLines.push(`${speaker}: ${exportedText}`);
+    const renderedBlock = rendered ? `<div>${rendered}</div>` : "";
+    htmlBlocks.push(
+      `<p><strong>${escapeNoteHtml(speaker)}:</strong></p>${renderedBlock}${screenshotHtml}${fileHtml}${generatedImageHtml}`,
+    );
+  }
+  const noteText = textLines.join("\n\n");
+  const bodyHtml = htmlBlocks.join("<hr/>");
+  return {
+    noteText,
+    noteHtml: `<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div>${NOTE_FOOTER_HTML}`,
+  };
+}
+
 function appendAssistantAnswerToNoteHtml(
   existingHtml: string,
   newAnswerHtml: string,
@@ -830,6 +1071,7 @@ export async function createAssistantResponseNote(params: {
   paperContexts?: PaperContextRef[];
   quoteCitations?: QuoteCitation[];
   generatedImages?: GeneratedChatImage[];
+  figureRender?: NoteFigureRenderOptions;
 }): Promise<AssistantResponseNoteResult> {
   let libraryID = 0;
   let parentId: number | undefined;
@@ -857,28 +1099,34 @@ export async function createAssistantResponseNote(params: {
       noteId && generatedImages.length
         ? await buildGeneratedImagesHtmlForNote(generatedImages, noteId)
         : "";
-    return buildAssistantNoteHtml(
+    return buildAssistantNoteHtmlForSave(
       params.contentText,
       params.modelName,
       params.paperContexts,
       params.quoteCitations,
       generatedImagesHtml,
       params.queryText,
+      {
+        noteId,
+        figureRender: params.figureRender,
+      },
     );
   };
 
   const note = new Zotero.Item("note");
   note.libraryID = libraryID;
   if (parentId) note.parentID = parentId;
-  if (generatedImages.length) {
-    note.setNote("<p>Preparing generated images...</p>");
+  const needsDeferredHtml =
+    generatedImages.length || Boolean(params.figureRender?.doc);
+  if (needsDeferredHtml) {
+    note.setNote("<p>Preparing note figures...</p>");
   } else {
     note.setNote(await buildHtml());
   }
   const saveResult = await note.saveTx();
   const noteId =
     typeof saveResult === "number" && saveResult > 0 ? saveResult : note.id;
-  if (generatedImages.length && noteId && noteId > 0) {
+  if (needsDeferredHtml && noteId && noteId > 0) {
     note.setNote(await buildHtml(noteId));
     await note.saveTx();
   }
@@ -911,6 +1159,7 @@ export async function createNoteFromAssistantText(
     quoteCitations?: QuoteCitation[];
     generatedImages?: GeneratedChatImage[];
     queryText?: string;
+    figureRender?: NoteFigureRenderOptions;
   } = {},
 ): Promise<"created" | "appended"> {
   const parentItem = resolveParentItemForNoteTarget(item);
@@ -933,13 +1182,17 @@ export async function createNoteFromAssistantText(
       noteId && generatedImages.length
         ? await buildGeneratedImagesHtmlForNote(generatedImages, noteId)
         : "";
-    return buildAssistantNoteHtml(
+    return buildAssistantNoteHtmlForSave(
       contentText,
       modelName,
       paperContexts,
       options.quoteCitations,
       generatedImagesHtml,
       options.queryText,
+      {
+        noteId,
+        figureRender: options.figureRender,
+      },
     );
   };
 
@@ -981,6 +1234,7 @@ export async function createNoteFromAssistantText(
     paperContexts,
     quoteCitations: options.quoteCitations,
     generatedImages: options.generatedImages,
+    figureRender: options.figureRender,
   });
   if (result.noteId && result.noteId > 0) {
     if (options.rememberCreatedNote) {
@@ -998,6 +1252,7 @@ export async function createStandaloneNoteFromAssistantText(
   quoteCitations?: QuoteCitation[],
   generatedImages?: GeneratedChatImage[],
   queryText?: string,
+  figureRender?: NoteFigureRenderOptions,
 ): Promise<"created"> {
   await createAssistantResponseNote({
     destination: { kind: "standalone", libraryID },
@@ -1007,6 +1262,7 @@ export async function createStandaloneNoteFromAssistantText(
     paperContexts,
     quoteCitations,
     generatedImages,
+    figureRender,
   });
   return "created";
 }
@@ -1033,6 +1289,9 @@ async function buildGeneratedImageHtmlByMessageIndex(
 export async function createNoteFromChatHistory(
   item: Zotero.Item,
   history: Message[],
+  options: {
+    figureRender?: NoteFigureRenderOptions;
+  } = {},
 ): Promise<void> {
   const parentItem = resolveParentItemForNoteTarget(item);
   const parentId = parentItem?.id;
@@ -1058,11 +1317,16 @@ export async function createNoteFromChatHistory(
     await normalizeHistoryAttachmentsToSharedBlobs(history);
   const generatedImageHtmlByMessageIndex =
     await buildGeneratedImageHtmlByMessageIndex(normalizedHistory, noteId);
-  note.setNote(
-    buildChatHistoryNotePayload(normalizedHistory, {
-      generatedImageHtmlByMessageIndex,
-    }).noteHtml,
-  );
+  const payload = options.figureRender?.doc
+    ? await buildChatHistoryNotePayloadForSave(normalizedHistory, {
+        noteId,
+        generatedImageHtmlByMessageIndex,
+        figureRender: options.figureRender,
+      })
+    : buildChatHistoryNotePayload(normalizedHistory, {
+        generatedImageHtmlByMessageIndex,
+      });
+  note.setNote(payload.noteHtml);
   await note.saveTx();
   const attachmentHashes = collectAttachmentHashes(normalizedHistory);
   try {
@@ -1083,6 +1347,9 @@ export async function createNoteFromChatHistory(
 export async function createStandaloneNoteFromChatHistory(
   libraryID: number,
   history: Message[],
+  options: {
+    figureRender?: NoteFigureRenderOptions;
+  } = {},
 ): Promise<void> {
   const normalizedLibraryID = Number.isFinite(libraryID)
     ? Math.floor(libraryID)
@@ -1105,11 +1372,16 @@ export async function createStandaloneNoteFromChatHistory(
     await normalizeHistoryAttachmentsToSharedBlobs(history);
   const generatedImageHtmlByMessageIndex =
     await buildGeneratedImageHtmlByMessageIndex(normalizedHistory, noteId);
-  note.setNote(
-    buildChatHistoryNotePayload(normalizedHistory, {
-      generatedImageHtmlByMessageIndex,
-    }).noteHtml,
-  );
+  const payload = options.figureRender?.doc
+    ? await buildChatHistoryNotePayloadForSave(normalizedHistory, {
+        noteId,
+        generatedImageHtmlByMessageIndex,
+        figureRender: options.figureRender,
+      })
+    : buildChatHistoryNotePayload(normalizedHistory, {
+        generatedImageHtmlByMessageIndex,
+      });
+  note.setNote(payload.noteHtml);
   await note.saveTx();
   const attachmentHashes = collectAttachmentHashes(normalizedHistory);
   try {

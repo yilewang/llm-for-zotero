@@ -151,6 +151,7 @@ import {
   setInlineEditSavedDraft,
   selectedRuntimeModeCache,
   pdfTextCache,
+  type ResponseActionTarget,
 } from "./state";
 import { agentRunTraceCache, agentRunTraceLoadingTasks } from "./agentState";
 import {
@@ -1226,6 +1227,132 @@ export function resolveAssistantResponseMenuContent(
   };
 }
 
+type ResponseMenuActionKind = "copy" | "note" | "delete";
+
+const RESPONSE_MENU_ACTION_BUTTON_SELECTORS: Record<
+  ResponseMenuActionKind,
+  string
+> = {
+  copy: "#llm-response-menu-copy",
+  note: "#llm-response-menu-note",
+  delete: "#llm-response-menu-delete",
+};
+
+export function buildAssistantResponseActionTarget(params: {
+  item: Zotero.Item;
+  message: Message;
+  pairedUserMessage: Message | null;
+  conversationKey: number;
+  selectedText?: string;
+}): ResponseActionTarget | null {
+  const {
+    item,
+    message,
+    pairedUserMessage,
+    conversationKey,
+    selectedText,
+  } = params;
+  const menuContent = resolveAssistantResponseMenuContent(
+    message,
+    selectedText || "",
+  );
+  if (!menuContent) return null;
+  const pairedUser =
+    pairedUserMessage?.role === "user" ? pairedUserMessage : null;
+  return {
+    item,
+    contentText: menuContent.contentText,
+    queryText: pairedUser ? pairedUser.text || "" : "",
+    modelName: message.modelName?.trim() || "unknown",
+    conversationKey,
+    userTimestamp: pairedUser ? Math.floor(pairedUser.timestamp) : 0,
+    assistantTimestamp: Math.floor(message.timestamp),
+    paperContexts: pairedUser
+      ? getMessageCitationPaperContexts(pairedUser)
+      : undefined,
+    quoteCitations: message.quoteCitations,
+    generatedImages: menuContent.generatedImages,
+  };
+}
+
+function buildAssistantResponseDeleteTarget(params: {
+  item: Zotero.Item;
+  message: Message;
+  pairedUserMessage: Message | null;
+  conversationKey: number;
+  contentTarget: ResponseActionTarget | null;
+}): ResponseActionTarget | null {
+  const pairedUser =
+    params.pairedUserMessage?.role === "user"
+      ? params.pairedUserMessage
+      : null;
+  if (!pairedUser) return null;
+  return (
+    params.contentTarget || {
+      item: params.item,
+      contentText: "",
+      queryText: pairedUser.text || "",
+      modelName: params.message.modelName?.trim() || "unknown",
+      conversationKey: params.conversationKey,
+      userTimestamp: Math.floor(pairedUser.timestamp),
+      assistantTimestamp: Math.floor(params.message.timestamp),
+      paperContexts: getMessageCitationPaperContexts(pairedUser),
+      quoteCitations: params.message.quoteCitations,
+      generatedImages: undefined,
+    }
+  );
+}
+
+function createResponseMenuClickEvent(doc: Document): Event {
+  const win = doc.defaultView as
+    | (Window & { MouseEvent?: typeof MouseEvent })
+    | null;
+  if (typeof win?.MouseEvent === "function") {
+    return new win.MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+    });
+  }
+  if (typeof Event === "function") {
+    return new Event("click", { bubbles: true, cancelable: true });
+  }
+  const legacyEvent = doc.createEvent("MouseEvents");
+  legacyEvent.initMouseEvent(
+    "click",
+    true,
+    true,
+    win || null,
+    0,
+    0,
+    0,
+    0,
+    0,
+    false,
+    false,
+    false,
+    false,
+    0,
+    null,
+  );
+  return legacyEvent;
+}
+
+export function invokeResponseMenuActionButton(params: {
+  body: Element;
+  action: ResponseMenuActionKind;
+  target: ResponseActionTarget | null;
+}): boolean {
+  const { body, action, target } = params;
+  if (!target) return false;
+  const selector = RESPONSE_MENU_ACTION_BUTTON_SELECTORS[action];
+  const button = body.querySelector(selector) as HTMLButtonElement | null;
+  if (!button || typeof button.dispatchEvent !== "function") return false;
+  setResponseMenuTarget(target);
+  button.dispatchEvent(createResponseMenuClickEvent(body.ownerDocument!));
+  return true;
+}
+
 export function shouldDecorateInterleavedAgentTraceCitations(params: {
   agentTraceEl: Element | null;
   agentUsesInterleavedText: boolean;
@@ -1296,40 +1423,27 @@ function attachAssistantResponseContextMenu(params: {
     // If the user has text selected within this bubble, extract just that
     // portion. Otherwise fall back to the full raw markdown source.
     const selectedText = getSelectedTextWithinBubble(doc, bubble);
-    const menuContent = resolveAssistantResponseMenuContent(
-      message,
-      selectedText,
-    );
-    if (!menuContent) return;
-    setResponseMenuTarget({
+    const menuTarget = buildAssistantResponseActionTarget({
       item,
-      contentText: menuContent.contentText,
-      queryText:
-        pairedUserMessage?.role === "user" ? pairedUserMessage.text || "" : "",
-      modelName: message.modelName?.trim() || "unknown",
+      message,
+      pairedUserMessage,
       conversationKey,
-      userTimestamp:
-        pairedUserMessage?.role === "user"
-          ? Math.floor(pairedUserMessage.timestamp)
-          : 0,
-      assistantTimestamp: Math.floor(message.timestamp),
-      paperContexts:
-        pairedUserMessage?.role === "user"
-          ? getMessageCitationPaperContexts(pairedUserMessage)
-          : undefined,
-      quoteCitations: message.quoteCitations,
-      generatedImages: menuContent.generatedImages,
+      selectedText,
     });
+    if (!menuTarget) return;
+    setResponseMenuTarget(menuTarget);
     positionMenuAtPointer(body, responseMenu, me.clientX, me.clientY);
   });
 }
 
 function appendMessageMetaActionButton(params: {
+  body?: Element;
   doc: Document;
   actions: HTMLElement;
   className: string;
   title: string;
   responseAction?: "copy" | "note" | "delete";
+  responseTarget?: ResponseActionTarget | null;
   conversationKey?: number;
   userTimestamp?: number;
   assistantTimestamp?: number;
@@ -1341,6 +1455,26 @@ function appendMessageMetaActionButton(params: {
   button.setAttribute("aria-label", params.title);
   if (params.responseAction) {
     button.dataset.responseAction = params.responseAction;
+  }
+  if (params.body && params.responseAction && params.responseTarget) {
+    button.addEventListener("click", (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === "function") {
+        event.stopImmediatePropagation();
+      }
+      const invoked = invokeResponseMenuActionButton({
+        body: params.body!,
+        action: params.responseAction!,
+        target: params.responseTarget || null,
+      });
+      if (!invoked) {
+        const status = params.body!.querySelector(
+          "#llm-status",
+        ) as HTMLElement | null;
+        if (status) setStatus(status, "Response action unavailable", "error");
+      }
+    });
   }
   if (Number.isFinite(params.conversationKey)) {
     button.dataset.conversationKey = String(
@@ -2272,6 +2406,18 @@ export function buildAssistantDisplayMarkdownForRender(
   );
 }
 
+export function buildPlainMarkdownClipboardText(
+  markdownText: string,
+  quoteCitations?: QuoteCitation[],
+): string | null {
+  const safeText = replaceQuoteCitationPlaceholdersForMarkdown(
+    sanitizeText(markdownText).trim(),
+    quoteCitations,
+    { unresolved: "omit" },
+  );
+  return safeText || null;
+}
+
 /**
  * Prepare both clipboard forms from markdown. Quote anchors are expanded before
  * rendering so structural citation tokens never leak into copied responses.
@@ -2280,10 +2426,9 @@ export function buildRenderedMarkdownClipboardPayload(
   markdownText: string,
   quoteCitations?: QuoteCitation[],
 ): { plainText: string; renderedHtml: string } | null {
-  const safeText = replaceQuoteCitationPlaceholdersForMarkdown(
-    sanitizeText(markdownText).trim(),
+  const safeText = buildPlainMarkdownClipboardText(
+    markdownText,
     quoteCitations,
-    { unresolved: "omit" },
   );
   if (!safeText) return null;
 
@@ -9718,6 +9863,19 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           ? Math.floor(pairedUserForActions.timestamp)
           : 0;
       const actionAssistantTimestamp = Math.floor(msg.timestamp);
+      const actionResponseTarget = buildAssistantResponseActionTarget({
+        item,
+        message: msg,
+        pairedUserMessage: pairedUserForActions,
+        conversationKey: actionConversationKey,
+      });
+      const actionDeleteTarget = buildAssistantResponseDeleteTarget({
+        item,
+        message: msg,
+        pairedUserMessage: pairedUserForActions,
+        conversationKey: actionConversationKey,
+        contentTarget: actionResponseTarget,
+      });
       const actions = doc.createElement("div") as HTMLDivElement;
       actions.className = "llm-message-actions";
 
@@ -9729,6 +9887,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         renderProviderProtocol !== "web_sync" // [webchat] no retry in webchat mode
       ) {
         appendMessageMetaActionButton({
+          body,
           doc,
           actions,
           className: "llm-message-action-retry llm-retry-latest",
@@ -9738,21 +9897,25 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
       if (actionContent && actionUserTimestamp > 0) {
         appendMessageMetaActionButton({
+          body,
           doc,
           actions,
           className: "llm-message-action-copy",
           title: "Copy response",
           responseAction: "copy",
+          responseTarget: actionResponseTarget,
           conversationKey: actionConversationKey,
           userTimestamp: actionUserTimestamp,
           assistantTimestamp: actionAssistantTimestamp,
         });
         appendMessageMetaActionButton({
+          body,
           doc,
           actions,
           className: "llm-message-action-note",
           title: "Save as note",
           responseAction: "note",
+          responseTarget: actionResponseTarget,
           conversationKey: actionConversationKey,
           userTimestamp: actionUserTimestamp,
           assistantTimestamp: actionAssistantTimestamp,
@@ -9761,11 +9924,13 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
 
       if (actionUserTimestamp > 0 && !msg.streaming) {
         appendMessageMetaActionButton({
+          body,
           doc,
           actions,
           className: "llm-message-action-delete",
           title: "Delete this turn",
           responseAction: "delete",
+          responseTarget: actionDeleteTarget,
           conversationKey: actionConversationKey,
           userTimestamp: actionUserTimestamp,
           assistantTimestamp: actionAssistantTimestamp,

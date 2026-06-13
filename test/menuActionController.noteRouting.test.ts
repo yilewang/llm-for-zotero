@@ -3,12 +3,21 @@ import {
   attachMenuActionController,
   buildResponseActionTargetFromHistory,
 } from "../src/modules/contextPanel/setupHandlers/controllers/menuActionController";
+import { invokeResponseMenuActionButton } from "../src/modules/contextPanel/chat";
+import {
+  responseMenuTarget,
+  type ResponseActionTarget,
+  setResponseMenuTarget,
+} from "../src/modules/contextPanel/state";
 
 class FakeElement {
   public dataset: Record<string, string | undefined> = {};
+  public readonly children: FakeElement[] = [];
+  public id = "";
   public textContent = "";
   public className = "";
   public disabled = false;
+  public ownerDocument?: any;
   private readonly listeners = new Map<
     string,
     Array<(event: any) => unknown>
@@ -18,6 +27,24 @@ class FakeElement {
     const existing = this.listeners.get(type) || [];
     existing.push(listener);
     this.listeners.set(type, existing);
+  }
+
+  appendChild(child: FakeElement): FakeElement {
+    this.children.push(child);
+    child.ownerDocument = child.ownerDocument || this.ownerDocument;
+    return child;
+  }
+
+  querySelector(selector: string): FakeElement | null {
+    if (!selector.startsWith("#")) return null;
+    const id = selector.slice(1);
+    const stack = [...this.children];
+    while (stack.length) {
+      const child = stack.shift()!;
+      if (child.id === id) return child;
+      stack.push(...child.children);
+    }
+    return null;
   }
 
   closest(selector: string): FakeElement | null {
@@ -30,15 +57,34 @@ class FakeElement {
     return null;
   }
 
+  dispatchEvent(event: any): boolean {
+    try {
+      event.target = event.target || this;
+    } catch (_err) {
+      void _err;
+    }
+    for (const listener of this.listeners.get(event.type) || []) {
+      void listener(event);
+      if (event.immediatePropagationStopped) break;
+    }
+    return !event.defaultPrevented;
+  }
+
   async dispatch(type: string, target: FakeElement = this): Promise<void> {
     const event = {
+      type,
       target,
+      immediatePropagationStopped: false,
+      defaultPrevented: false,
       preventDefault() {},
       stopPropagation() {},
-      stopImmediatePropagation() {},
+      stopImmediatePropagation() {
+        this.immediatePropagationStopped = true;
+      },
     };
     for (const listener of this.listeners.get(type) || []) {
       await listener(event);
+      if (event.immediatePropagationStopped) break;
     }
   }
 }
@@ -100,6 +146,7 @@ describe("menu action controller note routing", function () {
   });
 
   afterEach(function () {
+    setResponseMenuTarget(null);
     if (originalZotero) {
       globalScope.Zotero = originalZotero;
     } else {
@@ -111,6 +158,9 @@ describe("menu action controller note routing", function () {
       delete globalScope.ztoolkit;
     }
   });
+
+  const flushAsyncEvents = () =>
+    new Promise<void>((resolve) => setTimeout(resolve, 0));
 
   it("saves response-menu notes as standalone notes in library chat mode", async function () {
     const responseMenu = new FakeElement();
@@ -178,7 +228,7 @@ describe("menu action controller note routing", function () {
     assert.isEmpty(logErrors);
   });
 
-  it("reconstructs toolbar response targets from turn timestamps", function () {
+  it("reconstructs response targets from turn timestamps", function () {
     const currentItem = {
       id: 42,
       libraryID: 1,
@@ -311,26 +361,56 @@ describe("menu action controller note routing", function () {
     assert.isEmpty(logErrors);
   });
 
-  it("routes toolbar delete actions through queueTurnDeletion", async function () {
+  it("maps footer copy to the response-menu action without prior right-click state and keeps markdown source", async function () {
     const body = new FakeElement();
-    const deleteBtn = new FakeElement();
-    deleteBtn.className = "llm-message-action llm-message-action-delete";
-    deleteBtn.dataset.responseAction = "delete";
-    deleteBtn.dataset.conversationKey = "9";
-    deleteBtn.dataset.userTimestamp = "100";
-    deleteBtn.dataset.assistantTimestamp = "200";
+    const responseMenu = new FakeElement();
+    const responseMenuCopyBtn = new FakeElement();
+    const responseMenuNoteBtn = new FakeElement();
+    const status = new FakeElement();
+    let copiedText = "";
+    body.ownerDocument = {
+      defaultView: {
+        navigator: {
+          clipboard: {
+            writeText: async (value: string) => {
+              copiedText = value;
+            },
+          },
+        },
+      },
+    };
+    responseMenuCopyBtn.id = "llm-response-menu-copy";
+    responseMenuNoteBtn.id = "llm-response-menu-note";
+    body.appendChild(responseMenuCopyBtn);
     const currentItem = {
       id: 42,
       libraryID: 1,
     } as unknown as Zotero.Item;
-    const deletions: unknown[] = [];
+    const markdown = [
+      "Here is the source.",
+      "",
+      "```svg",
+      '<svg width="10" height="10"></svg>',
+      "```",
+    ].join("\n");
+    const target: ResponseActionTarget = {
+      item: currentItem,
+      contentText: markdown,
+      queryText: "show figure",
+      modelName: "Codex",
+      conversationKey: 9,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    };
 
     attachMenuActionController({
       body: body as unknown as Element,
-      status: new FakeElement() as unknown as HTMLElement,
-      responseMenu: null,
-      responseMenuCopyBtn: null,
-      responseMenuNoteBtn: null,
+      status: status as unknown as HTMLElement,
+      responseMenu: responseMenu as unknown as HTMLDivElement,
+      responseMenuCopyBtn:
+        responseMenuCopyBtn as unknown as HTMLButtonElement,
+      responseMenuNoteBtn:
+        responseMenuNoteBtn as unknown as HTMLButtonElement,
       responseMenuDeleteBtn: null,
       promptMenu: null,
       promptMenuDeleteBtn: null,
@@ -342,7 +422,168 @@ describe("menu action controller note routing", function () {
       settingsBtn: null,
       preferencesPaneId: "llm-for-zotero-test",
       getItem: () => currentItem,
-      getResponseMenuTarget: () => null,
+      getResponseMenuTarget: () => responseMenuTarget,
+      getPromptMenuTarget: () => null,
+      getCurrentLibraryID: () => 1,
+      getConversationSystem: () => "codex",
+      getCurrentRuntimeModeForItem: () => "agent",
+      isGlobalMode: () => true,
+      ensureConversationLoaded: async () => {},
+      getConversationKey: () => 9,
+      getHistory: () => [],
+      resolveActiveNoteSession: () => null,
+      closeResponseMenu: () => {},
+      closePromptMenu: () => {},
+      closeExportMenu: () => {},
+      closeRetryModelMenu: () => {},
+      closeSlashMenu: () => {},
+      closeHistoryNewMenu: () => {},
+      closeHistoryMenu: () => {},
+      queueTurnDeletion: async () => {},
+      logError: () => {},
+    });
+
+    const invoked = invokeResponseMenuActionButton({
+      body: body as unknown as Element,
+      action: "copy",
+      target,
+    });
+    await flushAsyncEvents();
+
+    assert.isTrue(invoked);
+    assert.equal(copiedText, markdown);
+    assert.include(copiedText, "```svg");
+    assert.equal(status.textContent, "Copied response");
+  });
+
+  it("maps footer note to the response-menu action without prior right-click state or history reconstruction", async function () {
+    const body = new FakeElement();
+    const responseMenu = new FakeElement();
+    const responseMenuCopyBtn = new FakeElement();
+    const responseMenuNoteBtn = new FakeElement();
+    const status = new FakeElement();
+    const currentItem = {
+      id: 42,
+      libraryID: 1,
+      isAttachment: () => false,
+      isNote: () => false,
+    } as unknown as Zotero.Item;
+    body.ownerDocument = { defaultView: {} };
+    responseMenuCopyBtn.id = "llm-response-menu-copy";
+    responseMenuNoteBtn.id = "llm-response-menu-note";
+    body.appendChild(responseMenuNoteBtn);
+    const target: ResponseActionTarget = {
+      item: currentItem,
+      contentText: "Footer mapped answer.",
+      queryText: "Footer mapped question",
+      modelName: "Codex",
+      conversationKey: 9,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    };
+
+    attachMenuActionController({
+      body: body as unknown as Element,
+      status: status as unknown as HTMLElement,
+      responseMenu: responseMenu as unknown as HTMLDivElement,
+      responseMenuCopyBtn:
+        responseMenuCopyBtn as unknown as HTMLButtonElement,
+      responseMenuNoteBtn:
+        responseMenuNoteBtn as unknown as HTMLButtonElement,
+      responseMenuDeleteBtn: null,
+      promptMenu: null,
+      promptMenuDeleteBtn: null,
+      exportMenu: null,
+      exportMenuCopyBtn: null,
+      exportMenuNoteBtn: null,
+      exportBtn: null,
+      popoutBtn: null,
+      settingsBtn: null,
+      preferencesPaneId: "llm-for-zotero-test",
+      getItem: () => currentItem,
+      getResponseMenuTarget: () => responseMenuTarget,
+      getPromptMenuTarget: () => null,
+      getCurrentLibraryID: () => 1,
+      getConversationSystem: () => "codex",
+      getCurrentRuntimeModeForItem: () => "agent",
+      isGlobalMode: () => false,
+      ensureConversationLoaded: async () => {},
+      getConversationKey: () => 9,
+      getHistory: () => [],
+      resolveActiveNoteSession: () => null,
+      closeResponseMenu: () => {},
+      closePromptMenu: () => {},
+      closeExportMenu: () => {},
+      closeRetryModelMenu: () => {},
+      closeSlashMenu: () => {},
+      closeHistoryNewMenu: () => {},
+      closeHistoryMenu: () => {},
+      queueTurnDeletion: async () => {},
+      logError: () => {},
+    });
+
+    const invoked = invokeResponseMenuActionButton({
+      body: body as unknown as Element,
+      action: "note",
+      target,
+    });
+    await flushAsyncEvents();
+
+    assert.isTrue(invoked);
+    assert.lengthOf(savedNotes, 1);
+    assert.equal(savedNotes[0].parentID, 42);
+    assert.include(savedNotes[0].getNote(), "Footer mapped question");
+    assert.include(savedNotes[0].getNote(), "Footer mapped answer.");
+    assert.equal(status.textContent, "Created a new note");
+  });
+
+  it("maps footer delete to the response-menu action", async function () {
+    const body = new FakeElement();
+    const responseMenu = new FakeElement();
+    const responseMenuCopyBtn = new FakeElement();
+    const responseMenuNoteBtn = new FakeElement();
+    const responseMenuDeleteBtn = new FakeElement();
+    const currentItem = {
+      id: 42,
+      libraryID: 1,
+    } as unknown as Zotero.Item;
+    const deletions: unknown[] = [];
+    body.ownerDocument = { defaultView: {} };
+    responseMenuCopyBtn.id = "llm-response-menu-copy";
+    responseMenuNoteBtn.id = "llm-response-menu-note";
+    responseMenuDeleteBtn.id = "llm-response-menu-delete";
+    body.appendChild(responseMenuDeleteBtn);
+    const target: ResponseActionTarget = {
+      item: currentItem,
+      contentText: "",
+      queryText: "Question",
+      modelName: "Codex",
+      conversationKey: 9,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    };
+
+    attachMenuActionController({
+      body: body as unknown as Element,
+      status: new FakeElement() as unknown as HTMLElement,
+      responseMenu: responseMenu as unknown as HTMLDivElement,
+      responseMenuCopyBtn:
+        responseMenuCopyBtn as unknown as HTMLButtonElement,
+      responseMenuNoteBtn:
+        responseMenuNoteBtn as unknown as HTMLButtonElement,
+      responseMenuDeleteBtn:
+        responseMenuDeleteBtn as unknown as HTMLButtonElement,
+      promptMenu: null,
+      promptMenuDeleteBtn: null,
+      exportMenu: null,
+      exportMenuCopyBtn: null,
+      exportMenuNoteBtn: null,
+      exportBtn: null,
+      popoutBtn: null,
+      settingsBtn: null,
+      preferencesPaneId: "llm-for-zotero-test",
+      getItem: () => currentItem,
+      getResponseMenuTarget: () => responseMenuTarget,
       getPromptMenuTarget: () => null,
       getCurrentLibraryID: () => 1,
       getConversationSystem: () => "codex",
@@ -362,14 +603,20 @@ describe("menu action controller note routing", function () {
       closeSlashMenu: () => {},
       closeHistoryNewMenu: () => {},
       closeHistoryMenu: () => {},
-      queueTurnDeletion: async (target) => {
-        deletions.push(target);
+      queueTurnDeletion: async (queuedTarget) => {
+        deletions.push(queuedTarget);
       },
       logError: () => {},
     });
 
-    await body.dispatch("click", deleteBtn);
+    const invoked = invokeResponseMenuActionButton({
+      body: body as unknown as Element,
+      action: "delete",
+      target,
+    });
+    await flushAsyncEvents();
 
+    assert.isTrue(invoked);
     assert.deepEqual(deletions, [
       {
         conversationKey: 9,
@@ -379,27 +626,42 @@ describe("menu action controller note routing", function () {
     ]);
   });
 
-  it("does not queue toolbar delete when the turn target is stale", async function () {
+  it("does not queue response-menu delete when the target is stale", async function () {
     const body = new FakeElement();
-    const deleteBtn = new FakeElement();
-    deleteBtn.className = "llm-message-action llm-message-action-delete";
-    deleteBtn.dataset.responseAction = "delete";
-    deleteBtn.dataset.conversationKey = "9";
-    deleteBtn.dataset.userTimestamp = "100";
-    deleteBtn.dataset.assistantTimestamp = "200";
+    const responseMenu = new FakeElement();
+    const responseMenuCopyBtn = new FakeElement();
+    const responseMenuNoteBtn = new FakeElement();
+    const responseMenuDeleteBtn = new FakeElement();
     const currentItem = {
       id: 42,
       libraryID: 1,
     } as unknown as Zotero.Item;
     let deletionCount = 0;
+    body.ownerDocument = { defaultView: {} };
+    responseMenuCopyBtn.id = "llm-response-menu-copy";
+    responseMenuNoteBtn.id = "llm-response-menu-note";
+    responseMenuDeleteBtn.id = "llm-response-menu-delete";
+    body.appendChild(responseMenuDeleteBtn);
+    const target: ResponseActionTarget = {
+      item: currentItem,
+      contentText: "",
+      queryText: "Question",
+      modelName: "Codex",
+      conversationKey: 9,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    };
 
     attachMenuActionController({
       body: body as unknown as Element,
       status: new FakeElement() as unknown as HTMLElement,
-      responseMenu: null,
-      responseMenuCopyBtn: null,
-      responseMenuNoteBtn: null,
-      responseMenuDeleteBtn: null,
+      responseMenu: responseMenu as unknown as HTMLDivElement,
+      responseMenuCopyBtn:
+        responseMenuCopyBtn as unknown as HTMLButtonElement,
+      responseMenuNoteBtn:
+        responseMenuNoteBtn as unknown as HTMLButtonElement,
+      responseMenuDeleteBtn:
+        responseMenuDeleteBtn as unknown as HTMLButtonElement,
       promptMenu: null,
       promptMenuDeleteBtn: null,
       exportMenu: null,
@@ -410,7 +672,7 @@ describe("menu action controller note routing", function () {
       settingsBtn: null,
       preferencesPaneId: "llm-for-zotero-test",
       getItem: () => currentItem,
-      getResponseMenuTarget: () => null,
+      getResponseMenuTarget: () => responseMenuTarget,
       getPromptMenuTarget: () => null,
       getCurrentLibraryID: () => 1,
       getConversationSystem: () => "codex",
@@ -436,8 +698,14 @@ describe("menu action controller note routing", function () {
       logError: () => {},
     });
 
-    await body.dispatch("click", deleteBtn);
+    const invoked = invokeResponseMenuActionButton({
+      body: body as unknown as Element,
+      action: "delete",
+      target,
+    });
+    await flushAsyncEvents();
 
+    assert.isTrue(invoked);
     assert.equal(deletionCount, 0);
   });
 });

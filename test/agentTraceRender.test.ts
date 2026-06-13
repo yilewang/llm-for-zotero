@@ -308,6 +308,8 @@ const throwingTemplateDocument = {
 function createFakeCodeBlockShell(options?: {
   lang?: string;
   previewClass?: string;
+  previewSource?: string;
+  renderedSvg?: string;
 }): {
   root: FakeElement;
   shell: FakeElement;
@@ -334,6 +336,12 @@ function createFakeCodeBlockShell(options?: {
   if (options?.previewClass) {
     const preview = new FakeElement("div");
     preview.className = options.previewClass;
+    if (options.previewSource) {
+      preview.dataset.llmSvgSource = options.previewSource;
+    }
+    if (options.renderedSvg) {
+      preview.dataset.llmRenderedSvg = options.renderedSvg;
+    }
     shell.appendChild(preview);
   }
   shell.appendChild(body);
@@ -700,6 +708,7 @@ describe("rendered Markdown code block source controls", function () {
     const { root, shell, header, body } = createFakeCodeBlockShell({
       lang: "svg",
       previewClass: "llm-svg-preview",
+      previewSource: '<svg width="10" height="10"></svg>',
     });
 
     attachRenderedCodeBlockControls(
@@ -723,6 +732,28 @@ describe("rendered Markdown code block source controls", function () {
     assert.equal(toggle?.textContent, "Hide source");
   });
 
+  it("adds a PNG figure-copy control for safe SVG previews", function () {
+    const { root, header } = createFakeCodeBlockShell({
+      lang: "svg",
+      previewClass: "llm-svg-preview",
+      previewSource: '<svg width="10" height="10"></svg>',
+    });
+
+    attachRenderedCodeBlockControls(
+      root as unknown as ParentNode,
+      fakeDocument,
+    );
+
+    const figureCopy = header.findByClass("llm-codeblock-figure-copy");
+    assert.exists(figureCopy);
+    assert.isFalse(Boolean(figureCopy?.disabled));
+    assert.equal(figureCopy?.title, "Copy SVG figure as PNG");
+    assert.equal(
+      figureCopy?.attributes["aria-label"],
+      "Copy SVG figure as PNG",
+    );
+  });
+
   it("collapses Mermaid source by default", function () {
     const { root, shell, header, body } = createFakeCodeBlockShell({
       lang: "mermaid",
@@ -739,6 +770,23 @@ describe("rendered Markdown code block source controls", function () {
     assert.equal(body.attributes["aria-hidden"], "true");
     assert.equal(toggle?.attributes["aria-expanded"], "false");
     assert.equal(toggle?.textContent, "Show source");
+  });
+
+  it("adds a disabled PNG figure-copy control for pending Mermaid previews", function () {
+    const { root, header } = createFakeCodeBlockShell({
+      lang: "mermaid",
+      previewClass: "llm-mermaid-preview",
+    });
+
+    attachRenderedCodeBlockControls(
+      root as unknown as ParentNode,
+      fakeDocument,
+    );
+
+    const figureCopy = header.findByClass("llm-codeblock-figure-copy");
+    assert.exists(figureCopy);
+    assert.isTrue(Boolean(figureCopy?.disabled));
+    assert.equal(figureCopy?.title, "Copy Mermaid diagram as PNG (rendering)");
   });
 
   it("keeps ordinary code source expanded by default but collapsible", function () {
@@ -766,7 +814,9 @@ describe("rendered Markdown code block source controls", function () {
   });
 
   it("treats unsafe SVG without a preview like ordinary expanded code", function () {
-    const { root, shell, body } = createFakeCodeBlockShell({ lang: "svg" });
+    const { root, shell, header, body } = createFakeCodeBlockShell({
+      lang: "svg",
+    });
 
     attachRenderedCodeBlockControls(
       root as unknown as ParentNode,
@@ -775,6 +825,7 @@ describe("rendered Markdown code block source controls", function () {
 
     assert.equal(shell.dataset.sourceCollapsed, "false");
     assert.equal(body.attributes["aria-hidden"], "false");
+    assert.isNull(header.findByClass("llm-codeblock-figure-copy"));
   });
 
   it("keeps copy controls bound to the original fenced source when source is collapsed", function () {
@@ -784,9 +835,10 @@ describe("rendered Markdown code block source controls", function () {
     copyable.className = "llm-copyable llm-copyable-code";
     copyable.dataset.llmCopySource = copySource;
 
-    const { shell } = createFakeCodeBlockShell({
+    const { shell, header } = createFakeCodeBlockShell({
       lang: "svg",
       previewClass: "llm-svg-preview",
+      previewSource: '<svg width="10" height="10"></svg>',
     });
     copyable.appendChild(shell);
     root.appendChild(copyable);
@@ -797,13 +849,25 @@ describe("rendered Markdown code block source controls", function () {
     );
     attachRenderedCopyButtons(root as unknown as ParentNode, fakeDocument);
 
-    const copyButton = copyable.children.find((child) =>
-      child.classList.contains("llm-render-copy-btn"),
-    );
+    const copyButton = header.findByClass("llm-render-copy-btn");
     assert.exists(copyButton);
     assert.equal(copyable.dataset.llmCopySource, copySource);
     assert.equal(shell.dataset.sourceCollapsed, "true");
     assert.equal(copyButton?.attributes["aria-label"], "Copy SVG code");
+    const sourceIndex = header.children.findIndex((child) =>
+      child.classList.contains("llm-codeblock-source-toggle"),
+    );
+    const figureIndex = header.children.findIndex((child) =>
+      child.classList.contains("llm-codeblock-figure-copy"),
+    );
+    const copyIndex = header.children.findIndex((child) =>
+      child.classList.contains("llm-render-code-copy-btn"),
+    );
+    assert.isAtLeast(sourceIndex, 0);
+    assert.isAtLeast(figureIndex, 0);
+    assert.isAtLeast(copyIndex, 0);
+    assert.isBelow(sourceIndex, figureIndex);
+    assert.isBelow(figureIndex, copyIndex);
   });
 });
 

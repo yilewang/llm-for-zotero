@@ -9,6 +9,7 @@ import {
   getTrackedAssistantNoteForParent,
   rememberAssistantNoteForParent,
 } from "../src/modules/contextPanel/prefHelpers";
+import { resolveSvgFigureRasterSize } from "../src/modules/contextPanel/figureExport";
 import type { AgentToolContext } from "../src/agent/types";
 
 describe("editCurrentNote create tracking", function () {
@@ -57,6 +58,8 @@ describe("editCurrentNote create tracking", function () {
   const parentNoteIds: number[] = [];
   const importedImageParents: number[] = [];
   const importedImagePaths: string[] = [];
+  const importedImageMimeTypes: string[] = [];
+  const importedImageByteSizes: number[] = [];
   let nextNoteId = 100;
   let parentItem: Zotero.Item;
 
@@ -129,6 +132,8 @@ describe("editCurrentNote create tracking", function () {
     parentNoteIds.splice(0);
     importedImageParents.splice(0);
     importedImagePaths.splice(0);
+    importedImageMimeTypes.splice(0);
+    importedImageByteSizes.splice(0);
     nextNoteId = 100;
     parentItem = {
       id: 9,
@@ -152,8 +157,10 @@ describe("editCurrentNote create tracking", function () {
       },
       Item: MockNoteItem as unknown as new (itemType: string) => Zotero.Item,
       Attachments: {
-        importEmbeddedImage: async ({ parentItemID }) => {
+        importEmbeddedImage: async ({ blob, parentItemID }) => {
           importedImageParents.push(parentItemID);
+          importedImageMimeTypes.push(blob.type);
+          importedImageByteSizes.push(blob.size);
           return { key: `IMG${parentItemID}_${importedImageParents.length}` };
         },
       },
@@ -396,6 +403,99 @@ describe("editCurrentNote create tracking", function () {
     assert.deepEqual(importedImageParents, [101]);
   });
 
+  it("response-menu note creation converts SVG fences into PNG note attachments", async function () {
+    let rasterizedSvg = "";
+    const pngBytes = new Uint8Array([137, 80, 78, 71, 1]);
+
+    const result = await createAssistantResponseNote({
+      destination: { kind: "item", item: parentItem },
+      queryText: "Render this SVG.",
+      contentText: [
+        "Before.",
+        "",
+        "```svg",
+        '<svg width="10" height="10"/>',
+        "```",
+        "",
+        "After.",
+      ].join("\n"),
+      modelName: "Codex",
+      figureRender: {
+        doc: {} as Document,
+        rasterizeSvgToPngBytes: async (_doc, svgMarkup) => {
+          rasterizedSvg = svgMarkup;
+          return pngBytes;
+        },
+      },
+    });
+
+    assert.equal(result.status, "created");
+    assert.lengthOf(childNotes(9), 1);
+    const note = childNotes(9)[0];
+    assert.include(note.getNote(), "Before.");
+    assert.include(note.getNote(), "After.");
+    assert.include(note.getNote(), 'data-attachment-key="IMG100_1"');
+    assert.notInclude(note.getNote(), '<pre class="lang-svg">');
+    assert.notInclude(note.getNote(), "&lt;svg");
+    assert.include(rasterizedSvg, '<svg xmlns="http://www.w3.org/2000/svg"');
+    assert.deepEqual(importedImageParents, [100]);
+    assert.deepEqual(importedImageMimeTypes, ["image/png"]);
+    assert.deepEqual(importedImageByteSizes, [pngBytes.length]);
+    assert.deepEqual(importedImagePaths, []);
+  });
+
+  it("rasterizes tiny SVG figures at readable note-export dimensions", function () {
+    assert.deepEqual(
+      resolveSvgFigureRasterSize('<svg width="12" height="8"></svg>'),
+      { width: 1600, height: 1067 },
+    );
+    assert.deepEqual(
+      resolveSvgFigureRasterSize(
+        '<svg width="100%" height="100%" viewBox="0 0 12 8"></svg>',
+      ),
+      { width: 1600, height: 1067 },
+    );
+    assert.deepEqual(
+      resolveSvgFigureRasterSize('<svg width="800" height="480"></svg>'),
+      { width: 1600, height: 960 },
+    );
+  });
+
+  it("response-menu note creation converts Mermaid fences into PNG note attachments", async function () {
+    let renderedMermaidSource = "";
+    let rasterizedSvg = "";
+
+    await createAssistantResponseNote({
+      destination: { kind: "item", item: parentItem },
+      queryText: "Render this diagram.",
+      contentText: ["```mermaid", "flowchart TD", "  A --> B", "```"].join(
+        "\n",
+      ),
+      modelName: "Codex",
+      figureRender: {
+        doc: {} as Document,
+        renderMermaidSvg: async (source) => {
+          renderedMermaidSource = source;
+          return '<svg width="12" height="8"><rect width="12" height="8"/></svg>';
+        },
+        rasterizeSvgToPngBytes: async (_doc, svgMarkup) => {
+          rasterizedSvg = svgMarkup;
+          return new Uint8Array([137, 80, 78, 71, 2]);
+        },
+      },
+    });
+
+    assert.lengthOf(childNotes(9), 1);
+    const note = childNotes(9)[0];
+    assert.include(note.getNote(), 'data-attachment-key="IMG100_1"');
+    assert.notInclude(note.getNote(), '<pre class="lang-mermaid">');
+    assert.notInclude(note.getNote(), "flowchart TD");
+    assert.equal(renderedMermaidSource, "flowchart TD\n  A --> B");
+    assert.include(rasterizedSvg, "<svg");
+    assert.deepEqual(importedImageParents, [100]);
+    assert.deepEqual(importedImageMimeTypes, ["image/png"]);
+  });
+
   it("standalone response notes embed generated images", async function () {
     await createAssistantResponseNote({
       destination: { kind: "standalone", libraryID: 1 },
@@ -453,5 +553,46 @@ describe("editCurrentNote create tracking", function () {
     assert.notInclude(note.getNote(), "history.png</p>");
     assert.deepEqual(importedImageParents, [100]);
     assert.deepEqual(importedImagePaths, ["/tmp/history.png"]);
+  });
+
+  it("chat-history note export converts visual fences into PNG note attachments", async function () {
+    let renderedMermaidSource = "";
+
+    await createNoteFromChatHistory(
+      parentItem,
+      [
+        {
+          role: "user",
+          text: "Please show a flowchart.",
+          timestamp: 1,
+        },
+        {
+          role: "assistant",
+          text: ["```mermaid", "flowchart LR", "  A --> B", "```"].join("\n"),
+          timestamp: 2,
+          modelName: "Codex",
+        },
+      ],
+      {
+        figureRender: {
+          doc: {} as Document,
+          renderMermaidSvg: async (source) => {
+            renderedMermaidSource = source;
+            return '<svg width="12" height="8"><rect width="12" height="8"/></svg>';
+          },
+          rasterizeSvgToPngBytes: async () =>
+            new Uint8Array([137, 80, 78, 71, 3]),
+        },
+      },
+    );
+
+    assert.lengthOf(childNotes(9), 1);
+    const note = childNotes(9)[0];
+    assert.include(note.getNote(), "Please show a flowchart.");
+    assert.include(note.getNote(), 'data-attachment-key="IMG100_1"');
+    assert.notInclude(note.getNote(), '<pre class="lang-mermaid">');
+    assert.notInclude(note.getNote(), "flowchart LR");
+    assert.equal(renderedMermaidSource, "flowchart LR\n  A --> B");
+    assert.deepEqual(importedImageParents, [100]);
   });
 });

@@ -5460,6 +5460,16 @@ label.llm-search-results-item:hover {
   color: #7dd3a8;
 }
 
+.llm-rendered-markdown
+  .llm-copyable-code[data-copy-feedback="copied"]
+  .llm-codeblock-header
+  > .llm-render-code-copy-btn {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  color: #7dd3a8;
+}
+
 .llm-rendered-markdown pre {
   background: rgba(0, 0, 0, 0.15);
   padding: 10px 12px;
@@ -5489,10 +5499,11 @@ label.llm-search-results-item:hover {
 .llm-rendered-markdown .llm-codeblock-header {
   display: flex;
   align-items: center;
+  gap: 6px;
   box-sizing: border-box;
   height: 34px;
   min-height: 0;
-  padding: 0 48px 0 18px;
+  padding: 0 14px 0 18px;
 }
 
 .llm-rendered-markdown .llm-codeblock-lang {
@@ -5512,7 +5523,11 @@ label.llm-search-results-item:hover {
   appearance: none;
   -moz-appearance: none;
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 0;
+  height: 24px;
   margin: 0;
   border: 0;
   border-radius: 4px;
@@ -5523,6 +5538,7 @@ label.llm-search-results-item:hover {
   font-size: var(--llm-fs-11);
   font-weight: 600;
   line-height: 1;
+  margin-left: auto;
   padding: 5px 7px;
 }
 
@@ -5534,6 +5550,103 @@ label.llm-search-results-item:hover {
 .llm-rendered-markdown .llm-codeblock-source-toggle:focus-visible {
   outline: 1px solid var(--color-accent);
   outline-offset: 1px;
+}
+
+.llm-rendered-markdown .llm-codeblock-figure-copy {
+  appearance: none;
+  -moz-appearance: none;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--llm-codeblock-copy);
+  cursor: pointer;
+}
+
+.llm-rendered-markdown .llm-codeblock-header > .llm-render-code-copy-btn {
+  position: static;
+  top: auto;
+  right: auto;
+  z-index: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--llm-codeblock-copy);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 15px;
+  font-weight: 600;
+  opacity: 1;
+  transform: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.llm-rendered-markdown .llm-codeblock-header > .llm-render-code-copy-btn:hover {
+  background: color-mix(in srgb, var(--fill-quinary) 75%, transparent);
+  color: var(--llm-codeblock-copy-hover);
+}
+
+.llm-rendered-markdown .llm-codeblock-figure-copy::before {
+  content: "";
+  display: block;
+  width: 15px;
+  height: 15px;
+  background-color: currentColor;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2' ry='2'/%3E%3Ccircle cx='8.5' cy='8.5' r='1.5'/%3E%3Cpath d='M21 15l-5-5L5 21'/%3E%3C/svg%3E");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='3' width='18' height='18' rx='2' ry='2'/%3E%3Ccircle cx='8.5' cy='8.5' r='1.5'/%3E%3Cpath d='M21 15l-5-5L5 21'/%3E%3C/svg%3E");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
+.llm-rendered-markdown .llm-codeblock-figure-copy:hover:not(:disabled),
+.llm-rendered-markdown .llm-codeblock-figure-copy:focus-visible {
+  background: color-mix(in srgb, var(--fill-quinary) 75%, transparent);
+  color: var(--llm-codeblock-copy-hover);
+}
+
+.llm-rendered-markdown .llm-codeblock-figure-copy:focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.llm-rendered-markdown .llm-codeblock-figure-copy:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.llm-rendered-markdown
+  .llm-codeblock-figure-copy[data-figure-copy-state="copied"] {
+  color: #7dd3a8;
+  opacity: 1;
+}
+
+.llm-rendered-markdown
+  .llm-codeblock-figure-copy[data-figure-copy-state="failed"],
+.llm-rendered-markdown
+  .llm-codeblock-figure-copy[data-figure-copy-state="unavailable"] {
+  color: #f87171;
+  opacity: 1;
 }
 
 .llm-rendered-markdown

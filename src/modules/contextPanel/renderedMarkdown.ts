@@ -14,6 +14,10 @@ import {
   openStandaloneSvgWindow,
 } from "./standaloneMermaidWindow";
 import { sanitizeText } from "./textUtils";
+import {
+  copySvgFigureAsPngToClipboard,
+  isMermaidFigureFenceLanguage,
+} from "./figureExport";
 
 export type RenderedMarkdownOptions = {
   resolveImage?: (src: string) => string | null;
@@ -302,6 +306,7 @@ const MERMAID_VIEWER_ZOOM_OUT_ICON = "−";
 const MERMAID_VIEWER_ZOOM_IN_ICON = "+";
 
 const MERMAID_PREVIEW_OPEN_ICON = "⛶";
+const FIGURE_COPY_RESET_DELAY_MS = 1400;
 const MERMAID_CYTOSCAPE_STYLESHEET_ID = "__________cytoscape_stylesheet";
 const MERMAID_CYTOSCAPE_CONTAINER_CLASS = "__________cytoscape_container";
 
@@ -1245,6 +1250,7 @@ function setMermaidPreviewError(preview: HTMLElement, error?: unknown): void {
   const reason = getMermaidErrorReason(error);
   preview.dataset.mermaidState = "error";
   delete preview.dataset.mermaidZoom;
+  delete preview.dataset.llmRenderedSvg;
   preview.textContent = reason
     ? `Unable to render Mermaid diagram: ${reason}`
     : "Unable to render Mermaid diagram.";
@@ -1453,7 +1459,11 @@ function renderMermaidImagePreview(
   });
 
   delete preview.dataset.mermaidZoom;
+  preview.dataset.llmRenderedSvg = svgMarkup;
   preview.replaceChildren(viewport, openButton);
+  syncFigureCopyButtonStateForShell(
+    preview.closest(".llm-codeblock-shell") as HTMLElement | null,
+  );
 }
 
 function attachRenderedSvgPreviewButtons(
@@ -1911,6 +1921,45 @@ async function renderMermaidBlocksNow(
   }
 }
 
+export async function renderMermaidSourceToSvg(
+  source: string,
+  doc: Document,
+  anchor?: HTMLElement,
+): Promise<string | null> {
+  const normalizedSource = source.trim();
+  if (!normalizedSource) return null;
+  const preview = doc.createElement("div") as HTMLElement;
+  preview.setAttribute("aria-hidden", "true");
+  preview.style.position = "absolute";
+  preview.style.left = "-10000px";
+  preview.style.top = "0";
+  preview.style.width = "1px";
+  preview.style.height = "1px";
+  preview.style.overflow = "hidden";
+  const mount =
+    anchor || (doc.body as HTMLElement | null) || doc.documentElement;
+  mount?.appendChild(preview);
+  try {
+    const themeKey = getMermaidThemeKey(doc, anchor || preview);
+    const mermaid = await getMermaidRenderer(doc);
+    await initializeMermaidRenderer(mermaid, doc, themeKey);
+    const svg = await renderMermaidSvgWithRetry(
+      mermaid,
+      doc,
+      normalizedSource,
+      preview,
+      themeKey,
+    );
+    const sanitized = sanitizeRenderedMermaidSvgWithReason(
+      svg,
+      MERMAID_RENDERED_SVG_MAX_CHARS,
+    );
+    return sanitized.ok ? sanitized.svg : null;
+  } finally {
+    removeMermaidRenderNode(preview);
+  }
+}
+
 export function renderMermaidBlocks(
   root: ParentNode,
   doc: Document,
@@ -1946,6 +1995,90 @@ function setCodeBlockSourceCollapsed(
   button.setAttribute("aria-label", label);
 }
 
+function getVisualCodeBlockPreview(shell: HTMLElement): HTMLElement | null {
+  return (
+    getDirectChildWithClass(shell, "llm-svg-preview") ||
+    getDirectChildWithClass(shell, "llm-mermaid-preview")
+  );
+}
+
+function getVisualCodeBlockSvgMarkup(shell: HTMLElement): string | null {
+  const svgPreview = getDirectChildWithClass(shell, "llm-svg-preview");
+  if (svgPreview) {
+    return buildSafeSvgMarkup(svgPreview.dataset.llmSvgSource || "");
+  }
+  const mermaidPreview = getDirectChildWithClass(shell, "llm-mermaid-preview");
+  const renderedSvg = mermaidPreview?.dataset.llmRenderedSvg || "";
+  return renderedSvg.trim() || null;
+}
+
+function syncFigureCopyButtonStateForShell(shell: HTMLElement | null): void {
+  if (!shell) return;
+  const button = getDirectChildWithClass(
+    getDirectChildWithClass(shell, "llm-codeblock-header") || shell,
+    "llm-codeblock-figure-copy",
+  ) as HTMLButtonElement | null;
+  if (!button) return;
+  const available = Boolean(getVisualCodeBlockSvgMarkup(shell));
+  button.disabled = !available;
+  const lang = shell.dataset.codeLang || "";
+  const isMermaid = isMermaidFigureFenceLanguage(lang);
+  const label = isMermaid
+    ? "Copy Mermaid diagram as PNG"
+    : "Copy SVG figure as PNG";
+  button.title = available ? label : `${label} (rendering)`;
+  button.setAttribute("aria-label", label);
+}
+
+function attachCodeBlockFigureCopyButton(
+  shell: HTMLElement,
+  header: HTMLElement,
+  doc: Document,
+): void {
+  if (!getVisualCodeBlockPreview(shell)) return;
+  let button = getDirectChildWithClass(
+    header,
+    "llm-codeblock-figure-copy",
+  ) as HTMLButtonElement | null;
+  if (!button) {
+    button = doc.createElement("button") as HTMLButtonElement;
+    button.type = "button";
+    button.className = "llm-codeblock-figure-copy";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === "function") {
+        event.stopImmediatePropagation();
+      }
+      const svgMarkup = getVisualCodeBlockSvgMarkup(shell);
+      if (!svgMarkup) {
+        button!.dataset.figureCopyState = "unavailable";
+        syncFigureCopyButtonStateForShell(shell);
+        return;
+      }
+      button!.disabled = true;
+      delete button!.dataset.figureCopyState;
+      void copySvgFigureAsPngToClipboard(doc, svgMarkup)
+        .then((copied) => {
+          button!.dataset.figureCopyState = copied ? "copied" : "failed";
+        })
+        .catch(() => {
+          button!.dataset.figureCopyState = "failed";
+        })
+        .finally(() => {
+          const win = doc.defaultView;
+          win?.setTimeout?.(() => {
+            delete button!.dataset.figureCopyState;
+            syncFigureCopyButtonStateForShell(shell);
+          }, FIGURE_COPY_RESET_DELAY_MS);
+          if (!win) syncFigureCopyButtonStateForShell(shell);
+        });
+    });
+    header.appendChild(button);
+  }
+  syncFigureCopyButtonStateForShell(shell);
+}
+
 export function attachRenderedCodeBlockControls(
   root: ParentNode,
   doc: Document,
@@ -1958,10 +2091,7 @@ export function attachRenderedCodeBlockControls(
     const body = getDirectChildWithClass(shell, "llm-codeblock-body");
     if (!header || !body) continue;
 
-    const hasVisualPreview = Boolean(
-      getDirectChildWithClass(shell, "llm-svg-preview") ||
-      getDirectChildWithClass(shell, "llm-mermaid-preview"),
-    );
+    const hasVisualPreview = Boolean(getVisualCodeBlockPreview(shell));
     const initialCollapsed =
       shell.dataset.sourceCollapsed === undefined
         ? hasVisualPreview
@@ -1996,6 +2126,7 @@ export function attachRenderedCodeBlockControls(
 
     button.setAttribute("aria-controls", body.id);
     setCodeBlockSourceCollapsed(shell, body, button, initialCollapsed);
+    attachCodeBlockFigureCopyButton(shell, header, doc);
   }
 }
 
@@ -2025,12 +2156,21 @@ export function attachRenderedCopyButtons(
       ":scope > .llm-render-copy-btn",
     ) as HTMLButtonElement | null;
     if (existing) continue;
-    const button = doc.createElement("button") as HTMLButtonElement;
-    button.type = "button";
-    button.className = "llm-render-copy-btn";
     const codeShell = copyable.querySelector(
       ":scope .llm-codeblock-shell",
     ) as HTMLElement | null;
+    const codeHeader = codeShell
+      ? getDirectChildWithClass(codeShell, "llm-codeblock-header")
+      : null;
+    if (
+      codeHeader &&
+      getDirectChildWithClass(codeHeader, "llm-render-copy-btn")
+    ) {
+      continue;
+    }
+    const button = doc.createElement("button") as HTMLButtonElement;
+    button.type = "button";
+    button.className = "llm-render-copy-btn";
     if (codeShell) {
       button.classList.add("llm-render-code-copy-btn");
       button.textContent = "⧉";
@@ -2044,7 +2184,11 @@ export function attachRenderedCopyButtons(
       button.title = "Copy original markdown";
       button.setAttribute("aria-label", "Copy original markdown");
     }
-    copyable.insertBefore(button, copyable.firstChild);
+    if (codeHeader) {
+      codeHeader.appendChild(button);
+    } else {
+      copyable.insertBefore(button, copyable.firstChild);
+    }
   }
 }
 
@@ -2065,8 +2209,8 @@ export function renderRenderedMarkdownInto(
       target.textContent = sanitizeText(text);
     }
   }
-  attachRenderedCopyButtons(target, doc);
   attachRenderedCodeBlockControls(target, doc);
+  attachRenderedCopyButtons(target, doc);
   attachRenderedSvgPreviewButtons(target, doc);
   void renderMermaidBlocks(
     target,
