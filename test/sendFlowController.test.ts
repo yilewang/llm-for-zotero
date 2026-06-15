@@ -44,7 +44,10 @@ describe("sendFlowController", function () {
     setUserSkills([]);
   });
 
-  function makeTestSkill(id: string): AgentSkill {
+  function makeTestSkill(
+    id: string,
+    overrides: Partial<AgentSkill> = {},
+  ): AgentSkill {
     return {
       id,
       description: `${id} description`,
@@ -54,6 +57,7 @@ describe("sendFlowController", function () {
       activation: "auto",
       instruction: `${id} instructions`,
       source: "personal",
+      ...overrides,
     };
   }
 
@@ -961,6 +965,38 @@ describe("sendFlowController", function () {
     assert.equal(lastSend.lastSentModelProviderLabel, "Codex");
   });
 
+  async function sendCodexNativeSkillInput(
+    input: string,
+    skills: AgentSkill[],
+  ) {
+    setUserSkills(skills);
+    const { controller, inputBox, getLastSend } = createBaseDeps({
+      getSelectedTextContextEntries: () => [],
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      isAgentMode: () => true,
+      isCodexConversationSystem: () => true,
+      getSelectedProfile: () => ({
+        entryId: "codex_app_server::gpt-5.4",
+        model: "gpt-5.4",
+        apiBase: "",
+        apiKey: "",
+        providerLabel: "Codex",
+        authMode: "codex_app_server",
+        providerProtocol: "codex_responses",
+      }),
+      resolvePromptText: (text: string) => text,
+      buildModelPromptWithFileContext: (question: string) => question,
+    });
+    inputBox.value = input;
+
+    await controller.doSend();
+
+    return getLastSend();
+  }
+
   it("translates chip-selected Codex app-server skills only in the submitted question", async function () {
     setUserSkills([makeTestSkill("write-note")]);
     const { controller, inputBox, getLastSend } = createBaseDeps({
@@ -1067,6 +1103,119 @@ describe("sendFlowController", function () {
       "$write-note\n\nplease draft this note",
     );
     assert.deepEqual(lastSend.lastSentForcedSkillIds, ["write-note"]);
+  });
+
+  it("recognizes fuzzy natural-language Codex skill directives", async function () {
+    const skills = [
+      makeTestSkill("evidence-based-qa", {
+        description:
+          "Locate specific passages in selected papers that support a claim with quoted evidence.",
+      }),
+      makeTestSkill("write-note", {
+        description: "Write a long-form reading or literature note.",
+      }),
+    ];
+
+    const partial = await sendCodexNativeSkillInput(
+      "use evidence base skill to read the paper",
+      skills,
+    );
+    assert.equal(
+      partial.lastSentQuestion,
+      "$evidence-based-qa\n\nread the paper",
+    );
+    assert.equal(
+      partial.lastSentDisplayQuestion,
+      "use evidence base skill to read the paper",
+    );
+    assert.deepEqual(partial.lastSentForcedSkillIds, ["evidence-based-qa"]);
+
+    const typo = await sendCodexNativeSkillInput(
+      "use evidnce based skill to read the paper",
+      skills,
+    );
+    assert.equal(typo.lastSentQuestion, "$evidence-based-qa\n\nread the paper");
+    assert.deepEqual(typo.lastSentForcedSkillIds, ["evidence-based-qa"]);
+
+    const writeNote = await sendCodexNativeSkillInput(
+      "please use write not skill to draft a note",
+      skills,
+    );
+    assert.equal(writeNote.lastSentQuestion, "$write-note\n\ndraft a note");
+    assert.deepEqual(writeNote.lastSentForcedSkillIds, ["write-note"]);
+
+    const description = await sendCodexNativeSkillInput(
+      "use reading note skill to summarize",
+      skills,
+    );
+    assert.equal(description.lastSentQuestion, "$write-note\n\nsummarize");
+    assert.deepEqual(description.lastSentForcedSkillIds, ["write-note"]);
+
+    const quoted = await sendCodexNativeSkillInput(
+      'use "evidence base" skill: quote the method',
+      skills,
+    );
+    assert.equal(
+      quoted.lastSentQuestion,
+      "$evidence-based-qa\n\nquote the method",
+    );
+    assert.deepEqual(quoted.lastSentForcedSkillIds, ["evidence-based-qa"]);
+  });
+
+  it("does not force ambiguous or non-leading natural-language skill mentions", async function () {
+    const evidenceSkill = makeTestSkill("evidence-based-qa", {
+      description:
+        "Locate specific passages in selected papers that support a claim with quoted evidence.",
+    });
+
+    const unknown = await sendCodexNativeSkillInput(
+      "use imaginary skill to draft a note",
+      [evidenceSkill],
+    );
+    assert.equal(
+      unknown.lastSentQuestion,
+      "use imaginary skill to draft a note",
+    );
+    assert.isUndefined(unknown.lastSentForcedSkillIds);
+
+    const vague = await sendCodexNativeSkillInput(
+      "use paper skill to read the paper",
+      [evidenceSkill],
+    );
+    assert.equal(vague.lastSentQuestion, "use paper skill to read the paper");
+    assert.isUndefined(vague.lastSentForcedSkillIds);
+
+    const tied = await sendCodexNativeSkillInput(
+      "use paper not skill to draft",
+      [makeTestSkill("paper-note"), makeTestSkill("paper-nots")],
+    );
+    assert.equal(tied.lastSentQuestion, "use paper not skill to draft");
+    assert.isUndefined(tied.lastSentForcedSkillIds);
+
+    const midSentence = await sendCodexNativeSkillInput(
+      "should I use evidence base skill?",
+      [evidenceSkill],
+    );
+    assert.equal(
+      midSentence.lastSentQuestion,
+      "should I use evidence base skill?",
+    );
+    assert.isUndefined(midSentence.lastSentForcedSkillIds);
+  });
+
+  it("allows natural-language directives to force manual Codex skills", async function () {
+    const manual = await sendCodexNativeSkillInput(
+      "use manual helper skill to run this",
+      [
+        makeTestSkill("manual-helper", {
+          activation: "manual",
+          description: "Manual helper for explicit workflow testing.",
+        }),
+      ],
+    );
+
+    assert.equal(manual.lastSentQuestion, "$manual-helper\n\nrun this");
+    assert.deepEqual(manual.lastSentForcedSkillIds, ["manual-helper"]);
   });
 
   it("keeps slash skill text unchanged outside Codex app-server mode", async function () {
