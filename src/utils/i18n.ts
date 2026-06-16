@@ -387,6 +387,12 @@ const zhCN: Record<string, string> = {
   "Processing on server… (%ss)": "服务器正在处理…（%s 秒）",
   "Converting on server… (%ss)": "服务器正在转换…（%s 秒）",
   "Waiting for parser… (%ss)": "等待解析器处理…（%s 秒）",
+  "Waiting for another local MinerU parse to finish…":
+    "正在等待另一个本地 MinerU 解析任务完成…",
+  "Local MinerU server is busy; retrying in %ss":
+    "本地 MinerU 服务正忙，将在 %s 秒后重试",
+  "Local MinerU server is still busy after %s retries":
+    "本地 MinerU 服务在 %s 次重试后仍然繁忙",
   "Local MinerU parsing timed out": "本地 MinerU 解析超时",
   "Local parse failed: HTTP %s": "本地解析失败：HTTP %s",
   "Done (%s files extracted)": "完成（已提取 %s 个文件）",

@@ -45,6 +45,7 @@ const REQUEST_TIMEOUT_MS = 60000;
 // explicit abort/pause rather than guessing whether an open request is stuck.
 const LOCAL_PARSE_TIMEOUT_MS = 0;
 const LOCAL_PROGRESS_INTERVAL_MS = 3000;
+const LOCAL_BUSY_RETRY_DELAYS_MS = [5000, 15000, 30000, 60000, 120000] as const;
 
 export type MinerUExtractedFile = MinerUZipFile;
 
@@ -84,6 +85,12 @@ type MineruCloudPollDecisionInput = {
   lastStatusAtMs: number | null;
   activeStartedAtMs: number | null;
 };
+
+type LocalFileParseGateRelease = () => void;
+
+let localFileParseGateHeld = false;
+let localFileParseGateQueue: Array<() => void> = [];
+let localBusyRetryDelaysOverrideForTests: readonly number[] | null = null;
 
 export class MineruRateLimitError extends Error {
   constructor(message: string) {
@@ -215,6 +222,70 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       { once: true },
     );
   });
+}
+
+function getLocalBusyRetryDelaysMs(): readonly number[] {
+  return localBusyRetryDelaysOverrideForTests ?? LOCAL_BUSY_RETRY_DELAYS_MS;
+}
+
+function createLocalFileParseGateRelease(): LocalFileParseGateRelease {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const next = localFileParseGateQueue.shift();
+    if (next) {
+      next();
+    } else {
+      localFileParseGateHeld = false;
+    }
+  };
+}
+
+function acquireLocalFileParseGate(
+  signal?: AbortSignal,
+  onWait?: () => void,
+): Promise<LocalFileParseGateRelease> {
+  if (signal?.aborted) return Promise.reject(new MineruCancelledError());
+  if (!localFileParseGateHeld) {
+    localFileParseGateHeld = true;
+    return Promise.resolve(createLocalFileParseGateRelease());
+  }
+
+  onWait?.();
+  return new Promise<LocalFileParseGateRelease>((resolve, reject) => {
+    let settled = false;
+    const grant = () => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve(createLocalFileParseGateRelease());
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      localFileParseGateQueue = localFileParseGateQueue.filter(
+        (queued) => queued !== grant,
+      );
+      reject(new MineruCancelledError());
+    };
+    localFileParseGateQueue.push(grant);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
+export function setMineruLocalBusyRetryDelaysForTests(
+  delays: readonly number[] | null,
+): void {
+  localBusyRetryDelaysOverrideForTests = delays;
+}
+
+export function resetMineruLocalFileParseGateForTests(): void {
+  localFileParseGateHeld = false;
+  localFileParseGateQueue = [];
+  localBusyRetryDelaysOverrideForTests = null;
 }
 
 // ── HTTP helpers using Zotero.HTTP (bypasses CORS) ────────────────────────────
@@ -721,6 +792,7 @@ async function fetchWithTimeout(
   timeoutMs: number,
   timeoutMessage: string,
 ): Promise<Response> {
+  if (signal?.aborted) throw new MineruCancelledError();
   const AbortCtrl = getAbortControllerCtor();
   if (!AbortCtrl) {
     return await new Promise<Response>((resolve, reject) => {
@@ -825,6 +897,71 @@ function buildLocalFileParseBody(params: {
   };
 }
 
+async function submitLocalFileParseRequest(params: {
+  url: string;
+  fileName: string;
+  sizeMB: string;
+  pdfBytes: Uint8Array;
+  backend: MineruLocalBackend;
+  report: (s: string) => void;
+  signal?: AbortSignal;
+}): Promise<Response> {
+  throwIfAborted(params.signal);
+  const { body, contentType } = buildLocalFileParseBody({
+    fileName: params.fileName,
+    pdfBytes: params.pdfBytes,
+    backend: params.backend,
+  });
+  params.report(
+    t("Uploading to local server… (%s MB)").replace("%s", params.sizeMB),
+  );
+  const startTime = Date.now();
+  const progressTimer = setInterval(() => {
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    params.report(t("Waiting for parser… (%ss)").replace("%s", `${elapsed}`));
+  }, LOCAL_PROGRESS_INTERVAL_MS);
+
+  try {
+    const headers: Record<string, string> = {};
+    if (contentType) headers["Content-Type"] = contentType;
+    return await raceAbort(
+      fetchWithTimeout(
+        params.url,
+        {
+          method: "POST",
+          headers,
+          body,
+        },
+        params.signal,
+        LOCAL_PARSE_TIMEOUT_MS,
+        t("Local MinerU parsing timed out"),
+      ),
+      params.signal,
+    );
+  } finally {
+    clearInterval(progressTimer);
+  }
+}
+
+async function readResponseText(
+  response: Response,
+  signal?: AbortSignal,
+): Promise<string> {
+  try {
+    return await raceAbort(response.text(), signal);
+  } catch {
+    return "";
+  }
+}
+
+function buildLocalParseHttpFailureMessage(
+  status: number,
+  responseText: string,
+): string {
+  const suffix = responseText ? `: ${truncateResponseText(responseText)}` : "";
+  return `${t("Local parse failed: HTTP %s").replace("%s", `${status}`)}${suffix}`;
+}
+
 async function parsePdfViaLocalFileParse(
   pdfPath: string,
   baseUrl: string,
@@ -842,89 +979,97 @@ async function parsePdfViaLocalFileParse(
 
   const fileName = getSafePdfFileName(pdfPath);
   const sizeMB = (pdfBytes.length / (1024 * 1024)).toFixed(1);
-  const { body, contentType } = buildLocalFileParseBody({
-    fileName,
-    pdfBytes,
-    backend,
-  });
 
   throwIfAborted(signal);
-  report(t("Uploading to local server… (%s MB)").replace("%s", sizeMB));
   const url = joinApiPath(baseUrl, "/file_parse");
-  const startTime = Date.now();
-  const progressTimer = setInterval(() => {
-    const elapsed = Math.round((Date.now() - startTime) / 1000);
-    report(t("Waiting for parser… (%ss)").replace("%s", `${elapsed}`));
-  }, LOCAL_PROGRESS_INTERVAL_MS);
-
-  let response: Response;
-  try {
-    const headers: Record<string, string> = {};
-    if (contentType) headers["Content-Type"] = contentType;
-    response = await raceAbort(
-      fetchWithTimeout(
-        url,
-        {
-          method: "POST",
-          headers,
-          body,
-        },
-        signal,
-        LOCAL_PARSE_TIMEOUT_MS,
-        t("Local MinerU parsing timed out"),
-      ),
-      signal,
-    );
-  } finally {
-    clearInterval(progressTimer);
-  }
-
-  const contentTypeHeader = response.headers.get("content-type");
-  if (!response.ok) {
-    let responseText = "";
-    try {
-      responseText = await raceAbort(response.text(), signal);
-    } catch {
-      /* ignore */
-    }
-    const suffix = responseText
-      ? `: ${truncateResponseText(responseText)}`
-      : "";
-    report(
-      `${t("Local parse failed: HTTP %s").replace("%s", `${response.status}`)}${suffix}`,
-    );
-    return null;
-  }
-
+  const releaseGate = await acquireLocalFileParseGate(signal, () => {
+    report(t("Waiting for another local MinerU parse to finish…"));
+  });
+  const retryDelays = getLocalBusyRetryDelaysMs();
   throwIfAborted(signal);
-  const zipBytes = new Uint8Array(
-    await raceAbort(response.arrayBuffer(), signal),
-  );
-  const extracted = extractMineruZipBytes(zipBytes, report);
-  if (extracted.ok) {
-    report(
-      t("Done (%s files extracted)").replace("%s", `${extracted.files.length}`),
-    );
-    return { mdContent: extracted.mdContent, files: extracted.files };
-  }
 
-  report(extracted.message);
-  logMineruZipFailure(
-    {
-      bytes: zipBytes,
-      attempts: [
+  try {
+    for (let attempt = 0; ; attempt++) {
+      const response = await submitLocalFileParseRequest({
+        url,
+        fileName,
+        sizeMB,
+        pdfBytes,
+        backend,
+        report,
+        signal,
+      });
+
+      const contentTypeHeader = response.headers.get("content-type");
+      if (!response.ok) {
+        const responseText = await readResponseText(response, signal);
+        if (response.status === 409) {
+          const retryDelayMs = retryDelays[attempt];
+          if (retryDelayMs != null) {
+            report(
+              t("Local MinerU server is busy; retrying in %ss").replace(
+                "%s",
+                `${Math.max(1, Math.ceil(retryDelayMs / 1000))}`,
+              ),
+            );
+            await sleep(retryDelayMs, signal);
+            continue;
+          }
+
+          const suffix = responseText
+            ? `: ${truncateResponseText(responseText)}`
+            : "";
+          report(
+            `${t("Local MinerU server is still busy after %s retries").replace(
+              "%s",
+              `${retryDelays.length}`,
+            )}${suffix}`,
+          );
+          return null;
+        }
+
+        report(
+          buildLocalParseHttpFailureMessage(response.status, responseText),
+        );
+        return null;
+      }
+
+      throwIfAborted(signal);
+      const zipBytes = new Uint8Array(
+        await raceAbort(response.arrayBuffer(), signal),
+      );
+      const extracted = extractMineruZipBytes(zipBytes, report);
+      if (extracted.ok) {
+        report(
+          t("Done (%s files extracted)").replace(
+            "%s",
+            `${extracted.files.length}`,
+          ),
+        );
+        return { mdContent: extracted.mdContent, files: extracted.files };
+      }
+
+      report(extracted.message);
+      logMineruZipFailure(
         {
-          transport: "fetch",
-          status: response.status,
-          contentType: contentTypeHeader,
-          byteLength: zipBytes.length,
-          error: extracted.message,
+          bytes: zipBytes,
+          attempts: [
+            {
+              transport: "fetch",
+              status: response.status,
+              contentType: contentTypeHeader,
+              byteLength: zipBytes.length,
+              error: extracted.message,
+            },
+          ],
         },
-      ],
-    },
-    extracted.zipInspection,
-  );
-  return null;
+        extracted.zipInspection,
+      );
+      return null;
+    }
+  } finally {
+    releaseGate();
+  }
 }
 
 // ── Presigned URL upload workflow ──────────────────────────────────────────────
