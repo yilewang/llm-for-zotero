@@ -229,6 +229,68 @@ describe("tool validation compatibility", function () {
     assert.equal(operationAlias.value.action, "read");
     assert.equal(operationAlias.value.filePath, "/tmp/read-alias.md");
 
+    const camelCaseWriteAlias = tool.validate({
+      action: "writeFile",
+      filePath: "/tmp/camel-write.md",
+      content: "saved from camelCase",
+    });
+    assert.isTrue(camelCaseWriteAlias.ok);
+    if (!camelCaseWriteAlias.ok) return;
+    assert.equal(camelCaseWriteAlias.value.action, "write");
+    assert.equal(camelCaseWriteAlias.value.filePath, "/tmp/camel-write.md");
+    assert.equal(camelCaseWriteAlias.value.content, "saved from camelCase");
+
+    const quotedReadAlias = tool.validate({
+      action: "'read'",
+      filePath: "/tmp/quoted-read.md",
+    });
+    assert.isTrue(quotedReadAlias.ok);
+    if (!quotedReadAlias.ok) return;
+    assert.equal(quotedReadAlias.value.action, "read");
+    assert.equal(quotedReadAlias.value.filePath, "/tmp/quoted-read.md");
+
+    const localizedSaveAlias = tool.validate({
+      action: "保存",
+      filePath: "/tmp/localized-save.md",
+      content: "saved from localized action",
+    });
+    assert.isTrue(localizedSaveAlias.ok);
+    if (!localizedSaveAlias.ok) return;
+    assert.equal(localizedSaveAlias.value.action, "write");
+    assert.equal(localizedSaveAlias.value.filePath, "/tmp/localized-save.md");
+    assert.equal(
+      localizedSaveAlias.value.content,
+      "saved from localized action",
+    );
+
+    const localizedWriteAlias = tool.validate({
+      action: "写入",
+      filePath: "/tmp/localized-write.md",
+      content: "written from localized action",
+    });
+    assert.isTrue(localizedWriteAlias.ok);
+    if (!localizedWriteAlias.ok) return;
+    assert.equal(localizedWriteAlias.value.action, "write");
+    assert.equal(localizedWriteAlias.value.filePath, "/tmp/localized-write.md");
+    assert.equal(
+      localizedWriteAlias.value.content,
+      "written from localized action",
+    );
+
+    const hyphenatedOperationAlias = tool.validate({
+      operation: "save-to-file",
+      path: "/tmp/hyphen-save.md",
+      text: "saved from hyphenated operation",
+    });
+    assert.isTrue(hyphenatedOperationAlias.ok);
+    if (!hyphenatedOperationAlias.ok) return;
+    assert.equal(hyphenatedOperationAlias.value.action, "write");
+    assert.equal(hyphenatedOperationAlias.value.filePath, "/tmp/hyphen-save.md");
+    assert.equal(
+      hyphenatedOperationAlias.value.content,
+      "saved from hyphenated operation",
+    );
+
     const actionlessMineruFullMd = tool.validate({
       filePath: "/tmp/llm-for-zotero-mineru/51/full.md",
       offset: 128,
@@ -324,7 +386,7 @@ describe("tool validation compatibility", function () {
     }
 
     const missingWriteContent = tool.validate({
-      action: "save",
+      action: "writeFile",
       filePath: "/tmp/missing-content.md",
     });
     assert.isFalse(missingWriteContent.ok);

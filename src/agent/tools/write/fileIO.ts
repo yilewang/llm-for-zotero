@@ -52,8 +52,14 @@ const FILE_IO_READ_ACTIONS = new Set([
   "open",
   "load",
   "view",
+  "open_file",
+  "view_file",
   "read_file",
   "load_file",
+  "读取",
+  "读",
+  "打开",
+  "查看",
 ]);
 
 const FILE_IO_WRITE_ACTIONS = new Set([
@@ -64,16 +70,47 @@ const FILE_IO_WRITE_ACTIONS = new Set([
   "write_file",
   "create_file",
   "save_file",
+  "save_to_file",
+  "save_as",
+  "write_to_file",
+  "create_new_file",
+  "create_or_overwrite",
+  "保存",
+  "写",
+  "写入",
+  "寫入",
+  "创建",
+  "建立",
+  "新建",
 ]);
 
 const FILE_IO_CONTENTLESS_READ_ACTIONS = new Set(["access", "inspect"]);
+
+function normalizeFileIOActionToken(value: string): string {
+  let normalized = value.trim();
+  const first = normalized[0];
+  const last = normalized[normalized.length - 1];
+  if (
+    normalized.length >= 2 &&
+    ((first === "'" && last === "'") ||
+      (first === '"' && last === '"') ||
+      (first === "`" && last === "`"))
+  ) {
+    normalized = normalized.slice(1, -1).trim();
+  }
+  return normalized
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s-]+/g, "_")
+    .replace(/_+/g, "_")
+    .toLowerCase();
+}
 
 function normalizeFileIOAction(
   value: unknown,
   options: { hasContent?: boolean } = {},
 ): FileIOAction | null {
   if (typeof value !== "string") return null;
-  const normalized = value.trim().toLowerCase();
+  const normalized = normalizeFileIOActionToken(value);
   if (FILE_IO_READ_ACTIONS.has(normalized)) return "read";
   if (
     !options.hasContent &&
