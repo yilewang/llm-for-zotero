@@ -36,6 +36,7 @@ import {
 } from "../../claudeCode/runtime";
 import { getCodexProfileSignature } from "../../codexAppServer/constants";
 import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
+import { normalizeForcedSkillIds } from "../../shared/skillIds";
 import {
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
@@ -138,6 +139,7 @@ import {
   isRequestPending,
   setPendingRequestId,
   setResponseMenuTarget,
+  getResponseActionRunner,
   setPromptMenuTarget,
   inlineEditTarget,
   setInlineEditTarget,
@@ -151,6 +153,7 @@ import {
   setInlineEditSavedDraft,
   selectedRuntimeModeCache,
   pdfTextCache,
+  type ResponseActionKind,
   type ResponseActionTarget,
 } from "./state";
 import { agentRunTraceCache, agentRunTraceLoadingTasks } from "./agentState";
@@ -1227,17 +1230,6 @@ export function resolveAssistantResponseMenuContent(
   };
 }
 
-type ResponseMenuActionKind = "copy" | "note" | "delete";
-
-const RESPONSE_MENU_ACTION_BUTTON_SELECTORS: Record<
-  ResponseMenuActionKind,
-  string
-> = {
-  copy: "#llm-response-menu-copy",
-  note: "#llm-response-menu-note",
-  delete: "#llm-response-menu-delete",
-};
-
 export function buildAssistantResponseActionTarget(params: {
   item: Zotero.Item;
   message: Message;
@@ -1296,53 +1288,17 @@ function buildAssistantResponseDeleteTarget(params: {
   );
 }
 
-function createResponseMenuClickEvent(doc: Document): Event {
-  const win = doc.defaultView as
-    | (Window & { MouseEvent?: typeof MouseEvent })
-    | null;
-  if (typeof win?.MouseEvent === "function") {
-    return new win.MouseEvent("click", {
-      bubbles: true,
-      cancelable: true,
-      button: 0,
-    });
-  }
-  if (typeof Event === "function") {
-    return new Event("click", { bubbles: true, cancelable: true });
-  }
-  const legacyEvent = doc.createEvent("MouseEvents");
-  legacyEvent.initMouseEvent(
-    "click",
-    true,
-    true,
-    win || null,
-    0,
-    0,
-    0,
-    0,
-    0,
-    false,
-    false,
-    false,
-    false,
-    0,
-    null,
-  );
-  return legacyEvent;
-}
-
 export function invokeResponseMenuActionButton(params: {
   body: Element;
-  action: ResponseMenuActionKind;
+  action: ResponseActionKind;
   target: ResponseActionTarget | null;
 }): boolean {
-  const { body, action, target } = params;
+  const { action, target } = params;
   if (!target) return false;
-  const selector = RESPONSE_MENU_ACTION_BUTTON_SELECTORS[action];
-  const button = body.querySelector(selector) as HTMLButtonElement | null;
-  if (!button || typeof button.dispatchEvent !== "function") return false;
+  const runner = getResponseActionRunner();
+  if (!runner) return false;
   setResponseMenuTarget(target);
-  button.dispatchEvent(createResponseMenuClickEvent(body.ownerDocument!));
+  void runner(action, target);
   return true;
 }
 
@@ -2092,6 +2048,7 @@ function toPanelMessage(message: StoredChatMessage): Message {
     (message as Message).selectedTextNoteContexts,
     selectedTexts.length,
   );
+  const forcedSkillIds = normalizeForcedSkillIds(message.forcedSkillIds);
   const paperContexts = normalizePaperContexts(message.paperContexts);
   const fullTextPaperContexts = normalizePaperContexts(
     message.fullTextPaperContexts,
@@ -2122,6 +2079,7 @@ function toPanelMessage(message: StoredChatMessage): Message {
     )
       ? selectedTextNoteContexts
       : undefined,
+    forcedSkillIds: forcedSkillIds.length ? forcedSkillIds : undefined,
     selectedTextExpandedIndex: -1,
     paperContexts: paperContexts.length ? paperContexts : undefined,
     fullTextPaperContexts: fullTextPaperContexts.length
@@ -5629,12 +5587,16 @@ export async function editLatestUserMessageAndRetry(
         selectedTextSources: retryPair.userMessage.selectedTextSources,
         selectedTextPaperContexts:
           retryPair.userMessage.selectedTextPaperContexts,
+        selectedTextNoteContexts:
+          retryPair.userMessage.selectedTextNoteContexts,
+        forcedSkillIds: retryPair.userMessage.forcedSkillIds,
         screenshotImages: retryPair.userMessage.screenshotImages,
         paperContexts: retryPair.userMessage.paperContexts,
         fullTextPaperContexts: retryPair.userMessage.fullTextPaperContexts,
         citationPaperContexts: retryPair.userMessage.citationPaperContexts,
         selectedCollectionContexts:
           retryPair.userMessage.selectedCollectionContexts,
+        selectedTagContexts: retryPair.userMessage.selectedTagContexts,
         attachments: retryPair.userMessage.attachments,
         modelAttachments: retryPair.userMessage.modelAttachments,
         modelName: retryPair.userMessage.modelName,
@@ -6646,6 +6608,8 @@ export async function editUserTurnAndRetry(opts: {
         selectedTexts: userMsg.selectedTexts,
         selectedTextSources: userMsg.selectedTextSources,
         selectedTextPaperContexts: userMsg.selectedTextPaperContexts,
+        selectedTextNoteContexts: userMsg.selectedTextNoteContexts,
+        forcedSkillIds: userMsg.forcedSkillIds,
         screenshotImages: userMsg.screenshotImages,
         paperContexts: userMsg.paperContexts,
         fullTextPaperContexts: userMsg.fullTextPaperContexts,
@@ -7817,6 +7781,8 @@ export async function sendQuestion(
         selectedTexts: userMessage.selectedTexts,
         selectedTextSources: userMessage.selectedTextSources,
         selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
+        selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
+        forcedSkillIds: userMessage.forcedSkillIds,
         paperContexts: userMessage.paperContexts,
         fullTextPaperContexts: userMessage.fullTextPaperContexts,
         citationPaperContexts: userMessage.citationPaperContexts,

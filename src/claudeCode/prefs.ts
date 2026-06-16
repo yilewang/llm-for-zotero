@@ -3,6 +3,10 @@ declare const Zotero: any;
 import { config } from "../../package.json";
 import type { ConversationSystem } from "../shared/types";
 import {
+  normalizeAgentPermissionMode,
+  type AgentPermissionMode,
+} from "../shared/agentPermissionMode";
+import {
   CLAUDE_MODEL_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
   getClaudeAllocatedConversationKeyRange,
@@ -188,13 +192,13 @@ export function getClaudeSettingSourcesCsvByPref(): string {
   return getClaudeSettingSourcesByPref().join(",");
 }
 
-export function getClaudePermissionModePref(): "safe" | "yolo" {
-  return getStringPref("agentPermissionMode").trim().toLowerCase() === "yolo"
-    ? "yolo"
-    : "safe";
+export function getClaudePermissionModePref(): AgentPermissionMode {
+  return normalizeAgentPermissionMode(
+    getStringPref("agentPermissionMode").trim().toLowerCase(),
+  );
 }
 
-export function setClaudePermissionModePref(mode: "safe" | "yolo"): void {
+export function setClaudePermissionModePref(mode: AgentPermissionMode): void {
   setPref("agentPermissionMode", mode === "yolo" ? "yolo" : "safe");
 }
 

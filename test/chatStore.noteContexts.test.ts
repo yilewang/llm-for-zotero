@@ -92,9 +92,55 @@ describe("chatStore note contexts", function () {
     });
 
     const insert = findChatMessageInsert(queries);
-    assert.lengthOf(insert.params, 31);
-    assert.equal(insert.params[29], 1234);
-    assert.equal(insert.params[30], 200000);
+    assert.lengthOf(insert.params, 32);
+    assert.equal(insert.params[30], 1234);
+    assert.equal(insert.params[31], 200000);
+  });
+
+  it("persists forced skill ids when appending a user message", async function () {
+    const queries = installAppendMessageDbFixture();
+
+    await appendMessage(42, {
+      role: "user",
+      text: "Use this skill",
+      timestamp: 100,
+      forcedSkillIds: ["write-note", "simple-paper-qa"],
+    });
+
+    const insert = findChatMessageInsert(queries);
+    assert.include(insert.sql, "forced_skill_ids_json");
+    assert.include(
+      insert.params,
+      JSON.stringify(["write-note", "simple-paper-qa"]),
+    );
+  });
+
+  it("loads forced skill ids from stored user messages", async function () {
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      DB: {
+        queryAsync: async (sql: string) => {
+          if (
+            sql.includes("FROM llm_for_zotero_chat_messages") &&
+            sql.includes("ORDER BY timestamp ASC")
+          ) {
+            return [
+              {
+                role: "user",
+                text: "Use write note",
+                timestamp: 100,
+                forcedSkillIdsJson: JSON.stringify(["write-note"]),
+              },
+            ];
+          }
+          return [];
+        },
+      },
+    };
+
+    const messages = await loadConversation(42, 20);
+
+    assert.deepEqual(messages[0]?.forcedSkillIds, ["write-note"]);
   });
 
   it("persists an explicit empty model attachment split", async function () {
@@ -143,7 +189,7 @@ describe("chatStore note contexts", function () {
     const insert = findChatMessageInsert(queries);
     assert.include(insert.sql, "generated_images_json");
     assert.equal(
-      insert.params[21],
+      insert.params[22],
       JSON.stringify([
         {
           id: "img-1",
@@ -154,7 +200,7 @@ describe("chatStore note contexts", function () {
       ]),
     );
     assert.equal(
-      insert.params[18],
+      insert.params[19],
       JSON.stringify(["data:image/png;base64,user-input"]),
     );
   });
@@ -254,7 +300,7 @@ describe("chatStore note contexts", function () {
     assert.include(insert.sql, "collection_contexts_json");
     assert.include(insert.sql, "tag_contexts_json");
     assert.equal(
-      insert.params[16],
+      insert.params[17],
       JSON.stringify([
         {
           collectionId: 55,
@@ -264,7 +310,7 @@ describe("chatStore note contexts", function () {
       ]),
     );
     assert.equal(
-      insert.params[17],
+      insert.params[18],
       JSON.stringify([
         {
           name: "Stability",

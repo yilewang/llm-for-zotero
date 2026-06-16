@@ -12,6 +12,10 @@ import { getClaudeProfileSignature } from "../claudeCode/projectSkills";
 import { getClaudeConversationSummary } from "../claudeCode/store";
 import { isNativeZoteroMcpToolsEnabled } from "../codexAppServer/prefs";
 import {
+  normalizeAgentPermissionMode,
+  type AgentPermissionMode,
+} from "../shared/agentPermissionMode";
+import {
   assertRequiredCodexZoteroMcpToolsReady,
   buildClaudeZoteroMcpServerConfig,
   preflightCodexZoteroMcpServer,
@@ -516,20 +520,20 @@ function getClaudeSettingSourcesCsvByPref(): string {
   return getClaudeSettingSourcesByPref().join(",");
 }
 
-function getAgentPermissionModePref(): "safe" | "yolo" {
+function getAgentPermissionModePref(): AgentPermissionMode {
   try {
     const raw = Zotero.Prefs.get(
       `${config.prefsPrefix}.agentPermissionMode`,
       true,
     );
-    return raw === "yolo" ? "yolo" : "safe";
+    return normalizeAgentPermissionMode(raw);
   } catch {
     return "safe";
   }
 }
 
 function buildAgentPermissionMetadata(): {
-  permissionMode: "safe" | "yolo";
+  permissionMode: AgentPermissionMode;
   allowDangerouslySkipPermissions?: true;
 } {
   const permissionMode = getAgentPermissionModePref();

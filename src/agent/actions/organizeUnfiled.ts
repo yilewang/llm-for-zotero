@@ -16,7 +16,11 @@ import {
   readToolResultError,
   type PagedActionInput,
 } from "./pagedWorkflow";
-import { callLLM } from "../../utils/llmClient";
+import {
+  callActionLlm,
+  collectActionLlmBatchResults,
+  extractJsonArray,
+} from "./llmBatchHelpers";
 import type {
   CollectionSummary,
   LibraryItemTarget,
@@ -542,18 +546,14 @@ async function suggestCollectionsForItems(
   ctx: ActionExecutionContext,
 ): Promise<Array<{ itemId: number; collectionId: number }>> {
   if (!ctx.llm || !collections.length) return [];
-  const results: Array<{ itemId: number; collectionId: number }> = [];
-  for (let i = 0; i < items.length; i += LLM_BATCH_SIZE) {
-    const batch = items.slice(i, i + LLM_BATCH_SIZE);
-    const batchResult = await suggestCollectionsBatch(
+  return collectActionLlmBatchResults(items, LLM_BATCH_SIZE, (batch) =>
+    suggestCollectionsBatch(
       batch,
       collections,
       userQuery,
       ctx,
-    );
-    results.push(...batchResult);
-  }
-  return results;
+    ),
+  );
 }
 
 async function suggestCollectionsBatch(
@@ -564,14 +564,9 @@ async function suggestCollectionsBatch(
 ): Promise<Array<{ itemId: number; collectionId: number }>> {
   if (!ctx.llm) return [];
   const prompt = buildCollectionPrompt(batch, collections, userQuery);
-  const raw = await callLLM({
+  const raw = await callActionLlm({
+    ctx,
     prompt,
-    model: ctx.llm.model,
-    apiBase: ctx.llm.apiBase,
-    apiKey: ctx.llm.apiKey,
-    authMode: ctx.llm.authMode,
-    providerProtocol: ctx.llm.providerProtocol,
-    temperature: 0,
     maxTokens: 1200,
   });
   return parseCollectionResponse(raw, batch, collections);
@@ -653,15 +648,4 @@ function parseCollectionResponse(
     out.push({ itemId, collectionId });
   }
   return out;
-}
-
-function extractJsonArray(text: string): string | null {
-  const trimmed = text.trim();
-  if (trimmed.startsWith("[")) return trimmed;
-  const start = trimmed.indexOf("[");
-  const end = trimmed.lastIndexOf("]");
-  if (start >= 0 && end > start) {
-    return trimmed.slice(start, end + 1);
-  }
-  return null;
 }

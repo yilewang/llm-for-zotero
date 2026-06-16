@@ -7,6 +7,7 @@ import { invokeResponseMenuActionButton } from "../src/modules/contextPanel/chat
 import {
   responseMenuTarget,
   type ResponseActionTarget,
+  setResponseActionRunner,
   setResponseMenuTarget,
 } from "../src/modules/contextPanel/state";
 
@@ -146,6 +147,7 @@ describe("menu action controller note routing", function () {
   });
 
   afterEach(function () {
+    setResponseActionRunner(null);
     setResponseMenuTarget(null);
     if (originalZotero) {
       globalScope.Zotero = originalZotero;
@@ -592,6 +594,83 @@ describe("menu action controller note routing", function () {
         responseMenuNoteBtn as unknown as HTMLButtonElement,
       responseMenuDeleteBtn:
         responseMenuDeleteBtn as unknown as HTMLButtonElement,
+      promptMenu: null,
+      promptMenuDeleteBtn: null,
+      exportMenu: null,
+      exportMenuCopyBtn: null,
+      exportMenuNoteBtn: null,
+      exportBtn: null,
+      popoutBtn: null,
+      settingsBtn: null,
+      preferencesPaneId: "llm-for-zotero-test",
+      getItem: () => currentItem,
+      getResponseMenuTarget: () => responseMenuTarget,
+      getPromptMenuTarget: () => null,
+      getCurrentLibraryID: () => 1,
+      getConversationSystem: () => "codex",
+      getCurrentRuntimeModeForItem: () => "agent",
+      isGlobalMode: () => true,
+      ensureConversationLoaded: async () => {},
+      getConversationKey: () => 9,
+      getHistory: () => [
+        { role: "user", text: "Question", timestamp: 100 },
+        { role: "assistant", text: "Answer", timestamp: 200 },
+      ],
+      resolveActiveNoteSession: () => null,
+      closeResponseMenu: () => {},
+      closePromptMenu: () => {},
+      closeExportMenu: () => {},
+      closeRetryModelMenu: () => {},
+      closeSlashMenu: () => {},
+      closeHistoryNewMenu: () => {},
+      closeHistoryMenu: () => {},
+      queueTurnDeletion: async (queuedTarget) => {
+        deletions.push(queuedTarget);
+      },
+      logError: () => {},
+    });
+
+    const invoked = invokeResponseMenuActionButton({
+      body: body as unknown as Element,
+      action: "delete",
+      target,
+    });
+    await flushAsyncEvents();
+
+    assert.isTrue(invoked);
+    assert.deepEqual(deletions, [
+      {
+        conversationKey: 9,
+        userTimestamp: 100,
+        assistantTimestamp: 200,
+      },
+    ]);
+  });
+
+  it("maps footer delete through the registered action runner without menu buttons", async function () {
+    const body = new FakeElement();
+    const currentItem = {
+      id: 42,
+      libraryID: 1,
+    } as unknown as Zotero.Item;
+    const deletions: unknown[] = [];
+    const target: ResponseActionTarget = {
+      item: currentItem,
+      contentText: "",
+      queryText: "Question",
+      modelName: "Codex",
+      conversationKey: 9,
+      userTimestamp: 100,
+      assistantTimestamp: 200,
+    };
+
+    attachMenuActionController({
+      body: body as unknown as Element,
+      status: new FakeElement() as unknown as HTMLElement,
+      responseMenu: null,
+      responseMenuCopyBtn: null,
+      responseMenuNoteBtn: null,
+      responseMenuDeleteBtn: null,
       promptMenu: null,
       promptMenuDeleteBtn: null,
       exportMenu: null,

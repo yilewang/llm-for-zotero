@@ -16,10 +16,6 @@
 import { matchesSkill, parseSkill } from "./skillLoader";
 import type { AgentSkill } from "./skillLoader";
 import type { SkillRoutingRequest } from "./contextEligibility";
-import {
-  isNotesDirectoryConfigured,
-  getNotesDirectoryNickname,
-} from "../../utils/notesDirectoryConfig";
 import libraryAnalysisRaw from "./library-analysis.md";
 import comparePapersRaw from "./compare-papers.md";
 import analyzeFiguresRaw from "./analyze-figures.md";
@@ -28,6 +24,7 @@ import evidenceBasedQaRaw from "./evidence-based-qa.md";
 import writeNoteRaw from "./write-note.md";
 import literatureReviewRaw from "./literature-review.md";
 import importCitedReferenceRaw from "./import-cited-reference.md";
+import { resolveSkillRouting } from "./routing";
 
 export { matchesSkill, parseSkill } from "./skillLoader";
 export {
@@ -45,6 +42,15 @@ export type {
   SkillRequestContext,
   SkillRoutingRequest,
 } from "./contextEligibility";
+export {
+  resolveSkillRouting,
+  resolveSkillDirectiveText,
+  prependNativeSkillMention,
+} from "./routing";
+export type {
+  SkillRoutingResolution,
+  SkillDirectiveTextResolution,
+} from "./routing";
 
 /**
  * Built-in skill files bundled at compile time.
@@ -84,14 +90,6 @@ export function getBuiltinSkillInstruction(
  */
 let skills: AgentSkill[] = [];
 
-const SIMPLE_PAPER_QA_SKILL_ID = "simple-paper-qa";
-const EVIDENCE_BASED_QA_SKILL_ID = "evidence-based-qa";
-const LIBRARY_ANALYSIS_SKILL_ID = "library-analysis";
-const SIMPLE_PAPER_QA_INTENT_PATTERN =
-  /\b(understand|explain|walk me through|help me understand)\b.*\b(paper|ppaer|article|study)\b/i;
-const COLLECTION_ANALYSIS_INTENT_PATTERN =
-  /\b(summarize|summarise|summary|overview|statistics|stats|analy[sz]e|breakdown|survey|audit)\b/i;
-
 /**
  * Replace the current set of skills.
  * Called once at plugin startup after scanning the user skills directory.
@@ -106,42 +104,6 @@ export function setUserSkills(loaded: AgentSkill[]): void {
  */
 export function getAllSkills(): AgentSkill[] {
   return skills;
-}
-
-/**
- * Runtime-context signals that force specific skill IDs to activate even if
- * the user's text wouldn't otherwise match. Returned as a Set so callers can
- * union it with regex/forcedIds without duplicates.
- *
- * Current rules:
- * - Notes-directory nickname mentioned in userText → force `write-note`.
- */
-function computeContextForcedSkillIds(
-  request: SkillRoutingRequest,
-): Set<string> {
-  const forced = new Set<string>();
-  const nickname = getNotesDirectoryNickname().trim();
-  if (nickname && isNotesDirectoryConfigured() && request.userText) {
-    const escaped = nickname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const isAscii = /^[\x20-\x7E]+$/.test(nickname);
-    const pattern = isAscii
-      ? new RegExp(`\\b${escaped}\\b`, "i")
-      : new RegExp(escaped, "i");
-    if (pattern.test(request.userText)) {
-      forced.add("write-note");
-    }
-  }
-  if (SIMPLE_PAPER_QA_INTENT_PATTERN.test(request.userText || "")) {
-    forced.add(SIMPLE_PAPER_QA_SKILL_ID);
-  }
-  if (
-    (request.selectedCollectionContexts?.length ||
-      request.selectedTagContexts?.length) &&
-    COLLECTION_ANALYSIS_INTENT_PATTERN.test(request.userText || "")
-  ) {
-    forced.add(LIBRARY_ANALYSIS_SKILL_ID);
-  }
-  return forced;
 }
 
 /**
@@ -163,35 +125,6 @@ export function getMatchedSkillIds(
     Pick<import("../types").AgentRuntimeRequest, "forcedSkillIds">,
   classifiedIds?: ReadonlyArray<string>,
 ): string[] {
-  const forcedIds = new Set(request.forcedSkillIds || []);
-  const contextForced = computeContextForcedSkillIds(request);
-  const baseMatched =
-    classifiedIds !== undefined
-      ? new Set(classifiedIds)
-      : new Set(
-          getAllSkills()
-            .filter((skill) => matchesSkill(skill, request))
-            .map((skill) => skill.id),
-        );
-  const matchedSkillIds = getAllSkills()
-    .filter((skill) => {
-      if (forcedIds.has(skill.id)) {
-        return true;
-      }
-      const isAutoMatched =
-        contextForced.has(skill.id) || baseMatched.has(skill.id);
-      if (!isAutoMatched || skill.activation === "manual") return false;
-      return true;
-    })
-    .map((skill) => skill.id);
-
-  if (
-    matchedSkillIds.includes(EVIDENCE_BASED_QA_SKILL_ID) &&
-    matchedSkillIds.includes(SIMPLE_PAPER_QA_SKILL_ID) &&
-    !forcedIds.has(SIMPLE_PAPER_QA_SKILL_ID)
-  ) {
-    return matchedSkillIds.filter((id) => id !== SIMPLE_PAPER_QA_SKILL_ID);
-  }
-
-  return matchedSkillIds;
+  return resolveSkillRouting(request, getAllSkills(), classifiedIds)
+    .matchedSkillIds;
 }

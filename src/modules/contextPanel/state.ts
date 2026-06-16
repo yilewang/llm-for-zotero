@@ -183,9 +183,25 @@ export type ResponseActionTarget = {
   generatedImages?: GeneratedChatImage[];
 };
 
+export type ResponseActionKind = "copy" | "note" | "delete";
+export type ResponseActionRunner = (
+  action: ResponseActionKind,
+  target: ResponseActionTarget | null,
+) => Promise<void>;
+
 export let responseMenuTarget: ResponseActionTarget | null = null;
 export function setResponseMenuTarget(value: typeof responseMenuTarget) {
   responseMenuTarget = value;
+}
+
+let responseActionRunner: ResponseActionRunner | null = null;
+export function setResponseActionRunner(
+  value: ResponseActionRunner | null,
+): void {
+  responseActionRunner = value;
+}
+export function getResponseActionRunner(): ResponseActionRunner | null {
+  return responseActionRunner;
 }
 
 export let promptMenuTarget: {

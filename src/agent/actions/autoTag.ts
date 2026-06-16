@@ -17,7 +17,11 @@ import {
   readToolResultError,
   type PagedActionInput,
 } from "./pagedWorkflow";
-import { callLLM } from "../../utils/llmClient";
+import {
+  callActionLlm,
+  collectActionLlmBatchResults,
+  extractJsonArray,
+} from "./llmBatchHelpers";
 import type { PaperScopedActionInput } from "./paperScope";
 import {
   resolvePaperScopedActionTargets,
@@ -688,19 +692,15 @@ async function suggestTagsForItems(
   ctx: ActionExecutionContext,
 ): Promise<Array<{ itemId: number; tags: string[] }>> {
   if (!ctx.llm) return [];
-  const results: Array<{ itemId: number; tags: string[] }> = [];
-  for (let i = 0; i < items.length; i += LLM_BATCH_SIZE) {
-    const batch = items.slice(i, i + LLM_BATCH_SIZE);
-    const batchResult = await suggestTagsBatch(
+  return collectActionLlmBatchResults(items, LLM_BATCH_SIZE, (batch) =>
+    suggestTagsBatch(
       batch,
       existingTags,
       maxTags,
       userQuery,
       ctx,
-    );
-    results.push(...batchResult);
-  }
-  return results;
+    ),
+  );
 }
 
 async function suggestTagsBatch(
@@ -712,14 +712,9 @@ async function suggestTagsBatch(
 ): Promise<Array<{ itemId: number; tags: string[] }>> {
   if (!ctx.llm) return [];
   const prompt = buildTagPrompt(batch, existingTags, maxTags, userQuery);
-  const raw = await callLLM({
+  const raw = await callActionLlm({
+    ctx,
     prompt,
-    model: ctx.llm.model,
-    apiBase: ctx.llm.apiBase,
-    apiKey: ctx.llm.apiKey,
-    authMode: ctx.llm.authMode,
-    providerProtocol: ctx.llm.providerProtocol,
-    temperature: 0,
     maxTokens: 800,
   });
   return parseTagResponse(raw, batch, maxTags);
@@ -826,15 +821,4 @@ function parseTagResponse(
     if (tags.length) out.push({ itemId, tags });
   }
   return out;
-}
-
-function extractJsonArray(text: string): string | null {
-  const trimmed = text.trim();
-  if (trimmed.startsWith("[")) return trimmed;
-  const start = trimmed.indexOf("[");
-  const end = trimmed.lastIndexOf("]");
-  if (start >= 0 && end > start) {
-    return trimmed.slice(start, end + 1);
-  }
-  return null;
 }

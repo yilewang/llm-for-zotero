@@ -1,27 +1,12 @@
-import { getAllSkills } from "../../../../agent/skills";
 import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import { getAgentApi, initAgentSubsystem } from "../../../../agent";
 import type { ActionRequestContext } from "../../../../agent/actions";
-import type {
-  AgentConfirmationResolution,
-  AgentPendingAction,
-} from "../../../../agent/types";
-import { renderPendingActionCard } from "../../agentTrace/render";
-import { refreshClaudeSlashCommands } from "../../../../claudeCode/runtime";
 import { createElement } from "../../../../utils/domHelpers";
-import { t } from "../../../../utils/i18n";
 import type { ModelProviderAuthMode } from "../../../../utils/modelProviders";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
 import { getAgentModeEnabled } from "../../prefHelpers";
-import {
-  ACTION_COMPLETION_DISMISS_MS,
-  formatActionCompletionCountdown,
-  formatActionLabel,
-  resolveActionCompletionFeedback,
-  resolveActionCompletionStatusText,
-  resolveActionFailureFeedback,
-  type ActionCompletionFeedback,
-} from "../../actionStatusText";
+import { formatActionLabel } from "../../actionStatusText";
+import { renderPendingActionCard } from "../../agentTrace/render";
 import { buildPaperKey } from "../../pdfContext";
 import {
   resolvePaperScopedCommandInput,
@@ -29,7 +14,6 @@ import {
   type PaperScopedActionProfile,
   type PaperScopedActionTagCandidate,
 } from "../../paperScopeCommand";
-import { resolveSlashActionChatMode } from "../../slashMenuBehavior";
 import { resolveDisplayConversationKind } from "../../portalScope";
 import {
   selectedCollectionContextCache,
@@ -45,6 +29,35 @@ import {
   setFloatingMenuOpen,
   SLASH_MENU_OPEN_CLASS,
 } from "./menuController";
+import {
+  isPagedLibraryActionForMode,
+  parseCommandParams,
+} from "./actionCommandParams";
+export {
+  isPagedLibraryActionForMode,
+  shouldExecuteAgentActionImmediatelyFromSlash,
+} from "./actionCommandParams";
+import {
+  activateCommandRowState,
+  clearCommandRowState,
+} from "./commandRowState";
+import {
+  createActionCommandLifecycle,
+  type ActionCommandLifecycle,
+} from "./actionCommandLifecycle";
+export {
+  attachActionCompletionEscapeDismissal,
+  getPagedReviewTransitionText,
+  isPagedReviewNavigationResolution,
+  renderActionCompletionCard,
+  renderActionTransitionCard,
+} from "./actionCommandLifecycle";
+import { runAgentActionWithLifecycle } from "./actionExecutionRunner";
+import {
+  renderAgentActionsInSlashMenu as renderAgentActionsSlashSection,
+  renderSkillsInSlashMenu as renderSkillsSlashSection,
+  type ActionCommandSlashMenuContext,
+} from "./actionCommandSlashMenu";
 
 type StatusLevel = "ready" | "warning" | "error";
 type ActionPickerItem = {
@@ -60,152 +73,6 @@ type ActionProfile = {
   providerProtocol?: ProviderProtocol;
 };
 type ActionMenuTrigger = "/" | "$";
-const PAGED_LIBRARY_ACTION_NAMES = new Set([
-  "audit_library",
-  "organize_unfiled",
-  "auto_tag",
-]);
-const PAGED_REVIEW_TRANSITION_ACTION_IDS = new Set([
-  "next",
-  "previous",
-  "refresh",
-]);
-const DEFAULT_PAGED_ACTION_PAGE_SIZE = 20;
-type ActionChatMode = "paper" | "library";
-
-export function isPagedLibraryActionForMode(
-  actionName: string,
-  mode: ActionChatMode,
-): boolean {
-  return mode === "library" && PAGED_LIBRARY_ACTION_NAMES.has(actionName);
-}
-
-export function shouldExecuteAgentActionImmediatelyFromSlash(
-  actionName: string,
-  mode: ActionChatMode,
-  hasPaperScopeProfile: boolean,
-): boolean {
-  return (
-    isPagedLibraryActionForMode(actionName, mode) ||
-    (mode === "paper" && hasPaperScopeProfile)
-  );
-}
-
-export function renderActionCompletionCard(
-  doc: Document,
-  feedback: ActionCompletionFeedback,
-  secondsRemaining = ACTION_COMPLETION_DISMISS_MS / 1000,
-): HTMLDivElement {
-  const card = doc.createElement("div");
-  card.className = "llm-agent-hitl-card llm-agent-hitl-card-complete";
-
-  const header = doc.createElement("div");
-  header.className = "llm-agent-hitl-header";
-  header.textContent = feedback.status === "failure" ? "Failed" : "Complete";
-  card.appendChild(header);
-
-  const title = doc.createElement("div");
-  title.className = "llm-agent-hitl-title";
-  title.textContent = feedback.title;
-  card.appendChild(title);
-
-  if (feedback.description) {
-    const description = doc.createElement("div");
-    description.className = "llm-agent-hitl-description";
-    description.textContent = feedback.description;
-    card.appendChild(description);
-  }
-
-  const countdown = doc.createElement("div");
-  countdown.className = "llm-agent-hitl-description";
-  countdown.setAttribute("data-action-completion-countdown", "true");
-  countdown.textContent = formatActionCompletionCountdown(secondsRemaining);
-  card.appendChild(countdown);
-
-  return card;
-}
-
-export function attachActionCompletionEscapeDismissal(
-  doc: Document,
-  onDismiss: () => void,
-): () => void {
-  const handleKeyDown = (event: KeyboardEvent): void => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    event.stopPropagation();
-    onDismiss();
-  };
-  doc.addEventListener("keydown", handleKeyDown, true);
-  return () => doc.removeEventListener("keydown", handleKeyDown, true);
-}
-
-export function isPagedReviewNavigationResolution(
-  action: AgentPendingAction,
-  resolution: AgentConfirmationResolution,
-): boolean {
-  if (resolution.approved || action.mode !== "review") return false;
-  const actionId = resolution.actionId || "";
-  if (!PAGED_REVIEW_TRANSITION_ACTION_IDS.has(actionId)) return false;
-  return Boolean(action.actions?.some((entry) => entry.id === actionId));
-}
-
-export function getPagedReviewTransitionText(actionId: string | undefined): {
-  title: string;
-  description: string;
-} {
-  if (actionId === "previous") {
-    return {
-      title: "Rendering previous page",
-      description: "Preparing the previous review page.",
-    };
-  }
-  if (actionId === "refresh") {
-    return {
-      title: "Refreshing review page",
-      description: "Reloading the library state and recalculating this page.",
-    };
-  }
-  return {
-    title: "Rendering next page",
-    description: "Preparing the next review page.",
-  };
-}
-
-export function renderActionTransitionCard(
-  doc: Document,
-  actionId?: string,
-): HTMLDivElement {
-  const card = doc.createElement("div");
-  card.className = "llm-agent-hitl-card llm-agent-hitl-card-transition";
-  card.setAttribute("role", "status");
-  card.setAttribute("aria-live", "polite");
-
-  const header = doc.createElement("div");
-  header.className = "llm-agent-hitl-header";
-  header.textContent = "Working";
-  card.appendChild(header);
-
-  const { title: titleText, description: descriptionText } =
-    getPagedReviewTransitionText(actionId);
-  const title = doc.createElement("div");
-  title.className = "llm-agent-hitl-title";
-  title.textContent = titleText;
-  card.appendChild(title);
-
-  const description = doc.createElement("div");
-  description.className = "llm-agent-hitl-description";
-  description.textContent = descriptionText;
-  card.appendChild(description);
-
-  const typing = doc.createElement("div");
-  typing.className = "llm-typing llm-agent-hitl-transition-typing";
-  typing.setAttribute("aria-hidden", "true");
-  typing.innerHTML =
-    '<span class="llm-typing-dot"></span><span class="llm-typing-dot"></span><span class="llm-typing-dot"></span>';
-  card.appendChild(typing);
-
-  return card;
-}
 type ActiveActionToken = {
   query: string;
   slashStart: number;
@@ -306,10 +173,6 @@ export function createActionCommandController(
   let forcedSkillBadge: HTMLElement | null = null;
   let activeCommandAction: ActionPickerItem | null = null;
   let activeCommandBadge: HTMLElement | null = null;
-  let actionCompletionDismissTimer: ReturnType<typeof setTimeout> | null = null;
-  let actionCompletionCountdownTimer: ReturnType<typeof setInterval> | null =
-    null;
-  let actionCompletionEscapeCleanup: (() => void) | null = null;
 
   const setStatus = (message: string, level: StatusLevel) => {
     deps.setStatusMessage?.(message, level);
@@ -576,188 +439,13 @@ export function createActionCommandController(
     }
   };
 
-  const clearActionCompletionTimers = () => {
-    if (actionCompletionDismissTimer) {
-      clearTimeout(actionCompletionDismissTimer);
-      actionCompletionDismissTimer = null;
-    }
-    if (actionCompletionCountdownTimer) {
-      clearInterval(actionCompletionCountdownTimer);
-      actionCompletionCountdownTimer = null;
-    }
-    actionCompletionEscapeCleanup?.();
-    actionCompletionEscapeCleanup = null;
-  };
-
-  const closeActionHitlPanel = () => {
-    clearActionCompletionTimers();
-    if (actionHitlPanel) {
-      actionHitlPanel.style.display = "none";
-      actionHitlPanel.innerHTML = "";
-    }
-    chatBox?.querySelector(".llm-action-inline-card")?.remove();
-    syncHasActionCardAttr();
-  };
-
-  const showPagedReviewTransitionCard = (actionId?: string): void => {
-    const ownerDoc = body.ownerDocument;
-    if (!ownerDoc || !chatBox) return;
-    clearActionCompletionTimers();
-    let wrapper = chatBox.querySelector(
-      ".llm-action-inline-card-review",
-    ) as HTMLDivElement | null;
-    if (!wrapper) {
-      chatBox.querySelector(".llm-action-inline-card")?.remove();
-      wrapper = ownerDoc.createElement("div");
-      wrapper.className =
-        "llm-action-inline-card llm-action-inline-card-review";
-      chatBox.appendChild(wrapper);
-    }
-    wrapper.innerHTML = "";
-    wrapper.appendChild(renderActionTransitionCard(ownerDoc, actionId));
-    chatBox.scrollTop = chatBox.scrollHeight;
-    syncHasActionCardAttr();
-  };
-
-  const showActionHitlCard = (
-    requestId: string,
-    action: AgentPendingAction,
-  ): Promise<AgentConfirmationResolution> =>
-    new Promise((resolve) => {
-      getAgentApi().registerPendingConfirmation(requestId, (resolution) => {
-        if (!resolution.approved) {
-          if (isPagedReviewNavigationResolution(action, resolution)) {
-            showPagedReviewTransitionCard(resolution.actionId);
-          } else {
-            closeActionHitlPanel();
-          }
-        }
-        resolve(resolution);
-      });
-      const ownerDoc = body.ownerDocument;
-      if (!ownerDoc || !chatBox) return;
-      clearActionCompletionTimers();
-      chatBox.querySelector(".llm-action-inline-card")?.remove();
-      const wrapper = ownerDoc.createElement("div");
-      wrapper.className =
-        "llm-action-inline-card llm-action-inline-card-review";
-      wrapper.appendChild(
-        renderPendingActionCard(ownerDoc, { requestId, action }),
-      );
-      chatBox.appendChild(wrapper);
-      chatBox.scrollTop = chatBox.scrollHeight;
-      syncHasActionCardAttr();
-    });
-
-  const showActionCompletionCard = (
-    feedback: ActionCompletionFeedback,
-  ): void => {
-    const ownerDoc = body.ownerDocument;
-    if (!ownerDoc || !chatBox) return;
-    clearActionCompletionTimers();
-    chatBox.querySelector(".llm-action-progress-card")?.remove();
-    chatBox.querySelector(".llm-action-inline-card")?.remove();
-    const wrapper = ownerDoc.createElement("div");
-    wrapper.className = "llm-action-inline-card llm-action-inline-card-status";
-    const totalMs = feedback.autoDismissMs || ACTION_COMPLETION_DISMISS_MS;
-    const startedAt = Date.now();
-    const card = renderActionCompletionCard(ownerDoc, feedback, totalMs / 1000);
-    wrapper.appendChild(card);
-    chatBox.appendChild(wrapper);
-    chatBox.scrollTop = chatBox.scrollHeight;
-    syncHasActionCardAttr();
-
-    const countdownEl = wrapper.querySelector(
-      "[data-action-completion-countdown]",
-    );
-    const updateCountdown = () => {
-      const remainingSeconds = Math.max(
-        1,
-        Math.ceil((startedAt + totalMs - Date.now()) / 1000),
-      );
-      if (countdownEl) {
-        countdownEl.textContent =
-          formatActionCompletionCountdown(remainingSeconds);
-      }
-    };
-    updateCountdown();
-    const dismissCompletionCard = () => {
-      if (wrapper.isConnected) wrapper.remove();
-      clearActionCompletionTimers();
-      syncHasActionCardAttr();
-    };
-    actionCompletionEscapeCleanup = attachActionCompletionEscapeDismissal(
-      ownerDoc,
-      dismissCompletionCard,
-    );
-    actionCompletionCountdownTimer = setInterval(updateCountdown, 1000);
-    actionCompletionDismissTimer = setTimeout(dismissCompletionCard, totalMs);
-  };
-
-  const createActionProgressIndicator = (actionName: string) => {
-    const ownerDoc = body.ownerDocument;
-    let element: HTMLDivElement | null = null;
-    let stepText: HTMLDivElement | null = null;
-    let summaryText: HTMLDivElement | null = null;
-
-    const ensureMounted = () => {
-      if (!ownerDoc || !chatBox) return;
-      if (element && element.isConnected) return;
-      chatBox.querySelector(".llm-action-progress-card")?.remove();
-      const wrapper = ownerDoc.createElement("div");
-      wrapper.className = "llm-action-progress-card";
-      const header = ownerDoc.createElement("div");
-      header.className = "llm-action-progress-header";
-      const title = ownerDoc.createElement("div");
-      title.className = "llm-action-progress-title";
-      title.textContent = `${formatActionLabel(actionName)}`;
-      const typing = ownerDoc.createElement("div");
-      typing.className = "llm-typing llm-action-progress-typing";
-      typing.innerHTML =
-        '<span class="llm-typing-dot"></span><span class="llm-typing-dot"></span><span class="llm-typing-dot"></span>';
-      header.append(title, typing);
-      wrapper.appendChild(header);
-      stepText = ownerDoc.createElement("div");
-      stepText.className = "llm-action-progress-step";
-      stepText.textContent = "Starting...";
-      wrapper.appendChild(stepText);
-      summaryText = ownerDoc.createElement("div");
-      summaryText.className = "llm-action-progress-summary";
-      summaryText.textContent = "";
-      wrapper.appendChild(summaryText);
-      chatBox.appendChild(wrapper);
-      chatBox.scrollTop = chatBox.scrollHeight;
-      element = wrapper;
-      syncHasActionCardAttr();
-    };
-
-    ensureMounted();
-    return {
-      setStep(stepName: string, index: number, total: number) {
-        ensureMounted();
-        if (stepText) stepText.textContent = `${stepName} (${index}/${total})`;
-        if (summaryText) summaryText.textContent = "";
-      },
-      setSummary(summary: string) {
-        ensureMounted();
-        if (summaryText) summaryText.textContent = summary;
-      },
-      hide() {
-        element?.remove();
-        element = null;
-        stepText = null;
-        summaryText = null;
-        syncHasActionCardAttr();
-      },
-      remove() {
-        element?.remove();
-        element = null;
-        stepText = null;
-        summaryText = null;
-        syncHasActionCardAttr();
-      },
-    };
-  };
+  const actionLifecycle: ActionCommandLifecycle = createActionCommandLifecycle({
+    body,
+    actionHitlPanel,
+    chatBox,
+    syncHasActionCardAttr,
+  });
+  const { closeActionHitlPanel } = actionLifecycle;
 
   const getNeedsUserInputFields = (
     _actionName: string,
@@ -1056,13 +744,13 @@ export function createActionCommandController(
     if (trimmedUserQuery && input.userQuery === undefined) {
       input.userQuery = trimmedUserQuery;
     }
-    setStatus(`Running: ${formatActionLabel(action.name)}...`, "ready");
-    const progressIndicator = createActionProgressIndicator(action.name);
-    let lastProgressSummary = "";
-    try {
-      const agentApi = getAgentApi();
-      const selectedProfile = deps.getSelectedProfile();
-      const actionLlmConfig = selectedProfile?.model
+    const selectedProfile = deps.getSelectedProfile();
+    await runAgentActionWithLifecycle({
+      actionName: action.name,
+      input,
+      requestContext,
+      libraryID: deps.getCurrentLibraryID(),
+      llm: selectedProfile?.model
         ? {
             model: selectedProfile.model,
             apiBase: selectedProfile.apiBase || "",
@@ -1070,109 +758,27 @@ export function createActionCommandController(
             authMode: selectedProfile.authMode,
             providerProtocol: selectedProfile.providerProtocol,
           }
-        : undefined;
-      const commonOptions = {
-        libraryID: deps.getCurrentLibraryID(),
-        requestContext,
-        llm: actionLlmConfig,
-        onProgress: (
-          event: import("../../../../agent/actions").ActionProgressEvent,
-        ) => {
-          if (event.type === "step_start") {
-            progressIndicator.setStep(event.step, event.index, event.total);
-            setStatus(`${event.step} (${event.index}/${event.total})`, "ready");
-          } else if (event.type === "step_done") {
-            if (event.summary) {
-              lastProgressSummary = event.summary;
-              progressIndicator.setSummary(event.summary);
-              setStatus(event.summary, "ready");
-            }
-          } else if (event.type === "confirmation_required") {
-            progressIndicator.hide();
-          }
-        },
-      };
-      if (isPagedLibraryActionForMode(action.name, actionMode)) {
-        agentApi
-          .getZoteroGateway()
-          .invalidateLibrarySearchCache?.(deps.getCurrentLibraryID());
-      }
-      const result = await agentApi.runAction(action.name, input, {
-        ...commonOptions,
-        confirmationMode: "native_ui",
-        requestConfirmation: (requestId, pendingAction) =>
-          showActionHitlCard(requestId, pendingAction),
-      });
-      setStatus(
-        result.ok
-          ? resolveActionCompletionStatusText({
-              actionName: action.name,
-              lastProgressSummary,
-            })
-          : `${formatActionLabel(action.name)} failed: ${result.error}`,
-        result.ok ? "ready" : "error",
-      );
-      if (result.ok) {
-        progressIndicator.remove();
-        showActionCompletionCard(
-          resolveActionCompletionFeedback({
-            actionName: action.name,
-            output: result.output,
-            lastProgressSummary,
-          }),
-        );
-      } else {
-        closeActionHitlPanel();
-        showActionCompletionCard(
-          resolveActionFailureFeedback({
-            actionName: action.name,
-            error: result.error,
-            lastProgressSummary,
-          }),
-        );
-      }
-    } catch (error) {
-      closeActionHitlPanel();
-      deps.logError("LLM: action picker run error", error);
-      setStatus(`Error: ${String(error)}`, "error");
-      showActionCompletionCard(
-        resolveActionFailureFeedback({
-          actionName: action.name,
-          error,
-          lastProgressSummary,
-        }),
-      );
-    } finally {
-      progressIndicator.remove();
-    }
+        : undefined,
+      isPagedLibraryAction: isPagedLibraryActionForMode(
+        action.name,
+        actionMode,
+      ),
+      lifecycle: actionLifecycle,
+      setStatus,
+      logError: deps.logError,
+    });
   };
 
   const clearForcedSkill = (): void => {
     forcedSkillId = null;
     forcedSkillBadge = null;
-    const row = body.querySelector("#llm-command-row");
-    if (row) {
-      row.removeAttribute("data-active");
-      row.classList.remove("llm-command-row--skill");
-    }
-    if (inputBox.dataset.originalPlaceholder !== undefined) {
-      inputBox.placeholder = inputBox.dataset.originalPlaceholder;
-      delete inputBox.dataset.originalPlaceholder;
-    }
+    clearCommandRowState({ body, inputBox });
   };
 
   const clearCommandChip = (): void => {
     activeCommandAction = null;
     activeCommandBadge = null;
-    const row = body.querySelector("#llm-command-row");
-    if (row) {
-      row.removeAttribute("data-active");
-      row.classList.remove("llm-command-row--skill");
-    }
-    if (inputBox.dataset.originalPlaceholder !== undefined) {
-      inputBox.placeholder = inputBox.dataset.originalPlaceholder;
-      delete inputBox.dataset.originalPlaceholder;
-    }
+    clearCommandRowState({ body, inputBox });
   };
 
   const dispatchComposerInput = (): void => {
@@ -1194,106 +800,27 @@ export function createActionCommandController(
     ) {
       deps.setCurrentRuntimeMode("agent");
     }
-    const row = body.querySelector("#llm-command-row");
-    const badgeEl = body.querySelector("#llm-command-row-badge");
-    if (!row || !badgeEl) return;
-    badgeEl.textContent = `/${skill.id}`;
-    row.classList.add("llm-command-row--skill");
-    row.setAttribute("data-active", "");
-    forcedSkillBadge = row as HTMLElement;
-    if (inputBox.dataset.originalPlaceholder === undefined) {
-      inputBox.dataset.originalPlaceholder = inputBox.placeholder;
-    }
-    inputBox.placeholder = "";
-    inputBox.focus({ preventScroll: true });
-    dispatchComposerInput();
+    forcedSkillBadge = activateCommandRowState({
+      body,
+      inputBox,
+      label: `/${skill.id}`,
+      kind: "skill",
+      dispatchInput: dispatchComposerInput,
+    });
   };
 
   const insertCommandToken = (action: ActionPickerItem): void => {
     clearForcedSkill();
     clearCommandChip();
     activeCommandAction = action;
-    const row = body.querySelector("#llm-command-row");
-    const badgeEl = body.querySelector("#llm-command-row-badge");
-    if (!row || !badgeEl) return;
-    badgeEl.textContent = `/${action.name}`;
-    row.classList.remove("llm-command-row--skill");
-    row.setAttribute("data-active", "");
-    activeCommandBadge = row as HTMLElement;
-    if (inputBox.dataset.originalPlaceholder === undefined) {
-      inputBox.dataset.originalPlaceholder = inputBox.placeholder;
-    }
-    inputBox.placeholder = "";
-    inputBox.value = "";
-    inputBox.focus({ preventScroll: true });
-    dispatchComposerInput();
-  };
-
-  const parseCommandParams = (
-    actionName: string,
-    params: string,
-    mode: ActionChatMode = buildActionRequestContext().mode,
-  ): Record<string, unknown> => {
-    const isPagedLibraryAction = isPagedLibraryActionForMode(actionName, mode);
-    const input: Record<string, unknown> = isPagedLibraryAction
-      ? {
-          scope: "all",
-          pageSize: DEFAULT_PAGED_ACTION_PAGE_SIZE,
-        }
-      : {};
-    if (params.trim()) {
-      input.userQuery = params.trim();
-    }
-    if (!params) return input;
-    const lower = params.toLowerCase();
-    const pageSizeMatch = /(?:page\s*size|per\s*page|show)\s+(\d+)/i.exec(
-      params,
-    );
-    if (pageSizeMatch && isPagedLibraryAction) {
-      input.pageSize = parseInt(pageSizeMatch[1], 10);
-      return input;
-    }
-    const firstNMatch =
-      /(?:for\s+)?(?:first|top)\s+(\d+)\s*(?:items?|papers?)?/i.exec(params);
-    if (firstNMatch) {
-      input.limit = parseInt(firstNMatch[1], 10);
-      return input;
-    }
-    const limitMatch = /(?:limit|cap)\s+(\d+)/i.exec(params);
-    if (limitMatch) {
-      input.limit = parseInt(limitMatch[1], 10);
-      return input;
-    }
-    const lastNMatch = /(?:for\s+)?last\s+(\d+)\s*(?:items?|papers?)?/i.exec(
-      params,
-    );
-    if (lastNMatch) {
-      input.limit = parseInt(lastNMatch[1], 10);
-      return input;
-    }
-    const collectionMatch = /(?:for\s+)?collection\s+(.+)/i.exec(params);
-    if (collectionMatch) {
-      input.scope = "collection";
-      input.collectionName = collectionMatch[1].trim();
-      return input;
-    }
-    if (
-      lower.includes("whole library") ||
-      lower.includes("for all") ||
-      lower === "all"
-    ) {
-      input.scope = "all";
-      return input;
-    }
-    const bareNumber = /^(\d+)$/.exec(params.trim());
-    if (bareNumber) {
-      if (isPagedLibraryAction) {
-        input.pageSize = parseInt(bareNumber[1], 10);
-      } else {
-        input.limit = parseInt(bareNumber[1], 10);
-      }
-    }
-    return input;
+    activeCommandBadge = activateCommandRowState({
+      body,
+      inputBox,
+      label: `/${action.name}`,
+      kind: "command",
+      clearInput: true,
+      dispatchInput: dispatchComposerInput,
+    });
   };
 
   const showScopeConfirmation = (
@@ -1432,279 +959,28 @@ export function createActionCommandController(
     void executeAgentAction(action, input);
   };
 
-  const renderSkillsInSlashMenu = (query = "") => {
-    const list = slashMenu?.querySelector(".llm-action-picker-list");
-    if (!list) return;
-    const ownerDoc = body.ownerDocument;
-    if (!ownerDoc) return;
-    clearSkillSlashItems();
-    const allSkills = getAllSkills();
-    if (!allSkills.length) return;
-    const filtered = query
-      ? allSkills.filter(
-          (skill: AgentSkill) =>
-            skill.id.toLowerCase().includes(query) ||
-            skill.description.toLowerCase().includes(query),
-        )
-      : allSkills;
-    if (!filtered.length) return;
-    const baseAnchor =
-      list.querySelector("[data-slash-section='base']") ||
-      list.querySelector("[data-slash-base-item]") ||
-      null;
-    const mkSkillEl = (tag: string, className: string): HTMLElement => {
-      const element = ownerDoc.createElement(tag);
-      element.className = className;
-      element.setAttribute("data-slash-skill-item", "true");
-      return element;
-    };
-    const sectionLabel = mkSkillEl("div", "llm-slash-menu-section");
-    sectionLabel.setAttribute("aria-hidden", "true");
-    sectionLabel.textContent = t("Skills");
-    list.insertBefore(sectionLabel, baseAnchor);
-    filtered.forEach((skill: AgentSkill) => {
-      const button = mkSkillEl(
-        "button",
-        "llm-action-picker-item",
-      ) as HTMLButtonElement;
-      button.type = "button";
-      button.disabled = false;
-      button.setAttribute("aria-disabled", "false");
-      button.title = skill.description || skill.id;
-      const titleEl = ownerDoc.createElement("span");
-      titleEl.className = "llm-action-picker-title";
-      titleEl.textContent = skill.id;
-      const descEl = ownerDoc.createElement("span");
-      descEl.className = "llm-action-picker-description";
-      descEl.textContent = skill.description;
-      const badgeEl = ownerDoc.createElement("span");
-      badgeEl.className = "llm-action-picker-badge";
-      badgeEl.textContent = t(
-        skill.source === "system"
-          ? "System"
-          : skill.source === "customized"
-            ? "Customized"
-            : "Personal",
-      );
-      button.append(titleEl, descEl, badgeEl);
-      button.addEventListener("click", (event: Event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        consumeActiveActionToken();
-        closeSlashMenu();
-        handleSkillSelection(skill);
-      });
-      list.insertBefore(button, baseAnchor);
-    });
+  const slashMenuContext: ActionCommandSlashMenuContext = {
+    body,
+    inputBox,
+    slashMenu,
+    getItem: deps.getItem,
+    getSelectedProfile: deps.getSelectedProfile,
+    isClaudeConversationSystem: deps.isClaudeConversationSystem,
+    clearAgentSlashItems,
+    clearSkillSlashItems,
+    consumeActiveActionToken,
+    closeSlashMenu,
+    handleSkillSelection,
+    insertCommandToken,
+    executeAgentAction,
+    buildActionRequestContext,
   };
 
-  const firstSentence = (text: string): string => {
-    const normalized = text.replace(/\s+/g, " ").trim();
-    if (!normalized) return "";
-    const match = /^(.+?[.!?])(?:\s|$)/.exec(normalized);
-    if (match) return match[1];
-    return normalized.length <= 80
-      ? normalized
-      : `${normalized.slice(0, 77).trimEnd()}...`;
-  };
+  const renderSkillsInSlashMenu = (query = ""): void =>
+    renderSkillsSlashSection(slashMenuContext, query);
 
-  type ClaudeSlashMenuItem = {
-    name: string;
-    description: string;
-    argumentHint?: string;
-  };
-
-  const renderAgentActionsInSlashMenu = (query = "") => {
-    clearAgentSlashItems();
-    const ownerDoc = body.ownerDocument;
-    const list = slashMenu?.querySelector(".llm-action-picker-list");
-    if (!ownerDoc || !list) return;
-    const firstBase = list.firstChild;
-    const mkAgentEl = (tag: string, className: string): HTMLElement => {
-      const element = ownerDoc.createElement(tag);
-      element.className = className;
-      element.setAttribute("data-slash-agent-item", "true");
-      return element;
-    };
-    if (deps.isClaudeConversationSystem()) {
-      let commands: ClaudeSlashMenuItem[] = [];
-      try {
-        commands = getAgentApi().listSlashCommands?.() || [];
-      } catch {
-        commands = [];
-      }
-      if (!commands.length) {
-        const loading = mkAgentEl("div", "llm-slash-menu-section");
-        loading.setAttribute("aria-hidden", "true");
-        loading.textContent = t("Loading Claude commands...");
-        list.insertBefore(loading, firstBase);
-        void initAgentSubsystem()
-          .then((coreRuntime) => refreshClaudeSlashCommands(coreRuntime, false))
-          .then(() => {
-            renderAgentActionsInSlashMenu(query);
-          })
-          .catch(() => {});
-        const baseLabel = mkAgentEl("div", "llm-slash-menu-section");
-        baseLabel.setAttribute("aria-hidden", "true");
-        baseLabel.textContent = t("Base actions");
-        list.insertBefore(baseLabel, firstBase);
-        return;
-      }
-      const filtered = query
-        ? commands.filter(
-            (command) =>
-              command.name.toLowerCase().includes(query) ||
-              command.description.toLowerCase().includes(query),
-          )
-        : commands;
-      if (filtered.length) {
-        const section = mkAgentEl("div", "llm-slash-menu-section");
-        section.setAttribute("aria-hidden", "true");
-        section.textContent = "Claude Code";
-        list.insertBefore(section, firstBase);
-        filtered.forEach((command) => {
-          const button = mkAgentEl(
-            "button",
-            "llm-action-picker-item",
-          ) as HTMLButtonElement;
-          button.type = "button";
-          button.title = command.description;
-          const titleEl = ownerDoc.createElement("span");
-          titleEl.className = "llm-action-picker-title";
-          titleEl.textContent = `/${command.name}`;
-          button.append(titleEl);
-          button.addEventListener("click", (event: Event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            consumeActiveActionToken();
-            closeSlashMenu();
-            insertCommandToken({
-              name: command.name,
-              description: command.description,
-              inputSchema: { type: "object", properties: {} },
-            });
-          });
-          list.insertBefore(button, firstBase);
-        });
-      }
-      const baseLabel = mkAgentEl("div", "llm-slash-menu-section");
-      baseLabel.setAttribute("aria-hidden", "true");
-      baseLabel.textContent = t("Base actions");
-      list.insertBefore(baseLabel, firstBase);
-      return;
-    }
-    const chatMode = resolveSlashActionChatMode(
-      resolveDisplayConversationKind(deps.getItem()),
-    );
-    let allActions: ActionPickerItem[] = [];
-    try {
-      allActions = getAgentApi().listActions(chatMode);
-    } catch {
-      void initAgentSubsystem()
-        .then(() => {
-          renderAgentActionsInSlashMenu(query);
-        })
-        .catch(() => {});
-      return;
-    }
-    const filtered = query
-      ? allActions.filter(
-          (action) =>
-            action.name.toLowerCase().includes(query) ||
-            action.description.toLowerCase().includes(query),
-        )
-      : allActions;
-    const baseAnchor = list.querySelector("[data-slash-base-item]") || null;
-    const baseLabel = mkAgentEl("div", "llm-slash-menu-section");
-    baseLabel.setAttribute("aria-hidden", "true");
-    baseLabel.setAttribute("data-slash-section", "base");
-    baseLabel.textContent = t("Base actions");
-    list.insertBefore(baseLabel, baseAnchor);
-    const selectedProfile = deps.getSelectedProfile();
-    const compactAction: ActionPickerItem = {
-      name: "compact",
-      description:
-        selectedProfile?.authMode === "codex_app_server"
-          ? "Compact the current Codex context."
-          : "Compact the current agent context.",
-      inputSchema: { type: "object", properties: {} },
-    };
-    if (
-      !query ||
-      compactAction.name.includes(query) ||
-      compactAction.description.toLowerCase().includes(query)
-    ) {
-      const button = mkAgentEl(
-        "button",
-        "llm-action-picker-item",
-      ) as HTMLButtonElement;
-      button.type = "button";
-      button.title = compactAction.description;
-      const titleEl = ownerDoc.createElement("span");
-      titleEl.className = "llm-action-picker-title";
-      titleEl.textContent = "/compact";
-      const descEl = ownerDoc.createElement("span");
-      descEl.className = "llm-action-picker-description";
-      descEl.textContent = compactAction.description;
-      button.append(titleEl, descEl);
-      button.addEventListener("click", (event: Event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        consumeActiveActionToken();
-        closeSlashMenu();
-        insertCommandToken(compactAction);
-      });
-      list.insertBefore(button, baseAnchor);
-    }
-    const agentLabel = mkAgentEl("div", "llm-slash-menu-section");
-    agentLabel.setAttribute("aria-hidden", "true");
-    agentLabel.textContent = t("Agent actions");
-    list.insertBefore(agentLabel, baseLabel);
-    filtered.forEach((action) => {
-      const button = mkAgentEl(
-        "button",
-        "llm-action-picker-item",
-      ) as HTMLButtonElement;
-      button.type = "button";
-      button.title = action.description;
-      const titleEl = ownerDoc.createElement("span");
-      titleEl.className = "llm-action-picker-title";
-      titleEl.textContent = action.name;
-      const descEl = ownerDoc.createElement("span");
-      descEl.className = "llm-action-picker-description";
-      descEl.textContent = firstSentence(action.description);
-      button.append(titleEl, descEl);
-      button.addEventListener("click", (event: Event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        consumeActiveActionToken();
-        closeSlashMenu();
-        const userQuery = inputBox.value.trim();
-        const actionMode = buildActionRequestContext().mode;
-        const hasPaperScopeProfile = Boolean(
-          getAgentApi().getPaperScopedActionProfile(action.name),
-        );
-        if (
-          shouldExecuteAgentActionImmediatelyFromSlash(
-            action.name,
-            actionMode,
-            hasPaperScopeProfile,
-          )
-        ) {
-          const parsedInput = isPagedLibraryActionForMode(
-            action.name,
-            actionMode,
-          )
-            ? parseCommandParams(action.name, "", actionMode)
-            : undefined;
-          void executeAgentAction(action, parsedInput, userQuery);
-          return;
-        }
-        insertCommandToken(action);
-      });
-      list.insertBefore(button, baseLabel);
-    });
-  };
+  const renderAgentActionsInSlashMenu = (query = ""): void =>
+    renderAgentActionsSlashSection(slashMenuContext, query);
 
   const selectActionPickerItem = async (index: number): Promise<void> => {
     const action = actionPickerItems[index];

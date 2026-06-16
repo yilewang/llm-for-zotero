@@ -712,6 +712,7 @@ export async function sendAgentTurn(
     selectedTagContexts: selectedTagContexts?.length
       ? selectedTagContexts
       : undefined,
+    forcedSkillIds: forcedSkillIds?.length ? forcedSkillIds.slice() : undefined,
   };
   if (modelAttachments !== undefined) {
     userMessage.modelAttachments = modelAttachments;
@@ -728,6 +729,7 @@ export async function sendAgentTurn(
       selectedTextSources: userMessage.selectedTextSources,
       selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
       selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
+      forcedSkillIds: userMessage.forcedSkillIds,
       citationPaperContexts: userMessage.citationPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
       selectedTagContexts: userMessage.selectedTagContexts,
@@ -843,6 +845,7 @@ export async function sendAgentTurn(
       selectedTextSources: userMessage.selectedTextSources,
       selectedTextPaperContexts: userMessage.selectedTextPaperContexts,
       selectedTextNoteContexts: userMessage.selectedTextNoteContexts,
+      forcedSkillIds: userMessage.forcedSkillIds,
       paperContexts: userMessage.paperContexts,
       fullTextPaperContexts: userMessage.fullTextPaperContexts,
       citationPaperContexts: userMessage.citationPaperContexts,

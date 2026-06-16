@@ -72,13 +72,25 @@ export function normalizeTagsPerPaper(value: unknown): number {
 }
 
 export function normalizeActionLimit(value: unknown): number | undefined {
-  if (!Number.isFinite(value) || Number(value) <= 0) return undefined;
-  return Math.max(1, Math.floor(Number(value)));
+  const numeric =
+    typeof value === "string" && value.trim()
+      ? Number(value)
+      : typeof value === "number"
+        ? value
+        : NaN;
+  if (!Number.isFinite(numeric) || numeric <= 0) return undefined;
+  return Math.max(1, Math.floor(numeric));
 }
 
 export function normalizeActionStartOffset(value: unknown): number {
-  if (!Number.isFinite(value) || Number(value) < 0) return 0;
-  return Math.max(0, Math.floor(Number(value)));
+  const numeric =
+    typeof value === "string" && value.trim()
+      ? Number(value)
+      : typeof value === "number"
+        ? value
+        : NaN;
+  if (!Number.isFinite(numeric) || numeric < 0) return 0;
+  return Math.max(0, Math.floor(numeric));
 }
 
 export function getPagedActionOptions(

@@ -18,6 +18,10 @@ import {
 import { normalizeQuoteCitations } from "../modules/contextPanel/quoteCitations";
 import type { StoredChatMessage } from "../utils/chatStore";
 import {
+  parseForcedSkillIdsJson,
+  serializeForcedSkillIds,
+} from "../shared/skillIds";
+import {
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
   RUNTIME_CONVERSATION_KEY_END,
   isConversationKeyFor,
@@ -96,6 +100,7 @@ const CODEX_MESSAGE_SELECT_COLUMNS_SQL = `id,
             selected_text_sources_json AS selectedTextSourcesJson,
             selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
             selected_text_note_contexts_json AS selectedTextNoteContextsJson,
+            forced_skill_ids_json AS forcedSkillIdsJson,
             paper_contexts_json AS paperContextsJson,
             full_text_paper_contexts_json AS fullTextPaperContextsJson,
             citation_paper_contexts_json AS citationPaperContextsJson,
@@ -440,6 +445,7 @@ const MESSAGE_TRANSFER_COLUMNS = [
   "selected_text_sources_json",
   "selected_text_paper_contexts_json",
   "selected_text_note_contexts_json",
+  "forced_skill_ids_json",
   "paper_contexts_json",
   "full_text_paper_contexts_json",
   "citation_paper_contexts_json",
@@ -717,6 +723,23 @@ export async function repairMisroutedCodexConversationRows(): Promise<void> {
     (await tableExists(CODEX_MESSAGES_TABLE));
   if (!hasSourceTables || !hasTargetTables) return;
 
+  await ensureColumn(
+    CLAUDE_MESSAGES_TABLE,
+    (await Zotero.DB.queryAsync(
+      `PRAGMA table_info(${CLAUDE_MESSAGES_TABLE})`,
+    )) as Array<{ name?: unknown }> | undefined,
+    "forced_skill_ids_json",
+    "forced_skill_ids_json TEXT",
+  );
+  await ensureColumn(
+    CODEX_MESSAGES_TABLE,
+    (await Zotero.DB.queryAsync(
+      `PRAGMA table_info(${CODEX_MESSAGES_TABLE})`,
+    )) as Array<{ name?: unknown }> | undefined,
+    "forced_skill_ids_json",
+    "forced_skill_ids_json TEXT",
+  );
+
   const conversationKeys = await findMisroutedCodexConversationKeys();
   for (const conversationKey of conversationKeys) {
     await moveConversationRowsIfSafe(conversationKey);
@@ -955,6 +978,7 @@ export async function initCodexAppServerStore(): Promise<void> {
         selected_text_sources_json TEXT,
         selected_text_paper_contexts_json TEXT,
         selected_text_note_contexts_json TEXT,
+        forced_skill_ids_json TEXT,
         paper_contexts_json TEXT,
         full_text_paper_contexts_json TEXT,
         citation_paper_contexts_json TEXT,
@@ -1028,6 +1052,12 @@ export async function initCodexAppServerStore(): Promise<void> {
          ADD COLUMN quote_citations_json TEXT`,
       );
     }
+    await ensureColumn(
+      CODEX_MESSAGES_TABLE,
+      columns,
+      "forced_skill_ids_json",
+      "forced_skill_ids_json TEXT",
+    );
     await ensureColumn(
       CODEX_MESSAGES_TABLE,
       columns,
@@ -1162,8 +1192,8 @@ export async function appendCodexMessage(
   await Zotero.DB.executeTransaction(async () => {
     await Zotero.DB.queryAsync(
       `INSERT INTO ${CODEX_MESSAGES_TABLE}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         conversationID,
         normalizedKey,
@@ -1180,6 +1210,9 @@ export async function appendCodexMessage(
           : null,
         selectedTextNoteContexts.some((entry) => Boolean(entry))
           ? JSON.stringify(selectedTextNoteContexts)
+          : null,
+        message.role === "user"
+          ? serializeForcedSkillIds(message.forcedSkillIds)
           : null,
         paperContexts.length ? JSON.stringify(paperContexts) : null,
         fullTextPaperContexts.length ? JSON.stringify(fullTextPaperContexts) : null,
@@ -1366,6 +1399,7 @@ export async function loadCodexConversation(
         return undefined;
       }
     })();
+    const forcedSkillIds = parseForcedSkillIdsJson(row.forcedSkillIdsJson);
 
     messages.push({
       role,
@@ -1378,6 +1412,8 @@ export async function loadCodexConversation(
       selectedTextSources,
       selectedTextPaperContexts,
       selectedTextNoteContexts,
+      forcedSkillIds:
+        role === "user" && forcedSkillIds.length ? forcedSkillIds : undefined,
       paperContexts,
       fullTextPaperContexts,
       citationPaperContexts,
@@ -1527,6 +1563,7 @@ export async function updateLatestCodexUserMessage(
     | "selectedTextSources"
     | "selectedTextPaperContexts"
     | "selectedTextNoteContexts"
+    | "forcedSkillIds"
     | "paperContexts"
     | "fullTextPaperContexts"
     | "citationPaperContexts"
@@ -1565,6 +1602,7 @@ export async function updateLatestCodexUserMessage(
            selected_text_sources_json = ?,
            selected_text_paper_contexts_json = ?,
            selected_text_note_contexts_json = ?,
+           forced_skill_ids_json = ?,
            paper_contexts_json = ?,
            full_text_paper_contexts_json = ?,
            citation_paper_contexts_json = ?,
@@ -1591,6 +1629,7 @@ export async function updateLatestCodexUserMessage(
         selectedTextNoteContexts.some((entry) => Boolean(entry))
           ? JSON.stringify(selectedTextNoteContexts)
           : null,
+        serializeForcedSkillIds(message.forcedSkillIds),
         message.paperContexts?.length ? JSON.stringify(normalizePaperContextRefs(message.paperContexts)) : null,
         message.fullTextPaperContexts?.length
           ? JSON.stringify(normalizePaperContextRefs(message.fullTextPaperContexts))

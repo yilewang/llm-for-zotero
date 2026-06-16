@@ -23,6 +23,7 @@ import type {
   QuoteCitation,
 } from "../../../../shared/types";
 import type { ChatRuntimeMode, Message, PaperContextRef } from "../../types";
+import { setResponseActionRunner } from "../../state";
 
 export type ResponseMenuTarget = {
   item: Zotero.Item;
@@ -381,6 +382,10 @@ export function attachMenuActionController(
   ) => {
     if (deps.status) setStatus(deps.status, message, level);
   };
+
+  setResponseActionRunner((action, target) =>
+    runResponseMenuAction(deps, action, target, setStatusMessage),
+  );
 
   if (
     deps.responseMenu &&

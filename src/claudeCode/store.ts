@@ -18,6 +18,10 @@ import {
 import { normalizeQuoteCitations } from "../modules/contextPanel/quoteCitations";
 import type { StoredChatMessage } from "../utils/chatStore";
 import {
+  parseForcedSkillIdsJson,
+  serializeForcedSkillIds,
+} from "../shared/skillIds";
+import {
   isConversationKeyFor,
   isConversationKeyForKind,
 } from "../shared/conversationKeySpace";
@@ -91,6 +95,7 @@ const CLAUDE_MESSAGE_SELECT_COLUMNS_SQL = `id,
             selected_text_sources_json AS selectedTextSourcesJson,
             selected_text_paper_contexts_json AS selectedTextPaperContextsJson,
             selected_text_note_contexts_json AS selectedTextNoteContextsJson,
+            forced_skill_ids_json AS forcedSkillIdsJson,
             paper_contexts_json AS paperContextsJson,
             full_text_paper_contexts_json AS fullTextPaperContextsJson,
             citation_paper_contexts_json AS citationPaperContextsJson,
@@ -759,6 +764,7 @@ export async function initClaudeCodeStore(): Promise<void> {
         selected_text_sources_json TEXT,
         selected_text_paper_contexts_json TEXT,
         selected_text_note_contexts_json TEXT,
+        forced_skill_ids_json TEXT,
         paper_contexts_json TEXT,
         full_text_paper_contexts_json TEXT,
         citation_paper_contexts_json TEXT,
@@ -832,6 +838,12 @@ export async function initClaudeCodeStore(): Promise<void> {
          ADD COLUMN quote_citations_json TEXT`,
       );
     }
+    await ensureColumn(
+      CLAUDE_MESSAGES_TABLE,
+      columns,
+      "forced_skill_ids_json",
+      "forced_skill_ids_json TEXT",
+    );
     await ensureColumn(
       CLAUDE_MESSAGES_TABLE,
       columns,
@@ -959,8 +971,8 @@ export async function appendClaudeMessage(
   await Zotero.DB.executeTransaction(async () => {
     await Zotero.DB.queryAsync(
       `INSERT INTO ${CLAUDE_MESSAGES_TABLE}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         conversationID,
         normalizedKey,
@@ -977,6 +989,9 @@ export async function appendClaudeMessage(
           : null,
         selectedTextNoteContexts.some((entry) => Boolean(entry))
           ? JSON.stringify(selectedTextNoteContexts)
+          : null,
+        message.role === "user"
+          ? serializeForcedSkillIds(message.forcedSkillIds)
           : null,
         paperContexts.length ? JSON.stringify(paperContexts) : null,
         fullTextPaperContexts.length ? JSON.stringify(fullTextPaperContexts) : null,
@@ -1162,6 +1177,7 @@ export async function loadClaudeConversation(
         return undefined;
       }
     })();
+    const forcedSkillIds = parseForcedSkillIdsJson(row.forcedSkillIdsJson);
 
     messages.push({
       role,
@@ -1174,6 +1190,8 @@ export async function loadClaudeConversation(
       selectedTextSources,
       selectedTextPaperContexts,
       selectedTextNoteContexts,
+      forcedSkillIds:
+        role === "user" && forcedSkillIds.length ? forcedSkillIds : undefined,
       paperContexts,
       fullTextPaperContexts,
       citationPaperContexts,
@@ -1323,6 +1341,7 @@ export async function updateLatestClaudeUserMessage(
     | "selectedTextSources"
     | "selectedTextPaperContexts"
     | "selectedTextNoteContexts"
+    | "forcedSkillIds"
     | "paperContexts"
     | "fullTextPaperContexts"
     | "citationPaperContexts"
@@ -1358,6 +1377,7 @@ export async function updateLatestClaudeUserMessage(
            selected_text_sources_json = ?,
            selected_text_paper_contexts_json = ?,
            selected_text_note_contexts_json = ?,
+           forced_skill_ids_json = ?,
            paper_contexts_json = ?,
            full_text_paper_contexts_json = ?,
            citation_paper_contexts_json = ?,
@@ -1384,6 +1404,7 @@ export async function updateLatestClaudeUserMessage(
         selectedTextNoteContexts.some((entry) => Boolean(entry))
           ? JSON.stringify(selectedTextNoteContexts)
           : null,
+        serializeForcedSkillIds(message.forcedSkillIds),
         message.paperContexts?.length ? JSON.stringify(normalizePaperContextRefs(message.paperContexts)) : null,
         message.fullTextPaperContexts?.length
           ? JSON.stringify(normalizePaperContextRefs(message.fullTextPaperContexts))

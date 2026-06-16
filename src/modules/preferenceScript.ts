@@ -39,6 +39,7 @@ import {
   runProviderConnectionTest,
   runCodexAppServerConnectionTest,
 } from "../utils/providerConnectionTest";
+import { normalizeAgentPermissionMode } from "../shared/agentPermissionMode";
 import {
   startCopilotDeviceFlow,
   pollCopilotDeviceAuth,
@@ -262,12 +263,6 @@ function getProviderProfile(index: number): ProviderProfile {
     modelPlaceholder: "",
     defaultModel: "",
   };
-}
-
-type AgentPermissionMode = "safe" | "yolo";
-
-function normalizeAgentPermissionMode(value: unknown): AgentPermissionMode {
-  return value === "yolo" ? "yolo" : "safe";
 }
 
 const DEFAULT_AGENT_BRIDGE_URL = "http://127.0.0.1:19787";

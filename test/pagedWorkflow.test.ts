@@ -8,6 +8,8 @@ import {
   getPagedActionPages,
   getPagedOperationId,
   normalizeActionPageSize,
+  normalizeActionLimit,
+  normalizeActionStartOffset,
   normalizeTagsPerPaper,
   readPagedOperationMeta,
 } from "../src/agent/actions/pagedWorkflow";
@@ -19,6 +21,15 @@ describe("paged action workflow helpers", function () {
     assert.equal(normalizeActionPageSize(11), 20);
     assert.equal(normalizeActionPageSize(51), 100);
     assert.equal(normalizeActionPageSize(500), MAX_ACTION_PAGE_SIZE);
+  });
+
+  it("normalizes numeric-string limit and start offset", function () {
+    assert.equal(normalizeActionLimit("12"), 12);
+    assert.equal(normalizeActionLimit("12.9"), 12);
+    assert.isUndefined(normalizeActionLimit("0"));
+    assert.equal(normalizeActionStartOffset("7"), 7);
+    assert.equal(normalizeActionStartOffset("7.9"), 7);
+    assert.equal(normalizeActionStartOffset("-1"), 0);
   });
 
   it("normalizes tags per paper with a hard cap", function () {
