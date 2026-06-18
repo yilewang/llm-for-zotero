@@ -13,12 +13,9 @@ import type {
   ToolSpec,
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
+import { buildAgentModelCapabilities } from "./contentCapabilities";
 import {
-  buildAgentModelCapabilities,
-  mediaContentInputs,
-} from "./contentCapabilities";
-import {
-  isMultimodalRequestSupported,
+  resolveRequestContentInputs,
   stringifyMessageContent,
 } from "./messageBuilder";
 import {
@@ -703,9 +700,7 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
     return buildAgentModelCapabilities({
       streaming: true,
       toolCalls: true,
-      contentInputs: mediaContentInputs(isMultimodalRequestSupported(request), {
-        pdfDocuments: true,
-      }),
+      contentInputs: resolveRequestContentInputs(request),
       fileInputs: false,
       reasoning: true,
     });

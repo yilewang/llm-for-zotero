@@ -162,6 +162,46 @@ describe("agent model factory", function () {
     assert.isFalse(chatCompatCapabilities.fileInputs);
   });
 
+  it("keeps Gemini PDF document inputs tied to provider capabilities", function () {
+    const firstPartyRequest = makeRequest({
+      providerProtocol: "gemini_native",
+      apiBase: "https://generativelanguage.googleapis.com/v1beta",
+      model: "gemini-2.5-pro",
+    });
+    const thirdPartyRequest = makeRequest({
+      providerProtocol: "gemini_native",
+      apiBase: "https://third-party.example/gemini",
+      model: "gemini-compatible",
+    });
+    const firstPartyAdapter = createAgentModelAdapter(firstPartyRequest);
+    const thirdPartyAdapter = createAgentModelAdapter(thirdPartyRequest);
+
+    assert.equal(firstPartyAdapter.constructor.name, "GeminiNativeAgentAdapter");
+    assert.equal(thirdPartyAdapter.constructor.name, "GeminiNativeAgentAdapter");
+    assert.deepEqual(
+      firstPartyAdapter.getCapabilities(firstPartyRequest).contentInputs,
+      {
+        images: true,
+        pdfDocuments: true,
+        nativeFiles: false,
+      },
+    );
+    assert.isFalse(
+      firstPartyAdapter.getCapabilities(firstPartyRequest).fileInputs,
+    );
+    assert.deepEqual(
+      thirdPartyAdapter.getCapabilities(thirdPartyRequest).contentInputs,
+      {
+        images: true,
+        pdfDocuments: false,
+        nativeFiles: false,
+      },
+    );
+    assert.isFalse(
+      thirdPartyAdapter.getCapabilities(thirdPartyRequest).fileInputs,
+    );
+  });
+
   it("keeps file-input capability limited to native file transports", function () {
     const responsesAdapter = createAgentModelAdapter(
       makeRequest({
