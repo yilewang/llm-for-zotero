@@ -27,6 +27,8 @@ export const conversationForkLinks = new Map<number, ConversationForkLink>();
 export const loadedConversationKeys = new Set<number>();
 export const loadingConversationTasks = new Map<number, Promise<void>>();
 export const webChatIsolatedConversationKeys = new Set<number>();
+const webChatForceNewChatConversationKeys = new Set<number>();
+const webChatPdfUploadedConversationKeys = new Set<number>();
 export const selectedModelCache = new Map<number, string>();
 export const selectedReasoningCache = new Map<
   number,
@@ -72,6 +74,70 @@ export function nextRequestId(): number {
 const pendingRequestIds = new Map<number, number>();
 const cancelledRequestIds = new Map<number, number>();
 const abortControllers = new Map<number, AbortController | null>();
+
+function normalizeConversationKey(value: unknown): number {
+  const key = Math.floor(Number(value || 0));
+  return Number.isFinite(key) && key > 0 ? key : 0;
+}
+
+export function markWebChatConversationForceNewChat(
+  conversationKey: number,
+): void {
+  const key = normalizeConversationKey(conversationKey);
+  if (!key) return;
+  webChatForceNewChatConversationKeys.add(key);
+  webChatPdfUploadedConversationKeys.delete(key);
+}
+
+export function clearWebChatConversationForceNewChat(
+  conversationKey: number,
+): void {
+  const key = normalizeConversationKey(conversationKey);
+  if (!key) return;
+  webChatForceNewChatConversationKeys.delete(key);
+}
+
+export function consumeWebChatConversationForceNewChat(
+  conversationKey: number,
+): boolean {
+  const key = normalizeConversationKey(conversationKey);
+  if (!key) return false;
+  const shouldForce = webChatForceNewChatConversationKeys.has(key);
+  webChatForceNewChatConversationKeys.delete(key);
+  return shouldForce;
+}
+
+export function hasWebChatPdfUploadedForConversation(
+  conversationKey: number,
+): boolean {
+  const key = normalizeConversationKey(conversationKey);
+  return key > 0 && webChatPdfUploadedConversationKeys.has(key);
+}
+
+export function markWebChatPdfUploadedForConversation(
+  conversationKey: number,
+): void {
+  const key = normalizeConversationKey(conversationKey);
+  if (!key) return;
+  webChatPdfUploadedConversationKeys.add(key);
+}
+
+export function resetWebChatPdfUploadedForConversation(
+  conversationKey: number,
+): void {
+  const key = normalizeConversationKey(conversationKey);
+  if (!key) return;
+  webChatPdfUploadedConversationKeys.delete(key);
+}
+
+export function resetWebChatConversationSessionState(
+  conversationKey: number,
+): void {
+  const key = normalizeConversationKey(conversationKey);
+  if (!key) return;
+  webChatForceNewChatConversationKeys.delete(key);
+  webChatPdfUploadedConversationKeys.delete(key);
+}
 
 export function getPendingRequestId(conversationKey: number): number {
   return pendingRequestIds.get(conversationKey) || 0;
@@ -383,6 +449,8 @@ export function clearAllState(): void {
   conversationForkLinks.clear();
   loadedConversationKeys.clear();
   loadingConversationTasks.clear();
+  webChatForceNewChatConversationKeys.clear();
+  webChatPdfUploadedConversationKeys.clear();
   selectedModelCache.clear();
   selectedReasoningCache.clear();
   selectedReasoningProviderCache.clear();

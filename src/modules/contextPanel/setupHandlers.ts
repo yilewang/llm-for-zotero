@@ -74,6 +74,13 @@ import {
   chatHistory,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
+  markWebChatConversationForceNewChat,
+  clearWebChatConversationForceNewChat,
+  consumeWebChatConversationForceNewChat,
+  hasWebChatPdfUploadedForConversation,
+  markWebChatPdfUploadedForConversation,
+  resetWebChatPdfUploadedForConversation,
+  resetWebChatConversationSessionState,
   currentRequestId,
   activeConversationModeByLibrary,
   activeGlobalConversationByLibrary,
@@ -4497,7 +4504,7 @@ export function setupHandlers(
             void (async () => {
               await createAndSwitchPaperConversation();
               if (!isWebChatMode()) return;
-              initializeWebChatConversationForCurrentItem();
+              resetCurrentWebChatConversation();
               refreshChatPreservingScroll();
 
               // Show preloading screen to verify connectivity before enabling webchat
@@ -4859,8 +4866,6 @@ export function setupHandlers(
 
   // [webchat] Remember the previous model so "Exit" can restore it
   let previousNonWebchatModelId: string | null = null;
-  let webchatForceNewChatOnNextSend = false;
-  let webchatPdfUploadedInCurrentConversation = false;
   let webchatConnectionTimer: ReturnType<typeof setInterval> | null = null;
   // Simple abort token — Zotero's Gecko context lacks AbortController.
   let webchatPreloadAbort: { aborted: boolean } | null = null;
@@ -4873,18 +4878,18 @@ export function setupHandlers(
   };
 
   markNextWebChatSendAsNewChat = () => {
-    webchatForceNewChatOnNextSend = true;
-    webchatPdfUploadedInCurrentConversation = false;
+    if (!item) return;
+    markWebChatConversationForceNewChat(getConversationKey(item));
   };
 
   const clearNextWebChatNewChatIntent = () => {
-    webchatForceNewChatOnNextSend = false;
+    if (!item) return;
+    clearWebChatConversationForceNewChat(getConversationKey(item));
   };
 
   const consumeWebChatForceNewChatIntent = () => {
-    const shouldForce = webchatForceNewChatOnNextSend;
-    webchatForceNewChatOnNextSend = false;
-    return shouldForce;
+    if (!item) return false;
+    return consumeWebChatConversationForceNewChat(getConversationKey(item));
   };
 
   primeFreshWebChatPaperChipState = () => {
@@ -4900,17 +4905,21 @@ export function setupHandlers(
   };
 
   const hasUploadedPdfInCurrentWebChatConversation = () =>
-    webchatPdfUploadedInCurrentConversation;
+    item
+      ? hasWebChatPdfUploadedForConversation(getConversationKey(item))
+      : false;
 
   const markWebChatPdfUploadedForCurrentConversation = () => {
-    webchatPdfUploadedInCurrentConversation = true;
+    if (!item) return;
+    markWebChatPdfUploadedForConversation(getConversationKey(item));
   };
 
   const resetWebChatPdfUploadedForCurrentConversation = () => {
-    webchatPdfUploadedInCurrentConversation = false;
+    if (!item) return;
+    resetWebChatPdfUploadedForConversation(getConversationKey(item));
   };
 
-  const initializeWebChatConversationForCurrentItem = () => {
+  const resetCurrentWebChatConversation = () => {
     if (!item) return;
     const key = getConversationKey(item);
     webChatIsolatedConversationKeys.add(key);
@@ -4919,6 +4928,29 @@ export function setupHandlers(
     markNextWebChatSendAsNewChat();
     primeFreshWebChatPaperChipState();
     if (inputBox && !inlineEditTarget) inputBox.value = "";
+  };
+
+  const initializeWebChatConversationForCurrentItem = () => {
+    if (!item) return;
+    const key = getConversationKey(item);
+    const hadWebChatSession =
+      webChatIsolatedConversationKeys.has(key) && chatHistory.has(key);
+    webChatIsolatedConversationKeys.add(key);
+    if (!hadWebChatSession) {
+      chatHistory.set(key, []);
+    }
+    loadedConversationKeys.add(key);
+    if (!hadWebChatSession) {
+      markNextWebChatSendAsNewChat();
+      primeFreshWebChatPaperChipState();
+      if (inputBox && !inlineEditTarget) inputBox.value = "";
+    }
+  };
+
+  const hasExistingWebChatSessionForCurrentItem = () => {
+    if (!item) return false;
+    const key = getConversationKey(item);
+    return webChatIsolatedConversationKeys.has(key) && chatHistory.has(key);
   };
 
   // Expose webchat intent clearing via hooks so standalone can call it
@@ -5412,7 +5444,7 @@ export function setupHandlers(
     }
 
     // [webchat] Pre-fetch history in background so it's ready when user clicks
-    if (isWebChat) {
+    if (isWebChat && !hasExistingWebChatSessionForCurrentItem()) {
       void warmUpWebChatHistory();
     }
 
@@ -5471,7 +5503,7 @@ export function setupHandlers(
   flushPanelStateRefreshNow();
   // [webchat] Cold startup → show preload screen so user knows they're in webchat mode
   try {
-    if (isWebChatMode()) {
+    if (isWebChatMode() && !hasExistingWebChatSessionForCurrentItem()) {
       const chatShellEl = body.querySelector(
         ".llm-chat-shell",
       ) as HTMLElement | null;
@@ -6986,6 +7018,7 @@ export function setupHandlers(
         // key, so deleting persisted conversation rows here would erase the
         // user's regular paper chat.
         const key = getConversationKey(item);
+        resetWebChatConversationSessionState(key);
         webChatIsolatedConversationKeys.delete(key);
         chatHistory.delete(key);
         loadedConversationKeys.delete(key);

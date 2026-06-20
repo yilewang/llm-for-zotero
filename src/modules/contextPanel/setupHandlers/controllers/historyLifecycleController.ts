@@ -2367,11 +2367,14 @@ export function createHistoryLifecycleController(
     refreshAutoLoadedPaperContextForCurrentItem();
     void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
     if (isWebChatMode()) {
+      const hadWebChatSession =
+        webChatIsolatedConversationKeys.has(resolvedConversationKey) &&
+        chatHistory.has(resolvedConversationKey);
       webChatIsolatedConversationKeys.add(resolvedConversationKey);
-      chatHistory.set(resolvedConversationKey, []);
+      if (!hadWebChatSession) {
+        chatHistory.set(resolvedConversationKey, []);
+      }
       loadedConversationKeys.add(resolvedConversationKey);
-      markNextWebChatSendAsNewChat();
-      primeFreshWebChatPaperChipState();
     } else {
       await ensureConversationLoaded(item as Zotero.Item);
     }
