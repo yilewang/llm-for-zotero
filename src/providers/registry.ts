@@ -1,5 +1,9 @@
 import { isTextOnlyModel } from "./modelChecks";
-import type { ProviderCapabilities, ProviderParams } from "./types";
+import type {
+  ImageInputCapability,
+  ProviderCapabilities,
+  ProviderParams,
+} from "./types";
 import * as native from "./tiers/native";
 import * as serverUpload from "./tiers/serverUpload";
 import * as copilot from "./tiers/copilot";
@@ -13,6 +17,11 @@ import { resolvePromptCacheCapability } from "../contextCache/manager";
 // against a proxy that doesn't expose it).
 const TIERS = [copilot, codex, serverUpload, native, thirdParty] as const;
 
+function normalizeImageInputCapability(value: unknown): ImageInputCapability {
+  if (value === "text_only" || value === "vision") return value;
+  return "auto";
+}
+
 /**
  * Resolve the full provider capability set for the given request
  * parameters.  This is the single entry point that replaces the
@@ -22,7 +31,14 @@ const TIERS = [copilot, codex, serverUpload, native, thirdParty] as const;
 export function resolveProviderCapabilities(
   params: ProviderParams,
 ): ProviderCapabilities {
-  const textOnly = isTextOnlyModel(params.model);
+  const imageInputCapability = normalizeImageInputCapability(
+    params.imageInputCapability,
+  );
+  const imageForcedTextOnly = imageInputCapability === "text_only";
+  const imageForcedVision = imageInputCapability === "vision";
+  const textOnly =
+    imageForcedTextOnly ||
+    (!imageForcedVision && isTextOnlyModel(params.model));
 
   const matched = TIERS.find((tier) => tier.matches(params));
   const base = matched?.capabilities ?? thirdParty.capabilities;
@@ -30,7 +46,8 @@ export function resolveProviderCapabilities(
   return {
     ...base,
     promptCache: resolvePromptCacheCapability(params),
-    multimodal: !textOnly,
+    multimodal: imageForcedVision || !textOnly,
+    ...(imageForcedVision ? { images: true } : {}),
     ...(textOnly ? { pdf: "none" as const, images: false } : {}),
   };
 }

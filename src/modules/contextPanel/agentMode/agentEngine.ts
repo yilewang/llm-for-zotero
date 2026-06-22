@@ -93,6 +93,7 @@ import type { ResolvedContextSource } from "../types";
 import type { UsageStats } from "../../../shared/llm";
 import type { ReasoningConfig as LLMReasoningConfig } from "../../../utils/llmClient";
 import type { ChatMessage } from "../../../utils/llmClient";
+import type { ImageInputCapability } from "../../../providers";
 import type { StoredChatMessage } from "../../../utils/chatStore";
 import type { Message } from "../types";
 import { isClaudeBlockStreamingEnabled } from "../../../claudeCode/prefs";
@@ -350,6 +351,7 @@ type EffectiveRequestConfigShape = {
     | "anthropic_messages"
     | "gemini_native"
     | "web_sync";
+  imageInputCapability?: ImageInputCapability;
   modelEntryId?: string;
   modelProviderLabel?: string;
   reasoning: LLMReasoningConfig | undefined;
@@ -510,6 +512,7 @@ export type AgentEngineDeps = {
       | "anthropic_messages"
       | "gemini_native"
       | "web_sync";
+    imageInputCapability?: ImageInputCapability;
     modelEntryId?: string;
     modelProviderLabel?: string;
     reasoning?: LLMReasoningConfig;
@@ -611,6 +614,7 @@ export async function sendAgentTurn(
       | "anthropic_messages"
       | "gemini_native"
       | "web_sync";
+    imageInputCapability?: ImageInputCapability;
     modelEntryId?: string;
     modelProviderLabel?: string;
     reasoning?: LLMReasoningConfig;
@@ -641,6 +645,7 @@ export async function sendAgentTurn(
     apiKey,
     authMode,
     providerProtocol,
+    imageInputCapability,
     modelEntryId,
     modelProviderLabel,
     reasoning,
@@ -769,6 +774,7 @@ export async function sendAgentTurn(
     apiKey,
     authMode,
     providerProtocol,
+    imageInputCapability,
     modelEntryId,
     modelProviderLabel,
     reasoning,
@@ -1424,6 +1430,7 @@ export async function retryAgentTurn(
     | "gemini_native"
     | "web_sync"
     | undefined,
+  imageInputCapability: ImageInputCapability | undefined,
   modelEntryId: string | undefined,
   modelProviderLabel: string | undefined,
   reasoning: LLMReasoningConfig | undefined,
@@ -1457,6 +1464,7 @@ export async function retryAgentTurn(
     apiKey,
     authMode,
     providerProtocol,
+    imageInputCapability,
     modelEntryId,
     modelProviderLabel,
     reasoning,

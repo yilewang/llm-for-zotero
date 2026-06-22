@@ -225,7 +225,11 @@ import {
   ensureNoteTextCached,
   ensurePDFTextCached,
 } from "./pdfContext";
-import { isTextOnlyModel, resolveProviderCapabilities } from "../../providers";
+import {
+  isTextOnlyModel,
+  resolveProviderCapabilities,
+  type ImageInputCapability,
+} from "../../providers";
 import {
   getActiveContextAttachmentFromTabs,
   resolveContextSourceItem,
@@ -2997,6 +3001,7 @@ export type EffectiveRequestConfig = {
     | "copilot_auth"
     | "webchat";
   providerProtocol?: ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
   modelEntryId?: string;
   modelProviderLabel?: string;
   reasoning: LLMReasoningConfig | undefined;
@@ -3058,6 +3063,7 @@ function resolveEffectiveRequestConfig(params: {
     | "copilot_auth"
     | "webchat";
   providerProtocol?: ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
   modelEntryId?: string;
   modelProviderLabel?: string;
   reasoning?: LLMReasoningConfig;
@@ -3108,6 +3114,7 @@ function resolveEffectiveRequestConfig(params: {
           apiKey: params.apiKey ?? "",
           authMode: params.authMode || "api_key",
           providerProtocol: params.providerProtocol || "anthropic_messages",
+          imageInputCapability: params.imageInputCapability,
           providerLabel: params.modelProviderLabel,
           advanced: params.advanced,
         }
@@ -3153,6 +3160,10 @@ function resolveEffectiveRequestConfig(params: {
     params.providerProtocol ||
     explicitEntry?.providerProtocol ||
     fallbackEntry?.providerProtocol;
+  const imageInputCapability =
+    params.imageInputCapability ||
+    explicitEntry?.imageInputCapability ||
+    fallbackEntry?.imageInputCapability;
   const reasoning =
     params.reasoning ||
     getSelectedReasoningForItem(
@@ -3169,6 +3180,7 @@ function resolveEffectiveRequestConfig(params: {
     apiKey,
     authMode,
     providerProtocol,
+    imageInputCapability,
     modelEntryId:
       params.modelEntryId || explicitEntry?.entryId || fallbackEntry?.entryId,
     modelProviderLabel:
@@ -3178,6 +3190,25 @@ function resolveEffectiveRequestConfig(params: {
     reasoning,
     advanced,
   };
+}
+
+function requestConfigSupportsImageInput(
+  config: Pick<
+    EffectiveRequestConfig,
+    | "model"
+    | "providerProtocol"
+    | "authMode"
+    | "apiBase"
+    | "imageInputCapability"
+  >,
+): boolean {
+  return resolveProviderCapabilities({
+    model: config.model,
+    protocol: config.providerProtocol,
+    authMode: config.authMode,
+    apiBase: config.apiBase,
+    imageInputCapability: config.imageInputCapability,
+  }).images;
 }
 
 function resolveCodexNativeConversationScope(params: {
@@ -5264,6 +5295,7 @@ async function resolveRetryModelInputs(params: {
     protocol: params.effectiveRequestConfig.providerProtocol,
     authMode: params.effectiveRequestConfig.authMode,
     apiBase: params.effectiveRequestConfig.apiBase,
+    imageInputCapability: params.effectiveRequestConfig.imageInputCapability,
   }).pdf;
   if (
     params.effectiveRequestConfig.providerProtocol !== "web_sync" &&
@@ -5619,6 +5651,7 @@ export async function editLatestUserMessageAndRetry(
     apiKey,
     authMode,
     providerProtocol,
+    imageInputCapability,
     modelEntryId,
     modelProviderLabel,
     reasoning,
@@ -5637,6 +5670,7 @@ export async function editLatestUserMessageAndRetry(
     apiKey,
     authMode,
     providerProtocol,
+    imageInputCapability,
     modelEntryId,
     modelProviderLabel,
     reasoning,
@@ -5860,6 +5894,7 @@ export async function editLatestUserMessageAndRetry(
       apiKey,
       authMode,
       providerProtocol,
+      imageInputCapability,
       modelEntryId,
       modelProviderLabel,
       reasoning,
@@ -5875,6 +5910,7 @@ export async function editLatestUserMessageAndRetry(
       apiKey,
       authMode,
       providerProtocol,
+      imageInputCapability,
       modelEntryId,
       modelProviderLabel,
       reasoning,
@@ -5899,6 +5935,7 @@ export async function retryLatestAssistantResponse(
     | "copilot_auth"
     | "webchat",
   providerProtocol?: ProviderProtocol,
+  imageInputCapability?: ImageInputCapability,
   modelEntryId?: string,
   modelProviderLabel?: string,
   reasoning?: LLMReasoningConfig,
@@ -5942,6 +5979,7 @@ export async function retryLatestAssistantResponse(
     apiKey,
     authMode,
     providerProtocol,
+    imageInputCapability,
     modelEntryId,
     modelProviderLabel,
     reasoning,
@@ -6222,7 +6260,7 @@ export async function retryLatestAssistantResponse(
     }
 
     // Text-only models reject image_url content, so drop all images.
-    const allImages = isTextOnlyModel(effectiveRequestConfig.model || "")
+    const allImages = !requestConfigSupportsImageInput(effectiveRequestConfig)
       ? []
       : [...(retryScreenshotImages || []), ...(contextPlan.mineruImages || [])];
     const requestParams = {
@@ -6237,6 +6275,7 @@ export async function retryLatestAssistantResponse(
       apiKey: effectiveRequestConfig.apiKey,
       authMode: effectiveRequestConfig.authMode,
       providerProtocol: effectiveRequestConfig.providerProtocol,
+      imageInputCapability: effectiveRequestConfig.imageInputCapability,
       reasoning: effectiveRequestConfig.reasoning,
       temperature: effectiveRequestConfig.advanced?.temperature,
       maxTokens: effectiveRequestConfig.advanced?.maxTokens,
@@ -6598,6 +6637,7 @@ export async function editUserTurnAndRetry(opts: {
     | "copilot_auth"
     | "webchat";
   providerProtocol?: ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
   modelEntryId?: string;
   modelProviderLabel?: string;
   reasoning?: LLMReasoningConfig;
@@ -6628,6 +6668,7 @@ export async function editUserTurnAndRetry(opts: {
     apiKey,
     authMode,
     providerProtocol,
+    imageInputCapability,
     modelEntryId,
     modelProviderLabel,
     reasoning,
@@ -6663,6 +6704,7 @@ export async function editUserTurnAndRetry(opts: {
     apiKey,
     authMode,
     providerProtocol,
+    imageInputCapability,
     modelEntryId,
     modelProviderLabel,
     reasoning,
@@ -6874,6 +6916,7 @@ export async function editUserTurnAndRetry(opts: {
       retryRequestConfig.apiKey,
       retryRequestConfig.authMode,
       retryRequestConfig.providerProtocol,
+      retryRequestConfig.imageInputCapability,
       retryRequestConfig.modelEntryId,
       retryRequestConfig.modelProviderLabel,
       retryRequestConfig.reasoning,
@@ -6889,6 +6932,7 @@ export async function editUserTurnAndRetry(opts: {
       retryRequestConfig.apiKey,
       retryRequestConfig.authMode,
       retryRequestConfig.providerProtocol,
+      retryRequestConfig.imageInputCapability,
       retryRequestConfig.modelEntryId,
       retryRequestConfig.modelProviderLabel,
       retryRequestConfig.reasoning,
@@ -7243,6 +7287,7 @@ async function buildAgentRuntimeRequest(
     apiKey: params.effectiveRequestConfig.apiKey,
     authMode: params.effectiveRequestConfig.authMode,
     providerProtocol: params.effectiveRequestConfig.providerProtocol,
+    imageInputCapability: params.effectiveRequestConfig.imageInputCapability,
     reasoning: params.effectiveRequestConfig.reasoning,
     claudeEffortLevel:
       typeof params.effectiveRequestConfig.reasoning?.level === "string"
@@ -7445,6 +7490,7 @@ async function retryLatestAgentResponse(
     | "copilot_auth"
     | "webchat",
   providerProtocol?: ProviderProtocol,
+  imageInputCapability?: ImageInputCapability,
   modelEntryId?: string,
   modelProviderLabel?: string,
   reasoning?: LLMReasoningConfig,
@@ -7466,6 +7512,7 @@ async function retryLatestAgentResponse(
     apiKey,
     authMode,
     providerProtocol,
+    imageInputCapability,
     modelEntryId,
     modelProviderLabel,
     reasoning,
@@ -7491,6 +7538,7 @@ async function sendAgentQuestion(opts: {
     | "copilot_auth"
     | "webchat";
   providerProtocol?: ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
   modelEntryId?: string;
   modelProviderLabel?: string;
   reasoning?: LLMReasoningConfig;
@@ -7597,6 +7645,7 @@ export async function sendQuestion(
       apiKey,
       authMode: opts.authMode,
       providerProtocol: opts.providerProtocol,
+      imageInputCapability: opts.imageInputCapability,
       modelEntryId: opts.modelEntryId,
       modelProviderLabel: opts.modelProviderLabel,
       reasoning,
@@ -7731,6 +7780,7 @@ export async function sendQuestion(
     apiKey,
     authMode: opts.authMode,
     providerProtocol: opts.providerProtocol,
+    imageInputCapability: opts.imageInputCapability,
     modelEntryId: opts.modelEntryId,
     modelProviderLabel: opts.modelProviderLabel,
     reasoning,
@@ -8344,7 +8394,9 @@ export async function sendQuestion(
     }
 
     // Text-only models reject image_url content, so drop all images.
-    const allSendImages = isTextOnlyModel(effectiveRequestConfig.model || "")
+    const allSendImages = !requestConfigSupportsImageInput(
+      effectiveRequestConfig,
+    )
       ? []
       : [...(images || []), ...(contextPlan.mineruImages || [])];
     const requestParams = {
@@ -8359,6 +8411,7 @@ export async function sendQuestion(
       apiKey: effectiveRequestConfig.apiKey,
       authMode: effectiveRequestConfig.authMode,
       providerProtocol: effectiveRequestConfig.providerProtocol,
+      imageInputCapability: effectiveRequestConfig.imageInputCapability,
       reasoning: effectiveRequestConfig.reasoning,
       temperature: effectiveRequestConfig.advanced?.temperature,
       maxTokens: effectiveRequestConfig.advanced?.maxTokens,

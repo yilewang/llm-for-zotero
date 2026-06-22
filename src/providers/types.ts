@@ -7,6 +7,8 @@ export type ProviderTier =
   | "copilot"
   | "codex";
 
+export type ImageInputCapability = "auto" | "text_only" | "vision";
+
 export type ProviderCapabilities = {
   tier: ProviderTier;
   label: string;
@@ -21,6 +23,7 @@ export type ProviderParams = {
   protocol?: string;
   authMode?: string;
   apiBase?: string;
+  imageInputCapability?: ImageInputCapability;
 };
 
 export type ProviderPromptCacheKind =

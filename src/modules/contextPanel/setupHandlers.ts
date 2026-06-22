@@ -2574,6 +2574,7 @@ export function setupHandlers(
       selectedProfile?.providerProtocol,
       selectedProfile?.authMode,
       selectedProfile?.apiBase,
+      selectedProfile?.imageInputCapability,
     );
   };
 
@@ -4447,6 +4448,7 @@ export function setupHandlers(
             entry.providerProtocol,
             entry.authMode,
             entry.apiBase,
+            entry.imageInputCapability,
           );
           const shouldDowngrade = newPdfSupport !== "native";
           if (shouldDowngrade) {
@@ -4630,6 +4632,7 @@ export function setupHandlers(
             entry.apiKey,
             entry.authMode,
             entry.providerProtocol,
+            entry.imageInputCapability,
             entry.entryId,
             entry.providerLabel,
             retryReasoning,
@@ -5668,6 +5671,7 @@ export function setupHandlers(
         profile?.providerProtocol,
         profile?.authMode,
         profile?.apiBase,
+        profile?.imageInputCapability,
       );
     },
     isScreenshotUnsupportedModel,
@@ -6084,8 +6088,20 @@ export function setupHandlers(
     markWebChatPdfUploadedForCurrentConversation,
     resolvePdfPaperAttachments: pdfPaperResolver.resolvePdfPaperAttachments,
     renderPdfPagesAsImages: pdfPaperResolver.renderPdfPagesAsImages,
-    getModelPdfSupport: (modelName, protocol, authMode, apiBase) =>
-      getModelPdfSupport(modelName, protocol, authMode, apiBase),
+    getModelPdfSupport: (
+      modelName,
+      protocol,
+      authMode,
+      apiBase,
+      imageInputCapability,
+    ) =>
+      getModelPdfSupport(
+        modelName,
+        protocol,
+        authMode,
+        apiBase,
+        imageInputCapability,
+      ),
     uploadPdfForProvider: pdfPaperResolver.uploadPdfForProvider,
     resolvePdfBytes: pdfPaperResolver.resolvePdfBytes,
     getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],

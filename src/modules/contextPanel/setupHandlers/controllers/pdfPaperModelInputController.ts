@@ -1,4 +1,4 @@
-import type { PdfSupport } from "../../../../providers";
+import type { ImageInputCapability, PdfSupport } from "../../../../providers";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
 import type { ChatAttachment, PaperContextRef } from "../../types";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "../../pdfSupportMessages";
@@ -16,6 +16,7 @@ export type PdfPaperModelInputProfile = {
     | "copilot_auth"
     | "webchat";
   providerProtocol?: ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
 } | null;
 
 export type PdfPaperModelInputDeps = {
@@ -28,6 +29,7 @@ export type PdfPaperModelInputDeps = {
     providerProtocol?: string,
     authMode?: string,
     apiBase?: string,
+    imageInputCapability?: ImageInputCapability,
   ) => PdfSupport;
   resolvePdfPaperAttachments: (
     paperContexts: PaperContextRef[],
@@ -118,6 +120,7 @@ export async function resolvePdfModeModelInputs(params: {
     profile?.providerProtocol,
     profile?.authMode,
     profile?.apiBase,
+    profile?.imageInputCapability,
   );
   let displayPdfPaperAttachments: ChatAttachment[] = [];
   let modelPdfPaperAttachments: ChatAttachment[] = [];

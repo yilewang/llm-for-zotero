@@ -10,6 +10,7 @@ import {
   normalizeProviderProtocolForAuthMode,
   type ProviderProtocol,
 } from "./providerProtocol";
+import type { ImageInputCapability } from "../providers";
 import { detectProviderPreset, getProviderPreset } from "./providerPresets";
 import type { ProviderPresetId } from "./providerPresets";
 
@@ -28,6 +29,7 @@ export type AdvancedModelConfig = {
 export type ModelProviderModel = AdvancedModelConfig & {
   id: string;
   model: string;
+  imageInputCapability?: ImageInputCapability;
   /** Per-model protocol override. When set, overrides the group-level protocol. */
   providerProtocol?: ProviderProtocol;
 };
@@ -58,6 +60,7 @@ export type RuntimeModelEntry = {
   apiKey: string;
   authMode: ModelProviderAuthMode;
   providerProtocol: ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
   providerLabel: string;
   providerOrder: number;
   displayModelLabel: string;
@@ -141,6 +144,13 @@ function normalizeProviderAuthMode(value: unknown): ModelProviderAuthMode {
   if (value === "copilot_auth") return "copilot_auth";
   if (value === "webchat") return "webchat"; // [webchat]
   return "api_key";
+}
+
+function normalizeImageInputCapability(
+  value: unknown,
+): ImageInputCapability | undefined {
+  if (value === "text_only" || value === "vision") return value;
+  return undefined;
 }
 
 function normalizeAdvancedModelConfig(
@@ -279,6 +289,7 @@ function normalizeGroupModel(model: unknown): ModelProviderModel | null {
     temperature?: unknown;
     maxTokens?: unknown;
     inputTokenCap?: unknown;
+    imageInputCapability?: unknown;
     providerProtocol?: unknown;
   };
   const modelName = normalizeString(rawModel.model);
@@ -300,6 +311,13 @@ function normalizeGroupModel(model: unknown): ModelProviderModel | null {
         : createId("model"),
     model: modelName,
     ...advanced,
+    ...(normalizeImageInputCapability(rawModel.imageInputCapability)
+      ? {
+          imageInputCapability: normalizeImageInputCapability(
+            rawModel.imageInputCapability,
+          ),
+        }
+      : {}),
     ...(modelProtocol ? { providerProtocol: modelProtocol } : {}),
   };
 }
@@ -584,12 +602,16 @@ export function createProviderModelEntry(
   model = "",
   advanced?: Partial<AdvancedModelConfig>,
   providerProtocol?: ProviderProtocol,
+  imageInputCapability?: ImageInputCapability,
 ): ModelProviderModel {
   return {
     id: createId("model"),
     model: model.trim(),
     ...normalizeAdvancedModelConfig(advanced, model),
     ...(providerProtocol ? { providerProtocol } : {}),
+    ...(normalizeImageInputCapability(imageInputCapability)
+      ? { imageInputCapability }
+      : {}),
   };
 }
 
@@ -640,6 +662,7 @@ export function getRuntimeModelEntries(): RuntimeModelEntry[] {
         apiKey: group.apiKey.trim(),
         authMode,
         providerProtocol: resolveRuntimeProviderProtocol(group, modelEntry),
+        imageInputCapability: modelEntry.imageInputCapability,
         providerLabel,
         providerOrder: groupIndex,
         displayModelLabel:

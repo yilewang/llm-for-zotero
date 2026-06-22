@@ -278,6 +278,36 @@ describe("llmClient prepareChatRequest", function () {
     assert.notInclude(JSON.stringify(prepared.messages), "image_url");
   });
 
+  it("strips image content when the configured model is marked text-only", function () {
+    const prepared = prepareChatRequest({
+      prompt: "Describe this image.",
+      images: ["data:image/png;base64,AAAA"],
+      model: "gpt-4o",
+      apiBase: "https://api.openai.com/v1",
+      providerProtocol: "openai_chat_compat",
+      imageInputCapability: "text_only",
+    });
+
+    const lastMessage = prepared.messages[prepared.messages.length - 1];
+    assert.equal(lastMessage.role, "user");
+    assert.isString(lastMessage.content);
+    assert.include(String(lastMessage.content), "image input");
+    assert.notInclude(JSON.stringify(prepared.messages), "image_url");
+  });
+
+  it("keeps image content when a local compatible model is marked vision-capable", function () {
+    const prepared = prepareChatRequest({
+      prompt: "Describe this image.",
+      images: ["data:image/png;base64,AAAA"],
+      model: "llama3.1",
+      apiBase: "http://127.0.0.1:11434/v1",
+      providerProtocol: "openai_chat_compat",
+      imageInputCapability: "vision",
+    });
+
+    assert.include(JSON.stringify(prepared.messages), "image_url");
+  });
+
   it("keeps Anthropic Messages thinking off by default and preserves temperature", async function () {
     let capturedBody: Record<string, unknown> | null = null;
     mockFetch(async (_url, init) => {

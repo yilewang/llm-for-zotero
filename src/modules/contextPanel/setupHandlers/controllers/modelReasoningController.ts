@@ -1,12 +1,10 @@
-import type {
-  ReasoningOption,
-  ReasoningProviderKind,
-} from "../../types";
+import type { ReasoningOption, ReasoningProviderKind } from "../../types";
 import type { ReasoningLevel as LLMReasoningLevel } from "../../../../utils/llmClient";
 
 import {
   isTextOnlyModel,
   resolveProviderCapabilities,
+  type ImageInputCapability,
   type PdfSupport,
 } from "../../../../providers";
 
@@ -21,12 +19,14 @@ export function getModelPdfSupport(
   providerProtocol?: string,
   authMode?: string,
   apiBase?: string,
+  imageInputCapability?: ImageInputCapability,
 ): ModelPdfSupport {
   return resolveProviderCapabilities({
     model: modelName,
     protocol: providerProtocol,
     authMode,
     apiBase,
+    imageInputCapability,
   }).pdf;
 }
 
