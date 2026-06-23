@@ -3517,17 +3517,36 @@ describe("agentTrace render", function () {
         eventType: "tool_call",
         payload: {
           type: "tool_call",
-          callId: "call-bad",
+          callId: "call-write-array",
           name: "file_io",
-          args: createMalformedToolArgumentsDiagnostic(
-            '{"action":"write","content":"secret malformed body"',
-          ),
+          args: {
+            action: "write",
+            filePath: "/tmp/script-list.py",
+            content: [
+              "secret array script body",
+              { nested: "secret nested script body" },
+            ],
+          },
         },
         createdAt: 2,
       },
       {
         runId: "run-1",
         seq: 3,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "call-bad",
+          name: "file_io",
+          args: createMalformedToolArgumentsDiagnostic(
+            '{"action":"write","content":"secret malformed body"',
+          ),
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-1",
+        seq: 4,
         eventType: "tool_result",
         payload: {
           type: "tool_result",
@@ -3557,6 +3576,8 @@ describe("agentTrace render", function () {
     assert.include(detailText, "[redacted");
     assert.include(detailText, "Malformed input");
     assert.notInclude(detailText, "super secret script body");
+    assert.notInclude(detailText, "secret array script body");
+    assert.notInclude(detailText, "secret nested script body");
     assert.notInclude(detailText, "secret malformed body");
     assert.include(rowText, "action:'write'");
   });

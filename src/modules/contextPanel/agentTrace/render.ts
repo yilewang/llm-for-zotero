@@ -2640,10 +2640,19 @@ const FILE_IO_TRACE_ACTION_FIELDS = ["action", "mode", "operation", "op"];
 const FILE_IO_TRACE_PATH_FIELDS = ["filePath", "path", "file_path", "filepath"];
 
 function redactFileIoTraceArgs(value: unknown, key = ""): unknown {
-  if (typeof value === "string") {
-    if (isContentLikeToolArgumentKey(key)) {
+  if (isContentLikeToolArgumentKey(key)) {
+    if (typeof value === "string") {
       return `[redacted ${value.length} chars]`;
     }
+    if (Array.isArray(value)) {
+      return `[redacted ${value.length} entries]`;
+    }
+    if (isAgentTraceRecord(value)) {
+      return "[redacted object]";
+    }
+    return value == null ? value : "[redacted value]";
+  }
+  if (typeof value === "string") {
     return value;
   }
   if (Array.isArray(value)) {
