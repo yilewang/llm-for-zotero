@@ -1167,6 +1167,48 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
       apiUrlWrap.append(apiUrlLabel, apiUrlInput, apiUrlHelper);
 
+      // ── Provider protocol ──────────────────────────────────────────
+      const protocolWrap = el(
+        doc,
+        "div",
+        "display: flex; flex-direction: column;",
+      );
+      const protocolLabel = el(doc, "label", LABEL_STYLE, t("API protocol"));
+      const protocolSelect = el(
+        doc,
+        "select",
+        INPUT_STYLE,
+      ) as HTMLSelectElement;
+      protocolSelect.id = `${config.addonRef}-provider-protocol-${group.id}`;
+      protocolLabel.setAttribute("for", protocolSelect.id);
+      const providerProtocolOptions = getProtocolOptions(
+        group.authMode,
+        selectedPresetId,
+      );
+      for (const protocol of providerProtocolOptions) {
+        const option = el(doc, "option") as HTMLOptionElement;
+        option.value = protocol;
+        option.textContent = getProviderProtocolSpec(protocol).label;
+        option.selected = protocol === group.providerProtocol;
+        protocolSelect.appendChild(option);
+      }
+      protocolSelect.value = group.providerProtocol;
+      protocolSelect.addEventListener("change", () => {
+        if (!isProviderProtocol(protocolSelect.value)) return;
+        group.providerProtocol = protocolSelect.value;
+        protocolHelper.textContent = t(
+          getProviderProtocolSpec(group.providerProtocol).helperText,
+        );
+        persistGroups(groups);
+      });
+      const protocolHelper = el(
+        doc,
+        "span",
+        HELPER_STYLE,
+        t(getProviderProtocolSpec(group.providerProtocol).helperText),
+      );
+      protocolWrap.append(protocolLabel, protocolSelect, protocolHelper);
+
       // ── API Key ──────────────────────────────────────────────────
       const apiKeyWrap = el(
         doc,
@@ -1957,6 +1999,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           authModeWrap,
           providerPresetWrap,
           apiUrlWrap,
+          ...(isCustomizedPreset ? [protocolWrap] : []),
           apiKeyWrap,
           divider,
           modelsWrap,
