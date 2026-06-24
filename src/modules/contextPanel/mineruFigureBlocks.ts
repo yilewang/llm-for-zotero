@@ -67,7 +67,7 @@ type FigureQueryRef = {
 
 const MD_IMAGE_PATTERN = /!\[([^\]]*)\]\(([^)\n]+)\)/g;
 const HTML_IMG_PATTERN = /<img\b[^>]*>/gi;
-const MAX_HIGH_CONFIDENCE_BLOCK_IMAGES = 8;
+const MAX_HIGH_CONFIDENCE_BLOCK_IMAGES = 50;
 
 function normalizePath(value: string): string {
   return value
@@ -110,9 +110,11 @@ function uniqueStrings(values: Iterable<string>): string[] {
 
 /** Extract a figure/table label like "Fig. 1", "Figure 3", or "Table 2". */
 export function extractFigureLabel(caption: string): string {
-  const match = caption.trim().match(
-    /^(Supplementary\s+)?(Fig(?:ure)?\.?|Table)\s*([sS]?\d+)([a-z])?\b/i,
-  );
+  const match = caption
+    .trim()
+    .match(
+      /^(Supplementary\s+)?(Fig(?:ure)?\.?|Table)\s*([sS]?\d+)([a-z])?\b/i,
+    );
   if (!match) return "";
   return `${match[1] || ""}${match[2]} ${match[3]}${match[4] || ""}`.trim();
 }
@@ -262,7 +264,9 @@ function metaForPath(
   const normalized = normalizePath(path);
   return (
     metaByPath.get(normalized) ||
-    [...metaByPath.values()].find((meta) => pathsMatch(meta.path, normalized)) ||
+    [...metaByPath.values()].find((meta) =>
+      pathsMatch(meta.path, normalized),
+    ) ||
     null
   );
 }
@@ -340,8 +344,7 @@ function buildBlock(
     pageStart !== undefined && pageEnd !== undefined && pageStart !== pageEnd;
   const overlong = refs.length > MAX_HIGH_CONFIDENCE_BLOCK_IMAGES;
   const fallbackLow = refs.length > 1 && !hasContentList;
-  const confidence =
-    pageSpans || overlong || fallbackLow ? "low" : "high";
+  const confidence = pageSpans || overlong || fallbackLow ? "low" : "high";
   const firstPath = refs[0]?.path || String(index);
   return {
     blockId: `${index}:${firstPath}`,
@@ -416,7 +419,10 @@ export function buildMineruFigureBlocks(source: {
         ...(existing?.captionHints || []),
         ...captionHints,
       ]),
-      labelHints: uniqueStrings([...(existing?.labelHints || []), ...labelHints]),
+      labelHints: uniqueStrings([
+        ...(existing?.labelHints || []),
+        ...labelHints,
+      ]),
       page: existing?.page || entry.page,
       sectionHeading: existing?.sectionHeading || entry.section || null,
     });
@@ -556,7 +562,10 @@ function extractEmbeddedImages(content: string): Array<{
     embeds.push({ alt: mdMatch[1] || "", target: mdMatch[2] || "" });
   }
   let htmlMatch: RegExpExecArray | null;
-  const htmlPattern = new RegExp(HTML_IMG_PATTERN.source, HTML_IMG_PATTERN.flags);
+  const htmlPattern = new RegExp(
+    HTML_IMG_PATTERN.source,
+    HTML_IMG_PATTERN.flags,
+  );
   while ((htmlMatch = htmlPattern.exec(content)) !== null) {
     const tag = htmlMatch[0];
     const target =
@@ -571,18 +580,25 @@ function extractEmbeddedImages(content: string): Array<{
   return embeds;
 }
 
-function embedMatchesBlock(
+function getEmbedCoveredBlockPaths(
+  embed: { alt: string; target: string },
+  block: MineruFigureBlock,
+): string[] {
+  if (!embed.target) return [];
+  return block.imagePaths.filter((imagePath) =>
+    pathsMatch(imagePath, embed.target),
+  );
+}
+
+function embedMentionsBlock(
   embed: { alt: string; target: string },
   block: MineruFigureBlock,
 ): boolean {
-  if (
-    embed.target &&
-    block.imagePaths.some((imagePath) => pathsMatch(imagePath, embed.target))
-  ) {
-    return true;
-  }
+  if (getEmbedCoveredBlockPaths(embed, block).length) return true;
   const haystack = `${embed.alt} ${embed.target}`;
-  return block.labelHints.some((label) => labelMentionPattern(label)?.test(haystack));
+  return block.labelHints.some((label) =>
+    labelMentionPattern(label)?.test(haystack),
+  );
 }
 
 function contentMentionsBlock(
@@ -591,7 +607,9 @@ function contentMentionsBlock(
   block: MineruFigureBlock,
 ): boolean {
   const text = `${requestText}\n${content}`;
-  return block.labelHints.some((label) => labelMentionPattern(label)?.test(text));
+  return block.labelHints.some((label) =>
+    labelMentionPattern(label)?.test(text),
+  );
 }
 
 function statesAmbiguity(content: string, block: MineruFigureBlock): boolean {
@@ -609,11 +627,20 @@ export function validateFigureBlockEmbeds(args: {
   const embeds = extractEmbeddedImages(args.content);
   for (const block of args.blocks) {
     if (block.imagePaths.length <= 1) continue;
-    const embeddedCount = embeds.filter((embed) =>
-      embedMatchesBlock(embed, block),
-    ).length;
+    const coveredImagePaths = new Set<string>();
+    let hasBlockEmbedMention = false;
+    for (const embed of embeds) {
+      const coveredPaths = getEmbedCoveredBlockPaths(embed, block);
+      for (const path of coveredPaths) {
+        coveredImagePaths.add(normalizePath(path));
+      }
+      if (coveredPaths.length || embedMentionsBlock(embed, block)) {
+        hasBlockEmbedMention = true;
+      }
+    }
+    const embeddedCount = coveredImagePaths.size;
     const discussed =
-      embeddedCount > 0 ||
+      hasBlockEmbedMention ||
       contentMentionsBlock(args.content, args.requestText, block);
     if (!discussed) continue;
     if (embeddedCount >= block.imagePaths.length) continue;

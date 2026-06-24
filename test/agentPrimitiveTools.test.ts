@@ -135,11 +135,12 @@ class FakePdfService extends PdfService {
   }
 }
 
+const globalScope = globalThis as typeof globalThis & {
+  Zotero?: Record<string, unknown>;
+};
+const originalZotero = globalScope.Zotero;
+
 describe("primitive agent tools", function () {
-  const globalScope = globalThis as typeof globalThis & {
-    Zotero?: Record<string, unknown>;
-  };
-  const originalZotero = globalScope.Zotero;
   const baseContext: AgentToolContext = {
     request: {
       conversationKey: 42,
@@ -1078,7 +1079,10 @@ describe("primitive agent tools", function () {
         action: "write",
         filePath: "/tmp/obsidian-vault/Zotero Notes/figures.md",
       });
-      assert.include(String(result.error || ""), "Incomplete MinerU figure block");
+      assert.include(
+        String(result.error || ""),
+        "Incomplete MinerU figure block",
+      );
       assert.include(String(result.error || ""), "Figure 2");
       assert.include(String(result.error || ""), "3 adjacent");
       assert.include(String(result.error || ""), "images/fig2a.png");
@@ -1175,7 +1179,10 @@ describe("primitive agent tools", function () {
         unknown
       >;
 
-      assert.include(String(result.error || ""), "Incomplete MinerU figure block");
+      assert.include(
+        String(result.error || ""),
+        "Incomplete MinerU figure block",
+      );
       assert.include(String(result.error || ""), "images/a.jpg");
       assert.include(String(result.error || ""), "images/b.jpg");
       assert.include(String(result.error || ""), "images/c.jpg");
@@ -1345,9 +1352,9 @@ describe("primitive agent tools", function () {
 
     try {
       const content = [
-        "![Figure 2a. Attractor architecture](imgs/paper/figure-2a.png)",
-        "![Figure 2b. Integrate-and-fire architecture](imgs/paper/figure-2b.png)",
-        "![Figure 2c. Energy landscape](imgs/paper/figure-2c.png)",
+        "![Figure 2a. Attractor architecture](images/fig2a.png)",
+        "![Figure 2b. Integrate-and-fire architecture](images/fig2b.png)",
+        "![Figure 2c. Energy landscape](images/fig2c.png)",
         "",
         "## Figure 2 - Attractor-network decision-making",
         "",
@@ -1463,7 +1470,10 @@ describe("primitive agent tools", function () {
         unknown
       >;
 
-      assert.include(String(result.error || ""), "Incomplete MinerU figure block");
+      assert.include(
+        String(result.error || ""),
+        "Incomplete MinerU figure block",
+      );
       assert.include(String(result.error || ""), "Figure 2");
       assert.isUndefined(
         fileContent.get("/tmp/obsidian-vault/Zotero Notes/figure-2b.md"),
@@ -2415,7 +2425,10 @@ describe("primitive agent tools", function () {
       >;
 
       assert.equal(result.status, "rejected");
-      assert.include(String(result.error || ""), "Incomplete MinerU figure block");
+      assert.include(
+        String(result.error || ""),
+        "Incomplete MinerU figure block",
+      );
       assert.include(String(result.error || ""), "Figure 2");
       assert.isFalse(replaced);
     } finally {

@@ -381,9 +381,9 @@ describe("mineruCache", function () {
     );
   });
 
-  it("resolves up to twenty MinerU context images by default", async function () {
+  it("resolves up to fifty MinerU context images by default", async function () {
     setupMemoryIO();
-    const imageCount = 25;
+    const imageCount = 55;
     const markdown = Array.from(
       { length: imageCount },
       (_value, index) => `![Figure ${index + 1}](images/fig${index + 1}.png)`,
@@ -401,8 +401,8 @@ describe("mineruCache", function () {
       attachmentId: 77,
     });
 
-    assert.equal(MAX_MINERU_CONTEXT_IMAGES, 20);
-    assert.lengthOf(images, 20);
+    assert.equal(MAX_MINERU_CONTEXT_IMAGES, 50);
+    assert.lengthOf(images, 50);
     assert.match(images[0], /^data:image\/png;base64,/);
   });
 

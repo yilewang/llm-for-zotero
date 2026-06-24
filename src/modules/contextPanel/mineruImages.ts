@@ -1,7 +1,4 @@
-import {
-  getMineruItemDir,
-  readMineruImageAsBase64,
-} from "./mineruCache";
+import { getMineruItemDir, readMineruImageAsBase64 } from "./mineruCache";
 import {
   loadMineruFigureBlocksFromCacheDir,
   toAbsoluteMineruPath,
@@ -10,7 +7,7 @@ import {
 import { findMineruFigureBlockByImagePath } from "./mineruFigureBlocks";
 
 const MD_IMAGE_PATTERN = /!\[([^\]]*)\]\(([^)]+)\)/g;
-export const MAX_MINERU_CONTEXT_IMAGES = 20;
+export const MAX_MINERU_CONTEXT_IMAGES = 50;
 
 export type MineruImageRef = {
   alt: string;

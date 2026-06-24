@@ -9,11 +9,27 @@ import {
 } from "../src/modules/contextPanel/mineruFigureBlocks";
 
 describe("mineruFigureBlocks", function () {
-  function build(
-    fullMd: string,
-    contentList: MineruContentListEntry[] = [],
-  ) {
+  function build(fullMd: string, contentList: MineruContentListEntry[] = []) {
     return buildMineruFigureBlocks({ fullMd, contentList });
+  }
+
+  function buildSamePageImageBlock(count: number) {
+    const fullMd = [
+      "# Results",
+      ...Array.from({ length: count }, (_value, index) => [
+        "",
+        `![](images/panel-${index + 1}.jpg)`,
+      ]).flat(),
+    ].join("\n");
+    const contentList: MineruContentListEntry[] = [
+      { type: "text", text_level: 1, text: "Results", page_idx: 0 },
+      ...Array.from({ length: count }, (_value, index) => ({
+        type: "image",
+        img_path: `images/panel-${index + 1}.jpg`,
+        page_idx: 1,
+      })),
+    ];
+    return build(fullMd, contentList);
   }
 
   it("normalizes figure and table panel labels to base labels", function () {
@@ -119,10 +135,10 @@ describe("mineruFigureBlocks", function () {
     );
 
     assert.lengthOf(blocks, 2);
-    assert.deepEqual(blocks.map((block) => block.imagePaths), [
-      ["images/fig1.jpg"],
-      ["images/fig2.jpg"],
-    ]);
+    assert.deepEqual(
+      blocks.map((block) => block.imagePaths),
+      [["images/fig1.jpg"], ["images/fig2.jpg"]],
+    );
   });
 
   it("marks captionless page-spanning blocks as low confidence", function () {
@@ -138,6 +154,20 @@ describe("mineruFigureBlocks", function () {
     assert.lengthOf(blocks, 1);
     assert.equal(blocks[0].confidence, "low");
     assert.isTrue(blocks[0].ambiguous);
+  });
+
+  it("keeps same-page blocks high confidence through fifty images", function () {
+    const fiftyBlocks = buildSamePageImageBlock(50);
+    assert.lengthOf(fiftyBlocks, 1);
+    assert.lengthOf(fiftyBlocks[0].imagePaths, 50);
+    assert.equal(fiftyBlocks[0].confidence, "high");
+    assert.isFalse(fiftyBlocks[0].ambiguous);
+
+    const fiftyOneBlocks = buildSamePageImageBlock(51);
+    assert.lengthOf(fiftyOneBlocks, 1);
+    assert.lengthOf(fiftyOneBlocks[0].imagePaths, 51);
+    assert.equal(fiftyOneBlocks[0].confidence, "low");
+    assert.isTrue(fiftyOneBlocks[0].ambiguous);
   });
 
   it("resolves panel requests to the full figure block with a panel hint", function () {
@@ -223,6 +253,83 @@ describe("mineruFigureBlocks", function () {
       blocks,
     });
     assert.isNull(complete);
+  });
+
+  it("does not count duplicate embeds of the same block image as complete coverage", function () {
+    const blocks = build(
+      [
+        "# Results",
+        "![](images/a.jpg)",
+        "",
+        "![](images/b.jpg)",
+        "",
+        "![](images/c.jpg)",
+      ].join("\n"),
+      [
+        { type: "text", text_level: 1, text: "Results", page_idx: 0 },
+        {
+          type: "image",
+          img_path: "images/a.jpg",
+          image_caption: ["Figure 2. Full compound figure."],
+          page_idx: 1,
+        },
+        { type: "image", img_path: "images/b.jpg", page_idx: 1 },
+        { type: "image", img_path: "images/c.jpg", page_idx: 1 },
+      ],
+    );
+
+    const duplicateOnly = validateFigureBlockEmbeds({
+      content: [
+        "![Figure 2](images/a.jpg)",
+        "![Figure 2](images/a.jpg)",
+        "![Figure 2](images/a.jpg)",
+        "## Figure 2",
+      ].join("\n"),
+      requestText: "write a note about Figure 2",
+      blocks,
+    });
+
+    assert.equal(duplicateOnly?.severity, "block");
+    assert.equal(duplicateOnly?.embeddedCount, 1);
+    assert.equal(duplicateOnly?.availableCount, 3);
+  });
+
+  it("does not count label-only embeds as covering specific block images", function () {
+    const blocks = build(
+      [
+        "# Results",
+        "![](images/a.jpg)",
+        "",
+        "![](images/b.jpg)",
+        "",
+        "![](images/c.jpg)",
+      ].join("\n"),
+      [
+        { type: "text", text_level: 1, text: "Results", page_idx: 0 },
+        {
+          type: "image",
+          img_path: "images/a.jpg",
+          image_caption: ["Figure 2. Full compound figure."],
+          page_idx: 1,
+        },
+        { type: "image", img_path: "images/b.jpg", page_idx: 1 },
+        { type: "image", img_path: "images/c.jpg", page_idx: 1 },
+      ],
+    );
+
+    const labelOnly = validateFigureBlockEmbeds({
+      content: [
+        "![Figure 2](images/unrelated-a.jpg)",
+        "![Figure 2](images/unrelated-b.jpg)",
+        "![Figure 2](images/unrelated-c.jpg)",
+      ].join("\n"),
+      requestText: "write a note about Figure 2",
+      blocks,
+    });
+
+    assert.equal(labelOnly?.severity, "block");
+    assert.equal(labelOnly?.embeddedCount, 0);
+    assert.equal(labelOnly?.availableCount, 3);
   });
 
   it("allows low-confidence incomplete embeds only when the note states ambiguity", function () {
