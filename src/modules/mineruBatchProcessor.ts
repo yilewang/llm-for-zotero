@@ -6,7 +6,6 @@ import {
 import {
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
-  invalidateMineruMd,
   getMineruCacheDir,
 } from "./contextPanel/mineruCache";
 import { invalidateCachedContextText } from "./contextPanel/pdfContext";
@@ -14,8 +13,12 @@ import {
   setItemProcessing,
   setItemCached,
   setItemFailed,
+  clearAllCachedStatuses,
+  clearItemCachedStatus,
 } from "./mineruProcessingStatus";
 import {
+  cleanSyncedMineruPackages,
+  deleteMineruCacheArtifactsForAttachment,
   getMineruAvailabilityForAttachment,
   publishMineruCachePackageForAttachment,
   type MineruAvailabilityStatus,
@@ -565,11 +568,14 @@ export async function deleteAllMineruCache(): Promise<void> {
     }
   }
 
+  await cleanSyncedMineruPackages();
+  clearAllCachedStatuses();
   await resetBatchQueue();
 }
 
 export async function deleteMineruCacheForItem(itemId: number): Promise<void> {
-  await invalidateMineruMd(itemId);
+  await deleteMineruCacheArtifactsForAttachment(itemId);
+  clearItemCachedStatus(itemId);
   // If queue is built, we need to re-add this item to the queue
   // Simplest approach: reset and rebuild
   if (queueBuilt) {

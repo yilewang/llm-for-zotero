@@ -1,11 +1,21 @@
 import { assert } from "chai";
 import {
+  deleteMineruCacheForItem,
   getMineruBatchState,
   getMineruItemList,
   processSelectedItems,
   startBatchProcessing,
 } from "../src/modules/mineruBatchProcessor";
-import { writeMineruCacheFiles } from "../src/modules/contextPanel/mineruCache";
+import {
+  hasCachedMineruMd,
+  writeMineruCacheFiles,
+} from "../src/modules/contextPanel/mineruCache";
+import {
+  clearAllStatuses,
+  getMineruStatus,
+  setItemCached,
+} from "../src/modules/mineruProcessingStatus";
+import { MINERU_SYNC_ATTACHMENT_TITLE_PREFIX } from "../src/modules/contextPanel/mineruSync";
 
 const encoder = new TextEncoder();
 
@@ -28,6 +38,7 @@ type MockItem = {
   >;
   getField?: (field: string) => string;
   getFilePathAsync?: () => Promise<string | false>;
+  saveTx?: () => Promise<void>;
 };
 
 function pdfText(pageCount: number): string {
@@ -35,6 +46,10 @@ function pdfText(pageCount: number): string {
 1 0 obj
 << /Type /Pages /Count ${pageCount} /Kids [] >>
 endobj`;
+}
+
+function normalizePath(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/g, "") || "/";
 }
 
 function setupZotero(
@@ -83,6 +98,18 @@ function setupZotero(
     write: async (path: string, data: Uint8Array) => {
       files.set(path, data);
     },
+    remove: async (path: string) => {
+      const normalized = normalizePath(path);
+      for (const key of [...files.keys()]) {
+        const normalizedKey = normalizePath(key);
+        if (
+          normalizedKey === normalized ||
+          normalizedKey.startsWith(`${normalized}/`)
+        ) {
+          files.delete(key);
+        }
+      }
+    },
   };
 }
 
@@ -108,6 +135,7 @@ function createRawPdf(): MockItem {
 
 describe("mineruBatchProcessor", function () {
   afterEach(function () {
+    clearAllStatuses();
     delete (globalThis as unknown as { Zotero?: unknown }).Zotero;
     delete (globalThis as unknown as { ztoolkit?: unknown }).ztoolkit;
     delete (globalThis as unknown as { IOUtils?: unknown }).IOUtils;
@@ -368,6 +396,77 @@ describe("mineruBatchProcessor", function () {
     assert.isTrue(list[0].localCached);
   });
 
+  it("deletes local cache, synced ZIP, and stale cached status for one item", async function () {
+    const parent: MockItem = {
+      id: 551,
+      key: "DELETECACHED",
+      libraryID: 1,
+      itemType: "journalArticle",
+      attachmentIDs: [552, 553],
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments() {
+        return this.attachmentIDs || [];
+      },
+      getCollections: () => [],
+      getField: (field) => (field === "title" ? "Delete Cached" : ""),
+    };
+    const pdf: MockItem = {
+      id: 552,
+      key: "DELETECACHEDPDF",
+      libraryID: 1,
+      parentID: parent.id,
+      itemType: "attachment",
+      attachmentContentType: "application/pdf",
+      attachmentFilename: "delete-cached.pdf",
+      attachmentSyncedHash: "delete-cached-hash",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: (field) => (field === "title" ? "Delete Cached PDF" : ""),
+      getFilePathAsync: async () => "/tmp/delete-cached.pdf",
+    };
+    const packageItem: MockItem = {
+      id: 553,
+      key: "DELETECACHEDPKG",
+      libraryID: 1,
+      parentID: parent.id,
+      itemType: "attachment",
+      attachmentContentType: "application/zip",
+      attachmentFilename: "delete-cached-mineru.zip",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: (field) =>
+        field === "title"
+          ? `${MINERU_SYNC_ATTACHMENT_TITLE_PREFIX} ${pdf.key}.zip`
+          : "",
+      saveTx: async () => {},
+    };
+    setupZotero(
+      new Map<number, MockItem>([
+        [parent.id, parent],
+        [pdf.id, pdf],
+        [packageItem.id, packageItem],
+      ]),
+      {
+        files: { "/tmp/delete-cached.pdf": pdfText(12) },
+        pref: (key) => (key.endsWith(".mineruSyncEnabled") ? true : undefined),
+      },
+    );
+    await writeMineruCacheFiles(pdf.id, "# Cached article", [
+      { relativePath: "content_list.json", data: encoder.encode("[]") },
+    ]);
+    setItemCached(pdf.id);
+
+    assert.isTrue(await hasCachedMineruMd(pdf.id));
+    assert.equal(await getMineruStatus(pdf.id), "cached");
+
+    await deleteMineruCacheForItem(pdf.id);
+
+    assert.isFalse(await hasCachedMineruMd(pdf.id));
+    assert.isTrue(packageItem.deleted);
+    assert.equal(await getMineruStatus(pdf.id), "idle");
+  });
+
   it("skips over-limit and filename-excluded PDFs in Start All batch processing", async function () {
     const parent: MockItem = {
       id: 601,
@@ -479,8 +578,7 @@ describe("mineruBatchProcessor", function () {
       attachmentSyncedHash: "translated-selected-hash",
       isAttachment: () => true,
       isRegularItem: () => false,
-      getField: (field) =>
-        field === "title" ? "Translated Selected PDF" : "",
+      getField: (field) => (field === "title" ? "Translated Selected PDF" : ""),
       getFilePathAsync: async () => "/tmp/selected-translated.pdf",
     };
     setupZotero(

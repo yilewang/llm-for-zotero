@@ -1581,6 +1581,123 @@ async function deleteMatchingPackageAttachmentsInParent(params: {
   return result;
 }
 
+async function deleteMatchingPackageAttachmentsForSource(params: {
+  sourceAttachment: Zotero.Item;
+  sourceAttachmentKey: string | undefined;
+  seenPackageIds: Set<number>;
+}): Promise<{ deleted: number; failed: number }> {
+  const result = { deleted: 0, failed: 0 };
+  if (!params.sourceAttachmentKey) return result;
+
+  for (const item of await collectPackageAttachmentCandidates(
+    params.sourceAttachment,
+  )) {
+    if (item.id === params.sourceAttachment.id) continue;
+    const deleted = await deleteMatchingPackageAttachment(
+      item,
+      params.sourceAttachmentKey,
+      params.seenPackageIds,
+    );
+    if (deleted === "deleted") result.deleted += 1;
+    if (deleted === "failed") result.failed += 1;
+  }
+  return result;
+}
+
+export async function deleteMineruCacheArtifactsForAttachment(
+  attachmentId: number,
+): Promise<MineruAttachmentCleanupResult> {
+  const normalizedAttachmentId = normalizeAttachmentId(attachmentId);
+  if (normalizedAttachmentId === null) {
+    return {
+      attachmentId,
+      localCacheDeleted: false,
+      removedSyncPackages: 0,
+      failed: 0,
+      skippedReason: "invalid_attachment_id",
+    };
+  }
+
+  const liveItem = Zotero.Items.get(normalizedAttachmentId);
+  if (!liveItem) {
+    return cleanupMineruArtifactsForRemovedAttachment(normalizedAttachmentId);
+  }
+  if (!liveItem.isAttachment?.()) {
+    return {
+      attachmentId: normalizedAttachmentId,
+      localCacheDeleted: false,
+      removedSyncPackages: 0,
+      failed: 0,
+      skippedReason: "not_attachment",
+    };
+  }
+  if (isMineruSyncPackageAttachment(liveItem)) {
+    return {
+      attachmentId: normalizedAttachmentId,
+      localCacheDeleted: false,
+      removedSyncPackages: 0,
+      failed: 0,
+      skippedReason: "sync_package_attachment",
+    };
+  }
+  if (!isPdfAttachment(liveItem)) {
+    return {
+      attachmentId: normalizedAttachmentId,
+      localCacheDeleted: false,
+      removedSyncPackages: 0,
+      failed: 0,
+      skippedReason: "not_pdf",
+    };
+  }
+
+  const localCacheExisted = await pathExists(
+    getMineruItemDir(normalizedAttachmentId),
+  );
+  const sourceProvenance = await readMineruSourceProvenance(
+    normalizedAttachmentId,
+  );
+  const localSyncState = await readLocalSyncState(normalizedAttachmentId);
+  const sourceAttachmentKey =
+    getItemKey(liveItem) ||
+    sourceProvenance?.attachmentKey ||
+    localSyncState?.sourceAttachmentKey;
+  const packageAttachmentId = normalizePackageAttachmentId(
+    sourceProvenance?.packageAttachmentId ??
+      localSyncState?.packageAttachmentId,
+  );
+  const seenPackageIds = new Set<number>();
+  let removedSyncPackages = 0;
+  let failed = 0;
+
+  if (packageAttachmentId !== null) {
+    const deleted = await deleteMatchingPackageAttachment(
+      Zotero.Items.get(packageAttachmentId),
+      sourceAttachmentKey,
+      seenPackageIds,
+    );
+    if (deleted === "deleted") removedSyncPackages += 1;
+    if (deleted === "failed") failed += 1;
+  }
+
+  const sourceCleanup = await deleteMatchingPackageAttachmentsForSource({
+    sourceAttachment: liveItem,
+    sourceAttachmentKey,
+    seenPackageIds,
+  });
+  removedSyncPackages += sourceCleanup.deleted;
+  failed += sourceCleanup.failed;
+
+  await invalidateMineruMd(normalizedAttachmentId);
+  await invalidateMineruRuntimeCache(normalizedAttachmentId);
+
+  return {
+    attachmentId: normalizedAttachmentId,
+    localCacheDeleted: localCacheExisted,
+    removedSyncPackages,
+    failed,
+  };
+}
+
 export async function cleanupMineruArtifactsForRemovedAttachment(
   attachmentId: number,
 ): Promise<MineruAttachmentCleanupResult> {
