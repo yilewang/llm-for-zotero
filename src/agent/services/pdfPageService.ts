@@ -27,6 +27,11 @@ import { PdfService, resolveContextItemFromPaperContext } from "./pdfService";
 import { ZoteroGateway } from "./zoteroGateway";
 import { findAttachment } from "../tools/shared";
 import { joinLocalPath } from "../../utils/localPath";
+import {
+  resolvePdfFigureExtractionRuntime,
+  resolveSystemPdfFigurePdftohtmlPath as resolvePdftohtmlPath,
+  resolveSystemPdfFigurePdftoppmPath as resolvePdftoppmPath,
+} from "./pdfFigureRuntimeService";
 
 export type PdfVisualMode = "general" | "figure" | "equation";
 
@@ -157,21 +162,6 @@ type CropPdfFigureRegionParams = ResolvePdfTargetInput & {
 };
 
 const HEADLESS_FIGURE_CROP_DPI = 216;
-const PDFTOPPM_CANDIDATE_PATHS = [
-  "/Users/yat-lok/.cache/codex-runtimes/codex-primary-runtime/dependencies/bin/pdftoppm",
-  "/opt/homebrew/bin/pdftoppm",
-  "/usr/local/bin/pdftoppm",
-  "/usr/bin/pdftoppm",
-];
-const PDFTOHTML_CANDIDATE_PATHS = PDFTOPPM_CANDIDATE_PATHS.map((path) =>
-  path.replace(/pdftoppm$/, "pdftohtml"),
-);
-const PYTHON3_CANDIDATE_PATHS = [
-  "/Users/yat-lok/miniconda3/bin/python3",
-  "/opt/homebrew/bin/python3",
-  "/usr/local/bin/python3",
-  "/usr/bin/python3",
-];
 
 function sanitizeText(value: unknown): string {
   return `${value ?? ""}`.replace(/\s+/g, " ").trim();
@@ -1002,85 +992,6 @@ async function pathExists(path: string): Promise<boolean> {
   return false;
 }
 
-function readPopplerPreference(): string {
-  const zotero = (globalThis as any).Zotero;
-  const preferenceKeys = [
-    "extensions.zotero.llmforzotero.pdftoppmPath",
-    "extensions.zotero.llmforzotero.popplerPdftoppmPath",
-    "llmforzotero.pdftoppmPath",
-  ];
-  for (const key of preferenceKeys) {
-    try {
-      const value = sanitizeText(zotero?.Prefs?.get?.(key));
-      if (value) return value;
-    } catch {
-      // Ignore missing preference namespaces.
-    }
-  }
-  return "";
-}
-
-async function resolvePdftoppmPath(): Promise<string | null> {
-  const preferencePath = readPopplerPreference();
-  const candidates = [
-    ...(preferencePath ? [preferencePath] : []),
-    ...PDFTOPPM_CANDIDATE_PATHS,
-  ];
-  for (const candidate of candidates) {
-    if (await pathExists(candidate)) return candidate;
-  }
-  return null;
-}
-
-async function resolvePdftohtmlPath(): Promise<string | null> {
-  const preferencePath = readPopplerPreference();
-  const preferenceSibling = preferencePath
-    ? preferencePath.replace(/pdftoppm$/, "pdftohtml")
-    : "";
-  const candidates = [
-    ...(preferenceSibling ? [preferenceSibling] : []),
-    ...PDFTOHTML_CANDIDATE_PATHS,
-  ];
-  for (const candidate of candidates) {
-    if (await pathExists(candidate)) return candidate;
-  }
-  return null;
-}
-
-function readPythonPreference(): string {
-  const zotero = (globalThis as any).Zotero;
-  const preferenceKeys = [
-    "extensions.zotero.llmforzotero.pythonPath",
-    "extensions.zotero.llmforzotero.figureExtractionPythonPath",
-    "llmforzotero.pythonPath",
-  ];
-  for (const key of preferenceKeys) {
-    try {
-      const value = sanitizeText(zotero?.Prefs?.get?.(key));
-      if (value) return value;
-    } catch {
-      // Ignore missing preference namespaces.
-    }
-  }
-  return "";
-}
-
-async function resolvePython3Path(): Promise<string | null> {
-  const preferencePath = readPythonPreference();
-  const candidates = [
-    ...(preferencePath ? [preferencePath] : []),
-    ...PYTHON3_CANDIDATE_PATHS,
-  ];
-  for (const candidate of candidates) {
-    if (await pathExists(candidate)) return candidate;
-  }
-  return null;
-}
-
-function parentDirectory(path: string): string {
-  return path.replace(/[\\/][^\\/]*$/, "");
-}
-
 async function loadSubprocessModule(): Promise<any | null> {
   const CU = (globalThis as any).ChromeUtils;
   if (CU?.importESModule) {
@@ -1378,7 +1289,9 @@ function normalizeRawFigureExtractionResult(
       confidence: Number.isFinite(confidence) ? confidence : 0,
       source,
       warnings: Array.isArray(figure.warnings)
-        ? figure.warnings.map((warning) => sanitizeText(warning)).filter(Boolean)
+        ? figure.warnings
+            .map((warning) => sanitizeText(warning))
+            .filter(Boolean)
         : [],
       mineruImagePaths: [],
     });
@@ -1730,18 +1643,7 @@ export class PdfPageService {
     if (!target.storedPath) {
       throw new Error("Could not resolve the source PDF file path");
     }
-    const pythonPath = await resolvePython3Path();
-    if (!pythonPath) {
-      throw new Error(
-        "Could not find python3 for raw source-PDF figure extraction",
-      );
-    }
-    const pdftoppmPath = await resolvePdftoppmPath();
-    if (!pdftoppmPath) {
-      throw new Error(
-        "Could not find Poppler pdftoppm for raw source-PDF figure extraction",
-      );
-    }
+    const runtime = await resolvePdfFigureExtractionRuntime();
     const Subprocess = await loadSubprocessModule();
     if (!Subprocess?.call) {
       throw new Error("Subprocess is not available for figure extraction");
@@ -1777,18 +1679,25 @@ export class PdfPageService {
         `${target.contextItemId}`,
         "--source-filename",
         target.attachmentName || target.title || "paper.pdf",
+        "--poppler-bin",
+        runtime.popplerBinDir,
         "--clean-out",
       ];
       if (pages) {
         args.push("--pages", pages);
       }
       const proc = await Subprocess.call({
-        command: pythonPath,
+        command: runtime.pythonPath,
         arguments: args,
         stdout: "pipe",
         stderr: "pipe",
         environment: {
-          PATH: `${parentDirectory(pdftoppmPath)}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+          PATH: [
+            runtime.popplerBinDir,
+            ...(runtime.pathListSeparator === ":"
+              ? ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+              : []),
+          ].join(runtime.pathListSeparator),
           XDG_CACHE_HOME: workDir,
         },
         environmentAppend: true,
@@ -1799,7 +1708,8 @@ export class PdfPageService {
       ]);
       const { exitCode } = await proc.wait();
       if (exitCode !== 0) {
-        const message = sanitizeText(stderr || stdout) || `exit code ${exitCode}`;
+        const message =
+          sanitizeText(stderr || stdout) || `exit code ${exitCode}`;
         throw new Error(`raw source-PDF figure extraction failed: ${message}`);
       }
       const jsonText = await readUtf8File(jsonOut);

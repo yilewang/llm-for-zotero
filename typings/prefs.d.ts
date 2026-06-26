@@ -73,6 +73,8 @@ declare namespace _ZoteroTypes {
       "mineruSyncEnabled": boolean;
       "mineruMaxAutoPages": number;
       "mineruExcludePatterns": string;
+      "figureExtractionRuntimePackageUrl": string;
+      "figureExtractionRuntimeAllowSystemFallback": boolean;
     };
   }
 }

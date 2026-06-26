@@ -44,10 +44,7 @@ describe("pdfPageService", function () {
       rootURI: "file:///Users/yat-lok/plugin/root/",
     };
 
-    assert.equal(
-      resolveAddonRootUri(),
-      "file:///Users/yat-lok/plugin/root/",
-    );
+    assert.equal(resolveAddonRootUri(), "file:///Users/yat-lok/plugin/root/");
   });
 
   it("unwraps nested PDF page proxies from Zotero/Firefox wrappers", function () {
