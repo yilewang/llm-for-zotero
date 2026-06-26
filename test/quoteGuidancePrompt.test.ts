@@ -22,6 +22,7 @@ const BALANCED_EVIDENCE_PHRASES = [
   "important paper-specific claims checkable",
   "not to decorate every paragraph",
   "repetitive citations or low-information quotes",
+  "not use them for publication metadata, DOI links, journal names, or source labels alone",
 ];
 
 const SOURCE_LABEL_PLACEMENT_PHRASES = [
