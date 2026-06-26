@@ -51,18 +51,37 @@ const SECTION_ONLY_LABELS = new Set([
 const NON_SOURCE_TRAILING_LABEL_PATTERN =
   /^([\s\S]*?)\s*(\([^()\n]{1,240}\))\s*([.!?。！？]*)$/;
 
+function isInvalidTextControlCode(code: number): boolean {
+  return (
+    (code >= 0x00 && code <= 0x08) ||
+    code === 0x0b ||
+    code === 0x0c ||
+    (code >= 0x0e && code <= 0x1f) ||
+    code === 0x7f
+  );
+}
+
+function stripInvalidTextControlChars(value: string): string {
+  let out = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (isInvalidTextControlCode(char.charCodeAt(0))) {
+      out += " ";
+      continue;
+    }
+    out += char;
+  }
+  return out;
+}
+
 function normalizeText(value: unknown): string {
   if (typeof value !== "string") return "";
-  return value
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return stripInvalidTextControlChars(value).replace(/\s+/g, " ").trim();
 }
 
 function normalizeMultilineText(value: unknown): string {
   if (typeof value !== "string") return "";
-  return value
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+  return stripInvalidTextControlChars(value)
     .replace(/\r\n?/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
@@ -107,6 +126,67 @@ function normalizeLeakedQuoteText(value: string): string {
 
 function normalizeQuoteTextForMatch(value: unknown): string {
   return normalizeMultilineText(value).replace(/\s+/g, " ").trim();
+}
+
+const URL_TEXT_PATTERN = /\bhttps?:\/\/\S+/gi;
+const DOI_TEXT_PATTERN = /\b(?:doi\s*:?\s*)?10\.\d{4,9}\/\S+/gi;
+const DOI_DOMAIN_PATTERN = /\bdoi\.org\b/i;
+const STANDALONE_SOURCE_LABEL_TEXT_PATTERN =
+  /^\(?[\p{L}'’.-]+(?:\s+(?:and|&)\s+[\p{L}'’.-]+|\s+et\s+al\.?)?,?\s+(?:19|20)\d{2}[a-z]?\)?$/iu;
+const JOURNAL_LABEL_TEXT_PATTERN =
+  /^(?:science|nature|cell|pnas|nejm|lancet|elife|plos\s+one|current\s+biology|journal\s+of\s+neuroscience)$/i;
+const PUBLISHER_METADATA_PATTERNS = [
+  /\bfull\s+article\b/i,
+  /\bauthor\s+affiliations?\b/i,
+  /\barticle\s+information\b/i,
+  /\bpublication\s+history\b/i,
+  /\bpublished\s+by\b/i,
+  /\bpublished\s+online\b/i,
+  /\bcopyright\b/i,
+  /\ball\s+rights\s+reserved\b/i,
+  /\bcreative\s+commons\b/i,
+  /\bopen\s+access\b/i,
+  /\bsupplementary\s+(?:materials?|information)\b/i,
+  /^(?:references?|bibliography)(?:\s+and\s+notes?)?\b/i,
+];
+
+function collectMatchedText(value: string, pattern: RegExp): string {
+  pattern.lastIndex = 0;
+  const matches = value.match(pattern) || [];
+  pattern.lastIndex = 0;
+  return matches.join("");
+}
+
+export function isQuoteWorthySourceText(value: unknown): boolean {
+  const text = normalizeQuoteTextForMatch(value);
+  if (!text) return false;
+  const strippedOuter = text.replace(/^["“”]+|["“”]+$/g, "").trim();
+  if (!strippedOuter) return false;
+  if (STANDALONE_SOURCE_LABEL_TEXT_PATTERN.test(strippedOuter)) return false;
+  if (JOURNAL_LABEL_TEXT_PATTERN.test(strippedOuter)) return false;
+  if (PUBLISHER_METADATA_PATTERNS.some((pattern) => pattern.test(text))) {
+    return false;
+  }
+
+  const urlText = collectMatchedText(text, URL_TEXT_PATTERN);
+  const doiText = collectMatchedText(text, DOI_TEXT_PATTERN);
+  const hasUrlOrDoi = Boolean(
+    urlText || doiText || DOI_DOMAIN_PATTERN.test(text),
+  );
+  if (!hasUrlOrDoi) return true;
+
+  const withoutLocators = text
+    .replace(URL_TEXT_PATTERN, " ")
+    .replace(DOI_TEXT_PATTERN, " ")
+    .replace(DOI_DOMAIN_PATTERN, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const locatorChars = urlText.length + doiText.length;
+  if (withoutLocators.length < 80) return false;
+  if (locatorChars > 0 && locatorChars / Math.max(text.length, 1) > 0.35) {
+    return false;
+  }
+  return true;
 }
 
 function stripPageSuffixFromCitationLabel(value: string): string {
@@ -420,6 +500,7 @@ export function buildQuoteCitation(input: {
   if (
     !quoteText ||
     !citationLabel ||
+    !isQuoteWorthySourceText(quoteText) ||
     !isCanonicalQuoteSourceLabel(citationLabel)
   ) {
     return undefined;
@@ -469,6 +550,19 @@ export function normalizeQuoteCitations(value: unknown): QuoteCitation[] {
     out.push(citation);
   }
   return out;
+}
+
+function collectInvalidQuoteCitationIds(value: unknown): Set<string> {
+  const ids = new Set<string>();
+  if (!Array.isArray(value)) return ids;
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as Record<string, unknown>;
+    const id = normalizeText(record.id).replace(/[^A-Za-z0-9_-]/g, "");
+    if (!id) continue;
+    if (!buildQuoteCitation(record)) ids.add(id);
+  }
+  return ids;
 }
 
 export function mergeQuoteCitations(
@@ -630,7 +724,7 @@ function findTokenSequenceOccurrences(
 
 function expandSourceQuoteSpanStart(sourceText: string, start: number): number {
   let cursor = start;
-  while (cursor > 0 && /["'“‘(\[]/.test(sourceText[cursor - 1])) {
+  while (cursor > 0 && "\"'“‘([".includes(sourceText[cursor - 1])) {
     cursor -= 1;
   }
   return cursor;
@@ -880,7 +974,7 @@ function quoteHasSearchableLocatorTokens(quoteText: string): boolean {
 
 function quoteHasNonAsciiLocatorTokens(quoteText: string): boolean {
   return extractLocatorTokens(quoteText).some((token) =>
-    /[^\x00-\x7F]/.test(token),
+    Array.from(token).some((char) => char.charCodeAt(0) > 0x7f),
   );
 }
 
@@ -984,6 +1078,12 @@ function finalizeSourceBackedQuoteBlock(params: {
   const citationRemainder = normalizeCitationRemainder(
     params.citationRemainder,
   );
+  if (!isQuoteWorthySourceText(quoteText)) {
+    return {
+      markdown: citationRemainder,
+      consumedCitation: true,
+    };
+  }
   const quoteCitation = resolveQuoteCitationForFinalizer(params);
   if (quoteCitation) {
     return {
@@ -1052,6 +1152,17 @@ function collapseAdjacentDuplicateQuoteCitationPlaceholders(
   result += markdown.slice(cursor);
   QUOTE_CITATION_PATTERN.lastIndex = 0;
   return result;
+}
+
+function cleanupEmptyCitationParentheticals(markdown: string): string {
+  if (!markdown) return markdown;
+  return markdown
+    .replace(/[ \t]*\(\s*\)[ \t]*,?/g, (match) =>
+      match.includes(",") ? "," : "",
+    )
+    .replace(/[ \t]+,/g, ",")
+    .replace(/,\s*,/g, ",")
+    .replace(/\n{3,}/g, "\n\n");
 }
 
 export function finalizeAssistantQuoteCitations(params: {
@@ -1181,7 +1292,7 @@ export function finalizeAssistantQuoteCitations(params: {
     { resolved: "preserve", unresolved: "omit" },
   );
   return {
-    markdown: finalizedMarkdown,
+    markdown: cleanupEmptyCitationParentheticals(finalizedMarkdown),
     quoteCitations: mergeQuoteCitations(quoteCitations),
   };
 }
@@ -1197,6 +1308,7 @@ export function buildQuoteAnchorPromptBlock(
     "- Do not manually copy the quote or sourceLabel when a quote anchor is available; the app will render the quote and clickable citation.",
     "- Quote text is provenance-locked source text: never translate or paraphrase it to match the user's language.",
     "- If a translation is useful, write it outside the quote block as explanation, not as the quoted source passage.",
+    "- Use quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.",
     "- Do not write source/section/chunk metadata such as [[source=...]] in the final answer; those fields are internal context only.",
   ];
   for (const citation of normalized) {
@@ -1399,6 +1511,7 @@ export function replaceQuoteCitationPlaceholdersForMarkdown(
       citation,
     ]),
   );
+  const invalidIds = collectInvalidQuoteCitationIds(quoteCitations);
   const resolved = options.resolved || "markdown";
   const unresolved = options.unresolved || "preserve";
   const replaceToken = (token: string, id: string): string => {
@@ -1408,6 +1521,7 @@ export function replaceQuoteCitationPlaceholdersForMarkdown(
         ? `[[quote:${citation.id}]]`
         : formatQuoteCitationMarkdown(citation);
     }
+    if (invalidIds.has(id)) return "";
     return unresolved === "preserve"
       ? token
       : formatUnresolvedQuoteCitationPlaceholder(unresolved);
@@ -1417,7 +1531,9 @@ export function replaceQuoteCitationPlaceholdersForMarkdown(
     (token, id: string) => replaceToken(token, id),
   );
   QUOTE_CITATION_PATTERN.lastIndex = 0;
-  return normalizedMarkdown.replace(QUOTE_CITATION_PATTERN, replaceToken);
+  return cleanupEmptyCitationParentheticals(
+    normalizedMarkdown.replace(QUOTE_CITATION_PATTERN, replaceToken),
+  );
 }
 
 function extractFromUnknown(

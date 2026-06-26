@@ -89,6 +89,7 @@ If key figures from deep-read papers would strengthen a thematic point, first ca
   Use short direct quotes when the exact wording matters or when a key point benefits from visible evidence.
   For background explanation, synthesis, or your own interpretation, write clearly and cite only the specific paper claim it depends on.
   Do not append a standalone source label or citation-only final line after ordinary summary prose; source labels on their own line belong only after direct blockquotes when no quote anchor is available.
+  Use quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.
   Prefer a readable answer with traceable evidence over repetitive citations or low-information quotes.
 - Use `(Author, Year)` for single-author papers, `(Author & Author, Year)` for two, `(Author et al., Year)` for three or more.
 - The citation label should match the Zotero item metadata (use `creators` and `date` fields).

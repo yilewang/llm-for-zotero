@@ -1,0 +1,170 @@
+name: Release PDF Figure Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Upload ZIPs to the pdf-figure-runtime-v1 GitHub release"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  PDF_FIGURE_RUNTIME_VERSION: "1"
+  PDF_FIGURE_RUNTIME_RELEASE_TAG: "pdf-figure-runtime-v1"
+  PDF_FIGURE_RUNTIME_RELEASE_TITLE: "PDF figure runtime v1"
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform_key }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform_key: macos-arm64
+            conda_platform: osx-arm64
+          - platform_key: macos-x64
+            conda_platform: osx-64
+          - platform_key: linux-arm64
+            conda_platform: linux-aarch64
+          - platform_key: linux-x64
+            conda_platform: linux-64
+          - platform_key: windows-arm64
+            conda_platform: win-64
+          - platform_key: windows-x64
+            conda_platform: win-64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup micromamba
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          init-shell: bash
+          post-cleanup: all
+
+      - name: Build runtime environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          env_dir="${RUNNER_TEMP}/pdf-figure-runtime-${{ matrix.platform_key }}"
+          micromamba create \
+            --yes \
+            --prefix "${env_dir}" \
+            --platform "${{ matrix.conda_platform }}" \
+            --channel conda-forge \
+            --override-channels \
+            python=3.11 \
+            numpy \
+            scipy \
+            pillow \
+            poppler
+          python3 scripts/build_pdf_figure_runtime.py \
+            --env-dir "${env_dir}" \
+            --platform "${{ matrix.platform_key }}" \
+            --version "${PDF_FIGURE_RUNTIME_VERSION}" \
+            --out-dir dist/pdf-figure-runtime
+
+      - name: Validate ZIP structure
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip_path="dist/pdf-figure-runtime/llm-for-zotero-pdf-figure-runtime-v${PDF_FIGURE_RUNTIME_VERSION}-${{ matrix.platform_key }}.zip"
+          python3 -m zipfile --test "${zip_path}"
+          python3 - "${zip_path}" "${{ matrix.platform_key }}" "${PDF_FIGURE_RUNTIME_VERSION}" <<'PY'
+          import json
+          import sys
+          import zipfile
+
+          zip_path, platform_key, version = sys.argv[1:]
+          exe = ".exe" if platform_key.startswith("windows") else ""
+          required_poppler_dir = "Library/bin" if platform_key.startswith("windows") else "bin"
+          required = {
+              "runtime.json",
+              f"{required_poppler_dir}/pdftoppm{exe}",
+              f"{required_poppler_dir}/pdftohtml{exe}",
+              f"{required_poppler_dir}/pdfinfo{exe}",
+          }
+          with zipfile.ZipFile(zip_path) as archive:
+              names = set(archive.namelist())
+              manifest = json.loads(archive.read("runtime.json"))
+          required.add(manifest["pythonPath"])
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit(f"missing runtime entries: {missing}")
+          expected = {
+              "kind": "llm-for-zotero/pdf-figure-runtime",
+              "version": version,
+              "platform": platform_key,
+          }
+          for key, value in expected.items():
+              if manifest.get(key) != value:
+                  raise SystemExit(f"bad runtime manifest {key}: {manifest.get(key)!r}")
+          PY
+
+      - name: Smoke test linux-x64 runtime
+        if: matrix.platform_key == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip_path="dist/pdf-figure-runtime/llm-for-zotero-pdf-figure-runtime-v${PDF_FIGURE_RUNTIME_VERSION}-${{ matrix.platform_key }}.zip"
+          smoke_dir="${RUNNER_TEMP}/runtime-smoke"
+          mkdir -p "${smoke_dir}"
+          python3 -m zipfile --extract "${zip_path}" "${smoke_dir}"
+          chmod +x "${smoke_dir}/bin/python" "${smoke_dir}/bin/python3" "${smoke_dir}/bin/pdftoppm" "${smoke_dir}/bin/pdftohtml" "${smoke_dir}/bin/pdfinfo" 2>/dev/null || true
+          "${smoke_dir}/bin/python" - <<'PY'
+          import numpy
+          import PIL.Image
+          import scipy.ndimage
+          print("python runtime imports ok")
+          PY
+          "${smoke_dir}/bin/pdftoppm" -v >/dev/null 2>&1
+          "${smoke_dir}/bin/pdftohtml" -v >/dev/null 2>&1
+          "${smoke_dir}/bin/pdfinfo" -v >/dev/null 2>&1
+
+      - name: Upload runtime artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-figure-runtime-${{ matrix.platform_key }}
+          path: dist/pdf-figure-runtime/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish runtime release
+    needs: build
+    if: ${{ inputs.publish_release }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download runtime artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/pdf-figure-runtime
+          pattern: pdf-figure-runtime-*
+          merge-multiple: true
+
+      - name: Publish release assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          release_tag="${PDF_FIGURE_RUNTIME_RELEASE_TAG}"
+          shopt -s nullglob
+          assets=(dist/pdf-figure-runtime/*.zip)
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "No runtime ZIP assets found" >&2
+            exit 1
+          fi
+          if gh release view "${release_tag}" >/dev/null 2>&1; then
+            gh release upload "${release_tag}" "${assets[@]}" --clobber
+          else
+            gh release create "${release_tag}" "${assets[@]}" \
+              --title "${PDF_FIGURE_RUNTIME_RELEASE_TITLE}" \
+              --notes "Managed runtime assets for PDF figure extraction."
+          fi

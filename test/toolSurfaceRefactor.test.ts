@@ -1330,6 +1330,54 @@ describe("semantic tool surface", function () {
     );
   });
 
+  it("paper_read overview does not anchor publisher DOI boilerplate", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "Visual Cortex Paper",
+      firstCreator: "Liu et al.",
+      year: "2026",
+    };
+    const substantiveSentence =
+      "Task learning increased information redundancy in macaque visual cortex without reducing population-level information.";
+    const boilerplate =
+      "Full article and list of author affiliations: https://doi.org/10.1126/science.adw7707";
+    const tool = createPaperReadTool(
+      {
+        getOverviewExcerpt: async () => ({
+          backend: "raw_pdf_text",
+          text:
+            `[chunk 0]\n${boilerplate}\n\n` +
+            `[chunk 4]\n${substantiveSentence}`,
+          citationLabel: "Liu et al., 2026",
+          sourceLabel: "(Liu et al., 2026)",
+          paperContext,
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({ mode: "overview" });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, baseContext)) as {
+      results?: Array<{ quoteAnchors?: string[] }>;
+      quoteCitations?: Array<{ quoteText: string }>;
+    };
+
+    assert.lengthOf(output.quoteCitations || [], 1);
+    assert.equal(output.quoteCitations?.[0]?.quoteText, substantiveSentence);
+    assert.notInclude(
+      output.quoteCitations?.map((citation) => citation.quoteText).join("\n"),
+      boilerplate,
+    );
+    assert.lengthOf(output.results?.[0]?.quoteAnchors || [], 1);
+  });
+
   it("paper_read targeted returns grouped per-paper evidence while preserving flat results", async function () {
     const firstPaper = {
       itemId: 11,

@@ -786,6 +786,71 @@ describe("quoteCitations", function () {
     assert.notInclude(finalized.markdown, "(Anticevic et al., 2013),");
   });
 
+  it("drops publisher DOI boilerplate quote blocks inside prose parentheticals", function () {
+    const boilerplate =
+      "Full article and list of author affiliations: https://doi.org/10.1126/science.adw7707";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: [
+        "Published in Science (",
+        "",
+        `> ${boilerplate}`,
+        "",
+        "(Liu et al., 2026)",
+        "",
+        "), the study challenges decades of conventional wisdom.",
+      ].join("\n"),
+      quoteCitations: [
+        {
+          id: "Q_bad_doi",
+          quoteText: boilerplate,
+          citationLabel: "(Liu et al., 2026)",
+          contextItemId: 22,
+        },
+      ],
+    });
+    const display = replaceQuoteCitationPlaceholdersForMarkdown(
+      finalized.markdown,
+      finalized.quoteCitations,
+    );
+    const rendered = renderMarkdown(display);
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.notInclude(display, boilerplate);
+    assert.notInclude(display, "(Liu et al., 2026)");
+    assert.notInclude(display, "Science (");
+    assert.notInclude(display, "), the study");
+    assert.include(
+      display,
+      "Published in Science, the study challenges decades of conventional wisdom.",
+    );
+    assert.notInclude(rendered, "<blockquote>");
+  });
+
+  it("drops publisher DOI quote placeholders inside prose parentheticals", function () {
+    const boilerplate =
+      "Full article and list of author affiliations: https://doi.org/10.1126/science.adw7707";
+    const display = replaceQuoteCitationPlaceholdersForMarkdown(
+      "Published in Science ([[quote:Q_bad_doi]]), the study challenges decades.",
+      [
+        {
+          id: "Q_bad_doi",
+          quoteText: boilerplate,
+          citationLabel: "(Liu et al., 2026)",
+          contextItemId: 22,
+        },
+      ],
+    );
+
+    assert.notInclude(display, boilerplate);
+    assert.notInclude(display, "[[quote:");
+    assert.notInclude(display, "Science (");
+    assert.notInclude(display, "), the study");
+    assert.include(
+      display,
+      "Published in Science, the study challenges decades.",
+    );
+  });
+
   it("repairs section labels to canonical source labels when one source matches", function () {
     const sourceText =
       "Abstract\nParticipants gained control by realigning brain activity along these directions.";
