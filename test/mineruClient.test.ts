@@ -13,6 +13,7 @@ import {
 
 const MINUTE_MS = 60 * 1000;
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 function bytes(value: string): Uint8Array {
   return encoder.encode(value);
@@ -49,6 +50,34 @@ function setupLocalMineruClientTest(files: Record<string, string>): void {
       return data;
     },
   };
+}
+
+async function readMultipartTextField(
+  body: BodyInit | null | undefined,
+  name: string,
+): Promise<string> {
+  if (!body) return "";
+  if (typeof FormData !== "undefined" && body instanceof FormData) {
+    const value = body.get(name);
+    return typeof value === "string" ? value : "";
+  }
+  const text =
+    typeof body === "string"
+      ? body
+      : body instanceof ArrayBuffer
+        ? decoder.decode(new Uint8Array(body))
+        : ArrayBuffer.isView(body)
+          ? decoder.decode(
+              new Uint8Array(body.buffer, body.byteOffset, body.byteLength),
+            )
+          : await new Response(body).text();
+  const nameMarker = `name="${name}"`;
+  const fieldIndex = text.indexOf(nameMarker);
+  if (fieldIndex < 0) return "";
+  const valueStart = text.indexOf("\r\n\r\n", fieldIndex);
+  if (valueStart < 0) return "";
+  const valueEnd = text.indexOf("\r\n", valueStart + 4);
+  return text.slice(valueStart + 4, valueEnd < 0 ? undefined : valueEnd);
 }
 
 describe("mineruClient", function () {
@@ -176,6 +205,16 @@ describe("mineruClient", function () {
       );
     });
 
+    it("sets cloud file is_ocr when force OCR is enabled", function () {
+      assert.deepEqual(
+        buildCloudBatchRequestBody({
+          fileName: "paper.pdf",
+          forceOcr: true,
+        }).files,
+        [{ name: "paper.pdf", is_ocr: true }],
+      );
+    });
+
     it("returns a clear key-required result before reading the PDF", async function () {
       const progress: string[] = [];
 
@@ -298,6 +337,31 @@ describe("mineruClient", function () {
       }
 
       assert.instanceOf(thrown, MineruCancelledError);
+    });
+
+    it("sends parse_method=ocr when force OCR is enabled", async function () {
+      let submittedBody: BodyInit | null | undefined;
+      globalThis.fetch = (async (_url, init) => {
+        submittedBody = init?.body;
+        return new Response(createMineruZip("# Parsed with OCR"), {
+          status: 200,
+        });
+      }) as typeof fetch;
+
+      const result = await parsePdfWithMineruLocal(
+        "/tmp/paper.pdf",
+        "http://127.0.0.1:58659",
+        "pipeline",
+        undefined,
+        undefined,
+        true,
+      );
+
+      assert.equal(result?.mdContent, "# Parsed with OCR");
+      assert.equal(
+        await readMultipartTextField(submittedBody, "parse_method"),
+        "ocr",
+      );
     });
 
     it("serializes concurrent local file_parse submissions in this process", async function () {

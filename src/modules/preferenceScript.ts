@@ -89,6 +89,7 @@ import {
   isMineruEnabled,
   getMineruApiKey,
   getMineruCloudModel,
+  isMineruForceOcrEnabled,
   getMineruLocalApiBase,
   getMineruLocalBackend,
   getMineruMode,
@@ -100,6 +101,7 @@ import {
   setMineruEnabled,
   setMineruApiKey,
   setMineruCloudModel,
+  setMineruForceOcrEnabled,
   setMineruLocalApiBase,
   setMineruLocalBackend,
   setMineruMode,
@@ -3614,6 +3616,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const mineruLocalBackendSelect = doc.querySelector(
     `#${config.addonRef}-mineru-local-backend`,
   ) as HTMLSelectElement | null;
+  const mineruForceOcrInput = doc.querySelector(
+    `#${config.addonRef}-mineru-force-ocr`,
+  ) as HTMLInputElement | null;
   const mineruTestBtn = doc.querySelector(
     `#${config.addonRef}-mineru-test`,
   ) as HTMLButtonElement | null;
@@ -3942,6 +3947,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       );
       setMineruLocalBackend(next);
       mineruLocalBackendSelect.value = next;
+      clearMineruTestStatus();
+    });
+  }
+
+  if (mineruForceOcrInput) {
+    mineruForceOcrInput.checked = isMineruForceOcrEnabled();
+    mineruForceOcrInput.addEventListener("change", () => {
+      setMineruForceOcrEnabled(mineruForceOcrInput.checked);
       clearMineruTestStatus();
     });
   }

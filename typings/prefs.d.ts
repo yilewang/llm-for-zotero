@@ -67,6 +67,7 @@ declare namespace _ZoteroTypes {
       "mineruCloudModel": string;
       "mineruLocalApiBase": string;
       "mineruLocalBackend": string;
+      "mineruForceOcr": boolean;
       "mineruAutoWatchCollections": string;
       "mineruGlobalAutoParse": boolean;
       "mineruSyncEnabled": boolean;

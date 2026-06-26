@@ -2,10 +2,12 @@ import { assert } from "chai";
 import {
   buildMineruFilenameMatcher,
   DEFAULT_MINERU_CLOUD_MODEL,
+  DEFAULT_MINERU_FORCE_OCR,
   DEFAULT_MINERU_MAX_AUTO_PAGES,
   DEFAULT_MINERU_LOCAL_API_BASE,
   MAX_MINERU_FILENAME_PATTERN_LENGTH,
   normalizeMineruCloudModel,
+  normalizeMineruForceOcr,
   normalizeMineruMaxAutoPages,
   normalizeMineruLocalApiBase,
   normalizeMineruLocalBackend,
@@ -85,6 +87,22 @@ describe("mineruConfig", function () {
       assert.equal(normalizeMineruCloudModel(undefined), "vlm");
       assert.equal(normalizeMineruCloudModel("MinerU-HTML"), "vlm");
       assert.equal(normalizeMineruCloudModel("vlm-auto-engine"), "vlm");
+    });
+  });
+
+  describe("normalizeMineruForceOcr", function () {
+    it("defaults to disabled force OCR", function () {
+      assert.equal(DEFAULT_MINERU_FORCE_OCR, false);
+      assert.equal(normalizeMineruForceOcr(undefined), false);
+      assert.equal(normalizeMineruForceOcr(""), false);
+      assert.equal(normalizeMineruForceOcr("false"), false);
+      assert.equal(normalizeMineruForceOcr(false), false);
+    });
+
+    it("accepts boolean true and string true", function () {
+      assert.equal(normalizeMineruForceOcr(true), true);
+      assert.equal(normalizeMineruForceOcr("true"), true);
+      assert.equal(normalizeMineruForceOcr("TRUE"), true);
     });
   });
 

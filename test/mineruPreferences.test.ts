@@ -43,6 +43,17 @@ describe("MinerU preferences", function () {
     assert.include(prefs, 'pref("mineruCloudModel", "vlm");');
   });
 
+  it("renders a shared force OCR option for MinerU parsing", function () {
+    assert.include(preferences, 'for="__addonRef__-mineru-force-ocr"');
+    assert.include(preferences, 'id="__addonRef__-mineru-force-ocr"');
+    assert.include(preferences, "Force OCR");
+    assert.include(
+      preferences,
+      "Use OCR even when MinerU would normally auto-detect PDF text.",
+    );
+    assert.include(prefs, 'pref("mineruForceOcr", false);');
+  });
+
   it("marks MinerU cloud keys as required and removes keyless proxy copy", function () {
     assert.include(preferences, "An API key is required.");
     assert.include(preferences, "API Key (Required)");
@@ -81,6 +92,9 @@ describe("MinerU preferences", function () {
     assert.include(preferenceScript, "mineruCloudModelSection");
     assert.include(preferenceScript, "mineruCloudModelSelect");
     assert.include(preferenceScript, "mineruCloudModelSection.style.display");
+    assert.include(preferenceScript, "mineruForceOcrInput");
+    assert.include(preferenceScript, "isMineruForceOcrEnabled");
+    assert.include(preferenceScript, "setMineruForceOcrEnabled");
     assert.include(preferenceScript, 'mode === "cloud" ? "flex" : "none"');
     assert.include(preferenceScript, "Enter your MinerU API key first");
     assert.notInclude(preferenceScript, "mineruLocalModeInput");

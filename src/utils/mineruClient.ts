@@ -7,8 +7,10 @@ import {
 } from "./mineruZip";
 import {
   DEFAULT_MINERU_CLOUD_MODEL,
+  DEFAULT_MINERU_FORCE_OCR,
   getMineruApiKey,
   getMineruCloudModel,
+  isMineruForceOcrEnabled,
   getMineruLocalApiBase,
   getMineruLocalBackend,
   getMineruMode,
@@ -856,6 +858,7 @@ function buildLocalFileParseBody(params: {
   fileName: string;
   pdfBytes: Uint8Array;
   backend: MineruLocalBackend;
+  forceOcr?: boolean;
 }): { body: BodyInit; contentType?: string; mode: "formdata" | "manual" } {
   const request = buildMultipartRequest(
     [
@@ -866,7 +869,7 @@ function buildLocalFileParseBody(params: {
         data: params.pdfBytes,
       },
       { name: "backend", value: toMineruApiBackend(params.backend) },
-      { name: "parse_method", value: "auto" },
+      { name: "parse_method", value: params.forceOcr ? "ocr" : "auto" },
       { name: "formula_enable", value: "true" },
       { name: "table_enable", value: "true" },
       { name: "return_md", value: "true" },
@@ -899,6 +902,7 @@ async function submitLocalFileParseRequest(params: {
   sizeMB: string;
   pdfBytes: Uint8Array;
   backend: MineruLocalBackend;
+  forceOcr?: boolean;
   report: (s: string) => void;
   signal?: AbortSignal;
 }): Promise<Response> {
@@ -907,6 +911,7 @@ async function submitLocalFileParseRequest(params: {
     fileName: params.fileName,
     pdfBytes: params.pdfBytes,
     backend: params.backend,
+    forceOcr: params.forceOcr,
   });
   params.report(
     t("Uploading to local server… (%s MB)").replace("%s", params.sizeMB),
@@ -962,6 +967,7 @@ async function parsePdfViaLocalFileParse(
   pdfPath: string,
   baseUrl: string,
   backend: MineruLocalBackend,
+  forceOcr: boolean,
   report: (s: string) => void,
   signal?: AbortSignal,
 ): Promise<MinerUResult> {
@@ -992,6 +998,7 @@ async function parsePdfViaLocalFileParse(
         sizeMB,
         pdfBytes,
         backend,
+        forceOcr,
         report,
         signal,
       });
@@ -1441,19 +1448,20 @@ async function httpPutBinary(
 export function buildCloudBatchRequestBody(params: {
   fileName: string;
   modelVersion?: MineruCloudModel;
+  forceOcr?: boolean;
 }): {
   enable_formula: true;
   enable_table: true;
   language: "ch";
   model_version: MineruCloudModel;
-  files: Array<{ name: string; is_ocr: false }>;
+  files: Array<{ name: string; is_ocr: boolean }>;
 } {
   return {
     enable_formula: true,
     enable_table: true,
     language: "ch",
     model_version: params.modelVersion ?? DEFAULT_MINERU_CLOUD_MODEL,
-    files: [{ name: params.fileName, is_ocr: false }],
+    files: [{ name: params.fileName, is_ocr: params.forceOcr === true }],
   };
 }
 
@@ -1461,6 +1469,7 @@ async function parsePdfViaUpload(
   pdfPath: string,
   apiKey: string,
   modelVersion: MineruCloudModel,
+  forceOcr: boolean,
   report: (s: string) => void,
   signal?: AbortSignal,
 ): Promise<MinerUResult> {
@@ -1486,7 +1495,9 @@ async function parsePdfViaUpload(
       ...getMineruAuthHeaders(apiKey),
       "Content-Type": "application/json",
     },
-    JSON.stringify(buildCloudBatchRequestBody({ fileName, modelVersion })),
+    JSON.stringify(
+      buildCloudBatchRequestBody({ fileName, modelVersion, forceOcr }),
+    ),
   );
 
   if (batchResult.status === 429) {
@@ -1666,6 +1677,7 @@ export async function parsePdfWithMineruCloud(
   modelVersion: MineruCloudModel = DEFAULT_MINERU_CLOUD_MODEL,
   onProgress?: MinerUProgressCallback,
   signal?: AbortSignal,
+  forceOcr = DEFAULT_MINERU_FORCE_OCR,
 ): Promise<MinerUResult> {
   const report = (stage: string) => {
     ztoolkit.log(`MinerU: ${stage}`);
@@ -1680,6 +1692,7 @@ export async function parsePdfWithMineruCloud(
       pdfPath,
       apiKey.trim(),
       modelVersion,
+      forceOcr,
       report,
       signal,
     );
@@ -1697,6 +1710,7 @@ export async function parsePdfWithMineruLocal(
   backend: MineruLocalBackend,
   onProgress?: MinerUProgressCallback,
   signal?: AbortSignal,
+  forceOcr = DEFAULT_MINERU_FORCE_OCR,
 ): Promise<MinerUResult> {
   const report = (stage: string) => {
     ztoolkit.log(`MinerU local: ${stage}`);
@@ -1707,6 +1721,7 @@ export async function parsePdfWithMineruLocal(
       pdfPath,
       baseUrl,
       backend,
+      forceOcr,
       report,
       signal,
     );
@@ -1722,6 +1737,7 @@ export async function parsePdfWithMineru(
   onProgress?: MinerUProgressCallback,
   signal?: AbortSignal,
 ): Promise<MinerUResult> {
+  const forceOcr = isMineruForceOcrEnabled();
   if (getMineruMode() === "local") {
     return parsePdfWithMineruLocal(
       pdfPath,
@@ -1729,6 +1745,7 @@ export async function parsePdfWithMineru(
       getMineruLocalBackend(),
       onProgress,
       signal,
+      forceOcr,
     );
   }
   return parsePdfWithMineruCloud(
@@ -1737,6 +1754,7 @@ export async function parsePdfWithMineru(
     getMineruCloudModel(),
     onProgress,
     signal,
+    forceOcr,
   );
 }
 

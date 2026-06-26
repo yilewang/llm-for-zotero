@@ -2605,6 +2605,37 @@
               </html:span>
             </html:div>
 
+            <html:div style="display: flex; flex-direction: column; gap: 4px">
+              <html:label
+                for="__addonRef__-mineru-force-ocr"
+                style="
+                  display: flex;
+                  align-items: center;
+                  gap: 8px;
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                "
+              >
+                <html:input
+                  id="__addonRef__-mineru-force-ocr"
+                  type="checkbox"
+                  style="margin: 0"
+                />
+                Force OCR
+              </html:label>
+              <html:span
+                style="
+                  font-size: 10.5px;
+                  color: var(--fill-secondary, #888);
+                  margin-top: 1px;
+                "
+              >
+                Use OCR even when MinerU would normally auto-detect PDF text.
+                Leave off to keep MinerU's default detection.
+              </html:span>
+            </html:div>
+
             <html:div style="display: flex; align-items: center; gap: 8px">
               <html:button
                 id="__addonRef__-mineru-test"

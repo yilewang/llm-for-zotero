@@ -6,6 +6,7 @@ const MINERU_MODE_KEY = `${config.prefsPrefix}.mineruMode`;
 const MINERU_CLOUD_MODEL_KEY = `${config.prefsPrefix}.mineruCloudModel`;
 const MINERU_LOCAL_API_BASE_KEY = `${config.prefsPrefix}.mineruLocalApiBase`;
 const MINERU_LOCAL_BACKEND_KEY = `${config.prefsPrefix}.mineruLocalBackend`;
+const MINERU_FORCE_OCR_KEY = `${config.prefsPrefix}.mineruForceOcr`;
 const MINERU_AUTO_WATCH_KEY = `${config.prefsPrefix}.mineruAutoWatchCollections`;
 const MINERU_GLOBAL_AUTO_PARSE_KEY = `${config.prefsPrefix}.mineruGlobalAutoParse`;
 const MINERU_SYNC_ENABLED_KEY = `${config.prefsPrefix}.mineruSyncEnabled`;
@@ -15,6 +16,7 @@ const MINERU_EXCLUDE_PATTERNS_KEY = `${config.prefsPrefix}.mineruExcludePatterns
 export const DEFAULT_MINERU_LOCAL_API_BASE = "http://127.0.0.1:8000";
 export const DEFAULT_MINERU_CLOUD_MODEL: MineruCloudModel = "vlm";
 export const DEFAULT_MINERU_LOCAL_BACKEND: MineruLocalBackend = "pipeline";
+export const DEFAULT_MINERU_FORCE_OCR = false;
 export const DEFAULT_MINERU_MAX_AUTO_PAGES = 100;
 export const MAX_MINERU_FILENAME_PATTERN_LENGTH = 256;
 
@@ -152,6 +154,22 @@ export function setMineruLocalBackend(value: MineruLocalBackend): void {
     normalizeMineruLocalBackend(value),
     true,
   );
+}
+
+export function normalizeMineruForceOcr(value: unknown): boolean {
+  if (value === true) return true;
+  if (value === false || value === undefined || value === null) {
+    return DEFAULT_MINERU_FORCE_OCR;
+  }
+  return `${value}`.trim().toLowerCase() === "true";
+}
+
+export function isMineruForceOcrEnabled(): boolean {
+  return normalizeMineruForceOcr(Zotero.Prefs.get(MINERU_FORCE_OCR_KEY, true));
+}
+
+export function setMineruForceOcrEnabled(value: boolean): void {
+  Zotero.Prefs.set(MINERU_FORCE_OCR_KEY, normalizeMineruForceOcr(value), true);
 }
 
 // ── Global Auto-Parse Configuration ──────────────────────────────────────────
