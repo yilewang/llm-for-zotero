@@ -98,6 +98,10 @@ describe("tool guidance contracts", function () {
       label: "MinerU source image embeds for notes",
       pattern: /(?:file:\/\/\/\{mineruCacheDir\}|mineruCacheDir\}\/images)/,
     },
+    {
+      label: "MinerU usable images folder guidance",
+      pattern: /cache directory also contains an images\/ folder/,
+    },
   ];
 
   it("does not contain stale pseudo-call examples in shipped guidance", function () {

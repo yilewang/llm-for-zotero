@@ -58,6 +58,14 @@ export type NormalizedMineruCacheFiles = {
   pathMap: Map<string, string>;
 };
 
+export type FinalizedMineruCacheFiles = {
+  mdContent: string;
+  sourceMdContent: string;
+  files: NormalizedMineruCacheFile[];
+  pathMap: Map<string, string>;
+  manifest: MineruManifest;
+};
+
 type IOUtilsLike = {
   exists?: (path: string) => Promise<boolean>;
   read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
@@ -559,6 +567,108 @@ function rewriteContentListFile(
   }
 }
 
+function parseContentListBytes(data: Uint8Array): ContentListEntry[] {
+  try {
+    const parsed = JSON.parse(new TextDecoder("utf-8").decode(data));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function readContentListFromNormalizedFiles(
+  files: NormalizedMineruCacheFile[],
+): ContentListEntry[] {
+  const contentList = files.find((file) =>
+    isContentListPath(file.relativePath.split(/[\\/]+/).filter(Boolean)),
+  );
+  return contentList ? parseContentListBytes(contentList.data) : [];
+}
+
+function readManifestFromNormalizedFiles(
+  files: NormalizedMineruCacheFile[],
+): MineruManifest | null {
+  const manifestFile = files.find(
+    (file) => file.relativePath === "manifest.json",
+  );
+  if (!manifestFile) return null;
+  try {
+    const parsed = JSON.parse(
+      new TextDecoder("utf-8").decode(manifestFile.data),
+    );
+    return parsed && typeof parsed === "object"
+      ? (parsed as MineruManifest)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function unwrapMarkdownTarget(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.startsWith("<") && trimmed.endsWith(">")
+    ? trimmed.slice(1, -1)
+    : trimmed;
+}
+
+function isLocalMarkdownTarget(value: string): boolean {
+  const target = unwrapMarkdownTarget(value);
+  return Boolean(target.trim()) && !isExternalOrAnchorPath(target.trim());
+}
+
+function stripLocalImageEmbedsFromLine(line: string): {
+  line: string;
+  removed: boolean;
+} {
+  let removed = false;
+  const withoutMarkdownImages = line.replace(
+    /!\[[^\]]*]\(([^)\n]+)\)/g,
+    (match, target) => {
+      if (!isLocalMarkdownTarget(String(target))) return match;
+      removed = true;
+      return "";
+    },
+  );
+  const withoutHtmlImages = withoutMarkdownImages.replace(
+    /<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi,
+    (match, target) => {
+      if (!isLocalMarkdownTarget(String(target))) return match;
+      removed = true;
+      return "";
+    },
+  );
+  return { line: withoutHtmlImages.replace(/[ \t]+$/g, ""), removed };
+}
+
+export function stripMineruSourceImageEmbedsFromMarkdown(
+  mdContent: string,
+): string {
+  const lines = mdContent.split(/\r?\n/);
+  const out: string[] = [];
+  for (const line of lines) {
+    const stripped = stripLocalImageEmbedsFromLine(line);
+    if (stripped.removed && !stripped.line.trim()) continue;
+    out.push(stripped.line);
+  }
+  return out
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+}
+
+function hasLocalImageEmbeds(mdContent: string): boolean {
+  return stripMineruSourceImageEmbedsFromMarkdown(mdContent) !== mdContent;
+}
+
+function isRawMineruSourceImagePath(relativePath: string): boolean {
+  const parts = normalizePathKey(relativePath).split("/").filter(Boolean);
+  return parts[0]?.toLowerCase() === "images";
+}
+
+function shouldWriteFinalizedCacheFile(relativePath: string): boolean {
+  return !isRawMineruSourceImagePath(relativePath);
+}
+
 export function normalizeMineruCacheFiles(
   mdContent: string,
   files: MineruCacheFile[],
@@ -632,6 +742,35 @@ export function normalizeMineruCacheFiles(
     mdContent: rewrittenMdContent,
     files: normalizedFiles,
     pathMap,
+  };
+}
+
+export function finalizeMineruCacheFiles(
+  mdContent: string,
+  files: MineruCacheFile[],
+): FinalizedMineruCacheFiles {
+  const normalized = normalizeMineruCacheFiles(mdContent, files);
+  const contentList = readContentListFromNormalizedFiles(normalized.files);
+  const canonicalMdContent = stripMineruSourceImageEmbedsFromMarkdown(
+    normalized.mdContent,
+  );
+  const sourceManifest = buildManifest(normalized.mdContent, contentList);
+  const canonicalManifest = buildManifest(canonicalMdContent, contentList);
+  const incomingManifest = readManifestFromNormalizedFiles(normalized.files);
+  const figureBlocks = hasLocalImageEmbeds(normalized.mdContent)
+    ? sourceManifest.figureBlocks
+    : incomingManifest?.figureBlocks || sourceManifest.figureBlocks;
+  return {
+    mdContent: canonicalMdContent,
+    sourceMdContent: normalized.mdContent,
+    files: normalized.files.filter((file) =>
+      shouldWriteFinalizedCacheFile(file.relativePath),
+    ),
+    pathMap: normalized.pathMap,
+    manifest: {
+      ...canonicalManifest,
+      figureBlocks,
+    },
   };
 }
 
@@ -829,9 +968,11 @@ export async function writeMineruCacheFiles(
 ): Promise<void> {
   const itemDir = getMineruItemDir(id);
   await ensureDir(itemDir);
-  const normalized = normalizeMineruCacheFiles(mdContent, files);
+  const finalized = finalizeMineruCacheFiles(mdContent, files);
 
-  for (const file of normalized.files) {
+  await removePath(joinLocalPath(itemDir, "images"));
+
+  for (const file of finalized.files) {
     const parts = file.relativePath.split(/[\\/]+/).filter(Boolean);
     const filePath = joinLocalPath(itemDir, ...parts);
     const parentDir = getLocalParentPath(filePath);
@@ -850,16 +991,22 @@ export async function writeMineruCacheFiles(
 
   const mdPath = getMineruMdPath(id);
   try {
-    await writeFileBytes(
-      mdPath,
-      new TextEncoder().encode(normalized.mdContent),
-    );
+    await writeFileBytes(mdPath, new TextEncoder().encode(finalized.mdContent));
   } catch (error) {
     throw new Error(
       `Failed to write MinerU cache file "full.md": ${formatCacheWriteError(
         error,
       )}`,
     );
+  }
+
+  try {
+    await writeFileBytes(
+      getManifestPath(id),
+      new TextEncoder().encode(JSON.stringify(finalized.manifest)),
+    );
+  } catch {
+    // Non-critical — manifest is an optimization, not required
   }
 
   // Clean up legacy _content.md if it exists
@@ -872,13 +1019,6 @@ export async function writeMineruCacheFiles(
   const legacyPath = getLegacyMdPath(id);
   if (await pathExists(legacyPath)) {
     await removePath(legacyPath);
-  }
-
-  // Build manifest.json from content_list + full.md (best effort)
-  try {
-    await buildAndWriteManifest(id);
-  } catch {
-    // Non-critical — manifest is an optimization, not required
   }
 }
 
@@ -1222,12 +1362,7 @@ export async function readMineruContentListFromDir(
   if (!contentListPath) return [];
   const clBytes = await readFileBytes(contentListPath);
   if (!clBytes) return [];
-  try {
-    const parsed = JSON.parse(new TextDecoder("utf-8").decode(clBytes));
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return parseContentListBytes(clBytes);
 }
 
 /**
@@ -1256,6 +1391,48 @@ export async function buildAndWriteManifest(
   );
 
   return manifest;
+}
+
+export async function finalizeExistingMineruCache(
+  id: number,
+): Promise<boolean> {
+  const itemDir = getMineruItemDir(id);
+  const mdBytes = await readFileBytes(getMineruMdPath(id));
+  if (!mdBytes) return false;
+
+  const sourceMdContent = new TextDecoder("utf-8").decode(mdBytes);
+  const canonicalMdContent =
+    stripMineruSourceImageEmbedsFromMarkdown(sourceMdContent);
+  const contentList = await readMineruContentListFromDir(itemDir);
+  const existingManifest = await readManifest(id);
+  let changed = canonicalMdContent !== sourceMdContent;
+
+  await removePath(joinLocalPath(itemDir, "images"));
+
+  if (changed) {
+    await writeFileBytes(
+      getMineruMdPath(id),
+      new TextEncoder().encode(canonicalMdContent),
+    );
+  }
+
+  if (changed || !existingManifest) {
+    const sourceManifest = buildManifest(sourceMdContent, contentList);
+    const canonicalManifest = buildManifest(canonicalMdContent, contentList);
+    const manifest = {
+      ...canonicalManifest,
+      figureBlocks: changed
+        ? sourceManifest.figureBlocks
+        : existingManifest?.figureBlocks || sourceManifest.figureBlocks,
+    };
+    await writeFileBytes(
+      getManifestPath(id),
+      new TextEncoder().encode(JSON.stringify(manifest)),
+    );
+    changed = true;
+  }
+
+  return changed;
 }
 
 /**

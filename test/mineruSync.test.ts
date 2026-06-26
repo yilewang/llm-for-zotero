@@ -323,14 +323,20 @@ describe("mineruSync", function () {
     pdfTextCache.clear();
   });
 
-  it("filters only unsafe entries and layout.json from sync packages", function () {
+  it("filters raw source images while preserving durable geometry and crops", function () {
     assert.isTrue(shouldIncludeMineruCachePackageEntry("full.md"));
     assert.isTrue(shouldIncludeMineruCachePackageEntry("content_list.json"));
-    assert.isTrue(shouldIncludeMineruCachePackageEntry("images/figure.png"));
+    assert.isFalse(shouldIncludeMineruCachePackageEntry("images/figure.png"));
+    assert.isTrue(shouldIncludeMineruCachePackageEntry("layout.json"));
+    assert.isTrue(
+      shouldIncludeMineruCachePackageEntry("figure_crops/figure_geometry.json"),
+    );
+    assert.isTrue(
+      shouldIncludeMineruCachePackageEntry("figure_crops/crops/figure-1.png"),
+    );
     assert.isTrue(
       shouldIncludeMineruCachePackageEntry(MINERU_SOURCE_PROVENANCE_FILE),
     );
-    assert.isFalse(shouldIncludeMineruCachePackageEntry("layout.json"));
     assert.isFalse(shouldIncludeMineruCachePackageEntry("../full.md"));
     assert.isFalse(shouldIncludeMineruCachePackageEntry("/tmp/full.md"));
     assert.isFalse(shouldIncludeMineruCachePackageEntry("__MACOSX/full.md"));
@@ -364,9 +370,9 @@ describe("mineruSync", function () {
       "full.md",
       "manifest.json",
       "content_list.json",
-      "images/fig1.png",
+      "layout.json",
     ]);
-    assert.notProperty(entries, "layout.json");
+    assert.notProperty(entries, "images/fig1.png");
     const metadata = JSON.parse(
       decoder.decode(entries[MINERU_SYNC_METADATA_FILE]),
     );
@@ -650,7 +656,7 @@ describe("mineruSync", function () {
     assert.equal(restored.status, "restored");
     assert.equal(
       await readCachedMineruMd(pdf.id),
-      "# Intro\n![Fig](images/fig1.png)\n# Results\ncontent",
+      "# Intro\n# Results\ncontent",
     );
   });
 
@@ -877,7 +883,7 @@ describe("mineruSync", function () {
     assert.equal(restored.status, "restored");
     assert.equal(
       await readCachedMineruMd(pdf.id),
-      "# Intro\n![Fig](images/fig1.png)\n# Results\ncontent",
+      "# Intro\n# Results\ncontent",
     );
   });
 
@@ -1011,7 +1017,7 @@ describe("mineruSync", function () {
     assert.equal(pdfAttachment?.mineruCacheDir, getMineruItemDir(pdf.id));
     assert.equal(
       await readCachedMineruMd(pdf.id),
-      "# Intro\n![Fig](images/fig1.png)\n# Results\ncontent",
+      "# Intro\n# Results\ncontent",
     );
   });
 
@@ -1133,7 +1139,7 @@ describe("mineruSync", function () {
     assert.equal(restored.status, "already_cached");
     assert.equal(
       await readCachedMineruMd(pdf.id),
-      "# Intro\n![Fig](images/fig1.png)\n# Results\ncontent",
+      "# Intro\n# Results\ncontent",
     );
   });
 
@@ -1454,6 +1460,61 @@ describe("mineruSync", function () {
     assert.isNull(provenance);
   });
 
+  it("migrates existing local caches to strip source images during repair", async function () {
+    const io = setupMemoryIO();
+    const items = new Map<number, MockItem>();
+    const parent = createParent();
+    const pdf = createAttachment({
+      id: 307,
+      key: "PDFREPAIRMIGRATE",
+      parentID: parent.id,
+      contentType: "application/pdf",
+      filename: "repair-migrate.pdf",
+    });
+    parent.attachmentIDs!.push(pdf.id);
+    items.set(parent.id, parent);
+    items.set(pdf.id, pdf);
+    setupZotero(items, io);
+
+    const itemDir = getMineruItemDir(pdf.id);
+    io.files.set(
+      normalizePath(`${itemDir}/full.md`),
+      bytes(
+        "# Intro\n![Fig](images/fig1.png)\nFig. 1 caption\n# Results\ncontent",
+      ),
+    );
+    io.files.set(normalizePath(`${itemDir}/images/fig1.png`), bytes([1, 2, 3]));
+    io.files.set(
+      normalizePath(`${itemDir}/content_list.json`),
+      bytes(
+        JSON.stringify([
+          { type: "text", text_level: 1, text: "Intro", page_idx: 0 },
+          {
+            type: "image",
+            img_path: "images/fig1.png",
+            image_caption: ["Fig. 1 caption"],
+            page_idx: 0,
+          },
+          { type: "text", text_level: 1, text: "Results", page_idx: 1 },
+        ]),
+      ),
+    );
+    io.files.set(normalizePath(`${itemDir}/layout.json`), bytes("{}"));
+
+    const result = await repairMineruCaches();
+
+    assert.equal(result.checked, 1);
+    assert.equal(
+      await readCachedMineruMd(pdf.id),
+      "# Intro\nFig. 1 caption\n# Results\ncontent",
+    );
+    assert.isFalse(io.files.has(normalizePath(`${itemDir}/images/fig1.png`)));
+    const manifest = JSON.parse(
+      decoder.decode(io.files.get(normalizePath(`${itemDir}/manifest.json`))!),
+    );
+    assert.deepEqual(manifest.figureBlocks[0].imagePaths, ["images/fig1.png"]);
+  });
+
   it("keeps a local cache when the current PDF bytes changed", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();
@@ -1528,7 +1589,7 @@ describe("mineruSync", function () {
     assert.equal(result.restored, 1);
     assert.equal(
       await readCachedMineruMd(pdf.id),
-      "# Intro\n![Fig](images/fig1.png)\n# Results\ncontent",
+      "# Intro\n# Results\ncontent",
     );
     const provenance = await readMineruSourceProvenance(pdf.id);
     assert.equal(provenance?.origin, "restored");
@@ -1602,7 +1663,7 @@ describe("mineruSync", function () {
     assert.isTrue(await hasCachedMineruMd(pdf.id));
     assert.equal(
       await readCachedMineruMd(pdf.id),
-      "# Intro\n![Fig](images/fig1.png)\n# Results\ncontent",
+      "# Intro\n# Results\ncontent",
     );
   });
 
