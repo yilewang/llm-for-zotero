@@ -35,6 +35,8 @@ describe("mineruFigureBlocks", function () {
   it("normalizes figure and table panel labels to base labels", function () {
     assert.equal(getManifestFigureBaseLabel("Fig. 1a"), "Figure 1");
     assert.equal(getManifestFigureBaseLabel("Figure 1B"), "Figure 1");
+    assert.equal(getManifestFigureBaseLabel("figure-1"), "Figure 1");
+    assert.equal(getManifestFigureBaseLabel("fig_2"), "Figure 2");
     assert.equal(getManifestFigureBaseLabel("Table 2c"), "Table 2");
     assert.equal(
       getManifestFigureBaseLabel("Supplementary Fig. S7b"),
@@ -141,6 +143,44 @@ describe("mineruFigureBlocks", function () {
     );
   });
 
+  it("resolves noncanonical manifest labels such as figure-1", function () {
+    const blocks = buildMineruFigureBlocks({
+      fullMd: [
+        "# Results",
+        "![A](images/a.jpg)",
+        "",
+        "![B](images/b.jpg)",
+      ].join("\n"),
+      contentList: [
+        { type: "text", text_level: 1, text: "Results", page_idx: 0 },
+        { type: "image", img_path: "images/a.jpg", page_idx: 1 },
+        { type: "image", img_path: "images/b.jpg", page_idx: 1 },
+      ],
+      manifestLike: {
+        allFigures: [
+          {
+            label: "figure-1",
+            baseLabel: "figure-1",
+            path: "images/a.jpg",
+            caption: "A B",
+            page: 1,
+          },
+        ],
+      },
+    });
+
+    const result = resolveMineruFigureBlocksForQuery(
+      "explain Figure 1",
+      blocks,
+    );
+
+    assert.lengthOf(result.blocks, 1);
+    assert.deepEqual(result.blocks[0].imagePaths, [
+      "images/a.jpg",
+      "images/b.jpg",
+    ]);
+  });
+
   it("marks captionless page-spanning blocks as low confidence", function () {
     const blocks = build(
       ["# Results", "![](images/a.jpg)", "", "![](images/b.jpg)"].join("\n"),
@@ -209,7 +249,7 @@ describe("mineruFigureBlocks", function () {
     assert.deepEqual(block?.imagePaths, ["images/a.jpg", "images/b.jpg"]);
   });
 
-  it("blocks incomplete high-confidence embeds and accepts complete embeds", function () {
+  it("blocks MinerU image embeds and accepts extracted PDF crop embeds", function () {
     const blocks = build(
       [
         "# Results",
@@ -240,9 +280,9 @@ describe("mineruFigureBlocks", function () {
     assert.equal(incomplete?.severity, "block");
     assert.include(incomplete?.message || "", "Figure 2");
     assert.equal(incomplete?.embeddedCount, 1);
-    assert.equal(incomplete?.availableCount, 3);
+    assert.equal(incomplete?.availableCount, 0);
 
-    const complete = validateFigureBlockEmbeds({
+    const completeMineruImages = validateFigureBlockEmbeds({
       content: [
         "![Figure 2a](images/a.jpg)",
         "![Figure 2b](images/b.jpg)",
@@ -252,7 +292,31 @@ describe("mineruFigureBlocks", function () {
       requestText: "write a note about Figure 2",
       blocks,
     });
-    assert.isNull(complete);
+    assert.equal(completeMineruImages?.severity, "block");
+    assert.include(completeMineruImages?.message || "", "extracted PDF crop");
+
+    const extractedCrop = validateFigureBlockEmbeds({
+      content:
+        "![Figure 2](/tmp/mineru/12/figure_crops/crops/figure-2.png)\n\n## Figure 2",
+      requestText: "write a note about Figure 2",
+      blocks,
+      extractedFigures: [
+        {
+          id: "figure-2",
+          label: "Figure 2",
+          baseLabel: "Figure 2",
+          pageNumber: 2,
+          cropPath: "/tmp/mineru/12/figure_crops/crops/figure-2.png",
+          rect: { left: 0, top: 0, width: 100, height: 100 },
+          confidence: 0.96,
+          source: "caption-bounded-region",
+          warnings: [],
+          mineruBlockId: blocks[0].blockId,
+          mineruImagePaths: ["images/a.jpg", "images/b.jpg", "images/c.jpg"],
+        },
+      ],
+    });
+    assert.isNull(extractedCrop);
   });
 
   it("does not count duplicate embeds of the same block image as complete coverage", function () {
@@ -291,7 +355,11 @@ describe("mineruFigureBlocks", function () {
 
     assert.equal(duplicateOnly?.severity, "block");
     assert.equal(duplicateOnly?.embeddedCount, 1);
-    assert.equal(duplicateOnly?.availableCount, 3);
+    assert.equal(duplicateOnly?.availableCount, 0);
+    assert.include(
+      duplicateOnly?.message || "",
+      "Missing extracted PDF figure crop",
+    );
   });
 
   it("does not count label-only embeds as covering specific block images", function () {
@@ -329,7 +397,11 @@ describe("mineruFigureBlocks", function () {
 
     assert.equal(labelOnly?.severity, "block");
     assert.equal(labelOnly?.embeddedCount, 0);
-    assert.equal(labelOnly?.availableCount, 3);
+    assert.equal(labelOnly?.availableCount, 0);
+    assert.include(
+      labelOnly?.message || "",
+      "Missing extracted PDF figure crop",
+    );
   });
 
   it("allows low-confidence incomplete embeds only when the note states ambiguity", function () {

@@ -14,6 +14,7 @@ tsconfig.tsbuildinfo
 .scaffold
 build
 logs
+tmp/
 
 # Ignore all contents inside a folder
 .claude/

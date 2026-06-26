@@ -94,6 +94,10 @@ describe("tool guidance contracts", function () {
       label: "library_retrieve(intent:'discover')",
       pattern: /library_retrieve\([^)]*intent:'discover'/,
     },
+    {
+      label: "MinerU source image embeds for notes",
+      pattern: /(?:file:\/\/\/\{mineruCacheDir\}|mineruCacheDir\}\/images)/,
+    },
   ];
 
   it("does not contain stale pseudo-call examples in shipped guidance", function () {
@@ -218,10 +222,10 @@ describe("tool guidance contracts", function () {
       agentPersona,
       "file_io({ action:'read', filePath:'{mineruCacheDir}/full.md'",
     );
-    assert.include(agentPersona, "read the image files via file_io");
+    assert.include(agentPersona, "use paper_read mode:'figures'");
   });
 
-  it("requires complete compound-figure inspection and note embedding", function () {
+  it("requires extracted PDF crop inspection and note embedding", function () {
     const sources = readSourceFiles();
     const byPath = new Map(
       sources.map((source) => [source.path, source.content] as const),
@@ -249,34 +253,17 @@ describe("tool guidance contracts", function () {
       assert.isString(content);
     }
 
-    assert.include(
-      analyzeFigures!,
-      "adjacent image runs in `full.md` are the primary block boundary",
-    );
-    assert.include(
-      messageBuilder!,
-      "treat adjacent image runs in full.md as one block",
-    );
-    assert.include(
-      paperRead!,
-      "Treat adjacent image runs in full.md as one figure/table block",
-    );
-    assert.include(
-      agentPersona!,
-      "treat adjacent image runs in full.md as one figure/table block",
-    );
-    assert.include(
-      writeNote!,
-      "embed every available image path from that adjacent block in source order",
-    );
-    assert.include(
-      noteTools!,
-      "For any multi-image MinerU block, embed every available adjacent image path",
-    );
-    assert.include(
-      currentNoteTool!,
-      "For any MinerU figure/table block with adjacent images, embed every available image path",
-    );
+    assert.include(analyzeFigures!, "paper_read({ mode:'figures'");
+    assert.include(messageBuilder!, "precise PDF crops");
+    assert.include(paperRead!, "mode:'figures'");
+    assert.include(agentPersona!, "embed extracted PDF crop paths");
+    assert.include(writeNote!, "Embed extracted PDF crop paths");
+    assert.include(noteTools!, "embed the extracted PDF crop path");
+    assert.include(noteTools!, "returns no_figures");
+    assert.include(noteTools!, "do not call note_write for that figure note");
+    assert.include(writeNote!, "do not call `note_write` or `file_io`");
+    assert.include(analyzeFigures!, "do not call `note_write`");
+    assert.include(currentNoteTool!, "Do not embed MinerU source image paths");
   });
 
   it("does not expose hidden legacy call targets in model-visible guidance", function () {

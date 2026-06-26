@@ -156,15 +156,17 @@ Written by LLM-for-Zotero.
 ### Step 3 — Include figures
 
 **If the user asked about a specific figure, you MUST include that figure in the note.** For other notes, include figures when they genuinely aid understanding (result plots, diagrams, key tables).
-For MinerU figures/tables, treat adjacent image runs in `full.md` as one figure block.
-If the note is about any image inside a multi-image MinerU block, embed every available image path from that adjacent block in source order, even when the user names one explicit panel such as Figure 1b.
+For MinerU-ready papers, first call `paper_read({ mode:'figures', query:'<figure request>' })`.
+Embed extracted PDF crop paths returned by that tool.
+Do not embed MinerU source image paths.
 Panel suffixes and captions are hints only; do not assume image order proves panel identity.
-If any image path is unavailable or unreadable, say that explicitly in the note.
-Text-only models may still copy/embed ordered image paths into notes, but must not make unsupported visual claims beyond caption and surrounding-text evidence.
+If `paper_read({ mode:'figures' })` returns `no_figures`, `mineru_required`, `error`, zero figures, or no image artifact, do not call `note_write` or `file_io` for that figure note.
+Tell the user that no extracted PDF crop is available instead of silently using MinerU images or creating a text-only substitute.
+Text-only models may still copy/embed extracted crop paths into notes, but must not make unsupported visual claims beyond caption and surrounding-text evidence.
 
 #### For Zotero notes (`note_write`)
 
-- Use `![Caption](file:///{mineruCacheDir}/images/filename.png)`. The `note_write` tool auto-imports `file://` images as Zotero embedded attachments.
+- Use `![Caption](file:///{extractedCropPath})`. The `note_write` tool auto-imports `file://` images as Zotero embedded attachments.
 - Place figures inline near the relevant discussion.
 
 #### For file-based notes (`file_io`)
@@ -178,7 +180,7 @@ Text-only models may still copy/embed ordered image paths into notes, but must n
 **Algorithm — follow exactly:**
 
 1. Create the destination directory: `run_command` with `mkdir -p "{attachmentsPath}/{sanitized-paper-title}"`. The folder is named after the **paper title only** (no subtopic, no date) so multiple notes about the same paper share the same images folder.
-2. Copy image files from `{mineruCacheDir}/images/` to `{attachmentsPath}/{sanitized-paper-title}/` using `run_command`. Copy images BEFORE writing the note file.
+2. Copy extracted PDF crop files returned by `paper_read({ mode:'figures' })` to `{attachmentsPath}/{sanitized-paper-title}/` using `run_command`. Copy images BEFORE writing the note file.
 3. Compute the **relative path from the note's directory to the image file**. Use `..` to climb to the common ancestor, then descend to the image. Count path segments deterministically — don't guess.
 4. Embed with `![<caption>](<relative-path>)`. Nothing else.
 
@@ -199,7 +201,7 @@ Write:        ![Figure 2. RSA toolbox schematic](../imgs/Nili2014/figure-2.jpg)
 - `![Figure 2|400](../imgs/foo.jpg)` — `|400` becomes literal alt text; image is not resized.
 - `![[imgs/foo/figure-2.jpg]]` — wiki-link embed; we use standard markdown only.
 
-**If the figure image cannot be found** in the MinerU cache, tell the user clearly. Do NOT fall back to `file:///`, absolute paths, or any of the negative examples above.
+**If the extracted PDF crop cannot be found**, tell the user clearly. Do NOT fall back to MinerU source images, `file:///`, absolute paths, or any of the negative examples above.
 
 ### Step 4a — Write to Zotero (`note_write`)
 

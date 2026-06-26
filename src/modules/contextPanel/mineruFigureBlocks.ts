@@ -11,6 +11,11 @@ export type MineruContentListEntry = {
   table_footnote?: string[];
 };
 
+import type {
+  ExpectedPdfFigure,
+  ExtractedPdfFigure,
+} from "./pdfFigureCropCache";
+
 export type MineruFigureBlockKind = "figure" | "table" | "image" | "mixed";
 
 export type MineruFigureBlock = {
@@ -122,13 +127,20 @@ export function extractFigureLabel(caption: string): string {
 export function getManifestFigureBaseLabel(label: string): string {
   const trimmed = label.trim();
   const match = trimmed.match(
-    /^(Supplementary\s+)?(Fig(?:ure)?\.?|Table)\s*([sS]?\d+)([a-z])?\b/i,
+    /^(Supplementary[\s_-]+)?(Fig(?:ure)?\.?|Table)[\s._-]*([sS]?\d+)([a-z])?\b/i,
   );
   if (!match) return trimmed;
   const prefix = match[1] ? "Supplementary " : "";
   const kind = /^table$/i.test(match[2]) ? "Table" : "Figure";
   const number = match[3].toUpperCase();
   return `${prefix}${kind} ${number}`;
+}
+
+function normalizeFigureLabel(label: string): string {
+  return getManifestFigureBaseLabel(label)
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function parseBaseLabel(
@@ -495,7 +507,13 @@ function blockMatchesBaseLabel(
   block: MineruFigureBlock,
   baseLabel: string,
 ): boolean {
-  if (block.labelHints.some((label) => label === baseLabel)) return true;
+  if (
+    block.labelHints.some(
+      (label) => getManifestFigureBaseLabel(label) === baseLabel,
+    )
+  ) {
+    return true;
+  }
   const pattern = labelMentionPattern(baseLabel);
   if (!pattern) return false;
   return block.captionHints.some((caption) => pattern.test(caption));
@@ -590,6 +608,185 @@ function getEmbedCoveredBlockPaths(
   );
 }
 
+function extractedFigureMatchesBlock(
+  figure: ExtractedPdfFigure,
+  block: MineruFigureBlock,
+): boolean {
+  if (figure.mineruBlockId && figure.mineruBlockId === block.blockId) {
+    return true;
+  }
+  const baseLabel = normalizeFigureLabel(figure.baseLabel || figure.label);
+  return Boolean(
+    baseLabel &&
+    block.labelHints.some((label) => normalizeFigureLabel(label) === baseLabel),
+  );
+}
+
+function embedCoversExtractedFigure(
+  embed: { alt: string; target: string },
+  block: MineruFigureBlock,
+  extractedFigures: ExtractedPdfFigure[],
+): boolean {
+  return extractedFigures
+    .filter((figure) => extractedFigureMatchesBlock(figure, block))
+    .some((figure) => pathsMatch(figure.cropPath, embed.target));
+}
+
+function extractedFigureMatchesBaseLabel(
+  figure: ExtractedPdfFigure,
+  baseLabel: string,
+): boolean {
+  const expected = normalizeFigureLabel(baseLabel);
+  return Boolean(
+    expected &&
+    [figure.baseLabel, figure.label].some(
+      (label) => normalizeFigureLabel(label || "") === expected,
+    ),
+  );
+}
+
+function embedLooksLikeExtractedCropForLabel(
+  embed: { alt: string; target: string },
+  baseLabel: string,
+): boolean {
+  const target = normalizePath(embed.target);
+  if (!/(^|\/)figure_crops\/crops\//.test(target)) return false;
+  const pattern = labelMentionPattern(baseLabel);
+  if (pattern?.test(`${embed.alt} ${target}`)) return true;
+  const normalizedLabel = baseLabel
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]+/g, "");
+  return Boolean(
+    normalizedLabel && target.toLowerCase().includes(normalizedLabel),
+  );
+}
+
+function embedCoversExtractedBaseLabel(
+  embed: { alt: string; target: string },
+  baseLabel: string,
+  extractedFigures: ExtractedPdfFigure[],
+): boolean {
+  return (
+    extractedFigures
+      .filter((figure) => extractedFigureMatchesBaseLabel(figure, baseLabel))
+      .some((figure) => pathsMatch(figure.cropPath, embed.target)) ||
+    embedLooksLikeExtractedCropForLabel(embed, baseLabel)
+  );
+}
+
+function blockForBaseLabel(
+  blocks: MineruFigureBlock[],
+  baseLabel: string,
+): MineruFigureBlock {
+  return (
+    blocks.find((block) => blockMatchesBaseLabel(block, baseLabel)) || {
+      blockId: `requested:${baseLabel}`,
+      kind: baseLabel.startsWith("Table ") ? "table" : "figure",
+      imagePaths: [],
+      markdownStart: 0,
+      markdownEnd: 0,
+      contextStart: 0,
+      contextEnd: 0,
+      labelHints: [baseLabel],
+      captionHints: [],
+      sectionHeading: null,
+      confidence: "high",
+      ambiguous: false,
+    }
+  );
+}
+
+function validateRequestedFigureCropEmbeds(args: {
+  embeds: Array<{ alt: string; target: string }>;
+  content: string;
+  requestText: string;
+  blocks: MineruFigureBlock[];
+  extractedFigures: ExtractedPdfFigure[];
+}): FigureBlockEmbedValidationResult | null {
+  const refs = extractQueryRefs(args.requestText);
+  for (const ref of refs) {
+    if (
+      args.embeds.some((embed) =>
+        embedCoversExtractedBaseLabel(
+          embed,
+          ref.baseLabel,
+          args.extractedFigures,
+        ),
+      )
+    ) {
+      continue;
+    }
+    const block = blockForBaseLabel(args.blocks, ref.baseLabel);
+    if (block.ambiguous && statesAmbiguity(args.content, block)) continue;
+    const availablePaths = args.extractedFigures
+      .filter((figure) =>
+        extractedFigureMatchesBaseLabel(figure, ref.baseLabel),
+      )
+      .map((figure) => figure.cropPath);
+    return {
+      block,
+      embeddedCount: 0,
+      availableCount: availablePaths.length,
+      availablePaths,
+      severity: "block",
+      message:
+        `Missing extracted PDF figure crop: ${ref.baseLabel} was requested for this note, but the note embeds no extracted PDF crop for it. ` +
+        `First call paper_read mode:'figures' and embed the extracted crop path returned by that tool. ` +
+        `Do not save a figure note with MinerU source images or without the extracted crop. Available extracted crop paths: ${
+          availablePaths.join(", ") || "none"
+        }`,
+    };
+  }
+  return null;
+}
+
+function requestsAllFigures(text: string): boolean {
+  return /\b(?:all|every|each)\s+(?:of\s+the\s+)?fig(?:ure)?s?\b/i.test(text);
+}
+
+function explicitlyAllowsPartialFigureNote(text: string): boolean {
+  return /\bpartial(?:\s+note)?\b|\bonly\s+(?:the\s+)?(?:available|extracted)\b|\bmissing\s+figures?\b/i.test(
+    text,
+  );
+}
+
+function isMainExpectedFigure(figure: ExpectedPdfFigure): boolean {
+  const parsed = parseBaseLabel(figure.baseLabel || figure.label);
+  return Boolean(
+    parsed &&
+      parsed.kind === "Figure" &&
+      !parsed.supplementary &&
+      !parsed.number.startsWith("S"),
+  );
+}
+
+function validateMissingExpectedFigures(args: {
+  content: string;
+  requestText: string;
+  blocks: MineruFigureBlock[];
+  missingFigures: ExpectedPdfFigure[];
+}): FigureBlockEmbedValidationResult | null {
+  const combined = `${args.requestText}\n${args.content}`;
+  if (!requestsAllFigures(combined)) return null;
+  if (explicitlyAllowsPartialFigureNote(combined)) return null;
+  const missing = args.missingFigures.find(isMainExpectedFigure);
+  if (!missing) return null;
+  const baseLabel = missing.baseLabel || missing.label;
+  const block = blockForBaseLabel(args.blocks, baseLabel);
+  return {
+    block,
+    embeddedCount: 0,
+    availableCount: 0,
+    availablePaths: [],
+    severity: "block",
+    message:
+      `Cannot save an all-figures note because ${baseLabel} has no extracted PDF crop. ` +
+      `Call paper_read mode:'figures' again after fixing extraction, or ask explicitly for a partial note. ` +
+      `Do not save an all-figures note that silently omits expected figure crops.`,
+  };
+}
+
 function embedMentionsBlock(
   embed: { alt: string; target: string },
   block: MineruFigureBlock,
@@ -623,10 +820,23 @@ export function validateFigureBlockEmbeds(args: {
   content: string;
   requestText: string;
   blocks: MineruFigureBlock[];
+  extractedFigures?: ExtractedPdfFigure[];
+  missingFigures?: ExpectedPdfFigure[];
 }): FigureBlockEmbedValidationResult | null {
   const embeds = extractEmbeddedImages(args.content);
+  const extractedFigures = args.extractedFigures || [];
+  const missingExpectedGuard = validateMissingExpectedFigures({
+    content: args.content,
+    requestText: args.requestText,
+    blocks: args.blocks,
+    missingFigures: args.missingFigures || [],
+  });
+  if (missingExpectedGuard) return missingExpectedGuard;
   for (const block of args.blocks) {
-    if (block.imagePaths.length <= 1) continue;
+    const hasExtractedCropEmbed = embeds.some((embed) =>
+      embedCoversExtractedFigure(embed, block, extractedFigures),
+    );
+    if (hasExtractedCropEmbed) continue;
     const coveredImagePaths = new Set<string>();
     let hasBlockEmbedMention = false;
     for (const embed of embeds) {
@@ -643,7 +853,6 @@ export function validateFigureBlockEmbeds(args: {
       hasBlockEmbedMention ||
       contentMentionsBlock(args.content, args.requestText, block);
     if (!discussed) continue;
-    if (embeddedCount >= block.imagePaths.length) continue;
     if (block.ambiguous && statesAmbiguity(args.content, block)) continue;
     const severity: "block" | "advisory" = block.ambiguous
       ? "advisory"
@@ -652,17 +861,37 @@ export function validateFigureBlockEmbeds(args: {
     return {
       block,
       embeddedCount,
-      availableCount: block.imagePaths.length,
-      availablePaths: block.imagePaths,
+      availableCount: extractedFigures.filter((figure) =>
+        extractedFigureMatchesBlock(figure, block),
+      ).length,
+      availablePaths: extractedFigures
+        .filter((figure) => extractedFigureMatchesBlock(figure, block))
+        .map((figure) => figure.cropPath),
       severity,
       message:
-        `Incomplete MinerU figure block: ${label} has ${block.imagePaths.length} adjacent image${block.imagePaths.length === 1 ? "" : "s"}, ` +
-        `but this note embeds ${embeddedCount}. Embed every image in source order` +
+        `Missing extracted PDF figure crop: ${label} is discussed, but this note ${
+          embeddedCount > 0
+            ? `embeds ${embeddedCount} MinerU source image${embeddedCount === 1 ? "" : "s"}`
+            : "embeds no extracted PDF crop for it"
+        }. Embed the extracted PDF crop path returned by paper_read mode:'figures'` +
         (severity === "advisory"
           ? " or explicitly state the block boundary/panel mapping ambiguity"
           : "") +
-        `. Available paths: ${block.imagePaths.join(", ")}`,
+        `. Available extracted crop paths: ${
+          extractedFigures
+            .filter((figure) => extractedFigureMatchesBlock(figure, block))
+            .map((figure) => figure.cropPath)
+            .join(", ") || "none"
+        }`,
     };
   }
+  const requestedFigureGuard = validateRequestedFigureCropEmbeds({
+    embeds,
+    content: args.content,
+    requestText: args.requestText,
+    blocks: args.blocks,
+    extractedFigures,
+  });
+  if (requestedFigureGuard) return requestedFigureGuard;
   return null;
 }

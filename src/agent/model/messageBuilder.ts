@@ -396,9 +396,10 @@ function buildFigureMineruInstruction(
     .join("\n");
   return (
     "TURN RULE: This is a figure/table interpretation task and MinerU cache is available for at least one in-scope paper. " +
-    "Use the MinerU cache first: read `manifest.json` with `file_io`, find the requested figure/table entry, read the matching `full.md` section slice by offset/length for caption and surrounding text, then read the extracted image path with `file_io` when a figure image is needed. " +
-    "For MinerU compound figures, treat adjacent image runs in full.md as one block: read every image path in that block plus the full figure text before answering; for explicit panel requests, focus on the requested panel evidence without treating one image as the whole figure. Panel suffixes are hints only. " +
-    "Use `paper_read({ mode:'visual', query:'<figure/table label>' })` only when MinerU is absent, the MinerU lookup/image load fails, or the user explicitly asks for rendered/raw PDF pages, page screenshots, page layout, exact pages, or visible-reader inspection.\n" +
+    "For figure/image questions, call `paper_read({ mode:'figures', query:'<figure/table label or all figures>' })` first. This returns precise PDF crops plus captions/provenance. " +
+    "Use `full.md`/manifest text for captions and surrounding textual evidence, but do not read or embed MinerU image paths for ordinary figure interpretation. " +
+    "For explicit panel requests, inspect the whole extracted figure crop and treat panel suffixes as hints. " +
+    "Use `paper_read({ mode:'visual', query:'<page/layout request>' })` only when the user explicitly asks for rendered/raw PDF pages, page screenshots, page layout, exact pages, or visible-reader inspection.\n" +
     `Available MinerU cache directories:\n${cacheHints}`
   );
 }
@@ -464,7 +465,7 @@ function buildTextOnlyModelInstruction(request: AgentRuntimeRequest): string {
     `MODEL LIMITATION: ${modelLabel} is treated as text-only in this plugin. ` +
     "Do not rely on screenshots, PDF page images, or image-file visual inspection. " +
     "For MinerU-cached papers, prefer `manifest.json`, `full.md` section offsets, captions, tables, formulas, and surrounding extracted text. " +
-    "If the user asks for information that requires direct visual inspection and only an image is available, state that this model cannot inspect the image directly and answer only from extracted text/captions."
+    "For figure workflows, you may still call `paper_read({ mode:'figures' })` to obtain extracted crop paths, captions, warnings, and provenance for note embedding, but do not make unsupported visual claims unless an image-capable model inspected the crop."
   );
 }
 

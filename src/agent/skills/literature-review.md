@@ -49,7 +49,7 @@ Deep-read only the **3-5 most relevant papers** to the review topic. If `library
 
 1. Use `paper_read({ mode:'overview', targets:[...] })` for selected papers.
 2. For targeted claims: `paper_read({ mode:'targeted', query:'...', targets:[...] })` with focused questions (e.g., "What methods were used?", "What were the key findings?").
-3. Use `paper_read({ mode:'visual', query:'...' })` or MinerU `file_io` image reads only when figures are directly relevant.
+3. Use `paper_read({ mode:'figures', query:'...' })` only when figures are directly relevant; reserve `mode:'visual'` for explicit page/layout inspection.
 
 Prioritize breadth over depth — it is better to include 15 papers with abstract-level understanding than 5 papers with full-text reads.
 
@@ -80,7 +80,7 @@ Write the review directly in the chat response. Use this structure:
    - List all cited papers in alphabetical order
    - Format: `Author(s). (Year). Title. *Journal*, Volume(Issue), Pages.`
 
-If key figures from deep-read papers would strengthen a thematic point, embed them: `![Figure caption](file:///{mineruCacheDir}/images/filename.png)`. Place figures within the thematic sections they relate to, not in a separate section.
+If key figures from deep-read papers would strengthen a thematic point, first call `paper_read({ mode:'figures', query:'<figure request>' })` and embed the extracted PDF crop paths it returns. Place figures within the thematic sections they relate to, not in a separate section. Do not embed MinerU source image paths.
 
 ### Citation rules
 

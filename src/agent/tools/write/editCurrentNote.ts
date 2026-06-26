@@ -469,9 +469,10 @@ export function createEditCurrentNoteTool(
         "When the user asks to create/write/save a new item note, call `edit_current_note` with mode 'create', target 'item', and `content`; create means a brand-new child note, not appending to the response-save note. " +
         "For standalone notes, call `edit_current_note` with mode 'create', target 'standalone', and `content`. " +
         "Pass Markdown by default. When the user explicitly requests HTML output (e.g. for styled note templates), pass well-formed HTML with inline styles directly. " +
-        "When the note discusses a specific figure or table you previously read via file_io, embed the image: `![Figure N](file:///{path})` — auto-imported as a Zotero attachment. " +
-        "For any MinerU figure/table block with adjacent images, embed every available image path from that block in source order, even for panel-specific notes; state clearly if any image path is unavailable. " +
-        "Text-only models may still copy/embed those paths into notes, but must not make unsupported visual claims beyond caption and surrounding-text evidence.",
+        "When the note discusses a specific figure or table, first use `paper_read({ mode:'figures' })` and embed the extracted PDF crop path: `![Figure N](file:///{path})` — auto-imported as a Zotero attachment. " +
+        "If paper_read mode:'figures' returns no_figures, mineru_required, error, zero figures, or no image artifact, do not call `edit_current_note` for that figure note and do not create a text-only substitute. " +
+        "Do not embed MinerU source image paths for figure notes. " +
+        "Text-only models may still copy/embed extracted crop paths into notes, but must not make unsupported visual claims beyond caption and surrounding-text evidence.",
     },
     presentation: {
       label: "Edit / Create / Append Note",
@@ -598,7 +599,9 @@ export function createEditCurrentNoteTool(
           item: context.item,
         });
         if (!snapshot) {
-          throw new Error("No active note is available to edit");
+          throw new Error(
+            "No active note is available to edit. Use mode 'create' with target 'item' when the user asks to write or save a new paper note.",
+          );
         }
         // Apply patches to the plain text representation for the diff preview.
         const patched = applyPatches(snapshot.text, inputExt._patches);
@@ -697,7 +700,9 @@ export function createEditCurrentNoteTool(
         item: context.item,
       });
       if (!snapshot) {
-        throw new Error("No active note is available to edit");
+        throw new Error(
+          "No active note is available to edit. Use mode 'create' with target 'item' when the user asks to write or save a new paper note.",
+        );
       }
 
       // --- Resolve _isHtml for edit mode: only activate when the source

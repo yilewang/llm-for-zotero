@@ -1081,13 +1081,14 @@ describe("primitive agent tools", function () {
       });
       assert.include(
         String(result.error || ""),
-        "Incomplete MinerU figure block",
+        "Missing extracted PDF figure crop",
       );
       assert.include(String(result.error || ""), "Figure 2");
-      assert.include(String(result.error || ""), "3 adjacent");
-      assert.include(String(result.error || ""), "images/fig2a.png");
-      assert.include(String(result.error || ""), "images/fig2b.png");
-      assert.include(String(result.error || ""), "images/fig2c.png");
+      assert.include(String(result.error || ""), "paper_read mode:'figures'");
+      assert.include(
+        String(result.error || ""),
+        "Available extracted crop paths: none",
+      );
       assert.deepEqual(writes, []);
     } finally {
       clearUndoStack(context.request.conversationKey);
@@ -1181,11 +1182,14 @@ describe("primitive agent tools", function () {
 
       assert.include(
         String(result.error || ""),
-        "Incomplete MinerU figure block",
+        "Missing extracted PDF figure crop",
       );
-      assert.include(String(result.error || ""), "images/a.jpg");
-      assert.include(String(result.error || ""), "images/b.jpg");
-      assert.include(String(result.error || ""), "images/c.jpg");
+      assert.include(String(result.error || ""), "1 MinerU source image");
+      assert.include(String(result.error || ""), "paper_read mode:'figures'");
+      assert.include(
+        String(result.error || ""),
+        "Available extracted crop paths: none",
+      );
       assert.deepEqual(writes, []);
     } finally {
       clearUndoStack(context.request.conversationKey);
@@ -1287,12 +1291,15 @@ describe("primitive agent tools", function () {
     }
   });
 
-  it("file_io allows Markdown notes that embed every available compound-figure panel", async function () {
+  it("file_io allows Markdown notes that embed the extracted PDF figure crop", async function () {
     const tool = createFileIOTool();
     const encoder = new TextEncoder();
     const fileContent = new Map<string, string>();
     const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
-    const manifestPath = "/tmp/llm-for-zotero-mineru/77/manifest.json";
+    const cacheDir = "/tmp/llm-for-zotero-mineru/77";
+    const manifestPath = `${cacheDir}/manifest.json`;
+    const cropCachePath = `${cacheDir}/figure_crops/figure_geometry.json`;
+    const cropPath = `${cacheDir}/figure_crops/crops/figure-2.png`;
     const manifest = {
       sections: [],
       totalChars: 0,
@@ -1321,11 +1328,44 @@ describe("primitive agent tools", function () {
       ],
       allTables: [],
     };
+    const cropCache = {
+      version: 1,
+      attachmentId: 77,
+      manifestHash: "test",
+      pdfFingerprint: "test",
+      renderScale: 1.8,
+      algorithmVersion: 1,
+      generatedAt: 1,
+      entries: [
+        {
+          id: "figure-2",
+          label: "Figure 2",
+          baseLabel: "Figure 2",
+          pageNumber: 4,
+          cropPath,
+          captionText: "Figure 2. Attractor-network decision-making.",
+          rect: { pageIndex: 3, x: 10, y: 10, width: 200, height: 160 },
+          confidence: 0.95,
+          source: "caption_bounded_region",
+          warnings: [],
+          mineruImagePaths: [
+            `${cacheDir}/images/fig2a.png`,
+            `${cacheDir}/images/fig2b.png`,
+            `${cacheDir}/images/fig2c.png`,
+          ],
+        },
+      ],
+    };
     (globalThis as { IOUtils?: unknown }).IOUtils = {
-      exists: async (path: string) => path === manifestPath,
+      exists: async (path: string) =>
+        path === manifestPath || path === cropCachePath,
       read: async (path: string) => {
-        if (path !== manifestPath) throw new Error(`Unexpected read: ${path}`);
-        return encoder.encode(JSON.stringify(manifest));
+        if (path === manifestPath)
+          return encoder.encode(JSON.stringify(manifest));
+        if (path === cropCachePath) {
+          return encoder.encode(JSON.stringify(cropCache));
+        }
+        throw new Error(`Unexpected read: ${path}`);
       },
       write: async (path: string, bytes: Uint8Array) => {
         fileContent.set(path, new TextDecoder().decode(bytes));
@@ -1338,7 +1378,7 @@ describe("primitive agent tools", function () {
       title: "Stochastic Dynamics",
       firstCreator: "Rolls",
       year: "2012",
-      mineruCacheDir: "/tmp/llm-for-zotero-mineru/77",
+      mineruCacheDir: cacheDir,
     };
     const context: AgentToolContext = {
       ...baseContext,
@@ -1352,9 +1392,7 @@ describe("primitive agent tools", function () {
 
     try {
       const content = [
-        "![Figure 2a. Attractor architecture](images/fig2a.png)",
-        "![Figure 2b. Integrate-and-fire architecture](images/fig2b.png)",
-        "![Figure 2c. Energy landscape](images/fig2c.png)",
+        `![Figure 2. Attractor-network decision-making](${cropPath})`,
         "",
         "## Figure 2 - Attractor-network decision-making",
         "",
@@ -1472,7 +1510,7 @@ describe("primitive agent tools", function () {
 
       assert.include(
         String(result.error || ""),
-        "Incomplete MinerU figure block",
+        "Missing extracted PDF figure crop",
       );
       assert.include(String(result.error || ""), "Figure 2");
       assert.isUndefined(
@@ -1799,6 +1837,35 @@ describe("primitive agent tools", function () {
       assert.isFalse(
         await tool.shouldRequireConfirmation?.(commandWrite.value, context),
       );
+
+      const readOnlyPythonComparison = tool.validate({
+        command: [
+          'python3 -c "',
+          "with open('/tmp/existing.md', 'r') as f:",
+          "    text = f.read()",
+          "idx = text.find('Fig. 1')",
+          "if idx >= 0:",
+          "    print(text[idx:idx+800])",
+          "else:",
+          "    print('Not found')",
+          '"',
+        ].join("\n"),
+      });
+      assert.isTrue(readOnlyPythonComparison.ok);
+      if (!readOnlyPythonComparison.ok) return;
+      (globalThis as { IOUtils?: unknown }).IOUtils = undefined;
+      assert.isFalse(
+        await tool.shouldRequireConfirmation?.(
+          readOnlyPythonComparison.value,
+          context,
+        ),
+      );
+      (globalThis as { IOUtils?: unknown }).IOUtils = {
+        exists: async (path: string) => existingPaths.has(path),
+        remove: async (path: string) => {
+          removedPaths.push(path);
+        },
+      };
 
       const destructive = tool.validate({ command: "rm -rf /tmp/example" });
       assert.isTrue(destructive.ok);
@@ -2427,9 +2494,10 @@ describe("primitive agent tools", function () {
       assert.equal(result.status, "rejected");
       assert.include(
         String(result.error || ""),
-        "Incomplete MinerU figure block",
+        "Missing extracted PDF figure crop",
       );
       assert.include(String(result.error || ""), "Figure 2");
+      assert.include(String(result.error || ""), "paper_read mode:'figures'");
       assert.isFalse(replaced);
     } finally {
       clearUndoStack(context.request.conversationKey);
@@ -2437,7 +2505,125 @@ describe("primitive agent tools", function () {
     }
   });
 
-  it("edit_current_note allows complete MinerU figure-block embeds", async function () {
+  it("edit_current_note rejects explicit figure notes without extracted crop embeds", async function () {
+    let replaced = false;
+    const tool = createEditCurrentNoteTool({
+      getActiveNoteSnapshot: () => ({
+        noteId: 55,
+        title: "Draft Note",
+        html: "<p>Original body</p>",
+        text: "Original body",
+        libraryID: 1,
+        noteKind: "standalone",
+      }),
+      replaceCurrentNote: async () => {
+        replaced = true;
+        throw new Error("replaceCurrentNote should not run");
+      },
+      restoreNoteHtml: async () => {},
+    } as never);
+    const encoder = new TextEncoder();
+    const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
+    const cacheDir = "/tmp/llm-for-zotero-mineru/92";
+    const contentListPath = `${cacheDir}/paper_content_list.json`;
+    const fullMd = [
+      "## Neural networks",
+      "",
+      "![](images/fig1a.png)",
+      "",
+      "![](images/fig1b.png)",
+      "",
+      "![](images/fig1cd.png)",
+      "",
+      "Fig. 1. Neural networks.",
+    ].join("\n");
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      read: async (path: string) => {
+        if (path === `${cacheDir}/full.md`) return encoder.encode(fullMd);
+        if (path === contentListPath) {
+          return encoder.encode(
+            JSON.stringify([
+              {
+                type: "image",
+                img_path: "images/fig1a.png",
+                image_caption: ["A"],
+              },
+              {
+                type: "image",
+                img_path: "images/fig1b.png",
+                image_caption: ["B"],
+              },
+              {
+                type: "image",
+                img_path: "images/fig1cd.png",
+                image_caption: ["C", "D"],
+              },
+            ]),
+          );
+        }
+        throw new Error(`Unexpected read: ${path}`);
+      },
+      getChildren: async (path: string) =>
+        path === cacheDir ? [contentListPath] : [],
+    };
+    const context: AgentToolContext = {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKey: 43_014,
+        userText: "help me write a note about Figure 1 and save it to my note",
+        activeNoteContext: {
+          noteId: 55,
+          title: "Draft Note",
+          noteKind: "standalone" as const,
+          noteText: "Original body",
+        },
+        fullTextPaperContexts: [
+          {
+            itemId: 91,
+            contextItemId: 92,
+            title: "A theory for how sensorimotor skills are learned",
+            mineruCacheDir: cacheDir,
+          },
+        ],
+      },
+    };
+
+    try {
+      const validated = tool.validate({
+        content: [
+          "## Figure 1 - Neural networks",
+          "",
+          "Figure 1 explains the stability-plasticity problem through four panels.",
+        ].join("\n"),
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+
+      const result = (await tool.execute(validated.value, context)) as Record<
+        string,
+        unknown
+      >;
+
+      assert.equal(result.status, "rejected");
+      assert.include(
+        String(result.error || ""),
+        "Missing extracted PDF figure crop",
+      );
+      assert.include(String(result.error || ""), "Figure 1");
+      assert.include(String(result.error || ""), "paper_read mode:'figures'");
+      assert.include(
+        String(result.error || ""),
+        "embeds no extracted PDF crop",
+      );
+      assert.isFalse(replaced);
+    } finally {
+      clearUndoStack(context.request.conversationKey);
+      (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
+    }
+  });
+
+  it("edit_current_note allows extracted PDF figure crop embeds", async function () {
     let replacedContent = "";
     const tool = createEditCurrentNoteTool({
       replaceCurrentNote: async ({ content }: { content: string }) => {
@@ -2456,6 +2642,8 @@ describe("primitive agent tools", function () {
     const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
     const cacheDir = "/tmp/llm-for-zotero-mineru/91";
     const contentListPath = `${cacheDir}/paper_content_list.json`;
+    const cropCachePath = `${cacheDir}/figure_crops/figure_geometry.json`;
+    const cropPath = `${cacheDir}/figure_crops/crops/figure-2.png`;
     const fullMd = [
       "![](images/fig2a.png)",
       "",
@@ -2465,9 +2653,40 @@ describe("primitive agent tools", function () {
       "",
       "Figure 2. Attractor network for probabilistic decision-making.",
     ].join("\n");
+    const cropCache = {
+      version: 1,
+      attachmentId: 91,
+      manifestHash: "test",
+      pdfFingerprint: "test",
+      renderScale: 1.8,
+      algorithmVersion: 1,
+      generatedAt: 1,
+      entries: [
+        {
+          id: "figure-2",
+          label: "Figure 2",
+          baseLabel: "Figure 2",
+          pageNumber: 2,
+          cropPath,
+          captionText: "Figure 2. Attractor network.",
+          rect: { pageIndex: 1, x: 10, y: 10, width: 200, height: 160 },
+          confidence: 0.95,
+          source: "caption_bounded_region",
+          warnings: [],
+          mineruImagePaths: [
+            `${cacheDir}/images/fig2a.png`,
+            `${cacheDir}/images/fig2b.png`,
+            `${cacheDir}/images/fig2c.png`,
+          ],
+        },
+      ],
+    };
     (globalThis as { IOUtils?: unknown }).IOUtils = {
       read: async (path: string) => {
         if (path === `${cacheDir}/full.md`) return encoder.encode(fullMd);
+        if (path === cropCachePath) {
+          return encoder.encode(JSON.stringify(cropCache));
+        }
         if (path === contentListPath) {
           return encoder.encode(
             JSON.stringify([
@@ -2505,11 +2724,7 @@ describe("primitive agent tools", function () {
 
     try {
       const content = [
-        "![Figure 2a](images/fig2a.png)",
-        "",
-        "![Figure 2b](images/fig2b.png)",
-        "",
-        "![Figure 2c](images/fig2c.png)",
+        `![Figure 2](${cropPath})`,
         "",
         "Figure 2 explains the attractor-network interpretation.",
       ].join("\n");
@@ -2528,6 +2743,149 @@ describe("primitive agent tools", function () {
         title: "Draft Note",
       });
       assert.equal(replacedContent, content);
+    } finally {
+      clearUndoStack(context.request.conversationKey);
+      (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
+    }
+  });
+
+  it("edit_current_note rejects all-figures notes when expected crops are missing", async function () {
+    let replaced = false;
+    const tool = createEditCurrentNoteTool({
+      replaceCurrentNote: async () => {
+        replaced = true;
+        throw new Error("replaceCurrentNote should not run");
+      },
+      restoreNoteHtml: async () => {},
+    } as never);
+    const encoder = new TextEncoder();
+    const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
+    const cacheDir = "/tmp/llm-for-zotero-mineru/93";
+    const contentListPath = `${cacheDir}/paper_content_list.json`;
+    const cropCachePath = `${cacheDir}/figure_crops/figure_geometry.json`;
+    const cropPath = `${cacheDir}/figure_crops/crops/figure-1.png`;
+    const fullMd = [
+      "Figure 1. First figure.",
+      "",
+      "Figure 2. Second figure.",
+    ].join("\n");
+    const cropCache = {
+      version: 2,
+      attachmentId: 93,
+      manifestHash: "test",
+      pdfFingerprint: "test",
+      renderScale: 1.8,
+      algorithmVersion: 9,
+      generatedAt: 1,
+      expectedFigures: [
+        {
+          label: "Figure 1",
+          baseLabel: "Figure 1",
+          pageNumber: 2,
+          captionPageNumber: 2,
+          status: "ok",
+          cropPath,
+        },
+        {
+          label: "Figure 2",
+          baseLabel: "Figure 2",
+          pageNumber: 4,
+          captionPageNumber: 5,
+          status: "no_confident_candidate",
+        },
+      ],
+      missingFigures: [
+        {
+          label: "Figure 2",
+          baseLabel: "Figure 2",
+          pageNumber: 4,
+          captionPageNumber: 5,
+          status: "no_confident_candidate",
+        },
+      ],
+      entries: [
+        {
+          id: "figure-1",
+          label: "Figure 1",
+          baseLabel: "Figure 1",
+          pageNumber: 2,
+          cropPath,
+          rect: { left: 10, top: 10, width: 200, height: 160 },
+          confidence: 0.95,
+          source: "pdf-image-object",
+          warnings: [],
+          mineruImagePaths: [],
+        },
+      ],
+    };
+    (globalThis as { IOUtils?: unknown }).IOUtils = {
+      read: async (path: string) => {
+        if (path === `${cacheDir}/full.md`) return encoder.encode(fullMd);
+        if (path === cropCachePath) {
+          return encoder.encode(JSON.stringify(cropCache));
+        }
+        if (path === contentListPath) {
+          return encoder.encode(
+            JSON.stringify([
+              {
+                type: "image",
+                img_path: "images/fig1.png",
+                image_caption: ["Figure 1. First figure."],
+              },
+              {
+                type: "image",
+                img_path: "images/fig2.png",
+                image_caption: ["Figure 2. Second figure."],
+              },
+            ]),
+          );
+        }
+        throw new Error(`Unexpected read: ${path}`);
+      },
+      getChildren: async (path: string) =>
+        path === cacheDir ? [contentListPath] : [],
+    };
+    const context: AgentToolContext = {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        conversationKey: 43_014,
+        userText: "help me explain all figures in this paper and save it into my note",
+        fullTextPaperContexts: [
+          {
+            itemId: 93,
+            contextItemId: 93,
+            title: "Cross-page Figures",
+            mineruCacheDir: cacheDir,
+          },
+        ],
+      },
+    };
+
+    try {
+      const content = [
+        "# All Figures",
+        "",
+        `![Figure 1](${cropPath})`,
+        "",
+        "Figure 1 is available.",
+      ].join("\n");
+      const validated = tool.validate({ content });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+
+      const result = (await tool.execute(validated.value, context)) as Record<
+        string,
+        unknown
+      >;
+
+      assert.equal(result.status, "rejected");
+      assert.include(
+        String(result.error || ""),
+        "Cannot save an all-figures note",
+      );
+      assert.include(String(result.error || ""), "Figure 2");
+      assert.isFalse(replaced);
     } finally {
       clearUndoStack(context.request.conversationKey);
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;

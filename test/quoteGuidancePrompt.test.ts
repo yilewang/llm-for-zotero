@@ -130,7 +130,8 @@ describe("quote guidance prompts", function () {
 
   it("includes balanced evidence guidance in paper and source quote helpers", function () {
     const paperGuidance = buildPaperQuoteCitationGuidance(paper()).join("\n");
-    const genericGuidance = buildGenericSourceQuoteCitationGuidance().join("\n");
+    const genericGuidance =
+      buildGenericSourceQuoteCitationGuidance().join("\n");
 
     assertBalancedEvidenceGuidance(paperGuidance);
     assertDirectQuoteSafety(paperGuidance);
@@ -191,7 +192,7 @@ describe("quote guidance prompts", function () {
     }
   });
 
-  it("guides figure tasks with MinerU cache through cached images before PDF rendering", async function () {
+  it("guides figure tasks with MinerU cache through extracted PDF crops", async function () {
     const paperContext: PaperContextRef = {
       ...paper(),
       title: "Figure Paper",
@@ -208,23 +209,20 @@ describe("quote guidance prompts", function () {
     );
     const text = messages.map((message) => message.content).join("\n");
 
-    assert.include(text, "Use the MinerU cache first");
-    assert.include(text, "manifest.json");
+    assert.include(text, "paper_read({ mode:'figures'");
+    assert.include(text, "precise PDF crops");
     assert.include(text, "full.md");
-    assert.include(text, "read the extracted image path with `file_io`");
+    assert.include(text, "do not read or embed MinerU image paths");
     assert.include(text, "/tmp/llm-for-zotero-mineru/12");
     assert.include(text, "Use `paper_read({ mode:'visual'");
-    assert.include(text, "only when MinerU is absent");
-    assert.notInclude(
-      text,
-      "Prefer the semantic `paper_read` path: use `paper_read({ mode:'visual'",
-    );
+    assert.include(text, "only when the user explicitly asks");
+    assert.notInclude(text, "read the extracted image path with `file_io`");
   });
 
   it("describes figure image support generically without naming specific models", function () {
     const text = readSkill("../src/agent/skills/analyze-figures.md");
 
-    assert.include(text, "Image-capable models");
+    assert.include(text, "Visual models");
     for (const modelName of ["GPT-4o", "Codex", "Claude", "Gemini"]) {
       assert.notInclude(text, modelName);
     }

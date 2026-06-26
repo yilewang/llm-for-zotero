@@ -31,6 +31,7 @@ import { createImportLocalFilesTool } from "./write/importLocalFiles";
 import { createFileIOTool } from "./write/fileIO";
 import { createZoteroScriptTool } from "./write/zoteroScript";
 import { PdfPageService } from "../services/pdfPageService";
+import { PdfFigureExtractionService } from "../services/pdfFigureExtractionService";
 import type { AgentToolDefinition } from "../types";
 import { fail, ok, PAPER_CONTEXT_REF_SCHEMA, validateObject } from "./shared";
 
@@ -108,7 +109,7 @@ const LIBRARY_UPDATE_GUIDANCE: ToolGuidance = {
 const NOTE_WRITE_GUIDANCE: ToolGuidance = {
   matches: () => true,
   instruction:
-    "When a Zotero note is already open/current and the user asks to edit, rewrite, revise, polish, or update that note, call note_write with mode:'edit'. NEVER output note text directly in chat. For edits, PREFER patches (find-and-replace pairs) over content (full rewrite). When the user asks to append/add content to an existing note, call note_write with mode:'append' and content; pass targetNoteId when the destination note is known. When the user asks to create/write/save a new item note, call note_write with mode:'create', target:'item', and content; create means a brand-new child note, not appending to the response-save note. For standalone notes, call note_write with mode:'create', target:'standalone', and content. Pass Markdown by default. When the user explicitly requests HTML output (e.g. for styled note templates), pass well-formed HTML with inline styles directly. When the note discusses a specific figure or table you previously read via file_io, embed the image: `![Figure N](file:///{path})`; it is auto-imported as a Zotero attachment. For any multi-image MinerU block, embed every available adjacent image path in source order and state clearly if any image path is unavailable; text-only models may still copy/embed paths but must not make unsupported visual claims.",
+    "When a Zotero note is already open/current and the user asks to edit, rewrite, revise, polish, or update that note, call note_write with mode:'edit'. NEVER output note text directly in chat. For edits, PREFER patches (find-and-replace pairs) over content (full rewrite). When the user asks to append/add content to an existing note, call note_write with mode:'append' and content; pass targetNoteId when the destination note is known. When the user asks to create/write/save a new item note, call note_write with mode:'create', target:'item', and content; create means a brand-new child note, not appending to the response-save note. For standalone notes, call note_write with mode:'create', target:'standalone', and content. Pass Markdown by default. When the note discusses a specific figure or table, first call paper_read with mode:'figures' and embed the extracted PDF crop path: `![Figure N](file:///{path})`; it is auto-imported as a Zotero attachment. If paper_read mode:'figures' returns no_figures, mineru_required, error, zero figures, or no image artifact, do not call note_write for that figure note and do not create a text-only substitute. Do not embed MinerU source image paths for figure notes; text-only models may still copy/embed extracted crop paths but must not make unsupported visual claims.",
 };
 
 const LIBRARY_IMPORT_GUIDANCE: ToolGuidance = {
@@ -395,6 +396,9 @@ export function createBuiltInToolRegistry(
   const libraryRetrieve = createLibraryRetrieveTool(
     new LibraryRetrieveService(deps.zoteroGateway, deps.pdfService),
   );
+  const figureExtractionService = new PdfFigureExtractionService(
+    deps.pdfPageService,
+  );
   const readPaper = createReadPaperTool(deps.pdfService, deps.zoteroGateway);
   const searchPaper = createSearchPaperTool(
     deps.retrievalService,
@@ -451,6 +455,7 @@ export function createBuiltInToolRegistry(
       deps.retrievalService,
       deps.pdfPageService,
       deps.zoteroGateway,
+      figureExtractionService,
     ),
   );
   registry.register(

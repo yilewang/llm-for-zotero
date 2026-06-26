@@ -67,7 +67,6 @@ export type ContextCacheTelemetryRecord = {
 const CACHE_MIN_TOKENS = 1024;
 const ANTHROPIC_1H_CACHE_MIN_TOKENS = 16000;
 const TELEMETRY_PREF_NAME = "contextCacheTelemetry";
-const MAX_PERSISTED_TELEMETRY_RECORDS = 100;
 const telemetryByCacheKey = new Map<string, ContextCacheTelemetryRecord>();
 let telemetryLoaded = false;
 
@@ -76,29 +75,15 @@ function getPrefName(key: string): string | null {
   return prefsPrefix ? `${prefsPrefix}.${key}` : null;
 }
 
-function getZoteroPref(key: string): unknown {
+function clearZoteroPref(key: string): void {
   try {
     const prefName = getPrefName(key);
     if (!prefName) return undefined;
-    return Zotero.Prefs.get(prefName, true);
-  } catch (_err) {
-    return undefined;
-  }
-}
-
-function setZoteroPref(key: string, value: unknown): void {
-  try {
-    const prefName = getPrefName(key);
-    if (!prefName) return;
-    Zotero.Prefs.set(
-      prefName,
-      typeof value === "string" ||
-        typeof value === "number" ||
-        typeof value === "boolean"
-        ? value
-        : JSON.stringify(value),
-      true,
-    );
+    if (typeof Zotero.Prefs.clear === "function") {
+      Zotero.Prefs.clear(prefName, true);
+    } else {
+      Zotero.Prefs.set(prefName, "", true);
+    }
   } catch (_err) {
     // Preference persistence is best-effort; cache planning still works without it.
   }
@@ -107,47 +92,12 @@ function setZoteroPref(key: string, value: unknown): void {
 function loadPersistedTelemetry(): void {
   if (telemetryLoaded) return;
   telemetryLoaded = true;
-  const raw = getZoteroPref(TELEMETRY_PREF_NAME);
-  if (typeof raw !== "string" || !raw.trim()) return;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return;
-    for (const entry of parsed) {
-      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-        continue;
-      }
-      const row = entry as Record<string, unknown>;
-      const cacheKey = typeof row.cacheKey === "string" ? row.cacheKey : "";
-      const provider =
-        typeof row.provider === "string"
-          ? (row.provider as ProviderPromptCacheProvider)
-          : "unknown";
-      if (!cacheKey) continue;
-      telemetryByCacheKey.set(cacheKey, {
-        cacheKey,
-        provider,
-        hits: Math.max(0, Math.floor(Number(row.hits) || 0)),
-        misses: Math.max(0, Math.floor(Number(row.misses) || 0)),
-        reads: Math.max(0, Math.floor(Number(row.reads) || 0)),
-        writes: Math.max(0, Math.floor(Number(row.writes) || 0)),
-        lastHitRatio:
-          Number.isFinite(Number(row.lastHitRatio)) &&
-          Number(row.lastHitRatio) >= 0
-            ? Math.max(0, Math.min(1, Number(row.lastHitRatio)))
-            : undefined,
-        lastUpdatedAt: Math.max(0, Math.floor(Number(row.lastUpdatedAt) || 0)),
-      });
-    }
-  } catch (_err) {
-    // Ignore corrupted telemetry; it is advisory and can be rebuilt.
-  }
+  clearZoteroPref(TELEMETRY_PREF_NAME);
 }
 
 function persistTelemetry(): void {
-  const records = [...telemetryByCacheKey.values()]
-    .sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt)
-    .slice(0, MAX_PERSISTED_TELEMETRY_RECORDS);
-  setZoteroPref(TELEMETRY_PREF_NAME, JSON.stringify(records));
+  // Telemetry is advisory runtime state. Persisting it into Zotero prefs can
+  // exceed Firefox preference-size guidance, so keep it in memory only.
 }
 
 function normalizeProtocol(value: unknown): string {

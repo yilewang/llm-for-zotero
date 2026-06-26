@@ -422,7 +422,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
     spec: {
       name: "file_io",
       description:
-        "Read or write files on the local filesystem. Reads text files (Markdown, JSON, CSV, etc.) and image files (PNG, JPG, SVG — returned as visual artifacts the model can see). Supports offset/length for partial reads of large files. For ordinary paper Q&A, use paper_read; use file_io for explicit filesystem work or direct MinerU cache inspection such as manifest offsets, section slices, and figure image paths.",
+        "Read or write files on the local filesystem. Reads text files (Markdown, JSON, CSV, etc.) and image files (PNG, JPG, SVG — returned as visual artifacts the model can see). Supports offset/length for partial reads of large files. For ordinary paper Q&A, use paper_read; use file_io for explicit filesystem work or direct MinerU cache metadata inspection such as manifest offsets and section slices. For paper figure interpretation or figure-note embeds, use paper_read mode:'figures'.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -471,7 +471,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
       instruction:
         "Use file_io to read or write files on the user's filesystem. " +
         "For ordinary Zotero paper summaries, methods, key points, and targeted Q&A, use paper_read instead of direct MinerU cache reads. " +
-        "Use file_io for explicit filesystem tasks, direct MinerU manifest/section/image cache inspection, or figure paths needed for note embedding. " +
+        "Use file_io for explicit filesystem tasks or direct MinerU manifest/section cache inspection. For figure interpretation or note figure embeds, use paper_read mode:'figures' and its extracted PDF crop paths rather than MinerU source image paths. " +
         "Common uses: write a Python/R script before running it with run_command, read a CSV/JSON data file, " +
         "save analysis results to the user's Desktop, export formatted bibliographies. " +
         "Always use absolute paths.",

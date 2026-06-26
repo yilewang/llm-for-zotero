@@ -208,12 +208,7 @@ import {
   setLastUsedReasoningLevelForProvider,
 } from "./prefHelpers";
 import { resolveMultiContextPlan } from "./multiContextPlanner";
-import {
-  MAX_MINERU_CONTEXT_IMAGES,
-  resolveContextImageInventory,
-  resolveContextImages,
-  buildImageResolver,
-} from "./mineruImages";
+import { buildImageResolver } from "./mineruImages";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
@@ -251,6 +246,7 @@ import { renderRenderedMarkdownInto } from "./renderedMarkdown";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
 import { getNotesDirectoryConfig } from "../../utils/notesDirectoryConfig";
+import { getWebChatTargetByModelName } from "../../webchat/types";
 import {
   decorateAssistantCitationLinks,
   renderQuoteCitationPlaceholders,
@@ -1493,6 +1489,12 @@ export function shouldShowAssistantFooterActions(
   return !msg.streaming && !msg.compactMarker;
 }
 
+export function shouldShowUserFooterCopyAction(
+  msg: Pick<Message, "text">,
+): boolean {
+  return Boolean(sanitizeText(msg.text || "").trim());
+}
+
 function appendMessageMetaActionButton(params: {
   body?: Element;
   doc: Document;
@@ -1550,6 +1552,35 @@ function appendMessageMetaActionButton(params: {
     );
   }
   params.actions.appendChild(button);
+  return button;
+}
+
+export function appendUserMessageCopyAction(params: {
+  body: Element;
+  doc: Document;
+  actions: HTMLElement;
+  message: Pick<Message, "text">;
+}): HTMLButtonElement | null {
+  if (!shouldShowUserFooterCopyAction(params.message)) return null;
+  const button = appendMessageMetaActionButton({
+    doc: params.doc,
+    actions: params.actions,
+    className: "llm-message-action-copy",
+    title: "Copy query",
+  });
+  button.dataset.userAction = "copy";
+  button.addEventListener("click", async (event: Event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (typeof event.stopImmediatePropagation === "function") {
+      event.stopImmediatePropagation();
+    }
+    await copyTextToClipboard(params.body, params.message.text || "");
+    const status = params.body.querySelector(
+      "#llm-status",
+    ) as HTMLElement | null;
+    if (status) setStatus(status, t("Copied query"), "ready");
+  });
   return button;
 }
 
@@ -3554,83 +3585,7 @@ async function buildContextPlanForRequest(params: {
     .filter(Boolean)
     .join("\n\n");
 
-  // Extract MinerU figure images from the context (if applicable).
-  // Text-only models receive the ordered path inventory instead.
-  const effectiveModel = params.effectiveRequestConfig.model || "";
-  const textOnlyModel = isTextOnlyModel(effectiveModel);
-  let mineruImages: string[] = [];
-  const mineruInventoryBlocks: string[] = [];
-  if (planContext) {
-    const mineruAttachmentIds: number[] = [];
-    const pushMineruAttachmentId = (attachmentId: number | undefined) => {
-      if (!attachmentId || mineruAttachmentIds.includes(attachmentId)) return;
-      const pdfCtx = pdfTextCache.get(attachmentId);
-      if (pdfCtx?.sourceType === "mineru")
-        mineruAttachmentIds.push(attachmentId);
-    };
-    pushMineruAttachmentId(activeContextItem?.id);
-    for (const paper of [
-      ...params.paperContexts,
-      ...params.fullTextPaperContexts,
-    ]) {
-      pushMineruAttachmentId(paper.contextItemId);
-    }
-    // Resolve images from all MinerU papers with a shared total cap.
-    for (const attachmentId of mineruAttachmentIds) {
-      try {
-        if (textOnlyModel) {
-          const inventory = await resolveContextImageInventory({
-            contextText: planContext,
-            attachmentId,
-          });
-          if (inventory.length) {
-            mineruInventoryBlocks.push(
-              [
-                `MinerU image block inventory for attachment ${attachmentId}:`,
-                "Use these ordered source paths for note embedding/copying; do not make visual claims unless supported by captions or surrounding text.",
-                ...inventory.flatMap((entry, index) => {
-                  const paths = entry.absoluteImagePaths?.length
-                    ? entry.absoluteImagePaths
-                    : entry.imagePaths;
-                  return [
-                    `Block ${index + 1}${entry.labelHints?.length ? ` (${entry.labelHints.join("; ")})` : ""}: requested ${entry.requestedPath}`,
-                    ...paths.map(
-                      (path, pathIndex) => `  ${pathIndex + 1}. ${path}`,
-                    ),
-                    ...(entry.captionHints?.length
-                      ? [`  Caption hints: ${entry.captionHints.join(" | ")}`]
-                      : []),
-                    ...(entry.ambiguous
-                      ? [
-                          "  Ambiguity: block boundary or panel mapping is uncertain.",
-                        ]
-                      : []),
-                  ];
-                }),
-              ].join("\n"),
-            );
-          }
-          continue;
-        }
-        if (mineruImages.length >= MAX_MINERU_CONTEXT_IMAGES) break;
-        const images = await resolveContextImages({
-          contextText: planContext,
-          attachmentId,
-          maxImages: MAX_MINERU_CONTEXT_IMAGES - mineruImages.length,
-        });
-        mineruImages.push(...images);
-      } catch (err) {
-        ztoolkit.log("LLM: MinerU figure resolution failed (best-effort)", err);
-      }
-    }
-  }
-  const mineruInventoryText = mineruInventoryBlocks.join("\n\n");
-  const combinedContext = [
-    noteContext,
-    planContext,
-    uploadedPdfContext,
-    mineruInventoryText,
-  ]
+  const combinedContext = [noteContext, planContext, uploadedPdfContext]
     .filter(Boolean)
     .join("\n\n");
 
@@ -3648,7 +3603,7 @@ async function buildContextPlanForRequest(params: {
     ),
     quoteCitations: plan.quoteCitations || [],
     recentPaperContexts: params.recentPaperContexts,
-    mineruImages,
+    mineruImages: [],
   };
 }
 
@@ -6246,7 +6201,7 @@ export async function retryLatestAssistantResponse(
           signal: getAbortController(conversationKey)?.signal,
           setStatusSafely,
         });
-    let combinedContext = contextPlan.combinedContext;
+    const combinedContext = contextPlan.combinedContext;
     assistantMessage.quoteCitations = mergeQuoteCitations(
       assistantMessage.quoteCitations,
       contextPlan.quoteCitations,
@@ -6315,7 +6270,7 @@ export async function retryLatestAssistantResponse(
     // Text-only models reject image_url content, so drop all images.
     const allImages = isTextOnlyModel(effectiveRequestConfig.model || "")
       ? []
-      : [...(retryScreenshotImages || []), ...(contextPlan.mineruImages || [])];
+      : [...(retryScreenshotImages || [])];
     const requestParams = {
       prompt: question,
       context: combinedContext,
@@ -6855,7 +6810,7 @@ export async function editUserTurnAndRetry(opts: {
     item,
     contextSource,
   );
-  let {
+  const {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
   } = includeAutoLoadedPaperContext(
@@ -8366,7 +8321,7 @@ export async function sendQuestion(
           signal: getAbortController(conversationKey)?.signal,
           setStatusSafely,
         });
-    let combinedContext = contextPlan.combinedContext;
+    const combinedContext = contextPlan.combinedContext;
     assistantMessage.quoteCitations = mergeQuoteCitations(
       assistantMessage.quoteCitations,
       contextPlan.quoteCitations,
@@ -8437,7 +8392,7 @@ export async function sendQuestion(
     // Text-only models reject image_url content, so drop all images.
     const allSendImages = isTextOnlyModel(effectiveRequestConfig.model || "")
       ? []
-      : [...(images || []), ...(contextPlan.mineruImages || [])];
+      : [...(images || [])];
     const requestParams = {
       prompt: question,
       context: combinedContext,
@@ -9031,8 +8986,6 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     // [webchat] Show webchat-specific welcome instead of generic instructions
     const effectiveRequestConfig = resolveEffectiveRequestConfig({ item });
     if (effectiveRequestConfig.providerProtocol === "web_sync") {
-      const { getWebChatTargetByModelName } =
-        require("../../webchat/types") as typeof import("../../webchat/types");
       const targetEntry = getWebChatTargetByModelName(
         effectiveRequestConfig.model || "",
       );
@@ -10164,6 +10117,19 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     time.className = "llm-message-time";
     time.textContent = formatTime(msg.timestamp);
     meta.appendChild(time);
+    if (isUser && shouldShowUserFooterCopyAction(msg)) {
+      const actions = doc.createElement("div") as HTMLDivElement;
+      actions.className = "llm-message-actions";
+      appendUserMessageCopyAction({
+        body,
+        doc,
+        actions,
+        message: msg,
+      });
+      if (actions.childElementCount > 0) {
+        meta.appendChild(actions);
+      }
+    }
     if (!isUser && shouldShowAssistantFooterActions(msg)) {
       const pairedUserForActions =
         index > 0 && history[index - 1]?.role === "user"

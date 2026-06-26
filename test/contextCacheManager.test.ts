@@ -258,6 +258,59 @@ describe("context cache manager", function () {
     );
   });
 
+  it("keeps context cache telemetry out of Zotero preferences", function () {
+    const globalScope = globalThis as typeof globalThis & { Zotero?: unknown };
+    const originalZotero = globalScope.Zotero;
+    const prefWrites: Array<{ key: string; value: unknown }> = [];
+    globalScope.Zotero = {
+      Prefs: {
+        get: () => JSON.stringify([{ cacheKey: "old", provider: "openai" }]),
+        set: (key: string, value: unknown) => {
+          prefWrites.push({ key, value });
+        },
+        clear: (key: string) => {
+          prefWrites.push({ key, value: "__cleared__" });
+        },
+      },
+    };
+
+    try {
+      clearContextCacheTelemetry();
+      for (let index = 0; index < 50; index += 1) {
+        const plan = planContextCacheReuse({
+          model: "gpt-5.4",
+          apiBase: "https://api.openai.com/v1/responses",
+          protocol: "responses_api",
+          mode: "full",
+          strategy: "paper-cache-full",
+          contextText: `stable paper text ${index} `.repeat(1200),
+        });
+        recordContextCacheTelemetry(plan, {
+          promptTokens: 2000,
+          completionTokens: 100,
+          totalTokens: 2100,
+          cacheReadTokens: 1600,
+          cacheMissTokens: 400,
+          cacheHitRatio: 0.8,
+        });
+      }
+    } finally {
+      if (originalZotero === undefined) {
+        delete globalScope.Zotero;
+      } else {
+        globalScope.Zotero = originalZotero;
+      }
+    }
+
+    assert.isFalse(
+      prefWrites.some(
+        (entry) =>
+          entry.key.endsWith(".contextCacheTelemetry") &&
+          entry.value !== "__cleared__",
+      ),
+    );
+  });
+
   it("uses Anthropic 1h cache TTL only for warm large official contexts", function () {
     const contextText = "stable paper text ".repeat(5000);
     const coldPlan = planContextCacheReuse({

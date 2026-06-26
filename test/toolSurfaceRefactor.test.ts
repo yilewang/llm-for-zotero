@@ -803,20 +803,19 @@ describe("semantic tool surface", function () {
       })) as Record<string, unknown>;
 
       assert.equal(prepareCalls, 0);
-      assert.equal(output.status, "mineru_cache_available");
-      assert.equal(output.backend, "mineru");
+      assert.equal(output.status, "use_figures_mode");
+      assert.equal(output.backend, "pdf_figure_extraction");
       assert.equal(output.mineruCacheDir, "/tmp/mineru-paper");
-      assert.include(String(output.guidance || ""), "adjacent image runs");
-      assert.include(String(output.guidance || ""), "panel suffixes are hints");
+      assert.include(String(output.guidance || ""), "mode:'figures'");
+      assert.include(
+        String(output.guidance || ""),
+        "Do not read MinerU image paths",
+      );
       assert.equal(output.panelHint, "c");
       const block = (
-        output.figureBlocks as Array<{ imagePaths: string[] }> | undefined
+        output.figureBlocks as Array<Record<string, unknown>> | undefined
       )?.[0];
-      assert.deepEqual(block?.imagePaths, [
-        "/tmp/mineru-paper/images/fig2a.png",
-        "/tmp/mineru-paper/images/fig2b.png",
-        "/tmp/mineru-paper/images/fig2c.png",
-      ]);
+      assert.notProperty(block || {}, "imagePaths");
       assert.notProperty(output, "artifacts");
     } finally {
       if (originalIOUtils === undefined) {
@@ -900,6 +899,246 @@ describe("semantic tool surface", function () {
     assert.deepEqual(requestedPages, [3]);
     assert.equal(output.content?.pageCount, 1);
     assert.lengthOf(output.artifacts || [], 1);
+  });
+
+  it("paper_read exposes a dedicated figures mode", function () {
+    const registry = createTestBuiltInRegistry();
+    const tool = registry.getTool("paper_read");
+    assert.exists(tool);
+    const modeSchema = (
+      tool!.spec.inputSchema as {
+        properties?: { mode?: { enum?: string[] } };
+      }
+    ).properties?.mode;
+
+    assert.include(modeSchema?.enum || [], "figures");
+  });
+
+  it("paper_read figures requires a MinerU-ready paper", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "PDF Figure Paper",
+      firstCreator: "Miller",
+      year: "2025",
+    };
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "figures",
+      query: "Explain Figure 1",
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+
+    const output = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        userText: "Explain Figure 1",
+        selectedPaperContexts: [paperContext],
+      },
+    })) as Record<string, unknown>;
+
+    assert.equal(output.mode, "figures");
+    assert.equal(output.status, "mineru_required");
+    assert.notProperty(output, "artifacts");
+  });
+
+  it("paper_read figures hydrates MinerU cache metadata from the Zotero attachment", async function () {
+    const scopedPaperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "Scoped Figure Paper",
+      firstCreator: "Miller",
+      year: "2025",
+    };
+    const extractionContexts: unknown[] = [];
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [scopedPaperContext],
+        resolvePaperContextTarget: () => scopedPaperContext,
+        getAllChildAttachmentInfos: async () => [
+          {
+            contextItemId: 22,
+            title: "Scoped Figure Paper.pdf",
+            contentType: "application/pdf",
+            indexingState: "indexed",
+            mineruCacheDir: "/tmp/mineru-paper",
+          },
+        ],
+      } as never,
+      {
+        extractFigures: async ({ paperContexts }) => {
+          extractionContexts.push(...paperContexts);
+          return {
+            mode: "figures",
+            status: "ok",
+            query: "Explain Figure 1",
+            figures: [
+              {
+                id: "figure-1",
+                label: "Figure 1",
+                cropPath: "/tmp/mineru-paper/figure_crops/crops/figure-1.png",
+              },
+            ],
+          };
+        },
+      },
+    );
+    const validated = tool.validate({
+      mode: "figures",
+      query: "Explain Figure 1",
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+
+    const output = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        userText: "Explain Figure 1",
+        selectedPaperContexts: [scopedPaperContext],
+      },
+    })) as Record<string, unknown>;
+
+    assert.equal(output.status, "ok");
+    assert.deepInclude(extractionContexts, {
+      ...scopedPaperContext,
+      mineruCacheDir: "/tmp/mineru-paper",
+      contentSourceMode: "mineru",
+    });
+  });
+
+  it("paper_read figures returns extracted PDF crops and never MinerU image artifacts", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "MinerU Figure Paper",
+      firstCreator: "Miller",
+      year: "2025",
+      mineruCacheDir: "/tmp/mineru-paper",
+    };
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+      {
+        extractFigures: async () => ({
+          mode: "figures",
+          status: "ok",
+          query: "Explain Figure 1",
+          figures: [
+            {
+              id: "figure-1",
+              label: "Figure 1",
+              baseLabel: "Figure 1",
+              pageNumber: 2,
+              cropPath: "/tmp/mineru-paper/figure_crops/crops/figure-1.png",
+              captionText: "Figure 1. A precise crop.",
+              rect: { left: 10, top: 20, width: 300, height: 200 },
+              confidence: 0.96,
+              source: "caption-bounded-region",
+              warnings: [],
+              mineruBlockId: "block-1",
+              mineruImagePaths: ["/tmp/mineru-paper/images/fig1-panel.png"],
+            },
+          ],
+          expectedFigures: [
+            {
+              label: "Figure 1",
+              baseLabel: "Figure 1",
+              pageNumber: 2,
+              captionPageNumber: 2,
+              status: "ok",
+            },
+            {
+              label: "Figure 2",
+              baseLabel: "Figure 2",
+              pageNumber: 4,
+              captionPageNumber: 5,
+              status: "no_confident_candidate",
+            },
+          ],
+          missingFigures: [
+            {
+              label: "Figure 2",
+              baseLabel: "Figure 2",
+              pageNumber: 4,
+              captionPageNumber: 5,
+              status: "no_confident_candidate",
+            },
+          ],
+          artifacts: [
+            {
+              kind: "image" as const,
+              mimeType: "image/png",
+              storedPath: "/tmp/mineru-paper/figure_crops/crops/figure-1.png",
+              title: "Figure 1",
+              pageIndex: 1,
+              pageLabel: "2",
+              paperContext,
+            },
+          ],
+        }),
+      },
+    );
+    const validated = tool.validate({
+      mode: "figures",
+      query: "Explain Figure 1",
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+
+    const output = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        userText: "Explain Figure 1",
+        selectedPaperContexts: [paperContext],
+      },
+    })) as {
+      content?: {
+        mode?: string;
+        status?: string;
+        expectedFigures?: Array<{ label?: string }>;
+        missingFigures?: Array<{ label?: string }>;
+        figures?: Array<{ cropPath?: string; mineruImagePaths?: string[] }>;
+      };
+      artifacts?: Array<{ storedPath?: string }>;
+    };
+
+    assert.equal(output.content?.mode, "figures");
+    assert.equal(output.content?.status, "ok");
+    assert.equal(
+      output.content?.figures?.[0]?.cropPath,
+      "/tmp/mineru-paper/figure_crops/crops/figure-1.png",
+    );
+    assert.deepEqual(
+      output.content?.missingFigures?.map((figure) => figure.label),
+      ["Figure 2"],
+    );
+    assert.deepEqual(output.content?.figures?.[0]?.mineruImagePaths, [
+      "/tmp/mineru-paper/images/fig1-panel.png",
+    ]);
+    assert.deepEqual(
+      (output.artifacts || []).map((artifact) => artifact.storedPath),
+      ["/tmp/mineru-paper/figure_crops/crops/figure-1.png"],
+    );
   });
 
   it("paper_read visual renders PDF pages when MinerU cache is absent", async function () {

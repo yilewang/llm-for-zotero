@@ -64,6 +64,7 @@ declare namespace _ZoteroTypes {
       "notesDirectoryNickname": string;
       "locale": string;
       "mineruMode": string;
+      "mineruCloudModel": string;
       "mineruLocalApiBase": string;
       "mineruLocalBackend": string;
       "mineruAutoWatchCollections": string;

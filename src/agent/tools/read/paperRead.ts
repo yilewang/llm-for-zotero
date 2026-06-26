@@ -1,6 +1,7 @@
 import type {
   AgentToolContext,
   AgentToolDefinition,
+  AgentToolArtifact,
   AgentToolResult,
 } from "../../types";
 import type { QuoteCitation } from "../../../shared/types";
@@ -14,10 +15,7 @@ import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
 } from "../../../modules/contextPanel/paperAttribution";
-import {
-  loadMineruFigureBlocksFromCacheDir,
-  toAbsoluteMineruPath,
-} from "../../../modules/contextPanel/mineruFigureBlockCache";
+import { loadMineruFigureBlocksFromCacheDir } from "../../../modules/contextPanel/mineruFigureBlockCache";
 import { resolveMineruFigureBlocksForQuery } from "../../../modules/contextPanel/mineruFigureBlocks";
 import {
   buildQuoteCitation,
@@ -41,7 +39,7 @@ import {
 import type { PdfTarget } from "./pdfToolUtils";
 import { createViewPdfPagesTool } from "./viewPdfPages";
 
-type PaperReadMode = "overview" | "targeted" | "visual" | "capture";
+type PaperReadMode = "overview" | "targeted" | "figures" | "visual" | "capture";
 
 type PaperReadInput = {
   mode: PaperReadMode;
@@ -57,6 +55,26 @@ type PaperReadInput = {
   visualInput?: unknown;
 };
 
+export type PaperReadFigureExtractionResult = {
+  mode: "figures";
+  status: "ok" | "mineru_required" | "no_figures" | "error";
+  query?: string;
+  guidance?: string;
+  expectedFigures?: Array<Record<string, unknown>>;
+  missingFigures?: Array<Record<string, unknown>>;
+  figures?: Array<Record<string, unknown>>;
+  artifacts?: AgentToolArtifact[];
+  warnings?: string[];
+};
+
+export type PaperReadFigureExtractionService = {
+  extractFigures: (params: {
+    input: PaperReadInput;
+    context: AgentToolContext;
+    paperContexts: NonNullable<PdfTarget["paperContext"]>[];
+  }) => Promise<PaperReadFigureExtractionResult>;
+};
+
 const MAX_OVERVIEW_TARGETS = 5;
 const MAX_TARGETED_TARGETS = 10;
 const MAX_OVERVIEW_QUOTES_PER_RESULT = 3;
@@ -65,6 +83,7 @@ const MAX_OVERVIEW_QUOTE_CHARS = 360;
 
 function normalizeMode(value: unknown): PaperReadMode {
   return value === "targeted" ||
+    value === "figures" ||
     value === "visual" ||
     value === "capture" ||
     value === "overview"
@@ -248,9 +267,6 @@ async function buildMineruVisualRedirect(params: {
     resolvedBlocks = resolution.blocks.map((block) => ({
       blockId: block.blockId,
       kind: block.kind,
-      imagePaths: block.imagePaths.map((path) =>
-        toAbsoluteMineruPath(mineruCacheDir, path),
-      ),
       labelHints: block.labelHints,
       captionHints: block.captionHints,
       sectionHeading: block.sectionHeading,
@@ -264,15 +280,10 @@ async function buildMineruVisualRedirect(params: {
   } catch {
     resolvedBlocks = [];
   }
-  const firstResolvedImagePath =
-    Array.isArray(resolvedBlocks[0]?.imagePaths) &&
-    (resolvedBlocks[0]?.imagePaths as unknown[]).length
-      ? String((resolvedBlocks[0]?.imagePaths as unknown[])[0])
-      : "";
   return {
     mode: "visual",
-    status: "mineru_cache_available",
-    backend: "mineru",
+    status: "use_figures_mode",
+    backend: "pdf_figure_extraction",
     query,
     paperContext,
     mineruCacheDir,
@@ -280,20 +291,9 @@ async function buildMineruVisualRedirect(params: {
       ? { figureBlocks: resolvedBlocks, ...(panelHint ? { panelHint } : {}) }
       : {}),
     guidance:
-      "MinerU cache is available for this paper, so do not render PDF pages for this generic figure/table request. Treat adjacent image runs in full.md as one figure/table block. For Figure 2, Fig. 2c, or any panel request, read the full section slice, caption/surrounding text, and every image path in the resolved block before answering; panel suffixes are hints only, not proof of image identity. Use file_io on any one block image path to receive metadata/artifacts for the whole block. Use paper_read mode:'visual' only if MinerU lookup or image loading fails, or if the user explicitly asks for raw/rendered PDF pages, page screenshots, page layout, exact pages, or visible-reader inspection.",
+      "This is a figure/image request for a MinerU-ready paper. Do not read MinerU image paths and do not use paper_read mode:'visual' for figure interpretation. Call paper_read({ mode:'figures', query:'<figure/table label or all figures>' }) to get precise PDF crops plus captions/provenance. Use mode:'visual' only for explicit raw/rendered PDF page or layout inspection.",
     nextSteps: [
-      `file_io({ action:'read', filePath:'${joinLocalPath(
-        mineruCacheDir,
-        "manifest.json",
-      )}' })`,
-      `file_io({ action:'read', filePath:'${joinLocalPath(
-        mineruCacheDir,
-        "full.md",
-      )}', offset:<charStart>, length:<charEnd - charStart> })`,
-      `file_io({ action:'read', filePath:'${
-        firstResolvedImagePath ||
-        joinLocalPath(mineruCacheDir, "<figure_path>")
-      }' })`,
+      `paper_read({ mode:'figures', query:'${query.replace(/'/g, "\\'")}' })`,
     ],
   };
 }
@@ -605,6 +605,59 @@ function formatSourcePhrase(
   return null;
 }
 
+async function hydrateMineruReadyFigureTargets(
+  targets: NonNullable<PdfTarget["paperContext"]>[],
+  zoteroGateway: ZoteroGateway,
+): Promise<NonNullable<PdfTarget["paperContext"]>[]> {
+  const attachmentInfoLoader = (
+    zoteroGateway as unknown as {
+      getAllChildAttachmentInfos?: (itemId: number) => Promise<
+        Array<{
+          contextItemId?: number;
+          mineruCacheDir?: string;
+        }>
+      >;
+    }
+  ).getAllChildAttachmentInfos;
+  const attachmentInfoByItem = new Map<
+    number,
+    Promise<Array<{ contextItemId?: number; mineruCacheDir?: string }>>
+  >();
+  const hydrated: NonNullable<PdfTarget["paperContext"]>[] = [];
+  for (const target of targets) {
+    if (normalizeString(target.mineruCacheDir)) {
+      hydrated.push(target);
+      continue;
+    }
+    if (!attachmentInfoLoader) continue;
+    const itemId = Math.floor(Number(target.itemId || 0));
+    const contextItemId = Math.floor(Number(target.contextItemId || 0));
+    if (!itemId || !contextItemId) continue;
+    let infoPromise = attachmentInfoByItem.get(itemId);
+    if (!infoPromise) {
+      infoPromise = attachmentInfoLoader.call(zoteroGateway, itemId);
+      attachmentInfoByItem.set(itemId, infoPromise);
+    }
+    let infos: Array<{ contextItemId?: number; mineruCacheDir?: string }> = [];
+    try {
+      infos = await infoPromise;
+    } catch (_error) {
+      void _error;
+    }
+    const matchingAttachment = infos.find(
+      (entry) => Math.floor(Number(entry.contextItemId || 0)) === contextItemId,
+    );
+    const mineruCacheDir = normalizeString(matchingAttachment?.mineruCacheDir);
+    if (!mineruCacheDir) continue;
+    hydrated.push({
+      ...target,
+      contentSourceMode: target.contentSourceMode || "mineru",
+      mineruCacheDir,
+    });
+  }
+  return hydrated;
+}
+
 async function readExplicitPageTargets(params: {
   input: PaperReadInput;
   targets: NonNullable<PdfTarget["paperContext"]>[];
@@ -647,22 +700,23 @@ export function createPaperReadTool(
   retrievalService: RetrievalService,
   pdfPageService: PdfPageService,
   zoteroGateway: ZoteroGateway,
+  figureExtractionService?: PaperReadFigureExtractionService,
 ): AgentToolDefinition<PaperReadInput, unknown> {
   const visualTool = createViewPdfPagesTool(pdfPageService, zoteroGateway);
   return {
     spec: {
       name: "paper_read",
       description:
-        "Read content from the active or targeted paper through one semantic tool. Use mode:'overview' for main-message summaries, mode:'targeted' for textual evidence/sections/pages, mode:'visual' for rendered figures/pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
+        "Read content from the active or targeted paper through one semantic tool. Use mode:'overview' for main-message summaries, mode:'targeted' for textual evidence/sections/pages, mode:'figures' for precise extracted figures from MinerU-ready PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
           mode: {
             type: "string",
-            enum: ["overview", "targeted", "visual", "capture"],
+            enum: ["overview", "targeted", "figures", "visual", "capture"],
             description:
-              "overview = summary/main message; targeted = text evidence by query/sections/pages; visual = rendered PDF pages/figures/layout; capture = current reader page.",
+              "overview = summary/main message; targeted = text evidence by query/sections/pages; figures = precise extracted figures from MinerU-ready PDFs; visual = rendered PDF pages/layout; capture = current reader page.",
           },
           target: {
             type: "object",
@@ -722,6 +776,8 @@ export function createPaperReadTool(
               : "overview";
           if (mode === "visual")
             return "Preparing paper pages for visual review";
+          if (mode === "figures")
+            return "Extracting precise figures from the paper";
           if (mode === "capture") return "Capturing current paper page";
           if (mode === "targeted") return "Reading targeted paper content";
           return "Reading paper overview";
@@ -759,8 +815,17 @@ export function createPaperReadTool(
               return `Read ${overviewLabel} from ${sourcePhrase}`;
             }
           }
-          if (mode === "visual" && c?.status === "mineru_cache_available") {
-            return "Found MinerU figure cache";
+          if (mode === "visual" && c?.status === "use_figures_mode") {
+            return "Use figure extraction for this figure request";
+          }
+          if (mode === "figures") {
+            const figures = Array.isArray(c?.figures) ? c.figures : [];
+            if (c?.status === "mineru_required") {
+              return "Figure extraction requires MinerU cache";
+            }
+            return figures.length === 1
+              ? "Extracted 1 figure"
+              : `Extracted ${figures.length} figures`;
           }
           const resultCount = results?.length ?? 1;
           return resultCount > 1
@@ -853,6 +918,36 @@ export function createPaperReadTool(
       );
       if (!targets.length) {
         throw new Error(describeNoDefaultPaperTarget(context.request));
+      }
+      if (input.mode === "figures") {
+        const mineruTargets = await hydrateMineruReadyFigureTargets(
+          targets,
+          zoteroGateway,
+        );
+        if (!mineruTargets.length) {
+          return {
+            mode: "figures",
+            status: "mineru_required",
+            query: input.query || context.request.userText || "",
+            warning:
+              "Precise figure extraction is available only for MinerU-ready papers.",
+          };
+        }
+        if (!figureExtractionService) {
+          return {
+            mode: "figures",
+            status: "error",
+            query: input.query || context.request.userText || "",
+            warning: "Precise figure extraction service is not available.",
+          };
+        }
+        const figureResult = await figureExtractionService.extractFigures({
+          input,
+          context,
+          paperContexts: mineruTargets,
+        });
+        const { artifacts, ...content } = figureResult;
+        return artifacts?.length ? { content, artifacts } : content;
       }
       if (input.mode === "overview") {
         const maxChars = input.maxChars || 6000;
