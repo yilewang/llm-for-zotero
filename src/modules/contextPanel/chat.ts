@@ -208,7 +208,6 @@ import {
   setLastUsedReasoningLevelForProvider,
 } from "./prefHelpers";
 import { resolveMultiContextPlan } from "./multiContextPlanner";
-import { buildImageResolver } from "./mineruImages";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
@@ -9911,16 +9910,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
           );
         } else
           try {
-            // Build image resolver for MinerU figures (if applicable)
-            const contextSource = resolveContextSourceItem(item);
-            const ctxItem = contextSource.contextItem;
-            const pdfCtx = ctxItem ? pdfTextCache.get(ctxItem.id) : null;
-            const resolveImage =
-              pdfCtx?.sourceType === "mineru" && ctxItem
-                ? buildImageResolver(ctxItem.id)
-                : undefined;
             renderRenderedMarkdownInto(bubble, safeText, doc, {
-              resolveImage,
               onAsyncContentRendered: () => {
                 stabilizeFollowBottomAfterAsyncChatContent(
                   body,

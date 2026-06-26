@@ -554,13 +554,26 @@ function buildOriginalAgentModeInstructionBlock(): string {
   ].join("\n\n");
 }
 
+function buildClaudeBridgeNotesDirectoryInstruction(): string {
+  const configSection = buildNotesDirectoryConfigSection().trim();
+  if (!configSection) return "";
+  return [
+    configSection,
+    "Claude Code note-directory rules:",
+    "- The notes directory is already configured by the user. Do not use Bash, Glob, Find, LS, or Read to rediscover the vault path, inspect likely note folders, or probe write access when this section is present.",
+    "- When the user asks to save a file-based note into the configured notes directory, use the configured Default target path unless the user explicitly names a different folder or absolute path.",
+    "- Do not create a Papers, papers, Notes, or other alternate subfolder unless the user explicitly requested that exact folder.",
+    "- If using Claude Code's Write tool for a Markdown note, pass a `.md` file path under the configured Default target path. Use the configured Attachments path for copied figure or image assets.",
+  ].join("\n");
+}
+
 function buildClaudeBridgeCustomInstruction(): string {
   return [
     getClaudeCustomInstructionPref(),
     buildOriginalAgentModeInstructionBlock(),
     "Claude Code receives Zotero access through the scoped MCP tools for this turn. When those tools are available, use library_search, library_retrieve, library_read, and paper_read for Zotero library or paper-content questions before relying on filesystem exploration or conversation-visible snippets. Use zotero_script for Zotero-native API inspection or scripted library operations only when the semantic Zotero tools cannot cover the request.",
     'If the turn includes selected collection or tag scopes, resolve phrases like "this folder", "this collection", "inside this folder", and "this tag" against those selected Zotero scopes. Do not ask the user which folder or tag they mean unless no selected scope is present or multiple selected scopes make the reference genuinely ambiguous.',
-    buildNotesDirectoryConfigSection(),
+    buildClaudeBridgeNotesDirectoryInstruction(),
   ]
     .map((entry) => entry.trim())
     .filter(Boolean)

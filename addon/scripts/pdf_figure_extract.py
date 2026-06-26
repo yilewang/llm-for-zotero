@@ -1278,6 +1278,121 @@ def rendered_content_x_bounds(
     return left, right
 
 
+def detect_two_column_text_windows(
+    page: dict[str, Any],
+    content_left: float,
+    content_right: float,
+) -> list[tuple[float, float]]:
+    content_width = max(1.0, content_right - content_left)
+    midpoint = (content_left + content_right) / 2
+    boxes: list[Rect] = []
+    for box in page["texts"]:
+        rect = box.rect
+        if rect.top < page["height"] * 0.09:
+            continue
+        if rect.height > 32:
+            continue
+        if rect.left < content_left - 20 or rect.right > content_right + 20:
+            continue
+        if rect.width < max(140.0, content_width * 0.20):
+            continue
+        if rect.width > content_width * 0.60:
+            continue
+        boxes.append(rect)
+    left_boxes = [box for box in boxes if (box.left + box.right) / 2 < midpoint]
+    right_boxes = [box for box in boxes if (box.left + box.right) / 2 >= midpoint]
+    if len(left_boxes) < 4 or len(right_boxes) < 4:
+        return []
+    raw_left = (
+        min(box.left for box in left_boxes),
+        max(box.right for box in left_boxes),
+    )
+    raw_right = (
+        min(box.left for box in right_boxes),
+        max(box.right for box in right_boxes),
+    )
+    gutter = raw_right[0] - raw_left[1]
+    if gutter < max(12.0, page["width"] * 0.015):
+        return []
+    left = (
+        max(content_left, raw_left[0] - 10.0),
+        min(content_right, raw_left[1] + min(10.0, gutter * 0.35)),
+    )
+    right = (
+        max(content_left, raw_right[0] - min(10.0, gutter * 0.35)),
+        min(content_right, raw_right[1] + 10.0),
+    )
+    min_width = content_width * 0.20
+    max_width = content_width * 0.70
+    if not (min_width <= left[1] - left[0] <= max_width):
+        return []
+    if not (min_width <= right[1] - right[0] <= max_width):
+        return []
+    return [left, right]
+
+
+def caption_line_rect(page: dict[str, Any], target: Target) -> Rect | None:
+    caption = target.caption_box
+    if not caption:
+        return None
+    caption_center_y = (caption.top + caption.bottom) / 2
+    same_line: list[Rect] = [caption]
+    for box in page["texts"]:
+        rect = box.rect
+        center_y = (rect.top + rect.bottom) / 2
+        if abs(center_y - caption_center_y) > max(4.0, caption.height):
+            continue
+        if rect.left < caption.left - 4.0:
+            continue
+        same_line.append(rect)
+    same_line.sort(key=lambda rect: rect.left)
+    connected: list[Rect] = []
+    right = caption.right
+    for rect in same_line:
+        if rect.right < caption.left - 4.0:
+            continue
+        if rect.left > right + max(12.0, caption.height * 1.2):
+            break
+        connected.append(rect)
+        right = max(right, rect.right)
+    return rect_union(connected or [caption])
+
+
+def caption_column_window(
+    page: dict[str, Any],
+    target: Target,
+    content_left: float,
+    content_right: float,
+) -> tuple[float, float] | None:
+    caption = target.caption_box
+    if not caption:
+        return None
+    columns = detect_two_column_text_windows(page, content_left, content_right)
+    if len(columns) != 2:
+        return None
+    caption_center = (caption.left + caption.right) / 2
+    column = None
+    for candidate in columns:
+        if candidate[0] - 8.0 <= caption_center <= candidate[1] + 8.0:
+            column = candidate
+            break
+    if column is None:
+        column = min(
+            columns,
+            key=lambda candidate: min(
+                abs(caption_center - candidate[0]),
+                abs(caption_center - candidate[1]),
+            ),
+        )
+    line = caption_line_rect(page, target)
+    if line:
+        column_width = max(1.0, column[1] - column[0])
+        crosses_column = line.right > column[1] + 12.0 or line.left < column[0] - 12.0
+        if crosses_column and line.width > column_width * 1.18:
+            return None
+    return column
+
+
 def caption_x_window(
     page: dict[str, Any],
     target: Target,
@@ -1469,139 +1584,183 @@ def choose_caption_region_candidate(
     arr = np.asarray(image)
     visual = np.any(arr < 250, axis=2)
     content_left, content_right = rendered_content_x_bounds(visual, page, sx)
-    x_left, x_right = caption_x_window(
+
+    def build_candidate(
+        x_window: tuple[float, float],
+        reason: str | None = None,
+    ) -> Candidate | None:
+        x_left, x_right = x_window
+        y_top, y_bottom = caption_y_window(
+            page,
+            target,
+            page_targets,
+            (x_left, x_right),
+        )
+        x0 = max(0, int(math.floor(x_left * sx)))
+        x1 = min(image.width, int(math.ceil(x_right * sx)))
+        y0 = max(0, int(math.floor(y_top * sy)))
+        y1 = min(image.height, int(math.ceil(y_bottom * sy)))
+        if x1 - x0 < 24 or y1 - y0 < 24:
+            return None
+
+        window = visual[y0:y1, x0:x1]
+        row_counts = window.sum(axis=1)
+        row_threshold = max(5, int(window.shape[1] * 0.003))
+        intervals = boolean_intervals(row_counts >= row_threshold)
+        intervals = merge_intervals(intervals, max(2, int(6 * sy)))
+        intervals = [
+            (start, end)
+            for start, end in intervals
+            if end - start >= max(4, int(3 * sy))
+            and int(row_counts[start:end].sum()) >= (end - start) * row_threshold
+        ]
+        if not intervals:
+            return None
+
+        start, end = intervals[-1]
+        max_cluster_gap = max(8, int(36 * sy))
+        for prev_start, prev_end in reversed(intervals[:-1]):
+            if start - prev_end > max_cluster_gap:
+                break
+            start = prev_start
+        start = trim_leading_header_rows(row_counts, start, end, window.shape[1], sy)
+        pad_y = max(2, int(3 * sy))
+        start = max(0, start - pad_y)
+        end = min(window.shape[0], end + pad_y)
+        if end - start < max(10, int(8 * sy)):
+            return None
+
+        band = window[start:end, :]
+        col_counts = band.sum(axis=0)
+        col_threshold = max(4, int(band.shape[0] * 0.004))
+        col_intervals = boolean_intervals(col_counts >= col_threshold)
+        col_intervals = merge_intervals(col_intervals, max(2, int(8 * sx)))
+        col_intervals = [
+            (start_col, end_col)
+            for start_col, end_col in col_intervals
+            if end_col - start_col >= max(6, int(6 * sx))
+        ]
+        if not col_intervals:
+            return None
+        col_start = min(start_col for start_col, _ in col_intervals)
+        col_end = max(end_col for _, end_col in col_intervals)
+        pad_x = max(2, int(4 * sx))
+        bbox = (
+            max(0, x0 + col_start - pad_x),
+            max(0, y0 + start),
+            min(image.width, x0 + col_end + pad_x),
+            min(image.height, y0 + end),
+        )
+        rect = rect_from_pixels(bbox, sx, sy)
+        warnings: list[str] = []
+        header_floor = page["height"] * 0.11
+        header_probe = Rect(rect.left, 0, rect.width, header_floor + 8)
+        has_header_text = any(
+            box.rect.top < page["height"] * 0.12
+            and not is_caption_text_box(box, target)
+            and intersect_area(box.rect, header_probe) > 0
+            for box in page["texts"]
+        )
+        if (
+            has_header_text
+            and rect.top <= page["height"] * 0.055 + 1
+            and rect.top < header_floor
+            and target.caption_box.top > page["height"] * 0.30
+            and rect.bottom - header_floor >= page["height"] * 0.08
+            and not has_top_figure_evidence(rect, header_floor, page, target)
+        ):
+            rect = Rect(rect.left, header_floor, rect.width, rect.bottom - header_floor)
+            warnings.append("trimmed page header band")
+        trimmed_rect = trim_leading_paragraph_text(rect, page, target)
+        if trimmed_rect != rect:
+            rect = trimmed_rect
+            warnings.append("trimmed leading paragraph text")
+        page_area = max(1.0, page["width"] * page["height"])
+        if rect.width < page["width"] * 0.12 or rect.height < page["height"] * 0.035:
+            return None
+        if rect.area / page_area > 0.72:
+            return None
+
+        reasons = ["rendered pixels bounded by caption"]
+        if reason:
+            reasons.append(reason)
+        confidence = 0.76
+        gap_ratio = vertical_gap(rect, target.caption_box) / max(1.0, page["height"])
+        if gap_ratio <= 0.035:
+            confidence += 0.11
+            reasons.append("touches caption band")
+        elif gap_ratio <= 0.12:
+            confidence += 0.07
+            reasons.append("near caption")
+        if horizontal_overlap_ratio(rect, target.caption_box) >= 0.60:
+            confidence += 0.06
+            reasons.append("caption-aligned region")
+        area_ratio = rect.area / page_area
+        confidence += min(0.04, area_ratio * 0.20)
+        overlap = text_overlap_ratio(rect, page, target)
+        if overlap > 0.12:
+            confidence -= min(0.35, overlap * 1.4)
+            warnings.append("substantial non-caption text overlap")
+        paragraph_overlap = paragraph_text_overlap_ratio(rect, page, target)
+        if paragraph_overlap > 0.04:
+            confidence -= min(0.60, paragraph_overlap * 4.4)
+            warnings.append("paragraph-like text overlap")
+        if paragraph_overlap > 0.12:
+            confidence = min(confidence, 0.36)
+        if rect.top <= page["height"] * 0.055 + 1 and target.caption_box.top > page["height"] * 0.35:
+            confidence -= 0.04
+            warnings.append("touches page header band")
+        confidence = max(0.0, min(1.0, confidence))
+        return Candidate(
+            "caption-bounded-region",
+            rect,
+            confidence,
+            tuple(reasons),
+            tuple(warnings),
+        )
+
+    default_window = caption_x_window(
         page,
         target,
         page_targets,
         content_left,
         content_right,
     )
-    y_top, y_bottom = caption_y_window(
-        page,
-        target,
-        page_targets,
-        (x_left, x_right),
-    )
-    x0 = max(0, int(math.floor(x_left * sx)))
-    x1 = min(image.width, int(math.ceil(x_right * sx)))
-    y0 = max(0, int(math.floor(y_top * sy)))
-    y1 = min(image.height, int(math.ceil(y_bottom * sy)))
-    if x1 - x0 < 24 or y1 - y0 < 24:
-        return None
-
-    window = visual[y0:y1, x0:x1]
-    row_counts = window.sum(axis=1)
-    row_threshold = max(5, int(window.shape[1] * 0.003))
-    intervals = boolean_intervals(row_counts >= row_threshold)
-    intervals = merge_intervals(intervals, max(2, int(6 * sy)))
-    intervals = [
-        (start, end)
-        for start, end in intervals
-        if end - start >= max(4, int(3 * sy))
-        and int(row_counts[start:end].sum()) >= (end - start) * row_threshold
-    ]
-    if not intervals:
-        return None
-
-    start, end = intervals[-1]
-    max_cluster_gap = max(8, int(36 * sy))
-    for prev_start, prev_end in reversed(intervals[:-1]):
-        if start - prev_end > max_cluster_gap:
-            break
-        start = prev_start
-    start = trim_leading_header_rows(row_counts, start, end, window.shape[1], sy)
-    pad_y = max(2, int(3 * sy))
-    start = max(0, start - pad_y)
-    end = min(window.shape[0], end + pad_y)
-    if end - start < max(10, int(8 * sy)):
-        return None
-
-    band = window[start:end, :]
-    col_counts = band.sum(axis=0)
-    col_threshold = max(4, int(band.shape[0] * 0.004))
-    col_intervals = boolean_intervals(col_counts >= col_threshold)
-    col_intervals = merge_intervals(col_intervals, max(2, int(8 * sx)))
-    col_intervals = [
-        (start_col, end_col)
-        for start_col, end_col in col_intervals
-        if end_col - start_col >= max(6, int(6 * sx))
-    ]
-    if not col_intervals:
-        return None
-    col_start = min(start_col for start_col, _ in col_intervals)
-    col_end = max(end_col for _, end_col in col_intervals)
-    pad_x = max(2, int(4 * sx))
-    bbox = (
-        max(0, x0 + col_start - pad_x),
-        max(0, y0 + start),
-        min(image.width, x0 + col_end + pad_x),
-        min(image.height, y0 + end),
-    )
-    rect = rect_from_pixels(bbox, sx, sy)
-    warnings: list[str] = []
-    header_floor = page["height"] * 0.11
-    header_probe = Rect(rect.left, 0, rect.width, header_floor + 8)
-    has_header_text = any(
-        box.rect.top < page["height"] * 0.12
-        and not is_caption_text_box(box, target)
-        and intersect_area(box.rect, header_probe) > 0
-        for box in page["texts"]
-    )
-    if (
-        has_header_text
-        and rect.top <= page["height"] * 0.055 + 1
-        and rect.top < header_floor
-        and target.caption_box.top > page["height"] * 0.30
-        and rect.bottom - header_floor >= page["height"] * 0.08
-        and not has_top_figure_evidence(rect, header_floor, page, target)
+    default_candidate = build_candidate(default_window)
+    column_window = caption_column_window(page, target, content_left, content_right)
+    column_candidate = None
+    if column_window and (
+        abs(column_window[0] - default_window[0]) > 4
+        or abs(column_window[1] - default_window[1]) > 4
     ):
-        rect = Rect(rect.left, header_floor, rect.width, rect.bottom - header_floor)
-        warnings.append("trimmed page header band")
-    trimmed_rect = trim_leading_paragraph_text(rect, page, target)
-    if trimmed_rect != rect:
-        rect = trimmed_rect
-        warnings.append("trimmed leading paragraph text")
-    page_area = max(1.0, page["width"] * page["height"])
-    if rect.width < page["width"] * 0.12 or rect.height < page["height"] * 0.035:
-        return None
-    if rect.area / page_area > 0.72:
-        return None
-
-    reasons = ["rendered pixels bounded by caption"]
-    confidence = 0.76
-    gap_ratio = vertical_gap(rect, target.caption_box) / max(1.0, page["height"])
-    if gap_ratio <= 0.035:
-        confidence += 0.11
-        reasons.append("touches caption band")
-    elif gap_ratio <= 0.12:
-        confidence += 0.07
-        reasons.append("near caption")
-    if horizontal_overlap_ratio(rect, target.caption_box) >= 0.60:
-        confidence += 0.06
-        reasons.append("caption-aligned region")
-    area_ratio = rect.area / page_area
-    confidence += min(0.04, area_ratio * 0.20)
-    overlap = text_overlap_ratio(rect, page, target)
-    if overlap > 0.12:
-        confidence -= min(0.35, overlap * 1.4)
-        warnings.append("substantial non-caption text overlap")
-    paragraph_overlap = paragraph_text_overlap_ratio(rect, page, target)
-    if paragraph_overlap > 0.04:
-        confidence -= min(0.60, paragraph_overlap * 4.4)
-        warnings.append("paragraph-like text overlap")
-    if paragraph_overlap > 0.12:
-        confidence = min(confidence, 0.36)
-    if rect.top <= page["height"] * 0.055 + 1 and target.caption_box.top > page["height"] * 0.35:
-        confidence -= 0.04
-        warnings.append("touches page header band")
-    confidence = max(0.0, min(1.0, confidence))
-    return Candidate(
-        "caption-bounded-region",
-        rect,
-        confidence,
-        tuple(reasons),
-        tuple(warnings),
-    )
+        column_candidate = build_candidate(column_window, "detected text column")
+    if not default_candidate:
+        return column_candidate
+    if not column_candidate:
+        return default_candidate
+    if (
+        default_candidate.confidence < MIN_ACCEPTED_CONFIDENCE
+        and column_candidate.confidence >= default_candidate.confidence + 0.05
+    ):
+        return column_candidate
+    if (
+        len(page_targets) > 1
+        and column_candidate.confidence >= default_candidate.confidence - 0.08
+        and (
+            column_candidate.rect.area >= default_candidate.rect.area * 1.12
+            or column_candidate.rect.area <= default_candidate.rect.area * 0.92
+            or column_candidate.confidence >= default_candidate.confidence
+        )
+    ):
+        return column_candidate
+    if column_candidate.confidence > default_candidate.confidence + 0.03:
+        return column_candidate
+    if (
+        column_candidate.confidence >= default_candidate.confidence - 0.02
+        and column_candidate.rect.area >= default_candidate.rect.area * 1.25
+    ):
+        return column_candidate
+    return default_candidate
 
 
 def choose_ink_candidate(
@@ -2218,15 +2377,22 @@ def run_direct_mode(args: argparse.Namespace) -> int:
         pdf_path=pdf_path,
         mineru_dir=mineru_dir,
     )
-    result = evaluate_case(case, work_dir, Path(args.poppler_bin), int(args.dpi))
+    result = evaluate_case(
+        case,
+        work_dir,
+        Path(args.poppler_bin),
+        int(args.dpi),
+        use_mineru_targets=bool(args.use_mineru_targets),
+    )
     if not result:
+        target_source = "PDF text or MinerU cache" if args.use_mineru_targets else "PDF text"
         payload = {
             "status": "no_figures",
             "algorithmVersion": DIRECT_EXTRACTOR_VERSION,
             "pdfPath": str(pdf_path),
             "mineruDir": str(mineru_dir),
             "figures": [],
-            "warnings": ["No figure targets were resolved from PDF text or MinerU cache."],
+            "warnings": [f"No figure targets were resolved from {target_source}."],
         }
     else:
         pages = parse_page_set(args.pages)
@@ -2304,18 +2470,32 @@ def make_contact_sheet(
     canvas.save(out_path, quality=92)
 
 
+def build_case_targets(
+    case: PdfCase,
+    pages: dict[int, dict[str, Any]],
+    *,
+    use_mineru_targets: bool = False,
+) -> list[Target]:
+    pdf_targets = targets_from_pdf_text(pages)
+    if not use_mineru_targets:
+        return merge_targets(pdf_targets, [], pages)
+    return merge_targets(
+        targets_from_manifest(case) + pdf_targets,
+        targets_from_mineru(case),
+        pages,
+    )
+
+
 def evaluate_case(
     case: PdfCase,
     out_dir: Path,
     poppler_bin: Path,
     dpi: int,
+    *,
+    use_mineru_targets: bool = False,
 ) -> dict[str, Any] | None:
     pages = parse_pdf_xml(case.pdf_path, poppler_bin)
-    targets = merge_targets(
-        targets_from_manifest(case) + targets_from_pdf_text(pages),
-        targets_from_mineru(case),
-        pages,
-    )
+    targets = build_case_targets(case, pages, use_mineru_targets=use_mineru_targets)
     if not targets:
         return None
     case_dir = out_dir / f"{case.attachment_id}_{case.attachment_key}"
@@ -2476,6 +2656,11 @@ def main() -> None:
         action="store_true",
         help="Remove --out before direct extraction.",
     )
+    parser.add_argument(
+        "--use-mineru-targets",
+        action="store_true",
+        help="Opt into MinerU manifest/content-list figure targets for diagnostics.",
+    )
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--seed", type=int, default=20260624)
     parser.add_argument("--dpi", type=int, default=220)
@@ -2542,7 +2727,13 @@ def main() -> None:
                 )
                 continue
         try:
-            result = evaluate_case(case, out_dir, args.poppler_bin, args.dpi)
+            result = evaluate_case(
+                case,
+                out_dir,
+                args.poppler_bin,
+                args.dpi,
+                use_mineru_targets=bool(args.use_mineru_targets),
+            )
         except Exception as error:
             result = {
                 "attachmentId": case.attachment_id,

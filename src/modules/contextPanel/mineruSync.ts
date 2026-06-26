@@ -5,6 +5,8 @@ import { isMineruSyncEnabled } from "../../utils/mineruConfig";
 import {
   buildAndWriteManifest,
   ensureManifest,
+  finalizeExistingMineruCache,
+  finalizeMineruCacheFiles,
   getMineruCacheDir,
   getMineruItemDir,
   hasCachedMineruMd,
@@ -394,9 +396,10 @@ export function shouldIncludeMineruCachePackageEntry(
   if (parts[0] === "__MACOSX") return false;
   const basename = parts[parts.length - 1] || "";
   if (!basename || basename === ".DS_Store") return false;
+  if (parts[0]?.toLowerCase() === "images") return false;
   if (basename === MINERU_SOURCE_PROVENANCE_FILE) return true;
   if (basename === MINERU_LOCAL_SYNC_STATE_FILE) return false;
-  return basename.toLowerCase() !== "layout.json";
+  return true;
 }
 
 function isMineruSourceProvenanceEntryPath(relativePath: string): boolean {
@@ -864,37 +867,65 @@ function extractPackageFiles(
     if (!metadata || !fullMdBytes) return null;
 
     const hashEntries: Record<string, Uint8Array> = {};
+    const rawHashEntries: Record<string, Uint8Array> = {};
     const files: MineruCacheFile[] = [];
     for (const [entryPath, data] of Object.entries(zipEntries)) {
       if (entryPath === MINERU_SYNC_METADATA_FILE) continue;
       const normalized = normalizePackagePath(entryPath);
-      if (!normalized || !shouldIncludeMineruCachePackageEntry(normalized)) {
-        continue;
+      if (!normalized) continue;
+      if (
+        normalized.split("/")[0]?.toLowerCase() !== "__macosx" &&
+        !normalized.split("/").includes(".DS_Store")
+      ) {
+        rawHashEntries[normalized] = data;
       }
-      hashEntries[normalized] = data;
-      if (normalized !== "full.md") {
-        files.push({ relativePath: normalized, data });
+      if (shouldIncludeMineruCachePackageEntry(normalized)) {
+        if (normalized !== "full.md") {
+          files.push({ relativePath: normalized, data });
+        }
       }
     }
 
-    if (!hashEntries["full.md"]) return null;
+    const finalized = finalizeMineruCacheFiles(
+      new TextDecoder("utf-8").decode(fullMdBytes),
+      files,
+    );
+    hashEntries["full.md"] = new TextEncoder().encode(finalized.mdContent);
+    for (const file of finalized.files) {
+      if (shouldIncludeMineruCachePackageEntry(file.relativePath)) {
+        hashEntries[file.relativePath] = file.data;
+      }
+    }
+    hashEntries["manifest.json"] = new TextEncoder().encode(
+      JSON.stringify(finalized.manifest),
+    );
+
     const contentHash = computeCacheEntriesContentHash(hashEntries);
     const legacyContentHash = computeCacheEntriesContentHash(hashEntries, {
       includeSourceProvenance: true,
     });
+    const rawLegacyContentHash = computeCacheEntriesContentHash(
+      rawHashEntries,
+      {
+        includeSourceProvenance: true,
+      },
+    );
+    const rawContentHash = computeCacheEntriesContentHash(rawHashEntries);
     if (
       typeof metadata.cacheContentHash === "string" &&
       metadata.cacheContentHash.trim() &&
       metadata.cacheContentHash !== contentHash &&
-      metadata.cacheContentHash !== legacyContentHash
+      metadata.cacheContentHash !== legacyContentHash &&
+      metadata.cacheContentHash !== rawContentHash &&
+      metadata.cacheContentHash !== rawLegacyContentHash
     ) {
       return null;
     }
 
     return {
       metadata,
-      mdContent: new TextDecoder("utf-8").decode(fullMdBytes),
-      files,
+      mdContent: finalized.sourceMdContent,
+      files: finalized.files,
       contentHash,
     };
   } catch {
@@ -1986,7 +2017,12 @@ export async function repairMineruCaches(
   for (const item of pdfAttachments) {
     result.checked += 1;
     try {
-      if (!(await hasCachedMineruMd(item.id))) {
+      if (await hasCachedMineruMd(item.id)) {
+        const migrated = await finalizeExistingMineruCache(item.id);
+        if (migrated) {
+          await invalidateMineruRuntimeCache(item.id);
+        }
+      } else {
         const restored = await repairSyncedMineruCacheForAttachment(item, {
           ignoreSyncPreference: true,
         });

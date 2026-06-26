@@ -312,6 +312,14 @@ describe("external bridge action approval handling", function () {
         customInstruction,
         "Do not append Default folder to Default target path again",
       );
+      assert.include(
+        customInstruction,
+        "Do not use Bash, Glob, Find, LS, or Read to rediscover the vault path",
+      );
+      assert.include(
+        customInstruction,
+        "Do not create a Papers, papers, Notes, or other alternate subfolder",
+      );
       assert.include(customInstruction, "Original agent-mode Zotero behavior");
       assert.include(customInstruction, "NEVER output rewritten");
       assert.include(customInstruction, "library_retrieve");

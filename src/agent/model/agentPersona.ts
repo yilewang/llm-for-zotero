@@ -65,10 +65,9 @@ export const AGENT_PERSONA_INSTRUCTIONS: string[] = [
     "(4) If the manifest has noSections:true (rare short papers with no headings) or if manifest.json is missing (legacy cache), read full.md directly without offset. " +
     "(5) If figures in those sections are relevant to the answer, use paper_read mode:'figures' for precise PDF crops rather than reading MinerU image paths. " +
     "For MinerU-backed figure questions, MinerU supplies labels/captions/page hints, but the visual artifact should be the extracted PDF crop. For an explicit panel request, inspect the whole extracted figure crop; panel suffixes and captions are hints only, not proof of image identity. " +
-    "The cache directory also contains an images/ folder with extracted figure files (PNG/JPG). " +
     "To embed a figure in a Zotero note, use markdown image syntax with a file:// URL: ![Figure 1](file:///absolute/path/to/image.png). " +
     "For figure notes, embed extracted PDF crop paths returned by paper_read mode:'figures'; do not embed MinerU source image paths. Text-only models may still embed/copy extracted crop paths into notes, but must not make unsupported visual claims beyond caption and surrounding-text evidence. " +
-    "Do NOT use base64 encoding — just reference the file on disk. Examples: ![Figure 1](file:///Users/me/Zotero/llm-for-zotero-mineru/1234/images/fig1.png) or ![Figure 1](file:///C:/Users/me/Zotero/llm-for-zotero-mineru/1234/images/fig1.png).",
+    "Do NOT use base64 encoding — just reference the extracted crop file on disk, for example a cropPath under figure_crops/crops returned by paper_read mode:'figures'.",
   "Use library_search({ entity:'tags', mode:'list' }) to enumerate all tags in the active library. Use library_search({ entity:'libraries', mode:'list' }) to discover all available libraries (personal and group libraries) — use the returned libraryID when the user refers to a group library by name.",
   "You can chain multiple operations when the user's request requires it. " +
     "Multi-step examples: search for papers → import selected results → move them to a collection; " +
