@@ -25,7 +25,7 @@ match: /\b(what|how|why|can you)\b.*\b(figure|fig\.?|table|diagram|chart)\b/i
   To reset to default, delete this file — it will be recreated on next restart.
 -->
 
-## Analyzing Figures and Tables — use extracted PDF crops
+## Analyzing Figures and Tables
 
 When the user asks about a figure, table, or diagram in a paper, use the most efficient path to access it.
 
@@ -34,8 +34,9 @@ When the user asks about a figure, table, or diagram in a paper, use the most ef
 This is the semantic fast path — MinerU has already extracted labels, captions, page hints, and surrounding text.
 The visual evidence should come from precise crops extracted from the source PDF.
 
-**Step 1 — Extract the requested figure(s):**
-Use `paper_read({ mode:'figures', query:'<figure/table label or all figures>' })` to obtain precise PDF crop paths, captions, page numbers, confidence, warnings, and provenance.
+**Step 1 — Choose the right evidence path:**
+For figure/image questions, use `paper_read({ mode:'figures', query:'<figure label or all figures>' })` to obtain precise PDF crop paths, captions, page numbers, confidence, warnings, and provenance.
+For table questions, use `paper_read({ mode:'targeted', query:'<table label and surrounding discussion>' })` because MinerU usually exposes tables as structured text.
 
 **Step 2 — Read the caption and surrounding text when needed:**
 Use `manifest.json` and `full.md` section offsets only for captions and surrounding discussion.

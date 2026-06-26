@@ -171,7 +171,7 @@ def run(
     timeout: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
 ) -> str:
     env = os.environ.copy()
-    env["PATH"] = f"{poppler_bin}:{env.get('PATH', '')}"
+    env["PATH"] = f"{poppler_bin}{os.pathsep}{env.get('PATH', '')}"
     proc = subprocess.run(
         cmd,
         cwd=str(cwd or REPO_ROOT),
@@ -2140,6 +2140,10 @@ def query_requests_all_figures(query: str) -> bool:
     )
 
 
+def query_requests_table(query: str) -> bool:
+    return bool(re.search(r"(?i)\btables?\s+(?:[S]?\d+|[IVX]+)\b", query or ""))
+
+
 def query_panel_hints(query: str) -> dict[str, str]:
     hints: dict[str, str] = {}
     for match in re.finditer(r"(?i)\bpanel\s+(\d+)\s*([a-z])\b", query or ""):
@@ -2210,7 +2214,10 @@ def direct_entry_matches_request(
     pages: set[int],
 ) -> bool:
     requested_labels = expand_requested_figure_labels(query)
-    all_requested = query_requests_all_figures(query) or not requested_labels
+    table_requested = query_requests_table(query)
+    all_requested = query_requests_all_figures(query) or (
+        not requested_labels and not table_requested
+    )
     label = normalize_label(str(figure.get("label") or ""))
     page_number = int(figure.get("pageNumber") or 0)
     caption_page_number = int(figure.get("captionPageNumber") or page_number or 0)

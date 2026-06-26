@@ -228,6 +228,30 @@ function isExplicitPdfVisualRequest(
   );
 }
 
+function getCombinedQueryText(
+  input: Pick<PaperReadInput, "query">,
+  requestText: string | undefined,
+): string {
+  return [input.query || "", requestText || ""]
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isTableOnlyInterpretationRequest(
+  input: Pick<PaperReadInput, "query">,
+  requestText: string | undefined,
+): boolean {
+  const text = getCombinedQueryText(input, requestText);
+  if (!text) return false;
+  const hasTable = /\btables?\s+(?:[sS]?\d+|[IVX]+)\b/i.test(text);
+  if (!hasTable) return false;
+  const hasFigure = /\b(?:fig(?:ure)?s?\.?|figs?\.?)\s*[sS]?\d+\b/i.test(
+    text,
+  );
+  return !hasFigure;
+}
+
 async function buildMineruVisualRedirect(params: {
   input: PaperReadInput;
   context: AgentToolContext;
@@ -256,6 +280,23 @@ async function buildMineruVisualRedirect(params: {
   const mineruCacheDir = normalizeString(paperContext?.mineruCacheDir);
   if (!paperContext || !mineruCacheDir) return null;
   const query = params.input.query || params.context.request.userText || "";
+  if (
+    isTableOnlyInterpretationRequest(params.input, params.context.request.userText)
+  ) {
+    return {
+      mode: "visual",
+      status: "use_text_mode",
+      backend: "mineru",
+      query,
+      paperContext,
+      mineruCacheDir,
+      guidance:
+        "This is a table request for a MinerU-ready paper. Do not render PDF pages and do not use the figure-crop extractor. Call paper_read({ mode:'targeted', query:'<table label and surrounding discussion>' }) so the answer comes from MinerU table text, captions, and surrounding extracted text. Use direct file_io manifest/full.md inspection only for explicit filesystem/cache-inspection tasks.",
+      nextSteps: [
+        `paper_read({ mode:'targeted', query:'${query.replace(/'/g, "\\'")}' })`,
+      ],
+    };
+  }
   return {
     mode: "visual",
     status: "use_figures_mode",
@@ -893,6 +934,15 @@ export function createPaperReadTool(
         throw new Error(describeNoDefaultPaperTarget(context.request));
       }
       if (input.mode === "figures") {
+        if (isTableOnlyInterpretationRequest(input, context.request.userText)) {
+          return {
+            mode: "figures",
+            status: "no_figures",
+            query: input.query || context.request.userText || "",
+            guidance:
+              "Tables are handled through extracted MinerU text/table content, not the figure-crop extractor. Use paper_read mode:'targeted' with the table label and surrounding discussion.",
+          };
+        }
         const mineruTargets = await hydrateMineruReadyFigureTargets(
           targets,
           zoteroGateway,
