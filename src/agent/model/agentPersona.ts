@@ -64,6 +64,7 @@ export const AGENT_PERSONA_INSTRUCTIONS: string[] = [
     "For comprehensive requests — read sections iteratively. " +
     "(4) If the manifest has noSections:true (rare short papers with no headings) or if manifest.json is missing (legacy cache), read full.md directly without offset. " +
     "(5) If figures in those sections are relevant to the answer, use paper_read mode:'figures' for precise PDF crops rather than reading MinerU image paths. " +
+    "For table questions, use paper_read mode:'targeted' or direct manifest/full.md section inspection because tables are usually structured text in MinerU, not figure crops. " +
     "For MinerU-backed figure questions, MinerU supplies labels/captions/page hints, but the visual artifact should be the extracted PDF crop. For an explicit panel request, inspect the whole extracted figure crop; panel suffixes and captions are hints only, not proof of image identity. " +
     "To embed a figure in a Zotero note, use markdown image syntax with a file:// URL: ![Figure 1](file:///absolute/path/to/image.png). " +
     "For figure notes, embed extracted PDF crop paths returned by paper_read mode:'figures'; do not embed MinerU source image paths. Text-only models may still embed/copy extracted crop paths into notes, but must not make unsupported visual claims beyond caption and surrounding-text evidence. " +

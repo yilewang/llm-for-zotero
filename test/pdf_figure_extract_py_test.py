@@ -233,6 +233,50 @@ class CaptionWindowTests(unittest.TestCase):
             self.assertEqual(targets[0].page_number, 1)
             self.assertIsNone(targets[0].visual_box)
 
+    def test_run_uses_platform_path_separator_for_poppler_bin(self):
+        original_run = self.extractor.subprocess.run
+        original_pathsep = self.extractor.os.pathsep
+        captured = {}
+
+        class FakeProcess:
+            stdout = "ok"
+
+        def fake_run(*args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            return FakeProcess()
+
+        try:
+            self.extractor.subprocess.run = fake_run
+            self.extractor.os.pathsep = ";"
+
+            self.extractor.run(
+                ["pdfinfo", "paper.pdf"],
+                poppler_bin=Path("C:/runtime/Library/bin"),
+            )
+
+            path = captured["env"]["PATH"]
+            self.assertTrue(path.startswith("C:/runtime/Library/bin;"))
+            self.assertFalse(path.startswith("C:/runtime/Library/bin:"))
+        finally:
+            self.extractor.subprocess.run = original_run
+            self.extractor.os.pathsep = original_pathsep
+
+    def test_table_query_does_not_match_every_figure(self):
+        figure = {
+            "label": "Figure 1",
+            "pageNumber": 1,
+            "captionPageNumber": 1,
+            "cropPath": "/tmp/figure-1.png",
+        }
+
+        self.assertFalse(
+            self.extractor.direct_entry_matches_request(
+                figure,
+                query="What does Table 1 show?",
+                pages=set(),
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

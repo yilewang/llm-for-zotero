@@ -823,6 +823,59 @@ describe("semantic tool surface", function () {
     }
   });
 
+  it("paper_read visual redirects generic MinerU table requests to text inspection", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "MinerU Table Paper",
+      firstCreator: "Miller",
+      year: "2025",
+      mineruCacheDir: "/tmp/mineru-paper",
+    };
+    let prepareCalls = 0;
+    const tool = createPaperReadTool(
+      {} as never,
+      {} as never,
+      {
+        preparePagesForModel: async () => {
+          prepareCalls += 1;
+          return {
+            target: { source: "library", title: "Should Not Render" },
+            pages: [],
+            artifacts: [],
+            pageTexts: {},
+          };
+        },
+      } as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({
+      mode: "visual",
+      query: "Explain Table 1",
+    });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+
+    const output = (await tool.execute(validated.value, {
+      ...baseContext,
+      request: {
+        ...baseContext.request,
+        userText: "Explain Table 1",
+        selectedPaperContexts: [paperContext],
+      },
+    })) as Record<string, unknown>;
+
+    assert.equal(prepareCalls, 0);
+    assert.equal(output.status, "use_text_mode");
+    assert.equal(output.backend, "mineru");
+    assert.include(String(output.guidance || ""), "mode:'targeted'");
+    assert.notInclude(String(output.guidance || ""), "mode:'figures'");
+    assert.notProperty(output, "artifacts");
+  });
+
   it("paper_read visual still renders explicit PDF pages for MinerU papers", async function () {
     const paperContext = {
       itemId: 11,
