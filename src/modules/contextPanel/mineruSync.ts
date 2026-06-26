@@ -11,6 +11,7 @@ import {
   getMineruItemDir,
   hasCachedMineruMd,
   invalidateMineruMd,
+  isDurableMineruCacheArtifactPath,
   MINERU_SOURCE_PROVENANCE_FILE,
   readMineruSourceProvenance,
   writeMineruSourceProvenanceForAttachment,
@@ -392,14 +393,8 @@ export function shouldIncludeMineruCachePackageEntry(
 ): boolean {
   const normalized = normalizePackagePath(relativePath);
   if (!normalized) return false;
-  const parts = normalized.split("/");
-  if (parts[0] === "__MACOSX") return false;
-  const basename = parts[parts.length - 1] || "";
-  if (!basename || basename === ".DS_Store") return false;
-  if (parts[0]?.toLowerCase() === "images") return false;
-  if (basename === MINERU_SOURCE_PROVENANCE_FILE) return true;
-  if (basename === MINERU_LOCAL_SYNC_STATE_FILE) return false;
-  return true;
+  if (normalized === MINERU_LOCAL_SYNC_STATE_FILE) return false;
+  return isDurableMineruCacheArtifactPath(normalized);
 }
 
 function isMineruSourceProvenanceEntryPath(relativePath: string): boolean {

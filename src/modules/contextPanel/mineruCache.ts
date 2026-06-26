@@ -78,6 +78,7 @@ type IOUtilsLike = {
     path: string,
     options?: { recursive?: boolean; ignoreAbsent?: boolean },
   ) => Promise<void>;
+  getChildren?: (path: string) => Promise<string[]>;
 };
 
 type OSFileLike = {
@@ -247,6 +248,10 @@ async function removePath(path: string): Promise<void> {
 // ── MinerU archive path normalization ────────────────────────────────────────
 
 const CONTENT_LIST_FILE_NAME = "content_list.json";
+const MANIFEST_FILE_NAME = "manifest.json";
+const FULL_MARKDOWN_FILE_NAME = "full.md";
+const PDF_FIGURE_CROP_DIR = "figure_crops";
+const MINERU_LOCAL_SYNC_STATE_FILE = "_llm_sync_state.json";
 const MAX_CACHE_PATH_SEGMENT_LENGTH = 80;
 const MAX_CACHE_RELATIVE_PATH_LENGTH = 160;
 
@@ -660,13 +665,97 @@ function hasLocalImageEmbeds(mdContent: string): boolean {
   return stripMineruSourceImageEmbedsFromMarkdown(mdContent) !== mdContent;
 }
 
-function isRawMineruSourceImagePath(relativePath: string): boolean {
-  const parts = normalizePathKey(relativePath).split("/").filter(Boolean);
-  return parts[0]?.toLowerCase() === "images";
+export function isDurableMineruCacheArtifactPath(
+  relativePath: string,
+  options: { includeLocalSyncState?: boolean } = {},
+): boolean {
+  const parts = parseSafeArchivePath(relativePath);
+  if (!parts) return false;
+  if (parts[0] === "__MACOSX") return false;
+  const basename = parts[parts.length - 1] || "";
+  if (!basename || basename === ".DS_Store") return false;
+  const normalized = parts.join("/");
+  if (
+    normalized === FULL_MARKDOWN_FILE_NAME ||
+    normalized === MANIFEST_FILE_NAME ||
+    normalized === CONTENT_LIST_FILE_NAME ||
+    normalized === MINERU_SOURCE_PROVENANCE_FILE
+  ) {
+    return true;
+  }
+  if (
+    options.includeLocalSyncState &&
+    normalized === MINERU_LOCAL_SYNC_STATE_FILE
+  ) {
+    return true;
+  }
+  return parts[0] === PDF_FIGURE_CROP_DIR && parts.length > 1;
 }
 
 function shouldWriteFinalizedCacheFile(relativePath: string): boolean {
-  return !isRawMineruSourceImagePath(relativePath);
+  return isDurableMineruCacheArtifactPath(relativePath);
+}
+
+async function getChildren(path: string): Promise<string[] | null> {
+  const io = getIOUtils();
+  if (io?.getChildren) {
+    try {
+      return await io.getChildren(path);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function relativeCachePath(rootPath: string, filePath: string): string | null {
+  const root = normalizePathKey(rootPath);
+  const file = normalizePathKey(filePath);
+  if (!file || file === root) return null;
+  const prefix = `${root}/`;
+  if (!file.startsWith(prefix)) return null;
+  return file.slice(prefix.length);
+}
+
+export async function pruneNonDurableMineruCacheArtifacts(
+  itemDir: string,
+): Promise<boolean> {
+  let changed = false;
+  const root = normalizePathKey(itemDir);
+
+  async function visit(dir: string): Promise<void> {
+    const children = await getChildren(dir);
+    if (!children) return;
+    for (const child of children) {
+      const relativePath = relativeCachePath(root, child);
+      if (!relativePath) continue;
+      const childEntries = await getChildren(child);
+      if (childEntries) {
+        if (
+          !isDurableMineruCacheArtifactPath(`${relativePath}/placeholder`, {
+            includeLocalSyncState: true,
+          })
+        ) {
+          await removePath(child);
+          changed = true;
+          continue;
+        }
+        await visit(child);
+        continue;
+      }
+      if (
+        !isDurableMineruCacheArtifactPath(relativePath, {
+          includeLocalSyncState: true,
+        })
+      ) {
+        await removePath(child);
+        changed = true;
+      }
+    }
+  }
+
+  await visit(itemDir);
+  return changed;
 }
 
 export function normalizeMineruCacheFiles(
@@ -970,7 +1059,7 @@ export async function writeMineruCacheFiles(
   await ensureDir(itemDir);
   const finalized = finalizeMineruCacheFiles(mdContent, files);
 
-  await removePath(joinLocalPath(itemDir, "images"));
+  await pruneNonDurableMineruCacheArtifacts(itemDir);
 
   for (const file of finalized.files) {
     const parts = file.relativePath.split(/[\\/]+/).filter(Boolean);
@@ -1020,35 +1109,6 @@ export async function writeMineruCacheFiles(
   if (await pathExists(legacyPath)) {
     await removePath(legacyPath);
   }
-}
-
-const EXT_MIME: Record<string, string> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  gif: "image/gif",
-  webp: "image/webp",
-  svg: "image/svg+xml",
-};
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++)
-    binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
-}
-
-export async function readMineruImageAsBase64(
-  attachmentId: number,
-  relativePath: string,
-): Promise<string | null> {
-  const parts = relativePath.split(/[\\/]+/).filter(Boolean);
-  const filePath = joinLocalPath(getMineruItemDir(attachmentId), ...parts);
-  const bytes = await readFileBytes(filePath);
-  if (!bytes || bytes.length === 0) return null;
-  const ext = (relativePath.match(/\.(\w+)$/)?.[1] || "png").toLowerCase();
-  const mime = EXT_MIME[ext] || "image/png";
-  return `data:${mime};base64,${toBase64(bytes)}`;
 }
 
 // ── Manifest ─────────────────────────────────────────────────────────────────
@@ -1407,7 +1467,8 @@ export async function finalizeExistingMineruCache(
   const existingManifest = await readManifest(id);
   let changed = canonicalMdContent !== sourceMdContent;
 
-  await removePath(joinLocalPath(itemDir, "images"));
+  const pruned = await pruneNonDurableMineruCacheArtifacts(itemDir);
+  if (pruned) changed = true;
 
   if (changed) {
     await writeFileBytes(

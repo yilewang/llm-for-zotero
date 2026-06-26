@@ -3407,7 +3407,6 @@ type ContextPlanForRequest = {
   citationPaperContexts: PaperContextRef[];
   quoteCitations: QuoteCitation[];
   recentPaperContexts: PaperContextRef[];
-  mineruImages: string[];
 };
 
 function shouldUseCodexNativeLightContext(params: {
@@ -3440,7 +3439,6 @@ function buildLightCodexNativeMcpContextPlan(params: {
     ),
     quoteCitations: [],
     recentPaperContexts: params.recentPaperContexts,
-    mineruImages: [],
   };
 }
 
@@ -3602,7 +3600,6 @@ async function buildContextPlanForRequest(params: {
     ),
     quoteCitations: plan.quoteCitations || [],
     recentPaperContexts: params.recentPaperContexts,
-    mineruImages: [],
   };
 }
 

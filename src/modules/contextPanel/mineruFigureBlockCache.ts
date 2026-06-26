@@ -328,26 +328,3 @@ export async function validateMineruFigureBlockEmbedsForCacheDirs(params: {
   }
   return null;
 }
-
-export async function findMineruImageBlockInCacheDirs(params: {
-  imagePath: string;
-  cacheDirs: string[];
-  encoding?: string;
-}): Promise<{ cacheDir: string; block: MineruFigureBlock } | null> {
-  const loaded = await loadMineruFigureBlocksFromCacheDirs(
-    params.cacheDirs,
-    params.encoding,
-  );
-  for (const entry of loaded) {
-    const block = findMineruFigureBlockByImagePath(
-      params.imagePath,
-      entry.blocks,
-    );
-    if (!block) continue;
-    return {
-      cacheDir: entry.cacheDir,
-      block: absolutizeMineruFigureBlock(block, entry.cacheDir),
-    };
-  }
-  return null;
-}

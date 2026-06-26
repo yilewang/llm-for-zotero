@@ -811,11 +811,8 @@ describe("semantic tool surface", function () {
         String(output.guidance || ""),
         "Do not read MinerU image paths",
       );
-      assert.equal(output.panelHint, "c");
-      const block = (
-        output.figureBlocks as Array<Record<string, unknown>> | undefined
-      )?.[0];
-      assert.notProperty(block || {}, "imagePaths");
+      assert.notProperty(output, "panelHint");
+      assert.notProperty(output, "figureBlocks");
       assert.notProperty(output, "artifacts");
     } finally {
       if (originalIOUtils === undefined) {

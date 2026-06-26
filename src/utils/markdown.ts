@@ -1907,7 +1907,7 @@ function renderInline(text: string): string {
     /!\[([^\]]*)\]\(([^)]+)\)/g,
     (_match, alt: string, src: string) => {
       const trimmedSrc = src.trim();
-      // Try resolver first (for MinerU images in chat)
+      // Try resolver first for callers that provide a safe image mapping.
       if (activeImageResolver) {
         const resolved = activeImageResolver(trimmedSrc);
         if (resolved) {

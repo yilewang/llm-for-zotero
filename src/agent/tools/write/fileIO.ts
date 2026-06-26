@@ -18,10 +18,8 @@ import { pushUndoEntry } from "../../store/undoStore";
 import { FILE_IO_CONTENT_FIELDS } from "../../toolArgumentFields";
 import { isMalformedToolArgumentsDiagnostic } from "../../toolArgumentDiagnostics";
 import {
-  findMineruImageBlockInCacheDirs,
   validateMineruFigureBlockEmbedsForCacheDirs,
 } from "../../../modules/contextPanel/mineruFigureBlockCache";
-import { MAX_MINERU_CONTEXT_IMAGES } from "../../../modules/contextPanel/mineruImages";
 import { collectRequestPaperContexts } from "../requestPaperContexts";
 
 type FileIOInput = {
@@ -289,18 +287,6 @@ async function validateMarkdownFigureBlockEmbeds(
   });
 }
 
-async function findMineruImageBlockForRead(
-  filePath: string,
-  context: AgentToolContext,
-  encoding: string,
-) {
-  return findMineruImageBlockInCacheDirs({
-    imagePath: filePath,
-    cacheDirs: getRequestMineruCacheDirs(context),
-    encoding,
-  });
-}
-
 function resolveFileNoteWriteInput(
   input: FileIOInput,
   context: AgentToolContext,
@@ -359,6 +345,41 @@ function buildCodexMineruPaperSourceMetadata(
     }
   }
   return null;
+}
+
+function getRequestMineruCacheRelativePath(
+  filePath: string,
+  context: AgentToolContext,
+): string | null {
+  const normalizedFilePath = normalizePathForPrefix(filePath);
+  for (const cacheDir of getRequestMineruCacheDirs(context)) {
+    const normalizedCacheDir = normalizePathForPrefix(cacheDir);
+    if (!normalizedCacheDir) continue;
+    if (normalizedFilePath === normalizedCacheDir) return "";
+    const prefix = `${normalizedCacheDir}/`;
+    if (normalizedFilePath.startsWith(prefix)) {
+      return normalizedFilePath.slice(prefix.length);
+    }
+  }
+  return null;
+}
+
+function isPdfFigureCropCachePath(relativePath: string): boolean {
+  const normalized = relativePath
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter(Boolean)
+    .join("/");
+  return normalized.startsWith("figure_crops/");
+}
+
+function isDisallowedMineruSourceImageCacheRead(
+  filePath: string,
+  context: AgentToolContext,
+): boolean {
+  const relativePath = getRequestMineruCacheRelativePath(filePath, context);
+  if (!relativePath) return false;
+  return !isPdfFigureCropCachePath(relativePath);
 }
 
 /**
@@ -704,45 +725,14 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
               },
             };
           }
-          const blockMatch = await findMineruImageBlockForRead(
-            input.filePath,
-            context,
-            input.encoding || "utf-8",
-          );
-          if (blockMatch) {
-            const block = blockMatch.block;
-            const artifactPaths = block.imagePaths.slice(
-              0,
-              MAX_MINERU_CONTEXT_IMAGES,
-            );
+          if (isDisallowedMineruSourceImageCacheRead(input.filePath, context)) {
             return {
               content: {
                 action: "read",
                 filePath: input.filePath,
-                imageFile: true,
-                mimeType,
-                figureBlock: {
-                  ...block,
-                  truncated:
-                    block.imagePaths.length > MAX_MINERU_CONTEXT_IMAGES,
-                  omittedImageCount: Math.max(
-                    0,
-                    block.imagePaths.length - MAX_MINERU_CONTEXT_IMAGES,
-                  ),
-                },
-                ...(paperSourceMetadata || {}),
+                error:
+                  "MinerU source image caches are not available. Use paper_read mode:'figures' to extract source-PDF figure crops under figure_crops/**.",
               },
-              artifacts: artifactPaths.map((storedPath) => {
-                const ext = (
-                  storedPath.match(/\.(\w+)$/)?.[1] || fileExt
-                ).toLowerCase();
-                return {
-                  kind: "image" as const,
-                  mimeType: IMAGE_MIME[ext] || mimeType,
-                  storedPath,
-                  paperContext: paperSourceMetadata?.paperContext,
-                };
-              }),
             };
           }
           return {

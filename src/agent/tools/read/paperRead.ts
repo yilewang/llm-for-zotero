@@ -15,8 +15,6 @@ import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
 } from "../../../modules/contextPanel/paperAttribution";
-import { loadMineruFigureBlocksFromCacheDir } from "../../../modules/contextPanel/mineruFigureBlockCache";
-import { resolveMineruFigureBlocksForQuery } from "../../../modules/contextPanel/mineruFigureBlocks";
 import {
   buildQuoteCitation,
   mergeQuoteCitations,
@@ -258,28 +256,6 @@ async function buildMineruVisualRedirect(params: {
   const mineruCacheDir = normalizeString(paperContext?.mineruCacheDir);
   if (!paperContext || !mineruCacheDir) return null;
   const query = params.input.query || params.context.request.userText || "";
-  let resolvedBlocks: Array<Record<string, unknown>> = [];
-  let panelHint: string | undefined;
-  try {
-    const blocks = await loadMineruFigureBlocksFromCacheDir(mineruCacheDir);
-    const resolution = resolveMineruFigureBlocksForQuery(query, blocks);
-    panelHint = resolution.panelHint;
-    resolvedBlocks = resolution.blocks.map((block) => ({
-      blockId: block.blockId,
-      kind: block.kind,
-      labelHints: block.labelHints,
-      captionHints: block.captionHints,
-      sectionHeading: block.sectionHeading,
-      markdownStart: block.markdownStart,
-      markdownEnd: block.markdownEnd,
-      contextStart: block.contextStart,
-      contextEnd: block.contextEnd,
-      confidence: block.confidence,
-      ambiguous: block.ambiguous,
-    }));
-  } catch {
-    resolvedBlocks = [];
-  }
   return {
     mode: "visual",
     status: "use_figures_mode",
@@ -287,9 +263,6 @@ async function buildMineruVisualRedirect(params: {
     query,
     paperContext,
     mineruCacheDir,
-    ...(resolvedBlocks.length
-      ? { figureBlocks: resolvedBlocks, ...(panelHint ? { panelHint } : {}) }
-      : {}),
     guidance:
       "This is a figure/image request for a MinerU-ready paper. Do not read MinerU image paths and do not use paper_read mode:'visual' for figure interpretation. Call paper_read({ mode:'figures', query:'<figure/table label or all figures>' }) to get precise PDF crops plus captions/provenance. Use mode:'visual' only for explicit raw/rendered PDF page or layout inspection.",
     nextSteps: [

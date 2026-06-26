@@ -57,7 +57,7 @@ export type PaperContextRef = {
   attachmentTitle?: string;
   firstCreator?: string;
   year?: string;
-  /** Full path to MinerU parsed cache directory (contains full.md + images/). */
+  /** Full path to durable MinerU text metadata plus PDF figure crop cache. */
   mineruCacheDir?: string;
 };
 

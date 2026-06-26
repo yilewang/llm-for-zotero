@@ -323,11 +323,14 @@ describe("mineruSync", function () {
     pdfTextCache.clear();
   });
 
-  it("filters raw source images while preserving durable geometry and crops", function () {
+  it("filters to durable text metadata and PDF crop cache artifacts", function () {
     assert.isTrue(shouldIncludeMineruCachePackageEntry("full.md"));
+    assert.isTrue(shouldIncludeMineruCachePackageEntry("manifest.json"));
     assert.isTrue(shouldIncludeMineruCachePackageEntry("content_list.json"));
     assert.isFalse(shouldIncludeMineruCachePackageEntry("images/figure.png"));
-    assert.isTrue(shouldIncludeMineruCachePackageEntry("layout.json"));
+    assert.isFalse(shouldIncludeMineruCachePackageEntry("layout.json"));
+    assert.isFalse(shouldIncludeMineruCachePackageEntry("middle.json"));
+    assert.isFalse(shouldIncludeMineruCachePackageEntry("tables/table-1.png"));
     assert.isTrue(
       shouldIncludeMineruCachePackageEntry("figure_crops/figure_geometry.json"),
     );
@@ -342,7 +345,7 @@ describe("mineruSync", function () {
     assert.isFalse(shouldIncludeMineruCachePackageEntry("__MACOSX/full.md"));
   });
 
-  it("builds a package with full.md, manifest, content_list, and assets", async function () {
+  it("builds a compact package with full.md, manifest, content_list, and PDF crops", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();
     const parent = createParent();
@@ -370,9 +373,9 @@ describe("mineruSync", function () {
       "full.md",
       "manifest.json",
       "content_list.json",
-      "layout.json",
     ]);
     assert.notProperty(entries, "images/fig1.png");
+    assert.notProperty(entries, "layout.json");
     const metadata = JSON.parse(
       decoder.decode(entries[MINERU_SYNC_METADATA_FILE]),
     );
@@ -1500,6 +1503,11 @@ describe("mineruSync", function () {
       ),
     );
     io.files.set(normalizePath(`${itemDir}/layout.json`), bytes("{}"));
+    io.files.set(normalizePath(`${itemDir}/middle.json`), bytes("{}"));
+    io.files.set(
+      normalizePath(`${itemDir}/tables/table-1.png`),
+      bytes([1, 2, 3]),
+    );
 
     const result = await repairMineruCaches();
 
@@ -1509,6 +1517,11 @@ describe("mineruSync", function () {
       "# Intro\nFig. 1 caption\n# Results\ncontent",
     );
     assert.isFalse(io.files.has(normalizePath(`${itemDir}/images/fig1.png`)));
+    assert.isFalse(io.files.has(normalizePath(`${itemDir}/layout.json`)));
+    assert.isFalse(io.files.has(normalizePath(`${itemDir}/middle.json`)));
+    assert.isFalse(
+      io.files.has(normalizePath(`${itemDir}/tables/table-1.png`)),
+    );
     const manifest = JSON.parse(
       decoder.decode(io.files.get(normalizePath(`${itemDir}/manifest.json`))!),
     );

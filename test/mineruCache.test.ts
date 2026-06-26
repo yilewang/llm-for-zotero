@@ -8,16 +8,10 @@ import {
   readCachedMineruMd,
   readMineruSourceProvenance,
   readManifest,
-  readMineruImageAsBase64,
   writeMineruCacheFiles,
   writeMineruSourceProvenanceForAttachment,
   type MineruCacheFile,
 } from "../src/modules/contextPanel/mineruCache";
-import {
-  MAX_MINERU_CONTEXT_IMAGES,
-  resolveContextImageInventory,
-  resolveContextImages,
-} from "../src/modules/contextPanel/mineruImages";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -248,7 +242,7 @@ describe("mineruCache", function () {
   });
 
   it("writes stripped full.md while preserving logical figure paths in manifest", async function () {
-    setupMemoryIO();
+    const io = setupMemoryIO();
     const originalImagePath = "Long Paper Title/auto/images/fig1.png";
     const mdContent = [
       "# Intro",
@@ -296,7 +290,9 @@ describe("mineruCache", function () {
         "results",
       ].join("\n"),
     );
-    assert.isNull(await readMineruImageAsBase64(42, "images/fig1.png"));
+    assert.isFalse(
+      io.files.has("/tmp/zotero/llm-for-zotero-mineru/42/images/fig1.png"),
+    );
 
     const manifest = await readManifest(42);
     assert.equal(manifest?.sections[0].figures[0].path, "images/fig1.png");
@@ -340,10 +336,21 @@ describe("mineruCache", function () {
           ]),
         ),
       },
+      {
+        relativePath: "paper/pipeline/layout.json",
+        data: bytes("{}"),
+      },
+      {
+        relativePath: "paper/pipeline/middle.json",
+        data: bytes("{}"),
+      },
+      {
+        relativePath: "paper/pipeline/tables/table-1.png",
+        data: bytes([1, 2, 3]),
+      },
     ]);
 
     assert.equal(await readCachedMineruMd(51), "# Intro\n# Results\nresults");
-    assert.isNull(await readMineruImageAsBase64(51, "images/fig1.png"));
     assert.includeMembers(io.writes, [
       "/tmp/zotero/llm-for-zotero-mineru/51/full.md",
       "/tmp/zotero/llm-for-zotero-mineru/51/content_list.json",
@@ -352,6 +359,18 @@ describe("mineruCache", function () {
     assert.notInclude(
       io.writes,
       "/tmp/zotero/llm-for-zotero-mineru/51/images/fig1.png",
+    );
+    assert.notInclude(
+      io.writes,
+      "/tmp/zotero/llm-for-zotero-mineru/51/layout.json",
+    );
+    assert.notInclude(
+      io.writes,
+      "/tmp/zotero/llm-for-zotero-mineru/51/middle.json",
+    );
+    assert.notInclude(
+      io.writes,
+      "/tmp/zotero/llm-for-zotero-mineru/51/tables/table-1.png",
     );
 
     const manifest = await readManifest(51);
@@ -379,18 +398,20 @@ describe("mineruCache", function () {
   });
 
   it("keeps simple cache layouts readable", async function () {
-    setupMemoryIO();
+    const io = setupMemoryIO();
     await writeMineruCacheFiles(7, "# Simple\n![x](images/a.png)", [
       { relativePath: "full.md", data: bytes("# Simple\n![x](images/a.png)") },
       { relativePath: "images/a.png", data: bytes([9, 8, 7]) },
     ]);
 
     assert.equal(await readCachedMineruMd(7), "# Simple");
-    assert.isNull(await readMineruImageAsBase64(7, "images/a.png"));
+    assert.isFalse(
+      io.files.has("/tmp/zotero/llm-for-zotero-mineru/7/images/a.png"),
+    );
   });
 
-  it("does not resolve raw MinerU source images after cache finalization", async function () {
-    setupMemoryIO();
+  it("does not persist raw MinerU source images after cache finalization", async function () {
+    const io = setupMemoryIO();
     const imageCount = 55;
     const markdown = Array.from(
       { length: imageCount },
@@ -404,17 +425,17 @@ describe("mineruCache", function () {
       })),
     ]);
 
-    const images = await resolveContextImages({
-      contextText: markdown,
-      attachmentId: 77,
-    });
-
-    assert.equal(MAX_MINERU_CONTEXT_IMAGES, 50);
-    assert.deepEqual(images, []);
+    for (let index = 0; index < imageCount; index += 1) {
+      assert.isFalse(
+        io.files.has(
+          `/tmp/zotero/llm-for-zotero-mineru/77/images/fig${index + 1}.png`,
+        ),
+      );
+    }
   });
 
-  it("expands one MinerU image ref to the full adjacent figure block", async function () {
-    setupMemoryIO();
+  it("keeps compound figure metadata without source image files", async function () {
+    const io = setupMemoryIO();
     const markdown = [
       "## Results",
       "",
@@ -447,27 +468,17 @@ describe("mineruCache", function () {
       { relativePath: "images/fig2c.png", data: bytes([137, 80, 78, 71, 3]) },
     ]);
 
-    const images = await resolveContextImages({
-      contextText: "Please inspect ![Figure 2c](images/fig2c.png).",
-      attachmentId: 78,
-    });
-    const inventory = await resolveContextImageInventory({
-      contextText: "Please inspect ![Figure 2c](images/fig2c.png).",
-      attachmentId: 78,
-    });
-
-    assert.deepEqual(images, []);
-    assert.deepEqual(inventory[0]?.imagePaths, [
+    const manifest = await readManifest(78);
+    assert.deepEqual(manifest?.figureBlocks?.[0]?.imagePaths, [
       "images/fig2a.png",
       "images/fig2b.png",
       "images/fig2c.png",
     ]);
-    assert.deepEqual(inventory[0]?.absoluteImagePaths, [
-      "/tmp/zotero/llm-for-zotero-mineru/78/images/fig2a.png",
-      "/tmp/zotero/llm-for-zotero-mineru/78/images/fig2b.png",
-      "/tmp/zotero/llm-for-zotero-mineru/78/images/fig2c.png",
-    ]);
-    assert.equal(inventory[0]?.requestedPath, "images/fig2c.png");
+    for (const name of ["fig2a", "fig2b", "fig2c"]) {
+      assert.isFalse(
+        io.files.has(`/tmp/zotero/llm-for-zotero-mineru/78/images/${name}.png`),
+      );
+    }
   });
 
   it("writes lightweight parsed source metadata without fingerprinting the PDF", async function () {
@@ -588,30 +599,22 @@ describe("mineruCache", function () {
     );
   });
 
-  it("includes normalized and original paths in cache write errors", async function () {
-    setupMemoryIO({ maxWritePathLength: 20 });
+  it("ignores unknown MinerU artifacts instead of writing them", async function () {
+    const io = setupMemoryIO();
 
-    try {
-      await writeMineruCacheFiles(99, "# Intro", [
-        { relativePath: "paper/full.md", data: bytes("# Intro") },
-        {
-          relativePath:
-            "paper/very-long-nonimage-artifact-name-that-still-gets-written.txt",
-          data: bytes([1]),
-        },
-      ]);
-      assert.fail("Expected cache write to fail");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      assert.include(
-        message,
-        'MinerU cache file "very-long-nonimage-artifact-name-that-still-gets-written.txt"',
-      );
-      assert.include(
-        message,
-        '"paper/very-long-nonimage-artifact-name-that-still-gets-written.txt"',
-      );
-      assert.notInclude(message, "{}");
-    }
+    await writeMineruCacheFiles(99, "# Intro", [
+      { relativePath: "paper/full.md", data: bytes("# Intro") },
+      {
+        relativePath:
+          "paper/very-long-nonimage-artifact-name-that-still-gets-written.txt",
+        data: bytes([1]),
+      },
+    ]);
+
+    assert.equal(await readCachedMineruMd(99), "# Intro");
+    assert.notInclude(
+      io.writes,
+      "/tmp/zotero/llm-for-zotero-mineru/99/very-long-nonimage-artifact-name-that-still-gets-written.txt",
+    );
   });
 });

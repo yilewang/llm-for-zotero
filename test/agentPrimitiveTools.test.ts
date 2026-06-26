@@ -1197,7 +1197,7 @@ describe("primitive agent tools", function () {
     }
   });
 
-  it("file_io image reads surface the whole MinerU image block", async function () {
+  it("file_io refuses stale MinerU source image cache reads", async function () {
     const tool = createFileIOTool();
     const encoder = new TextEncoder();
     const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
@@ -1272,20 +1272,16 @@ describe("primitive agent tools", function () {
         artifacts?: Array<{ storedPath: string }>;
       };
 
-      const block = result.content.figureBlock as Record<string, unknown>;
-      assert.deepEqual(block.imagePaths, [
-        `${cacheDir}/images/a.jpg`,
-        `${cacheDir}/images/b.jpg`,
-        `${cacheDir}/images/c.jpg`,
-      ]);
-      assert.deepEqual(
-        result.artifacts?.map((artifact) => artifact.storedPath),
-        [
-          `${cacheDir}/images/a.jpg`,
-          `${cacheDir}/images/b.jpg`,
-          `${cacheDir}/images/c.jpg`,
-        ],
+      assert.include(
+        String(result.content.error || ""),
+        "MinerU source image caches are not available",
       );
+      assert.include(
+        String(result.content.error || ""),
+        "paper_read mode:'figures'",
+      );
+      assert.isUndefined(result.content.figureBlock);
+      assert.isUndefined(result.artifacts);
     } finally {
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
     }

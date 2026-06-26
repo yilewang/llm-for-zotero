@@ -330,8 +330,8 @@ const zhCN: Record<string, string> = {
     "从 PDF 中提取高质量结构化文本，保留数学公式、表格和图片。MinerU 显著提升 AI 对论文的理解能力。",
   "Enable MinerU PDF Parsing": "启用 MinerU PDF 解析",
   "Sync MinerU cache with Zotero file sync": "使用 Zotero 文件同步 MinerU 缓存",
-  "Creates companion ZIP attachments for MinerU full.md, manifest.json, content_list.json, and extracted paper assets. Requires Zotero file sync or WebDAV.":
-    "为 MinerU full.md、manifest.json、content_list.json 和提取出的论文资源创建配套 ZIP 附件。需要启用 Zotero 文件同步或 WebDAV。",
+  "Creates companion ZIP attachments for MinerU full.md, manifest.json, content_list.json, and PDF figure crops. Requires Zotero file sync or WebDAV.":
+    "为 MinerU full.md、manifest.json、content_list.json 和 PDF 图像裁剪创建配套 ZIP 附件。需要启用 Zotero 文件同步或 WebDAV。",
   "Delete synced MinerU packages": "删除已同步的 MinerU 包",
   "Disable MinerU sync and delete packages": "禁用 MinerU 同步并删除同步包",
   "Delete MinerU sync packages?": "删除 MinerU 同步包？",

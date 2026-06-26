@@ -118,6 +118,7 @@ import {
   buildClaudeLibraryStateKey,
   buildClaudePaperStateKey,
 } from "../../claudeCode/state";
+import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
 import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
@@ -2564,17 +2565,13 @@ export function openStandaloneChat(options?: {
         if (!skillCtxFilename || skillCtxSource !== "customized") return;
         const { restoreSkillToDefault } =
           await import("../../agent/skills/userSkills");
-        const win = doc.defaultView as unknown as {
-          confirm?: (msg: string) => boolean;
-        };
-        // Destructive action: if the window has no `confirm` available for
-        // any reason, refuse rather than silently overwrite user edits.
-        const confirmed =
-          typeof win?.confirm === "function"
-            ? win.confirm(
-                `Restore ${skillCtxFilename} to the shipped default? Your customizations in this file will be lost.`,
-              )
-            : false;
+        const confirmed = await showStandaloneConfirmationDialog(doc, {
+          title: t("Restore skill to default?"),
+          message: `Restore ${skillCtxFilename} to the shipped default? Your customizations in this file will be lost.`,
+          confirmLabel: t("Restore"),
+          cancelLabel: t("Cancel"),
+          destructive: true,
+        });
         if (!confirmed) return;
         const ok = await restoreSkillToDefault(skillCtxFilename);
         skillCtxFilePath = "";
