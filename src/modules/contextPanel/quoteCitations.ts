@@ -1080,7 +1080,9 @@ function finalizeSourceBackedQuoteBlock(params: {
   );
   if (!isQuoteWorthySourceText(quoteText)) {
     return {
-      markdown: citationRemainder,
+      markdown: `${formatPlainQuoteMarkdown(quoteText)}${
+        citationRemainder ? `\n\n${citationRemainder}` : ""
+      }`,
       consumedCitation: true,
     };
   }

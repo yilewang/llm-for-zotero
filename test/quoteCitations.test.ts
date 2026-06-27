@@ -786,7 +786,7 @@ describe("quoteCitations", function () {
     assert.notInclude(finalized.markdown, "(Anticevic et al., 2013),");
   });
 
-  it("drops publisher DOI boilerplate quote blocks inside prose parentheticals", function () {
+  it("preserves non-quote-worthy blockquotes as plain quoted text", function () {
     const boilerplate =
       "Full article and list of author affiliations: https://doi.org/10.1126/science.adw7707";
     const finalized = finalizeAssistantQuoteCitations({
@@ -815,15 +815,64 @@ describe("quoteCitations", function () {
     const rendered = renderMarkdown(display);
 
     assert.notInclude(finalized.markdown, "[[quote:");
-    assert.notInclude(display, boilerplate);
+    assert.include(display, boilerplate);
     assert.notInclude(display, "(Liu et al., 2026)");
+    assert.include(display, "Science (");
+    assert.include(display, "), the study");
+    assert.include(
+      display,
+      "> Full article and list of author affiliations: https://doi.org/10.1126/science.adw7707",
+    );
+    assert.include(rendered, "<blockquote>");
+  });
+
+  it("preserves non-quote-worthy blockquotes with continuation text", function () {
+    const boilerplate = "Copyright 2026 Example Publisher.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: [
+        `> ${boilerplate}`,
+        "",
+        "(Liu et al., 2026), followed by a plain continuation.",
+      ].join("\n"),
+      quoteCitations: [
+        {
+          id: "Q_bad_copyright",
+          quoteText: boilerplate,
+          citationLabel: "(Liu et al., 2026)",
+          contextItemId: 22,
+        },
+      ],
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(finalized.markdown, `> ${boilerplate}`);
+    assert.include(finalized.markdown, "followed by a plain continuation.");
+    assert.notInclude(finalized.markdown, "(Liu et al., 2026)");
+  });
+
+  it("cleans publisher DOI quote placeholders inside prose parentheticals", function () {
+    const boilerplate =
+      "Full article and list of author affiliations: https://doi.org/10.1126/science.adw7707";
+    const display = replaceQuoteCitationPlaceholdersForMarkdown(
+      "Published in Science ([[quote:Q_bad_doi]]), the study challenges decades.",
+      [
+        {
+          id: "Q_bad_doi",
+          quoteText: boilerplate,
+          citationLabel: "(Liu et al., 2026)",
+          contextItemId: 22,
+        },
+      ],
+    );
+
+    assert.notInclude(display, boilerplate);
+    assert.notInclude(display, "[[quote:");
     assert.notInclude(display, "Science (");
     assert.notInclude(display, "), the study");
     assert.include(
       display,
-      "Published in Science, the study challenges decades of conventional wisdom.",
+      "Published in Science, the study challenges decades.",
     );
-    assert.notInclude(rendered, "<blockquote>");
   });
 
   it("drops publisher DOI quote placeholders inside prose parentheticals", function () {
