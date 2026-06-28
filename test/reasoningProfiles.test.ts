@@ -29,6 +29,18 @@ describe("reasoningProfiles", function () {
       });
     });
 
+    it("supports xhigh reasoning for gpt-5.5", function () {
+      const options = getRuntimeReasoningOptionsForModel("openai", "gpt-5.5");
+      assert.deepEqual(
+        options.map((option) => option.level),
+        ["default", "low", "medium", "high", "xhigh"],
+      );
+
+      const profile = getOpenAIReasoningProfileForModel("gpt-5.5");
+      assert.equal(profile.defaultLevel, "default");
+      assert.equal(profile.levelToEffort.xhigh, "xhigh");
+    });
+
     it("limits gpt-5.4-pro to medium/high/xhigh reasoning", function () {
       const options = getRuntimeReasoningOptionsForModel(
         "openai",
