@@ -138,6 +138,38 @@ export function shouldShowMineruManagerItem(
   return true;
 }
 
+export type MineruManagerSearchInput = Pick<
+  MineruItemEntry,
+  "title" | "pdfTitle" | "firstCreator" | "year" | "dateAdded"
+>;
+
+function normalizeMineruManagerSearchText(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+export function filterMineruItemsForSearch<T extends MineruManagerSearchInput>(
+  items: readonly T[],
+  query: string,
+): T[] {
+  const tokens = normalizeMineruManagerSearchText(query)
+    .split(/\s+/)
+    .filter(Boolean);
+  if (tokens.length === 0) return [...items];
+  return items.filter((item) => {
+    const haystack = [
+      item.title,
+      item.pdfTitle,
+      item.firstCreator,
+      item.year,
+      item.dateAdded,
+      fmtDate(item.dateAdded),
+    ]
+      .map(normalizeMineruManagerSearchText)
+      .join(" ");
+    return tokens.every((token) => haystack.includes(token));
+  });
+}
+
 export type MineruManagerActionLabelInput = {
   batchRunning: boolean;
   batchPaused: boolean;
@@ -277,6 +309,9 @@ export async function registerMineruManagerScript(
   let localProcessedCount = 0;
   const collapsedSidebar = new Set<number>();
   let isRepairing = false;
+  let itemSearchQuery = "";
+  let itemSearchInput: HTMLInputElement | null = null;
+  let itemSearchCount: HTMLSpanElement | null = null;
 
   // Sorting
   let sortKey: SortKey = "dateAdded";
@@ -443,7 +478,7 @@ export async function registerMineruManagerScript(
   }
 
   function getCombinedFilteredItems(): MineruItemEntry[] {
-    return filterMineruItemsForFolderAndTagView(
+    const items = filterMineruItemsForFolderAndTagView(
       getManagerVisibleSourceItems(),
       {
         folderScope: activeCollectionId,
@@ -454,6 +489,7 @@ export async function registerMineruManagerScript(
         tagMatchMode,
       },
     );
+    return filterMineruItemsForSearch(items, itemSearchQuery);
   }
 
   function getFilteredItemIds(): number[] {
@@ -467,7 +503,13 @@ export async function registerMineruManagerScript(
   }
 
   function isCombinedFilterActive(): boolean {
-    return isFolderFilterActive() || isTagFilterActive();
+    return (
+      isFolderFilterActive() || isTagFilterActive() || isItemSearchActive()
+    );
+  }
+
+  function isItemSearchActive(): boolean {
+    return itemSearchQuery.trim().length > 0;
   }
 
   function findCollectionName(
@@ -507,6 +549,9 @@ export async function registerMineruManagerScript(
     const parts = [
       getActiveFolderFilterSummary(),
       getTagFilterSummary(),
+      isItemSearchActive()
+        ? `${t("Item search")}: ${itemSearchQuery.trim()}`
+        : "",
     ].filter(Boolean);
     return parts.join(" + ");
   }
@@ -1065,7 +1110,7 @@ export async function registerMineruManagerScript(
     input.placeholder = t("Filter Tags");
     input.value = tagFilterQuery;
     input.style.cssText =
-      "flex: 1; min-width: 0; height: 27px; border: 1px solid rgba(0,0,0,0.16); border-radius: 7px; padding: 2px 9px; font-size: 12px; background: rgba(0,0,0,0.28); color: FieldText; box-shadow: inset 0 1px 1px rgba(0,0,0,0.18);";
+      "flex: 1; min-width: 0; height: 27px; border: 1px solid rgba(128,128,128,0.28); border-radius: 7px; padding: 2px 9px; font-size: 12px; background: #fff; color: FieldText; box-shadow: inset 0 1px 1px rgba(0,0,0,0.06);";
     input.addEventListener("input", () => {
       tagFilterQuery = input.value;
       const selectionStart = input.selectionStart ?? tagFilterQuery.length;
@@ -1159,6 +1204,87 @@ export async function registerMineruManagerScript(
 
     bar.appendChild(menuWrap);
     return bar;
+  }
+
+  function updateItemSearchBarStatus(): void {
+    if (!itemSearchInput || !itemSearchCount) return;
+    if (itemSearchInput.value !== itemSearchQuery) {
+      itemSearchInput.value = itemSearchQuery;
+    }
+    itemSearchCount.textContent = isItemSearchActive()
+      ? `${getCombinedFilteredItems().length} ${t("papers match")}`
+      : "";
+  }
+
+  function renderItemSearchBar(): void {
+    const parent = itemsList?.parentElement;
+    if (!parent) return;
+
+    const existing = doc.getElementById(`${idPrefix}-mineru-mgr-item-search`);
+    if (existing) {
+      itemSearchInput = doc.getElementById(
+        `${idPrefix}-mineru-mgr-item-search-input`,
+      ) as HTMLInputElement | null;
+      itemSearchCount = doc.getElementById(
+        `${idPrefix}-mineru-mgr-item-search-count`,
+      ) as HTMLSpanElement | null;
+      updateItemSearchBarStatus();
+      return;
+    }
+
+    const bar = doc.createElement("div");
+    bar.id = `${idPrefix}-mineru-mgr-item-search`;
+    bar.style.cssText =
+      "border-top: 1px solid rgba(128,128,128,0.16); padding: 6px 8px; display: flex; align-items: center; gap: 8px; flex-shrink: 0;";
+
+    itemSearchInput = doc.createElement("input");
+    itemSearchInput.id = `${idPrefix}-mineru-mgr-item-search-input`;
+    itemSearchInput.type = "search";
+    itemSearchInput.placeholder = t("Search Items");
+    itemSearchInput.value = itemSearchQuery;
+    itemSearchInput.style.cssText =
+      "flex: 1; min-width: 0; height: 27px; border: 1px solid rgba(128,128,128,0.28); border-radius: 7px; padding: 2px 9px; font-size: 12px; background: #fff; color: FieldText; box-shadow: inset 0 1px 1px rgba(0,0,0,0.06);";
+    itemSearchInput.addEventListener("input", () => {
+      itemSearchQuery = itemSearchInput?.value ?? "";
+      selectedIds.clear();
+      lastClickedId = null;
+      renderItemsList();
+      renderSidebar();
+      updateButtons();
+      updateItemSearchBarStatus();
+    });
+    bar.appendChild(itemSearchInput);
+
+    itemSearchCount = doc.createElement("span");
+    itemSearchCount.id = `${idPrefix}-mineru-mgr-item-search-count`;
+    itemSearchCount.style.cssText =
+      "flex: 0 0 auto; min-width: 74px; text-align: right; font-size: 11px; color: var(--fill-secondary, #888); white-space: nowrap;";
+    bar.appendChild(itemSearchCount);
+
+    const clear = doc.createElement("button");
+    clear.type = "button";
+    clear.textContent = "×";
+    clear.title = t("Clear item search");
+    clear.setAttribute("aria-label", t("Clear item search"));
+    clear.style.cssText =
+      "height: 27px; width: 24px; border: none; border-radius: 5px; background: transparent; color: var(--fill-secondary, #888); display: inline-flex; align-items: center; justify-content: center; padding: 0; font-size: 17px; line-height: 1; cursor: pointer;";
+    clear.addEventListener("click", () => {
+      itemSearchQuery = "";
+      if (itemSearchInput) {
+        itemSearchInput.value = "";
+        itemSearchInput.focus();
+      }
+      selectedIds.clear();
+      lastClickedId = null;
+      renderItemsList();
+      renderSidebar();
+      updateButtons();
+      updateItemSearchBarStatus();
+    });
+    bar.appendChild(clear);
+
+    parent.appendChild(bar);
+    updateItemSearchBarStatus();
   }
 
   function createSidebarEntry(
@@ -2014,6 +2140,7 @@ export async function registerMineruManagerScript(
 
     itemsList.appendChild(fragment);
     applyColumnLayout(colHeaders?.parentElement ?? itemsList);
+    updateItemSearchBarStatus();
     updateButtons();
   }
 
@@ -2640,6 +2767,7 @@ export async function registerMineruManagerScript(
   }
   renderSidebar();
   renderColumnHeaders();
+  renderItemSearchBar();
   renderItemsList();
   syncUIFromState(getMineruBatchState());
 }
