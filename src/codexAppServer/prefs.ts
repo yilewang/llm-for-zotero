@@ -18,6 +18,7 @@ export type CodexNativeSkillRoutingMode =
   | "deterministic"
   | "classifier";
 export type CodexNativeSkillMode = "native" | "legacy" | "off";
+export type CodexAppServerApprovalsReviewer = "user" | "auto_review";
 
 type ZoteroPrefsAPI = {
   get?: (key: string, global?: boolean) => unknown;
@@ -153,6 +154,40 @@ export function isCodexZoteroMcpToolsEnabled(): boolean {
 
 export function setCodexZoteroMcpToolsEnabled(enabled: boolean): void {
   setPref("codexAppServerZoteroMcpToolsEnabled", Boolean(enabled));
+}
+
+export function isCodexAppServerNativeApprovalsEnabled(): boolean {
+  const value = getZoteroPrefs()?.get?.(
+    prefKey("codexAppServerNativeApprovalsEnabled"),
+    true,
+  );
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") return true;
+    if (normalized === "false") return false;
+  }
+  return false;
+}
+
+export function setCodexAppServerNativeApprovalsEnabled(
+  enabled: boolean,
+): void {
+  setPref("codexAppServerNativeApprovalsEnabled", Boolean(enabled));
+}
+
+export function getCodexAppServerApprovalsReviewerPref(): CodexAppServerApprovalsReviewer {
+  const raw = getStringPref("codexAppServerApprovalsReviewer")
+    .trim()
+    .toLowerCase();
+  return raw === "auto_review" ? "auto_review" : "user";
+}
+
+export function setCodexAppServerApprovalsReviewerPref(
+  reviewer: CodexAppServerApprovalsReviewer,
+): void {
+  if (reviewer !== "user" && reviewer !== "auto_review") return;
+  setPref("codexAppServerApprovalsReviewer", reviewer);
 }
 
 export function isNativeZoteroMcpToolsEnabled(): boolean {

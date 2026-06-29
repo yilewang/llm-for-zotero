@@ -42,15 +42,20 @@ import { normalizeForcedSkillIds } from "../../shared/skillIds";
 import {
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
+  isCodexAppServerNativeApprovalsEnabled,
   isCodexAppServerModeEnabled,
   isCodexZoteroMcpToolsEnabled,
 } from "../../codexAppServer/prefs";
 import { getEffectiveCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
 import {
+  buildCodexNativeApprovalPendingAction,
+  buildCodexNativeApprovalResponseFromResolution,
   compactCodexAppServerConversation,
+  isCodexNativeBuiltInApprovalRequest,
   NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
   resolveCodexNativeApprovalRequest,
   runCodexAppServerNativeTurn,
+  type CodexNativeApprovalRequest,
   type CodexNativeConversationScope,
   type CodexNativeDiagnostics,
 } from "../../codexAppServer/nativeClient";
@@ -2718,6 +2723,8 @@ function scrollNativeMcpActionCardIntoView(
   view?.setTimeout(scroll, 80);
 }
 
+let codexNativeApprovalRequestCounter = 0;
+
 function closeNativeMcpActionCard(body: Element, requestId?: string): void {
   const ui = getPanelRequestUI(body);
   const chatBox = ui.chatBox;
@@ -2745,7 +2752,7 @@ function showNativeMcpActionCard(
   action: AgentPendingAction,
 ): Promise<AgentConfirmationResolution> {
   return new Promise((resolve) => {
-    ztoolkit.log("Codex app-server native MCP confirmation requested", {
+    ztoolkit.log("Codex app-server native confirmation requested", {
       requestId,
       toolName: action.toolName,
       mode: action.mode || "approval",
@@ -2754,18 +2761,18 @@ function showNativeMcpActionCard(
     const ui = getPanelRequestUI(body);
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc || !ui.chatBox) {
-      ztoolkit.log("Codex app-server native MCP confirmation unavailable", {
+      ztoolkit.log("Codex app-server native confirmation unavailable", {
         requestId,
         reason: "missing_panel_review_card_ui",
       });
       throw new Error(
-        "Zotero review card UI is unavailable for native MCP confirmation.",
+        "Zotero review card UI is unavailable for native confirmation.",
       );
     }
 
     try {
       getAgentApi().registerPendingConfirmation(requestId, (resolution) => {
-        ztoolkit.log("Codex app-server native MCP confirmation resolved", {
+        ztoolkit.log("Codex app-server native confirmation resolved", {
           requestId,
           approved: resolution.approved,
           actionId: resolution.actionId,
@@ -2774,12 +2781,12 @@ function showNativeMcpActionCard(
         resolve(resolution);
       });
     } catch (error) {
-      ztoolkit.log("Codex app-server native MCP confirmation unavailable", {
+      ztoolkit.log("Codex app-server native confirmation unavailable", {
         requestId,
         reason: error instanceof Error ? error.message : String(error),
       });
       throw new Error(
-        `Zotero review card UI could not register native MCP confirmation: ${
+        `Zotero review card UI could not register native confirmation: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -2789,7 +2796,7 @@ function showNativeMcpActionCard(
     if (renderedCard) {
       scrollNativeMcpActionCardIntoView(ui.chatBox, renderedCard);
       syncInlineActionCardAttr(body);
-      ztoolkit.log("Codex app-server native MCP confirmation rendered", {
+      ztoolkit.log("Codex app-server native confirmation rendered", {
         requestId,
         toolName: action.toolName,
         mode: action.mode || "approval",
@@ -2807,13 +2814,98 @@ function showNativeMcpActionCard(
     ui.chatBox.appendChild(wrapper);
     scrollNativeMcpActionCardIntoView(ui.chatBox, wrapper);
     syncInlineActionCardAttr(body);
-    ztoolkit.log("Codex app-server native MCP confirmation rendered", {
+    ztoolkit.log("Codex app-server native confirmation rendered", {
       requestId,
       toolName: action.toolName,
       mode: action.mode || "approval",
       source: "inline",
     });
   });
+}
+
+type CodexNativeApprovalTrace = {
+  noteMcpConfirmationRequired?: (
+    requestId: string,
+    action: AgentPendingAction,
+  ) => void;
+  noteMcpConfirmationResolved?: (
+    requestId: string,
+    resolution: AgentConfirmationResolution,
+  ) => void;
+};
+
+export async function resolveCodexNativeApprovalWithOptionalReviewCard(params: {
+  body: Element;
+  request: CodexNativeApprovalRequest;
+  trace?: CodexNativeApprovalTrace | null;
+  setStatusSafely: (
+    text: string,
+    kind: Parameters<typeof setStatus>[2],
+  ) => void;
+  isNativeApprovalsEnabled?: () => boolean;
+  showActionCard?: (
+    body: Element,
+    requestId: string,
+    action: AgentPendingAction,
+  ) => Promise<AgentConfirmationResolution>;
+  nextRequestId?: () => string;
+}): Promise<unknown> {
+  const defaultDecision = resolveCodexNativeApprovalRequest(params.request);
+  if (defaultDecision.approved) {
+    params.setStatusSafely("Codex approved Zotero MCP access", "sending");
+    return defaultDecision.response;
+  }
+  if (defaultDecision.reason === "unsupported_mcp_elicitation") {
+    params.setStatusSafely(
+      "Codex declined unsupported MCP elicitation",
+      "sending",
+    );
+    return defaultDecision.response;
+  }
+  if (
+    !(
+      params.isNativeApprovalsEnabled?.() ??
+      isCodexAppServerNativeApprovalsEnabled()
+    ) ||
+    !isCodexNativeBuiltInApprovalRequest(params.request)
+  ) {
+    params.setStatusSafely(
+      "Codex denied a built-in or untrusted approval request",
+      "error",
+    );
+    return defaultDecision.response;
+  }
+
+  const requestId =
+    params.nextRequestId?.() ||
+    `codex-native-approval-${Date.now()}-${++codexNativeApprovalRequestCounter}`;
+  const action = buildCodexNativeApprovalPendingAction(params.request);
+  const showActionCard = params.showActionCard || showNativeMcpActionCard;
+  try {
+    params.setStatusSafely("Codex is waiting for your approval", "sending");
+    params.trace?.noteMcpConfirmationRequired?.(requestId, action);
+    const resolution = await showActionCard(params.body, requestId, action);
+    params.trace?.noteMcpConfirmationResolved?.(requestId, resolution);
+    return buildCodexNativeApprovalResponseFromResolution(
+      params.request,
+      resolution,
+    );
+  } catch (error) {
+    if (typeof ztoolkit !== "undefined") {
+      ztoolkit.log(
+        "Codex app-server native approval UI unavailable; denying request",
+        {
+          method: params.request.method,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+    params.setStatusSafely(
+      "Codex denied a built-in approval request because the approval UI was unavailable",
+      "error",
+    );
+    return defaultDecision.response;
+  }
 }
 
 function isPanelWebChatMode(body: Element): boolean {
@@ -6524,23 +6616,14 @@ export async function retryLatestAssistantResponse(
                 "sending",
               );
             },
-            onApprovalRequest: (request) => {
+            onApprovalRequest: async (request) => {
               flushResponseStream("event");
-              const decision = resolveCodexNativeApprovalRequest(request);
-              if (decision.approved) {
-                setStatusSafely("Codex approved Zotero MCP access", "sending");
-              } else if (decision.reason === "unsupported_mcp_elicitation") {
-                setStatusSafely(
-                  "Codex declined unsupported MCP elicitation",
-                  "sending",
-                );
-              } else {
-                setStatusSafely(
-                  "Codex denied a built-in or untrusted approval request",
-                  "error",
-                );
-              }
-              return decision.response;
+              return resolveCodexNativeApprovalWithOptionalReviewCard({
+                body,
+                request,
+                trace: codexActivityTrace,
+                setStatusSafely,
+              });
             },
           })
         ).text
@@ -8638,23 +8721,14 @@ export async function sendQuestion(
                 "sending",
               );
             },
-            onApprovalRequest: (request) => {
+            onApprovalRequest: async (request) => {
               flushResponseStream("event");
-              const decision = resolveCodexNativeApprovalRequest(request);
-              if (decision.approved) {
-                setStatusSafely("Codex approved Zotero MCP access", "sending");
-              } else if (decision.reason === "unsupported_mcp_elicitation") {
-                setStatusSafely(
-                  "Codex declined unsupported MCP elicitation",
-                  "sending",
-                );
-              } else {
-                setStatusSafely(
-                  "Codex denied a built-in or untrusted approval request",
-                  "error",
-                );
-              }
-              return decision.response;
+              return resolveCodexNativeApprovalWithOptionalReviewCard({
+                body,
+                request,
+                trace: codexActivityTrace,
+                setStatusSafely,
+              });
             },
           })
         ).text

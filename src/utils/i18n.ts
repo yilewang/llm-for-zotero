@@ -638,6 +638,20 @@ const zhCN: Record<string, string> = {
   "Zotero MCP tools enabled but not configured yet.":
     "Zotero MCP 工具已启用，但尚未配置。",
   "Could not read Codex MCP status: ": "无法读取 Codex MCP 状态：",
+  "Native Codex approvals": "原生 Codex 授权",
+  "Lets Zotero surface native Codex command, file-change, and permission approval requests as per-request review cards. This does not grant shell or filesystem access by default.":
+    "允许 Zotero 将原生 Codex 的命令、文件变更和权限请求显示为逐次审核卡片。默认不会授予 shell 或文件系统访问权限。",
+  "Enable native Codex approval review cards": "启用原生 Codex 授权审核卡片",
+  Reviewer: "审核者",
+  "Auto review": "自动审核",
+  "User review shows every native request that reaches Zotero. Auto review only changes Codex app-server's reviewer parameter; Zotero MCP trust rules and confirmation behavior stay unchanged.":
+    "用户审核会显示所有到达 Zotero 的原生请求。自动审核只会更改 Codex app-server 的审核者参数；Zotero MCP 信任规则和确认行为保持不变。",
+  "Native Codex approval bridge enabled.": "原生 Codex 授权桥接已启用。",
+  "Native Codex approval bridge disabled.": "原生 Codex 授权桥接已禁用。",
+  "Codex may auto-review eligible native requests; Zotero still shows requests that reach the plugin.":
+    "Codex 可以自动审核符合条件的原生请求；到达插件的请求仍会由 Zotero 显示。",
+  "Zotero will show native Codex approval requests.":
+    "Zotero 将显示原生 Codex 授权请求。",
 
   // Claude Code preferences
   "Claude Code Integration": "Claude Code 集成",

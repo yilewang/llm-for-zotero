@@ -5,6 +5,10 @@ type AgentReasoningPayload = Extract<
   AgentRunEventRecord["payload"],
   { type: "reasoning" }
 >;
+type CodexToolActivityPayload = Extract<
+  AgentRunEventRecord["payload"],
+  { type: "codex_tool_activity" }
+>;
 
 export function appendAgentTraceText(
   base: string | undefined,
@@ -21,6 +25,44 @@ export function getReasoningTraceKey(payload: AgentReasoningPayload): string {
       ? payload.stepId.trim()
       : "";
   return stepId ? `step:${stepId}` : `round:${payload.round}`;
+}
+
+function stableDedupeJson(value: unknown): string {
+  return JSON.stringify(normalizeDedupeValue(value));
+}
+
+function normalizeDedupeValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeDedupeValue(entry));
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return Object.keys(record)
+      .sort()
+      .reduce<Record<string, unknown>>((normalized, key) => {
+        const entry = record[key];
+        if (entry !== undefined) {
+          normalized[key] = normalizeDedupeValue(entry);
+        }
+        return normalized;
+      }, {});
+  }
+  return value;
+}
+
+function getCodexToolActivityVisibleKey(
+  payload: CodexToolActivityPayload,
+): string {
+  return stableDedupeJson({
+    phase: payload.phase,
+    toolName: payload.toolName || "",
+    toolLabel: payload.toolLabel || "",
+    serverName: payload.serverName || "",
+    args: payload.args,
+    ok: typeof payload.ok === "boolean" ? payload.ok : null,
+    text: payload.text || "",
+    codeBlock: payload.codeBlock || "",
+  });
 }
 
 export function compactAgentTraceEvents(
@@ -87,6 +129,14 @@ export function compactAgentTraceEvents(
           codeBlock: entry.payload.codeBlock || previous.payload.codeBlock,
         },
       };
+      continue;
+    }
+    if (
+      entry.payload.type === "codex_tool_activity" &&
+      previous?.payload.type === "codex_tool_activity" &&
+      getCodexToolActivityVisibleKey(entry.payload) ===
+        getCodexToolActivityVisibleKey(previous.payload)
+    ) {
       continue;
     }
     compact.push(entry);

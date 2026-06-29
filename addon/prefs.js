@@ -30,6 +30,8 @@ pref("codexAppServerReasoning", "auto");
 pref("codexAppServerPath", "");
 pref("codexAppServerConversationModeMap", "");
 pref("codexAppServerZoteroMcpToolsEnabled", true);
+pref("codexAppServerNativeApprovalsEnabled", false);
+pref("codexAppServerApprovalsReviewer", "user");
 pref("codexNativeSkillMode", "native");
 pref("codexNativeSkillRoutingMode", "hybrid");
 pref("codexAppServerGlobalConversationMap", "");

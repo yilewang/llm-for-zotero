@@ -3,6 +3,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assert } from "chai";
 import {
+  buildCodexNativeApprovalPendingAction,
+  buildCodexNativeApprovalResponseFromResolution,
   buildCodexNativeScopedMcpScopeForTests,
   buildCodexNativeVisibleTurnContextBlockForTests,
   buildZoteroEnvironmentManifest,
@@ -256,6 +258,78 @@ describe("Codex app-server native client", function () {
         params: { serverName: "other_server", message: "Need input" },
       }).response,
       { action: "decline", content: null, _meta: null },
+    );
+  });
+
+  it("builds native Codex approval cards and turn-scoped approval responses", function () {
+    const commandRequest = {
+      method: "item/commandExecution/requestApproval",
+      params: {
+        command: "npm test",
+        cwd: "/repo/example",
+      },
+    };
+
+    const commandAction = buildCodexNativeApprovalPendingAction(commandRequest);
+
+    assert.equal(commandAction.toolName, "codex_native_approval");
+    assert.equal(commandAction.mode, "approval");
+    assert.equal(commandAction.confirmLabel, "Approve once");
+    assert.equal(commandAction.cancelLabel, "Deny");
+    assert.include(commandAction.title, "command");
+    assert.include(JSON.stringify(commandAction.fields), "npm test");
+    assert.include(JSON.stringify(commandAction.fields), "/repo/example");
+    assert.deepEqual(
+      buildCodexNativeApprovalResponseFromResolution(commandRequest, {
+        approved: true,
+        actionId: "approve",
+      }),
+      { decision: "accept" },
+    );
+    assert.deepEqual(
+      buildCodexNativeApprovalResponseFromResolution(commandRequest, {
+        approved: false,
+        actionId: "deny",
+      }),
+      { decision: "decline" },
+    );
+
+    const permissionRequest = {
+      method: "item/permissions/requestApproval",
+      params: {
+        cwd: "/repo/example",
+        reason: "Need to read a sibling package.",
+        permissions: {
+          fileSystem: {
+            read: ["/repo/shared"],
+            write: null,
+          },
+          network: null,
+        },
+      },
+    };
+
+    assert.deepEqual(
+      buildCodexNativeApprovalResponseFromResolution(permissionRequest, {
+        approved: true,
+        actionId: "approve",
+      }),
+      {
+        permissions: {
+          fileSystem: {
+            read: ["/repo/shared"],
+            write: null,
+          },
+        },
+        scope: "turn",
+      },
+    );
+    assert.deepEqual(
+      buildCodexNativeApprovalResponseFromResolution(permissionRequest, {
+        approved: false,
+        actionId: "deny",
+      }),
+      { permissions: {}, scope: "turn" },
     );
   });
 
@@ -532,6 +606,117 @@ describe("Codex app-server native client", function () {
     assert.notInclude(inputText, "SECRET SYSTEM PROMPT");
     assert.notInclude(inputText, "Zotero environment for this turn");
     assert.notInclude(inputText, "Notes directory configuration");
+  });
+
+  it("passes configured native approvals reviewer to thread and turn requests", async function () {
+    const processKey = "native-approvals-reviewer-test";
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const originalZotero = globalThis.Zotero;
+    let proc!: CodexAppServerProcess;
+    let threadStartParams: Record<string, unknown> | undefined;
+    let turnStartParams: Record<string, unknown> | undefined;
+
+    (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero = {
+      DataDirectory: { dir: "/tmp/lfz-native-reviewer-data" },
+      Profile: { dir: "/tmp/lfz-native-reviewer-profile" },
+      Prefs: {
+        get: (key: string) => {
+          if (key.endsWith(".codexAppServerZoteroMcpToolsEnabled"))
+            return false;
+          if (key.endsWith(".codexAppServerApprovalsReviewer")) {
+            return "auto_review";
+          }
+          return undefined;
+        },
+      },
+    };
+
+    proc = CodexAppServerProcess.forTest({
+      stdin: {
+        write: (chunk: string) => {
+          const request = JSON.parse(chunk) as {
+            id: number;
+            method: string;
+            params?: Record<string, unknown>;
+          };
+          const handleMessage = (
+            proc as unknown as {
+              handleMessage: (msg: Record<string, unknown>) => void;
+            }
+          ).handleMessage.bind(proc);
+          if (request.method === "thread/start") {
+            threadStartParams = request.params;
+            setTimeout(
+              () =>
+                handleMessage({
+                  id: request.id,
+                  result: { thread: { id: "thread-reviewer" } },
+                }),
+              0,
+            );
+            return;
+          }
+          if (request.method === "turn/start") {
+            turnStartParams = request.params;
+            setTimeout(
+              () =>
+                handleMessage({
+                  id: request.id,
+                  result: { turn: { id: "turn-reviewer" } },
+                }),
+              0,
+            );
+            setTimeout(
+              () =>
+                handleMessage({
+                  method: "turn/completed",
+                  params: {
+                    turn: { id: "turn-reviewer", status: "completed" },
+                  },
+                }),
+              5,
+            );
+            return;
+          }
+          if (request.method === "thread/read") {
+            setTimeout(
+              () => handleMessage({ id: request.id, result: { turns: [] } }),
+              0,
+            );
+          }
+        },
+      },
+      kill: () => {},
+    });
+    CodexAppServerProcess.spawn = async () => proc;
+
+    try {
+      await runCodexAppServerNativeTurn({
+        scope: {
+          profileSignature: "profile-native-reviewer-test",
+          conversationKey: 6_000_000_034,
+          libraryID: 1,
+          kind: "global",
+        },
+        model: "gpt-5.5",
+        messages: [{ role: "user", content: "Run a safe check." }],
+        hooks: {
+          loadProviderSessionId: async () => undefined,
+          persistProviderSessionId: async () => undefined,
+        },
+        processKey,
+      });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      (globalThis as typeof globalThis & { Zotero?: unknown }).Zotero =
+        originalZotero;
+      destroyCachedCodexAppServerProcess(processKey, proc);
+    }
+
+    assert.equal(threadStartParams?.approvalPolicy, "on-request");
+    assert.equal(threadStartParams?.approvalsReviewer, "auto_review");
+    assert.equal(turnStartParams?.approvalPolicy, "on-request");
+    assert.equal(turnStartParams?.approvalsReviewer, "auto_review");
   });
 
   it("submits automatic skill matches as structured native Codex skill inputs", async function () {

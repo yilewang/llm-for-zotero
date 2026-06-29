@@ -1373,6 +1373,64 @@ describe("agentTrace render", function () {
     assert.include(actionTexts, "Used Query Library");
   });
 
+  it("dedupes adjacent identical Codex tool activity rows with different item IDs", function () {
+    const args = {
+      command:
+        "rm -- '/Users/yat-lok/Desktop/Screenshot.png' && test ! -e '/Users/yat-lok/Desktop/Screenshot.png'",
+      cwd: "/Users/yat-lok/Documents/zotero-dev/agent-runtime/profile-79d985cc",
+      timeoutMs: 30000,
+    };
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "codex_tool_activity",
+        payload: {
+          type: "codex_tool_activity",
+          itemId: "native-command-1",
+          phase: "completed",
+          toolName: "run_command",
+          toolLabel: "Run Command",
+          args,
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "codex_tool_activity",
+        payload: {
+          type: "codex_tool_activity",
+          itemId: "mcp-command-1",
+          phase: "completed",
+          toolName: "run_command",
+          toolLabel: "Run Command",
+          args,
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null, {
+      role: "assistant",
+      text: "",
+      timestamp: 1,
+      runMode: "agent",
+      modelProviderLabel: "Codex",
+    });
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.equal(
+      actionTexts.filter((text) => text === "Used Run Command").length,
+      1,
+    );
+  });
+
   it("renders generated assistant images outside user screenshot UI", function () {
     const savedPathContainer = fakeDocument.createElement("div") as unknown as
       | HTMLElement

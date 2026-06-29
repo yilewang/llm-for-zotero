@@ -39,6 +39,8 @@ declare namespace _ZoteroTypes {
       "codexAppServerPath": string;
       "codexAppServerConversationModeMap": string;
       "codexAppServerZoteroMcpToolsEnabled": boolean;
+      "codexAppServerNativeApprovalsEnabled": boolean;
+      "codexAppServerApprovalsReviewer": string;
       "codexNativeSkillMode": string;
       "codexNativeSkillRoutingMode": string;
       "codexAppServerGlobalConversationMap": string;

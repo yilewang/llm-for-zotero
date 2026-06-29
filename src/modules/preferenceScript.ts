@@ -163,16 +163,21 @@ import {
   setClaudeBlockStreamingEnabled,
 } from "../claudeCode/prefs";
 import {
+  getCodexAppServerApprovalsReviewerPref,
   getCodexBinaryPathPref,
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
+  isCodexAppServerNativeApprovalsEnabled,
   isCodexAppServerModeEnabled,
   isNativeZoteroMcpToolsEnabled,
+  setCodexAppServerApprovalsReviewerPref,
   setCodexAppServerModeEnabled,
+  setCodexAppServerNativeApprovalsEnabled,
   setCodexBinaryPathPref,
   setNativeZoteroMcpToolsEnabled,
   setCodexReasoningModePref,
   setCodexRuntimeModelPref,
+  type CodexAppServerApprovalsReviewer,
 } from "../codexAppServer/prefs";
 import { getConfiguredCodexAppServerBinaryPath } from "../codexAppServer/binaryPath";
 import {
@@ -846,6 +851,15 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLButtonElement | null;
   const codexAppServerMcpStatus = doc.querySelector(
     `#${config.addonRef}-codex-app-server-mcp-status`,
+  ) as HTMLSpanElement | null;
+  const codexAppServerNativeApprovalsEnableInput = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-native-approvals-enable`,
+  ) as HTMLInputElement | null;
+  const codexAppServerApprovalsReviewerSelect = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-approvals-reviewer`,
+  ) as HTMLSelectElement | null;
+  const codexAppServerNativeApprovalsStatus = doc.querySelector(
+    `#${config.addonRef}-codex-app-server-native-approvals-status`,
   ) as HTMLSpanElement | null;
 
   if (!modelSections) return;
@@ -2472,6 +2486,46 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           : t(
               "Zotero MCP tools disabled for native Codex and Claude Code turns.",
             ),
+      );
+    });
+  }
+
+  const renderCodexNativeApprovalsStatus = (message: string) => {
+    if (!codexAppServerNativeApprovalsStatus) return;
+    codexAppServerNativeApprovalsStatus.style.display = "inline";
+    codexAppServerNativeApprovalsStatus.style.color =
+      "var(--fill-secondary, #888)";
+    codexAppServerNativeApprovalsStatus.textContent = message;
+  };
+
+  if (codexAppServerNativeApprovalsEnableInput) {
+    codexAppServerNativeApprovalsEnableInput.checked =
+      isCodexAppServerNativeApprovalsEnabled();
+    codexAppServerNativeApprovalsEnableInput.addEventListener("change", () => {
+      setCodexAppServerNativeApprovalsEnabled(
+        codexAppServerNativeApprovalsEnableInput.checked,
+      );
+      renderCodexNativeApprovalsStatus(
+        codexAppServerNativeApprovalsEnableInput.checked
+          ? t("Native Codex approval bridge enabled.")
+          : t("Native Codex approval bridge disabled."),
+      );
+    });
+  }
+
+  if (codexAppServerApprovalsReviewerSelect) {
+    codexAppServerApprovalsReviewerSelect.value =
+      getCodexAppServerApprovalsReviewerPref();
+    codexAppServerApprovalsReviewerSelect.addEventListener("change", () => {
+      setCodexAppServerApprovalsReviewerPref(
+        codexAppServerApprovalsReviewerSelect.value as CodexAppServerApprovalsReviewer,
+      );
+      renderCodexNativeApprovalsStatus(
+        codexAppServerApprovalsReviewerSelect.value === "auto_review"
+          ? t(
+              "Codex may auto-review eligible native requests; Zotero still shows requests that reach the plugin.",
+            )
+          : t("Zotero will show native Codex approval requests."),
       );
     });
   }
