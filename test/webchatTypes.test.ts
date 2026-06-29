@@ -14,8 +14,13 @@ describe("webchat target types", function () {
       getWebChatTargetByModelName("chat.deepseek.com")?.modelName,
       "chat.deepseek.com",
     );
+    assert.equal(
+      getWebChatTargetByModelName("gemini.google.com")?.modelName,
+      "gemini.google.com",
+    );
 
     assert.equal(getWebChatTargetDisplayName("chatgpt.com"), "chatgpt");
     assert.equal(getWebChatTargetDisplayName("chat.deepseek.com"), "deepseek");
+    assert.equal(getWebChatTargetDisplayName("gemini.google.com"), "gemini");
   });
 });
