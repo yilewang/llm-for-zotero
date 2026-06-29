@@ -58,6 +58,88 @@ describe("quote card UI contract", function () {
     );
   });
 
+  it("renders completed quote-card bodies through the markdown renderer", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
+    assert.include(renderSource, "renderQuoteCardBodyMarkdown");
+    assert.include(renderSource, "renderRenderedMarkdownInto(container");
+    assert.include(renderSource, "appendQuoteCardBodyContent");
+    assert.include(renderSource, "body.classList.add");
+    assert.notInclude(
+      renderSource,
+      'body.textContent = sanitizeText(params.quoteText || "").trim();',
+    );
+  });
+
+  it("renders collapsed quote-card previews through the markdown renderer", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
+    assert.include(renderSource, "renderQuoteCardPreviewMarkdown");
+    assert.include(renderSource, "preview.classList.add");
+    assert.notInclude(
+      renderSource,
+      "preview.textContent = buildQuotePreviewText(params.quoteText);",
+    );
+  });
+
+  it("preserves rendered blockquote DOM for quote-card display without changing lookup text", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
+    assert.include(renderSource, "quoteContent?: DocumentFragment | null");
+    assert.include(renderSource, "buildQuoteCardBodyContentFromBlockquote");
+    assert.include(
+      renderSource,
+      "const displayedQuoteContent = buildQuoteCardBodyContentFromBlockquote",
+    );
+    assert.include(renderSource, "quoteContent: displayedQuoteContent");
+    assert.include(renderSource, "quoteText: lookupQuoteText");
+    assert.include(renderSource, "paragraphQuoteText: trustedQuoteText");
+    assert.notInclude(
+      renderSource,
+      "quoteText = trustedQuoteCitation.quoteText;\n    const lookupQuoteText",
+    );
+  });
+
+  it("renders quote placeholders from display text while keeping source text for lookup", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
+    assert.include(renderSource, "getQuoteCitationDisplayText");
+    assert.include(renderSource, "displayQuoteText");
+    assert.include(
+      renderSource,
+      "const displayText = getQuoteCitationDisplayText",
+    );
+    assert.include(renderSource, "quoteText: displayText");
+    assert.include(
+      renderSource,
+      "paragraphQuoteText: params.quoteCitation.quoteText",
+    );
+    assert.include(
+      renderSource,
+      "const lookupText = getQuoteCitationLookupText",
+    );
+  });
+
+  it("does not toggle expanded quote cards during text selection or context menu", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
+    assert.include(renderSource, "hasActiveQuoteCardTextSelection");
+    assert.include(renderSource, "quoteCardPointerMoved");
+    assert.include(renderSource, "shouldSuppressQuoteCardToggle");
+    assert.include(renderSource, 'wrapper.addEventListener("contextmenu"');
+    assert.include(renderSource, 'wrapper.addEventListener("mouseup"');
+  });
+
   it("renders trusted anchors and fallback blockquotes through the quote-card component", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
@@ -105,6 +187,8 @@ describe("quote card UI contract", function () {
   it("warms local paper text before final quote verification", function () {
     const chatSource = source("src/modules/contextPanel/chat.ts");
 
+    assert.include(chatSource, "warmPageTextCacheForAttachment");
+    assert.include(chatSource, 'sourceMatchSource: "pdf-page-text"');
     assert.include(chatSource, "ensureQuoteSourceTextCachedForPaper");
     assert.include(chatSource, "assistantMarkdownNeedsQuoteSourceSearch");
     assert.include(chatSource, "await ensurePDFTextCached(contextItem");

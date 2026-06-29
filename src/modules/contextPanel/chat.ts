@@ -250,6 +250,7 @@ import {
   decorateAssistantCitationLinks,
   renderQuoteCitationPlaceholders,
 } from "./assistantCitationLinks";
+import { warmPageTextCacheForAttachment } from "./livePdfSelectionLocator";
 import {
   getMessageCitationPaperContexts,
   mergeCitationPaperContexts,
@@ -3618,6 +3619,16 @@ function hasCachedQuoteSourceText(contextItemId: number): boolean {
   return Boolean(cachedQuoteSourceText(contextItemId).trim());
 }
 
+function canUsePdfPageTextQuoteSource(
+  paper: PaperContextRef,
+  contextItem: Zotero.Item | null,
+): boolean {
+  if (!contextItem?.isAttachment?.()) return false;
+  return !["markdown", "html", "txt", "docx"].includes(
+    paper.contentSourceMode || "",
+  );
+}
+
 function resolveQuoteSourceContextItem(
   paper: PaperContextRef,
 ): Zotero.Item | null {
@@ -3671,6 +3682,28 @@ async function ensureQuoteSourceTextCachedForPaper(
   }
 }
 
+async function buildPdfPageQuoteSourceTextForPaper(
+  paper: PaperContextRef,
+): Promise<string> {
+  const contextItemId = Math.floor(Number(paper.contextItemId || 0));
+  if (!Number.isFinite(contextItemId) || contextItemId <= 0) return "";
+  const contextItem = resolveQuoteSourceContextItem(paper);
+  if (!canUsePdfPageTextQuoteSource(paper, contextItem)) return "";
+  try {
+    const cached = await warmPageTextCacheForAttachment(contextItemId);
+    return (cached?.pages || [])
+      .map((page) => sanitizeText(page.text || "").trim())
+      .filter(Boolean)
+      .join("\n\n");
+  } catch (error) {
+    ztoolkit.log("LLM: PDF page quote source text cache warm failed", {
+      contextItemId,
+      error,
+    });
+    return "";
+  }
+}
+
 async function buildQuoteSourceTextsForPaperContexts(
   ...groups: Array<PaperContextRef[] | undefined | null>
 ): Promise<QuoteSourceText[]> {
@@ -3691,11 +3724,22 @@ async function buildQuoteSourceTextsForPaperContexts(
     await ensureQuoteSourceTextCachedForPaper(paper);
     const contextItemId = Math.floor(Number(paper.contextItemId || 0));
     if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
+    const pdfPageSourceText = await buildPdfPageQuoteSourceTextForPaper(paper);
+    if (pdfPageSourceText.trim()) {
+      out.push({
+        sourceText: pdfPageSourceText,
+        sourceLabel: formatPaperSourceLabel(paper),
+        sourceMatchSource: "pdf-page-text",
+        contextItemId: paper.contextItemId,
+        itemId: paper.itemId,
+      });
+    }
     const sourceText = cachedQuoteSourceText(contextItemId);
     if (!sourceText.trim()) continue;
     out.push({
       sourceText,
       sourceLabel: formatPaperSourceLabel(paper),
+      sourceMatchSource: "context-text",
       contextItemId: paper.contextItemId,
       itemId: paper.itemId,
     });

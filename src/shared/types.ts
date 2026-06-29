@@ -64,6 +64,7 @@ export type PaperContextRef = {
 export type QuoteCitation = {
   id: string;
   quoteText: string;
+  displayQuoteText?: string;
   citationLabel: string;
   sourceMatchText?: string;
   sourceMatchKind?:
@@ -74,6 +75,7 @@ export type QuoteCitation = {
     | "raw-suffix"
     | "raw-middle"
     | "progressive";
+  sourceMatchSource?: "context-text" | "pdf-page-text";
   contextItemId?: number;
   itemId?: number;
 };

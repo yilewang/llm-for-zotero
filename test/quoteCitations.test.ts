@@ -175,6 +175,7 @@ describe("quoteCitations", function () {
       finalized.markdown,
       "> 记忆痕迹在巩固过程中具有高度动态性。",
     );
+    assert.include(finalized.markdown, "(Tomé, 2024)");
   });
 
   it("repairs exact Chinese source blockquotes through unique source matches", function () {
@@ -244,7 +245,24 @@ describe("quoteCitations", function () {
     assert.notInclude(finalized.markdown, "[[quote:");
     assert.lengthOf(finalized.quoteCitations, 0);
     assert.include(finalized.markdown, "> Paper A reports");
-    assert.notInclude(finalized.markdown, "(Paper B, 2024)");
+    assert.include(finalized.markdown, "(Paper B, 2024)");
+  });
+
+  it("preserves raw Claude source labels when quote verification does not resolve", function () {
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown:
+        "As the authors demonstrate:\n\n" +
+        "> Although this learning rule only explicitly stabilizes zSt for the observed stimulus set S,\n" +
+        "> which does not include the target stimulus x*, we find that the SNR of the readout is very stable.\n" +
+        "> Strikingly, this is despite the representation of every stimulus, including the target stimulus, changing entirely.\n\n" +
+        "(Zaid & Schaffer, 2026, page 5)\n\n" +
+        "### Is it biologically plausible?",
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, "(Zaid & Schaffer, 2026, page 5)");
+    assert.include(finalized.markdown, "### Is it biologically plausible?");
   });
 
   it("keeps duplicate same-label source quotes unanchored without unique context", function () {
@@ -817,7 +835,7 @@ describe("quoteCitations", function () {
 
     assert.notInclude(finalized.markdown, "[[quote:");
     assert.include(display, boilerplate);
-    assert.notInclude(display, "(Liu et al., 2026)");
+    assert.include(display, "(Liu et al., 2026)");
     assert.include(display, "Science (");
     assert.include(display, "), the study");
     assert.include(
@@ -856,7 +874,7 @@ describe("quoteCitations", function () {
     assert.notInclude(finalized.markdown, "[[quote:");
     assert.include(finalized.markdown, `> ${boilerplate}`);
     assert.include(finalized.markdown, "followed by a plain continuation.");
-    assert.notInclude(finalized.markdown, "(Liu et al., 2026)");
+    assert.include(finalized.markdown, "(Liu et al., 2026)");
   });
 
   it("cleans publisher DOI quote placeholders inside prose parentheticals", function () {
@@ -976,7 +994,7 @@ describe("quoteCitations", function () {
     assert.notInclude(unmatched.markdown, "(Abstract)");
   });
 
-  it("keeps unmatched canonical quote labels plain and unclickable", function () {
+  it("keeps unmatched canonical quote labels visible and unclickable", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> This sentence is not present in the current source.\n\n(Smith et al., 2024) Follow-up prose remains.",
@@ -997,7 +1015,84 @@ describe("quoteCitations", function () {
       "> This sentence is not present in the current source.",
     );
     assert.include(finalized.markdown, "Follow-up prose remains.");
-    assert.notInclude(finalized.markdown, "(Smith et al., 2024)");
+    assert.include(finalized.markdown, "(Smith et al., 2024)");
+  });
+
+  it("trusts clean model quotes from PDF page text without degrading display text", function () {
+    const cleanQuote =
+      "Although this learning rule only explicitly stabilizes zSt for the observed stimulus set S, which does not include the target stimulus x*, we find that the SNR of the readout is very stable.";
+    const damagedPdfText =
+      "Al-\nthough this learning rule only explicitly stabilizes zSt for the observed stimulus set S, which does not include the target stimulus x*, we find that the SNR of the readout is very stable.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${cleanQuote}\n\n(Zaid & Schaffer, 2026, page 5)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: damagedPdfText,
+            sourceLabel: "(Zaid and Schaffer, 2026)",
+            contextItemId: 3629,
+            itemId: 3630,
+            sourceMatchSource: "pdf-page-text",
+          },
+        ],
+      }),
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(finalized.quoteCitations[0].quoteText, cleanQuote);
+    assert.equal(
+      finalized.quoteCitations[0].citationLabel,
+      "(Zaid & Schaffer, 2026, page 5)",
+    );
+    assert.equal(
+      finalized.quoteCitations[0].sourceMatchSource,
+      "pdf-page-text",
+    );
+  });
+
+  it("keeps model math markdown as display text when PDF text verifies a quote", function () {
+    const displayQuote =
+      "Recall that the readout weights $w$ are proportional to $y_{*0}^\\top y_0$ through Hebbian plasticity.";
+    const sourceQuote =
+      "Recall that the readout weights w are proportional to y*0|\\mathbf{y}{*0}y*0 through Hebbian plasticity.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${displayQuote}\n\n(Zaid & Schaffer, 2026, page 5)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: sourceQuote,
+            sourceLabel: "(Zaid and Schaffer, 2026)",
+            contextItemId: 3629,
+            itemId: 3630,
+            sourceMatchSource: "pdf-page-text",
+          },
+        ],
+      }),
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.notEqual(finalized.quoteCitations[0].quoteText, displayQuote);
+    assert.include(finalized.quoteCitations[0].quoteText, "y*0");
+    assert.equal(finalized.quoteCitations[0].displayQuoteText, displayQuote);
+    assert.equal(
+      finalized.quoteCitations[0].sourceMatchSource,
+      "pdf-page-text",
+    );
+
+    const display = replaceQuoteCitationPlaceholdersForMarkdown(
+      finalized.markdown,
+      finalized.quoteCitations,
+    );
+
+    assert.include(display, displayQuote);
+    assert.notInclude(display, "y*0|\\mathbf");
+
+    const html = renderMarkdown(display);
+    assert.include(html, "math-inline");
+    assert.include(html, "katex");
+    assert.notInclude(html, "y*0|\\mathbf");
   });
 
   it("does not double-blockquote anchored quotes already wrapped in quote syntax", function () {

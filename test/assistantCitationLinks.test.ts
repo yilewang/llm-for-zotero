@@ -8,6 +8,7 @@ import {
   decorateAssistantCitationLinks,
   extractInlineCitationMentions,
   extractBlockquoteTailCitation,
+  extractMarkdownBlockquoteTextsForCitationDecoration,
   extractStandalonePaperSourceLabel,
   formatSourceLabelWithPage,
   formatUnverifiedCitationChipLabel,
@@ -119,9 +120,9 @@ function makeCitationCandidate(
   };
 }
 
-describe("assistantCitationLinks", function () {
-  const originalZotero = globalScope.Zotero;
+const originalZotero = globalScope.Zotero;
 
+describe("assistantCitationLinks", function () {
   afterEach(function () {
     clearCachedCitationPagesForTests();
     if (originalZotero === undefined) {
@@ -726,6 +727,38 @@ describe("assistantCitationLinks", function () {
     );
   });
 
+  it("keeps raw math markdown when extracting source blockquotes for citation decoration", function () {
+    const rawMessage = [
+      "The reference signal comes from a parallel, stable pathway:",
+      "",
+      "> Recall that the readout weights w are proportional to $\\mathbf{y}_{*0}$ through Hebbian plasticity,",
+      "> meaning that the readout responses can be rewritten as $z_{st} = \\mathbf{y}_{*t}^\\top \\mathbf{y}_{st}$.",
+      ">",
+      "> (Zaid & Schaffer, 2026, page 7)",
+      "",
+      "This is elegant.",
+    ].join("\n");
+
+    const blockquotes =
+      extractMarkdownBlockquoteTextsForCitationDecoration(rawMessage);
+
+    assert.lengthOf(blockquotes, 1);
+    assert.include(blockquotes[0], "$\\mathbf{y}_{*0}$");
+    assert.include(blockquotes[0], "$z_{st} = \\mathbf{y}_{*t}^\\top");
+
+    const extracted = extractBlockquoteTailCitation(blockquotes[0]);
+    assert.isNotNull(extracted);
+    assert.equal(
+      extracted?.quoteText,
+      "Recall that the readout weights w are proportional to $\\mathbf{y}_{*0}$ through Hebbian plasticity, meaning that the readout responses can be rewritten as $z_{st} = \\mathbf{y}_{*t}^\\top \\mathbf{y}_{st}$.",
+    );
+    assert.equal(
+      extracted?.extractedCitation.sourceLabel,
+      "(Zaid & Schaffer, 2026)",
+    );
+    assert.equal(extracted?.extractedCitation.pageLabel, "7");
+  });
+
   it("uses the shared citation separator helper", function () {
     assert.equal(
       stripLeadingCitationSeparators("; with an explanatory continuation."),
@@ -987,177 +1020,201 @@ describe("assistantCitationLinks", function () {
 
     assert.lengthOf(matches, 0);
   });
-});
 
-describe("citation page cache", function () {
-  afterEach(function () {
-    clearCachedCitationPagesForTests();
+  describe("citation page cache", function () {
+    afterEach(function () {
+      clearCachedCitationPagesForTests();
+    });
+
+    it("stores and returns verified page labels by attachment and quote text", function () {
+      const quote =
+        "We choose Hebbian learning, not only for its biological plausibility, but to also allow rapid learning when entering a new environment.";
+      const pageLabel = rememberCachedCitationPage(23, quote, 22, "23");
+
+      assert.equal(pageLabel, "23");
+      assert.equal(lookupCachedCitationPage(23, quote), "23");
+    });
+
+    it("does not store entries for empty quotes", function () {
+      const pageLabel = rememberCachedCitationPage(23, "   ", 22, "23");
+
+      assert.isNull(pageLabel);
+      assert.isNull(lookupCachedCitationPage(23, ""));
+    });
+
+    it("does not synthesize verified page labels from page indexes", function () {
+      const quote =
+        "Only reader-confirmed page labels should enter the citation cache.";
+      const pageLabel = rememberCachedCitationPage(23, quote, 10);
+
+      assert.isNull(pageLabel);
+      assert.isNull(lookupCachedCitationPage(23, quote));
+    });
+
+    it("does not keep the removed render-time PDFWorker page prelookup path", function () {
+      const source = readFileSync(
+        resolve(
+          testDir,
+          "../src/modules/contextPanel/assistantCitationLinks.ts",
+        ),
+        "utf8",
+      );
+
+      assert.notInclude(source, "resolvePageForCitationButton");
+      assert.notInclude(source, "PDFWorker.getFullText");
+      assert.include(source, "warmPageTextCache");
+    });
+
+    it("keeps idle cache warming separate from page label mutation", function () {
+      const source = readFileSync(
+        resolve(
+          testDir,
+          "../src/modules/contextPanel/assistantCitationLinks.ts",
+        ),
+        "utf8",
+      );
+      const start = source.indexOf("function startCitationPageTextCacheWarm");
+      const end = source.indexOf("function updateCitationButtonPage");
+      const warmSection = source.slice(start, end);
+
+      assert.isAtLeast(start, 0);
+      assert.isAbove(end, start);
+      assert.include(warmSection, "warmPageTextCache");
+      assert.include(warmSection, "requestIdleCallback");
+      assert.notInclude(warmSection, "updateCitationButtonPage");
+      assert.notInclude(warmSection, "rememberCachedCitationPage");
+    });
+
+    it("uses button-cached candidates before falling back to library search", function () {
+      const source = readFileSync(
+        resolve(
+          testDir,
+          "../src/modules/contextPanel/assistantCitationLinks.ts",
+        ),
+        "utf8",
+      );
+
+      assert.include(source, "new WeakMap<");
+      assert.include(source, "citationButtonCandidateCache.set(citationButton");
+      assert.include(source, "citationButtonCandidateCache.get(params.button)");
+      assert.include(
+        source,
+        "{ allowLibrarySearch: !staticCandidates.length }",
+      );
+      assert.include(source, "hasUsefulLocalCandidate");
+    });
+
+    it("uses hidden quote-location cache without mutating visible labels during warmup", function () {
+      const source = readFileSync(
+        resolve(
+          testDir,
+          "../src/modules/contextPanel/assistantCitationLinks.ts",
+        ),
+        "utf8",
+      );
+      const start = source.indexOf(
+        "function startCitationQuoteLocationCacheWarm",
+      );
+      const end = source.indexOf("function updateCitationButtonPage");
+      const warmSection = source.slice(start, end);
+
+      assert.isAtLeast(start, 0);
+      assert.isAbove(end, start);
+      assert.include(warmSection, "warmQuoteLocationCacheForAttachment");
+      assert.include(warmSection, "isPdfBackedCitationCandidate");
+      assert.notInclude(warmSection, "updateCitationButtonPage");
+      assert.notInclude(warmSection, "rememberCachedCitationPage");
+      assert.include(source, "lookupCachedQuoteLocationForAttachment");
+      assert.include(source, "navigateToHiddenQuoteLocation");
+    });
+
+    it("omits unresolved quote placeholders instead of rendering fallback text", function () {
+      const source = readFileSync(
+        resolve(
+          testDir,
+          "../src/modules/contextPanel/assistantCitationLinks.ts",
+        ),
+        "utf8",
+      );
+
+      assert.notInclude(source, "[quote unavailable]");
+      assert.notInclude(source, "createQuoteCitationUnavailableElement");
+      assert.include(source, "if (quoteCitation) {");
+    });
+
+    it("renders untrusted manual blockquotes as fallback quote cards", function () {
+      const source = readFileSync(
+        resolve(
+          testDir,
+          "../src/modules/contextPanel/assistantCitationLinks.ts",
+        ),
+        "utf8",
+      );
+
+      assert.include(source, "createFallbackQuoteCardElement");
+      assert.include(source, "replaceBlockquoteWithFallbackQuoteCard");
+      assert.notInclude(
+        source,
+        "rendering unanchored source-backed quote card",
+      );
+    });
   });
 
-  it("stores and returns verified page labels by attachment and quote text", function () {
-    const quote =
-      "We choose Hebbian learning, not only for its biological plausibility, but to also allow rapid learning when entering a new environment.";
-    const pageLabel = rememberCachedCitationPage(23, quote, 22, "23");
+  describe("formatSourceLabelWithPage", function () {
+    it("appends page number to a standard citation label", function () {
+      assert.equal(
+        formatSourceLabelWithPage("(Smith et al., 2024)", "5"),
+        "(Smith et al., 2024, page 5)",
+      );
+    });
 
-    assert.equal(pageLabel, "23");
-    assert.equal(lookupCachedCitationPage(23, quote), "23");
-  });
+    it("handles single-digit page numbers", function () {
+      assert.equal(
+        formatSourceLabelWithPage("(Lee et al., 2025)", "1"),
+        "(Lee et al., 2025, page 1)",
+      );
+    });
 
-  it("does not store entries for empty quotes", function () {
-    const pageLabel = rememberCachedCitationPage(23, "   ", 22, "23");
+    it("handles multi-digit page numbers", function () {
+      assert.equal(
+        formatSourceLabelWithPage("(Wang et al., 2023)", "142"),
+        "(Wang et al., 2023, page 142)",
+      );
+    });
 
-    assert.isNull(pageLabel);
-    assert.isNull(lookupCachedCitationPage(23, ""));
-  });
+    it("returns original label when pageLabel is empty", function () {
+      assert.equal(
+        formatSourceLabelWithPage("(Smith et al., 2024)", ""),
+        "(Smith et al., 2024)",
+      );
+    });
 
-  it("does not synthesize verified page labels from page indexes", function () {
-    const quote =
-      "Only reader-confirmed page labels should enter the citation cache.";
-    const pageLabel = rememberCachedCitationPage(23, quote, 10);
+    it("returns original label when format is not parenthesized", function () {
+      assert.equal(
+        formatSourceLabelWithPage("Smith et al., 2024", "5"),
+        "Smith et al., 2024",
+      );
+    });
 
-    assert.isNull(pageLabel);
-    assert.isNull(lookupCachedCitationPage(23, quote));
-  });
+    it("handles fallback Paper labels", function () {
+      assert.equal(
+        formatSourceLabelWithPage("(Paper 42)", "3"),
+        "(Paper 42, page 3)",
+      );
+    });
 
-  it("does not keep the removed render-time PDFWorker page prelookup path", function () {
-    const source = readFileSync(
-      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
-      "utf8",
-    );
+    it("handles citation without year", function () {
+      assert.equal(
+        formatSourceLabelWithPage("(Smith et al.)", "7"),
+        "(Smith et al., page 7)",
+      );
+    });
 
-    assert.notInclude(source, "resolvePageForCitationButton");
-    assert.notInclude(source, "PDFWorker.getFullText");
-    assert.include(source, "warmPageTextCache");
-  });
-
-  it("keeps idle cache warming separate from page label mutation", function () {
-    const source = readFileSync(
-      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
-      "utf8",
-    );
-    const start = source.indexOf("function startCitationPageTextCacheWarm");
-    const end = source.indexOf("function updateCitationButtonPage");
-    const warmSection = source.slice(start, end);
-
-    assert.isAtLeast(start, 0);
-    assert.isAbove(end, start);
-    assert.include(warmSection, "warmPageTextCache");
-    assert.include(warmSection, "requestIdleCallback");
-    assert.notInclude(warmSection, "updateCitationButtonPage");
-    assert.notInclude(warmSection, "rememberCachedCitationPage");
-  });
-
-  it("uses button-cached candidates before falling back to library search", function () {
-    const source = readFileSync(
-      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
-      "utf8",
-    );
-
-    assert.include(source, "new WeakMap<");
-    assert.include(source, "citationButtonCandidateCache.set(citationButton");
-    assert.include(source, "citationButtonCandidateCache.get(params.button)");
-    assert.include(source, "{ allowLibrarySearch: !staticCandidates.length }");
-    assert.include(source, "hasUsefulLocalCandidate");
-  });
-
-  it("uses hidden quote-location cache without mutating visible labels during warmup", function () {
-    const source = readFileSync(
-      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
-      "utf8",
-    );
-    const start = source.indexOf(
-      "function startCitationQuoteLocationCacheWarm",
-    );
-    const end = source.indexOf("function updateCitationButtonPage");
-    const warmSection = source.slice(start, end);
-
-    assert.isAtLeast(start, 0);
-    assert.isAbove(end, start);
-    assert.include(warmSection, "warmQuoteLocationCacheForAttachment");
-    assert.include(warmSection, "isPdfBackedCitationCandidate");
-    assert.notInclude(warmSection, "updateCitationButtonPage");
-    assert.notInclude(warmSection, "rememberCachedCitationPage");
-    assert.include(source, "lookupCachedQuoteLocationForAttachment");
-    assert.include(source, "navigateToHiddenQuoteLocation");
-  });
-
-  it("omits unresolved quote placeholders instead of rendering fallback text", function () {
-    const source = readFileSync(
-      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
-      "utf8",
-    );
-
-    assert.notInclude(source, "[quote unavailable]");
-    assert.notInclude(source, "createQuoteCitationUnavailableElement");
-    assert.include(source, "if (quoteCitation) {");
-  });
-
-  it("renders untrusted manual blockquotes as fallback quote cards", function () {
-    const source = readFileSync(
-      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
-      "utf8",
-    );
-
-    assert.include(source, "createFallbackQuoteCardElement");
-    assert.include(source, "replaceBlockquoteWithFallbackQuoteCard");
-    assert.notInclude(source, "rendering unanchored source-backed quote card");
-  });
-});
-
-describe("formatSourceLabelWithPage", function () {
-  it("appends page number to a standard citation label", function () {
-    assert.equal(
-      formatSourceLabelWithPage("(Smith et al., 2024)", "5"),
-      "(Smith et al., 2024, page 5)",
-    );
-  });
-
-  it("handles single-digit page numbers", function () {
-    assert.equal(
-      formatSourceLabelWithPage("(Lee et al., 2025)", "1"),
-      "(Lee et al., 2025, page 1)",
-    );
-  });
-
-  it("handles multi-digit page numbers", function () {
-    assert.equal(
-      formatSourceLabelWithPage("(Wang et al., 2023)", "142"),
-      "(Wang et al., 2023, page 142)",
-    );
-  });
-
-  it("returns original label when pageLabel is empty", function () {
-    assert.equal(
-      formatSourceLabelWithPage("(Smith et al., 2024)", ""),
-      "(Smith et al., 2024)",
-    );
-  });
-
-  it("returns original label when format is not parenthesized", function () {
-    assert.equal(
-      formatSourceLabelWithPage("Smith et al., 2024", "5"),
-      "Smith et al., 2024",
-    );
-  });
-
-  it("handles fallback Paper labels", function () {
-    assert.equal(
-      formatSourceLabelWithPage("(Paper 42)", "3"),
-      "(Paper 42, page 3)",
-    );
-  });
-
-  it("handles citation without year", function () {
-    assert.equal(
-      formatSourceLabelWithPage("(Smith et al.)", "7"),
-      "(Smith et al., page 7)",
-    );
-  });
-
-  it("handles Paper-only fallback label", function () {
-    assert.equal(
-      formatSourceLabelWithPage("(Paper)", "10"),
-      "(Paper, page 10)",
-    );
+    it("handles Paper-only fallback label", function () {
+      assert.equal(
+        formatSourceLabelWithPage("(Paper)", "10"),
+        "(Paper, page 10)",
+      );
+    });
   });
 });

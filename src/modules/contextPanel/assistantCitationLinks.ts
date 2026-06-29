@@ -346,14 +346,6 @@ function setCitationButtonLabel(
   button.setAttribute("aria-label", `Jump to cited source: ${labelText}`);
 }
 
-function replaceBlockquoteText(blockquote: Element, quoteText: string): void {
-  const ownerDoc = blockquote.ownerDocument;
-  if (!ownerDoc) return;
-  const normalizedQuote = sanitizeText(quoteText || "").trim();
-  if (!normalizedQuote) return;
-  blockquote.textContent = normalizedQuote;
-}
-
 function extractAuthorKey(normalizedLabel: string): string {
   const stripped = normalizedLabel.replace(/^\(|\)$/g, "").trim();
   // Try to match "Author et al" first
@@ -937,6 +929,41 @@ export function extractBlockquoteTailCitation(
   return { quoteText, extractedCitation };
 }
 
+function normalizeMarkdownBlockquoteLines(lines: string[]): string {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && !sanitizeText(lines[start] || "").trim()) start += 1;
+  while (end > start && !sanitizeText(lines[end - 1] || "").trim()) end -= 1;
+  return lines.slice(start, end).join("\n").trim();
+}
+
+export function extractMarkdownBlockquoteTextsForCitationDecoration(
+  markdown: string,
+): string[] {
+  const out: string[] = [];
+  const lines = sanitizeText(markdown || "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n");
+  let current: string[] = [];
+  const flush = () => {
+    if (!current.length) return;
+    const text = normalizeMarkdownBlockquoteLines(current);
+    if (text) out.push(text);
+    current = [];
+  };
+
+  for (const line of lines) {
+    const match = line.match(/^\s{0,3}>\s?(.*)$/);
+    if (match) {
+      current.push(match[1] || "");
+      continue;
+    }
+    flush();
+  }
+  flush();
+  return out;
+}
+
 function stripLeadingInlineCitationCue(value: string): {
   stripped: string;
   consumed: number;
@@ -1488,8 +1515,8 @@ async function navigateToCachedCitationPage(
   const cacheKey = buildCitationCacheKey(contextItemId, quoteText);
   const cached = citationPageCache.get(cacheKey);
   if (!cached) return null;
-  let targetPageIndex = Math.floor(cached.pageIndex);
-  let targetPageLabel =
+  const targetPageIndex = Math.floor(cached.pageIndex);
+  const targetPageLabel =
     typeof cached.pageLabel === "string" && cached.pageLabel.trim()
       ? cached.pageLabel.trim()
       : `${targetPageIndex + 1}`;
@@ -1635,15 +1662,17 @@ function scheduleCitationQuoteLocationCacheWarm(
     );
     return;
   }
-  win?.setTimeout
-    ? win.setTimeout(
-        () => startCitationQuoteLocationCacheWarm(candidates, quoteText),
-        120,
-      )
-    : setTimeout(
-        () => startCitationQuoteLocationCacheWarm(candidates, quoteText),
-        120,
-      );
+  if (win?.setTimeout) {
+    win.setTimeout(
+      () => startCitationQuoteLocationCacheWarm(candidates, quoteText),
+      120,
+    );
+  } else {
+    setTimeout(
+      () => startCitationQuoteLocationCacheWarm(candidates, quoteText),
+      120,
+    );
+  }
 }
 
 function scheduleCitationPageTextCacheWarm(
@@ -1675,9 +1704,11 @@ function scheduleCitationPageTextCacheWarm(
     });
     return;
   }
-  win?.setTimeout
-    ? win.setTimeout(() => startCitationPageTextCacheWarm(reader), 100)
-    : setTimeout(() => startCitationPageTextCacheWarm(reader), 100);
+  if (win?.setTimeout) {
+    win.setTimeout(() => startCitationPageTextCacheWarm(reader), 100);
+  } else {
+    setTimeout(() => startCitationPageTextCacheWarm(reader), 100);
+  }
 }
 
 function updateCitationButtonPage(
@@ -1965,7 +1996,7 @@ async function resolveCitationCandidatesFromLibrarySearch(
 
   const normalizedLibraryID = Math.floor(libraryID);
   const queryTokens = extractedCitation.citationLabel
-    .replace(/[()\[\],]/g, " ")
+    .replace(/[()[\],]/g, " ")
     .replace(/\bet\s+al\.?\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -2786,16 +2817,6 @@ function resolveQuoteCitationCandidates(
     : [];
 }
 
-function buildQuotePreviewText(quoteText: string): string {
-  const normalized = sanitizeText(quoteText || "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) return "";
-  return normalized.length > 220
-    ? `${normalized.slice(0, 217).trimEnd()}...`
-    : normalized;
-}
-
 function getQuoteCitationLookupText(citation: QuoteCitation): string {
   return (
     sanitizeText(citation.sourceMatchText || "").trim() ||
@@ -2803,11 +2824,129 @@ function getQuoteCitationLookupText(citation: QuoteCitation): string {
   );
 }
 
+function getQuoteCitationDisplayText(citation: QuoteCitation): string {
+  return (
+    sanitizeText(citation.displayQuoteText || "").trim() ||
+    sanitizeText(citation.quoteText || "").trim()
+  );
+}
+
+type QuoteCardPointerPoint = {
+  clientX: number;
+  clientY: number;
+};
+
+function isMouseEventLike(event: Event): event is MouseEvent {
+  const mouseEvent = event as MouseEvent;
+  return (
+    typeof mouseEvent.clientX === "number" &&
+    typeof mouseEvent.clientY === "number"
+  );
+}
+
+function quoteCardPointerMoved(
+  startPoint: QuoteCardPointerPoint,
+  event: MouseEvent,
+): boolean {
+  const deltaX = event.clientX - startPoint.clientX;
+  const deltaY = event.clientY - startPoint.clientY;
+  return Math.sqrt(deltaX * deltaX + deltaY * deltaY) > 4;
+}
+
+function quoteCardContainsSelectionNode(
+  wrapper: HTMLElement,
+  node: Node | null,
+): boolean {
+  if (!node) return false;
+  if (node === wrapper) return true;
+  const element = node.nodeType === 1 ? (node as Element) : node.parentElement;
+  return Boolean(element && wrapper.contains(element));
+}
+
+function getQuoteCardSelection(ownerDoc: Document): Selection | null {
+  return (
+    ownerDoc.getSelection?.() || ownerDoc.defaultView?.getSelection?.() || null
+  );
+}
+
+function hasActiveQuoteCardTextSelection(wrapper: HTMLElement): boolean {
+  const selection = getQuoteCardSelection(wrapper.ownerDocument);
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return false;
+  }
+  if (
+    quoteCardContainsSelectionNode(wrapper, selection.anchorNode) ||
+    quoteCardContainsSelectionNode(wrapper, selection.focusNode)
+  ) {
+    return true;
+  }
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    const range = selection.getRangeAt(index);
+    if (
+      quoteCardContainsSelectionNode(wrapper, range.commonAncestorContainer)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function renderQuoteCardMarkdownInto(
+  target: HTMLElement,
+  quoteText: string,
+  ownerDoc: Document,
+): void {
+  const safeText = sanitizeText(quoteText || "").trim();
+  if (!safeText) return;
+  const container = ownerDoc.createElement("div");
+  renderRenderedMarkdownInto(container, safeText, ownerDoc);
+  if (!appendQuoteCardBodyContent(target, container)) {
+    target.textContent = safeText;
+  }
+}
+
+function renderQuoteCardPreviewMarkdown(
+  preview: HTMLElement,
+  quoteText: string,
+  ownerDoc: Document,
+): void {
+  preview.classList.add("llm-rendered-markdown");
+  renderQuoteCardMarkdownInto(preview, quoteText, ownerDoc);
+}
+
+function renderQuoteCardBodyMarkdown(
+  body: HTMLElement,
+  quoteText: string,
+  ownerDoc: Document,
+): void {
+  renderQuoteCardMarkdownInto(body, quoteText, ownerDoc);
+}
+
+function appendQuoteCardBodyContent(
+  body: HTMLElement,
+  quoteContent: ParentNode | null | undefined,
+): boolean {
+  if (!quoteContent?.firstChild) return false;
+  body.classList.add("llm-rendered-markdown");
+  const firstElement =
+    "firstElementChild" in quoteContent ? quoteContent.firstElementChild : null;
+  const hasSingleParagraph =
+    quoteContent.childNodes.length === 1 &&
+    firstElement?.tagName.toLowerCase() === "p";
+  const moveSource =
+    hasSingleParagraph && firstElement ? firstElement : quoteContent;
+  while (moveSource.firstChild) {
+    body.appendChild(moveSource.firstChild);
+  }
+  return true;
+}
+
 function createQuoteCardElement(params: {
   ownerDoc: Document;
   quoteText: string;
   quoteCitationId?: string;
   citationContent: Node;
+  quoteContent?: DocumentFragment | null;
 }): HTMLElement {
   const wrapper = params.ownerDoc.createElement("div");
   wrapper.className = params.quoteCitationId
@@ -2826,7 +2965,7 @@ function createQuoteCardElement(params: {
 
   const preview = params.ownerDoc.createElement("span");
   preview.className = "llm-quote-card-preview";
-  preview.textContent = buildQuotePreviewText(params.quoteText);
+  renderQuoteCardPreviewMarkdown(preview, params.quoteText, params.ownerDoc);
 
   const citation = params.ownerDoc.createElement("span");
   citation.className = "llm-quote-card-citation";
@@ -2834,7 +2973,9 @@ function createQuoteCardElement(params: {
 
   const body = params.ownerDoc.createElement("div");
   body.className = "llm-quote-card-body";
-  body.textContent = sanitizeText(params.quoteText || "").trim();
+  if (!appendQuoteCardBodyContent(body, params.quoteContent)) {
+    renderQuoteCardBodyMarkdown(body, params.quoteText, params.ownerDoc);
+  }
   content.append(preview, body);
 
   const setExpanded = (expanded: boolean) => {
@@ -2855,10 +2996,43 @@ function createQuoteCardElement(params: {
       ),
     );
   };
+  let quoteCardPointerStart: QuoteCardPointerPoint | null = null;
+  let shouldSuppressQuoteCardToggle = false;
+  wrapper.addEventListener("mousedown", (event: Event) => {
+    if (!isMouseEventLike(event)) return;
+    quoteCardPointerStart = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    if (event.button !== 0) {
+      shouldSuppressQuoteCardToggle = true;
+    }
+  });
+  wrapper.addEventListener("mouseup", (event: Event) => {
+    if (!isMouseEventLike(event)) return;
+    if (
+      event.button !== 0 ||
+      (quoteCardPointerStart &&
+        quoteCardPointerMoved(quoteCardPointerStart, event)) ||
+      hasActiveQuoteCardTextSelection(wrapper)
+    ) {
+      shouldSuppressQuoteCardToggle = true;
+    }
+  });
+  wrapper.addEventListener("contextmenu", () => {
+    shouldSuppressQuoteCardToggle = true;
+  });
   wrapper.addEventListener("click", (event: Event) => {
     if (shouldIgnoreToggle(event.target)) return;
+    if (shouldSuppressQuoteCardToggle) {
+      shouldSuppressQuoteCardToggle = false;
+      quoteCardPointerStart = null;
+      event.stopPropagation();
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
+    quoteCardPointerStart = null;
     toggleExpanded();
   });
   content.addEventListener("keydown", (event: KeyboardEvent) => {
@@ -2878,6 +3052,7 @@ function createFallbackQuoteCardElement(params: {
   quoteText: string;
   citationLabel?: string;
   citationContent?: Node;
+  quoteContent?: DocumentFragment | null;
 }): HTMLElement {
   let citationContent = params.citationContent;
   if (!citationContent) {
@@ -2891,6 +3066,7 @@ function createFallbackQuoteCardElement(params: {
     ownerDoc: params.ownerDoc,
     quoteText: params.quoteText,
     citationContent,
+    quoteContent: params.quoteContent,
   });
 }
 
@@ -2904,6 +3080,7 @@ function createQuoteCitationAnchorElement(params: {
   const extractedCitation = extractStandalonePaperSourceLabel(
     params.quoteCitation.citationLabel,
   );
+  const displayText = getQuoteCitationDisplayText(params.quoteCitation);
   let citationContent: Node;
   if (extractedCitation) {
     const lookupText = getQuoteCitationLookupText(params.quoteCitation);
@@ -2928,7 +3105,7 @@ function createQuoteCitationAnchorElement(params: {
   }
   return createQuoteCardElement({
     ownerDoc: params.ownerDoc,
-    quoteText: params.quoteCitation.quoteText,
+    quoteText: displayText,
     quoteCitationId: params.quoteCitation.id,
     citationContent,
   });
@@ -3193,6 +3370,7 @@ function replaceBlockquoteWithFallbackQuoteCard(params: {
   quoteText: string;
   citationLabel?: string;
   citationContent?: Node;
+  quoteContent?: DocumentFragment | null;
 }): HTMLElement | null {
   const quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
     params.quoteText,
@@ -3203,11 +3381,82 @@ function replaceBlockquoteWithFallbackQuoteCard(params: {
     quoteText,
     citationLabel: params.citationLabel,
     citationContent: params.citationContent,
+    quoteContent: params.quoteContent,
   });
   const blockquoteParent = params.blockquote.parentNode;
   if (!blockquoteParent) return null;
   blockquoteParent.replaceChild(quoteCard, params.blockquote);
   return quoteCard;
+}
+
+function normalizeQuoteCardDisplayText(value: string): string {
+  return sanitizeText(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isBlankQuoteCardNode(node: Node | undefined): boolean {
+  return Boolean(
+    node && node.nodeType === 3 && !sanitizeText(node.textContent || "").trim(),
+  );
+}
+
+function isStandaloneBlockquoteCitationNode(
+  node: Node | undefined,
+  extractedCitation: ExtractedCitationLabel | null | undefined,
+): boolean {
+  if (!node || !extractedCitation) return false;
+  const parsed = extractStandalonePaperSourceLabel(node.textContent || "");
+  return Boolean(
+    parsed &&
+    parsed.normalizedSourceLabel === extractedCitation.normalizedSourceLabel,
+  );
+}
+
+function buildQuoteCardBodyContentFromBlockquote(
+  blockquote: Element,
+  quoteText: string,
+  extractedCitation?: ExtractedCitationLabel | null,
+): DocumentFragment | null {
+  const ownerDoc = blockquote.ownerDocument;
+  if (!ownerDoc) return null;
+  const childNodes = Array.from(blockquote.childNodes).filter(
+    (node): node is Node => Boolean(node),
+  );
+  let end = childNodes.length;
+  while (end > 0 && isBlankQuoteCardNode(childNodes[end - 1])) end -= 1;
+  let removedCitationNode = false;
+  if (
+    end > 0 &&
+    isStandaloneBlockquoteCitationNode(childNodes[end - 1], extractedCitation)
+  ) {
+    end -= 1;
+    removedCitationNode = true;
+    while (end > 0 && isBlankQuoteCardNode(childNodes[end - 1])) end -= 1;
+  }
+  const bodyNodes = childNodes.slice(0, end);
+  const displayedText = normalizeQuoteCardDisplayText(
+    bodyNodes.map((node) => node.textContent || "").join("\n"),
+  );
+  if (
+    !displayedText ||
+    (!extractedCitation &&
+      displayedText !== normalizeQuoteCardDisplayText(quoteText))
+  ) {
+    return null;
+  }
+  if (
+    extractedCitation &&
+    !removedCitationNode &&
+    extractBlockquoteTailCitation(displayedText)
+  ) {
+    return null;
+  }
+  const fragment = ownerDoc.createDocumentFragment();
+  for (const node of bodyNodes) {
+    fragment.appendChild(node);
+  }
+  return fragment.firstChild ? fragment : null;
 }
 
 export function decorateAssistantCitationLinks(params: {
@@ -3248,6 +3497,10 @@ export function decorateAssistantCitationLinks(params: {
   const blockquotes = Array.from(
     params.bubble.querySelectorAll("blockquote"),
   ) as Element[];
+  const rawBlockquoteTexts =
+    extractMarkdownBlockquoteTextsForCitationDecoration(
+      params.assistantMessage.text || "",
+    );
   ztoolkit.log(
     "LLM citation decoration: blockquotes found =",
     blockquotes.length,
@@ -3258,16 +3511,16 @@ export function decorateAssistantCitationLinks(params: {
     "bubble child count =",
     params.bubble.childElementCount,
   );
-  for (const blockquote of blockquotes) {
+  for (const [blockquoteIndex, blockquote] of blockquotes.entries()) {
     if (blockquote.closest(".llm-quote-citation-anchor")) continue;
+    const sourceBlockquoteText =
+      rawBlockquoteTexts[blockquoteIndex] || blockquote.textContent || "";
     let quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
-      sanitizeText(blockquote.textContent || "").trim(),
+      sanitizeText(sourceBlockquoteText).trim(),
     );
     if (!quoteText) continue;
     let citationEl = getNextElementSibling(blockquote);
-    const tailMatch = extractBlockquoteTailCitation(
-      blockquote.textContent || "",
-    );
+    const tailMatch = extractBlockquoteTailCitation(sourceBlockquoteText);
 
     // Primary attempt: entire element is a standalone citation label.
     let extractedCitation = citationEl
@@ -3295,7 +3548,6 @@ export function decorateAssistantCitationLinks(params: {
         extractedCitation.normalizedSourceLabel
     ) {
       quoteText = tailMatch.quoteText;
-      replaceBlockquoteText(blockquote, quoteText);
     }
 
     // Some model outputs put the citation on the final line *inside* the same
@@ -3303,7 +3555,6 @@ export function decorateAssistantCitationLinks(params: {
     if (!extractedCitation && tailMatch) {
       extractedCitation = tailMatch.extractedCitation;
       quoteText = tailMatch.quoteText;
-      replaceBlockquoteText(blockquote, quoteText);
       const syntheticCitationEl = ownerDoc.createElement("p");
       syntheticCitationEl.textContent = extractedCitation.sourceLabel;
       const insertParent = blockquote.parentElement;
@@ -3329,10 +3580,16 @@ export function decorateAssistantCitationLinks(params: {
         );
       }
       if (shouldRenderFallbackQuoteCards) {
+        const displayedQuoteContent = buildQuoteCardBodyContentFromBlockquote(
+          blockquote,
+          quoteText,
+          extractedCitation,
+        );
         replaceBlockquoteWithFallbackQuoteCard({
           ownerDoc,
           blockquote,
           quoteText,
+          quoteContent: displayedQuoteContent,
         });
       }
       continue;
@@ -3375,6 +3632,11 @@ export function decorateAssistantCitationLinks(params: {
         quoteText,
         paragraphQuoteText: quoteText,
       });
+      const displayedQuoteContent = buildQuoteCardBodyContentFromBlockquote(
+        blockquote,
+        quoteText,
+        extractedCitation,
+      );
       removeConsumedSourceBackedQuoteCitation({
         anchorElement:
           replaceBlockquoteWithFallbackQuoteCard({
@@ -3383,6 +3645,7 @@ export function decorateAssistantCitationLinks(params: {
             quoteText,
             citationLabel: extractedCitation.sourceLabel,
             citationContent: citationElement,
+            quoteContent: displayedQuoteContent,
           }) || blockquote,
         citationEl,
         extractedCitation,
@@ -3390,9 +3653,14 @@ export function decorateAssistantCitationLinks(params: {
       });
       continue;
     }
-    quoteText = trustedQuoteCitation.quoteText;
+    const displayedQuoteText = quoteText;
+    const displayedQuoteContent = buildQuoteCardBodyContentFromBlockquote(
+      blockquote,
+      displayedQuoteText,
+      extractedCitation,
+    );
+    const trustedQuoteText = trustedQuoteCitation.quoteText;
     const lookupQuoteText = getQuoteCitationLookupText(trustedQuoteCitation);
-    replaceBlockquoteText(blockquote, quoteText);
 
     // Try to match the trusted quote citation against known paper candidates.
     const matchingCandidates = resolveQuoteCitationCandidates(
@@ -3409,14 +3677,15 @@ export function decorateAssistantCitationLinks(params: {
       candidates: matchingCandidates,
       extractedCitation,
       quoteText: lookupQuoteText,
-      paragraphQuoteText: quoteText,
+      paragraphQuoteText: trustedQuoteText,
     });
 
     const quoteCard = createQuoteCardElement({
       ownerDoc,
-      quoteText,
+      quoteText: displayedQuoteText,
       quoteCitationId: trustedQuoteCitation.id,
       citationContent: citationElement,
+      quoteContent: displayedQuoteContent,
     });
     const blockquoteParent = blockquote.parentNode;
     if (!blockquoteParent) continue;
