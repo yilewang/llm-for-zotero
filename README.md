@@ -102,8 +102,8 @@ Server, Claude Code, and file upload workflows.
 
 1. Download the latest `.xpi` file from the
    [Releases page](https://github.com/yilewang/llm-for-zotero/releases).
-2. In Zotero, open `Tools` -> `Add-ons` -> gear icon ->
-   **Install Add-on From File**, then select the `.xpi`.
+2. In Zotero, open `Tools` -> `Plugins` -> gear icon ->
+   **Install Plugin From File...**, then select the `.xpi`.
 3. Restart Zotero.
 4. Open `Preferences` -> `llm-for-zotero`, choose a provider, enter the base
    URL, key, and model, then click **Test Connection**.
