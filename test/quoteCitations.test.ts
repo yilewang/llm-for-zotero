@@ -199,7 +199,7 @@ describe("quoteCitations", function () {
     assert.equal(finalized.quoteCitations[0].quoteText, quote);
   });
 
-  it("keeps wrongly labeled Chinese quotes plain without dropping attribution", function () {
+  it("repairs wrongly labeled quotes when exactly one source text matches", function () {
     const quote = "记忆痕迹在巩固过程中具有高度动态性。";
     const finalized = finalizeAssistantQuoteCitations({
       markdown: `> ${quote}\n\n(王, 2024)`,
@@ -214,13 +214,14 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.notInclude(finalized.markdown, "[[quote:");
-    assert.lengthOf(finalized.quoteCitations, 0);
-    assert.include(finalized.markdown, `> ${quote}`);
-    assert.include(finalized.markdown, "(王, 2024)");
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(finalized.quoteCitations[0].quoteText, quote);
+    assert.equal(finalized.quoteCitations[0].citationLabel, "(李, 2024)");
+    assert.equal(finalized.quoteCitations[0].contextItemId, 22);
   });
 
-  it("keeps quotes unanchored when the source label points to the wrong paper", function () {
+  it("repairs stale model labels to the verified source paper", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> Paper A reports that the intervention improved recall accuracy.\n\n(Paper B, 2024)",
@@ -242,10 +243,10 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.notInclude(finalized.markdown, "[[quote:");
-    assert.lengthOf(finalized.quoteCitations, 0);
-    assert.include(finalized.markdown, "> Paper A reports");
-    assert.include(finalized.markdown, "(Paper B, 2024)");
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(finalized.quoteCitations[0].citationLabel, "(Paper A, 2024)");
+    assert.equal(finalized.quoteCitations[0].contextItemId, 1);
   });
 
   it("preserves raw Claude source labels when quote verification does not resolve", function () {
@@ -289,6 +290,38 @@ describe("quoteCitations", function () {
     assert.notInclude(finalized.markdown, "[[quote:");
     assert.lengthOf(finalized.quoteCitations, 0);
     assert.include(finalized.markdown, `> ${duplicatedQuote}`);
+  });
+
+  it("repairs the Eppler paper quote when Claude emits a stale Aschauer label", function () {
+    const quote =
+      "data acquired from a mature and apparently stable brain on a given day, merely reflect a snapshot of two counterbalancing dynamic processes safeguarding functionality in an inherently unstable network.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n\n(Aschauer et al., 2025, Discussion)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: quote,
+            sourceLabel: "(Eppler et al., 2026)",
+            contextItemId: 3097,
+            itemId: 3096,
+            sourceMatchSource: "pdf-page-text",
+          },
+        ],
+      }),
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(
+      finalized.quoteCitations[0].citationLabel,
+      "(Eppler et al., 2026)",
+    );
+    assert.equal(finalized.quoteCitations[0].contextItemId, 3097);
+    assert.equal(finalized.quoteCitations[0].itemId, 3096);
+    assert.equal(
+      finalized.quoteCitations[0].sourceMatchSource,
+      "pdf-page-text",
+    );
   });
 
   it("keeps quote lead-ins from becoming blank when a manual quote is unmatched", function () {
@@ -1043,7 +1076,7 @@ describe("quoteCitations", function () {
     assert.equal(finalized.quoteCitations[0].quoteText, cleanQuote);
     assert.equal(
       finalized.quoteCitations[0].citationLabel,
-      "(Zaid & Schaffer, 2026, page 5)",
+      "(Zaid and Schaffer, 2026)",
     );
     assert.equal(
       finalized.quoteCitations[0].sourceMatchSource,

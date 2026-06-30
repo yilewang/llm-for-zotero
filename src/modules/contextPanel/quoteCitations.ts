@@ -988,47 +988,54 @@ function findUniqueQuoteSourceMatch(params: {
   const citationLabel = params.citationLabel
     ? normalizeCitationLabel(params.citationLabel)
     : "";
-  const groupedSources = new Map<
-    string,
-    { source: QuoteSourceIndexEntry; texts: string[] }
-  >();
-  params.sourceIndex.sources.forEach((source, ordinal) => {
-    if (
-      citationLabel &&
-      !quoteSourceMatchesRequestedLabel(source, citationLabel)
-    ) {
-      return;
-    }
-    const key = quoteSourceIdentityKey(source, ordinal);
-    const existing = groupedSources.get(key);
-    if (existing) {
-      existing.texts.push(source.sourceText);
-      return;
-    }
-    groupedSources.set(key, { source, texts: [source.sourceText] });
-  });
-  const entries = Array.from(groupedSources.entries()).map(([id, group]) => ({
-    id,
-    text: group.texts.join("\n\n"),
-    debugLabel: group.source.citationLabel,
-  }));
-  const match = findUniqueQuoteTextSearchMatch(entries, params.quoteText, {
-    minQueryLength: 24,
-    maxSameEntryOccurrences: 8,
-    rejectWeakQueries: true,
-    includeProgressiveQueries: true,
-    debugLabel: "Quote source",
-  });
-  if (!match) return undefined;
-  const group = groupedSources.get(match.entryId);
-  return group
-    ? { source: group.source, sourceText: group.texts.join("\n\n"), match }
-    : undefined;
+  const searchSources = (
+    sources: QuoteSourceIndexEntry[],
+  ): QuoteSourceSearchMatch | undefined => {
+    const groupedSources = new Map<
+      string,
+      { source: QuoteSourceIndexEntry; texts: string[] }
+    >();
+    sources.forEach((source, ordinal) => {
+      const key = quoteSourceIdentityKey(source, ordinal);
+      const existing = groupedSources.get(key);
+      if (existing) {
+        existing.texts.push(source.sourceText);
+        return;
+      }
+      groupedSources.set(key, { source, texts: [source.sourceText] });
+    });
+    const entries = Array.from(groupedSources.entries()).map(([id, group]) => ({
+      id,
+      text: group.texts.join("\n\n"),
+      debugLabel: group.source.citationLabel,
+    }));
+    const match = findUniqueQuoteTextSearchMatch(entries, params.quoteText, {
+      minQueryLength: 24,
+      maxSameEntryOccurrences: 8,
+      rejectWeakQueries: true,
+      includeProgressiveQueries: true,
+      debugLabel: "Quote source",
+    });
+    if (!match) return undefined;
+    const group = groupedSources.get(match.entryId);
+    return group
+      ? { source: group.source, sourceText: group.texts.join("\n\n"), match }
+      : undefined;
+  };
+
+  if (citationLabel) {
+    const labelCompatibleSources = params.sourceIndex.sources.filter((source) =>
+      quoteSourceMatchesRequestedLabel(source, citationLabel),
+    );
+    const labelCompatibleMatch = searchSources(labelCompatibleSources);
+    if (labelCompatibleMatch) return labelCompatibleMatch;
+  }
+
+  return searchSources(params.sourceIndex.sources);
 }
 
 function buildTrustedQuoteCitationFromSource(params: {
   quoteText: string;
-  citationLabel?: string | null;
   source: QuoteSourceIndexEntry;
   sourceText: string;
   match?: QuoteTextSearchMatch;
@@ -1046,10 +1053,6 @@ function buildTrustedQuoteCitationFromSource(params: {
           match: params.match,
         });
   if (!quoteText) return undefined;
-  const citationLabel =
-    params.citationLabel && isCanonicalQuoteSourceLabel(params.citationLabel)
-      ? params.citationLabel
-      : params.source.citationLabel;
   return buildQuoteCitation({
     quoteText,
     displayQuoteText:
@@ -1057,7 +1060,7 @@ function buildTrustedQuoteCitationFromSource(params: {
       normalizeMultilineText(inputQuoteText) !== quoteText
         ? inputQuoteText
         : undefined,
-    citationLabel,
+    citationLabel: params.source.citationLabel,
     sourceMatchText: params.match?.query,
     sourceMatchKind: params.match?.matchKind,
     sourceMatchSource: params.source.sourceMatchSource || "context-text",
@@ -1140,7 +1143,6 @@ function resolveQuoteCitationForFinalizer(params: {
   return sourceMatch
     ? buildTrustedQuoteCitationFromSource({
         quoteText,
-        citationLabel: params.citationLabel,
         source: sourceMatch.source,
         sourceText: sourceMatch.sourceText,
         match: sourceMatch.match,

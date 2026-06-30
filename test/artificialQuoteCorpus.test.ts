@@ -132,6 +132,14 @@ const anchoredFixtures: AnchoredFixture[] = [
     quoteExcludes: ["invented by the model"],
     matchIncludes: ["i have a very good partner"],
   },
+  {
+    name: "wrong source label repairs to the unique source text",
+    markdown:
+      "> I have a very good partner as my friend.\n\n(Wrong et al., 2026)",
+    sourceMatchKinds: ["exact"],
+    quoteIncludes: ["I have a very good partner as my friend"],
+    matchIncludes: ["i have a very good partner"],
+  },
 ];
 
 type UnanchoredFixture = {
@@ -161,11 +169,6 @@ const unanchoredFixtures: UnanchoredFixture[] = [
         },
       ],
     }),
-  },
-  {
-    name: "wrong source label prevents source verification",
-    markdown: "> I have a very good partner as my friend.\n\n(Wrong et al., 2026)",
-    sourceIndex: syntheticSourceIndex(),
   },
   {
     name: "only a tiny snippet matches",

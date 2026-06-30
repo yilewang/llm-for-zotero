@@ -46,5 +46,7 @@ Use Zotero paper tools as resources, not a ritual.
 - If `paper_read` provides quote anchors like `[[quote:Q_x7a2]]`, use those anchor tokens for direct quotes instead of copying the quote/sourceLabel manually.
 - Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. Put any translation outside the blockquote as explanation.
 - If no quote anchor is provided for a direct quote, put the provided `sourceLabel` on the next non-empty line after the blockquote, before any commentary.
+- Copy the Source label string exactly.
+- Do not invent author/year/page/section labels.
 - Do not write `[[source=...]]`, `section=...`, or `chunk=...` metadata in the final answer.
 - Do not call visual/page tools, `file_io`, or `run_command` just to improve citation anchors or page numbers. Use the provided `sourceLabel`; the UI can bind citations after rendering.

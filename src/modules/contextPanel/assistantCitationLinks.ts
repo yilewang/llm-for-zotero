@@ -51,6 +51,45 @@ const citationButtonCandidateCache = new WeakMap<
   AssistantCitationPaperCandidate[]
 >();
 
+type CitationNavigationMode =
+  | "inline-citation"
+  | "trusted-quote"
+  | "untrusted-quote";
+
+const citationButtonNavigationModeCache = new WeakMap<
+  HTMLButtonElement,
+  CitationNavigationMode
+>();
+
+function getCitationNavigationMode(
+  button: HTMLButtonElement,
+  hasQuoteText: boolean,
+): CitationNavigationMode {
+  const cached = citationButtonNavigationModeCache.get(button);
+  if (cached) return cached;
+  const raw = button.dataset.citationNavigationMode;
+  if (
+    raw === "inline-citation" ||
+    raw === "trusted-quote" ||
+    raw === "untrusted-quote"
+  ) {
+    return raw;
+  }
+  return hasQuoteText ? "trusted-quote" : "inline-citation";
+}
+
+function allowLibrarySearchForCitationNavigation(params: {
+  navigationMode: CitationNavigationMode;
+  hasQuoteText: boolean;
+  staticCandidateCount: number;
+}): boolean {
+  return (
+    params.navigationMode === "inline-citation" &&
+    !params.hasQuoteText &&
+    params.staticCandidateCount === 0
+  );
+}
+
 export type AssistantCitationPaperCandidate = {
   paperContext: PaperContextRef;
   displayPaperContext: PaperContextRef;
@@ -2140,6 +2179,132 @@ function resolveAuthoritativeNonPdfCitationCandidate(input: {
 export const resolveAuthoritativeNonPdfCitationCandidateForTests =
   resolveAuthoritativeNonPdfCitationCandidate;
 
+async function navigateUntrustedQuoteCitation(params: {
+  status: HTMLElement | null;
+  button: HTMLButtonElement;
+  staticCandidates: AssistantCitationPaperCandidate[];
+  displayCitationLabel: string;
+  quoteText: string;
+  paragraphQuoteTexts: string[];
+}): Promise<void> {
+  const pdfCandidates = params.staticCandidates.filter((candidate) =>
+    isPdfBackedCitationCandidate(candidate),
+  );
+  if (!pdfCandidates.length) {
+    if (params.status) {
+      setStatus(
+        params.status,
+        "The cited quote is unverified and no explicit PDF context is available.",
+        "error",
+      );
+    }
+    return;
+  }
+
+  if (params.status) {
+    setStatus(params.status, "Locating cited quote...", "sending");
+  }
+
+  const matchedCandidates: Array<{
+    candidate: AssistantCitationPaperCandidate;
+    pageIndex: number;
+    pageLabel: string;
+  }> = [];
+  let lastReason = "The cited quote was not found in the explicit PDF context.";
+
+  for (const candidate of pdfCandidates) {
+    const reader = await openReaderForItem(candidate.contextItemId);
+    if (!reader) {
+      lastReason = "Could not open an explicit PDF context for this quote.";
+      continue;
+    }
+    const result = await locateQuoteInLivePdfReader(reader, params.quoteText, {
+      skipFindController: true,
+    });
+    if (result.status === "resolved" && result.computedPageIndex !== null) {
+      const pageIndex = Math.floor(result.computedPageIndex);
+      matchedCandidates.push({
+        candidate,
+        pageIndex,
+        pageLabel:
+          getPageLabelForIndex(reader, pageIndex) || `${pageIndex + 1}`,
+      });
+      if (matchedCandidates.length > 1) break;
+      continue;
+    }
+    if (result.reason) {
+      lastReason = result.reason;
+    } else if (result.status === "ambiguous") {
+      lastReason = "The cited quote matched multiple pages.";
+    } else if (result.status === "not-found") {
+      lastReason = "The cited quote was not found in the explicit PDF context.";
+    }
+  }
+
+  if (matchedCandidates.length > 1) {
+    if (params.status) {
+      setStatus(
+        params.status,
+        "The cited quote could not be resolved to a unique explicit PDF.",
+        "error",
+      );
+    }
+    return;
+  }
+
+  const match = matchedCandidates[0];
+  if (!match) {
+    if (params.status) setStatus(params.status, lastReason, "error");
+    return;
+  }
+
+  const reader = await openReaderForItem(match.candidate.contextItemId, {
+    pageIndex: match.pageIndex,
+    pageLabel: match.pageLabel,
+  });
+  if (!reader) {
+    if (params.status) {
+      setStatus(params.status, "Could not open the cited paper.", "error");
+    }
+    return;
+  }
+
+  const paragraphJump = await attemptCitationParagraphJump({
+    reader,
+    contextItemId: match.candidate.contextItemId,
+    displayCitationLabel: params.displayCitationLabel,
+    quoteText: params.quoteText,
+    alternateQuoteTexts: params.paragraphQuoteTexts,
+    pageIndex: match.pageIndex,
+    pageLabel: match.pageLabel,
+  });
+  const jumpedLabel = resolveJumpedPageLabel(
+    reader,
+    paragraphJump,
+    match.pageLabel,
+  );
+  rememberCachedCitationPage(
+    match.candidate.contextItemId,
+    params.quoteText,
+    paragraphJump.matchedPageIndex ?? match.pageIndex,
+    jumpedLabel,
+  );
+  updateCitationButtonPage(
+    params.button,
+    params.displayCitationLabel,
+    jumpedLabel,
+  );
+  if (params.status) {
+    setStatus(
+      params.status,
+      paragraphJump.matched
+        ? buildParagraphJumpSuccessStatus(jumpedLabel)
+        : buildParagraphJumpFailureStatus(jumpedLabel, paragraphJump),
+      "ready",
+    );
+  }
+}
+
 async function resolveAndNavigateAssistantCitation(params: {
   body: Element;
   button: HTMLButtonElement;
@@ -2176,11 +2341,32 @@ async function resolveAndNavigateAssistantCitation(params: {
       : params.candidates.length
         ? params.candidates
         : [];
+    const navigationMode = getCitationNavigationMode(
+      params.button,
+      Boolean(normalizedQuoteText),
+    );
+    if (navigationMode === "untrusted-quote" && normalizedQuoteText) {
+      await navigateUntrustedQuoteCitation({
+        status,
+        button: params.button,
+        staticCandidates,
+        displayCitationLabel: params.displayCitationLabel,
+        quoteText: normalizedQuoteText,
+        paragraphQuoteTexts,
+      });
+      return;
+    }
     const orderedCandidates = await buildOrderedCitationCandidates(
       params.panelItem,
       extractedCitation,
       staticCandidates,
-      { allowLibrarySearch: !staticCandidates.length },
+      {
+        allowLibrarySearch: allowLibrarySearchForCitationNavigation({
+          navigationMode,
+          hasQuoteText: Boolean(normalizedQuoteText),
+          staticCandidateCount: staticCandidates.length,
+        }),
+      },
     );
     const nonPdfCandidate = resolveAuthoritativeNonPdfCitationCandidate({
       orderedCandidates,
@@ -2658,6 +2844,8 @@ function createCitationButton(params: {
   extractedCitation: ExtractedCitationLabel;
   quoteText: string;
   paragraphQuoteText?: string;
+  navigationMode?: CitationNavigationMode;
+  preferRawCitationLabel?: boolean;
   inline?: boolean;
   rawCitationText?: string;
 }): HTMLSpanElement {
@@ -2677,7 +2865,9 @@ function createCitationButton(params: {
     params.candidates,
     params.quoteText,
   );
-  const matchedDisplayLabel = params.candidates[0]?.displayCitationLabel || "";
+  const matchedDisplayLabel = params.preferRawCitationLabel
+    ? ""
+    : params.candidates[0]?.displayCitationLabel || "";
   let baseLabelText: string;
   if (matchedDisplayLabel) {
     baseLabelText = params.inline
@@ -2707,6 +2897,11 @@ function createCitationButton(params: {
     ? "llm-citation-icon llm-citation-icon-inline"
     : "llm-citation-icon";
   citationButtonCandidateCache.set(citationButton, params.candidates.slice());
+  const navigationMode =
+    params.navigationMode ||
+    (params.quoteText ? "trusted-quote" : "inline-citation");
+  citationButtonNavigationModeCache.set(citationButton, navigationMode);
+  citationButton.dataset.citationNavigationMode = navigationMode;
   citationButton.dataset.loading = "false";
   citationButton.dataset.citationSyncKey = `${normalizeCitationLabel(baseSourceLabel)}\u241f${normalizeQuoteKey(params.quoteText)}`;
   if (params.extractedCitation.pageLabel) {
@@ -2809,12 +3004,46 @@ function resolveQuoteCitationCandidates(
     );
     if (matches.length) return matches;
   }
+  const storedMatches = resolveStoredQuoteCitationCandidates(citation);
+  if (storedMatches.length) return storedMatches;
   return extractedCitation
     ? resolveMatchingCandidatesForExtractedCitation(
         extractedCitation,
         candidates,
       )
     : [];
+}
+
+function resolveStoredQuoteCitationCandidates(
+  citation: QuoteCitation,
+): AssistantCitationPaperCandidate[] {
+  const out: AssistantCitationPaperCandidate[] = [];
+  const seen = new Set<string>();
+  const displayCache: PaperContextDisplayCache = new Map();
+  const contextItemId = Math.floor(Number(citation.contextItemId || 0));
+  if (contextItemId > 0) {
+    try {
+      const contextItem = Zotero.Items.get(contextItemId) || null;
+      const contextRef = resolvePaperContextRefFromAttachment(contextItem);
+      addCitationCandidate(out, seen, contextRef, contextItemId, displayCache);
+    } catch (_err) {
+      void _err;
+    }
+  }
+
+  const itemId = Math.floor(Number(citation.itemId || 0));
+  if (itemId > 0) {
+    try {
+      const item = Zotero.Items.get(itemId) || null;
+      const attachment = getFirstPdfAttachment(item);
+      const contextRef = resolvePaperContextRefFromAttachment(attachment);
+      addCitationCandidate(out, seen, contextRef, attachment?.id, displayCache);
+    } catch (_err) {
+      void _err;
+    }
+  }
+
+  return out;
 }
 
 function getQuoteCitationLookupText(citation: QuoteCitation): string {
@@ -3097,6 +3326,7 @@ function createQuoteCitationAnchorElement(params: {
       extractedCitation,
       quoteText: lookupText,
       paragraphQuoteText: params.quoteCitation.quoteText,
+      navigationMode: "trusted-quote",
       rawCitationText: params.quoteCitation.citationLabel,
     });
   } else {
@@ -3341,6 +3571,7 @@ function decorateInlineCitationNodes(params: {
           candidates: matchingCandidates,
           extractedCitation: mention.extractedCitation,
           quoteText: "",
+          navigationMode: "inline-citation",
           inline: true,
           rawCitationText: mention.rawText,
         });
@@ -3619,19 +3850,19 @@ export function decorateAssistantCitationLinks(params: {
         "quote =",
         quoteText.slice(0, 120),
       );
-      const matchingCandidates = resolveMatchingCandidatesForExtractedCitation(
-        extractedCitation,
-        candidates,
-      );
-      const citationElement = createCitationButton({
-        ownerDoc,
-        body: params.body,
-        panelItem: params.panelItem,
-        candidates: matchingCandidates,
-        extractedCitation,
-        quoteText,
-        paragraphQuoteText: quoteText,
-      });
+      const citationElement = candidates.length
+        ? createCitationButton({
+            ownerDoc,
+            body: params.body,
+            panelItem: params.panelItem,
+            candidates,
+            extractedCitation,
+            quoteText,
+            paragraphQuoteText: quoteText,
+            navigationMode: "untrusted-quote",
+            preferRawCitationLabel: true,
+          })
+        : undefined;
       const displayedQuoteContent = buildQuoteCardBodyContentFromBlockquote(
         blockquote,
         quoteText,
@@ -3678,6 +3909,7 @@ export function decorateAssistantCitationLinks(params: {
       extractedCitation,
       quoteText: lookupQuoteText,
       paragraphQuoteText: trustedQuoteText,
+      navigationMode: "trusted-quote",
     });
 
     const quoteCard = createQuoteCardElement({

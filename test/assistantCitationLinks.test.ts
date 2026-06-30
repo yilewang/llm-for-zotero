@@ -1085,7 +1085,7 @@ describe("assistantCitationLinks", function () {
       assert.notInclude(warmSection, "rememberCachedCitationPage");
     });
 
-    it("uses button-cached candidates before falling back to library search", function () {
+    it("uses button-cached candidates before considering citation fallback", function () {
       const source = readFileSync(
         resolve(
           testDir,
@@ -1097,11 +1097,48 @@ describe("assistantCitationLinks", function () {
       assert.include(source, "new WeakMap<");
       assert.include(source, "citationButtonCandidateCache.set(citationButton");
       assert.include(source, "citationButtonCandidateCache.get(params.button)");
-      assert.include(
+      assert.include(source, "allowLibrarySearchForCitationNavigation");
+      assert.include(source, "hasUsefulLocalCandidate");
+    });
+
+    it("does not allow whole-library fallback for quote-card navigation", function () {
+      const source = readFileSync(
+        resolve(
+          testDir,
+          "../src/modules/contextPanel/assistantCitationLinks.ts",
+        ),
+        "utf8",
+      );
+
+      assert.include(source, "type CitationNavigationMode");
+      assert.include(source, "getCitationNavigationMode");
+      assert.include(source, "allowLibrarySearchForCitationNavigation");
+      assert.include(source, 'navigationMode: "trusted-quote"');
+      assert.include(source, 'navigationMode: "untrusted-quote"');
+      assert.notInclude(
         source,
         "{ allowLibrarySearch: !staticCandidates.length }",
       );
-      assert.include(source, "hasUsefulLocalCandidate");
+    });
+
+    it("routes untrusted quote-card clicks through constrained source search", function () {
+      const source = readFileSync(
+        resolve(
+          testDir,
+          "../src/modules/contextPanel/assistantCitationLinks.ts",
+        ),
+        "utf8",
+      );
+
+      assert.include(source, "navigateUntrustedQuoteCitation");
+      assert.include(source, "skipFindController: true");
+      assert.include(source, "matchedCandidates.length > 1");
+      assert.include(
+        source,
+        "quote could not be resolved to a unique explicit PDF",
+      );
+      assert.include(source, "preferRawCitationLabel");
+      assert.include(source, "preferRawCitationLabel: true");
     });
 
     it("uses hidden quote-location cache without mutating visible labels during warmup", function () {

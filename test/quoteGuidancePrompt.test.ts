@@ -32,6 +32,8 @@ const SOURCE_LABEL_PLACEMENT_PHRASES = [
 
 const DIRECT_QUOTE_SAFETY_PHRASES = [
   "Direct quote text must be copied verbatim in the original source language",
+  "Copy the Source label string exactly",
+  "Do not invent author/year/page/section labels",
   "[[source=...]]",
   "section=...",
   "chunk=...",

@@ -620,6 +620,7 @@ export function buildAgentStableResourceContextBlock(
       "If quote anchors like [[quote:Q_x7a2]] are provided, use the anchor token for direct quotes instead of manually copying the quote or sourceLabel.",
       "Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. Put any translation outside the blockquote as explanation.",
       "If no quote anchor is provided for a direct quote, keep the source label attached to the quote: put it on the next non-empty line after the blockquote, before any commentary.",
+      "Copy the Source label string exactly. Do not invent author/year/page/section labels.",
       "Do not write [[source=...]], section=..., or chunk=... metadata in the final answer; those fields are internal context only.",
     );
   }

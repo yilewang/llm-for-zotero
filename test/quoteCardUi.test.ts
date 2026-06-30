@@ -152,10 +152,8 @@ describe("quote card UI contract", function () {
       renderSource,
       "citationLabel: extractedCitation.sourceLabel",
     );
-    assert.include(
-      renderSource,
-      "const citationElement = createCitationButton({\n        ownerDoc,\n        body: params.body",
-    );
+    assert.include(renderSource, 'navigationMode: "trusted-quote"');
+    assert.include(renderSource, 'navigationMode: "untrusted-quote"');
     assert.include(renderSource, "citationContent: citationElement");
     assert.notInclude(renderSource, 'citationContent.textContent = "Quote"');
     assert.notInclude(

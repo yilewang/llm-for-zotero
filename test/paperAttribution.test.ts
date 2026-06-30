@@ -98,6 +98,14 @@ describe("paperAttribution", function () {
     );
     assert.include(
       buildPaperQuoteCitationGuidance(paper).join("\n"),
+      "Copy the Source label string exactly",
+    );
+    assert.include(
+      buildPaperQuoteCitationGuidance(paper).join("\n"),
+      "Do not invent author/year/page/section labels",
+    );
+    assert.include(
+      buildPaperQuoteCitationGuidance(paper).join("\n"),
       "Do not write [[source=...]], section=..., or chunk=...",
     );
   });
