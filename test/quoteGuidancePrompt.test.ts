@@ -23,6 +23,7 @@ const BALANCED_EVIDENCE_PHRASES = [
   "not to decorate every paragraph",
   "repetitive citations or low-information quotes",
   "not use them for publication metadata, DOI links, journal names, or source labels alone",
+  "Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence",
 ];
 
 const SOURCE_LABEL_PLACEMENT_PHRASES = [

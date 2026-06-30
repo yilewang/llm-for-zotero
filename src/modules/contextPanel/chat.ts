@@ -3840,6 +3840,7 @@ async function buildQuoteSourceTextsForPaperContexts(
       out.push({
         sourceText: pdfPageSourceText,
         sourceLabel: formatPaperSourceLabel(paper),
+        metadataTexts: [paper.title, paper.attachmentTitle],
         sourceMatchSource: "pdf-page-text",
         contextItemId: paper.contextItemId,
         itemId: paper.itemId,
@@ -3850,6 +3851,7 @@ async function buildQuoteSourceTextsForPaperContexts(
     out.push({
       sourceText,
       sourceLabel: formatPaperSourceLabel(paper),
+      metadataTexts: [paper.title, paper.attachmentTitle],
       sourceMatchSource: "context-text",
       contextItemId: paper.contextItemId,
       itemId: paper.itemId,

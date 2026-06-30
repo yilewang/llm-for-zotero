@@ -324,6 +324,112 @@ describe("quoteCitations", function () {
     );
   });
 
+  it("drops paper-title blockquotes and their dangling title lead-ins", function () {
+    const title =
+      "Representational drift reflects ongoing balancing of stochastic changes by Hebbian learning";
+    const finding =
+      "Signal correlations at one time point are predictive of noise correlations in the future.";
+    const sourceLabel = "(Eppler et al., 2026, page 1)";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: [
+        "The central finding is that Hebbian-like plasticity and stochastic change jointly maintain functional stability. As the paper's title puts it,",
+        "",
+        `> ${title}`,
+        "",
+        sourceLabel,
+      ].join("\n"),
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `${title}\n\n${finding}`,
+            sourceLabel,
+            contextItemId: 3097,
+            itemId: 3096,
+            sourceMatchSource: "pdf-page-text",
+            metadataTexts: [title],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(
+      finalized.markdown,
+      "The central finding is that Hebbian-like plasticity and stochastic change jointly maintain functional stability.",
+    );
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.notInclude(finalized.markdown, title);
+    assert.notInclude(finalized.markdown, "paper's title puts it");
+    assert.notInclude(finalized.markdown, "[[quote:");
+  });
+
+  it("filters preexisting paper-title quote placeholders", function () {
+    const title =
+      "Representational drift reflects ongoing balancing of stochastic changes by Hebbian learning";
+    const sourceLabel = "(Eppler et al., 2026, page 1)";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown:
+        "The paper argues [[quote:Q_title]] that functional stability is actively maintained.",
+      quoteCitations: [
+        {
+          id: "Q_title",
+          quoteText: title,
+          citationLabel: sourceLabel,
+          contextItemId: 3097,
+          itemId: 3096,
+        },
+      ],
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "Signal correlations at one time point are predictive of noise correlations in the future.",
+            sourceLabel,
+            contextItemId: 3097,
+            itemId: 3096,
+            sourceMatchSource: "pdf-page-text",
+            metadataTexts: [title],
+          },
+        ],
+      }),
+    });
+
+    assert.equal(
+      finalized.markdown,
+      "The paper argues that functional stability is actively maintained.",
+    );
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.notInclude(finalized.markdown, title);
+    assert.notInclude(finalized.markdown, "[[quote:");
+  });
+
+  it("keeps substantive first-page quotes eligible when title metadata is filtered", function () {
+    const title =
+      "Representational drift reflects ongoing balancing of stochastic changes by Hebbian learning";
+    const quote =
+      "Signal correlations at one time point are predictive of noise correlations in the future.";
+    const sourceLabel = "(Eppler et al., 2026, page 1)";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n\n${sourceLabel}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `${title}\n\n${quote}`,
+            sourceLabel,
+            contextItemId: 3097,
+            itemId: 3096,
+            sourceMatchSource: "pdf-page-text",
+            metadataTexts: [title],
+          },
+        ],
+      }),
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(finalized.quoteCitations[0].quoteText, quote);
+    assert.equal(finalized.quoteCitations[0].citationLabel, sourceLabel);
+  });
+
   it("keeps quote lead-ins from becoming blank when a manual quote is unmatched", function () {
     const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
       "CNNs apply the same computation across every pixel in an image — as the authors put it:\n\n> This is prohibitively expensive for large images or video.\n\n(Mnih et al., 2014)\n\nThis motivates recurrent attention.",

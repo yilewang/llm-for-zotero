@@ -167,6 +167,42 @@ function normalizeQuoteTextForMatch(value: unknown): string {
   return normalizeMultilineText(value).replace(/\s+/g, " ").trim();
 }
 
+function normalizeQuoteMetadataText(value: unknown): string {
+  const text = normalizeQuoteTextForMatch(value)
+    .replace(/^["“”]+|["“”]+$/g, "")
+    .normalize("NFKC")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return text.length >= 12 ? text : "";
+}
+
+function collectQuoteMetadataTexts(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : [value];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of values) {
+    const normalized = normalizeQuoteMetadataText(entry);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function isKnownQuoteMetadataText(
+  quoteText: unknown,
+  metadataTexts: Iterable<string> | undefined | null,
+): boolean {
+  const normalized = normalizeQuoteMetadataText(quoteText);
+  if (!normalized) return false;
+  for (const metadataText of metadataTexts || []) {
+    if (metadataText === normalized) return true;
+  }
+  return false;
+}
+
 const URL_TEXT_PATTERN = /\bhttps?:\/\/\S+/gi;
 const DOI_TEXT_PATTERN = /\b(?:doi\s*:?\s*)?10\.\d{4,9}\/\S+/gi;
 const DOI_DOMAIN_PATTERN = /\bdoi\.org\b/i;
@@ -571,6 +607,7 @@ export function buildQuoteCitation(input: {
   displayQuoteText?: unknown;
   citationLabel?: unknown;
   sourceLabel?: unknown;
+  metadataTexts?: unknown;
   sourceMatchText?: unknown;
   sourceMatchKind?: unknown;
   sourceMatchSource?: unknown;
@@ -586,6 +623,10 @@ export function buildQuoteCitation(input: {
     !quoteText ||
     !citationLabel ||
     !isQuoteWorthySourceText(quoteText) ||
+    isKnownQuoteMetadataText(
+      quoteText,
+      collectQuoteMetadataTexts(input.metadataTexts),
+    ) ||
     !isCanonicalQuoteSourceLabel(citationLabel)
   ) {
     return undefined;
@@ -673,6 +714,7 @@ export type QuoteSourceText = {
   sourceText?: unknown;
   citationLabel?: unknown;
   sourceLabel?: unknown;
+  metadataTexts?: unknown;
   sourceMatchSource?: unknown;
   contextItemId?: unknown;
   itemId?: unknown;
@@ -689,7 +731,32 @@ export type QuoteSourceIndexEntry = {
 export type QuoteSourceIndex = {
   quoteCitations: QuoteCitation[];
   sources: QuoteSourceIndexEntry[];
+  metadataTexts: string[];
 };
+
+function filterMetadataQuoteCitations(
+  quoteCitations: QuoteCitation[] | undefined | null,
+  metadataTexts: Iterable<string> | undefined | null,
+): QuoteCitation[] {
+  return normalizeQuoteCitations(quoteCitations).filter(
+    (citation) =>
+      !isKnownQuoteMetadataText(citation.quoteText, metadataTexts),
+  );
+}
+
+function collectMetadataQuoteCitationIds(
+  quoteCitations: QuoteCitation[] | undefined | null,
+  metadataTexts: Iterable<string> | undefined | null,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const citation of normalizeQuoteCitations(quoteCitations)) {
+    if (!isKnownQuoteMetadataText(citation.quoteText, metadataTexts)) {
+      continue;
+    }
+    ids.add(citation.id);
+  }
+  return ids;
+}
 
 function quoteSourceKey(source: QuoteSourceIndexEntry): string {
   return [
@@ -704,7 +771,19 @@ export function buildQuoteSourceIndex(params: {
   quoteCitations?: QuoteCitation[] | undefined | null;
   sourceTexts?: QuoteSourceText[] | undefined | null;
 }): QuoteSourceIndex {
-  const quoteCitations = normalizeQuoteCitations(params.quoteCitations);
+  const metadataTextSet = new Set<string>();
+  const sourceTexts = params.sourceTexts || [];
+  for (const source of sourceTexts) {
+    for (const metadataText of collectQuoteMetadataTexts(
+      source.metadataTexts,
+    )) {
+      metadataTextSet.add(metadataText);
+    }
+  }
+  const quoteCitations = filterMetadataQuoteCitations(
+    params.quoteCitations,
+    metadataTextSet,
+  );
   const sources: QuoteSourceIndexEntry[] = [];
   const seen = new Set<string>();
   const pushSource = (entry: QuoteSourceIndexEntry | undefined) => {
@@ -728,7 +807,7 @@ export function buildQuoteSourceIndex(params: {
       itemId: citation.itemId,
     });
   }
-  for (const source of params.sourceTexts || []) {
+  for (const source of sourceTexts) {
     const sourceText = normalizeMultilineText(source.sourceText || source.text);
     const citationLabel = normalizeCitationLabel(
       source.sourceLabel || source.citationLabel,
@@ -742,7 +821,7 @@ export function buildQuoteSourceIndex(params: {
       itemId: normalizePositiveInt(source.itemId),
     });
   }
-  return { quoteCitations, sources };
+  return { quoteCitations, sources, metadataTexts: [...metadataTextSet] };
 }
 
 export function stripTrailingNonSourceQuoteLabelFromQuoteText(
@@ -1114,6 +1193,49 @@ function normalizeCitationRemainder(value: string | undefined): string {
   return stripLeadingCitationSeparators(normalizeMultilineText(value || ""));
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripMetadataQuoteCitationPlaceholders(
+  markdown: string,
+  metadataQuoteIds: Set<string>,
+): string {
+  if (!markdown || !metadataQuoteIds.size) return markdown;
+  let out = markdown;
+  for (const quoteId of metadataQuoteIds) {
+    const escaped = escapeRegExp(quoteId);
+    out = out.replace(
+      new RegExp(
+        `^[ \\t]*(?:>[ \\t]*)+\\[\\[quote:${escaped}\\]\\][ \\t]*(?:\\n|$)`,
+        "gm",
+      ),
+      "",
+    );
+    out = out.replace(
+      new RegExp(`[ \\t]*\\[\\[quote:${escaped}\\]\\][ \\t]*`, "g"),
+      " ",
+    );
+  }
+  return out.replace(/[ \t]{2,}/g, " ");
+}
+
+function cleanupRemovedMetadataQuoteArtifacts(markdown: string): string {
+  if (!markdown) return markdown;
+  let out = markdown;
+  out = out.replace(
+    /[ \t]+as\s+(?:the\s+)?(?:paper(?:['’]s)?\s+)?title\s+(?:puts\s+it|states|says),?[ \t]*(?=(?:\n{2,}|$))/gi,
+    "",
+  );
+  out = out.replace(
+    /(^|\n)[ \t]*as\s+(?:the\s+)?(?:paper(?:['’]s)?\s+)?title\s+(?:puts\s+it|states|says),?[ \t]*(?=(?:\n{2,}|$))/gi,
+    "$1",
+  );
+  return normalizeSanitizedMarkdown(out)
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+}
+
 function resolveQuoteCitationForFinalizer(params: {
   quoteText: string;
   citationLabel: string;
@@ -1123,6 +1245,9 @@ function resolveQuoteCitationForFinalizer(params: {
   const quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
     params.quoteText,
   );
+  if (isKnownQuoteMetadataText(quoteText, params.sourceIndex.metadataTexts)) {
+    return undefined;
+  }
   if (!isNonSourceQuoteLabel(params.citationLabel)) {
     const trusted = findMatchingTrustedQuoteCitation({
       quoteText,
@@ -1157,6 +1282,9 @@ function resolveUnlabeledQuoteCitationForFinalizer(params: {
   const quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
     params.quoteText,
   );
+  if (isKnownQuoteMetadataText(quoteText, params.sourceIndex.metadataTexts)) {
+    return undefined;
+  }
   const sourceMatch = findUniqueQuoteSourceMatch({
     quoteText,
     sourceIndex: params.sourceIndex,
@@ -1191,6 +1319,12 @@ function finalizeSourceBackedQuoteBlock(params: {
   const hasCanonicalSourceLabel = isCanonicalQuoteSourceLabel(
     params.citationLabel,
   );
+  if (isKnownQuoteMetadataText(quoteText, params.sourceIndex.metadataTexts)) {
+    return {
+      markdown: citationRemainder,
+      consumedCitation: true,
+    };
+  }
   if (!isQuoteWorthySourceText(quoteText)) {
     return {
       markdown: `${
@@ -1289,12 +1423,21 @@ export function finalizeAssistantQuoteCitations(params: {
   const sourceIndex =
     params.sourceIndex ||
     buildQuoteSourceIndex({ quoteCitations: params.quoteCitations });
-  let quoteCitations = mergeQuoteCitations(
+  const mergedQuoteCitations = mergeQuoteCitations(
     params.quoteCitations,
     sourceIndex.quoteCitations,
   );
-  const markdown = sanitizeInvalidStructuredSourceMarkers(
-    params.markdown || "",
+  const metadataQuoteIds = collectMetadataQuoteCitationIds(
+    mergedQuoteCitations,
+    sourceIndex.metadataTexts,
+  );
+  let quoteCitations = filterMetadataQuoteCitations(
+    mergedQuoteCitations,
+    sourceIndex.metadataTexts,
+  );
+  const markdown = stripMetadataQuoteCitationPlaceholders(
+    sanitizeInvalidStructuredSourceMarkers(params.markdown || ""),
+    metadataQuoteIds,
   );
   if (!markdown) return { markdown, quoteCitations };
   const lines = markdown.split("\n");
@@ -1379,6 +1522,12 @@ export function finalizeAssistantQuoteCitations(params: {
       continue;
     }
 
+    if (isKnownQuoteMetadataText(quoteText, sourceIndex.metadataTexts)) {
+      out.push("");
+      index -= 1;
+      continue;
+    }
+
     const unlabeledQuoteCitation = resolveUnlabeledQuoteCitationForFinalizer({
       quoteText,
       sourceIndex,
@@ -1408,8 +1557,13 @@ export function finalizeAssistantQuoteCitations(params: {
     { resolved: "preserve", unresolved: "omit" },
   );
   return {
-    markdown: cleanupEmptyCitationParentheticals(finalizedMarkdown),
-    quoteCitations: mergeQuoteCitations(quoteCitations),
+    markdown: cleanupRemovedMetadataQuoteArtifacts(
+      cleanupEmptyCitationParentheticals(finalizedMarkdown),
+    ),
+    quoteCitations: filterMetadataQuoteCitations(
+      mergeQuoteCitations(quoteCitations),
+      sourceIndex.metadataTexts,
+    ),
   };
 }
 
