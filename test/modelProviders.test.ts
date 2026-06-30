@@ -425,6 +425,52 @@ describe("modelProviders", function () {
     assert.equal(entries[0].displayModelLabel, "codex/gpt-5.4");
   });
 
+  it("preserves per-model image input capability settings", function () {
+    (
+      globalThis.Zotero.Prefs as {
+        set: (key: string, value: unknown, global?: boolean) => void;
+      }
+    ).set(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      JSON.stringify([
+        {
+          id: "provider-local",
+          apiBase: "http://127.0.0.1:11434/v1",
+          apiKey: "local",
+          authMode: "api_key",
+          providerProtocol: "openai_chat_compat",
+          models: [
+            {
+              id: "m1",
+              model: "llama3.1",
+              temperature: 0.3,
+              maxTokens: 4096,
+              imageInputCapability: "text_only",
+            },
+            {
+              id: "m2",
+              model: "llava",
+              temperature: 0.3,
+              maxTokens: 4096,
+              imageInputCapability: "vision",
+            },
+          ],
+        },
+      ]),
+      true,
+    );
+    (
+      globalThis.Zotero.Prefs as {
+        set: (key: string, value: unknown, global?: boolean) => void;
+      }
+    ).set(`${config.prefsPrefix}.modelProviderGroupsMigrationVersion`, 3, true);
+
+    const entries = getRuntimeModelEntries();
+    assert.lengthOf(entries, 2);
+    assert.equal(entries[0].imageInputCapability, "text_only");
+    assert.equal(entries[1].imageInputCapability, "vision");
+  });
+
   it("keeps codex app server entries labeled separately", function () {
     (
       globalThis.Zotero.Prefs as {

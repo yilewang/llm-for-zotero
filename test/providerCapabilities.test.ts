@@ -196,4 +196,33 @@ describe("provider capabilities", function () {
       assert.isTrue(isTextOnlyModel(model), model);
     }
   });
+
+  it("lets per-model image input settings override automatic detection", function () {
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "deepseek-chat",
+        apiBase: "https://api.deepseek.com/v1",
+        protocol: "openai_chat_compat",
+        imageInputCapability: "vision",
+      }),
+      {
+        images: true,
+        multimodal: true,
+      },
+    );
+
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "gpt-4o",
+        apiBase: "https://api.openai.com/v1/responses",
+        protocol: "responses_api",
+        imageInputCapability: "text_only",
+      }),
+      {
+        pdf: "none",
+        images: false,
+        multimodal: false,
+      },
+    );
+  });
 });

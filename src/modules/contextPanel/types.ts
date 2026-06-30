@@ -375,6 +375,7 @@ export type ZoteroTabsState = {
 // ── Send flow options ─────────────────────────────────────────────────────
 
 import type { ReasoningConfig as LLMReasoningConfig } from "../../utils/llmClient";
+import type { ImageInputCapability } from "../../providers";
 
 export type SendQuestionOptions = {
   body: Element;
@@ -393,6 +394,7 @@ export type SendQuestionOptions = {
     | "copilot_auth"
     | "webchat";
   providerProtocol?: import("../../utils/providerProtocol").ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
   modelEntryId?: string;
   modelProviderLabel?: string;
   reasoning?: LLMReasoningConfig;
@@ -461,6 +463,7 @@ export type EditRetryOptions = {
     | "copilot_auth"
     | "webchat";
   providerProtocol?: import("../../utils/providerProtocol").ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
   modelEntryId?: string;
   modelProviderLabel?: string;
   reasoning?: LLMReasoningConfig;

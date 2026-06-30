@@ -1,4 +1,5 @@
 import type { ModelProviderAuthMode } from "../utils/modelProviders";
+import type { ImageInputCapability } from "../providers";
 import type { ProviderProtocol } from "../utils/providerProtocol";
 import type {
   AdvancedModelParams,
@@ -41,6 +42,7 @@ export type AgentRequest = {
   apiBase?: string;
   apiKey?: string;
   providerProtocol?: ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
   reasoning?: LLMReasoningConfig;
   advanced?: AdvancedModelParams;
 };

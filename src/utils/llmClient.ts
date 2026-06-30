@@ -70,6 +70,10 @@ import {
   type ModelProviderAuthMode,
 } from "./modelProviders";
 import {
+  resolveProviderCapabilities,
+  type ImageInputCapability,
+} from "../providers";
+import {
   detectProviderPreset,
   getProviderPreset,
   isGrokApiBase,
@@ -94,7 +98,6 @@ import {
   getModelInputTokenLimit,
   type InputCapResult,
 } from "./modelInputCap";
-import { isTextOnlyModel } from "../providers/modelChecks";
 import {
   extractContextCacheUsage,
   type ContextCachePlan,
@@ -142,6 +145,8 @@ export type ChatParams = {
   systemMessages?: string[];
   /** Override provider protocol for this request */
   providerProtocol?: ProviderProtocol;
+  /** Per-model image input override from provider settings. */
+  imageInputCapability?: ImageInputCapability;
   /** Provider-side prompt/context cache plan resolved by the context planner. */
   contextCache?: ContextCachePlan;
 };
@@ -230,6 +235,7 @@ function getApiConfig(overrides?: {
   authMode?: ModelProviderAuthMode;
   model?: string;
   providerProtocol?: ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
 }) {
   const defaultEntry = getDefaultModelEntry();
   const defaultProviderGroup = getDefaultProviderGroup();
@@ -282,6 +288,8 @@ function getApiConfig(overrides?: {
     }
     return inferLegacyProviderProtocol({ authMode, apiBase });
   })();
+  const imageInputCapability =
+    overrides?.imageInputCapability || defaultEntry?.imageInputCapability;
 
   if (!apiBase) {
     throw new Error("API URL is missing in preferences");
@@ -297,6 +305,7 @@ function getApiConfig(overrides?: {
       ? `${DEFAULT_SYSTEM_PROMPT}\n\n${customSystemPrompt}`
       : DEFAULT_SYSTEM_PROMPT,
     providerProtocol,
+    imageInputCapability,
   };
 }
 
@@ -1346,9 +1355,22 @@ function buildMessages(
 
 function stripUnsupportedImageContent(
   messages: ChatMessage[],
-  modelName: string,
+  params: {
+    modelName: string;
+    providerProtocol?: ProviderProtocol;
+    authMode?: ModelProviderAuthMode;
+    apiBase?: string;
+    imageInputCapability?: ImageInputCapability;
+  },
 ): ChatMessage[] {
-  if (!isTextOnlyModel(modelName)) return messages;
+  const supportsImages = resolveProviderCapabilities({
+    model: params.modelName,
+    protocol: params.providerProtocol,
+    authMode: params.authMode,
+    apiBase: params.apiBase,
+    imageInputCapability: params.imageInputCapability,
+  }).images;
+  if (supportsImages) return messages;
   return messages.map((message) => {
     if (typeof message.content === "string") return message;
     const omittedImageCount = message.content.filter(
@@ -1362,7 +1384,7 @@ function stripUnsupportedImageContent(
       omittedImageCount > 0
         ? `[${omittedImageCount} image input${
             omittedImageCount === 1 ? "" : "s"
-          } omitted because ${modelName || "the selected model"} does not support image input.]`
+          } omitted because ${params.modelName || "the selected model"} does not support image input.]`
         : "";
     const content = [...textParts, omittedNotice].filter(Boolean).join("\n\n");
     return {
@@ -1373,17 +1395,31 @@ function stripUnsupportedImageContent(
 }
 
 export function prepareChatRequest(params: ChatParams): PreparedChatRequest {
-  const { apiBase, apiKey, authMode, model, systemPrompt, providerProtocol } =
-    getApiConfig({
-      apiBase: params.apiBase,
-      apiKey: params.apiKey,
-      authMode: params.authMode,
-      model: params.model,
-      providerProtocol: params.providerProtocol,
-    });
+  const {
+    apiBase,
+    apiKey,
+    authMode,
+    model,
+    systemPrompt,
+    providerProtocol,
+    imageInputCapability,
+  } = getApiConfig({
+    apiBase: params.apiBase,
+    apiKey: params.apiKey,
+    authMode: params.authMode,
+    model: params.model,
+    providerProtocol: params.providerProtocol,
+    imageInputCapability: params.imageInputCapability,
+  });
   const rawMessages = stripUnsupportedImageContent(
     buildMessages(params, systemPrompt),
-    model,
+    {
+      modelName: model,
+      providerProtocol,
+      authMode,
+      apiBase,
+      imageInputCapability,
+    },
   );
   const inputCap = applyModelInputTokenCap(
     rawMessages,
@@ -2374,9 +2410,7 @@ async function parseAnthropicStreamResponse(
             const outputTokens = parsed.message.usage.output_tokens ?? 0;
             const totalTokens = inputTokens + outputTokens;
             if (inputTokens > 0 || totalTokens > 0) {
-              const cacheUsage = extractContextCacheUsage(
-                parsed.message.usage,
-              );
+              const cacheUsage = extractContextCacheUsage(parsed.message.usage);
               onUsage({
                 promptTokens: inputTokens,
                 completionTokens: outputTokens,
@@ -2548,9 +2582,7 @@ async function parseGeminiNativeStreamResponse(
           if (parsed.usageMetadata && onUsage) {
             const total = parsed.usageMetadata.totalTokenCount ?? 0;
             if (total > 0) {
-              const cacheUsage = extractContextCacheUsage(
-                parsed.usageMetadata,
-              );
+              const cacheUsage = extractContextCacheUsage(parsed.usageMetadata);
               onUsage({
                 promptTokens: parsed.usageMetadata.promptTokenCount ?? 0,
                 completionTokens:

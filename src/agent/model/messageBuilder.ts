@@ -47,6 +47,7 @@ function resolveRequestProviderCapabilities(
     protocol: request.providerProtocol,
     authMode: request.authMode,
     apiBase: request.apiBase,
+    imageInputCapability: request.imageInputCapability,
   });
 }
 

@@ -5,6 +5,7 @@ import { getAllSkills } from "../../agent/skills";
 import type { AgentSkill } from "../../agent/skills/skillLoader";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
 import type { ConversationSystem } from "../../shared/types";
+import { resolveProviderCapabilities } from "../../providers";
 import {
   getLastUsedModelEntryId,
   getModelEntryById,
@@ -2574,6 +2575,7 @@ export function setupHandlers(
       selectedProfile?.providerProtocol,
       selectedProfile?.authMode,
       selectedProfile?.apiBase,
+      selectedProfile?.imageInputCapability,
     );
   };
 
@@ -3895,7 +3897,7 @@ export function setupHandlers(
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc) return;
     const { currentModel } = getSelectedModelInfo();
-    const screenshotUnsupported = isScreenshotUnsupportedModel(currentModel);
+    const screenshotUnsupported = !selectedModelSupportsImageInput(currentModel);
     const screenshotDisabledHint = getScreenshotDisabledHint(currentModel);
     let selectedImages = selectedImageCache.get(item.id) || [];
     if (screenshotUnsupported && selectedImages.length) {
@@ -4300,6 +4302,20 @@ export function setupHandlers(
     };
   };
 
+  const selectedModelSupportsImageInput = (fallbackModelName?: string) => {
+    const { selectedEntry, currentModel } = getSelectedModelInfo();
+    if (!selectedEntry) {
+      return !isScreenshotUnsupportedModel(fallbackModelName || currentModel);
+    }
+    return resolveProviderCapabilities({
+      model: selectedEntry.model,
+      protocol: selectedEntry.providerProtocol,
+      authMode: selectedEntry.authMode,
+      apiBase: selectedEntry.apiBase,
+      imageInputCapability: selectedEntry.imageInputCapability,
+    }).images;
+  };
+
   updateModelButton = () => {
     if (!item || !modelBtn) return;
     withScrollGuard(chatBox, conversationKey, () => {
@@ -4447,6 +4463,7 @@ export function setupHandlers(
             entry.providerProtocol,
             entry.authMode,
             entry.apiBase,
+            entry.imageInputCapability,
           );
           const shouldDowngrade = newPdfSupport !== "native";
           if (shouldDowngrade) {
@@ -4630,6 +4647,7 @@ export function setupHandlers(
             entry.apiKey,
             entry.authMode,
             entry.providerProtocol,
+            entry.imageInputCapability,
             entry.entryId,
             entry.providerLabel,
             retryReasoning,
@@ -5668,6 +5686,7 @@ export function setupHandlers(
         profile?.providerProtocol,
         profile?.authMode,
         profile?.apiBase,
+        profile?.imageInputCapability,
       );
     },
     isScreenshotUnsupportedModel,
@@ -6084,8 +6103,20 @@ export function setupHandlers(
     markWebChatPdfUploadedForCurrentConversation,
     resolvePdfPaperAttachments: pdfPaperResolver.resolvePdfPaperAttachments,
     renderPdfPagesAsImages: pdfPaperResolver.renderPdfPagesAsImages,
-    getModelPdfSupport: (modelName, protocol, authMode, apiBase) =>
-      getModelPdfSupport(modelName, protocol, authMode, apiBase),
+    getModelPdfSupport: (
+      modelName,
+      protocol,
+      authMode,
+      apiBase,
+      imageInputCapability,
+    ) =>
+      getModelPdfSupport(
+        modelName,
+        protocol,
+        authMode,
+        apiBase,
+        imageInputCapability,
+      ),
     uploadPdfForProvider: pdfPaperResolver.uploadPdfForProvider,
     resolvePdfBytes: pdfPaperResolver.resolvePdfBytes,
     getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],
@@ -6367,6 +6398,8 @@ export function setupHandlers(
       const selectedImages = (
         selectedImageCache.get(currentItem.id) || []
       ).slice(0, MAX_SELECTED_IMAGES);
+      const supportsImageInput =
+        selectedModelSupportsImageInput(activeModelName);
       const pdfInputs = await resolvePdfModeModelInputs({
         deps: {
           setInputDisabled: (disabled) => {
@@ -6390,11 +6423,9 @@ export function setupHandlers(
         },
         paperContexts: pdfModePapers,
         selectedBaseFiles: baseSelectedFiles,
-        selectedImageCountForBudget: isScreenshotUnsupportedModel(
-          activeModelName,
-        )
-          ? 0
-          : selectedImages.length,
+        selectedImageCountForBudget: supportsImageInput
+          ? selectedImages.length
+          : 0,
         profile: selectedProfile,
         currentModelName: activeModelName,
         isWebChat: isWebChatMode(),
@@ -6407,9 +6438,7 @@ export function setupHandlers(
         pdfUploadSystemMessages,
       } = pdfInputs;
       const images = [
-        ...(isScreenshotUnsupportedModel(activeModelName)
-          ? []
-          : selectedImages),
+        ...(supportsImageInput ? selectedImages : []),
         ...pdfPageImageDataUrls,
       ].slice(0, MAX_SELECTED_IMAGES);
       const selectedReasoning = getSelectedReasoning();

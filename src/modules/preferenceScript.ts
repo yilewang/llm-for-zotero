@@ -1488,6 +1488,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
                     }
                   : undefined,
                 m.protocol,
+                existing?.imageInputCapability,
               );
             });
             persistGroups(groups);
@@ -1730,6 +1731,35 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           "optional",
         );
 
+        const imageCapabilityWrap = el(
+          doc,
+          "div",
+          "display: flex; flex-direction: column; gap: 3px;",
+        );
+        const imageCapabilityLabel = el(
+          doc,
+          "label",
+          "font-size: 10.5px; font-weight: 600; color: var(--fill-primary, inherit);",
+          t("Image input"),
+        );
+        const imageCapabilitySelect = el(
+          doc,
+          "select",
+          PROTOCOL_SELECT_SM_STYLE,
+        ) as HTMLSelectElement;
+        for (const option of [
+          { value: "", label: "auto" },
+          { value: "text_only", label: t("Text only") },
+          { value: "vision", label: t("Supports images") },
+        ]) {
+          const opt = el(doc, "option") as HTMLOptionElement;
+          opt.value = option.value;
+          opt.textContent = option.label;
+          imageCapabilitySelect.appendChild(opt);
+        }
+        imageCapabilitySelect.value = modelEntry.imageInputCapability || "";
+        imageCapabilityWrap.append(imageCapabilityLabel, imageCapabilitySelect);
+
         // ── Per-model protocol override ──
         const protocolFieldWrap = el(
           doc,
@@ -1771,6 +1801,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           tempField.wrap,
           maxTokField.wrap,
           inputCapField.wrap,
+          imageCapabilityWrap,
           protocolFieldWrap,
         );
         advRow.append(
@@ -1799,12 +1830,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           )
             ? protocolFieldSelect.value
             : undefined;
+          modelEntry.imageInputCapability =
+            imageCapabilitySelect.value === "text_only" ||
+            imageCapabilitySelect.value === "vision"
+              ? imageCapabilitySelect.value
+              : undefined;
           tempField.input.value = `${modelEntry.temperature}`;
           maxTokField.input.value = `${modelEntry.maxTokens}`;
           inputCapField.input.value =
             modelEntry.inputTokenCap !== undefined
               ? `${modelEntry.inputTokenCap}`
               : "";
+          imageCapabilitySelect.value = modelEntry.imageInputCapability || "";
           persistGroups(groups);
         };
         for (const f of [tempField, maxTokField, inputCapField]) {
@@ -1812,6 +1849,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           f.input.addEventListener("blur", commitAdvanced);
         }
         protocolFieldSelect.addEventListener("change", commitAdvanced);
+        imageCapabilitySelect.addEventListener("change", commitAdvanced);
 
         const syncAdvAvailability = () => {
           const hasModel = Boolean(modelEntry.model.trim());
@@ -1820,6 +1858,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           for (const f of [tempField, maxTokField, inputCapField])
             f.input.disabled = !hasModel;
           protocolFieldSelect.disabled = !hasModel;
+          imageCapabilitySelect.disabled = !hasModel;
         };
         syncAdvAvailability();
 

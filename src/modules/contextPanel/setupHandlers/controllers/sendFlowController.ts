@@ -1,6 +1,10 @@
 import { MAX_SELECTED_IMAGES } from "../../constants";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
-import type { PdfSupport } from "../../../../providers";
+import {
+  resolveProviderCapabilities,
+  type ImageInputCapability,
+  type PdfSupport,
+} from "../../../../providers";
 import type {
   AdvancedModelParams,
   ChatAttachment,
@@ -41,7 +45,23 @@ type SelectedProfile = {
     | "copilot_auth"
     | "webchat";
   providerProtocol?: ProviderProtocol;
+  imageInputCapability?: ImageInputCapability;
 };
+
+function selectedProfileSupportsImageInput(
+  profile: SelectedProfile | null | undefined,
+  fallbackModelName: string,
+  isScreenshotUnsupportedModel: (modelName: string) => boolean,
+): boolean {
+  if (!profile) return !isScreenshotUnsupportedModel(fallbackModelName);
+  return resolveProviderCapabilities({
+    model: profile.model,
+    protocol: profile.providerProtocol,
+    authMode: profile.authMode,
+    apiBase: profile.apiBase,
+    imageInputCapability: profile.imageInputCapability,
+  }).images;
+}
 
 type LatestEditablePair = {
   conversationKey: number;
@@ -87,6 +107,7 @@ type SendFlowControllerDeps = {
     providerProtocol?: string,
     authMode?: string,
     apiBase?: string,
+    imageInputCapability?: ImageInputCapability,
   ) => PdfSupport;
   uploadPdfForProvider: (params: {
     apiBase: string;
@@ -280,11 +301,14 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const selectedImages = deps
         .getSelectedImages(item.id)
         .slice(0, MAX_SELECTED_IMAGES);
-      const selectedImageCountForBudget = deps.isScreenshotUnsupportedModel(
+      const earlySupportsImageInput = selectedProfileSupportsImageInput(
+        earlyProfile,
         earlyModelName,
-      )
-        ? 0
-        : selectedImages.length;
+        deps.isScreenshotUnsupportedModel,
+      );
+      const selectedImageCountForBudget = earlySupportsImageInput
+        ? selectedImages.length
+        : 0;
       const pdfInputs = await resolvePdfModeModelInputs({
         deps: {
           setInputDisabled: (disabled) => {
@@ -443,10 +467,13 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         deps.getCurrentModelName() ||
         ""
       ).trim();
+      const activeSupportsImageInput = selectedProfileSupportsImageInput(
+        selectedProfile,
+        activeModelName,
+        deps.isScreenshotUnsupportedModel,
+      );
       const images = [
-        ...(deps.isScreenshotUnsupportedModel(activeModelName)
-          ? []
-          : selectedImages),
+        ...(activeSupportsImageInput ? selectedImages : []),
         ...pdfPageImageDataUrls,
       ];
       const selectedReasoning = deps.getSelectedReasoning();
@@ -507,6 +534,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           apiKey: selectedProfile?.apiKey,
           authMode: selectedProfile?.authMode,
           providerProtocol: selectedProfile?.providerProtocol,
+          imageInputCapability: selectedProfile?.imageInputCapability,
           modelEntryId: selectedProfile?.entryId,
           modelProviderLabel: selectedProfile?.providerLabel,
           reasoning: selectedReasoning,
@@ -608,6 +636,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         apiKey: selectedProfile?.apiKey,
         authMode: selectedProfile?.authMode,
         providerProtocol: selectedProfile?.providerProtocol,
+        imageInputCapability: selectedProfile?.imageInputCapability,
         modelEntryId: selectedProfile?.entryId,
         modelProviderLabel: selectedProfile?.providerLabel,
         reasoning: selectedReasoning,
