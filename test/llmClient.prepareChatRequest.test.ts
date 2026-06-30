@@ -308,6 +308,33 @@ describe("llmClient prepareChatRequest", function () {
     assert.include(JSON.stringify(prepared.messages), "image_url");
   });
 
+  it("strips image content from prior history when marked text-only", function () {
+    const prepared = prepareChatRequest({
+      prompt: "Continue without looking at images.",
+      history: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Earlier image question." },
+            {
+              type: "image_url",
+              image_url: { url: "data:image/png;base64,BBBB", detail: "high" },
+            },
+          ],
+        },
+        { role: "assistant", content: "Earlier answer." },
+      ],
+      model: "third-party-chat",
+      apiBase: "https://api.example.test/v1",
+      providerProtocol: "openai_chat_compat",
+      imageInputCapability: "text_only",
+    });
+
+    assert.notInclude(JSON.stringify(prepared.messages), "image_url");
+    assert.include(JSON.stringify(prepared.messages), "Earlier image question.");
+    assert.include(JSON.stringify(prepared.messages), "image input");
+  });
+
   it("keeps Anthropic Messages thinking off by default and preserves temperature", async function () {
     let capturedBody: Record<string, unknown> | null = null;
     mockFetch(async (_url, init) => {

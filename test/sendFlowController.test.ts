@@ -132,6 +132,7 @@ describe("sendFlowController", function () {
     let lastRuntimeMode = "";
     let lastSentAuthMode = "";
     let lastSentProviderProtocol = "";
+    let lastSentImageInputCapability = "";
     let lastSentModelProviderLabel = "";
     let lastSentImages: string[] | undefined;
     let lastSentAttachments: ChatAttachment[] | undefined;
@@ -226,6 +227,7 @@ describe("sendFlowController", function () {
         lastRuntimeMode = opts.runtimeMode || "";
         lastSentAuthMode = opts.authMode || "";
         lastSentProviderProtocol = opts.providerProtocol || "";
+        lastSentImageInputCapability = opts.imageInputCapability || "";
         lastSentModelProviderLabel = opts.modelProviderLabel || "";
         lastSentImages = opts.images;
         lastSentAttachments = opts.attachments;
@@ -296,6 +298,7 @@ describe("sendFlowController", function () {
         lastRuntimeMode,
         lastSentAuthMode,
         lastSentProviderProtocol,
+        lastSentImageInputCapability,
         lastSentModelProviderLabel,
         lastSentImages,
         lastSentAttachments,
@@ -340,6 +343,26 @@ describe("sendFlowController", function () {
     await controller.doSend();
 
     assert.equal(getCounts().composerDraftClearedCalls, 1);
+  });
+
+  it("omits selected screenshots for text-only non-agent sends", async function () {
+    const { controller, getLastSend } = createBaseDeps({
+      getSelectedProfile: () => ({
+        entryId: "entry-text-only",
+        model: "third-party-chat",
+        apiBase: "https://api.example.test/v1",
+        apiKey: "test-key",
+        providerLabel: "Example",
+        authMode: "api_key",
+        providerProtocol: "openai_chat_compat",
+        imageInputCapability: "text_only",
+      }),
+    });
+
+    await controller.doSend();
+
+    assert.deepEqual(getLastSend().lastSentImages, []);
+    assert.equal(getLastSend().lastSentImageInputCapability, "text_only");
   });
 
   it("awaits the resolved context source before selecting paper contexts", async function () {
