@@ -990,8 +990,32 @@ export function extractMarkdownBlockquoteTextsForCitationDecoration(
     if (text) out.push(text);
     current = [];
   };
+  let fencedCode: { char: "`" | "~"; length: number } | null = null;
 
   for (const line of lines) {
+    const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+    if (fencedCode) {
+      if (
+        fenceMatch &&
+        fenceMatch[1]?.[0] === fencedCode.char &&
+        fenceMatch[1].length >= fencedCode.length &&
+        new RegExp(
+          `^\\s{0,3}\\${fencedCode.char}{${fencedCode.length},}\\s*$`,
+        ).test(line)
+      ) {
+        fencedCode = null;
+      }
+      continue;
+    }
+    if (fenceMatch) {
+      flush();
+      const marker = fenceMatch[1] || "";
+      fencedCode = {
+        char: marker[0] === "~" ? "~" : "`",
+        length: marker.length,
+      };
+      continue;
+    }
     const match = line.match(/^\s{0,3}>\s?(.*)$/);
     if (match) {
       current.push(match[1] || "");

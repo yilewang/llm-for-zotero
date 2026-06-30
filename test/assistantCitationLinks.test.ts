@@ -759,6 +759,31 @@ describe("assistantCitationLinks", function () {
     assert.equal(extracted?.extractedCitation.pageLabel, "7");
   });
 
+  it("ignores fenced code blockquote examples when extracting source blockquotes", function () {
+    const rawMessage = [
+      "Use this Markdown shape when quoting:",
+      "",
+      "```markdown",
+      "> quoted text from the paper",
+      ">",
+      "> (Author, 2026)",
+      "```",
+      "",
+      "The actual evidence is:",
+      "",
+      "> Drift was balanced by Hebbian plasticity in the model.",
+      ">",
+      "> (Eppler et al., 2026, page 1)",
+    ].join("\n");
+
+    const blockquotes =
+      extractMarkdownBlockquoteTextsForCitationDecoration(rawMessage);
+
+    assert.deepEqual(blockquotes, [
+      "Drift was balanced by Hebbian plasticity in the model.\n\n(Eppler et al., 2026, page 1)",
+    ]);
+  });
+
   it("uses the shared citation separator helper", function () {
     assert.equal(
       stripLeadingCitationSeparators("; with an explanatory continuation."),
