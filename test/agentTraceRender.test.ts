@@ -9,6 +9,7 @@ import {
   renderPendingActionCard,
 } from "../src/modules/contextPanel/agentTrace/render";
 import {
+  createCodexNativeActivityTraceControllerForTests,
   resolveAssistantResponseMenuContent,
   renderAssistantMarkdownHtmlForChat,
   renderAssistantGeneratedImagesInto,
@@ -305,6 +306,41 @@ const throwingTemplateDocument = {
   createElementNS: (_namespace: string, tagName: string) =>
     new FakeElement(tagName),
 } as unknown as Document;
+
+type CodexToolActivityTestPayload = Extract<
+  AgentRunEventRecord["payload"],
+  { type: "codex_tool_activity" }
+>;
+
+function codexToolActivityEvent(
+  seq: number,
+  payload: CodexToolActivityTestPayload,
+  createdAt = seq,
+): AgentRunEventRecord {
+  return {
+    runId: "run-1",
+    seq,
+    eventType: "codex_tool_activity",
+    payload,
+    createdAt,
+  };
+}
+
+function getCodexTraceActionTexts(events: AgentRunEventRecord[]): string[] {
+  const { items } = buildAgentTraceDisplayItems(events, null, {
+    role: "assistant",
+    text: "",
+    timestamp: 1,
+    runMode: "agent",
+    modelProviderLabel: "Codex",
+  });
+  return items
+    .filter(
+      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+        item.type === "action",
+    )
+    .map((item) => item.row.text);
+}
 
 function createFakeCodeBlockShell(options?: {
   lang?: string;
@@ -1429,6 +1465,241 @@ describe("agentTrace render", function () {
       actionTexts.filter((text) => text === "Used Run Command").length,
       1,
     );
+  });
+
+  it("renders one Codex MCP row for duplicate visible tool activity", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3542,
+          contextItemId: 3541,
+          title: "Subspace communication in the hippocampal-retrosplenial axis",
+          firstCreator: "Gonzalez et al.",
+          year: "2026",
+          citationKey: "gonzalezSubspaceCommunicationHippocampal2026",
+          attachmentTitle: "PDF",
+          contentSourceMode: "text",
+        },
+      },
+      maxChars: 12000,
+    };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp-jsonrpc-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm_for_zotero",
+        args,
+        ok: true,
+      }),
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "status",
+        payload: {
+          type: "status",
+          text: "Compacting context…",
+        },
+        createdAt: 2,
+      },
+      codexToolActivityEvent(3, {
+        type: "codex_tool_activity",
+        itemId: "native-tool-item-1",
+        phase: "completed",
+        toolName: "mcp__llm_for_zotero__paper_read",
+        toolLabel: "Read Paper",
+        args,
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("renders one Codex MCP row when duplicate arguments are serialized differently", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3441,
+          contextItemId: 3442,
+          title: "Recurrent Models of Visual Attention",
+          firstCreator: "Mnih et al.",
+          year: "2014",
+          citationKey: "mnihRecurrentModelsVisual2014",
+          attachmentTitle: "PDF",
+          contentSourceMode: "mineru",
+          mineruCacheDir:
+            "/Users/yat-lok/Documents/zotero-dev/llm-for-zotero-mineru/3442",
+        },
+      },
+      maxChars: 6000,
+    };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp-jsonrpc-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm_for_zotero",
+        args,
+        ok: true,
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "native-tool-item-1",
+        phase: "completed",
+        toolName: "mcp__llm_for_zotero__paper_read",
+        toolLabel: "Read Paper",
+        args: JSON.stringify(args),
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("renders one Codex MCP row when duplicate identity is label versus tool name", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3597,
+          contextItemId: 3598,
+          title:
+            "Stochastic Gradient Descent-Induced Drift of Representation in a Two-Layer Neural Network",
+        },
+      },
+      maxChars: 6000,
+    };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp-jsonrpc-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        args,
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "native-tool-item-1",
+        phase: "completed",
+        toolName: "mcp__llm_for_zotero__paper_read",
+        args,
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("keeps repeated Codex tool activity outside the duplicate window", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3542,
+          contextItemId: 3541,
+          title: "Subspace communication in the hippocampal-retrosplenial axis",
+        },
+      },
+      maxChars: 12000,
+    };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp-jsonrpc-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        args,
+      }),
+      codexToolActivityEvent(
+        2,
+        {
+          type: "codex_tool_activity",
+          itemId: "mcp-jsonrpc-2",
+          phase: "completed",
+          toolName: "paper_read",
+          toolLabel: "Read Paper",
+          args,
+        },
+        9002,
+      ),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("coalesces duplicate Codex native and MCP activity before rendering", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3542,
+          contextItemId: 3541,
+          title: "Subspace communication in the hippocampal-retrosplenial axis",
+        },
+      },
+      maxChars: 12000,
+    };
+    const assistantMessage = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      assistantMessage,
+      () => undefined,
+    );
+
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:1",
+      phase: "completed",
+      toolName: "paper_read",
+      toolLabel: "Read Paper",
+      arguments: args,
+      ok: true,
+    });
+    controller.appendItemStatus(
+      {
+        id: "native-tool-item-1",
+        type: "tool_call",
+        name: "mcp__llm_for_zotero__paper_read",
+        title: "Read Paper",
+        serverName: "llm_for_zotero",
+        arguments: args,
+      },
+      "completed",
+    );
+
+    const events = assistantMessage.pendingAgentTraceEvents || [];
+    assert.lengthOf(
+      events.filter((entry) => entry.payload.type === "codex_tool_activity"),
+      1,
+    );
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
   });
 
   it("renders generated assistant images outside user screenshot UI", function () {

@@ -246,6 +246,11 @@ import { extractManagedBlobHash } from "./attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
 import { canEditUserPromptTurn } from "./editability";
 import { renderAgentTrace, renderPendingActionCard } from "./agentTrace/render";
+import {
+  TOOL_ACTIVITY_VISIBLE_DEDUPE_WINDOW_MS,
+  hasSameToolActivityVisibleIdentity,
+  mergeToolActivityPayload,
+} from "./agentTrace/toolActivityDedupe";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
@@ -4201,6 +4206,11 @@ type CodexNativeMcpToolActivityEvent = {
   quoteCitations?: QuoteCitation[];
 };
 
+type CodexToolActivityEventPayload = Extract<
+  AgentEvent,
+  { type: "codex_tool_activity" }
+>;
+
 function isCodexNativeAgentMessageItem(
   event: CodexNativeTraceItemEvent,
 ): boolean {
@@ -4562,6 +4572,23 @@ function createCodexNativeActivityTraceController(
     return null;
   };
 
+  const findRecentVisibleDuplicateToolActivity = (
+    payload: CodexToolActivityEventPayload,
+  ): string | null => {
+    const now = Date.now();
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const entry = events[index];
+      if (now - entry.createdAt > TOOL_ACTIVITY_VISIBLE_DEDUPE_WINDOW_MS) {
+        break;
+      }
+      if (entry?.payload.type !== "codex_tool_activity") continue;
+      if (hasSameToolActivityVisibleIdentity(entry.payload, payload)) {
+        return entry.payload.itemId;
+      }
+    }
+    return null;
+  };
+
   const upsertToolActivity = (
     activity: {
       itemId: string;
@@ -4581,18 +4608,7 @@ function createCodexNativeActivityTraceController(
     const cleanToolName = sanitizeText(activity.toolName || "").trim();
     const cleanToolLabel = sanitizeText(activity.toolLabel || "").trim();
     const cleanServerName = sanitizeText(activity.serverName || "").trim();
-    const matchedUnknown =
-      options.matchRecentUnknown && (cleanToolName || cleanToolLabel)
-        ? findRecentCompatibleToolActivity(
-            activity.phase,
-            cleanServerName,
-            cleanToolName,
-            cleanToolLabel,
-          )
-        : null;
-    const itemId = matchedUnknown || cleanItemId;
-    const existingIndex = toolEventIndexes.get(itemId);
-    const payload: AgentEvent = {
+    const buildPayload = (itemId: string): CodexToolActivityEventPayload => ({
       type: "codex_tool_activity",
       itemId,
       phase: activity.phase,
@@ -4603,22 +4619,32 @@ function createCodexNativeActivityTraceController(
       ...(typeof activity.ok === "boolean" ? { ok: activity.ok } : {}),
       ...(activity.text ? { text: activity.text } : {}),
       ...(activity.codeBlock ? { codeBlock: activity.codeBlock } : {}),
-    };
+    });
+    const matchedUnknown =
+      options.matchRecentUnknown && (cleanToolName || cleanToolLabel)
+        ? findRecentCompatibleToolActivity(
+            activity.phase,
+            cleanServerName,
+            cleanToolName,
+            cleanToolLabel,
+          )
+        : null;
+    let itemId = matchedUnknown || cleanItemId;
+    let payload = buildPayload(itemId);
+    if (!matchedUnknown) {
+      const visibleDuplicate = findRecentVisibleDuplicateToolActivity(payload);
+      if (visibleDuplicate) {
+        itemId = visibleDuplicate;
+        payload = buildPayload(itemId);
+      }
+    }
+    const existingIndex = toolEventIndexes.get(itemId);
     if (existingIndex !== undefined) {
       const existing = events[existingIndex];
       if (existing?.payload.type !== "codex_tool_activity") return null;
       events[existingIndex] = {
         ...existing,
-        payload: {
-          ...existing.payload,
-          ...payload,
-          toolName: payload.toolName || existing.payload.toolName,
-          toolLabel: payload.toolLabel || existing.payload.toolLabel,
-          serverName: payload.serverName || existing.payload.serverName,
-          args:
-            payload.args !== undefined ? payload.args : existing.payload.args,
-          codeBlock: payload.codeBlock || existing.payload.codeBlock,
-        },
+        payload: mergeToolActivityPayload(existing.payload, payload),
         createdAt: Date.now(),
       };
       return itemId;
@@ -5043,6 +5069,9 @@ function createCodexNativeActivityTraceController(
 type CodexNativeActivityTraceController = ReturnType<
   typeof createCodexNativeActivityTraceController
 >;
+
+export const createCodexNativeActivityTraceControllerForTests =
+  createCodexNativeActivityTraceController;
 
 function noteExplicitCodexNativeSkillInvocations(
   trace: CodexNativeActivityTraceController | null,
