@@ -42,10 +42,13 @@ export type PaperContentSourceMode =
   | "txt"
   | "docx";
 
+export type ModelInputMode = "text_only" | "vision_allowed";
+
 export type AdvancedModelParams = {
   temperature: number;
   maxTokens: number;
   inputTokenCap?: number;
+  inputMode?: ModelInputMode;
 };
 
 export type PaperContextRef = {

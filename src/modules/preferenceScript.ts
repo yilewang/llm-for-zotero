@@ -13,6 +13,12 @@ import {
   normalizeTemperature,
 } from "../utils/normalization";
 import {
+  MODEL_INPUT_MODE_OPTIONS,
+  getModelInputModeLabel,
+  normalizeModelInputMode,
+  resolveModelInputMode,
+} from "../utils/modelInputMode";
+import {
   createEmptyProviderGroup,
   createProviderModelEntry,
   getModelProviderGroups,
@@ -543,6 +549,7 @@ const INPUT_SM_STYLE =
   " border: 1px solid var(--stroke-secondary, #c8c8c8); border-radius: 5px;" +
   " box-sizing: border-box; background: Field; color: FieldText;";
 
+const INPUT_MODE_SELECT_SM_STYLE = INPUT_SM_STYLE + " width: 108px;";
 const PROTOCOL_SELECT_SM_STYLE = INPUT_SM_STYLE + " width: 135px;";
 
 const LABEL_STYLE =
@@ -1499,6 +1506,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
                       temperature: existing.temperature,
                       maxTokens: existing.maxTokens,
                       inputTokenCap: existing.inputTokenCap,
+                      inputMode: existing.inputMode,
                     }
                   : undefined,
                 m.protocol,
@@ -1744,6 +1752,31 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           "optional",
         );
 
+        const inputModeFieldWrap = el(
+          doc,
+          "div",
+          "display: flex; flex-direction: column; gap: 3px;",
+        );
+        const inputModeFieldLabel = el(
+          doc,
+          "label",
+          "font-size: 10.5px; font-weight: 600; color: var(--fill-primary, inherit);",
+          t("Input mode"),
+        );
+        const inputModeSelect = el(
+          doc,
+          "select",
+          INPUT_MODE_SELECT_SM_STYLE,
+        ) as HTMLSelectElement;
+        for (const mode of MODEL_INPUT_MODE_OPTIONS) {
+          const opt = el(doc, "option") as HTMLOptionElement;
+          opt.value = mode;
+          opt.textContent = t(getModelInputModeLabel(mode));
+          inputModeSelect.appendChild(opt);
+        }
+        inputModeSelect.value = resolveModelInputMode(modelEntry.inputMode);
+        inputModeFieldWrap.append(inputModeFieldLabel, inputModeSelect);
+
         // ── Per-model protocol override ──
         const protocolFieldWrap = el(
           doc,
@@ -1785,6 +1818,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           tempField.wrap,
           maxTokField.wrap,
           inputCapField.wrap,
+          inputModeFieldWrap,
           protocolFieldWrap,
         );
         advRow.append(
@@ -1794,7 +1828,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             "span",
             "font-size: 10.5px; color: var(--fill-secondary, #888); margin-top: 2px; display: block;",
             t(
-              "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit (optional)",
+              "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit  ·  Input mode: auto/text-only/vision",
             ),
           ),
         );
@@ -1808,6 +1842,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           modelEntry.inputTokenCap = normalizeOptionalInputTokenCap(
             inputCapField.input.value,
           );
+          const nextInputMode = normalizeModelInputMode(inputModeSelect.value);
+          if (nextInputMode) {
+            modelEntry.inputMode = nextInputMode;
+          } else {
+            delete modelEntry.inputMode;
+          }
           modelEntry.providerProtocol = isProviderProtocol(
             protocolFieldSelect.value,
           )
@@ -1819,12 +1859,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             modelEntry.inputTokenCap !== undefined
               ? `${modelEntry.inputTokenCap}`
               : "";
+          inputModeSelect.value = resolveModelInputMode(modelEntry.inputMode);
           persistGroups(groups);
         };
         for (const f of [tempField, maxTokField, inputCapField]) {
           f.input.addEventListener("change", commitAdvanced);
           f.input.addEventListener("blur", commitAdvanced);
         }
+        inputModeSelect.addEventListener("change", commitAdvanced);
         protocolFieldSelect.addEventListener("change", commitAdvanced);
 
         const syncAdvAvailability = () => {
@@ -1833,6 +1875,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           advRow.style.pointerEvents = hasModel ? "" : "none";
           for (const f of [tempField, maxTokField, inputCapField])
             f.input.disabled = !hasModel;
+          inputModeSelect.disabled = !hasModel;
           protocolFieldSelect.disabled = !hasModel;
         };
         syncAdvAvailability();

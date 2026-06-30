@@ -1,3 +1,5 @@
+import type { ModelInputMode } from "../shared/types";
+
 export type PdfSupport = "native" | "upload" | "vision" | "none";
 
 export type ProviderTier =
@@ -21,6 +23,7 @@ export type ProviderParams = {
   protocol?: string;
   authMode?: string;
   apiBase?: string;
+  inputMode?: ModelInputMode | "auto" | string;
 };
 
 export type ProviderPromptCacheKind =

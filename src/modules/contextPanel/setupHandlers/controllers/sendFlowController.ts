@@ -1,4 +1,5 @@
 import { MAX_SELECTED_IMAGES } from "../../constants";
+import type { ModelInputMode } from "../../../../shared/types";
 import type { ProviderProtocol } from "../../../../utils/providerProtocol";
 import type { PdfSupport } from "../../../../providers";
 import type {
@@ -87,6 +88,7 @@ type SendFlowControllerDeps = {
     providerProtocol?: string,
     authMode?: string,
     apiBase?: string,
+    inputMode?: ModelInputMode,
   ) => PdfSupport;
   uploadPdfForProvider: (params: {
     apiBase: string;
@@ -141,7 +143,13 @@ type SendFlowControllerDeps = {
   ) => Promise<void>;
   getSelectedProfile: () => SelectedProfile | null;
   getCurrentModelName: () => string;
-  isScreenshotUnsupportedModel: (modelName: string) => boolean;
+  isScreenshotUnsupportedModel: (
+    modelName: string,
+    providerProtocol?: string,
+    authMode?: string,
+    apiBase?: string,
+    inputMode?: ModelInputMode,
+  ) => boolean;
   getSelectedReasoning: () => LLMReasoningConfig | undefined;
   getAdvancedModelParams: (
     entryId: string | undefined,
@@ -265,6 +273,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         deps.getCurrentModelName() ||
         ""
       ).trim();
+      const earlyAdvancedParams = deps.getAdvancedModelParams(
+        earlyProfile?.entryId,
+      );
       const selectedBaseFiles = deps.getSelectedFiles(item.id);
       if (useCodexAttachmentPolicy) {
         const blockedAttachments =
@@ -282,6 +293,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         .slice(0, MAX_SELECTED_IMAGES);
       const selectedImageCountForBudget = deps.isScreenshotUnsupportedModel(
         earlyModelName,
+        earlyProfile?.providerProtocol,
+        earlyProfile?.authMode,
+        earlyProfile?.apiBase,
+        earlyAdvancedParams?.inputMode,
       )
         ? 0
         : selectedImages.length;
@@ -304,7 +319,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         paperContexts: pdfModePaperContexts,
         selectedBaseFiles,
         selectedImageCountForBudget,
-        profile: earlyProfile,
+        profile: earlyProfile
+          ? { ...earlyProfile, inputMode: earlyAdvancedParams?.inputMode }
+          : null,
         currentModelName: earlyModelName,
         isWebChat,
         useCodexAttachmentPolicy,
@@ -443,16 +460,22 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         deps.getCurrentModelName() ||
         ""
       ).trim();
-      const images = [
-        ...(deps.isScreenshotUnsupportedModel(activeModelName)
-          ? []
-          : selectedImages),
-        ...pdfPageImageDataUrls,
-      ];
       const selectedReasoning = deps.getSelectedReasoning();
       const advancedParams = deps.getAdvancedModelParams(
         selectedProfile?.entryId,
       );
+      const images = [
+        ...(deps.isScreenshotUnsupportedModel(
+          activeModelName,
+          selectedProfile?.providerProtocol,
+          selectedProfile?.authMode,
+          selectedProfile?.apiBase,
+          advancedParams?.inputMode,
+        )
+          ? []
+          : selectedImages),
+        ...pdfPageImageDataUrls,
+      ];
 
       const activeEditSession = deps.getActiveEditSession();
       if (activeEditSession) {

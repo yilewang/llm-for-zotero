@@ -334,6 +334,63 @@ describe("sendFlowController", function () {
     assert.equal(counts.retainTextCalled, 1);
   });
 
+  it("passes input mode to the screenshot gate and omits images for text-only mode", async function () {
+    let screenshotGateArgs:
+      | {
+          modelName: string;
+          providerProtocol?: string;
+          authMode?: string;
+          apiBase?: string;
+          inputMode?: string;
+        }
+      | undefined;
+    const profile = {
+      entryId: "model-1",
+      model: "gpt-5.5",
+      apiBase: "https://api.openai.com/v1/responses",
+      apiKey: "sk-openai",
+      providerLabel: "OpenAI",
+      authMode: "api_key" as const,
+      providerProtocol: "responses_api" as const,
+    };
+    const { controller, getLastSend } = createBaseDeps({
+      getSelectedProfile: () => profile,
+      getCurrentModelName: () => profile.model,
+      getAdvancedModelParams: () => ({
+        temperature: 0.3,
+        maxTokens: 4096,
+        inputMode: "text_only",
+      }),
+      isScreenshotUnsupportedModel: (
+        modelName: string,
+        providerProtocol?: string,
+        authMode?: string,
+        apiBase?: string,
+        inputMode?: string,
+      ) => {
+        screenshotGateArgs = {
+          modelName,
+          providerProtocol,
+          authMode,
+          apiBase,
+          inputMode,
+        };
+        return inputMode === "text_only";
+      },
+    });
+
+    await controller.doSend();
+
+    assert.deepEqual(screenshotGateArgs, {
+      modelName: "gpt-5.5",
+      providerProtocol: "responses_api",
+      authMode: "api_key",
+      apiBase: "https://api.openai.com/v1/responses",
+      inputMode: "text_only",
+    });
+    assert.deepEqual(getLastSend().lastSentImages, []);
+  });
+
   it("resets the composer draft height after a normal send clears the input", async function () {
     const { controller, getCounts } = createBaseDeps();
 

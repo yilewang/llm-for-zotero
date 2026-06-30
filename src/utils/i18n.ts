@@ -501,8 +501,13 @@ const zhCN: Record<string, string> = {
   Temperature: "温度",
   "Max tokens": "最大 Token 数",
   "Input cap": "输入上限",
+  "Input mode": "输入模式",
+  "Text only": "仅文本",
+  "Vision allowed": "允许视觉",
   "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit (optional)":
     "温度：随机性 (0–2)  ·  最大 Token 数：输出限制  ·  输入上限：上下文限制（可选）",
+  "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit  ·  Input mode: auto/text-only/vision":
+    "温度：随机性 (0–2)  ·  最大 Token 数：输出限制  ·  输入上限：上下文限制  ·  输入模式：自动/仅文本/视觉",
   "Complete the empty provider first": "请先完善空白的服务商",
   "Add provider": "添加服务商",
   "+ Add Provider": "+ 添加服务商",

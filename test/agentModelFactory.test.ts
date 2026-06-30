@@ -162,6 +162,55 @@ describe("agent model factory", function () {
     assert.isFalse(chatCompatCapabilities.fileInputs);
   });
 
+  it("applies manual input mode overrides to agent content inputs", function () {
+    const adapter = createAgentModelAdapter(
+      makeRequest({
+        providerProtocol: "responses_api",
+        apiBase: "https://api.openai.com/v1/responses",
+      }),
+    );
+
+    assert.deepEqual(
+      adapter.getCapabilities(
+        makeRequest({
+          providerProtocol: "responses_api",
+          apiBase: "https://api.openai.com/v1/responses",
+          model: "gpt-5.5",
+          advanced: {
+            temperature: 0.3,
+            maxTokens: 4096,
+            inputMode: "text_only",
+          },
+        }),
+      ).contentInputs,
+      {
+        images: false,
+        pdfDocuments: false,
+        nativeFiles: false,
+      },
+    );
+
+    assert.deepEqual(
+      adapter.getCapabilities(
+        makeRequest({
+          providerProtocol: "openai_chat_compat",
+          apiBase: "https://api.deepseek.com/v1",
+          model: "deepseek-v4-pro",
+          advanced: {
+            temperature: 0.3,
+            maxTokens: 4096,
+            inputMode: "vision_allowed",
+          },
+        }),
+      ).contentInputs,
+      {
+        images: true,
+        pdfDocuments: false,
+        nativeFiles: false,
+      },
+    );
+  });
+
   it("keeps Gemini PDF document inputs tied to provider capabilities", function () {
     const firstPartyRequest = makeRequest({
       providerProtocol: "gemini_native",
@@ -176,8 +225,14 @@ describe("agent model factory", function () {
     const firstPartyAdapter = createAgentModelAdapter(firstPartyRequest);
     const thirdPartyAdapter = createAgentModelAdapter(thirdPartyRequest);
 
-    assert.equal(firstPartyAdapter.constructor.name, "GeminiNativeAgentAdapter");
-    assert.equal(thirdPartyAdapter.constructor.name, "GeminiNativeAgentAdapter");
+    assert.equal(
+      firstPartyAdapter.constructor.name,
+      "GeminiNativeAgentAdapter",
+    );
+    assert.equal(
+      thirdPartyAdapter.constructor.name,
+      "GeminiNativeAgentAdapter",
+    );
     assert.deepEqual(
       firstPartyAdapter.getCapabilities(firstPartyRequest).contentInputs,
       {

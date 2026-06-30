@@ -328,6 +328,88 @@ describe("modelProviders", function () {
     assert.isUndefined(entries[0].advanced.inputTokenCap);
   });
 
+  it("preserves per-model input mode overrides in runtime entries", function () {
+    const groups: ModelProviderGroup[] = [
+      {
+        id: "provider-1",
+        apiBase: "https://api.openai.com/v1",
+        apiKey: "sk-openai",
+        authMode: "api_key",
+        models: [
+          {
+            id: "model-1",
+            model: "gpt-5.5",
+            temperature: 0.3,
+            maxTokens: 4096,
+            inputMode: "text_only",
+          },
+          {
+            id: "model-2",
+            model: "local-text-only",
+            temperature: 0.3,
+            maxTokens: 4096,
+            inputMode: "vision_allowed",
+          },
+        ],
+      },
+    ];
+
+    setModelProviderGroups(groups);
+    const entries = getRuntimeModelEntries();
+
+    assert.lengthOf(entries, 2);
+    assert.equal(entries[0].advanced.inputMode, "text_only");
+    assert.equal(entries[1].advanced.inputMode, "vision_allowed");
+  });
+
+  it("defaults missing, auto, and invalid input modes to automatic detection", function () {
+    (
+      globalThis.Zotero.Prefs as {
+        set: (key: string, value: unknown, global?: boolean) => void;
+      }
+    ).set(
+      `${config.prefsPrefix}.modelProviderGroups`,
+      JSON.stringify([
+        {
+          id: "provider-1",
+          apiBase: "https://api.openai.com/v1",
+          apiKey: "sk-openai",
+          authMode: "api_key",
+          models: [
+            { id: "m1", model: "gpt-5.5", temperature: 0.3, maxTokens: 4096 },
+            {
+              id: "m2",
+              model: "gpt-5.5",
+              temperature: 0.3,
+              maxTokens: 4096,
+              inputMode: "auto",
+            },
+            {
+              id: "m3",
+              model: "gpt-5.5",
+              temperature: 0.3,
+              maxTokens: 4096,
+              inputMode: "images_only",
+            },
+          ],
+        },
+      ]),
+      true,
+    );
+    (
+      globalThis.Zotero.Prefs as {
+        set: (key: string, value: unknown, global?: boolean) => void;
+      }
+    ).set(`${config.prefsPrefix}.modelProviderGroupsMigrationVersion`, 3, true);
+
+    const entries = getRuntimeModelEntries();
+
+    assert.lengthOf(entries, 3);
+    assert.isUndefined(entries[0].advanced.inputMode);
+    assert.isUndefined(entries[1].advanced.inputMode);
+    assert.isUndefined(entries[2].advanced.inputMode);
+  });
+
   it("preserves large DeepSeek V4 output token settings", function () {
     const groups: ModelProviderGroup[] = [
       {

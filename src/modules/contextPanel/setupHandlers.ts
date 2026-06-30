@@ -2569,11 +2569,15 @@ export function setupHandlers(
       getSelectedModelInfo().currentModel ||
       ""
     ).trim();
+    const inputMode = getAdvancedModelParamsForEntry(
+      selectedProfile?.entryId,
+    )?.inputMode;
     return getModelPdfSupport(
       modelName,
       selectedProfile?.providerProtocol,
       selectedProfile?.authMode,
       selectedProfile?.apiBase,
+      inputMode,
     );
   };
 
@@ -3894,8 +3898,22 @@ export function setupHandlers(
       return;
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc) return;
-    const { currentModel } = getSelectedModelInfo();
-    const screenshotUnsupported = isScreenshotUnsupportedModel(currentModel);
+    const selectedProfile = getSelectedProfile();
+    const currentModel = (
+      selectedProfile?.model ||
+      getSelectedModelInfo().currentModel ||
+      ""
+    ).trim();
+    const inputMode = getAdvancedModelParamsForEntry(
+      selectedProfile?.entryId,
+    )?.inputMode;
+    const screenshotUnsupported = isScreenshotUnsupportedModel(
+      currentModel,
+      selectedProfile?.providerProtocol,
+      selectedProfile?.authMode,
+      selectedProfile?.apiBase,
+      inputMode,
+    );
     const screenshotDisabledHint = getScreenshotDisabledHint(currentModel);
     let selectedImages = selectedImageCache.get(item.id) || [];
     if (screenshotUnsupported && selectedImages.length) {
@@ -4447,6 +4465,7 @@ export function setupHandlers(
             entry.providerProtocol,
             entry.authMode,
             entry.apiBase,
+            entry.advanced.inputMode,
           );
           const shouldDowngrade = newPdfSupport !== "native";
           if (shouldDowngrade) {
@@ -5663,14 +5682,30 @@ export function setupHandlers(
         getSelectedModelInfo().currentModel ||
         ""
       ).trim();
+      const inputMode = getAdvancedModelParamsForEntry(
+        profile?.entryId,
+      )?.inputMode;
       return getModelPdfSupport(
         modelName,
         profile?.providerProtocol,
         profile?.authMode,
         profile?.apiBase,
+        inputMode,
       );
     },
-    isScreenshotUnsupportedModel,
+    isScreenshotUnsupportedModel: (modelName) => {
+      const profile = getSelectedProfile();
+      const inputMode = getAdvancedModelParamsForEntry(
+        profile?.entryId,
+      )?.inputMode;
+      return isScreenshotUnsupportedModel(
+        (profile?.model || modelName || "").trim(),
+        profile?.providerProtocol,
+        profile?.authMode,
+        profile?.apiBase,
+        inputMode,
+      );
+    },
     optimizeImageDataUrl,
     persistAttachmentBlob,
     selectedImageCache,
@@ -6084,8 +6119,8 @@ export function setupHandlers(
     markWebChatPdfUploadedForCurrentConversation,
     resolvePdfPaperAttachments: pdfPaperResolver.resolvePdfPaperAttachments,
     renderPdfPagesAsImages: pdfPaperResolver.renderPdfPagesAsImages,
-    getModelPdfSupport: (modelName, protocol, authMode, apiBase) =>
-      getModelPdfSupport(modelName, protocol, authMode, apiBase),
+    getModelPdfSupport: (modelName, protocol, authMode, apiBase, inputMode) =>
+      getModelPdfSupport(modelName, protocol, authMode, apiBase, inputMode),
     uploadPdfForProvider: pdfPaperResolver.uploadPdfForProvider,
     resolvePdfBytes: pdfPaperResolver.resolvePdfBytes,
     getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],
@@ -6362,6 +6397,7 @@ export function setupHandlers(
         getSelectedModelInfo().currentModel ||
         ""
       ).trim();
+      const advancedParams = getAdvancedModelParams(selectedProfile?.entryId);
       const baseSelectedFiles =
         selectedFileAttachmentCache.get(currentItem.id) || [];
       const selectedImages = (
@@ -6392,10 +6428,16 @@ export function setupHandlers(
         selectedBaseFiles: baseSelectedFiles,
         selectedImageCountForBudget: isScreenshotUnsupportedModel(
           activeModelName,
+          selectedProfile?.providerProtocol,
+          selectedProfile?.authMode,
+          selectedProfile?.apiBase,
+          advancedParams?.inputMode,
         )
           ? 0
           : selectedImages.length,
-        profile: selectedProfile,
+        profile: selectedProfile
+          ? { ...selectedProfile, inputMode: advancedParams?.inputMode }
+          : null,
         currentModelName: activeModelName,
         isWebChat: isWebChatMode(),
       });
@@ -6407,13 +6449,18 @@ export function setupHandlers(
         pdfUploadSystemMessages,
       } = pdfInputs;
       const images = [
-        ...(isScreenshotUnsupportedModel(activeModelName)
+        ...(isScreenshotUnsupportedModel(
+          activeModelName,
+          selectedProfile?.providerProtocol,
+          selectedProfile?.authMode,
+          selectedProfile?.apiBase,
+          advancedParams?.inputMode,
+        )
           ? []
           : selectedImages),
         ...pdfPageImageDataUrls,
       ].slice(0, MAX_SELECTED_IMAGES);
       const selectedReasoning = getSelectedReasoning();
-      const advancedParams = getAdvancedModelParams(selectedProfile?.entryId);
       const targetRuntimeMode = getCurrentRuntimeMode();
       inlineEditCleanup?.();
       setInlineEditCleanup(null);
@@ -6737,6 +6784,19 @@ export function setupHandlers(
     closeExportMenu,
     schedulePaperPickerSearch,
     updateImagePreviewPreservingScroll,
+    isScreenshotUnsupportedModel: (modelName) => {
+      const profile = getSelectedProfile();
+      const inputMode = getAdvancedModelParamsForEntry(
+        profile?.entryId,
+      )?.inputMode;
+      return isScreenshotUnsupportedModel(
+        (profile?.model || modelName || "").trim(),
+        profile?.providerProtocol,
+        profile?.authMode,
+        profile?.apiBase,
+        inputMode,
+      );
+    },
     setStatusMessage: status
       ? (message, level) => {
           setStatus(status, message, level);

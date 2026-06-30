@@ -94,11 +94,12 @@ import {
   getModelInputTokenLimit,
   type InputCapResult,
 } from "./modelInputCap";
-import { isTextOnlyModel } from "../providers/modelChecks";
+import { resolveProviderCapabilities } from "../providers";
 import {
   extractContextCacheUsage,
   type ContextCachePlan,
 } from "../contextCache/manager";
+import type { ModelInputMode } from "../shared/types";
 
 // =============================================================================
 // Types
@@ -136,6 +137,8 @@ export type ChatParams = {
   maxTokens?: number;
   /** Optional override for input token cap. */
   inputTokenCap?: number;
+  /** Optional per-model input capability override. Missing means auto. */
+  inputMode?: ModelInputMode;
   /** Local files to upload and attach when using Responses API */
   attachments?: ChatFileAttachment[];
   /** Extra system-only guidance added to the same request */
@@ -1346,9 +1349,22 @@ function buildMessages(
 
 function stripUnsupportedImageContent(
   messages: ChatMessage[],
-  modelName: string,
+  params: {
+    modelName: string;
+    apiBase?: string;
+    authMode?: ModelProviderAuthMode;
+    providerProtocol?: ProviderProtocol;
+    inputMode?: ModelInputMode;
+  },
 ): ChatMessage[] {
-  if (!isTextOnlyModel(modelName)) return messages;
+  const capabilities = resolveProviderCapabilities({
+    model: params.modelName,
+    apiBase: params.apiBase,
+    authMode: params.authMode,
+    protocol: params.providerProtocol,
+    inputMode: params.inputMode,
+  });
+  if (capabilities.images) return messages;
   return messages.map((message) => {
     if (typeof message.content === "string") return message;
     const omittedImageCount = message.content.filter(
@@ -1362,7 +1378,7 @@ function stripUnsupportedImageContent(
       omittedImageCount > 0
         ? `[${omittedImageCount} image input${
             omittedImageCount === 1 ? "" : "s"
-          } omitted because ${modelName || "the selected model"} does not support image input.]`
+          } omitted because ${params.modelName || "the selected model"} does not support image input.]`
         : "";
     const content = [...textParts, omittedNotice].filter(Boolean).join("\n\n");
     return {
@@ -1383,7 +1399,13 @@ export function prepareChatRequest(params: ChatParams): PreparedChatRequest {
     });
   const rawMessages = stripUnsupportedImageContent(
     buildMessages(params, systemPrompt),
-    model,
+    {
+      modelName: model,
+      apiBase,
+      authMode,
+      providerProtocol,
+      inputMode: params.inputMode,
+    },
   );
   const inputCap = applyModelInputTokenCap(
     rawMessages,
@@ -2374,9 +2396,7 @@ async function parseAnthropicStreamResponse(
             const outputTokens = parsed.message.usage.output_tokens ?? 0;
             const totalTokens = inputTokens + outputTokens;
             if (inputTokens > 0 || totalTokens > 0) {
-              const cacheUsage = extractContextCacheUsage(
-                parsed.message.usage,
-              );
+              const cacheUsage = extractContextCacheUsage(parsed.message.usage);
               onUsage({
                 promptTokens: inputTokens,
                 completionTokens: outputTokens,
@@ -2548,9 +2568,7 @@ async function parseGeminiNativeStreamResponse(
           if (parsed.usageMetadata && onUsage) {
             const total = parsed.usageMetadata.totalTokenCount ?? 0;
             if (total > 0) {
-              const cacheUsage = extractContextCacheUsage(
-                parsed.usageMetadata,
-              );
+              const cacheUsage = extractContextCacheUsage(parsed.usageMetadata);
               onUsage({
                 promptTokens: parsed.usageMetadata.promptTokenCount ?? 0,
                 completionTokens:

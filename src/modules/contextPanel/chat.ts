@@ -226,7 +226,7 @@ import {
   ensureNoteTextCached,
   ensurePDFTextCached,
 } from "./pdfContext";
-import { isTextOnlyModel, resolveProviderCapabilities } from "../../providers";
+import { resolveProviderCapabilities } from "../../providers";
 import {
   getActiveContextAttachmentFromTabs,
   resolveContextSourceItem,
@@ -3184,6 +3184,20 @@ export type EffectiveRequestConfig = {
   advanced: AdvancedModelParams | undefined;
 };
 
+function resolveEffectiveProviderCapabilities(config: EffectiveRequestConfig) {
+  return resolveProviderCapabilities({
+    model: config.model || "",
+    protocol: config.providerProtocol,
+    authMode: config.authMode,
+    apiBase: config.apiBase,
+    inputMode: config.advanced?.inputMode,
+  });
+}
+
+function supportsImageInputs(config: EffectiveRequestConfig): boolean {
+  return resolveEffectiveProviderCapabilities(config).images;
+}
+
 function isCodexAppServerConversationRequest(params: {
   item: Zotero.Item;
   authMode?:
@@ -5442,6 +5456,7 @@ async function resolveRetryModelInputs(params: {
     protocol: params.effectiveRequestConfig.providerProtocol,
     authMode: params.effectiveRequestConfig.authMode,
     apiBase: params.effectiveRequestConfig.apiBase,
+    inputMode: params.effectiveRequestConfig.advanced?.inputMode,
   }).pdf;
   if (
     params.effectiveRequestConfig.providerProtocol !== "web_sync" &&
@@ -6399,10 +6414,10 @@ export async function retryLatestAssistantResponse(
       return;
     }
 
-    // Text-only models reject image_url content, so drop all images.
-    const allImages = isTextOnlyModel(effectiveRequestConfig.model || "")
-      ? []
-      : [...(retryScreenshotImages || [])];
+    // Models resolved as image-disabled reject image_url content, so drop all images.
+    const allImages = supportsImageInputs(effectiveRequestConfig)
+      ? [...(retryScreenshotImages || [])]
+      : [];
     const requestParams = {
       prompt: question,
       context: combinedContext,
@@ -6419,6 +6434,7 @@ export async function retryLatestAssistantResponse(
       temperature: effectiveRequestConfig.advanced?.temperature,
       maxTokens: effectiveRequestConfig.advanced?.maxTokens,
       inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
+      inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
     };
     const previewSystemMessages = buildContextPlanSystemMessages({
@@ -8512,10 +8528,10 @@ export async function sendQuestion(
       return;
     }
 
-    // Text-only models reject image_url content, so drop all images.
-    const allSendImages = isTextOnlyModel(effectiveRequestConfig.model || "")
-      ? []
-      : [...(images || [])];
+    // Models resolved as image-disabled reject image_url content, so drop all images.
+    const allSendImages = supportsImageInputs(effectiveRequestConfig)
+      ? [...(images || [])]
+      : [];
     const requestParams = {
       prompt: question,
       context: combinedContext,
@@ -8532,6 +8548,7 @@ export async function sendQuestion(
       temperature: effectiveRequestConfig.advanced?.temperature,
       maxTokens: effectiveRequestConfig.advanced?.maxTokens,
       inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
+      inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
     };
     const previewSystemMessages = buildContextPlanSystemMessages({
