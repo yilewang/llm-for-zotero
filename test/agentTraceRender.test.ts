@@ -2217,6 +2217,124 @@ describe("agentTrace render", function () {
     assert.isFalse(chipLabels.some((label) => label.includes("...")));
   });
 
+  it("makes Claude Read calls with empty arguments distinguishable and expandable", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "read-1",
+          name: "Read",
+          args: {},
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "read-1",
+          name: "",
+          ok: true,
+          content: [
+            "1\t# Representational drift reflects ongoing balancing of stochastic changes by Hebbian learning",
+            "2\t",
+            "3\tRecent evidence discusses signal and noise correlations.",
+            "200\t4. cortex. Nature 594, 541546 (2021).",
+          ].join("\n"),
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "read-2",
+          name: "Read",
+          args: {},
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-1",
+        seq: 4,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "read-2",
+          name: "",
+          ok: true,
+          content: [
+            "200\t4. cortex. Nature 594, 541546 (2021).",
+            "201\t5. Lear-du bas ...",
+            "220\tAckNowLEDGMENTs. We thank members of the Kaschube and Rumpel lab.",
+          ].join("\n"),
+        },
+        createdAt: 4,
+      },
+      {
+        runId: "run-1",
+        seq: 5,
+        eventType: "final",
+        payload: { type: "final", text: "Done." },
+        createdAt: 5,
+      },
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "Done.",
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Claude Code",
+      },
+      events,
+    }) as unknown as FakeElement;
+
+    const actionTexts = trace
+      .findAllByClass("llm-at-text")
+      .map(collectFakeText);
+    assert.include(actionTexts, "Using Read lines 1-200");
+    assert.include(actionTexts, "Using Read lines 200-220");
+
+    const expandableActions = trace.findAllByClass(
+      "llm-agent-process-action-expandable",
+    );
+    assert.lengthOf(expandableActions, 2);
+
+    const detailValues = trace
+      .findAllByClass("llm-agent-process-detail-value")
+      .map(collectFakeText);
+    assert.include(detailValues, "Lines 1-200");
+    assert.include(detailValues, "Lines 200-220");
+    assert.isAtLeast(
+      detailValues.filter((value) => /^\d+ chars$/.test(value)).length,
+      2,
+    );
+    assert.isTrue(
+      detailValues.some((value) =>
+        value.includes(
+          "Recent evidence discusses signal and noise correlations.",
+        ),
+      ),
+    );
+    assert.isTrue(
+      detailValues.some((value) =>
+        value.includes(
+          "AckNowLEDGMENTs. We thank members of the Kaschube and Rumpel lab.",
+        ),
+      ),
+    );
+  });
+
   it("renders full expandable details for request context chips", function () {
     const longPaperTitle =
       "A very long paper title about hippocampal attractor dynamics and entorhinal grid cell scaffolds across episodic memory";
