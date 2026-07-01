@@ -12,6 +12,7 @@ export const CONTEXT_ICON_NAMES = [
   "text",
   "model",
   "model-chip",
+  "papers",
 ] as const;
 
 export type ContextIconName = (typeof CONTEXT_ICON_NAMES)[number];

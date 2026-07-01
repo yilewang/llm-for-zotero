@@ -39,6 +39,7 @@ import {
   selectedCollectionContextCache,
   selectedOtherRefContextCache,
   selectedPaperContextCache,
+  selectedPaperContextListExpandedCache,
   selectedPaperPreviewExpandedCache,
   paperContentSourceOverrides,
   paperContextModeOverrides,
@@ -318,6 +319,7 @@ export function clearUserAddedContextForItem(params: {
 
   const removedPapers = selectedPaperContextCache.get(itemId) || [];
   selectedPaperContextCache.delete(itemId);
+  selectedPaperContextListExpandedCache.delete(itemId);
   selectedPaperPreviewExpandedCache.delete(itemId);
   for (const paper of removedPapers) {
     clearPaperOverridesForItem(itemId, paper);

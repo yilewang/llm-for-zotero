@@ -47,8 +47,6 @@ export type PanelDomRefs = {
   slashPdfMultiplePagesOption: HTMLButtonElement | null;
   imagePreview: HTMLDivElement | null;
   contextPreviews: HTMLDivElement | null;
-  contextBarMenu: HTMLDivElement | null;
-  contextBarClearBtn: HTMLButtonElement | null;
   selectedContextList: HTMLDivElement | null;
   previewStrip: HTMLDivElement | null;
   previewExpanded: HTMLDivElement | null;
@@ -212,12 +210,6 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     contextPreviews: body.querySelector(
       "#llm-context-previews",
     ) as HTMLDivElement | null,
-    contextBarMenu: body.querySelector(
-      "#llm-context-bar-menu",
-    ) as HTMLDivElement | null,
-    contextBarClearBtn: body.querySelector(
-      "#llm-context-bar-clear",
-    ) as HTMLButtonElement | null,
     selectedContextList: body.querySelector(
       "#llm-selected-context-list",
     ) as HTMLDivElement | null,

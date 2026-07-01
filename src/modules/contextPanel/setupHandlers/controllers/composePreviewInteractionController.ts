@@ -1,9 +1,5 @@
 import { t } from "../../../../utils/i18n";
-import {
-  clearUserAddedContextForItem,
-  hasUserAddedContextForItem,
-} from "../../contextSelectionActions";
-import { attachContextBarClearMenuController } from "./contextBarClearMenuController";
+import { clearUserAddedContextForItem } from "../../contextSelectionActions";
 import {
   getActiveContextAttachmentFromTabs,
   getActiveReaderForSelectedTab,
@@ -46,6 +42,7 @@ import {
   selectedImagePreviewExpandedCache,
   selectedOtherRefContextCache,
   selectedPaperContextCache,
+  selectedPaperContextListExpandedCache,
   selectedPaperPreviewExpandedCache,
   selectedTagContextCache,
 } from "../../state";
@@ -58,6 +55,7 @@ import {
   isPaperContextFullTextOnlySourceMode,
   isPaperContextReaderFocusableSourceMode,
 } from "./composeContextController";
+import { togglePaperContextCollapseState } from "./paperContextCollapseController";
 import {
   removePinnedSelectedText,
   togglePinnedFile,
@@ -77,9 +75,6 @@ type ComposePreviewInteractionControllerDeps = {
   filePreviewMeta: HTMLButtonElement | null;
   filePreviewClear: HTMLButtonElement | null;
   filePreviewList: HTMLDivElement | null;
-  contextPreviews: HTMLDivElement | null;
-  contextBarMenu: HTMLDivElement | null;
-  contextBarClearBtn: HTMLButtonElement | null;
   previewStrip: HTMLDivElement | null;
   paperPreview: HTMLDivElement | null;
   getItem: () => Zotero.Item | null;
@@ -118,11 +113,6 @@ type ComposePreviewInteractionControllerDeps = {
   updateImagePreviewPreservingScroll: () => void;
   updateSelectedTextPreviewPreservingScroll: () => void;
   scheduleAttachmentGc: () => void;
-  positionContextBarMenuAtPointer: (
-    menu: HTMLDivElement,
-    clientX: number,
-    clientY: number,
-  ) => void;
   setStatusMessage?: (message: string, level: StatusLevel) => void;
   logError: (message: string, error?: unknown) => void;
 };
@@ -146,9 +136,6 @@ export function attachComposePreviewInteractionController(
     filePreviewMeta,
     filePreviewClear,
     filePreviewList,
-    contextPreviews,
-    contextBarMenu,
-    contextBarClearBtn,
     previewStrip,
     paperPreview,
   } = deps;
@@ -180,17 +167,6 @@ export function attachComposePreviewInteractionController(
     }
   };
 
-  const hasClearableContext = (): boolean => {
-    const item = getItem();
-    return (
-      !!item &&
-      hasUserAddedContextForItem({
-        itemId: item.id,
-        textContextKey: deps.getTextContextConversationKey(),
-      })
-    );
-  };
-
   const clearAllContext = (): void => {
     const item = getItem();
     if (!item) return;
@@ -209,17 +185,6 @@ export function attachComposePreviewInteractionController(
       setStatus(result.statusMessage, result.statusLevel || "ready");
     }
   };
-
-  attachContextBarClearMenuController({
-    body,
-    contextPreviews,
-    contextBarMenu,
-    contextBarClearBtn,
-    hasContext: hasClearableContext,
-    clearContext: clearAllContext,
-    closeOtherMenus: deps.closePaperChipMenu,
-    positionMenuAtPointer: deps.positionContextBarMenuAtPointer,
-  });
 
   if (previewMeta) {
     previewMeta.addEventListener("click", (event: Event) => {
@@ -377,6 +342,37 @@ export function attachComposePreviewInteractionController(
       if (!item) return;
       const target = event.target as Element | null;
       if (!target) return;
+
+      const summaryClearBtn = target.closest(
+        ".llm-paper-context-summary-clear",
+      ) as HTMLButtonElement | null;
+      if (summaryClearBtn && paperPreview.contains(summaryClearBtn)) {
+        event.preventDefault();
+        event.stopPropagation();
+        clearAllContext();
+        return;
+      }
+
+      const summaryChip = target.closest(
+        ".llm-paper-context-summary-chip",
+      ) as HTMLElement | null;
+      if (summaryChip && paperPreview.contains(summaryChip)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const autoLoadedPaperContext = deps.resolveAutoLoadedPaperContext();
+        const selectedPapers = deps.getManualPaperContextsForItem(
+          item.id,
+          autoLoadedPaperContext,
+        );
+        togglePaperContextCollapseState({
+          itemId: item.id,
+          paperCount: selectedPapers.length + (autoLoadedPaperContext ? 1 : 0),
+          expandedByItem: selectedPaperContextListExpandedCache,
+        });
+        deps.closePaperChipMenu();
+        deps.updatePaperPreviewPreservingScroll();
+        return;
+      }
 
       const otherClearBtn = target.closest(
         ".llm-other-ref-clear",

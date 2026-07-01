@@ -34,7 +34,11 @@ import {
   setLockedGlobalConversationKey,
 } from "./prefHelpers";
 import { buildUI } from "./buildUI";
-import { setupHandlers, type SetupHandlersHooks } from "./setupHandlers";
+import {
+  setupHandlers,
+  type ContextPreviewRenderMetrics,
+  type SetupHandlersHooks,
+} from "./setupHandlers";
 import {
   ensureConversationLoaded,
   getConversationKey,
@@ -1726,18 +1730,37 @@ export function openStandaloneChat(options?: {
           activeContextPanels.set(contentArea, () => activeItem);
           activeContextPanelRawItems.set(contentArea, rawItemForPanel);
           void retainClaudeRuntimeForBody(contentArea, mountedItem);
+          let standaloneInputFitRequestId = 0;
+          const cancelPendingStandaloneInputFit = () => {
+            standaloneInputFitRequestId += 1;
+          };
+          const scheduleStandaloneInputFit = () => {
+            if (cancelled || newWin.closed) return;
+            const fitRequestId = (standaloneInputFitRequestId += 1);
+            const inputSection = contentArea.querySelector(
+              ".llm-input-section",
+            ) as HTMLElement | null;
+            scheduleStandaloneWindowFitForElement(newWin, inputSection, {
+              shouldRun: () => fitRequestId === standaloneInputFitRequestId,
+            });
+          };
+          const scheduleStandaloneInputFitAfterContextPreviewRender = (
+            metrics: ContextPreviewRenderMetrics,
+          ) => {
+            if (metrics.nextHeight <= metrics.previousHeight) {
+              cancelPendingStandaloneInputFit();
+              return;
+            }
+            scheduleStandaloneInputFit();
+          };
           const chatHooks: SetupHandlersHooks = {
             onConversationHistoryChanged: () => {
               if (cancelled) return;
               scheduleStandaloneSidebarRender();
             },
-            onDefaultContextRendered: () => {
-              if (cancelled || newWin.closed) return;
-              const inputSection = contentArea.querySelector(
-                ".llm-input-section",
-              ) as HTMLElement | null;
-              scheduleStandaloneWindowFitForElement(newWin, inputSection);
-            },
+            onDefaultContextRendered: scheduleStandaloneInputFit,
+            onContextPreviewRendered:
+              scheduleStandaloneInputFitAfterContextPreviewRender,
             onWebChatModeChanged: (isWebChat) => {
               if (cancelled) return;
               updateStandaloneWebChatUI(isWebChat);

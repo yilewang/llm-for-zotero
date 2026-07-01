@@ -53,6 +53,7 @@ import {
   selectedImagePreviewActiveIndexCache,
   selectedFilePreviewExpandedCache,
   selectedPaperContextCache,
+  selectedPaperContextListExpandedCache,
   selectedOtherRefContextCache,
   selectedCollectionContextCache,
   selectedTagContextCache,
@@ -371,6 +372,7 @@ import {
   normalizePaperContextEntries,
   resolvePaperContextDisplayMetadata,
 } from "./setupHandlers/controllers/composeContextController";
+import { getPaperContextCollapseState } from "./setupHandlers/controllers/paperContextCollapseController";
 import {
   isPinnedFile,
   isPinnedImage,
@@ -524,9 +526,15 @@ setQueuedFollowUpBodySyncCallback((body) => {
 /** Monotonic counter incremented every time setupHandlers rebuilds a panel. */
 let setupHandlersGeneration = 0;
 
+export type ContextPreviewRenderMetrics = {
+  previousHeight: number;
+  nextHeight: number;
+};
+
 export type SetupHandlersHooks = {
   onConversationHistoryChanged?: () => void;
   onDefaultContextRendered?: () => void;
+  onContextPreviewRendered?: (metrics: ContextPreviewRenderMetrics) => void;
   onWebChatModeChanged?: (isWebChat: boolean) => void;
   prepareItemsAsDefaultContextTarget?: () =>
     | Promise<boolean | void>
@@ -629,8 +637,6 @@ export function setupHandlers(
     slashPdfMultiplePagesOption,
     imagePreview,
     contextPreviews,
-    contextBarMenu,
-    contextBarClearBtn,
     selectedContextList,
     previewStrip,
     previewExpanded,
@@ -3582,6 +3588,72 @@ export function setupHandlers(
     list.appendChild(chip);
   };
 
+  const appendPaperSummaryChip = (
+    ownerDoc: Document,
+    list: HTMLDivElement,
+    params: {
+      paperCount: number;
+      expanded: boolean;
+      label: string;
+    },
+  ) => {
+    const summaryChip = createElement(
+      ownerDoc,
+      "div",
+      "llm-selected-context llm-paper-context-summary-chip",
+    ) as HTMLDivElement;
+    summaryChip.dataset.paperContextSummary = "true";
+    summaryChip.dataset.paperContextCount = `${params.paperCount}`;
+
+    const summaryToggle = createElement(
+      ownerDoc,
+      "button",
+      "llm-paper-context-summary-toggle",
+      {
+        type: "button",
+        title: params.expanded
+          ? t("Collapse paper contexts")
+          : t("Expand paper contexts"),
+      },
+    ) as HTMLButtonElement;
+    summaryToggle.setAttribute(
+      "aria-expanded",
+      params.expanded ? "true" : "false",
+    );
+    summaryToggle.setAttribute(
+      "aria-label",
+      params.expanded
+        ? t("Collapse paper contexts")
+        : t("Expand paper contexts"),
+    );
+
+    const summaryIcon = createContextIcon(
+      ownerDoc,
+      "papers",
+      "llm-paper-context-summary-icon",
+    );
+    const summaryText = createElement(
+      ownerDoc,
+      "span",
+      "llm-paper-context-summary-text",
+      { textContent: params.label },
+    );
+    summaryToggle.append(summaryIcon, summaryText);
+    const clearButton = createElement(
+      ownerDoc,
+      "button",
+      "llm-remove-img-btn llm-paper-context-summary-clear",
+      {
+        type: "button",
+        textContent: "×",
+        title: t("Clear all context"),
+      },
+    ) as HTMLButtonElement;
+    clearButton.setAttribute("aria-label", t("Clear all context"));
+    summaryChip.append(summaryToggle, clearButton);
+    list.appendChild(summaryChip);
+  };
+
   const appendOtherRefChip = (
     ownerDoc: Document,
     list: HTMLDivElement,
@@ -3783,28 +3855,47 @@ export function setupHandlers(
     paperPreviewList.innerHTML = "";
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc) return;
-    if (autoLoadedPaperContext) {
-      appendPaperChip(ownerDoc, paperPreviewList, autoLoadedPaperContext, {
-        autoLoaded: true,
-        fullText: isPaperContextFullTextMode(
-          resolvePaperContextNextSendMode(itemId, autoLoadedPaperContext),
-        ),
-        contentSourceMode: resolvePaperContentSourceMode(
-          itemId,
-          autoLoadedPaperContext,
-        ),
+    const effectivePaperCount =
+      selectedPapers.length + (autoLoadedPaperContext ? 1 : 0);
+    const paperCollapseState = getPaperContextCollapseState({
+      itemId,
+      paperCount: effectivePaperCount,
+      expandedByItem: selectedPaperContextListExpandedCache,
+    });
+    if (paperCollapseState.showSummaryChip) {
+      appendPaperSummaryChip(ownerDoc, paperPreviewList, {
+        paperCount: effectivePaperCount,
+        expanded: paperCollapseState.expanded,
+        label: paperCollapseState.summaryLabel,
       });
     }
-    selectedPapers.forEach((paperContext, index) => {
-      appendPaperChip(ownerDoc, paperPreviewList, paperContext, {
-        removable: true,
-        removableIndex: index,
-        fullText: isPaperContextFullTextMode(
-          resolvePaperContextNextSendMode(itemId, paperContext),
-        ),
-        contentSourceMode: resolvePaperContentSourceMode(itemId, paperContext),
+    if (paperCollapseState.showPaperChips) {
+      if (autoLoadedPaperContext) {
+        appendPaperChip(ownerDoc, paperPreviewList, autoLoadedPaperContext, {
+          autoLoaded: true,
+          fullText: isPaperContextFullTextMode(
+            resolvePaperContextNextSendMode(itemId, autoLoadedPaperContext),
+          ),
+          contentSourceMode: resolvePaperContentSourceMode(
+            itemId,
+            autoLoadedPaperContext,
+          ),
+        });
+      }
+      selectedPapers.forEach((paperContext, index) => {
+        appendPaperChip(ownerDoc, paperPreviewList, paperContext, {
+          removable: true,
+          removableIndex: index,
+          fullText: isPaperContextFullTextMode(
+            resolvePaperContextNextSendMode(itemId, paperContext),
+          ),
+          contentSourceMode: resolvePaperContentSourceMode(
+            itemId,
+            paperContext,
+          ),
+        });
       });
-    });
+    }
     selectedOtherRefs.forEach((ref, index) => {
       appendOtherRefChip(ownerDoc, paperPreviewList, ref, index);
     });
@@ -4128,6 +4219,20 @@ export function setupHandlers(
     if (!textContextKey) return;
     applySelectedTextPreview(body, textContextKey);
   };
+  const measureContextPreviewHeight = (): number => {
+    if (!contextPreviews) return 0;
+    const rect = contextPreviews.getBoundingClientRect?.();
+    const rectHeight = Number(rect?.height);
+    if (Number.isFinite(rectHeight) && rectHeight >= 0) return rectHeight;
+    const scrollHeight = Number(contextPreviews.scrollHeight);
+    if (Number.isFinite(scrollHeight) && scrollHeight >= 0) {
+      return scrollHeight;
+    }
+    const offsetHeight = Number(contextPreviews.offsetHeight);
+    return Number.isFinite(offsetHeight) && offsetHeight >= 0
+      ? offsetHeight
+      : 0;
+  };
   const syncConversationPanelState = () => {
     syncRequestUiForCurrentConversation();
     restoreDraftInputForCurrentConversation();
@@ -4138,13 +4243,19 @@ export function setupHandlers(
   };
   activeContextPanelStateSync.set(body, syncConversationPanelState);
   const runPanelStateRefreshNow = () => {
+    const previousHeight = measureContextPreviewHeight();
     if (!item) {
       runWithChatScrollGuard(syncConversationPanelState);
-      return;
+    } else {
+      refreshConversationPanels(body, item, {
+        includeChat: false,
+        includePanelState: true,
+      });
     }
-    refreshConversationPanels(body, item, {
-      includeChat: false,
-      includePanelState: true,
+    const nextHeight = measureContextPreviewHeight();
+    hooks?.onContextPreviewRendered?.({
+      previousHeight,
+      nextHeight,
     });
   };
   const panelStateRefreshScheduler = createCoalescedFrameScheduler({
@@ -7046,9 +7157,6 @@ export function setupHandlers(
     filePreviewMeta,
     filePreviewClear,
     filePreviewList,
-    contextPreviews,
-    contextBarMenu,
-    contextBarClearBtn,
     previewStrip,
     paperPreview,
     getItem: () => item,
@@ -7070,9 +7178,6 @@ export function setupHandlers(
     updateImagePreviewPreservingScroll,
     updateSelectedTextPreviewPreservingScroll,
     scheduleAttachmentGc,
-    positionContextBarMenuAtPointer: (menu, clientX, clientY) => {
-      positionMenuAtPointer(body, menu, clientX, clientY);
-    },
     setStatusMessage: status
       ? (message, level) => {
           setStatus(status, message, level);

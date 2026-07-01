@@ -11,6 +11,7 @@ type StandaloneContextFitMetrics = {
 
 type StandaloneContextFitOptions = {
   marginPx?: number;
+  shouldRun?: () => boolean;
 };
 
 type StandaloneWindowLike = {
@@ -104,7 +105,10 @@ export function scheduleStandaloneWindowFitForElement(
   options: StandaloneContextFitOptions = {},
 ): void {
   if (!win || !element) return;
-  const run = () => resizeStandaloneWindowToFitElement(win, element, options);
+  const run = () => {
+    if (options.shouldRun && !options.shouldRun()) return;
+    resizeStandaloneWindowToFitElement(win, element, options);
+  };
   if (win.requestAnimationFrame) {
     win.requestAnimationFrame(() => run());
     return;

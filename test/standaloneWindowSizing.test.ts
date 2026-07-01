@@ -3,6 +3,7 @@ import { describe, it } from "mocha";
 import {
   computeStandaloneContextFitHeight,
   resizeStandaloneWindowToFitElement,
+  scheduleStandaloneWindowFitForElement,
 } from "../src/modules/contextPanel/standaloneWindowSizing";
 
 describe("standalone window sizing", function () {
@@ -67,5 +68,39 @@ describe("standalone window sizing", function () {
       resizeStandaloneWindowToFitElement(win as any, element as any),
     );
     assert.deepEqual(calls, [{ width: 820, height: 604 }]);
+  });
+
+  it("skips a scheduled resize when the request becomes stale", function () {
+    const calls: Array<{ width: number; height: number }> = [];
+    let animationFrameCallback: FrameRequestCallback | null = null;
+    const win = {
+      innerHeight: 480,
+      outerHeight: 520,
+      outerWidth: 820,
+      screenY: 100,
+      screen: { availTop: 0, availHeight: 900 },
+      requestAnimationFrame: (callback: FrameRequestCallback) => {
+        animationFrameCallback = callback;
+        return 1;
+      },
+      resizeTo: (width: number, height: number) => {
+        calls.push({ width, height });
+      },
+    };
+    const element = {
+      getBoundingClientRect: () => ({ bottom: 540 }),
+    };
+
+    scheduleStandaloneWindowFitForElement(
+      win as any,
+      element as any,
+      {
+        shouldRun: () => false,
+      } as any,
+    );
+    assert.isFunction(animationFrameCallback);
+    animationFrameCallback?.(0);
+
+    assert.deepEqual(calls, []);
   });
 });
