@@ -3896,6 +3896,7 @@ async function finalizeAssistantMessageQuoteCitations(
     markdown: assistantMessage.text || "",
     quoteCitations: assistantMessage.quoteCitations,
     sourceIndex,
+    requireVerifiedQuoteCitations: true,
   });
   assistantMessage.text = finalized.markdown;
   assistantMessage.quoteCitations = finalized.quoteCitations.length

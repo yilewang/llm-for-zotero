@@ -35,6 +35,7 @@ import {
 import {
   buildQuoteAnchorPromptBlock,
   buildQuoteCitation,
+  isQuoteWorthySourceText,
   mergeQuoteCitations,
 } from "./quoteCitations";
 import { readNoteSnapshot } from "./notes";
@@ -2208,6 +2209,71 @@ function buildEvidenceQuoteText(
   ).text;
 }
 
+export type EvidenceQuoteAnchorPolicy = "none" | "verified";
+
+type EvidenceQuoteAnchorRejectionReason =
+  | "policy-none"
+  | "boilerplate-section"
+  | "reference-section"
+  | "not-quote-worthy";
+
+export type EvidenceQuoteAnchorDiagnostics = {
+  policy: EvidenceQuoteAnchorPolicy;
+  candidateCount: number;
+  acceptedCount: number;
+  rejectedReasons: Partial<Record<EvidenceQuoteAnchorRejectionReason, number>>;
+};
+
+function incrementQuoteAnchorRejection(
+  diagnostics: EvidenceQuoteAnchorDiagnostics,
+  reason: EvidenceQuoteAnchorRejectionReason,
+): void {
+  diagnostics.rejectedReasons[reason] =
+    (diagnostics.rejectedReasons[reason] || 0) + 1;
+}
+
+const BOILERPLATE_QUOTE_SECTION_PATTERN =
+  /^(?:in brief|highlights?|graphical abstract|author summary|summary|keywords?|article info(?:rmation)?|author contributions?|declaration of interests?|acknowledg(?:e)?ments?)$/i;
+
+function normalizeSectionLabelForQuoteGate(value: string | undefined): string {
+  return sanitizePdfText(value || "")
+    .replace(/^#+\s*/, "")
+    .replace(/[:.\s-]+$/g, "")
+    .trim();
+}
+
+function isEvidenceQuoteAnchorEligible(params: {
+  candidate: PaperContextCandidate;
+  quoteText: string;
+}): { eligible: boolean; reason?: EvidenceQuoteAnchorRejectionReason } {
+  const { candidate, quoteText } = params;
+  const sectionLabel = normalizeSectionLabelForQuoteGate(
+    candidate.sectionLabel,
+  );
+  if (sectionLabel && BOILERPLATE_QUOTE_SECTION_PATTERN.test(sectionLabel)) {
+    return { eligible: false, reason: "boilerplate-section" };
+  }
+  if (candidate.chunkKind === "references") {
+    return { eligible: false, reason: "reference-section" };
+  }
+  if (!isQuoteWorthySourceText(quoteText)) {
+    return { eligible: false, reason: "not-quote-worthy" };
+  }
+  return { eligible: true };
+}
+
+export function resolveEvidenceQuoteAnchorPolicy(
+  question: string | undefined,
+): EvidenceQuoteAnchorPolicy {
+  const normalized = sanitizePdfText(question || "").toLowerCase();
+  if (!normalized) return "none";
+  return /\b(?:direct\s+quotes?|exact\s+(?:quotes?|wording|passages?)|verbatim|quote\s+the|quotations?|blockquotes?|source\s+wording|original\s+wording)\b/.test(
+    normalized,
+  )
+    ? "verified"
+    : "none";
+}
+
 function formatMarkdownBlockquote(text: string): string {
   const normalized = sanitizePdfText(text);
   if (!normalized) return "> [No quoted text available]";
@@ -2217,15 +2283,98 @@ function formatMarkdownBlockquote(text: string): string {
     .join("\n");
 }
 
+function evidenceSupportId(paperIndex: number, candidateIndex: number): string {
+  return `P${paperIndex + 1}.S${candidateIndex + 1}`;
+}
+
+function sectionLabelForDigest(candidate: PaperContextCandidate): string {
+  return sanitizePdfText(
+    candidate.sectionLabel ||
+      (candidate.chunkKind && candidate.chunkKind !== "unknown"
+        ? candidate.chunkKind
+        : "Unlabeled body text"),
+  );
+}
+
+function candidateHasBodyEvidence(candidate: PaperContextCandidate): boolean {
+  const label = normalizeSectionLabelForQuoteGate(candidate.sectionLabel);
+  if (candidate.chunkKind && candidate.chunkKind !== "abstract") {
+    return candidate.chunkKind !== "references";
+  }
+  if (!label) return candidate.chunkKind !== "abstract";
+  return !/^(?:abstract|summary|highlights?|in brief|keywords?|title|authors?|article info(?:rmation)?)$/i.test(
+    label,
+  );
+}
+
+function truncateDigestText(text: string, maxChars = 220): string {
+  const normalized = sanitizePdfText(text);
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 3)).trim()}...`;
+}
+
+function buildPaperSynthesisDigest(params: {
+  papers: PaperContextRef[];
+  byPaper: Map<string, PaperContextCandidate[]>;
+}): string {
+  const lines = [
+    "Paper synthesis digest:",
+    "Use this digest as the first-pass synthesis ledger before writing the final answer. Support IDs point to retrieved snippets below; cite papers normally in prose and use quote cards only for verified exact wording.",
+  ];
+  for (const [paperIndex, paper] of params.papers.entries()) {
+    const paperKey = buildPaperKey(paper);
+    const candidates = [...(params.byPaper.get(paperKey) || [])].sort(
+      (a, b) => a.chunkIndex - b.chunkIndex,
+    );
+    const supportIds = candidates.map((_, candidateIndex) =>
+      evidenceSupportId(paperIndex, candidateIndex),
+    );
+    const sections = Array.from(
+      new Set(candidates.map(sectionLabelForDigest).filter(Boolean)),
+    );
+    const preferred =
+      candidates.find(candidateHasBodyEvidence) || candidates[0] || null;
+    const coverage = candidates.length
+      ? candidates.some(candidateHasBodyEvidence)
+        ? "body evidence"
+        : "abstract/front matter only"
+      : "metadata only";
+    const contribution = preferred
+      ? truncateDigestText(buildEvidenceQuoteText(preferred))
+      : "No retrieved snippet was available in this turn.";
+    lines.push(
+      [
+        `- Paper ${paperIndex + 1}: ${formatPaperSourceLabel(paper)}`,
+        `coverage: ${coverage}`,
+        `sections: ${sections.length ? sections.join(", ") : "none"}`,
+        `support: ${supportIds.length ? supportIds.join(", ") : "none"}`,
+        `contribution: ${contribution}`,
+      ].join("; "),
+    );
+  }
+  return lines.join("\n");
+}
+
 export function buildEvidencePack(params: {
   papers: PaperContextRef[];
   candidates: PaperContextCandidate[];
+  quoteAnchorPolicy?: EvidenceQuoteAnchorPolicy;
 }): {
   contextText: string;
   quoteCitations: QuoteCitation[];
+  quoteAnchorDiagnostics: EvidenceQuoteAnchorDiagnostics;
 } {
   const { papers, candidates } = params;
-  if (!papers.length) return { contextText: "", quoteCitations: [] };
+  const quoteAnchorPolicy = params.quoteAnchorPolicy || "none";
+  const quoteAnchorDiagnostics: EvidenceQuoteAnchorDiagnostics = {
+    policy: quoteAnchorPolicy,
+    candidateCount: candidates.length,
+    acceptedCount: 0,
+    rejectedReasons: {},
+  };
+  if (!papers.length) {
+    return { contextText: "", quoteCitations: [], quoteAnchorDiagnostics };
+  }
 
   const deduped = new Map<string, PaperContextCandidate>();
   for (const candidate of candidates) {
@@ -2246,13 +2395,39 @@ export function buildEvidencePack(params: {
   for (const paper of papers) {
     const paperKey = buildPaperKey(paper);
     for (const candidate of byPaper.get(paperKey) || []) {
+      const quoteText = buildEvidenceQuoteText(candidate);
+      if (quoteAnchorPolicy === "none") {
+        incrementQuoteAnchorRejection(quoteAnchorDiagnostics, "policy-none");
+        continue;
+      }
+      const eligibility = isEvidenceQuoteAnchorEligible({
+        candidate,
+        quoteText,
+      });
+      if (!eligibility.eligible) {
+        incrementQuoteAnchorRejection(
+          quoteAnchorDiagnostics,
+          eligibility.reason || "not-quote-worthy",
+        );
+        continue;
+      }
       const citation = buildQuoteCitation({
-        quoteText: buildEvidenceQuoteText(candidate),
+        quoteText,
         citationLabel: formatPaperSourceLabel(paper),
+        sourceMatchKind: "trusted",
+        sourceMatchSource: "context-text",
         contextItemId: paper.contextItemId,
         itemId: paper.itemId,
       });
-      if (citation) quoteCitations.push(citation);
+      if (citation) {
+        quoteAnchorDiagnostics.acceptedCount += 1;
+        quoteCitations.push(citation);
+      } else {
+        incrementQuoteAnchorRejection(
+          quoteAnchorDiagnostics,
+          "not-quote-worthy",
+        );
+      }
     }
   }
   const normalizedQuoteCitations = mergeQuoteCitations(quoteCitations);
@@ -2263,7 +2438,18 @@ export function buildEvidencePack(params: {
     isTextLikeAttachmentSourceMode(paper.contentSourceMode),
   );
 
-  const blocks: string[] = [
+  const blocks: string[] = [];
+  const ledgerLines = ["Paper coverage ledger:"];
+  for (const [paperIndex, paper] of papers.entries()) {
+    const paperKey = buildPaperKey(paper);
+    const paperCandidates = byPaper.get(paperKey) || [];
+    ledgerLines.push(
+      `- Paper ${paperIndex + 1}: ${formatPaperSourceLabel(paper)}; retrieved snippets: ${paperCandidates.length}`,
+    );
+  }
+  blocks.push(ledgerLines.join("\n"));
+  blocks.push(buildPaperSynthesisDigest({ papers, byPaper }));
+  blocks.push(
     [
       "Retrieved Evidence:",
       "",
@@ -2276,10 +2462,11 @@ export function buildEvidencePack(params: {
         ? "The full paper or selected attachment source remains available in paper chat."
         : "The full paper remains available in paper chat.",
       "For this reply, prioritize these retrieved snippets as the primary evidence pack.",
+      "For broad synthesis, work from the paper ledger and snippets first; do not turn snippets into quote cards unless verified quote anchors are provided and exact wording is useful.",
       "Do not use snippets from references as empirical evidence.",
       "If support is weak or indirect, say so instead of overstating the claim.",
     ].join("\n"),
-  ];
+  );
   for (const [paperIndex, paper] of papers.entries()) {
     const paperKey = buildPaperKey(paper);
     const paperCandidates = byPaper.get(paperKey) || [];
@@ -2289,7 +2476,12 @@ export function buildEvidencePack(params: {
     if (paperCandidates.length) {
       lines.push("", "Evidence:");
       for (const [candidateIndex, candidate] of paperCandidates.entries()) {
-        lines.push(`Evidence snippet ${candidateIndex + 1}`);
+        lines.push(
+          `Evidence snippet ${candidateIndex + 1} (${evidenceSupportId(
+            paperIndex,
+            candidateIndex,
+          )})`,
+        );
         lines.push(
           `Section: ${candidate.sectionLabel || "Unlabeled body text"}`,
         );
@@ -2304,10 +2496,13 @@ export function buildEvidencePack(params: {
     blocks.push(lines.join("\n").trimEnd());
   }
 
-  if (blocks.length <= 1) return { contextText: "", quoteCitations: [] };
+  if (blocks.length <= 1) {
+    return { contextText: "", quoteCitations: [], quoteAnchorDiagnostics };
+  }
   return {
     contextText: blocks.join("\n\n---\n\n"),
     quoteCitations: normalizedQuoteCitations,
+    quoteAnchorDiagnostics,
   };
 }
 

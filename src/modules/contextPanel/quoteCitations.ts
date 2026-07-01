@@ -165,6 +165,7 @@ const STANDALONE_SOURCE_LABEL_TEXT_PATTERN =
 const JOURNAL_LABEL_TEXT_PATTERN =
   /^(?:science|nature|cell|pnas|nejm|lancet|elife|plos\s+one|current\s+biology|journal\s+of\s+neuroscience)$/i;
 const PUBLISHER_METADATA_PATTERNS = [
+  /^(?:highlights?|in brief|graphical abstract|author summary|summary|keywords?)\b/i,
   /\bfull\s+article\b/i,
   /\bauthor\s+affiliations?\b/i,
   /\barticle\s+information\b/i,
@@ -178,6 +179,16 @@ const PUBLISHER_METADATA_PATTERNS = [
   /\bsupplementary\s+(?:materials?|information)\b/i,
   /^(?:references?|bibliography)(?:\s+and\s+notes?)?\b/i,
 ];
+const AFFILIATION_OR_ADDRESS_PATTERN =
+  /\b(?:department|university|institute|school|faculty|center|centre|college|laborator(?:y|ies)|hospital|clinic|campus)\b/i;
+const LOCATION_OR_POSTAL_PATTERN =
+  /\b(?:united kingdom|united states|usa|canada|china|japan|germany|france|australia|netherlands|switzerland|italy|spain|cambridge|boston|new york|california|massachusetts|[A-Z]{2}\s*\d[A-Z0-9]?\s*\d[A-Z]{2}|\d{5}(?:-\d{4})?)\b/i;
+const CORRESPONDENCE_METADATA_PATTERN =
+  /^(?:correspondence|corresponding author|contact)\b|(?:correspondence\s+should\s+be\s+addressed|addressed\s+to|e-?mail|email|@)/i;
+const AUTHOR_BYLINE_FRAGMENT_PATTERN =
+  /\b[A-Z][\p{L}'’.-]+[0-9*†‡§]*,\s+[A-Z][\p{L}'’.-]+(?:\s+[A-Z]\.?)?/u;
+const MULTI_AUTHOR_BYLINE_PATTERN =
+  /\b[A-Z][\p{L}'’.-]+(?:[0-9*†‡§]+)?(?:,\s+[A-Z][\p{L}'’.-]+(?:[0-9*†‡§]+)?){2,}/u;
 
 function collectMatchedRanges(
   value: string,
@@ -237,6 +248,21 @@ export function isQuoteWorthySourceText(value: unknown): boolean {
   if (STANDALONE_SOURCE_LABEL_TEXT_PATTERN.test(strippedOuter)) return false;
   if (JOURNAL_LABEL_TEXT_PATTERN.test(strippedOuter)) return false;
   if (PUBLISHER_METADATA_PATTERNS.some((pattern) => pattern.test(text))) {
+    return false;
+  }
+  const commaCount = (strippedOuter.match(/,/g) || []).length;
+  if (
+    AFFILIATION_OR_ADDRESS_PATTERN.test(strippedOuter) &&
+    (LOCATION_OR_POSTAL_PATTERN.test(strippedOuter) || commaCount >= 2)
+  ) {
+    return false;
+  }
+  if (CORRESPONDENCE_METADATA_PATTERN.test(strippedOuter)) return false;
+  if (
+    strippedOuter.length <= 220 &&
+    (AUTHOR_BYLINE_FRAGMENT_PATTERN.test(strippedOuter) ||
+      MULTI_AUTHOR_BYLINE_PATTERN.test(strippedOuter))
+  ) {
     return false;
   }
 
@@ -646,6 +672,56 @@ function filterMetadataQuoteCitations(
   );
 }
 
+function isVerifiedQuoteCitation(citation: QuoteCitation): boolean {
+  return Boolean(citation.sourceMatchKind || citation.sourceMatchSource);
+}
+
+function filterVerifiedQuoteCitations(
+  quoteCitations: QuoteCitation[] | undefined | null,
+): QuoteCitation[] {
+  return normalizeQuoteCitations(quoteCitations).filter(
+    isVerifiedQuoteCitation,
+  );
+}
+
+function quoteSourceKeyForCitation(citation: QuoteCitation): string {
+  return quoteSourceKey({
+    sourceText: citation.quoteText,
+    citationLabel: citation.citationLabel,
+    sourceMatchSource: citation.sourceMatchSource,
+    contextItemId: citation.contextItemId,
+    itemId: citation.itemId,
+  });
+}
+
+function filterUnverifiedQuoteCitationSources(params: {
+  sourceIndex: QuoteSourceIndex;
+  quoteCitations: QuoteCitation[] | undefined | null;
+}): QuoteSourceIndex {
+  const unverifiedSourceKeys = new Set(
+    normalizeQuoteCitations(params.quoteCitations)
+      .filter((citation) => !isVerifiedQuoteCitation(citation))
+      .map(quoteSourceKeyForCitation),
+  );
+  if (!unverifiedSourceKeys.size) {
+    return {
+      ...params.sourceIndex,
+      quoteCitations: filterVerifiedQuoteCitations(
+        params.sourceIndex.quoteCitations,
+      ),
+    };
+  }
+  return {
+    ...params.sourceIndex,
+    quoteCitations: filterVerifiedQuoteCitations(
+      params.sourceIndex.quoteCitations,
+    ),
+    sources: params.sourceIndex.sources.filter(
+      (source) => !unverifiedSourceKeys.has(quoteSourceKey(source)),
+    ),
+  };
+}
+
 function collectMetadataQuoteCitationIds(
   quoteCitations: QuoteCitation[] | undefined | null,
   metadataTexts: Iterable<string> | undefined | null,
@@ -762,8 +838,10 @@ function findNormalizedSourceSpanMatch(params: {
   if (!isLocatorQueryLongEnough(normalizedQuery, 24)) return undefined;
   const sourceIndex = buildQuoteTextIndex(params.sourceText);
   if (
-    countNormalizedSourceOccurrences(sourceIndex.canonicalText, normalizedQuery) <
-    1
+    countNormalizedSourceOccurrences(
+      sourceIndex.canonicalText,
+      normalizedQuery,
+    ) < 1
   ) {
     return undefined;
   }
@@ -1516,21 +1594,34 @@ export function finalizeAssistantQuoteCitations(params: {
   markdown: string;
   quoteCitations?: QuoteCitation[] | undefined | null;
   sourceIndex?: QuoteSourceIndex | undefined | null;
+  requireVerifiedQuoteCitations?: boolean;
 }): { markdown: string; quoteCitations: QuoteCitation[] } {
   const sourceIndex =
     params.sourceIndex ||
     buildQuoteSourceIndex({ quoteCitations: params.quoteCitations });
-  const mergedQuoteCitations = mergeQuoteCitations(
+  const inputQuoteCitations = mergeQuoteCitations(
     params.quoteCitations,
     sourceIndex.quoteCitations,
   );
+  const finalizedSourceIndex = params.requireVerifiedQuoteCitations
+    ? filterUnverifiedQuoteCitationSources({
+        sourceIndex,
+        quoteCitations: inputQuoteCitations,
+      })
+    : sourceIndex;
+  const mergedQuoteCitations = params.requireVerifiedQuoteCitations
+    ? filterVerifiedQuoteCitations(inputQuoteCitations)
+    : mergeQuoteCitations(
+        params.quoteCitations,
+        finalizedSourceIndex.quoteCitations,
+      );
   const metadataQuoteIds = collectMetadataQuoteCitationIds(
     mergedQuoteCitations,
-    sourceIndex.metadataTexts,
+    finalizedSourceIndex.metadataTexts,
   );
   let quoteCitations = filterMetadataQuoteCitations(
     mergedQuoteCitations,
-    sourceIndex.metadataTexts,
+    finalizedSourceIndex.metadataTexts,
   );
   const markdown = stripMetadataQuoteCitationPlaceholders(
     sanitizeInvalidStructuredSourceMarkers(params.markdown || ""),
@@ -1588,7 +1679,7 @@ export function finalizeAssistantQuoteCitations(params: {
           quoteText,
           citationLabel: trailingLabel.label,
           quoteCitations,
-          sourceIndex,
+          sourceIndex: finalizedSourceIndex,
         });
         if (finalized.quoteCitation) {
           quoteCitations = mergeQuoteCitations(quoteCitations, [
@@ -1616,7 +1707,7 @@ export function finalizeAssistantQuoteCitations(params: {
         citationLabel: leadingLabel.label,
         citationRemainder: leadingLabel.remainder,
         quoteCitations,
-        sourceIndex,
+        sourceIndex: finalizedSourceIndex,
       });
       if (finalized.quoteCitation) {
         quoteCitations = mergeQuoteCitations(quoteCitations, [
@@ -1628,7 +1719,9 @@ export function finalizeAssistantQuoteCitations(params: {
       continue;
     }
 
-    if (isKnownQuoteMetadataText(quoteText, sourceIndex.metadataTexts)) {
+    if (
+      isKnownQuoteMetadataText(quoteText, finalizedSourceIndex.metadataTexts)
+    ) {
       out.push("");
       index -= 1;
       continue;
@@ -1636,7 +1729,7 @@ export function finalizeAssistantQuoteCitations(params: {
 
     const unlabeledQuoteCitation = resolveUnlabeledQuoteCitationForFinalizer({
       quoteText,
-      sourceIndex,
+      sourceIndex: finalizedSourceIndex,
     });
     if (unlabeledQuoteCitation) {
       quoteCitations = mergeQuoteCitations(quoteCitations, [
@@ -1648,7 +1741,7 @@ export function finalizeAssistantQuoteCitations(params: {
     }
     const unverifiedQuoteMarkdown = formatUnverifiedQuoteWithBestSourceLabel({
       quoteText,
-      sourceIndex,
+      sourceIndex: finalizedSourceIndex,
     });
     if (unverifiedQuoteMarkdown) {
       out.push(unverifiedQuoteMarkdown);
@@ -1677,7 +1770,7 @@ export function finalizeAssistantQuoteCitations(params: {
     ),
     quoteCitations: filterMetadataQuoteCitations(
       mergeQuoteCitations(quoteCitations),
-      sourceIndex.metadataTexts,
+      finalizedSourceIndex.metadataTexts,
     ),
   };
 }
@@ -1688,13 +1781,14 @@ export function buildQuoteAnchorPromptBlock(
   const normalized = normalizeQuoteCitations(quoteCitations);
   if (!normalized.length) return [];
   const lines = [
-    "Quote anchors for direct evidence:",
+    "Verified quote anchors:",
+    "- Use a quote anchor only when exact wording is useful for the answer; otherwise cite the paper in normal prose.",
     "- When you need to include one of these exact quotes, write only the matching token, e.g. [[quote:Q_x7a2]].",
     "- Do not manually copy the quote or sourceLabel when a quote anchor is available; the app will render the quote and clickable citation.",
     "- Quote text is provenance-locked source text: never translate or paraphrase it to match the user's language.",
     "- Use `>` blockquotes only for direct original source text.",
     "- If a translation, interpretation, emphasis, example, or opinion is useful, write it outside the quote block as explanation or in a fenced `text` block, not as the quoted source passage.",
-    "- Use quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.",
+    "- Use verified quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.",
     "- Do not write source/section/chunk metadata such as [[source=...]] in the final answer; those fields are internal context only.",
   ];
   for (const citation of normalized) {
@@ -2018,6 +2112,8 @@ export function buildSelectedTextQuoteCitations(
     const citation = buildQuoteCitation({
       quoteText: selectedTexts[index],
       citationLabel: formatPaperSourceLabel(paperContext),
+      sourceMatchKind: "trusted",
+      sourceMatchSource: "context-text",
       contextItemId: paperContext.contextItemId,
       itemId: paperContext.itemId,
     });

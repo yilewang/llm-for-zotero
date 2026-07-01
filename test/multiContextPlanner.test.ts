@@ -554,6 +554,63 @@ describe("multiContextPlanner", function () {
     );
   });
 
+  it("defaults bounded multi-paper synthesis to deep per-paper coverage before global reranking", async function () {
+    const papers = Array.from({ length: 23 }, (_, index) => {
+      const itemId = 400 + index;
+      const contextItemId = 1400 + index;
+      const isWeakPaper = index === 22;
+      const paper: PaperContextRef = {
+        itemId,
+        contextItemId,
+        title: isWeakPaper
+          ? "Weak lexical outlier"
+          : `Representational drift synthesis ${index + 1}`,
+        firstCreator: isWeakPaper ? "Outlier" : "Drift",
+        year: "2026",
+      };
+      return {
+        paperContext: paper,
+        contextItem: null,
+        pdfContext: buildPdfContext(paper.title, [
+          isWeakPaper
+            ? "Abstract\nThis study examines stable latent coordination in a separate measurement regime."
+            : `Abstract\nPaper ${index + 1} studies representational drift as a common neural coding phenomenon.`,
+          isWeakPaper
+            ? "Results\nThe outlier body evidence shows a control case where population activity remains stable."
+            : `Results\nPaper ${index + 1} reports body evidence that representational drift preserves task-relevant structure.`,
+          isWeakPaper
+            ? "Discussion\nThe outlier helps bound the synthesis by contrasting stable and drifting coding regimes."
+            : `Discussion\nPaper ${index + 1} connects representational drift to shared mechanisms across systems.`,
+        ]),
+        paperKey: buildPaperKey(paper),
+        isActive: false,
+        pinKind: "explicit" as const,
+        order: index + 1,
+      };
+    });
+
+    const result = await assembleRetrievedMultiPaperContext({
+      papers: papers as any,
+      question:
+        "What is the commonality of those representational drift papers?",
+      contextBudgetTokens: 20_000,
+      options: {
+        maxChunks: 46,
+      },
+    });
+
+    const readStrategy = (result as any).readStrategy;
+    assert.equal(readStrategy?.resolvedStrategy, "deep_synthesis");
+    assert.equal(readStrategy?.papersPlanned, 23);
+    assert.equal(readStrategy?.papersBodyRead, 23);
+    assert.equal(result.selectedPaperCount, 23);
+    assert.include(
+      result.contextText,
+      "The outlier body evidence shows a control case",
+    );
+    assert.include(result.contextText, "Paper synthesis digest:");
+  });
+
   it("adds a capability reminder only for follow-up questions about access or coverage", async function () {
     const paper = registerMockPaper({
       itemId: 34,
@@ -722,10 +779,7 @@ describe("multiContextPlanner", function () {
 
     assert.equal(plan.mode, "retrieval");
     assert.include(plan.contextText, "Selected Zotero context scopes:");
-    assert.include(
-      plan.contextText,
-      "Scope manifest (PDF-backed papers):",
-    );
+    assert.include(plan.contextText, "Scope manifest (PDF-backed papers):");
     assert.include(plan.contextText, "metadata-ranked shortlist");
     assert.include(
       plan.contextText,
@@ -806,7 +860,10 @@ describe("multiContextPlanner", function () {
 
     assert.equal(plan.mode, "retrieval");
     assert.include(plan.contextText, "Selected Zotero context scopes:");
-    assert.include(plan.contextText, "- Stable [tag=Stable, libraryID=1, papers=8]");
+    assert.include(
+      plan.contextText,
+      "- Stable [tag=Stable, libraryID=1, papers=8]",
+    );
     assert.include(plan.contextText, "Scope manifest (PDF-backed papers):");
     assert.include(plan.contextText, "Title: Stable Tag Paper 1");
     assert.include(plan.contextText, "itemId=5001");
@@ -929,10 +986,7 @@ describe("multiContextPlanner", function () {
     });
 
     assert.equal(plan.mode, "retrieval");
-    assert.include(
-      plan.contextText,
-      "Scope manifest (PDF-backed papers):",
-    );
+    assert.include(plan.contextText, "Scope manifest (PDF-backed papers):");
     assert.include(plan.contextText, "Citation key: SmallKey1");
     for (let index = 1; index <= 6; index += 1) {
       assert.include(plan.contextText, `Title: Small Folder Paper ${index}`);

@@ -238,9 +238,7 @@ function makeGateway(
             ? entry.collectionIds.includes(collectionFilter)
             : true,
         )
-        .filter((entry) =>
-          tagFilter ? entry.tags.includes(tagFilter) : true,
-        );
+        .filter((entry) => (tagFilter ? entry.tags.includes(tagFilter) : true));
       const limit = params.limit || matches.length;
       return {
         items: matches.slice(0, limit),
@@ -345,6 +343,151 @@ describe("LibraryRetrieveService", function () {
     assert.lengthOf(result.snippets, 4);
     assert.equal(result.intent, "enumerate");
     assert.equal(result.answerContract.snippetCoverage, "sampled");
+    assert.isUndefined(result.quoteCitations);
+    assert.notProperty(result.snippets[0], "quoteCitationId");
+  });
+
+  it("summarize intent returns snippets as evidence without quote-card anchors", async function () {
+    const entries = [
+      makeItem(1, "Representational drift overview", "", {
+        hasPdf: true,
+      }),
+    ];
+    const service = new LibraryRetrieveService(
+      makeGateway(entries) as any,
+      {
+        ensurePaperContext: async () =>
+          makePdfContext([
+            "Abstract\nRepresentational drift appears across multiple neural systems while task-level structure remains usable.",
+          ]),
+      } as any,
+      async (paperContext): Promise<PaperContextCandidate[]> => [
+        {
+          paperKey: `${paperContext.itemId}:${paperContext.contextItemId}`,
+          itemId: paperContext.itemId,
+          contextItemId: paperContext.contextItemId,
+          title: paperContext.title,
+          chunkIndex: 0,
+          chunkText:
+            "Representational drift appears across multiple neural systems while task-level structure remains usable.",
+          chunkKind: "abstract",
+          sectionLabel: "Abstract",
+          estimatedTokens: 14,
+          bm25Score: 1,
+          embeddingScore: 0,
+          hybridScore: 1,
+          evidenceScore: 1,
+        },
+      ],
+    );
+
+    const result = await service.retrieve({
+      query: "commonality of representational drift papers",
+      intent: "summarize",
+      depth: "evidence",
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText: "What is the commonality of those papers?",
+        libraryID: 1,
+      },
+    });
+
+    assert.lengthOf(result.snippets, 1);
+    assert.isUndefined(result.quoteCitations);
+    assert.notProperty(result.snippets[0], "quoteCitationId");
+  });
+
+  it("treats a bounded selected-paper commonality prompt as deep synthesis, not abstract-only overview", async function () {
+    const entries = Array.from({ length: 23 }, (_, index) =>
+      makeItem(
+        index + 1,
+        `Representational drift paper ${index + 1}`,
+        "The abstract maps representational drift across repeated measurements.",
+        { hasPdf: true },
+      ),
+    );
+    const loadedPaperIds: number[] = [];
+    const service = new LibraryRetrieveService(
+      makeGateway(entries) as any,
+      {
+        ensurePaperContext: async (paperContext: PaperContextRef) => {
+          loadedPaperIds.push(paperContext.itemId);
+          return makePdfContext([
+            `Abstract\nPaper ${paperContext.itemId} introduces representational drift as a long-timescale neural population phenomenon.`,
+            `Results\nPaper ${paperContext.itemId} shows body-level evidence that neural codes change while task-relevant structure remains interpretable.`,
+            `Discussion\nPaper ${paperContext.itemId} connects the drift evidence to common mechanisms across brain regions.`,
+          ]);
+        },
+      } as any,
+      async (paperContext): Promise<PaperContextCandidate[]> => [
+        {
+          paperKey: `${paperContext.itemId}:${paperContext.contextItemId}`,
+          itemId: paperContext.itemId,
+          contextItemId: paperContext.contextItemId,
+          title: paperContext.title,
+          chunkIndex: 0,
+          chunkText: `Abstract\nPaper ${paperContext.itemId} introduces representational drift as a long-timescale neural population phenomenon.`,
+          chunkKind: "abstract",
+          sectionLabel: "Abstract",
+          estimatedTokens: 18,
+          bm25Score: 0.5,
+          embeddingScore: 0.6,
+          hybridScore: 0.6,
+          evidenceScore: 0.6,
+        },
+        {
+          paperKey: `${paperContext.itemId}:${paperContext.contextItemId}`,
+          itemId: paperContext.itemId,
+          contextItemId: paperContext.contextItemId,
+          title: paperContext.title,
+          chunkIndex: 1,
+          chunkText: `Results\nPaper ${paperContext.itemId} shows body-level evidence that neural codes change while task-relevant structure remains interpretable.`,
+          chunkKind: "results",
+          sectionLabel: "Results",
+          estimatedTokens: 18,
+          bm25Score: 0.4,
+          embeddingScore: 0.7,
+          hybridScore: 0.7,
+          evidenceScore: 0.7,
+        },
+      ],
+    );
+
+    const result = await service.retrieve({
+      scope: { itemIds: entries.map((entry) => entry.target.itemId) },
+      query: "what is the commonality of those representational drift papers",
+      intent: "summarize",
+      depth: "evidence",
+      methods: ["metadata", "abstract", "semantic"],
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText: "What is the commonality of those papers?",
+        libraryID: 1,
+      },
+    });
+
+    const answerContract = result.answerContract as any;
+    assert.equal(answerContract.resolvedStrategy, "deep_synthesis");
+    assert.equal(answerContract.papersPlanned, 23);
+    assert.equal(answerContract.papersBodyRead, 23);
+    assert.equal(answerContract.papersMetadataOnly, 0);
+    assert.equal(answerContract.stopReason, "enough_evidence");
+    assert.equal(result.resourcePool.queryCoverage.deepReadPapers, 23);
+    assert.sameMembers(
+      loadedPaperIds,
+      entries.map((entry) => entry.target.itemId),
+    );
+    assert.lengthOf(
+      new Set(
+        result.snippets
+          .filter((snippet) => snippet.sectionLabel === "Results")
+          .map((snippet) => snippet.itemId),
+      ),
+      23,
+    );
+    assert.isUndefined(result.quoteCitations);
   });
 
   it("does not return the same chunk as both exact and BM25 evidence", async function () {
@@ -451,6 +594,8 @@ describe("LibraryRetrieveService", function () {
       "calcium imaging analysis pipeline",
     );
     assert.equal(result.quoteCitations?.[0]?.citationLabel, "(Smith, 2024)");
+    assert.equal(result.quoteCitations?.[0]?.sourceMatchKind, "exact");
+    assert.equal(result.quoteCitations?.[0]?.sourceMatchSource, "context-text");
     assert.include(result.methodsUsed, "exact");
   });
 
@@ -917,10 +1062,15 @@ describe("LibraryRetrieveService", function () {
   });
 
   it("unions selected collection and tag scopes while deduping overlapping papers", async function () {
-    const collectionOnly = makeItem(4, "Collection-only paper", "collection evidence", {
-      hasPdf: true,
-      collectionIds: [4],
-    });
+    const collectionOnly = makeItem(
+      4,
+      "Collection-only paper",
+      "collection evidence",
+      {
+        hasPdf: true,
+        collectionIds: [4],
+      },
+    );
     const overlap = makeItem(7, "Overlapping paper", "shared evidence", {
       hasPdf: true,
       collectionIds: [4],

@@ -31,11 +31,14 @@ match: /\bcompare\b.*\b(methods?|methodology|sections?|approach|results?|limitat
 Use Zotero paper tools as resources, not a ritual. Batch selected papers in `targets`.
 
 A selected Zotero collection/folder is also a valid comparison corpus. In collection/library chat, never rely on the active-reader paper as an implicit target. If explicit paper targets are not already selected, first use `library_retrieve` scoped to the selected collection/library to map the comparison evidence, then call `paper_read` only with explicit `targets` when close reading is needed.
+For bounded selected or collection-scoped comparison pools, overview is the answer style, not the read depth.
+Prefer body-evidence coverage and the returned paper synthesis digest before writing the comparison.
 
 - If the user names a comparison dimension such as methods, results, limitations, theory, data, or figures, start with one batched targeted read:
   `paper_read({ mode:'targeted', query:'methods methodology method section', targets:[...] })`
 - If the corpus is a selected collection/folder and the dimension is known, prefer one scoped `library_retrieve({ query:'methods methodology method section', intent:'summarize', depth:'evidence' })` before selecting explicit paper targets for deeper comparison.
-- For broad requests like "compare these papers" with no dimension, call `paper_read({ mode:'overview', targets:[...] })` once, then answer or make one focused targeted call if a specific gap remains.
+- For broad requests like "compare these papers" with no dimension, use bounded evidence coverage first: `library_retrieve({ query:'compare these papers', intent:'summarize', depth:'evidence' })` for collection/library chat, or the selected-paper evidence ledger when it is already supplied.
+  Then synthesize from the paper digest and snippets.
 - For method-section requests, do not call overview first unless the targeted result is clearly insufficient.
 - When `paper_read` returns exact passages, include short direct-source blockquotes from the already-returned passages when useful for grounding the comparison.
 - Use citations and short quotes to make important paper-specific claims checkable, not to decorate every paragraph.
@@ -43,10 +46,10 @@ A selected Zotero collection/folder is also a valid comparison corpus. In collec
   Use short direct quotes when the exact wording matters or when a key point benefits from visible evidence.
   For background explanation, synthesis, or your own interpretation, write clearly and cite only the specific paper claim it depends on.
   `>` Markdown blockquotes are reserved only for direct original source text.
-  Quote anchors are preferred for direct source quotes; use the exact anchor token when one is available.
+  Verified quote anchors are available only for direct source quotes; use the exact anchor token only when exact wording is useful.
   For interpretation, emphasis, examples, or opinion, use normal prose or fenced `text` blocks, never `>` blockquotes.
   Do not append a standalone source label or citation-only final line after ordinary summary prose; source labels on their own line belong only after direct blockquotes when no quote anchor is available.
-  Use quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.
+  Use verified quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.
   Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence.
   Prefer a readable answer with traceable evidence over repetitive citations or low-information quotes.
 - If `paper_read` provides quote anchors like `[[quote:Q_x7a2]]`, use those anchor tokens for direct quotes instead of copying the quote/sourceLabel manually.
@@ -57,4 +60,4 @@ A selected Zotero collection/folder is also a valid comparison corpus. In collec
 - Do not invent author/year/page/section labels.
 - Do not write `[[source=...]]`, `section=...`, or `chunk=...` metadata in the final answer.
 - Do not call visual/page tools, `file_io`, or `run_command` just to improve citation anchors or page numbers. Use the provided `sourceLabel`; the UI can bind citations after rendering.
-- Stop after the first useful batched result when it covers the selected papers. Make at most one follow-up `paper_read({ mode:'targeted', ... })` for a concrete missing dimension.
+- Stop after the evidence ledger covers the selected papers at the needed depth, or explicitly report the coverage frontier. Make follow-up `paper_read({ mode:'targeted', ... })` calls only for concrete missing dimensions or papers that the ledger marks as insufficient.

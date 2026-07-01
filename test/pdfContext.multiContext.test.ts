@@ -559,9 +559,241 @@ describe("pdfContext multi-context helpers", function () {
         },
       ],
     });
+    assert.lengthOf(pack.quoteCitations, 0);
+    assert.equal(pack.quoteAnchorDiagnostics.policy, "none");
+    assert.notInclude(pack.contextText, "[[quote:Q_");
+  });
+
+  it("exposes verified quote anchors only when exact quote policy is requested", function () {
+    const paper: PaperContextRef = {
+      itemId: 1,
+      contextItemId: 11,
+      title: "Paper A",
+      firstCreator: "Zheng et al.",
+      year: "2026",
+    };
+    const pack = buildEvidencePack({
+      papers: [paper],
+      quoteAnchorPolicy: "verified",
+      candidates: [
+        {
+          paperKey: buildPaperKey(paper),
+          itemId: 1,
+          contextItemId: 11,
+          title: "Paper A",
+          firstCreator: "Zheng et al.",
+          year: "2026",
+          chunkIndex: 3,
+          chunkText:
+            "Abstract\nDespite global representational drift, the relative geometry remained stable across conditions.",
+          sectionLabel: "Abstract",
+          chunkKind: "abstract",
+          estimatedTokens: 8,
+          bm25Score: 0.7,
+          embeddingScore: 0.1,
+          hybridScore: 0.4,
+          evidenceScore: 1.3,
+        },
+      ],
+    });
+
     assert.lengthOf(pack.quoteCitations, 1);
     assert.match(pack.quoteCitations[0].id, /^Q_/);
+    assert.equal(pack.quoteCitations[0].sourceMatchKind, "trusted");
+    assert.include(pack.contextText, "Verified quote anchors:");
     assert.include(pack.contextText, `[[quote:${pack.quoteCitations[0].id}]]`);
+  });
+
+  it("does not promote broad synthesis evidence snippets into quote anchors", function () {
+    const yuanPaper: PaperContextRef = {
+      itemId: 101,
+      contextItemId: 1101,
+      title:
+        "Changes in perceptual sampling contribute to representational drift",
+      firstCreator: "Yuan et al.",
+    };
+    const brownPaper: PaperContextRef = {
+      itemId: 102,
+      contextItemId: 1102,
+      title: "Developmental representational drift",
+      firstCreator: "Brown and McGee",
+      year: "2025",
+    };
+    const schneegansPaper: PaperContextRef = {
+      itemId: 103,
+      contextItemId: 1103,
+      title: "Drift in neural population activity",
+      firstCreator: "Schneegans and Bays",
+      year: "2018",
+    };
+
+    const papers = [yuanPaper, brownPaper, schneegansPaper];
+    const candidates = [
+      {
+        paperKey: buildPaperKey(yuanPaper),
+        itemId: yuanPaper.itemId,
+        contextItemId: yuanPaper.contextItemId,
+        title: yuanPaper.title,
+        firstCreator: yuanPaper.firstCreator,
+        chunkIndex: 0,
+        chunkText:
+          "Changes in perceptual sampling contribute to representational drift Yixin Yuan1, Mikio C.",
+        chunkKind: "body",
+        estimatedTokens: 12,
+        bm25Score: 1,
+        embeddingScore: 0,
+        hybridScore: 1,
+        evidenceScore: 1,
+      },
+      {
+        paperKey: buildPaperKey(brownPaper),
+        itemId: brownPaper.itemId,
+        contextItemId: brownPaper.contextItemId,
+        title: brownPaper.title,
+        firstCreator: brownPaper.firstCreator,
+        year: brownPaper.year,
+        chunkIndex: 0,
+        chunkText:
+          "In brief\nBrown and McGee employ in vivo calcium imaging to measure representational drift during and after visual circuit maturation.",
+        sectionLabel: "In brief",
+        chunkKind: "body",
+        estimatedTokens: 16,
+        bm25Score: 1,
+        embeddingScore: 0,
+        hybridScore: 1,
+        evidenceScore: 1,
+      },
+      {
+        paperKey: buildPaperKey(schneegansPaper),
+        itemId: schneegansPaper.itemId,
+        contextItemId: schneegansPaper.contextItemId,
+        title: schneegansPaper.title,
+        firstCreator: schneegansPaper.firstCreator,
+        year: schneegansPaper.year,
+        chunkIndex: 0,
+        chunkText:
+          "University of Cambridge, Department of Psychology, Cambridge CB2 3EB, United Kingdom",
+        chunkKind: "body",
+        estimatedTokens: 10,
+        bm25Score: 1,
+        embeddingScore: 0,
+        hybridScore: 1,
+        evidenceScore: 1,
+      },
+      {
+        paperKey: buildPaperKey(schneegansPaper),
+        itemId: schneegansPaper.itemId,
+        contextItemId: schneegansPaper.contextItemId,
+        title: schneegansPaper.title,
+        firstCreator: schneegansPaper.firstCreator,
+        year: schneegansPaper.year,
+        chunkIndex: 1,
+        chunkText:
+          "Abstract\nWe identified representational drift as a key mechanism of memory decline across delayed recall conditions.",
+        sectionLabel: "Abstract",
+        chunkKind: "abstract",
+        estimatedTokens: 14,
+        bm25Score: 1,
+        embeddingScore: 0,
+        hybridScore: 1,
+        evidenceScore: 1,
+      },
+    ];
+    const pack = buildEvidencePack({
+      papers,
+      candidates,
+    });
+
+    assert.lengthOf(pack.quoteCitations, 0);
+    assert.notInclude(pack.contextText, "Quote anchors for direct evidence:");
+    assert.include(pack.contextText, "Retrieved Evidence:");
+    assert.include(pack.contextText, "We identified representational drift");
+
+    const verifiedPack = buildEvidencePack({
+      papers,
+      candidates,
+      quoteAnchorPolicy: "verified",
+    });
+    const quoteTexts = verifiedPack.quoteCitations.map(
+      (citation) => citation.quoteText,
+    );
+    assert.lengthOf(verifiedPack.quoteCitations, 1);
+    assert.include(quoteTexts[0], "We identified representational drift");
+    assert.notInclude(
+      quoteTexts.join("\n"),
+      "Changes in perceptual sampling contribute",
+    );
+    assert.notInclude(quoteTexts.join("\n"), "University of Cambridge");
+    assert.notInclude(quoteTexts.join("\n"), "Brown and McGee employ");
+    assert.equal(
+      verifiedPack.quoteAnchorDiagnostics.rejectedReasons[
+        "boilerplate-section"
+      ],
+      1,
+    );
+  });
+
+  it("adds a per-paper synthesis digest before retrieved snippets", function () {
+    const paper: PaperContextRef = {
+      itemId: 201,
+      contextItemId: 2201,
+      title: "Geometry of representational drift",
+      firstCreator: "Lee et al.",
+      year: "2026",
+    };
+    const pack = buildEvidencePack({
+      papers: [paper],
+      candidates: [
+        {
+          paperKey: buildPaperKey(paper),
+          itemId: paper.itemId,
+          contextItemId: paper.contextItemId,
+          title: paper.title,
+          firstCreator: paper.firstCreator,
+          year: paper.year,
+          chunkIndex: 0,
+          chunkText:
+            "Abstract\nThe paper studies representational drift across repeated neural measurements.",
+          sectionLabel: "Abstract",
+          chunkKind: "abstract",
+          estimatedTokens: 12,
+          bm25Score: 1,
+          embeddingScore: 0,
+          hybridScore: 1,
+          evidenceScore: 1,
+        },
+        {
+          paperKey: buildPaperKey(paper),
+          itemId: paper.itemId,
+          contextItemId: paper.contextItemId,
+          title: paper.title,
+          firstCreator: paper.firstCreator,
+          year: paper.year,
+          chunkIndex: 2,
+          chunkText:
+            "Results\nPopulation codes drifted over days, but the geometry of task-relevant distances remained stable.",
+          sectionLabel: "Results",
+          chunkKind: "results",
+          estimatedTokens: 14,
+          bm25Score: 1,
+          embeddingScore: 0,
+          hybridScore: 1,
+          evidenceScore: 1,
+        },
+      ],
+    });
+
+    const digestIndex = pack.contextText.indexOf("Paper synthesis digest:");
+    const evidenceIndex = pack.contextText.indexOf("Retrieved Evidence:");
+    assert.isAtLeast(digestIndex, 0);
+    assert.isAbove(evidenceIndex, digestIndex);
+    assert.include(pack.contextText, "coverage: body evidence");
+    assert.include(pack.contextText, "sections: Abstract, Results");
+    assert.include(pack.contextText, "support: P1.S1, P1.S2");
+    assert.include(
+      pack.contextText,
+      "Population codes drifted over days, but the geometry",
+    );
   });
 
   it("labels retrieved evidence from text-like attachments as attachment-derived", function () {
@@ -576,6 +808,7 @@ describe("pdfContext multi-context helpers", function () {
     };
     const pack = buildEvidencePack({
       papers: [attachmentPaper],
+      quoteAnchorPolicy: "verified",
       candidates: [
         {
           paperKey: buildPaperKey(attachmentPaper),

@@ -31,13 +31,16 @@ match: /\b(distribution|breakdown|histogram)\b.*\b(years?|tags?|authors?|types?|
 When the user asks for a summary, overview, statistics, or analysis of their **whole library or a collection**, do NOT make multiple `library_search` calls to page through results. Each broad `library_search` call can return enough metadata to overflow the context window.
 
 For evidence-bearing topic/theme questions, use `library_retrieve` first. It treats the library or selected collection as a resource pool, maps metadata/abstracts broadly, scans indexed/searchable text for paper-level matches when appropriate, expands selected snippets, and reports coverage.
+For bounded selected-paper or collection-scoped synthesis, overview means a concise final answer, not shallow source use.
+When the scoped corpus is small enough to inspect deeply, prefer body-evidence coverage and the returned paper synthesis digest over stopping at titles or abstracts.
 
 For pure aggregate statistics, use a single `zotero_script({ mode:'read', description:'Analyze library or collection statistics', script:'...' })` call that iterates all items inside Zotero's runtime and aggregates the answer in one pass. The script runs locally — there is no context-size limitation because only the final `env.log()` output is returned to the conversation.
 
 ### Strategy
 
 1. If the user asks "which papers discuss X", "find all papers about X", "how many papers use X", or any broad local evidence question, call `library_retrieve({ query:'X', queryVariants:[...], intent:'enumerate', depth:'evidence' })` or collection-scoped `library_retrieve({ scope:{ collectionIds:[...] }, query:'X', queryVariants:[...], intent:'enumerate', depth:'evidence' })` when translation, acronyms, notation variants, or technical equivalents would improve recall. Treat `enumerate` as comprehensive quality-first search across the scoped resource pool, not just a fast list operation.
-2. If the user asks for a broad method/theme taxonomy, call `library_retrieve({ query:'X', queryVariants:[...], intent:'summarize', depth:'evidence' })` when useful.
+2. If the user asks for a broad method/theme/commonality/comparison overview, call `library_retrieve({ query:'X', queryVariants:[...], intent:'summarize', depth:'evidence' })` when useful.
+   For selected or bounded collection pools, treat this as quality-first synthesis: use the paper ledger, body snippets, digest, and frontier before answering.
 3. If the user asks for counts/distributions only, write a `zotero_script({ mode:'read', description:'Analyze library or collection statistics', script:'...' })` script that:
    - Calls `Zotero.Items.getAll(env.libraryID, false, false, false)` to get all items.
    - Filters to `item.isRegularItem()` (skips attachments, notes, annotations).

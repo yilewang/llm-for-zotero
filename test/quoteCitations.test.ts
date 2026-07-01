@@ -24,6 +24,48 @@ describe("quoteCitations", function () {
     return value.split(needle).length - 1;
   }
 
+  it("rejects publication metadata and front-matter boilerplate as quote-worthy text", function () {
+    const cases = [
+      "Changes in perceptual sampling contribute to representational drift Yixin Yuan1, Mikio C.",
+      "University of Cambridge, Department of Psychology, Cambridge CB2 3EB, United Kingdom",
+      "Department of Neuroscience, University of Example, 1 Institute Road, Boston, MA 02115",
+      "Correspondence should be addressed to the lead author at author@example.edu",
+      "Highlights - Neural responses were recorded over repeated sessions - Calcium imaging was used",
+    ];
+
+    for (const text of cases) {
+      assert.isFalse(isQuoteWorthySourceText(text), text);
+      assert.isUndefined(
+        buildQuoteCitation({
+          quoteText: text,
+          citationLabel: "(Metadata et al., 2026)",
+          sourceMatchKind: "trusted",
+          sourceMatchSource: "context-text",
+          contextItemId: 12,
+          itemId: 11,
+        }),
+        text,
+      );
+    }
+  });
+
+  it("keeps substantive scientific spans quote-worthy", function () {
+    const text =
+      "Despite global representational drift, the relative geometry of population responses remained stable across repeated conditions.";
+
+    assert.isTrue(isQuoteWorthySourceText(text));
+    assert.exists(
+      buildQuoteCitation({
+        quoteText: text,
+        citationLabel: "(Zheng et al., 2026)",
+        sourceMatchKind: "trusted",
+        sourceMatchSource: "context-text",
+        contextItemId: 12,
+        itemId: 11,
+      }),
+    );
+  });
+
   it("generates stable ids from quote text, citation label, and context item", function () {
     const first = buildQuoteCitation({
       quoteText: "The models will offer a set of categories.",
@@ -64,6 +106,84 @@ describe("quoteCitations", function () {
     assert.include(prompt, "quoteText");
     assert.include(prompt, "sourceLabel");
     assert.notInclude(prompt, "citationLabel");
+  });
+
+  it("frames prompt quote anchors as verified exact-wording affordances", function () {
+    const citation = buildQuoteCitation({
+      quoteText:
+        "Representational drift changed the neural response pattern across repeated sessions.",
+      citationLabel: "(Anchor et al., 2026)",
+      sourceMatchKind: "trusted",
+      sourceMatchSource: "context-text",
+      contextItemId: 123,
+      itemId: 456,
+    });
+
+    const prompt = buildQuoteAnchorPromptBlock([citation!]).join("\n");
+
+    assert.include(prompt, "Verified quote anchors");
+    assert.include(prompt, "only when exact wording");
+    assert.notInclude(prompt, "Quote anchors for direct evidence:");
+  });
+
+  it("can omit unverified generated quote placeholders during live finalization", function () {
+    const unverified = buildQuoteCitation({
+      quoteText:
+        "This unverified retrieved snippet should not become a live quote card.",
+      citationLabel: "(Snippet et al., 2026)",
+      contextItemId: 123,
+      itemId: 456,
+    });
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `Claim [[quote:${unverified!.id}]]`,
+      quoteCitations: [unverified!],
+      requireVerifiedQuoteCitations: true,
+    });
+
+    assert.equal(finalized.markdown, "Claim");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("does not let unverified generated quote candidates self-verify raw blockquotes", function () {
+    const unverified = buildQuoteCitation({
+      quoteText:
+        "This unverified retrieved snippet should not become a live quote card.",
+      citationLabel: "(Snippet et al., 2026)",
+      contextItemId: 123,
+      itemId: 456,
+    });
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown:
+        "> This unverified retrieved snippet should not become a live quote card.\n\n(Snippet et al., 2026)",
+      quoteCitations: [unverified!],
+      requireVerifiedQuoteCitations: true,
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("preserves verified generated quote placeholders during live finalization", function () {
+    const verified = buildQuoteCitation({
+      quoteText:
+        "This verified retrieved snippet can become a live quote card.",
+      citationLabel: "(Verified et al., 2026)",
+      sourceMatchKind: "trusted",
+      sourceMatchSource: "context-text",
+      contextItemId: 123,
+      itemId: 456,
+    });
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `Claim [[quote:${verified!.id}]]`,
+      quoteCitations: [verified!],
+      requireVerifiedQuoteCitations: true,
+    });
+
+    assert.include(finalized.markdown, `[[quote:${verified!.id}]]`);
+    assert.lengthOf(finalized.quoteCitations, 1);
   });
 
   it("replaces known markdown placeholders with canonical blockquote citations", function () {
@@ -1239,7 +1359,8 @@ describe("quoteCitations", function () {
 
   it("preserves source punctuation when normalizing quote spans", function () {
     const finalized = finalizeAssistantQuoteCitations({
-      markdown: "> The model's accuracy dropped sharply.\n\n(Smith et al., 2024)",
+      markdown:
+        "> The model's accuracy dropped sharply.\n\n(Smith et al., 2024)",
       sourceIndex: buildQuoteSourceIndex({
         sourceTexts: [
           {

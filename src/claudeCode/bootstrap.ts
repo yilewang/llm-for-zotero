@@ -27,20 +27,22 @@ function getIOUtils(): IOUtilsLike | undefined {
 }
 
 function getBootstrapSettingsTemplate(): string {
-  return JSON.stringify(
-    {
-      $schema: "https://json.schemastore.org/claude-code-settings.json",
-      permissions: {
-        defaultMode: "default",
+  return (
+    JSON.stringify(
+      {
+        $schema: "https://json.schemastore.org/claude-code-settings.json",
+        permissions: {
+          defaultMode: "default",
+        },
+        env: {
+          ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+        },
+        enabledPlugins: {},
       },
-      env: {
-        ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-      },
-      enabledPlugins: {},
-    },
-    null,
-    2,
-  ) + "\n";
+      null,
+      2,
+    ) + "\n"
+  );
 }
 
 function getConfigModelInstructionLines(): string[] {
@@ -94,10 +96,10 @@ export function getDefaultClaudeManagedInstructionBlock(): string {
     "- Do not hunt for page numbers or exact quotations unless the user explicitly asks for evidence, quotes, exact wording, page references, or passage location.",
     "- If a paper is marked for full-text reading on this turn, treat it as a high-priority reading target before answering.",
     "- Treat selected papers as available turn context, and treat pinned papers as persistent background context.",
-    "- Do not upgrade selected or pinned papers into mandatory full-text reads unless they are explicitly in the full-text group for this turn.",
+    "- For bounded selected or pinned multi-paper synthesis, comparison, commonality, and theme questions, treat the selected papers as the requested evidence pool and prefer body-evidence coverage before answering.",
     "- For broad questions about one paper, prefer one useful read then answer.",
     "- For specific questions about methods, results, metrics, datasets, or exact claims, keep retrieval targeted and minimal.",
-    "- For multi-paper work, prefer breadth first and follow up only on the comparison dimension the user actually asked about.",
+    "- For large or unbounded multi-paper work, stage breadth first and report the coverage frontier instead of pretending every paper was deeply read.",
     "- For figures and tables, prefer localized section reads over scanning the whole paper.",
     "- For library or collection analysis, prefer one local aggregation pass over enumerating large result sets in chat.",
     "- Default to the shortest path that can produce a correct answer.",
@@ -107,17 +109,22 @@ export function getDefaultClaudeManagedInstructionBlock(): string {
 }
 
 function normalizeManagedInstructionBlockContent(content: string): string {
-  return String(content || "").replace(/\r\n?/g, "\n").trim();
+  return String(content || "")
+    .replace(/\r\n?/g, "\n")
+    .trim();
 }
 
 function getManagedInstructionBlockFromSettings(): string {
   return (
-    normalizeManagedInstructionBlockContent(getClaudeManagedInstructionTemplatePref()) ||
-    getDefaultClaudeManagedInstructionBlock()
+    normalizeManagedInstructionBlockContent(
+      getClaudeManagedInstructionTemplatePref(),
+    ) || getDefaultClaudeManagedInstructionBlock()
   );
 }
 
-function getBootstrapInstructionTemplate(managedBlock = getManagedInstructionBlockFromSettings()): string {
+function getBootstrapInstructionTemplate(
+  managedBlock = getManagedInstructionBlockFromSettings(),
+): string {
   return `${MANAGED_BEGIN_MARKER}\n${managedBlock}\n${MANAGED_END_MARKER}\n`;
 }
 
@@ -159,7 +166,10 @@ function extractManagedInstructionBlock(onDiskRaw: string): string | null {
   return normalized || null;
 }
 
-function spliceManagedInstructionBlock(onDiskRaw: string, managedBlock: string): string {
+function spliceManagedInstructionBlock(
+  onDiskRaw: string,
+  managedBlock: string,
+): string {
   const beginIdx = onDiskRaw.indexOf(MANAGED_BEGIN_MARKER);
   const endIdx = onDiskRaw.indexOf(MANAGED_END_MARKER);
   if (beginIdx >= 0 && endIdx > beginIdx) {
@@ -184,7 +194,10 @@ async function ensureManagedClaudeInstructionBlock(): Promise<void> {
   const path = getClaudeProjectInstructionFile();
   const exists = await io.exists(path).catch(() => false);
   if (!exists) {
-    await io.write(path, new TextEncoder().encode(getBootstrapInstructionTemplate()));
+    await io.write(
+      path,
+      new TextEncoder().encode(getBootstrapInstructionTemplate()),
+    );
     return;
   }
   const raw = await io.read(path).catch(() => null);
@@ -200,7 +213,9 @@ async function ensureManagedClaudeInstructionBlock(): Promise<void> {
   await io.write(path, new TextEncoder().encode(next));
 }
 
-export async function readClaudeProjectManagedInstructionBlock(): Promise<string | null> {
+export async function readClaudeProjectManagedInstructionBlock(): Promise<
+  string | null
+> {
   const io = getIOUtils();
   if (!io?.exists || !io?.read) return null;
   const path = getClaudeProjectInstructionFile();
@@ -227,7 +242,10 @@ export async function updateClaudeProjectManagedInstructionBlock(
     getDefaultClaudeManagedInstructionBlock();
   const exists = await io.exists(path).catch(() => false);
   if (!exists) {
-    await io.write(path, new TextEncoder().encode(getBootstrapInstructionTemplate(managedBlock)));
+    await io.write(
+      path,
+      new TextEncoder().encode(getBootstrapInstructionTemplate(managedBlock)),
+    );
     return;
   }
   const raw = await io.read(path).catch(() => null);
@@ -245,6 +263,9 @@ export async function updateClaudeProjectManagedInstructionBlock(
 
 export async function ensureClaudeProjectBootstrap(): Promise<void> {
   await ensureClaudeProjectSkillStructure();
-  await writeIfMissing(getClaudeProjectSettingsFile(), getBootstrapSettingsTemplate());
+  await writeIfMissing(
+    getClaudeProjectSettingsFile(),
+    getBootstrapSettingsTemplate(),
+  );
   await ensureManagedClaudeInstructionBlock();
 }

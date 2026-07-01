@@ -33,7 +33,7 @@ const SOURCE_LABEL_PLACEMENT_PHRASES = [
 
 const STRICT_BLOCKQUOTE_SOURCE_PHRASES = [
   "`>` Markdown blockquotes are reserved only for direct original source text",
-  "Quote anchors are preferred for direct source quotes",
+  "Verified quote anchors are available only for direct source quotes",
   "For interpretation, emphasis, examples, or opinion, use normal prose or fenced `text` blocks",
 ];
 

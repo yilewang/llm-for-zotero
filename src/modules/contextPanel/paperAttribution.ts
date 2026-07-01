@@ -294,7 +294,7 @@ export function buildPaperQuoteCitationGuidance(
       return [
         "Answer format when quoting this selected attachment:",
         BALANCED_EVIDENCE_GUIDANCE,
-        "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
+        "- If verified quote anchors are provided, use the exact [[quote:<id>]] token only when exact wording is useful.",
         "- Use `>` only for text copied from the selected attachment.",
         "> quoted text copied from the selected attachment",
         "",
@@ -314,7 +314,7 @@ export function buildPaperQuoteCitationGuidance(
     return [
       "Answer format when quoting this paper:",
       BALANCED_EVIDENCE_GUIDANCE,
-      "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
+      "- If verified quote anchors are provided, use the exact [[quote:<id>]] token only when exact wording is useful.",
       "- Use `>` only for text copied from the paper.",
       "> quoted text copied from the paper",
       "",
@@ -334,7 +334,7 @@ export function buildPaperQuoteCitationGuidance(
   return [
     "Paper-grounded citation format for the final answer:",
     BALANCED_EVIDENCE_GUIDANCE,
-    "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
+    "- If verified quote anchors are provided, use the exact [[quote:<id>]] token only when exact wording is useful.",
     "- Use `>` only for text copied from the paper.",
     "> quoted text copied from the paper",
     "",
@@ -357,7 +357,7 @@ export function buildGenericSourceQuoteCitationGuidance(): string[] {
   return [
     "Source-grounded citation format for the final answer:",
     BALANCED_EVIDENCE_GUIDANCE,
-    "- If quote anchors are provided, use the exact [[quote:<id>]] token for direct quotes.",
+    "- If verified quote anchors are provided, use the exact [[quote:<id>]] token only when exact wording is useful.",
     "- Use `>` only for text copied from the selected source.",
     "> quoted text copied from the selected source",
     "",

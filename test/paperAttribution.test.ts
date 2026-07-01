@@ -98,7 +98,7 @@ describe("paperAttribution", function () {
     );
     assert.include(
       buildPaperQuoteCitationGuidance(paper).join("\n"),
-      "If quote anchors are provided, use the exact [[quote:<id>]] token",
+      "If verified quote anchors are provided, use the exact [[quote:<id>]] token",
     );
     assert.include(
       buildPaperQuoteCitationGuidance(paper).join("\n"),
