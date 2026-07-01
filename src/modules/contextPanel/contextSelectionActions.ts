@@ -3,13 +3,21 @@ import { MAX_SELECTED_PAPER_CONTEXTS } from "./constants";
 import {
   appendSelectedTextContextForItem,
   getSelectedTextContextEntries,
+  setNoteContextExpanded,
   setSelectedTextContextEntries,
+  setSelectedTextExpandedIndex,
 } from "./contextResolution";
-import { resolveContextAttachmentSupportFromMetadata } from "./contextAttachmentSupport";
+import {
+  isSupportedContextAttachment,
+  resolveContextAttachmentSupportFromMetadata,
+} from "./contextAttachmentSupport";
 import { setPaperModeOverride } from "./contexts/paperContextState";
 import { isSamePaperContextRef } from "./modeBehavior";
 import { readNoteSnapshot } from "./notes";
-import { resolvePaperContextRefFromItem } from "./paperAttribution";
+import {
+  resolvePaperContextRefFromAttachment,
+  resolvePaperContextRefFromItem,
+} from "./paperAttribution";
 import type {
   PaperSearchAttachmentCandidate,
   PaperSearchGroupCandidate,
@@ -20,10 +28,19 @@ import {
   normalizeReferenceSelectorTagIdentityName,
 } from "./referenceSelector/model";
 import {
+  pinnedFileKeys,
+  pinnedImageKeys,
+  pinnedSelectedTextKeys,
+  selectedFileAttachmentCache,
+  selectedFilePreviewExpandedCache,
+  selectedImageCache,
+  selectedImagePreviewActiveIndexCache,
+  selectedImagePreviewExpandedCache,
   selectedCollectionContextCache,
   selectedOtherRefContextCache,
   selectedPaperContextCache,
   selectedPaperPreviewExpandedCache,
+  paperContentSourceOverrides,
   paperContextModeOverrides,
   selectedTagContextCache,
 } from "./state";
@@ -79,6 +96,20 @@ const changed = (
   statusMessage,
   statusLevel,
 });
+
+function normalizePositiveItemId(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function clearPaperOverridesForItem(
+  itemId: number,
+  paper: PaperContextRef,
+): void {
+  const overrideKey = `${itemId}:${buildPaperKey(paper)}`;
+  paperContextModeOverrides.delete(overrideKey);
+  paperContentSourceOverrides.delete(overrideKey);
+}
 
 export function upsertPaperContext(
   deps: ContextSelectionActionDeps,
@@ -186,6 +217,130 @@ export function addZoteroItemsAsContext(
   return lastResult;
 }
 
+function resolveDefaultContextParentItem(
+  zoteroItem: Zotero.Item | null | undefined,
+): Zotero.Item | null {
+  if (!zoteroItem) return null;
+  if (zoteroItem.isRegularItem?.()) return zoteroItem;
+  const parentId = normalizePositiveItemId(
+    (zoteroItem as any).parentID || (zoteroItem as any).parentItemID,
+  );
+  if (!parentId || typeof Zotero === "undefined") return null;
+  const parent = Zotero.Items.get(parentId) || null;
+  return parent?.isRegularItem?.() ? parent : null;
+}
+
+async function resolveDefaultPaperContextRefFromItem(
+  zoteroItem: Zotero.Item,
+): Promise<PaperContextRef | null> {
+  const parentItem = resolveDefaultContextParentItem(zoteroItem);
+  if (!parentItem || typeof parentItem.getBestAttachment !== "function") {
+    return null;
+  }
+  let bestAttachment: Zotero.Item | null = null;
+  try {
+    bestAttachment = (await parentItem.getBestAttachment()) || null;
+  } catch (_error) {
+    void _error;
+    return null;
+  }
+  if (!isSupportedContextAttachment(bestAttachment)) return null;
+  return resolvePaperContextRefFromAttachment(bestAttachment);
+}
+
+export async function addZoteroItemsAsDefaultContext(
+  deps: ContextSelectionActionDeps,
+  zoteroItems: Zotero.Item[],
+): Promise<ContextSelectionActionResult> {
+  if (!deps.item) return unchanged();
+  const parentItems: Zotero.Item[] = [];
+  const seenParentIds = new Set<number>();
+  for (const zoteroItem of zoteroItems) {
+    const parent = resolveDefaultContextParentItem(zoteroItem);
+    const parentId = normalizePositiveItemId(parent?.id);
+    if (!parent || !parentId || seenParentIds.has(parentId)) continue;
+    seenParentIds.add(parentId);
+    parentItems.push(parent);
+  }
+
+  let added = 0;
+  let skipped = 0;
+  let lastResult: ContextSelectionActionResult = unchanged();
+  for (const parentItem of parentItems) {
+    const ref = await resolveDefaultPaperContextRefFromItem(parentItem);
+    if (!ref) {
+      skipped += 1;
+      continue;
+    }
+    lastResult = upsertPaperContext(deps, ref);
+    if (lastResult.changed) added += 1;
+    else skipped += 1;
+  }
+
+  if (added > 0 && skipped > 0) {
+    return changed(`Added ${added} paper(s), ${skipped} skipped`, "warning");
+  }
+  if (added > 1) {
+    return changed(`Added ${added} paper(s) as context`, "ready");
+  }
+  if (added === 1) return lastResult;
+  return unchanged(t("No supported default attachment found"), "warning");
+}
+
+export function hasUserAddedContextForItem(params: {
+  itemId: number;
+  textContextKey?: number | null;
+}): boolean {
+  const itemId = normalizePositiveItemId(params.itemId);
+  if (!itemId) return false;
+  const textContextKey = normalizePositiveItemId(params.textContextKey);
+  return (
+    (selectedPaperContextCache.get(itemId) || []).length > 0 ||
+    (selectedOtherRefContextCache.get(itemId) || []).length > 0 ||
+    (selectedCollectionContextCache.get(itemId) || []).length > 0 ||
+    (selectedTagContextCache.get(itemId) || []).length > 0 ||
+    (selectedImageCache.get(itemId) || []).length > 0 ||
+    (selectedFileAttachmentCache.get(itemId) || []).length > 0 ||
+    (textContextKey
+      ? getSelectedTextContextEntries(textContextKey).length > 0
+      : false)
+  );
+}
+
+export function clearUserAddedContextForItem(params: {
+  itemId: number;
+  textContextKey?: number | null;
+}): ContextSelectionActionResult {
+  const itemId = normalizePositiveItemId(params.itemId);
+  if (!itemId) return unchanged();
+  const textContextKey = normalizePositiveItemId(params.textContextKey);
+  const hadContext = hasUserAddedContextForItem({ itemId, textContextKey });
+
+  const removedPapers = selectedPaperContextCache.get(itemId) || [];
+  selectedPaperContextCache.delete(itemId);
+  selectedPaperPreviewExpandedCache.delete(itemId);
+  for (const paper of removedPapers) {
+    clearPaperOverridesForItem(itemId, paper);
+  }
+  selectedOtherRefContextCache.delete(itemId);
+  selectedCollectionContextCache.delete(itemId);
+  selectedTagContextCache.delete(itemId);
+  selectedImageCache.delete(itemId);
+  selectedImagePreviewExpandedCache.delete(itemId);
+  selectedImagePreviewActiveIndexCache.delete(itemId);
+  selectedFileAttachmentCache.delete(itemId);
+  selectedFilePreviewExpandedCache.delete(itemId);
+  pinnedImageKeys.delete(itemId);
+  pinnedFileKeys.delete(itemId);
+  if (textContextKey) {
+    setSelectedTextContextEntries(textContextKey, []);
+    setSelectedTextExpandedIndex(textContextKey, null);
+    setNoteContextExpanded(textContextKey, null);
+    pinnedSelectedTextKeys.delete(textContextKey);
+  }
+  return hadContext ? changed(t("Context cleared"), "ready") : unchanged();
+}
+
 export function upsertOtherRefContext(
   deps: ContextSelectionActionDeps,
   ref: OtherContextRef,
@@ -278,7 +433,7 @@ export function removeReferenceAttachmentContext(params: {
       if (next.length) selectedPaperContextCache.set(item.id, next);
       else selectedPaperContextCache.delete(item.id);
       for (const paper of removedPapers) {
-        paperContextModeOverrides.delete(`${item.id}:${buildPaperKey(paper)}`);
+        clearPaperOverridesForItem(item.id, paper);
       }
       selectedPaperPreviewExpandedCache.set(item.id, false);
       deps.updatePaperPreviewPreservingScroll();
@@ -342,7 +497,7 @@ export function removeReferenceGroupContexts(params: {
     if (nextPapers.length) selectedPaperContextCache.set(item.id, nextPapers);
     else selectedPaperContextCache.delete(item.id);
     for (const paper of removedPapers) {
-      paperContextModeOverrides.delete(`${item.id}:${buildPaperKey(paper)}`);
+      clearPaperOverridesForItem(item.id, paper);
     }
     selectedPaperPreviewExpandedCache.set(item.id, false);
     removed = true;

@@ -407,6 +407,8 @@ import { attachFloatingMenuInteractionController } from "./setupHandlers/control
 import { createPaperPickerController } from "./setupHandlers/controllers/paperPickerController";
 import { createActionCommandController } from "./setupHandlers/controllers/actionCommandController";
 import { parseInlineActionCommand } from "./setupHandlers/controllers/actionCommandParams";
+import { addZoteroItemsAsDefaultContext } from "./contextSelectionActions";
+import { registerContextSurfaceActionTarget } from "./zoteroItemContextMenu";
 import {
   createCoalescedFrameScheduler,
   getOrCreateKeyedInFlightTask,
@@ -616,6 +618,9 @@ export function setupHandlers(
     slashPdfPageOption,
     slashPdfMultiplePagesOption,
     imagePreview,
+    contextPreviews,
+    contextBarMenu,
+    contextBarClearBtn,
     selectedContextList,
     previewStrip,
     previewExpanded,
@@ -6929,6 +6934,9 @@ export function setupHandlers(
     filePreviewMeta,
     filePreviewClear,
     filePreviewList,
+    contextPreviews,
+    contextBarMenu,
+    contextBarClearBtn,
     previewStrip,
     paperPreview,
     getItem: () => item,
@@ -6950,6 +6958,9 @@ export function setupHandlers(
     updateImagePreviewPreservingScroll,
     updateSelectedTextPreviewPreservingScroll,
     scheduleAttachmentGc,
+    positionContextBarMenuAtPointer: (menu, clientX, clientY) => {
+      positionMenuAtPointer(body, menu, clientX, clientY);
+    },
     setStatusMessage: status
       ? (message, level) => {
           setStatus(status, message, level);
@@ -6959,6 +6970,35 @@ export function setupHandlers(
       ztoolkit.log(message, error);
     },
   });
+
+  const unregisterContextSurfaceActions = registerContextSurfaceActionTarget(
+    body,
+    {
+      surfaceKind:
+        (body as HTMLElement).dataset?.standalone === "true"
+          ? "standalone"
+          : "embedded",
+      addItemsAsDefaultContext: async (zoteroItems) => {
+        const result = await addZoteroItemsAsDefaultContext(
+          {
+            item,
+            resolveAutoLoadedPaperContext,
+            getManualPaperContextsForItem,
+            isPaperContextMineru,
+            getTextContextConversationKey,
+            updatePaperPreviewPreservingScroll,
+            updateSelectedTextPreviewPreservingScroll,
+          },
+          zoteroItems,
+        );
+        if (result.statusMessage && status) {
+          setStatus(status, result.statusMessage, result.statusLevel || "ready");
+        }
+        inputBox.focus({ preventScroll: true });
+        return result;
+      },
+    },
+  );
 
   const cancelActiveAgentAction = (options?: {
     requireVisibleReviewCard?: boolean;
@@ -7121,6 +7161,7 @@ export function setupHandlers(
         delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];
         delete (body as any).__llmScheduleClaudeQueueDrain;
         delete (body as any).__llmScheduleClaudeThreadQueueDrain;
+        unregisterContextSurfaceActions();
         void releaseClaudeRuntimeForBody(body);
         delete cleanupBody.__llmQueuedFollowUpDisconnectCleanup;
         cleanupBody.__llmQueuedFollowUpCleanupRegistered = false;

@@ -1,5 +1,10 @@
 import { t } from "../../../../utils/i18n";
 import {
+  clearUserAddedContextForItem,
+  hasUserAddedContextForItem,
+} from "../../contextSelectionActions";
+import { attachContextBarClearMenuController } from "./contextBarClearMenuController";
+import {
   getActiveContextAttachmentFromTabs,
   getActiveReaderForSelectedTab,
   getSelectedTextContextEntries,
@@ -72,6 +77,9 @@ type ComposePreviewInteractionControllerDeps = {
   filePreviewMeta: HTMLButtonElement | null;
   filePreviewClear: HTMLButtonElement | null;
   filePreviewList: HTMLDivElement | null;
+  contextPreviews: HTMLDivElement | null;
+  contextBarMenu: HTMLDivElement | null;
+  contextBarClearBtn: HTMLButtonElement | null;
   previewStrip: HTMLDivElement | null;
   paperPreview: HTMLDivElement | null;
   getItem: () => Zotero.Item | null;
@@ -110,6 +118,11 @@ type ComposePreviewInteractionControllerDeps = {
   updateImagePreviewPreservingScroll: () => void;
   updateSelectedTextPreviewPreservingScroll: () => void;
   scheduleAttachmentGc: () => void;
+  positionContextBarMenuAtPointer: (
+    menu: HTMLDivElement,
+    clientX: number,
+    clientY: number,
+  ) => void;
   setStatusMessage?: (message: string, level: StatusLevel) => void;
   logError: (message: string, error?: unknown) => void;
 };
@@ -133,6 +146,9 @@ export function attachComposePreviewInteractionController(
     filePreviewMeta,
     filePreviewClear,
     filePreviewList,
+    contextPreviews,
+    contextBarMenu,
+    contextBarClearBtn,
     previewStrip,
     paperPreview,
   } = deps;
@@ -152,6 +168,58 @@ export function attachComposePreviewInteractionController(
     selectedPaperPreviewExpandedCache.set(itemId, false);
     selectedFilePreviewExpandedCache.set(itemId, false);
   };
+
+  const removeUnmanagedSelectedFileCopies = (itemId: number): void => {
+    const selectedFiles = selectedFileAttachmentCache.get(itemId) || [];
+    for (const entry of selectedFiles) {
+      if (!entry?.storedPath) continue;
+      if (entry.contentHash || isManagedBlobPath(entry.storedPath)) continue;
+      void removeAttachmentFile(entry.storedPath).catch((error) => {
+        deps.logError("LLM: Failed to remove cleared attachment file", error);
+      });
+    }
+  };
+
+  const hasClearableContext = (): boolean => {
+    const item = getItem();
+    return (
+      !!item &&
+      hasUserAddedContextForItem({
+        itemId: item.id,
+        textContextKey: deps.getTextContextConversationKey(),
+      })
+    );
+  };
+
+  const clearAllContext = (): void => {
+    const item = getItem();
+    if (!item) return;
+    removeUnmanagedSelectedFileCopies(item.id);
+    const result = clearUserAddedContextForItem({
+      itemId: item.id,
+      textContextKey: deps.getTextContextConversationKey(),
+    });
+    deps.closePaperChipMenu();
+    deps.updatePaperPreviewPreservingScroll();
+    deps.updateFilePreviewPreservingScroll();
+    deps.updateImagePreviewPreservingScroll();
+    deps.updateSelectedTextPreviewPreservingScroll();
+    deps.scheduleAttachmentGc();
+    if (result.statusMessage) {
+      setStatus(result.statusMessage, result.statusLevel || "ready");
+    }
+  };
+
+  attachContextBarClearMenuController({
+    body,
+    contextPreviews,
+    contextBarMenu,
+    contextBarClearBtn,
+    hasContext: hasClearableContext,
+    clearContext: clearAllContext,
+    closeOtherMenus: deps.closePaperChipMenu,
+    positionMenuAtPointer: deps.positionContextBarMenuAtPointer,
+  });
 
   if (previewMeta) {
     previewMeta.addEventListener("click", (event: Event) => {
@@ -222,14 +290,7 @@ export function attachComposePreviewInteractionController(
       event.stopPropagation();
       const item = getItem();
       if (!item) return;
-      const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
-      for (const entry of selectedFiles) {
-        if (!entry?.storedPath) continue;
-        if (entry.contentHash || isManagedBlobPath(entry.storedPath)) continue;
-        void removeAttachmentFile(entry.storedPath).catch((error) => {
-          deps.logError("LLM: Failed to remove cleared attachment file", error);
-        });
-      }
+      removeUnmanagedSelectedFileCopies(item.id);
       deps.clearSelectedFileState(item.id);
       deps.updateFilePreviewPreservingScroll();
       deps.scheduleAttachmentGc();

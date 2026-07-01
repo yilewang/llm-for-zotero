@@ -33,6 +33,12 @@ const zhCN: Record<string, string> = {
   "Open plugin settings": "打开插件设置",
   Export: "导出",
   Clear: "清除",
+  "Clear all": "全部清除",
+  "Context cleared": "上下文已清除",
+  "No context to clear": "没有可清除的上下文",
+  "Add Items as Context to LLM-for-Zotero":
+    "将条目作为上下文添加到 LLM-for-Zotero",
+  "No supported default attachment found": "未找到支持的默认附件",
   Rename: "重命名",
   "Rename chat": "重命名对话",
   Undo: "撤销",

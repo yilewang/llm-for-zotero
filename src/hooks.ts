@@ -11,6 +11,7 @@ import {
 } from "./modules/contextPanel";
 import { resolveActiveLibraryID } from "./modules/contextPanel/portalScope";
 import { invalidatePaperSearchCache } from "./modules/contextPanel/paperSearch";
+import { registerZoteroItemContextMenu } from "./modules/contextPanel/zoteroItemContextMenu";
 import { initChatStore } from "./utils/chatStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
@@ -283,6 +284,32 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   registerReaderContextPanel();
   registerReaderSelectionTracking();
   registerNoteEditingSelectionTracking(win);
+  registerZoteroItemContextMenu({
+    ztoolkit,
+    getSelectedItems: () => {
+      try {
+        const pane = Zotero.getActiveZoteroPane?.() as
+          | { getSelectedItems?: () => Zotero.Item[] }
+          | undefined;
+        const activeItems = pane?.getSelectedItems?.();
+        if (Array.isArray(activeItems)) return activeItems;
+      } catch {
+        void 0;
+      }
+      try {
+        const pane = (win as unknown as {
+          ZoteroPane?: { getSelectedItems?: () => Zotero.Item[] };
+        }).ZoteroPane;
+        const selectedItems = pane?.getSelectedItems?.();
+        return Array.isArray(selectedItems) ? selectedItems : [];
+      } catch {
+        return [];
+      }
+    },
+    openStandaloneChat: (options) => {
+      openStandaloneChat({ initialItem: options?.initialItem || null });
+    },
+  });
 
   // Keyboard shortcut: Ctrl/Cmd+Shift+L
   const doc = win.document;

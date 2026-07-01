@@ -7400,6 +7400,41 @@ label.llm-search-results-item:hover {
   background: var(--fill-quinary);
 }
 
+.llm-context-bar-menu {
+  min-width: 112px;
+  max-width: min(220px, calc(100vw - 24px));
+  gap: 0;
+  padding: 4px;
+}
+
+.llm-context-bar-menu-item {
+  all: unset;
+  box-sizing: border-box;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 5px;
+  color: var(--fill-primary);
+  font: inherit;
+  font-size: var(--llm-fs-12, 12px);
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+}
+
+.llm-context-bar-menu-item:hover,
+.llm-context-bar-menu-item:focus-visible {
+  background: var(--fill-quinary);
+}
+
+.llm-context-bar-menu-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .llm-paper-chip-menu-row .llm-paper-picker-title,
 .llm-paper-chip-menu-row .llm-paper-picker-meta {
   white-space: normal;

@@ -739,6 +739,27 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   inputSection.appendChild(paperPicker);
 
   inputSection.appendChild(contextPreviews);
+  const contextBarMenu = createElement(
+    doc,
+    "div",
+    "llm-model-menu llm-context-bar-menu",
+    {
+      id: "llm-context-bar-menu",
+    },
+  );
+  contextBarMenu.style.display = "none";
+  const contextBarClearBtn = createElement(
+    doc,
+    "button",
+    "llm-context-bar-menu-item",
+    {
+      id: "llm-context-bar-clear",
+      type: "button",
+      textContent: t("Clear all"),
+    },
+  ) as HTMLButtonElement;
+  contextBarMenu.appendChild(contextBarClearBtn);
+  inputSection.appendChild(contextBarMenu);
 
   const composeArea = createElement(doc, "div", "llm-compose-area", {
     id: "llm-compose-area",
