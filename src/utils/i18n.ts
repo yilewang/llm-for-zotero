@@ -541,6 +541,11 @@ const zhCN: Record<string, string> = {
   "Fetching models…": "正在获取模型…",
   "No models found": "未找到模型",
   "Synced %n models": "已同步 %n 个模型",
+  "Loading Codex models…": "正在加载 Codex 模型…",
+  "Could not load Codex models. Showing current model only.":
+    "无法加载 Codex 模型。仅显示当前模型。",
+  "Retry loading Codex models": "重试加载 Codex 模型",
+  "Codex did not return any available models.": "Codex 未返回任何可用模型。",
   "Fetch Models": "获取模型",
   WebChat: "WebChat",
   "Provider A": "服务商 A",

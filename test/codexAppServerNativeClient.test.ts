@@ -11,6 +11,7 @@ import {
   compactCodexAppServerConversation,
   compactCodexAppServerThread,
   isDeniedTrustedZoteroMcpGuardianReviewForTests,
+  listCodexAppServerModels,
   NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
   resolveCodexNativeApprovalRequest,
   resolveSafeCodexNativeApprovalRequest,
@@ -115,6 +116,63 @@ describe("Codex app-server native client", function () {
       (caught as Error).message,
       NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
     );
+  });
+
+  it("requests paged Codex app-server models", async function () {
+    const processKey = "native-model-list-test";
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const writes: string[] = [];
+    let proc!: CodexAppServerProcess;
+    proc = CodexAppServerProcess.forTest({
+      stdin: {
+        write: (chunk: string) => {
+          writes.push(chunk);
+          const request = JSON.parse(chunk) as {
+            id: number;
+            method: string;
+          };
+          if (request.method === "model/list") {
+            setTimeout(() => {
+              (
+                proc as unknown as {
+                  handleMessage: (msg: Record<string, unknown>) => void;
+                }
+              ).handleMessage({
+                id: request.id,
+                result: { data: [], nextCursor: null },
+              });
+            }, 0);
+          }
+        },
+      },
+      kill: () => {},
+    });
+    CodexAppServerProcess.spawn = async () => proc;
+
+    try {
+      const result = await listCodexAppServerModels({
+        processKey,
+        codexPath: "codex",
+        includeHidden: true,
+        cursor: "cursor-1",
+        limit: 50,
+      });
+      assert.deepEqual(result, { data: [], nextCursor: null });
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+      destroyCachedCodexAppServerProcess(processKey, proc, {
+        codexPath: "codex",
+      });
+    }
+
+    const modelListRequest = writes
+      .map((chunk) => JSON.parse(chunk) as { method: string; params: unknown })
+      .find((entry) => entry.method === "model/list");
+    assert.deepEqual(modelListRequest?.params, {
+      includeHidden: true,
+      cursor: "cursor-1",
+      limit: 50,
+    });
   });
 
   it("auto-approves trusted Zotero MCP approval prompts except self-confirmation", function () {

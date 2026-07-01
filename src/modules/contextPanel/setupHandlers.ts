@@ -466,6 +466,11 @@ import {
 } from "../../codexAppServer/prefs";
 import { getConfiguredCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
 import {
+  buildCodexRuntimeModelEntries,
+  loadCodexAppServerModelCatalog,
+  type CodexAppServerModelCatalogEntry,
+} from "../../codexAppServer/modelCatalog";
+import {
   activeClaudeConversationModeByLibrary,
   activeClaudeGlobalConversationByLibrary,
   activeClaudePaperConversationByPaper,
@@ -817,29 +822,70 @@ export function setupHandlers(
   syncQueuedFollowUpRegistration();
   const isClaudeModeAvailable = () => getClaudeCodeModeEnabled();
   const isCodexModeAvailable = () => isCodexAppServerModeEnabled();
+  let codexModelCatalogStatus: "idle" | "loading" | "ready" | "error" = "idle";
+  let codexModelCatalogError = "";
+  let codexModelCatalogModels: CodexAppServerModelCatalogEntry[] = [];
+  let codexModelCatalogInFlight: Promise<void> | null = null;
+  let codexModelCatalogPath = "";
+  const refreshOpenCodexModelMenu = () => {
+    updateModelButton();
+    if (!modelMenu || !modelBtn || !isFloatingMenuOpen(modelMenu)) return;
+    rebuildModelMenu();
+    if (!modelMenu.childElementCount) {
+      closeModelMenu();
+      return;
+    }
+    positionFloatingMenu(body, modelMenu, modelBtn);
+  };
+  const ensureCodexModelCatalogLoaded = (): Promise<void> => {
+    if (!isCodexConversationSystem()) return Promise.resolve();
+    const codexPath = getConfiguredCodexAppServerBinaryPath();
+    if (
+      codexModelCatalogStatus === "ready" &&
+      codexPath === codexModelCatalogPath
+    ) {
+      return Promise.resolve();
+    }
+    if (codexModelCatalogInFlight) return codexModelCatalogInFlight;
+    codexModelCatalogStatus = "loading";
+    codexModelCatalogError = "";
+    codexModelCatalogPath = codexPath;
+    refreshOpenCodexModelMenu();
+    codexModelCatalogInFlight = loadCodexAppServerModelCatalog({ codexPath })
+      .then((catalog) => {
+        codexModelCatalogModels = catalog.models;
+        codexModelCatalogStatus = "ready";
+        codexModelCatalogError = "";
+      })
+      .catch((error: unknown) => {
+        codexModelCatalogModels = [];
+        codexModelCatalogStatus = "error";
+        codexModelCatalogError =
+          error instanceof Error ? error.message : String(error);
+        ztoolkit.log("Codex app-server: failed to load model catalog", error);
+      })
+      .finally(() => {
+        codexModelCatalogInFlight = null;
+        refreshOpenCodexModelMenu();
+      });
+    return codexModelCatalogInFlight;
+  };
   const getCodexRuntimeModelEntries = (): RuntimeModelEntry[] => {
     const model = getCodexRuntimeModelPref();
-    return [
-      {
-        entryId: `codex_app_server::${model}`,
-        groupId: "codex_app_server",
-        model,
-        apiBase: getConfiguredCodexAppServerBinaryPath(),
-        apiKey: "",
-        authMode: "codex_app_server",
-        providerProtocol: "codex_responses",
-        providerLabel: "Codex",
-        providerOrder: -1,
-        displayModelLabel: model,
-        advanced: {
-          temperature: 0.3,
-          maxTokens: 4096,
-        },
-      },
-    ];
+    return buildCodexRuntimeModelEntries({
+      models: codexModelCatalogModels,
+      selectedModel: model,
+      codexPath: getConfiguredCodexAppServerBinaryPath(),
+    });
   };
-  const getSelectedCodexRuntimeEntry = (): RuntimeModelEntry =>
-    getCodexRuntimeModelEntries()[0]!;
+  const getSelectedCodexRuntimeEntry = (): RuntimeModelEntry => {
+    const selectedModel = getCodexRuntimeModelPref().toLowerCase();
+    const entries = getCodexRuntimeModelEntries();
+    return (
+      entries.find((entry) => entry.model.toLowerCase() === selectedModel) ||
+      entries[0]!
+    );
+  };
   const getPreferredTargetSystem = (): ConversationSystem => {
     if (isNoteSession()) {
       return isCodexModeAvailable() ? "codex" : "upstream";
@@ -4377,7 +4423,10 @@ export function setupHandlers(
     menu.appendChild(section);
   };
 
-  const appendModelMenuEmptyState = (menu: HTMLDivElement, text: string) => {
+  const appendModelMenuEmptyState = (
+    menu: HTMLDivElement,
+    text: string,
+  ): HTMLDivElement => {
     const empty = createElement(
       body.ownerDocument as Document,
       "div",
@@ -4388,6 +4437,59 @@ export function setupHandlers(
     );
     empty.setAttribute("aria-hidden", "true");
     menu.appendChild(empty);
+    return empty;
+  };
+
+  const appendModelMenuAction = (
+    menu: HTMLDivElement,
+    text: string,
+    onActivate: (event: Event) => void,
+  ) => {
+    const action = createElement(
+      body.ownerDocument as Document,
+      "button",
+      "llm-response-menu-item llm-model-option",
+      {
+        type: "button",
+        textContent: text,
+      },
+    );
+    action.addEventListener("pointerdown", onActivate);
+    action.addEventListener("click", onActivate);
+    menu.appendChild(action);
+  };
+
+  const appendCodexModelCatalogStatus = (menu: HTMLDivElement) => {
+    if (!isCodexConversationSystem()) return;
+    if (codexModelCatalogStatus === "loading") {
+      appendModelMenuEmptyState(menu, t("Loading Codex models…"));
+      return;
+    }
+    if (codexModelCatalogStatus === "error") {
+      const message = appendModelMenuEmptyState(
+        menu,
+        t("Could not load Codex models. Showing current model only."),
+      );
+      if (codexModelCatalogError) message.title = codexModelCatalogError;
+      appendModelMenuAction(menu, t("Retry loading Codex models"), (event) => {
+        if (!isPrimaryPointerEvent(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        codexModelCatalogStatus = "idle";
+        codexModelCatalogError = "";
+        void ensureCodexModelCatalogLoaded();
+      });
+      return;
+    }
+    if (
+      codexModelCatalogStatus === "ready" &&
+      !codexModelCatalogModels.length
+    ) {
+      appendModelMenuEmptyState(
+        menu,
+        t("Codex did not return any available models."),
+      );
+    }
   };
 
   const rebuildModelMenu = () => {
@@ -4400,6 +4502,7 @@ export function setupHandlers(
       t("Select model"),
       "llm-model-menu-hint",
     );
+    appendCodexModelCatalogStatus(modelMenu);
     if (!groupedChoices.length) {
       appendModelMenuEmptyState(modelMenu, t("No models configured yet."));
       return;
@@ -6821,6 +6924,9 @@ export function setupHandlers(
     closePromptMenu();
     closeHistoryNewMenu();
     closeHistoryMenu();
+    if (isCodexConversationSystem()) {
+      void ensureCodexModelCatalogLoaded();
+    }
     updateModelButton();
     flushResponsiveLayoutSyncNow();
     flushPanelStateRefreshNow();
@@ -6992,7 +7098,11 @@ export function setupHandlers(
           zoteroItems,
         );
         if (result.statusMessage && status) {
-          setStatus(status, result.statusMessage, result.statusLevel || "ready");
+          setStatus(
+            status,
+            result.statusMessage,
+            result.statusLevel || "ready",
+          );
         }
         inputBox.focus({ preventScroll: true });
         return result;

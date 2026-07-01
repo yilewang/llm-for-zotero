@@ -1662,6 +1662,8 @@ export async function listCodexAppServerModels(
   params: {
     codexPath?: string;
     includeHidden?: boolean;
+    cursor?: string;
+    limit?: number;
     processKey?: string;
   } = {},
 ): Promise<unknown> {
@@ -1670,9 +1672,15 @@ export async function listCodexAppServerModels(
     params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
     { codexPath },
   );
-  return proc.sendRequest("model/list", {
+  const requestParams: Record<string, unknown> = {
     includeHidden: params.includeHidden === true,
-  });
+  };
+  if (params.cursor) requestParams.cursor = params.cursor;
+  const limit = params.limit;
+  if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+    requestParams.limit = Math.floor(limit);
+  }
+  return proc.sendRequest("model/list", requestParams);
 }
 
 export async function forkCodexAppServerThread(params: {
