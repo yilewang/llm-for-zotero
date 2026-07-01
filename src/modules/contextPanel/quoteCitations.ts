@@ -11,6 +11,11 @@ import {
   normalizeLocatorText,
   type QuoteTextSearchMatch,
 } from "./quoteTextSearch";
+import {
+  buildQuoteTextIndex,
+  countCanonicalTextMatches,
+  findCanonicalQuoteSourceSpan,
+} from "./quoteTextNormalization";
 import { stripLeadingCitationSeparators } from "./citationText";
 import {
   citationLabelsCompatible,
@@ -739,32 +744,33 @@ function stripOuterQuoteDelimiters(value: string): string {
 }
 
 function countNormalizedSourceOccurrences(text: string, query: string): number {
-  if (!text || !query) return 0;
-  let count = 0;
-  let cursor = 0;
-  while (cursor <= text.length) {
-    const index = text.indexOf(query, cursor);
-    if (index < 0) break;
-    count += 1;
-    cursor = index + Math.max(1, query.length);
-  }
-  return count;
+  return countCanonicalTextMatches(text, query);
 }
 
 function findNormalizedSourceSpanMatch(params: {
   quoteText: string;
   sourceText: string;
-}): { quoteText: string; normalizedQuery: string } | undefined {
+}):
+  | {
+      quoteText: string;
+      normalizedQuery: string;
+      sourceQuoteText?: string;
+    }
+  | undefined {
   const quoteText = stripOuterQuoteDelimiters(params.quoteText);
   const normalizedQuery = normalizeLocatorText(quoteText);
   if (!isLocatorQueryLongEnough(normalizedQuery, 24)) return undefined;
-  const normalizedSource = normalizeLocatorText(params.sourceText);
-  if (countNormalizedSourceOccurrences(normalizedSource, normalizedQuery) < 1) {
+  const sourceIndex = buildQuoteTextIndex(params.sourceText);
+  if (
+    countNormalizedSourceOccurrences(sourceIndex.canonicalText, normalizedQuery) <
+    1
+  ) {
     return undefined;
   }
   const sourceText = normalizeMultilineText(params.sourceText);
   if (sourceText.includes(quoteText)) return undefined;
-  return { quoteText, normalizedQuery };
+  const sourceSpan = findCanonicalQuoteSourceSpan(sourceIndex, quoteText);
+  return { quoteText, normalizedQuery, sourceQuoteText: sourceSpan?.text };
 }
 
 function inferSingleSourceCitationLabel(
@@ -1150,11 +1156,27 @@ function buildTrustedQuoteCitationFromSource(params: {
     sourceText: params.sourceText,
   });
   if (normalizedSpanMatch) {
-    const sourceQuoteText = findBestSourceQuoteSpan({
-      quoteText: normalizedSpanMatch.quoteText,
-      sourceText: params.sourceText,
-      queryText: normalizedSpanMatch.normalizedQuery,
-    });
+    if (
+      params.source.sourceMatchSource === "pdf-page-text" &&
+      params.match?.matchKind === "exact"
+    ) {
+      return buildQuoteCitation({
+        quoteText: normalizeMultilineText(inputQuoteText),
+        citationLabel: params.source.citationLabel,
+        sourceMatchText: normalizedSpanMatch.normalizedQuery,
+        sourceMatchKind: "normalized-span",
+        sourceMatchSource: "pdf-page-text",
+        contextItemId: params.source.contextItemId,
+        itemId: params.source.itemId,
+      });
+    }
+    const sourceQuoteText =
+      normalizedSpanMatch.sourceQuoteText ||
+      findBestSourceQuoteSpan({
+        quoteText: normalizedSpanMatch.quoteText,
+        sourceText: params.sourceText,
+        queryText: normalizedSpanMatch.normalizedQuery,
+      });
     const normalizedDisplayQuote = normalizeLocatorText(
       normalizedSpanMatch.quoteText,
     );

@@ -53,10 +53,20 @@ describe("quoteTextSearch", function () {
     );
 
     assert.isTrue(
-      result.some((query) => query.includes("t-phate takes as input")),
+      result.some((query) => query.includes("t phate takes as input")),
       result.join("\n"),
     );
     assert.isTrue(
+      result.some((query) =>
+        query.includes("temporal autocorrelation based affinity matrix"),
+      ),
+      result.join("\n"),
+    );
+    assert.isFalse(
+      result.some((query) => query.includes("t-phate takes as input")),
+      result.join("\n"),
+    );
+    assert.isFalse(
       result.some((query) =>
         query.includes("temporal autocorrelation-based affinity matrix"),
       ),
@@ -82,6 +92,13 @@ describe("quoteTextSearch", function () {
     assert.equal(
       normalizeLocatorText("记忆痕迹在巩固过程中具有高度动态性。"),
       "记忆痕迹在巩固过程中具有高度动态性",
+    );
+  });
+
+  it("does not hard-code English phrase splitting during normalization", function () {
+    assert.equal(
+      normalizeLocatorText("crossvalidated goodnessof gradientflow"),
+      "crossvalidated goodnessof gradientflow",
     );
   });
 
@@ -116,6 +133,36 @@ describe("quoteTextSearch", function () {
         },
       ],
       quote,
+    );
+
+    assert.isNull(match);
+  });
+
+  it("does not match a normalized query that starts inside a source token", function () {
+    const match = findUniqueQuoteTextSearchMatch(
+      [
+        {
+          id: "paper-a",
+          text: "Neurodynamic states are controlled by training across sessions.",
+        },
+      ],
+      "Dynamic states are controlled by training across sessions.",
+      { includeProgressiveQueries: false },
+    );
+
+    assert.isNull(match);
+  });
+
+  it("does not match a normalized query that ends inside a source token", function () {
+    const match = findUniqueQuoteTextSearchMatch(
+      [
+        {
+          id: "paper-a",
+          text: "Dynamic states are controlled by training across sessionstable dynamics.",
+        },
+      ],
+      "Dynamic states are controlled by training across sessions.",
+      { includeProgressiveQueries: false },
     );
 
     assert.isNull(match);

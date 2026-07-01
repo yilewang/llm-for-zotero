@@ -1216,6 +1216,48 @@ describe("quoteCitations", function () {
     );
   });
 
+  it("does not anchor quotes that start inside a source token", function () {
+    const quote = "Dynamic states are controlled by training across sessions.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n\n(Smith et al., 2024)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "Neurodynamic states are controlled by training across sessions.",
+            sourceLabel: "(Smith et al., 2024)",
+            contextItemId: 1,
+          },
+        ],
+      }),
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, `> ${quote}`);
+  });
+
+  it("preserves source punctuation when normalizing quote spans", function () {
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: "> The model's accuracy dropped sharply.\n\n(Smith et al., 2024)",
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: "The model’s accuracy dropped sharply!",
+            sourceLabel: "(Smith et al., 2024)",
+            contextItemId: 1,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(
+      finalized.quoteCitations[0].quoteText,
+      "The model’s accuracy dropped sharply!",
+    );
+  });
+
   it("repairs normalized math and hyphenation blockquotes without truncating display text", function () {
     const displayQuote =
       "the model's goodness-of-fit, measured by cross-validated R² (cvR²), dropped with the number of sessions intervening between train and test sessions";

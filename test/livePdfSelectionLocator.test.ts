@@ -1123,4 +1123,22 @@ describe("locateQuoteByRawPrefixInPages", function () {
     assert.isNotNull(result);
     assert.equal(result!.computedPageIndex, 1);
   });
+
+  it("resolves MinerU-style math and hyphenation through normalized page text", function () {
+    const result = locateQuoteByRawPrefixInPages(
+      [
+        {
+          pageIndex: 4,
+          pageLabel: "5",
+          text: "The model’s goodness-of-fit, measured by crossvalidated $\\textstyle \\mathbf { R } ^ { 2 }$ (cvR2 ), dropped sharply.",
+        },
+      ],
+      "the model's goodness-of-fit, measured by crossvalidated R² (cvR2 ), dropped",
+      null,
+    );
+
+    assert.isNotNull(result);
+    assert.equal(result!.status, "resolved");
+    assert.equal(result!.computedPageIndex, 4);
+  });
 });
