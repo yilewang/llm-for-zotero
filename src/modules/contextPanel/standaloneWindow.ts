@@ -119,6 +119,7 @@ import {
   buildClaudePaperStateKey,
 } from "../../claudeCode/state";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
+import { scheduleStandaloneWindowFitForElement } from "./standaloneWindowSizing";
 import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
@@ -1730,9 +1731,20 @@ export function openStandaloneChat(options?: {
               if (cancelled) return;
               scheduleStandaloneSidebarRender();
             },
+            onDefaultContextRendered: () => {
+              if (cancelled || newWin.closed) return;
+              const inputSection = contentArea.querySelector(
+                ".llm-input-section",
+              ) as HTMLElement | null;
+              scheduleStandaloneWindowFitForElement(newWin, inputSection);
+            },
             onWebChatModeChanged: (isWebChat) => {
               if (cancelled) return;
               updateStandaloneWebChatUI(isWebChat);
+            },
+            prepareItemsAsDefaultContextTarget: async () => {
+              if (cancelled || newWin.closed) return;
+              return await createStandaloneOpenConversationForContext();
             },
           };
           setupHandlers(contentArea, mountedItem as any, chatHooks);
@@ -3258,42 +3270,38 @@ export function openStandaloneChat(options?: {
         });
       };
 
-      const restoreStandaloneOpenConversation = async (
-        forceFresh = false,
-      ): Promise<boolean> => {
+      const mountStandaloneOpenConversation = (
+        conversationKey: number,
+      ): boolean => {
+        const normalizedKey = Number.isFinite(conversationKey)
+          ? Math.floor(conversationKey)
+          : 0;
+        if (normalizedKey <= 0 || cancelled) return false;
         standaloneMode = "open";
         paperTab.classList.remove("active");
         openTab.classList.add("active");
-        const conversationKey =
-          await resolveStandaloneGlobalConversation(forceFresh);
-        if (!conversationKey || cancelled) {
-          return false;
-        }
-        activeConversationKey = conversationKey;
+        activeConversationKey = normalizedKey;
         const currentLibraryID = getCurrentLibraryScopeID();
         if (isClaudeConversationSystem()) {
           activeClaudeGlobalConversationByLibrary.set(
             buildClaudeLibraryStateKey(currentLibraryID),
-            conversationKey,
+            normalizedKey,
           );
         } else if (isCodexConversationSystem()) {
           activeCodexGlobalConversationByLibrary.set(
             buildCodexLibraryStateKey(currentLibraryID),
-            conversationKey,
+            normalizedKey,
           );
           setLastUsedCodexGlobalConversationKey(
             currentLibraryID,
-            conversationKey,
+            normalizedKey,
           );
         } else {
-          activeGlobalConversationByLibrary.set(
-            currentLibraryID,
-            conversationKey,
-          );
+          activeGlobalConversationByLibrary.set(currentLibraryID, normalizedKey);
         }
         const nextItem = buildStandalonePortalItem({
           mode: "open",
-          conversationKey,
+          conversationKey: normalizedKey,
         });
         if (!nextItem) {
           return false;
@@ -3301,6 +3309,35 @@ export function openStandaloneChat(options?: {
         mountChatPanel(nextItem);
         scheduleStandaloneSidebarRender();
         return true;
+      };
+
+      const createStandaloneOpenConversationForContext =
+        async (): Promise<boolean> => {
+          const currentLibraryID = getCurrentLibraryScopeID();
+          if (!currentLibraryID) return false;
+          const summary = await conversationRepository.createCatalogEntry({
+            system: currentConversationSystem,
+            kind: "global",
+            libraryID: currentLibraryID,
+          });
+          const conversationKey = Number(summary?.conversationKey || 0);
+          if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
+            return false;
+          }
+          if (cancelled) return false;
+          await touchStandaloneEmptyDraftActivity(conversationKey, "global");
+          return mountStandaloneOpenConversation(conversationKey);
+        };
+
+      const restoreStandaloneOpenConversation = async (
+        options: boolean | StandaloneCreateConversationOptions = false,
+      ): Promise<boolean> => {
+        const conversationKey =
+          await resolveStandaloneGlobalConversation(options);
+        if (!conversationKey || cancelled) {
+          return false;
+        }
+        return mountStandaloneOpenConversation(conversationKey);
       };
 
       // Icon strip handlers — new chat

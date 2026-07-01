@@ -526,7 +526,12 @@ let setupHandlersGeneration = 0;
 
 export type SetupHandlersHooks = {
   onConversationHistoryChanged?: () => void;
+  onDefaultContextRendered?: () => void;
   onWebChatModeChanged?: (isWebChat: boolean) => void;
+  prepareItemsAsDefaultContextTarget?: () =>
+    | Promise<boolean | void>
+    | boolean
+    | void;
   /** Called by standalone to clear force-new-chat intent before loading a session. */
   clearWebChatNewChatIntent?: () => void;
   /** Called by standalone to resolve the currently selected model consistently. */
@@ -673,6 +678,8 @@ export function setupHandlers(
     ztoolkit.log("LLM: Could not find panel root");
     return;
   }
+
+  const isStandalonePanel = panelRoot.dataset.standalone === "true";
 
   // Guard: skip re-wiring if handlers were already attached to this exact
   // panelRoot element.  buildUI() creates a fresh panelRoot each time, so
@@ -5679,8 +5686,7 @@ export function setupHandlers(
     // conversation loading.  The parameter-less auto-fire would race with it
     // and resolve to a different (default) conversation, overwriting the
     // explicitly targeted one.
-    const isStandalone = panelRoot.dataset.standalone === "true";
-    if (!isStandalone) {
+    if (!isStandalonePanel) {
       void switchPaperConversation().catch((err) => {
         ztoolkit.log("LLM: Failed to restore paper conversation session", err);
       });
@@ -7080,10 +7086,7 @@ export function setupHandlers(
   const unregisterContextSurfaceActions = registerContextSurfaceActionTarget(
     body,
     {
-      surfaceKind:
-        (body as HTMLElement).dataset?.standalone === "true"
-          ? "standalone"
-          : "embedded",
+      surfaceKind: isStandalonePanel ? "standalone" : "embedded",
       addItemsAsDefaultContext: async (zoteroItems) => {
         const result = await addZoteroItemsAsDefaultContext(
           {
@@ -7107,6 +7110,14 @@ export function setupHandlers(
         inputBox.focus({ preventScroll: true });
         return result;
       },
+      afterItemsAsDefaultContextAdded: (result) => {
+        if (!isStandalonePanel || !result.changed) return;
+        flushPanelStateRefreshNow();
+        hooks?.onDefaultContextRendered?.();
+      },
+      prepareItemsAsDefaultContextTarget: isStandalonePanel
+        ? hooks?.prepareItemsAsDefaultContextTarget
+        : undefined,
     },
   );
 

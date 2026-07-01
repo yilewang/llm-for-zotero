@@ -5,12 +5,22 @@ import type { ZoteroToolkit } from "zotero-plugin-toolkit";
 type AddItemsAsDefaultContext = (
   items: Zotero.Item[],
 ) => Promise<ContextSelectionActionResult>;
+type AfterItemsAsDefaultContextAdded = (
+  result: ContextSelectionActionResult,
+  items: Zotero.Item[],
+) => Promise<void> | void;
+type PrepareItemsAsDefaultContextTarget = () =>
+  | Promise<boolean | void>
+  | boolean
+  | void;
 
 type ContextSurfaceKind = "embedded" | "standalone";
 
 type ContextSurfaceActionTarget = {
   surfaceKind: ContextSurfaceKind;
   addItemsAsDefaultContext: AddItemsAsDefaultContext;
+  afterItemsAsDefaultContextAdded?: AfterItemsAsDefaultContextAdded;
+  prepareItemsAsDefaultContextTarget?: PrepareItemsAsDefaultContextTarget;
 };
 
 type OpenStandaloneChat = (options?: {
@@ -28,6 +38,8 @@ type DispatchDeps = {
 };
 
 const MENU_ID = "llmforzotero-add-items-as-context";
+const MENU_SEPARATOR_BEFORE_ID = "llmforzotero-add-items-as-context-before";
+const MENU_SEPARATOR_AFTER_ID = "llmforzotero-add-items-as-context-after";
 const activeContextSurfaceTargets = new Map<
   Element,
   ContextSurfaceActionTarget
@@ -55,7 +67,7 @@ export function registerContextSurfaceActionTarget(
 ): () => void {
   activeContextSurfaceTargets.set(body, target);
   if (target.surfaceKind === "standalone") {
-    void drainPendingStandaloneContextItems(target.addItemsAsDefaultContext);
+    void drainPendingStandaloneContextItems(target);
   }
   return () => {
     if (activeContextSurfaceTargets.get(body) === target) {
@@ -75,7 +87,17 @@ export async function dispatchZoteroItemsAsContext(
   const standaloneTarget = getConnectedContextSurfaceTarget("standalone");
   if (standaloneTarget) {
     deps.openStandaloneChat({ initialItem: null });
-    await standaloneTarget.addItemsAsDefaultContext(selectedItems);
+    const preparedTarget =
+      await prepareStandaloneContextTarget(standaloneTarget);
+    if (!preparedTarget) {
+      return { dispatched: false, openedStandalone: true };
+    }
+    const result =
+      await preparedTarget.addItemsAsDefaultContext(selectedItems);
+    await preparedTarget.afterItemsAsDefaultContextAdded?.(
+      result,
+      selectedItems,
+    );
     return { dispatched: true, openedStandalone: true };
   }
   pendingStandaloneContextItems.push(selectedItems);
@@ -84,6 +106,10 @@ export async function dispatchZoteroItemsAsContext(
 }
 
 export function registerZoteroItemContextMenu(deps: RegisterMenuDeps): void {
+  deps.ztoolkit.Menu?.register?.("item", {
+    tag: "menuseparator",
+    id: MENU_SEPARATOR_BEFORE_ID,
+  });
   deps.ztoolkit.Menu?.register?.("item", {
     tag: "menuitem",
     id: MENU_ID,
@@ -95,21 +121,44 @@ export function registerZoteroItemContextMenu(deps: RegisterMenuDeps): void {
       });
     },
   });
+  deps.ztoolkit.Menu?.register?.("item", {
+    tag: "menuseparator",
+    id: MENU_SEPARATOR_AFTER_ID,
+  });
 }
 
 async function drainPendingStandaloneContextItems(
-  addItemsAsDefaultContext: AddItemsAsDefaultContext,
+  fallbackTarget: ContextSurfaceActionTarget,
 ): Promise<void> {
   while (pendingStandaloneContextItems.length) {
     const items = pendingStandaloneContextItems.shift();
-    if (items?.length) await addItemsAsDefaultContext(items);
+    if (items?.length) {
+      const target =
+        getConnectedContextSurfaceTarget("standalone") || fallbackTarget;
+      const preparedTarget = await prepareStandaloneContextTarget(target);
+      if (!preparedTarget) continue;
+      const result = await preparedTarget.addItemsAsDefaultContext(items);
+      await preparedTarget.afterItemsAsDefaultContextAdded?.(result, items);
+    }
   }
+}
+
+async function prepareStandaloneContextTarget(
+  target: ContextSurfaceActionTarget,
+): Promise<ContextSurfaceActionTarget | null> {
+  if (target.surfaceKind !== "standalone") return target;
+  const prepared = await target.prepareItemsAsDefaultContextTarget?.();
+  if (prepared === false) return null;
+  return getConnectedContextSurfaceTarget("standalone") || target;
 }
 
 export async function drainPendingStandaloneContextItemsForTests(
   addItemsAsDefaultContext: AddItemsAsDefaultContext,
 ): Promise<void> {
-  await drainPendingStandaloneContextItems(addItemsAsDefaultContext);
+  await drainPendingStandaloneContextItems({
+    surfaceKind: "standalone",
+    addItemsAsDefaultContext,
+  });
 }
 
 export function clearContextSurfaceActionTargetsForTests(): void {

@@ -28,6 +28,8 @@ function diagnosticsMessage(
       conversationKind: diagnostics.conversationKind,
       statusText: diagnostics.statusText,
       titleText: diagnostics.titleText,
+      chipText: diagnostics.chipText,
+      messageText: diagnostics.messageText,
       paperTabText: diagnostics.paperTabText,
       openTabText: diagnostics.openTabText,
       lastSend: diagnostics.lastSend
@@ -199,6 +201,72 @@ describe("workflow: standalone document chat", function () {
     );
     assert.equal(
       send.contextSource?.paperContext?.contextItemId,
+      fixture.pdfAttachmentId,
+      diagnosticsMessage(postSendDiagnostics),
+    );
+  });
+
+  it("adds right-click Zotero context to a new blank Library Chat", async function () {
+    const fixture = await api.createPaperWithPdfFixture({
+      title: "Workflow Right Click Context Paper",
+      pdfTitle: "Workflow Right Click Context PDF",
+    });
+    fixtures.push(fixture);
+
+    const initial = await api.openStandaloneForItem(fixture.parentItemId);
+    assert.equal(initial.activeTab, "paper", diagnosticsMessage(initial));
+
+    const openMode = await api.clickStandaloneTab("open");
+    assert.equal(openMode.activeTab, "open", diagnosticsMessage(openMode));
+    const oldConversationKey = openMode.conversationKey;
+    assert.isOk(oldConversationKey, diagnosticsMessage(openMode));
+
+    const oldMarker = "workflow old library chat marker before right click";
+    const oldChat = await api.seedStandaloneUserMessage(oldMarker);
+    assert.include(
+      oldChat.messageText || "",
+      oldMarker,
+      diagnosticsMessage(oldChat),
+    );
+
+    const afterContext = await api.addItemsAsStandaloneContext([
+      fixture.parentItemId,
+    ]);
+    assert.equal(
+      afterContext.activeTab,
+      "open",
+      diagnosticsMessage(afterContext),
+    );
+    assert.notEqual(
+      afterContext.conversationKey,
+      oldConversationKey,
+      diagnosticsMessage(afterContext),
+    );
+    assert.notInclude(
+      afterContext.messageText || "",
+      oldMarker,
+      diagnosticsMessage(afterContext),
+    );
+    assert.include(
+      (afterContext.statusText || "").toLowerCase(),
+      "context added",
+      diagnosticsMessage(afterContext),
+    );
+    assert.isAtLeast(
+      afterContext.chipText.length,
+      1,
+      diagnosticsMessage(afterContext),
+    );
+
+    const send = await api.askStandalone("Use the newly added paper context.");
+    const postSendDiagnostics = await api.getStandaloneDiagnostics();
+    assert.equal(
+      send.paperContexts?.[0]?.itemId,
+      fixture.parentItemId,
+      diagnosticsMessage(postSendDiagnostics),
+    );
+    assert.equal(
+      send.paperContexts?.[0]?.contextItemId,
       fixture.pdfAttachmentId,
       diagnosticsMessage(postSendDiagnostics),
     );

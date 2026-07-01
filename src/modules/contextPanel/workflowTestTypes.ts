@@ -45,6 +45,8 @@ export type WorkflowTestStandaloneDiagnostics = {
   contextItemId?: number;
   conversationKind?: string;
   titleText?: string;
+  chipText: string[];
+  messageText?: string;
   paperTabText?: string;
   openTabText?: string;
   statusText?: string;
@@ -79,8 +81,14 @@ export type WorkflowTestApi = {
     tab: "paper" | "open",
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
+  seedStandaloneUserMessage: (
+    text: string,
+  ) => Promise<WorkflowTestStandaloneDiagnostics>;
   notifyStandaloneItemChanged: (
     itemId: number | null,
+  ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  addItemsAsStandaloneContext: (
+    itemIds: number[],
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
   getStandaloneDiagnostics: () => Promise<WorkflowTestStandaloneDiagnostics>;
   closeStandalone: () => Promise<void>;
