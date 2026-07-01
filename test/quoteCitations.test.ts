@@ -1442,6 +1442,136 @@ describe("quoteCitations", function () {
     assert.notInclude(html, "(Carrasco et al., 2026) *");
   });
 
+  it("keeps adjacent manual blockquotes separate from rendered quote anchors", function () {
+    const first = buildQuoteCitation({
+      quoteText: "Trusted quote text from the paper.",
+      citationLabel: "(Trusted, 2026)",
+      contextItemId: 22,
+    });
+    const second = buildQuoteCitation({
+      quoteText: "Second trusted quote with Unicode punctuation: alpha-beta.",
+      citationLabel: "(Second, 2026)",
+      contextItemId: 23,
+    });
+    assert.isDefined(first);
+    assert.isDefined(second);
+
+    const cases = [
+      {
+        name: "bare anchor after manual quote",
+        markdown: `> Unresolved manual quote.\n[[quote:${first!.id}]]`,
+        expectedBlockquotes: 2,
+      },
+      {
+        name: "blockquote-wrapped anchor after manual quote",
+        markdown: `> Unresolved manual quote.\n> [[quote:${first!.id}]]`,
+        expectedBlockquotes: 2,
+      },
+      {
+        name: "manual quote after anchor",
+        markdown: `[[quote:${first!.id}]]\n> Unresolved manual quote.`,
+        expectedBlockquotes: 2,
+      },
+      {
+        name: "two adjacent anchors",
+        markdown: `[[quote:${first!.id}]]\n[[quote:${second!.id}]]`,
+        expectedBlockquotes: 2,
+      },
+      {
+        name: "paragraph and heading around anchor",
+        markdown: `Intro paragraph.\n[[quote:${first!.id}]]\n## Next finding`,
+        expectedBlockquotes: 1,
+      },
+      {
+        name: "list items around indented anchor",
+        markdown: [
+          "- **Metric:** compared across sessions.",
+          `  [[quote:${first!.id}]]`,
+          "- **Decoder:** transferred across sessions.",
+        ].join("\n"),
+        expectedBlockquotes: 1,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+        testCase.markdown,
+        [first!, second!],
+      );
+      const html = renderMarkdown(rendered);
+
+      assert.equal(
+        countOccurrences(html, "<blockquote>"),
+        testCase.expectedBlockquotes,
+        testCase.name,
+      );
+      assert.notInclude(
+        rendered,
+        "> Unresolved manual quote.\n> Trusted quote text from the paper.",
+        testCase.name,
+      );
+      assert.notInclude(html, "<blockquote><blockquote>", testCase.name);
+    }
+  });
+
+  it("does not expand quote anchors inside fenced code examples", function () {
+    const citation = buildQuoteCitation({
+      quoteText: "Trusted quote text from the paper.",
+      citationLabel: "(Trusted, 2026)",
+      contextItemId: 22,
+    });
+    assert.isDefined(citation);
+
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      ["```text", `[[quote:${citation!.id}]]`, "```"].join("\n"),
+      [citation!],
+    );
+
+    assert.include(rendered, `[[quote:${citation!.id}]]`);
+    assert.notInclude(rendered, "> Trusted quote text from the paper.");
+  });
+
+  it("finalizes blockquote-wrapped quote anchors without swallowing the preceding quote", function () {
+    const citation = buildQuoteCitation({
+      quoteText: "Trusted quote text from the paper.",
+      citationLabel: "(Trusted, 2026)",
+      contextItemId: 22,
+    });
+    assert.isDefined(citation);
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> Unresolved manual quote.\n> [[quote:${citation!.id}]]`,
+      quoteCitations: [citation!],
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: "Trusted quote text from the paper.",
+            sourceLabel: "(Trusted, 2026)",
+            contextItemId: 22,
+          },
+          {
+            sourceText: "Another source text from a different paper.",
+            sourceLabel: "(Other, 2025)",
+            contextItemId: 23,
+          },
+        ],
+      }),
+    });
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      finalized.markdown,
+      finalized.quoteCitations,
+    );
+    const html = renderMarkdown(rendered);
+
+    assert.include(finalized.markdown, "> Unresolved manual quote.");
+    assert.notInclude(finalized.markdown, "Unresolved manual quote.\n[[quote:");
+    assert.equal(countOccurrences(html, "<blockquote>"), 2);
+    assert.notInclude(
+      rendered,
+      "> Unresolved manual quote.\n> Trusted quote text from the paper.",
+    );
+  });
+
   it("omits unresolved placeholders on external text surfaces", function () {
     const preserved = replaceQuoteCitationPlaceholdersForMarkdown(
       "Evidence: [[quote:Q_missing]]",

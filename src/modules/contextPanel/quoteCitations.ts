@@ -24,6 +24,8 @@ import {
 export const QUOTE_CITATION_PATTERN = /\[\[quote:([A-Za-z0-9_-]+)\]\]/g;
 const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN =
   /^[ \t]*(?:>[ \t]*)+\[\[quote:([A-Za-z0-9_-]+)\]\][ \t]*$/gm;
+const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_PATTERN =
+  /^[ \t]*(?:>[ \t]*)+\[\[quote:([A-Za-z0-9_-]+)\]\][ \t]*$/;
 const STRUCTURED_SOURCE_MARKER_PATTERN =
   /\[\[\s*source\s*=\s*([^\]]+?)\s*\]\]/gi;
 const BRACKETED_SOURCE_METADATA_PATTERN = /\[\s*source\s*=\s*([^\]]+?)\s*\]/gi;
@@ -280,6 +282,22 @@ function stripBlockquoteMarker(line: string): string {
   return line.replace(/^[ \t]*(?:>[ \t]?)+/, "");
 }
 
+function isBlockquoteWrappedQuoteCitationLine(line: string): boolean {
+  return BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_PATTERN.test(line);
+}
+
+function unwrapBlockquoteWrappedQuoteCitationPlaceholders(
+  markdown: string,
+): string {
+  BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN.lastIndex = 0;
+  const unwrapped = markdown.replace(
+    BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN,
+    (_token, id: string) => `[[quote:${id}]]`,
+  );
+  BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN.lastIndex = 0;
+  return unwrapped;
+}
+
 function splitTrailingCitationFromQuoteText(value: string): {
   quoteText: string;
   citationLabel: string;
@@ -410,7 +428,16 @@ export function sanitizeUntrustedSourceBackedQuoteBlocks(
 
     const blockStart = index;
     const quoteLines: string[] = [];
-    while (index < lines.length && /^[ \t]*>/.test(lines[index])) {
+    if (isBlockquoteWrappedQuoteCitationLine(line)) {
+      out.push(line);
+      continue;
+    }
+
+    while (
+      index < lines.length &&
+      /^[ \t]*>/.test(lines[index]) &&
+      !isBlockquoteWrappedQuoteCitationLine(lines[index])
+    ) {
       quoteLines.push(stripBlockquoteMarker(lines[index]));
       index += 1;
     }
@@ -1505,7 +1532,16 @@ export function finalizeAssistantQuoteCitations(params: {
 
     const blockStart = index;
     const quoteLines: string[] = [];
-    while (index < lines.length && /^[ \t]*>/.test(lines[index])) {
+    if (isBlockquoteWrappedQuoteCitationLine(line)) {
+      out.push(line);
+      continue;
+    }
+
+    while (
+      index < lines.length &&
+      /^[ \t]*>/.test(lines[index]) &&
+      !isBlockquoteWrappedQuoteCitationLine(lines[index])
+    ) {
       quoteLines.push(stripBlockquoteMarker(lines[index]));
       index += 1;
     }
@@ -1694,9 +1730,11 @@ function endsWithLineBreak(value: string): boolean {
 function normalizeQuoteCitationPlaceholderBoundariesInSegment(
   markdown: string,
 ): string {
-  if (!markdown || !QUOTE_CITATION_PATTERN.test(markdown)) {
+  const unwrappedMarkdown =
+    unwrapBlockquoteWrappedQuoteCitationPlaceholders(markdown);
+  if (!unwrappedMarkdown || !QUOTE_CITATION_PATTERN.test(unwrappedMarkdown)) {
     QUOTE_CITATION_PATTERN.lastIndex = 0;
-    return markdown;
+    return unwrappedMarkdown;
   }
   QUOTE_CITATION_PATTERN.lastIndex = 0;
 
@@ -1724,10 +1762,10 @@ function normalizeQuoteCitationPlaceholderBoundariesInSegment(
     appendedQuoteAnchor = false;
   };
 
-  for (const match of markdown.matchAll(QUOTE_CITATION_PATTERN)) {
+  for (const match of unwrappedMarkdown.matchAll(QUOTE_CITATION_PATTERN)) {
     const start = match.index || 0;
     const token = match[0];
-    appendText(markdown.slice(cursor, start));
+    appendText(unwrappedMarkdown.slice(cursor, start));
     result = result.replace(/[ \t]+$/, "");
     if (result.trim() && !endsWithBlankLine(result)) {
       result += endsWithLineBreak(result) ? "\n" : "\n\n";
@@ -1736,20 +1774,15 @@ function normalizeQuoteCitationPlaceholderBoundariesInSegment(
     appendedQuoteAnchor = true;
     cursor = start + token.length;
   }
-  appendText(markdown.slice(cursor));
+  appendText(unwrappedMarkdown.slice(cursor));
   QUOTE_CITATION_PATTERN.lastIndex = 0;
   return result;
 }
 
-export function normalizeQuoteCitationPlaceholdersForDisplay(
+function transformMarkdownOutsideFencedCode(
   markdown: string,
+  transformSegment: (segment: string) => string,
 ): string {
-  if (!markdown || !QUOTE_CITATION_PATTERN.test(markdown)) {
-    QUOTE_CITATION_PATTERN.lastIndex = 0;
-    return markdown;
-  }
-  QUOTE_CITATION_PATTERN.lastIndex = 0;
-
   const lines = markdown.split("\n");
   const segments: string[] = [];
   let current: string[] = [];
@@ -1759,11 +1792,7 @@ export function normalizeQuoteCitationPlaceholdersForDisplay(
   const flush = () => {
     if (!current.length) return;
     const segment = current.join("\n");
-    segments.push(
-      currentIsFence
-        ? segment
-        : normalizeQuoteCitationPlaceholderBoundariesInSegment(segment),
-    );
+    segments.push(currentIsFence ? segment : transformSegment(segment));
     current = [];
   };
 
@@ -1791,6 +1820,21 @@ export function normalizeQuoteCitationPlaceholdersForDisplay(
   }
   flush();
   return segments.join("\n");
+}
+
+export function normalizeQuoteCitationPlaceholdersForDisplay(
+  markdown: string,
+): string {
+  if (!markdown || !QUOTE_CITATION_PATTERN.test(markdown)) {
+    QUOTE_CITATION_PATTERN.lastIndex = 0;
+    return markdown;
+  }
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+
+  return transformMarkdownOutsideFencedCode(
+    markdown,
+    normalizeQuoteCitationPlaceholderBoundariesInSegment,
+  );
 }
 
 export function findUnresolvedQuoteCitationPlaceholderIds(
@@ -1842,6 +1886,28 @@ export function replaceQuoteCitationPlaceholdersForMarkdown(
   const invalidIds = collectInvalidQuoteCitationIds(quoteCitations);
   const resolved = options.resolved || "markdown";
   const unresolved = options.unresolved || "preserve";
+  const shouldOmitToken = (id: string): boolean => {
+    if (invalidIds.has(id)) return true;
+    return !byId.has(id) && unresolved !== "preserve";
+  };
+  const omissionFilteredMarkdown = transformMarkdownOutsideFencedCode(
+    safeMarkdown,
+    (segment) => {
+      BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN.lastIndex = 0;
+      const withoutWrappedOmissions = segment.replace(
+        BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN,
+        (token, id: string) => (shouldOmitToken(id) ? "" : token),
+      );
+      BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN.lastIndex = 0;
+      QUOTE_CITATION_PATTERN.lastIndex = 0;
+      const withoutOmissions = withoutWrappedOmissions.replace(
+        QUOTE_CITATION_PATTERN,
+        (token, id: string) => (shouldOmitToken(id) ? "" : token),
+      );
+      QUOTE_CITATION_PATTERN.lastIndex = 0;
+      return withoutOmissions;
+    },
+  );
   const replaceToken = (token: string, id: string): string => {
     const citation = byId.get(id);
     if (citation) {
@@ -1854,14 +1920,22 @@ export function replaceQuoteCitationPlaceholdersForMarkdown(
       ? token
       : formatUnresolvedQuoteCitationPlaceholder(unresolved);
   };
-  const normalizedMarkdown = safeMarkdown.replace(
-    BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN,
-    (token, id: string) => replaceToken(token, id),
+  const normalizedMarkdown = normalizeQuoteCitationPlaceholdersForDisplay(
+    omissionFilteredMarkdown,
   );
-  QUOTE_CITATION_PATTERN.lastIndex = 0;
-  return cleanupEmptyCitationParentheticals(
-    normalizedMarkdown.replace(QUOTE_CITATION_PATTERN, replaceToken),
+  const replacedMarkdown = transformMarkdownOutsideFencedCode(
+    normalizedMarkdown,
+    (segment) => {
+      QUOTE_CITATION_PATTERN.lastIndex = 0;
+      const replacedSegment = segment.replace(
+        QUOTE_CITATION_PATTERN,
+        replaceToken,
+      );
+      QUOTE_CITATION_PATTERN.lastIndex = 0;
+      return replacedSegment;
+    },
   );
+  return cleanupEmptyCitationParentheticals(replacedMarkdown);
 }
 
 function extractFromUnknown(
