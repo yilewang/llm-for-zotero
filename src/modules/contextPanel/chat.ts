@@ -7124,6 +7124,7 @@ export type BuildAgentRuntimeRequestParams = {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  citationPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
   attachments: ChatAttachment[] | undefined;
@@ -7445,6 +7446,7 @@ async function buildAgentRuntimeRequest(
     selectedTextPaperContexts: params.selectedTextPaperContexts,
     selectedPaperContexts: enrichedPaperContexts,
     fullTextPaperContexts: enrichedFullTextPapers,
+    citationPaperContexts: normalizePaperContexts(params.citationPaperContexts),
     selectedCollectionContexts: normalizeCollectionContexts(
       params.selectedCollectionContexts,
     ),
@@ -7552,9 +7554,13 @@ function buildAgentEngineDeps(
     finalizeAssistantQuoteCitations: async (
       assistantMessage,
       pairedUserMessage,
+      runtimeRequest,
     ) => {
       await finalizeAssistantMessageQuoteCitations(assistantMessage, {
         pairedUserMessage,
+        paperContexts: runtimeRequest?.selectedPaperContexts,
+        fullTextPaperContexts: runtimeRequest?.fullTextPaperContexts,
+        citationPaperContexts: runtimeRequest?.citationPaperContexts,
       });
     },
     appendReasoningPart,

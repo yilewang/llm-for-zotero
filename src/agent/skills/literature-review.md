@@ -92,6 +92,9 @@ Do not embed MinerU source image paths.
   Cite concrete claims about methods, datasets, results, definitions, equations, limitations, and the authors' own interpretations.
   Use short direct quotes when the exact wording matters or when a key point benefits from visible evidence.
   For background explanation, synthesis, or your own interpretation, write clearly and cite only the specific paper claim it depends on.
+  `>` Markdown blockquotes are reserved only for direct original source text.
+  Quote anchors are preferred for direct source quotes; use the exact anchor token when one is available.
+  For interpretation, emphasis, examples, or opinion, use normal prose or fenced `text` blocks, never `>` blockquotes.
   Do not append a standalone source label or citation-only final line after ordinary summary prose; source labels on their own line belong only after direct blockquotes when no quote anchor is available.
   Use quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.
   Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence.
@@ -99,7 +102,10 @@ Do not embed MinerU source image paths.
 - Use `(Author, Year)` for single-author papers, `(Author & Author, Year)` for two, `(Author et al., Year)` for three or more.
 - The citation label should match the Zotero item metadata (use `creators` and `date` fields).
 - Do NOT invent citations or cite papers not in the user's library.
-- If a deep-read passage provides a quote anchor like `[[quote:Q_x7a2]]`, use that anchor token for the direct quote. Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. Put any translation outside the blockquote as explanation. If no quote anchor is provided, put the source label on the next non-empty line after the blockquote.
+- If a deep-read passage provides a quote anchor like `[[quote:Q_x7a2]]`, use that anchor token for the direct quote.
+  Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language.
+  Put any translation outside the blockquote as explanation.
+  If no quote anchor is provided, put the source label on the next non-empty line after the blockquote.
 - Copy the Source label string exactly.
 - Do not invent author/year/page/section labels.
 - Do not write `[[source=...]]`, `section=...`, or `chunk=...` metadata in the final answer.

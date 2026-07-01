@@ -132,11 +132,30 @@ export type QuoteTextSearchOptions = {
   debugLabel?: string;
 };
 
+function normalizeLocatorSourceVariants(value: string): string {
+  return value
+    .replace(
+      /\\(?:textstyle|displaystyle|scriptstyle|scriptscriptstyle|mathbf|mathrm|mathit|mathsf|mathbb|mathcal|pmb|boldsymbol)\b/g,
+      " ",
+    )
+    .replace(/\{\s*([A-Za-z])\s*\}\s*\^\s*\{\s*([0-9]+)\s*\}/g, "$1$2")
+    .replace(/\b([A-Za-z])\s*\^\s*\{\s*([0-9]+)\s*\}/g, "$1$2")
+    .replace(/\b([A-Za-z])\s*\^\s*([0-9]+)\b/g, "$1$2")
+    .replace(/\bcrossvalidated\b/gi, "cross validated")
+    .replace(/\bcrosssession\b/gi, "cross session")
+    .replace(/\bgoodnessof\b/gi, "goodness of");
+}
+
 export function normalizeLocatorText(value: string): string {
-  return sanitizeText(value || "")
+  return normalizeLocatorSourceVariants(
+    sanitizeText(value || "").normalize("NFKC"),
+  )
     .normalize("NFKC")
     .replace(/\u00ad/g, "")
     .replace(/([A-Za-z])-\s+([A-Za-z])/g, "$1$2")
+    .replace(/\bcrossvalidated\b/gi, "cross validated")
+    .replace(/\bcrosssession\b/gi, "cross session")
+    .replace(/\bgoodnessof\b/gi, "goodness of")
     .replace(/[“”‘’]/g, " ")
     .replace(/[‐‑‒–—-]/g, " ")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")

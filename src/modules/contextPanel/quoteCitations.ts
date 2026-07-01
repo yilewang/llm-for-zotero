@@ -12,6 +12,14 @@ import {
   type QuoteTextSearchMatch,
 } from "./quoteTextSearch";
 import { stripLeadingCitationSeparators } from "./citationText";
+import {
+  citationLabelsCompatible,
+  isCanonicalSourceCitationLabel,
+  isNonSourceCitationLabel,
+  normalizeCitationLabelForMatch,
+  normalizeWrappedCitationLabel as normalizeCitationLabel,
+  parseStandaloneCitationLabel as parseStandaloneSourceCitationLabel,
+} from "./citationLabelParser";
 
 export const QUOTE_CITATION_PATTERN = /\[\[quote:([A-Za-z0-9_-]+)\]\]/g;
 const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_PATTERN =
@@ -25,29 +33,6 @@ const SOURCE_QUOTE_ELLIPSIS_PATTERN =
 const SOURCE_QUOTE_ELLIPSIS_PATTERN_G =
   /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/g;
 const SOURCE_QUOTE_TOKEN_PATTERN = /[\p{L}\p{N}]+/gu;
-const SECTION_ONLY_LABELS = new Set([
-  "abstract",
-  "background",
-  "conclusion",
-  "conclusions",
-  "discussion",
-  "experiment",
-  "experiments",
-  "introduction",
-  "limitation",
-  "limitations",
-  "material and methods",
-  "materials and methods",
-  "method",
-  "methodology",
-  "methods",
-  "result",
-  "results",
-  "supplement",
-  "supplementary",
-  "supplementary material",
-  "supplementary materials",
-]);
 const NON_SOURCE_TRAILING_LABEL_PATTERN =
   /^([\s\S]*?)\s*(\([^()\n]{1,240}\))\s*([.!?。！？]*)$/;
 
@@ -95,50 +80,12 @@ function normalizePositiveInt(value: unknown): number | undefined {
   return normalized > 0 ? normalized : undefined;
 }
 
-function normalizeCitationLabel(value: unknown): string {
-  const label = normalizeText(value);
-  if (!label) return "";
-  if (label.startsWith("(") && label.endsWith(")")) return label;
-  return `(${label.replace(/^\(+|\)+$/g, "")})`;
-}
-
 function normalizeQuoteMatchSource(
   value: unknown,
 ): QuoteCitation["sourceMatchSource"] | undefined {
   return value === "context-text" || value === "pdf-page-text"
     ? value
     : undefined;
-}
-
-function normalizeCitationLabelForCompatibility(value: unknown): string {
-  const label = normalizeCitationLabel(value);
-  if (!label) return "";
-  return label
-    .replace(/^\(+|\)+$/g, "")
-    .normalize("NFKC")
-    .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ")
-    .replace(/&/g, " and ")
-    .replace(
-      /,\s*(?:pages?|p\.?|pp\.?)\s+[A-Za-z0-9ivxlcdmIVXLCDM]+(?:\s*[-\u2010-\u2015]\s*[A-Za-z0-9ivxlcdmIVXLCDM]+)?\s*$/i,
-      "",
-    )
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function citationLabelsCompatible(
-  sourceLabel: string,
-  requestedLabel: string,
-): boolean {
-  const sourceExact = normalizeCitationLabelForMatch(sourceLabel);
-  const requestedExact = normalizeCitationLabelForMatch(requestedLabel);
-  if (!sourceExact || !requestedExact) return false;
-  if (sourceExact === requestedExact) return true;
-  const sourceCore = normalizeCitationLabelForCompatibility(sourceLabel);
-  const requestedCore = normalizeCitationLabelForCompatibility(requestedLabel);
-  return Boolean(sourceCore && requestedCore && sourceCore === requestedCore);
 }
 
 function truncateForPrompt(value: string, maxLength = 360): string {
@@ -308,57 +255,8 @@ export function isQuoteWorthySourceText(value: unknown): boolean {
   return true;
 }
 
-function stripPageSuffixFromCitationLabel(value: string): string {
-  const label = normalizeCitationLabel(value);
-  const inner = label.replace(/^\(|\)$/g, "").trim();
-  const withoutPage = inner
-    .replace(/,\s*(?:p\.?|pp\.?|page|pages)\s+[^,)]+$/i, "")
-    .trim();
-  return normalizeCitationLabel(withoutPage || inner);
-}
-
-function normalizeCitationLabelForMatch(value: unknown): string {
-  return stripPageSuffixFromCitationLabel(normalizeCitationLabel(value))
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function citationInnerText(value: unknown): string {
-  return normalizeCitationLabel(value)
-    .replace(/^\(|\)$/g, "")
-    .trim();
-}
-
 export function isNonSourceQuoteLabel(value: string): boolean {
-  const inner = citationInnerText(value)
-    .replace(/^["'“”]+|["'“”]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-  if (!inner) return false;
-  const leadingSegment = inner
-    .split(/[,;:–—-]/)[0]
-    .replace(/^["'“”]+|["'“”]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (
-    SECTION_ONLY_LABELS.has(inner) ||
-    SECTION_ONLY_LABELS.has(leadingSegment)
-  ) {
-    return true;
-  }
-  return (
-    /^(?:caption|legend|figure caption|fig\.?\s+caption|table caption)$/i.test(
-      inner,
-    ) ||
-    /^(?:supplementary|supplemental|appendix|appendices)(?:\s+(?:table|tab\.?|figure|fig\.?|section|text|material|materials|note|notes|data|movie|video|file|information))?(?:\s+[a-z0-9][a-z0-9._-]*)?(?:\s+(?:caption|legend))?(?:\s*[,;:–—-].*)?$/i.test(
-      inner,
-    ) ||
-    /^(?:table|tab\.?|figure|fig\.?|fig|box|equation|eq\.?|scheme|algorithm)(?:\s+[a-z0-9][a-z0-9._-]*)?(?:\s+(?:caption|legend))?(?:\s*[,;:–—-].*)?$/i.test(
-      inner,
-    )
-  );
+  return isNonSourceCitationLabel(value);
 }
 
 export function isSectionOnlyCitationLabel(value: string): boolean {
@@ -366,44 +264,16 @@ export function isSectionOnlyCitationLabel(value: string): boolean {
 }
 
 export function isCanonicalQuoteSourceLabel(value: string): boolean {
-  const label = normalizeCitationLabel(value);
-  if (!label.startsWith("(") || !label.endsWith(")") || label.length > 300) {
-    return false;
-  }
-  if (isNonSourceQuoteLabel(label)) return false;
-  const inner = citationInnerText(label);
-  if (!inner) return false;
-  if (/\battachment\s+under\b/i.test(inner)) return true;
-  if (/\b(?:19|20)\d{2}[a-z]?\b/i.test(inner)) return true;
-  if (/\bet\s+al\.?\b/i.test(inner)) return true;
-  if (/\[[^\]]+\]/.test(inner)) return true;
-  if (/^paper(?:\s+\d+)?$/i.test(inner)) return true;
-  if (
-    /^[\p{L}][\p{L}'’.-]+(?:\s+(?:and|&)\s+[\p{L}][\p{L}'’.-]+)?$/u.test(inner)
-  ) {
-    return true;
-  }
-  return false;
-}
-
-function looksLikeSourceCitationLabel(value: string): boolean {
-  const label = normalizeCitationLabel(value);
-  const inner = label.replace(/^\(|\)$/g, "").trim();
-  if (!inner) return false;
-  if (isNonSourceQuoteLabel(label)) return false;
-  if (isCanonicalQuoteSourceLabel(label)) return true;
-  if (/\b(?:19|20)\d{2}\b/.test(inner)) return true;
-  if (/\bet\s+al\.?\b/i.test(inner)) return true;
-  if (/\battachment\s+under\b/i.test(inner)) return true;
-  return /^[\p{L}][^()]{1,160}$/u.test(inner) && /[,;&]/.test(inner);
+  return isCanonicalSourceCitationLabel(value);
 }
 
 function parseStandaloneCitationLabel(value: string): string | null {
-  const trimmed = normalizeText(value);
-  if (!/^\([^()]{2,240}\)$/.test(trimmed)) return null;
-  if (!looksLikeSourceCitationLabel(trimmed)) return null;
-  if (!isCanonicalQuoteSourceLabel(trimmed)) return null;
-  return normalizeCitationLabel(trimmed);
+  const parsed = parseStandaloneSourceCitationLabel(value);
+  if (!parsed) return null;
+  const normalized = normalizeText(value);
+  return normalized.startsWith("(") && normalized.endsWith(")")
+    ? normalizeCitationLabel(normalized)
+    : parsed.sourceLabel;
 }
 
 function stripBlockquoteMarker(line: string): string {
@@ -645,6 +515,7 @@ export function buildQuoteCitation(input: {
     "raw-suffix",
     "raw-middle",
     "progressive",
+    "normalized-span",
   ].includes(sourceMatchKind)
     ? (sourceMatchKind as QuoteCitation["sourceMatchKind"])
     : undefined;
@@ -739,8 +610,7 @@ function filterMetadataQuoteCitations(
   metadataTexts: Iterable<string> | undefined | null,
 ): QuoteCitation[] {
   return normalizeQuoteCitations(quoteCitations).filter(
-    (citation) =>
-      !isKnownQuoteMetadataText(citation.quoteText, metadataTexts),
+    (citation) => !isKnownQuoteMetadataText(citation.quoteText, metadataTexts),
   );
 }
 
@@ -835,6 +705,89 @@ export function stripTrailingNonSourceQuoteLabelFromQuoteText(
   return normalizeMultilineText(match[1] || "");
 }
 
+function stripOuterQuoteDelimiters(value: string): string {
+  return normalizeMultilineText(value)
+    .replace(/^["“”]+|["“”]+$/g, "")
+    .trim();
+}
+
+function countNormalizedSourceOccurrences(text: string, query: string): number {
+  if (!text || !query) return 0;
+  let count = 0;
+  let cursor = 0;
+  while (cursor <= text.length) {
+    const index = text.indexOf(query, cursor);
+    if (index < 0) break;
+    count += 1;
+    cursor = index + Math.max(1, query.length);
+  }
+  return count;
+}
+
+function findNormalizedSourceSpanMatch(params: {
+  quoteText: string;
+  sourceText: string;
+}): { quoteText: string; normalizedQuery: string } | undefined {
+  const quoteText = stripOuterQuoteDelimiters(params.quoteText);
+  const normalizedQuery = normalizeLocatorText(quoteText);
+  if (!isLocatorQueryLongEnough(normalizedQuery, 24)) return undefined;
+  const normalizedSource = normalizeLocatorText(params.sourceText);
+  if (countNormalizedSourceOccurrences(normalizedSource, normalizedQuery) < 1) {
+    return undefined;
+  }
+  const sourceText = normalizeMultilineText(params.sourceText);
+  if (sourceText.includes(quoteText)) return undefined;
+  return { quoteText, normalizedQuery };
+}
+
+function inferSingleSourceCitationLabel(
+  sourceIndex: QuoteSourceIndex,
+): string | undefined {
+  const labels = new Map<string, string>();
+  for (const source of sourceIndex.sources) {
+    const label = normalizeCitationLabel(source.citationLabel);
+    if (!label || !isCanonicalQuoteSourceLabel(label)) continue;
+    labels.set(normalizeCitationLabelForMatch(label), label);
+  }
+  return labels.size === 1 ? Array.from(labels.values())[0] : undefined;
+}
+
+function isObviousNonSourceBlockquoteText(value: string): boolean {
+  const text = normalizeQuoteTextForMatch(value);
+  if (!text) return false;
+  return (
+    /^(?:my\s+)?(?:interpretation|takeaway|summary|note|commentary|explanation)\s*[:：]/i.test(
+      text,
+    ) || /\b(?:i think|i would say|in other words)\b/i.test(text)
+  );
+}
+
+function formatFencedTextMarkdown(value: string): string {
+  const text = normalizeMultilineText(value).replace(/```/g, "'''");
+  return text ? `\`\`\`text\n${text}\n\`\`\`` : "";
+}
+
+function formatUnverifiedQuoteWithBestSourceLabel(params: {
+  quoteText: string;
+  sourceIndex: QuoteSourceIndex;
+}): string | undefined {
+  const quoteText = normalizeMultilineText(params.quoteText);
+  if (!quoteText) return undefined;
+  if (isObviousNonSourceBlockquoteText(quoteText)) {
+    return formatFencedTextMarkdown(quoteText);
+  }
+  const inferredCitationLabel = inferSingleSourceCitationLabel(
+    params.sourceIndex,
+  );
+  if (inferredCitationLabel && isQuoteWorthySourceText(quoteText)) {
+    return formatPlainQuoteWithCitationMarkdown(
+      quoteText,
+      inferredCitationLabel,
+    );
+  }
+  return undefined;
+}
+
 type QuoteSourceSearchMatch = {
   source: QuoteSourceIndexEntry;
   sourceText: string;
@@ -912,10 +865,43 @@ function expandSourceQuoteSpanEnd(sourceText: string, end: number): number {
   return cursor;
 }
 
+function expandSourceQuoteSpanToSentenceStart(
+  sourceText: string,
+  start: number,
+): number {
+  let cursor = start;
+  while (
+    cursor > 0 &&
+    !/[.!?。！？]\s/.test(sourceText.slice(cursor - 1, cursor + 1))
+  ) {
+    cursor -= 1;
+  }
+  while (cursor < sourceText.length && /\s/.test(sourceText[cursor])) {
+    cursor += 1;
+  }
+  return cursor;
+}
+
+function expandSourceQuoteSpanToSentenceEnd(
+  sourceText: string,
+  end: number,
+): number {
+  let cursor = end;
+  while (
+    cursor < sourceText.length &&
+    !/[.!?。！？]/.test(sourceText[cursor])
+  ) {
+    cursor += 1;
+  }
+  if (cursor < sourceText.length) cursor += 1;
+  return cursor;
+}
+
 function findBestSourceQuoteSpan(params: {
   quoteText: string;
   sourceText: string;
   queryText: string;
+  expandToSentence?: boolean;
 }): string {
   const queryTokens = locatorTokens(params.queryText);
   if (!queryTokens.length) return "";
@@ -966,8 +952,14 @@ function findBestSourceQuoteSpan(params: {
         sourceText,
         lastSourceToken.end,
       );
+      const expandedStart = params.expandToSentence
+        ? expandSourceQuoteSpanToSentenceStart(sourceText, sourceStartIndex)
+        : sourceStartIndex;
+      const expandedEnd = params.expandToSentence
+        ? expandSourceQuoteSpanToSentenceEnd(sourceText, sourceEndIndex)
+        : sourceEndIndex;
       const text = normalizeMultilineText(
-        sourceText.slice(sourceStartIndex, sourceEndIndex),
+        sourceText.slice(expandedStart, expandedEnd),
       );
       if (!text) continue;
       const tokenCount = left + right;
@@ -1019,6 +1011,7 @@ function reconstructSourceConfirmedQuoteText(params: {
           quoteText: segment,
           sourceText: params.sourceText,
           queryText: segment,
+          expandToSentence: true,
         }),
       )
       .filter(Boolean);
@@ -1031,6 +1024,9 @@ function reconstructSourceConfirmedQuoteText(params: {
     quoteText: params.quoteText,
     sourceText: params.sourceText,
     queryText: params.match?.query || params.quoteText,
+    expandToSentence:
+      params.match?.matchKind === "raw-middle" ||
+      params.match?.matchKind === "progressive",
   });
 }
 
@@ -1122,6 +1118,39 @@ function buildTrustedQuoteCitationFromSource(params: {
   const inputQuoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
     params.quoteText,
   );
+  const normalizedSpanMatch = findNormalizedSourceSpanMatch({
+    quoteText: inputQuoteText,
+    sourceText: params.sourceText,
+  });
+  if (normalizedSpanMatch) {
+    const sourceQuoteText = findBestSourceQuoteSpan({
+      quoteText: normalizedSpanMatch.quoteText,
+      sourceText: params.sourceText,
+      queryText: normalizedSpanMatch.normalizedQuery,
+    });
+    const normalizedDisplayQuote = normalizeLocatorText(
+      normalizedSpanMatch.quoteText,
+    );
+    const normalizedSourceQuote = normalizeLocatorText(sourceQuoteText);
+    const quoteText =
+      sourceQuoteText &&
+      normalizedSourceQuote.length >= normalizedDisplayQuote.length * 0.75
+        ? sourceQuoteText
+        : normalizedSpanMatch.quoteText;
+    return buildQuoteCitation({
+      quoteText,
+      displayQuoteText:
+        quoteText !== normalizedSpanMatch.quoteText
+          ? normalizedSpanMatch.quoteText
+          : undefined,
+      citationLabel: params.source.citationLabel,
+      sourceMatchText: normalizedSpanMatch.normalizedQuery,
+      sourceMatchKind: "normalized-span",
+      sourceMatchSource: params.source.sourceMatchSource || "context-text",
+      contextItemId: params.source.contextItemId,
+      itemId: params.source.itemId,
+    });
+  }
   const quoteText =
     params.source.sourceMatchSource === "pdf-page-text" &&
     params.match?.matchKind === "exact"
@@ -1132,6 +1161,10 @@ function buildTrustedQuoteCitationFromSource(params: {
           match: params.match,
         });
   if (!quoteText) return undefined;
+  const normalizedSourceMatchText = normalizeLocatorText(quoteText);
+  const normalizedOriginalMatchText = normalizeLocatorText(
+    params.match?.query || "",
+  );
   return buildQuoteCitation({
     quoteText,
     displayQuoteText:
@@ -1140,7 +1173,10 @@ function buildTrustedQuoteCitationFromSource(params: {
         ? inputQuoteText
         : undefined,
     citationLabel: params.source.citationLabel,
-    sourceMatchText: params.match?.query,
+    sourceMatchText:
+      normalizedSourceMatchText.length > normalizedOriginalMatchText.length
+        ? normalizedSourceMatchText
+        : params.match?.query,
     sourceMatchKind: params.match?.matchKind,
     sourceMatchSource: params.source.sourceMatchSource || "context-text",
     contextItemId: params.source.contextItemId,
@@ -1325,6 +1361,18 @@ function finalizeSourceBackedQuoteBlock(params: {
       consumedCitation: true,
     };
   }
+  const unverifiedQuoteMarkdown = formatUnverifiedQuoteWithBestSourceLabel({
+    quoteText,
+    sourceIndex: params.sourceIndex,
+  });
+  if (isObviousNonSourceBlockquoteText(quoteText)) {
+    return {
+      markdown: `${
+        unverifiedQuoteMarkdown || formatFencedTextMarkdown(quoteText)
+      }${citationRemainder ? `\n\n${citationRemainder}` : ""}`,
+      consumedCitation: true,
+    };
+  }
   if (!isQuoteWorthySourceText(quoteText)) {
     return {
       markdown: `${
@@ -1350,7 +1398,7 @@ function finalizeSourceBackedQuoteBlock(params: {
   }
   if (isNonSourceQuoteLabel(params.citationLabel)) {
     return {
-      markdown: `${formatPlainQuoteMarkdown(quoteText)}${
+      markdown: `${unverifiedQuoteMarkdown || formatPlainQuoteMarkdown(quoteText)}${
         citationRemainder ? `\n\n${citationRemainder}` : ""
       }`,
       consumedCitation: true,
@@ -1540,6 +1588,15 @@ export function finalizeAssistantQuoteCitations(params: {
       index -= 1;
       continue;
     }
+    const unverifiedQuoteMarkdown = formatUnverifiedQuoteWithBestSourceLabel({
+      quoteText,
+      sourceIndex,
+    });
+    if (unverifiedQuoteMarkdown) {
+      out.push(unverifiedQuoteMarkdown);
+      index -= 1;
+      continue;
+    }
     if (quoteText && quoteText !== originalQuoteText) {
       out.push(formatPlainQuoteMarkdown(quoteText));
       index -= 1;
@@ -1577,7 +1634,8 @@ export function buildQuoteAnchorPromptBlock(
     "- When you need to include one of these exact quotes, write only the matching token, e.g. [[quote:Q_x7a2]].",
     "- Do not manually copy the quote or sourceLabel when a quote anchor is available; the app will render the quote and clickable citation.",
     "- Quote text is provenance-locked source text: never translate or paraphrase it to match the user's language.",
-    "- If a translation is useful, write it outside the quote block as explanation, not as the quoted source passage.",
+    "- Use `>` blockquotes only for direct original source text.",
+    "- If a translation, interpretation, emphasis, example, or opinion is useful, write it outside the quote block as explanation or in a fenced `text` block, not as the quoted source passage.",
     "- Use quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.",
     "- Do not write source/section/chunk metadata such as [[source=...]] in the final answer; those fields are internal context only.",
   ];

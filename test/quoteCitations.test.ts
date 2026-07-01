@@ -1133,6 +1133,32 @@ describe("quoteCitations", function () {
     assert.notInclude(unmatched.markdown, "(Abstract)");
   });
 
+  it("keeps the active source label for unmatched section-labeled single-source blockquotes", function () {
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown:
+        "> This source-like sentence is not verified exactly but was emitted with a section label.\n\n(Abstract) Follow-up prose remains.",
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: "The active paper discusses a related result.",
+            sourceLabel: "(Single, 2024)",
+            contextItemId: 101,
+          },
+        ],
+      }),
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(
+      finalized.markdown,
+      "> This source-like sentence is not verified exactly but was emitted with a section label.",
+    );
+    assert.include(finalized.markdown, "(Single, 2024)");
+    assert.include(finalized.markdown, "Follow-up prose remains.");
+    assert.notInclude(finalized.markdown, "(Abstract)");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
   it("keeps unmatched canonical quote labels visible and unclickable", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
@@ -1190,6 +1216,66 @@ describe("quoteCitations", function () {
     );
   });
 
+  it("repairs normalized math and hyphenation blockquotes without truncating display text", function () {
+    const displayQuote =
+      "the model's goodness-of-fit, measured by cross-validated R² (cvR²), dropped with the number of sessions intervening between train and test sessions";
+    const mineruText =
+      "But we found, on the contrary, that the model’s goodness-of-fit, measured by crossvalidated $\\textstyle \\mathbf { R } ^ { 2 }$ (cvR2 ), dropped with the number of sessions intervening between train and test sessions (Fig. 1C, D).";
+    const pdfText =
+      "But we found, on the contrary, that the model’s goodness-of-fit, measured by cross- validated R2 (cvR2), dropped with the number of sessions intervening between train and test sessions (Fig. 1C, D).";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> "${displayQuote}"`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: mineruText,
+            sourceLabel: "(Roth and Merriam, 2023)",
+            contextItemId: 220,
+            itemId: 20,
+            sourceMatchSource: "context-text",
+          },
+          {
+            sourceText: pdfText,
+            sourceLabel: "(Roth and Merriam, 2023)",
+            contextItemId: 220,
+            itemId: 20,
+            sourceMatchSource: "pdf-page-text",
+          },
+        ],
+      }),
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(
+      finalized.quoteCitations[0].citationLabel,
+      "(Roth and Merriam, 2023)",
+    );
+    assert.equal(
+      finalized.quoteCitations[0].sourceMatchKind,
+      "normalized-span",
+    );
+    assert.notEqual(finalized.quoteCitations[0].quoteText, displayQuote);
+    assert.include(
+      finalized.quoteCitations[0].quoteText,
+      "dropped with the number of sessions intervening between train and test sessions",
+    );
+    assert.equal(finalized.quoteCitations[0].displayQuoteText, displayQuote);
+
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      finalized.markdown,
+      finalized.quoteCitations,
+    );
+
+    assert.include(rendered, displayQuote);
+    assert.include(rendered, "(Roth and Merriam, 2023)");
+    assert.include(
+      rendered,
+      "dropped with the number of sessions intervening between train and test sessions",
+    );
+    assert.notInclude(rendered, "the model’s goodness-of-fit, measured by");
+  });
+
   it("keeps model math markdown as display text when PDF text verifies a quote", function () {
     const displayQuote =
       "Recall that the readout weights $w$ are proportional to $y_{*0}^\\top y_0$ through Hebbian plasticity.";
@@ -1232,6 +1318,82 @@ describe("quoteCitations", function () {
     assert.include(html, "math-inline");
     assert.include(html, "katex");
     assert.notInclude(html, "y*0|\\mathbf");
+  });
+
+  it("keeps a degraded visible source label for unmatched single-source blockquotes", function () {
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown:
+        "> This source-like sentence is not verified exactly but belongs to the active paper context.",
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: "The active paper discusses a related result.",
+            sourceLabel: "(Single, 2024)",
+            contextItemId: 101,
+          },
+        ],
+      }),
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(
+      finalized.markdown,
+      "> This source-like sentence is not verified exactly but belongs to the active paper context.",
+    );
+    assert.include(finalized.markdown, "(Single, 2024)");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("does not infer a degraded source label for ambiguous multi-source blockquotes", function () {
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown:
+        "> This source-like sentence is not verified exactly but may belong to more than one paper.",
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: "Paper one discusses a related result.",
+            sourceLabel: "(One, 2024)",
+            contextItemId: 101,
+          },
+          {
+            sourceText: "Paper two discusses a related result.",
+            sourceLabel: "(Two, 2024)",
+            contextItemId: 102,
+          },
+        ],
+      }),
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(
+      finalized.markdown,
+      "> This source-like sentence is not verified exactly but may belong to more than one paper.",
+    );
+    assert.notInclude(finalized.markdown, "(One, 2024)");
+    assert.notInclude(finalized.markdown, "(Two, 2024)");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("converts obvious non-source blockquotes to fenced text blocks", function () {
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: "> Interpretation: this means the model is probably unstable.",
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: "The active paper discusses model stability.",
+            sourceLabel: "(Single, 2024)",
+            contextItemId: 101,
+          },
+        ],
+      }),
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(
+      finalized.markdown,
+      "```text\nInterpretation: this means the model is probably unstable.\n```",
+    );
+    assert.notInclude(finalized.markdown, "(Single, 2024)");
   });
 
   it("does not double-blockquote anchored quotes already wrapped in quote syntax", function () {

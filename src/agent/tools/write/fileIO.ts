@@ -341,7 +341,7 @@ function buildCodexMineruPaperSourceMetadata(
         sourceLabel,
         citationInstruction:
           `This file is parsed paper text for ${paperContext.title}. ` +
-          `When using this content in the answer, include a short verbatim blockquote in the original source language only when it provides direct evidence for an important paper-specific claim, and put ${sourceLabel} on the next non-empty line after the blockquote, before any commentary. Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence. Never translate quote text to match the user's language; put any translation outside the blockquote as explanation. Never put interpretation between the quote and ${sourceLabel}. A bare parenthetical citation alone is not enough.`,
+          `When using this content in the answer, use > blockquotes only for short verbatim original source text that provides direct evidence for an important paper-specific claim, and put ${sourceLabel} on the next non-empty line after the blockquote, before any commentary. Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence. Never translate quote text to match the user's language; put translation, interpretation, emphasis, examples, or opinion in normal prose or fenced text blocks. Never put interpretation between the quote and ${sourceLabel}. A bare parenthetical citation alone is not enough.`,
       };
     }
   }

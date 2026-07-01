@@ -86,7 +86,11 @@ describe("paperAttribution", function () {
     );
     assert.include(
       buildPaperQuoteCitationGuidance(paper).join("\n"),
-      "include short blockquotes",
+      "include short direct-source blockquotes",
+    );
+    assert.include(
+      buildPaperQuoteCitationGuidance(paper).join("\n"),
+      "Use `>` only for text copied from the paper",
     );
     assert.include(
       buildPaperQuoteCitationGuidance(paper).join("\n"),
@@ -128,7 +132,14 @@ describe("paperAttribution", function () {
     const guidance =
       buildPaperQuoteCitationGuidance(attachmentContext).join("\n");
     assert.include(guidance, "quoting this selected attachment");
-    assert.include(guidance, "> quoted text from the selected attachment");
+    assert.include(
+      guidance,
+      "Use `>` only for text copied from the selected attachment",
+    );
+    assert.include(
+      guidance,
+      "> quoted text copied from the selected attachment",
+    );
     assert.include(
       guidance,
       "(test.md, attachment under Chandra et al., 2025)",
@@ -140,7 +151,7 @@ describe("paperAttribution", function () {
 
     assert.include(
       guidance,
-      "> quoted text from the paper\n\nthe exact sourceLabel shown for the relevant paper",
+      "> quoted text copied from the paper\n\nthe exact sourceLabel shown for the relevant paper",
     );
     assert.include(
       guidance,

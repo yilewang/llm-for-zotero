@@ -231,11 +231,11 @@ describe("quote card UI contract", function () {
 
     assert.include(
       agentSource,
-      "await deps.finalizeAssistantQuoteCitations(assistantMessage, userMessage)",
+      "await deps.finalizeAssistantQuoteCitations(\n      assistantMessage,\n      userMessage,\n      runtimeRequest,",
     );
     assert.include(
       agentSource,
-      "await deps.finalizeAssistantQuoteCitations(\n      assistantMessage",
+      "await deps.finalizeAssistantQuoteCitations(\n      assistantMessage,\n      retryPair.userMessage,\n      runtimeRequest,",
     );
   });
 });

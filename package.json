@@ -28,7 +28,7 @@
     "lint:fix": "prettier --write . && eslint . --fix",
     "release": "zotero-plugin release",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && zotero-plugin test",
+    "test": "npm run typecheck && npm run test:unit && npm run test:workflow",
     "test:unit": "npx tsx node_modules/mocha/bin/mocha.js --require ./test/register.cjs 'test/**/*.test.ts'",
     "test:workflow": "node scripts/run-workflow-tests.mjs",
     "update-deps": "npm update --save"

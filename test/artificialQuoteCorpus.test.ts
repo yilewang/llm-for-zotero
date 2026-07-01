@@ -119,7 +119,7 @@ const anchoredFixtures: AnchoredFixture[] = [
     name: "unicode hyphen and punctuation drift",
     markdown:
       "> Finally, the T‑PHATE style manifold is robust to multi‑voxel noise.",
-    sourceMatchKinds: ["exact"],
+    sourceMatchKinds: ["exact", "normalized-span"],
     quoteIncludes: ["T-PHATE style manifold"],
     matchIncludes: ["t phate style manifold"],
   },

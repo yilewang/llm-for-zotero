@@ -1521,6 +1521,139 @@ describe("agentTrace render", function () {
     ]);
   });
 
+  it("renders one Codex MCP row when Zotero MCP server aliases differ", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3485,
+          contextItemId: 3484,
+          title:
+            "A stable brain from unstable components: Emerging concepts and implications for neural computation",
+          firstCreator: "Chambers and Rumpel",
+          year: "2017",
+          attachmentTitle: "PDF",
+          citationKey: "chambersStableBrainUnstable2017",
+          contentSourceMode: "mineru",
+          mineruCacheDir:
+            "/Users/yat-lok/Documents/zotero-dev/llm-for-zotero-mineru/3484",
+        },
+      },
+      maxChars: 6000,
+    };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp-jsonrpc-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm_for_zotero",
+        args,
+        ok: true,
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "native-tool-item-1",
+        phase: "completed",
+        toolName: "mcp__llm-for-zotero-profile-dev__paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm-for-zotero-profile-dev",
+        args,
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("keeps distinct Codex tools that emit the same visible text", function () {
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "paper-read-1",
+        phase: "completed",
+        toolName: "paper_read",
+        serverName: "llm_for_zotero",
+        args: { mode: "overview" },
+        text: "Completed",
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "library-search-1",
+        phase: "completed",
+        toolName: "library_search",
+        serverName: "llm_for_zotero",
+        args: { entity: "items" },
+        text: "Completed",
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Completed",
+      "Completed",
+    ]);
+  });
+
+  it("keeps same Codex tool text when arguments differ", function () {
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "paper-read-1",
+        phase: "completed",
+        toolName: "paper_read",
+        serverName: "llm_for_zotero",
+        args: { mode: "overview", itemId: 1 },
+        text: "Completed",
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "paper-read-2",
+        phase: "completed",
+        toolName: "paper_read",
+        serverName: "llm_for_zotero",
+        args: { mode: "overview", itemId: 2 },
+        text: "Completed",
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Completed",
+      "Completed",
+    ]);
+  });
+
+  it("dedupes same Codex tool text when identity and arguments match", function () {
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "paper-read-1",
+        phase: "completed",
+        toolName: "paper_read",
+        serverName: "llm_for_zotero",
+        args: { mode: "overview", itemId: 1 },
+        text: "Completed",
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "paper-read-2",
+        phase: "completed",
+        toolName: "mcp__llm_for_zotero__paper_read",
+        args: { itemId: 1, mode: "overview" },
+        text: "Completed",
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Completed",
+    ]);
+  });
+
   it("renders one Codex MCP row when duplicate arguments are serialized differently", function () {
     const args = {
       mode: "overview",
@@ -1696,6 +1829,63 @@ describe("agentTrace render", function () {
       1,
     );
 
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("coalesces native and MCP activity when Zotero server names use different separators", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3485,
+          contextItemId: 3484,
+          title:
+            "A stable brain from unstable components: Emerging concepts and implications for neural computation",
+        },
+      },
+      maxChars: 6000,
+    };
+    const assistantMessage = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      assistantMessage,
+      () => undefined,
+    );
+
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:1",
+      phase: "completed",
+      toolName: "paper_read",
+      toolLabel: "Read Paper",
+      serverName: "llm_for_zotero",
+      arguments: args,
+      ok: true,
+    });
+    controller.appendItemStatus(
+      {
+        id: "native-tool-item-1",
+        type: "tool_call",
+        name: "mcp__llm-for-zotero-profile-dev__paper_read",
+        title: "Read Paper",
+        serverName: "llm-for-zotero-profile-dev",
+        arguments: args,
+      },
+      "completed",
+    );
+
+    const events = assistantMessage.pendingAgentTraceEvents || [];
+    assert.lengthOf(
+      events.filter((entry) => entry.payload.type === "codex_tool_activity"),
+      1,
+    );
     assert.deepEqual(getCodexTraceActionTexts(events), [
       "Codex received the request",
       "Used Read Paper",

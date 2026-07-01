@@ -7,10 +7,69 @@ type CodexToolActivityPayload = Extract<
 >;
 
 export const TOOL_ACTIVITY_VISIBLE_DEDUPE_WINDOW_MS = 8000;
+const ZOTERO_MCP_TRACE_TOOL_NAMES = new Set([
+  "query_library",
+  "read_paper",
+  "search_paper",
+  "view_pdf_pages",
+  "search_literature_online",
+  "edit_current_note",
+  "import_identifiers",
+  "update_metadata",
+  "library_search",
+  "library_read",
+  "library_retrieve",
+  "paper_read",
+  "literature_search",
+  "library_update",
+  "collection_update",
+  "note_write",
+  "library_import",
+  "library_delete",
+  "attachment_update",
+  "undo_last_action",
+]);
+const ZOTERO_MCP_TRACE_SERVER_NAMES = new Set([
+  "llm_for_zotero",
+  "llm-for-zotero",
+  "llm for zotero",
+  "claude_zotero",
+  "claude-zotero",
+  "claude zotero",
+]);
+
+function normalizeCodexServerIdentityTextForDedupe(value: string): string {
+  return sanitizeText(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function normalizeZoteroMcpServerAliasForDedupe(value: string): string {
+  const normalized = normalizeCodexServerIdentityTextForDedupe(value);
+  if (!normalized) return "";
+  if (
+    normalized === "llm_for_zotero" ||
+    normalized === "claude_zotero" ||
+    normalized.startsWith("llm_for_zotero_") ||
+    normalized.startsWith("claude_zotero_")
+  ) {
+    return "llm_for_zotero";
+  }
+  return normalized;
+}
 
 export type CodexToolActivityDedupeInput = Pick<
   CodexToolActivityPayload,
-  "phase" | "toolName" | "toolLabel" | "args" | "text" | "codeBlock"
+  | "phase"
+  | "itemId"
+  | "serverName"
+  | "toolName"
+  | "toolLabel"
+  | "args"
+  | "text"
+  | "codeBlock"
 >;
 
 function normalizeDedupeValue(value: unknown): unknown {
@@ -40,6 +99,27 @@ function normalizeCodexToolNameForDedupe(name: string | undefined): string {
   const clean = sanitizeText(name || "").trim();
   const mcpMatch = clean.match(/^mcp__[^_]+(?:_[^_]+)*__(.+)$/);
   return mcpMatch?.[1] || clean;
+}
+
+function normalizeCodexServerNameForDedupe(
+  serverName: string | undefined,
+  toolName: string | undefined,
+): string {
+  const explicit = normalizeZoteroMcpServerAliasForDedupe(serverName || "");
+  if (explicit) return explicit;
+  const cleanToolName = sanitizeText(toolName || "").trim();
+  const mcpMatch = cleanToolName.match(/^mcp__(.+)__(.+)$/);
+  if (mcpMatch?.[1]) {
+    const serverAlias = normalizeZoteroMcpServerAliasForDedupe(mcpMatch[1]);
+    if (ZOTERO_MCP_TRACE_SERVER_NAMES.has(mcpMatch[1].toLowerCase())) {
+      return "llm_for_zotero";
+    }
+    return serverAlias;
+  }
+  const normalizedToolName = normalizeCodexToolNameForDedupe(cleanToolName);
+  return ZOTERO_MCP_TRACE_TOOL_NAMES.has(normalizedToolName)
+    ? "llm_for_zotero"
+    : "";
 }
 
 function normalizeCodexToolIdentityTextForDedupe(value: string): string {
@@ -82,12 +162,18 @@ export function getToolActivityVisibleDedupeKey(
   payload: CodexToolActivityDedupeInput,
 ): string {
   const explicitText = sanitizeText(payload.text || "").trim();
-  const toolIdentity = explicitText
-    ? ""
-    : normalizeCodexToolIdentityForDedupe(payload.toolName, payload.toolLabel);
+  const toolIdentity = normalizeCodexToolIdentityForDedupe(
+    payload.toolName,
+    payload.toolLabel,
+  );
   return stableDedupeJson({
     phase: payload.phase,
+    serverIdentity: normalizeCodexServerNameForDedupe(
+      payload.serverName,
+      payload.toolName,
+    ),
     toolIdentity,
+    itemId: toolIdentity ? "" : sanitizeText(String(payload.itemId || "")),
     args: normalizeCodexToolActivityArgsForDedupe(payload.args),
     text: explicitText,
     codeBlock: payload.codeBlock || "",

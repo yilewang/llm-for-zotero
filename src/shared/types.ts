@@ -77,7 +77,8 @@ export type QuoteCitation = {
     | "raw-prefix"
     | "raw-suffix"
     | "raw-middle"
-    | "progressive";
+    | "progressive"
+    | "normalized-span";
   sourceMatchSource?: "context-text" | "pdf-page-text";
   contextItemId?: number;
   itemId?: number;

@@ -365,6 +365,7 @@ type BuildAgentRuntimeRequestParamsShape = {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  citationPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
   attachments: ChatAttachment[] | undefined;
@@ -555,6 +556,7 @@ export type AgentEngineDeps = {
   finalizeAssistantQuoteCitations: (
     assistantMessage: Pick<Message, "text" | "quoteCitations">,
     pairedUserMessage?: Message | null,
+    runtimeRequest?: AgentRuntimeRequest | null,
   ) => Promise<void>;
   appendReasoningPart: (base: string | undefined, next?: string) => string;
 
@@ -891,6 +893,7 @@ export async function sendAgentTurn(
     selectedTextPaperContexts: selectedTextPaperContextsForMessage,
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
+    citationPaperContexts: userMessage.citationPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
     attachments: modelAttachments ?? attachments,
@@ -1342,7 +1345,11 @@ export async function sendAgentTurn(
       assistantMessage.pendingFinalText ||
       assistantMessage.text ||
       "No response.";
-    await deps.finalizeAssistantQuoteCitations(assistantMessage, userMessage);
+    await deps.finalizeAssistantQuoteCitations(
+      assistantMessage,
+      userMessage,
+      runtimeRequest,
+    );
     assistantMessage.pendingFinalText = undefined;
     assistantMessage.waitingAnimationStartedAt = undefined;
     assistantMessage.streaming = false;
@@ -1568,6 +1575,7 @@ export async function retryAgentTurn(
     selectedTextPaperContexts: selectedTextPaperContextsRaw,
     paperContexts,
     fullTextPaperContexts,
+    citationPaperContexts: retryPair.userMessage.citationPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
     attachments: retryModelAttachments,
@@ -1977,6 +1985,7 @@ export async function retryAgentTurn(
     await deps.finalizeAssistantQuoteCitations(
       assistantMessage,
       retryPair.userMessage,
+      runtimeRequest,
     );
     assistantMessage.pendingFinalText = undefined;
     assistantMessage.waitingAnimationStartedAt = undefined;

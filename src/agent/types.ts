@@ -28,6 +28,7 @@ export type AgentRequest = {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   selectedPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
+  citationPaperContexts?: PaperContextRef[];
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];

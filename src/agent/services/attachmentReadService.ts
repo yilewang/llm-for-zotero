@@ -55,7 +55,8 @@ const IMAGE_MIME_PREFIXES = ["image/"];
 function categorizeContentType(contentType: string): AttachmentContentCategory {
   const ct = contentType.toLowerCase().trim();
   if (ct === "application/pdf") return "pdf";
-  if (IMAGE_MIME_PREFIXES.some((prefix) => ct.startsWith(prefix))) return "image";
+  if (IMAGE_MIME_PREFIXES.some((prefix) => ct.startsWith(prefix)))
+    return "image";
   if (TEXT_MIME_PREFIXES.some((prefix) => ct.startsWith(prefix))) return "text";
   if (TEXT_MIME_EXACT.has(ct)) return "text";
   return "binary";
@@ -137,7 +138,8 @@ export class AttachmentReadService {
       contextItemId: info.attachmentId,
       title,
       attachmentTitle: info.filename || info.title || undefined,
-      citationKey: normalizeText(parentItem.getField?.("citationKey")) || undefined,
+      citationKey:
+        normalizeText(parentItem.getField?.("citationKey")) || undefined,
       firstCreator,
       year,
       contentSourceMode: sourceMode,
@@ -150,7 +152,8 @@ export class AttachmentReadService {
   ): Partial<AttachmentReadResult> {
     if (!sourceMode) return {};
     const paperContext = this.buildPaperContextForAttachment(info, sourceMode);
-    if (!paperContext) return { sourceMode, sourceType: formatAttachmentSourceType(sourceMode) };
+    if (!paperContext)
+      return { sourceMode, sourceType: formatAttachmentSourceType(sourceMode) };
     return {
       sourceMode,
       sourceType: formatAttachmentSourceType(sourceMode),
@@ -168,7 +171,8 @@ export class AttachmentReadService {
       readingGuidance: [
         "Answer primarily from this selected attachment content.",
         "Use parent metadata only for bibliographic or contextual grounding.",
-        "If quoting, copy the attachment text verbatim in its original source language; put any translation outside the blockquote as explanation.",
+        "If quoting, use `>` blockquotes only for direct original attachment text copied verbatim in its source language.",
+        "Put translation, interpretation, emphasis, examples, or opinion in normal prose or fenced `text` blocks, not in `>` blockquotes.",
         "Do not infer attachment loading failed just because the attachment text differs from the parent title.",
       ],
       paperContext,
@@ -225,7 +229,8 @@ export class AttachmentReadService {
 
     // Resolve file path
     const attachmentItem = this.zoteroGateway.getItem(params.attachmentId);
-    const filePath: string | undefined = (attachmentItem as any)?.getFilePath?.() || undefined;
+    const filePath: string | undefined =
+      (attachmentItem as any)?.getFilePath?.() || undefined;
     if (!filePath) {
       return {
         ...baseResult,
@@ -261,13 +266,16 @@ export class AttachmentReadService {
         Number.isFinite(params.maxChars) && (params.maxChars as number) > 0
           ? Math.floor(params.maxChars as number)
           : 50000;
-      const truncated = text.length > maxChars ? `${text.slice(0, maxChars)}\u2026` : text;
+      const truncated =
+        text.length > maxChars ? `${text.slice(0, maxChars)}\u2026` : text;
       return {
         ...baseWithPath,
         textContent: truncated,
         wordCount: truncated.split(/\s+/).filter(Boolean).length,
         ...(sourceMode === "docx" && !truncated.trim()
-          ? { note: "No plain text could be extracted from this DOCX attachment." }
+          ? {
+              note: "No plain text could be extracted from this DOCX attachment.",
+            }
           : {}),
       };
     } catch (error) {
