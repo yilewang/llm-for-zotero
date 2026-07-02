@@ -23,6 +23,7 @@ import {
 import { normalizePaperContextRefs } from "./normalizers";
 
 import {
+  formatPaperSourceLabel,
   resolvePaperContextRefFromAttachment,
   resolvePaperContextRefFromNote,
 } from "./paperAttribution";
@@ -35,6 +36,7 @@ import {
   ensurePDFTextCached,
   ensureNoteTextCached,
   buildEvidencePack,
+  resolveEvidenceQuoteAnchorPolicy,
 } from "./pdfContext";
 import {
   isPdfContextAttachment,
@@ -54,6 +56,16 @@ import {
   planContextCacheReuse,
   shouldPreferCacheAwareFullContext,
 } from "../../contextCache/manager";
+import {
+  buildLibraryChatCoverageReceipt,
+  completeLibraryChatReadStrategyDiagnostics,
+  resolveLibraryChatReadStrategy,
+  type LibraryChatReadStrategyDiagnostics,
+} from "../../shared/libraryChatReadStrategy";
+import {
+  compareEvidenceCandidatesForQuestion,
+  isBodyEvidenceSection,
+} from "../../shared/libraryChatEvidencePolicy";
 
 // ── Cross-turn retrieval cache ──────────────────────────────────────────────
 // Caches chunk candidates returned by buildPaperRetrievalCandidates so that
@@ -412,7 +424,11 @@ function getTagContextItemTagNames(
       if (typeof entry === "string") {
         name = entry;
       } else if (entry && typeof entry === "object") {
-        const typed = entry as { tag?: unknown; name?: unknown; type?: unknown };
+        const typed = entry as {
+          tag?: unknown;
+          name?: unknown;
+          type?: unknown;
+        };
         name =
           typeof typed.tag === "string"
             ? typed.tag
@@ -519,7 +535,9 @@ async function resolveCollectionScopePapers(params: {
   const collectionContexts = Array.isArray(params.collectionContexts)
     ? params.collectionContexts
     : [];
-  const tagContexts = Array.isArray(params.tagContexts) ? params.tagContexts : [];
+  const tagContexts = Array.isArray(params.tagContexts)
+    ? params.tagContexts
+    : [];
   if (!collectionContexts.length && !tagContexts.length) {
     return {
       papers: [],
@@ -725,6 +743,8 @@ type RetrievedAssembly = {
   selectedPaperCount: number;
   citationPaperContexts: PaperContextRef[];
   quoteCitations: QuoteCitation[];
+  readStrategy: LibraryChatReadStrategyDiagnostics;
+  coverageReceipt: ReturnType<typeof buildLibraryChatCoverageReceipt>;
 };
 
 type RetrievedAssemblyOptions = {
@@ -732,6 +752,101 @@ type RetrievedAssemblyOptions = {
   maxChunks?: number;
   minTotalChunks?: number;
 };
+
+function isBodyEvidenceCandidate(candidate: PaperContextCandidate): boolean {
+  return isBodyEvidenceSection(candidate.sectionLabel, candidate.chunkKind);
+}
+
+function buildRetrievedAssemblyReadStrategy(params: {
+  papers: PlannerPaperEntry[];
+  question: string;
+  selectedCandidates?: PaperContextCandidate[];
+  allCandidates?: PaperContextCandidate[];
+  stopReason?: LibraryChatReadStrategyDiagnostics["stopReason"];
+}): LibraryChatReadStrategyDiagnostics {
+  const base = resolveLibraryChatReadStrategy({
+    query: params.question,
+    intent: "summarize",
+    depth: "evidence",
+    paperCount: params.papers.length,
+    scopeType: "items",
+    explicitPaperScope: true,
+  });
+  const selectedCandidates = params.selectedCandidates || [];
+  const selectedPaperKeys = new Set(
+    selectedCandidates.map((candidate) => candidate.paperKey),
+  );
+  const bodyPaperKeys = new Set(
+    selectedCandidates
+      .filter(isBodyEvidenceCandidate)
+      .map((candidate) => candidate.paperKey),
+  );
+  const candidatePaperKeys = new Set(
+    (params.allCandidates || selectedCandidates).map(
+      (candidate) => candidate.paperKey,
+    ),
+  );
+  const coverageFrontier: string[] = [];
+  for (const paper of params.papers) {
+    if (!candidatePaperKeys.has(paper.paperKey)) {
+      coverageFrontier.push(
+        `${formatPaperSourceLabel(paper.paperContext)}: no retrievable text chunks`,
+      );
+      continue;
+    }
+    if (!selectedPaperKeys.has(paper.paperKey)) {
+      coverageFrontier.push(
+        `${formatPaperSourceLabel(paper.paperContext)}: no snippet selected within budget`,
+      );
+      continue;
+    }
+    if (!bodyPaperKeys.has(paper.paperKey)) {
+      coverageFrontier.push(
+        `${formatPaperSourceLabel(paper.paperContext)}: only abstract/front-matter evidence selected`,
+      );
+    }
+  }
+  const papersMetadataOnly = params.papers.filter(
+    (paper) => !selectedPaperKeys.has(paper.paperKey),
+  ).length;
+  const stopReason =
+    params.stopReason ||
+    (coverageFrontier.length ? "budget_limit" : "enough_evidence");
+  return completeLibraryChatReadStrategyDiagnostics({
+    base,
+    papersPlanned: params.papers.length,
+    papersBodyRead: bodyPaperKeys.size,
+    papersMetadataOnly,
+    coverageFrontier,
+    unreadableReasons: coverageFrontier,
+    stopReason,
+  });
+}
+
+function ensureReadStrategyMinChunks(params: {
+  papers: PlannerPaperEntry[];
+  question: string;
+  minChunksByPaper?: Map<string, number>;
+}): {
+  minChunksByPaper: Map<string, number>;
+  readStrategy: LibraryChatReadStrategyDiagnostics;
+} {
+  const readStrategy = buildRetrievedAssemblyReadStrategy({
+    papers: params.papers,
+    question: params.question,
+  });
+  const out = new Map(params.minChunksByPaper || []);
+  if (readStrategy.resolvedStrategy === "deep_synthesis") {
+    for (const paper of params.papers) {
+      out.set(paper.paperKey, Math.max(out.get(paper.paperKey) || 0, 2));
+    }
+  } else if (readStrategy.resolvedStrategy === "evidence_overview") {
+    for (const paper of params.papers) {
+      out.set(paper.paperKey, Math.max(out.get(paper.paperKey) || 0, 1));
+    }
+  }
+  return { minChunksByPaper: out, readStrategy };
+}
 
 function mergePlannerCitationPaperContexts(
   ...groups: Array<Array<PlannerPaperEntry | PaperContextRef> | undefined>
@@ -897,6 +1012,12 @@ export async function assembleRetrievedMultiPaperContext(params: {
     params;
   const queryPlan =
     params.queryPlan || buildRetrievalQueryPlan({ query: question });
+  const strategyDefaults = ensureReadStrategyMinChunks({
+    papers,
+    question,
+    minChunksByPaper,
+  });
+  const effectiveMinChunksByPaper = strategyDefaults.minChunksByPaper;
   const retrievalCacheKey = buildRetrievalQueryPlanCacheKey(queryPlan);
   if (!papers.length || contextBudgetTokens <= 0) {
     return {
@@ -905,6 +1026,10 @@ export async function assembleRetrievedMultiPaperContext(params: {
       selectedPaperCount: 0,
       citationPaperContexts: [],
       quoteCitations: [],
+      readStrategy: strategyDefaults.readStrategy,
+      coverageReceipt: buildLibraryChatCoverageReceipt(
+        strategyDefaults.readStrategy,
+      ),
     };
   }
 
@@ -947,6 +1072,13 @@ export async function assembleRetrievedMultiPaperContext(params: {
   }
 
   if (!allCandidates.length) {
+    const readStrategy = buildRetrievedAssemblyReadStrategy({
+      papers,
+      question,
+      selectedCandidates: [],
+      allCandidates,
+      stopReason: "unreadable_sources",
+    });
     return {
       contextText: buildMetadataOnlyFallback(
         papers.map((entry) => entry.paperContext),
@@ -955,6 +1087,8 @@ export async function assembleRetrievedMultiPaperContext(params: {
       selectedPaperCount: papers.length,
       citationPaperContexts: mergePlannerCitationPaperContexts(papers),
       quoteCitations: [],
+      readStrategy,
+      coverageReceipt: buildLibraryChatCoverageReceipt(readStrategy),
     };
   }
 
@@ -973,13 +1107,12 @@ export async function assembleRetrievedMultiPaperContext(params: {
     candidatesByPaper.set(candidate.paperKey, list);
   }
   for (const list of candidatesByPaper.values()) {
-    list.sort((a, b) => {
-      const scoreDelta =
-        (relevanceByCandidate.get(candidateKey(b)) || 0) -
-        (relevanceByCandidate.get(candidateKey(a)) || 0);
-      if (scoreDelta !== 0) return scoreDelta;
-      return a.chunkIndex - b.chunkIndex;
-    });
+    list.sort(
+      compareEvidenceCandidatesForQuestion(
+        question,
+        (candidate) => relevanceByCandidate.get(candidateKey(candidate)) || 0,
+      ),
+    );
   }
 
   const maxChunks = Number.isFinite(options?.maxChunks)
@@ -1031,7 +1164,7 @@ export async function assembleRetrievedMultiPaperContext(params: {
   // First pass: guarantee per-paper coverage before global reranking.
   for (const paper of papers) {
     const key = paper.paperKey;
-    const minChunks = Math.max(0, minChunksByPaper?.get(key) || 0);
+    const minChunks = Math.max(0, effectiveMinChunksByPaper.get(key) || 0);
     if (minChunks <= 0) continue;
     const list = candidatesByPaper.get(key) || [];
     let added = 0;
@@ -1040,6 +1173,41 @@ export async function assembleRetrievedMultiPaperContext(params: {
       if (added >= minChunks) break;
       if (selectCandidate(candidate)) {
         added += 1;
+      }
+    }
+  }
+
+  if (strategyDefaults.readStrategy.resolvedStrategy === "deep_synthesis") {
+    for (const paper of papers) {
+      const list = candidatesByPaper.get(paper.paperKey) || [];
+      if (!list.some(isBodyEvidenceCandidate)) continue;
+      const selectedForPaper = Array.from(selected.values()).filter(
+        (candidate) => candidate.paperKey === paper.paperKey,
+      );
+      if (selectedForPaper.some(isBodyEvidenceCandidate)) continue;
+      const bodyCandidate = list.find(
+        (candidate) =>
+          isBodyEvidenceCandidate(candidate) &&
+          !selected.has(candidateKey(candidate)) &&
+          !shouldSkipCandidate(candidate),
+      );
+      if (!bodyCandidate) continue;
+      const replaceable = [...selectedForPaper]
+        .filter((candidate) => !isBodyEvidenceCandidate(candidate))
+        .sort((a, b) => b.estimatedTokens - a.estimatedTokens)[0];
+      if (replaceable) {
+        const tokenDelta =
+          bodyCandidate.estimatedTokens - replaceable.estimatedTokens;
+        if (tokenDelta <= remainingTokens) {
+          selected.delete(candidateKey(replaceable));
+          remainingTokens += replaceable.estimatedTokens;
+          if (!selectCandidate(bodyCandidate)) {
+            selected.set(candidateKey(replaceable), replaceable);
+            remainingTokens -= replaceable.estimatedTokens;
+          }
+        }
+      } else {
+        selectCandidate(bodyCandidate);
       }
     }
   }
@@ -1115,10 +1283,17 @@ export async function assembleRetrievedMultiPaperContext(params: {
   const evidencePack = buildEvidencePack({
     papers: papers.map((paper) => paper.paperContext),
     candidates: selectedCandidates,
+    quoteAnchorPolicy: resolveEvidenceQuoteAnchorPolicy(question),
   });
   const contextText =
     evidencePack.contextText ||
     buildMetadataOnlyFallback(papers.map((entry) => entry.paperContext));
+  const readStrategy = buildRetrievedAssemblyReadStrategy({
+    papers,
+    question,
+    selectedCandidates,
+    allCandidates,
+  });
 
   return {
     contextText,
@@ -1135,6 +1310,8 @@ export async function assembleRetrievedMultiPaperContext(params: {
     quoteCitations: selectedCandidates.length
       ? evidencePack.quoteCitations
       : [],
+    readStrategy,
+    coverageReceipt: buildLibraryChatCoverageReceipt(readStrategy),
   };
 }
 
@@ -1403,6 +1580,15 @@ export async function resolveMultiContextPlan(params: {
       fullTextPaperContexts,
     }),
   });
+  const retrievedDiagnostics = (
+    retrieved?: RetrievedAssembly | null,
+  ): Partial<Pick<MultiContextPlan, "readStrategy" | "coverageReceipt">> =>
+    retrieved
+      ? {
+          readStrategy: retrieved.readStrategy,
+          coverageReceipt: retrieved.coverageReceipt,
+        }
+      : {};
 
   if (!papers.length && !collectionPapers.length) {
     const contextText = prependCollectionScope("");
@@ -1438,6 +1624,7 @@ export async function resolveMultiContextPlan(params: {
       selectedChunkCount: retrieved.selectedChunkCount,
       citationPaperContexts: retrieved.citationPaperContexts,
       quoteCitations: retrieved.quoteCitations,
+      ...retrievedDiagnostics(retrieved),
     });
   }
 
@@ -1515,6 +1702,7 @@ export async function resolveMultiContextPlan(params: {
           extraRetrieved?.citationPaperContexts,
         ),
         quoteCitations: extraRetrieved?.quoteCitations || [],
+        ...retrievedDiagnostics(extraRetrieved),
       });
     }
 
@@ -1586,6 +1774,7 @@ export async function resolveMultiContextPlan(params: {
           extraRetrieved?.citationPaperContexts,
         ),
         quoteCitations: extraRetrieved?.quoteCitations || [],
+        ...retrievedDiagnostics(extraRetrieved),
       });
     }
 
@@ -1630,6 +1819,7 @@ export async function resolveMultiContextPlan(params: {
       assistantInstruction: firstPaperTurn
         ? undefined
         : buildPaperFollowupAssistantInstruction(params.question),
+      ...retrievedDiagnostics(retrieved),
     });
   }
 
@@ -1694,6 +1884,7 @@ export async function resolveMultiContextPlan(params: {
           extraUnpinned?.citationPaperContexts,
         ),
         quoteCitations: extraUnpinned?.quoteCitations || [],
+        ...retrievedDiagnostics(extraUnpinned),
       });
     }
 
@@ -1770,6 +1961,7 @@ export async function resolveMultiContextPlan(params: {
           extraRetrieved?.citationPaperContexts,
         ),
         quoteCitations: extraRetrieved?.quoteCitations || [],
+        ...retrievedDiagnostics(extraRetrieved),
       });
     }
   }
@@ -1812,5 +2004,6 @@ export async function resolveMultiContextPlan(params: {
     selectedChunkCount: retrieved.selectedChunkCount,
     citationPaperContexts: retrieved.citationPaperContexts,
     quoteCitations: retrieved.quoteCitations,
+    ...retrievedDiagnostics(retrieved),
   });
 }

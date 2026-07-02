@@ -1,4 +1,5 @@
 import { t } from "../../../../utils/i18n";
+import { clearUserAddedContextForItem } from "../../contextSelectionActions";
 import {
   getActiveContextAttachmentFromTabs,
   getActiveReaderForSelectedTab,
@@ -41,6 +42,7 @@ import {
   selectedImagePreviewExpandedCache,
   selectedOtherRefContextCache,
   selectedPaperContextCache,
+  selectedPaperContextListExpandedCache,
   selectedPaperPreviewExpandedCache,
   selectedTagContextCache,
 } from "../../state";
@@ -53,6 +55,7 @@ import {
   isPaperContextFullTextOnlySourceMode,
   isPaperContextReaderFocusableSourceMode,
 } from "./composeContextController";
+import { togglePaperContextCollapseState } from "./paperContextCollapseController";
 import {
   removePinnedSelectedText,
   togglePinnedFile,
@@ -153,6 +156,36 @@ export function attachComposePreviewInteractionController(
     selectedFilePreviewExpandedCache.set(itemId, false);
   };
 
+  const removeUnmanagedSelectedFileCopies = (itemId: number): void => {
+    const selectedFiles = selectedFileAttachmentCache.get(itemId) || [];
+    for (const entry of selectedFiles) {
+      if (!entry?.storedPath) continue;
+      if (entry.contentHash || isManagedBlobPath(entry.storedPath)) continue;
+      void removeAttachmentFile(entry.storedPath).catch((error) => {
+        deps.logError("LLM: Failed to remove cleared attachment file", error);
+      });
+    }
+  };
+
+  const clearAllContext = (): void => {
+    const item = getItem();
+    if (!item) return;
+    removeUnmanagedSelectedFileCopies(item.id);
+    const result = clearUserAddedContextForItem({
+      itemId: item.id,
+      textContextKey: deps.getTextContextConversationKey(),
+    });
+    deps.closePaperChipMenu();
+    deps.updatePaperPreviewPreservingScroll();
+    deps.updateFilePreviewPreservingScroll();
+    deps.updateImagePreviewPreservingScroll();
+    deps.updateSelectedTextPreviewPreservingScroll();
+    deps.scheduleAttachmentGc();
+    if (result.statusMessage) {
+      setStatus(result.statusMessage, result.statusLevel || "ready");
+    }
+  };
+
   if (previewMeta) {
     previewMeta.addEventListener("click", (event: Event) => {
       event.preventDefault();
@@ -222,14 +255,7 @@ export function attachComposePreviewInteractionController(
       event.stopPropagation();
       const item = getItem();
       if (!item) return;
-      const selectedFiles = selectedFileAttachmentCache.get(item.id) || [];
-      for (const entry of selectedFiles) {
-        if (!entry?.storedPath) continue;
-        if (entry.contentHash || isManagedBlobPath(entry.storedPath)) continue;
-        void removeAttachmentFile(entry.storedPath).catch((error) => {
-          deps.logError("LLM: Failed to remove cleared attachment file", error);
-        });
-      }
+      removeUnmanagedSelectedFileCopies(item.id);
       deps.clearSelectedFileState(item.id);
       deps.updateFilePreviewPreservingScroll();
       deps.scheduleAttachmentGc();
@@ -316,6 +342,37 @@ export function attachComposePreviewInteractionController(
       if (!item) return;
       const target = event.target as Element | null;
       if (!target) return;
+
+      const summaryClearBtn = target.closest(
+        ".llm-paper-context-summary-clear",
+      ) as HTMLButtonElement | null;
+      if (summaryClearBtn && paperPreview.contains(summaryClearBtn)) {
+        event.preventDefault();
+        event.stopPropagation();
+        clearAllContext();
+        return;
+      }
+
+      const summaryChip = target.closest(
+        ".llm-paper-context-summary-chip",
+      ) as HTMLElement | null;
+      if (summaryChip && paperPreview.contains(summaryChip)) {
+        event.preventDefault();
+        event.stopPropagation();
+        const autoLoadedPaperContext = deps.resolveAutoLoadedPaperContext();
+        const selectedPapers = deps.getManualPaperContextsForItem(
+          item.id,
+          autoLoadedPaperContext,
+        );
+        togglePaperContextCollapseState({
+          itemId: item.id,
+          paperCount: selectedPapers.length + (autoLoadedPaperContext ? 1 : 0),
+          expandedByItem: selectedPaperContextListExpandedCache,
+        });
+        deps.closePaperChipMenu();
+        deps.updatePaperPreviewPreservingScroll();
+        return;
+      }
 
       const otherClearBtn = target.closest(
         ".llm-other-ref-clear",

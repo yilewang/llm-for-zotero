@@ -42,10 +42,13 @@ export type PaperContentSourceMode =
   | "txt"
   | "docx";
 
+export type ModelInputMode = "text_only" | "vision_allowed";
+
 export type AdvancedModelParams = {
   temperature: number;
   maxTokens: number;
   inputTokenCap?: number;
+  inputMode?: ModelInputMode;
 };
 
 export type PaperContextRef = {
@@ -64,6 +67,7 @@ export type PaperContextRef = {
 export type QuoteCitation = {
   id: string;
   quoteText: string;
+  displayQuoteText?: string;
   citationLabel: string;
   sourceMatchText?: string;
   sourceMatchKind?:
@@ -73,7 +77,9 @@ export type QuoteCitation = {
     | "raw-prefix"
     | "raw-suffix"
     | "raw-middle"
-    | "progressive";
+    | "progressive"
+    | "normalized-span";
+  sourceMatchSource?: "context-text" | "pdf-page-text";
   contextItemId?: number;
   itemId?: number;
 };

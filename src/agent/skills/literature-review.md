@@ -34,24 +34,28 @@ When the user asks for a literature review, follow this three-phase workflow. Th
 
 Identify the corpus of papers to review:
 
-- **Papers already in context**: If the user has pinned or selected papers (visible in `selectedPaperContexts` or `fullTextPaperContexts`), use those directly. No discovery step needed.
+- **Papers already in context**: If the user has pinned or selected papers (visible in `selectedPaperContexts` or `fullTextPaperContexts`), use those directly. No discovery step needed. Treat a selected finite corpus as the user's requested evidence pool, not as a sample to skim.
 - **Topic search**: If the user provides a topic or keywords and wants evidence from their Zotero library, use `library_retrieve({ query:'<topic>', queryVariants:[...], intent:'enumerate', depth:'metadata'|'evidence' })` to search metadata/abstracts/indexed text broadly when translation, acronyms, notation variants, or terminology equivalents would improve recall. Use `intent:'summarize', depth:'evidence'` for method or theme taxonomies.
 - **Collection**: If the user names a collection, use `library_search({ entity:'collections', mode:'search', text:'<collection name>' })` to resolve it, then `library_retrieve({ scope:{ collectionIds:[<collectionId>] }, query:'<review topic>', queryVariants:[...], intent:'enumerate', depth:'metadata'|'evidence' })` when variants would help. Use `intent:'summarize'` for collection-grounded taxonomies.
 - **Whole library**: If the user wants a review across their entire library, use `zotero_script({ mode:'read', description:'Summarize candidate papers for a literature review', script:'...' })` to aggregate candidates in Zotero's runtime (same pattern as `library-analysis`).
 
-Cap the corpus at **15-20 papers**. If more match, select the most relevant based on title/abstract relevance to the topic. Use `library_read` to retrieve metadata (title, authors, year, abstract, publicationTitle) for all discovered papers.
+For newly discovered corpora, cap the review set at **15-20 papers** unless the user explicitly asks for exhaustive coverage. If more match, select the most relevant based on title/abstract relevance to the topic. Use `library_read` to retrieve metadata (title, authors, year, abstract, publicationTitle) for all discovered papers.
+Do not apply this cap to papers the user already selected or pinned.
 
 ### Phase 2 — Selective Deep Reading (2-5 tool calls)
 
-Do **NOT** read every paper in full. Abstracts from Phase 1 are sufficient for most.
+For selected or pinned corpora up to roughly 25 papers, prefer bounded evidence coverage across every readable paper before writing the synthesis.
+Use `library_retrieve({ query:'<review focus>', intent:'summarize', depth:'evidence' })` or the selected-paper evidence ledger so the answer is grounded in body snippets and the paper synthesis digest, not just abstracts.
 
-Deep-read only the **3-5 most relevant papers** to the review topic. If `library_retrieve` already returned good evidence snippets, use those before calling `paper_read`.
+For newly discovered or large corpora, deep-read the most relevant papers and use the `library_retrieve` frontier to report what remains sampled.
+If `library_retrieve` already returned good evidence snippets, use those before calling `paper_read`.
 
 1. Use `paper_read({ mode:'overview', targets:[...] })` for selected papers.
 2. For targeted claims: `paper_read({ mode:'targeted', query:'...', targets:[...] })` with focused questions (e.g., "What methods were used?", "What were the key findings?").
 3. Use `paper_read({ mode:'figures', query:'...' })` only when figures are directly relevant; reserve `mode:'visual'` for explicit page/layout inspection.
 
-Prioritize breadth over depth — it is better to include 15 papers with abstract-level understanding than 5 papers with full-text reads.
+For bounded selected corpora, prioritize body-evidence coverage over shallow breadth.
+For large discovered corpora, use staged breadth first and report the frontier before making exhaustive claims.
 
 When deep-reading papers with MinerU cache, note any key figures (result plots, comparison tables, architecture diagrams). Consider including select figures in the final review when they illustrate important findings that are hard to convey with text alone.
 
@@ -92,13 +96,22 @@ Do not embed MinerU source image paths.
   Cite concrete claims about methods, datasets, results, definitions, equations, limitations, and the authors' own interpretations.
   Use short direct quotes when the exact wording matters or when a key point benefits from visible evidence.
   For background explanation, synthesis, or your own interpretation, write clearly and cite only the specific paper claim it depends on.
+  `>` Markdown blockquotes are reserved only for direct original source text.
+  Verified quote anchors are available only for direct source quotes; use the exact anchor token only when exact wording is useful.
+  For interpretation, emphasis, examples, or opinion, use normal prose or fenced `text` blocks, never `>` blockquotes.
   Do not append a standalone source label or citation-only final line after ordinary summary prose; source labels on their own line belong only after direct blockquotes when no quote anchor is available.
-  Use quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.
+  Use verified quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.
+  Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence.
   Prefer a readable answer with traceable evidence over repetitive citations or low-information quotes.
 - Use `(Author, Year)` for single-author papers, `(Author & Author, Year)` for two, `(Author et al., Year)` for three or more.
 - The citation label should match the Zotero item metadata (use `creators` and `date` fields).
 - Do NOT invent citations or cite papers not in the user's library.
-- If a deep-read passage provides a quote anchor like `[[quote:Q_x7a2]]`, use that anchor token for the direct quote. Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. Put any translation outside the blockquote as explanation. If no quote anchor is provided, put the source label on the next non-empty line after the blockquote.
+- If a deep-read passage provides a quote anchor like `[[quote:Q_x7a2]]`, use that anchor token for the direct quote.
+  Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language.
+  Put any translation outside the blockquote as explanation.
+  If no quote anchor is provided, put the source label on the next non-empty line after the blockquote.
+- Copy the Source label string exactly.
+- Do not invent author/year/page/section labels.
 - Do not write `[[source=...]]`, `section=...`, or `chunk=...` metadata in the final answer.
 
 ### After writing
@@ -108,9 +121,9 @@ Do not embed MinerU source image paths.
 
 ### Key rules
 
-- Budget: aim for **3-6 tool calls** total across all phases. Prefer one `library_retrieve` call over many `paper_read` calls for broad collection/library search.
+- Budget: prefer one `library_retrieve` call over many `paper_read` calls for broad collection/library search, but do not enforce a fixed call count when a bounded selected corpus needs deeper evidence coverage.
 - Preserve coverage wording from `library_retrieve`: sampled snippets support evidence summaries, but only complete metadata/indexed/searchable-text coverage can support exhaustive folder-level claims. Use `paperMatches` before manually inferring from snippets.
-- Do NOT dump all paper content into context — use abstracts first, deep-read selectively.
+- Do NOT dump all paper content into context. Use the paper synthesis digest, body snippets, and coverage frontier as the working evidence layer.
 - Do NOT produce a per-paper summary list — synthesize thematically.
-- If the review covers >10 papers, prioritize breadth (abstracts) over depth (full reads).
+- If a discovered review covers >25 papers, stage the work and report the frontier instead of pretending every paper was deeply read.
 - If fewer than 3 papers match the topic, tell the user and offer to search online with `literature_search`.

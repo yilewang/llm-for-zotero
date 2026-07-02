@@ -23,6 +23,7 @@ const BALANCED_EVIDENCE_PHRASES = [
   "not to decorate every paragraph",
   "repetitive citations or low-information quotes",
   "not use them for publication metadata, DOI links, journal names, or source labels alone",
+  "Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence",
 ];
 
 const SOURCE_LABEL_PLACEMENT_PHRASES = [
@@ -30,8 +31,16 @@ const SOURCE_LABEL_PLACEMENT_PHRASES = [
   "source labels on their own line belong only after direct blockquotes",
 ];
 
+const STRICT_BLOCKQUOTE_SOURCE_PHRASES = [
+  "`>` Markdown blockquotes are reserved only for direct original source text",
+  "Verified quote anchors are available only for direct source quotes",
+  "For interpretation, emphasis, examples, or opinion, use normal prose or fenced `text` blocks",
+];
+
 const DIRECT_QUOTE_SAFETY_PHRASES = [
   "Direct quote text must be copied verbatim in the original source language",
+  "Copy the Source label string exactly",
+  "Do not invent author/year/page/section labels",
   "[[source=...]]",
   "section=...",
   "chunk=...",
@@ -43,11 +52,19 @@ function assertBalancedEvidenceGuidance(text: string): void {
     assert.include(normalized, phrase);
   }
   assertSourceLabelPlacementGuidance(text);
+  assertStrictBlockquoteSourceGuidance(text);
 }
 
 function assertSourceLabelPlacementGuidance(text: string): void {
   const normalized = text.replace(/\s+/g, " ");
   for (const phrase of SOURCE_LABEL_PLACEMENT_PHRASES) {
+    assert.include(normalized, phrase);
+  }
+}
+
+function assertStrictBlockquoteSourceGuidance(text: string): void {
+  const normalized = text.replace(/\s+/g, " ");
+  for (const phrase of STRICT_BLOCKQUOTE_SOURCE_PHRASES) {
     assert.include(normalized, phrase);
   }
 }
@@ -96,6 +113,7 @@ describe("quote guidance prompts", function () {
 
   it("keeps direct chat guidance from requesting dangling source labels", function () {
     assertSourceLabelPlacementGuidance(DEFAULT_SYSTEM_PROMPT);
+    assertStrictBlockquoteSourceGuidance(DEFAULT_SYSTEM_PROMPT);
   });
 
   it("includes balanced evidence guidance in the core agent persona", function () {

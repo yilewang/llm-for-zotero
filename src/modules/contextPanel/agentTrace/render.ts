@@ -40,6 +40,10 @@ import {
   getReasoningTraceKey,
   normalizeInlineTextForDedupe,
 } from "./traceReducer";
+import {
+  buildToolResultTraceInfo,
+  type ToolResultTraceInfo,
+} from "./toolResultTraceInfo";
 
 type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
 
@@ -2694,7 +2698,11 @@ function buildAgentTraceArgsDetails(
         FILE_IO_TRACE_ACTION_FIELDS,
       );
       if (action) {
-        pushTraceDetail(details, `Action field (${action.field})`, action.value);
+        pushTraceDetail(
+          details,
+          `Action field (${action.field})`,
+          action.value,
+        );
       }
       const path = readFirstTraceStringField(record, FILE_IO_TRACE_PATH_FIELDS);
       if (path) {
@@ -2745,6 +2753,7 @@ function summarizeAgentTraceToolCall(
   name: string,
   args: unknown,
   request?: AgentTraceRequestSummary,
+  resultInfo?: ToolResultTraceInfo,
 ): AgentTraceSummaryRow {
   const label = toolLabelFromName(name);
   const a =
@@ -2766,6 +2775,10 @@ function summarizeAgentTraceToolCall(
     ) ||
     fallbackFileIoSummary ||
     (skillName ? `${skillVerb}: ${skillName}` : `Using ${label}`);
+  const displayText =
+    resultInfo?.rowSuffix && text === `Using ${label}`
+      ? `${text} ${resultInfo.rowSuffix}`
+      : text;
 
   // Show code block for shell commands and file I/O
   let codeBlock: string | undefined;
@@ -2780,7 +2793,7 @@ function summarizeAgentTraceToolCall(
     icon: "→",
     // For file_io, use the descriptive onCall text (e.g. "Reading paper section")
     // instead of the generic label. For other tools (run_command), keep label.
-    text: codeBlock && name !== "file_io" ? label : text,
+    text: codeBlock && name !== "file_io" ? label : displayText,
     codeBlock,
   };
 }
@@ -3088,6 +3101,10 @@ type AgentTraceAdapterContext = {
   requestSummary: AgentTraceRequestSummary;
   userMessage: Message | null | undefined;
   pendingActions: Map<string, AgentPendingAction>;
+  toolResultsByCallId: Map<
+    string,
+    Extract<AgentRunEventRecord["payload"], { type: "tool_result" }>
+  >;
   announcedWriting: boolean;
   lastMeaningfulStatus: string | null;
   reasoningLabels: Map<string, string>;
@@ -3189,27 +3206,34 @@ function appendLegacyAgentTraceEvent(
       });
       return true;
     }
-    case "tool_call":
+    case "tool_call": {
+      const resultInfo = buildToolResultTraceInfo(
+        entry.payload.name,
+        ctx.toolResultsByCallId.get(entry.payload.callId),
+      );
+      const details = [
+        ...buildAgentTraceArgsDetails(entry.payload.name, entry.payload.args),
+        ...(resultInfo?.details || []),
+      ];
       ctx.items.push({
         type: "action",
         row: summarizeAgentTraceToolCall(
           entry.payload.name,
           entry.payload.args,
           ctx.requestSummary,
+          resultInfo || undefined,
         ),
         chips: buildAgentTraceToolChips(
           entry.payload.name,
           entry.payload.args,
           ctx.userMessage,
         ),
-        details: buildAgentTraceArgsDetails(
-          entry.payload.name,
-          entry.payload.args,
-        ),
+        details: dedupeAgentTraceDetails(details),
         detailKey: `tool-call:${entry.payload.callId}`,
       });
       ctx.fallbackReasoningStep += 1;
       return true;
+    }
     case "reasoning":
       appendReasoningTraceItem(ctx, entry.payload);
       return true;
@@ -3403,6 +3427,15 @@ export function buildAgentTraceDisplayItems(
   const isCodexTrace = assistantMessage?.modelProviderLabel === "Codex";
   const isAgentTrace = assistantMessage?.runMode === "agent";
   const compactedEvents = compactAgentTraceEvents(events);
+  const toolResultsByCallId = new Map<
+    string,
+    Extract<AgentRunEventRecord["payload"], { type: "tool_result" }>
+  >();
+  for (const entry of compactedEvents) {
+    if (entry.payload.type === "tool_result") {
+      toolResultsByCallId.set(entry.payload.callId, entry.payload);
+    }
+  }
   const isInterleaved = hasInterleavedTextAndTools(events, {
     preserveRolledBackText: isCodexTrace || isAgentTrace,
   });
@@ -3415,6 +3448,7 @@ export function buildAgentTraceDisplayItems(
     requestSummary,
     userMessage,
     pendingActions: new Map<string, AgentPendingAction>(),
+    toolResultsByCallId,
     announcedWriting: false,
     lastMeaningfulStatus: null,
     reasoningLabels: new Map<string, string>(),

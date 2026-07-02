@@ -346,6 +346,7 @@ export const selectedPaperPreviewExpandedCache = new Map<
   number,
   number | false
 >();
+export const selectedPaperContextListExpandedCache = new Map<number, boolean>();
 export const activeGlobalConversationByLibrary = new Map<number, number>();
 export const activeConversationModeByLibrary = new Map<
   number,
@@ -470,6 +471,7 @@ export function clearAllState(): void {
   paperContextModeOverrides.clear();
   paperContentSourceOverrides.clear();
   selectedPaperPreviewExpandedCache.clear();
+  selectedPaperContextListExpandedCache.clear();
   activeGlobalConversationByLibrary.clear();
   activeConversationModeByLibrary.clear();
   draftInputCache.clear();

@@ -21,6 +21,7 @@ import {
   selectedOtherRefContextCache,
   paperContextModeOverrides,
   paperContentSourceOverrides,
+  selectedPaperContextListExpandedCache,
   selectedPaperPreviewExpandedCache,
 } from "../state";
 import { buildPaperKey } from "../pdfContext";
@@ -101,6 +102,7 @@ export function getNextContentSourceMode(
 export function clearSelectedPaperState(itemId: number): void {
   selectedPaperContextCache.delete(itemId);
   selectedPaperPreviewExpandedCache.delete(itemId);
+  selectedPaperContextListExpandedCache.delete(itemId);
   clearPaperModeOverrides(itemId);
   // Note: content source overrides are NOT cleared here because auto-loaded
   // papers may still have overrides when selectedPaperContextCache is empty.

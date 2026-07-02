@@ -66,6 +66,7 @@ type ComposeCaptureControllerDeps = {
   closeExportMenu: () => void;
   schedulePaperPickerSearch: () => void;
   updateImagePreviewPreservingScroll: () => void;
+  isScreenshotUnsupportedModel?: (modelName: string) => boolean;
   setStatusMessage?: (message: string, level: StatusLevel) => void;
   log: (message: string, ...args: unknown[]) => void;
 };
@@ -92,6 +93,8 @@ export function attachComposeCaptureController(
   const setStatus = (message: string, level: StatusLevel) => {
     deps.setStatusMessage?.(message, level);
   };
+  const isScreenshotUnsupported =
+    deps.isScreenshotUnsupportedModel || isScreenshotUnsupportedModel;
 
   const closeModelMenu = () =>
     setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
@@ -220,7 +223,7 @@ export function attachComposeCaptureController(
       const item = deps.getItem();
       if (!item) return;
       const { currentModel } = deps.getSelectedModelInfo();
-      if (isScreenshotUnsupportedModel(currentModel)) {
+      if (isScreenshotUnsupported(currentModel)) {
         setStatus(getScreenshotDisabledHint(currentModel), "error");
         deps.updateImagePreviewPreservingScroll();
         return;
@@ -390,7 +393,7 @@ export function attachComposeCaptureController(
       deps.consumeActiveActionToken();
       deps.closeSlashMenu();
       const { currentModel } = deps.getSelectedModelInfo();
-      if (isScreenshotUnsupportedModel(currentModel)) {
+      if (isScreenshotUnsupported(currentModel)) {
         setStatus(getScreenshotDisabledHint(currentModel), "error");
         return;
       }
@@ -452,7 +455,7 @@ export function attachComposeCaptureController(
         deps.consumeActiveActionToken();
         deps.closeSlashMenu();
         const { currentModel } = deps.getSelectedModelInfo();
-        if (isScreenshotUnsupportedModel(currentModel)) {
+        if (isScreenshotUnsupported(currentModel)) {
           setStatus(getScreenshotDisabledHint(currentModel), "error");
           return;
         }

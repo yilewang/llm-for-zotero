@@ -33,6 +33,12 @@ const zhCN: Record<string, string> = {
   "Open plugin settings": "打开插件设置",
   Export: "导出",
   Clear: "清除",
+  "Clear all": "全部清除",
+  "Context cleared": "上下文已清除",
+  "No context to clear": "没有可清除的上下文",
+  "Add Items as Context to LLM-for-Zotero":
+    "将条目作为上下文添加到 LLM-for-Zotero",
+  "No supported default attachment found": "未找到支持的默认附件",
   Rename: "重命名",
   "Rename chat": "重命名对话",
   Undo: "撤销",
@@ -501,8 +507,13 @@ const zhCN: Record<string, string> = {
   Temperature: "温度",
   "Max tokens": "最大 Token 数",
   "Input cap": "输入上限",
+  "Input mode": "输入模式",
+  "Text only": "仅文本",
+  "Vision allowed": "允许视觉",
   "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit (optional)":
     "温度：随机性 (0–2)  ·  最大 Token 数：输出限制  ·  输入上限：上下文限制（可选）",
+  "Temperature: randomness (0–2)  ·  Max tokens: output limit  ·  Input cap: context limit  ·  Input mode: auto/text-only/vision":
+    "温度：随机性 (0–2)  ·  最大 Token 数：输出限制  ·  输入上限：上下文限制  ·  输入模式：自动/仅文本/视觉",
   "Complete the empty provider first": "请先完善空白的服务商",
   "Add provider": "添加服务商",
   "+ Add Provider": "+ 添加服务商",
@@ -530,6 +541,11 @@ const zhCN: Record<string, string> = {
   "Fetching models…": "正在获取模型…",
   "No models found": "未找到模型",
   "Synced %n models": "已同步 %n 个模型",
+  "Loading Codex models…": "正在加载 Codex 模型…",
+  "Could not load Codex models. Showing current model only.":
+    "无法加载 Codex 模型。仅显示当前模型。",
+  "Retry loading Codex models": "重试加载 Codex 模型",
+  "Codex did not return any available models.": "Codex 未返回任何可用模型。",
   "Fetch Models": "获取模型",
   WebChat: "WebChat",
   "Provider A": "服务商 A",
@@ -638,6 +654,20 @@ const zhCN: Record<string, string> = {
   "Zotero MCP tools enabled but not configured yet.":
     "Zotero MCP 工具已启用，但尚未配置。",
   "Could not read Codex MCP status: ": "无法读取 Codex MCP 状态：",
+  "Native Codex approvals": "原生 Codex 授权",
+  "Lets Zotero surface native Codex command, file-change, and permission approval requests as per-request review cards. This does not grant shell or filesystem access by default.":
+    "允许 Zotero 将原生 Codex 的命令、文件变更和权限请求显示为逐次审核卡片。默认不会授予 shell 或文件系统访问权限。",
+  "Enable native Codex approval review cards": "启用原生 Codex 授权审核卡片",
+  Reviewer: "审核者",
+  "Auto review": "自动审核",
+  "User review shows every native request that reaches Zotero. Auto review only changes Codex app-server's reviewer parameter; Zotero MCP trust rules and confirmation behavior stay unchanged.":
+    "用户审核会显示所有到达 Zotero 的原生请求。自动审核只会更改 Codex app-server 的审核者参数；Zotero MCP 信任规则和确认行为保持不变。",
+  "Native Codex approval bridge enabled.": "原生 Codex 授权桥接已启用。",
+  "Native Codex approval bridge disabled.": "原生 Codex 授权桥接已禁用。",
+  "Codex may auto-review eligible native requests; Zotero still shows requests that reach the plugin.":
+    "Codex 可以自动审核符合条件的原生请求；到达插件的请求仍会由 Zotero 显示。",
+  "Zotero will show native Codex approval requests.":
+    "Zotero 将显示原生 Codex 授权请求。",
 
   // Claude Code preferences
   "Claude Code Integration": "Claude Code 集成",

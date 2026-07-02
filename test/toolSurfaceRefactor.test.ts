@@ -2128,7 +2128,7 @@ describe("semantic tool surface", function () {
       raw,
       "For method-section requests, do not call overview first",
     );
-    assert.include(raw, "include short blockquotes");
+    assert.include(raw, "include short direct-source blockquotes");
     assert.include(
       raw,
       "Do not call visual/page tools, `file_io`, or `run_command`",

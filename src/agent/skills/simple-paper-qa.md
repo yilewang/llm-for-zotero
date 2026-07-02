@@ -35,16 +35,23 @@ Use Zotero paper tools as resources, not a ritual.
 - If the user asks for a specific claim, method, result, table, or named section that overview cannot answer, make one focused `paper_read({ mode:'targeted', query:'<specific missing claim>' })` call.
 - If overview reports `contentStatus:'no_pdf_attachment'`, answer from Zotero metadata/abstract if sufficient; otherwise one external lookup is allowed and must be labeled as external.
 - If overview reports `contentStatus:'no_extractable_pdf_text'`, answer from metadata/abstract and state the limitation.
-- When `paper_read` returns exact passages, include 1-3 short blockquotes from those passages when useful for grounding the explanation.
+- When `paper_read` returns exact passages, include 1-3 short direct-source blockquotes from those passages when useful for grounding the explanation.
 - Use citations and short quotes to make important paper-specific claims checkable, not to decorate every paragraph.
   Cite concrete claims about methods, datasets, results, definitions, equations, limitations, and the authors' own interpretations.
   Use short direct quotes when the exact wording matters or when a key point benefits from visible evidence.
   For background explanation, synthesis, or your own interpretation, write clearly and cite only the specific paper claim it depends on.
+  `>` Markdown blockquotes are reserved only for direct original source text.
+  Verified quote anchors are available only for direct source quotes; use the exact anchor token only when exact wording is useful.
+  For interpretation, emphasis, examples, or opinion, use normal prose or fenced `text` blocks, never `>` blockquotes.
   Do not append a standalone source label or citation-only final line after ordinary summary prose; source labels on their own line belong only after direct blockquotes when no quote anchor is available.
-  Use quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.
+  Use verified quote anchors only for direct article evidence; do not use them for publication metadata, DOI links, journal names, or source labels alone.
+  Paper titles, headings, author lists, journal names, DOI blocks, and source labels are metadata, not direct evidence.
   Prefer a readable answer with traceable evidence over repetitive citations or low-information quotes.
 - If `paper_read` provides quote anchors like `[[quote:Q_x7a2]]`, use those anchor tokens for direct quotes instead of copying the quote/sourceLabel manually.
-- Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. Put any translation outside the blockquote as explanation.
+- Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language.
+  Put any translation outside the blockquote as explanation.
 - If no quote anchor is provided for a direct quote, put the provided `sourceLabel` on the next non-empty line after the blockquote, before any commentary.
+- Copy the Source label string exactly.
+- Do not invent author/year/page/section labels.
 - Do not write `[[source=...]]`, `section=...`, or `chunk=...` metadata in the final answer.
 - Do not call visual/page tools, `file_io`, or `run_command` just to improve citation anchors or page numbers. Use the provided `sourceLabel`; the UI can bind citations after rendering.

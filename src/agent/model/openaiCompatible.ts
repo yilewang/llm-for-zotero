@@ -19,11 +19,8 @@ import type {
   AgentToolCall,
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
-import {
-  buildAgentModelCapabilities,
-  mediaContentInputs,
-} from "./contentCapabilities";
-import { isMultimodalRequestSupported } from "./messageBuilder";
+import { buildAgentModelCapabilities } from "./contentCapabilities";
+import { resolveRequestContentInputs } from "./messageBuilder";
 import {
   buildOpenAIFunctionTools,
   createFallbackToolCallId,
@@ -342,7 +339,7 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
     return buildAgentModelCapabilities({
       streaming: true,
       toolCalls: isToolCapableApiBase(request),
-      contentInputs: mediaContentInputs(isMultimodalRequestSupported(request)),
+      contentInputs: resolveRequestContentInputs(request),
       fileInputs: false,
       reasoning: true,
     });

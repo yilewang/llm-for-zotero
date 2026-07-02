@@ -1093,6 +1093,114 @@
                   setup remain owned by Codex.
                 </html:span>
               </html:div>
+
+              <html:div
+                style="
+                  display: flex;
+                  flex-direction: column;
+                  gap: 8px;
+                  padding: 12px;
+                  border: 1px solid var(--stroke-secondary, #c8c8c8);
+                  border-radius: 8px;
+                  background: Field;
+                "
+              >
+                <html:div
+                  style="display: flex; flex-direction: column; gap: 4px"
+                >
+                  <html:span
+                    style="
+                      font-weight: 700;
+                      font-size: 12px;
+                      color: var(--fill-primary, inherit);
+                    "
+                    >Native Codex approvals</html:span
+                  >
+                  <html:span
+                    style="
+                      font-size: 11px;
+                      color: var(--fill-secondary, #777);
+                      line-height: 1.5;
+                    "
+                  >
+                    Lets Zotero surface native Codex command, file-change, and
+                    permission approval requests as per-request review cards.
+                    This does not grant shell or filesystem access by default.
+                  </html:span>
+                </html:div>
+                <html:label
+                  style="
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 8px;
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: var(--fill-primary, inherit);
+                  "
+                >
+                  <html:input
+                    id="__addonRef__-codex-app-server-native-approvals-enable"
+                    type="checkbox"
+                  ></html:input>
+                  Enable native Codex approval review cards
+                </html:label>
+                <html:div
+                  style="
+                    display: grid;
+                    grid-template-columns: minmax(180px, 260px) 1fr;
+                    gap: 8px 12px;
+                    align-items: center;
+                  "
+                >
+                  <html:label
+                    for="__addonRef__-codex-app-server-approvals-reviewer"
+                    style="
+                      font-size: 12px;
+                      font-weight: 600;
+                      color: var(--fill-primary, inherit);
+                    "
+                  >
+                    Reviewer
+                  </html:label>
+                  <html:select
+                    id="__addonRef__-codex-app-server-approvals-reviewer"
+                    style="
+                      width: 100%;
+                      max-width: 260px;
+                      height: 28px;
+                      margin: 0;
+                      padding: 4px 8px;
+                      font-size: 12px;
+                      line-height: 18px;
+                      border: 1px solid var(--stroke-secondary, #c8c8c8);
+                      border-radius: 6px;
+                      background: Field;
+                      color: FieldText;
+                      box-sizing: border-box;
+                    "
+                  >
+                    <html:option value="user">User</html:option>
+                    <html:option value="auto_review">Auto review</html:option>
+                  </html:select>
+                </html:div>
+                <html:span
+                  id="__addonRef__-codex-app-server-native-approvals-status"
+                  style="font-size: 11.5px; display: none"
+                ></html:span>
+                <html:span
+                  style="
+                    font-size: 11px;
+                    color: var(--fill-secondary, #777);
+                    line-height: 1.45;
+                    display: block;
+                  "
+                >
+                  User review shows every native request that reaches Zotero.
+                  Auto review only changes Codex app-server's reviewer
+                  parameter; Zotero MCP trust rules and confirmation behavior
+                  stay unchanged.
+                </html:span>
+              </html:div>
             </html:div>
           </html:div>
         </html:div>

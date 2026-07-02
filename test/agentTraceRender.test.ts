@@ -9,6 +9,7 @@ import {
   renderPendingActionCard,
 } from "../src/modules/contextPanel/agentTrace/render";
 import {
+  createCodexNativeActivityTraceControllerForTests,
   resolveAssistantResponseMenuContent,
   renderAssistantMarkdownHtmlForChat,
   renderAssistantGeneratedImagesInto,
@@ -305,6 +306,41 @@ const throwingTemplateDocument = {
   createElementNS: (_namespace: string, tagName: string) =>
     new FakeElement(tagName),
 } as unknown as Document;
+
+type CodexToolActivityTestPayload = Extract<
+  AgentRunEventRecord["payload"],
+  { type: "codex_tool_activity" }
+>;
+
+function codexToolActivityEvent(
+  seq: number,
+  payload: CodexToolActivityTestPayload,
+  createdAt = seq,
+): AgentRunEventRecord {
+  return {
+    runId: "run-1",
+    seq,
+    eventType: "codex_tool_activity",
+    payload,
+    createdAt,
+  };
+}
+
+function getCodexTraceActionTexts(events: AgentRunEventRecord[]): string[] {
+  const { items } = buildAgentTraceDisplayItems(events, null, {
+    role: "assistant",
+    text: "",
+    timestamp: 1,
+    runMode: "agent",
+    modelProviderLabel: "Codex",
+  });
+  return items
+    .filter(
+      (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+        item.type === "action",
+    )
+    .map((item) => item.row.text);
+}
 
 function createFakeCodeBlockShell(options?: {
   lang?: string;
@@ -1373,6 +1409,489 @@ describe("agentTrace render", function () {
     assert.include(actionTexts, "Used Query Library");
   });
 
+  it("dedupes adjacent identical Codex tool activity rows with different item IDs", function () {
+    const args = {
+      command:
+        "rm -- '/Users/yat-lok/Desktop/Screenshot.png' && test ! -e '/Users/yat-lok/Desktop/Screenshot.png'",
+      cwd: "/Users/yat-lok/Documents/zotero-dev/agent-runtime/profile-79d985cc",
+      timeoutMs: 30000,
+    };
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "codex_tool_activity",
+        payload: {
+          type: "codex_tool_activity",
+          itemId: "native-command-1",
+          phase: "completed",
+          toolName: "run_command",
+          toolLabel: "Run Command",
+          args,
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "codex_tool_activity",
+        payload: {
+          type: "codex_tool_activity",
+          itemId: "mcp-command-1",
+          phase: "completed",
+          toolName: "run_command",
+          toolLabel: "Run Command",
+          args,
+        },
+        createdAt: 2,
+      },
+    ];
+
+    const { items } = buildAgentTraceDisplayItems(events, null, {
+      role: "assistant",
+      text: "",
+      timestamp: 1,
+      runMode: "agent",
+      modelProviderLabel: "Codex",
+    });
+    const actionTexts = items
+      .filter(
+        (item): item is Extract<(typeof items)[number], { type: "action" }> =>
+          item.type === "action",
+      )
+      .map((item) => item.row.text);
+
+    assert.equal(
+      actionTexts.filter((text) => text === "Used Run Command").length,
+      1,
+    );
+  });
+
+  it("renders one Codex MCP row for duplicate visible tool activity", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3542,
+          contextItemId: 3541,
+          title: "Subspace communication in the hippocampal-retrosplenial axis",
+          firstCreator: "Gonzalez et al.",
+          year: "2026",
+          citationKey: "gonzalezSubspaceCommunicationHippocampal2026",
+          attachmentTitle: "PDF",
+          contentSourceMode: "text",
+        },
+      },
+      maxChars: 12000,
+    };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp-jsonrpc-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm_for_zotero",
+        args,
+        ok: true,
+      }),
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "status",
+        payload: {
+          type: "status",
+          text: "Compacting context…",
+        },
+        createdAt: 2,
+      },
+      codexToolActivityEvent(3, {
+        type: "codex_tool_activity",
+        itemId: "native-tool-item-1",
+        phase: "completed",
+        toolName: "mcp__llm_for_zotero__paper_read",
+        toolLabel: "Read Paper",
+        args,
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("renders one Codex MCP row when Zotero MCP server aliases differ", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3485,
+          contextItemId: 3484,
+          title:
+            "A stable brain from unstable components: Emerging concepts and implications for neural computation",
+          firstCreator: "Chambers and Rumpel",
+          year: "2017",
+          attachmentTitle: "PDF",
+          citationKey: "chambersStableBrainUnstable2017",
+          contentSourceMode: "mineru",
+          mineruCacheDir:
+            "/Users/yat-lok/Documents/zotero-dev/llm-for-zotero-mineru/3484",
+        },
+      },
+      maxChars: 6000,
+    };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp-jsonrpc-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm_for_zotero",
+        args,
+        ok: true,
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "native-tool-item-1",
+        phase: "completed",
+        toolName: "mcp__llm-for-zotero-profile-dev__paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm-for-zotero-profile-dev",
+        args,
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("keeps distinct Codex tools that emit the same visible text", function () {
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "paper-read-1",
+        phase: "completed",
+        toolName: "paper_read",
+        serverName: "llm_for_zotero",
+        args: { mode: "overview" },
+        text: "Completed",
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "library-search-1",
+        phase: "completed",
+        toolName: "library_search",
+        serverName: "llm_for_zotero",
+        args: { entity: "items" },
+        text: "Completed",
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Completed",
+      "Completed",
+    ]);
+  });
+
+  it("keeps same Codex tool text when arguments differ", function () {
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "paper-read-1",
+        phase: "completed",
+        toolName: "paper_read",
+        serverName: "llm_for_zotero",
+        args: { mode: "overview", itemId: 1 },
+        text: "Completed",
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "paper-read-2",
+        phase: "completed",
+        toolName: "paper_read",
+        serverName: "llm_for_zotero",
+        args: { mode: "overview", itemId: 2 },
+        text: "Completed",
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Completed",
+      "Completed",
+    ]);
+  });
+
+  it("dedupes same Codex tool text when identity and arguments match", function () {
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "paper-read-1",
+        phase: "completed",
+        toolName: "paper_read",
+        serverName: "llm_for_zotero",
+        args: { mode: "overview", itemId: 1 },
+        text: "Completed",
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "paper-read-2",
+        phase: "completed",
+        toolName: "mcp__llm_for_zotero__paper_read",
+        args: { itemId: 1, mode: "overview" },
+        text: "Completed",
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Completed",
+    ]);
+  });
+
+  it("renders one Codex MCP row when duplicate arguments are serialized differently", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3441,
+          contextItemId: 3442,
+          title: "Recurrent Models of Visual Attention",
+          firstCreator: "Mnih et al.",
+          year: "2014",
+          citationKey: "mnihRecurrentModelsVisual2014",
+          attachmentTitle: "PDF",
+          contentSourceMode: "mineru",
+          mineruCacheDir:
+            "/Users/yat-lok/Documents/zotero-dev/llm-for-zotero-mineru/3442",
+        },
+      },
+      maxChars: 6000,
+    };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp-jsonrpc-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm_for_zotero",
+        args,
+        ok: true,
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "native-tool-item-1",
+        phase: "completed",
+        toolName: "mcp__llm_for_zotero__paper_read",
+        toolLabel: "Read Paper",
+        args: JSON.stringify(args),
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("renders one Codex MCP row when duplicate identity is label versus tool name", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3597,
+          contextItemId: 3598,
+          title:
+            "Stochastic Gradient Descent-Induced Drift of Representation in a Two-Layer Neural Network",
+        },
+      },
+      maxChars: 6000,
+    };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp-jsonrpc-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        args,
+      }),
+      codexToolActivityEvent(2, {
+        type: "codex_tool_activity",
+        itemId: "native-tool-item-1",
+        phase: "completed",
+        toolName: "mcp__llm_for_zotero__paper_read",
+        args,
+      }),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("keeps repeated Codex tool activity outside the duplicate window", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3542,
+          contextItemId: 3541,
+          title: "Subspace communication in the hippocampal-retrosplenial axis",
+        },
+      },
+      maxChars: 12000,
+    };
+    const events: AgentRunEventRecord[] = [
+      codexToolActivityEvent(1, {
+        type: "codex_tool_activity",
+        itemId: "mcp-jsonrpc-1",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        args,
+      }),
+      codexToolActivityEvent(
+        2,
+        {
+          type: "codex_tool_activity",
+          itemId: "mcp-jsonrpc-2",
+          phase: "completed",
+          toolName: "paper_read",
+          toolLabel: "Read Paper",
+          args,
+        },
+        9002,
+      ),
+    ];
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("coalesces duplicate Codex native and MCP activity before rendering", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3542,
+          contextItemId: 3541,
+          title: "Subspace communication in the hippocampal-retrosplenial axis",
+        },
+      },
+      maxChars: 12000,
+    };
+    const assistantMessage = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      assistantMessage,
+      () => undefined,
+    );
+
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:1",
+      phase: "completed",
+      toolName: "paper_read",
+      toolLabel: "Read Paper",
+      arguments: args,
+      ok: true,
+    });
+    controller.appendItemStatus(
+      {
+        id: "native-tool-item-1",
+        type: "tool_call",
+        name: "mcp__llm_for_zotero__paper_read",
+        title: "Read Paper",
+        serverName: "llm_for_zotero",
+        arguments: args,
+      },
+      "completed",
+    );
+
+    const events = assistantMessage.pendingAgentTraceEvents || [];
+    assert.lengthOf(
+      events.filter((entry) => entry.payload.type === "codex_tool_activity"),
+      1,
+    );
+
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
+  it("coalesces native and MCP activity when Zotero server names use different separators", function () {
+    const args = {
+      mode: "overview",
+      target: {
+        paperContext: {
+          itemId: 3485,
+          contextItemId: 3484,
+          title:
+            "A stable brain from unstable components: Emerging concepts and implications for neural computation",
+        },
+      },
+      maxChars: 6000,
+    };
+    const assistantMessage = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      assistantMessage,
+      () => undefined,
+    );
+
+    controller.noteMcpToolActivity({
+      requestId: "jsonrpc:1",
+      phase: "completed",
+      toolName: "paper_read",
+      toolLabel: "Read Paper",
+      serverName: "llm_for_zotero",
+      arguments: args,
+      ok: true,
+    });
+    controller.appendItemStatus(
+      {
+        id: "native-tool-item-1",
+        type: "tool_call",
+        name: "mcp__llm-for-zotero-profile-dev__paper_read",
+        title: "Read Paper",
+        serverName: "llm-for-zotero-profile-dev",
+        arguments: args,
+      },
+      "completed",
+    );
+
+    const events = assistantMessage.pendingAgentTraceEvents || [];
+    assert.lengthOf(
+      events.filter((entry) => entry.payload.type === "codex_tool_activity"),
+      1,
+    );
+    assert.deepEqual(getCodexTraceActionTexts(events), [
+      "Codex received the request",
+      "Used Read Paper",
+    ]);
+  });
+
   it("renders generated assistant images outside user screenshot UI", function () {
     const savedPathContainer = fakeDocument.createElement("div") as unknown as
       | HTMLElement
@@ -1886,6 +2405,124 @@ describe("agentTrace render", function () {
       "Status",
     ]);
     assert.isFalse(chipLabels.some((label) => label.includes("...")));
+  });
+
+  it("makes Claude Read calls with empty arguments distinguishable and expandable", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-1",
+        seq: 1,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "read-1",
+          name: "Read",
+          args: {},
+        },
+        createdAt: 1,
+      },
+      {
+        runId: "run-1",
+        seq: 2,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "read-1",
+          name: "",
+          ok: true,
+          content: [
+            "1\t# Representational drift reflects ongoing balancing of stochastic changes by Hebbian learning",
+            "2\t",
+            "3\tRecent evidence discusses signal and noise correlations.",
+            "200\t4. cortex. Nature 594, 541546 (2021).",
+          ].join("\n"),
+        },
+        createdAt: 2,
+      },
+      {
+        runId: "run-1",
+        seq: 3,
+        eventType: "tool_call",
+        payload: {
+          type: "tool_call",
+          callId: "read-2",
+          name: "Read",
+          args: {},
+        },
+        createdAt: 3,
+      },
+      {
+        runId: "run-1",
+        seq: 4,
+        eventType: "tool_result",
+        payload: {
+          type: "tool_result",
+          callId: "read-2",
+          name: "",
+          ok: true,
+          content: [
+            "200\t4. cortex. Nature 594, 541546 (2021).",
+            "201\t5. Lear-du bas ...",
+            "220\tAckNowLEDGMENTs. We thank members of the Kaschube and Rumpel lab.",
+          ].join("\n"),
+        },
+        createdAt: 4,
+      },
+      {
+        runId: "run-1",
+        seq: 5,
+        eventType: "final",
+        payload: { type: "final", text: "Done." },
+        createdAt: 5,
+      },
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant",
+        text: "Done.",
+        timestamp: 1,
+        runMode: "agent",
+        modelProviderLabel: "Claude Code",
+      },
+      events,
+    }) as unknown as FakeElement;
+
+    const actionTexts = trace
+      .findAllByClass("llm-at-text")
+      .map(collectFakeText);
+    assert.include(actionTexts, "Using Read lines 1-200");
+    assert.include(actionTexts, "Using Read lines 200-220");
+
+    const expandableActions = trace.findAllByClass(
+      "llm-agent-process-action-expandable",
+    );
+    assert.lengthOf(expandableActions, 2);
+
+    const detailValues = trace
+      .findAllByClass("llm-agent-process-detail-value")
+      .map(collectFakeText);
+    assert.include(detailValues, "Lines 1-200");
+    assert.include(detailValues, "Lines 200-220");
+    assert.isAtLeast(
+      detailValues.filter((value) => /^\d+ chars$/.test(value)).length,
+      2,
+    );
+    assert.isTrue(
+      detailValues.some((value) =>
+        value.includes(
+          "Recent evidence discusses signal and noise correlations.",
+        ),
+      ),
+    );
+    assert.isTrue(
+      detailValues.some((value) =>
+        value.includes(
+          "AckNowLEDGMENTs. We thank members of the Kaschube and Rumpel lab.",
+        ),
+      ),
+    );
   });
 
   it("renders full expandable details for request context chips", function () {

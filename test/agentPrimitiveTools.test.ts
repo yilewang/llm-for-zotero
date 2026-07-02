@@ -830,7 +830,7 @@ describe("primitive agent tools", function () {
       });
       assert.include(
         String(codexContent.citationInstruction || ""),
-        "short verbatim blockquote",
+        "use > blockquotes only for short verbatim original source text",
       );
 
       const normalResult = await tool.execute(validated.value, {

@@ -1,3 +1,10 @@
+import {
+  buildQuoteTextIndex,
+  countCanonicalTextMatches,
+  extractQuoteTextTokens,
+  normalizeQuoteTextCanonical,
+} from "./quoteTextNormalization";
+
 const SEARCH_BOUNDARY_PUNCTUATION_RE =
   /^[\s"'`“”‘’([{<]+|[\s"'`“”‘’)\]}>.,;:!?]+$/g;
 const SEARCH_WORD_PATTERN = /[\p{L}\p{N}]+/gu;
@@ -42,18 +49,6 @@ const NORMALIZED_QUERY_LENGTHS = [100, 80, 60, 40, 30, 25, 20, 15];
 const FIND_CONTROLLER_HYPHEN_RE = /[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g;
 const FIND_CONTROLLER_TOKEN_RE =
   /[A-Za-z0-9]+(?:[-\u2010-\u2015][A-Za-z0-9]+)*/g;
-const FIND_CONTROLLER_COMPOUND_SECOND_WORDS = new Set([
-  "based",
-  "computer",
-  "decay",
-  "dimensional",
-  "guided",
-  "manifold",
-  "participant",
-  "regularized",
-  "time",
-  "voxel",
-]);
 
 function sanitizeText(text: string): string {
   let out = "";
@@ -133,16 +128,7 @@ export type QuoteTextSearchOptions = {
 };
 
 export function normalizeLocatorText(value: string): string {
-  return sanitizeText(value || "")
-    .normalize("NFKC")
-    .replace(/\u00ad/g, "")
-    .replace(/([A-Za-z])-\s+([A-Za-z])/g, "$1$2")
-    .replace(/[“”‘’]/g, " ")
-    .replace(/[‐‑‒–—-]/g, " ")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+  return normalizeQuoteTextCanonical(value || "");
 }
 
 function hasNonAsciiToken(token: string): boolean {
@@ -158,7 +144,7 @@ function locatorTokensFromNormalizedText(value: string): string[] {
 }
 
 export function extractLocatorTokens(value: string): string[] {
-  return locatorTokensFromNormalizedText(normalizeLocatorText(value));
+  return extractQuoteTextTokens(value || "");
 }
 
 export function isLocatorQueryLongEnough(
@@ -277,16 +263,7 @@ export function getProgressiveStartOffsets(tokens: string[]): number[] {
 
 /** Count all overlapping occurrences of `needle` in `haystack`. */
 export function countOccurrences(haystack: string, needle: string): number {
-  if (!haystack || !needle) return 0;
-  let count = 0;
-  let cursor = 0;
-  while (cursor <= haystack.length - needle.length) {
-    const idx = haystack.indexOf(needle, cursor);
-    if (idx < 0) break;
-    count++;
-    cursor = idx + 1;
-  }
-  return count;
+  return countCanonicalTextMatches(haystack, needle);
 }
 
 function pushUniqueQuery(
@@ -560,41 +537,6 @@ function pushFindControllerQuery(
   queries.push(normalizedQuery);
 }
 
-function hyphenateLikelyCompoundPairs(query: string): string[] {
-  const variants = new Set<string>();
-  const words = Array.from(query.matchAll(/\b[A-Za-z0-9]+\b/g));
-  for (let index = 0; index < words.length - 1; index += 1) {
-    const first = words[index][0];
-    const second = words[index + 1][0];
-    const firstLower = first.toLowerCase();
-    const secondLower = second.toLowerCase();
-    const shouldHyphenate =
-      FIND_CONTROLLER_COMPOUND_SECOND_WORDS.has(secondLower) ||
-      (firstLower === "t" && secondLower === "phate") ||
-      (firstLower === "bci" && secondLower === "learning");
-    if (!shouldHyphenate) continue;
-    const firstEnd = (words[index].index || 0) + first.length;
-    const secondStart = words[index + 1].index || 0;
-    if (!/^\s+$/.test(query.slice(firstEnd, secondStart))) continue;
-    variants.add(`${query.slice(0, firstEnd)}-${query.slice(secondStart)}`);
-  }
-  return Array.from(variants);
-}
-
-function hyphenateAllLikelyCompoundPairs(query: string): string {
-  return query
-    .replace(/\b([Tt])\s+(PHATE|phate)\b/g, "$1-$2")
-    .replace(
-      new RegExp(
-        `\\b([A-Za-z0-9]+)\\s+(${Array.from(
-          FIND_CONTROLLER_COMPOUND_SECOND_WORDS,
-        ).join("|")})\\b`,
-        "gi",
-      ),
-      "$1-$2",
-    );
-}
-
 function pushFindControllerQueryVariants(
   queries: string[],
   seen: Set<string>,
@@ -609,17 +551,6 @@ function pushFindControllerQueryVariants(
     "$1 $2",
   );
   pushFindControllerQuery(queries, seen, spacedHyphen);
-  pushFindControllerQuery(
-    queries,
-    seen,
-    hyphenateAllLikelyCompoundPairs(spacedHyphen),
-  );
-  for (const variant of hyphenateLikelyCompoundPairs(asciiHyphen)) {
-    pushFindControllerQuery(queries, seen, variant);
-  }
-  for (const variant of hyphenateLikelyCompoundPairs(spacedHyphen)) {
-    pushFindControllerQuery(queries, seen, variant);
-  }
 }
 
 function findControllerTokenSpans(text: string): Array<{
@@ -742,15 +673,25 @@ function normalizeEntries(
   entries: QuoteTextSearchEntry[],
 ): NormalizedQuoteTextSearchEntry[] {
   return entries
-    .map((entry) => ({
-      id: String(entry.id || ""),
-      normalizedText:
+    .map((entry) => {
+      const normalizedText =
         entry.normalizedText !== undefined
           ? normalizeLocatorText(entry.normalizedText)
-          : normalizeLocatorText(entry.text),
-      debugLabel: entry.debugLabel || String(entry.id || ""),
-    }))
+          : buildQuoteTextIndex(entry.text).canonicalText;
+      return {
+        id: String(entry.id || ""),
+        normalizedText,
+        debugLabel: entry.debugLabel || String(entry.id || ""),
+      };
+    })
     .filter((entry) => entry.id && entry.normalizedText);
+}
+
+function hasNonBoundaryCanonicalOccurrence(
+  haystack: string,
+  needle: string,
+): boolean {
+  return Boolean(haystack && needle && haystack.includes(needle));
 }
 
 export function findUniqueQuoteTextSearchMatch(
@@ -787,12 +728,21 @@ export function findUniqueQuoteTextSearchMatch(
     }
     const matchedEntryIds: string[] = [];
     let totalOccurrences = 0;
+    let hasNonBoundaryExactOccurrence = false;
     for (const entry of normalizedEntries) {
       const occurrences = countOccurrences(
         entry.normalizedText,
         normalizedQuery,
       );
-      if (occurrences <= 0) continue;
+      if (occurrences <= 0) {
+        if (
+          query.kind === "exact" &&
+          hasNonBoundaryCanonicalOccurrence(entry.normalizedText, normalizedQuery)
+        ) {
+          hasNonBoundaryExactOccurrence = true;
+        }
+        continue;
+      }
       matchedEntryIds.push(entry.id);
       totalOccurrences += occurrences;
     }
@@ -801,34 +751,49 @@ export function findUniqueQuoteTextSearchMatch(
         normalizedQuery,
       )}" -> ${matchedEntryIds.length ? matchedEntryIds.join(", ") : "none"} (${totalOccurrences} total)`,
     );
-    if (matchedEntryIds.length !== 1) continue;
-    if (totalOccurrences === 1) {
-      return {
-        entryId: matchedEntryIds[0],
-        query: query.query,
-        normalizedQuery,
-        matchKind: query.kind,
-        confidence: query.confidence,
-        totalOccurrences,
-        matchedEntryIds,
-        debugSummary,
-      };
-    }
-    if (totalOccurrences > maxSameEntryOccurrences) continue;
     if (
-      !bestMatch ||
-      normalizedQuery.length > bestMatch.normalizedQuery.length
+      query.kind === "exact" &&
+      !matchedEntryIds.length &&
+      hasNonBoundaryExactOccurrence
     ) {
-      bestMatch = {
-        entryId: matchedEntryIds[0],
-        query: query.query,
-        normalizedQuery,
-        matchKind: query.kind,
-        confidence: "medium",
-        totalOccurrences,
-        matchedEntryIds,
-        debugSummary: debugSummary.slice(),
-      };
+      debugSummary.push(
+        `${options?.debugLabel || "Quote"} exact "${formatQuoteSearchQuerySnippet(
+          normalizedQuery,
+        )}" -> skipped non-boundary canonical match`,
+      );
+      return null;
+    }
+    if (
+      matchedEntryIds.length === 1 &&
+      totalOccurrences <= maxSameEntryOccurrences
+    ) {
+      if (totalOccurrences === 1) {
+        return {
+          entryId: matchedEntryIds[0],
+          query: query.query,
+          normalizedQuery,
+          matchKind: query.kind,
+          confidence: query.confidence,
+          totalOccurrences,
+          matchedEntryIds,
+          debugSummary,
+        };
+      }
+      if (
+        !bestMatch ||
+        normalizedQuery.length > bestMatch.normalizedQuery.length
+      ) {
+        bestMatch = {
+          entryId: matchedEntryIds[0],
+          query: query.query,
+          normalizedQuery,
+          matchKind: query.kind,
+          confidence: "medium",
+          totalOccurrences,
+          matchedEntryIds,
+          debugSummary: debugSummary.slice(),
+        };
+      }
     }
   }
 

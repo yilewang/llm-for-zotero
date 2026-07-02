@@ -187,6 +187,66 @@ describe("provider capabilities", function () {
     }
   });
 
+  it("forces text-only input mode through the resolved capability contract", function () {
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "gpt-5.5",
+        apiBase: "https://api.openai.com/v1/responses",
+        protocol: "responses_api",
+        inputMode: "text_only",
+      }),
+      {
+        pdf: "none",
+        images: false,
+        multimodal: false,
+      },
+    );
+  });
+
+  it("allows vision input without forcing PDF support", function () {
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "deepseek-v4-pro",
+        apiBase: "https://api.deepseek.com/v1",
+        protocol: "openai_chat_compat",
+        inputMode: "vision_allowed",
+      }),
+      {
+        pdf: "none",
+        images: true,
+        multimodal: true,
+      },
+    );
+  });
+
+  it("treats missing and invalid input modes as automatic detection", function () {
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "deepseek-v4-pro",
+        apiBase: "https://api.deepseek.com/v1",
+        protocol: "openai_chat_compat",
+      }),
+      {
+        pdf: "none",
+        images: false,
+        multimodal: false,
+      },
+    );
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "deepseek-v4-pro",
+        apiBase: "https://api.deepseek.com/v1",
+        protocol: "openai_chat_compat",
+        inputMode: "invalid",
+      }),
+      {
+        pdf: "none",
+        images: false,
+        multimodal: false,
+      },
+    );
+  });
+
   it("keeps explicit text-only and embedding model names blocked", function () {
     for (const model of [
       "local-text-only",

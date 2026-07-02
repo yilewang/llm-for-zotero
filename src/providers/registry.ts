@@ -6,6 +6,7 @@ import * as copilot from "./tiers/copilot";
 import * as codex from "./tiers/codex";
 import * as thirdParty from "./tiers/thirdParty";
 import { resolvePromptCacheCapability } from "../contextCache/manager";
+import { resolveModelInputMode } from "../utils/modelInputMode";
 
 // Evaluate in priority order: auth-mode tiers (copilot, codex) must come
 // before protocol-based tiers (native) so that e.g. copilot+responses_api
@@ -22,15 +23,20 @@ const TIERS = [copilot, codex, serverUpload, native, thirdParty] as const;
 export function resolveProviderCapabilities(
   params: ProviderParams,
 ): ProviderCapabilities {
-  const textOnly = isTextOnlyModel(params.model);
-
   const matched = TIERS.find((tier) => tier.matches(params));
   const base = matched?.capabilities ?? thirdParty.capabilities;
+  const inputMode = resolveModelInputMode(params.inputMode);
+  const textOnly =
+    inputMode === "text_only" ||
+    (inputMode === "auto" && isTextOnlyModel(params.model));
+  const images =
+    inputMode === "vision_allowed" ? true : textOnly ? false : base.images;
 
   return {
     ...base,
     promptCache: resolvePromptCacheCapability(params),
-    multimodal: !textOnly,
+    images,
+    multimodal: images || (!textOnly && base.pdf !== "none"),
     ...(textOnly ? { pdf: "none" as const, images: false } : {}),
   };
 }

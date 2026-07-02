@@ -5,6 +5,7 @@ import {
   locateQuoteInPageTexts,
   locateQuoteInLivePdfReader,
   locateSelectionInPageTexts,
+  resolvePageIndexForLabel,
   stripBoundaryEllipsis,
   splitQuoteAtEllipsis,
   buildRawPrefixQueries,
@@ -15,7 +16,9 @@ import {
 } from "../src/modules/contextPanel/livePdfSelectionLocator";
 
 function installPdfWorkerStub(
-  handler: (itemId: number) => Promise<{ text: string; pageChars: number[] } | null>,
+  handler: (
+    itemId: number,
+  ) => Promise<{ text: string; pageChars: number[] } | null>,
 ): () => void {
   const originalZotero = (globalThis as any).Zotero;
   const originalZtoolkit = (globalThis as any).ztoolkit;
@@ -278,6 +281,10 @@ describe("citation page cache warming", function () {
 
       assert.equal(first?.pages[0]?.text, "Attachment one target quote.");
       assert.equal(second?.pages[0]?.text, "Attachment two different quote.");
+      assert.equal(first?.coverage, "full-pdfworker");
+      assert.equal(first?.pageCount, 1);
+      assert.equal(second?.coverage, "full-pdfworker");
+      assert.equal(second?.pageCount, 1);
       assert.deepEqual(calls, [101, 202]);
     } finally {
       restore();
@@ -431,6 +438,41 @@ describe("citation page cache warming", function () {
     } finally {
       restore();
     }
+  });
+});
+
+describe("resolvePageIndexForLabel", function () {
+  function createReader(pageLabels?: string[], pagesCount?: number): any {
+    return {
+      _window: {
+        PDFViewerApplication: {
+          pdfDocument: { numPages: pagesCount ?? pageLabels?.length ?? 0 },
+          pagesCount: pagesCount ?? pageLabels?.length ?? 0,
+          pdfViewer: pageLabels ? { pageLabels } : {},
+        },
+      },
+    };
+  }
+
+  it("returns null for empty or unknown page labels", function () {
+    const reader = createReader(["i", "ii", "1", "2"], 4);
+
+    assert.isNull(resolvePageIndexForLabel(reader, ""));
+    assert.isNull(resolvePageIndexForLabel(reader, "S1"));
+  });
+
+  it("resolves numeric page labels without defaulting unknown labels to page 1", function () {
+    const reader = createReader(undefined, 20);
+
+    assert.equal(resolvePageIndexForLabel(reader, "12"), 11);
+    assert.isNull(resolvePageIndexForLabel(reader, "appendix"));
+  });
+
+  it("resolves exact custom and roman page labels", function () {
+    const reader = createReader(["i", "ii", "1", "2"], 4);
+
+    assert.equal(resolvePageIndexForLabel(reader, "ii"), 1);
+    assert.equal(resolvePageIndexForLabel(reader, "2"), 3);
   });
 });
 
@@ -624,6 +666,7 @@ describe("scrollToExactQuoteInReader", function () {
       dispatchSelectedPageIdx?: number;
       findBarCountText?: string;
       matchesCountTotal?: number;
+      pagesCount?: number;
       dispatchedQueries?: string[];
       pageMatchesByQuery?: Record<string, unknown[]>;
       selectedPageIdx?: number;
@@ -661,15 +704,17 @@ describe("scrollToExactQuoteInReader", function () {
           };
         }
         if (options?.dispatchSelectedPageIdx !== undefined) {
-          findController.selected = { pageIdx: options.dispatchSelectedPageIdx };
+          findController.selected = {
+            pageIdx: options.dispatchSelectedPageIdx,
+          };
         }
       },
     };
     return {
       _window: {
         PDFViewerApplication: {
-          pdfDocument: { numPages: 3 },
-          pagesCount: 3,
+          pdfDocument: { numPages: options?.pagesCount ?? 3 },
+          pagesCount: options?.pagesCount ?? 3,
           page: options?.page ?? 2,
           eventBus,
           findBar,
@@ -757,6 +802,102 @@ describe("scrollToExactQuoteInReader", function () {
       assert.isTrue(result.matched);
       assert.equal(result.matchedPageIndex, 1);
       assert.deepEqual(dispatchedQueries, [uniqueQuery]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not let a partial DOM page-text cache veto FindController search", async function () {
+    clearPageTextCache();
+    const quote =
+      "A globally searchable quote appears only on an unrendered PDF page during citation navigation.";
+    const dispatchedQueries: string[] = [];
+    const reader: any = createFindControllerReader(
+      [[], [], [], [], [], [], [], [0]],
+      {
+        dispatchedQueries,
+        pagesCount: 8,
+      },
+    );
+    reader._window.document = {
+      querySelectorAll: () => [
+        {
+          nodeType: 1,
+          parentElement: null,
+          textContent: "Rendered first page without the cited quote.",
+          getAttribute: (name: string) =>
+            name === "data-page-number" ? "1" : null,
+          querySelector: () => ({
+            children: [
+              {
+                textContent: "Rendered first page without the cited quote.",
+              },
+            ],
+            textContent: "Rendered first page without the cited quote.",
+          }),
+        },
+        {
+          nodeType: 1,
+          parentElement: null,
+          textContent: "Rendered second page also lacks it.",
+          getAttribute: (name: string) =>
+            name === "data-page-number" ? "2" : null,
+          querySelector: () => ({
+            children: [
+              {
+                textContent: "Rendered second page also lacks it.",
+              },
+            ],
+            textContent: "Rendered second page also lacks it.",
+          }),
+        },
+      ],
+    };
+    const restore = installPdfWorkerStub(async () => null);
+
+    try {
+      const result = await scrollToExactQuoteInReader(reader, quote, {
+        expectedPageIndex: null,
+      });
+
+      assert.isTrue(result.matched);
+      assert.equal(result.matchedPageIndex, 7);
+      assert.isAbove(
+        dispatchedQueries.length,
+        0,
+        "FindController should run when only a partial DOM cache was checked",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("lets a complete page-text cache veto ambiguous FindController searches", async function () {
+    clearPageTextCache();
+    const quote =
+      "Repeated complete-cache quote remains ambiguous across two extracted PDF pages.";
+    const dispatchedQueries: string[] = [];
+    const reader: any = createFindControllerReader([[], [0], []], {
+      dispatchedQueries,
+    });
+    reader._item = { id: 910 };
+    reader.itemID = 910;
+    const pageOne = `${quote} First occurrence.`;
+    const pageTwo = `Middle page without the quote.`;
+    const pageThree = `${quote} Second occurrence.`;
+    const restore = installPdfWorkerStub(async () => ({
+      text: pageOne + pageTwo + pageThree,
+      pageChars: [pageOne.length, pageTwo.length, pageThree.length],
+    }));
+
+    try {
+      const result = await scrollToExactQuoteInReader(reader, quote, {
+        expectedPageIndex: null,
+      });
+
+      assert.isFalse(result.matched);
+      assert.include(result.reason, "Cached page text found multiple");
+      assert.deepEqual(dispatchedQueries, []);
     } finally {
       restore();
     }
@@ -981,5 +1122,23 @@ describe("locateQuoteByRawPrefixInPages", function () {
     );
     assert.isNotNull(result);
     assert.equal(result!.computedPageIndex, 1);
+  });
+
+  it("resolves MinerU-style math and hyphenation through normalized page text", function () {
+    const result = locateQuoteByRawPrefixInPages(
+      [
+        {
+          pageIndex: 4,
+          pageLabel: "5",
+          text: "The model’s goodness-of-fit, measured by crossvalidated $\\textstyle \\mathbf { R } ^ { 2 }$ (cvR2 ), dropped sharply.",
+        },
+      ],
+      "the model's goodness-of-fit, measured by crossvalidated R² (cvR2 ), dropped",
+      null,
+    );
+
+    assert.isNotNull(result);
+    assert.equal(result!.status, "resolved");
+    assert.equal(result!.computedPageIndex, 4);
   });
 });

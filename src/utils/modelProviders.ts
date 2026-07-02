@@ -5,6 +5,7 @@ import {
   normalizeOptionalInputTokenCap,
   normalizeTemperature,
 } from "./normalization";
+import { normalizeModelInputMode } from "./modelInputMode";
 import {
   isProviderProtocol,
   normalizeProviderProtocolForAuthMode,
@@ -12,6 +13,7 @@ import {
 } from "./providerProtocol";
 import { detectProviderPreset, getProviderPreset } from "./providerPresets";
 import type { ProviderPresetId } from "./providerPresets";
+import type { ModelInputMode } from "../shared/types";
 
 export type LegacyModelSlotKey =
   | "primary"
@@ -23,6 +25,7 @@ export type AdvancedModelConfig = {
   temperature: number;
   maxTokens: number;
   inputTokenCap?: number;
+  inputMode?: ModelInputMode;
 };
 
 export type ModelProviderModel = AdvancedModelConfig & {
@@ -80,6 +83,7 @@ type AdvancedModelConfigInput = {
   temperature?: number | string | null;
   maxTokens?: number | string | null;
   inputTokenCap?: number | string | null;
+  inputMode?: unknown;
 };
 
 type ZoteroPrefsAPI = {
@@ -147,6 +151,7 @@ function normalizeAdvancedModelConfig(
   value?: AdvancedModelConfigInput | null,
   modelName?: string,
 ): AdvancedModelConfig {
+  const inputMode = normalizeModelInputMode(value?.inputMode);
   return {
     temperature: normalizeTemperature(
       `${value?.temperature ?? DEFAULT_TEMPERATURE}`,
@@ -156,6 +161,7 @@ function normalizeAdvancedModelConfig(
       modelName,
     ),
     inputTokenCap: normalizeOptionalInputTokenCap(value?.inputTokenCap),
+    ...(inputMode ? { inputMode } : {}),
   };
 }
 
@@ -279,6 +285,7 @@ function normalizeGroupModel(model: unknown): ModelProviderModel | null {
     temperature?: unknown;
     maxTokens?: unknown;
     inputTokenCap?: unknown;
+    inputMode?: unknown;
     providerProtocol?: unknown;
   };
   const modelName = normalizeString(rawModel.model);
@@ -287,6 +294,7 @@ function normalizeGroupModel(model: unknown): ModelProviderModel | null {
       temperature: Number(rawModel.temperature),
       maxTokens: Number(rawModel.maxTokens),
       inputTokenCap: rawModel.inputTokenCap as number | string | undefined,
+      inputMode: rawModel.inputMode,
     },
     modelName,
   );

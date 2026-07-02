@@ -1,8 +1,12 @@
 import { assert } from "chai";
 import {
+  getCodexAppServerApprovalsReviewerPref,
   getCodexRuntimeModelPref,
   isCodexZoteroMcpToolsEnabled,
+  isCodexAppServerNativeApprovalsEnabled,
   isNativeZoteroMcpToolsEnabled,
+  setCodexAppServerApprovalsReviewerPref,
+  setCodexAppServerNativeApprovalsEnabled,
   setCodexRuntimeModelPref,
   setNativeZoteroMcpToolsEnabled,
 } from "../src/codexAppServer/prefs";
@@ -50,6 +54,74 @@ describe("codexAppServer prefs", function () {
 
       assert.equal(isCodexZoteroMcpToolsEnabled(), true);
       assert.equal(isNativeZoteroMcpToolsEnabled(), true);
+    } finally {
+      if (originalZotero) {
+        globalScope.Zotero = originalZotero;
+      } else {
+        delete globalScope.Zotero;
+      }
+    }
+  });
+
+  it("keeps native Codex built-in approvals disabled with user review by default", function () {
+    const globalScope = globalThis as typeof globalThis & {
+      Zotero?: unknown;
+    };
+    const originalZotero = globalScope.Zotero;
+    try {
+      globalScope.Zotero = {
+        Prefs: {
+          get: () => undefined,
+        },
+      };
+
+      assert.equal(isCodexAppServerNativeApprovalsEnabled(), false);
+      assert.equal(getCodexAppServerApprovalsReviewerPref(), "user");
+    } finally {
+      if (originalZotero) {
+        globalScope.Zotero = originalZotero;
+      } else {
+        delete globalScope.Zotero;
+      }
+    }
+  });
+
+  it("persists native Codex approval bridge and reviewer preferences", function () {
+    const globalScope = globalThis as typeof globalThis & {
+      Zotero?: unknown;
+    };
+    const originalZotero = globalScope.Zotero;
+    const prefs = new Map<string, unknown>();
+    try {
+      globalScope.Zotero = {
+        Prefs: {
+          get: (key: string) => prefs.get(key),
+          set: (key: string, value: unknown) => {
+            prefs.set(key, value);
+          },
+        },
+      };
+
+      setCodexAppServerNativeApprovalsEnabled(true);
+      setCodexAppServerApprovalsReviewerPref("auto_review");
+
+      assert.equal(isCodexAppServerNativeApprovalsEnabled(), true);
+      assert.equal(getCodexAppServerApprovalsReviewerPref(), "auto_review");
+      assert.equal(
+        prefs.get(
+          "extensions.zotero.llmforzotero.codexAppServerNativeApprovalsEnabled",
+        ),
+        true,
+      );
+      assert.equal(
+        prefs.get(
+          "extensions.zotero.llmforzotero.codexAppServerApprovalsReviewer",
+        ),
+        "auto_review",
+      );
+
+      setCodexAppServerApprovalsReviewerPref("guardian_subagent" as never);
+      assert.equal(getCodexAppServerApprovalsReviewerPref(), "auto_review");
     } finally {
       if (originalZotero) {
         globalScope.Zotero = originalZotero;

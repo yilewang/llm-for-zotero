@@ -3,6 +3,7 @@ import { setupHandlers } from "./setupHandlers";
 import {
   activeContextPanels,
   activeContextPanelRawItems,
+  chatHistory,
   loadedConversationKeys,
 } from "./state";
 import type { ResolvedContextSource, SendQuestionOptions } from "./types";
@@ -20,6 +21,7 @@ import {
   buildAssistantDisplayMarkdownForRender,
   ensureConversationLoaded,
   getConversationKey,
+  refreshChat,
 } from "./chat";
 import { resolveContextSourceItemAsync } from "./contextResolution";
 import {
@@ -31,7 +33,12 @@ import {
   notifyStandaloneItemChanged as notifyStandaloneItemChangedRuntime,
   openStandaloneChat,
 } from "./standaloneWindow";
-import { setWorkflowTestSendInterceptor } from "./workflowTestHooks";
+import {
+  setWorkflowTestFinalRequestInterceptor,
+  setWorkflowTestSendInterceptor,
+  type WorkflowTestFinalRequestSnapshot,
+} from "./workflowTestHooks";
+import { dispatchZoteroItemsAsContext } from "./zoteroItemContextMenu";
 
 type PanelRecord = {
   id: string;
@@ -43,6 +50,7 @@ type PanelRecord = {
 const panels = new Map<string, PanelRecord>();
 let panelCounter = 0;
 let lastSend: SendQuestionOptions | null = null;
+let lastFinalRequest: WorkflowTestFinalRequestSnapshot | null = null;
 
 function assertWorkflowTestEnabled(): void {
   if (__env__ !== "test" && __env__ !== "development") {
@@ -430,6 +438,9 @@ function readStandaloneDiagnostics(): WorkflowTestStandaloneDiagnostics {
   const titleEl = doc?.querySelector(
     ".llm-standalone-content-title-text",
   ) as HTMLElement | null;
+  const chatBox = contentArea?.querySelector(
+    "#llm-chat-box",
+  ) as HTMLElement | null;
   const mountedItem = contentArea
     ? activeContextPanels.get(contentArea)?.() || null
     : null;
@@ -453,10 +464,15 @@ function readStandaloneDiagnostics(): WorkflowTestStandaloneDiagnostics {
     contextItemId: parsePositiveInt(panelRoot?.dataset.contextItemId),
     conversationKind: panelRoot?.dataset.conversationKind || undefined,
     titleText: titleEl?.textContent?.trim() || undefined,
+    chipText: Array.from(
+      contentArea?.querySelectorAll(".llm-paper-context-chip-text") || [],
+    ).map((node) => ((node as Element).textContent || "").trim()),
+    messageText: chatBox?.textContent?.trim() || undefined,
     paperTabText: paperTab?.textContent?.trim() || undefined,
     openTabText: openTab?.textContent?.trim() || undefined,
     statusText: statusEl?.textContent?.trim() || undefined,
     lastSend,
+    lastFinalRequest,
   };
 }
 
@@ -519,6 +535,34 @@ async function askStandalone(text: string): Promise<SendQuestionOptions> {
   return waitForLastSend();
 }
 
+async function seedStandaloneUserMessage(
+  text: string,
+): Promise<WorkflowTestStandaloneDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const contentArea = doc.querySelector(
+    ".llm-standalone-content",
+  ) as HTMLElement | null;
+  const item = contentArea
+    ? activeContextPanels.get(contentArea)?.() || null
+    : null;
+  if (!contentArea || !item) {
+    throw new Error("Standalone workflow chat panel is not mounted");
+  }
+  const conversationKey = getConversationKey(item);
+  chatHistory.set(conversationKey, [
+    {
+      role: "user",
+      text,
+      timestamp: Date.now(),
+    },
+  ]);
+  loadedConversationKeys.add(conversationKey);
+  refreshChat(contentArea, item);
+  await Zotero.Promise.delay(150);
+  return readStandaloneDiagnostics();
+}
+
 async function notifyStandaloneItemChanged(
   itemId: number | null,
 ): Promise<WorkflowTestStandaloneDiagnostics> {
@@ -530,6 +574,23 @@ async function notifyStandaloneItemChanged(
   }
   notifyStandaloneItemChangedRuntime(item);
   await Zotero.Promise.delay(250);
+  return readStandaloneDiagnostics();
+}
+
+async function addItemsAsStandaloneContext(
+  itemIds: number[],
+): Promise<WorkflowTestStandaloneDiagnostics> {
+  assertWorkflowTestEnabled();
+  const items = itemIds.map((itemId) => Zotero.Items.get(itemId) || null);
+  const missingIndex = items.findIndex((item) => !item);
+  if (missingIndex >= 0) {
+    throw new Error(`Unable to find Zotero item ${itemIds[missingIndex]}`);
+  }
+  await dispatchZoteroItemsAsContext(items as Zotero.Item[], {
+    openStandaloneChat,
+  });
+  await waitForStandaloneReady();
+  await Zotero.Promise.delay(300);
   return readStandaloneDiagnostics();
 }
 
@@ -564,6 +625,7 @@ async function getDiagnostics(
       (body?.querySelector("#llm-status") as HTMLElement | null)?.textContent ||
       undefined,
     lastSend,
+    lastFinalRequest,
   };
 }
 
@@ -571,6 +633,7 @@ async function reset(): Promise<void> {
   assertWorkflowTestEnabled();
   await closeStandalone();
   lastSend = null;
+  lastFinalRequest = null;
   for (const panel of panels.values()) {
     activeContextPanels.delete(panel.body);
     activeContextPanelRawItems.delete(panel.body);
@@ -579,6 +642,9 @@ async function reset(): Promise<void> {
   panels.clear();
   setWorkflowTestSendInterceptor((opts) => {
     lastSend = opts;
+  });
+  setWorkflowTestFinalRequestInterceptor((snapshot) => {
+    lastFinalRequest = snapshot;
   });
 }
 
@@ -610,7 +676,10 @@ export function installWorkflowTestHarness(targetAddon: {
     openStandaloneForItem,
     clickStandaloneTab,
     askStandalone,
+    seedStandaloneUserMessage,
     notifyStandaloneItemChanged,
+    addItemsAsStandaloneContext,
+    getLastFinalRequest: () => lastFinalRequest,
     getStandaloneDiagnostics,
     closeStandalone,
     getLastSend: () => lastSend,

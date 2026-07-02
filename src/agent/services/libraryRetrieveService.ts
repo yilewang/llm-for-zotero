@@ -15,6 +15,20 @@ import type {
   TagContextRef,
 } from "../../shared/types";
 import {
+  buildLibraryChatCoverageReceipt,
+  completeLibraryChatReadStrategyDiagnostics,
+  DEEP_SYNTHESIS_MAX_PAPERS,
+  resolveLibraryChatReadStrategy,
+  type LibraryChatCoverageReceipt,
+  type LibraryChatReadStrategyDiagnostics,
+} from "../../shared/libraryChatReadStrategy";
+import {
+  compareEvidenceCandidatesForQuestion,
+  isBodyEvidenceSection,
+  queryHasExplicitSectionPreference,
+} from "../../shared/libraryChatEvidencePolicy";
+import { buildLibraryRetrieveEvidencePack } from "./libraryRetrieveEvidencePack";
+import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
 } from "../../modules/contextPanel/paperAttribution";
@@ -31,10 +45,7 @@ import type {
 import type { PdfService } from "./pdfService";
 
 export type LibraryRetrieveDepth = "pool" | "metadata" | "evidence" | "verify";
-export type LibraryRetrieveIntent =
-  | "enumerate"
-  | "verify"
-  | "summarize";
+export type LibraryRetrieveIntent = "enumerate" | "verify" | "summarize";
 export type LibraryRetrieveMethod =
   | "metadata"
   | "abstract"
@@ -138,16 +149,17 @@ export type LibraryRetrieveFrontier = {
     | "unreadable_sources";
 };
 
-export type LibraryRetrieveAnswerContract = {
-  metadataCoverage: Extract<
-    LibraryRetrieveCoverageStatus,
-    "complete" | "partial"
-  >;
-  indexedTextCoverage: LibraryRetrieveCoverageStatus;
-  snippetCoverage: LibraryRetrieveSnippetCoverageStatus;
-  safeClaims: string[];
-  unsafeClaims: string[];
-};
+export type LibraryRetrieveAnswerContract =
+  LibraryChatReadStrategyDiagnostics & {
+    metadataCoverage: Extract<
+      LibraryRetrieveCoverageStatus,
+      "complete" | "partial"
+    >;
+    indexedTextCoverage: LibraryRetrieveCoverageStatus;
+    snippetCoverage: LibraryRetrieveSnippetCoverageStatus;
+    safeClaims: string[];
+    unsafeClaims: string[];
+  };
 
 export type LibraryRetrieveCandidate = {
   itemId: string;
@@ -226,6 +238,9 @@ export type LibraryRetrieveResult = {
   paperMatches: LibraryRetrievePaperMatch[];
   frontier: LibraryRetrieveFrontier;
   answerContract: LibraryRetrieveAnswerContract;
+  coverageReceipt: LibraryChatCoverageReceipt;
+  evidenceLedgerText?: string;
+  synthesisDigest?: string;
   snippets: LibraryRetrieveSnippet[];
   quoteCitations?: QuoteCitation[];
   warnings: string[];
@@ -266,6 +281,8 @@ function buildSnippetQuoteCitation(
   return buildQuoteCitation({
     quoteText: snippet.snippet,
     citationLabel,
+    sourceMatchKind: snippet.matchMethod === "exact" ? "exact" : "trusted",
+    sourceMatchSource: "context-text",
     contextItemId,
     itemId,
   });
@@ -273,10 +290,21 @@ function buildSnippetQuoteCitation(
 
 function attachQuoteCitationsToSnippets(
   snippets: LibraryRetrieveSnippet[],
+  options: { includeQuoteAnchors: boolean },
 ): {
   snippets: LibraryRetrieveSnippet[];
   quoteCitations: QuoteCitation[];
 } {
+  if (!options.includeQuoteAnchors) {
+    return {
+      snippets: snippets.map((snippet) => {
+        const { quoteCitationId: _quoteCitationId, ...rest } = snippet;
+        void _quoteCitationId;
+        return rest;
+      }),
+      quoteCitations: [],
+    };
+  }
   const quoteCitations: QuoteCitation[] = [];
   const pairedSnippets = snippets.map((snippet) => {
     const citation = buildSnippetQuoteCitation(snippet);
@@ -388,11 +416,7 @@ function normalizeIntent(
   depth: LibraryRetrieveDepth,
   query: string,
 ): LibraryRetrieveIntent {
-  if (
-    value === "enumerate" ||
-    value === "verify" ||
-    value === "summarize"
-  ) {
+  if (value === "enumerate" || value === "verify" || value === "summarize") {
     return value;
   }
   if (value === "discover") return "enumerate";
@@ -406,7 +430,7 @@ function normalizeIntent(
     return "enumerate";
   }
   if (
-    /\b(?:summari[sz]e|summary|taxonomy|methods?|themes?|comprehensive|overview)\b/.test(
+    /\b(?:summari[sz]e|summary|taxonomy|methods?|themes?|comprehensive|overview|commonalit(?:y|ies)|synthesi[sz]e|synthesis|similarit(?:y|ies)|compare|contrast)\b/.test(
       normalized,
     )
   ) {
@@ -429,7 +453,7 @@ function hasCollectionLikeScope(
   }
   return Boolean(
     request?.selectedCollectionContexts?.length ||
-      request?.selectedTagContexts?.length,
+    request?.selectedTagContexts?.length,
   );
 }
 
@@ -983,8 +1007,105 @@ function buildFrontier(params: {
   };
 }
 
+function applyReadStrategyBudgets(
+  input: NormalizedLibraryRetrieveInput,
+  strategy: ReturnType<typeof resolveLibraryChatReadStrategy>,
+  scope: ScopeResolution,
+): NormalizedLibraryRetrieveInput {
+  if (strategy.resolvedStrategy !== "deep_synthesis") return input;
+  const plannedPapers = Math.min(
+    DEEP_SYNTHESIS_MAX_PAPERS,
+    Math.max(0, scope.items.length || scope.totalItems),
+  );
+  if (plannedPapers <= 0) return input;
+  return {
+    ...input,
+    maxFullTextPapers: Math.max(input.maxFullTextPapers, plannedPapers),
+    perPaperTopK: Math.max(input.perPaperTopK, 2),
+    maxTotalSnippets: Math.max(input.maxTotalSnippets, plannedPapers * 2),
+  };
+}
+
+function snippetIsBodyEvidence(snippet: LibraryRetrieveSnippet): boolean {
+  return isBodyEvidenceSection(snippet.sectionLabel);
+}
+
+function buildReadStrategyDiagnostics(params: {
+  strategy: ReturnType<typeof resolveLibraryChatReadStrategy>;
+  candidateRecords: ResourceRecord[];
+  snippets: LibraryRetrieveSnippet[];
+  frontier: LibraryRetrieveFrontier;
+}): LibraryChatReadStrategyDiagnostics {
+  const plannedRecords = params.candidateRecords;
+  const snippetItemIds = new Set(
+    params.snippets.map((snippet) => snippet.itemId),
+  );
+  const bodyItemIds = new Set(
+    params.snippets
+      .filter(snippetIsBodyEvidence)
+      .map((snippet) => snippet.itemId),
+  );
+  const readablePlannedCount = plannedRecords.filter(
+    (record) => record.paperContext,
+  ).length;
+  const unreadableReasons: string[] = [];
+  for (const record of plannedRecords) {
+    const itemId = String(record.target.itemId);
+    if (!record.paperContext) {
+      unreadableReasons.push(`${itemId}: no full-text attachment available`);
+      continue;
+    }
+    if (!record.queryState.has("content_loaded")) {
+      unreadableReasons.push(`${itemId}: full text was not loaded`);
+      continue;
+    }
+    if (!snippetItemIds.has(itemId)) {
+      unreadableReasons.push(`${itemId}: no snippet returned`);
+      continue;
+    }
+    if (!bodyItemIds.has(itemId)) {
+      unreadableReasons.push(
+        `${itemId}: only abstract/front-matter snippets returned`,
+      );
+    }
+  }
+  const hasBodyCoverageForReadablePapers =
+    readablePlannedCount > 0 && bodyItemIds.size >= readablePlannedCount;
+  const frontierEntries = hasBodyCoverageForReadablePapers
+    ? unreadableReasons
+    : [
+        ...params.frontier.needsSnippetExpansion.map(
+          (itemId) => `${itemId}: needs snippet expansion`,
+        ),
+        ...params.frontier.needsCloseRead.map(
+          (itemId) => `${itemId}: needs close reading`,
+        ),
+        ...unreadableReasons,
+      ];
+  const coverageFrontier = Array.from(new Set(frontierEntries)).slice(0, 50);
+  const papersBodyRead = bodyItemIds.size;
+  const papersMetadataOnly = plannedRecords.filter(
+    (record) => !snippetItemIds.has(String(record.target.itemId)),
+  ).length;
+  const stopReason = !coverageFrontier.length
+    ? "enough_evidence"
+    : params.frontier.stopReason === "enough_evidence"
+      ? "unreadable_sources"
+      : params.frontier.stopReason;
+  return completeLibraryChatReadStrategyDiagnostics({
+    base: params.strategy,
+    papersPlanned: plannedRecords.length,
+    papersBodyRead,
+    papersMetadataOnly,
+    unreadableReasons,
+    coverageFrontier,
+    stopReason,
+  });
+}
+
 function buildAnswerContract(params: {
   input: NormalizedLibraryRetrieveInput;
+  readStrategy: LibraryChatReadStrategyDiagnostics;
   metadataComplete: boolean;
   indexedScan: IndexedTextScanResult;
   paperMatches: LibraryRetrievePaperMatch[];
@@ -1056,6 +1177,7 @@ function buildAnswerContract(params: {
     );
   }
   return {
+    ...params.readStrategy,
     metadataCoverage,
     indexedTextCoverage,
     snippetCoverage,
@@ -1100,10 +1222,19 @@ export class LibraryRetrieveService {
       reasoning: params.reasoning || params.request?.reasoning,
       signal: params.signal,
     });
-    const input = normalizeInput(params, params.request, queryPlan);
+    let input = normalizeInput(params, params.request, queryPlan);
     const warnings: string[] = [];
     const methodsUsed = new Set<LibraryRetrieveMethod>();
     const scope = await this.resolveScope(input, params.request, params.item);
+    const readStrategyBase = resolveLibraryChatReadStrategy({
+      query: input.query,
+      intent: input.intent,
+      depth: input.depth,
+      paperCount: scope.totalItems,
+      scopeType: scope.type,
+      explicitPaperScope: Boolean(scope.explicitItemIds.length),
+    });
+    input = applyReadStrategyBudgets(input, readStrategyBase, scope);
     warnings.push(...scope.warnings);
     const metadataComplete = scope.totalItems <= scope.items.length;
     if (scope.totalItems > scope.items.length) {
@@ -1164,8 +1295,12 @@ export class LibraryRetrieveService {
       input.intent === "enumerate" ||
       input.intent === "verify" ||
       input.intent === "summarize";
-    const candidateSource =
-      shouldPreferMatchedLedger && scope.type !== "items"
+    const shouldUseBoundedSynthesisPool =
+      readStrategyBase.resolvedStrategy === "deep_synthesis" &&
+      scope.totalItems <= DEEP_SYNTHESIS_MAX_PAPERS;
+    const candidateSource = shouldUseBoundedSynthesisPool
+      ? sorted
+      : shouldPreferMatchedLedger && scope.type !== "items"
         ? matchedRecords
         : sorted;
     const candidateRecords =
@@ -1177,6 +1312,9 @@ export class LibraryRetrieveService {
     const snippets: LibraryRetrieveSnippet[] = [];
     let snippetPapersExpanded = 0;
     let evidencePapers = 0;
+    const preferBodyEvidence =
+      readStrategyBase.resolvedStrategy === "deep_synthesis" ||
+      queryHasExplicitSectionPreference(input.query);
 
     if (input.depth === "evidence" || input.depth === "verify") {
       const fullTextRecords = candidateRecords
@@ -1189,6 +1327,7 @@ export class LibraryRetrieveService {
           record,
           input,
           maxSnippets: Math.min(input.perPaperTopK, remaining),
+          preferBodyEvidence,
           apiBase: params.apiBase,
           apiKey: params.apiKey,
           methodsUsed,
@@ -1214,7 +1353,13 @@ export class LibraryRetrieveService {
       0,
       input.maxTotalSnippets,
     );
-    const snippetQuotePack = attachQuoteCitationsToSnippets(dedupedRawSnippets);
+    const snippetQuotePack = attachQuoteCitationsToSnippets(
+      dedupedRawSnippets,
+      {
+        includeQuoteAnchors:
+          input.depth === "verify" || input.intent === "verify",
+      },
+    );
     const dedupedSnippets = snippetQuotePack.snippets;
     const snippetPaperKeys = new Set(
       dedupedSnippets.map(
@@ -1237,8 +1382,15 @@ export class LibraryRetrieveService {
       indexedScan,
       metadataComplete,
     });
+    const readStrategy = buildReadStrategyDiagnostics({
+      strategy: readStrategyBase,
+      candidateRecords,
+      snippets: dedupedSnippets,
+      frontier,
+    });
     const answerContract = buildAnswerContract({
       input,
+      readStrategy,
       metadataComplete,
       indexedScan,
       paperMatches,
@@ -1248,6 +1400,13 @@ export class LibraryRetrieveService {
     if (answerContract.unsafeClaims.length) {
       warnings.push(...answerContract.unsafeClaims);
     }
+    const coverageReceipt = buildLibraryChatCoverageReceipt(readStrategy);
+    const evidencePack = buildLibraryRetrieveEvidencePack({
+      papers: candidateRecords
+        .map((record) => record.paperContext)
+        .filter((paper): paper is PaperContextRef => Boolean(paper)),
+      snippets: dedupedSnippets,
+    });
 
     const candidates = candidateRecords.map(candidateFromRecord);
     return {
@@ -1305,7 +1464,7 @@ export class LibraryRetrieveService {
           fullTextSearched: snippetPapersExpanded,
           snippetsReturned: dedupedSnippets.length,
           evidencePapers,
-          deepReadPapers: 0,
+          deepReadPapers: readStrategy.papersBodyRead,
         },
       },
       intent: input.intent,
@@ -1315,6 +1474,9 @@ export class LibraryRetrieveService {
       paperMatches,
       frontier,
       answerContract,
+      coverageReceipt,
+      evidenceLedgerText: evidencePack.evidenceLedgerText,
+      synthesisDigest: evidencePack.synthesisDigest,
       snippets: dedupedSnippets,
       quoteCitations: snippetQuotePack.quoteCitations.length
         ? snippetQuotePack.quoteCitations
@@ -1332,15 +1494,14 @@ export class LibraryRetrieveService {
     const explicitScope = input.scope || {};
     const hasExplicitScope = Boolean(
       explicitScope.libraryID ||
-        explicitScope.collectionIds?.length ||
-        explicitScope.itemIds?.length ||
-        explicitScope.tagNames?.length ||
-        explicitScope.tagScopes?.length,
+      explicitScope.collectionIds?.length ||
+      explicitScope.itemIds?.length ||
+      explicitScope.tagNames?.length ||
+      explicitScope.tagScopes?.length,
     );
-    const selectedCollections =
-      !hasExplicitScope
-        ? request?.selectedCollectionContexts || []
-        : [];
+    const selectedCollections = !hasExplicitScope
+      ? request?.selectedCollectionContexts || []
+      : [];
     const selectedTags = !hasExplicitScope
       ? request?.selectedTagContexts || []
       : [];
@@ -1359,7 +1520,9 @@ export class LibraryRetrieveService {
       request,
       item,
       libraryID:
-        explicitScope.libraryID || inferredCollectionLibraryID || inferredTagLibraryID,
+        explicitScope.libraryID ||
+        inferredCollectionLibraryID ||
+        inferredTagLibraryID,
     });
     if (!libraryID)
       throw new Error("No active library available for library_retrieve");
@@ -1390,7 +1553,9 @@ export class LibraryRetrieveService {
         includeAutomatic,
       });
     }
-    const tagContexts = selectedTags.length ? selectedTags : explicitTagContexts;
+    const tagContexts = selectedTags.length
+      ? selectedTags
+      : explicitTagContexts;
 
     if (explicitItemIds.length) {
       const items =
@@ -1463,7 +1628,11 @@ export class LibraryRetrieveService {
           "Multiple tag totals may include overlapping items; retrieval uses unique item IDs.",
         );
       }
-      if (collectionIds.length && tagContexts.length && byItemId.size < totalItems) {
+      if (
+        collectionIds.length &&
+        tagContexts.length &&
+        byItemId.size < totalItems
+      ) {
         warnings.push(
           "Selected collection and tag totals may include overlapping items; retrieval uses unique item IDs.",
         );
@@ -1666,6 +1835,7 @@ export class LibraryRetrieveService {
     record: ResourceRecord;
     input: NormalizedLibraryRetrieveInput;
     maxSnippets: number;
+    preferBodyEvidence?: boolean;
     apiBase?: string;
     apiKey?: string;
     methodsUsed: Set<LibraryRetrieveMethod>;
@@ -1705,6 +1875,9 @@ export class LibraryRetrieveService {
     }
     if (!params.input.requireExact && snippets.length < params.maxSnippets) {
       params.methodsUsed.add("fts");
+      const candidateTopK = params.preferBodyEvidence
+        ? Math.max(params.maxSnippets, 5)
+        : params.maxSnippets;
       const candidates = await this.candidateBuilder(
         paperContext,
         pdfContext,
@@ -1716,11 +1889,21 @@ export class LibraryRetrieveService {
           queryPlan: params.input.queryPlan,
         },
         {
-          topK: params.maxSnippets,
+          topK: candidateTopK,
           mode: "evidence",
           disableEmbeddings: !params.input.methods.includes("semantic"),
           queryPlan: params.input.queryPlan,
         },
+      ).then((rows) =>
+        params.preferBodyEvidence
+          ? rows.sort(
+              compareEvidenceCandidatesForQuestion(
+                params.input.query,
+                (candidate) =>
+                  candidate.evidenceScore || candidate.hybridScore || 0,
+              ),
+            )
+          : rows,
       );
       const seenChunks = new Set(
         snippets

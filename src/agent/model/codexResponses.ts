@@ -12,11 +12,8 @@ import type {
   AgentModelStep,
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
-import {
-  buildAgentModelCapabilities,
-  mediaContentInputs,
-} from "./contentCapabilities";
-import { isMultimodalRequestSupported } from "./messageBuilder";
+import { buildAgentModelCapabilities } from "./contentCapabilities";
+import { resolveRequestContentInputs } from "./messageBuilder";
 import {
   buildResponsesContinuationInput,
   buildResponsesInitialInput,
@@ -25,7 +22,10 @@ import {
   normalizeResponsesStepFromPayload,
   parseResponsesStepStream,
 } from "./responsesShared";
-import { buildResponsesFunctionTools, getToolContinuationMessages } from "./shared";
+import {
+  buildResponsesFunctionTools,
+  getToolContinuationMessages,
+} from "./shared";
 
 function isCodexAuthRequest(request: AgentRuntimeRequest): boolean {
   return (
@@ -49,7 +49,7 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
     return buildAgentModelCapabilities({
       streaming: true,
       toolCalls: isCodexAuthRequest(request),
-      contentInputs: mediaContentInputs(isMultimodalRequestSupported(request)),
+      contentInputs: resolveRequestContentInputs(request),
       fileInputs: false,
       reasoning: true,
     });
@@ -130,7 +130,9 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
           ...(reasoningPayload.omitTemperature
             ? {}
             : {
-                temperature: normalizeTemperature(request.advanced?.temperature),
+                temperature: normalizeTemperature(
+                  request.advanced?.temperature,
+                ),
               }),
         };
       },

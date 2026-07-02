@@ -1,17 +1,26 @@
-import type {
-  ReasoningOption,
-  ReasoningProviderKind,
-} from "../../types";
+import type { ReasoningOption, ReasoningProviderKind } from "../../types";
 import type { ReasoningLevel as LLMReasoningLevel } from "../../../../utils/llmClient";
+import type { ModelInputMode } from "../../../../shared/types";
 
 import {
-  isTextOnlyModel,
   resolveProviderCapabilities,
   type PdfSupport,
 } from "../../../../providers";
 
-export function isScreenshotUnsupportedModel(modelName: string): boolean {
-  return isTextOnlyModel(modelName);
+export function isScreenshotUnsupportedModel(
+  modelName: string,
+  providerProtocol?: string,
+  authMode?: string,
+  apiBase?: string,
+  inputMode?: ModelInputMode,
+): boolean {
+  return !resolveProviderCapabilities({
+    model: modelName,
+    protocol: providerProtocol,
+    authMode,
+    apiBase,
+    inputMode,
+  }).images;
 }
 
 export type ModelPdfSupport = PdfSupport;
@@ -21,12 +30,14 @@ export function getModelPdfSupport(
   providerProtocol?: string,
   authMode?: string,
   apiBase?: string,
+  inputMode?: ModelInputMode,
 ): ModelPdfSupport {
   return resolveProviderCapabilities({
     model: modelName,
     protocol: providerProtocol,
     authMode,
     apiBase,
+    inputMode,
   }).pdf;
 }
 

@@ -47,6 +47,7 @@ function resolveRequestProviderCapabilities(
     protocol: request.providerProtocol,
     authMode: request.authMode,
     apiBase: request.apiBase,
+    inputMode: request.advanced?.inputMode,
   });
 }
 
@@ -57,7 +58,10 @@ export function resolveRequestContentInputs(
   return {
     images: capabilities.images,
     pdfDocuments: capabilities.pdf === "native",
-    nativeFiles: false,
+    nativeFiles:
+      capabilities.tier === "native" &&
+      request.providerProtocol === "responses_api" &&
+      capabilities.pdf === "native",
   };
 }
 

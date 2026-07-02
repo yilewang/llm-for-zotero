@@ -53,6 +53,7 @@ import {
   selectedImagePreviewActiveIndexCache,
   selectedFilePreviewExpandedCache,
   selectedPaperContextCache,
+  selectedPaperContextListExpandedCache,
   selectedOtherRefContextCache,
   selectedCollectionContextCache,
   selectedTagContextCache,
@@ -371,6 +372,7 @@ import {
   normalizePaperContextEntries,
   resolvePaperContextDisplayMetadata,
 } from "./setupHandlers/controllers/composeContextController";
+import { getPaperContextCollapseState } from "./setupHandlers/controllers/paperContextCollapseController";
 import {
   isPinnedFile,
   isPinnedImage,
@@ -407,6 +409,8 @@ import { attachFloatingMenuInteractionController } from "./setupHandlers/control
 import { createPaperPickerController } from "./setupHandlers/controllers/paperPickerController";
 import { createActionCommandController } from "./setupHandlers/controllers/actionCommandController";
 import { parseInlineActionCommand } from "./setupHandlers/controllers/actionCommandParams";
+import { addZoteroItemsAsDefaultContext } from "./contextSelectionActions";
+import { registerContextSurfaceActionTarget } from "./zoteroItemContextMenu";
 import {
   createCoalescedFrameScheduler,
   getOrCreateKeyedInFlightTask,
@@ -464,6 +468,11 @@ import {
 } from "../../codexAppServer/prefs";
 import { getConfiguredCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
 import {
+  buildCodexRuntimeModelEntries,
+  loadCodexAppServerModelCatalog,
+  type CodexAppServerModelCatalogEntry,
+} from "../../codexAppServer/modelCatalog";
+import {
   activeClaudeConversationModeByLibrary,
   activeClaudeGlobalConversationByLibrary,
   activeClaudePaperConversationByPaper,
@@ -517,9 +526,20 @@ setQueuedFollowUpBodySyncCallback((body) => {
 /** Monotonic counter incremented every time setupHandlers rebuilds a panel. */
 let setupHandlersGeneration = 0;
 
+export type ContextPreviewRenderMetrics = {
+  previousHeight: number;
+  nextHeight: number;
+};
+
 export type SetupHandlersHooks = {
   onConversationHistoryChanged?: () => void;
+  onDefaultContextRendered?: () => void;
+  onContextPreviewRendered?: (metrics: ContextPreviewRenderMetrics) => void;
   onWebChatModeChanged?: (isWebChat: boolean) => void;
+  prepareItemsAsDefaultContextTarget?: () =>
+    | Promise<boolean | void>
+    | boolean
+    | void;
   /** Called by standalone to clear force-new-chat intent before loading a session. */
   clearWebChatNewChatIntent?: () => void;
   /** Called by standalone to resolve the currently selected model consistently. */
@@ -616,6 +636,7 @@ export function setupHandlers(
     slashPdfPageOption,
     slashPdfMultiplePagesOption,
     imagePreview,
+    contextPreviews,
     selectedContextList,
     previewStrip,
     previewExpanded,
@@ -663,6 +684,8 @@ export function setupHandlers(
     ztoolkit.log("LLM: Could not find panel root");
     return;
   }
+
+  const isStandalonePanel = panelRoot.dataset.standalone === "true";
 
   // Guard: skip re-wiring if handlers were already attached to this exact
   // panelRoot element.  buildUI() creates a fresh panelRoot each time, so
@@ -812,29 +835,70 @@ export function setupHandlers(
   syncQueuedFollowUpRegistration();
   const isClaudeModeAvailable = () => getClaudeCodeModeEnabled();
   const isCodexModeAvailable = () => isCodexAppServerModeEnabled();
+  let codexModelCatalogStatus: "idle" | "loading" | "ready" | "error" = "idle";
+  let codexModelCatalogError = "";
+  let codexModelCatalogModels: CodexAppServerModelCatalogEntry[] = [];
+  let codexModelCatalogInFlight: Promise<void> | null = null;
+  let codexModelCatalogPath = "";
+  const refreshOpenCodexModelMenu = () => {
+    updateModelButton();
+    if (!modelMenu || !modelBtn || !isFloatingMenuOpen(modelMenu)) return;
+    rebuildModelMenu();
+    if (!modelMenu.childElementCount) {
+      closeModelMenu();
+      return;
+    }
+    positionFloatingMenu(body, modelMenu, modelBtn);
+  };
+  const ensureCodexModelCatalogLoaded = (): Promise<void> => {
+    if (!isCodexConversationSystem()) return Promise.resolve();
+    const codexPath = getConfiguredCodexAppServerBinaryPath();
+    if (
+      codexModelCatalogStatus === "ready" &&
+      codexPath === codexModelCatalogPath
+    ) {
+      return Promise.resolve();
+    }
+    if (codexModelCatalogInFlight) return codexModelCatalogInFlight;
+    codexModelCatalogStatus = "loading";
+    codexModelCatalogError = "";
+    codexModelCatalogPath = codexPath;
+    refreshOpenCodexModelMenu();
+    codexModelCatalogInFlight = loadCodexAppServerModelCatalog({ codexPath })
+      .then((catalog) => {
+        codexModelCatalogModels = catalog.models;
+        codexModelCatalogStatus = "ready";
+        codexModelCatalogError = "";
+      })
+      .catch((error: unknown) => {
+        codexModelCatalogModels = [];
+        codexModelCatalogStatus = "error";
+        codexModelCatalogError =
+          error instanceof Error ? error.message : String(error);
+        ztoolkit.log("Codex app-server: failed to load model catalog", error);
+      })
+      .finally(() => {
+        codexModelCatalogInFlight = null;
+        refreshOpenCodexModelMenu();
+      });
+    return codexModelCatalogInFlight;
+  };
   const getCodexRuntimeModelEntries = (): RuntimeModelEntry[] => {
     const model = getCodexRuntimeModelPref();
-    return [
-      {
-        entryId: `codex_app_server::${model}`,
-        groupId: "codex_app_server",
-        model,
-        apiBase: getConfiguredCodexAppServerBinaryPath(),
-        apiKey: "",
-        authMode: "codex_app_server",
-        providerProtocol: "codex_responses",
-        providerLabel: "Codex",
-        providerOrder: -1,
-        displayModelLabel: model,
-        advanced: {
-          temperature: 0.3,
-          maxTokens: 4096,
-        },
-      },
-    ];
+    return buildCodexRuntimeModelEntries({
+      models: codexModelCatalogModels,
+      selectedModel: model,
+      codexPath: getConfiguredCodexAppServerBinaryPath(),
+    });
   };
-  const getSelectedCodexRuntimeEntry = (): RuntimeModelEntry =>
-    getCodexRuntimeModelEntries()[0]!;
+  const getSelectedCodexRuntimeEntry = (): RuntimeModelEntry => {
+    const selectedModel = getCodexRuntimeModelPref().toLowerCase();
+    const entries = getCodexRuntimeModelEntries();
+    return (
+      entries.find((entry) => entry.model.toLowerCase() === selectedModel) ||
+      entries[0]!
+    );
+  };
   const getPreferredTargetSystem = (): ConversationSystem => {
     if (isNoteSession()) {
       return isCodexModeAvailable() ? "codex" : "upstream";
@@ -2569,11 +2633,15 @@ export function setupHandlers(
       getSelectedModelInfo().currentModel ||
       ""
     ).trim();
+    const inputMode = getAdvancedModelParamsForEntry(
+      selectedProfile?.entryId,
+    )?.inputMode;
     return getModelPdfSupport(
       modelName,
       selectedProfile?.providerProtocol,
       selectedProfile?.authMode,
       selectedProfile?.apiBase,
+      inputMode,
     );
   };
 
@@ -3520,6 +3588,72 @@ export function setupHandlers(
     list.appendChild(chip);
   };
 
+  const appendPaperSummaryChip = (
+    ownerDoc: Document,
+    list: HTMLDivElement,
+    params: {
+      paperCount: number;
+      expanded: boolean;
+      label: string;
+    },
+  ) => {
+    const summaryChip = createElement(
+      ownerDoc,
+      "div",
+      "llm-selected-context llm-paper-context-summary-chip",
+    ) as HTMLDivElement;
+    summaryChip.dataset.paperContextSummary = "true";
+    summaryChip.dataset.paperContextCount = `${params.paperCount}`;
+
+    const summaryToggle = createElement(
+      ownerDoc,
+      "button",
+      "llm-paper-context-summary-toggle",
+      {
+        type: "button",
+        title: params.expanded
+          ? t("Collapse paper contexts")
+          : t("Expand paper contexts"),
+      },
+    ) as HTMLButtonElement;
+    summaryToggle.setAttribute(
+      "aria-expanded",
+      params.expanded ? "true" : "false",
+    );
+    summaryToggle.setAttribute(
+      "aria-label",
+      params.expanded
+        ? t("Collapse paper contexts")
+        : t("Expand paper contexts"),
+    );
+
+    const summaryIcon = createContextIcon(
+      ownerDoc,
+      "papers",
+      "llm-paper-context-summary-icon",
+    );
+    const summaryText = createElement(
+      ownerDoc,
+      "span",
+      "llm-paper-context-summary-text",
+      { textContent: params.label },
+    );
+    summaryToggle.append(summaryIcon, summaryText);
+    const clearButton = createElement(
+      ownerDoc,
+      "button",
+      "llm-remove-img-btn llm-paper-context-summary-clear",
+      {
+        type: "button",
+        textContent: "×",
+        title: t("Clear all context"),
+      },
+    ) as HTMLButtonElement;
+    clearButton.setAttribute("aria-label", t("Clear all context"));
+    summaryChip.append(summaryToggle, clearButton);
+    list.appendChild(summaryChip);
+  };
+
   const appendOtherRefChip = (
     ownerDoc: Document,
     list: HTMLDivElement,
@@ -3721,28 +3855,47 @@ export function setupHandlers(
     paperPreviewList.innerHTML = "";
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc) return;
-    if (autoLoadedPaperContext) {
-      appendPaperChip(ownerDoc, paperPreviewList, autoLoadedPaperContext, {
-        autoLoaded: true,
-        fullText: isPaperContextFullTextMode(
-          resolvePaperContextNextSendMode(itemId, autoLoadedPaperContext),
-        ),
-        contentSourceMode: resolvePaperContentSourceMode(
-          itemId,
-          autoLoadedPaperContext,
-        ),
+    const effectivePaperCount =
+      selectedPapers.length + (autoLoadedPaperContext ? 1 : 0);
+    const paperCollapseState = getPaperContextCollapseState({
+      itemId,
+      paperCount: effectivePaperCount,
+      expandedByItem: selectedPaperContextListExpandedCache,
+    });
+    if (paperCollapseState.showSummaryChip) {
+      appendPaperSummaryChip(ownerDoc, paperPreviewList, {
+        paperCount: effectivePaperCount,
+        expanded: paperCollapseState.expanded,
+        label: paperCollapseState.summaryLabel,
       });
     }
-    selectedPapers.forEach((paperContext, index) => {
-      appendPaperChip(ownerDoc, paperPreviewList, paperContext, {
-        removable: true,
-        removableIndex: index,
-        fullText: isPaperContextFullTextMode(
-          resolvePaperContextNextSendMode(itemId, paperContext),
-        ),
-        contentSourceMode: resolvePaperContentSourceMode(itemId, paperContext),
+    if (paperCollapseState.showPaperChips) {
+      if (autoLoadedPaperContext) {
+        appendPaperChip(ownerDoc, paperPreviewList, autoLoadedPaperContext, {
+          autoLoaded: true,
+          fullText: isPaperContextFullTextMode(
+            resolvePaperContextNextSendMode(itemId, autoLoadedPaperContext),
+          ),
+          contentSourceMode: resolvePaperContentSourceMode(
+            itemId,
+            autoLoadedPaperContext,
+          ),
+        });
+      }
+      selectedPapers.forEach((paperContext, index) => {
+        appendPaperChip(ownerDoc, paperPreviewList, paperContext, {
+          removable: true,
+          removableIndex: index,
+          fullText: isPaperContextFullTextMode(
+            resolvePaperContextNextSendMode(itemId, paperContext),
+          ),
+          contentSourceMode: resolvePaperContentSourceMode(
+            itemId,
+            paperContext,
+          ),
+        });
       });
-    });
+    }
     selectedOtherRefs.forEach((ref, index) => {
       appendOtherRefChip(ownerDoc, paperPreviewList, ref, index);
     });
@@ -3894,8 +4047,22 @@ export function setupHandlers(
       return;
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc) return;
-    const { currentModel } = getSelectedModelInfo();
-    const screenshotUnsupported = isScreenshotUnsupportedModel(currentModel);
+    const selectedProfile = getSelectedProfile();
+    const currentModel = (
+      selectedProfile?.model ||
+      getSelectedModelInfo().currentModel ||
+      ""
+    ).trim();
+    const inputMode = getAdvancedModelParamsForEntry(
+      selectedProfile?.entryId,
+    )?.inputMode;
+    const screenshotUnsupported = isScreenshotUnsupportedModel(
+      currentModel,
+      selectedProfile?.providerProtocol,
+      selectedProfile?.authMode,
+      selectedProfile?.apiBase,
+      inputMode,
+    );
     const screenshotDisabledHint = getScreenshotDisabledHint(currentModel);
     let selectedImages = selectedImageCache.get(item.id) || [];
     if (screenshotUnsupported && selectedImages.length) {
@@ -4052,6 +4219,20 @@ export function setupHandlers(
     if (!textContextKey) return;
     applySelectedTextPreview(body, textContextKey);
   };
+  const measureContextPreviewHeight = (): number => {
+    if (!contextPreviews) return 0;
+    const rect = contextPreviews.getBoundingClientRect?.();
+    const rectHeight = Number(rect?.height);
+    if (Number.isFinite(rectHeight) && rectHeight >= 0) return rectHeight;
+    const scrollHeight = Number(contextPreviews.scrollHeight);
+    if (Number.isFinite(scrollHeight) && scrollHeight >= 0) {
+      return scrollHeight;
+    }
+    const offsetHeight = Number(contextPreviews.offsetHeight);
+    return Number.isFinite(offsetHeight) && offsetHeight >= 0
+      ? offsetHeight
+      : 0;
+  };
   const syncConversationPanelState = () => {
     syncRequestUiForCurrentConversation();
     restoreDraftInputForCurrentConversation();
@@ -4062,13 +4243,19 @@ export function setupHandlers(
   };
   activeContextPanelStateSync.set(body, syncConversationPanelState);
   const runPanelStateRefreshNow = () => {
+    const previousHeight = measureContextPreviewHeight();
     if (!item) {
       runWithChatScrollGuard(syncConversationPanelState);
-      return;
+    } else {
+      refreshConversationPanels(body, item, {
+        includeChat: false,
+        includePanelState: true,
+      });
     }
-    refreshConversationPanels(body, item, {
-      includeChat: false,
-      includePanelState: true,
+    const nextHeight = measureContextPreviewHeight();
+    hooks?.onContextPreviewRendered?.({
+      previousHeight,
+      nextHeight,
     });
   };
   const panelStateRefreshScheduler = createCoalescedFrameScheduler({
@@ -4354,7 +4541,10 @@ export function setupHandlers(
     menu.appendChild(section);
   };
 
-  const appendModelMenuEmptyState = (menu: HTMLDivElement, text: string) => {
+  const appendModelMenuEmptyState = (
+    menu: HTMLDivElement,
+    text: string,
+  ): HTMLDivElement => {
     const empty = createElement(
       body.ownerDocument as Document,
       "div",
@@ -4365,6 +4555,59 @@ export function setupHandlers(
     );
     empty.setAttribute("aria-hidden", "true");
     menu.appendChild(empty);
+    return empty;
+  };
+
+  const appendModelMenuAction = (
+    menu: HTMLDivElement,
+    text: string,
+    onActivate: (event: Event) => void,
+  ) => {
+    const action = createElement(
+      body.ownerDocument as Document,
+      "button",
+      "llm-response-menu-item llm-model-option",
+      {
+        type: "button",
+        textContent: text,
+      },
+    );
+    action.addEventListener("pointerdown", onActivate);
+    action.addEventListener("click", onActivate);
+    menu.appendChild(action);
+  };
+
+  const appendCodexModelCatalogStatus = (menu: HTMLDivElement) => {
+    if (!isCodexConversationSystem()) return;
+    if (codexModelCatalogStatus === "loading") {
+      appendModelMenuEmptyState(menu, t("Loading Codex models…"));
+      return;
+    }
+    if (codexModelCatalogStatus === "error") {
+      const message = appendModelMenuEmptyState(
+        menu,
+        t("Could not load Codex models. Showing current model only."),
+      );
+      if (codexModelCatalogError) message.title = codexModelCatalogError;
+      appendModelMenuAction(menu, t("Retry loading Codex models"), (event) => {
+        if (!isPrimaryPointerEvent(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        codexModelCatalogStatus = "idle";
+        codexModelCatalogError = "";
+        void ensureCodexModelCatalogLoaded();
+      });
+      return;
+    }
+    if (
+      codexModelCatalogStatus === "ready" &&
+      !codexModelCatalogModels.length
+    ) {
+      appendModelMenuEmptyState(
+        menu,
+        t("Codex did not return any available models."),
+      );
+    }
   };
 
   const rebuildModelMenu = () => {
@@ -4377,6 +4620,7 @@ export function setupHandlers(
       t("Select model"),
       "llm-model-menu-hint",
     );
+    appendCodexModelCatalogStatus(modelMenu);
     if (!groupedChoices.length) {
       appendModelMenuEmptyState(modelMenu, t("No models configured yet."));
       return;
@@ -4447,6 +4691,7 @@ export function setupHandlers(
             entry.providerProtocol,
             entry.authMode,
             entry.apiBase,
+            entry.advanced.inputMode,
           );
           const shouldDowngrade = newPdfSupport !== "native";
           if (shouldDowngrade) {
@@ -5552,8 +5797,7 @@ export function setupHandlers(
     // conversation loading.  The parameter-less auto-fire would race with it
     // and resolve to a different (default) conversation, overwriting the
     // explicitly targeted one.
-    const isStandalone = panelRoot.dataset.standalone === "true";
-    if (!isStandalone) {
+    if (!isStandalonePanel) {
       void switchPaperConversation().catch((err) => {
         ztoolkit.log("LLM: Failed to restore paper conversation session", err);
       });
@@ -5663,14 +5907,30 @@ export function setupHandlers(
         getSelectedModelInfo().currentModel ||
         ""
       ).trim();
+      const inputMode = getAdvancedModelParamsForEntry(
+        profile?.entryId,
+      )?.inputMode;
       return getModelPdfSupport(
         modelName,
         profile?.providerProtocol,
         profile?.authMode,
         profile?.apiBase,
+        inputMode,
       );
     },
-    isScreenshotUnsupportedModel,
+    isScreenshotUnsupportedModel: (modelName) => {
+      const profile = getSelectedProfile();
+      const inputMode = getAdvancedModelParamsForEntry(
+        profile?.entryId,
+      )?.inputMode;
+      return isScreenshotUnsupportedModel(
+        (profile?.model || modelName || "").trim(),
+        profile?.providerProtocol,
+        profile?.authMode,
+        profile?.apiBase,
+        inputMode,
+      );
+    },
     optimizeImageDataUrl,
     persistAttachmentBlob,
     selectedImageCache,
@@ -6084,8 +6344,8 @@ export function setupHandlers(
     markWebChatPdfUploadedForCurrentConversation,
     resolvePdfPaperAttachments: pdfPaperResolver.resolvePdfPaperAttachments,
     renderPdfPagesAsImages: pdfPaperResolver.renderPdfPagesAsImages,
-    getModelPdfSupport: (modelName, protocol, authMode, apiBase) =>
-      getModelPdfSupport(modelName, protocol, authMode, apiBase),
+    getModelPdfSupport: (modelName, protocol, authMode, apiBase, inputMode) =>
+      getModelPdfSupport(modelName, protocol, authMode, apiBase, inputMode),
     uploadPdfForProvider: pdfPaperResolver.uploadPdfForProvider,
     resolvePdfBytes: pdfPaperResolver.resolvePdfBytes,
     getSelectedFiles: (itemId) => selectedFileAttachmentCache.get(itemId) || [],
@@ -6362,6 +6622,7 @@ export function setupHandlers(
         getSelectedModelInfo().currentModel ||
         ""
       ).trim();
+      const advancedParams = getAdvancedModelParams(selectedProfile?.entryId);
       const baseSelectedFiles =
         selectedFileAttachmentCache.get(currentItem.id) || [];
       const selectedImages = (
@@ -6392,10 +6653,16 @@ export function setupHandlers(
         selectedBaseFiles: baseSelectedFiles,
         selectedImageCountForBudget: isScreenshotUnsupportedModel(
           activeModelName,
+          selectedProfile?.providerProtocol,
+          selectedProfile?.authMode,
+          selectedProfile?.apiBase,
+          advancedParams?.inputMode,
         )
           ? 0
           : selectedImages.length,
-        profile: selectedProfile,
+        profile: selectedProfile
+          ? { ...selectedProfile, inputMode: advancedParams?.inputMode }
+          : null,
         currentModelName: activeModelName,
         isWebChat: isWebChatMode(),
       });
@@ -6407,13 +6674,18 @@ export function setupHandlers(
         pdfUploadSystemMessages,
       } = pdfInputs;
       const images = [
-        ...(isScreenshotUnsupportedModel(activeModelName)
+        ...(isScreenshotUnsupportedModel(
+          activeModelName,
+          selectedProfile?.providerProtocol,
+          selectedProfile?.authMode,
+          selectedProfile?.apiBase,
+          advancedParams?.inputMode,
+        )
           ? []
           : selectedImages),
         ...pdfPageImageDataUrls,
       ].slice(0, MAX_SELECTED_IMAGES);
       const selectedReasoning = getSelectedReasoning();
-      const advancedParams = getAdvancedModelParams(selectedProfile?.entryId);
       const targetRuntimeMode = getCurrentRuntimeMode();
       inlineEditCleanup?.();
       setInlineEditCleanup(null);
@@ -6737,6 +7009,19 @@ export function setupHandlers(
     closeExportMenu,
     schedulePaperPickerSearch,
     updateImagePreviewPreservingScroll,
+    isScreenshotUnsupportedModel: (modelName) => {
+      const profile = getSelectedProfile();
+      const inputMode = getAdvancedModelParamsForEntry(
+        profile?.entryId,
+      )?.inputMode;
+      return isScreenshotUnsupportedModel(
+        (profile?.model || modelName || "").trim(),
+        profile?.providerProtocol,
+        profile?.authMode,
+        profile?.apiBase,
+        inputMode,
+      );
+    },
     setStatusMessage: status
       ? (message, level) => {
           setStatus(status, message, level);
@@ -6756,6 +7041,9 @@ export function setupHandlers(
     closePromptMenu();
     closeHistoryNewMenu();
     closeHistoryMenu();
+    if (isCodexConversationSystem()) {
+      void ensureCodexModelCatalogLoaded();
+    }
     updateModelButton();
     flushResponsiveLayoutSyncNow();
     flushPanelStateRefreshNow();
@@ -6899,6 +7187,44 @@ export function setupHandlers(
       ztoolkit.log(message, error);
     },
   });
+
+  const unregisterContextSurfaceActions = registerContextSurfaceActionTarget(
+    body,
+    {
+      surfaceKind: isStandalonePanel ? "standalone" : "embedded",
+      addItemsAsDefaultContext: async (zoteroItems) => {
+        const result = await addZoteroItemsAsDefaultContext(
+          {
+            item,
+            resolveAutoLoadedPaperContext,
+            getManualPaperContextsForItem,
+            isPaperContextMineru,
+            getTextContextConversationKey,
+            updatePaperPreviewPreservingScroll,
+            updateSelectedTextPreviewPreservingScroll,
+          },
+          zoteroItems,
+        );
+        if (result.statusMessage && status) {
+          setStatus(
+            status,
+            result.statusMessage,
+            result.statusLevel || "ready",
+          );
+        }
+        inputBox.focus({ preventScroll: true });
+        return result;
+      },
+      afterItemsAsDefaultContextAdded: (result) => {
+        if (!isStandalonePanel || !result.changed) return;
+        flushPanelStateRefreshNow();
+        hooks?.onDefaultContextRendered?.();
+      },
+      prepareItemsAsDefaultContextTarget: isStandalonePanel
+        ? hooks?.prepareItemsAsDefaultContextTarget
+        : undefined,
+    },
+  );
 
   const cancelActiveAgentAction = (options?: {
     requireVisibleReviewCard?: boolean;
@@ -7061,6 +7387,7 @@ export function setupHandlers(
         delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];
         delete (body as any).__llmScheduleClaudeQueueDrain;
         delete (body as any).__llmScheduleClaudeThreadQueueDrain;
+        unregisterContextSurfaceActions();
         void releaseClaudeRuntimeForBody(body);
         delete cleanupBody.__llmQueuedFollowUpDisconnectCleanup;
         cleanupBody.__llmQueuedFollowUpCleanupRegistered = false;

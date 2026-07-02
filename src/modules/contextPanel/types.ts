@@ -17,6 +17,10 @@ import type {
   GlobalConversationSummary,
   PaperConversationSummary,
 } from "../../shared/types";
+import type {
+  LibraryChatCoverageReceipt,
+  LibraryChatReadStrategyDiagnostics,
+} from "../../shared/libraryChatReadStrategy";
 
 export type {
   SelectedTextSource,
@@ -277,6 +281,8 @@ export type MultiContextPlan = {
   citationPaperContexts?: PaperContextRef[];
   quoteCitations?: QuoteCitation[];
   assistantInstruction?: string;
+  readStrategy?: LibraryChatReadStrategyDiagnostics;
+  coverageReceipt?: LibraryChatCoverageReceipt;
 };
 
 export type GlobalPortalItem = {

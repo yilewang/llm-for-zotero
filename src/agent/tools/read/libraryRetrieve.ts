@@ -164,7 +164,7 @@ export function createLibraryRetrieveTool(
     spec: {
       name: "library_retrieve",
       description:
-        "Comprehensively search a Zotero library, collection, tag, or explicit item pool as a lazy resource tree. Use this for broad folder/tag/library evidence questions: it maps metadata broadly, scans indexed/searchable text for paper-level matches, expands selected snippets, returns a ranked paper-level ledger/frontier, and reports coverage. Query variants are standard search probes for translations, acronyms, notation variants, or technical equivalents. Use library_search for catalog lookup and paper_read for close reading one known paper.",
+        "Comprehensively search a Zotero library, collection, tag, or explicit item pool as a lazy resource tree. Use this for broad folder/tag/library evidence questions: it maps metadata broadly, scans indexed/searchable text for paper-level matches, expands selected snippets, returns a ranked paper-level ledger/frontier, and reports coverage. For bounded selected synthesis, comparison, commonality, or theme questions, intent:'summarize' prefers body-evidence coverage and a paper synthesis digest instead of stopping at titles or abstracts. Query variants are standard search probes for translations, acronyms, notation variants, or technical equivalents. Use library_search for catalog lookup and paper_read for close reading one known paper.",
       inputSchema: {
         type: "object",
         required: ["query"],
@@ -214,7 +214,7 @@ export function createLibraryRetrieveTool(
             type: "string",
             enum: ["enumerate", "verify", "summarize"],
             description:
-              "Retrieval intent. Use enumerate for comprehensive evidence search across the scoped resource pool, verify for exact presence/absence, and summarize for broad taxonomy/theme synthesis over the retrieved ledger.",
+              "Retrieval intent. Use enumerate for comprehensive evidence search across the scoped resource pool, verify for exact presence/absence, and summarize for broad taxonomy/theme/commonality/comparison synthesis over the retrieved ledger.",
           },
           depth: {
             type: "string",

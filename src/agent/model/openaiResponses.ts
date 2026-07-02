@@ -27,7 +27,11 @@ import {
   normalizeResponsesStepFromPayload,
   parseResponsesStepStream,
 } from "./responsesShared";
-import { buildResponsesFunctionTools, getToolContinuationMessages } from "./shared";
+import {
+  buildResponsesFunctionTools,
+  getToolContinuationMessages,
+} from "./shared";
+import { resolveRequestContentInputs } from "./messageBuilder";
 
 async function uploadFilePart(
   part: Extract<AgentModelContentPart, { type: "file_ref" }>,
@@ -56,16 +60,13 @@ async function uploadFilePart(
 export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
   private conversationItems: unknown[] | null = null;
 
-  getCapabilities(_request: AgentRuntimeRequest): AgentModelCapabilities {
+  getCapabilities(request: AgentRuntimeRequest): AgentModelCapabilities {
+    const contentInputs = resolveRequestContentInputs(request);
     return buildAgentModelCapabilities({
       streaming: true,
       toolCalls: true,
-      contentInputs: {
-        images: true,
-        pdfDocuments: true,
-        nativeFiles: true,
-      },
-      fileInputs: true,
+      contentInputs,
+      fileInputs: contentInputs.nativeFiles,
       reasoning: true,
     });
   }
@@ -142,7 +143,9 @@ export class OpenAIResponsesAgentAdapter implements AgentModelAdapter {
           ...(reasoningPayload.omitTemperature
             ? {}
             : {
-                temperature: normalizeTemperature(request.advanced?.temperature),
+                temperature: normalizeTemperature(
+                  request.advanced?.temperature,
+                ),
               }),
         };
       },

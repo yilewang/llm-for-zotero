@@ -6,13 +6,19 @@ import type {
   TextContent,
   UsageStats,
 } from "../shared/llm";
-import type { AgentConfirmationResolution } from "../agent/types";
+import type {
+  AgentConfirmationResolution,
+  AgentPendingAction,
+  AgentPendingField,
+} from "../agent/types";
 import type { CodexConversationKind, PaperContextRef } from "../shared/types";
 import { BALANCED_EVIDENCE_GUIDANCE } from "../shared/quoteGuidance";
 import {
   addZoteroMcpToolActivityObserver,
   addZoteroMcpConfirmationHandler,
   ZOTERO_MCP_SERVER_NAME,
+  ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
+  ZOTERO_MCP_WRITE_TOOL_NAMES,
   registerScopedZoteroMcpScope,
   setActiveZoteroMcpScope,
   type ZoteroMcpActiveScope,
@@ -43,8 +49,10 @@ import {
   upsertCodexConversationSummary,
 } from "./store";
 import {
+  getCodexAppServerApprovalsReviewerPref,
   getCodexNativeSkillModePref,
   isCodexZoteroMcpToolsEnabled,
+  type CodexAppServerApprovalsReviewer,
 } from "./prefs";
 import { getCodexProfileSignature } from "./constants";
 import {
@@ -127,6 +135,11 @@ type NativeThreadResolution = {
   threadSource?: string;
 };
 
+type NativeContextPlacement =
+  | "developer-instructions"
+  | "latest-user-prefix"
+  | "both-for-legacy-fallback";
+
 export type CodexNativeDiagnostics = {
   threadId: string;
   threadSource?: string;
@@ -155,10 +168,55 @@ const CODEX_APP_SERVER_APPROVAL_REQUEST_METHODS = [
 ];
 
 const DISALLOWED_ZOTERO_MCP_APPROVAL_MARKERS = ["zotero_confirm_action"];
-const CODEX_APP_SERVER_NATIVE_APPROVAL_PARAMS = {
-  approvalPolicy: "on-request",
-  approvalsReviewer: "user",
-};
+const DISALLOWED_ZOTERO_MCP_AUTO_APPROVAL_TOOLS = new Set([
+  "run_command",
+  "file_io",
+  "zotero_script",
+  ...DISALLOWED_ZOTERO_MCP_APPROVAL_MARKERS,
+]);
+const LEGACY_ZOTERO_MCP_AUTO_APPROVAL_TOOL_NAMES = [
+  "query_library",
+  "read_paper",
+  "search_paper",
+  "view_pdf_pages",
+  "search_literature_online",
+  "edit_current_note",
+  "import_identifiers",
+  "update_metadata",
+] as const;
+const TRUSTED_ZOTERO_MCP_AUTO_APPROVAL_TOOL_NAMES = new Set<string>(
+  [
+    ...ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
+    ...ZOTERO_MCP_WRITE_TOOL_NAMES,
+    ...LEGACY_ZOTERO_MCP_AUTO_APPROVAL_TOOL_NAMES,
+  ].filter((name) => !DISALLOWED_ZOTERO_MCP_AUTO_APPROVAL_TOOLS.has(name)),
+);
+const TRUSTED_ZOTERO_MCP_APPROVAL_METHODS = new Set([
+  "item/tool/requestUserInput",
+  "tool/requestUserInput",
+  "approval/request",
+  "approval/requested",
+  "turn/approval/request",
+]);
+const CODEX_APP_SERVER_BUILT_IN_APPROVAL_REQUEST_METHODS = [
+  "item/commandExecution/requestApproval",
+  "item/fileChange/requestApproval",
+  "item/permissions/requestApproval",
+  "execCommandApproval",
+  "applyPatchApproval",
+];
+const CODEX_APP_SERVER_NATIVE_APPROVAL_POLICY = "on-request";
+
+function buildCodexAppServerNativeApprovalParams(): {
+  approvalPolicy: typeof CODEX_APP_SERVER_NATIVE_APPROVAL_POLICY;
+  approvalsReviewer: CodexAppServerApprovalsReviewer;
+} {
+  return {
+    approvalPolicy: CODEX_APP_SERVER_NATIVE_APPROVAL_POLICY,
+    approvalsReviewer: getCodexAppServerApprovalsReviewerPref(),
+  };
+}
+
 const CODEX_NATIVE_HISTORY_VERIFICATION_TTL_MS = 5 * 60 * 1000;
 const CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD =
   "item/autoApprovalReview/completed";
@@ -178,18 +236,255 @@ export function clearCodexNativeHistoryVerificationState(): void {
   nativeHistoryVerificationState.clear();
 }
 
-function serializeApprovalPayload(value: unknown): string {
-  try {
-    return JSON.stringify(value).toLowerCase();
-  } catch {
-    return String(value || "").toLowerCase();
-  }
-}
-
 function normalizeRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function prettyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value || "");
+  }
+}
+
+function firstNonEmptyString(
+  record: Record<string, unknown>,
+  keys: ReadonlyArray<string>,
+): string {
+  for (const key of keys) {
+    const value = normalizeNonEmptyString(record[key]);
+    if (value) return value;
+  }
+  return "";
+}
+
+function collectNestedRecords(value: unknown): Record<string, unknown>[] {
+  const records: Record<string, unknown>[] = [];
+  const visit = (entry: unknown): void => {
+    const record = normalizeRecord(entry);
+    if (!Object.keys(record).length) return;
+    records.push(record);
+    for (const nested of Object.values(record)) {
+      if (nested && typeof nested === "object") visit(nested);
+    }
+  };
+  visit(value);
+  return records;
+}
+
+function findNestedString(value: unknown, keys: ReadonlyArray<string>): string {
+  for (const record of collectNestedRecords(value)) {
+    const candidate = firstNonEmptyString(record, keys);
+    if (candidate) return candidate;
+  }
+  return "";
+}
+
+function findCommandPreview(params: unknown): string {
+  const command = findNestedString(params, [
+    "command",
+    "cmd",
+    "argv",
+    "fullCommand",
+    "full_command",
+  ]);
+  if (command) return command;
+  for (const record of collectNestedRecords(params)) {
+    const argv = record.argv || record.args;
+    if (Array.isArray(argv)) {
+      const pieces = argv
+        .map((entry) => normalizeNonEmptyString(entry))
+        .filter(Boolean);
+      if (pieces.length) return pieces.join(" ");
+    }
+  }
+  return "";
+}
+
+function findPathSummary(params: unknown): string {
+  return findNestedString(params, [
+    "path",
+    "filePath",
+    "file_path",
+    "targetPath",
+    "target_path",
+    "cwd",
+  ]);
+}
+
+function appendTextField(
+  fields: AgentPendingField[],
+  id: string,
+  label: string,
+  value: string,
+): void {
+  if (!value) return;
+  fields.push({ type: "text", id, label, value });
+}
+
+function buildCodexNativeApprovalSummary(
+  request: CodexNativeApprovalRequest,
+): string {
+  if (request.method === "item/commandExecution/requestApproval") {
+    const command = findCommandPreview(request.params);
+    return command ? `Command: ${command}` : "Command execution approval";
+  }
+  if (request.method === "item/fileChange/requestApproval") {
+    const path = findPathSummary(request.params);
+    return path ? `File change: ${path}` : "File-change approval";
+  }
+  if (request.method === "item/permissions/requestApproval") {
+    const permissions = normalizeRecord(
+      normalizeRecord(request.params).permissions,
+    );
+    const fileSystem = normalizeRecord(permissions.fileSystem);
+    const network = normalizeRecord(permissions.network);
+    const pieces = [
+      fileSystem.read ? "filesystem read" : "",
+      fileSystem.write ? "filesystem write" : "",
+      network.enabled !== undefined ? "network" : "",
+    ].filter(Boolean);
+    return pieces.length
+      ? `Permissions: ${pieces.join(", ")}`
+      : "Permission request";
+  }
+  if (request.method === "execCommandApproval") {
+    const command = findCommandPreview(request.params);
+    return command ? `Legacy command: ${command}` : "Legacy command approval";
+  }
+  if (request.method === "applyPatchApproval") {
+    return "Legacy patch approval";
+  }
+  return "Codex native approval";
+}
+
+export function isCodexNativeBuiltInApprovalRequest(
+  request: CodexNativeApprovalRequest,
+): boolean {
+  return (
+    CODEX_APP_SERVER_BUILT_IN_APPROVAL_REQUEST_METHODS as readonly string[]
+  ).includes(request.method);
+}
+
+export function buildCodexNativeApprovalPendingAction(
+  request: CodexNativeApprovalRequest,
+): AgentPendingAction {
+  const params = normalizeRecord(request.params);
+  const fields: AgentPendingField[] = [
+    {
+      type: "text",
+      id: "method",
+      label: "Method",
+      value: request.method,
+    },
+  ];
+  const cwd = findNestedString(request.params, ["cwd", "workingDirectory"]);
+  const command = findCommandPreview(request.params);
+  const path = findPathSummary(request.params);
+  const reason = firstNonEmptyString(params, [
+    "reason",
+    "justification",
+    "description",
+  ]);
+  appendTextField(fields, "cwd", "Working directory", cwd);
+  appendTextField(fields, "path", "Path", path && path !== cwd ? path : "");
+  appendTextField(fields, "reason", "Reason", reason);
+  if (command) {
+    fields.push({
+      type: "code_preview",
+      id: "command",
+      label: "Command",
+      value: command,
+      language: "bash",
+    });
+  }
+  if (request.method === "item/permissions/requestApproval") {
+    fields.push({
+      type: "textarea",
+      id: "permissions",
+      label: "Requested permissions",
+      value: prettyJson(params.permissions || {}),
+      editorMode: "json",
+      spellcheck: false,
+    });
+  }
+  fields.push({
+    type: "textarea",
+    id: "payload",
+    label: "Request payload",
+    value: prettyJson(request.params),
+    editorMode: "json",
+    spellcheck: false,
+  });
+
+  return {
+    toolName: "codex_native_approval",
+    title:
+      request.method === "item/commandExecution/requestApproval" ||
+      request.method === "execCommandApproval"
+        ? "Review Codex command approval"
+        : request.method === "item/fileChange/requestApproval" ||
+            request.method === "applyPatchApproval"
+          ? "Review Codex file-change approval"
+          : request.method === "item/permissions/requestApproval"
+            ? "Review Codex permission request"
+            : "Review Codex native approval",
+    mode: "approval",
+    confirmLabel: "Approve once",
+    cancelLabel: "Deny",
+    description: buildCodexNativeApprovalSummary(request),
+    fields,
+    defaultActionId: "approve",
+    cancelActionId: "deny",
+  };
+}
+
+function buildApprovedPermissionsResponse(params: unknown): {
+  permissions: Record<string, unknown>;
+  scope: "turn";
+} {
+  const requestParams = normalizeRecord(params);
+  const requestedPermissions = normalizeRecord(requestParams.permissions);
+  const permissions: Record<string, unknown> = {};
+  if (
+    requestedPermissions.fileSystem &&
+    typeof requestedPermissions.fileSystem === "object" &&
+    !Array.isArray(requestedPermissions.fileSystem)
+  ) {
+    permissions.fileSystem = requestedPermissions.fileSystem;
+  }
+  if (
+    requestedPermissions.network &&
+    typeof requestedPermissions.network === "object" &&
+    !Array.isArray(requestedPermissions.network)
+  ) {
+    permissions.network = requestedPermissions.network;
+  }
+  return { permissions, scope: "turn" };
+}
+
+export function buildCodexNativeApprovalResponseFromResolution(
+  request: CodexNativeApprovalRequest,
+  resolution: AgentConfirmationResolution,
+): unknown {
+  if (!resolution.approved) {
+    return resolveCodexNativeApprovalRequest(request).response;
+  }
+  switch (request.method) {
+    case "item/commandExecution/requestApproval":
+    case "item/fileChange/requestApproval":
+      return { decision: "accept" };
+    case "item/permissions/requestApproval":
+      return buildApprovedPermissionsResponse(request.params);
+    case "execCommandApproval":
+    case "applyPatchApproval":
+      return { decision: "approved" };
+    default:
+      return resolveCodexNativeApprovalRequest(request).response;
+  }
 }
 
 type CodexNativeSkillInput = Extract<
@@ -389,16 +684,65 @@ function isCodexAppServerApprovalRequestMethod(method: string): boolean {
   ).includes(method);
 }
 
-function isTrustedZoteroMcpPayload(value: unknown): boolean {
-  const serialized = serializeApprovalPayload(value);
-  const isZoteroMcpRequest =
-    serialized.includes(ZOTERO_MCP_SERVER_NAME) ||
-    serialized.includes("llm-for-zotero") ||
-    serialized.includes("zotero mcp");
-  if (!isZoteroMcpRequest) return false;
-  return !DISALLOWED_ZOTERO_MCP_APPROVAL_MARKERS.some((name) =>
-    serialized.includes(name),
+type TrustedZoteroMcpApprovalPayload = {
+  serverName: string;
+  toolName: string;
+  scopeToken?: string;
+  approvalId?: string;
+};
+
+function isTrustedZoteroMcpServerName(value: string): boolean {
+  return (
+    value === ZOTERO_MCP_SERVER_NAME ||
+    value.startsWith(`${ZOTERO_MCP_SERVER_NAME}_`)
   );
+}
+
+function findStructuredApprovalString(
+  value: unknown,
+  keys: ReadonlyArray<string>,
+): string {
+  for (const record of collectNestedRecords(value)) {
+    const candidate = firstNonEmptyString(record, keys);
+    if (candidate) return candidate;
+  }
+  return "";
+}
+
+function extractTrustedZoteroMcpApprovalPayload(
+  params: unknown,
+): TrustedZoteroMcpApprovalPayload | null {
+  const serverName = findStructuredApprovalString(params, [
+    "serverName",
+    "server_name",
+    "server",
+  ]);
+  if (!serverName || !isTrustedZoteroMcpServerName(serverName)) return null;
+
+  const toolName = findStructuredApprovalString(params, [
+    "toolName",
+    "tool_name",
+    "tool",
+  ]).toLowerCase();
+  if (!toolName || !TRUSTED_ZOTERO_MCP_AUTO_APPROVAL_TOOL_NAMES.has(toolName)) {
+    return null;
+  }
+
+  return {
+    serverName,
+    toolName,
+    scopeToken: findStructuredApprovalString(params, [
+      "scopeToken",
+      "scope_token",
+      "x-llm-for-zotero-scope",
+    ]),
+    approvalId: findStructuredApprovalString(params, [
+      "approvalId",
+      "approval_id",
+      "requestId",
+      "request_id",
+    ]),
+  };
 }
 
 function getApprovalRequestTarget(params: unknown): string {
@@ -427,8 +771,8 @@ function getApprovalRequestTarget(params: unknown): string {
   return questionText.slice(0, 180);
 }
 
-function chooseToolUserInputAnswer(question: unknown): string[] {
-  if (!question || typeof question !== "object") return ["approved"];
+function chooseToolUserInputAnswer(question: unknown): string[] | null {
+  if (!question || typeof question !== "object") return null;
   const record = question as Record<string, unknown>;
   const options = Array.isArray(record.options) ? record.options : [];
   const choices = options
@@ -445,6 +789,7 @@ function chooseToolUserInputAnswer(question: unknown): string[] {
     .filter((entry): entry is { answer: string; searchable: string } =>
       Boolean(entry),
     );
+  if (!choices.length) return null;
   const positivePattern =
     /\b(allow|approve|approved|accept|accepted|yes|continue|ok|trust|trusted)\b/i;
   const negativePattern =
@@ -459,29 +804,30 @@ function chooseToolUserInputAnswer(question: unknown): string[] {
       (choice) =>
         /\brecommended\b/i.test(choice.searchable) &&
         !negativePattern.test(choice.searchable),
-    )?.answer ||
-    choices.find((choice) => !negativePattern.test(choice.searchable))
-      ?.answer ||
-    choices[0]?.answer ||
-    "approved";
+    )?.answer;
+  if (!preferred) return null;
   return [preferred];
 }
 
 function buildToolRequestUserInputResponse(params: unknown): {
   answers: Record<string, { answers: string[] }>;
-} {
+} | null {
   const answers: Record<string, { answers: string[] }> = {};
-  if (!params || typeof params !== "object") return { answers };
+  if (!params || typeof params !== "object") return null;
   const questions = Array.isArray((params as Record<string, unknown>).questions)
     ? ((params as Record<string, unknown>).questions as unknown[])
     : [];
+  if (!questions.length) return null;
   for (const [index, question] of questions.entries()) {
     const id =
       question && typeof question === "object"
         ? normalizeNonEmptyString((question as Record<string, unknown>).id)
         : "";
+    if (!id) return null;
+    const questionAnswers = chooseToolUserInputAnswer(question);
+    if (!questionAnswers) return null;
     answers[id || `q${index + 1}`] = {
-      answers: chooseToolUserInputAnswer(question),
+      answers: questionAnswers,
     };
   }
   return { answers };
@@ -489,7 +835,7 @@ function buildToolRequestUserInputResponse(params: unknown): {
 
 function buildTrustedZoteroMcpApprovalResponse(
   request: CodexNativeApprovalRequest,
-): unknown {
+): unknown | null {
   if (request.method === "item/tool/requestUserInput") {
     return buildToolRequestUserInputResponse(request.params);
   }
@@ -502,22 +848,17 @@ export function resolveSafeCodexNativeApprovalRequest(
   if (!isCodexAppServerApprovalRequestMethod(request.method)) {
     return null;
   }
-  if (
-    request.method !== "item/tool/requestUserInput" &&
-    request.method !== "tool/requestUserInput" &&
-    request.method !== "approval/request" &&
-    request.method !== "approval/requested" &&
-    request.method !== "turn/approval/request"
-  ) {
-    return null;
-  }
-  if (!isTrustedZoteroMcpPayload(request.params)) return null;
+  if (!TRUSTED_ZOTERO_MCP_APPROVAL_METHODS.has(request.method)) return null;
+  const trustedPayload = extractTrustedZoteroMcpApprovalPayload(request.params);
+  if (!trustedPayload) return null;
+  const response = buildTrustedZoteroMcpApprovalResponse(request);
+  if (!response) return null;
 
   return {
     approved: true,
-    response: buildTrustedZoteroMcpApprovalResponse(request),
+    response,
     reason: "trusted_zotero_mcp",
-    target: getApprovalRequestTarget(request.params),
+    target: `${trustedPayload.serverName}/${trustedPayload.toolName}`,
   };
 }
 
@@ -655,8 +996,11 @@ function isDeniedTrustedZoteroMcpGuardianReview(rawParams: unknown): boolean {
   if (actionType !== "mcpToolCall" && actionType !== "mcp_tool_call") {
     return false;
   }
-  return isTrustedZoteroMcpPayload(action);
+  return Boolean(extractTrustedZoteroMcpApprovalPayload(action));
 }
+
+export const isDeniedTrustedZoteroMcpGuardianReviewForTests =
+  isDeniedTrustedZoteroMcpGuardianReview;
 
 function registerNativeGuardianReviewHandlers(params: {
   proc: CodexAppServerProcess;
@@ -909,9 +1253,9 @@ export function buildZoteroEnvironmentManifest(params: {
     "- You are Codex. Zotero resources and MCP tools are available when useful; they are not mandatory for every response.",
     "- Use tools only when they materially improve the answer or are required to inspect/update Zotero. If available context is enough, answer directly.",
     "- For Zotero library, profile, item, PDF, and note facts not shown in context, use Zotero MCP tools instead of local Zotero database/filesystem copies.",
-    "- Paper content: use paper_read overview for broad summaries, targeted for specific sections/results/methods, and visual/capture only for figures, layout, pages, or current reader capture.",
+    "- Paper content: use paper_read overview for broad single-paper summaries, targeted for specific sections/results/methods, and visual/capture only for figures, layout, pages, or current reader capture. For bounded selected multi-paper synthesis, comparison, commonality, or theme questions, overview is the answer style, not the read depth; use library_retrieve or the supplied evidence ledger for body-evidence coverage before answering.",
     `- ${BALANCED_EVIDENCE_GUIDANCE}`,
-    "- Citations: use the provided sourceLabel for paper-grounded claims. When paper_read provides quote anchors like [[quote:Q_x7a2]], use those anchor tokens for direct quotes instead of manually copying the quote or sourceLabel. Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. If a translation is useful, write it outside the blockquote as explanation, not as the quoted source passage. If no quote anchor is provided for a direct quote, put the sourceLabel on the next non-empty line after the blockquote. Do not write [[source=...]], section=..., or chunk=... metadata in the final answer. Do not call tools solely to discover quotes or page numbers; the UI citation binder may resolve page links after rendering.",
+    "- Citations: use the provided sourceLabel for paper-grounded claims. When paper_read provides verified quote anchors like [[quote:Q_x7a2]], use those anchor tokens only when exact wording is useful instead of manually copying the quote or sourceLabel. Use `>` blockquotes only for direct original source text. Direct quote text must be copied verbatim in the original source language; never translate quote text to match the user's language. If a translation, interpretation, emphasis, example, or opinion is useful, write it outside the blockquote as explanation or in a fenced `text` block, not as the quoted source passage. If no quote anchor is provided for a direct quote, put the sourceLabel on the next non-empty line after the blockquote. Copy the Source label string exactly. Do not invent author/year/page/section labels. Do not write [[source=...]], section=..., or chunk=... metadata in the final answer. Do not call tools solely to discover quotes or page numbers; the UI citation binder may resolve page links after rendering.",
     "- External lookup is allowed when the user asks for current web information, or when paper_read shows local paper content is unavailable and Zotero metadata/abstract is insufficient. Label external sources separately.",
     "- Write/update requests should use semantic Zotero MCP write tools. Review cards or direct tool results are the deliverable for tool-backed writes.",
     "- Advanced tools run_command, file_io, and zotero_script are escape hatches for explicit shell/file/script tasks or unsupported formats, not ordinary paper/library reading.",
@@ -1021,6 +1365,14 @@ function buildNativeMessages(params: {
   ];
 }
 
+function resolveNativeContextPlacement(
+  thread: NativeThreadResolution,
+): NativeContextPlacement {
+  return thread.developerInstructionsAccepted
+    ? "developer-instructions"
+    : "latest-user-prefix";
+}
+
 async function loadStoredProviderSessionId(params: {
   conversationKey: number;
   hooks?: CodexNativeStoreHooks;
@@ -1070,7 +1422,7 @@ async function startNativeThread(params: {
     model: params.model,
     ephemeral: false,
     persistExtendedHistory: true,
-    ...CODEX_APP_SERVER_NATIVE_APPROVAL_PARAMS,
+    ...buildCodexAppServerNativeApprovalParams(),
     serviceName: CODEX_APP_SERVER_SERVICE_NAME,
     ...(params.cwd ? { cwd: params.cwd } : {}),
     ...(params.config ? { config: params.config } : {}),
@@ -1130,7 +1482,7 @@ async function resumeNativeThread(params: {
     threadId: params.threadId,
     model: params.model,
     persistExtendedHistory: true,
-    ...CODEX_APP_SERVER_NATIVE_APPROVAL_PARAMS,
+    ...buildCodexAppServerNativeApprovalParams(),
     ...(params.cwd ? { cwd: params.cwd } : {}),
     ...(params.config ? { config: params.config } : {}),
     ...(params.developerInstructions
@@ -1278,7 +1630,9 @@ function registerNativeApprovalRequestHandlers(params: {
               ((response as Record<string, unknown>).approved === true ||
                 (response as Record<string, unknown>).decision === "accept" ||
                 (response as Record<string, unknown>).action === "accept" ||
-                (response as Record<string, unknown>).answers),
+                (response as Record<string, unknown>).answers ||
+                ((response as Record<string, unknown>).scope === "turn" &&
+                  Boolean((response as Record<string, unknown>).permissions))),
             ),
             response,
             reason: "custom_handler",
@@ -1308,6 +1662,8 @@ export async function listCodexAppServerModels(
   params: {
     codexPath?: string;
     includeHidden?: boolean;
+    cursor?: string;
+    limit?: number;
     processKey?: string;
   } = {},
 ): Promise<unknown> {
@@ -1316,9 +1672,15 @@ export async function listCodexAppServerModels(
     params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
     { codexPath },
   );
-  return proc.sendRequest("model/list", {
+  const requestParams: Record<string, unknown> = {
     includeHidden: params.includeHidden === true,
-  });
+  };
+  if (params.cursor) requestParams.cursor = params.cursor;
+  const limit = params.limit;
+  if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+    requestParams.limit = Math.floor(limit);
+  }
+  return proc.sendRequest("model/list", requestParams);
 }
 
 export async function forkCodexAppServerThread(params: {
@@ -1640,7 +2002,7 @@ export async function runCodexAppServerNativeTurn(params: {
             input: args.input,
             model: params.model,
             ...(codexNativeRuntimeCwd ? { cwd: codexNativeRuntimeCwd } : {}),
-            ...CODEX_APP_SERVER_NATIVE_APPROVAL_PARAMS,
+            ...buildCodexAppServerNativeApprovalParams(),
             ...reasoningParams,
           });
           const turnId = extractCodexAppServerTurnId(turnResult);
@@ -1732,16 +2094,19 @@ export async function runCodexAppServerNativeTurn(params: {
         skillContext: params.skillContext,
       });
       const optimisticMcpReady = mcpEnabled;
+      const developerEnvironmentText = buildZoteroEnvironmentManifest({
+        scope: scopeWithProfile,
+        mcpEnabled,
+        mcpReady: optimisticMcpReady,
+        mcpWarning,
+        skillInstructionBlock,
+        priorReadContextBlock,
+        resourceContextBlock: visibleTurnContextBlock,
+      });
       const developerInstructionMessages = buildNativeMessages({
         messages: messagesForNativeTurn,
         includeVisibleHistory: true,
-        zoteroEnvironmentText: buildZoteroEnvironmentManifest({
-          scope: scopeWithProfile,
-          mcpEnabled,
-          mcpReady: optimisticMcpReady,
-          mcpWarning,
-          skillInstructionBlock,
-        }),
+        zoteroEnvironmentText: developerEnvironmentText,
       });
       const developerPreparedTurn = await prepareCodexAppServerChatTurn(
         developerInstructionMessages,
@@ -1786,6 +2151,21 @@ export async function runCodexAppServerNativeTurn(params: {
           name: params.scope.title,
         });
       }
+      const contextPlacement = resolveNativeContextPlacement(thread);
+      const latestUserFallbackContextText = [
+        visibleTurnContextBlock,
+        buildZoteroEnvironmentManifest({
+          scope: scopeWithProfile,
+          mcpEnabled,
+          mcpReady,
+          mcpWarning,
+          skillInstructionBlock,
+          priorReadContextBlock,
+          resourceContextBlock: "",
+        }),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
       const nativeMessages = buildNativeMessages({
         messages: messagesForNativeTurn,
         includeVisibleHistory: true,
@@ -1794,12 +2174,12 @@ export async function runCodexAppServerNativeTurn(params: {
           mcpEnabled,
           mcpReady,
           mcpWarning,
-          skillInstructionBlock,
-          priorReadContextBlock,
-          resourceContextBlock: visibleTurnContextBlock,
+          skillInstructionBlock: "",
+          priorReadContextBlock: "",
+          resourceContextBlock: "",
         }),
-        prefixLatestUserWithContext: true,
-        latestUserContextText: visibleTurnContextBlock,
+        prefixLatestUserWithContext: contextPlacement === "latest-user-prefix",
+        latestUserContextText: latestUserFallbackContextText,
       });
       const preparedTurn = await prepareCodexAppServerChatTurn(nativeMessages);
       const input = await resolveCodexAppServerTurnInputWithFallback({

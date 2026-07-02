@@ -42,25 +42,32 @@ import { normalizeForcedSkillIds } from "../../shared/skillIds";
 import {
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
+  isCodexAppServerNativeApprovalsEnabled,
   isCodexAppServerModeEnabled,
   isCodexZoteroMcpToolsEnabled,
 } from "../../codexAppServer/prefs";
 import { getEffectiveCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
 import {
+  buildCodexNativeApprovalPendingAction,
+  buildCodexNativeApprovalResponseFromResolution,
   compactCodexAppServerConversation,
+  isCodexNativeBuiltInApprovalRequest,
   NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE,
   resolveCodexNativeApprovalRequest,
   runCodexAppServerNativeTurn,
+  type CodexNativeApprovalRequest,
   type CodexNativeConversationScope,
   type CodexNativeDiagnostics,
 } from "../../codexAppServer/nativeClient";
 import type { CodexNativeSkillContext } from "../../codexAppServer/nativeSkills";
 import {
   callLLMStream,
+  type ChatParams,
   ChatFileAttachment,
   ChatMessage,
   getRuntimeReasoningOptions,
   prepareChatRequest,
+  type PreparedChatRequest,
   ReasoningConfig as LLMReasoningConfig,
   ReasoningEvent,
   ReasoningLevel as LLMReasoningLevel,
@@ -89,6 +96,10 @@ import type {
   GeneratedChatImage,
   QuoteCitation,
 } from "../../shared/types";
+import type {
+  LibraryChatCoverageReceipt,
+  LibraryChatReadStrategyDiagnostics,
+} from "../../shared/libraryChatReadStrategy";
 import {
   getConversationForkLink,
   type ConversationForkLink,
@@ -221,7 +232,7 @@ import {
   ensureNoteTextCached,
   ensurePDFTextCached,
 } from "./pdfContext";
-import { isTextOnlyModel, resolveProviderCapabilities } from "../../providers";
+import { resolveProviderCapabilities } from "../../providers";
 import {
   getActiveContextAttachmentFromTabs,
   resolveContextSourceItem,
@@ -239,8 +250,14 @@ import { buildChatHistoryNotePayload } from "./notes";
 import { readNoteSnapshot } from "./noteSnapshot";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
+import { getWorkflowTestFinalRequestInterceptor } from "./workflowTestHooks";
 import { canEditUserPromptTurn } from "./editability";
 import { renderAgentTrace, renderPendingActionCard } from "./agentTrace/render";
+import {
+  TOOL_ACTIVITY_VISIBLE_DEDUPE_WINDOW_MS,
+  hasSameToolActivityVisibleIdentity,
+  mergeToolActivityPayload,
+} from "./agentTrace/toolActivityDedupe";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
 import { toFileUrl } from "../../utils/pathFileUrl";
 import { replaceOwnerAttachmentRefs } from "../../utils/attachmentRefStore";
@@ -250,6 +267,7 @@ import {
   decorateAssistantCitationLinks,
   renderQuoteCitationPlaceholders,
 } from "./assistantCitationLinks";
+import { warmPageTextCacheForAttachment } from "./livePdfSelectionLocator";
 import {
   getMessageCitationPaperContexts,
   mergeCitationPaperContexts,
@@ -2717,6 +2735,8 @@ function scrollNativeMcpActionCardIntoView(
   view?.setTimeout(scroll, 80);
 }
 
+let codexNativeApprovalRequestCounter = 0;
+
 function closeNativeMcpActionCard(body: Element, requestId?: string): void {
   const ui = getPanelRequestUI(body);
   const chatBox = ui.chatBox;
@@ -2744,7 +2764,7 @@ function showNativeMcpActionCard(
   action: AgentPendingAction,
 ): Promise<AgentConfirmationResolution> {
   return new Promise((resolve) => {
-    ztoolkit.log("Codex app-server native MCP confirmation requested", {
+    ztoolkit.log("Codex app-server native confirmation requested", {
       requestId,
       toolName: action.toolName,
       mode: action.mode || "approval",
@@ -2753,18 +2773,18 @@ function showNativeMcpActionCard(
     const ui = getPanelRequestUI(body);
     const ownerDoc = body.ownerDocument;
     if (!ownerDoc || !ui.chatBox) {
-      ztoolkit.log("Codex app-server native MCP confirmation unavailable", {
+      ztoolkit.log("Codex app-server native confirmation unavailable", {
         requestId,
         reason: "missing_panel_review_card_ui",
       });
       throw new Error(
-        "Zotero review card UI is unavailable for native MCP confirmation.",
+        "Zotero review card UI is unavailable for native confirmation.",
       );
     }
 
     try {
       getAgentApi().registerPendingConfirmation(requestId, (resolution) => {
-        ztoolkit.log("Codex app-server native MCP confirmation resolved", {
+        ztoolkit.log("Codex app-server native confirmation resolved", {
           requestId,
           approved: resolution.approved,
           actionId: resolution.actionId,
@@ -2773,12 +2793,12 @@ function showNativeMcpActionCard(
         resolve(resolution);
       });
     } catch (error) {
-      ztoolkit.log("Codex app-server native MCP confirmation unavailable", {
+      ztoolkit.log("Codex app-server native confirmation unavailable", {
         requestId,
         reason: error instanceof Error ? error.message : String(error),
       });
       throw new Error(
-        `Zotero review card UI could not register native MCP confirmation: ${
+        `Zotero review card UI could not register native confirmation: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -2788,7 +2808,7 @@ function showNativeMcpActionCard(
     if (renderedCard) {
       scrollNativeMcpActionCardIntoView(ui.chatBox, renderedCard);
       syncInlineActionCardAttr(body);
-      ztoolkit.log("Codex app-server native MCP confirmation rendered", {
+      ztoolkit.log("Codex app-server native confirmation rendered", {
         requestId,
         toolName: action.toolName,
         mode: action.mode || "approval",
@@ -2806,13 +2826,98 @@ function showNativeMcpActionCard(
     ui.chatBox.appendChild(wrapper);
     scrollNativeMcpActionCardIntoView(ui.chatBox, wrapper);
     syncInlineActionCardAttr(body);
-    ztoolkit.log("Codex app-server native MCP confirmation rendered", {
+    ztoolkit.log("Codex app-server native confirmation rendered", {
       requestId,
       toolName: action.toolName,
       mode: action.mode || "approval",
       source: "inline",
     });
   });
+}
+
+type CodexNativeApprovalTrace = {
+  noteMcpConfirmationRequired?: (
+    requestId: string,
+    action: AgentPendingAction,
+  ) => void;
+  noteMcpConfirmationResolved?: (
+    requestId: string,
+    resolution: AgentConfirmationResolution,
+  ) => void;
+};
+
+export async function resolveCodexNativeApprovalWithOptionalReviewCard(params: {
+  body: Element;
+  request: CodexNativeApprovalRequest;
+  trace?: CodexNativeApprovalTrace | null;
+  setStatusSafely: (
+    text: string,
+    kind: Parameters<typeof setStatus>[2],
+  ) => void;
+  isNativeApprovalsEnabled?: () => boolean;
+  showActionCard?: (
+    body: Element,
+    requestId: string,
+    action: AgentPendingAction,
+  ) => Promise<AgentConfirmationResolution>;
+  nextRequestId?: () => string;
+}): Promise<unknown> {
+  const defaultDecision = resolveCodexNativeApprovalRequest(params.request);
+  if (defaultDecision.approved) {
+    params.setStatusSafely("Codex approved Zotero MCP access", "sending");
+    return defaultDecision.response;
+  }
+  if (defaultDecision.reason === "unsupported_mcp_elicitation") {
+    params.setStatusSafely(
+      "Codex declined unsupported MCP elicitation",
+      "sending",
+    );
+    return defaultDecision.response;
+  }
+  if (
+    !(
+      params.isNativeApprovalsEnabled?.() ??
+      isCodexAppServerNativeApprovalsEnabled()
+    ) ||
+    !isCodexNativeBuiltInApprovalRequest(params.request)
+  ) {
+    params.setStatusSafely(
+      "Codex denied a built-in or untrusted approval request",
+      "error",
+    );
+    return defaultDecision.response;
+  }
+
+  const requestId =
+    params.nextRequestId?.() ||
+    `codex-native-approval-${Date.now()}-${++codexNativeApprovalRequestCounter}`;
+  const action = buildCodexNativeApprovalPendingAction(params.request);
+  const showActionCard = params.showActionCard || showNativeMcpActionCard;
+  try {
+    params.setStatusSafely("Codex is waiting for your approval", "sending");
+    params.trace?.noteMcpConfirmationRequired?.(requestId, action);
+    const resolution = await showActionCard(params.body, requestId, action);
+    params.trace?.noteMcpConfirmationResolved?.(requestId, resolution);
+    return buildCodexNativeApprovalResponseFromResolution(
+      params.request,
+      resolution,
+    );
+  } catch (error) {
+    if (typeof ztoolkit !== "undefined") {
+      ztoolkit.log(
+        "Codex app-server native approval UI unavailable; denying request",
+        {
+          method: params.request.method,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+    params.setStatusSafely(
+      "Codex denied a built-in approval request because the approval UI was unavailable",
+      "error",
+    );
+    return defaultDecision.response;
+  }
 }
 
 function isPanelWebChatMode(body: Element): boolean {
@@ -3090,6 +3195,20 @@ export type EffectiveRequestConfig = {
   reasoning: LLMReasoningConfig | undefined;
   advanced: AdvancedModelParams | undefined;
 };
+
+function resolveEffectiveProviderCapabilities(config: EffectiveRequestConfig) {
+  return resolveProviderCapabilities({
+    model: config.model || "",
+    protocol: config.providerProtocol,
+    authMode: config.authMode,
+    apiBase: config.apiBase,
+    inputMode: config.advanced?.inputMode,
+  });
+}
+
+function supportsImageInputs(config: EffectiveRequestConfig): boolean {
+  return resolveEffectiveProviderCapabilities(config).images;
+}
 
 function isCodexAppServerConversationRequest(params: {
   item: Zotero.Item;
@@ -3407,7 +3526,58 @@ type ContextPlanForRequest = {
   citationPaperContexts: PaperContextRef[];
   quoteCitations: QuoteCitation[];
   recentPaperContexts: PaperContextRef[];
+  readStrategy?: LibraryChatReadStrategyDiagnostics;
+  coverageReceipt?: LibraryChatCoverageReceipt;
 };
+
+type PreparedContextPlanChatRequest = {
+  finalPrepared: PreparedChatRequest;
+  systemMessages: string[];
+  inputCapEffects: PreparedChatRequest["inputCap"]["effects"];
+};
+
+async function prepareFinalContextPlanChatRequest(params: {
+  requestParams: ChatParams;
+  contextPlan: ContextPlanForRequest;
+  combinedContext: string;
+}): Promise<PreparedContextPlanChatRequest> {
+  const previewSystemMessages = buildContextPlanSystemMessages({
+    strategy: params.contextPlan.strategy,
+    assistantInstruction: params.contextPlan.assistantInstruction,
+    coverageReceiptText: params.contextPlan.coverageReceipt?.text,
+  });
+  const preview = prepareChatRequest({
+    ...params.requestParams,
+    systemMessages: previewSystemMessages,
+  });
+  const systemMessages = buildContextPlanSystemMessages({
+    strategy: params.contextPlan.strategy,
+    assistantInstruction: params.contextPlan.assistantInstruction,
+    coverageReceiptText: params.contextPlan.coverageReceipt?.text,
+    inputCapEffects: preview.inputCap.effects,
+  });
+  const finalPrepared = prepareChatRequest({
+    ...params.requestParams,
+    systemMessages,
+  });
+  const workflowTestFinalRequestInterceptor =
+    getWorkflowTestFinalRequestInterceptor();
+  if (workflowTestFinalRequestInterceptor) {
+    await workflowTestFinalRequestInterceptor({
+      combinedContext: params.combinedContext,
+      strategy: params.contextPlan.strategy,
+      systemMessages,
+      inputCapEffects: preview.inputCap.effects,
+      readStrategy: params.contextPlan.readStrategy,
+      coverageReceipt: params.contextPlan.coverageReceipt,
+    });
+  }
+  return {
+    finalPrepared,
+    systemMessages,
+    inputCapEffects: preview.inputCap.effects,
+  };
+}
 
 function shouldUseCodexNativeLightContext(params: {
   isCodexNativeTurn: boolean;
@@ -3600,6 +3770,8 @@ async function buildContextPlanForRequest(params: {
     ),
     quoteCitations: plan.quoteCitations || [],
     recentPaperContexts: params.recentPaperContexts,
+    readStrategy: plan.readStrategy,
+    coverageReceipt: plan.coverageReceipt,
   };
 }
 
@@ -3616,6 +3788,16 @@ function cachedQuoteSourceText(contextItemId: number): string {
 
 function hasCachedQuoteSourceText(contextItemId: number): boolean {
   return Boolean(cachedQuoteSourceText(contextItemId).trim());
+}
+
+function canUsePdfPageTextQuoteSource(
+  paper: PaperContextRef,
+  contextItem: Zotero.Item | null,
+): boolean {
+  if (!contextItem?.isAttachment?.()) return false;
+  return !["markdown", "html", "txt", "docx"].includes(
+    paper.contentSourceMode || "",
+  );
 }
 
 function resolveQuoteSourceContextItem(
@@ -3671,6 +3853,28 @@ async function ensureQuoteSourceTextCachedForPaper(
   }
 }
 
+async function buildPdfPageQuoteSourceTextForPaper(
+  paper: PaperContextRef,
+): Promise<string> {
+  const contextItemId = Math.floor(Number(paper.contextItemId || 0));
+  if (!Number.isFinite(contextItemId) || contextItemId <= 0) return "";
+  const contextItem = resolveQuoteSourceContextItem(paper);
+  if (!canUsePdfPageTextQuoteSource(paper, contextItem)) return "";
+  try {
+    const cached = await warmPageTextCacheForAttachment(contextItemId);
+    return (cached?.pages || [])
+      .map((page) => sanitizeText(page.text || "").trim())
+      .filter(Boolean)
+      .join("\n\n");
+  } catch (error) {
+    ztoolkit.log("LLM: PDF page quote source text cache warm failed", {
+      contextItemId,
+      error,
+    });
+    return "";
+  }
+}
+
 async function buildQuoteSourceTextsForPaperContexts(
   ...groups: Array<PaperContextRef[] | undefined | null>
 ): Promise<QuoteSourceText[]> {
@@ -3691,11 +3895,24 @@ async function buildQuoteSourceTextsForPaperContexts(
     await ensureQuoteSourceTextCachedForPaper(paper);
     const contextItemId = Math.floor(Number(paper.contextItemId || 0));
     if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
+    const pdfPageSourceText = await buildPdfPageQuoteSourceTextForPaper(paper);
+    if (pdfPageSourceText.trim()) {
+      out.push({
+        sourceText: pdfPageSourceText,
+        sourceLabel: formatPaperSourceLabel(paper),
+        metadataTexts: [paper.title, paper.attachmentTitle],
+        sourceMatchSource: "pdf-page-text",
+        contextItemId: paper.contextItemId,
+        itemId: paper.itemId,
+      });
+    }
     const sourceText = cachedQuoteSourceText(contextItemId);
     if (!sourceText.trim()) continue;
     out.push({
       sourceText,
       sourceLabel: formatPaperSourceLabel(paper),
+      metadataTexts: [paper.title, paper.attachmentTitle],
+      sourceMatchSource: "context-text",
       contextItemId: paper.contextItemId,
       itemId: paper.itemId,
     });
@@ -3739,6 +3956,7 @@ async function finalizeAssistantMessageQuoteCitations(
     markdown: assistantMessage.text || "",
     quoteCitations: assistantMessage.quoteCitations,
     sourceIndex,
+    requireVerifiedQuoteCitations: true,
   });
   assistantMessage.text = finalized.markdown;
   assistantMessage.quoteCitations = finalized.quoteCitations.length
@@ -4050,6 +4268,11 @@ type CodexNativeMcpToolActivityEvent = {
   error?: string;
   quoteCitations?: QuoteCitation[];
 };
+
+type CodexToolActivityEventPayload = Extract<
+  AgentEvent,
+  { type: "codex_tool_activity" }
+>;
 
 function isCodexNativeAgentMessageItem(
   event: CodexNativeTraceItemEvent,
@@ -4412,6 +4635,23 @@ function createCodexNativeActivityTraceController(
     return null;
   };
 
+  const findRecentVisibleDuplicateToolActivity = (
+    payload: CodexToolActivityEventPayload,
+  ): string | null => {
+    const now = Date.now();
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const entry = events[index];
+      if (now - entry.createdAt > TOOL_ACTIVITY_VISIBLE_DEDUPE_WINDOW_MS) {
+        break;
+      }
+      if (entry?.payload.type !== "codex_tool_activity") continue;
+      if (hasSameToolActivityVisibleIdentity(entry.payload, payload)) {
+        return entry.payload.itemId;
+      }
+    }
+    return null;
+  };
+
   const upsertToolActivity = (
     activity: {
       itemId: string;
@@ -4431,18 +4671,7 @@ function createCodexNativeActivityTraceController(
     const cleanToolName = sanitizeText(activity.toolName || "").trim();
     const cleanToolLabel = sanitizeText(activity.toolLabel || "").trim();
     const cleanServerName = sanitizeText(activity.serverName || "").trim();
-    const matchedUnknown =
-      options.matchRecentUnknown && (cleanToolName || cleanToolLabel)
-        ? findRecentCompatibleToolActivity(
-            activity.phase,
-            cleanServerName,
-            cleanToolName,
-            cleanToolLabel,
-          )
-        : null;
-    const itemId = matchedUnknown || cleanItemId;
-    const existingIndex = toolEventIndexes.get(itemId);
-    const payload: AgentEvent = {
+    const buildPayload = (itemId: string): CodexToolActivityEventPayload => ({
       type: "codex_tool_activity",
       itemId,
       phase: activity.phase,
@@ -4453,22 +4682,32 @@ function createCodexNativeActivityTraceController(
       ...(typeof activity.ok === "boolean" ? { ok: activity.ok } : {}),
       ...(activity.text ? { text: activity.text } : {}),
       ...(activity.codeBlock ? { codeBlock: activity.codeBlock } : {}),
-    };
+    });
+    const matchedUnknown =
+      options.matchRecentUnknown && (cleanToolName || cleanToolLabel)
+        ? findRecentCompatibleToolActivity(
+            activity.phase,
+            cleanServerName,
+            cleanToolName,
+            cleanToolLabel,
+          )
+        : null;
+    let itemId = matchedUnknown || cleanItemId;
+    let payload = buildPayload(itemId);
+    if (!matchedUnknown) {
+      const visibleDuplicate = findRecentVisibleDuplicateToolActivity(payload);
+      if (visibleDuplicate) {
+        itemId = visibleDuplicate;
+        payload = buildPayload(itemId);
+      }
+    }
+    const existingIndex = toolEventIndexes.get(itemId);
     if (existingIndex !== undefined) {
       const existing = events[existingIndex];
       if (existing?.payload.type !== "codex_tool_activity") return null;
       events[existingIndex] = {
         ...existing,
-        payload: {
-          ...existing.payload,
-          ...payload,
-          toolName: payload.toolName || existing.payload.toolName,
-          toolLabel: payload.toolLabel || existing.payload.toolLabel,
-          serverName: payload.serverName || existing.payload.serverName,
-          args:
-            payload.args !== undefined ? payload.args : existing.payload.args,
-          codeBlock: payload.codeBlock || existing.payload.codeBlock,
-        },
+        payload: mergeToolActivityPayload(existing.payload, payload),
         createdAt: Date.now(),
       };
       return itemId;
@@ -4894,6 +5133,9 @@ type CodexNativeActivityTraceController = ReturnType<
   typeof createCodexNativeActivityTraceController
 >;
 
+export const createCodexNativeActivityTraceControllerForTests =
+  createCodexNativeActivityTraceController;
+
 function noteExplicitCodexNativeSkillInvocations(
   trace: CodexNativeActivityTraceController | null,
   skillIds?: string[],
@@ -5306,6 +5548,7 @@ async function resolveRetryModelInputs(params: {
     protocol: params.effectiveRequestConfig.providerProtocol,
     authMode: params.effectiveRequestConfig.authMode,
     apiBase: params.effectiveRequestConfig.apiBase,
+    inputMode: params.effectiveRequestConfig.advanced?.inputMode,
   }).pdf;
   if (
     params.effectiveRequestConfig.providerProtocol !== "web_sync" &&
@@ -6263,10 +6506,10 @@ export async function retryLatestAssistantResponse(
       return;
     }
 
-    // Text-only models reject image_url content, so drop all images.
-    const allImages = isTextOnlyModel(effectiveRequestConfig.model || "")
-      ? []
-      : [...(retryScreenshotImages || [])];
+    // Models resolved as image-disabled reject image_url content, so drop all images.
+    const allImages = supportsImageInputs(effectiveRequestConfig)
+      ? [...(retryScreenshotImages || [])]
+      : [];
     const requestParams = {
       prompt: question,
       context: combinedContext,
@@ -6283,25 +6526,15 @@ export async function retryLatestAssistantResponse(
       temperature: effectiveRequestConfig.advanced?.temperature,
       maxTokens: effectiveRequestConfig.advanced?.maxTokens,
       inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
+      inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
     };
-    const previewSystemMessages = buildContextPlanSystemMessages({
-      strategy: contextPlan.strategy,
-      assistantInstruction: contextPlan.assistantInstruction,
-    });
-    const preview = prepareChatRequest({
-      ...requestParams,
-      systemMessages: previewSystemMessages,
-    });
-    const systemMessages = buildContextPlanSystemMessages({
-      strategy: contextPlan.strategy,
-      assistantInstruction: contextPlan.assistantInstruction,
-      inputCapEffects: preview.inputCap.effects,
-    });
-    const finalPrepared = prepareChatRequest({
-      ...requestParams,
-      systemMessages,
-    });
+    const { finalPrepared, systemMessages } =
+      await prepareFinalContextPlanChatRequest({
+        requestParams,
+        contextPlan,
+        combinedContext,
+      });
     const estimatedContextSnapshot = setContextUsageSnapshot(conversationKey, {
       contextTokens: finalPrepared.inputCap.estimatedAfterTokens,
       contextWindow: finalPrepared.inputCap.limitTokens,
@@ -6480,23 +6713,14 @@ export async function retryLatestAssistantResponse(
                 "sending",
               );
             },
-            onApprovalRequest: (request) => {
+            onApprovalRequest: async (request) => {
               flushResponseStream("event");
-              const decision = resolveCodexNativeApprovalRequest(request);
-              if (decision.approved) {
-                setStatusSafely("Codex approved Zotero MCP access", "sending");
-              } else if (decision.reason === "unsupported_mcp_elicitation") {
-                setStatusSafely(
-                  "Codex declined unsupported MCP elicitation",
-                  "sending",
-                );
-              } else {
-                setStatusSafely(
-                  "Codex denied a built-in or untrusted approval request",
-                  "error",
-                );
-              }
-              return decision.response;
+              return resolveCodexNativeApprovalWithOptionalReviewCard({
+                body,
+                request,
+                trace: codexActivityTrace,
+                setStatusSafely,
+              });
             },
           })
         ).text
@@ -6950,6 +7174,7 @@ export type BuildAgentRuntimeRequestParams = {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  citationPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
   attachments: ChatAttachment[] | undefined;
@@ -7271,6 +7496,7 @@ async function buildAgentRuntimeRequest(
     selectedTextPaperContexts: params.selectedTextPaperContexts,
     selectedPaperContexts: enrichedPaperContexts,
     fullTextPaperContexts: enrichedFullTextPapers,
+    citationPaperContexts: normalizePaperContexts(params.citationPaperContexts),
     selectedCollectionContexts: normalizeCollectionContexts(
       params.selectedCollectionContexts,
     ),
@@ -7378,9 +7604,13 @@ function buildAgentEngineDeps(
     finalizeAssistantQuoteCitations: async (
       assistantMessage,
       pairedUserMessage,
+      runtimeRequest,
     ) => {
       await finalizeAssistantMessageQuoteCitations(assistantMessage, {
         pairedUserMessage,
+        paperContexts: runtimeRequest?.selectedPaperContexts,
+        fullTextPaperContexts: runtimeRequest?.fullTextPaperContexts,
+        citationPaperContexts: runtimeRequest?.citationPaperContexts,
       });
     },
     appendReasoningPart,
@@ -8385,10 +8615,10 @@ export async function sendQuestion(
       return;
     }
 
-    // Text-only models reject image_url content, so drop all images.
-    const allSendImages = isTextOnlyModel(effectiveRequestConfig.model || "")
-      ? []
-      : [...(images || [])];
+    // Models resolved as image-disabled reject image_url content, so drop all images.
+    const allSendImages = supportsImageInputs(effectiveRequestConfig)
+      ? [...(images || [])]
+      : [];
     const requestParams = {
       prompt: question,
       context: combinedContext,
@@ -8405,25 +8635,15 @@ export async function sendQuestion(
       temperature: effectiveRequestConfig.advanced?.temperature,
       maxTokens: effectiveRequestConfig.advanced?.maxTokens,
       inputTokenCap: effectiveRequestConfig.advanced?.inputTokenCap,
+      inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
     };
-    const previewSystemMessages = buildContextPlanSystemMessages({
-      strategy: contextPlan.strategy,
-      assistantInstruction: contextPlan.assistantInstruction,
-    });
-    const preview = prepareChatRequest({
-      ...requestParams,
-      systemMessages: previewSystemMessages,
-    });
-    const systemMessages = buildContextPlanSystemMessages({
-      strategy: contextPlan.strategy,
-      assistantInstruction: contextPlan.assistantInstruction,
-      inputCapEffects: preview.inputCap.effects,
-    });
-    const finalPrepared = prepareChatRequest({
-      ...requestParams,
-      systemMessages,
-    });
+    const { finalPrepared, systemMessages } =
+      await prepareFinalContextPlanChatRequest({
+        requestParams,
+        contextPlan,
+        combinedContext,
+      });
     const estimatedContextSnapshot = setContextUsageSnapshot(conversationKey, {
       contextTokens: finalPrepared.inputCap.estimatedAfterTokens,
       contextWindow: finalPrepared.inputCap.limitTokens,
@@ -8594,23 +8814,14 @@ export async function sendQuestion(
                 "sending",
               );
             },
-            onApprovalRequest: (request) => {
+            onApprovalRequest: async (request) => {
               flushResponseStream("event");
-              const decision = resolveCodexNativeApprovalRequest(request);
-              if (decision.approved) {
-                setStatusSafely("Codex approved Zotero MCP access", "sending");
-              } else if (decision.reason === "unsupported_mcp_elicitation") {
-                setStatusSafely(
-                  "Codex declined unsupported MCP elicitation",
-                  "sending",
-                );
-              } else {
-                setStatusSafely(
-                  "Codex denied a built-in or untrusted approval request",
-                  "error",
-                );
-              }
-              return decision.response;
+              return resolveCodexNativeApprovalWithOptionalReviewCard({
+                body,
+                request,
+                trace: codexActivityTrace,
+                setStatusSafely,
+              });
             },
           })
         ).text
