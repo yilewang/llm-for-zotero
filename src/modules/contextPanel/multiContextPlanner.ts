@@ -475,7 +475,8 @@ async function collectTagContextItems(
 
 type CollectionScopeResolution = {
   papers: PlannerPaperEntry[];
-  manifestText: string;
+  scopeLines: string[];
+  candidates: CollectionPaperCandidate[];
   retrievalStrategyText: string;
   totalPaperCount: number;
   shortlistedPaperCount: number;
@@ -507,8 +508,9 @@ function formatCollectionManifestRow(
 function buildCollectionManifestText(params: {
   scopeLines: string[];
   candidates: CollectionPaperCandidate[];
+  tokenBudget?: number;
 }): string {
-  const lines = [
+  const lines: string[] = [
     "Selected Zotero context scopes:",
     ...params.scopeLines,
     "",
@@ -518,9 +520,35 @@ function buildCollectionManifestText(params: {
     lines.push("(No PDF-backed regular items found.)");
     return lines.join("\n");
   }
-  params.candidates.forEach((candidate, index) => {
-    lines.push(formatCollectionManifestRow(candidate, index));
-  });
+  const unbounded =
+    params.tokenBudget === undefined ||
+    !Number.isFinite(params.tokenBudget) ||
+    params.tokenBudget < 0;
+  if (unbounded) {
+    params.candidates.forEach((candidate, index) => {
+      lines.push(formatCollectionManifestRow(candidate, index));
+    });
+    return lines.join("\n");
+  }
+  const omissionLine = (count: number): string =>
+    `${count} more papers are in scope but omitted from prompt; use library_search or library_retrieve to inspect the full scope.`;
+  let keptCount = 0;
+  const tokenBudget = params.tokenBudget ?? 0;
+  for (const [index, candidate] of params.candidates.entries()) {
+    const row = formatCollectionManifestRow(candidate, index);
+    const remainingAfterRow = params.candidates.length - index - 1;
+    const trialLines = [...lines, row];
+    if (remainingAfterRow > 0) {
+      trialLines.push(omissionLine(remainingAfterRow));
+    }
+    if (estimateTextTokens(trialLines.join("\n")) > tokenBudget) break;
+    lines.push(row);
+    keptCount += 1;
+  }
+  const omittedCount = params.candidates.length - keptCount;
+  if (omittedCount > 0) {
+    lines.push(omissionLine(omittedCount));
+  }
   return lines.join("\n");
 }
 
@@ -541,7 +569,8 @@ async function resolveCollectionScopePapers(params: {
   if (!collectionContexts.length && !tagContexts.length) {
     return {
       papers: [],
-      manifestText: "",
+      scopeLines: [],
+      candidates: [],
       retrievalStrategyText: "",
       totalPaperCount: 0,
       shortlistedPaperCount: 0,
@@ -696,10 +725,8 @@ async function resolveCollectionScopePapers(params: {
 
   return {
     papers,
-    manifestText: buildCollectionManifestText({
-      scopeLines,
-      candidates,
-    }),
+    scopeLines,
+    candidates,
     retrievalStrategyText,
     totalPaperCount,
     shortlistedPaperCount: shortlisted.length,
@@ -1505,6 +1532,25 @@ export async function resolveMultiContextPlan(params: {
   });
   const firstPaperTurn =
     params.conversationMode === "paper" && isFirstPaperTurn(params.history);
+  const contextBudget = estimateAvailableContextBudget({
+    model: params.model,
+    prompt: params.question,
+    history: params.history,
+    images: params.images,
+    image: params.image,
+    reasoning: params.reasoning,
+    maxTokens: params.advanced?.maxTokens,
+    inputTokenCap: params.advanced?.inputTokenCap,
+    systemPrompt: params.systemPrompt,
+  });
+  const reservedPrefixTokens = estimateTextTokens(params.contextPrefix || "");
+  const adjustedContextBudget = {
+    ...contextBudget,
+    contextBudgetTokens: Math.max(
+      0,
+      contextBudget.contextBudgetTokens - reservedPrefixTokens,
+    ),
+  };
   const hasCollectionContext = Boolean(params.collectionContexts?.length);
   const hasTagContext = Boolean(params.tagContexts?.length);
   const queryPlan = await resolveRetrievalQueryPlan({
@@ -1537,34 +1583,37 @@ export async function resolveMultiContextPlan(params: {
     orderStart: papers.length + 1,
   });
   const collectionPapers = collectionScope.papers;
-  const collectionScopeContextText = appendContextBlocks([
-    collectionScope.manifestText,
-    collectionScope.retrievalStrategyText,
-  ]);
-  const prependCollectionScope = (contextText: string): string =>
-    appendContextBlocks([collectionScopeContextText, contextText]);
-  const contextBudget = estimateAvailableContextBudget({
-    model: params.model,
-    prompt: params.question,
-    history: params.history,
-    images: params.images,
-    image: params.image,
-    reasoning: params.reasoning,
-    maxTokens: params.advanced?.maxTokens,
-    inputTokenCap: params.advanced?.inputTokenCap,
-    systemPrompt: params.systemPrompt,
-  });
-  const reservedPrefixTokens = estimateTextTokens(params.contextPrefix || "");
-  const collectionScopeTokens = estimateTextTokens(collectionScopeContextText);
-  const adjustedContextBudget = {
-    ...contextBudget,
-    contextBudgetTokens: Math.max(
+  const buildCollectionScopeContextText = (evidenceContextText: string) => {
+    if (
+      !collectionScope.scopeLines.length &&
+      !collectionScope.candidates.length &&
+      !collectionScope.retrievalStrategyText
+    ) {
+      return "";
+    }
+    const evidenceTokens = estimateTextTokens(evidenceContextText);
+    const remainingTokens = Math.max(
       0,
-      contextBudget.contextBudgetTokens -
-        reservedPrefixTokens -
-        collectionScopeTokens,
-    ),
+      adjustedContextBudget.contextBudgetTokens - evidenceTokens,
+    );
+    const strategyTokens = estimateTextTokens(
+      collectionScope.retrievalStrategyText,
+    );
+    const manifestTokenBudget = Math.max(0, remainingTokens - strategyTokens);
+    return appendContextBlocks([
+      buildCollectionManifestText({
+        scopeLines: collectionScope.scopeLines,
+        candidates: collectionScope.candidates,
+        tokenBudget: manifestTokenBudget,
+      }),
+      collectionScope.retrievalStrategyText,
+    ]);
   };
+  const prependCollectionScope = (contextText: string): string =>
+    appendContextBlocks([
+      buildCollectionScopeContextText(contextText),
+      contextText,
+    ]);
   const finalizePlan = (plan: MultiContextPlan): MultiContextPlan => ({
     ...plan,
     quoteCitations: mergeQuoteCitations(plan.quoteCitations),

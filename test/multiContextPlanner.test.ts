@@ -10,6 +10,7 @@ import {
   COLLECTION_RETRIEVAL_MIN_SCORE_FALLBACK_PAPERS,
   MAX_FULL_TEXT_PAPER_CONTEXTS,
 } from "../src/modules/contextPanel/constants";
+import { estimateTextTokens } from "../src/utils/modelInputCap";
 import {
   buildChunkMetadata,
   buildPaperKey,
@@ -820,9 +821,11 @@ describe("multiContextPlanner", function () {
     );
     assert.include(plan.contextText, "Title: Calibration Drift Paper 001");
     assert.include(plan.contextText, "Title: Calibration Drift Paper 100");
-    assert.include(plan.contextText, "Title: Calibration Drift Paper 120");
-    assert.include(plan.contextText, "itemId=1100");
-    assert.include(plan.contextText, "contextItemId=2100");
+    assert.include(
+      plan.contextText,
+      "more papers are in scope but omitted from prompt; use library_search or library_retrieve to inspect the full scope.",
+    );
+    assert.notInclude(plan.contextText, "Title: Calibration Drift Paper 120");
     assert.isAtMost(plan.selectedPaperCount, COLLECTION_RETRIEVAL_MAX_PAPERS);
     assert.isAtLeast(plan.citationPaperContexts?.length || 0, 1);
     assert.isAtMost(
@@ -837,6 +840,209 @@ describe("multiContextPlanner", function () {
       (plan.citationPaperContexts || []).map((paper) => paper.title),
       "Calibration Drift Paper 120",
     );
+  });
+
+  it("protects evidence retrieval before bounding a huge collection manifest", async function () {
+    const itemIds: number[] = [];
+    for (let index = 1; index <= 300; index += 1) {
+      const suffix = String(index).padStart(3, "0");
+      itemIds.push(20_000 + index);
+      registerMockPaper({
+        itemId: 20_000 + index,
+        contextItemId: 21_000 + index,
+        title: `Evidence First Collection Paper ${suffix}`,
+        firstCreator: "Budget",
+        year: "2026",
+        abstractNote:
+          index <= 12
+            ? "This abstract discusses rare evidence-first budget protection."
+            : "This abstract is unrelated filler.",
+        pdfContext: buildPdfContext(
+          `Evidence First Collection Paper ${suffix}`,
+          [
+            index <= 12
+              ? `Abstract\nRare evidence-first budget protection appears in paper ${suffix}.`
+              : `Abstract\nUnrelated filler in paper ${suffix}.`,
+            index <= 12
+              ? `Results\nThe evidence-first retrieval test needs this snippet from paper ${suffix}.`
+              : `Results\nNo relevant evidence here ${suffix}.`,
+          ],
+        ),
+      });
+    }
+    zoteroCollections.set(155, {
+      id: 155,
+      name: "Huge Evidence Folder",
+      libraryID: 1,
+      getChildItems: () => itemIds,
+      getChildCollections: () => [],
+    });
+
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "open",
+      activeContextItem: null,
+      question: "What does rare evidence-first budget protection say?",
+      collectionContexts: [
+        {
+          collectionId: 155,
+          name: "Huge Evidence Folder",
+          libraryID: 1,
+        },
+      ],
+      paperContexts: [],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      advanced: {
+        temperature: 0.2,
+        maxTokens: 512,
+        inputTokenCap: 2_000,
+      },
+    });
+
+    assert.equal(plan.mode, "retrieval");
+    assert.isAbove(
+      plan.selectedChunkCount,
+      0,
+      "large manifests must not consume all retrieval budget",
+    );
+    assert.include(plan.contextText, "Retrieved Evidence:");
+    assert.include(
+      plan.contextText,
+      "more papers are in scope but omitted from prompt; use library_search or library_retrieve to inspect the full scope.",
+    );
+    assert.notInclude(
+      plan.contextText,
+      "Title: Evidence First Collection Paper 300",
+    );
+  });
+
+  it("reports the exact omitted count when bounding a large collection manifest", async function () {
+    const itemIds: number[] = [];
+    for (let index = 1; index <= 80; index += 1) {
+      const suffix = String(index).padStart(3, "0");
+      itemIds.push(30_000 + index);
+      registerMockPaper({
+        itemId: 30_000 + index,
+        contextItemId: 31_000 + index,
+        title: `Bounded Manifest Paper ${suffix}`,
+        firstCreator: "Manifest",
+        year: "2026",
+        abstractNote:
+          index <= 6
+            ? "This abstract discusses bounded manifest evidence."
+            : "This abstract is unrelated filler.",
+        pdfContext: buildPdfContext(`Bounded Manifest Paper ${suffix}`, [
+          index <= 6
+            ? `Bounded manifest evidence appears in paper ${suffix}.`
+            : `Unrelated filler appears in paper ${suffix}.`,
+        ]),
+      });
+    }
+    zoteroCollections.set(188, {
+      id: 188,
+      name: "Bounded Manifest Folder",
+      libraryID: 1,
+      getChildItems: () => itemIds,
+      getChildCollections: () => [],
+    });
+
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "open",
+      activeContextItem: null,
+      question: "What does bounded manifest evidence say?",
+      collectionContexts: [
+        {
+          collectionId: 188,
+          name: "Bounded Manifest Folder",
+          libraryID: 1,
+        },
+      ],
+      paperContexts: [],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      advanced: {
+        temperature: 0.2,
+        maxTokens: 512,
+        inputTokenCap: 1_600,
+      },
+    });
+
+    const keptManifestRows = Array.from(
+      plan.contextText.matchAll(/^\d+\. Title: Bounded Manifest Paper/gm),
+    ).length;
+    const omitted = Number(
+      plan.contextText.match(/(\d+) more papers are in scope but omitted/)?.[1],
+    );
+
+    assert.isBelow(keptManifestRows, 80);
+    assert.equal(omitted, 80 - keptManifestRows);
+    assert.isAtMost(
+      estimateTextTokens(plan.contextText),
+      plan.contextBudget.contextBudgetTokens + 400,
+    );
+  });
+
+  it("keeps scope identity and omission text when no manifest rows fit", async function () {
+    const itemIds: number[] = [];
+    for (let index = 1; index <= 20; index += 1) {
+      itemIds.push(40_000 + index);
+      registerMockPaper({
+        itemId: 40_000 + index,
+        contextItemId: 41_000 + index,
+        title: `Zero Budget Paper ${index}`,
+        firstCreator: "Tiny",
+        year: "2026",
+        abstractNote: "Tiny budget evidence.",
+        pdfContext: buildPdfContext(`Zero Budget Paper ${index}`, [
+          "Tiny budget evidence.",
+        ]),
+      });
+    }
+    zoteroCollections.set(199, {
+      id: 199,
+      name: "Zero Budget Folder",
+      libraryID: 1,
+      getChildItems: () => itemIds,
+      getChildCollections: () => [],
+    });
+
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "open",
+      activeContextItem: null,
+      question: "tiny budget evidence",
+      collectionContexts: [
+        {
+          collectionId: 199,
+          name: "Zero Budget Folder",
+          libraryID: 1,
+        },
+      ],
+      paperContexts: [],
+      fullTextPaperContexts: [],
+      historyPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+      advanced: {
+        temperature: 0.2,
+        maxTokens: 512,
+        inputTokenCap: 1,
+      },
+    });
+
+    assert.include(plan.contextText, "Selected Zotero context scopes:");
+    assert.include(
+      plan.contextText,
+      "- Zero Budget Folder [collectionId=199, libraryID=1, papers=20]",
+    );
+    assert.include(
+      plan.contextText,
+      "20 more papers are in scope but omitted from prompt; use library_search or library_retrieve to inspect the full scope.",
+    );
+    assert.notInclude(plan.contextText, "Title: Zero Budget Paper 1");
   });
 
   it("metadata-ranks selected tag scopes and builds a tag manifest", async function () {
@@ -898,6 +1104,7 @@ describe("multiContextPlanner", function () {
       "- Stable [tag=Stable, libraryID=1, papers=8]",
     );
     assert.include(plan.contextText, "Scope manifest (PDF-backed papers):");
+    assert.notInclude(plan.contextText, "more papers are in scope but omitted");
     assert.include(plan.contextText, "Title: Stable Tag Paper 1");
     assert.include(plan.contextText, "itemId=5001");
     assert.notInclude(plan.contextText, "Outside Tag Paper");
@@ -967,7 +1174,7 @@ describe("multiContextPlanner", function () {
     );
   });
 
-  it("includes a complete collection manifest when retrieval surfaces fewer papers", async function () {
+  it("includes a complete collection manifest for a small scope when budget allows", async function () {
     const itemIds: number[] = [];
     for (let index = 1; index <= 6; index += 1) {
       itemIds.push(3_000 + index);
@@ -1014,7 +1221,7 @@ describe("multiContextPlanner", function () {
       advanced: {
         temperature: 0.2,
         maxTokens: 512,
-        inputTokenCap: 1_000,
+        inputTokenCap: 8_000,
       },
     });
 
@@ -1034,6 +1241,6 @@ describe("multiContextPlanner", function () {
       plan.contextText,
       "6 of 6 PDF-backed papers selected for deeper retrieval",
     );
-    assert.isBelow(plan.selectedPaperCount, 6);
+    assert.equal(plan.selectedPaperCount, 6);
   });
 });
