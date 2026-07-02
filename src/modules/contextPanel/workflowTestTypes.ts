@@ -1,5 +1,6 @@
 import type { ResolvedContextSource, SendQuestionOptions } from "./types";
 import type { QuoteCitation } from "../../shared/types";
+import type { WorkflowTestFinalRequestSnapshot } from "./workflowTestHooks";
 
 export type WorkflowTestFixture = {
   parentItemId: number;
@@ -29,6 +30,7 @@ export type WorkflowTestDiagnostics = {
   inputValue?: string;
   statusText?: string;
   lastSend: SendQuestionOptions | null;
+  lastFinalRequest: WorkflowTestFinalRequestSnapshot | null;
 };
 
 export type WorkflowTestAssistantRenderResult = {
@@ -51,6 +53,7 @@ export type WorkflowTestStandaloneDiagnostics = {
   openTabText?: string;
   statusText?: string;
   lastSend: SendQuestionOptions | null;
+  lastFinalRequest: WorkflowTestFinalRequestSnapshot | null;
 };
 
 export type WorkflowTestApi = {
@@ -81,6 +84,7 @@ export type WorkflowTestApi = {
     tab: "paper" | "open",
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
+  getLastFinalRequest: () => WorkflowTestFinalRequestSnapshot | null;
   seedStandaloneUserMessage: (
     text: string,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;

@@ -787,6 +787,17 @@ describe("pdfContext multi-context helpers", function () {
     const evidenceIndex = pack.contextText.indexOf("Retrieved Evidence:");
     assert.isAtLeast(digestIndex, 0);
     assert.isAbove(evidenceIndex, digestIndex);
+    assert.include(pack.ledgerText, "Paper coverage ledger:");
+    assert.include(pack.ledgerText, "retrieved snippets: 2");
+    assert.include(pack.synthesisDigest, "Paper synthesis digest:");
+    assert.include(pack.synthesisDigest, "coverage: body evidence");
+    assert.include(pack.retrievedEvidenceText, "Retrieved Evidence:");
+    assert.include(
+      pack.contextText,
+      [pack.ledgerText, pack.synthesisDigest, pack.retrievedEvidenceText].join(
+        "\n\n---\n\n",
+      ),
+    );
     assert.include(pack.contextText, "coverage: body evidence");
     assert.include(pack.contextText, "sections: Abstract, Results");
     assert.include(pack.contextText, "support: P1.S1, P1.S2");

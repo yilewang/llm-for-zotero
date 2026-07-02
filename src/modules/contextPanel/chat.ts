@@ -62,10 +62,12 @@ import {
 import type { CodexNativeSkillContext } from "../../codexAppServer/nativeSkills";
 import {
   callLLMStream,
+  type ChatParams,
   ChatFileAttachment,
   ChatMessage,
   getRuntimeReasoningOptions,
   prepareChatRequest,
+  type PreparedChatRequest,
   ReasoningConfig as LLMReasoningConfig,
   ReasoningEvent,
   ReasoningLevel as LLMReasoningLevel,
@@ -94,6 +96,10 @@ import type {
   GeneratedChatImage,
   QuoteCitation,
 } from "../../shared/types";
+import type {
+  LibraryChatCoverageReceipt,
+  LibraryChatReadStrategyDiagnostics,
+} from "../../shared/libraryChatReadStrategy";
 import {
   getConversationForkLink,
   type ConversationForkLink,
@@ -244,6 +250,7 @@ import { buildChatHistoryNotePayload } from "./notes";
 import { readNoteSnapshot } from "./noteSnapshot";
 import { extractManagedBlobHash } from "./attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
+import { getWorkflowTestFinalRequestInterceptor } from "./workflowTestHooks";
 import { canEditUserPromptTurn } from "./editability";
 import { renderAgentTrace, renderPendingActionCard } from "./agentTrace/render";
 import {
@@ -3519,7 +3526,58 @@ type ContextPlanForRequest = {
   citationPaperContexts: PaperContextRef[];
   quoteCitations: QuoteCitation[];
   recentPaperContexts: PaperContextRef[];
+  readStrategy?: LibraryChatReadStrategyDiagnostics;
+  coverageReceipt?: LibraryChatCoverageReceipt;
 };
+
+type PreparedContextPlanChatRequest = {
+  finalPrepared: PreparedChatRequest;
+  systemMessages: string[];
+  inputCapEffects: PreparedChatRequest["inputCap"]["effects"];
+};
+
+async function prepareFinalContextPlanChatRequest(params: {
+  requestParams: ChatParams;
+  contextPlan: ContextPlanForRequest;
+  combinedContext: string;
+}): Promise<PreparedContextPlanChatRequest> {
+  const previewSystemMessages = buildContextPlanSystemMessages({
+    strategy: params.contextPlan.strategy,
+    assistantInstruction: params.contextPlan.assistantInstruction,
+    coverageReceiptText: params.contextPlan.coverageReceipt?.text,
+  });
+  const preview = prepareChatRequest({
+    ...params.requestParams,
+    systemMessages: previewSystemMessages,
+  });
+  const systemMessages = buildContextPlanSystemMessages({
+    strategy: params.contextPlan.strategy,
+    assistantInstruction: params.contextPlan.assistantInstruction,
+    coverageReceiptText: params.contextPlan.coverageReceipt?.text,
+    inputCapEffects: preview.inputCap.effects,
+  });
+  const finalPrepared = prepareChatRequest({
+    ...params.requestParams,
+    systemMessages,
+  });
+  const workflowTestFinalRequestInterceptor =
+    getWorkflowTestFinalRequestInterceptor();
+  if (workflowTestFinalRequestInterceptor) {
+    await workflowTestFinalRequestInterceptor({
+      combinedContext: params.combinedContext,
+      strategy: params.contextPlan.strategy,
+      systemMessages,
+      inputCapEffects: preview.inputCap.effects,
+      readStrategy: params.contextPlan.readStrategy,
+      coverageReceipt: params.contextPlan.coverageReceipt,
+    });
+  }
+  return {
+    finalPrepared,
+    systemMessages,
+    inputCapEffects: preview.inputCap.effects,
+  };
+}
 
 function shouldUseCodexNativeLightContext(params: {
   isCodexNativeTurn: boolean;
@@ -3712,6 +3770,8 @@ async function buildContextPlanForRequest(params: {
     ),
     quoteCitations: plan.quoteCitations || [],
     recentPaperContexts: params.recentPaperContexts,
+    readStrategy: plan.readStrategy,
+    coverageReceipt: plan.coverageReceipt,
   };
 }
 
@@ -6469,23 +6529,12 @@ export async function retryLatestAssistantResponse(
       inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
     };
-    const previewSystemMessages = buildContextPlanSystemMessages({
-      strategy: contextPlan.strategy,
-      assistantInstruction: contextPlan.assistantInstruction,
-    });
-    const preview = prepareChatRequest({
-      ...requestParams,
-      systemMessages: previewSystemMessages,
-    });
-    const systemMessages = buildContextPlanSystemMessages({
-      strategy: contextPlan.strategy,
-      assistantInstruction: contextPlan.assistantInstruction,
-      inputCapEffects: preview.inputCap.effects,
-    });
-    const finalPrepared = prepareChatRequest({
-      ...requestParams,
-      systemMessages,
-    });
+    const { finalPrepared, systemMessages } =
+      await prepareFinalContextPlanChatRequest({
+        requestParams,
+        contextPlan,
+        combinedContext,
+      });
     const estimatedContextSnapshot = setContextUsageSnapshot(conversationKey, {
       contextTokens: finalPrepared.inputCap.estimatedAfterTokens,
       contextWindow: finalPrepared.inputCap.limitTokens,
@@ -8589,23 +8638,12 @@ export async function sendQuestion(
       inputMode: effectiveRequestConfig.advanced?.inputMode,
       contextCache: contextPlan.contextCache,
     };
-    const previewSystemMessages = buildContextPlanSystemMessages({
-      strategy: contextPlan.strategy,
-      assistantInstruction: contextPlan.assistantInstruction,
-    });
-    const preview = prepareChatRequest({
-      ...requestParams,
-      systemMessages: previewSystemMessages,
-    });
-    const systemMessages = buildContextPlanSystemMessages({
-      strategy: contextPlan.strategy,
-      assistantInstruction: contextPlan.assistantInstruction,
-      inputCapEffects: preview.inputCap.effects,
-    });
-    const finalPrepared = prepareChatRequest({
-      ...requestParams,
-      systemMessages,
-    });
+    const { finalPrepared, systemMessages } =
+      await prepareFinalContextPlanChatRequest({
+        requestParams,
+        contextPlan,
+        combinedContext,
+      });
     const estimatedContextSnapshot = setContextUsageSnapshot(conversationKey, {
       contextTokens: finalPrepared.inputCap.estimatedAfterTokens,
       contextWindow: finalPrepared.inputCap.limitTokens,

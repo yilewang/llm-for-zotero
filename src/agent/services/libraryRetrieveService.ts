@@ -15,11 +15,19 @@ import type {
   TagContextRef,
 } from "../../shared/types";
 import {
+  buildLibraryChatCoverageReceipt,
   completeLibraryChatReadStrategyDiagnostics,
   DEEP_SYNTHESIS_MAX_PAPERS,
   resolveLibraryChatReadStrategy,
+  type LibraryChatCoverageReceipt,
   type LibraryChatReadStrategyDiagnostics,
 } from "../../shared/libraryChatReadStrategy";
+import {
+  compareEvidenceCandidatesForQuestion,
+  isBodyEvidenceSection,
+  queryHasExplicitSectionPreference,
+} from "../../shared/libraryChatEvidencePolicy";
+import { buildLibraryRetrieveEvidencePack } from "./libraryRetrieveEvidencePack";
 import {
   formatPaperCitationLabel,
   formatPaperSourceLabel,
@@ -230,6 +238,9 @@ export type LibraryRetrieveResult = {
   paperMatches: LibraryRetrievePaperMatch[];
   frontier: LibraryRetrieveFrontier;
   answerContract: LibraryRetrieveAnswerContract;
+  coverageReceipt: LibraryChatCoverageReceipt;
+  evidenceLedgerText?: string;
+  synthesisDigest?: string;
   snippets: LibraryRetrieveSnippet[];
   quoteCitations?: QuoteCitation[];
   warnings: string[];
@@ -1015,19 +1026,8 @@ function applyReadStrategyBudgets(
   };
 }
 
-function normalizeSectionLabel(value: string | undefined): string {
-  return normalizeForSearch(value || "")
-    .replace(/^#+\s*/, "")
-    .replace(/[:.\s-]+$/g, "")
-    .trim();
-}
-
 function snippetIsBodyEvidence(snippet: LibraryRetrieveSnippet): boolean {
-  const section = normalizeSectionLabel(snippet.sectionLabel);
-  if (!section) return true;
-  return !/^(?:abstract|summary|highlights?|in brief|keywords?|title|authors?|article info(?:rmation)?)$/.test(
-    section,
-  );
+  return isBodyEvidenceSection(snippet.sectionLabel);
 }
 
 function buildReadStrategyDiagnostics(params: {
@@ -1312,6 +1312,9 @@ export class LibraryRetrieveService {
     const snippets: LibraryRetrieveSnippet[] = [];
     let snippetPapersExpanded = 0;
     let evidencePapers = 0;
+    const preferBodyEvidence =
+      readStrategyBase.resolvedStrategy === "deep_synthesis" ||
+      queryHasExplicitSectionPreference(input.query);
 
     if (input.depth === "evidence" || input.depth === "verify") {
       const fullTextRecords = candidateRecords
@@ -1324,6 +1327,7 @@ export class LibraryRetrieveService {
           record,
           input,
           maxSnippets: Math.min(input.perPaperTopK, remaining),
+          preferBodyEvidence,
           apiBase: params.apiBase,
           apiKey: params.apiKey,
           methodsUsed,
@@ -1396,6 +1400,13 @@ export class LibraryRetrieveService {
     if (answerContract.unsafeClaims.length) {
       warnings.push(...answerContract.unsafeClaims);
     }
+    const coverageReceipt = buildLibraryChatCoverageReceipt(readStrategy);
+    const evidencePack = buildLibraryRetrieveEvidencePack({
+      papers: candidateRecords
+        .map((record) => record.paperContext)
+        .filter((paper): paper is PaperContextRef => Boolean(paper)),
+      snippets: dedupedSnippets,
+    });
 
     const candidates = candidateRecords.map(candidateFromRecord);
     return {
@@ -1463,6 +1474,9 @@ export class LibraryRetrieveService {
       paperMatches,
       frontier,
       answerContract,
+      coverageReceipt,
+      evidenceLedgerText: evidencePack.evidenceLedgerText,
+      synthesisDigest: evidencePack.synthesisDigest,
       snippets: dedupedSnippets,
       quoteCitations: snippetQuotePack.quoteCitations.length
         ? snippetQuotePack.quoteCitations
@@ -1821,6 +1835,7 @@ export class LibraryRetrieveService {
     record: ResourceRecord;
     input: NormalizedLibraryRetrieveInput;
     maxSnippets: number;
+    preferBodyEvidence?: boolean;
     apiBase?: string;
     apiKey?: string;
     methodsUsed: Set<LibraryRetrieveMethod>;
@@ -1860,6 +1875,9 @@ export class LibraryRetrieveService {
     }
     if (!params.input.requireExact && snippets.length < params.maxSnippets) {
       params.methodsUsed.add("fts");
+      const candidateTopK = params.preferBodyEvidence
+        ? Math.max(params.maxSnippets, 5)
+        : params.maxSnippets;
       const candidates = await this.candidateBuilder(
         paperContext,
         pdfContext,
@@ -1871,11 +1889,21 @@ export class LibraryRetrieveService {
           queryPlan: params.input.queryPlan,
         },
         {
-          topK: params.maxSnippets,
+          topK: candidateTopK,
           mode: "evidence",
           disableEmbeddings: !params.input.methods.includes("semantic"),
           queryPlan: params.input.queryPlan,
         },
+      ).then((rows) =>
+        params.preferBodyEvidence
+          ? rows.sort(
+              compareEvidenceCandidatesForQuestion(
+                params.input.query,
+                (candidate) =>
+                  candidate.evidenceScore || candidate.hybridScore || 0,
+              ),
+            )
+          : rows,
       );
       const seenChunks = new Set(
         snippets

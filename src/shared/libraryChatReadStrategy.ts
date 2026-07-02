@@ -30,6 +30,17 @@ export type LibraryChatReadStrategyDiagnostics = {
   coverageFrontier: string[];
 };
 
+export type LibraryChatCoverageReceipt = {
+  text: string;
+  resolvedStrategy: LibraryChatReadStrategy;
+  answerStyle: LibraryChatAnswerStyle;
+  papersPlanned: number;
+  papersBodyRead: number;
+  papersMetadataOnly: number;
+  stopReason: LibraryChatReadStrategyStopReason;
+  coverageFrontier: string[];
+};
+
 export type LibraryChatReadStrategyInput = {
   query?: string;
   intent?: "enumerate" | "verify" | "summarize";
@@ -182,5 +193,38 @@ export function completeLibraryChatReadStrategyDiagnostics(params: {
     unreadableReasons: params.unreadableReasons || [],
     stopReason: params.stopReason || "enough_evidence",
     coverageFrontier: params.coverageFrontier || [],
+  };
+}
+
+export function buildLibraryChatCoverageReceipt(
+  diagnostics: LibraryChatReadStrategyDiagnostics,
+): LibraryChatCoverageReceipt {
+  const papersMetadataOnly = Math.max(
+    0,
+    diagnostics.papersMetadataOnly,
+    diagnostics.papersPlanned - diagnostics.papersBodyRead,
+  );
+  const frontier = Array.from(new Set(diagnostics.coverageFrontier || []));
+  const lines = [
+    "Reading receipt:",
+    `- Strategy: ${diagnostics.resolvedStrategy}`,
+    `- Answer style: ${diagnostics.answerStyle}`,
+    `- Planned papers: ${diagnostics.papersPlanned}`,
+    `- Body evidence read: ${diagnostics.papersBodyRead}`,
+    `- Metadata/abstract only: ${papersMetadataOnly}`,
+    `- Stop reason: ${diagnostics.stopReason}`,
+    `- Coverage frontier: ${
+      frontier.length ? frontier.slice(0, 6).join("; ") : "none"
+    }`,
+  ];
+  return {
+    text: lines.join("\n"),
+    resolvedStrategy: diagnostics.resolvedStrategy,
+    answerStyle: diagnostics.answerStyle,
+    papersPlanned: diagnostics.papersPlanned,
+    papersBodyRead: diagnostics.papersBodyRead,
+    papersMetadataOnly,
+    stopReason: diagnostics.stopReason,
+    coverageFrontier: frontier,
   };
 }

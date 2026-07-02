@@ -67,6 +67,7 @@ import {
 import type { TextAttachmentSourceMode } from "./contextAttachmentTypes";
 import { isPdfContextAttachment } from "./contextAttachmentSupport";
 import { config } from "./constants";
+import { isBodyEvidenceSection } from "../../shared/libraryChatEvidencePolicy";
 
 const prefKey = (key: string) => `${config.prefsPrefix}.${key}`;
 const getPref = (key: string) => Zotero.Prefs.get(prefKey(key), true);
@@ -2297,14 +2298,7 @@ function sectionLabelForDigest(candidate: PaperContextCandidate): string {
 }
 
 function candidateHasBodyEvidence(candidate: PaperContextCandidate): boolean {
-  const label = normalizeSectionLabelForQuoteGate(candidate.sectionLabel);
-  if (candidate.chunkKind && candidate.chunkKind !== "abstract") {
-    return candidate.chunkKind !== "references";
-  }
-  if (!label) return candidate.chunkKind !== "abstract";
-  return !/^(?:abstract|summary|highlights?|in brief|keywords?|title|authors?|article info(?:rmation)?)$/i.test(
-    label,
-  );
+  return isBodyEvidenceSection(candidate.sectionLabel, candidate.chunkKind);
 }
 
 function truncateDigestText(text: string, maxChars = 220): string {
@@ -2361,6 +2355,9 @@ export function buildEvidencePack(params: {
   quoteAnchorPolicy?: EvidenceQuoteAnchorPolicy;
 }): {
   contextText: string;
+  ledgerText: string;
+  synthesisDigest: string;
+  retrievedEvidenceText: string;
   quoteCitations: QuoteCitation[];
   quoteAnchorDiagnostics: EvidenceQuoteAnchorDiagnostics;
 } {
@@ -2373,7 +2370,14 @@ export function buildEvidencePack(params: {
     rejectedReasons: {},
   };
   if (!papers.length) {
-    return { contextText: "", quoteCitations: [], quoteAnchorDiagnostics };
+    return {
+      contextText: "",
+      ledgerText: "",
+      synthesisDigest: "",
+      retrievedEvidenceText: "",
+      quoteCitations: [],
+      quoteAnchorDiagnostics,
+    };
   }
 
   const deduped = new Map<string, PaperContextCandidate>();
@@ -2447,26 +2451,27 @@ export function buildEvidencePack(params: {
       `- Paper ${paperIndex + 1}: ${formatPaperSourceLabel(paper)}; retrieved snippets: ${paperCandidates.length}`,
     );
   }
-  blocks.push(ledgerLines.join("\n"));
-  blocks.push(buildPaperSynthesisDigest({ papers, byPaper }));
-  blocks.push(
-    [
-      "Retrieved Evidence:",
-      "",
-      ...quoteAnchorGuidance,
-      ...(quoteAnchorGuidance.length ? [""] : []),
-      ...(hasSelectedAttachmentSource
-        ? buildGenericSourceQuoteCitationGuidance()
-        : buildPaperQuoteCitationGuidance()),
-      hasSelectedAttachmentSource
-        ? "The full paper or selected attachment source remains available in paper chat."
-        : "The full paper remains available in paper chat.",
-      "For this reply, prioritize these retrieved snippets as the primary evidence pack.",
-      "For broad synthesis, work from the paper ledger and snippets first; do not turn snippets into quote cards unless verified quote anchors are provided and exact wording is useful.",
-      "Do not use snippets from references as empirical evidence.",
-      "If support is weak or indirect, say so instead of overstating the claim.",
-    ].join("\n"),
-  );
+  const ledgerText = ledgerLines.join("\n");
+  const synthesisDigest = buildPaperSynthesisDigest({ papers, byPaper });
+  const retrievedEvidenceText = [
+    "Retrieved Evidence:",
+    "",
+    ...quoteAnchorGuidance,
+    ...(quoteAnchorGuidance.length ? [""] : []),
+    ...(hasSelectedAttachmentSource
+      ? buildGenericSourceQuoteCitationGuidance()
+      : buildPaperQuoteCitationGuidance()),
+    hasSelectedAttachmentSource
+      ? "The full paper or selected attachment source remains available in paper chat."
+      : "The full paper remains available in paper chat.",
+    "For this reply, prioritize these retrieved snippets as the primary evidence pack.",
+    "For broad synthesis, work from the paper ledger and snippets first; do not turn snippets into quote cards unless verified quote anchors are provided and exact wording is useful.",
+    "Do not use snippets from references as empirical evidence.",
+    "If support is weak or indirect, say so instead of overstating the claim.",
+  ].join("\n");
+  blocks.push(ledgerText);
+  blocks.push(synthesisDigest);
+  blocks.push(retrievedEvidenceText);
   for (const [paperIndex, paper] of papers.entries()) {
     const paperKey = buildPaperKey(paper);
     const paperCandidates = byPaper.get(paperKey) || [];
@@ -2497,10 +2502,20 @@ export function buildEvidencePack(params: {
   }
 
   if (blocks.length <= 1) {
-    return { contextText: "", quoteCitations: [], quoteAnchorDiagnostics };
+    return {
+      contextText: "",
+      ledgerText: "",
+      synthesisDigest: "",
+      retrievedEvidenceText: "",
+      quoteCitations: [],
+      quoteAnchorDiagnostics,
+    };
   }
   return {
     contextText: blocks.join("\n\n---\n\n"),
+    ledgerText,
+    synthesisDigest,
+    retrievedEvidenceText,
     quoteCitations: normalizedQuoteCitations,
     quoteAnchorDiagnostics,
   };

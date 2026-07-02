@@ -57,10 +57,15 @@ import {
   shouldPreferCacheAwareFullContext,
 } from "../../contextCache/manager";
 import {
+  buildLibraryChatCoverageReceipt,
   completeLibraryChatReadStrategyDiagnostics,
   resolveLibraryChatReadStrategy,
   type LibraryChatReadStrategyDiagnostics,
 } from "../../shared/libraryChatReadStrategy";
+import {
+  compareEvidenceCandidatesForQuestion,
+  isBodyEvidenceSection,
+} from "../../shared/libraryChatEvidencePolicy";
 
 // ── Cross-turn retrieval cache ──────────────────────────────────────────────
 // Caches chunk candidates returned by buildPaperRetrievalCandidates so that
@@ -739,6 +744,7 @@ type RetrievedAssembly = {
   citationPaperContexts: PaperContextRef[];
   quoteCitations: QuoteCitation[];
   readStrategy: LibraryChatReadStrategyDiagnostics;
+  coverageReceipt: ReturnType<typeof buildLibraryChatCoverageReceipt>;
 };
 
 type RetrievedAssemblyOptions = {
@@ -748,18 +754,7 @@ type RetrievedAssemblyOptions = {
 };
 
 function isBodyEvidenceCandidate(candidate: PaperContextCandidate): boolean {
-  const label = sanitizeText(candidate.sectionLabel || "")
-    .toLowerCase()
-    .replace(/^#+\s*/, "")
-    .replace(/[:.\s-]+$/g, "")
-    .trim();
-  const kind = candidate.chunkKind || "body";
-  if (kind === "references") return false;
-  if (kind && kind !== "abstract" && kind !== "unknown") return true;
-  if (!label) return kind !== "abstract";
-  return !/^(?:abstract|summary|highlights?|in brief|keywords?|title|authors?|article info(?:rmation)?)$/.test(
-    label,
-  );
+  return isBodyEvidenceSection(candidate.sectionLabel, candidate.chunkKind);
 }
 
 function buildRetrievedAssemblyReadStrategy(params: {
@@ -1032,6 +1027,9 @@ export async function assembleRetrievedMultiPaperContext(params: {
       citationPaperContexts: [],
       quoteCitations: [],
       readStrategy: strategyDefaults.readStrategy,
+      coverageReceipt: buildLibraryChatCoverageReceipt(
+        strategyDefaults.readStrategy,
+      ),
     };
   }
 
@@ -1074,6 +1072,13 @@ export async function assembleRetrievedMultiPaperContext(params: {
   }
 
   if (!allCandidates.length) {
+    const readStrategy = buildRetrievedAssemblyReadStrategy({
+      papers,
+      question,
+      selectedCandidates: [],
+      allCandidates,
+      stopReason: "unreadable_sources",
+    });
     return {
       contextText: buildMetadataOnlyFallback(
         papers.map((entry) => entry.paperContext),
@@ -1082,13 +1087,8 @@ export async function assembleRetrievedMultiPaperContext(params: {
       selectedPaperCount: papers.length,
       citationPaperContexts: mergePlannerCitationPaperContexts(papers),
       quoteCitations: [],
-      readStrategy: buildRetrievedAssemblyReadStrategy({
-        papers,
-        question,
-        selectedCandidates: [],
-        allCandidates,
-        stopReason: "unreadable_sources",
-      }),
+      readStrategy,
+      coverageReceipt: buildLibraryChatCoverageReceipt(readStrategy),
     };
   }
 
@@ -1107,13 +1107,12 @@ export async function assembleRetrievedMultiPaperContext(params: {
     candidatesByPaper.set(candidate.paperKey, list);
   }
   for (const list of candidatesByPaper.values()) {
-    list.sort((a, b) => {
-      const scoreDelta =
-        (relevanceByCandidate.get(candidateKey(b)) || 0) -
-        (relevanceByCandidate.get(candidateKey(a)) || 0);
-      if (scoreDelta !== 0) return scoreDelta;
-      return a.chunkIndex - b.chunkIndex;
-    });
+    list.sort(
+      compareEvidenceCandidatesForQuestion(
+        question,
+        (candidate) => relevanceByCandidate.get(candidateKey(candidate)) || 0,
+      ),
+    );
   }
 
   const maxChunks = Number.isFinite(options?.maxChunks)
@@ -1174,6 +1173,41 @@ export async function assembleRetrievedMultiPaperContext(params: {
       if (added >= minChunks) break;
       if (selectCandidate(candidate)) {
         added += 1;
+      }
+    }
+  }
+
+  if (strategyDefaults.readStrategy.resolvedStrategy === "deep_synthesis") {
+    for (const paper of papers) {
+      const list = candidatesByPaper.get(paper.paperKey) || [];
+      if (!list.some(isBodyEvidenceCandidate)) continue;
+      const selectedForPaper = Array.from(selected.values()).filter(
+        (candidate) => candidate.paperKey === paper.paperKey,
+      );
+      if (selectedForPaper.some(isBodyEvidenceCandidate)) continue;
+      const bodyCandidate = list.find(
+        (candidate) =>
+          isBodyEvidenceCandidate(candidate) &&
+          !selected.has(candidateKey(candidate)) &&
+          !shouldSkipCandidate(candidate),
+      );
+      if (!bodyCandidate) continue;
+      const replaceable = [...selectedForPaper]
+        .filter((candidate) => !isBodyEvidenceCandidate(candidate))
+        .sort((a, b) => b.estimatedTokens - a.estimatedTokens)[0];
+      if (replaceable) {
+        const tokenDelta =
+          bodyCandidate.estimatedTokens - replaceable.estimatedTokens;
+        if (tokenDelta <= remainingTokens) {
+          selected.delete(candidateKey(replaceable));
+          remainingTokens += replaceable.estimatedTokens;
+          if (!selectCandidate(bodyCandidate)) {
+            selected.set(candidateKey(replaceable), replaceable);
+            remainingTokens -= replaceable.estimatedTokens;
+          }
+        }
+      } else {
+        selectCandidate(bodyCandidate);
       }
     }
   }
@@ -1254,6 +1288,12 @@ export async function assembleRetrievedMultiPaperContext(params: {
   const contextText =
     evidencePack.contextText ||
     buildMetadataOnlyFallback(papers.map((entry) => entry.paperContext));
+  const readStrategy = buildRetrievedAssemblyReadStrategy({
+    papers,
+    question,
+    selectedCandidates,
+    allCandidates,
+  });
 
   return {
     contextText,
@@ -1270,12 +1310,8 @@ export async function assembleRetrievedMultiPaperContext(params: {
     quoteCitations: selectedCandidates.length
       ? evidencePack.quoteCitations
       : [],
-    readStrategy: buildRetrievedAssemblyReadStrategy({
-      papers,
-      question,
-      selectedCandidates,
-      allCandidates,
-    }),
+    readStrategy,
+    coverageReceipt: buildLibraryChatCoverageReceipt(readStrategy),
   };
 }
 
@@ -1544,6 +1580,15 @@ export async function resolveMultiContextPlan(params: {
       fullTextPaperContexts,
     }),
   });
+  const retrievedDiagnostics = (
+    retrieved?: RetrievedAssembly | null,
+  ): Partial<Pick<MultiContextPlan, "readStrategy" | "coverageReceipt">> =>
+    retrieved
+      ? {
+          readStrategy: retrieved.readStrategy,
+          coverageReceipt: retrieved.coverageReceipt,
+        }
+      : {};
 
   if (!papers.length && !collectionPapers.length) {
     const contextText = prependCollectionScope("");
@@ -1579,6 +1624,7 @@ export async function resolveMultiContextPlan(params: {
       selectedChunkCount: retrieved.selectedChunkCount,
       citationPaperContexts: retrieved.citationPaperContexts,
       quoteCitations: retrieved.quoteCitations,
+      ...retrievedDiagnostics(retrieved),
     });
   }
 
@@ -1656,6 +1702,7 @@ export async function resolveMultiContextPlan(params: {
           extraRetrieved?.citationPaperContexts,
         ),
         quoteCitations: extraRetrieved?.quoteCitations || [],
+        ...retrievedDiagnostics(extraRetrieved),
       });
     }
 
@@ -1727,6 +1774,7 @@ export async function resolveMultiContextPlan(params: {
           extraRetrieved?.citationPaperContexts,
         ),
         quoteCitations: extraRetrieved?.quoteCitations || [],
+        ...retrievedDiagnostics(extraRetrieved),
       });
     }
 
@@ -1771,6 +1819,7 @@ export async function resolveMultiContextPlan(params: {
       assistantInstruction: firstPaperTurn
         ? undefined
         : buildPaperFollowupAssistantInstruction(params.question),
+      ...retrievedDiagnostics(retrieved),
     });
   }
 
@@ -1835,6 +1884,7 @@ export async function resolveMultiContextPlan(params: {
           extraUnpinned?.citationPaperContexts,
         ),
         quoteCitations: extraUnpinned?.quoteCitations || [],
+        ...retrievedDiagnostics(extraUnpinned),
       });
     }
 
@@ -1911,6 +1961,7 @@ export async function resolveMultiContextPlan(params: {
           extraRetrieved?.citationPaperContexts,
         ),
         quoteCitations: extraRetrieved?.quoteCitations || [],
+        ...retrievedDiagnostics(extraRetrieved),
       });
     }
   }
@@ -1953,5 +2004,6 @@ export async function resolveMultiContextPlan(params: {
     selectedChunkCount: retrieved.selectedChunkCount,
     citationPaperContexts: retrieved.citationPaperContexts,
     quoteCitations: retrieved.quoteCitations,
+    ...retrievedDiagnostics(retrieved),
   });
 }

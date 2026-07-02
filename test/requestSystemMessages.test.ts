@@ -68,4 +68,26 @@ describe("requestSystemMessages", function () {
 
     assert.deepEqual(messages, []);
   });
+
+  it("adds a compact reading receipt for retrieved multi-paper evidence", function () {
+    const messages = buildContextPlanSystemMessages({
+      strategy: "general-retrieval",
+      coverageReceiptText: [
+        "Reading receipt:",
+        "- Strategy: deep_synthesis",
+        "- Planned papers: 23",
+        "- Body evidence read: 21",
+        "- Metadata/abstract only: 2",
+        "- Stop reason: budget_limit",
+        "- Coverage frontier: Paper A needs close reading",
+      ].join("\n"),
+    } as any);
+
+    assert.lengthOf(messages, 1);
+    assert.include(messages[0], "Reading receipt:");
+    assert.include(messages[0], "Planned papers: 23");
+    assert.include(messages[0], "Body evidence read: 21");
+    assert.include(messages[0], "Metadata/abstract only: 2");
+    assert.include(messages[0], "Coverage frontier");
+  });
 });

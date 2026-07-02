@@ -611,6 +611,39 @@ describe("multiContextPlanner", function () {
     assert.include(result.contextText, "Paper synthesis digest:");
   });
 
+  it("exposes a reading receipt on the final multi-context plan", async function () {
+    const paper = registerMockPaper({
+      itemId: 4300,
+      contextItemId: 5300,
+      title: "Receipt Coverage Paper",
+      firstCreator: "Receipt",
+      year: "2026",
+      pdfContext: buildPdfContext("Receipt Coverage Paper", [
+        "Abstract\nThe paper introduces cross-paper synthesis.",
+        "Results\nThe body evidence explains the finding used for synthesis.",
+      ]),
+    });
+
+    const plan = await resolveMultiContextPlan({
+      conversationMode: "open",
+      activeContextItem: null,
+      question: "Summarize the common themes across these papers",
+      paperContexts: [paper],
+      fullTextPaperContexts: [],
+      history: [],
+      model: "gpt-4o-mini",
+    });
+
+    assert.equal(
+      (plan as any).readStrategy?.resolvedStrategy,
+      "deep_synthesis",
+    );
+    assert.equal((plan as any).coverageReceipt?.papersPlanned, 1);
+    assert.equal((plan as any).coverageReceipt?.papersBodyRead, 1);
+    assert.include((plan as any).coverageReceipt?.text, "Reading receipt:");
+    assert.include((plan as any).coverageReceipt?.text, "Planned papers: 1");
+  });
+
   it("adds a capability reminder only for follow-up questions about access or coverage", async function () {
     const paper = registerMockPaper({
       itemId: 34,

@@ -33,7 +33,11 @@ import {
   notifyStandaloneItemChanged as notifyStandaloneItemChangedRuntime,
   openStandaloneChat,
 } from "./standaloneWindow";
-import { setWorkflowTestSendInterceptor } from "./workflowTestHooks";
+import {
+  setWorkflowTestFinalRequestInterceptor,
+  setWorkflowTestSendInterceptor,
+  type WorkflowTestFinalRequestSnapshot,
+} from "./workflowTestHooks";
 import { dispatchZoteroItemsAsContext } from "./zoteroItemContextMenu";
 
 type PanelRecord = {
@@ -46,6 +50,7 @@ type PanelRecord = {
 const panels = new Map<string, PanelRecord>();
 let panelCounter = 0;
 let lastSend: SendQuestionOptions | null = null;
+let lastFinalRequest: WorkflowTestFinalRequestSnapshot | null = null;
 
 function assertWorkflowTestEnabled(): void {
   if (__env__ !== "test" && __env__ !== "development") {
@@ -467,6 +472,7 @@ function readStandaloneDiagnostics(): WorkflowTestStandaloneDiagnostics {
     openTabText: openTab?.textContent?.trim() || undefined,
     statusText: statusEl?.textContent?.trim() || undefined,
     lastSend,
+    lastFinalRequest,
   };
 }
 
@@ -619,6 +625,7 @@ async function getDiagnostics(
       (body?.querySelector("#llm-status") as HTMLElement | null)?.textContent ||
       undefined,
     lastSend,
+    lastFinalRequest,
   };
 }
 
@@ -626,6 +633,7 @@ async function reset(): Promise<void> {
   assertWorkflowTestEnabled();
   await closeStandalone();
   lastSend = null;
+  lastFinalRequest = null;
   for (const panel of panels.values()) {
     activeContextPanels.delete(panel.body);
     activeContextPanelRawItems.delete(panel.body);
@@ -634,6 +642,9 @@ async function reset(): Promise<void> {
   panels.clear();
   setWorkflowTestSendInterceptor((opts) => {
     lastSend = opts;
+  });
+  setWorkflowTestFinalRequestInterceptor((snapshot) => {
+    lastFinalRequest = snapshot;
   });
 }
 
@@ -668,6 +679,7 @@ export function installWorkflowTestHarness(targetAddon: {
     seedStandaloneUserMessage,
     notifyStandaloneItemChanged,
     addItemsAsStandaloneContext,
+    getLastFinalRequest: () => lastFinalRequest,
     getStandaloneDiagnostics,
     closeStandalone,
     getLastSend: () => lastSend,

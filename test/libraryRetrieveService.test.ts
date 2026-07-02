@@ -488,6 +488,196 @@ describe("LibraryRetrieveService", function () {
       23,
     );
     assert.isUndefined(result.quoteCitations);
+    assert.include(
+      (result as any).evidenceLedgerText,
+      "Paper coverage ledger:",
+    );
+    assert.include((result as any).synthesisDigest, "Paper synthesis digest:");
+    assert.include((result as any).coverageReceipt?.text, "Reading receipt:");
+    assert.equal((result as any).coverageReceipt?.papersPlanned, 23);
+    assert.equal((result as any).coverageReceipt?.papersBodyRead, 23);
+  });
+
+  it("repairs deep synthesis snippets so body evidence is retained over front matter when the per-paper budget is tight", async function () {
+    const entries = [
+      makeItem(
+        81,
+        "Front matter dominated paper",
+        "The abstract repeats commonality commonality commonality.",
+        { hasPdf: true },
+      ),
+    ];
+    const service = new LibraryRetrieveService(
+      makeGateway(entries) as any,
+      {
+        ensurePaperContext: async () =>
+          makePdfContext([
+            "Abstract\ncommonality commonality commonality",
+            "Highlights\ncommonality commonality overview",
+            "Results\nThe body evidence shows the mechanism that matters for synthesis.",
+          ]),
+      } as any,
+      async (paperContext): Promise<PaperContextCandidate[]> => [
+        {
+          paperKey: `${paperContext.itemId}:${paperContext.contextItemId}`,
+          itemId: paperContext.itemId,
+          contextItemId: paperContext.contextItemId,
+          title: paperContext.title,
+          chunkIndex: 0,
+          chunkText: "Abstract\ncommonality commonality commonality",
+          chunkKind: "abstract",
+          sectionLabel: "Abstract",
+          estimatedTokens: 12,
+          bm25Score: 0.9,
+          embeddingScore: 0,
+          hybridScore: 0.9,
+          evidenceScore: 0.9,
+        },
+        {
+          paperKey: `${paperContext.itemId}:${paperContext.contextItemId}`,
+          itemId: paperContext.itemId,
+          contextItemId: paperContext.contextItemId,
+          title: paperContext.title,
+          chunkIndex: 1,
+          chunkText: "Highlights\ncommonality commonality overview",
+          chunkKind: "unknown",
+          sectionLabel: "Highlights",
+          estimatedTokens: 12,
+          bm25Score: 0.8,
+          embeddingScore: 0,
+          hybridScore: 0.8,
+          evidenceScore: 0.8,
+        },
+        {
+          paperKey: `${paperContext.itemId}:${paperContext.contextItemId}`,
+          itemId: paperContext.itemId,
+          contextItemId: paperContext.contextItemId,
+          title: paperContext.title,
+          chunkIndex: 2,
+          chunkText:
+            "Results\nThe body evidence shows the mechanism that matters for synthesis.",
+          chunkKind: "results",
+          sectionLabel: "Results",
+          estimatedTokens: 12,
+          bm25Score: 0.2,
+          embeddingScore: 0,
+          hybridScore: 0.2,
+          evidenceScore: 0.2,
+        },
+      ],
+    );
+
+    const result = await service.retrieve({
+      scope: { itemIds: [81] },
+      query: "summarize the commonality",
+      intent: "summarize",
+      depth: "evidence",
+      methods: ["metadata", "abstract", "semantic"],
+      perPaperTopK: 2,
+      maxTotalSnippets: 2,
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText: "Summarize the commonality",
+        libraryID: 1,
+      },
+    });
+
+    assert.include(
+      result.snippets.map((snippet) => snippet.sectionLabel),
+      "Results",
+    );
+    assert.equal(result.answerContract.papersBodyRead, 1);
+    assert.notInclude(result.answerContract.coverageFrontier.join("\n"), "81:");
+  });
+
+  it("prefers method evidence for selected-paper method comparison questions", async function () {
+    const entries = [
+      makeItem(82, "Method comparison paper", "", { hasPdf: true }),
+    ];
+    const service = new LibraryRetrieveService(
+      makeGateway(entries) as any,
+      {
+        ensurePaperContext: async () =>
+          makePdfContext([
+            "Abstract\nThe paper studies a benchmark.",
+            "Results\nThe result section reports the highest scoring outcome.",
+            "Discussion\nThe discussion interprets the benchmark outcome.",
+            "Methods\nThe method section explains the controlled ablation protocol.",
+          ]),
+      } as any,
+      async (paperContext): Promise<PaperContextCandidate[]> => [
+        {
+          paperKey: `${paperContext.itemId}:${paperContext.contextItemId}`,
+          itemId: paperContext.itemId,
+          contextItemId: paperContext.contextItemId,
+          title: paperContext.title,
+          chunkIndex: 1,
+          chunkText:
+            "Results\nThe result section reports the highest scoring outcome.",
+          chunkKind: "results",
+          sectionLabel: "Results",
+          estimatedTokens: 12,
+          bm25Score: 0.9,
+          embeddingScore: 0,
+          hybridScore: 0.9,
+          evidenceScore: 0.9,
+        },
+        {
+          paperKey: `${paperContext.itemId}:${paperContext.contextItemId}`,
+          itemId: paperContext.itemId,
+          contextItemId: paperContext.contextItemId,
+          title: paperContext.title,
+          chunkIndex: 2,
+          chunkText:
+            "Discussion\nThe discussion interprets the benchmark outcome.",
+          chunkKind: "discussion",
+          sectionLabel: "Discussion",
+          estimatedTokens: 12,
+          bm25Score: 0.8,
+          embeddingScore: 0,
+          hybridScore: 0.8,
+          evidenceScore: 0.8,
+        },
+        {
+          paperKey: `${paperContext.itemId}:${paperContext.contextItemId}`,
+          itemId: paperContext.itemId,
+          contextItemId: paperContext.contextItemId,
+          title: paperContext.title,
+          chunkIndex: 3,
+          chunkText:
+            "Methods\nThe method section explains the controlled ablation protocol.",
+          chunkKind: "methods",
+          sectionLabel: "Methods",
+          estimatedTokens: 12,
+          bm25Score: 0.2,
+          embeddingScore: 0,
+          hybridScore: 0.2,
+          evidenceScore: 0.2,
+        },
+      ],
+    );
+
+    const result = await service.retrieve({
+      scope: { itemIds: [82] },
+      query: "Compare the methods used by this paper",
+      intent: "summarize",
+      depth: "evidence",
+      methods: ["metadata", "abstract", "semantic"],
+      perPaperTopK: 2,
+      maxTotalSnippets: 2,
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText: "Compare the methods used by this paper",
+        libraryID: 1,
+      },
+    });
+
+    assert.include(
+      result.snippets.map((snippet) => snippet.sectionLabel),
+      "Methods",
+    );
   });
 
   it("does not return the same chunk as both exact and BM25 evidence", async function () {
