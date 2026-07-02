@@ -15,6 +15,7 @@ import {
   findMatchingTrustedQuoteCitation,
   normalizeQuoteCitations,
   QUOTE_CITATION_PATTERN,
+  stripQuoteCitationAnchorsFromDisplayText,
   stripTrailingNonSourceQuoteLabelFromQuoteText,
 } from "./quoteCitations";
 import { stripLeadingCitationSeparators } from "./citationText";
@@ -3215,9 +3216,14 @@ function getQuoteCitationLookupText(citation: QuoteCitation): string {
 }
 
 function getQuoteCitationDisplayText(citation: QuoteCitation): string {
+  const displayText = stripQuoteCitationAnchorsFromDisplayText(
+    citation.displayQuoteText || citation.quoteText,
+  );
   return (
-    sanitizeText(citation.displayQuoteText || "").trim() ||
-    sanitizeText(citation.quoteText || "").trim()
+    sanitizeText(displayText).trim() ||
+    sanitizeText(
+      stripQuoteCitationAnchorsFromDisplayText(citation.quoteText || ""),
+    ).trim()
   );
 }
 

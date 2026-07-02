@@ -128,6 +128,26 @@ describe("quote card UI contract", function () {
     );
   });
 
+  it("sanitizes quote-card display text without changing lookup text", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
+    assert.include(renderSource, "stripQuoteCitationAnchorsFromDisplayText");
+    assert.include(
+      renderSource,
+      "stripQuoteCitationAnchorsFromDisplayText(\n    citation.displayQuoteText || citation.quoteText",
+    );
+    assert.include(
+      renderSource,
+      'sanitizeText(citation.sourceMatchText || "").trim() ||',
+    );
+    assert.include(
+      renderSource,
+      'sanitizeText(citation.quoteText || "").trim()',
+    );
+  });
+
   it("does not toggle expanded quote cards during text selection or context menu", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",

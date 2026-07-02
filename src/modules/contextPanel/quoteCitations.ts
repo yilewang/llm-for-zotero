@@ -80,6 +80,38 @@ function normalizeMultilineText(value: unknown): string {
     .trim();
 }
 
+function stripQuoteCitationAnchorsFromDisplaySegment(segment: string): string {
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  const withoutAnchors = segment.replace(QUOTE_CITATION_PATTERN, "");
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  return withoutAnchors
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/[ \t]+([,.;:!?。，；：！？])/g, "$1")
+        .trimEnd(),
+    )
+    .join("\n");
+}
+
+export function stripQuoteCitationAnchorsFromDisplayText(
+  value: unknown,
+): string {
+  const normalized = normalizeMultilineText(value);
+  if (!normalized) return "";
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  const hasQuoteAnchor = QUOTE_CITATION_PATTERN.test(normalized);
+  QUOTE_CITATION_PATTERN.lastIndex = 0;
+  if (!hasQuoteAnchor) return normalized;
+  return normalizeMultilineText(
+    transformMarkdownOutsideFencedCode(
+      normalized,
+      stripQuoteCitationAnchorsFromDisplaySegment,
+    ),
+  );
+}
+
 function normalizePositiveInt(value: unknown): number | undefined {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return undefined;
@@ -562,7 +594,9 @@ export function buildQuoteCitation(input: {
   const contextItemId = normalizePositiveInt(input.contextItemId);
   const itemId = normalizePositiveInt(input.itemId);
   const id = normalizeText(input.id).replace(/[^A-Za-z0-9_-]/g, "");
-  const displayQuoteText = normalizeMultilineText(input.displayQuoteText);
+  const displayQuoteText = stripQuoteCitationAnchorsFromDisplayText(
+    input.displayQuoteText,
+  );
   const sourceMatchText = normalizeText(input.sourceMatchText);
   const sourceMatchKind = normalizeText(input.sourceMatchKind);
   const normalizedSourceMatchKind = [
@@ -586,7 +620,10 @@ export function buildQuoteCitation(input: {
         contextItemId,
       }),
     quoteText,
-    displayQuoteText: displayQuoteText || undefined,
+    displayQuoteText:
+      displayQuoteText && displayQuoteText !== quoteText
+        ? displayQuoteText
+        : undefined,
     citationLabel,
     sourceMatchText: sourceMatchText || undefined,
     sourceMatchKind: normalizedSourceMatchKind,

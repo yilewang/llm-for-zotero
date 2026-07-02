@@ -83,6 +83,22 @@ describe("quoteCitations", function () {
     assert.match(first?.id || "", /^Q_[a-z0-9]+$/);
   });
 
+  it("strips nested quote anchors from display quote text", function () {
+    const citation = buildQuoteCitation({
+      quoteText:
+        "Note that high signal correlations between pairs of neurons at a given imaging time point do not necessarily indicate high noise correlations and vice versa.",
+      displayQuoteText:
+        "Note that high signal correlations between pairs of neurons at a given imaging time point do not necessarily indicate high noise correlations and vice versa. [[quote:Q_1b7wj09]]",
+      citationLabel: "(Eppler et al., 2026)",
+      contextItemId: 3097,
+      itemId: 3096,
+    });
+
+    assert.isDefined(citation);
+    assert.isUndefined(citation!.displayQuoteText);
+    assert.notInclude(citation!.displayQuoteText || "", "[[quote:");
+  });
+
   it("builds selected PDF text anchors and prompt tokens", function () {
     const anchors = buildSelectedTextQuoteCitations(
       ["quoted PDF passage", "note text"],
@@ -1481,6 +1497,46 @@ describe("quoteCitations", function () {
     assert.include(html, "math-inline");
     assert.include(html, "katex");
     assert.notInclude(html, "y*0|\\mathbf");
+  });
+
+  it("does not leak model-provided quote anchors when verified PDF text preserves display text", function () {
+    const displayQuote =
+      "Note that high signal correlations between pairs of neurons at a given imaging time point do not necessarily indicate high noise correlations and vice versa. [[quote:Q_1b7wj09]]";
+    const sourceQuote =
+      "Note that high signal correlations between pairs of neurons at a given imaging time point do not necessarily indicate high noise correlations and vice versa.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${displayQuote}\n\n(Eppler et al., 2026)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: sourceQuote,
+            sourceLabel: "(Eppler et al., 2026)",
+            contextItemId: 3097,
+            itemId: 3096,
+            sourceMatchSource: "pdf-page-text",
+          },
+        ],
+      }),
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.notInclude(
+      finalized.quoteCitations[0].displayQuoteText || "",
+      "[[quote:",
+    );
+    assert.isUndefined(finalized.quoteCitations[0].displayQuoteText);
+
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      finalized.markdown,
+      finalized.quoteCitations,
+    );
+
+    assert.include(rendered, sourceQuote);
+    assert.include(rendered, "(Eppler et al., 2026)");
+    assert.notInclude(rendered, "[[quote:Q_1b7wj09]]");
+    assert.notInclude(rendered, finalized.markdown);
+    assert.notInclude(rendered, "[[quote:");
   });
 
   it("keeps a degraded visible source label for unmatched single-source blockquotes", function () {
