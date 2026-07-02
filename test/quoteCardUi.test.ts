@@ -217,6 +217,43 @@ describe("quote card UI contract", function () {
     assert.include(chatSource, "await finalizeAssistantMessageQuoteCitations");
   });
 
+  it("keeps page-text warming off the blocking final quote verification path", function () {
+    const chatSource = source("src/modules/contextPanel/chat.ts");
+
+    assert.include(chatSource, "extractQuoteSourceLabelHintsFromMarkdown");
+    assert.include(chatSource, "QUOTE_SOURCE_TEXT_WARM_CONCURRENCY");
+    assert.include(chatSource, "includePdfPageText: false");
+    assert.include(chatSource, "void warmQuotePageTextCacheForPaperContexts");
+    assert.include(chatSource, "quoteSourceLabels: sourceLabelHints.labels");
+  });
+
+  it("decorates known quote anchors while streaming without source-verifying raw blockquotes", function () {
+    const chatSource = source("src/modules/contextPanel/chat.ts");
+    const decoratorStart = chatSource.indexOf(
+      "function decorateCompletedAssistantCitationLinks",
+    );
+    const decoratorEnd = chatSource.indexOf(
+      "function attachAssistantResponseContextMenu",
+      decoratorStart,
+    );
+    const decoratorSource = chatSource.slice(decoratorStart, decoratorEnd);
+    const renderPlaceholders = decoratorSource.indexOf(
+      "renderQuoteCitationPlaceholders({",
+    );
+    const streamingReturn = decoratorSource.indexOf(
+      "if (assistantMessage.streaming) return;",
+    );
+    const decorateBlockquotes = decoratorSource.indexOf(
+      "decorateAssistantCitationLinks({",
+    );
+
+    assert.isAtLeast(decoratorStart, 0);
+    assert.isAtLeast(decoratorEnd, decoratorStart);
+    assert.isAtLeast(renderPlaceholders, 0);
+    assert.isAbove(streamingReturn, renderPlaceholders);
+    assert.isAbove(decorateBlockquotes, streamingReturn);
+  });
+
   it("decorates citation blockquotes after all assistant markdown surfaces are mounted", function () {
     const chatSource = source("src/modules/contextPanel/chat.ts");
     const answerRenderStart = chatSource.indexOf(

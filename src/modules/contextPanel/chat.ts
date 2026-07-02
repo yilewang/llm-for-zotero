@@ -275,6 +275,7 @@ import {
 import {
   buildQuoteSourceIndex,
   buildSelectedTextQuoteCitations,
+  extractQuoteSourceLabelHintsFromMarkdown,
   extractQuoteCitationsFromToolContent,
   finalizeAssistantQuoteCitations,
   mergeQuoteCitations,
@@ -282,6 +283,7 @@ import {
   replaceQuoteCitationPlaceholdersForMarkdown,
   type QuoteSourceText,
 } from "./quoteCitations";
+import { citationLabelsCompatible } from "./citationLabelParser";
 import {
   getAgentApi,
   getCoreAgentRuntime,
@@ -1360,7 +1362,7 @@ function decorateCompletedAssistantCitationLinks(params: {
 }): void {
   const { body, panelItem, bubble, assistantMessage, pairedUserMessage } =
     params;
-  if (assistantMessage.streaming || assistantMessage.compactMarker) return;
+  if (assistantMessage.compactMarker) return;
   if (!sanitizeText(bubble.textContent || assistantMessage.text || "").trim()) {
     return;
   }
@@ -1383,6 +1385,7 @@ function decorateCompletedAssistantCitationLinks(params: {
       assistantMessage,
       pairedUserMessage,
     });
+    if (assistantMessage.streaming) return;
     decorateAssistantCitationLinks({
       body,
       panelItem,
@@ -3781,6 +3784,85 @@ function quoteSourcePaperKey(paper: PaperContextRef): string {
   )}:${paper.contentSourceMode || ""}`;
 }
 
+const QUOTE_SOURCE_TEXT_WARM_CONCURRENCY = 4;
+const QUOTE_PAGE_TEXT_BACKGROUND_WARM_CONCURRENCY = 2;
+
+type QuoteSourcePaperSelectionOptions = {
+  quoteSourceLabels?: string[];
+  allowLabelFiltering?: boolean;
+};
+
+type QuoteSourceTextBuildOptions = QuoteSourcePaperSelectionOptions & {
+  includePdfPageText?: boolean;
+  concurrency?: number;
+};
+
+function collectUniqueQuoteSourcePapers(
+  ...groups: Array<PaperContextRef[] | undefined | null>
+): PaperContextRef[] {
+  const papers = normalizePaperContexts(groups.flatMap((group) => group || []));
+  const seen = new Set<string>();
+  const uniquePapers: PaperContextRef[] = [];
+  for (const paper of papers) {
+    const contextItemId = Number(paper.contextItemId || 0);
+    if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
+    const key = quoteSourcePaperKey(paper);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniquePapers.push(paper);
+  }
+  return uniquePapers;
+}
+
+function paperMatchesQuoteSourceLabels(
+  paper: PaperContextRef,
+  quoteSourceLabels: string[] | undefined,
+): boolean {
+  const labels = quoteSourceLabels || [];
+  if (!labels.length) return true;
+  const paperSourceLabel = formatPaperSourceLabel(paper);
+  return labels.some((label) =>
+    citationLabelsCompatible(paperSourceLabel, label),
+  );
+}
+
+function selectQuoteSourcePapers(
+  papers: PaperContextRef[],
+  options?: QuoteSourcePaperSelectionOptions,
+): PaperContextRef[] {
+  if (!options?.allowLabelFiltering || !options.quoteSourceLabels?.length) {
+    return papers;
+  }
+  const filtered = papers.filter((paper) =>
+    paperMatchesQuoteSourceLabels(paper, options.quoteSourceLabels),
+  );
+  // If model/source labels drift from the local paper label format, keep the old
+  // broad behavior instead of losing verification coverage.
+  return filtered.length ? filtered : papers;
+}
+
+async function mapWithConcurrencyLimit<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const limit = Math.max(1, Math.floor(concurrency || 1));
+  const out: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        out[index] = await worker(items[index]);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return out;
+}
+
 function cachedQuoteSourceText(contextItemId: number): string {
   const cached = pdfTextCache.get(contextItemId);
   return Array.isArray(cached?.chunks) ? cached.chunks.join("\n\n") : "";
@@ -3875,26 +3957,15 @@ async function buildPdfPageQuoteSourceTextForPaper(
   }
 }
 
-async function buildQuoteSourceTextsForPaperContexts(
-  ...groups: Array<PaperContextRef[] | undefined | null>
+async function buildQuoteSourceTextsForPaper(
+  paper: PaperContextRef,
+  options?: QuoteSourceTextBuildOptions,
 ): Promise<QuoteSourceText[]> {
-  const papers = normalizePaperContexts(groups.flatMap((group) => group || []));
   const out: QuoteSourceText[] = [];
-  const seen = new Set<string>();
-  const uniquePapers: PaperContextRef[] = [];
-  for (const paper of papers) {
-    const contextItemId = Number(paper.contextItemId || 0);
-    if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
-    const key = quoteSourcePaperKey(paper);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    uniquePapers.push(paper);
-  }
-
-  for (const paper of uniquePapers) {
-    await ensureQuoteSourceTextCachedForPaper(paper);
-    const contextItemId = Math.floor(Number(paper.contextItemId || 0));
-    if (!Number.isFinite(contextItemId) || contextItemId <= 0) continue;
+  await ensureQuoteSourceTextCachedForPaper(paper);
+  const contextItemId = Math.floor(Number(paper.contextItemId || 0));
+  if (!Number.isFinite(contextItemId) || contextItemId <= 0) return out;
+  if (options?.includePdfPageText !== false) {
     const pdfPageSourceText = await buildPdfPageQuoteSourceTextForPaper(paper);
     if (pdfPageSourceText.trim()) {
       out.push({
@@ -3906,18 +3977,66 @@ async function buildQuoteSourceTextsForPaperContexts(
         itemId: paper.itemId,
       });
     }
-    const sourceText = cachedQuoteSourceText(contextItemId);
-    if (!sourceText.trim()) continue;
-    out.push({
-      sourceText,
-      sourceLabel: formatPaperSourceLabel(paper),
-      metadataTexts: [paper.title, paper.attachmentTitle],
-      sourceMatchSource: "context-text",
-      contextItemId: paper.contextItemId,
-      itemId: paper.itemId,
+  }
+  const sourceText = cachedQuoteSourceText(contextItemId);
+  if (!sourceText.trim()) return out;
+  out.push({
+    sourceText,
+    sourceLabel: formatPaperSourceLabel(paper),
+    metadataTexts: [paper.title, paper.attachmentTitle],
+    sourceMatchSource: "context-text",
+    contextItemId: paper.contextItemId,
+    itemId: paper.itemId,
+  });
+  return out;
+}
+
+async function warmQuotePageTextCacheForPaper(
+  paper: PaperContextRef,
+): Promise<void> {
+  const contextItemId = Math.floor(Number(paper.contextItemId || 0));
+  if (!Number.isFinite(contextItemId) || contextItemId <= 0) return;
+  const contextItem = resolveQuoteSourceContextItem(paper);
+  if (!canUsePdfPageTextQuoteSource(paper, contextItem)) return;
+  try {
+    await warmPageTextCacheForAttachment(contextItemId);
+  } catch (error) {
+    ztoolkit.log("LLM: background PDF page quote cache warm failed", {
+      contextItemId,
+      error,
     });
   }
-  return out;
+}
+
+async function warmQuotePageTextCacheForPaperContexts(
+  options: QuoteSourcePaperSelectionOptions | undefined,
+  ...groups: Array<PaperContextRef[] | undefined | null>
+): Promise<void> {
+  const papers = selectQuoteSourcePapers(
+    collectUniqueQuoteSourcePapers(...groups),
+    options,
+  );
+  await mapWithConcurrencyLimit(
+    papers,
+    QUOTE_PAGE_TEXT_BACKGROUND_WARM_CONCURRENCY,
+    warmQuotePageTextCacheForPaper,
+  );
+}
+
+async function buildQuoteSourceTextsForPaperContexts(
+  options: QuoteSourceTextBuildOptions | undefined,
+  ...groups: Array<PaperContextRef[] | undefined | null>
+): Promise<QuoteSourceText[]> {
+  const papers = selectQuoteSourcePapers(
+    collectUniqueQuoteSourcePapers(...groups),
+    options,
+  );
+  const grouped = await mapWithConcurrencyLimit(
+    papers,
+    options?.concurrency || QUOTE_SOURCE_TEXT_WARM_CONCURRENCY,
+    (paper) => buildQuoteSourceTextsForPaper(paper, options),
+  );
+  return grouped.flat();
 }
 
 function assistantMarkdownNeedsQuoteSourceSearch(markdown: string): boolean {
@@ -3933,10 +4052,21 @@ async function finalizeAssistantMessageQuoteCitations(
     citationPaperContexts?: PaperContextRef[];
   } = {},
 ): Promise<void> {
-  const sourceTexts = assistantMarkdownNeedsQuoteSourceSearch(
-    assistantMessage.text || "",
-  )
+  const markdown = assistantMessage.text || "";
+  const needsQuoteSourceSearch =
+    assistantMarkdownNeedsQuoteSourceSearch(markdown);
+  const sourceLabelHints = extractQuoteSourceLabelHintsFromMarkdown(markdown);
+  const sourceSelectionOptions: QuoteSourcePaperSelectionOptions = {
+    quoteSourceLabels: sourceLabelHints.labels,
+    allowLabelFiltering: !sourceLabelHints.hasUnlabeledQuote,
+  };
+  const sourceTexts = needsQuoteSourceSearch
     ? await buildQuoteSourceTextsForPaperContexts(
+        {
+          ...sourceSelectionOptions,
+          includePdfPageText: false,
+          concurrency: QUOTE_SOURCE_TEXT_WARM_CONCURRENCY,
+        },
         options.paperContexts,
         options.fullTextPaperContexts,
         options.citationPaperContexts,
@@ -3948,12 +4078,29 @@ async function finalizeAssistantMessageQuoteCitations(
         ),
       )
     : [];
+  if (needsQuoteSourceSearch) {
+    void warmQuotePageTextCacheForPaperContexts(
+      {
+        quoteSourceLabels: sourceLabelHints.labels,
+        allowLabelFiltering: sourceSelectionOptions.allowLabelFiltering,
+      },
+      options.paperContexts,
+      options.fullTextPaperContexts,
+      options.citationPaperContexts,
+      options.pairedUserMessage?.paperContexts,
+      options.pairedUserMessage?.fullTextPaperContexts,
+      options.pairedUserMessage?.citationPaperContexts,
+      options.pairedUserMessage?.selectedTextPaperContexts?.filter(
+        (entry): entry is PaperContextRef => Boolean(entry),
+      ),
+    );
+  }
   const sourceIndex = buildQuoteSourceIndex({
     quoteCitations: assistantMessage.quoteCitations,
     sourceTexts,
   });
   const finalized = finalizeAssistantQuoteCitations({
-    markdown: assistantMessage.text || "",
+    markdown,
     quoteCitations: assistantMessage.quoteCitations,
     sourceIndex,
     requireVerifiedQuoteCitations: true,

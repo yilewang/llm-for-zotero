@@ -4,6 +4,7 @@ import {
   buildQuoteCitation,
   buildQuoteSourceIndex,
   buildSelectedTextQuoteCitations,
+  extractQuoteSourceLabelHintsFromMarkdown,
   extractQuoteCitationsFromToolContent,
   finalizeAssistantQuoteCitations,
   findUnresolvedQuoteCitationPlaceholderIds,
@@ -124,6 +125,46 @@ describe("quoteCitations", function () {
     assert.notInclude(prompt, "citationLabel");
   });
 
+  it("extracts source labels from quote blocks for targeted source warming", function () {
+    const hints = extractQuoteSourceLabelHintsFromMarkdown(
+      [
+        "> The first paper reports stable population geometry across sessions.",
+        "",
+        "(Smith et al., 2024)",
+        "",
+        "```",
+        "> A fenced quote should not count.",
+        "",
+        "(Ignored et al., 2024)",
+        "```",
+        "",
+        "> The second paper reports task-dependent remapping.",
+        "> (Lee et al., 2025)",
+      ].join("\n"),
+    );
+
+    assert.sameMembers(hints.labels, [
+      "(Smith et al., 2024)",
+      "(Lee et al., 2025)",
+    ]);
+    assert.isFalse(hints.hasUnlabeledQuote);
+  });
+
+  it("keeps source warming broad when any quote block lacks a source label", function () {
+    const hints = extractQuoteSourceLabelHintsFromMarkdown(
+      [
+        "> This unlabeled source quote should keep all papers eligible for final verification.",
+        "",
+        "> This labeled quote can still contribute a label hint.",
+        "",
+        "(Garcia et al., 2026)",
+      ].join("\n"),
+    );
+
+    assert.sameMembers(hints.labels, ["(Garcia et al., 2026)"]);
+    assert.isTrue(hints.hasUnlabeledQuote);
+  });
+
   it("frames prompt quote anchors as verified exact-wording affordances", function () {
     const citation = buildQuoteCitation({
       quoteText:
@@ -219,6 +260,27 @@ describe("quoteCitations", function () {
     assert.include(rendered, "> (Lee, 2025)");
     assert.include(rendered, "(Lee, 2025)");
     assert.notInclude(rendered, "[[quote:");
+  });
+
+  it("precomputes normalized source text once when building quote source indexes", function () {
+    const sourceText =
+      "Representational drift changed neural population codes across days.";
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText,
+          sourceLabel: "(Norm et al., 2026)",
+          contextItemId: 9002,
+          itemId: 9001,
+        },
+      ],
+    });
+
+    assert.lengthOf(sourceIndex.sources, 1);
+    assert.equal(
+      sourceIndex.sources[0].normalizedSourceText,
+      "representational drift changed neural population codes across days",
+    );
   });
 
   it("isolates preserved quote placeholders from following prose for display", function () {

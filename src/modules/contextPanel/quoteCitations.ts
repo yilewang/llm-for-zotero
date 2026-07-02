@@ -374,6 +374,98 @@ function splitTrailingCitationFromQuoteText(value: string): {
   return { quoteText, citationLabel };
 }
 
+function extractLeadingSourceLabel(value: string): string | null {
+  const normalized = normalizeText(value);
+  if (!normalized.startsWith("(")) return null;
+  let depth = 0;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const ch = normalized[index];
+    if (ch === "(") depth += 1;
+    if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        const label = normalizeCitationLabel(normalized.slice(0, index + 1));
+        return label && isCanonicalQuoteSourceLabel(label) ? label : null;
+      }
+    }
+  }
+  return null;
+}
+
+function collectQuoteSourceLabelHint(
+  labels: Map<string, string>,
+  label: string | null | undefined,
+): boolean {
+  if (!label || !isCanonicalQuoteSourceLabel(label)) return false;
+  const key = normalizeCitationLabelForMatch(label);
+  if (!key) return false;
+  if (!labels.has(key)) labels.set(key, label);
+  return true;
+}
+
+export function extractQuoteSourceLabelHintsFromMarkdown(
+  markdown: string,
+): QuoteSourceLabelHints {
+  const labels = new Map<string, string>();
+  let hasUnlabeledQuote = false;
+  if (!markdown) return { labels: [], hasUnlabeledQuote };
+
+  const lines = markdown.split("\n");
+  let inFence = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (FENCED_CODE_PATTERN.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || !/^[ \t]*>/.test(line)) continue;
+    if (isBlockquoteWrappedQuoteCitationLine(line)) continue;
+
+    const quoteLines: string[] = [];
+    while (
+      index < lines.length &&
+      /^[ \t]*>/.test(lines[index]) &&
+      !isBlockquoteWrappedQuoteCitationLine(lines[index])
+    ) {
+      quoteLines.push(stripBlockquoteMarker(lines[index]));
+      index += 1;
+    }
+
+    const originalQuoteText = normalizeMultilineText(quoteLines.join("\n"));
+    const trailingLabel = quoteLines.length
+      ? extractLeadingSourceLabel(quoteLines[quoteLines.length - 1])
+      : null;
+    if (trailingLabel && collectQuoteSourceLabelHint(labels, trailingLabel)) {
+      index -= 1;
+      continue;
+    }
+
+    let cursor = index;
+    while (cursor < lines.length && !lines[cursor].trim()) cursor += 1;
+    const leadingLabel =
+      cursor < lines.length ? extractLeadingSourceLabel(lines[cursor]) : null;
+    if (leadingLabel && collectQuoteSourceLabelHint(labels, leadingLabel)) {
+      index -= 1;
+      continue;
+    }
+
+    const tail = splitTrailingCitationFromQuoteText(originalQuoteText);
+    if (tail && collectQuoteSourceLabelHint(labels, tail.citationLabel)) {
+      index -= 1;
+      continue;
+    }
+
+    const quoteText =
+      stripTrailingNonSourceQuoteLabelFromQuoteText(originalQuoteText);
+    if (isQuoteWorthySourceText(quoteText)) {
+      hasUnlabeledQuote = true;
+    }
+    index -= 1;
+  }
+
+  return { labels: [...labels.values()], hasUnlabeledQuote };
+}
+
 export function findMatchingTrustedQuoteCitation(input: {
   quoteText: string;
   citationLabel: string;
@@ -678,6 +770,7 @@ export function mergeQuoteCitations(
 export type QuoteSourceText = {
   text?: unknown;
   sourceText?: unknown;
+  normalizedSourceText?: unknown;
   citationLabel?: unknown;
   sourceLabel?: unknown;
   metadataTexts?: unknown;
@@ -688,6 +781,7 @@ export type QuoteSourceText = {
 
 export type QuoteSourceIndexEntry = {
   sourceText: string;
+  normalizedSourceText?: string;
   citationLabel: string;
   sourceMatchSource?: QuoteCitation["sourceMatchSource"];
   contextItemId?: number;
@@ -698,6 +792,11 @@ export type QuoteSourceIndex = {
   quoteCitations: QuoteCitation[];
   sources: QuoteSourceIndexEntry[];
   metadataTexts: string[];
+};
+
+export type QuoteSourceLabelHints = {
+  labels: string[];
+  hasUnlabeledQuote: boolean;
 };
 
 function filterMetadataQuoteCitations(
@@ -782,6 +881,10 @@ function quoteSourceKey(source: QuoteSourceIndexEntry): string {
   ].join("\u241f");
 }
 
+function buildNormalizedQuoteSourceText(sourceText: string): string {
+  return buildQuoteTextIndex(sourceText).canonicalText;
+}
+
 export function buildQuoteSourceIndex(params: {
   quoteCitations?: QuoteCitation[] | undefined | null;
   sourceTexts?: QuoteSourceText[] | undefined | null;
@@ -808,10 +911,16 @@ export function buildQuoteSourceIndex(params: {
     ) {
       return;
     }
-    const key = quoteSourceKey(entry);
+    const normalizedEntry: QuoteSourceIndexEntry = {
+      ...entry,
+      normalizedSourceText:
+        normalizeText(entry.normalizedSourceText || "") ||
+        buildNormalizedQuoteSourceText(entry.sourceText),
+    };
+    const key = quoteSourceKey(normalizedEntry);
     if (seen.has(key)) return;
     seen.add(key);
-    sources.push(entry);
+    sources.push(normalizedEntry);
   };
   for (const citation of quoteCitations) {
     pushSource({
@@ -830,6 +939,7 @@ export function buildQuoteSourceIndex(params: {
     if (!sourceText || !citationLabel) continue;
     pushSource({
       sourceText,
+      normalizedSourceText: normalizeText(source.normalizedSourceText),
       citationLabel,
       sourceMatchSource: normalizeQuoteMatchSource(source.sourceMatchSource),
       contextItemId: normalizePositiveInt(source.contextItemId),
@@ -1216,20 +1326,33 @@ function findUniqueQuoteSourceMatch(params: {
   ): QuoteSourceSearchMatch | undefined => {
     const groupedSources = new Map<
       string,
-      { source: QuoteSourceIndexEntry; texts: string[] }
+      {
+        source: QuoteSourceIndexEntry;
+        texts: string[];
+        normalizedTexts: string[];
+      }
     >();
     sources.forEach((source, ordinal) => {
       const key = quoteSourceIdentityKey(source, ordinal);
+      const normalizedText =
+        source.normalizedSourceText ||
+        buildNormalizedQuoteSourceText(source.sourceText);
       const existing = groupedSources.get(key);
       if (existing) {
         existing.texts.push(source.sourceText);
+        existing.normalizedTexts.push(normalizedText);
         return;
       }
-      groupedSources.set(key, { source, texts: [source.sourceText] });
+      groupedSources.set(key, {
+        source,
+        texts: [source.sourceText],
+        normalizedTexts: [normalizedText],
+      });
     });
     const entries = Array.from(groupedSources.entries()).map(([id, group]) => ({
       id,
       text: group.texts.join("\n\n"),
+      normalizedText: group.normalizedTexts.join(" "),
       debugLabel: group.source.citationLabel,
     }));
     const match = findUniqueQuoteTextSearchMatch(entries, params.quoteText, {
