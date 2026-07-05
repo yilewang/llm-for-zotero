@@ -2338,8 +2338,28 @@ describe("AgentRuntime", function () {
       });
 
       const serialized = JSON.stringify(secondMessages);
-      assert.include(serialized, "remember alpha");
-      assert.include(serialized, "Alpha is preserved.");
+      const priorUserTranscriptMessages = secondMessages.filter(
+        (message) =>
+          message.role === "user" &&
+          message.content === "User request:\nremember alpha",
+      );
+      const priorAssistantTranscriptMessages = secondMessages.filter(
+        (message) =>
+          message.role === "assistant" &&
+          message.content === "Alpha is preserved.",
+      );
+      assert.lengthOf(priorUserTranscriptMessages, 1, serialized);
+      assert.lengthOf(priorAssistantTranscriptMessages, 1, serialized);
+      assert.equal(
+        serialized.split("remember alpha").length - 1,
+        2,
+        serialized,
+      );
+      assert.equal(
+        serialized.split("Alpha is preserved.").length - 1,
+        2,
+        serialized,
+      );
       assert.include(secondToolNames, "tool_result_read");
     } finally {
       restoreDb();
@@ -2851,6 +2871,12 @@ describe("AgentRuntime", function () {
       let stepIndex = 0;
       let storedHandle = "";
       let readToolMessage: AgentModelMessage | undefined;
+      let readToolStepMessages: Array<{
+        role: string;
+        name?: string;
+        toolCallId?: string;
+        contentStart?: string;
+      }> = [];
       const toolNamesByStep: string[][] = [];
       const adapter: AgentModelAdapter = {
         getCapabilities: () => ({
@@ -2934,6 +2960,16 @@ describe("AgentRuntime", function () {
             (message) =>
               message.role === "tool" && message.name === "tool_result_read",
           );
+          readToolStepMessages = params.messages.map((message) => ({
+            role: message.role,
+            name: "name" in message ? message.name : undefined,
+            toolCallId:
+              "tool_call_id" in message ? message.tool_call_id : undefined,
+            contentStart:
+              typeof message.content === "string"
+                ? message.content.slice(0, 80)
+                : undefined,
+          }));
           return {
             kind: "final",
             text: "Read stored rows.",
@@ -2956,14 +2992,26 @@ describe("AgentRuntime", function () {
           model: "claude-haiku-4-5",
           apiBase: "https://api.anthropic.com/v1/messages",
           apiKey: "test",
-          advanced: { inputTokenCap: 8_000 },
+          advanced: { inputTokenCap: 10_000 },
         },
       });
 
       assert.equal(outcome.kind, "completed");
       assert.notInclude(toolNamesByStep[0], "tool_result_read");
       assert.include(toolNamesByStep[1], "tool_result_read");
-      assert.equal(readToolMessage?.role, "tool");
+      assert.equal(
+        readToolMessage?.role,
+        "tool",
+        JSON.stringify(
+          {
+            stepIndex,
+            outcome,
+            readToolStepMessages,
+          },
+          null,
+          2,
+        ),
+      );
       const readContent = JSON.parse(
         (readToolMessage as { content: string }).content,
       );

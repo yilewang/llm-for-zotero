@@ -365,6 +365,7 @@ type BuildAgentRuntimeRequestParamsShape = {
   selectedTextPaperContexts?: (PaperContextRef | undefined)[];
   paperContexts: PaperContextRef[];
   fullTextPaperContexts: PaperContextRef[];
+  citationPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
   attachments: ChatAttachment[] | undefined;
@@ -555,6 +556,7 @@ export type AgentEngineDeps = {
   finalizeAssistantQuoteCitations: (
     assistantMessage: Pick<Message, "text" | "quoteCitations">,
     pairedUserMessage?: Message | null,
+    runtimeRequest?: AgentRuntimeRequest | null,
   ) => Promise<void>;
   appendReasoningPart: (base: string | undefined, next?: string) => string;
 
@@ -583,6 +585,57 @@ export type AgentEngineDeps = {
   // Constant
   maxSelectedImages: number;
 };
+
+type RequestUiReleaseController = {
+  releaseReady: () => void;
+  isReleased: () => boolean;
+};
+
+function createRequestUiReleaseController(params: {
+  deps: Pick<
+    AgentEngineDeps,
+    "restoreRequestUIIdle" | "setCurrentAbortController" | "setPendingRequestId"
+  >;
+  body: Element;
+  conversationKey: number;
+  requestId: number;
+  scheduleQueueDrain: () => void;
+  setStatusSafely: (text: string, kind: StatusKind) => void;
+}): RequestUiReleaseController {
+  let released = false;
+  const releaseReady = () => {
+    if (released) return;
+    released = true;
+    params.deps.setPendingRequestId(params.conversationKey, 0);
+    params.deps.restoreRequestUIIdle(
+      params.body,
+      params.conversationKey,
+      params.requestId,
+    );
+    params.deps.setCurrentAbortController(params.conversationKey, null);
+    params.setStatusSafely("Ready", "ready");
+    params.scheduleQueueDrain();
+  };
+  return {
+    releaseReady,
+    isReleased: () => released,
+  };
+}
+
+function refreshAssistantMessageTimestampForPersistence(
+  assistantMessage: Pick<Message, "timestamp">,
+  pairedUserMessage?: Pick<Message, "timestamp"> | null,
+): number {
+  const assistantTimestamp = Number(assistantMessage.timestamp);
+  const userTimestamp = Number(pairedUserMessage?.timestamp);
+  const persistedTimestamp = Math.max(
+    Number.isFinite(assistantTimestamp) ? Math.floor(assistantTimestamp) : 0,
+    Number.isFinite(userTimestamp) ? Math.floor(userTimestamp) + 1 : 0,
+    Date.now(),
+  );
+  assistantMessage.timestamp = persistedTimestamp;
+  return persistedTimestamp;
+}
 
 // ---------------------------------------------------------------------------
 // sendAgentTurn — extracted from sendAgentQuestion in chat.ts
@@ -824,6 +877,14 @@ export async function sendAgentTurn(
       conversationKey,
       webChatActive: effectiveRequestConfig.providerProtocol === "web_sync",
     });
+  const uiRelease = createRequestUiReleaseController({
+    deps,
+    body,
+    conversationKey,
+    requestId: thisRequestId,
+    scheduleQueueDrain,
+    setStatusSafely,
+  });
   setStatusSafely(
     "Checking the request against the attached context.",
     "sending",
@@ -891,6 +952,7 @@ export async function sendAgentTurn(
     selectedTextPaperContexts: selectedTextPaperContextsForMessage,
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
+    citationPaperContexts: userMessage.citationPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
     attachments: modelAttachments ?? attachments,
@@ -944,11 +1006,15 @@ export async function sendAgentTurn(
   const persistAssistantOnce = async () => {
     if (assistantPersisted) return;
     assistantPersisted = true;
+    const persistedTimestamp = refreshAssistantMessageTimestampForPersistence(
+      assistantMessage,
+      userMessage,
+    );
     const snapshot = deps.getContextUsageSnapshot?.(conversationKey);
     await deps.persistConversationMessage(conversationKey, {
       role: "assistant",
       text: assistantMessage.text,
-      timestamp: assistantMessage.timestamp,
+      timestamp: persistedTimestamp,
       runMode: "agent",
       agentRunId: assistantMessage.agentRunId,
       modelName: assistantMessage.modelName,
@@ -1312,8 +1378,9 @@ export async function sendAgentTurn(
               assistantMessage.pendingFinalText ||
               assistantMessage.text;
             assistantMessage.pendingFinalText = undefined;
+            assistantMessage.waitingAnimationStartedAt = undefined;
             assistantMessage.streaming = false;
-            scheduleQueueDrain?.();
+            uiRelease.releaseReady();
             break;
           default:
             break;
@@ -1324,8 +1391,9 @@ export async function sendAgentTurn(
     });
 
     if (
-      deps.cancelledRequestId(conversationKey) >= thisRequestId ||
-      Boolean(deps.currentAbortController(conversationKey)?.signal.aborted)
+      !uiRelease.isReleased() &&
+      (deps.cancelledRequestId(conversationKey) >= thisRequestId ||
+        Boolean(deps.currentAbortController(conversationKey)?.signal.aborted))
     ) {
       await markCancelled();
       return;
@@ -1342,7 +1410,11 @@ export async function sendAgentTurn(
       assistantMessage.pendingFinalText ||
       assistantMessage.text ||
       "No response.";
-    await deps.finalizeAssistantQuoteCitations(assistantMessage, userMessage);
+    await deps.finalizeAssistantQuoteCitations(
+      assistantMessage,
+      userMessage,
+      runtimeRequest,
+    );
     assistantMessage.pendingFinalText = undefined;
     assistantMessage.waitingAnimationStartedAt = undefined;
     assistantMessage.streaming = false;
@@ -1369,8 +1441,13 @@ export async function sendAgentTurn(
         }),
       ).catch(() => null);
     }
-    setStatusSafely("Ready", "ready");
+    if (!uiRelease.isReleased()) {
+      setStatusSafely("Ready", "ready");
+    }
   } catch (err) {
+    if (uiRelease.isReleased()) {
+      return;
+    }
     const isCancelled =
       deps.cancelledRequestId(conversationKey) >= thisRequestId ||
       Boolean(deps.currentAbortController(conversationKey)?.signal.aborted) ||
@@ -1392,10 +1469,12 @@ export async function sendAgentTurn(
     await persistAssistantOnce();
     setStatusSafely(`Error: ${userFacingError.slice(0, 40)}`, "error");
   } finally {
-    deps.setPendingRequestId(conversationKey, 0);
-    deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
-    deps.setCurrentAbortController(conversationKey, null);
-    scheduleQueueDrain?.();
+    if (!uiRelease.isReleased()) {
+      deps.setPendingRequestId(conversationKey, 0);
+      deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
+      deps.setCurrentAbortController(conversationKey, null);
+      scheduleQueueDrain();
+    }
   }
 }
 
@@ -1508,6 +1587,14 @@ export async function retryAgentTurn(
       conversationKey,
       webChatActive: effectiveRequestConfig.providerProtocol === "web_sync",
     });
+  const uiRelease = createRequestUiReleaseController({
+    deps,
+    body,
+    conversationKey,
+    requestId: thisRequestId,
+    scheduleQueueDrain,
+    setStatusSafely,
+  });
   refreshChatSafely(); // Immediately clear the old trace from view
 
   const {
@@ -1520,6 +1607,7 @@ export async function retryAgentTurn(
   } = deps.reconstructRetryPayload(retryPair.userMessage);
   if (!question.trim()) {
     setStatusSafely("Nothing to retry for latest turn", "error");
+    deps.setPendingRequestId(conversationKey, 0);
     deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
     return;
   }
@@ -1568,6 +1656,7 @@ export async function retryAgentTurn(
     selectedTextPaperContexts: selectedTextPaperContextsRaw,
     paperContexts,
     fullTextPaperContexts,
+    citationPaperContexts: retryPair.userMessage.citationPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
     attachments: retryModelAttachments,
@@ -1580,10 +1669,14 @@ export async function retryAgentTurn(
   const persistAssistantOnce = async () => {
     if (assistantPersisted) return;
     assistantPersisted = true;
+    const persistedTimestamp = refreshAssistantMessageTimestampForPersistence(
+      assistantMessage,
+      retryPair.userMessage,
+    );
     const snapshot = deps.getContextUsageSnapshot?.(conversationKey);
     await deps.updateStoredLatestAssistantMessage(conversationKey, {
       text: assistantMessage.text,
-      timestamp: assistantMessage.timestamp,
+      timestamp: persistedTimestamp,
       runMode: "agent",
       agentRunId: assistantMessage.agentRunId,
       modelName: assistantMessage.modelName,
@@ -1944,8 +2037,9 @@ export async function retryAgentTurn(
               assistantMessage.pendingFinalText ||
               assistantMessage.text;
             assistantMessage.pendingFinalText = undefined;
+            assistantMessage.waitingAnimationStartedAt = undefined;
             assistantMessage.streaming = false;
-            scheduleQueueDrain?.();
+            uiRelease.releaseReady();
             break;
           default:
             break;
@@ -1956,8 +2050,9 @@ export async function retryAgentTurn(
     });
 
     if (
-      deps.cancelledRequestId(conversationKey) >= thisRequestId ||
-      Boolean(deps.currentAbortController(conversationKey)?.signal.aborted)
+      !uiRelease.isReleased() &&
+      (deps.cancelledRequestId(conversationKey) >= thisRequestId ||
+        Boolean(deps.currentAbortController(conversationKey)?.signal.aborted))
     ) {
       await markCancelled();
       return;
@@ -1977,6 +2072,7 @@ export async function retryAgentTurn(
     await deps.finalizeAssistantQuoteCitations(
       assistantMessage,
       retryPair.userMessage,
+      runtimeRequest,
     );
     assistantMessage.pendingFinalText = undefined;
     assistantMessage.waitingAnimationStartedAt = undefined;
@@ -2002,8 +2098,13 @@ export async function retryAgentTurn(
         }),
       ).catch(() => null);
     }
-    setStatusSafely("Ready", "ready");
+    if (!uiRelease.isReleased()) {
+      setStatusSafely("Ready", "ready");
+    }
   } catch (err) {
+    if (uiRelease.isReleased()) {
+      return;
+    }
     const isCancelled =
       deps.cancelledRequestId(conversationKey) >= thisRequestId ||
       Boolean(deps.currentAbortController(conversationKey)?.signal.aborted) ||
@@ -2025,9 +2126,11 @@ export async function retryAgentTurn(
     await persistAssistantOnce();
     setStatusSafely(`Error: ${userFacingError.slice(0, 40)}`, "error");
   } finally {
-    deps.setPendingRequestId(conversationKey, 0);
-    deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
-    deps.setCurrentAbortController(conversationKey, null);
-    scheduleQueueDrain?.();
+    if (!uiRelease.isReleased()) {
+      deps.setPendingRequestId(conversationKey, 0);
+      deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
+      deps.setCurrentAbortController(conversationKey, null);
+      scheduleQueueDrain();
+    }
   }
 }

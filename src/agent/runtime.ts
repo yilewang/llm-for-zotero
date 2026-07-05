@@ -488,6 +488,35 @@ function buildTranscriptUserMessage(
   };
 }
 
+function transcriptContentToPlainText(
+  content: AgentModelMessage["content"],
+): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join("\n");
+}
+
+function normalizeTranscriptUserText(value: string): string {
+  return value
+    .replace(/^User request:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isCurrentTurnUserTranscriptMessage(
+  message: AgentModelMessage | undefined,
+  request: AgentRuntimeRequest,
+): boolean {
+  if (!message || message.role !== "user") return false;
+  return (
+    normalizeTranscriptUserText(
+      transcriptContentToPlainText(message.content),
+    ) === normalizeTranscriptUserText(request.userText || "")
+  );
+}
+
 type ExecutedToolCall = {
   toolResult: AgentToolResult;
   toolDefinition?: import("./types").AgentToolDefinition<any, any>;
@@ -870,9 +899,18 @@ export class AgentRuntime {
         );
       }
     }
+    const seedTranscriptMessages = transcriptSegment.messages.length
+      ? []
+      : transcriptMessagesForPrompt;
+    const currentUserTranscriptMessage = buildTranscriptUserMessage(request);
     const newTranscriptMessages: AgentModelMessage[] = [
-      ...(transcriptSegment.messages.length ? [] : transcriptMessagesForPrompt),
-      buildTranscriptUserMessage(request),
+      ...seedTranscriptMessages,
+      ...(isCurrentTurnUserTranscriptMessage(
+        seedTranscriptMessages[seedTranscriptMessages.length - 1],
+        request,
+      )
+        ? []
+        : [currentUserTranscriptMessage]),
     ];
 
     for (const skillId of matchedSkills) {
