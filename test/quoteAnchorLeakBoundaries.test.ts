@@ -48,8 +48,17 @@ describe("quote anchor leak boundaries", function () {
     );
 
     assert.include(menuSource, "target.quoteCitations");
-    assert.include(chatSource, '{ unresolved: "omit" }');
-    assert.include(notesSource, '{ unresolved: "omit" }');
+    assert.include(chatSource, "buildQuoteExpandedMarkdown(");
+    assert.include(notesSource, "buildQuoteExpandedMarkdown(");
+    assert.include(chatSource, "buildQuoteDisplayMarkdown(");
+    assert.notInclude(
+      chatSource,
+      "replaceQuoteCitationPlaceholdersForMarkdown(",
+    );
+    assert.notInclude(
+      notesSource,
+      "replaceQuoteCitationPlaceholdersForMarkdown(",
+    );
     assert.notInclude(chatSource, "[quote unavailable]");
     assert.notInclude(notesSource, "[quote unavailable]");
   });

@@ -5,6 +5,7 @@ import {
   locateQuoteInPageTexts,
   locateQuoteInLivePdfReader,
   locateSelectionInPageTexts,
+  resolvePageIndexForLabel,
   stripBoundaryEllipsis,
   splitQuoteAtEllipsis,
   buildRawPrefixQueries,
@@ -15,7 +16,9 @@ import {
 } from "../src/modules/contextPanel/livePdfSelectionLocator";
 
 function installPdfWorkerStub(
-  handler: (itemId: number) => Promise<{ text: string; pageChars: number[] } | null>,
+  handler: (
+    itemId: number,
+  ) => Promise<{ text: string; pageChars: number[] } | null>,
 ): () => void {
   const originalZotero = (globalThis as any).Zotero;
   const originalZtoolkit = (globalThis as any).ztoolkit;
@@ -278,6 +281,10 @@ describe("citation page cache warming", function () {
 
       assert.equal(first?.pages[0]?.text, "Attachment one target quote.");
       assert.equal(second?.pages[0]?.text, "Attachment two different quote.");
+      assert.equal(first?.coverage, "full-pdfworker");
+      assert.equal(first?.pageCount, 1);
+      assert.equal(second?.coverage, "full-pdfworker");
+      assert.equal(second?.pageCount, 1);
       assert.deepEqual(calls, [101, 202]);
     } finally {
       restore();
@@ -431,6 +438,41 @@ describe("citation page cache warming", function () {
     } finally {
       restore();
     }
+  });
+});
+
+describe("resolvePageIndexForLabel", function () {
+  function createReader(pageLabels?: string[], pagesCount?: number): any {
+    return {
+      _window: {
+        PDFViewerApplication: {
+          pdfDocument: { numPages: pagesCount ?? pageLabels?.length ?? 0 },
+          pagesCount: pagesCount ?? pageLabels?.length ?? 0,
+          pdfViewer: pageLabels ? { pageLabels } : {},
+        },
+      },
+    };
+  }
+
+  it("returns null for empty or unknown page labels", function () {
+    const reader = createReader(["i", "ii", "1", "2"], 4);
+
+    assert.isNull(resolvePageIndexForLabel(reader, ""));
+    assert.isNull(resolvePageIndexForLabel(reader, "S1"));
+  });
+
+  it("resolves numeric page labels without defaulting unknown labels to page 1", function () {
+    const reader = createReader(undefined, 20);
+
+    assert.equal(resolvePageIndexForLabel(reader, "12"), 11);
+    assert.isNull(resolvePageIndexForLabel(reader, "appendix"));
+  });
+
+  it("resolves exact custom and roman page labels", function () {
+    const reader = createReader(["i", "ii", "1", "2"], 4);
+
+    assert.equal(resolvePageIndexForLabel(reader, "ii"), 1);
+    assert.equal(resolvePageIndexForLabel(reader, "2"), 3);
   });
 });
 
@@ -624,9 +666,13 @@ describe("scrollToExactQuoteInReader", function () {
       dispatchSelectedPageIdx?: number;
       findBarCountText?: string;
       matchesCountTotal?: number;
+      pagesCount?: number;
       dispatchedQueries?: string[];
       pageMatchesByQuery?: Record<string, unknown[]>;
       selectedPageIdx?: number;
+      findFieldInputNoop?: boolean;
+      findFieldAsyncDelayMs?: number;
+      findFieldAsyncMatches?: unknown[];
     },
   ) {
     const findController = {
@@ -643,12 +689,41 @@ describe("scrollToExactQuoteInReader", function () {
           ? { pageIdx: options.selectedPageIdx }
           : undefined,
     };
-    const findBar = options?.findBarCountText
-      ? {
-          open: () => undefined,
-          findResultsCount: { textContent: options.findBarCountText },
-        }
-      : undefined;
+    class FakeInputEvent {
+      constructor(_type: string, _init?: EventInit) {}
+    }
+    let findField: HTMLInputElement | undefined;
+    if (options?.findFieldInputNoop || options?.findFieldAsyncMatches) {
+      findField = {
+        value: "",
+        ownerDocument: {
+          defaultView: {
+            Event: FakeInputEvent,
+            InputEvent: FakeInputEvent,
+          },
+        },
+        dispatchEvent: () => {
+          if (!options?.findFieldAsyncMatches) {
+            return true;
+          }
+          const submittedQuery = findField?.value ?? "";
+          setTimeout(() => {
+            findController._rawQuery = submittedQuery;
+            findController.pageMatches = options.findFieldAsyncMatches || [];
+          }, options.findFieldAsyncDelayMs ?? 20);
+          return true;
+        },
+      } as unknown as HTMLInputElement;
+    }
+    const findBar =
+      options?.findBarCountText || findField
+        ? {
+            open: () => undefined,
+            findResultsCount: { textContent: options?.findBarCountText || "" },
+            findField,
+            _findField: findField,
+          }
+        : undefined;
     const eventBus = {
       dispatch: (_eventName: string, params: { query: string }) => {
         options?.dispatchedQueries?.push(params.query);
@@ -661,15 +736,17 @@ describe("scrollToExactQuoteInReader", function () {
           };
         }
         if (options?.dispatchSelectedPageIdx !== undefined) {
-          findController.selected = { pageIdx: options.dispatchSelectedPageIdx };
+          findController.selected = {
+            pageIdx: options.dispatchSelectedPageIdx,
+          };
         }
       },
     };
     return {
       _window: {
         PDFViewerApplication: {
-          pdfDocument: { numPages: 3 },
-          pagesCount: 3,
+          pdfDocument: { numPages: options?.pagesCount ?? 3 },
+          pagesCount: options?.pagesCount ?? 3,
           page: options?.page ?? 2,
           eventBus,
           findBar,
@@ -726,6 +803,154 @@ describe("scrollToExactQuoteInReader", function () {
     assert.include(result.reason, "page 3");
   });
 
+  it("falls back to eventBus when find-bar input does not reach FindController", async function () {
+    this.timeout(5000);
+    const quote = "Unique fallback phrase";
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([[], [0], []], {
+      dispatchedQueries,
+      findFieldInputNoop: true,
+    });
+
+    const result = await scrollToExactQuoteInReader(reader, quote, {
+      expectedPageIndex: 1,
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchedPageIndex, 1);
+    assert.deepEqual(dispatchedQueries, [quote]);
+  });
+
+  it("upgrades a short locator match to a full source-quote highlight", async function () {
+    const locator = "we love him deeply";
+    const fullQuote =
+      "we love him deeply, we are family, alpha = 2 and everything is a bless.";
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery: {
+        [locator]: [[], [0], []],
+        [fullQuote]: [[], [0], []],
+      },
+    });
+
+    const result = await scrollToExactQuoteInReader(reader, locator, {
+      expectedPageIndex: 1,
+      highlightTextCandidates: [fullQuote],
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchedPageIndex, 1);
+    assert.equal(result.queryUsed, fullQuote);
+    assert.deepEqual(dispatchedQueries, [locator, fullQuote]);
+  });
+
+  it("extends long highlights to the final quoted word when terminal punctuation differs", async function () {
+    const locator = "This preservation of input similarity";
+    const fullQuote = [
+      "This preservation of input similarity is a generic consequence of random connectivity.",
+      "When a neuron receives input from many randomly connected upstream neurons, the similarity between its responses to two stimuli is, on average, determined entirely by how similar those stimuli are, not by the particular pattern of connections.",
+      "Because this relationship holds across every output neuron independently of the specific weights, the population-level similarity structure of the inputs is reflected in the outputs.",
+      "This final clause makes the quote long enough that the highlighter must still try to reach the final quoted word.",
+    ].join(" ");
+    const withoutTerminalPunctuation = fullQuote.replace(/\.$/, "");
+    assert.isAbove(fullQuote.length, 420);
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery: {
+        [locator]: [[], [0], []],
+        [withoutTerminalPunctuation]: [[], [0], []],
+      },
+    });
+
+    const result = await scrollToExactQuoteInReader(reader, locator, {
+      expectedPageIndex: 1,
+      highlightTextCandidates: [fullQuote],
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchedPageIndex, 1);
+    assert.equal(result.queryUsed, withoutTerminalPunctuation);
+    assert.include(dispatchedQueries, withoutTerminalPunctuation);
+  });
+
+  it("upgrades an end-locator match to a high-coverage beginning highlight when the exact full quote is unavailable", async function () {
+    const locator = "leaving this similarity intact";
+    const fullQuote = [
+      "In this study, we showed that representational similarity is preserved as a generic mathematical consequence of random connectivity.",
+      "In random networks, pairwise similarities between inputs are largely reflected in the outputs, independent of the specific connectivity pattern.",
+      "Drift merely transitions the network between random instantiations, leaving this similarity intact.",
+    ].join(" ");
+    const beginningHighlight =
+      "In this study, we showed that representational similarity is preserved as a generic mathematical consequence of random connectivity";
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery: {
+        [locator]: [[], [0], []],
+        [beginningHighlight]: [[], [0], []],
+      },
+    });
+
+    const result = await scrollToExactQuoteInReader(reader, locator, {
+      expectedPageIndex: 1,
+      highlightTextCandidates: [fullQuote],
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchedPageIndex, 1);
+    assert.equal(result.queryUsed, beginningHighlight);
+    assert.isAbove(result.highlightCoverage || 0, 0.3);
+    assert.isBelow(result.highlightCoverage || 1, 1);
+    assert.include(dispatchedQueries, beginningHighlight);
+  });
+
+  it("restores the short locator highlight when full source-quote highlight is ambiguous", async function () {
+    const locator = "we love him deeply";
+    const fullQuote =
+      "we love him deeply, we are family, alpha = 2 and everything is a bless.";
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      pageMatchesByQuery: {
+        [locator]: [[], [0], []],
+        [fullQuote]: [[], [0], [0]],
+      },
+    });
+
+    const result = await scrollToExactQuoteInReader(reader, locator, {
+      expectedPageIndex: 1,
+      highlightTextCandidates: [fullQuote],
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchedPageIndex, 1);
+    assert.equal(result.queryUsed, locator);
+    assert.deepEqual(dispatchedQueries.slice(0, 2), [locator, fullQuote]);
+    assert.include(dispatchedQueries, fullQuote.replace(/\.$/, ""));
+    assert.equal(dispatchedQueries[dispatchedQueries.length - 1], locator);
+  });
+
+  it("waits for delayed find-bar input before using eventBus fallback", async function () {
+    this.timeout(5000);
+    const quote = "Unique delayed find field phrase";
+    const dispatchedQueries: string[] = [];
+    const reader = createFindControllerReader([], {
+      dispatchedQueries,
+      findFieldAsyncDelayMs: 220,
+      findFieldAsyncMatches: [[], [0], []],
+    });
+
+    const result = await scrollToExactQuoteInReader(reader, quote, {
+      expectedPageIndex: 1,
+    });
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchedPageIndex, 1);
+    assert.deepEqual(dispatchedQueries, []);
+  });
+
   it("uses cached page text to skip non-unique FindController queries before paragraph jump", async function () {
     clearPageTextCache();
     const quote =
@@ -762,6 +987,102 @@ describe("scrollToExactQuoteInReader", function () {
     }
   });
 
+  it("does not let a partial DOM page-text cache veto FindController search", async function () {
+    clearPageTextCache();
+    const quote =
+      "A globally searchable quote appears only on an unrendered PDF page during citation navigation.";
+    const dispatchedQueries: string[] = [];
+    const reader: any = createFindControllerReader(
+      [[], [], [], [], [], [], [], [0]],
+      {
+        dispatchedQueries,
+        pagesCount: 8,
+      },
+    );
+    reader._window.document = {
+      querySelectorAll: () => [
+        {
+          nodeType: 1,
+          parentElement: null,
+          textContent: "Rendered first page without the cited quote.",
+          getAttribute: (name: string) =>
+            name === "data-page-number" ? "1" : null,
+          querySelector: () => ({
+            children: [
+              {
+                textContent: "Rendered first page without the cited quote.",
+              },
+            ],
+            textContent: "Rendered first page without the cited quote.",
+          }),
+        },
+        {
+          nodeType: 1,
+          parentElement: null,
+          textContent: "Rendered second page also lacks it.",
+          getAttribute: (name: string) =>
+            name === "data-page-number" ? "2" : null,
+          querySelector: () => ({
+            children: [
+              {
+                textContent: "Rendered second page also lacks it.",
+              },
+            ],
+            textContent: "Rendered second page also lacks it.",
+          }),
+        },
+      ],
+    };
+    const restore = installPdfWorkerStub(async () => null);
+
+    try {
+      const result = await scrollToExactQuoteInReader(reader, quote, {
+        expectedPageIndex: null,
+      });
+
+      assert.isTrue(result.matched);
+      assert.equal(result.matchedPageIndex, 7);
+      assert.isAbove(
+        dispatchedQueries.length,
+        0,
+        "FindController should run when only a partial DOM cache was checked",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("lets a complete page-text cache veto ambiguous FindController searches", async function () {
+    clearPageTextCache();
+    const quote =
+      "Repeated complete-cache quote remains ambiguous across two extracted PDF pages.";
+    const dispatchedQueries: string[] = [];
+    const reader: any = createFindControllerReader([[], [0], []], {
+      dispatchedQueries,
+    });
+    reader._item = { id: 910 };
+    reader.itemID = 910;
+    const pageOne = `${quote} First occurrence.`;
+    const pageTwo = `Middle page without the quote.`;
+    const pageThree = `${quote} Second occurrence.`;
+    const restore = installPdfWorkerStub(async () => ({
+      text: pageOne + pageTwo + pageThree,
+      pageChars: [pageOne.length, pageTwo.length, pageThree.length],
+    }));
+
+    try {
+      const result = await scrollToExactQuoteInReader(reader, quote, {
+        expectedPageIndex: null,
+      });
+
+      assert.isFalse(result.matched);
+      assert.include(result.reason, "Cached page text found multiple");
+      assert.deepEqual(dispatchedQueries, []);
+    } finally {
+      restore();
+    }
+  });
+
   it("does not use stale FindController counts and selected pages as a match", async function () {
     const reader = createFindControllerReader([], {
       matchesCountTotal: 1,
@@ -775,6 +1096,36 @@ describe("scrollToExactQuoteInReader", function () {
 
     assert.isFalse(result.matched);
     assert.isUndefined(result.matchedPageIndex);
+  });
+
+  it("waits for a cold reader's FindController before paragraph search", async function () {
+    const readyReader = createFindControllerReader([[], [0], []]);
+    const app = {
+      pdfDocument: { numPages: 3 },
+      pagesCount: 3,
+      page: 2,
+    } as Record<string, unknown>;
+    const reader = {
+      _window: {
+        PDFViewerApplication: app,
+      },
+    };
+
+    setTimeout(() => {
+      const readyApp = readyReader._window.PDFViewerApplication;
+      app.eventBus = readyApp.eventBus;
+      app.findBar = readyApp.findBar;
+      app.findController = readyApp.findController;
+    }, 60);
+
+    const result = await scrollToExactQuoteInReader(
+      reader,
+      "Representational drift remained stable across repeated measurements in the target region.",
+      { expectedPageIndex: 1 },
+    );
+
+    assert.isTrue(result.matched);
+    assert.equal(result.matchedPageIndex, 1);
   });
 
   it("does not use stale find-bar counts and the current viewport page as a match", async function () {
@@ -981,5 +1332,23 @@ describe("locateQuoteByRawPrefixInPages", function () {
     );
     assert.isNotNull(result);
     assert.equal(result!.computedPageIndex, 1);
+  });
+
+  it("resolves MinerU-style math and hyphenation through normalized page text", function () {
+    const result = locateQuoteByRawPrefixInPages(
+      [
+        {
+          pageIndex: 4,
+          pageLabel: "5",
+          text: "The model’s goodness-of-fit, measured by crossvalidated $\\textstyle \\mathbf { R } ^ { 2 }$ (cvR2 ), dropped sharply.",
+        },
+      ],
+      "the model's goodness-of-fit, measured by crossvalidated R² (cvR2 ), dropped",
+      null,
+    );
+
+    assert.isNotNull(result);
+    assert.equal(result!.status, "resolved");
+    assert.equal(result!.computedPageIndex, 4);
   });
 });

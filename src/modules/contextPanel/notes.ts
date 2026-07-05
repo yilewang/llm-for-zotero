@@ -61,10 +61,8 @@ import {
   resolveCodexPaperPortalBaseItem,
 } from "../../codexAppServer/portal";
 import { getMessageCitationPaperContexts } from "./citationContexts";
-import {
-  findMatchingTrustedQuoteCitation,
-  replaceQuoteCitationPlaceholdersForMarkdown,
-} from "./quoteCitations";
+import { findMatchingTrustedQuoteCitation } from "./quoteCitations";
+import { buildQuoteExpandedMarkdown } from "./quoteRenderPlan";
 import {
   buildGeneratedImagesHtmlForNote,
   formatGeneratedImagesMarkdownForNote,
@@ -497,16 +495,14 @@ function buildAssistantNoteHtml(
   generatedImagesHtml = "",
   queryText = "",
 ): string {
-  const query = replaceQuoteCitationPlaceholdersForMarkdown(
-    sanitizeText(queryText || "").trim(),
+  const query = buildQuoteExpandedMarkdown({
+    markdown: sanitizeText(queryText || "").trim(),
     quoteCitations,
-    { unresolved: "omit" },
-  );
-  const response = replaceQuoteCitationPlaceholdersForMarkdown(
-    sanitizeText(stripTrailingPluginFooter(contentText || "")).trim(),
+  });
+  const response = buildQuoteExpandedMarkdown({
+    markdown: sanitizeText(stripTrailingPluginFooter(contentText || "")).trim(),
     quoteCitations,
-    { unresolved: "omit" },
-  );
+  });
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
   let queryHtml = query ? renderRawNoteHtml(query) : "";
@@ -543,16 +539,14 @@ async function buildAssistantNoteHtmlForSave(
     figureRender?: NoteFigureRenderOptions;
   } = {},
 ): Promise<string> {
-  const query = replaceQuoteCitationPlaceholdersForMarkdown(
-    sanitizeText(queryText || "").trim(),
+  const query = buildQuoteExpandedMarkdown({
+    markdown: sanitizeText(queryText || "").trim(),
     quoteCitations,
-    { unresolved: "omit" },
-  );
-  const response = replaceQuoteCitationPlaceholdersForMarkdown(
-    sanitizeText(stripTrailingPluginFooter(contentText || "")).trim(),
+  });
+  const response = buildQuoteExpandedMarkdown({
+    markdown: sanitizeText(stripTrailingPluginFooter(contentText || "")).trim(),
     quoteCitations,
-    { unresolved: "omit" },
-  );
+  });
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
   let queryHtml = query ? await renderRawNoteHtmlForSave(query, options) : "";
@@ -583,11 +577,10 @@ function renderChatMessageHtmlForNote(
   text: string,
   quoteCitations?: QuoteCitation[],
 ): string {
-  const safeText = replaceQuoteCitationPlaceholdersForMarkdown(
-    sanitizeText(text || "").trim(),
+  const safeText = buildQuoteExpandedMarkdown({
+    markdown: sanitizeText(text || "").trim(),
     quoteCitations,
-    { unresolved: "omit" },
-  );
+  });
   if (!safeText) return "";
   // Reuse the same markdown-to-note rendering path as single-response save.
   return renderRawNoteHtml(safeText);
@@ -599,11 +592,10 @@ async function renderChatMessageHtmlForNoteSave(
   figureRender: NoteFigureRenderOptions | undefined,
   quoteCitations?: QuoteCitation[],
 ): Promise<string> {
-  const safeText = replaceQuoteCitationPlaceholdersForMarkdown(
-    sanitizeText(text || "").trim(),
+  const safeText = buildQuoteExpandedMarkdown({
+    markdown: sanitizeText(text || "").trim(),
     quoteCitations,
-    { unresolved: "omit" },
-  );
+  });
   if (!safeText) return "";
   return renderRawNoteHtmlForSave(safeText, {
     noteId,
@@ -958,11 +950,10 @@ export function buildChatHistoryNotePayload(
     }
     const exportedText =
       msg.role === "assistant"
-        ? replaceQuoteCitationPlaceholdersForMarkdown(
-            textWithContext,
-            msg.quoteCitations,
-            { unresolved: "omit" },
-          )
+        ? buildQuoteExpandedMarkdown({
+            markdown: textWithContext,
+            quoteCitations: msg.quoteCitations,
+          })
         : textWithContext;
     if (msg.role === "user") {
       lastUserPaperContexts = getMessageCitationPaperContexts(msg);
@@ -1108,11 +1099,10 @@ async function buildChatHistoryNotePayloadForSave(
     }
     const exportedText =
       msg.role === "assistant"
-        ? replaceQuoteCitationPlaceholdersForMarkdown(
-            textWithContext,
-            msg.quoteCitations,
-            { unresolved: "omit" },
-          )
+        ? buildQuoteExpandedMarkdown({
+            markdown: textWithContext,
+            quoteCitations: msg.quoteCitations,
+          })
         : textWithContext;
     if (msg.role === "user") {
       lastUserPaperContexts = getMessageCitationPaperContexts(msg);

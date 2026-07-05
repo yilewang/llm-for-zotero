@@ -4,6 +4,7 @@ import type { ContextAssemblyStrategy } from "./types";
 export function buildContextPlanSystemMessages(params: {
   strategy: ContextAssemblyStrategy;
   assistantInstruction?: string;
+  coverageReceiptText?: string;
   inputCapEffects?: InputCapEffects;
 }): string[] {
   const messages: string[] = [];
@@ -24,6 +25,17 @@ export function buildContextPlanSystemMessages(params: {
   const assistantInstruction = (params.assistantInstruction || "").trim();
   if (assistantInstruction) {
     messages.push(assistantInstruction);
+  }
+
+  const coverageReceiptText = (params.coverageReceiptText || "").trim();
+  if (coverageReceiptText) {
+    messages.push(
+      [
+        coverageReceiptText,
+        "Use this receipt to calibrate the answer's certainty and coverage.",
+        "If coverage is partial, say which parts are grounded and which would need closer reading.",
+      ].join("\n"),
+    );
   }
 
   const effects = params.inputCapEffects;

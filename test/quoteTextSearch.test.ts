@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  buildFindControllerHighlightQueries,
   buildFindControllerQuoteQueries,
   buildRawPrefixQueries,
   findUniqueQuoteTextSearchMatch,
@@ -53,10 +54,20 @@ describe("quoteTextSearch", function () {
     );
 
     assert.isTrue(
-      result.some((query) => query.includes("t-phate takes as input")),
+      result.some((query) => query.includes("t phate takes as input")),
       result.join("\n"),
     );
     assert.isTrue(
+      result.some((query) =>
+        query.includes("temporal autocorrelation based affinity matrix"),
+      ),
+      result.join("\n"),
+    );
+    assert.isFalse(
+      result.some((query) => query.includes("t-phate takes as input")),
+      result.join("\n"),
+    );
+    assert.isFalse(
       result.some((query) =>
         query.includes("temporal autocorrelation-based affinity matrix"),
       ),
@@ -78,10 +89,42 @@ describe("quoteTextSearch", function () {
     );
   });
 
+  it("builds high-coverage highlight fallbacks from the beginning of moderate-length quotes", function () {
+    const quote = [
+      "In this study, we showed that representational similarity is preserved as a generic mathematical consequence of random connectivity.",
+      "In random networks, pairwise similarities between inputs are largely reflected in the outputs, independent of the specific connectivity pattern.",
+      "Drift merely transitions the network between random instantiations, leaving this similarity intact.",
+    ].join(" ");
+    const result = buildFindControllerHighlightQueries(quote, {
+      maxQueries: 8,
+      maxFullQueryLength: 1200,
+      maxChunkLength: 900,
+    });
+
+    assert.isAbove(quote.length, 220);
+    assert.equal(result[0], quote);
+    assert.isTrue(
+      result.some(
+        (query) =>
+          query.startsWith("In this study") &&
+          query.length > 120 &&
+          query.length < quote.length - 40,
+      ),
+      result.join("\n"),
+    );
+  });
+
   it("preserves non-ASCII locator text during normalization", function () {
     assert.equal(
       normalizeLocatorText("记忆痕迹在巩固过程中具有高度动态性。"),
       "记忆痕迹在巩固过程中具有高度动态性",
+    );
+  });
+
+  it("does not hard-code English phrase splitting during normalization", function () {
+    assert.equal(
+      normalizeLocatorText("crossvalidated goodnessof gradientflow"),
+      "crossvalidated goodnessof gradientflow",
     );
   });
 
@@ -116,6 +159,36 @@ describe("quoteTextSearch", function () {
         },
       ],
       quote,
+    );
+
+    assert.isNull(match);
+  });
+
+  it("does not match a normalized query that starts inside a source token", function () {
+    const match = findUniqueQuoteTextSearchMatch(
+      [
+        {
+          id: "paper-a",
+          text: "Neurodynamic states are controlled by training across sessions.",
+        },
+      ],
+      "Dynamic states are controlled by training across sessions.",
+      { includeProgressiveQueries: false },
+    );
+
+    assert.isNull(match);
+  });
+
+  it("does not match a normalized query that ends inside a source token", function () {
+    const match = findUniqueQuoteTextSearchMatch(
+      [
+        {
+          id: "paper-a",
+          text: "Dynamic states are controlled by training across sessionstable dynamics.",
+        },
+      ],
+      "Dynamic states are controlled by training across sessions.",
+      { includeProgressiveQueries: false },
     );
 
     assert.isNull(match);

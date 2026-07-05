@@ -49,6 +49,20 @@ function readSourceFiles(): Array<{ path: string; content: string }> {
 }
 
 describe("tool guidance contracts", function () {
+  it("keeps library retrieve reference lists aligned with coverage wording", function () {
+    const prompt = AGENT_PERSONA_INSTRUCTIONS.join("\n");
+
+    assert.include(
+      prompt,
+      "If you include a references or bibliography section after library_retrieve",
+    );
+    assert.include(
+      prompt,
+      "either include all planned papers, or label the list as body-evidence references",
+    );
+    assert.include(prompt, "metadata/abstract-only papers");
+  });
+
   const stalePatterns: Array<{ label: string; pattern: RegExp }> = [
     { label: "query_library(query:...)", pattern: /query_library\(query:/ },
     {
@@ -268,7 +282,10 @@ describe("tool guidance contracts", function () {
     assert.include(writeNote!, "switch to text-only mode");
     assert.include(analyzeFigures!, "switch to text-only mode");
     assert.include(agentPersona!, "user manually attached or pasted");
-    assert.include(messageBuilder!, "user-provided image inputs are unaffected");
+    assert.include(
+      messageBuilder!,
+      "user-provided image inputs are unaffected",
+    );
     assert.include(currentNoteTool!, "Do not embed MinerU source image paths");
   });
 
