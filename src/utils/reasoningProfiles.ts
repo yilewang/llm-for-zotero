@@ -624,7 +624,7 @@ const PROFILE_RULES: Record<
         profile: OPENAI_GPT5_CODEX_PROFILE,
       },
       {
-        match: /^gpt-5\.4(?:\b|[.-])/,
+        match: /^gpt-5\.(?:4|5)(?:\b|[.-])/,
         profile: OPENAI_GPT5_XHIGH_PROFILE,
       },
       {
