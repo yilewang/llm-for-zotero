@@ -7,6 +7,10 @@ import {
   getLastKnownSelectedTabId,
   selectZoteroTab,
 } from "../../modules/contextPanel/contextResolution";
+import {
+  PDF_PAGE_MODEL_RENDER_SCALE,
+  capturePdfPageToBytes,
+} from "../../modules/contextPanel/pdfJsPageRenderer";
 import type { ChatAttachment, PaperContextRef } from "../../shared/types";
 import {
   warmPageTextCache,
@@ -96,7 +100,8 @@ type PreparePdfFileParams = ResolvePdfTargetInput & {
 export type SourcePdfFigureExtractionParams = ResolvePdfTargetInput & {
   request: AgentRuntimeRequest;
   paperContext?: PaperContextRef;
-  mineruCacheDir: string;
+  figureCacheDir: string;
+  mineruCacheDir?: string;
   query: string;
   pages?: number[];
   dpi?: number;
@@ -774,134 +779,6 @@ function getReaderDocument(reader: any): Document | null {
     reader?._internalReader?._lastView?._iframeWindow?.document ||
     null
   );
-}
-
-function isCanvasElement(value: unknown): value is HTMLCanvasElement {
-  return Boolean(
-    value &&
-    typeof value === "object" &&
-    typeof (value as { getContext?: unknown }).getContext === "function" &&
-    ((value as { nodeName?: unknown }).nodeName === "CANVAS" ||
-      (value as { tagName?: unknown }).tagName === "CANVAS"),
-  );
-}
-
-function pickLargestCanvas(
-  canvases: Iterable<HTMLCanvasElement>,
-): HTMLCanvasElement | null {
-  let best: HTMLCanvasElement | null = null;
-  let bestArea = 0;
-  for (const canvas of canvases) {
-    const width = Number(canvas?.width) || 0;
-    const height = Number(canvas?.height) || 0;
-    const area = width * height;
-    if (area > bestArea) {
-      best = canvas;
-      bestArea = area;
-    }
-  }
-  return best;
-}
-
-function getPageViewCanvas(
-  app: any,
-  pageIndex: number,
-): HTMLCanvasElement | null {
-  const pageView = unwrapWrappedJsObject(
-    app?.pdfViewer?.getPageView?.(pageIndex) ||
-      app?.pdfViewer?._pages?.[pageIndex] ||
-      null,
-  ) as {
-    canvas?: unknown;
-    div?: Element | null;
-  } | null;
-  if (!pageView) return null;
-  const directCanvas = unwrapWrappedJsObject(pageView.canvas);
-  if (isCanvasElement(directCanvas)) {
-    return directCanvas;
-  }
-  if (pageView.div) {
-    const canvases = Array.from(
-      pageView.div.querySelectorAll("canvas"),
-    ) as HTMLCanvasElement[];
-    return pickLargestCanvas(canvases);
-  }
-  return null;
-}
-
-function findRenderedPageCanvas(
-  doc: Document,
-  pageNumber: number,
-): HTMLCanvasElement | null {
-  const selectors = [
-    `.page[data-page-number="${pageNumber}"] canvas`,
-    `.page[data-page-number="${pageNumber}"] .canvasWrapper canvas`,
-    `[data-page-number="${pageNumber}"] canvas`,
-  ];
-  for (const selector of selectors) {
-    const canvases = Array.from(
-      doc.querySelectorAll(selector),
-    ) as HTMLCanvasElement[];
-    const match = pickLargestCanvas(canvases);
-    if (match) return match;
-  }
-  return null;
-}
-
-async function waitForRenderedPageCanvas(
-  app: any,
-  reader: any,
-  pageNumber: number,
-  timeoutMs = 1800,
-): Promise<HTMLCanvasElement | null> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const pageViewCanvas = getPageViewCanvas(app, pageNumber - 1);
-    if (
-      pageViewCanvas &&
-      pageViewCanvas.width > 0 &&
-      pageViewCanvas.height > 0
-    ) {
-      return pageViewCanvas;
-    }
-    const doc = getReaderDocument(reader);
-    if (doc) {
-      const canvas = findRenderedPageCanvas(doc, pageNumber);
-      if (canvas && canvas.width > 0 && canvas.height > 0) {
-        return canvas;
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 40));
-  }
-  return null;
-}
-
-async function captureRenderedReaderPage(
-  app: any,
-  reader: any,
-  pageIndex: number,
-): Promise<Uint8Array | null> {
-  const sourceCanvas = await waitForRenderedPageCanvas(
-    app,
-    reader,
-    pageIndex + 1,
-  );
-  if (!sourceCanvas) return null;
-  try {
-    return await canvasToBytes(sourceCanvas);
-  } catch (_error) {
-    const doc = sourceCanvas.ownerDocument || getReaderDocument(reader);
-    if (!doc) return null;
-    const tempCanvas = doc.createElement("canvas") as HTMLCanvasElement;
-    tempCanvas.width = Math.max(1, sourceCanvas.width);
-    tempCanvas.height = Math.max(1, sourceCanvas.height);
-    const context = tempCanvas.getContext(
-      "2d",
-    ) as CanvasRenderingContext2D | null;
-    if (!context) return null;
-    context.drawImage(sourceCanvas, 0, 0);
-    return canvasToBytes(tempCanvas);
-  }
 }
 
 async function canvasToBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
@@ -1836,7 +1713,9 @@ export class PdfPageService {
       throw new Error("Subprocess is not available for figure extraction");
     }
     const materialized = await materializePackagedFigureExtractorScript();
-    const cropDir = getPdfFigureCropImageDirForCacheDir(params.mineruCacheDir);
+    const cropDir = getPdfFigureCropImageDirForCacheDir(
+      params.figureCacheDir,
+    );
     const pages = Array.isArray(params.pages)
       ? params.pages
           .filter((page) => Number.isFinite(page) && page >= 0)
@@ -1853,8 +1732,6 @@ export class PdfPageService {
           materialized.scriptPath,
           "--pdf",
           target.storedPath,
-          "--mineru-dir",
-          params.mineruCacheDir,
           "--query",
           params.query || "",
           "--crop-dir",
@@ -1871,9 +1748,15 @@ export class PdfPageService {
           target.attachmentName || target.title || "paper.pdf",
           "--poppler-bin",
           runtime.popplerBinDir,
-          "--use-mineru-targets",
           "--clean-out",
         ];
+        if (params.mineruCacheDir) {
+          args.push(
+            "--mineru-dir",
+            params.mineruCacheDir,
+            "--use-mineru-targets",
+          );
+        }
         if (pages) {
           args.push("--pages", pages);
         }
@@ -2496,58 +2379,11 @@ export class PdfPageService {
     for (const pageIndex of orderedPages) {
       const pageLabel = `${pageIndex + 1}`;
       await navigateReaderToPage(reader, pageIndex, pageLabel);
-      let bytes = await captureRenderedReaderPage(app, reader, pageIndex);
+      const bytes = await capturePdfPageToBytes(app, reader, pageIndex + 1, {
+        scale: PDF_PAGE_MODEL_RENDER_SCALE,
+      });
       if (!bytes) {
-        const canvasDoc =
-          getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
-        if (!canvasDoc) {
-          throw new Error("No document is available for PDF page rendering");
-        }
-        const pdfDocument = unwrapWrappedJsObject(
-          app.pdfDocument as {
-            getPage?: (pageNumber: number) => Promise<unknown>;
-          },
-        );
-        if (typeof pdfDocument?.getPage !== "function") {
-          throw new Error("Could not access the PDF document page loader");
-        }
-        const pdfPage = resolveRenderablePdfPage(
-          await pdfDocument.getPage(pageIndex + 1),
-        );
-        if (!pdfPage) {
-          throw new Error(
-            `Could not access a renderable PDF.js page for page ${pageIndex + 1}`,
-          );
-        }
-        const viewport = pdfPage.getViewport({ scale: 1.8 });
-        const canvas = canvasDoc.createElement("canvas") as HTMLCanvasElement;
-        canvas.width = Math.max(1, Math.ceil(viewport.width));
-        canvas.height = Math.max(1, Math.ceil(viewport.height));
-        const context = canvas.getContext("2d");
-        if (!context) {
-          throw new Error("Could not create a canvas for PDF rendering");
-        }
-        const renderTask = pdfPage.render({
-          canvasContext: context,
-          viewport,
-        });
-        if (
-          renderTask &&
-          typeof renderTask === "object" &&
-          "promise" in renderTask &&
-          renderTask.promise
-        ) {
-          await renderTask.promise;
-        } else if (
-          renderTask &&
-          (typeof renderTask === "object" ||
-            typeof renderTask === "function") &&
-          "then" in renderTask &&
-          typeof renderTask.then === "function"
-        ) {
-          await renderTask;
-        }
-        bytes = await canvasToBytes(canvas);
+        throw new Error(`Could not render PDF page ${pageIndex + 1}`);
       }
       const persisted = await persistAttachmentBlob(
         `${sanitizeText(target.attachmentName || target.title || "pdf")}-page-${pageIndex + 1}.png`,
@@ -2668,58 +2504,11 @@ export class PdfPageService {
     for (const pageIndex of orderedPages) {
       const pageLabel = `${pageIndex + 1}`;
       await navigateReaderToPage(reader, pageIndex, pageLabel);
-      let bytes = await captureRenderedReaderPage(app, reader, pageIndex);
+      const bytes = await capturePdfPageToBytes(app, reader, pageIndex + 1, {
+        scale: PDF_PAGE_MODEL_RENDER_SCALE,
+      });
       if (!bytes) {
-        const canvasDoc =
-          getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
-        if (!canvasDoc) {
-          throw new Error("No document available for PDF page rendering");
-        }
-        const pdfDocument = unwrapWrappedJsObject(
-          app.pdfDocument as {
-            getPage?: (pageNumber: number) => Promise<unknown>;
-          },
-        );
-        if (typeof pdfDocument?.getPage !== "function") {
-          throw new Error("Could not access the PDF document page loader");
-        }
-        const pdfPage = resolveRenderablePdfPage(
-          await pdfDocument.getPage(pageIndex + 1),
-        );
-        if (!pdfPage) {
-          throw new Error(
-            `Could not access a renderable PDF.js page for page ${pageIndex + 1}`,
-          );
-        }
-        const viewport = pdfPage.getViewport({ scale: 1.8 });
-        const canvas = canvasDoc.createElement("canvas") as HTMLCanvasElement;
-        canvas.width = Math.max(1, Math.ceil(viewport.width));
-        canvas.height = Math.max(1, Math.ceil(viewport.height));
-        const context = canvas.getContext("2d");
-        if (!context) {
-          throw new Error("Could not create a canvas for PDF rendering");
-        }
-        const renderTask = pdfPage.render({
-          canvasContext: context,
-          viewport,
-        });
-        if (
-          renderTask &&
-          typeof renderTask === "object" &&
-          "promise" in renderTask &&
-          renderTask.promise
-        ) {
-          await renderTask.promise;
-        } else if (
-          renderTask &&
-          (typeof renderTask === "object" ||
-            typeof renderTask === "function") &&
-          "then" in renderTask &&
-          typeof renderTask.then === "function"
-        ) {
-          await renderTask;
-        }
-        bytes = await canvasToBytes(canvas);
+        throw new Error(`Could not render PDF page ${pageIndex + 1}`);
       }
       const persisted = await persistAttachmentBlob(
         `${sanitizeText(target.attachmentName || target.title || "pdf")}-page-${pageIndex + 1}.png`,
@@ -2835,49 +2624,9 @@ export async function renderAllPdfPages(
     }[] = [];
     for (let i = 0; i < numPages; i++) {
       await navigateReaderToPage(reader, i, `${i + 1}`);
-      let bytes = await captureRenderedReaderPage(app, reader, i);
-      if (!bytes) {
-        // Fallback: render via PDF.js API directly
-        const canvasDoc =
-          getReaderDocument(reader) || Zotero.getMainWindow?.()?.document;
-        if (canvasDoc && typeof pdfDocument?.getPage === "function") {
-          const pdfPage = resolveRenderablePdfPage(
-            await pdfDocument.getPage(i + 1),
-          );
-          if (pdfPage) {
-            const viewport = pdfPage.getViewport({ scale: 1.8 });
-            const canvas = canvasDoc.createElement(
-              "canvas",
-            ) as HTMLCanvasElement;
-            canvas.width = Math.max(1, Math.ceil(viewport.width));
-            canvas.height = Math.max(1, Math.ceil(viewport.height));
-            const context = canvas.getContext("2d");
-            if (context) {
-              const renderTask = pdfPage.render({
-                canvasContext: context,
-                viewport,
-              });
-              if (
-                renderTask &&
-                typeof renderTask === "object" &&
-                "promise" in renderTask &&
-                renderTask.promise
-              ) {
-                await renderTask.promise;
-              } else if (
-                renderTask &&
-                (typeof renderTask === "object" ||
-                  typeof renderTask === "function") &&
-                "then" in renderTask &&
-                typeof renderTask.then === "function"
-              ) {
-                await renderTask;
-              }
-              bytes = await canvasToBytes(canvas);
-            }
-          }
-        }
-      }
+      const bytes = await capturePdfPageToBytes(app, reader, i + 1, {
+        scale: PDF_PAGE_MODEL_RENDER_SCALE,
+      });
       if (!bytes) continue; // skip unrenderable pages
       const persisted = await persistAttachmentBlob(`page-${i + 1}.png`, bytes);
       results.push({

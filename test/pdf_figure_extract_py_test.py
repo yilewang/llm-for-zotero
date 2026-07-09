@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 
@@ -234,6 +235,42 @@ class CaptionWindowTests(unittest.TestCase):
             self.assertEqual(targets[0].source, "pdf-text")
             self.assertEqual(targets[0].page_number, 1)
             self.assertIsNone(targets[0].visual_box)
+
+    def test_direct_mode_accepts_pdf_without_mineru_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf_path = root / "paper.pdf"
+            pdf_path.write_bytes(b"%PDF-1.7\n")
+            json_out = root / "figures.json"
+            original_evaluate_case = self.extractor.evaluate_case
+            self.extractor.evaluate_case = lambda *args, **kwargs: None
+            try:
+                exit_code = self.extractor.run_direct_mode(
+                    SimpleNamespace(
+                        pdf=str(pdf_path),
+                        mineru_dir=None,
+                        out=str(root / "work"),
+                        clean_out=True,
+                        attachment_id="22",
+                        attachment_key="",
+                        source_filename="paper.pdf",
+                        poppler_bin="/tmp/poppler",
+                        dpi=216,
+                        use_mineru_targets=False,
+                        json_out=str(json_out),
+                        pages="",
+                        query="Figure 1",
+                        crop_dir=str(root / "crops"),
+                    )
+                )
+            finally:
+                self.extractor.evaluate_case = original_evaluate_case
+
+            self.assertEqual(exit_code, 0)
+            payload = json.loads(json_out.read_text())
+            self.assertEqual(payload["status"], "no_figures")
+            self.assertIsNone(payload.get("mineruDir"))
+            self.assertIn("PDF text", payload["warnings"][0])
 
     def test_run_uses_platform_path_separator_for_poppler_bin(self):
         original_run = self.extractor.subprocess.run

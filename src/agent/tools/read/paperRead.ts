@@ -275,11 +275,9 @@ async function buildMineruVisualRedirect(params: {
   } catch {
     return null;
   }
-  const paperContext = targets.find((entry) =>
-    Boolean(normalizeString(entry.mineruCacheDir)),
-  );
+  const paperContext = targets[0] || null;
   const mineruCacheDir = normalizeString(paperContext?.mineruCacheDir);
-  if (!paperContext || !mineruCacheDir) return null;
+  if (!paperContext) return null;
   const query = params.input.query || params.context.request.userText || "";
   if (
     isTableOnlyInterpretationRequest(
@@ -287,6 +285,7 @@ async function buildMineruVisualRedirect(params: {
       params.context.request.userText,
     )
   ) {
+    if (!mineruCacheDir) return null;
     return {
       mode: "visual",
       status: "use_text_mode",
@@ -307,9 +306,9 @@ async function buildMineruVisualRedirect(params: {
     backend: "pdf_figure_extraction",
     query,
     paperContext,
-    mineruCacheDir,
+    ...(mineruCacheDir ? { mineruCacheDir } : {}),
     guidance:
-      "This is a figure/image request for a MinerU-ready paper. Do not read MinerU image paths and do not use paper_read mode:'visual' for figure interpretation. Call paper_read({ mode:'figures', query:'<figure/table label or all figures>' }) to get precise PDF crops plus captions/provenance. Use mode:'visual' only for explicit raw/rendered PDF page or layout inspection.",
+      "This is a figure/image request for a Zotero library PDF. Do not read MinerU image paths and do not use paper_read mode:'visual' for figure interpretation. Call paper_read({ mode:'figures', query:'<figure/table label or all figures>' }) to get precise PDF crops plus captions/provenance. Use mode:'visual' only for explicit raw/rendered PDF page or layout inspection.",
     nextSteps: [
       `paper_read({ mode:'figures', query:'${query.replace(/'/g, "\\'")}' })`,
     ],
@@ -635,7 +634,7 @@ function formatSourcePhrase(
   return null;
 }
 
-async function hydrateMineruReadyFigureTargets(
+async function hydrateFigureTargetsWithMineruMetadata(
   targets: NonNullable<PdfTarget["paperContext"]>[],
   zoteroGateway: ZoteroGateway,
 ): Promise<NonNullable<PdfTarget["paperContext"]>[]> {
@@ -659,10 +658,16 @@ async function hydrateMineruReadyFigureTargets(
       hydrated.push(target);
       continue;
     }
-    if (!attachmentInfoLoader) continue;
+    if (!attachmentInfoLoader) {
+      hydrated.push(target);
+      continue;
+    }
     const itemId = Math.floor(Number(target.itemId || 0));
     const contextItemId = Math.floor(Number(target.contextItemId || 0));
-    if (!itemId || !contextItemId) continue;
+    if (!itemId || !contextItemId) {
+      hydrated.push(target);
+      continue;
+    }
     let infoPromise = attachmentInfoByItem.get(itemId);
     if (!infoPromise) {
       infoPromise = attachmentInfoLoader.call(zoteroGateway, itemId);
@@ -678,7 +683,10 @@ async function hydrateMineruReadyFigureTargets(
       (entry) => Math.floor(Number(entry.contextItemId || 0)) === contextItemId,
     );
     const mineruCacheDir = normalizeString(matchingAttachment?.mineruCacheDir);
-    if (!mineruCacheDir) continue;
+    if (!mineruCacheDir) {
+      hydrated.push(target);
+      continue;
+    }
     hydrated.push({
       ...target,
       contentSourceMode: target.contentSourceMode || "mineru",
@@ -737,7 +745,7 @@ export function createPaperReadTool(
     spec: {
       name: "paper_read",
       description:
-        "Read content from the active or targeted paper through one semantic tool. Use mode:'overview' for main-message summaries, mode:'targeted' for textual evidence/sections/pages, mode:'figures' for precise extracted figures from MinerU-ready PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
+        "Read content from the active or targeted paper through one semantic tool. Use mode:'overview' for main-message summaries, mode:'targeted' for textual evidence/sections/pages, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -746,7 +754,7 @@ export function createPaperReadTool(
             type: "string",
             enum: ["overview", "targeted", "figures", "visual", "capture"],
             description:
-              "overview = summary/main message; targeted = text evidence by query/sections/pages; figures = precise extracted figures from MinerU-ready PDFs; visual = rendered PDF pages/layout; capture = current reader page.",
+              "overview = summary/main message; targeted = text evidence by query/sections/pages; figures = precise extracted figures from Zotero library PDFs; visual = rendered PDF pages/layout; capture = current reader page.",
           },
           target: {
             type: "object",
@@ -959,19 +967,10 @@ export function createPaperReadTool(
               "Tables are handled through extracted MinerU text/table content, not the figure-crop extractor. Use paper_read mode:'targeted' with the table label and surrounding discussion.",
           };
         }
-        const mineruTargets = await hydrateMineruReadyFigureTargets(
+        const figureTargets = await hydrateFigureTargetsWithMineruMetadata(
           targets,
           zoteroGateway,
         );
-        if (!mineruTargets.length) {
-          return {
-            mode: "figures",
-            status: "mineru_required",
-            query: input.query || context.request.userText || "",
-            warning:
-              "Precise figure extraction is available only for MinerU-ready papers.",
-          };
-        }
         if (!figureExtractionService) {
           return {
             mode: "figures",
@@ -983,7 +982,7 @@ export function createPaperReadTool(
         const figureResult = await figureExtractionService.extractFigures({
           input,
           context,
-          paperContexts: mineruTargets,
+          paperContexts: figureTargets,
         });
         const { artifacts, ...content } = figureResult;
         return artifacts?.length ? { content, artifacts } : content;

@@ -1,9 +1,9 @@
 import { getActiveReaderForSelectedTab } from "./contextResolution";
 
-const PDF_PAGE_MODEL_RENDER_SCALE = 2.6;
+export const PDF_PAGE_MODEL_RENDER_SCALE = 2.6;
 const PDF_PAGE_MODEL_RETRY_SCALE = 2.0;
 
-function getPdfPageRenderScaleForCount(total: number): number {
+export function getPdfPageRenderScaleForCount(total: number): number {
   if (!Number.isFinite(total) || total <= 0) return PDF_PAGE_MODEL_RENDER_SCALE;
   if (total >= 24) return 2.0;
   if (total >= 12) return 2.2;
@@ -98,7 +98,7 @@ function resolveRenderablePdfPage(value: unknown): RenderablePdfPage | null {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getPdfViewerApplication(reader: any): any | null {
+export function getPdfViewerApplication(reader: any): any | null {
   const candidates = [
     reader?._internalReader?._lastView,
     reader?._internalReader?._primaryView,
@@ -794,13 +794,42 @@ function clearRenderCanvas(
   }
 }
 
-async function renderPdfPageToDataUrl(
+export type PdfJsPageRenderOptions = {
+  scale?: number;
+  allowVisibleCanvasFallback?: boolean;
+};
+
+function dataUrlToBytes(dataUrl: string): Uint8Array | null {
+  const base64 = dataUrl.split(",")[1] || "";
+  if (!base64) return null;
+  const atobFn = (globalThis as unknown as { atob?: (value: string) => string })
+    .atob;
+  if (typeof atobFn === "function") {
+    const binary = atobFn(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  }
+  const bufferCtor = (
+    globalThis as unknown as {
+      Buffer?: { from?: (value: string, encoding: "base64") => Uint8Array };
+    }
+  ).Buffer;
+  if (typeof bufferCtor?.from === "function") {
+    return new Uint8Array(bufferCtor.from(base64, "base64"));
+  }
+  return null;
+}
+
+export async function renderPdfPageToDataUrl(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   reader: any,
   pageNumber: number,
-  options: { scale?: number } = {},
+  options: PdfJsPageRenderOptions = {},
 ): Promise<string | null> {
   const canvasDoc =
     getPdfApplicationDocument(app, reader) ||
@@ -924,6 +953,18 @@ async function renderPdfPageToDataUrl(
   }
 }
 
+export async function renderPdfPageToBytes(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reader: any,
+  pageNumber: number,
+  options: PdfJsPageRenderOptions = {},
+): Promise<Uint8Array | null> {
+  const dataUrl = await renderPdfPageToDataUrl(app, reader, pageNumber, options);
+  return dataUrl ? dataUrlToBytes(dataUrl) : null;
+}
+
 /**
  * Captures the currently visible PDF page in the active Zotero reader as a
  * PNG data URL, or returns null if no PDF is open / rendering fails.
@@ -1040,13 +1081,13 @@ async function navigateReaderToPage(
  * Prefers off-screen PDF.js rendering and only falls back to the visible reader
  * canvas after off-screen attempts fail.
  */
-async function capturePageByNavigation(
+export async function capturePdfPageToDataUrl(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   reader: any,
   pageNumber: number,
-  options: { scale?: number } = {},
+  options: PdfJsPageRenderOptions = {},
 ): Promise<string | null> {
   const primary = await renderPdfPageToDataUrl(app, reader, pageNumber, {
     scale: options.scale,
@@ -1063,6 +1104,8 @@ async function capturePageByNavigation(
   });
   if (retry) return retry;
 
+  if (options.allowVisibleCanvasFallback === false) return null;
+
   await navigateReaderToPage(reader, pageNumber - 1);
   const rendered = await waitForRenderedPageCanvas(
     app,
@@ -1078,6 +1121,23 @@ async function capturePageByNavigation(
   }
 
   return null;
+}
+
+export async function capturePdfPageToBytes(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reader: any,
+  pageNumber: number,
+  options: PdfJsPageRenderOptions = {},
+): Promise<Uint8Array | null> {
+  const dataUrl = await capturePdfPageToDataUrl(
+    app,
+    reader,
+    pageNumber,
+    options,
+  );
+  return dataUrl ? dataUrlToBytes(dataUrl) : null;
 }
 
 /**
@@ -1111,7 +1171,7 @@ export async function capturePdfPages(
   try {
     for (let idx = 0; idx < total; idx++) {
       opts?.onProgress?.(idx + 1, total);
-      const dataUrl = await capturePageByNavigation(
+      const dataUrl = await capturePdfPageToDataUrl(
         app,
         reader,
         pageNumbers[idx],

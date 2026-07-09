@@ -1030,7 +1030,7 @@ describe("semantic tool surface", function () {
     assert.include(modeSchema?.enum || [], "figures");
   });
 
-  it("paper_read figures requires a MinerU-ready paper", async function () {
+  it("paper_read figures accepts library PDFs without MinerU cache", async function () {
     const paperContext = {
       itemId: 11,
       contextItemId: 22,
@@ -1038,6 +1038,7 @@ describe("semantic tool surface", function () {
       firstCreator: "Miller",
       year: "2025",
     };
+    const extractionContexts: unknown[] = [];
     const tool = createPaperReadTool(
       {} as never,
       {} as never,
@@ -1046,6 +1047,24 @@ describe("semantic tool surface", function () {
         listPaperContexts: () => [paperContext],
         resolvePaperContextTarget: () => paperContext,
       } as never,
+      {
+        extractFigures: async ({ paperContexts }) => {
+          extractionContexts.push(...paperContexts);
+          return {
+            mode: "figures",
+            status: "ok",
+            query: "Explain Figure 1",
+            figures: [
+              {
+                id: "figure-1",
+                label: "Figure 1",
+                cropPath:
+                  "/tmp/zotero/llm-for-zotero-pdf-figure-crops/22/figure_crops/crops/figure-1.png",
+              },
+            ],
+          };
+        },
+      },
     );
     const validated = tool.validate({
       mode: "figures",
@@ -1064,8 +1083,8 @@ describe("semantic tool surface", function () {
     })) as Record<string, unknown>;
 
     assert.equal(output.mode, "figures");
-    assert.equal(output.status, "mineru_required");
-    assert.notProperty(output, "artifacts");
+    assert.equal(output.status, "ok");
+    assert.deepEqual(extractionContexts, [paperContext]);
   });
 
   it("paper_read figures hydrates MinerU cache metadata from the Zotero attachment", async function () {

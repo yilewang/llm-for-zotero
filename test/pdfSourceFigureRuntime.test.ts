@@ -188,7 +188,7 @@ describe("PdfPageService source-PDF figure runtime", function () {
     else globalScope._globalThis = originalSandboxGlobal;
   });
 
-  async function extractWithService() {
+  async function extractWithService(overrides: Record<string, unknown> = {}) {
     const service = new PdfPageService({} as never, {} as never);
     return service.extractFiguresFromSourcePdf({
       request: {
@@ -198,10 +198,12 @@ describe("PdfPageService source-PDF figure runtime", function () {
         libraryID: 1,
       },
       paperContext,
+      figureCacheDir: "/tmp/mineru-paper",
       mineruCacheDir: "/tmp/mineru-paper",
       query: "Figure 1",
       dpi: 216,
-    });
+      ...overrides,
+    } as never);
   }
 
   it("uses an installed managed runtime before any system runtime", async function () {
@@ -259,6 +261,44 @@ describe("PdfPageService source-PDF figure runtime", function () {
     await extractWithService();
 
     assert.include(capturedCall?.arguments || [], "--use-mineru-targets");
+    assert.include(capturedCall?.arguments || [], "--mineru-dir");
+    const mineruArg = capturedCall?.arguments.indexOf("--mineru-dir") ?? -1;
+    assert.equal(capturedCall?.arguments[mineruArg + 1], "/tmp/mineru-paper");
+  });
+
+  it("omits MinerU arguments for source PDFs without a MinerU cache", async function () {
+    const runtimeRoot =
+      "/tmp/zotero/llm-for-zotero-runtimes/pdf-figure-extractor/1/macos-arm64";
+    files.set(
+      `${runtimeRoot}/runtime.json`,
+      encoder.encode(
+        JSON.stringify({
+          kind: "llm-for-zotero/pdf-figure-runtime",
+          version: "1",
+          platform: "macos-arm64",
+          pythonPath: "bin/python3",
+          popplerBinDir: "bin",
+        }),
+      ),
+    );
+    files.set(`${runtimeRoot}/bin/python3`, encoder.encode("#!/bin/sh\n"));
+    files.set(`${runtimeRoot}/bin/pdftoppm`, encoder.encode("#!/bin/sh\n"));
+    files.set(`${runtimeRoot}/bin/pdftohtml`, encoder.encode("#!/bin/sh\n"));
+    files.set(`${runtimeRoot}/bin/pdfinfo`, encoder.encode("#!/bin/sh\n"));
+
+    await extractWithService({
+      figureCacheDir: "/tmp/pdf-figure-cache/22",
+      mineruCacheDir: undefined,
+    });
+
+    assert.notInclude(capturedCall?.arguments || [], "--use-mineru-targets");
+    assert.notInclude(capturedCall?.arguments || [], "--mineru-dir");
+    const cropArg = capturedCall?.arguments.indexOf("--crop-dir") ?? -1;
+    assert.isAtLeast(cropArg, 0);
+    assert.equal(
+      capturedCall?.arguments[cropArg + 1],
+      "/tmp/pdf-figure-cache/22/figure_crops/crops",
+    );
   });
 
   it("downloads and installs the managed runtime when it is missing", async function () {

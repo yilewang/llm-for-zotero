@@ -2365,29 +2365,32 @@ def parse_page_set(raw: str | None) -> set[int]:
 
 def run_direct_mode(args: argparse.Namespace) -> int:
     pdf_path = Path(args.pdf).expanduser()
-    mineru_dir = Path(args.mineru_dir).expanduser()
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
-    if not mineru_dir.exists():
-        raise FileNotFoundError(f"MinerU cache directory not found: {mineru_dir}")
     work_dir = Path(args.out).expanduser()
+    mineru_dir = Path(args.mineru_dir).expanduser() if args.mineru_dir else None
+    if args.use_mineru_targets and mineru_dir is None:
+        raise ValueError("MinerU cache directory is required for MinerU targets")
+    if mineru_dir is not None and not mineru_dir.exists():
+        raise FileNotFoundError(f"MinerU cache directory not found: {mineru_dir}")
     if args.clean_out and work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     source_data: dict[str, Any] = {}
-    source_path = mineru_dir / "_llm_source.json"
-    if source_path.exists():
+    source_path = mineru_dir / "_llm_source.json" if mineru_dir else None
+    if source_path and source_path.exists():
         try:
             source_data = json.loads(source_path.read_text())
         except Exception:
             source_data = {}
+    case_mineru_dir = mineru_dir or (work_dir / "_pdf_only_no_mineru")
     case = PdfCase(
         attachment_id=int(args.attachment_id or source_data.get("attachmentId") or 0),
         attachment_key=str(args.attachment_key or source_data.get("attachmentKey") or "source"),
         parent_item_key=str(source_data.get("parentItemKey") or ""),
         source_filename=str(args.source_filename or source_data.get("sourceFilename") or pdf_path.name),
         pdf_path=pdf_path,
-        mineru_dir=mineru_dir,
+        mineru_dir=case_mineru_dir,
     )
     try:
         result = evaluate_case(
@@ -2402,7 +2405,7 @@ def run_direct_mode(args: argparse.Namespace) -> int:
             "status": "error",
             "algorithmVersion": DIRECT_EXTRACTOR_VERSION,
             "pdfPath": str(pdf_path),
-            "mineruDir": str(mineru_dir),
+            "mineruDir": str(mineru_dir) if mineru_dir else None,
             "expectedFigures": [],
             "missingFigures": [],
             "figures": [],
@@ -2419,7 +2422,7 @@ def run_direct_mode(args: argparse.Namespace) -> int:
             "status": "no_figures",
             "algorithmVersion": DIRECT_EXTRACTOR_VERSION,
             "pdfPath": str(pdf_path),
-            "mineruDir": str(mineru_dir),
+            "mineruDir": str(mineru_dir) if mineru_dir else None,
             "figures": [],
             "warnings": [f"No figure targets were resolved from {target_source}."],
         }
@@ -2453,7 +2456,7 @@ def run_direct_mode(args: argparse.Namespace) -> int:
             "status": "ok" if figures else "no_figures",
             "algorithmVersion": DIRECT_EXTRACTOR_VERSION,
             "pdfPath": str(pdf_path),
-            "mineruDir": str(mineru_dir),
+            "mineruDir": str(mineru_dir) if mineru_dir else None,
             "contactSheet": result.get("contactSheet"),
             "overlaySheet": result.get("overlaySheet"),
             "targetCount": result.get("targetCount", 0),
@@ -2718,8 +2721,10 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.pdf or args.mineru_dir:
-        if not args.pdf or not args.mineru_dir:
-            parser.error("--pdf and --mineru-dir must be provided together")
+        if not args.pdf:
+            parser.error("--pdf is required in direct extraction mode")
+        if args.use_mineru_targets and not args.mineru_dir:
+            parser.error("--mineru-dir is required with --use-mineru-targets")
         if not args.crop_dir:
             parser.error("--crop-dir is required in direct extraction mode")
         raise SystemExit(run_direct_mode(args))

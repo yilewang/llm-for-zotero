@@ -5,6 +5,7 @@ import {
   resolveAddonRootUri,
   resolveRenderablePdfPage,
 } from "../src/agent/services/pdfPageService";
+import { renderPdfPageToBytes } from "../src/modules/contextPanel/pdfJsPageRenderer";
 
 describe("pdfPageService", function () {
   const globalScope = globalThis as typeof globalThis & {
@@ -221,5 +222,76 @@ describe("pdfPageService", function () {
     assert.equal(rendered.pageIndex, 2);
     assert.equal(rendered.width, 18);
     assert.equal(rendered.height, 36);
+  });
+
+  it("renders model PDF pages through the shared PDF.js offscreen renderer", async function () {
+    const dataUrl = `data:image/png;base64,${Buffer.from("png-bytes").toString("base64")}`;
+    const nonBlankPixels = new Uint8ClampedArray(128 * 128 * 4);
+    for (let index = 0; index < nonBlankPixels.length; index += 4) {
+      nonBlankPixels[index] = 0;
+      nonBlankPixels[index + 1] = 0;
+      nonBlankPixels[index + 2] = 0;
+      nonBlankPixels[index + 3] = 255;
+    }
+    const renderWindow = {
+      Object,
+      Array,
+      document: null as unknown,
+    };
+    const canvasDoc = {
+      defaultView: renderWindow,
+      createElement: () => ({
+        width: 0,
+        height: 0,
+        style: {},
+        ownerDocument: canvasDoc,
+        getContext: () => ({
+          save: () => undefined,
+          restore: () => undefined,
+          setTransform: () => undefined,
+          clearRect: () => undefined,
+          fillRect: () => undefined,
+          drawImage: () => undefined,
+          getImageData: () => ({ data: nonBlankPixels }),
+        }),
+        toDataURL: () => dataUrl,
+      }),
+      fonts: { status: "loaded" },
+    };
+    renderWindow.document = canvasDoc;
+    let getPageCalls = 0;
+    let renderCalls = 0;
+    const app = {
+      pdfDocument: {
+        getPage: async (pageNumber: number) => {
+          getPageCalls += 1;
+          assert.equal(pageNumber, 2);
+          return {
+            getViewport: ({ scale }: { scale: number }) => ({
+              width: 100 * scale,
+              height: 200 * scale,
+              scale,
+            }),
+            render: () => {
+              renderCalls += 1;
+              return { promise: Promise.resolve() };
+            },
+            cleanup: () => undefined,
+          };
+        },
+      },
+      pdfViewer: { container: { ownerDocument: canvasDoc } },
+    };
+
+    const bytes = await renderPdfPageToBytes(
+      app,
+      { _iframeWindow: { document: canvasDoc } },
+      2,
+      { allowVisibleCanvasFallback: false, scale: 2.6 },
+    );
+
+    assert.equal(getPageCalls, 1);
+    assert.equal(renderCalls, 1);
+    assert.deepEqual(Buffer.from(bytes || []).toString(), "png-bytes");
   });
 });

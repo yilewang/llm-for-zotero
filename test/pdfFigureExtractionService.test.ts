@@ -13,8 +13,10 @@ describe("PdfFigureExtractionService", function () {
   const decoder = new TextDecoder();
   const globalScope = globalThis as typeof globalThis & {
     IOUtils?: unknown;
+    Zotero?: unknown;
   };
   let originalIOUtils: unknown;
+  let originalZotero: unknown;
   let files: Map<string, Uint8Array>;
   let removedPaths: Array<{
     path: string;
@@ -60,6 +62,7 @@ describe("PdfFigureExtractionService", function () {
 
   beforeEach(function () {
     originalIOUtils = globalScope.IOUtils;
+    originalZotero = globalScope.Zotero;
     files = new Map<string, Uint8Array>();
     removedPaths = [];
     writeFile = (path: string, value: string) =>
@@ -98,6 +101,9 @@ describe("PdfFigureExtractionService", function () {
         return [...children];
       },
     };
+    globalScope.Zotero = {
+      DataDirectory: { dir: "/tmp/zotero" },
+    };
   });
 
   afterEach(function () {
@@ -105,6 +111,11 @@ describe("PdfFigureExtractionService", function () {
       delete globalScope.IOUtils;
     } else {
       globalScope.IOUtils = originalIOUtils;
+    }
+    if (originalZotero === undefined) {
+      delete globalScope.Zotero;
+    } else {
+      globalScope.Zotero = originalZotero;
     }
   });
 
@@ -657,6 +668,58 @@ describe("PdfFigureExtractionService", function () {
     assert.equal(cache.version, 2);
     assert.equal(cache.algorithmVersion, 9);
     assert.equal(cache.entries[0].source, "pdf-image-object");
+  });
+
+  it("uses source-PDF extraction for library PDFs without MinerU cache", async function () {
+    const pdfOnlyPaperContext = {
+      ...paperContext,
+      mineruCacheDir: undefined,
+    };
+    const cropPath =
+      "/tmp/zotero/llm-for-zotero-pdf-figure-crops/22/figure_crops/crops/figure-1-p2.png";
+    let rawParams: { figureCacheDir?: string; mineruCacheDir?: string } | null =
+      null;
+
+    const result = await new PdfFigureExtractionService({
+      extractFiguresFromSourcePdf: async (params: {
+        query: string;
+        figureCacheDir: string;
+        mineruCacheDir?: string;
+      }) => {
+        rawParams = params;
+        return [
+          {
+            id: "figure-1-p2",
+            label: "Figure 1",
+            baseLabel: "Figure 1",
+            pageNumber: 2,
+            cropPath,
+            captionText: "Figure 1. First precise result.",
+            rect: { left: 57, top: 80, width: 451, height: 331 },
+            confidence: 0.9,
+            source: "pdf-image-object" as const,
+            warnings: [],
+            mineruImagePaths: [],
+          },
+        ];
+      },
+    } as never).extractFigures({
+      input: { query: "explain Figure 1" },
+      context,
+      paperContexts: [pdfOnlyPaperContext],
+    });
+
+    assert.equal(result.status, "ok");
+    assert.equal(
+      rawParams?.figureCacheDir,
+      "/tmp/zotero/llm-for-zotero-pdf-figure-crops/22",
+    );
+    assert.isUndefined(rawParams?.mineruCacheDir);
+    assert.notMatch(result.warnings?.join("\n") || "", /MinerU-ready/i);
+    const cacheBytes = files.get(
+      "/tmp/zotero/llm-for-zotero-pdf-figure-crops/22/figure_crops/figure_geometry.json",
+    );
+    assert.instanceOf(cacheBytes, Uint8Array);
   });
 
   it("removes raw MinerU source images after writing a ready crop cache", async function () {

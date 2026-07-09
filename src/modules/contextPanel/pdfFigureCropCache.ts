@@ -9,6 +9,8 @@ export const PDF_FIGURE_CROP_CACHE_VERSION = 2;
 export const PDF_FIGURE_CROP_ALGORITHM_VERSION = 9;
 export const PDF_FIGURE_CROP_DIR = "figure_crops";
 export const PDF_FIGURE_CROP_METADATA_FILE = "figure_geometry.json";
+export const PDF_FIGURE_CROP_STANDALONE_ROOT_DIR =
+  "llm-for-zotero-pdf-figure-crops";
 
 export type ExtractedPdfFigure = {
   id: string;
@@ -71,6 +73,45 @@ type PdfFigureCropFingerprintInput = Pick<
 function normalizePositiveInt(value: unknown): number {
   const number = Math.floor(Number(value));
   return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function getBaseWritableDir(): string {
+  const zotero = (globalThis as unknown as {
+    Zotero?: {
+      DataDirectory?: { dir?: string };
+      Profile?: { dir?: string };
+      getTempDirectory?: () => { path?: string } | null;
+    };
+  }).Zotero;
+  const dataDir = zotero?.DataDirectory?.dir;
+  if (typeof dataDir === "string" && dataDir.trim()) {
+    return dataDir.trim();
+  }
+  const profileDir = zotero?.Profile?.dir;
+  if (typeof profileDir === "string" && profileDir.trim()) {
+    return profileDir.trim();
+  }
+  const tempDirObj = zotero?.getTempDirectory?.();
+  if (typeof tempDirObj?.path === "string" && tempDirObj.path.trim()) {
+    return tempDirObj.path.trim();
+  }
+  throw new Error(
+    "Cannot resolve writable data directory for PDF figure crops",
+  );
+}
+
+export function getStandalonePdfFigureCropCacheDirForAttachmentId(
+  attachmentId: number,
+): string {
+  const normalizedAttachmentId = normalizePositiveInt(attachmentId);
+  if (!normalizedAttachmentId) {
+    throw new Error("Cannot resolve PDF figure cache without an attachment ID");
+  }
+  return joinLocalPath(
+    getBaseWritableDir(),
+    PDF_FIGURE_CROP_STANDALONE_ROOT_DIR,
+    `${normalizedAttachmentId}`,
+  );
 }
 
 export function buildPdfFigureCropStableHash(value: string): string {

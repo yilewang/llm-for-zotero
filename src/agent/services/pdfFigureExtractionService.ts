@@ -9,6 +9,7 @@ import {
   buildPdfFigureCropManifestHash,
   buildPdfFigureCropPdfFingerprint,
   getPdfFigureCropCacheFreshness,
+  getStandalonePdfFigureCropCacheDirForAttachmentId,
   pdfFigureCropFileExists,
   readPdfFigureCropCacheFromDir,
   removePdfFigureCropCacheDir,
@@ -41,7 +42,8 @@ type FigureCropPageService = PdfPageService & {
   extractFiguresFromSourcePdf?: (params: {
     request: AgentToolContext["request"];
     paperContext?: NonNullable<PdfTarget["paperContext"]>;
-    mineruCacheDir: string;
+    figureCacheDir: string;
+    mineruCacheDir?: string;
     query: string;
     pages?: number[];
     dpi?: number;
@@ -528,16 +530,23 @@ export class PdfFigureExtractionService {
     for (const paperContext of params.paperContexts) {
       const attachmentId = Math.floor(Number(paperContext.contextItemId || 0));
       const mineruCacheDir = normalizeText(paperContext.mineruCacheDir);
-      if (!attachmentId || !mineruCacheDir) {
-        warnings.push(`${paperContext.title || "Paper"} is not MinerU-ready.`);
+      if (!attachmentId) {
+        warnings.push(
+          `${paperContext.title || "Paper"} does not have a Zotero PDF attachment ID.`,
+        );
         continue;
       }
+      const figureCacheDir =
+        mineruCacheDir ||
+        getStandalonePdfFigureCropCacheDirForAttachmentId(attachmentId);
 
-      const manifest = await readMineruManifestFromDir(mineruCacheDir);
+      const manifest = mineruCacheDir
+        ? await readMineruManifestFromDir(mineruCacheDir)
+        : null;
       const manifestHash = buildPdfFigureCropManifestHash(manifest);
       const pdfFingerprint = buildPdfFigureCropPdfFingerprint(paperContext);
       const cached = await readVerifiedCachedFigures({
-        cacheDir: mineruCacheDir,
+        cacheDir: figureCacheDir,
         attachmentId,
         manifest,
         manifestHash,
@@ -574,7 +583,7 @@ export class PdfFigureExtractionService {
           figures.push(figure);
           artifacts.push(artifactForFigure(figure, paperContext));
         }
-        await writePdfFigureCropCacheToDir(mineruCacheDir, {
+        await writePdfFigureCropCacheToDir(figureCacheDir, {
           version: PDF_FIGURE_CROP_CACHE_VERSION,
           attachmentId,
           manifestHash,
@@ -586,17 +595,19 @@ export class PdfFigureExtractionService {
           missingFigures: rawMissingFigures,
           entries: rawFigures,
         });
-        try {
-          await pruneMineruSourceImagesWhenFigureCropsReady(
-            mineruCacheDir,
-            manifest,
-          );
-        } catch (error) {
-          warnings.push(
-            `Could not remove MinerU source images after figure extraction: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
+        if (mineruCacheDir) {
+          try {
+            await pruneMineruSourceImagesWhenFigureCropsReady(
+              mineruCacheDir,
+              manifest,
+            );
+          } catch (error) {
+            warnings.push(
+              `Could not remove MinerU source images after figure extraction: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
         }
         return true;
       };
@@ -611,7 +622,8 @@ export class PdfFigureExtractionService {
           {
             request: params.context.request,
             paperContext,
-            mineruCacheDir,
+            figureCacheDir,
+            ...(mineruCacheDir ? { mineruCacheDir } : {}),
             query,
             pages: params.input.pages,
             dpi: 216,
