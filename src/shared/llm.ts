@@ -27,6 +27,7 @@ export type ChatMessage = {
 export type ReasoningConfig = {
   provider: ReasoningProvider;
   level: ReasoningLevel;
+  effort?: string;
 };
 
 export type ReasoningEvent = {

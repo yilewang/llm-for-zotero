@@ -1,12 +1,14 @@
 import { assert } from "chai";
 import {
   getCodexAppServerApprovalsReviewerPref,
+  getCodexReasoningModePref,
   getCodexRuntimeModelPref,
   isCodexZoteroMcpToolsEnabled,
   isCodexAppServerNativeApprovalsEnabled,
   isNativeZoteroMcpToolsEnabled,
   setCodexAppServerApprovalsReviewerPref,
   setCodexAppServerNativeApprovalsEnabled,
+  setCodexReasoningModePref,
   setCodexRuntimeModelPref,
   setNativeZoteroMcpToolsEnabled,
 } from "../src/codexAppServer/prefs";
@@ -31,6 +33,38 @@ describe("codexAppServer prefs", function () {
       setCodexRuntimeModelPref("gpt-5.5-codex-preview");
 
       assert.equal(getCodexRuntimeModelPref(), "gpt-5.5-codex-preview");
+    } finally {
+      if (originalZotero) {
+        globalScope.Zotero = originalZotero;
+      } else {
+        delete globalScope.Zotero;
+      }
+    }
+  });
+
+  it("allows catalog-advertised Codex reasoning effort names", function () {
+    const globalScope = globalThis as typeof globalThis & {
+      Zotero?: unknown;
+    };
+    const originalZotero = globalScope.Zotero;
+    const prefs = new Map<string, unknown>();
+    try {
+      globalScope.Zotero = {
+        Prefs: {
+          get: (key: string) => prefs.get(key),
+          set: (key: string, value: unknown) => {
+            prefs.set(key, value);
+          },
+        },
+      };
+
+      for (const mode of ["max", "ultra", "future-effort"]) {
+        setCodexReasoningModePref(mode);
+        assert.equal(getCodexReasoningModePref(), mode);
+      }
+
+      setCodexReasoningModePref("");
+      assert.equal(getCodexReasoningModePref(), "auto");
     } finally {
       if (originalZotero) {
         globalScope.Zotero = originalZotero;

@@ -205,6 +205,39 @@ describe("codexAppServerProcess", function () {
         summary: "detailed",
       },
     );
+    assert.deepEqual(
+      resolveCodexAppServerReasoningParams({
+        provider: "openai",
+        level: "default",
+        effort: "max",
+      }),
+      {
+        effort: "max",
+        summary: "detailed",
+      },
+    );
+    assert.deepEqual(
+      resolveCodexAppServerReasoningParams({
+        provider: "openai",
+        level: "default",
+        effort: "ultra",
+      }),
+      {
+        effort: "ultra",
+        summary: "detailed",
+      },
+    );
+    assert.deepEqual(
+      resolveCodexAppServerReasoningParams({
+        provider: "openai",
+        level: "high",
+        effort: "   ",
+      }),
+      {
+        effort: "high",
+        summary: "detailed",
+      },
+    );
   });
 
   it("recognizes older-server thread/inject_items compatibility errors", function () {

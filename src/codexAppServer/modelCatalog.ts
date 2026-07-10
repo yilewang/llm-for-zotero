@@ -1,5 +1,6 @@
 import type { RuntimeModelEntry } from "../utils/modelProviders";
 import { DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE } from "../utils/llmDefaults";
+import { CODEX_REASONING_OPTIONS } from "./constants";
 import { listCodexAppServerModels } from "./nativeClient";
 
 const DEFAULT_MODEL_LIST_LIMIT = 100;
@@ -18,6 +19,11 @@ export type CodexAppServerModelCatalogEntry = {
 
 export type CodexAppServerModelCatalog = {
   models: CodexAppServerModelCatalogEntry[];
+};
+
+export type CodexAppServerReasoningChoice = {
+  value: string;
+  label: string;
 };
 
 export type ListCodexAppServerModelsParams = {
@@ -136,6 +142,59 @@ export async function loadCodexAppServerModelCatalog(params: {
   }
 
   return { models };
+}
+
+export function formatCodexAppServerReasoningLabel(value: string): string {
+  const normalized = value.trim();
+  if (normalized.toLowerCase() === "xhigh") return "XHigh";
+  return normalized
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+export function getCodexAppServerReasoningChoices(params: {
+  models: CodexAppServerModelCatalogEntry[];
+  selectedModel: string;
+}): CodexAppServerReasoningChoice[] {
+  const selectedModel = params.selectedModel.trim().toLowerCase();
+  const catalogModel = params.models.find(
+    (model) => model.model.toLowerCase() === selectedModel,
+  );
+  const efforts = catalogModel
+    ? catalogModel.supportedReasoningEfforts
+    : CODEX_REASONING_OPTIONS;
+  const choices: CodexAppServerReasoningChoice[] = [
+    { value: "auto", label: "Auto" },
+  ];
+  const seen = new Set<string>(["auto"]);
+
+  for (const effort of efforts) {
+    const value = effort.trim();
+    const key = value.toLowerCase();
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    choices.push({
+      value,
+      label: formatCodexAppServerReasoningLabel(value),
+    });
+  }
+
+  return choices;
+}
+
+export function reconcileCodexAppServerReasoningMode(
+  mode: string,
+  choices: CodexAppServerReasoningChoice[],
+): string {
+  const normalized = mode.trim();
+  if (!normalized || normalized.toLowerCase() === "auto") return "auto";
+  return (
+    choices.find(
+      (choice) => choice.value.toLowerCase() === normalized.toLowerCase(),
+    )?.value || "auto"
+  );
 }
 
 function createRuntimeModelEntry(params: {

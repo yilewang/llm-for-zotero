@@ -468,9 +468,12 @@ import {
   setCodexRuntimeModelPref,
 } from "../../codexAppServer/prefs";
 import { getConfiguredCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
+import { buildCodexAppServerReasoningConfig } from "../../codexAppServer/reasoning";
 import {
   buildCodexRuntimeModelEntries,
+  getCodexAppServerReasoningChoices,
   loadCodexAppServerModelCatalog,
+  reconcileCodexAppServerReasoningMode,
   type CodexAppServerModelCatalogEntry,
 } from "../../codexAppServer/modelCatalog";
 import {
@@ -842,8 +845,29 @@ export function setupHandlers(
   let codexModelCatalogModels: CodexAppServerModelCatalogEntry[] = [];
   let codexModelCatalogInFlight: Promise<void> | null = null;
   let codexModelCatalogPath = "";
+  const getCodexReasoningChoices = () =>
+    getCodexAppServerReasoningChoices({
+      models: codexModelCatalogModels,
+      selectedModel: getCodexRuntimeModelPref(),
+    });
+  const reconcileSelectedCodexReasoningMode = () => {
+    const currentMode = getCodexReasoningModePref();
+    const reconciledMode = reconcileCodexAppServerReasoningMode(
+      currentMode,
+      getCodexReasoningChoices(),
+    );
+    if (reconciledMode !== currentMode) {
+      setCodexReasoningModePref(reconciledMode);
+    }
+    return reconciledMode;
+  };
   const refreshOpenCodexModelMenu = () => {
     updateModelButton();
+    updateReasoningButton();
+    if (reasoningMenu && reasoningBtn && isFloatingMenuOpen(reasoningMenu)) {
+      rebuildReasoningMenu();
+      positionFloatingMenu(body, reasoningMenu, reasoningBtn);
+    }
     if (!modelMenu || !modelBtn || !isFloatingMenuOpen(modelMenu)) return;
     rebuildModelMenu();
     if (!modelMenu.childElementCount) {
@@ -871,10 +895,12 @@ export function setupHandlers(
         codexModelCatalogModels = catalog.models;
         codexModelCatalogStatus = "ready";
         codexModelCatalogError = "";
+        reconcileSelectedCodexReasoningMode();
       })
       .catch((error: unknown) => {
         codexModelCatalogModels = [];
         codexModelCatalogStatus = "error";
+        reconcileSelectedCodexReasoningMode();
         codexModelCatalogError =
           error instanceof Error ? error.message : String(error);
         ztoolkit.log("Codex app-server: failed to load model catalog", error);
@@ -4691,6 +4717,7 @@ export function setupHandlers(
           }
           if (isCodexConversationSystem()) {
             setCodexRuntimeModelPref(entry.model);
+            reconcileSelectedCodexReasoningMode();
             setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
             setFloatingMenuOpen(
               reasoningMenu,
@@ -5050,12 +5077,13 @@ export function setupHandlers(
     }
     if (isCodexConversationSystem()) {
       const selectedMode = getCodexReasoningModePref();
-      const options: ReasoningOption[] = [
-        { level: "low", enabled: true, label: "Low" },
-        { level: "medium", enabled: true, label: "Medium" },
-        { level: "high", enabled: true, label: "High" },
-        { level: "xhigh", enabled: true, label: "XHigh" },
-      ];
+      const options: ReasoningOption[] = getCodexReasoningChoices()
+        .filter((choice) => choice.value !== "auto")
+        .map((choice) => ({
+          level: choice.value as LLMReasoningLevel,
+          enabled: true,
+          label: choice.label,
+        }));
       return {
         provider: "openai" as const,
         currentModel,
@@ -5288,9 +5316,11 @@ export function setupHandlers(
         : isCodexConversationSystem()
           ? (() => {
               const mode = getCodexReasoningModePref();
-              if (mode === "auto") return "Auto";
-              if (mode === "xhigh") return "XHigh";
-              return mode.charAt(0).toUpperCase() + mode.slice(1);
+              return (
+                getCodexReasoningChoices().find(
+                  (choice) => choice.value.toLowerCase() === mode.toLowerCase(),
+                )?.label || "Auto"
+              );
             })()
           : selectedLevel === "none"
             ? "off"
@@ -5419,16 +5449,7 @@ export function setupHandlers(
       return;
     }
     if (isCodexConversationSystem()) {
-      const codexModes: Array<{
-        value: "auto" | "low" | "medium" | "high" | "xhigh";
-        label: string;
-      }> = [
-        { value: "auto", label: "Auto" },
-        { value: "low", label: "Low" },
-        { value: "medium", label: "Medium" },
-        { value: "high", label: "High" },
-        { value: "xhigh", label: "XHigh" },
-      ];
+      const codexModes = getCodexReasoningChoices();
       const currentMode = getCodexReasoningModePref();
       for (const mode of codexModes) {
         const option = createElement(
@@ -5911,8 +5932,12 @@ export function setupHandlers(
       );
     }
     if (isCodexConversationSystem()) {
-      const mode = getCodexReasoningModePref();
-      return mode === "auto" ? undefined : { provider: "openai", level: mode };
+      const mode =
+        codexModelCatalogStatus === "ready" ||
+        codexModelCatalogStatus === "error"
+          ? reconcileSelectedCodexReasoningMode()
+          : getCodexReasoningModePref();
+      return buildCodexAppServerReasoningConfig(mode);
     }
     const { provider, enabledLevels, selectedLevel } = getReasoningState();
     if (provider === "unsupported" || selectedLevel === "none")
@@ -7095,6 +7120,9 @@ export function setupHandlers(
     closePromptMenu();
     closeHistoryNewMenu();
     closeHistoryMenu();
+    if (isCodexConversationSystem()) {
+      void ensureCodexModelCatalogLoaded();
+    }
     updateReasoningButton();
     flushResponsiveLayoutSyncNow();
     rebuildReasoningMenu();

@@ -47,6 +47,7 @@ import {
   isCodexZoteroMcpToolsEnabled,
 } from "../../codexAppServer/prefs";
 import { getEffectiveCodexAppServerBinaryPath } from "../../codexAppServer/binaryPath";
+import { buildCodexAppServerReasoningConfig } from "../../codexAppServer/reasoning";
 import {
   buildCodexNativeApprovalPendingAction,
   buildCodexNativeApprovalResponseFromResolution,
@@ -2699,13 +2700,7 @@ function resolveEffectiveRequestConfig(params: {
       (params.model || getCodexRuntimeModelPref()).trim() || "gpt-5.4";
     const reasoningMode = getCodexReasoningModePref();
     const reasoning =
-      params.reasoning ||
-      (reasoningMode === "auto"
-        ? undefined
-        : {
-            provider: "openai" as const,
-            level: reasoningMode,
-          });
+      params.reasoning || buildCodexAppServerReasoningConfig(reasoningMode);
     return {
       model,
       apiBase: (params.apiBase ?? "").trim(),

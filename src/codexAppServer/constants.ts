@@ -36,7 +36,7 @@ export const CODEX_REASONING_OPTIONS = [
   "high",
   "xhigh",
 ] as const;
-export type CodexReasoningMode = (typeof CODEX_REASONING_OPTIONS)[number];
+export type CodexReasoningMode = string;
 
 export function getCodexProfileSignature(): string {
   return getClaudeProfileSignature();
@@ -54,27 +54,17 @@ export function getCodexGlobalConversationKeyRange(): {
   start: number;
   endExclusive: number;
 } {
-  return getConversationKeyRange(
-    "codex",
-    "global",
-    getCodexProfileSignature(),
-  );
+  return getConversationKeyRange("codex", "global", getCodexProfileSignature());
 }
 
 export function getCodexPaperConversationKeyRange(): {
   start: number;
   endExclusive: number;
 } {
-  return getConversationKeyRange(
-    "codex",
-    "paper",
-    getCodexProfileSignature(),
-  );
+  return getConversationKeyRange("codex", "paper", getCodexProfileSignature());
 }
 
-export function getCodexDefaultConversationKeyRange(
-  kind: "global" | "paper",
-): {
+export function getCodexDefaultConversationKeyRange(kind: "global" | "paper"): {
   start: number;
   endExclusive: number;
 } {
@@ -98,7 +88,9 @@ export function getCodexAllocatedConversationKeyRange(
   );
 }
 
-export function buildDefaultCodexGlobalConversationKey(libraryID: number): number {
+export function buildDefaultCodexGlobalConversationKey(
+  libraryID: number,
+): number {
   return buildDefaultConversationKey(
     "codex",
     "global",
@@ -107,7 +99,9 @@ export function buildDefaultCodexGlobalConversationKey(libraryID: number): numbe
   );
 }
 
-export function buildDefaultCodexPaperConversationKey(paperItemID: number): number {
+export function buildDefaultCodexPaperConversationKey(
+  paperItemID: number,
+): number {
   return buildDefaultConversationKey(
     "codex",
     "paper",

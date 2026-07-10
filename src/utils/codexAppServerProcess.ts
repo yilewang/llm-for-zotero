@@ -139,10 +139,7 @@ export class CodexAppServerProcess {
     this.launchDescription = launchDescription;
   }
 
-  static forTest(
-    proc: unknown,
-    launchDescription = "",
-  ): CodexAppServerProcess {
+  static forTest(proc: unknown, launchDescription = ""): CodexAppServerProcess {
     return new CodexAppServerProcess(proc, launchDescription);
   }
 
@@ -684,9 +681,11 @@ function normalizeCodexAppServerReasoningLevel(
 export function resolveCodexAppServerReasoningParams(
   reasoning: ReasoningConfig | undefined,
   modelName?: string,
-): { effort?: "low" | "medium" | "high" | "xhigh"; summary?: "detailed" } {
+): { effort?: string; summary?: "detailed" } {
   if (!reasoning) return {};
-  const effort = normalizeCodexAppServerReasoningLevel(reasoning, modelName);
+  const effort =
+    reasoning.effort?.trim() ||
+    normalizeCodexAppServerReasoningLevel(reasoning, modelName);
   return {
     // OpenAI-backed app-server sessions usually expose readable reasoning only
     // through summary events, so request the richer summary mode explicitly.
@@ -2084,7 +2083,8 @@ async function resolveCodexBinaryFromShellPathLookup(
 ): Promise<string | undefined> {
   if (!Subprocess?.call) return undefined;
   try {
-    const lookupCmd = info.platform === "windows" ? "where codex" : "which codex";
+    const lookupCmd =
+      info.platform === "windows" ? "where codex" : "which codex";
     const proc = await Subprocess.call({
       command: info.shellPath,
       arguments: [info.shellFlag, lookupCmd],

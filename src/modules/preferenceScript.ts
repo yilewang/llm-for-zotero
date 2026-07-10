@@ -187,10 +187,15 @@ import {
 } from "../codexAppServer/prefs";
 import { getConfiguredCodexAppServerBinaryPath } from "../codexAppServer/binaryPath";
 import {
+  getCodexAppServerReasoningChoices,
+  loadCodexAppServerModelCatalog,
+  reconcileCodexAppServerReasoningMode,
+  type CodexAppServerModelCatalogEntry,
+} from "../codexAppServer/modelCatalog";
+import {
   installOrUpdateCodexZoteroMcpConfig,
   readCodexNativeMcpSetupStatus,
 } from "../codexAppServer/mcpSetup";
-import type { CodexReasoningMode } from "../codexAppServer/constants";
 import {
   getClaudeRuntimeRootDir,
   getClaudeUserHomeDir,
@@ -2456,17 +2461,66 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       setCodexAppServerModeEnabled(enabled);
       if (enabled) {
         setConversationSystemPref("codex");
+        void refreshCodexReasoningOptions();
       } else if (getConversationSystemPref() === "codex") {
         setConversationSystemPref("upstream");
       }
     });
   }
 
+  let codexReasoningCatalogRefreshId = 0;
+  const renderCodexReasoningOptions = (
+    models: CodexAppServerModelCatalogEntry[],
+  ) => {
+    if (!codexAppServerReasoningSelect) return;
+    const choices = getCodexAppServerReasoningChoices({
+      models,
+      selectedModel:
+        codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
+    });
+    const currentMode = getCodexReasoningModePref();
+    const reconciledMode = reconcileCodexAppServerReasoningMode(
+      currentMode,
+      choices,
+    );
+    if (reconciledMode !== currentMode) {
+      setCodexReasoningModePref(reconciledMode);
+    }
+    const options = choices.map((choice) => {
+      const option = el(doc, "option") as HTMLOptionElement;
+      option.value = choice.value;
+      option.textContent = choice.label;
+      return option;
+    });
+    codexAppServerReasoningSelect.replaceChildren(...options);
+    codexAppServerReasoningSelect.value = reconciledMode;
+  };
+  const refreshCodexReasoningOptions = async () => {
+    if (!codexAppServerReasoningSelect) return;
+    if (!isCodexAppServerModeEnabled()) return;
+    const refreshId = ++codexReasoningCatalogRefreshId;
+    try {
+      const catalog = await loadCodexAppServerModelCatalog({
+        codexPath: getConfiguredCodexAppServerBinaryPath(),
+      });
+      if (refreshId !== codexReasoningCatalogRefreshId) return;
+      renderCodexReasoningOptions(catalog.models);
+    } catch (error) {
+      if (refreshId !== codexReasoningCatalogRefreshId) return;
+      ztoolkit.log(
+        "Codex app-server: failed to load reasoning options in preferences",
+        error,
+      );
+      renderCodexReasoningOptions([]);
+    }
+  };
+
   if (codexAppServerModelInput) {
     codexAppServerModelInput.value = getCodexRuntimeModelPref();
     const commitCodexModel = () => {
       setCodexRuntimeModelPref(codexAppServerModelInput.value);
       codexAppServerModelInput.value = getCodexRuntimeModelPref();
+      void refreshCodexReasoningOptions();
     };
     codexAppServerModelInput.addEventListener("change", commitCodexModel);
     codexAppServerModelInput.addEventListener("blur", commitCodexModel);
@@ -2477,10 +2531,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
   if (codexAppServerReasoningSelect) {
     codexAppServerReasoningSelect.value = getCodexReasoningModePref();
+    void refreshCodexReasoningOptions();
     codexAppServerReasoningSelect.addEventListener("change", () => {
-      setCodexReasoningModePref(
-        codexAppServerReasoningSelect.value as CodexReasoningMode,
-      );
+      setCodexReasoningModePref(codexAppServerReasoningSelect.value);
     });
   }
 
@@ -2489,6 +2542,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     const commitCodexPath = () => {
       setCodexBinaryPathPref(codexAppServerPathInput.value);
       codexAppServerPathInput.value = getCodexBinaryPathPref();
+      void refreshCodexReasoningOptions();
     };
     codexAppServerPathInput.addEventListener("change", commitCodexPath);
     codexAppServerPathInput.addEventListener("blur", commitCodexPath);
