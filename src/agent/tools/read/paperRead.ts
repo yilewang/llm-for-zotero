@@ -43,6 +43,7 @@ import {
   type FullReadCoverageReceipt,
   type FullReadPaperResult,
 } from "../../../shared/exhaustiveDocumentReader";
+import { createCodexAppServerExhaustiveReaderSession } from "../../../codexAppServer/exhaustiveReader";
 
 type PaperReadMode =
   | "overview"
@@ -1133,23 +1134,43 @@ export function createPaperReadTool(
           2048,
           Math.floor(Number(context.request.advanced?.inputTokenCap || 12000)),
         );
-        const result = await readDocumentsExhaustively({
-          papers: paperInputs,
-          question:
-            input.query || context.request.userText || "Read the full text.",
-          batchTokenBudget: Math.max(1024, Math.floor(inputTokenCap * 0.5)),
-          finalTokenBudget: Math.max(1024, Math.floor(inputTokenCap * 0.45)),
-          analyzeBatch: fullReadAnalyzer,
-          signal: context.signal,
-          llm: {
-            model: context.request.model,
-            apiBase: context.request.apiBase,
-            apiKey: context.request.apiKey,
-            authMode: context.request.authMode,
-            providerProtocol: context.request.providerProtocol,
-            reasoning: context.request.reasoning,
-          },
-        });
+        const nativeReaderSession =
+          !fullReadAnalyzer && context.request.authMode === "codex_app_server"
+            ? createCodexAppServerExhaustiveReaderSession({
+                model: context.request.model,
+                codexPath: context.request.apiBase,
+                reasoning: context.request.reasoning,
+              })
+            : null;
+        const result = await (async () => {
+          try {
+            return await readDocumentsExhaustively({
+              papers: paperInputs,
+              question:
+                input.query ||
+                context.request.userText ||
+                "Read the full text.",
+              batchTokenBudget: Math.max(1024, Math.floor(inputTokenCap * 0.5)),
+              finalTokenBudget: Math.max(
+                1024,
+                Math.floor(inputTokenCap * 0.45),
+              ),
+              analyzeBatch:
+                fullReadAnalyzer || nativeReaderSession?.analyzeBatch,
+              signal: context.signal,
+              llm: {
+                model: context.request.model,
+                apiBase: context.request.apiBase,
+                apiKey: context.request.apiKey,
+                authMode: context.request.authMode,
+                providerProtocol: context.request.providerProtocol,
+                reasoning: context.request.reasoning,
+              },
+            });
+          } finally {
+            nativeReaderSession?.dispose();
+          }
+        })();
         const output: PaperReadFullResult = {
           mode: "full",
           status: result.status,

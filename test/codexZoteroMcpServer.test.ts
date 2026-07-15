@@ -1056,6 +1056,10 @@ describe("Zotero MCP server", function () {
           conversationKey: context.request.conversationKey,
           libraryID: context.request.libraryID,
           activeItemId: context.request.activeItemId,
+          model: context.request.model,
+          apiBase: context.request.apiBase,
+          authMode: context.request.authMode,
+          reasoning: context.request.reasoning,
         },
       }),
     });
@@ -1079,6 +1083,9 @@ describe("Zotero MCP server", function () {
         kind: "global",
         activeItemId: 77,
         libraryName: "Development Library",
+        model: "gpt-5.5",
+        codexPath: "/tmp/codex-native",
+        reasoning: { provider: "openai", level: "high" },
       },
       { token: "scoped-test-token" },
     );
@@ -1103,6 +1110,10 @@ describe("Zotero MCP server", function () {
         conversationKey: 456,
         libraryID: 7,
         activeItemId: 77,
+        model: "gpt-5.5",
+        apiBase: "/tmp/codex-native",
+        authMode: "codex_app_server",
+        reasoning: { provider: "openai", level: "high" },
       });
     } finally {
       scoped.clear();

@@ -16,6 +16,7 @@ import {
   buildPdfFigureCropManifestHash,
   buildPdfFigureCropPdfFingerprint,
 } from "../src/modules/contextPanel/pdfFigureCropCache";
+import { CodexAppServerProcess } from "../src/utils/codexAppServerProcess";
 
 describe("semantic tool surface", function () {
   const encoder = new TextEncoder();
@@ -1841,6 +1842,147 @@ describe("semantic tool surface", function () {
       [...seen].sort((a, b) => a - b),
       [0, 1, 2, 3, 4, 5],
     );
+  });
+
+  it("paper_read full uses an isolated native Codex worker in the production registry", async function () {
+    const originalSpawn = CodexAppServerProcess.spawn;
+    const paperContext = {
+      itemId: 53,
+      contextItemId: 54,
+      title: "Native Full Read Paper",
+    };
+    const chunks = ["Native evidence zero.", "Native evidence one."];
+    let threadStartParams: Record<string, unknown> | undefined;
+    let turnStartParams: Record<string, unknown> | undefined;
+    const proc = CodexAppServerProcess.forTest({
+      stdin: {
+        write: (chunk: string) => {
+          const request = JSON.parse(chunk) as {
+            id: number;
+            method: string;
+            params?: Record<string, unknown>;
+          };
+          const handleMessage = (
+            proc as unknown as {
+              handleMessage: (message: Record<string, unknown>) => void;
+            }
+          ).handleMessage.bind(proc);
+          if (request.method === "thread/start") {
+            threadStartParams = request.params;
+            setTimeout(
+              () =>
+                handleMessage({
+                  id: request.id,
+                  result: { thread: { id: "thread-full-reader" } },
+                }),
+              0,
+            );
+            return;
+          }
+          if (request.method === "turn/start") {
+            turnStartParams = request.params;
+            setTimeout(
+              () =>
+                handleMessage({
+                  id: request.id,
+                  result: { turn: { id: "turn-full-reader" } },
+                }),
+              0,
+            );
+            setTimeout(
+              () =>
+                handleMessage({
+                  method: "item/agentMessage/delta",
+                  params: {
+                    turnId: "turn-full-reader",
+                    itemId: "message-full-reader",
+                    delta:
+                      '{"digest":"Read every native chunk","relevantChunkIds":[0,1]}',
+                  },
+                }),
+              5,
+            );
+            setTimeout(
+              () =>
+                handleMessage({
+                  method: "turn/completed",
+                  params: {
+                    turn: { id: "turn-full-reader", status: "completed" },
+                  },
+                }),
+              10,
+            );
+          }
+        },
+      },
+      kill: () => undefined,
+    });
+    CodexAppServerProcess.spawn = async () => proc;
+
+    try {
+      const registry = createBuiltInToolRegistry({
+        zoteroGateway: {
+          resolvePaperContextTarget: () => paperContext,
+          listPaperContexts: () => [paperContext],
+        } as never,
+        pdfService: {
+          ensurePaperContext: async () => ({
+            title: paperContext.title,
+            chunks,
+            chunkMeta: chunks.map((text, chunkIndex) => ({
+              chunkIndex,
+              text,
+              normalizedText: text,
+              chunkKind: "body",
+            })),
+            chunkStats: [],
+            docFreq: {},
+            avgChunkLength: 0,
+            fullLength: chunks.join("\n\n").length,
+          }),
+        } as never,
+        pdfPageService: {} as never,
+        retrievalService: {} as never,
+      });
+      const tool = registry.getTool("paper_read");
+      assert.exists(tool);
+      const validated = tool!.validate({
+        mode: "full",
+        target: paperContext,
+        query: "Read the complete text.",
+      });
+      assert.equal(validated.ok, true);
+      if (!validated.ok) return;
+
+      const output = (await tool!.execute(validated.value, {
+        ...baseContext,
+        request: {
+          ...baseContext.request,
+          authMode: "codex_app_server",
+          model: "gpt-5.5",
+          apiBase: "/tmp/codex",
+        },
+      })) as {
+        status: string;
+        coverageReceipt: {
+          complete: boolean;
+          processedChunks: number;
+          totalChunks: number;
+        };
+      };
+
+      assert.equal(output.status, "complete");
+      assert.isTrue(output.coverageReceipt.complete);
+      assert.equal(output.coverageReceipt.processedChunks, 2);
+      assert.equal(output.coverageReceipt.totalChunks, 2);
+      assert.equal(threadStartParams?.model, "gpt-5.5");
+      assert.equal(threadStartParams?.ephemeral, true);
+      assert.equal(threadStartParams?.approvalPolicy, "never");
+      assert.include(JSON.stringify(turnStartParams?.input), chunks[0]);
+      assert.include(JSON.stringify(turnStartParams?.input), chunks[1]);
+    } finally {
+      CodexAppServerProcess.spawn = originalSpawn;
+    }
   });
 
   it("paper_read full targets the active paper unless all selected papers are explicit", async function () {

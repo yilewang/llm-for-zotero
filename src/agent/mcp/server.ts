@@ -14,6 +14,7 @@ import type {
   QuoteCitation,
   TagContextRef,
 } from "../../shared/types";
+import type { ReasoningConfig } from "../../shared/llm";
 import { readNoteSnapshot } from "../../modules/contextPanel/noteSnapshot";
 import { extractQuoteCitationsFromToolContent } from "../../modules/contextPanel/quoteCitations";
 import type { AgentToolRegistry } from "../tools/registry";
@@ -125,6 +126,9 @@ export type ZoteroMcpActiveScope = {
   libraryName?: string;
   title?: string;
   userText?: string;
+  model?: string;
+  codexPath?: string;
+  reasoning?: ReasoningConfig;
   paperContext?: PaperContextRef;
   selectedPaperContexts?: PaperContextRef[];
   fullTextPaperContexts?: PaperContextRef[];
@@ -499,6 +503,39 @@ function normalizeNoteKind(value: unknown): "item" | "standalone" | undefined {
   return value === "item" || value === "standalone" ? value : undefined;
 }
 
+function normalizeReasoningConfig(
+  value: ReasoningConfig | undefined,
+): ReasoningConfig | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const providers = new Set<ReasoningConfig["provider"]>([
+    "openai",
+    "gemini",
+    "deepseek",
+    "kimi",
+    "mimo",
+    "qwen",
+    "grok",
+    "anthropic",
+  ]);
+  const levels = new Set<ReasoningConfig["level"]>([
+    "default",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+  ]);
+  if (!providers.has(value.provider) || !levels.has(value.level)) {
+    return undefined;
+  }
+  const effort = normalizeText(value.effort, 128);
+  return {
+    provider: value.provider,
+    level: value.level,
+    ...(effort ? { effort } : {}),
+  };
+}
+
 function normalizeActiveScope(
   scope: ZoteroMcpActiveScope,
 ): ZoteroMcpActiveScope {
@@ -524,6 +561,9 @@ function normalizeActiveScope(
     libraryName: normalizeText(scope.libraryName),
     title: normalizeText(scope.title),
     userText: normalizeText(scope.userText, 4000),
+    model: normalizeText(scope.model, 256),
+    codexPath: normalizeText(scope.codexPath, 4096),
+    reasoning: normalizeReasoningConfig(scope.reasoning),
     paperContext,
     selectedPaperContexts: normalizePaperContexts(scope.selectedPaperContexts),
     fullTextPaperContexts: normalizePaperContexts(scope.fullTextPaperContexts),
@@ -1087,8 +1127,10 @@ function createToolContext(
     activeItemId,
     libraryID: scopeArgs.libraryID || scope?.libraryID || 0,
     conversationKind: scope?.kind,
-    model: "codex-app-server",
+    model: scope?.model || "codex-app-server",
+    apiBase: scope?.codexPath,
     authMode: "codex_app_server",
+    reasoning: scope?.reasoning,
     selectedPaperContexts:
       selectedPaperContexts ||
       (!hasExplicitPaperScope && paperContext ? [paperContext] : undefined),

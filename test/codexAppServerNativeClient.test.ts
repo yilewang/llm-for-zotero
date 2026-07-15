@@ -1535,6 +1535,9 @@ describe("Codex app-server native client", function () {
       },
       profileSignature: "profile-native-paper-scope",
       userText: "read these papers",
+      model: "gpt-5.5",
+      codexPath: "/tmp/codex-native",
+      reasoning: { provider: "openai", level: "high" },
       skillContext: {
         selectedPaperContexts: [selectedPaper],
         fullTextPaperContexts: [fullTextPaper],
@@ -1557,6 +1560,12 @@ describe("Codex app-server native client", function () {
     assert.deepEqual(scope.selectedTagContexts, [
       { name: "Stable", normalizedName: "stable", libraryID: 1 },
     ]);
+    assert.equal(scope.model, "gpt-5.5");
+    assert.equal(scope.codexPath, "/tmp/codex-native");
+    assert.deepEqual(scope.reasoning, {
+      provider: "openai",
+      level: "high",
+    });
   });
 
   it("records successful native paper reads for context reuse hints", function () {

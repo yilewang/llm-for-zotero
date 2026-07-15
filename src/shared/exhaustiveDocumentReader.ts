@@ -36,6 +36,18 @@ export type ExhaustiveBatchAnalyzer = (
   input: ExhaustiveBatchInput,
 ) => Promise<ExhaustiveBatchOutput>;
 
+export type ExhaustiveBatchCompletionInput = {
+  prompt: string;
+  systemMessages: string[];
+  maxTokens: number;
+  temperature: number;
+  signal?: AbortSignal;
+};
+
+export type ExhaustiveBatchCompletion = (
+  input: ExhaustiveBatchCompletionInput,
+) => Promise<string>;
+
 export type FullReadPaperResult = {
   paperContext: PaperContextRef;
   paperKey: string;
@@ -186,8 +198,8 @@ function extractJsonObject(text: string): Record<string, unknown> | null {
   return null;
 }
 
-function createLlmBatchAnalyzer(
-  config: LlmBatchConfig,
+export function createExhaustiveBatchAnalyzer(
+  complete: ExhaustiveBatchCompletion,
 ): ExhaustiveBatchAnalyzer {
   return async (input) => {
     const source = input.chunks
@@ -196,8 +208,7 @@ function createLlmBatchAnalyzer(
           `[chunk ${chunk.chunkIndex}${chunk.sectionLabel ? `; section=${chunk.sectionLabel}` : ""}]\n${chunk.text}`,
       )
       .join("\n\n");
-    const raw = await callLLM({
-      ...config,
+    const raw = await complete({
       prompt: [
         "Read every supplied source chunk and create a grounded batch digest for later synthesis.",
         'Return strict JSON only: {"digest":"...","relevantChunkIds":[0]}.',
@@ -224,6 +235,17 @@ function createLlmBatchAnalyzer(
       : [];
     return { digest, relevantChunkIds };
   };
+}
+
+function createLlmBatchAnalyzer(
+  config: LlmBatchConfig,
+): ExhaustiveBatchAnalyzer {
+  return createExhaustiveBatchAnalyzer((input) =>
+    callLLM({
+      ...config,
+      ...input,
+    }),
+  );
 }
 
 function missingRanges(total: number, processed: Set<number>): string[] {

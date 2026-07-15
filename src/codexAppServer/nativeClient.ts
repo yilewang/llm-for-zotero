@@ -1161,12 +1161,18 @@ function buildCodexNativeScopedMcpScope(params: {
   scope: CodexNativeConversationScope;
   profileSignature: string;
   userText: string;
+  model?: string;
+  codexPath?: string;
+  reasoning?: ReasoningConfig;
   skillContext?: CodexNativeSkillContext;
 }): ZoteroMcpActiveScope {
   return {
     ...params.scope,
     profileSignature: params.profileSignature,
     userText: params.userText,
+    model: params.model,
+    codexPath: params.codexPath,
+    reasoning: params.reasoning,
     selectedPaperContexts: params.skillContext?.selectedPaperContexts,
     fullTextPaperContexts: params.skillContext?.fullTextPaperContexts,
     pinnedPaperContexts: params.skillContext?.pinnedPaperContexts,
@@ -1179,6 +1185,9 @@ export function buildCodexNativeScopedMcpScopeForTests(params: {
   scope: CodexNativeConversationScope;
   profileSignature: string;
   userText: string;
+  model?: string;
+  codexPath?: string;
+  reasoning?: ReasoningConfig;
   skillContext?: CodexNativeSkillContext;
 }): ZoteroMcpActiveScope {
   return buildCodexNativeScopedMcpScope(params);
@@ -1934,6 +1943,9 @@ export async function runCodexAppServerNativeTurn(params: {
       scope: scopeWithProfile,
       profileSignature,
       userText: latestUserText,
+      model: params.model,
+      codexPath,
+      reasoning: params.reasoning,
       skillContext: params.skillContext,
     });
     const scopedMcp = mcpEnabled
