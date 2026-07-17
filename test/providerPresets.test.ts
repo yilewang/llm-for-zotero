@@ -201,6 +201,29 @@ describe("providerPresets", function () {
     ]);
   });
 
+  it("does not match non-litellm localhost URLs as litellm", function () {
+    assert.equal(
+      detectProviderPreset("http://localhost:11434/v1"),
+      "customized",
+    );
+    assert.equal(
+      detectProviderPreset("http://127.0.0.1:5000/v1"),
+      "customized",
+    );
+  });
+
+  it("matches litellm on port 8000 (common alt port)", function () {
+    assert.equal(detectProviderPreset("http://localhost:8000/v1"), "litellm");
+  });
+
+  it("reports litellm embeddings support", function () {
+    assert.isTrue(getProviderPreset("litellm").supportsEmbeddings);
+    assert.equal(
+      getProviderPreset("litellm").defaultEmbeddingModel,
+      "text-embedding-3-small",
+    );
+  });
+
   it("does not advertise Gemini as Responses-capable", function () {
     assert.isFalse(
       providerSupportsResponsesEndpoint(
