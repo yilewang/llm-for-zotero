@@ -997,6 +997,49 @@ export async function fetchCopilotModelList(params: {
     }));
 }
 
+export type LiteLLMModelInfo = {
+  id: string;
+  name: string;
+};
+
+export async function fetchLiteLLMModelList(params: {
+  apiBase: string;
+  apiKey?: string;
+  signal?: AbortSignal;
+}): Promise<LiteLLMModelInfo[]> {
+  const base = (params.apiBase || "").trim().replace(/\/+$/, "");
+  if (!base) {
+    throw new Error("LiteLLM API base URL is empty");
+  }
+  const url = `${base}/models`;
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+  };
+  if (params.apiKey) {
+    headers.Authorization = `Bearer ${params.apiKey}`;
+  }
+  const response = await getFetch()(url, {
+    method: "GET",
+    headers,
+    signal: params.signal,
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `LiteLLM model list fetch failed: ${response.status} ${response.statusText} - ${errorText}`,
+    );
+  }
+  const payload = (await response.json()) as {
+    data?: Array<{ id?: string; name?: string; owned_by?: string }>;
+  };
+  return (payload.data || [])
+    .filter((m) => typeof m.id === "string" && m.id.trim())
+    .map((m) => ({
+      id: m.id!.trim(),
+      name: (m.name || m.id || "").trim(),
+    }));
+}
+
 export async function readLocalFileBytes(path: string): Promise<Uint8Array> {
   const normalizedPath = (path || "").trim();
   if (!normalizedPath) {
