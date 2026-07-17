@@ -2,7 +2,6 @@ import {
   buildDefaultUpstreamGlobalConversationKey,
   config,
   GLOBAL_CONVERSATION_KEY_BASE,
-  isUpstreamGlobalConversationKey,
 } from "./constants";
 import {
   activeContextPanels,
@@ -17,6 +16,7 @@ import {
   resolveConversationSystemForItem,
   resolveDisplayConversationKind,
   resolveInitialPanelItemState,
+  resolveRememberedGlobalPanelItem,
   resolveConversationBaseItem,
   resolvePaperChatSourceItem,
   resolveActiveNoteSession,
@@ -35,6 +35,7 @@ import {
 } from "./prefHelpers";
 import { buildUI } from "./buildUI";
 import {
+  disposeSetupHandlers,
   setupHandlers,
   type ContextPreviewRenderMetrics,
   type SetupHandlersHooks,
@@ -611,6 +612,7 @@ export function openStandaloneChat(options?: {
   let isInWebChatMode = false;
   let currentChatHooks: SetupHandlersHooks | null = null;
   let standaloneSidebarRenderQueued = false;
+  let standaloneMountGeneration = 0;
   let explicitNewChatInFlight = false;
   let initialRuntimeModeSeeded = false;
   let standaloneAttachmentGcTimer: number | null = null;
@@ -1720,8 +1722,14 @@ export function openStandaloneChat(options?: {
         nextItem: Zotero.Item,
         rawContextItem?: Zotero.Item | null,
       ) => {
+        const mountGeneration = ++standaloneMountGeneration;
+        const isCurrentMount = () =>
+          !cancelled &&
+          !newWin.closed &&
+          mountGeneration === standaloneMountGeneration;
         const resolvedState = resolveInitialPanelItemState(nextItem, {
           conversationSystem: currentConversationSystem,
+          conversationMode: standaloneMode === "open" ? "global" : "paper",
         });
         const mountedItem = resolvedState.item || nextItem;
         const rawItemForPanel =
@@ -1773,7 +1781,7 @@ export function openStandaloneChat(options?: {
                 );
               } else {
                 activePaperConversationByPaper.set(
-                  buildPaperStateKey(libraryID, paperItemID),
+                  buildPaperStateKey(paperLibraryID, paperItemID),
                   activeConversationKey,
                 );
               }
@@ -1852,9 +1860,9 @@ export function openStandaloneChat(options?: {
 
         void (async () => {
           try {
-            if (cancelled) return;
+            if (!isCurrentMount()) return;
             await ensureConversationLoaded(mountedItem);
-            if (cancelled) return;
+            if (!isCurrentMount()) return;
             refreshChat(contentArea, mountedItem);
             // Refresh sidebar after conversation is confirmed loaded
             scheduleStandaloneSidebarRender();
@@ -2873,7 +2881,7 @@ export function openStandaloneChat(options?: {
           {
             createFreshGlobalConversation: async () => {
               const currentLibraryID = getCurrentLibraryScopeID();
-              const newKey = await resolveStandaloneGlobalConversation({
+              const newKey = await resolveFreshStandaloneGlobalConversation({
                 forceFresh: true,
                 excludeConversationKey: deletedConversationKey,
               });
@@ -3175,7 +3183,7 @@ export function openStandaloneChat(options?: {
         }
       });
 
-      const resolveStandaloneGlobalConversation = async (
+      const resolveFreshStandaloneGlobalConversation = async (
         options: boolean | StandaloneCreateConversationOptions = false,
       ): Promise<number> => {
         const { excludeConversationKey } =
@@ -3302,8 +3310,19 @@ export function openStandaloneChat(options?: {
       const restoreStandaloneOpenConversation = async (
         options: boolean | StandaloneCreateConversationOptions = false,
       ): Promise<boolean> => {
-        const conversationKey =
-          await resolveStandaloneGlobalConversation(options);
+        const normalizedOptions =
+          normalizeStandaloneCreateConversationOptions(options);
+        const rememberedItem =
+          !normalizedOptions.forceFresh &&
+          !normalizedOptions.excludeConversationKey
+            ? resolveRememberedGlobalPanelItem(
+                getCurrentLibraryScopeID(),
+                currentConversationSystem,
+              )
+            : null;
+        const conversationKey = rememberedItem
+          ? getConversationKey(rememberedItem)
+          : await resolveFreshStandaloneGlobalConversation(normalizedOptions);
         if (!conversationKey || cancelled) {
           return false;
         }
@@ -3327,7 +3346,7 @@ export function openStandaloneChat(options?: {
 
           if (standaloneMode === "open") {
             const currentLibraryID = getCurrentLibraryScopeID();
-            const newKey = await resolveStandaloneGlobalConversation(true);
+            const newKey = await resolveFreshStandaloneGlobalConversation(true);
             if (!newKey || cancelled) return;
             await touchStandaloneEmptyDraftActivity(newKey, "global");
             activeConversationKey = newKey;
@@ -3487,7 +3506,7 @@ export function openStandaloneChat(options?: {
           };
 
           if (forceFresh) {
-            const newKey = await resolveStandaloneGlobalConversation(true);
+            const newKey = await resolveFreshStandaloneGlobalConversation(true);
             if (switchSeq !== systemSwitchSeq) return;
             if (newKey > 0) {
               await touchStandaloneEmptyDraftActivity(newKey, "global");
@@ -3497,58 +3516,13 @@ export function openStandaloneChat(options?: {
             return;
           }
 
-          if (nextSystem === "claude_code") {
-            const rememberedKey = Number(
-              resolveRememberedClaudeConversationKey({
-                libraryID,
-                kind: "global",
-              }) || 0,
-            );
-            const targetKey =
-              Number.isFinite(rememberedKey) && rememberedKey > 0
-                ? Math.floor(rememberedKey)
-                : buildDefaultClaudeGlobalConversationKey(libraryID);
-            if (switchSeq !== systemSwitchSeq) return;
-            if (targetKey > 0) {
-              mountOpenConversation(targetKey);
-            }
-            return;
-          }
-
-          if (nextSystem === "codex") {
-            const rememberedKey = Number(
-              activeCodexGlobalConversationByLibrary.get(
-                buildCodexLibraryStateKey(libraryID),
-              ) ||
-                getLastUsedCodexGlobalConversationKey(libraryID) ||
-                0,
-            );
-            const targetKey =
-              Number.isFinite(rememberedKey) && rememberedKey > 0
-                ? Math.floor(rememberedKey)
-                : buildDefaultCodexGlobalConversationKey(libraryID);
-            if (switchSeq !== systemSwitchSeq) return;
-            if (targetKey > 0) {
-              mountOpenConversation(targetKey);
-            }
-            return;
-          }
-
-          const rememberedUpstreamKey = (() => {
-            const lockedKey = getLockedGlobalConversationKey(libraryID);
-            if (lockedKey !== null) return lockedKey;
-            const activeKey = Number(
-              activeGlobalConversationByLibrary.get(libraryID) || 0,
-            );
-            if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
-            return activeKey === GLOBAL_CONVERSATION_KEY_BASE
-              ? buildDefaultUpstreamGlobalConversationKey(libraryID)
-              : Math.floor(activeKey);
-          })();
-          const targetKey =
-            Number.isFinite(rememberedUpstreamKey) && rememberedUpstreamKey > 0
-              ? Math.floor(rememberedUpstreamKey)
-              : buildDefaultUpstreamGlobalConversationKey(libraryID);
+          const rememberedItem = resolveRememberedGlobalPanelItem(
+            libraryID,
+            nextSystem,
+          );
+          const targetKey = rememberedItem
+            ? getConversationKey(rememberedItem)
+            : 0;
           if (switchSeq !== systemSwitchSeq) return;
           if (targetKey > 0) {
             mountOpenConversation(targetKey);
@@ -3559,6 +3533,7 @@ export function openStandaloneChat(options?: {
           getSelectedZoteroItem() || currentBasePaperItem || currentPaperItem;
         const resolved = resolveInitialPanelItemState(nextRawItem, {
           conversationSystem: nextSystem,
+          conversationMode: "paper",
         });
         currentRawContextItem = nextRawItem || currentRawContextItem;
         currentBasePaperItem = resolved.basePaperItem || currentBasePaperItem;
@@ -3628,7 +3603,7 @@ export function openStandaloneChat(options?: {
         };
         cleanupStandalonePrefObserver = unregister;
         const onClaudeModePrefChange = () => {
-          if (cancelled) {
+          if (cancelled || newWin.closed) {
             unregister();
             return;
           }
@@ -3655,7 +3630,7 @@ export function openStandaloneChat(options?: {
           updateStandaloneSystemToggle();
         };
         const onCodexModePrefChange = () => {
-          if (cancelled) {
+          if (cancelled || newWin.closed) {
             unregister();
             return;
           }
@@ -3712,23 +3687,30 @@ export function openStandaloneChat(options?: {
 
       const resolvePaperSwitchTarget = (
         rawItem: Zotero.Item | null,
-      ): { rawItem: Zotero.Item | null; paperItem: Zotero.Item | null } => {
+      ): {
+        rawItem: Zotero.Item | null;
+        paperItem: Zotero.Item | null;
+        panelItem: Zotero.Item | null;
+      } => {
         const resolved = resolveInitialPanelItemState(rawItem, {
           conversationSystem: currentConversationSystem,
+          conversationMode: "paper",
         });
+        const paperItem =
+          resolved.basePaperItem ||
+          (rawItem ? resolvePaperChatSourceItem(rawItem) : null);
         return {
           rawItem,
-          paperItem:
-            resolved.basePaperItem ||
-            (rawItem ? resolvePaperChatSourceItem(rawItem) : null),
+          paperItem,
+          panelItem: resolved.item || paperItem,
         };
       };
 
-      const mountStandalonePaperConversation = async (params: {
+      const mountRememberedStandalonePaperConversation = (params: {
         paperItem: Zotero.Item;
+        panelItem?: Zotero.Item | null;
         rawItem?: Zotero.Item | null;
-        forceFresh?: boolean;
-      }): Promise<boolean> => {
+      }): boolean => {
         const paperLibraryID = getLibraryIDForPaperItem(params.paperItem);
         const paperId = Number(params.paperItem.id || 0);
         if (
@@ -3739,23 +3721,11 @@ export function openStandaloneChat(options?: {
         ) {
           return false;
         }
-        const { conversationKey: newKey, sessionVersion } =
-          await resolveStandalonePaperConversation(
-            Boolean(params.forceFresh),
-            params.paperItem,
-          );
-        if (!newKey || cancelled) return false;
-        const nextItem = buildStandalonePortalItem({
-          mode: "paper",
-          conversationKey: newKey,
-          paperItem: params.paperItem,
-          sessionVersion,
-        });
-        if (!nextItem) return false;
-        activeConversationKey = newKey;
+        const nextItem = params.panelItem || params.paperItem;
+        if (cancelled) return false;
         currentRawContextItem = params.rawItem || params.paperItem;
         currentBasePaperItem = params.paperItem;
-        currentPaperItem = params.paperItem;
+        currentPaperItem = nextItem;
         commitStandaloneMode("paper");
         mountChatPanel(nextItem, currentRawContextItem);
         scheduleStandaloneSidebarRender();
@@ -3775,32 +3745,14 @@ export function openStandaloneChat(options?: {
           if (mode === standaloneMode) return;
 
           if (mode === "open") {
-            const currentLibraryID = getCurrentLibraryScopeID();
-            const key = await resolveStandaloneGlobalConversation(false);
+            const rememberedItem = resolveRememberedGlobalPanelItem(
+              getCurrentLibraryScopeID(),
+              currentConversationSystem,
+            );
+            const key = rememberedItem ? getConversationKey(rememberedItem) : 0;
             if (!key) return;
-            const item = buildStandalonePortalItem({
-              mode: "open",
-              conversationKey: key,
-            });
-            if (!item) return;
-            activeConversationKey = key;
-            if (isClaudeConversationSystem()) {
-              activeClaudeGlobalConversationByLibrary.set(
-                buildClaudeLibraryStateKey(currentLibraryID),
-                key,
-              );
-            } else if (isCodexConversationSystem()) {
-              activeCodexGlobalConversationByLibrary.set(
-                buildCodexLibraryStateKey(currentLibraryID),
-                key,
-              );
-              setLastUsedCodexGlobalConversationKey(currentLibraryID, key);
-            } else {
-              activeGlobalConversationByLibrary.set(currentLibraryID, key);
-            }
             commitStandaloneMode("open");
-            mountChatPanel(item);
-            scheduleStandaloneSidebarRender();
+            mountStandaloneOpenConversation(key);
             return;
           }
 
@@ -3814,8 +3766,9 @@ export function openStandaloneChat(options?: {
             showNoPaperChatSourceStatus();
             return;
           }
-          const mounted = await mountStandalonePaperConversation({
+          const mounted = mountRememberedStandalonePaperConversation({
             paperItem: target.paperItem,
+            panelItem: target.panelItem,
             rawItem: target.rawItem,
           });
           if (!mounted) {
@@ -3907,14 +3860,8 @@ export function openStandaloneChat(options?: {
       // When the user switches to a different paper, update the standalone chat.
       standaloneItemChangeHandler = (rawItem: Zotero.Item | null) => {
         if (cancelled || standaloneMode !== "paper") return;
-        const resolved = resolveInitialPanelItemState(rawItem, {
-          conversationSystem:
-            resolveConversationSystemForItem(rawItem) ||
-            currentConversationSystem,
-        });
-        const newBasePaper =
-          resolved.basePaperItem ||
-          (rawItem ? resolvePaperChatSourceItem(rawItem) : null);
+        const target = resolvePaperSwitchTarget(rawItem);
+        const newBasePaper = target.paperItem;
         if (!newBasePaper) {
           currentRawContextItem = rawItem;
           currentBasePaperItem = null;
@@ -3934,7 +3881,10 @@ export function openStandaloneChat(options?: {
           if (newRawContextID > 0 && newRawContextID !== oldRawContextID) {
             currentRawContextItem = rawItem;
             mountChatPanel(
-              activeItem || currentPaperItem || newBasePaper,
+              target.panelItem ||
+                activeItem ||
+                currentPaperItem ||
+                newBasePaper,
               rawItem,
             );
             scheduleStandaloneSidebarRender();
@@ -3942,16 +3892,16 @@ export function openStandaloneChat(options?: {
           return;
         }
         // Switch to the new paper
-        void mountStandalonePaperConversation({
+        const mounted = mountRememberedStandalonePaperConversation({
           paperItem: newBasePaper,
-          rawItem: rawItem || newBasePaper,
-        }).then((mounted) => {
-          if (!mounted && !cancelled) {
-            void restoreStandaloneOpenConversation(false).then(() => {
-              if (!cancelled) showNoPaperChatSourceStatus();
-            });
-          }
+          panelItem: target.panelItem,
+          rawItem: target.rawItem || newBasePaper,
         });
+        if (!mounted && !cancelled) {
+          void restoreStandaloneOpenConversation(false).then(() => {
+            if (!cancelled) showNoPaperChatSourceStatus();
+          });
+        }
       };
 
       // Initial mount preserves the current paper/library conversation. The
@@ -4021,6 +3971,7 @@ export function openStandaloneChat(options?: {
     );
     const contentArea = root?.querySelector(".llm-standalone-content");
     if (contentArea) {
+      disposeSetupHandlers(contentArea);
       void releaseClaudeRuntimeForBody(contentArea as Element);
       activeContextPanels.delete(contentArea);
       activeContextPanelRawItems.delete(contentArea);

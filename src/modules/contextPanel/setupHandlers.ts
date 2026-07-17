@@ -559,11 +559,18 @@ export type SetupHandlersHooks = {
   getCurrentModelName?: () => string | null;
 };
 
+const setupHandlersCleanupByBody = new WeakMap<Element, () => void>();
+
+export function disposeSetupHandlers(body: Element): void {
+  setupHandlersCleanupByBody.get(body)?.();
+}
+
 export function setupHandlers(
   body: Element,
   initialItem?: Zotero.Item | null,
   hooks?: SetupHandlersHooks,
 ) {
+  disposeSetupHandlers(body);
   const existingPanelRoot = body.querySelector(
     "#llm-main",
   ) as HTMLElement | null;
@@ -575,8 +582,15 @@ export function setupHandlers(
         : existingPanelRoot?.dataset?.conversationSystem === "upstream"
           ? "upstream"
           : resolveConversationSystemForItem(initialItem);
+  const preferredConversationMode =
+    existingPanelRoot?.dataset?.conversationKind === "global"
+      ? "global"
+      : existingPanelRoot?.dataset?.conversationKind === "paper"
+        ? "paper"
+        : undefined;
   const resolvedInitialState = resolveInitialPanelItemState(initialItem, {
     conversationSystem: preferredConversationSystem,
+    conversationMode: preferredConversationMode,
   });
   const rawPanelItem =
     activeContextPanelRawItems.get(body) || initialItem || null;
@@ -1542,15 +1556,18 @@ export function setupHandlers(
       claudeObserverId = undefined;
       codexObserverId = undefined;
     };
+    const isPanelUnavailable = () =>
+      !(body as Element).isConnected ||
+      body.ownerDocument?.defaultView?.closed === true;
     const onAgentPrefChange = () => {
-      if (!(body as Element).isConnected) {
+      if (isPanelUnavailable()) {
         cleanupPrefObservers?.();
         return;
       }
       updateRuntimeModeButton();
     };
     const onClaudeModePrefChange = () => {
-      if (!(body as Element).isConnected) {
+      if (isPanelUnavailable()) {
         cleanupPrefObservers?.();
         return;
       }
@@ -1573,7 +1590,7 @@ export function setupHandlers(
       updateClaudeSystemToggle();
     };
     const onCodexModePrefChange = () => {
-      if (!(body as Element).isConnected) {
+      if (isPanelUnavailable()) {
         cleanupPrefObservers?.();
         return;
       }
@@ -7554,30 +7571,34 @@ export function setupHandlers(
     });
   }
 
-  const cleanupBody = body as Element & {
-    __llmQueuedFollowUpCleanupRegistered?: boolean;
-    __llmQueuedFollowUpDisconnectCleanup?: () => void;
+  let disconnectObserverCleanup: (() => void) | null = null;
+  let setupHandlersCleaned = false;
+  const cleanupSetupHandlers = () => {
+    if (setupHandlersCleaned) return;
+    setupHandlersCleaned = true;
+    disconnectObserverCleanup?.();
+    disconnectObserverCleanup = null;
+    cleanupPrefObservers?.();
+    cleanupMineruPaperSourceObservers?.();
+    unregisterQueuedFollowUpBody(registeredQueuedFollowUpThreadKey, body);
+    queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;
+    activeContextPanelStateSync.delete(body);
+    delete (body as any).__llmApplyResolvedClaudeEffort;
+    delete (body as any).__llmRefreshContextSourceForCurrentItem;
+    delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY];
+    delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];
+    delete (body as any).__llmScheduleClaudeQueueDrain;
+    delete (body as any).__llmScheduleClaudeThreadQueueDrain;
+    unregisterContextSurfaceActions();
+    void releaseClaudeRuntimeForBody(body);
+    if (setupHandlersCleanupByBody.get(body) === cleanupSetupHandlers) {
+      setupHandlersCleanupByBody.delete(body);
+    }
   };
-  if (!cleanupBody.__llmQueuedFollowUpCleanupRegistered) {
-    cleanupBody.__llmQueuedFollowUpCleanupRegistered = true;
-    cleanupBody.__llmQueuedFollowUpDisconnectCleanup =
-      observeElementDisconnected(body, () => {
-        cleanupPrefObservers?.();
-        cleanupMineruPaperSourceObservers?.();
-        unregisterQueuedFollowUpBody(registeredQueuedFollowUpThreadKey, body);
-        queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;
-        activeContextPanelStateSync.delete(body);
-        delete (body as any).__llmApplyResolvedClaudeEffort;
-        delete (body as any).__llmRefreshContextSourceForCurrentItem;
-        delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_DRAIN_PROPERTY];
-        delete (body as any)[SCHEDULE_QUEUED_FOLLOW_UP_THREAD_DRAIN_PROPERTY];
-        delete (body as any).__llmScheduleClaudeQueueDrain;
-        delete (body as any).__llmScheduleClaudeThreadQueueDrain;
-        unregisterContextSurfaceActions();
-        void releaseClaudeRuntimeForBody(body);
-        delete cleanupBody.__llmQueuedFollowUpDisconnectCleanup;
-        cleanupBody.__llmQueuedFollowUpCleanupRegistered = false;
-      });
-  }
+  setupHandlersCleanupByBody.set(body, cleanupSetupHandlers);
+  disconnectObserverCleanup = observeElementDisconnected(
+    body,
+    cleanupSetupHandlers,
+  );
   panelRoot.dataset.handlersInitialized = thisGen;
 }

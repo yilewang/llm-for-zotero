@@ -466,6 +466,23 @@ function resolveGlobalConversationKey(
   return buildDefaultUpstreamGlobalConversationKey(libraryID);
 }
 
+export function resolveRememberedGlobalPanelItem(
+  libraryID: number,
+  conversationSystem: ConversationSystem,
+): Zotero.Item | null {
+  const normalizedLibraryID = normalizePositiveInt(libraryID);
+  if (!normalizedLibraryID) return null;
+  const conversationKey = resolveGlobalConversationKey(
+    normalizedLibraryID,
+    conversationSystem,
+  );
+  return conversationSystem === "claude_code"
+    ? createClaudeGlobalPortalItem(normalizedLibraryID, conversationKey)
+    : conversationSystem === "codex"
+      ? createCodexGlobalPortalItem(normalizedLibraryID, conversationKey)
+      : createGlobalPortalItem(normalizedLibraryID, conversationKey);
+}
+
 function resolvePaperConversationKeyForBaseItem(
   basePaperItem: Zotero.Item,
   system: ConversationSystem,
@@ -524,6 +541,7 @@ export function resolveInitialPanelItemState(
   initialItem: Zotero.Item | null | undefined,
   options?: {
     conversationSystem?: ConversationSystem | null;
+    conversationMode?: "global" | "paper";
   },
 ): {
   item: Zotero.Item | null;
@@ -574,22 +592,12 @@ export function resolveInitialPanelItemState(
     item,
     preferredSystem: options?.conversationSystem,
   });
-  const preferredMode = resolvePreferredConversationMode(
-    libraryID,
-    conversationSystem,
-  );
+  const preferredMode =
+    options?.conversationMode ||
+    resolvePreferredConversationMode(libraryID, conversationSystem);
 
   if (preferredMode === "global") {
-    const conversationKey = resolveGlobalConversationKey(
-      libraryID,
-      conversationSystem,
-    );
-    item =
-      conversationSystem === "claude_code"
-        ? createClaudeGlobalPortalItem(libraryID, conversationKey)
-        : conversationSystem === "codex"
-          ? createCodexGlobalPortalItem(libraryID, conversationKey)
-          : createGlobalPortalItem(libraryID, conversationKey);
+    item = resolveRememberedGlobalPanelItem(libraryID, conversationSystem);
     return { item, basePaperItem };
   }
 

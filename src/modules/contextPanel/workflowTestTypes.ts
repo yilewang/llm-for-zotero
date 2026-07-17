@@ -172,6 +172,9 @@ export type WorkflowTestApi = {
   notifyStandaloneItemChanged: (
     itemId: number | null,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  notifyStandaloneItemChanges: (
+    itemIds: number[],
+  ) => Promise<WorkflowTestStandaloneDiagnostics>;
   addItemsAsStandaloneContext: (
     itemIds: number[],
   ) => Promise<WorkflowTestStandaloneDiagnostics>;

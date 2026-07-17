@@ -180,16 +180,71 @@ describe("workflow: standalone document chat", function () {
       fixture.parentItemId,
       diagnosticsMessage(initial),
     );
+    const paperConversationKey = initial.conversationKey;
+    const paperMarker = "workflow remembered paper chat";
+    await api.seedStandaloneUserMessage(paperMarker);
 
     const openMode = await api.clickStandaloneTab("open");
     assert.equal(openMode.activeTab, "open", diagnosticsMessage(openMode));
+    const libraryConversationKey = openMode.conversationKey;
+    assert.notEqual(
+      libraryConversationKey,
+      paperConversationKey,
+      diagnosticsMessage(openMode),
+    );
+    const libraryMarker = "workflow remembered library chat";
+    await api.seedStandaloneUserMessage(libraryMarker);
 
     const paperMode = await api.clickStandaloneTab("paper");
     assert.equal(paperMode.activeTab, "paper", diagnosticsMessage(paperMode));
     assert.equal(
+      paperMode.conversationKey,
+      paperConversationKey,
+      diagnosticsMessage(paperMode),
+    );
+    assert.equal(
       paperMode.basePaperItemId,
       fixture.parentItemId,
       diagnosticsMessage(paperMode),
+    );
+    assert.include(
+      paperMode.messageText || "",
+      paperMarker,
+      diagnosticsMessage(paperMode),
+    );
+    assert.notInclude(
+      paperMode.messageText || "",
+      libraryMarker,
+      diagnosticsMessage(paperMode),
+    );
+
+    const restoredLibraryMode = await api.clickStandaloneTab("open");
+    assert.equal(
+      restoredLibraryMode.activeTab,
+      "open",
+      diagnosticsMessage(restoredLibraryMode),
+    );
+    assert.equal(
+      restoredLibraryMode.conversationKey,
+      libraryConversationKey,
+      diagnosticsMessage(restoredLibraryMode),
+    );
+    assert.include(
+      restoredLibraryMode.messageText || "",
+      libraryMarker,
+      diagnosticsMessage(restoredLibraryMode),
+    );
+    assert.notInclude(
+      restoredLibraryMode.messageText || "",
+      paperMarker,
+      diagnosticsMessage(restoredLibraryMode),
+    );
+
+    const restoredPaperMode = await api.clickStandaloneTab("paper");
+    assert.equal(
+      restoredPaperMode.conversationKey,
+      paperConversationKey,
+      diagnosticsMessage(restoredPaperMode),
     );
 
     const send = await api.askStandalone("What is the paper about?");
@@ -203,6 +258,90 @@ describe("workflow: standalone document chat", function () {
       send.contextSource?.paperContext?.contextItemId,
       fixture.pdfAttachmentId,
       diagnosticsMessage(postSendDiagnostics),
+    );
+  });
+
+  it("restores each paper's active conversation after switching standalone items", async function () {
+    const paperA = await api.createPaperWithPdfFixture({
+      title: "Workflow Standalone Paper A",
+      pdfTitle: "Workflow Standalone Paper A PDF",
+    });
+    const paperB = await api.createPaperWithPdfFixture({
+      title: "Workflow Standalone Paper B",
+      pdfTitle: "Workflow Standalone Paper B PDF",
+    });
+    fixtures.push(paperA, paperB);
+
+    const initialA = await api.openStandaloneForItem(paperA.parentItemId);
+    const conversationA = initialA.conversationKey;
+    assert.isOk(conversationA, diagnosticsMessage(initialA));
+
+    const marker = "workflow standalone paper A remembered conversation";
+    const seededA = await api.seedStandaloneUserMessage(marker);
+    assert.include(
+      seededA.messageText || "",
+      marker,
+      diagnosticsMessage(seededA),
+    );
+
+    const switchedToB = await api.notifyStandaloneItemChanged(
+      paperB.parentItemId,
+    );
+    assert.equal(
+      switchedToB.basePaperItemId,
+      paperB.parentItemId,
+      diagnosticsMessage(switchedToB),
+    );
+    assert.notEqual(
+      switchedToB.conversationKey,
+      conversationA,
+      diagnosticsMessage(switchedToB),
+    );
+    assert.notInclude(
+      switchedToB.messageText || "",
+      marker,
+      diagnosticsMessage(switchedToB),
+    );
+
+    const restoredA = await api.notifyStandaloneItemChanged(
+      paperA.parentItemId,
+    );
+    assert.equal(
+      restoredA.basePaperItemId,
+      paperA.parentItemId,
+      diagnosticsMessage(restoredA),
+    );
+    assert.equal(
+      restoredA.conversationKey,
+      conversationA,
+      diagnosticsMessage(restoredA),
+    );
+    assert.include(
+      restoredA.messageText || "",
+      marker,
+      diagnosticsMessage(restoredA),
+    );
+
+    const rapidRestoredA = await api.notifyStandaloneItemChanges([
+      paperB.parentItemId,
+      paperA.parentItemId,
+      paperB.parentItemId,
+      paperA.parentItemId,
+    ]);
+    assert.equal(
+      rapidRestoredA.basePaperItemId,
+      paperA.parentItemId,
+      diagnosticsMessage(rapidRestoredA),
+    );
+    assert.equal(
+      rapidRestoredA.conversationKey,
+      conversationA,
+      diagnosticsMessage(rapidRestoredA),
+    );
+    assert.include(
+      rapidRestoredA.messageText || "",
+      marker,
+      diagnosticsMessage(rapidRestoredA),
     );
   });
 

@@ -139,6 +139,29 @@ describe("portalScope resolveInitialPanelItemState", function () {
     assert.equal(resolved.item?.libraryID, 7);
   });
 
+  it("restores explicit paper mode while the remembered library mode is global", function () {
+    const paperItem = {
+      id: 42,
+      libraryID: 7,
+      parentID: undefined,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+    } as unknown as Zotero.Item;
+
+    activeConversationModeByLibrary.set(7, "global");
+    activeGlobalConversationByLibrary.set(7, 2_000_009_001);
+    activePaperConversationByPaper.set("7:42", 4207);
+
+    const resolved = resolveInitialPanelItemState(paperItem, {
+      conversationMode: "paper",
+    });
+
+    assert.equal(resolved.basePaperItem, paperItem);
+    assert.isTrue(isPaperPortalItem(resolved.item));
+    assert.equal(resolved.item?.id, 4207);
+    assert.equal(resolved.item?.libraryID, 7);
+  });
+
   it("uses the parent paper as the conversation item for a selected child attachment", function () {
     const paperItem = {
       id: 42,

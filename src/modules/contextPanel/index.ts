@@ -274,10 +274,6 @@ export function registerReaderContextPanel() {
     },
     onItemChange: ({ setEnabled, tabType, item }) => {
       setEnabled(true);
-      if (isStandaloneWindowActive()) {
-        notifyStandaloneItemChanged(item || null);
-        return true;
-      }
       const selectedTabId = refreshLastKnownSelectedTabId();
       const itemChangeSignature = [
         tabType || "",
@@ -288,6 +284,9 @@ export function registerReaderContextPanel() {
         return true;
       }
       lastItemChangeSignature = itemChangeSignature;
+      if (isStandaloneWindowActive()) {
+        notifyStandaloneItemChanged(item || null);
+      }
       return true;
     },
     onRender: ({ body, item }) => {
