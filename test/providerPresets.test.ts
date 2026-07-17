@@ -72,6 +72,15 @@ describe("providerPresets", function () {
       "mimo",
     );
     assert.equal(detectProviderPreset("https://api.xiaomimimo.com/v1"), "mimo");
+    assert.equal(detectProviderPreset("http://localhost:4000/v1"), "litellm");
+    assert.equal(
+      detectProviderPreset("http://127.0.0.1:4000/v1/chat/completions"),
+      "litellm",
+    );
+    assert.equal(
+      detectProviderPreset("https://litellm.example.com/v1"),
+      "litellm",
+    );
   });
 
   it("falls back to customized for unknown URLs", function () {
@@ -116,6 +125,10 @@ describe("providerPresets", function () {
       getProviderPreset("mimo").defaultApiBase,
       "https://api.xiaomimimo.com/v1",
     );
+    assert.equal(
+      getProviderPreset("litellm").defaultApiBase,
+      "http://localhost:4000/v1",
+    );
   });
 
   it("stores default protocols per preset", function () {
@@ -158,6 +171,14 @@ describe("providerPresets", function () {
     );
     assert.deepEqual(getProviderPreset("mimo").supportedProtocols, [
       "openai_chat_compat",
+    ]);
+    assert.equal(
+      getProviderPreset("litellm").defaultProtocol,
+      "openai_chat_compat",
+    );
+    assert.deepEqual(getProviderPreset("litellm").supportedProtocols, [
+      "openai_chat_compat",
+      "responses_api",
     ]);
   });
 

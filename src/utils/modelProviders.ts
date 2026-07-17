@@ -214,6 +214,7 @@ export function deriveProviderLabel(
   if (lowerHost.includes("openrouter.ai")) return "OpenRouter";
   if (lowerHost === "x.ai" || lowerHost.endsWith(".x.ai")) return "Grok";
   if (lowerHost.includes("groq.com")) return "Groq";
+  if (lowerHost.includes("litellm")) return "LiteLLM";
   if (lowerHost.includes("dashscope") || lowerHost.includes("aliyuncs.com")) {
     return "Qwen";
   }
