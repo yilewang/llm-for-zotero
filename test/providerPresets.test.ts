@@ -72,13 +72,14 @@ describe("providerPresets", function () {
       "mimo",
     );
     assert.equal(detectProviderPreset("https://api.xiaomimimo.com/v1"), "mimo");
-    assert.equal(detectProviderPreset("http://localhost:4000/v1"), "litellm");
     assert.equal(
-      detectProviderPreset("http://127.0.0.1:4000/v1/chat/completions"),
+      detectProviderPreset("https://litellm.example.com/v1"),
       "litellm",
     );
     assert.equal(
-      detectProviderPreset("https://litellm.example.com/v1"),
+      detectProviderPreset(
+        "https://my-litellm-proxy.internal/v1/chat/completions",
+      ),
       "litellm",
     );
   });
@@ -201,19 +202,19 @@ describe("providerPresets", function () {
     ]);
   });
 
-  it("does not match non-litellm localhost URLs as litellm", function () {
+  it("does not match localhost or bare IPs as litellm", function () {
     assert.equal(
-      detectProviderPreset("http://localhost:11434/v1"),
+      detectProviderPreset("http://localhost:4000/v1"),
       "customized",
     );
     assert.equal(
-      detectProviderPreset("http://127.0.0.1:5000/v1"),
+      detectProviderPreset("http://127.0.0.1:4000/v1"),
       "customized",
     );
-  });
-
-  it("matches litellm on port 8000 (common alt port)", function () {
-    assert.equal(detectProviderPreset("http://localhost:8000/v1"), "litellm");
+    assert.equal(
+      detectProviderPreset("http://localhost:8000/v1"),
+      "customized",
+    );
   });
 
   it("reports litellm embeddings support", function () {

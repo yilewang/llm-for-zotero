@@ -289,14 +289,10 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     matches: (apiBase: string) => {
       const parsed = parseApiBase(apiBase);
       if (!parsed) return false;
-      if (parsed.hostname.includes("litellm"))
-        return matchesPaths(parsed.pathname, LITELLM_PATHS);
-      if (
-        (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") &&
-        /:(4000|8000)\b/.test(apiBase)
-      )
-        return matchesPaths(parsed.pathname, LITELLM_PATHS);
-      return false;
+      return (
+        parsed.hostname.includes("litellm") &&
+        matchesPaths(parsed.pathname, LITELLM_PATHS)
+      );
     },
     supportsEmbeddings: true,
     defaultEmbeddingModel: "text-embedding-3-small",
