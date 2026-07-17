@@ -163,25 +163,20 @@ describe("provider capabilities", function () {
     }
   });
 
-  it("routes LiteLLM proxy URLs to third-party tier", function () {
-    for (const apiBase of [
-      "https://litellm.example.com/v1",
-      "https://my-litellm-proxy.internal/v1",
-    ]) {
-      assert.deepInclude(
-        resolveProviderCapabilities({
-          model: "gpt-4o",
-          apiBase,
-          protocol: "openai_chat_compat",
-        }),
-        {
-          tier: "third_party",
-          pdf: "none",
-          images: true,
-          multimodal: true,
-        },
-      );
-    }
+  it("resolves LiteLLM proxy URLs as third-party (manual-select preset)", function () {
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "gpt-4o",
+        apiBase: "http://localhost:4000/v1",
+        protocol: "openai_chat_compat",
+      }),
+      {
+        tier: "third_party",
+        pdf: "none",
+        images: true,
+        multimodal: true,
+      },
+    );
   });
 
   it("keeps known DeepSeek API models image-disabled", function () {

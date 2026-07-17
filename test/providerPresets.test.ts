@@ -72,16 +72,6 @@ describe("providerPresets", function () {
       "mimo",
     );
     assert.equal(detectProviderPreset("https://api.xiaomimimo.com/v1"), "mimo");
-    assert.equal(
-      detectProviderPreset("https://litellm.example.com/v1"),
-      "litellm",
-    );
-    assert.equal(
-      detectProviderPreset(
-        "https://my-litellm-proxy.internal/v1/chat/completions",
-      ),
-      "litellm",
-    );
   });
 
   it("falls back to customized for unknown URLs", function () {
@@ -202,17 +192,13 @@ describe("providerPresets", function () {
     ]);
   });
 
-  it("does not match localhost or bare IPs as litellm", function () {
+  it("never auto-detects litellm from URL (manual-select only)", function () {
     assert.equal(
       detectProviderPreset("http://localhost:4000/v1"),
       "customized",
     );
     assert.equal(
-      detectProviderPreset("http://127.0.0.1:4000/v1"),
-      "customized",
-    );
-    assert.equal(
-      detectProviderPreset("http://localhost:8000/v1"),
+      detectProviderPreset("https://litellm.example.com/v1"),
       "customized",
     );
   });

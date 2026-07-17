@@ -286,14 +286,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     supportedProtocols: ["openai_chat_compat", "responses_api"],
     helperText:
       "Preset uses a LiteLLM proxy for unified access to 100+ LLM providers.",
-    matches: (apiBase: string) => {
-      const parsed = parseApiBase(apiBase);
-      if (!parsed) return false;
-      return (
-        parsed.hostname.includes("litellm") &&
-        matchesPaths(parsed.pathname, LITELLM_PATHS)
-      );
-    },
+    matches: () => false,
     supportsEmbeddings: true,
     defaultEmbeddingModel: "text-embedding-3-small",
   },
