@@ -113,6 +113,12 @@ import {
   releaseClaudeRuntimeForBody,
 } from "../../claudeCode/runtimeRetention";
 import { freshStartupConversationSession } from "./freshStartupConversation";
+import {
+  registerReaderDedicatedPane,
+  resolveReaderDedicatedPanelBody,
+  unregisterAllReaderDedicatedPanes,
+  unregisterReaderDedicatedPane,
+} from "./readerDedicatedPane";
 
 export { openStandaloneChat } from "./standaloneWindow";
 import {
@@ -120,6 +126,21 @@ import {
   notifyStandaloneItemChanged,
   renderStandalonePlaceholder,
 } from "./standaloneWindow";
+
+let registeredReaderContextPaneID: string | null = null;
+
+export function registerReaderDedicatedPaneForWindow(win: Window): void {
+  if (!registeredReaderContextPaneID) return;
+  registerReaderDedicatedPane(win, registeredReaderContextPaneID);
+}
+
+export function unregisterReaderDedicatedPaneForWindow(win: Window): void {
+  unregisterReaderDedicatedPane(win);
+}
+
+export function unregisterAllReaderDedicatedPaneWindows(): void {
+  unregisterAllReaderDedicatedPanes();
+}
 
 // =============================================================================
 // Public API
@@ -257,7 +278,7 @@ export function registerReaderContextPanel() {
         : undefined,
     );
   };
-  Zotero.ItemPaneManager.registerSection({
+  const registeredPaneID = Zotero.ItemPaneManager.registerSection({
     paneID: PANE_ID,
     pluginID: config.addonID,
     header: {
@@ -290,7 +311,13 @@ export function registerReaderContextPanel() {
       lastItemChangeSignature = itemChangeSignature;
       return true;
     },
-    onRender: ({ body, item }) => {
+    onRender: ({ body: sectionBody, item, tabType, paneID }) => {
+      const body = resolveReaderDedicatedPanelBody({
+        sectionBody,
+        tabType,
+        paneID,
+      });
+      if (!body) return;
       // When standalone window is open, show placeholder instead of full UI
       if (isStandaloneWindowActive()) {
         clearCompletedPanelLifecycleSignature(body);
@@ -447,12 +474,24 @@ export function registerReaderContextPanel() {
             }
           }
         }
-      } catch {
-        /* ignore */
+      } catch (error) {
+        ztoolkit.log("LLM: reader panel synchronous render failed", error);
       }
     },
-    onAsyncRender: async ({ body, item, setEnabled }) => {
+    onAsyncRender: async ({
+      body: sectionBody,
+      item,
+      setEnabled,
+      tabType,
+      paneID,
+    }) => {
       setEnabled(true);
+      const body = resolveReaderDedicatedPanelBody({
+        sectionBody,
+        tabType,
+        paneID,
+      });
+      if (!body) return;
       // Skip full render when standalone window is active
       if (isStandaloneWindowActive()) return;
 
@@ -534,6 +573,12 @@ export function registerReaderContextPanel() {
       }
     },
   });
+  if (typeof registeredPaneID === "string") {
+    registeredReaderContextPaneID = registeredPaneID;
+    for (const win of Zotero.getMainWindows?.() || []) {
+      registerReaderDedicatedPane(win, registeredPaneID);
+    }
+  }
 }
 
 type ReaderTextSelectionPopupHandler =

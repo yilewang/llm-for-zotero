@@ -88,6 +88,13 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
 
   // Main container
   const container = createElement(doc, "div", "llm-panel", { id: "llm-main" });
+  if (body.classList.contains("llm-reader-ai-pane")) {
+    Object.assign(container.style, {
+      flex: "1 1 auto",
+      height: "100%",
+      minHeight: "0",
+    });
+  }
   container.dataset.itemId =
     conversationItemId > 0 ? `${conversationItemId}` : "";
   container.dataset.libraryId = hasItem && item ? `${item.libraryID}` : "";
