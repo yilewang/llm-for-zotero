@@ -266,6 +266,23 @@ describe("reader dedicated AI pane", function () {
     assert.include(i18nSource, "llm-start-page-mark");
   });
 
+  it("uses an intact neutral surface for inline prompt editing", function () {
+    const styles = readSource("../addon/content/zoteroPane.css");
+
+    assert.match(
+      styles,
+      /\.llm-inline-edit-wrapper \{[\s\S]*?border: var\(--material-border-quinary\);[\s\S]*?border-radius: 8px;/,
+    );
+    assert.match(
+      styles,
+      /\.llm-inline-edit-header-label \{[\s\S]*?color: var\(--fill-secondary\);/,
+    );
+    assert.match(
+      styles,
+      /\.llm-inline-edit-wrapper > \.llm-input-section \{[\s\S]*?border-radius: 0 0 7px 7px;[\s\S]*?background: transparent;[\s\S]*?background-clip: padding-box;/,
+    );
+  });
+
   it("shares the modern chat layout with the My Library item pane", function () {
     const paneSource = readSource(
       "../src/modules/contextPanel/readerDedicatedPane.ts",

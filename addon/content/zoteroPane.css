@@ -3913,9 +3913,13 @@ item-pane-section.llm-reader-ai-source-section {
 
 /* Inline edit widget — the full .llm-input-section is physically moved here */
 .llm-inline-edit-wrapper {
-  background: var(--material-background);
-  border: 1px solid var(--color-accent);
-  border-radius: 10px;
+  background: color-mix(
+    in srgb,
+    var(--material-toolbar) 96%,
+    var(--fill-primary) 4%
+  );
+  border: var(--material-border-quinary);
+  border-radius: 8px;
   padding: 0;
   max-width: 100%;
   width: 100%;
@@ -3931,14 +3935,16 @@ item-pane-section.llm-reader-ai-source-section {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px 4px;
+  min-height: 30px;
+  padding: 4px 8px 3px 10px;
   justify-content: space-between;
+  border-bottom: var(--material-border-quinary);
 }
 
 .llm-inline-edit-header-label {
   font-size: var(--llm-fs-11, 11px);
-  font-weight: 600;
-  color: var(--color-accent);
+  font-weight: 500;
+  color: var(--fill-secondary);
   user-select: none;
 }
 
@@ -3946,27 +3952,31 @@ item-pane-section.llm-reader-ai-source-section {
   appearance: none;
   -moz-appearance: none;
   border: none;
-  border-radius: 999px;
+  min-height: 24px;
+  border-radius: 5px;
   cursor: pointer;
   font-size: var(--llm-fs-11, 11px);
   font-weight: 500;
-  padding: 2px 10px;
+  padding: 0 8px;
   font-family: inherit;
   line-height: 1.5;
-  background: var(--fill-quinary, var(--fill-quaternary));
+  background: transparent;
   color: var(--fill-secondary);
 }
 
 .llm-inline-edit-header-cancel:hover {
-  opacity: 0.8;
+  background: var(--fill-quinary);
+  color: var(--fill-primary);
 }
 
 /* The borrowed input section sits flush inside the widget */
 .llm-inline-edit-wrapper > .llm-input-section {
   border: none;
-  border-radius: 0;
+  border-radius: 0 0 7px 7px;
   margin: 0;
+  background: transparent;
   box-shadow: none;
+  background-clip: padding-box;
 }
 
 /* In inline edit, show context hover cards below the chip so the textarea/header
