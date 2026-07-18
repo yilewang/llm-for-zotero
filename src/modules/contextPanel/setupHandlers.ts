@@ -1076,6 +1076,7 @@ export function setupHandlers(
       active ? activeLabel : inactiveLabel,
     );
     const iconSystem = active ? getConversationSystem() : targetSystem;
+    claudeSystemToggleBtn.dataset.system = iconSystem;
     if (iconSystem === "codex") {
       claudeSystemToggleIcon.classList.add("llm-codex-system-toggle-icon");
       claudeSystemToggleIcon.textContent = "";
@@ -6273,10 +6274,17 @@ export function setupHandlers(
       inputBox.focus({ preventScroll: true });
     });
 
-    /** Auto-resize the textarea to fit its content, up to max-height. */
+    /** Auto-resize the textarea to fit its content up to its responsive CSS cap. */
     const autoResizeInput = (): void => {
       inputBox.style.height = "auto";
-      const max = 220; // matches CSS max-height
+      const panelWindow = body.ownerDocument?.defaultView;
+      const computedMax = Number.parseFloat(
+        panelWindow?.getComputedStyle(inputBox)?.maxHeight || "",
+      );
+      const max =
+        Number.isFinite(computedMax) && computedMax > 0
+          ? computedMax
+          : inputBox.scrollHeight;
       inputBox.style.height = `${Math.min(inputBox.scrollHeight, max)}px`;
     };
 

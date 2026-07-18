@@ -8,13 +8,13 @@ item-pane-section.llm-reader-ai-source-section {
   display: none !important;
 }
 
-.llm-reader-ai-deck-panel {
+.llm-dedicated-ai-deck-panel {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.llm-reader-ai-pane {
+.llm-dedicated-ai-pane {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -24,13 +24,486 @@ item-pane-section.llm-reader-ai-source-section {
   min-height: 0;
   overflow: hidden;
   box-sizing: border-box;
-  background: var(--material-sidepane, var(--material-background));
+  background: var(--material-background);
 }
 
-.llm-reader-ai-pane > .llm-panel {
+.llm-dedicated-ai-pane > .llm-panel {
   flex: 1 1 auto;
   height: 100%;
   min-height: 0;
+}
+
+/* The dedicated Reader pane follows the available Zotero window height.
+   Neither the conversation viewport nor the composer is user-resizable. */
+.llm-dedicated-ai-pane .llm-chat-shell {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  resize: none;
+}
+
+.llm-modern-chat-pane .llm-input {
+  max-height: 30vh;
+  resize: none;
+}
+
+/* Shared research-chat layout for the Reader and My Library panes. The
+   structure follows mature coding-agent
+   interfaces: quiet chrome, a flat transcript, compact process rows, and one
+   cohesive composer dock. */
+.llm-modern-chat-pane > .llm-panel {
+  gap: 0;
+  padding: 0;
+  background: var(--material-background);
+}
+
+.llm-modern-chat-pane .llm-header {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  height: 41px;
+  min-height: 41px;
+  padding: 0 4px 0 8px;
+  border-bottom: var(--material-panedivider);
+  background: var(--material-toolbar);
+}
+
+.llm-modern-chat-pane .llm-header-top {
+  height: 40px;
+  min-height: 40px;
+  gap: 4px;
+}
+
+.llm-modern-chat-pane .llm-header-info {
+  gap: 4px;
+}
+
+.llm-modern-chat-pane .llm-header button {
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  border-radius: 5px;
+  color: var(--fill-secondary);
+  background: transparent;
+}
+
+.llm-modern-chat-pane .llm-header button:hover:not(:disabled) {
+  color: var(--fill-secondary);
+  background: var(--fill-quinary);
+}
+
+.llm-modern-chat-pane .llm-header button:active:not(:disabled),
+.llm-modern-chat-pane .llm-header button[aria-pressed="true"]:not(:disabled),
+.llm-modern-chat-pane .llm-header button[data-active="true"]:not(:disabled) {
+  background: var(--fill-quarternary);
+}
+
+.llm-modern-chat-pane .llm-history-bar {
+  gap: 4px;
+}
+
+.llm-modern-chat-pane .llm-history-new,
+.llm-modern-chat-pane .llm-history-toggle {
+  width: 28px;
+  min-width: 28px;
+  color: var(--fill-secondary);
+  border-radius: 5px;
+}
+
+.llm-modern-chat-pane .llm-history-new::before,
+.llm-modern-chat-pane .llm-history-toggle::before {
+  width: 16px;
+  height: 16px;
+}
+
+.llm-modern-chat-pane .llm-mode-switch {
+  height: 28px;
+}
+
+.llm-modern-chat-pane .llm-mode-chip {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 7px;
+  border: var(--material-border-quinary);
+  border-radius: 5px;
+  background: var(--material-background);
+  font-size: var(--llm-fs-12);
+  color: var(--fill-secondary);
+}
+
+.llm-modern-chat-pane .llm-claude-system-toggle {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  border-radius: 5px;
+}
+
+.llm-modern-chat-pane .llm-header-actions {
+  gap: 4px;
+}
+
+.llm-modern-chat-pane .llm-header-actions > button {
+  color: var(--fill-secondary);
+}
+
+.llm-modern-chat-pane .llm-messages {
+  gap: 4px;
+  padding: 10px 12px 18px;
+}
+
+.llm-modern-chat-pane [data-start-page-active="true"] .llm-start-page {
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: clamp(24px, 8vh, 72px) clamp(18px, 8%, 34px);
+}
+
+.llm-modern-chat-pane .llm-paper-start-page {
+  gap: 8px;
+  transform: translateY(-4vh);
+}
+
+.llm-modern-chat-pane .llm-start-page-mark {
+  width: 20px;
+  height: 20px;
+  color: var(--fill-secondary);
+  opacity: 0.65;
+}
+
+.llm-modern-chat-pane .llm-start-page-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 34rem;
+  gap: 4px;
+}
+
+.llm-modern-chat-pane .llm-start-page-title {
+  margin: 0;
+  font-size: var(--llm-fs-12);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.llm-modern-chat-pane .llm-start-page-subtitle {
+  margin: 0;
+  max-width: 25rem;
+  font-size: var(--llm-fs-10);
+  line-height: 1.5;
+  font-style: normal;
+  color: var(--fill-tertiary);
+}
+
+.llm-modern-chat-pane .llm-message-wrapper {
+  padding-block: 7px;
+}
+
+.llm-modern-chat-pane .llm-message-wrapper.user {
+  padding-left: clamp(24px, 12%, 72px);
+}
+
+.llm-modern-chat-pane .llm-bubble.user {
+  max-width: 100%;
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 14px 14px 5px 14px;
+  background: color-mix(
+    in srgb,
+    var(--fill-quinary) 86%,
+    var(--material-background)
+  );
+  color: var(--fill-primary);
+}
+
+.llm-modern-chat-pane .llm-message-wrapper.assistant {
+  gap: 5px;
+  padding-right: 2px;
+}
+
+.llm-modern-chat-pane .llm-model-header {
+  gap: 7px;
+  min-height: 20px;
+  margin-bottom: 7px;
+}
+
+.llm-modern-chat-pane .llm-model-header::before {
+  content: "";
+  display: inline-flex;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: color-mix(
+    in srgb,
+    var(--fill-primary) 88%,
+    var(--material-background)
+  );
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--stroke-secondary) 55%, transparent);
+}
+
+.llm-modern-chat-pane .llm-model-name {
+  font-size: var(--llm-fs-10);
+  font-weight: 600;
+  color: var(--fill-secondary);
+  letter-spacing: 0.02em;
+}
+
+.llm-modern-chat-pane .llm-message-meta {
+  padding-inline: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.llm-modern-chat-pane .llm-message-wrapper:hover > .llm-message-meta,
+.llm-modern-chat-pane .llm-message-wrapper:focus-within > .llm-message-meta {
+  opacity: 0.7;
+}
+
+.llm-modern-chat-pane .llm-agent-activity {
+  --llm-agent-surface-bg: color-mix(
+    in srgb,
+    var(--fill-quinary) 72%,
+    transparent
+  );
+  gap: 6px;
+  margin: 8px 0 2px 3px;
+  padding: 2px 0 2px 10px;
+  border-left: 1px solid
+    color-mix(in srgb, var(--stroke-secondary) 72%, transparent);
+}
+
+.llm-modern-chat-pane .llm-agent-activity-list {
+  gap: 3px;
+}
+
+.llm-modern-chat-pane .llm-agent-process-action {
+  gap: 3px;
+  padding: 5px 7px;
+  border-radius: 7px;
+  color: var(--fill-secondary);
+}
+
+.llm-modern-chat-pane .llm-agent-process-action:hover,
+.llm-modern-chat-pane .llm-agent-process-action[open] {
+  background: color-mix(in srgb, var(--fill-quinary) 72%, transparent);
+}
+
+.llm-modern-chat-pane .llm-at-row {
+  gap: 7px;
+  min-height: 18px;
+}
+
+.llm-modern-chat-pane .llm-at-icon {
+  flex-basis: 14px;
+  width: 14px;
+  color: var(--fill-tertiary);
+}
+
+.llm-modern-chat-pane .llm-at-text,
+.llm-modern-chat-pane .llm-agent-process-message {
+  font-size: var(--llm-fs-10);
+  line-height: 1.45;
+  color: var(--fill-secondary);
+}
+
+.llm-modern-chat-pane .llm-agent-process-chips {
+  gap: 4px;
+  padding-left: 21px;
+}
+
+.llm-modern-chat-pane .llm-agent-process-chip {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fill-quinary) 76%, transparent);
+}
+
+.llm-modern-chat-pane .llm-agent-reasoning {
+  margin-block: 3px;
+}
+
+.llm-modern-chat-pane .llm-agent-reasoning-summary {
+  font-size: var(--llm-fs-10);
+  font-weight: 500;
+  color: var(--fill-tertiary);
+}
+
+.llm-modern-chat-pane .llm-agent-pending-action-shell {
+  border-radius: 10px;
+  background: color-mix(
+    in srgb,
+    var(--material-background) 94%,
+    var(--fill-primary) 6%
+  );
+}
+
+.llm-modern-chat-pane .llm-reader-composer-dock {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  min-width: 0;
+  padding-top: 4px;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    var(--material-background) 10px
+  );
+}
+
+.llm-modern-chat-pane .llm-shortcuts {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 5px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 3px 10px 5px;
+  scrollbar-width: none;
+}
+
+.llm-modern-chat-pane .llm-shortcuts::-webkit-scrollbar {
+  display: none;
+}
+
+.llm-modern-chat-pane .llm-shortcut-btn {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fill-secondary);
+  font-size: var(--llm-fs-10);
+}
+
+.llm-modern-chat-pane .llm-shortcut-btn:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--fill-quinary);
+  color: var(--fill-primary);
+}
+
+.llm-modern-chat-pane .llm-shortcut-btn:active:not(:disabled) {
+  background: var(--fill-quarternary);
+}
+
+.llm-modern-chat-pane .llm-input-section {
+  --llm-input-section-padding: 7px;
+  flex: 0 0 auto;
+  gap: 5px;
+  margin: 0 9px 8px;
+  border: var(--material-border-quinary);
+  border-radius: 7px;
+  background: var(--material-toolbar);
+  box-shadow: none;
+}
+
+.llm-modern-chat-pane .llm-compose-area {
+  gap: 6px;
+}
+
+.llm-modern-chat-pane .llm-input {
+  min-height: 42px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  line-height: 1.45;
+}
+
+.llm-modern-chat-pane .llm-input:focus,
+.llm-modern-chat-pane .llm-input:focus-visible {
+  outline: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.llm-modern-chat-pane .llm-actions {
+  --llm-action-height: 28px;
+  --llm-action-icon-size: 16px;
+  min-height: 28px;
+}
+
+.llm-modern-chat-pane .llm-actions-left {
+  gap: 0;
+}
+
+.llm-modern-chat-pane .llm-actions .llm-shortcut-btn {
+  height: 28px;
+  min-height: 28px;
+  padding-inline: 6px;
+  background: transparent;
+  font-size: var(--llm-fs-11);
+}
+
+.llm-modern-chat-pane
+  .llm-actions
+  :is(
+    .llm-upload-file-btn,
+    .llm-select-text-btn,
+    .llm-screenshot-btn,
+    .llm-model-btn,
+    .llm-runtime-mode-btn,
+    .llm-reasoning-btn,
+    .llm-send-btn
+  ) {
+  height: 28px;
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fill-secondary);
+  box-shadow: none;
+}
+
+.llm-modern-chat-pane
+  .llm-actions
+  :is(
+    .llm-upload-file-btn,
+    .llm-select-text-btn,
+    .llm-screenshot-btn,
+    .llm-model-btn,
+    .llm-runtime-mode-btn,
+    .llm-reasoning-btn,
+    .llm-send-btn
+  ):hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--fill-quinary);
+  color: var(--fill-primary);
+}
+
+.llm-modern-chat-pane
+  .llm-actions
+  :is(
+    .llm-upload-file-btn,
+    .llm-select-text-btn,
+    .llm-screenshot-btn,
+    .llm-model-btn,
+    .llm-runtime-mode-btn,
+    .llm-reasoning-btn,
+    .llm-send-btn
+  ):active:not(:disabled) {
+  background: var(--fill-quarternary);
+  transform: none;
+}
+
+.llm-modern-chat-pane .llm-send-btn,
+.llm-modern-chat-pane .llm-send-btn.llm-action-icon-only {
+  min-width: 28px;
+  width: 28px;
+  border-radius: 5px;
+}
+
+.llm-modern-chat-pane
+  #llm-runtime-mode-toggle.llm-runtime-mode-static[data-system="codex"] {
+  display: none;
+}
+
+.llm-modern-chat-pane .llm-status-bar {
+  min-height: 0;
+  padding: 0 11px 6px;
+  border: 0;
+  opacity: 0.72;
 }
 
 #zotero-context-pane-sidenav[data-llm-reader-ai-active]
@@ -683,8 +1156,23 @@ item-pane-section.llm-reader-ai-source-section {
 }
 
 .llm-codex-system-toggle-icon::after {
-  background-image: url("icons/codex-logo.svg");
+  background-color: currentColor;
+  mask-image: url("icons/codex-logo.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/codex-logo.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
   opacity: 0;
+}
+
+.llm-claude-system-toggle[data-system="codex"],
+.llm-standalone-claude-toggle[data-system="codex"],
+.llm-claude-system-toggle[data-system="codex"][data-active="true"],
+.llm-standalone-claude-toggle[data-system="codex"][data-active="true"] {
+  color: var(--fill-secondary);
 }
 
 .llm-claude-system-toggle[data-active="true"]
@@ -2042,9 +2530,7 @@ item-pane-section.llm-reader-ai-source-section {
 
 /* ---- Chat start page (shared layout for all modes) ---- */
 
-/* Center welcome content inside the default-sized shell so .llm-chat-shell's
-   native `resize: vertical` keeps working on the start page. Shrinking the
-   shell (height: auto / overflow: visible) hides the user-agent resize grip. */
+/* Center welcome content inside the available chat shell. */
 [data-start-page-active="true"] .llm-start-page {
   flex: 1;
   justify-content: center;

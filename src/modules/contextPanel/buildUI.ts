@@ -87,14 +87,17 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   }
 
   // Main container
+  const isDedicatedPaneBody = body.classList.contains("llm-dedicated-ai-pane");
+  const usesModernChatLayout = body.classList.contains("llm-modern-chat-pane");
   const container = createElement(doc, "div", "llm-panel", { id: "llm-main" });
-  if (body.classList.contains("llm-reader-ai-pane")) {
+  if (isDedicatedPaneBody) {
     Object.assign(container.style, {
       flex: "1 1 auto",
       height: "100%",
       minHeight: "0",
     });
   }
+  if (usesModernChatLayout) container.dataset.uiLayout = "reader-chat";
   container.dataset.itemId =
     conversationItemId > 0 ? `${conversationItemId}` : "";
   container.dataset.libraryId = hasItem && item ? `${item.libraryID}` : "";
@@ -966,8 +969,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   actionsRight.append(sendSlot);
   actionsRow.append(actionsLeft, actionsRight);
   composeArea.appendChild(actionsRow);
-  container.appendChild(inputSection);
-  container.appendChild(statusBar);
+  if (usesModernChatLayout) {
+    const composerDock = createElement(doc, "div", "llm-reader-composer-dock");
+    composerDock.append(shortcutsRow, inputSection, statusBar);
+    container.appendChild(composerDock);
+  } else {
+    container.appendChild(inputSection);
+    container.appendChild(statusBar);
+  }
   body.appendChild(container);
 }
 

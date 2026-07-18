@@ -117,6 +117,7 @@ import {
   registerReaderDedicatedPane,
   resolveReaderDedicatedPanelBody,
   unregisterAllReaderDedicatedPanes,
+  unregisterLibraryDedicatedPane,
   unregisterReaderDedicatedPane,
 } from "./readerDedicatedPane";
 
@@ -136,6 +137,7 @@ export function registerReaderDedicatedPaneForWindow(win: Window): void {
 
 export function unregisterReaderDedicatedPaneForWindow(win: Window): void {
   unregisterReaderDedicatedPane(win);
+  unregisterLibraryDedicatedPane(win);
 }
 
 export function unregisterAllReaderDedicatedPaneWindows(): void {
@@ -283,11 +285,13 @@ export function registerReaderContextPanel() {
     pluginID: config.addonID,
     header: {
       l10nID: getLocaleID("llm-panel-head"),
-      icon: `chrome://${config.addonRef}/content/icons/icon-20.png`,
+      icon: `chrome://${config.addonRef}/content/icons/sidebar-ai.svg`,
+      darkIcon: `chrome://${config.addonRef}/content/icons/sidebar-ai.svg`,
     },
     sidenav: {
       l10nID: getLocaleID("llm-panel-sidenav-tooltip"),
-      icon: `chrome://${config.addonRef}/content/icons/icon-20.png`,
+      icon: `chrome://${config.addonRef}/content/icons/sidebar-ai.svg`,
+      darkIcon: `chrome://${config.addonRef}/content/icons/sidebar-ai.svg`,
     },
     onInit: ({ setEnabled, tabType }) => {
       setEnabled(true);

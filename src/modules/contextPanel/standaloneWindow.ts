@@ -928,6 +928,7 @@ export function openStandaloneChat(options?: {
         const active = isRuntimeConversationSystem();
         const iconSystem = active ? currentConversationSystem : targetSystem;
         systemToggleBtn.dataset.active = active ? "true" : "false";
+        systemToggleBtn.dataset.system = iconSystem;
         systemToggleBtn.title = active
           ? "Switch to upstream mode"
           : iconSystem === "codex"

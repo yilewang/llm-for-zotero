@@ -104,6 +104,7 @@ export function createActionLayoutController(
 
   const applyResponsiveActionButtonsLayout = () => {
     if (!modelBtn || !actionsLeft) return;
+    const preferCompactSend = body.classList.contains("llm-modern-chat-pane");
     const modelLabel = modelBtn.dataset.modelLabel || "default";
     const modelHint = modelBtn.dataset.modelHint || "";
     const modelCanUseTwoLineWrap =
@@ -446,17 +447,17 @@ export function createActionLayoutController(
     };
 
     const fullState: ActionRevealState = {
-      send: "full",
+      send: preferCompactSend ? "icon" : "full",
       reasoning: "full",
       model: "full-single",
     };
     const reasoningState: ActionRevealState = {
-      send: "full",
+      send: preferCompactSend ? "icon" : "full",
       reasoning: "full",
       model: "icon",
     };
     const sendState: ActionRevealState = {
-      send: "full",
+      send: preferCompactSend ? "icon" : "full",
       reasoning: "icon",
       model: "icon",
     };

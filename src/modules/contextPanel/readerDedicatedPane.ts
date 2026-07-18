@@ -3,20 +3,38 @@ const READER_ITEM_DECK_ID = "zotero-context-pane-item-deck";
 const READER_SIDENAV_ID = "zotero-context-pane-sidenav";
 const READER_AI_DECK_PANEL_ID = "llmforzotero-reader-ai-deck-panel";
 const READER_AI_PANE_ID = "llmforzotero-reader-ai-pane";
+const LIBRARY_ITEM_DECK_ID = "zotero-item-pane-content";
+const LIBRARY_ITEM_DETAILS_ID = "zotero-item-details";
+const LIBRARY_SIDENAV_ID = "zotero-view-item-sidenav";
+const LIBRARY_AI_DECK_PANEL_ID = "llmforzotero-library-ai-deck-panel";
+const LIBRARY_AI_PANE_ID = "llmforzotero-library-ai-pane";
 
-type ReaderDedicatedPaneState = {
+type DedicatedPaneState = {
+  scope: "reader" | "library";
   paneID: string;
   deck: Element;
   deckPanel: Element;
   itemDeck: Element;
   host: HTMLElement;
   sidenav: Element;
+  activeRequested: boolean;
   onSidenavClick: (event: Event) => void;
   layoutObserver: MutationObserver;
   selectionObserver: MutationObserver;
 };
 
-const readerDedicatedPaneStates = new Map<Window, ReaderDedicatedPaneState>();
+type DedicatedPaneConfig = {
+  scope: DedicatedPaneState["scope"];
+  deckID: string;
+  defaultPanelID: string;
+  sidenavID: string;
+  deckPanelID: string;
+  hostID: string;
+  hostClassName: string;
+};
+
+const readerDedicatedPaneStates = new Map<Window, DedicatedPaneState>();
+const libraryDedicatedPaneStates = new Map<Window, DedicatedPaneState>();
 
 function getButtonForPane(
   sidenav: Element,
@@ -31,14 +49,12 @@ function getButtonForPane(
   return null;
 }
 
-function isAiPaneSelected(state: ReaderDedicatedPaneState): boolean {
+function isAiPaneSelected(state: DedicatedPaneState): boolean {
   const deck = state.deck as Element & { selectedPanel?: Element | null };
   return deck.selectedPanel === state.deckPanel;
 }
 
-function syncReaderDedicatedPaneSelection(
-  state: ReaderDedicatedPaneState,
-): void {
+function syncReaderDedicatedPaneSelection(state: DedicatedPaneState): void {
   const active = isAiPaneSelected(state);
   const button = getButtonForPane(state.sidenav, state.paneID);
   if (button) {
@@ -59,31 +75,37 @@ function syncReaderDedicatedPaneSelection(
   }
 }
 
-function activateReaderDedicatedPane(state: ReaderDedicatedPaneState): void {
+function activateReaderDedicatedPane(state: DedicatedPaneState): void {
+  state.activeRequested = true;
   const deck = state.deck as Element & { selectedPanel?: Element | null };
   deck.selectedPanel = state.deckPanel;
-  try {
-    const contextPane = state.deck.ownerDocument.getElementById(
-      "zotero-context-pane-inner",
-    ) as (HTMLElement & { collapsed?: boolean }) | null;
-    if (contextPane) contextPane.collapsed = false;
-  } catch {
-    void 0;
-  }
-  try {
-    const mainWindow = state.deck.ownerDocument.defaultView as
-      | (Window & { ZoteroContextPane?: { collapsed?: boolean } })
-      | null;
-    if (mainWindow?.ZoteroContextPane) {
-      mainWindow.ZoteroContextPane.collapsed = false;
+  if (state.scope === "reader") {
+    try {
+      const contextPane = state.deck.ownerDocument.getElementById(
+        "zotero-context-pane-inner",
+      ) as (HTMLElement & { collapsed?: boolean }) | null;
+      if (contextPane) contextPane.collapsed = false;
+    } catch {
+      void 0;
     }
-  } catch {
-    void 0;
+  }
+  if (state.scope === "reader") {
+    try {
+      const mainWindow = state.deck.ownerDocument.defaultView as
+        | (Window & { ZoteroContextPane?: { collapsed?: boolean } })
+        | null;
+      if (mainWindow?.ZoteroContextPane) {
+        mainWindow.ZoteroContextPane.collapsed = false;
+      }
+    } catch {
+      void 0;
+    }
   }
   syncReaderDedicatedPaneSelection(state);
 }
 
-function restoreReaderItemPane(state: ReaderDedicatedPaneState): void {
+function restoreReaderItemPane(state: DedicatedPaneState): void {
+  state.activeRequested = false;
   if (!isAiPaneSelected(state)) return;
   const deck = state.deck as Element & { selectedPanel?: Element | null };
   deck.selectedPanel = state.itemDeck;
@@ -110,24 +132,44 @@ function syncReaderDedicatedPaneLayout(host: HTMLElement): void {
     height: "100%",
     minHeight: "0",
   });
+
+  const chatShell = panel.querySelector<HTMLElement>(".llm-chat-shell");
+  if (chatShell) {
+    Object.assign(chatShell.style, {
+      flex: "1 1 0",
+      height: "auto",
+      minHeight: "0",
+      maxHeight: "none",
+      resize: "none",
+    });
+  }
+
+  const input = panel.querySelector<HTMLElement>(".llm-input");
+  if (input) {
+    Object.assign(input.style, {
+      maxHeight: "30vh",
+      resize: "none",
+    });
+  }
 }
 
 function createReaderDedicatedPaneState(
   win: Window,
   paneID: string,
-): ReaderDedicatedPaneState | null {
+  config: DedicatedPaneConfig,
+): DedicatedPaneState | null {
   const doc = win.document;
-  const deck = doc.getElementById(READER_CONTEXT_DECK_ID);
-  const itemDeck = doc.getElementById(READER_ITEM_DECK_ID);
-  const sidenav = doc.getElementById(READER_SIDENAV_ID);
+  const deck = doc.getElementById(config.deckID);
+  const itemDeck = doc.getElementById(config.defaultPanelID);
+  const sidenav = doc.getElementById(config.sidenavID);
   if (!deck || !itemDeck || !sidenav) return null;
 
-  let deckPanel: Element | null = doc.getElementById(READER_AI_DECK_PANEL_ID);
-  let host = doc.getElementById(READER_AI_PANE_ID) as HTMLElement | null;
+  let deckPanel: Element | null = doc.getElementById(config.deckPanelID);
+  let host = doc.getElementById(config.hostID) as HTMLElement | null;
   if (!deckPanel) {
     const createdDeckPanel = doc.createXULElement("vbox");
-    createdDeckPanel.id = READER_AI_DECK_PANEL_ID;
-    createdDeckPanel.classList.add("llm-reader-ai-deck-panel");
+    createdDeckPanel.id = config.deckPanelID;
+    createdDeckPanel.classList.add("llm-dedicated-ai-deck-panel");
     createdDeckPanel.setAttribute("flex", "1");
     createdDeckPanel.setAttribute("role", "tabpanel");
     createdDeckPanel.setAttribute("aria-label", "LLM Assistant");
@@ -139,25 +181,28 @@ function createReaderDedicatedPaneState(
       "http://www.w3.org/1999/xhtml",
       "div",
     ) as HTMLElement;
-    createdHost.id = READER_AI_PANE_ID;
-    createdHost.className = "llm-reader-ai-pane";
+    createdHost.id = config.hostID;
+    createdHost.className = config.hostClassName;
     deckPanel.appendChild(createdHost);
     host = createdHost;
   } else if (host.parentElement !== deckPanel) {
     deckPanel.appendChild(host);
   }
+  host.classList.add(...config.hostClassName.split(/\s+/).filter(Boolean));
 
   const state = {
+    scope: config.scope,
     paneID,
     deck,
     deckPanel,
     itemDeck,
     host,
     sidenav,
+    activeRequested: false,
     onSidenavClick: (_event: Event) => undefined,
     layoutObserver: null as unknown as MutationObserver,
     selectionObserver: null as unknown as MutationObserver,
-  } satisfies ReaderDedicatedPaneState;
+  } satisfies DedicatedPaneState;
 
   syncReaderDedicatedPaneLayout(host);
   state.layoutObserver = new win.MutationObserver(() => {
@@ -203,12 +248,43 @@ function createReaderDedicatedPaneState(
 export function registerReaderDedicatedPane(win: Window, paneID: string): void {
   const existing = readerDedicatedPaneStates.get(win);
   if (existing?.paneID === paneID) {
-    syncReaderDedicatedPaneSelection(existing);
+    if (existing.activeRequested) activateReaderDedicatedPane(existing);
+    else syncReaderDedicatedPaneSelection(existing);
     return;
   }
   if (existing) unregisterReaderDedicatedPane(win);
-  const state = createReaderDedicatedPaneState(win, paneID);
+  const state = createReaderDedicatedPaneState(win, paneID, {
+    scope: "reader",
+    deckID: READER_CONTEXT_DECK_ID,
+    defaultPanelID: READER_ITEM_DECK_ID,
+    sidenavID: READER_SIDENAV_ID,
+    deckPanelID: READER_AI_DECK_PANEL_ID,
+    hostID: READER_AI_PANE_ID,
+    hostClassName:
+      "llm-reader-ai-pane llm-dedicated-ai-pane llm-modern-chat-pane",
+  });
   if (state) readerDedicatedPaneStates.set(win, state);
+}
+
+function registerLibraryDedicatedPane(win: Window, paneID: string): void {
+  const existing = libraryDedicatedPaneStates.get(win);
+  if (existing?.paneID === paneID) {
+    if (existing.activeRequested) activateReaderDedicatedPane(existing);
+    else syncReaderDedicatedPaneSelection(existing);
+    return;
+  }
+  if (existing) unregisterLibraryDedicatedPane(win);
+  const state = createReaderDedicatedPaneState(win, paneID, {
+    scope: "library",
+    deckID: LIBRARY_ITEM_DECK_ID,
+    defaultPanelID: LIBRARY_ITEM_DETAILS_ID,
+    sidenavID: LIBRARY_SIDENAV_ID,
+    deckPanelID: LIBRARY_AI_DECK_PANEL_ID,
+    hostID: LIBRARY_AI_PANE_ID,
+    hostClassName:
+      "llm-library-ai-pane llm-dedicated-ai-pane llm-modern-chat-pane",
+  });
+  if (state) libraryDedicatedPaneStates.set(win, state);
 }
 
 export function unregisterReaderDedicatedPane(win: Window): void {
@@ -221,9 +297,22 @@ export function unregisterReaderDedicatedPane(win: Window): void {
   readerDedicatedPaneStates.delete(win);
 }
 
+export function unregisterLibraryDedicatedPane(win: Window): void {
+  const state = libraryDedicatedPaneStates.get(win);
+  if (!state) return;
+  state.sidenav.removeEventListener("click", state.onSidenavClick, true);
+  state.layoutObserver.disconnect();
+  state.selectionObserver.disconnect();
+  state.deckPanel.remove();
+  libraryDedicatedPaneStates.delete(win);
+}
+
 export function unregisterAllReaderDedicatedPanes(): void {
   for (const win of [...readerDedicatedPaneStates.keys()]) {
     unregisterReaderDedicatedPane(win);
+  }
+  for (const win of [...libraryDedicatedPaneStates.keys()]) {
+    unregisterLibraryDedicatedPane(win);
   }
 }
 
@@ -239,7 +328,7 @@ export function resolveReaderDedicatedPanelBody(params: {
   paneID: string | null;
 }): Element | null {
   const { sectionBody, tabType, paneID } = params;
-  if (tabType !== "reader" || !paneID) return sectionBody;
+  if (!paneID) return sectionBody;
 
   const sourceSection = sectionBody.closest(
     "item-pane-custom-section, item-pane-section",
@@ -249,6 +338,10 @@ export function resolveReaderDedicatedPanelBody(params: {
 
   const win = sectionBody.ownerDocument.defaultView;
   if (!win) return sectionBody;
+  if (tabType !== "reader") {
+    registerLibraryDedicatedPane(win, paneID);
+    return libraryDedicatedPaneStates.get(win)?.host || sectionBody;
+  }
   registerReaderDedicatedPane(win, paneID);
   const state = readerDedicatedPaneStates.get(win);
   if (!state) return sectionBody;
