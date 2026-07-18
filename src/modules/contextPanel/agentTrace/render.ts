@@ -56,6 +56,10 @@ type AgentTraceSummaryRow = {
 };
 
 const agentTraceActionExpandedCache = new Map<string, boolean>();
+const agentActivityExpandedCache = new WeakMap<
+  Message,
+  { open: boolean; wasWorking: boolean }
+>();
 
 type AgentTraceDisplayItem =
   | {
@@ -96,6 +100,97 @@ type RenderAgentTraceParams = {
   onTraceMissing?: () => void;
   onInterleavedText?: () => void;
 };
+
+export function formatAgentActivityDuration(durationMs: number): string {
+  const totalSeconds = Math.max(
+    1,
+    Math.round((Number.isFinite(durationMs) ? durationMs : 0) / 1000),
+  );
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [
+    hours > 0 ? `${hours}h` : "",
+    minutes > 0 ? `${minutes}m` : "",
+    `${seconds}s`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function resolveAgentActivityDurationMs(
+  message: Message,
+  userMessage: Message | null | undefined,
+  events: AgentRunEventRecord[],
+  answerStartedAt?: number,
+): number {
+  const eventTimes = events
+    .map((event) => Number(event.createdAt))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const start = eventTimes.length
+    ? Math.min(...eventTimes)
+    : Number(message.waitingAnimationStartedAt) ||
+      Number(userMessage?.timestamp) ||
+      Number(message.timestamp) ||
+      Date.now();
+  const end =
+    Number.isFinite(answerStartedAt) && Number(answerStartedAt) > 0
+      ? Number(answerStartedAt)
+      : message.streaming
+        ? Date.now()
+        : eventTimes.length
+          ? Math.max(...eventTimes)
+          : Number(message.timestamp) || Date.now();
+  return Math.max(0, end - start);
+}
+
+function appendAgentActivityDisclosure(params: {
+  doc: Document;
+  wrap: HTMLElement;
+  list: HTMLElement;
+  message: Message;
+  userMessage?: Message | null;
+  events: AgentRunEventRecord[];
+  answerStartedAt?: number;
+  forceOpen?: boolean;
+}): void {
+  const { doc, wrap, list, message, userMessage, events } = params;
+  const working = message.streaming === true && !params.answerStartedAt;
+  const previous = agentActivityExpandedCache.get(message);
+  const state = working
+    ? !previous || !previous.wasWorking
+      ? { open: true, wasWorking: true }
+      : previous
+    : previous?.wasWorking
+      ? { open: false, wasWorking: false }
+      : previous || { open: false, wasWorking: false };
+  agentActivityExpandedCache.set(message, state);
+
+  const details = doc.createElement("details") as HTMLDetailsElement;
+  details.className = "llm-agent-activity-details";
+  details.open = params.forceOpen === true || state.open;
+
+  const summary = doc.createElement("summary") as HTMLElement;
+  summary.className = "llm-agent-activity-summary";
+  summary.textContent = working
+    ? "Working…"
+    : `Worked for ${formatAgentActivityDuration(
+        resolveAgentActivityDurationMs(
+          message,
+          userMessage,
+          events,
+          params.answerStartedAt,
+        ),
+      )}`;
+  details.append(summary, list);
+  details.addEventListener("toggle", () => {
+    agentActivityExpandedCache.set(message, {
+      open: details.open,
+      wasWorking: working,
+    });
+  });
+  wrap.appendChild(details);
+}
 
 export function buildAgentTraceMarkdownForRender(
   text: string,
@@ -3506,6 +3601,14 @@ function appendCodexAgentTraceEvent(
     case "codex_progress": {
       const progressText = readAgentTraceText(entry.payload.text);
       if (progressText) {
+        if (entry.payload.kind === "assistant_message") {
+          appendInterleavedInlineText(
+            ctx.items,
+            progressText,
+            ctx.visibleInlineText,
+          );
+          return true;
+        }
         ctx.items.push({
           type: "message",
           tone: "neutral",
@@ -3770,7 +3873,15 @@ export function renderAgentTrace({
     loadingText.textContent = "Loading agent activity...";
     loadingRow.append(loadingIcon, loadingText);
     list.appendChild(loadingRow);
-    wrap.appendChild(list);
+    appendAgentActivityDisclosure({
+      doc,
+      wrap,
+      list,
+      message,
+      userMessage,
+      events,
+      forceOpen: true,
+    });
     return wrap;
   }
   const {
@@ -3788,6 +3899,23 @@ export function renderAgentTrace({
   const hasFinalResponse = events.some(
     (entry) => entry.payload.type === "final",
   );
+  const completedAnswerEvent = events.find(
+    (
+      entry,
+    ): entry is AgentRunEventRecord & {
+      payload: Extract<AgentRunEventRecord["payload"], { type: "final" }>;
+    } =>
+      entry.payload.type === "final" &&
+      Number.isFinite(entry.payload.answerStartedAt),
+  );
+  const answerStartedAt =
+    events.find(
+      (entry) =>
+        entry.payload.type === "codex_progress" &&
+        entry.payload.kind === "assistant_message" &&
+        Boolean(entry.payload.text.trim()),
+    )?.createdAt || completedAnswerEvent?.payload.answerStartedAt;
+  const outputFragments: HTMLElement[] = [];
   for (const [itemIndex, itemEntry] of processItems.entries()) {
     if (itemEntry.type === "inline_text") {
       const inlineEl = doc.createElement("div");
@@ -3801,7 +3929,7 @@ export function renderAgentTrace({
       } catch {
         inlineEl.textContent = inlineText;
       }
-      list.appendChild(inlineEl);
+      outputFragments.push(inlineEl);
       continue;
     }
 
@@ -3951,13 +4079,26 @@ export function renderAgentTrace({
 
     list.appendChild(actionWrap);
   }
-  wrap.appendChild(list);
+  appendAgentActivityDisclosure({
+    doc,
+    wrap,
+    list,
+    message,
+    userMessage,
+    events,
+    answerStartedAt,
+    forceOpen: Boolean(pending),
+  });
 
-  if (hasFinalResponse && !isInterleaved) {
+  if (hasFinalResponse || answerStartedAt) {
     const divider = doc.createElement("div");
     divider.className = "llm-agent-output-divider";
     divider.setAttribute("aria-hidden", "true");
     wrap.appendChild(divider);
+  }
+
+  for (const fragment of outputFragments) {
+    wrap.appendChild(fragment);
   }
 
   if (pending) {

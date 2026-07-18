@@ -64,5 +64,11 @@ describe("compact marker CSS", function () {
     assert.include(css, ".llm-fork-source-marker-wrapper");
     assert.include(css, ".llm-bubble.llm-fork-source-marker");
     assert.include(css, ".llm-fork-source-marker-button");
+    assert.include(css, "color: var(--fill-tertiary)");
+    assert.include(css, "background: var(--fill-quinary)");
+    assert.notInclude(
+      extractCssRule(css, ".llm-bubble.llm-fork-source-marker"),
+      "var(--color-accent",
+    );
   });
 });

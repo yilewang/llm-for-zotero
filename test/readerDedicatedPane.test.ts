@@ -92,6 +92,17 @@ describe("reader dedicated AI pane", function () {
     );
   });
 
+  it("records the reader tab that owns the dedicated chat pane", function () {
+    const paneSource = readSource(
+      "../src/modules/contextPanel/readerDedicatedPane.ts",
+    );
+
+    assert.include(
+      paneSource,
+      "state.host.dataset.llmReaderTabId = sourceTabID || selectedTabID",
+    );
+  });
+
   it("uses window-responsive sizing without Reader resize handles", function () {
     const styles = readSource("../addon/content/zoteroPane.css");
     assert.match(
@@ -100,7 +111,11 @@ describe("reader dedicated AI pane", function () {
     );
     assert.match(
       styles,
-      /\.llm-modern-chat-pane \.llm-input \{[\s\S]*?max-height: 30vh;[\s\S]*?resize: none;/,
+      /\.llm-modern-chat-pane \.llm-chat-shell,[\s\S]*?\.llm-modern-chat-pane \.llm-input \{[\s\S]*?resize: none;/,
+    );
+    assert.match(
+      styles,
+      /\.llm-modern-chat-pane \.llm-input \{[\s\S]*?max-height: 30vh;/,
     );
   });
 
@@ -132,7 +147,7 @@ describe("reader dedicated AI pane", function () {
     );
     assert.match(
       styles,
-      /\.llm-modern-chat-pane \.llm-input-section \{[\s\S]*?border: var\(--material-border-quinary\);[\s\S]*?background: var\(--material-toolbar\);[\s\S]*?box-shadow: none;/,
+      /\.llm-modern-chat-pane \.llm-input-section \{[\s\S]*?border: var\(--material-border-quinary\);[\s\S]*?background: color-mix\([\s\S]*?var\(--material-toolbar\) 96%,[\s\S]*?var\(--fill-primary\) 4%[\s\S]*?box-shadow: none;/,
     );
     assert.match(
       styles,
@@ -142,6 +157,86 @@ describe("reader dedicated AI pane", function () {
       styles,
       /\.llm-modern-chat-pane \.llm-actions \{[\s\S]*?--llm-action-height: 28px;[\s\S]*?--llm-action-icon-size: 16px;/,
     );
+    assert.match(
+      styles,
+      /\.llm-modern-chat-pane \.llm-status-ready \{[\s\S]*?color: var\(--fill-tertiary\);/,
+    );
+  });
+
+  it("keeps composer icon actions square", function () {
+    const styles = readSource("../addon/content/zoteroPane.css");
+
+    assert.include(styles, ".llm-select-text-btn.llm-action-icon-only");
+    assert.include(styles, ".llm-screenshot-btn.llm-action-icon-only");
+    assert.include(styles, "flex: 0 0 28px");
+    assert.include(styles, "width: 28px");
+    assert.include(styles, "min-width: 28px");
+  });
+
+  it("gives the primary send action a high-contrast surface", function () {
+    const styles = readSource("../addon/content/zoteroPane.css");
+
+    assert.include(styles, ".llm-send-btn:not(.llm-cancel-btn)");
+    assert.include(
+      styles,
+      "background: color-mix(in srgb, var(--fill-primary) 84%, transparent)",
+    );
+    assert.include(styles, "color: var(--material-background)");
+    assert.include(styles, "opacity: 0.78");
+  });
+
+  it("renders the permanent paper source first as a compact format control", function () {
+    const handlers = readSource("../src/modules/contextPanel/setupHandlers.ts");
+    const contextResolution = readSource(
+      "../src/modules/contextPanel/contextResolution.ts",
+    );
+    const styles = readSource("../addon/content/zoteroPane.css");
+
+    assert.include(
+      handlers,
+      'getContextSourceModeBadgeLabel(contentSourceMode) || "Text"',
+    );
+    assert.include(styles, ".llm-paper-context-chip-autoloaded");
+    assert.include(styles, "order: -100");
+    assert.include(contextResolution, "Quote · ${pageLabel.replace");
+    assert.include(styles, "opacity: 0");
+    assert.include(styles, ".llm-selected-context-header:hover");
+  });
+
+  it("keeps the streaming stop action prominent and uses a square glyph", function () {
+    const styles = readSource("../addon/content/zoteroPane.css");
+    const actionLayoutSource = readSource(
+      "../src/modules/contextPanel/setupHandlers/controllers/actionLayoutController.ts",
+    );
+    const stopIcon = readSource("../addon/content/icons/action-stop.svg");
+
+    assert.include(styles, ".llm-actions .llm-cancel-btn");
+    assert.include(styles, 'mask: url("icons/action-stop.svg")');
+    assert.include(stopIcon, '<rect x="4" y="4" width="8" height="8"');
+    assert.include(
+      actionLayoutSource,
+      'setActionButtonLabel(cancelBtn, "Cancel", "", mode)',
+    );
+    assert.notInclude(
+      actionLayoutSource,
+      'setActionButtonLabel(cancelBtn, "Cancel", "X", mode)',
+    );
+  });
+
+  it("uses Codex-style assistant chrome without an avatar or model heading", function () {
+    const styles = readSource("../addon/content/zoteroPane.css");
+    const traceSource = readSource(
+      "../src/modules/contextPanel/agentTrace/render.ts",
+    );
+
+    assert.include(styles, ".llm-modern-chat-pane .llm-model-header::before");
+    assert.match(
+      styles,
+      /\.llm-modern-chat-pane \.llm-model-header::before,[\s\S]*?\.llm-modern-chat-pane \.llm-model-name \{[\s\S]*?display: none;/,
+    );
+    assert.include(styles, ".llm-agent-activity-summary::after");
+    assert.include(traceSource, "summary.textContent = working");
+    assert.include(traceSource, "Worked for ${formatAgentActivityDuration");
   });
 
   it("groups Reader actions and input into a cohesive composer dock", function () {

@@ -52,10 +52,15 @@ class FakeElement {
 }
 
 class FakeDocument {
-  constructor(private readonly deck: FakeElement) {}
+  constructor(
+    private readonly deck: FakeElement,
+    private readonly dedicatedHost: FakeElement | null = null,
+  ) {}
 
   getElementById(id: string): FakeElement | null {
-    return id === "zotero-context-pane-item-deck" ? this.deck : null;
+    if (id === "zotero-context-pane-item-deck") return this.deck;
+    if (id === "llmforzotero-reader-ai-pane") return this.dedicatedHost;
+    return null;
   }
 }
 
@@ -97,6 +102,23 @@ function buildStandalonePanel() {
   body.append(root);
   return {
     body: body as unknown as Element,
+    root: root as unknown as Element,
+  };
+}
+
+function buildDedicatedReaderPanel(ownerTabID = "tab-active") {
+  const deck = new FakeElement();
+  const host = new FakeElement();
+  const doc = new FakeDocument(deck, host);
+  deck.ownerDocument = doc;
+  host.ownerDocument = doc;
+  host.setAttribute("data-llm-reader-tab-id", ownerTabID);
+  const root = new FakeElement();
+  root.setAttribute("id", "llm-main");
+  host.append(root);
+  return {
+    doc: doc as unknown as Document,
+    host: host as unknown as Element,
     root: root as unknown as Element,
   };
 }
@@ -149,6 +171,31 @@ describe("reader popup panel routing", function () {
 
     assert.strictEqual(target?.body, activePanel);
     assert.strictEqual(target?.root, activeRoot);
+  });
+
+  it("routes a reader popup to the matching dedicated chat pane", function () {
+    const { doc, host, root } = buildDedicatedReaderPanel();
+
+    const target = resolveReaderPopupPanelTarget({
+      preferredDocument: doc,
+      documents: [doc],
+      tabID: "tab-active",
+    });
+
+    assert.strictEqual(target?.body, host);
+    assert.strictEqual(target?.root, root);
+  });
+
+  it("does not route a reader popup to another tab's dedicated chat", function () {
+    const { doc } = buildDedicatedReaderPanel("tab-other");
+
+    assert.isNull(
+      resolveReaderPopupPanelTarget({
+        preferredDocument: doc,
+        documents: [doc],
+        tabID: "tab-active",
+      }),
+    );
   });
 
   it("uses only the preferred window's selected panel without a tab ID", function () {

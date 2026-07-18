@@ -325,6 +325,7 @@ export type AgentEvent =
       itemId: string;
       text: string;
       status?: "running" | "completed";
+      kind?: "assistant_message";
     }
   | {
       type: "codex_tool_activity";
@@ -354,7 +355,7 @@ export type AgentEvent =
     }
   | { type: "context_compacted"; automatic?: boolean }
   | { type: "fallback"; reason: string }
-  | { type: "final"; text: string };
+  | { type: "final"; text: string; answerStartedAt?: number };
 
 export type AgentRunStatus = "running" | "completed" | "failed" | "cancelled";
 

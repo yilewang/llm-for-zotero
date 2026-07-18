@@ -1593,7 +1593,7 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
             ? `${paperLabel}, ${pageLabel.replace(/^page /, "p")}`
             : pageLabel.replace(/^page /, "p");
         }
-        return pageLabel;
+        return `Quote · ${pageLabel.replace(/^page\s+/i, "p. ")}`;
       }
       return isGlobalConversation && selectedSource === "pdf"
         ? formatPaperCitationLabel(selectedContext.paperContext)

@@ -1157,7 +1157,7 @@ export function openStandaloneChat(options?: {
       contentTitleBar.append(contentTitleText, contentTitleBarSpacer);
 
       const contentArea = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
-      contentArea.className = "llm-standalone-content";
+      contentArea.className = "llm-standalone-content llm-modern-chat-pane";
       contentArea.dataset.standalone = "true";
 
       contentWrapper.append(tabRow, contentTitleBar, contentArea);

@@ -3583,6 +3583,20 @@ function createQueuedRefresh(refresh: () => void): () => void {
   };
 }
 
+function createAssistantResponseStreamCoalescer(
+  onBlock: (chunk: string) => void,
+): BlockStreamCoalescer {
+  return createBlockStreamCoalescer({
+    // Keep answer updates close to the 50 ms UI refresh cadence. The default
+    // 450 ms batching is useful for trace logs, but makes prose visibly jump.
+    minBoundaryChars: 24,
+    targetChars: 48,
+    hardCapChars: 96,
+    maxWaitMs: 40,
+    onBlock,
+  });
+}
+
 function waitForUiStep(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
@@ -4098,8 +4112,10 @@ function createCodexNativeActivityTraceController(
   const mcpRequestToolItemIds = new Map<string, string>();
   const activatedSkillIds = new Set<string>();
   const progressCoalescers = new Map<string, BlockStreamCoalescer>();
+  const agentMessageItemIds = new Set<string>();
   let seq = 0;
   let lastAgentMessageItemId = "";
+  let agentAnswerStartedAt: number | undefined;
 
   const createEvent = (payload: AgentEvent): AgentRunEventRecord => ({
     runId,
@@ -4144,6 +4160,7 @@ function createCodexNativeActivityTraceController(
     text: string,
     mode: "replace" | "append",
     status: "running" | "completed",
+    kind?: "assistant_message",
   ): boolean => {
     const cleanItemId = sanitizeText(itemId).trim();
     const cleanText = sanitizeText(text);
@@ -4163,8 +4180,10 @@ function createCodexNativeActivityTraceController(
           itemId: cleanItemId,
           text: nextText,
           status,
+          ...(kind || existing.payload.kind
+            ? { kind: kind || existing.payload.kind }
+            : {}),
         },
-        createdAt: Date.now(),
       };
       return true;
     }
@@ -4175,6 +4194,7 @@ function createCodexNativeActivityTraceController(
         itemId: cleanItemId,
         text: cleanText,
         status,
+        ...(kind ? { kind } : {}),
       }),
     );
     return true;
@@ -4183,12 +4203,19 @@ function createCodexNativeActivityTraceController(
   const getProgressCoalescer = (itemId: string): BlockStreamCoalescer => {
     let coalescer = progressCoalescers.get(itemId);
     if (coalescer) return coalescer;
-    coalescer = createBlockStreamCoalescer({
-      onBlock: (block) => {
-        const changed = upsertProgressText(itemId, block, "append", "running");
-        if (changed) sync();
-      },
-    });
+    const onBlock = (block: string) => {
+      const changed = upsertProgressText(
+        itemId,
+        block,
+        "append",
+        "running",
+        agentMessageItemIds.has(itemId) ? "assistant_message" : undefined,
+      );
+      if (changed) sync();
+    };
+    coalescer = agentMessageItemIds.has(itemId)
+      ? createAssistantResponseStreamCoalescer(onBlock)
+      : createBlockStreamCoalescer({ onBlock });
     progressCoalescers.set(itemId, coalescer);
     return coalescer;
   };
@@ -4566,7 +4593,11 @@ function createCodexNativeActivityTraceController(
     event: CodexNativeTraceItemEvent,
     phase: "started" | "completed",
   ): void => {
-    if (isCodexNativeAgentMessageItem(event)) return;
+    if (isCodexNativeAgentMessageItem(event)) {
+      const itemId = sanitizeText(event.id || "").trim();
+      if (itemId) agentMessageItemIds.add(itemId);
+      return;
+    }
     flushAllProgressCoalescers("event");
     if (appendStructuredOperationStatus(event, phase)) {
       sync();
@@ -4616,6 +4647,8 @@ function createCodexNativeActivityTraceController(
   ): boolean => {
     const itemId = sanitizeText(event.itemId || "").trim();
     if (!itemId) return false;
+    agentAnswerStartedAt ||= Date.now();
+    agentMessageItemIds.add(itemId);
     getProgressCoalescer(itemId).pushText(event.delta);
     return true;
   };
@@ -4693,11 +4726,20 @@ function createCodexNativeActivityTraceController(
     if (!isCodexNativeAgentMessageItem(event)) return;
     const itemId = sanitizeText(event.id || "").trim();
     if (!itemId) return;
+    agentMessageItemIds.add(itemId);
     flushProgressCoalescer(itemId, "event");
     lastAgentMessageItemId = itemId;
     const completedText = event.details || event.summary || "";
     if (completedText && !progressEventIndexes.has(itemId)) {
-      if (upsertProgressText(itemId, completedText, "replace", "completed")) {
+      if (
+        upsertProgressText(
+          itemId,
+          completedText,
+          "replace",
+          "completed",
+          "assistant_message",
+        )
+      ) {
         sync();
       }
     }
@@ -4727,7 +4769,15 @@ function createCodexNativeActivityTraceController(
     }
     const alreadyFinal = events.some((entry) => entry.payload.type === "final");
     if (!alreadyFinal) {
-      events.push(createEvent({ type: "final", text: finalText }));
+      events.push(
+        createEvent({
+          type: "final",
+          text: finalText,
+          ...(agentAnswerStartedAt
+            ? { answerStartedAt: agentAnswerStartedAt }
+            : {}),
+        }),
+      );
       changed = true;
     }
     if (changed) sync();
@@ -6240,12 +6290,12 @@ export async function retryLatestAssistantResponse(
     });
     renderContextUsageSnapshot(body, ui.tokenUsageEl, estimatedContextSnapshot);
 
-    responseStreamCoalescer = createBlockStreamCoalescer({
-      onBlock: (chunk) => {
+    responseStreamCoalescer = createAssistantResponseStreamCoalescer(
+      (chunk) => {
         assistantMessage.text += chunk;
         queueRefresh();
       },
-    });
+    );
     const handleDelta = (delta: string) => {
       const chunk = sanitizeText(delta);
       if (!chunk) return;
@@ -8423,12 +8473,12 @@ export async function sendQuestion(
       codexActivityTrace,
       opts.forcedSkillIds,
     );
-    responseStreamCoalescer = createBlockStreamCoalescer({
-      onBlock: (chunk) => {
+    responseStreamCoalescer = createAssistantResponseStreamCoalescer(
+      (chunk) => {
         assistantMessage.text += chunk;
         queueRefresh();
       },
-    });
+    );
 
     if (getCancelledRequestId(conversationKey) >= thisRequestId) {
       getAbortController(conversationKey)?.abort();

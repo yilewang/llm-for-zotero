@@ -23,6 +23,25 @@ function extractCssRule(css: string, selector: string): string {
 }
 
 describe("standalone window layout CSS", function () {
+  it("mounts the standalone transcript with the shared modern chat surface", function () {
+    const source = readStandaloneWindowSource();
+    const css = readPanelCss();
+
+    assert.include(source, '"llm-standalone-content llm-modern-chat-pane"');
+    assert.include(
+      css,
+      ".llm-standalone-content.llm-modern-chat-pane .llm-header",
+    );
+    assert.include(
+      css,
+      ".llm-standalone-content.llm-modern-chat-pane > .llm-panel",
+    );
+    assert.match(
+      css,
+      /\.llm-modern-chat-pane \.llm-chat-shell,[\s\S]*?\.llm-modern-chat-pane \.llm-input \{[\s\S]*?resize: none;/,
+    );
+  });
+
   it("lets the standalone chat panel widen beyond the default window width", function () {
     const rule = extractCssRule(
       readPanelCss(),
@@ -85,14 +104,36 @@ describe("standalone window layout CSS", function () {
       lightRootRule,
       /--llm-standalone-icon-strip-bg:\s*color-mix\(\s*in srgb,\s*var\(--material-background\) 90%,\s*var\(--fill-primary\) 10%\s*\);/,
     );
-    assert.include(
-      sidebarRule,
-      "background: color-mix(in srgb, var(--material-background) 96%, black 4%)",
-    );
+    assert.include(sidebarRule, "background: var(--llm-standalone-sidebar-bg)");
     assert.include(
       iconStripRule,
-      "background: color-mix(in srgb, var(--material-background) 96%, black 4%)",
+      "background: var(--llm-standalone-icon-strip-bg)",
     );
+    const activeConversationRule = extractCssRule(
+      css,
+      ".llm-standalone-conv-item.active",
+    );
+    assert.include(activeConversationRule, "background: var(--fill-quinary)");
+    assert.include(activeConversationRule, "color: var(--fill-primary)");
+  });
+
+  it("uses a lighter sidebar surface and a compact document title bar", function () {
+    const css = readPanelCss();
+    const rootRule = extractCssRule(css, "#llmforzotero-standalone-chat-root");
+    const titleRule = extractCssRule(css, ".llm-standalone-content-title");
+    const titleIconRule = extractCssRule(
+      css,
+      ".llm-standalone-content-title-text::before",
+    );
+
+    assert.include(rootRule, "--llm-standalone-sidebar-bg: color-mix(");
+    assert.include(rootRule, "var(--material-background) 92%");
+    assert.include(rootRule, "var(--fill-primary) 8%");
+    assert.include(titleRule, "min-height: 32px");
+    assert.include(titleRule, "font-size: var(--llm-fs-11)");
+    assert.include(titleRule, "color: var(--fill-secondary)");
+    assert.include(titleRule, "background: var(--material-background)");
+    assert.include(titleIconRule, 'url("icons/action-paper.svg")');
   });
 
   it("marks standalone windows with a light or dark theme without changing dark CSS defaults", function () {

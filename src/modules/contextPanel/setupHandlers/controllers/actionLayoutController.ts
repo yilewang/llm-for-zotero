@@ -80,9 +80,10 @@ export function createActionLayoutController(
   const setSendButtonLabel = (mode: ActionLabelMode) => {
     setActionButtonLabel(sendBtn, "Send", "↑", mode);
     sendBtn.title = "Send";
-    setActionButtonLabel(cancelBtn, "Cancel", "X", mode);
+    setActionButtonLabel(cancelBtn, "Cancel", "", mode);
     if (cancelBtn) {
       cancelBtn.title = "Cancel";
+      cancelBtn.setAttribute("aria-label", "Cancel");
     }
   };
 

@@ -5,6 +5,9 @@ type ZoteroDeckElement = Element & {
   selectedIndex?: number;
 };
 
+const READER_DEDICATED_PANE_ID = "llmforzotero-reader-ai-pane";
+const READER_DEDICATED_TAB_ATTRIBUTE = "data-llm-reader-tab-id";
+
 export type ReaderPopupPanelTarget = {
   body: Element;
   root: HTMLDivElement;
@@ -77,22 +80,44 @@ export function isPanelInReaderContextForTab(
   );
 }
 
-function getPanelTarget(
-  doc: Document,
-  tabID: ReaderTabID,
-): ReaderPopupPanelTarget | null {
-  const readerPanel = getReaderContextPanelForTab(doc, tabID);
-  if (!readerPanel) return null;
+function getRootTarget(container: Element): ReaderPopupPanelTarget | null {
   const root = (
-    readerPanel.matches?.("#llm-main")
-      ? readerPanel
-      : readerPanel.querySelector?.("#llm-main")
+    container.matches?.("#llm-main")
+      ? container
+      : container.querySelector?.("#llm-main")
   ) as HTMLDivElement | null;
   if (!root) return null;
   return {
     body: root.parentElement || root,
     root,
   };
+}
+
+function getDedicatedPanelTarget(
+  doc: Document,
+  tabID: ReaderTabID,
+): ReaderPopupPanelTarget | null {
+  const host = doc.getElementById(READER_DEDICATED_PANE_ID);
+  if (!host) return null;
+
+  const normalizedTabID = normalizeReaderTabID(tabID);
+  const ownerTabID = normalizeReaderTabID(
+    host.getAttribute(READER_DEDICATED_TAB_ATTRIBUTE),
+  );
+  if (normalizedTabID && ownerTabID !== normalizedTabID) return null;
+  return getRootTarget(host);
+}
+
+function getPanelTarget(
+  doc: Document,
+  tabID: ReaderTabID,
+): ReaderPopupPanelTarget | null {
+  const dedicatedTarget = getDedicatedPanelTarget(doc, tabID);
+  if (dedicatedTarget) return dedicatedTarget;
+
+  const readerPanel = getReaderContextPanelForTab(doc, tabID);
+  if (!readerPanel) return null;
+  return getRootTarget(readerPanel);
 }
 
 function getStandalonePanelTarget(

@@ -354,6 +354,7 @@ export function resolveReaderDedicatedPanelBody(params: {
   if (sourceTabID && selectedTabID && sourceTabID !== selectedTabID) {
     return null;
   }
+  state.host.dataset.llmReaderTabId = sourceTabID || selectedTabID;
   return state.host;
 }
 

@@ -206,7 +206,10 @@ import {
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "./pdfSupportMessages";
 import { buildPaperKey } from "./pdfContext";
 import { isSupportedContextAttachment } from "./contextAttachmentSupport";
-import { getContextSourceModeCssClassName } from "./contextSourceModes";
+import {
+  getContextSourceModeBadgeLabel,
+  getContextSourceModeCssClassName,
+} from "./contextSourceModes";
 import {
   getPaperModeOverride,
   setPaperModeOverride,
@@ -3602,10 +3605,9 @@ export function setupHandlers(
       "span",
       "llm-paper-context-chip-text",
       {
-        textContent: formatPaperContextChipLabel(
-          paperContext,
-          contentSourceMode,
-        ),
+        textContent: options?.autoLoaded
+          ? getContextSourceModeBadgeLabel(contentSourceMode) || "Text"
+          : formatPaperContextChipLabel(paperContext, contentSourceMode),
       },
     );
     chipLabel.append(chipIcon, chipText);

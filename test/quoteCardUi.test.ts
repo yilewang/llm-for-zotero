@@ -20,12 +20,12 @@ describe("quote card UI contract", function () {
     assert.include(css, "-webkit-line-clamp: 2");
     assert.include(css, '.llm-quote-card[data-expanded="false"]:hover');
     assert.include(css, "--llm-quote-card-rail");
-    assert.include(css, "--llm-quote-card-rail: var(--color-accent)");
-    assert.include(css, "border-left: 3px solid var(--llm-quote-card-rail)");
-    assert.include(css, "border: none");
+    assert.include(css, "--llm-quote-card-rail: var(--fill-tertiary)");
+    assert.include(css, "border-left: 2px solid var(--llm-quote-card-rail)");
+    assert.include(css, "var(--stroke-secondary) 68%");
     assert.include(css, "justify-content: flex-end");
-    assert.include(css, "background: transparent");
     assert.include(css, "background: var(--llm-quote-card-surface)");
+    assert.include(css, ".llm-modern-chat-pane .llm-citation-icon:hover");
   });
 
   it("defaults quote cards to the collapsed visual state", function () {

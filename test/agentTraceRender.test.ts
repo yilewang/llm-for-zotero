@@ -4,6 +4,7 @@ import {
   buildAgentTraceChipDetails,
   buildAgentTraceDisplayItems,
   buildAgentTraceMarkdownForRender,
+  formatAgentActivityDuration,
   getPendingActionButtonLayout,
   renderAgentTrace,
   renderPendingActionCard,
@@ -981,6 +982,145 @@ describe("rendered Markdown code block source controls", function () {
 });
 
 describe("agentTrace render", function () {
+  it("formats compact Codex-style activity durations", function () {
+    assert.equal(formatAgentActivityDuration(250), "1s");
+    assert.equal(formatAgentActivityDuration(259_000), "4m 19s");
+    assert.equal(formatAgentActivityDuration(3_661_000), "1h 1m 1s");
+  });
+
+  it("expands activity while streaming and collapses it when complete", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-activity-collapse",
+        seq: 1,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: "Working" },
+        createdAt: 1_000,
+      },
+      {
+        runId: "run-activity-collapse",
+        seq: 2,
+        eventType: "final",
+        payload: { type: "final", text: "Done" },
+        createdAt: 260_000,
+      },
+    ];
+    const streamingMessage = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 260_000,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const streamingTrace = renderAgentTrace({
+      doc: fakeDocument,
+      message: streamingMessage,
+      events: events.slice(0, 1),
+    }) as unknown as FakeElement;
+    const streamingDetails = streamingTrace.findByClass(
+      "llm-agent-activity-details",
+    ) as (FakeElement & { open?: boolean }) | null;
+    assert.isTrue(streamingDetails?.open);
+    assert.equal(
+      streamingTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      "Working…",
+    );
+
+    streamingMessage.streaming = false;
+    const completedTrace = renderAgentTrace({
+      doc: fakeDocument,
+      message: streamingMessage,
+      events,
+    }) as unknown as FakeElement;
+    const completedDetails = completedTrace.findByClass(
+      "llm-agent-activity-details",
+    ) as (FakeElement & { open?: boolean }) | null;
+    assert.isFalse(completedDetails?.open);
+    assert.equal(
+      completedTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      "Worked for 4m 19s",
+    );
+    assert.exists(completedTrace.findByClass("llm-agent-output-divider"));
+  });
+
+  it("collapses Codex activity as soon as the assistant answer starts", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 5_000,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const workingEvents: AgentRunEventRecord[] = [
+      {
+        runId: "run-answer-start",
+        seq: 1,
+        eventType: "codex_progress",
+        payload: {
+          type: "codex_progress",
+          itemId: "reasoning-1",
+          text: "Checking the paper context.",
+          status: "running",
+        },
+        createdAt: 1_000,
+      },
+    ];
+
+    const workingTrace = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: workingEvents,
+    }) as unknown as FakeElement;
+    const workingDetails = workingTrace.findByClass(
+      "llm-agent-activity-details",
+    ) as (FakeElement & { open?: boolean }) | null;
+    assert.isTrue(workingDetails?.open);
+    assert.equal(
+      workingTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      "Working…",
+    );
+
+    const answeringTrace = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: [
+        ...workingEvents,
+        {
+          runId: "run-answer-start",
+          seq: 2,
+          eventType: "codex_progress",
+          payload: {
+            type: "codex_progress",
+            itemId: "assistant-1",
+            text: "This is the final answer, still streaming.",
+            status: "running",
+            kind: "assistant_message",
+          },
+          createdAt: 5_000,
+        },
+      ],
+    }) as unknown as FakeElement;
+    const answeringDetails = answeringTrace.findByClass(
+      "llm-agent-activity-details",
+    ) as (FakeElement & { open?: boolean }) | null;
+    assert.isFalse(answeringDetails?.open);
+    assert.equal(
+      answeringTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      "Worked for 4s",
+    );
+    assert.exists(answeringTrace.findByClass("llm-agent-output-divider"));
+    assert.notExists(
+      answeringDetails?.findByClass("llm-agent-inline-text") || null,
+    );
+    const answer = answeringTrace.findByClass("llm-agent-inline-text");
+    assert.include(
+      `${answer?.textContent || ""}${answer?.innerHTML || ""}`,
+      "This is the final answer",
+    );
+  });
+
   it("preserves known quote anchors before agent trace DOM decoration", function () {
     const quoteCitation = buildQuoteCitation({
       quoteText: "Interleaved trace quote anchors should not leak.",
@@ -1431,6 +1571,41 @@ describe("agentTrace render", function () {
       "Next I'm opening the matching records.",
     ]);
     assert.isTrue(codexProgressMessages.every((item) => item.markdown));
+  });
+
+  it("flushes Codex assistant text at a smooth streaming cadence", async function () {
+    this.timeout(1_000);
+    const assistantMessage = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      assistantMessage,
+      () => undefined,
+    );
+
+    controller.appendAgentMessageDelta({
+      itemId: "assistant-smooth-stream",
+      delta: "A small streamed answer delta.",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    const answerEvent = assistantMessage.pendingAgentTraceEvents?.find(
+      (entry) =>
+        entry.payload.type === "codex_progress" &&
+        entry.payload.kind === "assistant_message",
+    );
+    assert.exists(answerEvent);
+    assert.equal(
+      answerEvent?.payload.type === "codex_progress"
+        ? answerEvent.payload.text
+        : "",
+      "A small streamed answer delta.",
+    );
   });
 
   it("renders concrete Codex MCP tool activity rows", function () {
