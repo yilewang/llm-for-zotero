@@ -42,6 +42,7 @@ import {
   isAtAutoFollowBottom,
   resolveStreamingScrollFollowAction,
 } from "./scrollFollowPolicy";
+import { resizeTextareaToContent } from "./textareaSizing";
 import { createContextIcon } from "./contextIcons";
 import {
   selectedModelCache,
@@ -2368,6 +2369,9 @@ export function setupHandlers(
     }
   };
   const persistDraftInputForCurrentConversation = () => {
+    // Most programmatic composer updates already persist immediately. Keeping
+    // sizing here makes those paths share the same behavior as typed input.
+    resizeTextareaToContent(inputBox);
     // Don't persist the edit-mode text as a draft; the real draft was saved in
     // inlineEditSavedDraft when edit mode was entered.
     if (!item || !inputBox || inlineEditTarget) return;
@@ -2382,9 +2386,11 @@ export function setupHandlers(
     if (inlineEditTarget) return;
     if (isWebChatModeActive()) {
       inputBox.value = "";
+      resizeTextareaToContent(inputBox);
       return;
     }
     inputBox.value = draftInputCache.get(getConversationKey(item)) || "";
+    resizeTextareaToContent(inputBox);
   };
   const clearDraftInputState = (itemId: number) => {
     draftInputCache.delete(itemId);
@@ -5370,7 +5376,10 @@ export function setupHandlers(
     loadedConversationKeys.add(key);
     markNextWebChatSendAsNewChat();
     primeFreshWebChatPaperChipState();
-    if (inputBox && !inlineEditTarget) inputBox.value = "";
+    if (inputBox && !inlineEditTarget) {
+      inputBox.value = "";
+      resizeTextareaToContent(inputBox);
+    }
   };
 
   const initializeWebChatConversationForCurrentItem = () => {
@@ -5386,7 +5395,10 @@ export function setupHandlers(
     if (!hadWebChatSession) {
       markNextWebChatSendAsNewChat();
       primeFreshWebChatPaperChipState();
-      if (inputBox && !inlineEditTarget) inputBox.value = "";
+      if (inputBox && !inlineEditTarget) {
+        inputBox.value = "";
+        resizeTextareaToContent(inputBox);
+      }
     }
   };
 
@@ -6355,15 +6367,7 @@ export function setupHandlers(
       inputBox.focus({ preventScroll: true });
     });
 
-    /** Auto-resize the textarea to fit its content, up to max-height. */
-    const autoResizeInput = (): void => {
-      inputBox.style.height = "auto";
-      const max = 220; // matches CSS max-height
-      inputBox.style.height = `${Math.min(inputBox.scrollHeight, max)}px`;
-    };
-
     inputBox.addEventListener("input", () => {
-      autoResizeInput();
       persistDraftInputForCurrentConversation();
       schedulePaperPickerSearch();
       scheduleActionPickerTrigger();
@@ -6397,10 +6401,13 @@ export function setupHandlers(
       schedulePaperPickerSearch();
       scheduleActionPickerTrigger();
     });
+
+    // Draft restoration happens before handlers are attached.
+    resizeTextareaToContent(inputBox);
   }
 
   const resetComposerInputHeight = (): void => {
-    inputBox.style.height = "";
+    resizeTextareaToContent(inputBox);
   };
 
   let queuedFollowUpDrainTimer: number | null = null;

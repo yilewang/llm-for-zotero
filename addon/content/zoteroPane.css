@@ -3251,7 +3251,7 @@
 /* Inline edit widget — the full .llm-input-section is physically moved here */
 .llm-inline-edit-wrapper {
   background: var(--material-background);
-  border: 1px solid var(--color-accent);
+  border: none;
   border-radius: 10px;
   padding: 0;
   max-width: 100%;
@@ -9102,6 +9102,7 @@ label.llm-search-results-item:hover {
 }
 
 .llm-input {
+  appearance: none;
   width: 100%;
   min-height: 60px;
   max-height: 220px;
@@ -9110,15 +9111,14 @@ label.llm-search-results-item:hover {
   padding: 12px 14px;
   box-sizing: border-box;
   border-radius: 14px;
-  border: 1px solid var(--stroke-secondary);
+  border: none;
   background: var(--fill-quaternary);
   color: var(--fill-primary);
-  transition: border-color 0.15s;
 }
 
 .llm-input:focus {
   outline: none;
-  border-color: var(--color-accent);
+  box-shadow: none;
 }
 
 .llm-input:disabled {

@@ -101,6 +101,7 @@ import {
   setFollowBottomChatScrollSnapshot,
   withScrollGuard,
 } from "./chatScrollSnapshots";
+import { resizeTextareaToContent } from "./textareaSizing";
 export {
   isScrollUpdateSuspended,
   withScrollGuard,
@@ -9224,10 +9225,7 @@ function buildInlineEditWidget(
       // Restore the draft text.
       if (inputBoxEl) {
         inputBoxEl.value = inlineEditSavedDraft;
-        inputBoxEl.style.height = "auto";
-        if (inputBoxEl.scrollHeight) {
-          inputBoxEl.style.height = `${inputBoxEl.scrollHeight}px`;
-        }
+        resizeTextareaToContent(inputBoxEl);
         delete inputBoxEl.dataset.inlineEditListening;
         delete inputBoxEl.dataset.inlineEditFocused;
       }
@@ -9269,21 +9267,21 @@ function buildInlineEditWidget(
   // Move the real input section into the widget
   if (inputSectionEl) widgetRoot.appendChild(inputSectionEl);
 
-  // Focus on first entry only (don't steal focus on streaming refreshes)
+  // Measure after the widget has been attached so scrollHeight reflects the
+  // inline editor's actual width and rendered wrapping.
   const win = body.ownerDocument?.defaultView;
-  if (
-    win &&
-    inputBoxEl &&
-    isFirstEntry &&
-    !inputBoxEl.dataset.inlineEditFocused
-  ) {
-    inputBoxEl.dataset.inlineEditFocused = "1";
+  if (win && inputBoxEl) {
+    const shouldFocus = isFirstEntry && !inputBoxEl.dataset.inlineEditFocused;
+    if (shouldFocus) inputBoxEl.dataset.inlineEditFocused = "1";
     win.setTimeout(() => {
-      inputBoxEl.focus({ preventScroll: true });
-      inputBoxEl.setSelectionRange(
-        inputBoxEl.value.length,
-        inputBoxEl.value.length,
-      );
+      resizeTextareaToContent(inputBoxEl);
+      if (shouldFocus) {
+        inputBoxEl.focus({ preventScroll: true });
+        inputBoxEl.setSelectionRange(
+          inputBoxEl.value.length,
+          inputBoxEl.value.length,
+        );
+      }
     }, 0);
   }
 
