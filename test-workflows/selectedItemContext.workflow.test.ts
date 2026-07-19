@@ -1,6 +1,8 @@
 import { assert } from "chai";
+import { isConversationKeyForKind } from "../src/shared/conversationKeySpace";
 import type {
   WorkflowTestApi,
+  WorkflowTestDiagnostics,
   WorkflowTestFixture,
 } from "../src/modules/contextPanel/workflowTestTypes";
 
@@ -37,6 +39,28 @@ function getWorkflowTestApi(): WorkflowTestApi {
   const api = (Zotero as any).LLMForZotero?.api?.workflowTest;
   assert.isOk(api, "workflow test API should be installed");
   return api as WorkflowTestApi;
+}
+
+function assertDualRuntimeControls(
+  diagnostics: WorkflowTestDiagnostics,
+  activeSystem?: "codex" | "claude_code",
+): void {
+  const visible = diagnostics.runtimeSystemToggles.filter(
+    (toggle) => toggle.visible,
+  );
+  const active = visible.filter((toggle) => toggle.active);
+  assert.deepEqual(
+    visible.map((toggle) => toggle.system),
+    ["codex", "claude_code"],
+  );
+  assert.deepEqual(
+    active.map((toggle) => toggle.system),
+    activeSystem ? [activeSystem] : [],
+  );
+  for (const toggle of visible) {
+    assert.equal(toggle.active, toggle.ariaPressed);
+    assert.isFalse(toggle.disabled);
+  }
 }
 
 async function diagnosticsMessage(
@@ -160,6 +184,161 @@ describe("workflow: selected item context send", function () {
         await diagnosticsMessage(api, panel.panelId),
       );
     });
+  });
+
+  it("switches directly between both paper runtimes and returns to a fresh draft", async function () {
+    await withPrefs(
+      {
+        enableCodexAppServerMode: true,
+        enableClaudeCodeMode: true,
+        conversationSystem: "upstream",
+      },
+      async () => {
+        fixture = await api.createPaperWithPdfFixture({
+          title: "Dual Runtime Workflow Parent",
+          pdfTitle: "Dual Runtime Workflow PDF",
+        });
+        const panel = await api.renderPanelForItem(fixture.parentItemId);
+        const initial = await api.getDiagnostics(panel.panelId);
+        assert.equal(initial.conversationSystem, "upstream");
+        assertDualRuntimeControls(initial);
+        const geometry = await api.measurePanelRuntimeGeometry(panel.panelId, {
+          width: 320,
+          fontScale: 1.8,
+        });
+        assert.closeTo(geometry.containerWidth, 316, 4);
+        assert.isAtLeast(geometry.runtimeWidth, 50, JSON.stringify(geometry));
+        assert.isFalse(
+          geometry.runtimeIntersectsLeadingContent,
+          JSON.stringify(geometry),
+        );
+        assert.isFalse(
+          geometry.runtimeIntersectsTrailingContent,
+          JSON.stringify(geometry),
+        );
+        assert.isTrue(
+          geometry.runtimeWithinContainer,
+          JSON.stringify(geometry),
+        );
+        assert.isTrue(
+          geometry.trailingContentWithinContainer,
+          JSON.stringify(geometry),
+        );
+        assert.isTrue(
+          geometry.clearButtonCompact,
+          "the narrow header must replace the Clear label with its icon",
+        );
+        const wideGeometry = await api.measurePanelRuntimeGeometry(
+          panel.panelId,
+          {
+            width: 700,
+            fontScale: 1,
+          },
+        );
+        assert.isFalse(
+          wideGeometry.runtimeIntersectsTrailingContent,
+          JSON.stringify(wideGeometry),
+        );
+        assert.isFalse(
+          wideGeometry.clearButtonCompact,
+          "the full Clear label must return when the header has room",
+        );
+
+        const rapid = await api.clickPanelSystemTogglesRapidly(panel.panelId, [
+          "codex",
+          "claude_code",
+        ]);
+        assert.equal(
+          rapid.conversationSystem,
+          "codex",
+          "the sidebar busy guard must ignore a re-entrant second switch",
+        );
+        assertDualRuntimeControls(rapid, "codex");
+        const resetUpstream = await api.clickPanelSystemToggle(
+          panel.panelId,
+          "codex",
+        );
+        assert.equal(resetUpstream.conversationSystem, "upstream");
+
+        const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+        assert.equal(codex.conversationSystem, "codex");
+        assert.isTrue(
+          isConversationKeyForKind(
+            "codex",
+            "paper",
+            codex.conversationKey || 0,
+          ),
+        );
+        assertDualRuntimeControls(codex, "codex");
+        const codexKey = codex.conversationKey;
+        const codexMarker = "nonblank remembered Codex workflow chat";
+        await api.seedPanelStoredUserMessage(panel.panelId, codexMarker);
+
+        const claude = await api.clickPanelSystemToggle(
+          panel.panelId,
+          "claude_code",
+        );
+        assert.equal(claude.conversationSystem, "claude_code");
+        assert.isTrue(
+          isConversationKeyForKind(
+            "claude_code",
+            "paper",
+            claude.conversationKey || 0,
+          ),
+        );
+        assertDualRuntimeControls(claude, "claude_code");
+
+        const upstream = await api.clickPanelSystemToggle(
+          panel.panelId,
+          "claude_code",
+        );
+        assert.equal(upstream.conversationSystem, "upstream");
+        assert.isTrue(
+          isConversationKeyForKind(
+            "upstream",
+            "paper",
+            upstream.conversationKey || 0,
+          ),
+        );
+        assertDualRuntimeControls(upstream);
+
+        const freshCodex = await api.clickPanelSystemToggle(
+          panel.panelId,
+          "codex",
+        );
+        assert.equal(freshCodex.conversationSystem, "codex");
+        assert.notEqual(freshCodex.conversationKey, codexKey);
+        assert.notInclude(freshCodex.messageText || "", codexMarker);
+        assertDualRuntimeControls(freshCodex, "codex");
+
+        Zotero.Prefs.set(`${PREF_PREFIX}.enableClaudeCodeMode`, false, true);
+        await Zotero.Promise.delay(250);
+        const inactiveClaudeDisabled = await api.getDiagnostics(panel.panelId);
+        assert.equal(inactiveClaudeDisabled.conversationSystem, "codex");
+        assert.deepEqual(
+          inactiveClaudeDisabled.runtimeSystemToggles
+            .filter((toggle) => toggle.visible)
+            .map((toggle) => toggle.system),
+          ["codex"],
+        );
+
+        Zotero.Prefs.set(`${PREF_PREFIX}.enableClaudeCodeMode`, true, true);
+        Zotero.Prefs.set(
+          `${PREF_PREFIX}.enableCodexAppServerMode`,
+          false,
+          true,
+        );
+        await Zotero.Promise.delay(400);
+        const activeCodexDisabled = await api.getDiagnostics(panel.panelId);
+        assert.equal(activeCodexDisabled.conversationSystem, "upstream");
+        assert.deepEqual(
+          activeCodexDisabled.runtimeSystemToggles
+            .filter((toggle) => toggle.visible)
+            .map((toggle) => toggle.system),
+          ["claude_code"],
+        );
+      },
+    );
   });
 
   it("preserves a Chinese figure request at the normal-chat send boundary", async function () {

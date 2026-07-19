@@ -258,7 +258,6 @@ function createControllerHarness(
     historyUndoBtn: null,
     topToast,
     modeChipBtn: null,
-    claudeSystemToggleBtn: null,
     getItem: () => currentItem,
     setItem: (item) => {
       currentItem = item;
@@ -283,7 +282,6 @@ function createControllerHarness(
     syncConversationIdentity: () => undefined,
     syncQueuedFollowUpRegistration: () => undefined,
     updateRuntimeModeButton: () => undefined,
-    updateClaudeSystemToggle: () => undefined,
     refreshChatPreservingScroll: () => undefined,
     resetComposePreviewUI: () => undefined,
     updateModelButton: () => undefined,
@@ -320,7 +318,6 @@ function createControllerHarness(
     markNextWebChatSendAsNewChat: () => undefined,
     primeFreshWebChatPaperChipState: () => undefined,
     updateImagePreviewPreservingScroll: () => undefined,
-    getPreferredTargetSystem: () => "upstream",
     switchConversationSystem: async () => undefined,
     setActiveEditSession: () => undefined,
     getCoreAgentRuntime: async () => ({}) as any,

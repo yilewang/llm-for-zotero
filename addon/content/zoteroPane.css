@@ -249,12 +249,14 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  container-type: inline-size;
 }
 
 .llm-header-top {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  column-gap: 4px;
   position: relative;
 }
 
@@ -262,13 +264,15 @@
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
 }
 
 .llm-header-actions {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex: 0 0 auto;
 }
 
 .llm-header-icon {
@@ -291,6 +295,7 @@
   align-items: center !important;
   gap: 10px;
   min-height: 22px;
+  min-width: 0;
 }
 
 .llm-claude-context-gauge {
@@ -493,14 +498,15 @@
 
 /* ---- Mode chip: single pill showing current mode ---- */
 
-.llm-header-mode-controls {
+.llm-header-runtime-controls {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
+  gap: 4px;
+  min-width: max-content;
+  flex: 0 0 auto;
 }
 
-.llm-header-mode-controls > .llm-claude-context-gauge {
+.llm-header-runtime-controls > .llm-claude-context-gauge {
   align-self: center;
 }
 
@@ -570,8 +576,21 @@
   border-color: var(--stroke-secondary);
 }
 
-.llm-claude-system-toggle,
-.llm-standalone-claude-toggle {
+.llm-runtime-system-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  width: 24px;
+  min-width: 24px;
+}
+
+.llm-runtime-system-controls[data-visible-count="2"] {
+  width: 50px;
+  min-width: 50px;
+}
+
+.llm-runtime-system-toggle {
   appearance: none;
   -moz-appearance: none;
   display: inline-flex;
@@ -586,42 +605,64 @@
   border-radius: 6px;
   cursor: pointer;
   padding: 0;
+  margin: 0 !important;
+  box-sizing: border-box;
+  flex: 0 0 24px;
 }
 
-.llm-claude-system-toggle[data-active="true"],
-.llm-standalone-claude-toggle[data-active="true"] {
+.llm-runtime-system-toggle--claude-code[data-active="true"] {
   color: #d77757;
 }
 
-.llm-claude-system-toggle:hover,
-.llm-standalone-claude-toggle:hover {
+.llm-runtime-system-toggle:hover:not(:disabled) {
   background: var(--fill-quinary);
 }
 
-.llm-claude-system-toggle:focus-visible,
-.llm-standalone-claude-toggle:focus-visible {
+.llm-runtime-system-toggle:focus-visible {
   outline: 1px solid var(--color-accent);
   outline-offset: 1px;
 }
 
-.llm-claude-system-toggle-icon {
+.llm-runtime-system-toggle:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.llm-runtime-system-toggle-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  flex: none;
+  width: 16px;
+  height: 16px;
   line-height: 1;
 }
 
-.llm-codex-system-toggle-icon {
-  display: inline-block;
-  flex: none;
-  position: relative;
-  width: 16px;
-  height: 16px;
+.llm-runtime-system-toggle-icon--claude-code {
+  background-color: currentColor;
+  mask-image: url("icons/claude-code.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/claude-code.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  opacity: 0.62;
 }
 
-.llm-codex-system-toggle-icon::before,
-.llm-codex-system-toggle-icon::after {
+.llm-runtime-system-toggle--claude-code[data-active="true"]
+  .llm-runtime-system-toggle-icon--claude-code {
+  opacity: 1;
+}
+
+.llm-runtime-system-toggle-icon--codex {
+  display: inline-block;
+  position: relative;
+}
+
+.llm-runtime-system-toggle-icon--codex::before,
+.llm-runtime-system-toggle-icon--codex::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -631,7 +672,7 @@
   transition: opacity 0.15s;
 }
 
-.llm-codex-system-toggle-icon::before {
+.llm-runtime-system-toggle-icon--codex::before {
   background-color: var(--fill-primary, #0d0d0d);
   mask-image: url("icons/codex-app-server.svg");
   mask-repeat: no-repeat;
@@ -644,22 +685,18 @@
   opacity: 0.62;
 }
 
-.llm-codex-system-toggle-icon::after {
+.llm-runtime-system-toggle-icon--codex::after {
   background-image: url("icons/codex-logo.svg");
   opacity: 0;
 }
 
-.llm-claude-system-toggle[data-active="true"]
-  .llm-codex-system-toggle-icon::before,
-.llm-standalone-claude-toggle[data-active="true"]
-  .llm-codex-system-toggle-icon::before {
+.llm-runtime-system-toggle--codex[data-active="true"]
+  .llm-runtime-system-toggle-icon--codex::before {
   opacity: 0;
 }
 
-.llm-claude-system-toggle[data-active="true"]
-  .llm-codex-system-toggle-icon::after,
-.llm-standalone-claude-toggle[data-active="true"]
-  .llm-codex-system-toggle-icon::after {
+.llm-runtime-system-toggle--codex[data-active="true"]
+  .llm-runtime-system-toggle-icon--codex::after {
   opacity: 1;
 }
 
@@ -860,6 +897,76 @@
 .llm-btn-icon:hover {
   opacity: 1;
   background: var(--fill-quinary);
+}
+
+.llm-clear-btn::before {
+  content: "";
+  display: none;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  mask-image: url("icons/action-clear.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/action-clear.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  pointer-events: none;
+}
+
+.llm-clear-btn[data-compact="true"] {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  font-size: 0;
+}
+
+.llm-clear-btn[data-compact="true"]::before {
+  display: block;
+}
+
+@container (max-width: 380px) {
+  .llm-header-actions {
+    gap: 0;
+  }
+
+  .llm-header-actions .llm-btn-icon {
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
+    min-height: 24px;
+    padding: 0;
+  }
+
+  .llm-clear-btn {
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
+    min-height: 24px;
+    padding: 0;
+    font-size: 0;
+  }
+
+  .llm-clear-btn::before {
+    display: block;
+  }
+}
+
+.llm-panel[data-webchat-mode="true"] .llm-clear-btn {
+  width: auto;
+  min-width: 0;
+  height: auto;
+  min-height: 0;
+  padding: 4px 6px;
+  font-size: inherit;
+}
+
+.llm-panel[data-webchat-mode="true"] .llm-clear-btn::before {
+  display: none;
 }
 
 .llm-settings-btn {
@@ -1085,8 +1192,8 @@
 
 /* Clear icon — trash */
 .llm-standalone-icon-clear::before {
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='3 6 5 6 21 6'/%3E%3Cpath d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/%3E%3C/svg%3E");
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='3 6 5 6 21 6'/%3E%3Cpath d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/%3E%3C/svg%3E");
+  mask-image: url("icons/action-clear.svg");
+  -webkit-mask-image: url("icons/action-clear.svg");
 }
 
 /* Exit button — webchat mode override for clear icon */
@@ -1840,25 +1947,23 @@
 
 /* Tab row — centers the tab group at top of content area */
 .llm-standalone-tab-row {
-  position: relative;
-  display: flex;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 56px;
   align-items: center;
-  justify-content: center;
-  gap: 10px;
   min-height: 36px;
   padding: 6px 12px;
   flex-shrink: 0;
 }
 
-.llm-standalone-tab-row > .llm-standalone-claude-toggle {
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
+.llm-standalone-runtime-system-controls {
+  grid-column: 1;
+  justify-self: start;
 }
 
 /* Segmented control container */
 .llm-standalone-tab-group {
+  grid-column: 2;
+  justify-self: center;
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -1866,6 +1971,8 @@
   border-radius: 10px;
   background: color-mix(in srgb, var(--material-background) 80%, black 20%);
   border: 1px solid color-mix(in srgb, var(--stroke-secondary) 60%, transparent);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .llm-standalone-tab {

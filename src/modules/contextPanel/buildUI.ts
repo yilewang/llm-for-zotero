@@ -24,6 +24,7 @@ import {
   resolvePreferredConversationSystem,
 } from "./portalScope";
 import { getConversationKey } from "./conversationIdentity";
+import { createRuntimeSystemControls } from "./runtimeSystemControls";
 
 function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
   const slot = createElement(
@@ -155,12 +156,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   historyToggle.style.display = "";
 
   const isStandaloneBody = (body as HTMLElement).dataset?.standalone === "true";
-  const headerModeControls = createElement(
+  const headerRuntimeControls = createElement(
     doc,
     "div",
-    "llm-header-mode-controls",
+    "llm-header-runtime-controls",
     {
-      id: "llm-header-mode-controls",
+      id: "llm-header-runtime-controls",
     },
   );
 
@@ -187,27 +188,15 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
 
   modeSwitchWrap.append(modeChipBtn);
 
-  const claudeToggleBtn = createElement(
-    doc,
-    "button",
-    "llm-claude-system-toggle",
-    {
-      id: "llm-claude-system-toggle",
-      type: "button",
-      title: "Claude Code",
+  const runtimeSystemControls = createRuntimeSystemControls(doc, {
+    groupId: "llm-runtime-system-controls",
+    groupClassName: "llm-panel-runtime-system-controls",
+    buttonClassName: "llm-panel-runtime-system-toggle",
+    buttonIds: {
+      codex: "llm-codex-system-toggle",
+      claude_code: "llm-claude-system-toggle",
     },
-  );
-  claudeToggleBtn.setAttribute("aria-label", "Claude Code");
-  const claudeToggleIcon = createElement(
-    doc,
-    "span",
-    "llm-claude-system-toggle-icon",
-    {
-      id: "llm-claude-system-toggle-icon",
-    },
-  );
-  claudeToggleIcon.setAttribute("aria-hidden", "true");
-  claudeToggleBtn.appendChild(claudeToggleIcon);
+  });
 
   const claudeContextGauge = createElement(
     doc,
@@ -220,12 +209,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   claudeContextGauge.style.display = "none";
   claudeContextGauge.setAttribute("aria-hidden", "true");
 
-  headerModeControls.append(
+  headerRuntimeControls.append(
     modeSwitchWrap,
-    claudeToggleBtn,
+    runtimeSystemControls.group,
     claudeContextGauge,
   );
-  historyBar.append(historyNewBtn, historyToggle, headerModeControls);
+  historyBar.append(historyNewBtn, historyToggle, headerRuntimeControls);
 
   headerInfo.append(title, historyBar);
   headerTop.appendChild(headerInfo);
@@ -261,11 +250,14 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     title: t("Export"),
     disabled: !hasItem,
   });
-  const clearBtn = createElement(doc, "button", "llm-btn-icon", {
+  const clearBtn = createElement(doc, "button", "llm-btn-icon llm-clear-btn", {
     id: "llm-clear",
     type: "button",
     textContent: t("Clear"),
+    title: t("Clear"),
   });
+  clearBtn.dataset.compact = "true";
+  clearBtn.setAttribute("aria-label", t("Clear"));
   headerActions.append(popoutBtn, settingsBtn, exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);

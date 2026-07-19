@@ -89,6 +89,12 @@ import { primeHistoryNavigationMode } from "./historyNavigationModeSync";
 import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
 import { resolveFreshConversationDraft } from "./freshConversationDraft";
 import { collapseDuplicateReusableConversationDrafts } from "./standaloneConversationResolution";
+import {
+  createRuntimeSystemControls,
+  RUNTIME_CONVERSATION_SYSTEMS,
+  resolveRuntimeSystemToggleTarget,
+  syncRuntimeSystemControls,
+} from "./runtimeSystemControls";
 import { buildDefaultClaudeGlobalConversationKey } from "../../claudeCode/constants";
 import {
   resolveRememberedClaudeConversationKey,
@@ -897,56 +903,22 @@ export function openStandaloneChat(options?: {
       tabGroup.className = "llm-standalone-tab-group";
       tabGroup.append(paperTab, openTab);
 
-      const systemToggleBtn = doc.createElementNS(
-        HTML_NS,
-        "button",
-      ) as HTMLButtonElement;
-      systemToggleBtn.className = "llm-standalone-claude-toggle";
-      systemToggleBtn.type = "button";
-      systemToggleBtn.setAttribute("aria-label", "Conversation runtime");
-
-      const getPreferredRuntimeSystem = (): ConversationSystem => {
-        if (resolveActiveNoteSession(activeItem)) {
-          return isCodexAppServerModeEnabled() ? "codex" : "upstream";
-        }
-        const preferred = getConversationSystemPref();
-        if (preferred === "codex" && isCodexAppServerModeEnabled())
-          return "codex";
-        if (preferred === "claude_code" && getClaudeCodeModeEnabled())
-          return "claude_code";
-        if (isCodexAppServerModeEnabled()) return "codex";
-        if (getClaudeCodeModeEnabled()) return "claude_code";
-        return "upstream";
-      };
-
-      const updateStandaloneSystemToggle = () => {
-        const targetSystem = getPreferredRuntimeSystem();
-        const enabled =
-          !isInWebChatMode &&
-          (resolveActiveNoteSession(activeItem)
-            ? targetSystem === "codex" || isCodexConversationSystem()
-            : getClaudeCodeModeEnabled() || isCodexAppServerModeEnabled());
-        systemToggleBtn.style.display = enabled ? "inline-flex" : "none";
-        const active = isRuntimeConversationSystem();
-        const iconSystem = active ? currentConversationSystem : targetSystem;
-        systemToggleBtn.dataset.active = active ? "true" : "false";
-        systemToggleBtn.title = active
-          ? "Switch to upstream mode"
-          : iconSystem === "codex"
-            ? "Switch to Codex mode"
-            : "Switch to Claude Code mode";
-        if (iconSystem === "codex") {
-          systemToggleBtn.innerHTML = `<span class="llm-codex-system-toggle-icon" aria-hidden="true"></span>`;
-          return;
-        }
-        systemToggleBtn.innerHTML = active
-          ? `<svg height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z" fill="#D97757" fill-rule="evenodd"></path></svg>`
-          : `<svg fill="currentColor" fill-rule="evenodd" height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"></path></svg>`;
+      const standaloneRuntimeSystemControls = createRuntimeSystemControls(doc, {
+        groupClassName: "llm-standalone-runtime-system-controls",
+        buttonClassName: "llm-standalone-runtime-system-toggle",
+      });
+      const updateStandaloneSystemToggles = () => {
+        syncRuntimeSystemControls(standaloneRuntimeSystemControls, {
+          activeSystem: currentConversationSystem,
+          codexEnabled: isCodexAppServerModeEnabled(),
+          claudeEnabled: getClaudeCodeModeEnabled(),
+          hidden: isInWebChatMode,
+        });
       };
 
       const tabRow = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
       tabRow.className = "llm-standalone-tab-row";
-      tabRow.append(systemToggleBtn, tabGroup);
+      tabRow.append(standaloneRuntimeSystemControls.group, tabGroup);
 
       // -- Lower area: sidebar + content side by side --
       const lowerArea = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
@@ -1380,7 +1352,7 @@ export function openStandaloneChat(options?: {
       const updateStandaloneWebChatUI = (isWebChat: boolean) => {
         if (cancelled) return;
         isInWebChatMode = isWebChat;
-        updateStandaloneSystemToggle();
+        updateStandaloneSystemToggles();
 
         // Tab labels
         if (isWebChat) {
@@ -3450,10 +3422,9 @@ export function openStandaloneChat(options?: {
         options?: { forceFresh?: boolean },
       ) => {
         const switchSeq = ++systemSwitchSeq;
-        const activeNoteItem = resolveActiveNoteSession(activeItem)
-          ? activeItem
-          : null;
-        if (activeNoteItem) {
+        const activeNoteSession = resolveActiveNoteSession(activeItem);
+        const activeNoteItem = activeNoteSession ? activeItem : null;
+        if (activeNoteSession && activeNoteItem) {
           const resolvedNextSystem = resolveNoteFocusSystemSwitch({
             nextSystem,
             codexAvailable: isCodexAppServerModeEnabled(),
@@ -3463,10 +3434,71 @@ export function openStandaloneChat(options?: {
           if (resolvedNextSystem === currentConversationSystem) return;
           setConversationSystemPref(resolvedNextSystem);
           currentConversationSystem = resolvedNextSystem;
+          if (options?.forceFresh === true) {
+            if (activeNoteSession.conversationKind === "global") {
+              const newKey =
+                await resolveFreshStandaloneGlobalConversation(true);
+              if (switchSeq !== systemSwitchSeq || !newKey) return;
+              await touchStandaloneEmptyDraftActivity(newKey, "global");
+              if (switchSeq !== systemSwitchSeq) return;
+              const libraryID = activeNoteSession.libraryID;
+              if (resolvedNextSystem === "claude_code") {
+                activeClaudeGlobalConversationByLibrary.set(
+                  buildClaudeLibraryStateKey(libraryID),
+                  newKey,
+                );
+              } else if (resolvedNextSystem === "codex") {
+                activeCodexGlobalConversationByLibrary.set(
+                  buildCodexLibraryStateKey(libraryID),
+                  newKey,
+                );
+                setLastUsedCodexGlobalConversationKey(libraryID, newKey);
+              } else {
+                activeGlobalConversationByLibrary.set(libraryID, newKey);
+              }
+              activeConversationKey = newKey;
+            } else {
+              const paperItem =
+                currentBasePaperItem ||
+                resolveConversationBaseItem(activeNoteItem);
+              const { conversationKey: newKey } =
+                await resolveStandalonePaperConversation(true, paperItem);
+              if (switchSeq !== systemSwitchSeq || !newKey || !paperItem)
+                return;
+              await touchStandaloneEmptyDraftActivity(newKey, "paper");
+              if (switchSeq !== systemSwitchSeq) return;
+              const libraryID = getLibraryIDForPaperItem(paperItem);
+              const paperItemID = Number(paperItem.id || 0);
+              if (resolvedNextSystem === "claude_code") {
+                activeClaudePaperConversationByPaper.set(
+                  buildClaudePaperStateKey(libraryID, paperItemID),
+                  newKey,
+                );
+              } else if (resolvedNextSystem === "codex") {
+                activeCodexPaperConversationByPaper.set(
+                  buildCodexPaperStateKey(libraryID, paperItemID),
+                  newKey,
+                );
+                setLastUsedCodexPaperConversationKey(
+                  libraryID,
+                  paperItemID,
+                  newKey,
+                );
+              } else {
+                activePaperConversationByPaper.set(
+                  buildPaperStateKey(libraryID, paperItemID),
+                  newKey,
+                );
+              }
+              activeConversationKey = newKey;
+            }
+          }
+          if (switchSeq !== systemSwitchSeq || cancelled || newWin.closed)
+            return;
           activeConversationKey = getConversationKey(activeNoteItem);
           mountChatPanel(activeNoteItem);
           scheduleStandaloneSidebarRender();
-          updateStandaloneSystemToggle();
+          updateStandaloneSystemToggles();
           return;
         }
         const currentSystem = currentConversationSystem;
@@ -3474,7 +3506,7 @@ export function openStandaloneChat(options?: {
         const forceFresh = options?.forceFresh === true;
         setConversationSystemPref(nextSystem);
         currentConversationSystem = nextSystem;
-        updateStandaloneSystemToggle();
+        updateStandaloneSystemToggles();
         if (standaloneMode === "open") {
           const libraryID = getCurrentLibraryScopeID();
           const mountOpenConversation = (conversationKey: number) => {
@@ -3502,7 +3534,7 @@ export function openStandaloneChat(options?: {
             }
             mountChatPanel(nextItem as Zotero.Item);
             scheduleStandaloneSidebarRender();
-            updateStandaloneSystemToggle();
+            updateStandaloneSystemToggles();
           };
 
           if (forceFresh) {
@@ -3558,7 +3590,7 @@ export function openStandaloneChat(options?: {
           mountChatPanel(freshItem as Zotero.Item, currentRawContextItem);
           scheduleStandaloneSidebarRender();
           void renderShortcuts(contentArea, freshItem as Zotero.Item, "paper");
-          updateStandaloneSystemToggle();
+          updateStandaloneSystemToggles();
           return;
         }
         if (switchSeq !== systemSwitchSeq) return;
@@ -3572,18 +3604,25 @@ export function openStandaloneChat(options?: {
             resolveShortcutMode(nextItem),
           );
         }
-        updateStandaloneSystemToggle();
+        updateStandaloneSystemToggles();
       };
 
-      systemToggleBtn.addEventListener("click", () => {
-        void switchConversationSystem(
-          isRuntimeConversationSystem()
-            ? "upstream"
-            : getPreferredRuntimeSystem(),
-          { forceFresh: true },
+      for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
+        standaloneRuntimeSystemControls.buttons[system].addEventListener(
+          "click",
+          () => {
+            if (cancelled || newWin.closed || isInWebChatMode) return;
+            void switchConversationSystem(
+              resolveRuntimeSystemToggleTarget(
+                currentConversationSystem,
+                system,
+              ),
+              { forceFresh: true },
+            );
+          },
         );
-      });
-      updateStandaloneSystemToggle();
+      }
+      updateStandaloneSystemToggles();
       {
         const claudeModePrefKey = `${config.prefsPrefix}.enableClaudeCodeMode`;
         const codexModePrefKey = `${config.prefsPrefix}.enableCodexAppServerMode`;
@@ -3627,7 +3666,7 @@ export function openStandaloneChat(options?: {
               return;
             }
           }
-          updateStandaloneSystemToggle();
+          updateStandaloneSystemToggles();
         };
         const onCodexModePrefChange = () => {
           if (cancelled || newWin.closed) {
@@ -3643,7 +3682,7 @@ export function openStandaloneChat(options?: {
               return;
             }
           }
-          updateStandaloneSystemToggle();
+          updateStandaloneSystemToggles();
         };
         try {
           claudeObserverId = (Zotero as any).Prefs.registerObserver(

@@ -322,6 +322,14 @@ import {
   resolveNoteFocusSystemSwitch,
   resolveShortcutMode,
 } from "./portalScope";
+import {
+  RUNTIME_CONVERSATION_SYSTEMS,
+  resolveRuntimeSystemToggleTarget,
+  syncRuntimeSystemControls,
+  type RuntimeConversationSystem,
+  type RuntimeSystemControls,
+} from "./runtimeSystemControls";
+import { shouldCompactHeaderClearButton } from "./headerClearPresentation";
 import { getPanelDomRefs } from "./setupHandlers/domRefs";
 import {
   chooseAutoLoadedContextPanelItem,
@@ -651,8 +659,9 @@ export function setupHandlers(
     historyUndoText,
     historyUndoBtn,
     topToast,
+    runtimeSystemControls,
+    codexSystemToggleBtn,
     claudeSystemToggleBtn,
-    claudeSystemToggleIcon,
     selectTextBtn,
     screenshotBtn,
     uploadBtn,
@@ -812,6 +821,12 @@ export function setupHandlers(
   const headerTop = body.querySelector(
     ".llm-header-top",
   ) as HTMLDivElement | null;
+  const headerInfo = headerTop?.querySelector(
+    ".llm-header-info",
+  ) as HTMLDivElement | null;
+  const headerActions = headerTop?.querySelector(
+    ".llm-header-actions",
+  ) as HTMLDivElement | null;
   panelRoot.tabIndex = 0;
   applyPanelFontScale(panelRoot);
 
@@ -951,15 +966,6 @@ export function setupHandlers(
       entries[0]!
     );
   };
-  const getPreferredTargetSystem = (): ConversationSystem => {
-    const preferred = getConversationSystemPref();
-    if (preferred === "codex" && isCodexModeAvailable()) return "codex";
-    if (preferred === "claude_code" && isClaudeModeAvailable())
-      return "claude_code";
-    if (isCodexModeAvailable()) return "codex";
-    if (isClaudeModeAvailable()) return "claude_code";
-    return "upstream";
-  };
   const getCurrentLibraryID = (): number => {
     const fromItem =
       item && Number.isFinite(item.libraryID) && item.libraryID > 0
@@ -1065,42 +1071,22 @@ export function setupHandlers(
     selectedRuntimeModeCache.set(getConversationKey(item), mode);
     updateRuntimeModeButton();
   };
-  const updateClaudeSystemToggle = () => {
-    if (!claudeSystemToggleBtn || !claudeSystemToggleIcon) return;
-    const targetSystem = getPreferredTargetSystem();
-    const webChatActive = isWebChatModeActive();
-    const available =
-      !webChatActive && (isClaudeModeAvailable() || isCodexModeAvailable());
-    claudeSystemToggleBtn.style.display = available ? "inline-flex" : "none";
-    if (!available) return;
-    const active = isRuntimeConversationSystem();
-    const inactiveLabel =
-      targetSystem === "codex"
-        ? "Switch to Codex mode"
-        : "Switch to Claude Code mode";
-    const activeLabel = "Switch to upstream mode";
-    claudeSystemToggleBtn.dataset.active = active ? "true" : "false";
-    claudeSystemToggleBtn.setAttribute(
-      "aria-pressed",
-      active ? "true" : "false",
-    );
-    claudeSystemToggleBtn.title = active ? activeLabel : inactiveLabel;
-    claudeSystemToggleBtn.setAttribute(
-      "aria-label",
-      active ? activeLabel : inactiveLabel,
-    );
-    const iconSystem = active ? getConversationSystem() : targetSystem;
-    if (iconSystem === "codex") {
-      claudeSystemToggleIcon.classList.add("llm-codex-system-toggle-icon");
-      claudeSystemToggleIcon.textContent = "";
-      claudeSystemToggleIcon.setAttribute("aria-hidden", "true");
-      return;
-    }
-    claudeSystemToggleIcon.classList.remove("llm-codex-system-toggle-icon");
-    claudeSystemToggleIcon.setAttribute("aria-hidden", "true");
-    claudeSystemToggleIcon.innerHTML = active
-      ? `<svg height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z" fill="#D97757" fill-rule="evenodd"></path></svg>`
-      : `<svg fill="currentColor" fill-rule="evenodd" height="1em" style="flex:none;line-height:1" viewBox="0 0 24 24" width="1em" xmlns="http://www.w3.org/2000/svg"><path clip-rule="evenodd" d="M20.998 10.949H24v3.102h-3v3.028h-1.487V20H18v-2.921h-1.487V20H15v-2.921H9V20H7.488v-2.921H6V20H4.487v-2.921H3V14.05H0V10.95h3V5h17.998v5.949zM6 10.949h1.488V8.102H6v2.847zm10.51 0H18V8.102h-1.49v2.847z"></path></svg>`;
+  const panelRuntimeSystemControls: RuntimeSystemControls = {
+    group: runtimeSystemControls,
+    buttons: {
+      codex: codexSystemToggleBtn,
+      claude_code: claudeSystemToggleBtn,
+    },
+  };
+  let runtimeSystemSwitchInFlight = false;
+  const updateRuntimeSystemToggles = () => {
+    syncRuntimeSystemControls(panelRuntimeSystemControls, {
+      activeSystem: getConversationSystem(),
+      codexEnabled: isCodexModeAvailable(),
+      claudeEnabled: isClaudeModeAvailable(),
+      hidden: isWebChatModeActive(),
+      busy: runtimeSystemSwitchInFlight,
+    });
   };
   let claudeWarmupInFlight: Promise<void> | null = null;
   const warmClaudeModeCaches = () => {
@@ -1200,7 +1186,15 @@ export function setupHandlers(
         warmClaudeModeCaches();
       }
       updateRuntimeModeButton();
-      updateClaudeSystemToggle();
+      updateRuntimeSystemToggles();
+      if (options?.forceFresh === true) {
+        if (noteSession.conversationKind === "global") {
+          await createAndSwitchGlobalConversation(true);
+        } else {
+          await createAndSwitchPaperConversation(true);
+        }
+        return;
+      }
       await ensureConversationLoaded(item);
       restoreDraftInputForCurrentConversation();
       refreshChatPreservingScroll();
@@ -1218,7 +1212,7 @@ export function setupHandlers(
     currentConversationSystem = nextSystem;
     panelRoot.dataset.conversationSystem = nextSystem;
     syncQueuedFollowUpRegistration();
-    updateClaudeSystemToggle();
+    updateRuntimeSystemToggles();
     if (nextSystem === "claude_code") {
       warmClaudeModeCaches();
     }
@@ -1293,7 +1287,7 @@ export function setupHandlers(
     resetComposePreviewUI();
     updateModelButton();
     updateReasoningButton();
-    updateClaudeSystemToggle();
+    updateRuntimeSystemToggles();
     void refreshGlobalHistoryHeader();
   };
   const isClaudeConversationDraft = async (conversationKey: number) => {
@@ -1522,7 +1516,7 @@ export function setupHandlers(
           : t("Ask about this paper... Type / for actions, @ to add papers");
     }
     updateRuntimeModeButton();
-    updateClaudeSystemToggle();
+    updateRuntimeSystemToggles();
   };
   syncConversationIdentity();
   if (getConversationSystem() === "claude_code") {
@@ -1581,13 +1575,15 @@ export function setupHandlers(
               err,
             );
           });
-        setConversationSystemPref("upstream");
+        if (getConversationSystemPref() === "claude_code") {
+          setConversationSystemPref("upstream");
+        }
         if (isClaudeConversationSystem()) {
           void switchConversationSystem("upstream");
           return;
         }
       }
-      updateClaudeSystemToggle();
+      updateRuntimeSystemToggles();
     };
     const onCodexModePrefChange = () => {
       if (isPanelUnavailable()) {
@@ -1603,7 +1599,7 @@ export function setupHandlers(
           return;
         }
       }
-      updateClaudeSystemToggle();
+      updateRuntimeSystemToggles();
       updateRuntimeModeButton();
     };
     try {
@@ -1957,6 +1953,38 @@ export function setupHandlers(
     sendBtn,
     cancelBtn,
   });
+  const syncResponsiveHeaderClearButton = () => {
+    if (
+      isStandalonePanel ||
+      !headerTop ||
+      !headerInfo ||
+      !headerActions ||
+      !clearBtn
+    ) {
+      return;
+    }
+    if (panelRoot.dataset.webchatMode === "true") {
+      clearBtn.dataset.compact = "false";
+      return;
+    }
+
+    // Always measure the full label first so widening the sidebar restores it.
+    clearBtn.dataset.compact = "false";
+    const headerRect = headerTop.getBoundingClientRect();
+    const headerInfoRect = headerInfo.getBoundingClientRect();
+    const actionsRect = headerActions.getBoundingClientRect();
+    const leftContentRight =
+      headerInfoRect.left +
+      Math.max(headerInfoRect.width, Number(headerInfo.scrollWidth) || 0);
+    clearBtn.dataset.compact = shouldCompactHeaderClearButton({
+      headerRight: headerRect.right,
+      leftContentRight,
+      actionsLeft: actionsRect.left,
+      actionsRight: actionsRect.right,
+    })
+      ? "true"
+      : "false";
+  };
   let lastUserContextAlignmentPanelWidth = -1;
   const getRoundedPanelWidth = () =>
     Math.ceil(
@@ -1971,6 +1999,7 @@ export function setupHandlers(
         conversationKey,
         () => {
           applyResponsiveActionButtonsLayout();
+          syncResponsiveHeaderClearButton();
           if (
             panelWidth <= 0 ||
             panelWidth !== lastUserContextAlignmentPanelWidth
@@ -4413,7 +4442,6 @@ export function setupHandlers(
     historyUndoBtn,
     topToast,
     modeChipBtn,
-    claudeSystemToggleBtn,
     getItem: () => item,
     setItem: (nextItem) => {
       item = nextItem as any;
@@ -4440,7 +4468,6 @@ export function setupHandlers(
     syncConversationIdentity,
     syncQueuedFollowUpRegistration,
     updateRuntimeModeButton,
-    updateClaudeSystemToggle,
     refreshChatPreservingScroll,
     resetComposePreviewUI,
     updateModelButton: () => updateModelButton(),
@@ -4473,7 +4500,6 @@ export function setupHandlers(
     markNextWebChatSendAsNewChat: () => markNextWebChatSendAsNewChat(),
     primeFreshWebChatPaperChipState: () => primeFreshWebChatPaperChipState(),
     updateImagePreviewPreservingScroll,
-    getPreferredTargetSystem,
     switchConversationSystem,
     setActiveEditSession: (value) => {
       activeEditSession = value;
@@ -4507,6 +4533,44 @@ export function setupHandlers(
   resetHistorySearchState = historyLifecycleController.resetHistorySearchState;
   hasPendingTurnDeletionForConversation =
     historyLifecycleController.hasPendingTurnDeletionForConversation;
+
+  const switchRuntimeSystemFromControl = async (
+    clickedSystem: RuntimeConversationSystem,
+  ) => {
+    if (
+      runtimeSystemSwitchInFlight ||
+      !item ||
+      isWebChatModeActive() ||
+      (clickedSystem === "codex"
+        ? !isCodexModeAvailable()
+        : !isClaudeModeAvailable())
+    ) {
+      return;
+    }
+    runtimeSystemSwitchInFlight = true;
+    updateRuntimeSystemToggles();
+    try {
+      const nextSystem = resolveRuntimeSystemToggleTarget(
+        getConversationSystem(),
+        clickedSystem,
+      );
+      await switchConversationSystem(nextSystem, { forceFresh: true });
+    } catch (err) {
+      ztoolkit.log("LLM: Failed to switch conversation runtime", err);
+    } finally {
+      runtimeSystemSwitchInFlight = false;
+      updateRuntimeSystemToggles();
+    }
+  };
+  for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
+    const button = panelRuntimeSystemControls.buttons[system];
+    if (!button) continue;
+    button.addEventListener("click", (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void switchRuntimeSystemFromControl(system);
+    });
+  }
 
   const maybeStartWithFreshConversation = () => {
     const startupBody = body as Element & {
@@ -5844,7 +5908,7 @@ export function setupHandlers(
     }
 
     updateRuntimeModeButton();
-    updateClaudeSystemToggle();
+    updateRuntimeSystemToggles();
 
     // Notify standalone window (or other listeners) of webchat mode change
     hooks?.onWebChatModeChanged?.(isWebChat);
@@ -5956,6 +6020,7 @@ export function setupHandlers(
     ro.observe(panelRoot);
     if (actionsRow) ro.observe(actionsRow);
     if (actionsLeft) ro.observe(actionsLeft);
+    if (headerTop) ro.observe(headerTop);
     if (chatBox) {
       const chatBoxResizeObserver = new ResizeObserverCtor(() => {
         if (!chatBox) return;

@@ -19,6 +19,8 @@ import type {
   WorkflowTestReaderPopupRoutingDiagnostics,
   WorkflowTestReaderPopupStandaloneRoutingDiagnostics,
   WorkflowTestReaderSelectionTrackingDiagnostics,
+  WorkflowTestRuntimeGeometry,
+  WorkflowTestRuntimeSystemToggle,
   WorkflowTestStandaloneNoteFixture,
   WorkflowTestStandaloneDiagnostics,
 } from "./workflowTestTypes";
@@ -51,6 +53,8 @@ import {
 } from "./workflowTestHooks";
 import { dispatchZoteroItemsAsContext } from "./zoteroItemContextMenu";
 import { appendMessage } from "../../utils/chatStore";
+import { appendCodexMessage } from "../../codexAppServer/store";
+import { appendClaudeMessage } from "../../claudeCode/store";
 import { FreshStartupConversationSession } from "./freshStartupConversation";
 import {
   ensureMarkedReaderSelectionTrackingListener,
@@ -58,8 +62,125 @@ import {
   type ReaderSelectionTrackingReader,
 } from "./readerSelectionTracking";
 import { config } from "./constants";
+import type { RuntimeConversationSystem } from "./runtimeSystemControls";
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
+import type { ConversationSystem } from "../../shared/types";
+
+async function appendWorkflowStoredMessage(
+  system: ConversationSystem,
+  conversationKey: number,
+  message: Parameters<typeof appendMessage>[1],
+): Promise<void> {
+  if (system === "codex") {
+    await appendCodexMessage(conversationKey, message);
+    return;
+  }
+  if (system === "claude_code") {
+    await appendClaudeMessage(conversationKey, message);
+    return;
+  }
+  await appendMessage(conversationKey, message);
+}
+
+function readRuntimeSystemToggles(
+  root: ParentNode | null | undefined,
+  groupSelector: string,
+): WorkflowTestRuntimeSystemToggle[] {
+  const group = root?.querySelector(groupSelector) as HTMLElement | null;
+  if (!group) return [];
+  const groupVisible = group.style.display !== "none";
+  return (
+    Array.from(
+      group.querySelectorAll(
+        ".llm-runtime-system-toggle[data-conversation-system]",
+      ),
+    ) as HTMLButtonElement[]
+  )
+    .map((button) => {
+      const system = button.dataset.conversationSystem;
+      if (system !== "codex" && system !== "claude_code") return null;
+      return {
+        system,
+        visible: groupVisible && button.style.display !== "none",
+        active: button.dataset.active === "true",
+        disabled: button.disabled,
+        ariaPressed: button.getAttribute("aria-pressed") === "true",
+      };
+    })
+    .filter(
+      (state): state is WorkflowTestRuntimeSystemToggle => state !== null,
+    );
+}
+
+type GeometryRect = Pick<
+  DOMRect,
+  "left" | "right" | "top" | "bottom" | "width" | "height"
+>;
+
+function rectsIntersect(
+  first: GeometryRect | null,
+  second: GeometryRect | null,
+): boolean {
+  if (
+    !first ||
+    !second ||
+    first.width <= 0 ||
+    first.height <= 0 ||
+    second.width <= 0 ||
+    second.height <= 0
+  ) {
+    return false;
+  }
+  return (
+    first.left < second.right &&
+    first.right > second.left &&
+    first.top < second.bottom &&
+    first.bottom > second.top
+  );
+}
+
+function rectWithinContainer(
+  rect: GeometryRect,
+  container: GeometryRect,
+): boolean {
+  const tolerance = 0.5;
+  return (
+    rect.left >= container.left - tolerance &&
+    rect.right <= container.right + tolerance &&
+    rect.top >= container.top - tolerance &&
+    rect.bottom <= container.bottom + tolerance
+  );
+}
+
+function getVisibleRuntimeControlsRect(group: HTMLElement): GeometryRect {
+  const buttonRects = getVisibleRuntimeButtonRects(group);
+  if (!buttonRects.length) return group.getBoundingClientRect();
+  const left = Math.min(...buttonRects.map((rect) => rect.left));
+  const right = Math.max(...buttonRects.map((rect) => rect.right));
+  const top = Math.min(...buttonRects.map((rect) => rect.top));
+  const bottom = Math.max(...buttonRects.map((rect) => rect.bottom));
+  return {
+    left,
+    right,
+    top,
+    bottom,
+    width: right - left,
+    height: bottom - top,
+  };
+}
+
+function getVisibleRuntimeButtonRects(group: HTMLElement): DOMRect[] {
+  return (
+    Array.from(
+      group.querySelectorAll(
+        ".llm-runtime-system-toggle[data-conversation-system]",
+      ),
+    ) as HTMLElement[]
+  )
+    .map((button) => button.getBoundingClientRect())
+    .filter((rect) => rect.width > 0 && rect.height > 0);
+}
 
 type PanelRecord = {
   id: string;
@@ -446,7 +567,16 @@ async function seedPanelStoredUserMessage(
     text,
     timestamp: Date.now(),
   };
-  await appendMessage(conversationKey, message);
+  const conversationSystem =
+    (panel.body.querySelector("#llm-main") as HTMLElement | null)?.dataset
+      .conversationSystem || "upstream";
+  await appendWorkflowStoredMessage(
+    conversationSystem === "codex" || conversationSystem === "claude_code"
+      ? conversationSystem
+      : "upstream",
+    conversationKey,
+    message,
+  );
   const existing = chatHistory.get(conversationKey) || [];
   chatHistory.set(conversationKey, [...existing, message]);
   loadedConversationKeys.add(conversationKey);
@@ -472,13 +602,16 @@ async function selectNoteEditorText(
 
 async function clickPanelSystemToggle(
   panelId: string,
+  system: RuntimeConversationSystem,
 ): Promise<WorkflowTestDiagnostics> {
   assertWorkflowTestEnabled();
   const panel = getPanel(panelId);
   const button = panel.body.querySelector(
-    "#llm-claude-system-toggle",
+    `.llm-panel-runtime-system-toggle[data-conversation-system='${system}']`,
   ) as HTMLButtonElement | null;
-  if (!button) throw new Error("System toggle button was not rendered");
+  if (!button) {
+    throw new Error(`Panel ${system} system toggle was not rendered`);
+  }
   const eventCtor = panel.body.ownerDocument.defaultView?.MouseEvent;
   if (eventCtor) {
     button.dispatchEvent(
@@ -489,6 +622,118 @@ async function clickPanelSystemToggle(
   }
   await Zotero.Promise.delay(350);
   return getDiagnostics(panelId);
+}
+
+async function clickPanelSystemTogglesRapidly(
+  panelId: string,
+  systems: RuntimeConversationSystem[],
+): Promise<WorkflowTestDiagnostics> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const eventCtor = panel.body.ownerDocument.defaultView?.MouseEvent;
+  for (const system of systems) {
+    const button = panel.body.querySelector(
+      `.llm-panel-runtime-system-toggle[data-conversation-system='${system}']`,
+    ) as HTMLButtonElement | null;
+    if (!button) {
+      throw new Error(`Panel ${system} system toggle was not rendered`);
+    }
+    if (eventCtor) {
+      button.dispatchEvent(
+        new eventCtor("click", { bubbles: true, cancelable: true }),
+      );
+    } else {
+      button.click();
+    }
+  }
+  await Zotero.Promise.delay(500);
+  return getDiagnostics(panelId);
+}
+
+async function measurePanelRuntimeGeometry(
+  panelId: string,
+  input: { width: number; fontScale: number },
+): Promise<WorkflowTestRuntimeGeometry> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const panelRoot = panel.body.querySelector("#llm-main") as HTMLElement | null;
+  const header = panel.body.querySelector(
+    ".llm-header-top",
+  ) as HTMLElement | null;
+  const runtimeControls = panel.body.querySelector(
+    ".llm-panel-runtime-system-controls",
+  ) as HTMLElement | null;
+  const modeChip = panel.body.querySelector(
+    ".llm-mode-chip",
+  ) as HTMLElement | null;
+  const headerActions = panel.body.querySelector(
+    ".llm-header-actions",
+  ) as HTMLElement | null;
+  const clearButton = panel.body.querySelector(
+    ".llm-clear-btn",
+  ) as HTMLButtonElement | null;
+  if (
+    !panelRoot ||
+    !header ||
+    !runtimeControls ||
+    !modeChip ||
+    !headerActions ||
+    !clearButton
+  ) {
+    throw new Error("Panel runtime geometry targets were not rendered");
+  }
+
+  const previousWidth = panel.body.style.width;
+  const previousScale = panelRoot.style.getPropertyValue("--llm-font-scale");
+  panel.body.style.width = `${input.width}px`;
+  panelRoot.style.setProperty("--llm-font-scale", String(input.fontScale));
+  await Zotero.Promise.delay(50);
+  try {
+    const containerRect = header.getBoundingClientRect();
+    const runtimeRect = getVisibleRuntimeControlsRect(runtimeControls);
+    const runtimeButtonWidths = getVisibleRuntimeButtonRects(
+      runtimeControls,
+    ).map((rect) => rect.width);
+    const modeChipRect = modeChip.getBoundingClientRect();
+    const actionsRect = headerActions.getBoundingClientRect();
+    const clearButtonRect = clearButton.getBoundingClientRect();
+    const clearButtonStyle =
+      clearButton.ownerDocument.defaultView?.getComputedStyle(clearButton);
+    return {
+      containerWidth: containerRect.width,
+      fontScale: input.fontScale,
+      runtimeWidth: runtimeRect.width,
+      runtimeButtonWidths,
+      runtimeIntersectsLeadingContent: rectsIntersect(
+        runtimeRect,
+        modeChipRect,
+      ),
+      runtimeIntersectsTrailingContent: rectsIntersect(
+        runtimeRect,
+        actionsRect,
+      ),
+      runtimeTrailingOverlapPx: Math.max(
+        0,
+        runtimeRect.right - actionsRect.left,
+      ),
+      runtimeWithinContainer: rectWithinContainer(runtimeRect, containerRect),
+      trailingContentWithinContainer: rectWithinContainer(
+        actionsRect,
+        containerRect,
+      ),
+      clearButtonCompact:
+        clearButtonRect.width <= 28.5 &&
+        Number.parseFloat(clearButtonStyle?.fontSize || "") === 0,
+      centeredContentOffset: 0,
+    };
+  } finally {
+    panel.body.style.width = previousWidth;
+    if (previousScale) {
+      panelRoot.style.setProperty("--llm-font-scale", previousScale);
+    } else {
+      panelRoot.style.removeProperty("--llm-font-scale");
+    }
+  }
 }
 
 async function ask(
@@ -704,6 +949,10 @@ function readStandaloneDiagnostics(): WorkflowTestStandaloneDiagnostics {
     paperTabText: paperTab?.textContent?.trim() || undefined,
     openTabText: openTab?.textContent?.trim() || undefined,
     statusText: statusEl?.textContent?.trim() || undefined,
+    runtimeSystemToggles: readRuntimeSystemToggles(
+      doc,
+      ".llm-standalone-runtime-system-controls",
+    ),
     lastSend,
     lastFinalRequest,
   };
@@ -744,16 +993,100 @@ async function clickStandaloneTab(
   return readStandaloneDiagnostics();
 }
 
-async function clickStandaloneSystemToggle(): Promise<WorkflowTestStandaloneDiagnostics> {
+async function clickStandaloneSystemToggle(
+  system: RuntimeConversationSystem,
+): Promise<WorkflowTestStandaloneDiagnostics> {
   assertWorkflowTestEnabled();
   const doc = await waitForStandaloneReady();
   const button = doc.querySelector(
-    ".llm-standalone-claude-toggle",
+    `.llm-standalone-runtime-system-toggle[data-conversation-system='${system}']`,
   ) as HTMLButtonElement | null;
-  if (!button) throw new Error("Standalone system toggle was not rendered");
+  if (!button) {
+    throw new Error(`Standalone ${system} system toggle was not rendered`);
+  }
   button.click();
   await Zotero.Promise.delay(250);
   return readStandaloneDiagnostics();
+}
+
+async function clickStandaloneSystemTogglesRapidly(
+  systems: RuntimeConversationSystem[],
+): Promise<WorkflowTestStandaloneDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  for (const system of systems) {
+    const button = doc.querySelector(
+      `.llm-standalone-runtime-system-toggle[data-conversation-system='${system}']`,
+    ) as HTMLButtonElement | null;
+    if (!button) {
+      throw new Error(`Standalone ${system} system toggle was not rendered`);
+    }
+    button.click();
+  }
+  await Zotero.Promise.delay(500);
+  return readStandaloneDiagnostics();
+}
+
+async function measureStandaloneRuntimeGeometry(input: {
+  width: number;
+  fontScale: number;
+}): Promise<WorkflowTestRuntimeGeometry> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const root = doc.getElementById(
+    "llmforzotero-standalone-chat-root",
+  ) as HTMLElement | null;
+  const tabRow = doc.querySelector(
+    ".llm-standalone-tab-row",
+  ) as HTMLElement | null;
+  const runtimeControls = doc.querySelector(
+    ".llm-standalone-runtime-system-controls",
+  ) as HTMLElement | null;
+  const tabGroup = doc.querySelector(
+    ".llm-standalone-tab-group",
+  ) as HTMLElement | null;
+  if (!root || !tabRow || !runtimeControls || !tabGroup) {
+    throw new Error("Standalone runtime geometry targets were not rendered");
+  }
+
+  const previousWidth = tabRow.style.width;
+  const previousBoxSizing = tabRow.style.boxSizing;
+  const previousScale = root.style.getPropertyValue("--llm-font-scale");
+  tabRow.style.width = `${input.width}px`;
+  tabRow.style.boxSizing = "border-box";
+  root.style.setProperty("--llm-font-scale", String(input.fontScale));
+  await Zotero.Promise.delay(50);
+  try {
+    const containerRect = tabRow.getBoundingClientRect();
+    const runtimeRect = getVisibleRuntimeControlsRect(runtimeControls);
+    const runtimeButtonWidths = getVisibleRuntimeButtonRects(
+      runtimeControls,
+    ).map((rect) => rect.width);
+    const tabsRect = tabGroup.getBoundingClientRect();
+    const containerCenter = containerRect.left + containerRect.width / 2;
+    const tabsCenter = tabsRect.left + tabsRect.width / 2;
+    return {
+      containerWidth: containerRect.width,
+      fontScale: input.fontScale,
+      runtimeWidth: runtimeRect.width,
+      runtimeButtonWidths,
+      runtimeIntersectsLeadingContent: rectsIntersect(runtimeRect, tabsRect),
+      runtimeIntersectsTrailingContent: false,
+      runtimeTrailingOverlapPx: 0,
+      runtimeWithinContainer: rectWithinContainer(runtimeRect, containerRect),
+      trailingContentWithinContainer: true,
+      clearButtonCompact: false,
+      centeredContentOffset: Math.abs(tabsCenter - containerCenter),
+    };
+  } finally {
+    tabRow.style.width = previousWidth;
+    tabRow.style.boxSizing = previousBoxSizing;
+    if (previousScale) {
+      root.style.setProperty("--llm-font-scale", previousScale);
+    } else {
+      root.style.removeProperty("--llm-font-scale");
+    }
+  }
 }
 
 async function askStandalone(text: string): Promise<SendQuestionOptions> {
@@ -800,7 +1133,16 @@ async function seedStandaloneUserMessage(
     text,
     timestamp: Date.now(),
   };
-  await appendMessage(conversationKey, message);
+  const conversationSystem =
+    (contentArea.querySelector("#llm-main") as HTMLElement | null)?.dataset
+      .conversationSystem || "upstream";
+  await appendWorkflowStoredMessage(
+    conversationSystem === "codex" || conversationSystem === "claude_code"
+      ? conversationSystem
+      : "upstream",
+    conversationKey,
+    message,
+  );
   chatHistory.set(conversationKey, [message]);
   loadedConversationKeys.add(conversationKey);
   refreshChat(contentArea, item);
@@ -909,6 +1251,10 @@ async function getDiagnostics(
     historyToggleVisible: historyToggleBtn
       ? historyToggleBtn.style.display !== "none"
       : false,
+    runtimeSystemToggles: readRuntimeSystemToggles(
+      body,
+      ".llm-panel-runtime-system-controls",
+    ),
     inputValue: (
       body?.querySelector("#llm-input") as HTMLTextAreaElement | null
     )?.value,
@@ -1563,12 +1909,16 @@ export function installWorkflowTestHarness(targetAddon: {
     renderStartupPanelForItem,
     seedPanelStoredUserMessage,
     clickPanelSystemToggle,
+    clickPanelSystemTogglesRapidly,
+    measurePanelRuntimeGeometry,
     selectNoteEditorText,
     ask,
     renderAssistantForPanel,
     openStandaloneForItem,
     clickStandaloneTab,
     clickStandaloneSystemToggle,
+    clickStandaloneSystemTogglesRapidly,
+    measureStandaloneRuntimeGeometry,
     askStandalone,
     seedStandaloneUserMessage,
     notifyStandaloneItemChanged,

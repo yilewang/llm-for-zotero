@@ -614,8 +614,8 @@ const zhCN: Record<string, string> = {
   "before enabling it; Zotero keeps local tool approvals in its own confirmation cards.":
     "；Zotero 会在自己的确认卡片中管理本地工具授权。",
   "Enable Codex App Server integration": "启用 Codex App Server 集成",
-  "When enabled, Zotero shows the Codex button in the chat header so you can switch between upstream chat and Codex.":
-    "启用后，Zotero 会在聊天标题栏显示 Codex 按钮，用于在上游聊天和 Codex 之间切换。",
+  "When enabled, Zotero adds a Codex button to the chat header. Codex and Claude Code can both be enabled; only the selected runtime is active.":
+    "启用后，Zotero 会在聊天标题栏添加 Codex 按钮。Codex 和 Claude Code 可以同时启用；只有所选运行时处于活动状态。",
   "These values control how Codex runs inside Zotero by default.":
     "这些值控制 Codex 在 Zotero 中运行时的默认行为。",
   "Enter a Codex app-server model ID, for example":
@@ -676,12 +676,8 @@ const zhCN: Record<string, string> = {
   "This panel configures the embedded Claude runtime. You enter Claude Code mode from the chat header, not from settings.":
     "此面板用于配置嵌入式 Claude 运行时。请从聊天标题栏进入 Claude Code 模式，而不是从设置页进入。",
   "Enable Claude Code integration": "启用 Claude Code 集成",
-  "When enabled, Zotero shows the Claude button in the chat header so you can switch between upstream chat and Claude Code.":
-    "启用后，Zotero 会在聊天标题栏显示 Claude 按钮，用于在上游聊天和 Claude Code 之间切换。",
-  "Disable Codex App Server first to switch on Claude Code.":
-    "请先禁用 Codex App Server，再开启 Claude Code。",
-  "Disable Claude Code first to switch on Codex App Server.":
-    "请先禁用 Claude Code，再开启 Codex App Server。",
+  "When enabled, Zotero adds a Claude Code button to the chat header. Codex and Claude Code can both be enabled; only the selected runtime is active.":
+    "启用后，Zotero 会在聊天标题栏添加 Claude Code 按钮。Codex 和 Claude Code 可以同时启用；只有所选运行时处于活动状态。",
   Connection: "连接",
   "Zotero sends Claude requests to this local bridge service.":
     "Zotero 会将 Claude 请求发送到这个本地桥接服务。",

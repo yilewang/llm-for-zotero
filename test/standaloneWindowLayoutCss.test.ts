@@ -103,4 +103,26 @@ describe("standalone window layout CSS", function () {
     assert.include(source, '"light"');
     assert.include(source, '"dark"');
   });
+
+  it("centers tabs in a symmetric grid without overlaying runtime controls", function () {
+    const css = readPanelCss();
+    const tabRowRule = extractCssRule(css, ".llm-standalone-tab-row");
+    const runtimeControlsRule = extractCssRule(
+      css,
+      ".llm-standalone-runtime-system-controls",
+    );
+    const tabGroupRule = extractCssRule(css, ".llm-standalone-tab-group");
+
+    assert.include(tabRowRule, "display: grid");
+    assert.include(
+      tabRowRule,
+      "grid-template-columns: 56px minmax(0, 1fr) 56px",
+    );
+    assert.include(runtimeControlsRule, "grid-column: 1");
+    assert.include(runtimeControlsRule, "justify-self: start");
+    assert.notInclude(runtimeControlsRule, "position: absolute");
+    assert.include(tabGroupRule, "grid-column: 2");
+    assert.include(tabGroupRule, "justify-self: center");
+    assert.notInclude(css, ".llm-standalone-claude-toggle");
+  });
 });
