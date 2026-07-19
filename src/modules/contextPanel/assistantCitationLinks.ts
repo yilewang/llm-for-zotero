@@ -3816,7 +3816,7 @@ function createQuoteCardElement(params: {
   quoteText: string;
   quoteCitationId?: string;
   quoteOccurrenceId?: string;
-  citationContent: Node;
+  citationContent?: Node;
   quoteContent?: DocumentFragment | null;
   status?: QuoteCardStatus;
 }): HTMLElement {
@@ -3847,17 +3847,19 @@ function createQuoteCardElement(params: {
   preview.className = "llm-quote-card-preview";
   renderQuoteCardPreviewMarkdown(preview, params.quoteText, params.ownerDoc);
 
-  const citation = params.ownerDoc.createElement("span");
-  citation.className = "llm-quote-card-citation";
-  citation.appendChild(params.citationContent);
-
   const body = params.ownerDoc.createElement("div");
   body.className = "llm-quote-card-body";
   if (!appendQuoteCardBodyContent(body, params.quoteContent)) {
     renderQuoteCardBodyMarkdown(body, params.quoteText, params.ownerDoc);
   }
   content.append(preview, body);
-  wrapper.append(content, citation);
+  wrapper.appendChild(content);
+  if (params.citationContent) {
+    const citation = params.ownerDoc.createElement("span");
+    citation.className = "llm-quote-card-citation";
+    citation.appendChild(params.citationContent);
+    wrapper.appendChild(citation);
+  }
 
   if (!interactive) return wrapper;
 
@@ -4041,13 +4043,10 @@ function createQuoteRenderOccurrenceElement(params: {
   }
 
   if (params.occurrence.trust === "not-source-quote") {
-    const citationContent = params.ownerDoc.createElement("span");
-    citationContent.textContent = params.occurrence.citationLabel;
     return createQuoteCardElement({
       ownerDoc: params.ownerDoc,
       quoteText: params.occurrence.displayText,
       quoteOccurrenceId: params.occurrence.occurrenceId,
-      citationContent,
       status: "not-source",
     });
   }

@@ -579,10 +579,16 @@ export function setupHandlers(
   initialItem?: Zotero.Item | null,
   hooks?: SetupHandlersHooks,
 ) {
-  disposeSetupHandlers(body);
   const existingPanelRoot = body.querySelector(
     "#llm-main",
   ) as HTMLElement | null;
+  // A repeated lifecycle callback for the same completed DOM must be a true
+  // no-op. Disposing before this check would tear down cleanup-managed
+  // observers and registrations, then return without replacing them.
+  if (existingPanelRoot?.dataset.handlersInitialized) {
+    return;
+  }
+  disposeSetupHandlers(body);
   const preferredConversationSystem =
     existingPanelRoot?.dataset?.conversationSystem === "claude_code"
       ? "claude_code"
@@ -724,14 +730,7 @@ export function setupHandlers(
 
   const isStandalonePanel = panelRoot.dataset.standalone === "true";
 
-  // Guard: skip re-wiring if handlers were already attached to this exact
-  // panelRoot element.  buildUI() creates a fresh panelRoot each time, so
-  // the stamp is only present when setupHandlers is called twice on the
-  // same DOM tree without an intervening rebuild.
   const thisGen = String(++setupHandlersGeneration);
-  if (panelRoot.dataset.handlersInitialized) {
-    return;
-  }
   panelRoot.dataset.handlersAttached = thisGen;
   panelRoot.dataset.rawContextItemId = rawPanelItem
     ? `${Number(rawPanelItem.id || 0) || ""}`

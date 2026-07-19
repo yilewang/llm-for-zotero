@@ -12,8 +12,14 @@ function source(path: string): string {
 describe("quote card UI contract", function () {
   it("defines expandable quote-card styling", function () {
     const css = source("addon/content/zoteroPane.css");
+    const quoteCardRuleStart = css.indexOf(".llm-quote-card {");
+    const quoteCardRuleEnd = css.indexOf("}", quoteCardRuleStart);
+    const quoteCardRule = css.slice(quoteCardRuleStart, quoteCardRuleEnd);
 
     assert.include(css, ".llm-quote-card");
+    assert.isAtLeast(quoteCardRuleStart, 0);
+    assert.isAbove(quoteCardRuleEnd, quoteCardRuleStart);
+    assert.include(quoteCardRule, "margin: 10px 0");
     assert.include(css, ".llm-quote-card-content");
     assert.include(css, ".llm-quote-card-body");
     assert.include(css, '.llm-quote-card[data-expanded="false"]');
@@ -35,6 +41,11 @@ describe("quote card UI contract", function () {
     assert.include(css, "--llm-quote-card-rail: #f59e0b");
     assert.include(css, "font-style: normal");
     assert.include(css, "cursor: default");
+    assert.include(
+      css,
+      '.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-content',
+    );
+    assert.include(css, "padding-bottom: 8px");
   });
 
   it("defaults quote cards to the collapsed visual state", function () {
@@ -67,13 +78,29 @@ describe("quote card UI contract", function () {
     assert.include(renderSource, "if (!interactive) return wrapper");
   });
 
-  it("keeps the not-source card non-interactive", function () {
+  it("keeps the not-source card non-interactive without a visible label", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+    const notSourceBranchStart = renderSource.indexOf(
+      'if (params.occurrence.trust === "not-source-quote")',
+    );
+    const nextBranchStart = renderSource.indexOf(
+      "const extractedCitation = extractStandalonePaperSourceLabel(",
+      notSourceBranchStart,
+    );
+    const notSourceBranch = renderSource.slice(
+      notSourceBranchStart,
+      nextBranchStart,
     );
 
     assert.include(renderSource, 'status: "not-source"');
     assert.include(renderSource, "if (!interactive) return wrapper");
+    assert.include(renderSource, "citationContent?: Node");
+    assert.include(renderSource, "if (params.citationContent)");
+    assert.isAtLeast(notSourceBranchStart, 0);
+    assert.isAbove(nextBranchStart, notSourceBranchStart);
+    assert.notInclude(notSourceBranch, "citationContent");
     assert.notInclude(renderSource, "Related source:");
   });
 

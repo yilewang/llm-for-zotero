@@ -41,6 +41,14 @@ export type WorkflowTestRuntimeSystemToggle = {
   ariaPressed: boolean;
 };
 
+export type WorkflowTestDuplicatePanelSetupDiagnostics = {
+  samePanelRoot: boolean;
+  initializationGenerationBefore: string;
+  initializationGenerationAfter: string;
+  panelStateSyncBefore: boolean;
+  panelStateSyncAfter: boolean;
+};
+
 export type WorkflowTestRuntimeGeometry = {
   containerWidth: number;
   fontScale: number;
@@ -81,6 +89,9 @@ export type WorkflowTestDiagnostics = {
 export type WorkflowTestAssistantRenderResult = {
   renderedText: string;
   quoteCardBodies: string[];
+  quoteCardStatuses: string[];
+  quoteCardCitationTexts: string[];
+  quoteCardVerticalMargins: Array<{ top: number; bottom: number }>;
 };
 
 export type WorkflowTestStandaloneDiagnostics = {
@@ -168,6 +179,9 @@ export type WorkflowTestApi = {
   }) => Promise<WorkflowTestStandaloneNoteFixture>;
   renderPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
   renderStartupPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
+  exerciseDuplicatePanelSetup: (
+    panelId: string,
+  ) => Promise<WorkflowTestDuplicatePanelSetupDiagnostics>;
   seedPanelStoredUserMessage: (
     panelId: string,
     text: string,

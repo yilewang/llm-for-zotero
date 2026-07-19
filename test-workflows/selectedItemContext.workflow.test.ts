@@ -404,4 +404,27 @@ describe("workflow: selected item context send", function () {
     assert.deepEqual(result.quoteCardBodies, [quoteText]);
     assert.notInclude(result.renderedText, "记忆痕迹");
   });
+
+  it("renders rejected quotes as amber cards without a visible status label", async function () {
+    fixture = await api.createPaperWithPdfFixture({
+      title: "Rejected Quote Workflow Paper",
+      pdfTitle: "Rejected Quote Workflow PDF",
+    });
+
+    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const quoteText =
+      "This model interpretation does not appear in the complete source.";
+    const result = await api.renderAssistantForPanel(panel.panelId, {
+      text: `> ${quoteText}\n>\n> Not a source quote`,
+    });
+
+    assert.include(result.renderedText, quoteText);
+    assert.notInclude(result.renderedText, "Not a source quote");
+    assert.deepEqual(result.quoteCardBodies, [quoteText]);
+    assert.deepEqual(result.quoteCardStatuses, ["not-source"]);
+    assert.deepEqual(result.quoteCardCitationTexts, []);
+    assert.deepEqual(result.quoteCardVerticalMargins, [
+      { top: 10, bottom: 10 },
+    ]);
+  });
 });

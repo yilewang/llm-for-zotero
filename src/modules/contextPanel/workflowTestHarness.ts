@@ -3,6 +3,7 @@ import { disposeSetupHandlers, setupHandlers } from "./setupHandlers";
 import {
   activeContextPanels,
   activeContextPanelRawItems,
+  activeContextPanelStateSync,
   chatHistory,
   loadedConversationKeys,
 } from "./state";
@@ -12,6 +13,7 @@ import type {
   WorkflowTestAssistantRenderResult,
   WorkflowTestAttachmentFixture,
   WorkflowTestDiagnostics,
+  WorkflowTestDuplicatePanelSetupDiagnostics,
   WorkflowTestFixture,
   WorkflowTestHighlightAwareRetrievalDiagnostics,
   WorkflowTestNoteFixture,
@@ -551,6 +553,37 @@ async function renderPanelForItemInternal(
   return { panelId, itemId, contextSnapshot };
 }
 
+async function exerciseDuplicatePanelSetup(
+  panelId: string,
+): Promise<WorkflowTestDuplicatePanelSetupDiagnostics> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const panelRootBefore = panel.body.querySelector(
+    "#llm-main",
+  ) as HTMLElement | null;
+  if (!panelRootBefore) {
+    throw new Error(`Panel ${panelId} has no mounted root`);
+  }
+  const mountedItem = activeContextPanels.get(panel.body)?.() || panel.item;
+  const initializationGenerationBefore =
+    panelRootBefore.dataset.handlersInitialized || "";
+  const panelStateSyncBefore = activeContextPanelStateSync.has(panel.body);
+
+  setupHandlers(panel.body, mountedItem);
+
+  const panelRootAfter = panel.body.querySelector(
+    "#llm-main",
+  ) as HTMLElement | null;
+  return {
+    samePanelRoot: panelRootAfter === panelRootBefore,
+    initializationGenerationBefore,
+    initializationGenerationAfter:
+      panelRootAfter?.dataset.handlersInitialized || "",
+    panelStateSyncBefore,
+    panelStateSyncAfter: activeContextPanelStateSync.has(panel.body),
+  };
+}
+
 async function seedPanelStoredUserMessage(
   panelId: string,
   text: string,
@@ -808,11 +841,25 @@ async function renderAssistantForPanel(
     pairedUserMessage,
   });
 
+  const quoteCards = Array.from(
+    bubble.querySelectorAll(".llm-quote-card"),
+  ) as HTMLElement[];
   return {
     renderedText: bubble.textContent || "",
     quoteCardBodies: Array.from(
       bubble.querySelectorAll(".llm-quote-card-body"),
     ).map((node) => ((node as Element).textContent || "").trim()),
+    quoteCardStatuses: quoteCards.map((node) => node.dataset.quoteStatus || ""),
+    quoteCardCitationTexts: Array.from(
+      bubble.querySelectorAll(".llm-quote-card-citation"),
+    ).map((node) => ((node as Element).textContent || "").trim()),
+    quoteCardVerticalMargins: quoteCards.map((node) => {
+      const style = doc.defaultView?.getComputedStyle(node);
+      return {
+        top: Number.parseFloat(style?.marginTop || "0") || 0,
+        bottom: Number.parseFloat(style?.marginBottom || "0") || 0,
+      };
+    }),
   };
 }
 
@@ -1907,6 +1954,7 @@ export function installWorkflowTestHarness(targetAddon: {
     createStandaloneNoteFixture,
     renderPanelForItem,
     renderStartupPanelForItem,
+    exerciseDuplicatePanelSetup,
     seedPanelStoredUserMessage,
     clickPanelSystemToggle,
     clickPanelSystemTogglesRapidly,

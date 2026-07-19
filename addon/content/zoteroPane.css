@@ -6671,10 +6671,6 @@ label.llm-search-results-item:hover {
   font-style: italic;
 }
 
-.llm-quote-citation-anchor {
-  margin: 10px 0;
-}
-
 .llm-quote-card {
   --llm-quote-card-surface: color-mix(
     in srgb,
@@ -6682,6 +6678,7 @@ label.llm-search-results-item:hover {
     var(--fill-primary) 4%
   );
   --llm-quote-card-rail: var(--color-accent);
+  margin: 10px 0;
   border: none;
   border-radius: 6px;
   background: var(--llm-quote-card-surface);
@@ -6702,6 +6699,10 @@ label.llm-search-results-item:hover {
   --llm-quote-card-rail: #f59e0b;
   background: var(--llm-quote-card-surface);
   cursor: default;
+}
+
+.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-content {
+  padding-bottom: 8px;
 }
 
 .llm-quote-card-content {
