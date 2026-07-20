@@ -589,6 +589,16 @@ function buildQuoteCitationFromResult(
   )
     ? result.paperContext
     : undefined;
+  const itemId = Number(paperContext?.itemId);
+  const contextItemId = Number(paperContext?.contextItemId);
+  if (
+    !Number.isFinite(itemId) ||
+    itemId <= 0 ||
+    !Number.isFinite(contextItemId) ||
+    contextItemId <= 0
+  ) {
+    return undefined;
+  }
   const explicitPageIndex = Number(result.pageIndex);
   const pageStart = Number(result.pageStart);
   const pageEnd = Number(result.pageEnd);
@@ -601,21 +611,21 @@ function buildQuoteCitationFromResult(
           pageStart === pageEnd
         ? Math.floor(pageStart)
         : undefined;
-  if (pageHintIndex === undefined) return undefined;
   const exactQuoteText = normalizeString(quoteText) || "";
   if (!exactQuoteText) return undefined;
   return buildQuoteCitation({
     quoteText: exactQuoteText,
     sourceMatchText: exactQuoteText,
     sourceMatchKind: "exact",
-    sourceMatchSource: "pdf-page-text",
+    sourceMatchSource:
+      pageHintIndex === undefined ? "context-text" : "pdf-page-text",
     citationLabel:
       normalizeString(result.sourceLabel) ||
       normalizeString(result.citationLabel),
     sourceSectionLabel: result.sectionLabel,
     sourceChunkKind: result.chunkKind,
-    contextItemId: paperContext?.contextItemId,
-    itemId: paperContext?.itemId,
+    contextItemId,
+    itemId,
     sourceFingerprint: result.sourceFingerprint,
     pageHintIndex,
     pageHintLabel: result.pageLabel,
