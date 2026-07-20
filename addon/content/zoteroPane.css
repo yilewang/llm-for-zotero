@@ -4089,6 +4089,54 @@
   gap: 10px;
 }
 
+.llm-agent-activity-details {
+  margin: 0;
+}
+
+.llm-agent-activity-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 24px;
+  padding: 2px 0;
+  list-style: none;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-11);
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+
+.llm-agent-activity-summary::-webkit-details-marker {
+  display: none;
+}
+
+.llm-agent-activity-summary::after {
+  content: "›";
+  display: inline-block;
+  font-size: var(--llm-fs-14);
+  line-height: 1;
+  transform-origin: 50% 52%;
+  transition: transform 120ms ease;
+}
+
+.llm-agent-activity-details[open] > .llm-agent-activity-summary::after {
+  transform: rotate(90deg);
+}
+
+.llm-agent-activity-summary:hover,
+.llm-agent-activity-summary:focus-visible {
+  color: var(--fill-secondary);
+  outline: none;
+}
+
+.llm-agent-activity-details > .llm-agent-activity-list {
+  margin-top: 4px;
+  padding-left: 10px;
+  border-left: 1px solid
+    color-mix(in srgb, var(--stroke-secondary) 72%, transparent);
+}
+
 .llm-agent-activity-list {
   display: flex;
   flex-direction: column;

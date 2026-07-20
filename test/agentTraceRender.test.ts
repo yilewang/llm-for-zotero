@@ -4,6 +4,7 @@ import {
   buildAgentTraceChipDetails,
   buildAgentTraceDisplayItems,
   buildAgentTraceMarkdownForRender,
+  formatAgentActivityDuration,
   getPendingActionButtonLayout,
   renderAgentTrace,
   renderPendingActionCard,
@@ -981,6 +982,178 @@ describe("rendered Markdown code block source controls", function () {
 });
 
 describe("agentTrace render", function () {
+  it("formats compact Codex-style activity durations", function () {
+    assert.equal(formatAgentActivityDuration(250), "1s");
+    assert.equal(formatAgentActivityDuration(259_000), "4m 19s");
+    assert.equal(formatAgentActivityDuration(3_661_000), "1h 1m 1s");
+  });
+
+  it("expands activity while streaming and collapses it when complete", function () {
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-activity-collapse",
+        seq: 1,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: "Working" },
+        createdAt: 1_000,
+      },
+      {
+        runId: "run-activity-collapse",
+        seq: 2,
+        eventType: "final",
+        payload: { type: "final", text: "Done" },
+        createdAt: 260_000,
+      },
+    ];
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 260_000,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const workingTrace = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: events.slice(0, 1),
+    }) as unknown as FakeElement;
+    assert.isTrue(
+      (
+        workingTrace.findByClass("llm-agent-activity-details") as
+          | (FakeElement & {
+              open?: boolean;
+            })
+          | null
+      )?.open,
+    );
+    assert.equal(
+      workingTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      "Working…",
+    );
+
+    message.streaming = false;
+    const completedTrace = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+    }) as unknown as FakeElement;
+    assert.isFalse(
+      (
+        completedTrace.findByClass("llm-agent-activity-details") as
+          | (FakeElement & {
+              open?: boolean;
+            })
+          | null
+      )?.open,
+    );
+    assert.equal(
+      completedTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      "Worked for 4m 19s",
+    );
+  });
+
+  it("collapses activity when the Codex answer starts", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 5_000,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const events: AgentRunEventRecord[] = [
+      {
+        runId: "run-answer-start",
+        seq: 1,
+        eventType: "codex_progress",
+        payload: {
+          type: "codex_progress",
+          itemId: "reasoning-1",
+          text: "Checking context.",
+          status: "running",
+        },
+        createdAt: 1_000,
+      },
+      {
+        runId: "run-answer-start",
+        seq: 2,
+        eventType: "codex_progress",
+        payload: {
+          type: "codex_progress",
+          itemId: "assistant-1",
+          text: "This is the final answer.",
+          status: "running",
+          kind: "assistant_message",
+        },
+        createdAt: 5_000,
+      },
+    ];
+
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events,
+    }) as unknown as FakeElement;
+    const details = trace.findByClass("llm-agent-activity-details") as
+      | (FakeElement & {
+          open?: boolean;
+        })
+      | null;
+    assert.isFalse(details?.open);
+    assert.equal(
+      trace.findByClass("llm-agent-activity-summary")?.textContent,
+      "Worked for 4s",
+    );
+    assert.notExists(details?.findByClass("llm-agent-inline-text") || null);
+    assert.include(
+      `${trace.findByClass("llm-agent-inline-text")?.textContent || ""}${
+        trace.findByClass("llm-agent-inline-text")?.innerHTML || ""
+      }`,
+      "This is the final answer",
+    );
+  });
+
+  it("marks native Codex answer events and records their start time", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    controller.appendAgentMessageDelta({
+      itemId: "assistant-answer",
+      delta: "Answer starts.",
+    });
+    const progress = message.pendingAgentTraceEvents?.find(
+      (entry) => entry.payload.type === "codex_progress",
+    );
+    assert.equal(
+      progress?.payload.type === "codex_progress"
+        ? progress.payload.kind
+        : undefined,
+      "assistant_message",
+    );
+
+    controller.finish("Answer starts.");
+    const finalEvent = message.pendingAgentTraceEvents?.find(
+      (entry) => entry.payload.type === "final",
+    );
+    assert.isAbove(
+      finalEvent?.payload.type === "final"
+        ? Number(finalEvent.payload.answerStartedAt)
+        : 0,
+      0,
+    );
+  });
+
   it("preserves known quote anchors before agent trace DOM decoration", function () {
     const quoteCitation = buildQuoteCitation({
       quoteText: "Interleaved trace quote anchors should not leak.",
