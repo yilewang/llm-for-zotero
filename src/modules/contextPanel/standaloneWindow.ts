@@ -131,7 +131,10 @@ import {
   buildClaudePaperStateKey,
 } from "../../claudeCode/state";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
-import { scheduleStandaloneWindowFitForElement } from "./standaloneWindowSizing";
+import {
+  installStandaloneVerticalResizeBehavior,
+  scheduleStandaloneWindowFitForElement,
+} from "./standaloneWindowSizing";
 import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
@@ -642,6 +645,7 @@ export function openStandaloneChat(options?: {
   let darkMQ: MediaQueryList | null = null;
   let onSchemeChange: (() => void) | null = null;
   let cleanupStandalonePrefObserver: (() => void) | null = null;
+  let cleanupStandaloneVerticalResize: (() => void) | null = null;
   let enforceStandaloneMinimumSize: (() => void) | null = null;
 
   const initWindow = () => {
@@ -1234,6 +1238,13 @@ export function openStandaloneChat(options?: {
       skillCtxMenu.append(skillCtxShowInFs, skillCtxRestore, skillCtxDelete);
 
       root.append(lowerArea, exportPopup, skillOverlay, skillCtxMenu);
+      cleanupStandaloneVerticalResize = installStandaloneVerticalResizeBehavior(
+        newWin,
+        contentArea,
+        {
+          minWindowHeight: STANDALONE_MIN_HEIGHT_PX,
+        },
+      );
 
       // -- Sidebar state management --
       let userManualSidebarState: "expanded" | "collapsed" | null = null;
@@ -4020,6 +4031,8 @@ export function openStandaloneChat(options?: {
   const cleanupWindow = () => {
     cancelled = true;
     cleanupStandalonePrefObserver?.();
+    cleanupStandaloneVerticalResize?.();
+    cleanupStandaloneVerticalResize = null;
     standaloneItemChangeHandler = null;
     themeObserver?.disconnect();
     themeObserver = null;

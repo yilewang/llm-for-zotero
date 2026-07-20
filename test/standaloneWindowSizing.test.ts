@@ -1,12 +1,87 @@
 import { assert } from "chai";
 import { describe, it } from "mocha";
 import {
+  computeStandaloneManualVerticalResize,
   computeStandaloneContextFitHeight,
   resizeStandaloneWindowToFitElement,
   scheduleStandaloneWindowFitForElement,
 } from "../src/modules/contextPanel/standaloneWindowSizing";
 
 describe("standalone window sizing", function () {
+  it("grows the window and chat panel together when its handle moves down", function () {
+    assert.deepEqual(
+      computeStandaloneManualVerticalResize({
+        kind: "chat",
+        startScreenY: 700,
+        currentScreenY: 820,
+        startWindowHeight: 900,
+        startElementHeight: 540,
+        minWindowHeight: 500,
+        minElementHeight: 200,
+      }),
+      {
+        windowHeight: 1020,
+        elementHeight: 660,
+      },
+    );
+  });
+
+  it("grows the window and typing box together without consuming chat height", function () {
+    assert.deepEqual(
+      computeStandaloneManualVerticalResize({
+        kind: "input",
+        startScreenY: 760,
+        currentScreenY: 850,
+        startWindowHeight: 900,
+        startElementHeight: 100,
+        minWindowHeight: 500,
+        minElementHeight: 60,
+        maxElementHeight: 220,
+      }),
+      {
+        windowHeight: 990,
+        elementHeight: 190,
+      },
+    );
+  });
+
+  it("stops typing-box and window growth at the composer maximum", function () {
+    assert.deepEqual(
+      computeStandaloneManualVerticalResize({
+        kind: "input",
+        startScreenY: 760,
+        currentScreenY: 980,
+        startWindowHeight: 900,
+        startElementHeight: 100,
+        minWindowHeight: 500,
+        minElementHeight: 60,
+        maxElementHeight: 220,
+      }),
+      {
+        windowHeight: 1020,
+        elementHeight: 220,
+      },
+    );
+  });
+
+  it("honors both window and element minimums while dragging upward", function () {
+    assert.deepEqual(
+      computeStandaloneManualVerticalResize({
+        kind: "chat",
+        startScreenY: 700,
+        currentScreenY: 300,
+        startWindowHeight: 620,
+        startElementHeight: 320,
+        minWindowHeight: 500,
+        minElementHeight: 200,
+      }),
+      {
+        windowHeight: 500,
+        elementHeight: 200,
+      },
+    );
+  });
+
   it("grows the outer window when the target element would be clipped", function () {
     assert.equal(
       computeStandaloneContextFitHeight({

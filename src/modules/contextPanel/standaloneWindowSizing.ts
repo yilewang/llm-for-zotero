@@ -14,6 +14,26 @@ type StandaloneContextFitOptions = {
   shouldRun?: () => boolean;
 };
 
+export type StandaloneManualVerticalResizeParams = {
+  kind: "chat" | "input";
+  startScreenY: number;
+  currentScreenY: number;
+  startWindowHeight: number;
+  startElementHeight: number;
+  minWindowHeight: number;
+  minElementHeight: number;
+  maxElementHeight?: number;
+};
+
+export type StandaloneManualVerticalResizeFrame = {
+  windowHeight: number;
+  elementHeight: number;
+};
+
+type StandaloneManualResizeOptions = {
+  minWindowHeight?: number;
+};
+
 type StandaloneWindowLike = {
   innerHeight?: number;
   innerWidth?: number;
@@ -39,6 +59,197 @@ function finiteNumber(value: unknown): number | null {
 function ceilPositive(value: unknown): number | null {
   const parsed = finiteNumber(value);
   return parsed !== null && parsed > 0 ? Math.ceil(parsed) : null;
+}
+
+function finiteNonNegative(value: unknown, fallback: number): number {
+  const parsed = finiteNumber(value);
+  return parsed !== null && parsed >= 0 ? parsed : fallback;
+}
+
+function parseCssPixels(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+/**
+ * Keep the resized standalone surface attached to the window's lower edge.
+ * The same effective height delta is applied to the element and outer window,
+ * so growing the composer never steals space from the chat above it.
+ */
+export function computeStandaloneManualVerticalResize(
+  params: StandaloneManualVerticalResizeParams,
+): StandaloneManualVerticalResizeFrame {
+  const startScreenY = finiteNumber(params.startScreenY) ?? 0;
+  const currentScreenY = finiteNumber(params.currentScreenY) ?? startScreenY;
+  const startWindowHeight = finiteNonNegative(params.startWindowHeight, 0);
+  const startElementHeight = finiteNonNegative(params.startElementHeight, 0);
+  const minWindowHeight = finiteNonNegative(params.minWindowHeight, 0);
+  const minElementHeight = finiteNonNegative(params.minElementHeight, 0);
+  const maxElementHeight =
+    params.kind === "input"
+      ? Math.max(
+          minElementHeight,
+          finiteNonNegative(params.maxElementHeight, Number.POSITIVE_INFINITY),
+        )
+      : Number.POSITIVE_INFINITY;
+  const pointerDelta = currentScreenY - startScreenY;
+  const requestedElementHeight = Math.min(
+    maxElementHeight,
+    Math.max(minElementHeight, startElementHeight + pointerDelta),
+  );
+  const elementDelta = requestedElementHeight - startElementHeight;
+  const windowDelta = Math.max(
+    elementDelta,
+    minWindowHeight - startWindowHeight,
+  );
+  const elementHeight = Math.min(
+    maxElementHeight,
+    Math.max(minElementHeight, startElementHeight + windowDelta),
+  );
+  const appliedDelta = elementHeight - startElementHeight;
+
+  return {
+    windowHeight: Math.max(minWindowHeight, startWindowHeight + appliedDelta),
+    elementHeight,
+  };
+}
+
+/**
+ * Replace the two native standalone resize operations with a window-aware
+ * drag. Sidebar panels retain their native CSS resizing behavior.
+ */
+export function installStandaloneVerticalResizeBehavior(
+  win: Window,
+  root: HTMLElement,
+  options: StandaloneManualResizeOptions = {},
+): () => void {
+  type ActiveDrag = {
+    kind: "chat" | "input";
+    handle: HTMLElement;
+    element: HTMLElement;
+    startScreenY: number;
+    startWindowHeight: number;
+    startWindowWidth: number;
+    startElementHeight: number;
+    minElementHeight: number;
+    maxElementHeight?: number;
+    lastWindowHeight: number;
+    lastElementHeight: number;
+  };
+
+  let activeDrag: ActiveDrag | null = null;
+  const minWindowHeight = finiteNonNegative(options.minWindowHeight, 500);
+
+  const endDrag = () => {
+    const drag = activeDrag;
+    activeDrag = null;
+    root.classList.remove("llm-standalone-resizing");
+    try {
+      (drag?.handle as any)?.releaseCapture?.();
+    } catch {
+      // Gecko can throw if capture was already released by window teardown.
+    }
+  };
+
+  const onMouseDown = (event: MouseEvent) => {
+    if (event.button !== 0) return;
+    const eventElement = event.target as HTMLElement | null;
+    const handle = eventElement?.closest?.(
+      ".llm-standalone-resize-handle",
+    ) as HTMLElement | null;
+    if (!handle || !root.contains(handle)) return;
+    const kind = handle.dataset.resizeTarget;
+    if (kind !== "chat" && kind !== "input") return;
+
+    const element =
+      kind === "chat"
+        ? handle.parentElement
+        : (handle.parentElement?.querySelector(
+            ".llm-input",
+          ) as HTMLElement | null);
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    const startWindowHeight = finiteNonNegative(
+      win.outerHeight || win.innerHeight,
+      0,
+    );
+    const startWindowWidth = finiteNonNegative(
+      win.outerWidth || win.innerWidth,
+      0,
+    );
+    if (!startWindowHeight || !startWindowWidth || !rect.height) return;
+
+    const computed = win.getComputedStyle(element);
+    const minElementHeight = parseCssPixels(computed?.minHeight) ?? 0;
+    const maxElementHeight =
+      kind === "input"
+        ? (parseCssPixels(computed?.maxHeight) ?? Number.POSITIVE_INFINITY)
+        : undefined;
+    activeDrag = {
+      kind,
+      handle,
+      element,
+      startScreenY: event.screenY,
+      startWindowHeight,
+      startWindowWidth,
+      startElementHeight: rect.height,
+      minElementHeight,
+      maxElementHeight,
+      lastWindowHeight: startWindowHeight,
+      lastElementHeight: rect.height,
+    };
+    root.classList.add("llm-standalone-resizing");
+    try {
+      (handle as any).setCapture?.(true);
+    } catch {
+      // Window-level listeners still keep the drag active without capture.
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const onMouseMove = (event: MouseEvent) => {
+    const drag = activeDrag;
+    if (!drag) return;
+    const frame = computeStandaloneManualVerticalResize({
+      kind: drag.kind,
+      startScreenY: drag.startScreenY,
+      currentScreenY: event.screenY,
+      startWindowHeight: drag.startWindowHeight,
+      startElementHeight: drag.startElementHeight,
+      minWindowHeight,
+      minElementHeight: drag.minElementHeight,
+      maxElementHeight: drag.maxElementHeight,
+    });
+
+    if (
+      drag.kind === "input" &&
+      frame.elementHeight !== drag.lastElementHeight
+    ) {
+      drag.element.style.height = `${frame.elementHeight}px`;
+      drag.lastElementHeight = frame.elementHeight;
+    }
+    if (frame.windowHeight !== drag.lastWindowHeight) {
+      win.resizeTo(drag.startWindowWidth, frame.windowHeight);
+      drag.lastWindowHeight = frame.windowHeight;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  root.addEventListener("mousedown", onMouseDown, true);
+  win.addEventListener("mousemove", onMouseMove, true);
+  win.addEventListener("mouseup", endDrag, true);
+  win.addEventListener("blur", endDrag);
+
+  return () => {
+    endDrag();
+    root.removeEventListener("mousedown", onMouseDown, true);
+    win.removeEventListener("mousemove", onMouseMove, true);
+    win.removeEventListener("mouseup", endDrag, true);
+    win.removeEventListener("blur", endDrag);
+  };
 }
 
 export function computeStandaloneContextFitHeight(

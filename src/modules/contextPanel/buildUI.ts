@@ -327,6 +327,16 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     id: "llm-chat-box",
   });
   chatShell.append(chatBox);
+  if (isStandaloneBody) {
+    const chatResizeHandle = createElement(
+      doc,
+      "div",
+      "llm-standalone-resize-handle",
+    );
+    chatResizeHandle.dataset.resizeTarget = "chat";
+    chatResizeHandle.setAttribute("aria-hidden", "true");
+    chatShell.appendChild(chatResizeHandle);
+  }
   container.appendChild(chatShell);
 
   // Shortcuts row
@@ -809,7 +819,24 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       : t("Open a PDF first"),
     disabled: !hasItem,
   });
-  composeArea.appendChild(inputBox);
+  if (isStandaloneBody) {
+    const inputResizeWrap = createElement(
+      doc,
+      "div",
+      "llm-standalone-input-resize-wrap",
+    );
+    const inputResizeHandle = createElement(
+      doc,
+      "div",
+      "llm-standalone-resize-handle",
+    );
+    inputResizeHandle.dataset.resizeTarget = "input";
+    inputResizeHandle.setAttribute("aria-hidden", "true");
+    inputResizeWrap.append(inputBox, inputResizeHandle);
+    composeArea.appendChild(inputResizeWrap);
+  } else {
+    composeArea.appendChild(inputBox);
+  }
 
   // Actions row
   const actionsRow = createElement(doc, "div", "llm-actions");

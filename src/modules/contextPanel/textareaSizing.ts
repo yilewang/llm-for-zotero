@@ -1,17 +1,12 @@
 const DEFAULT_MIN_HEIGHT = 60;
 const DEFAULT_MAX_HEIGHT = 220;
-const DEFAULT_FONT_SIZE = 12;
-const DEFAULT_LINE_HEIGHT_MULTIPLIER = 1.2;
-const MULTILINE_SPARE_LINES = 1;
 const HEIGHT_EPSILON = 0.5;
 
 export type AdaptiveTextareaHeightParams = {
   scrollHeight: number;
   minHeight: number;
   maxHeight: number;
-  lineHeight: number;
   borderHeight?: number;
-  spareLines?: number;
 };
 
 export type AdaptiveTextareaHeight = {
@@ -35,24 +30,12 @@ export function calculateAdaptiveTextareaHeight(
     minHeight,
     finiteNonNegative(params.maxHeight, DEFAULT_MAX_HEIGHT),
   );
-  const lineHeight = finiteNonNegative(
-    params.lineHeight,
-    DEFAULT_FONT_SIZE * DEFAULT_LINE_HEIGHT_MULTIPLIER,
-  );
   const borderHeight = finiteNonNegative(params.borderHeight ?? 0, 0);
-  const spareLines = finiteNonNegative(
-    params.spareLines ?? MULTILINE_SPARE_LINES,
-    MULTILINE_SPARE_LINES,
-  );
   const naturalHeight =
     finiteNonNegative(params.scrollHeight, minHeight) + borderHeight;
-  const isMultiline = naturalHeight > minHeight + HEIGHT_EPSILON;
-  const desiredHeight =
-    naturalHeight + (isMultiline ? lineHeight * spareLines : 0);
 
   return {
-    height: Math.min(maxHeight, Math.max(minHeight, desiredHeight)),
-    // Do not show a scrollbar merely because the spare line was clipped.
+    height: Math.min(maxHeight, Math.max(minHeight, naturalHeight)),
     overflowY: naturalHeight > maxHeight + HEIGHT_EPSILON ? "auto" : "hidden",
   };
 }
@@ -69,8 +52,7 @@ function formatCssPixels(value: number): string {
 
 /**
  * Grow or shrink the shared composer textarea to its rendered wrapped content.
- * Multiline content receives one spare visible line and only scrolls after the
- * CSS max-height is reached.
+ * Content only scrolls after the CSS max-height is reached.
  */
 export function resizeTextareaToContent(
   textarea: HTMLTextAreaElement,
@@ -85,10 +67,6 @@ export function resizeTextareaToContent(
     // Detached/fake DOMs can lack a working getComputedStyle implementation.
   }
 
-  const fontSize = parseCssPixels(computed?.fontSize) ?? DEFAULT_FONT_SIZE;
-  const lineHeight =
-    parseCssPixels(computed?.lineHeight) ??
-    fontSize * DEFAULT_LINE_HEIGHT_MULTIPLIER;
   const minHeight = parseCssPixels(computed?.minHeight) ?? DEFAULT_MIN_HEIGHT;
   const maxHeight = parseCssPixels(computed?.maxHeight) ?? DEFAULT_MAX_HEIGHT;
   const borderHeight =
@@ -100,7 +78,6 @@ export function resizeTextareaToContent(
     scrollHeight: textarea.scrollHeight,
     minHeight,
     maxHeight,
-    lineHeight,
     borderHeight,
   });
 

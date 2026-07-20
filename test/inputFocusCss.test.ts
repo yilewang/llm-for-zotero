@@ -24,6 +24,22 @@ function extractCssRules(css: string, selector: string): string[] {
 }
 
 describe("composer input focus CSS", function () {
+  it("balances compact spacing above and below the typing text", function () {
+    const css = readPanelCss();
+    const inputSectionRule = extractCssRules(css, ".llm-input-section").find(
+      (rule) => rule.includes("--llm-input-section-padding"),
+    );
+    const composeAreaRule = extractCssRule(css, ".llm-compose-area");
+    const inputRule = extractCssRules(css, ".llm-input").find((rule) =>
+      rule.includes("max-height: 220px"),
+    );
+
+    assert.include(inputSectionRule, "--llm-composer-gap: 6px;");
+    assert.include(inputSectionRule, "gap: var(--llm-composer-gap);");
+    assert.include(composeAreaRule, "gap: var(--llm-composer-gap, 6px);");
+    assert.include(inputRule, "padding: 8px 14px;");
+  });
+
   it("keeps the shared input borderless while typing", function () {
     const css = readPanelCss();
     const inputRules = extractCssRules(css, ".llm-input");

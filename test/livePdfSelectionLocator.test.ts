@@ -383,6 +383,61 @@ describe("livePdfSelectionLocator", function () {
     }
   });
 
+  it("unwraps Gecko PDF.js page proxies while refreshing live quote text", async function () {
+    clearPageTextCache();
+    const storedQuote =
+      "The page eleven source passage remains available through the wrapped PDF.js page proxy.";
+    const restore = installPdfWorkerStub(async () => ({
+      text: "The indexed cache omitted the wrapped page source passage.",
+      pageChars: [57],
+    }));
+    const reader = {
+      _item: { id: 3111 },
+      itemID: 3111,
+      _window: {
+        PDFViewerApplication: {
+          page: 11,
+          pdfDocument: {
+            numPages: 11,
+            fingerprints: ["wrapped-page-test"],
+            getPage: async (pageNumber: number) => ({
+              wrappedJSObject: {
+                getTextContent: async () => ({
+                  items: [
+                    {
+                      str:
+                        pageNumber === 11
+                          ? storedQuote
+                          : `Unrelated page ${pageNumber}.`,
+                    },
+                  ],
+                }),
+              },
+            }),
+          },
+          pdfViewer: {
+            pageLabels: Array.from({ length: 11 }, (_, i) => `${i + 1}`),
+          },
+        },
+      },
+    };
+
+    try {
+      const result = await locateQuoteInLivePdfReader(reader, storedQuote, {
+        skipFindController: true,
+      });
+
+      assert.equal(result.status, "resolved");
+      assert.equal(result.computedPageIndex, 10);
+      assert.equal(
+        getCachedPageTextForAttachment(3111)?.coverage,
+        "full-viewer",
+      );
+    } finally {
+      restore();
+    }
+  });
+
   it("keeps a cached miss retryable when loaded PDF.js text is unavailable", async function () {
     clearPageTextCache();
     const restore = installPdfWorkerStub(async () => ({

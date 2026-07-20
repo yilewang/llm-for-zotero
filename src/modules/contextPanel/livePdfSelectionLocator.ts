@@ -786,6 +786,29 @@ export function locateQuoteInPageTexts(
   );
 }
 
+function unwrapGeckoJsObject(value: any): any {
+  try {
+    return value?.wrappedJSObject || value;
+  } catch {
+    return value;
+  }
+}
+
+function resolveGeckoMethodOwner(value: any, methodName: string): any | null {
+  const candidates = [unwrapGeckoJsObject(value), value];
+  const seen = new Set<any>();
+  for (const candidate of candidates) {
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      if (typeof candidate[methodName] === "function") return candidate;
+    } catch {
+      // Continue to the other side of the Gecko wrapper.
+    }
+  }
+  return null;
+}
+
 function getPdfViewerApplication(reader: any): any | null {
   const candidates = [
     reader?._internalReader?._lastView,
@@ -1668,7 +1691,13 @@ async function extractPageTextsFromViewer(
       );
       return null;
     }
-    const pdfDoc = app.pdfDocument;
+    const pdfDoc = resolveGeckoMethodOwner(app.pdfDocument, "getPage");
+    if (!pdfDoc) {
+      ztoolkit.log(
+        "LLM quote-locator: pdfDocument.getPage is unavailable through the Gecko wrapper",
+      );
+      return null;
+    }
     const numPages = Number(pdfDoc.numPages);
     if (!Number.isFinite(numPages) || numPages < 1) {
       ztoolkit.log(
@@ -1686,11 +1715,27 @@ async function extractPageTextsFromViewer(
     const pages: LivePdfPageText[] = [];
     for (let i = 1; i <= numPages; i++) {
       try {
-        const page = await pdfDoc.getPage(i);
-        const textContent = await page.getTextContent();
-        const items = Array.isArray(textContent?.items)
-          ? textContent.items
-          : [];
+        const page = resolveGeckoMethodOwner(
+          await pdfDoc.getPage(i),
+          "getTextContent",
+        );
+        if (!page) {
+          ztoolkit.log(
+            "LLM quote-locator: page",
+            i,
+            "does not expose getTextContent through the Gecko wrapper",
+          );
+          continue;
+        }
+        const textContent = unwrapGeckoJsObject(await page.getTextContent());
+        const rawItems = textContent?.items;
+        const itemCount = Number(rawItems?.length || 0);
+        const items: any[] = [];
+        if (Number.isFinite(itemCount) && itemCount > 0) {
+          for (let itemIndex = 0; itemIndex < itemCount; itemIndex += 1) {
+            items.push(unwrapGeckoJsObject(rawItems[itemIndex]));
+          }
+        }
         const text = items
           .map((item: any) => item.str ?? "")
           .join(" ")
@@ -2931,19 +2976,12 @@ async function extractFindControllerPageText(
 ): Promise<string | null> {
   if (!Number.isFinite(pageIndex) || pageIndex < 0) return null;
 
-  const unwrap = (value: any): any => {
-    try {
-      return value?.wrappedJSObject || value;
-    } catch {
-      return value;
-    }
-  };
   const documents: any[] = [];
   const seenDocuments = new Set<any>();
   for (const candidate of [
-    unwrap(app?.pdfDocument),
+    unwrapGeckoJsObject(app?.pdfDocument),
     app?.pdfDocument,
-    unwrap(app?.findController?._pdfDocument),
+    unwrapGeckoJsObject(app?.findController?._pdfDocument),
     app?.findController?._pdfDocument,
   ]) {
     if (!candidate || seenDocuments.has(candidate)) continue;
@@ -2954,7 +2992,9 @@ async function extractFindControllerPageText(
   for (const pdfDocument of documents) {
     if (typeof pdfDocument?.getPage !== "function") continue;
     try {
-      const page = unwrap(await pdfDocument.getPage(Math.floor(pageIndex) + 1));
+      const page = unwrapGeckoJsObject(
+        await pdfDocument.getPage(Math.floor(pageIndex) + 1),
+      );
       if (typeof page?.getTextContent !== "function") continue;
       let textContent: any;
       try {
@@ -2976,7 +3016,7 @@ async function extractFindControllerPageText(
         );
         textContent = await page.getTextContent();
       }
-      const unwrappedTextContent = unwrap(textContent);
+      const unwrappedTextContent = unwrapGeckoJsObject(textContent);
       const items =
         unwrappedTextContent?.items != null &&
         typeof unwrappedTextContent.items.length === "number"
@@ -2984,7 +3024,7 @@ async function extractFindControllerPageText(
           : [];
       const unwrappedItems: Array<{ str?: unknown; hasEOL?: unknown }> = [];
       for (let index = 0; index < items.length; index += 1) {
-        unwrappedItems.push(unwrap(items[index]));
+        unwrappedItems.push(unwrapGeckoJsObject(items[index]));
       }
       const text = buildPageNativeFindControllerPageText(unwrappedItems);
       if (text) return text;

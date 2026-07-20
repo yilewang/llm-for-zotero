@@ -12,7 +12,6 @@ describe("adaptive composer textarea sizing", function () {
         borderHeight: 2,
         minHeight: 60,
         maxHeight: 220,
-        lineHeight: 18,
       }),
       {
         height: 60,
@@ -21,17 +20,16 @@ describe("adaptive composer textarea sizing", function () {
     );
   });
 
-  it("adds one spare visible line after content becomes multiline", function () {
+  it("matches multiline content without reserving a spare line", function () {
     assert.deepEqual(
       calculateAdaptiveTextareaHeight({
         scrollHeight: 78,
         borderHeight: 2,
         minHeight: 60,
         maxHeight: 220,
-        lineHeight: 18,
       }),
       {
-        height: 98,
+        height: 80,
         overflowY: "hidden",
       },
     );
@@ -44,7 +42,6 @@ describe("adaptive composer textarea sizing", function () {
         borderHeight: 2,
         minHeight: 60,
         maxHeight: 220,
-        lineHeight: 18,
       }),
       {
         height: 220,
@@ -57,10 +54,9 @@ describe("adaptive composer textarea sizing", function () {
         borderHeight: 2,
         minHeight: 60,
         maxHeight: 220,
-        lineHeight: 18,
       }),
       {
-        height: 220,
+        height: 210,
         overflowY: "hidden",
       },
     );
@@ -92,10 +88,10 @@ describe("adaptive composer textarea sizing", function () {
     const result = resizeTextareaToContent(textarea);
 
     assert.deepEqual(result, {
-      height: 98,
+      height: 80,
       overflowY: "hidden",
     });
-    assert.equal(style.height, "98px");
+    assert.equal(style.height, "80px");
     assert.equal(style.overflowY, "hidden");
   });
 });

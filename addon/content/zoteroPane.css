@@ -2106,6 +2106,9 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  -moz-user-select: text;
+  user-select: text;
+  cursor: text;
 }
 
 .llm-standalone-content-title-actions {
@@ -2129,6 +2132,52 @@
   height: auto;
   flex: 1 1 0;
   min-height: 200px;
+  resize: none;
+}
+
+.llm-standalone-input-resize-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.llm-standalone-input-resize-wrap > .llm-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Transparent hit target over the native bottom-right resize grip. The
+   standalone controller grows the OS window by the same vertical delta, while
+   the sidebar keeps its native element-only resize behavior. */
+.llm-standalone-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+}
+
+/* Gecko's native grip owns pointer handling when it is painted directly on
+   the flexed chat shell. Draw the same triangular affordance on our explicit
+   hit target so chat drags reach the window-aware resize controller. */
+.llm-standalone-resize-handle[data-resize-target="chat"] {
+  color: var(--fill-tertiary, #7a7a7a);
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 3px,
+    currentColor 3px 4px,
+    transparent 4px 7px
+  );
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+  opacity: 0.75;
+}
+
+.llm-standalone-resizing,
+.llm-standalone-resizing * {
+  cursor: nwse-resize !important;
+  user-select: none !important;
 }
 
 /* Centered responsive width for standalone chat content */
@@ -7137,10 +7186,11 @@ label.llm-search-results-item:hover {
 /* Input Section */
 .llm-input-section {
   --llm-input-section-padding: 10px;
+  --llm-composer-gap: 6px;
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--llm-composer-gap);
   flex-shrink: 0;
   min-width: 0;
   padding: var(--llm-input-section-padding);
@@ -7285,7 +7335,7 @@ label.llm-search-results-item:hover {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--llm-composer-gap, 6px);
   min-width: 0;
 }
 
@@ -9202,7 +9252,7 @@ label.llm-search-results-item:hover {
   max-height: 220px;
   font: inherit;
   font-size: var(--llm-fs-12);
-  padding: 12px 14px;
+  padding: 8px 14px;
   box-sizing: border-box;
   border-radius: 14px;
   border: none;
