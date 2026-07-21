@@ -397,6 +397,7 @@ export function setStatus(
   variant: "ready" | "sending" | "error" | "warning",
 ) {
   statusEl.textContent = text;
+  statusEl.title = text;
   statusEl.className = `llm-status llm-status-${variant}`;
 }
 

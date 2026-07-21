@@ -1,10 +1,30 @@
 import { assert } from "chai";
 import {
   buildQuestionWithSelectedTextContexts,
+  setStatus,
   setTokenUsage,
 } from "../src/modules/contextPanel/textUtils";
 
 describe("textUtils selected text prompt composition", function () {
+  it("preserves the full status text as a tooltip when the footer truncates it", function () {
+    const statusEl = {
+      textContent: "",
+      title: "",
+      className: "",
+    } as unknown as HTMLElement;
+
+    setStatus(
+      statusEl,
+      "Jumped to cited source (page 1, paragraph matched)",
+      "ready",
+    );
+
+    assert.equal(
+      statusEl.title,
+      "Jumped to cited source (page 1, paragraph matched)",
+    );
+  });
+
   it("includes paper attribution for open-chat prompt composition", function () {
     const prompt = buildQuestionWithSelectedTextContexts(
       ["A selected text snippet."],

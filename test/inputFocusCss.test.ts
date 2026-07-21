@@ -54,6 +54,19 @@ describe("composer input focus CSS", function () {
     assert.notInclude(focusRule, "border-color");
   });
 
+  it("keeps the footer status on one line without crowding token usage", function () {
+    const css = readPanelCss();
+    const statusRule = extractCssRule(css, ".llm-status");
+    const tokenUsageRule = extractCssRule(css, ".llm-token-usage");
+
+    assert.include(statusRule, "flex: 1 1 auto;");
+    assert.include(statusRule, "overflow: hidden;");
+    assert.include(statusRule, "text-overflow: ellipsis;");
+    assert.include(statusRule, "white-space: nowrap;");
+    assert.include(tokenUsageRule, "flex: 0 0 auto;");
+    assert.include(tokenUsageRule, "white-space: nowrap;");
+  });
+
   it("keeps the inline editor on one cohesive surface with matched bottom corners", function () {
     const css = readPanelCss();
     const editWrapperRule = extractCssRule(css, ".llm-inline-edit-wrapper");

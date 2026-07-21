@@ -19,6 +19,7 @@ import {
   matchAssistantCitationCandidates,
   rememberCachedCitationPage,
   refreshAllCitationButtonPagesForTests,
+  resolveCitationVisibleLabelForTests,
   resolveQuoteCitationPageHintForTests,
   resolveAutoNavigableCitationCandidatesForTests,
   resolveAuthoritativeNonPdfCitationCandidateForTests,
@@ -139,6 +140,23 @@ describe("assistantCitationLinks", function () {
     } else {
       globalScope.Zotero = originalZotero;
     }
+  });
+
+  it("shows a real paper title instead of an internal Paper item ID fallback", function () {
+    assert.equal(
+      resolveCitationVisibleLabelForTests(
+        "Paper 2",
+        "Weekly Summary (July 17, 2026)",
+      ),
+      "Weekly Summary (July 17, 2026)",
+    );
+    assert.equal(
+      resolveCitationVisibleLabelForTests(
+        "Smith et al., 2024",
+        "A descriptive paper title",
+      ),
+      "Smith et al., 2024",
+    );
   });
 
   it("extracts a standalone paper source label from a citation line", function () {

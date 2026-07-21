@@ -3555,6 +3555,24 @@ function resolveMatchingCandidatesForExtractedCitation(
   return out;
 }
 
+function resolveCitationVisibleLabel(
+  label: string,
+  paperTitle: string,
+): string {
+  const normalizedLabel = sanitizeText(label || "").trim();
+  const normalizedTitle = sanitizeText(paperTitle || "").trim();
+  if (
+    /^Paper\s+\d+$/i.test(normalizedLabel) &&
+    normalizedTitle &&
+    !/^Paper\s+\d+$/i.test(normalizedTitle)
+  ) {
+    return normalizedTitle;
+  }
+  return normalizedLabel;
+}
+
+export const resolveCitationVisibleLabelForTests = resolveCitationVisibleLabel;
+
 function createCitationButton(params: {
   ownerDoc: Document;
   body: Element;
@@ -3585,9 +3603,13 @@ function createCitationButton(params: {
     params.candidates,
     params.quoteText,
   );
+  const primaryDisplayCandidate = params.candidates[0];
   const matchedDisplayLabel = params.preferRawCitationLabel
     ? ""
-    : params.candidates[0]?.displayCitationLabel || "";
+    : resolveCitationVisibleLabel(
+        primaryDisplayCandidate?.displayCitationLabel || "",
+        primaryDisplayCandidate?.displayPaperContext.title || "",
+      );
   let baseLabelText: string;
   if (matchedDisplayLabel) {
     baseLabelText = params.inline
@@ -3955,6 +3977,9 @@ function createQuoteCardElement(params: {
     : "llm-quote-card";
   wrapper.dataset.quoteStatus = status;
   wrapper.dataset.expanded = interactive ? "false" : "true";
+  if (interactive) {
+    wrapper.dataset.expandable = "pending";
+  }
   if (params.quoteCitationId) {
     wrapper.dataset.quoteCitationId = params.quoteCitationId;
   }
@@ -3964,12 +3989,6 @@ function createQuoteCardElement(params: {
 
   const content = params.ownerDoc.createElement("div");
   content.className = "llm-quote-card-content";
-  if (interactive) {
-    content.setAttribute("role", "button");
-    content.setAttribute("tabindex", "0");
-    content.setAttribute("aria-expanded", "false");
-  }
-
   const preview = params.ownerDoc.createElement("span");
   preview.className = "llm-quote-card-preview";
   renderQuoteCardPreviewMarkdown(preview, params.quoteText, params.ownerDoc);
@@ -4000,6 +4019,7 @@ function createQuoteCardElement(params: {
     content.setAttribute("aria-expanded", expanded ? "true" : "false");
   };
   const toggleExpanded = () => {
+    if (wrapper.dataset.expandable !== "true") return;
     setExpanded(wrapper.dataset.expanded !== "true");
   };
   const shouldIgnoreToggle = (target: EventTarget | null): boolean => {
@@ -4044,6 +4064,7 @@ function createQuoteCardElement(params: {
   });
   wrapper.addEventListener("click", (event: Event) => {
     if (wrapper.dataset.quoteStatus !== "verified") return;
+    if (wrapper.dataset.expandable !== "true") return;
     if (shouldIgnoreToggle(event.target)) return;
     if (shouldSuppressQuoteCardToggle) {
       shouldSuppressQuoteCardToggle = false;
@@ -4058,12 +4079,33 @@ function createQuoteCardElement(params: {
   });
   content.addEventListener("keydown", (event: KeyboardEvent) => {
     if (wrapper.dataset.quoteStatus !== "verified") return;
+    if (wrapper.dataset.expandable !== "true") return;
     if (event.key !== "Enter" && event.key !== " ") return;
     if (shouldIgnoreToggle(event.target)) return;
     event.preventDefault();
     event.stopPropagation();
     toggleExpanded();
   });
+
+  const measureExpandability = () => {
+    if (!wrapper.isConnected) return;
+    const expandable = preview.scrollHeight > preview.clientHeight + 1;
+    wrapper.dataset.expandable = expandable ? "true" : "false";
+    if (expandable) {
+      content.setAttribute("role", "button");
+      content.setAttribute("tabindex", "0");
+      content.setAttribute(
+        "aria-expanded",
+        wrapper.dataset.expanded || "false",
+      );
+      return;
+    }
+    wrapper.dataset.expanded = "false";
+    content.removeAttribute("role");
+    content.removeAttribute("tabindex");
+    content.removeAttribute("aria-expanded");
+  };
+  params.ownerDoc.defaultView?.requestAnimationFrame(measureExpandability);
 
   return wrapper;
 }

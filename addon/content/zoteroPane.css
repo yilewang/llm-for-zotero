@@ -363,7 +363,7 @@ item-pane-section.llm-reader-ai-source-section {
 
 .llm-modern-chat-pane .llm-agent-output-divider {
   margin: 8px 0 12px;
-  border-color: color-mix(in srgb, var(--stroke-secondary) 72%, transparent);
+  border-color: rgba(128, 128, 128, 0.24);
 }
 
 .llm-modern-chat-pane .llm-agent-pending-action-shell {
@@ -5272,7 +5272,7 @@ item-pane-section.llm-reader-ai-source-section {
   /* The shared activity spacing centres the rule between the disclosure and
      the answer at every supported font scale. */
   margin: 0;
-  border-top: 1px solid var(--stroke-secondary, rgba(120, 120, 120, 0.22));
+  border-top: 1px solid rgba(128, 128, 128, 0.24);
 }
 
 .llm-agent-inline-text {
@@ -7604,20 +7604,57 @@ label.llm-search-results-item:hover {
   background: var(--llm-quote-card-surface);
 }
 
-.llm-quote-card[data-quote-status="not-source"],
+.llm-quote-card[data-quote-status="verified"]:not([data-expandable="true"]) {
+  cursor: default;
+}
+
+.llm-quote-card[data-quote-status="not-source"] {
+  --llm-quote-card-rail: var(--fill-tertiary);
+  cursor: default;
+}
+
 .llm-quote-card[data-quote-status="unverified"] {
   --llm-quote-card-rail: #f59e0b;
   background: var(--llm-quote-card-surface);
   cursor: default;
 }
 
-.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-content,
+.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-content {
+  padding-bottom: 8px;
+}
+
 .llm-quote-card[data-quote-status="unverified"] .llm-quote-card-content {
   padding-bottom: 8px;
 }
 
 .llm-quote-card-content {
+  position: relative;
   padding: 8px 10px 3px;
+}
+
+.llm-quote-card[data-quote-status="verified"][data-expandable="true"]
+  .llm-quote-card-content {
+  padding-right: 30px;
+}
+
+.llm-quote-card[data-quote-status="verified"][data-expandable="true"]
+  .llm-quote-card-content::after {
+  content: "›";
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  color: var(--fill-tertiary);
+  font-size: var(--llm-fs-14);
+  line-height: 1;
+  pointer-events: none;
+  transform: translateY(-50%);
+  transform-origin: center;
+  transition: transform 120ms ease;
+}
+
+.llm-quote-card[data-quote-status="verified"][data-expandable="true"][data-expanded="true"]
+  .llm-quote-card-content::after {
+  transform: translateY(-50%) rotate(90deg);
 }
 
 .llm-quote-card-content:focus-visible {
@@ -7629,14 +7666,14 @@ label.llm-search-results-item:hover {
   display: none;
   min-width: 0;
   border-left: 2px solid var(--llm-quote-card-rail);
-  padding-left: 9px;
+  padding-left: 10px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: normal;
   color: var(--fill-secondary);
   font-size: var(--llm-fs-11);
   font-style: italic;
-  line-height: 1.42;
+  line-height: 1.5;
   user-select: text;
 }
 
@@ -7651,12 +7688,15 @@ label.llm-search-results-item:hover {
   justify-content: flex-end;
   min-width: 0;
   padding: 0 9px 7px;
+  font-size: var(--llm-fs-10);
 }
 
 .llm-quote-card-body {
   border-left: 2px solid var(--llm-quote-card-rail);
   padding: 0 0 0 10px;
   color: var(--fill-secondary);
+  font-size: var(--llm-fs-11);
+  font-weight: inherit;
   font-style: italic;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -7667,8 +7707,6 @@ label.llm-search-results-item:hover {
   display: none;
 }
 
-.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-preview,
-.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-body,
 .llm-quote-card[data-quote-status="unverified"] .llm-quote-card-preview,
 .llm-quote-card[data-quote-status="unverified"] .llm-quote-card-body {
   font-style: normal;
@@ -10535,10 +10573,13 @@ label.llm-search-results-item:hover {
 }
 
 .llm-status {
+  flex: 1 1 auto;
   font-size: var(--llm-fs-11);
   color: var(--fill-tertiary);
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .llm-status-ready {
@@ -10562,10 +10603,10 @@ label.llm-search-results-item:hover {
 }
 
 .llm-token-usage {
+  flex: 0 0 auto;
   font-size: var(--llm-fs-11);
   color: var(--fill-tertiary);
   white-space: nowrap;
-  flex-shrink: 0;
   display: none;
 }
 

@@ -1169,10 +1169,7 @@ describe("agentTrace render", function () {
     assert.include(activityRule, "gap: var(--llm-agent-activity-spacing)");
     assert.include(answerRule, "margin-top: 0");
     assert.include(dividerRule, "margin: 0");
-    assert.include(
-      dividerRule,
-      "var(--stroke-secondary, rgba(120, 120, 120, 0.22))",
-    );
+    assert.include(dividerRule, "rgba(128, 128, 128, 0.24)");
   });
 
   it("collapses activity when the Codex answer starts", function () {

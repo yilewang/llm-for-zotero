@@ -930,24 +930,114 @@ export function getWelcomeHtml(): string {
   `;
 }
 
-export function getPaperChatStartPageHtml(): string {
-  if (getEffectiveLocale().startsWith("zh")) {
-    return `
-      <div class="llm-start-page llm-paper-start-page">
-        <div class="llm-start-page-mark llm-context-svg-icon llm-context-icon-paper" aria-hidden="true"></div>
-        <div class="llm-start-page-copy">
-          <div class="llm-start-page-title">询问这篇论文</div>
-          <div class="llm-start-page-subtitle">当前 PDF 已准备好。直接提问，或使用下方快捷操作添加文本、图片和其他论文。</div>
-        </div>
-      </div>
-    `;
+type PaperChatGreeting = {
+  title: string;
+  subtitle: string;
+};
+
+const paperChatGreetings: Record<"en" | "zh", PaperChatGreeting[]> = {
+  en: [
+    {
+      title: "The abstract made promises.",
+      subtitle: "Let's see whether the evidence keeps them.",
+    },
+    {
+      title: "Every result hides an assumption.",
+      subtitle: "Which one shall we question first?",
+    },
+    {
+      title: "Another PDF approaches.",
+      subtitle: "Ready your questions.",
+    },
+    {
+      title: "Somewhere between Methods and Discussion...",
+      subtitle: "The truth is hiding in plain sight.",
+    },
+    {
+      title: "Summon the evidence.",
+      subtitle: "No claim leaves this page unexamined.",
+    },
+    {
+      title: "Read bravely.",
+      subtitle: "The appendix cannot hurt you.",
+    },
+    {
+      title: "Figures speak. Captions negotiate.",
+      subtitle: "Let's hear what the paper is really saying.",
+    },
+    {
+      title: "Knowledge advances one annoying question at a time.",
+      subtitle: "Fortunately, questions are what I do.",
+    },
+    {
+      title: "This paper has entered the arena.",
+      subtitle: "Choose a claim. We begin there.",
+    },
+    {
+      title: "The literature is vast.",
+      subtitle: "This PDF, however, has nowhere to hide.",
+    },
+    {
+      title: "Doubt is a reading strategy.",
+      subtitle: "What should we inspect first?",
+    },
+    {
+      title: "Peer review, but make it personal.",
+      subtitle: "Ask about the method, the evidence, or what's missing.",
+    },
+  ],
+  zh: [
+    { title: "摘要许下了承诺。", subtitle: "看看证据有没有兑现。" },
+    { title: "每个结论背后都藏着一个假设。", subtitle: "先审问哪一个？" },
+    { title: "又一篇 PDF 出现了。", subtitle: "准备好你的问题。" },
+    { title: "在方法与讨论之间……", subtitle: "真相正若无其事地藏着。" },
+    { title: "召唤证据。", subtitle: "今天不放过任何未经检验的结论。" },
+    { title: "勇敢地读吧。", subtitle: "附录不会伤害你。" },
+    { title: "图会说话，图注会斡旋。", subtitle: "来听听论文到底在说什么。" },
+    {
+      title: "知识靠一个个烦人的问题向前推进。",
+      subtitle: "好在提问正是我的工作。",
+    },
+    { title: "论文已进入战场。", subtitle: "选一个结论，从那里开局。" },
+    { title: "文献浩如烟海。", subtitle: "但这篇 PDF 无处可藏。" },
+    { title: "怀疑也是一种阅读方法。", subtitle: "先检查哪里？" },
+    {
+      title: "私人同行评审，现在开始。",
+      subtitle: "方法、证据，还是没写出来的部分？",
+    },
+  ],
+};
+
+const lastPaperChatGreeting: Record<"en" | "zh", number> = {
+  en: -1,
+  zh: -1,
+};
+
+function pickPaperChatGreeting(
+  locale: "en" | "zh",
+  random: () => number,
+): PaperChatGreeting {
+  const greetings = paperChatGreetings[locale];
+  const randomValue = Math.min(Math.max(random(), 0), 0.999999);
+  let index = Math.floor(randomValue * greetings.length);
+  if (index === lastPaperChatGreeting[locale]) {
+    index = (index + 1) % greetings.length;
   }
+  lastPaperChatGreeting[locale] = index;
+  return greetings[index];
+}
+
+export function getPaperChatStartPageHtml(
+  random: () => number = Math.random,
+): string {
+  const locale = getEffectiveLocale().startsWith("zh") ? "zh" : "en";
+  const greeting = pickPaperChatGreeting(locale, random);
   return `
     <div class="llm-start-page llm-paper-start-page">
       <div class="llm-start-page-mark llm-context-svg-icon llm-context-icon-paper" aria-hidden="true"></div>
       <div class="llm-start-page-copy">
-        <div class="llm-start-page-title">Ask this paper</div>
-        <div class="llm-start-page-subtitle">The current PDF is ready. Ask a question or use the actions below to add text, figures, and other papers.</div>
+        <div class="llm-start-page-title">${greeting.title}</div>
+        <div class="llm-start-page-subtitle">${greeting.subtitle}</div>
       </div>
     </div>
   `;

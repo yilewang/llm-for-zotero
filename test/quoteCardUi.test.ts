@@ -31,10 +31,14 @@ describe("quote card UI contract", function () {
     assert.include(css, "var(--stroke-secondary) 68%");
     assert.include(css, "justify-content: flex-end");
     assert.include(css, "background: var(--llm-quote-card-surface)");
+    assert.include(css, 'data-quote-status="verified"');
+    assert.include(css, 'data-expandable="true"');
+    assert.include(css, 'content: "›"');
+    assert.include(css, "cursor: default");
     assert.include(css, ".llm-modern-chat-pane .llm-citation-icon:hover");
   });
 
-  it("defines noninteractive amber styling for not-source quote cards", function () {
+  it("uses the same quote surface for emphasis while reserving amber for uncertain sources", function () {
     const css = source("addon/content/zoteroPane.css");
 
     assert.include(css, '.llm-quote-card[data-quote-status="not-source"]');
@@ -42,11 +46,37 @@ describe("quote card UI contract", function () {
     assert.include(css, "--llm-quote-card-rail: #f59e0b");
     assert.include(css, "font-style: normal");
     assert.include(css, "cursor: default");
+    const notSourceStart = css.indexOf(
+      '.llm-quote-card[data-quote-status="not-source"] {',
+    );
+    const notSourceEnd = css.indexOf("}", notSourceStart);
+    const notSourceRule = css.slice(notSourceStart, notSourceEnd);
+    assert.notInclude(notSourceRule, "border: none");
+    assert.notInclude(notSourceRule, "background: transparent");
+    assert.include(
+      notSourceRule,
+      "--llm-quote-card-rail: var(--fill-tertiary)",
+    );
     assert.include(
       css,
       '.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-content',
     );
     assert.include(css, "padding-bottom: 8px");
+  });
+
+  it("keeps collapsed and expanded source quotes at the same type size", function () {
+    const css = source("addon/content/zoteroPane.css");
+    const previewStart = css.indexOf(".llm-quote-card-preview {");
+    const previewRule = css.slice(previewStart, css.indexOf("}", previewStart));
+    const bodyStart = css.indexOf(".llm-quote-card-body {");
+    const bodyRule = css.slice(bodyStart, css.indexOf("}", bodyStart));
+
+    assert.include(previewRule, "font-size: var(--llm-fs-11)");
+    assert.include(previewRule, "line-height: 1.5");
+    assert.include(previewRule, "padding-left: 10px");
+    assert.include(bodyRule, "font-size: var(--llm-fs-11)");
+    assert.include(bodyRule, "line-height: 1.5");
+    assert.include(bodyRule, "padding: 0 0 0 10px");
   });
 
   it("defaults quote cards to the collapsed visual state", function () {
@@ -58,11 +88,28 @@ describe("quote card UI contract", function () {
       renderSource,
       'wrapper.dataset.expanded = interactive ? "false" : "true"',
     );
+    assert.include(renderSource, 'wrapper.dataset.expandable = "pending"');
+    assert.notInclude(renderSource, 'title.textContent = "Evidence quote"');
+  });
+
+  it("only enables expansion when the two-line quote preview overflows", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
     assert.include(
       renderSource,
-      'content.setAttribute("aria-expanded", "false")',
+      "preview.scrollHeight > preview.clientHeight + 1",
     );
-    assert.notInclude(renderSource, 'title.textContent = "Evidence quote"');
+    assert.include(
+      renderSource,
+      'wrapper.dataset.expandable = expandable ? "true" : "false"',
+    );
+    assert.include(
+      renderSource,
+      'if (wrapper.dataset.expandable !== "true") return',
+    );
+    assert.include(renderSource, "requestAnimationFrame(measureExpandability)");
   });
 
   it("keeps rejected cards expanded and noninteractive", function () {
