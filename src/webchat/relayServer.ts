@@ -132,7 +132,7 @@ export interface RelayState {
     pdf_filename: string | null;
     images: string[] | null;
     chatgpt_mode: string | null;
-    /** Which webchat site to target: "chatgpt" | "deepseek". */
+    /** Which webchat site to target: "chatgpt" | "deepseek" | "gemini". */
     target: string | null;
     force_new_chat: boolean;
     seq: number;
@@ -177,7 +177,7 @@ export interface RelayState {
   reported_mode: string | null;
   /** [webchat] Set by cancel button — polled separately so it works during active pipeline. */
   stopRequested: boolean;
-  /** [webchat] Active target site: "chatgpt" | "deepseek". Set by the plugin when submitting queries. */
+  /** [webchat] Active target site. Set by the plugin when submitting queries. */
   active_target: string | null;
 }
 
