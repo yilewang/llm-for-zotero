@@ -24,6 +24,7 @@ import {
   resolvePreferredConversationSystem,
 } from "./portalScope";
 import { getConversationKey } from "./conversationIdentity";
+import { createRuntimeSystemControls } from "./runtimeSystemControls";
 
 function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
   const slot = createElement(
@@ -165,12 +166,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   historyToggle.style.display = "";
 
   const isStandaloneBody = (body as HTMLElement).dataset?.standalone === "true";
-  const headerModeControls = createElement(
+  const headerRuntimeControls = createElement(
     doc,
     "div",
-    "llm-header-mode-controls",
+    "llm-header-runtime-controls",
     {
-      id: "llm-header-mode-controls",
+      id: "llm-header-runtime-controls",
     },
   );
 
@@ -197,27 +198,15 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
 
   modeSwitchWrap.append(modeChipBtn);
 
-  const claudeToggleBtn = createElement(
-    doc,
-    "button",
-    "llm-claude-system-toggle",
-    {
-      id: "llm-claude-system-toggle",
-      type: "button",
-      title: "Claude Code",
+  const runtimeSystemControls = createRuntimeSystemControls(doc, {
+    groupId: "llm-runtime-system-controls",
+    groupClassName: "llm-panel-runtime-system-controls",
+    buttonClassName: "llm-panel-runtime-system-toggle",
+    buttonIds: {
+      codex: "llm-codex-system-toggle",
+      claude_code: "llm-claude-system-toggle",
     },
-  );
-  claudeToggleBtn.setAttribute("aria-label", "Claude Code");
-  const claudeToggleIcon = createElement(
-    doc,
-    "span",
-    "llm-claude-system-toggle-icon",
-    {
-      id: "llm-claude-system-toggle-icon",
-    },
-  );
-  claudeToggleIcon.setAttribute("aria-hidden", "true");
-  claudeToggleBtn.appendChild(claudeToggleIcon);
+  });
 
   const claudeContextGauge = createElement(
     doc,
@@ -230,12 +219,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   claudeContextGauge.style.display = "none";
   claudeContextGauge.setAttribute("aria-hidden", "true");
 
-  headerModeControls.append(
+  headerRuntimeControls.append(
     modeSwitchWrap,
-    claudeToggleBtn,
+    runtimeSystemControls.group,
     claudeContextGauge,
   );
-  historyBar.append(historyNewBtn, historyToggle, headerModeControls);
+  historyBar.append(historyNewBtn, historyToggle, headerRuntimeControls);
 
   headerInfo.append(title, historyBar);
   headerTop.appendChild(headerInfo);
@@ -264,18 +253,26 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   settingsBtn.setAttribute("aria-label", t("Open plugin settings"));
   settingsBtn.dataset.preferencesPaneId = PREFERENCES_PANE_ID;
-  const exportBtn = createElement(doc, "button", "llm-btn-icon", {
-    id: "llm-export",
-    type: "button",
-    textContent: "⤓",
-    title: t("Export"),
-    disabled: !hasItem,
-  });
-  const clearBtn = createElement(doc, "button", "llm-btn-icon", {
+  const exportBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-export-btn",
+    {
+      id: "llm-export",
+      type: "button",
+      title: t("Export"),
+      disabled: !hasItem,
+    },
+  );
+  exportBtn.setAttribute("aria-label", t("Export"));
+  const clearBtn = createElement(doc, "button", "llm-btn-icon llm-clear-btn", {
     id: "llm-clear",
     type: "button",
     textContent: t("Clear"),
+    title: t("Clear"),
   });
+  clearBtn.dataset.compact = "true";
+  clearBtn.setAttribute("aria-label", t("Clear"));
   headerActions.append(popoutBtn, settingsBtn, exportBtn, clearBtn);
   headerTop.appendChild(headerActions);
   header.appendChild(headerTop);
@@ -340,6 +337,16 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     id: "llm-chat-box",
   });
   chatShell.append(chatBox);
+  if (isStandaloneBody) {
+    const chatResizeHandle = createElement(
+      doc,
+      "div",
+      "llm-standalone-resize-handle",
+    );
+    chatResizeHandle.dataset.resizeTarget = "chat";
+    chatResizeHandle.setAttribute("aria-hidden", "true");
+    chatShell.appendChild(chatResizeHandle);
+  }
   container.appendChild(chatShell);
 
   // Shortcuts row
@@ -822,7 +829,24 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       : t("Open a PDF first"),
     disabled: !hasItem,
   });
-  composeArea.appendChild(inputBox);
+  if (isStandaloneBody) {
+    const inputResizeWrap = createElement(
+      doc,
+      "div",
+      "llm-standalone-input-resize-wrap",
+    );
+    const inputResizeHandle = createElement(
+      doc,
+      "div",
+      "llm-standalone-resize-handle",
+    );
+    inputResizeHandle.dataset.resizeTarget = "input";
+    inputResizeHandle.setAttribute("aria-hidden", "true");
+    inputResizeWrap.append(inputBox, inputResizeHandle);
+    composeArea.appendChild(inputResizeWrap);
+  } else {
+    composeArea.appendChild(inputBox);
+  }
 
   // Actions row
   const actionsRow = createElement(doc, "div", "llm-actions");

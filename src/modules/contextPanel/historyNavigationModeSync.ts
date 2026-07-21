@@ -42,8 +42,14 @@ import {
 } from "./state";
 import {
   buildPaperStateKey,
+  getLastUsedUpstreamConversationMode,
+  getLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
+  removeLastUsedUpstreamConversationMode,
+  removeLastUsedUpstreamGlobalConversationKey,
   removeLastUsedPaperConversationKey,
+  setLastUsedUpstreamConversationMode,
+  setLastUsedUpstreamGlobalConversationKey,
   setLastUsedPaperConversationKey,
 } from "./prefHelpers";
 
@@ -280,16 +286,35 @@ export function primeHistoryNavigationMode(
     activeConversationModeByLibrary,
     libraryID,
   );
+  const previousMode = getLastUsedUpstreamConversationMode(libraryID);
   activeConversationModeByLibrary.set(libraryID, mode);
-  restoreCallbacks.push(() => restoreMapEntry(modeSnapshot));
+  setLastUsedUpstreamConversationMode(libraryID, mode);
+  restoreCallbacks.push(() => {
+    restoreMapEntry(modeSnapshot);
+    restoreOptionalMode(
+      previousMode,
+      (value) => setLastUsedUpstreamConversationMode(libraryID, value),
+      () => removeLastUsedUpstreamConversationMode(libraryID),
+    );
+  });
 
   if (mode === "global" && conversationKey) {
     const globalSnapshot = snapshotMapEntry(
       activeGlobalConversationByLibrary,
       libraryID,
     );
+    const previousGlobalKey =
+      getLastUsedUpstreamGlobalConversationKey(libraryID);
     activeGlobalConversationByLibrary.set(libraryID, conversationKey);
-    restoreCallbacks.push(() => restoreMapEntry(globalSnapshot));
+    setLastUsedUpstreamGlobalConversationKey(libraryID, conversationKey);
+    restoreCallbacks.push(() => {
+      restoreMapEntry(globalSnapshot);
+      restoreOptionalNumber(
+        previousGlobalKey,
+        (value) => setLastUsedUpstreamGlobalConversationKey(libraryID, value),
+        () => removeLastUsedUpstreamGlobalConversationKey(libraryID),
+      );
+    });
   } else if (mode === "paper" && conversationKey && paperItemID) {
     const paperKey = buildPaperStateKey(libraryID, paperItemID);
     const paperSnapshot = snapshotMapEntry(

@@ -568,8 +568,9 @@ export type AgentEngineDeps = {
     fallbackText?: string,
   ) => void;
   sanitizeText: (text: string) => string;
+  resetAssistantQuoteDisplay?: (message: Message) => void;
   finalizeAssistantQuoteCitations: (
-    assistantMessage: Pick<Message, "text" | "quoteCitations">,
+    assistantMessage: Message,
     pairedUserMessage?: Message | null,
     runtimeRequest?: AgentRuntimeRequest | null,
   ) => Promise<void>;
@@ -1755,6 +1756,11 @@ export async function retryAgentTurn(
     selectedTextSourcesRaw,
     selectedTextPaperContextsRaw,
   );
+  if (deps.resetAssistantQuoteDisplay) {
+    deps.resetAssistantQuoteDisplay(assistantMessage);
+  } else {
+    assistantMessage.quoteDisplayOverride = undefined;
+  }
 
   const historyForLLM = deps.buildLLMHistoryMessages(
     history.slice(0, retryPair.userIndex),

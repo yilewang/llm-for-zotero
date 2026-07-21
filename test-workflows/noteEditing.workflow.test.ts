@@ -3,6 +3,7 @@ import { isConversationKeyForKind } from "../src/shared/conversationKeySpace";
 import type { ConversationSystem } from "../src/shared/types";
 import type {
   WorkflowTestApi,
+  WorkflowTestDiagnostics,
   WorkflowTestNoteFixture,
   WorkflowTestStandaloneNoteFixture,
 } from "../src/modules/contextPanel/workflowTestTypes";
@@ -36,6 +37,23 @@ function getWorkflowTestApi(): WorkflowTestApi {
   const api = (Zotero as any).LLMForZotero?.api?.workflowTest;
   assert.isOk(api, "workflow test API should be installed");
   return api as WorkflowTestApi;
+}
+
+function assertDualRuntimeControls(
+  diagnostics: Pick<WorkflowTestDiagnostics, "runtimeSystemToggles">,
+  activeSystem?: "codex" | "claude_code",
+): void {
+  const visible = diagnostics.runtimeSystemToggles.filter(
+    (toggle) => toggle.visible,
+  );
+  assert.deepEqual(
+    visible.map((toggle) => toggle.system),
+    ["codex", "claude_code"],
+  );
+  assert.deepEqual(
+    visible.filter((toggle) => toggle.active).map((toggle) => toggle.system),
+    activeSystem ? [activeSystem] : [],
+  );
 }
 
 async function diagnosticsMessage(
@@ -371,7 +389,7 @@ describe("workflow: note editing mode", function () {
     await withPrefs(
       {
         enableCodexAppServerMode: true,
-        enableClaudeCodeMode: false,
+        enableClaudeCodeMode: true,
         conversationSystem: "upstream",
       },
       async () => {
@@ -385,14 +403,47 @@ describe("workflow: note editing mode", function () {
           initial.conversationKey,
           await diagnosticsMessage(api, panel.panelId),
         );
+        assertDualRuntimeControls(initial);
 
-        const switched = await api.clickPanelSystemToggle(panel.panelId);
+        const switched = await api.clickPanelSystemToggle(
+          panel.panelId,
+          "codex",
+        );
         assert.equal(switched.conversationSystem, "codex");
         assert.equal(
           switched.panelConversationKey,
           switched.conversationKey,
           await diagnosticsMessage(api, panel.panelId),
         );
+        assertDualRuntimeControls(switched, "codex");
+        const firstCodexKey = switched.conversationKey;
+        const codexMarker = "nonblank note-focused Codex chat";
+        await api.seedPanelStoredUserMessage(panel.panelId, codexMarker);
+
+        const claude = await api.clickPanelSystemToggle(
+          panel.panelId,
+          "claude_code",
+        );
+        assert.equal(claude.conversationSystem, "claude_code");
+        assert.equal(claude.panelConversationKey, claude.conversationKey);
+        assertDualRuntimeControls(claude, "claude_code");
+
+        const upstream = await api.clickPanelSystemToggle(
+          panel.panelId,
+          "claude_code",
+        );
+        assert.equal(upstream.conversationSystem, "upstream");
+        assert.equal(upstream.panelConversationKey, upstream.conversationKey);
+        assertDualRuntimeControls(upstream);
+
+        const freshCodex = await api.clickPanelSystemToggle(
+          panel.panelId,
+          "codex",
+        );
+        assert.equal(freshCodex.conversationSystem, "codex");
+        assert.notEqual(freshCodex.conversationKey, firstCodexKey);
+        assert.notInclude(freshCodex.messageText || "", codexMarker);
+        assertDualRuntimeControls(freshCodex, "codex");
 
         await api.selectNoteEditorText(panel.panelId, selectedSentence);
         const selected = await api.getDiagnostics(panel.panelId);
@@ -405,7 +456,7 @@ describe("workflow: note editing mode", function () {
     );
   });
 
-  it("routes a standalone note through the runtime selected in its toolbar", async function () {
+  it("switches a standalone note directly between both toolbar runtimes", async function () {
     fixture = await api.createItemNoteFixture({
       title: "Workflow Standalone Runtime Parent",
       pdfTitle: "Workflow Standalone Runtime PDF",
@@ -415,7 +466,7 @@ describe("workflow: note editing mode", function () {
     await withPrefs(
       {
         enableCodexAppServerMode: true,
-        enableClaudeCodeMode: false,
+        enableClaudeCodeMode: true,
         conversationSystem: "upstream",
       },
       async () => {
@@ -423,24 +474,38 @@ describe("workflow: note editing mode", function () {
           (fixture as WorkflowTestNoteFixture).noteItemId,
         );
         assert.equal(initial.conversationSystem, "upstream");
+        assertDualRuntimeControls(initial);
 
-        const switched = await api.clickStandaloneSystemToggle();
-        assert.equal(switched.conversationSystem, "codex");
+        const codex = await api.clickStandaloneSystemToggle("codex");
+        assert.equal(codex.conversationSystem, "codex");
         assert.isTrue(
           isConversationKeyForKind(
             "codex",
             "paper",
-            switched.conversationKey || 0,
+            codex.conversationKey || 0,
           ),
-          JSON.stringify(switched, null, 2),
+          JSON.stringify(codex, null, 2),
         );
+        assertDualRuntimeControls(codex, "codex");
+
+        const claude = await api.clickStandaloneSystemToggle("claude_code");
+        assert.equal(claude.conversationSystem, "claude_code");
+        assert.isTrue(
+          isConversationKeyForKind(
+            "claude_code",
+            "paper",
+            claude.conversationKey || 0,
+          ),
+          JSON.stringify(claude, null, 2),
+        );
+        assertDualRuntimeControls(claude, "claude_code");
 
         const send = await api.askStandalone(
-          "Route this standalone note through Codex",
+          "Route this standalone note through Claude Code",
         );
         assertNoteSendRouting({
           send,
-          system: "codex",
+          system: "claude_code",
           noteItemId: (fixture as WorkflowTestNoteFixture).noteItemId,
           conversationKind: "paper",
         });

@@ -5,6 +5,7 @@ import {
   CODEX_GLOBAL_CONVERSATION_KEY_BASE,
   CODEX_PAPER_CONVERSATION_KEY_BASE,
   RUNTIME_ALLOCATED_CONVERSATION_KEY_OFFSET,
+  UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE,
   UPSTREAM_PAPER_CONVERSATION_KEY_BASE,
 } from "../src/shared/conversationKeySpace";
 import { cleanupRememberedConversationKeyPrefs } from "../src/shared/conversationKeyPrefCleanup";
@@ -70,6 +71,14 @@ describe("conversation key preference cleanup", function () {
       }),
     );
     prefStore.set(
+      prefKey("lastUsedGlobalConversationMap"),
+      JSON.stringify({
+        valid: UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE + 1,
+        paper: UPSTREAM_PAPER_CONVERSATION_KEY_BASE + 1,
+        runtime: CODEX_GLOBAL_CONVERSATION_KEY_BASE + 1,
+      }),
+    );
+    prefStore.set(
       prefKey("claudeCodeLastAllocatedConversationKeyMap"),
       JSON.stringify({
         "profile-a:global":
@@ -99,6 +108,9 @@ describe("conversation key preference cleanup", function () {
     assert.deepEqual(readMap(prefStore, "lastUsedPaperConversationMap"), {
       legacy: 42,
       extra: UPSTREAM_PAPER_CONVERSATION_KEY_BASE + 1,
+    });
+    assert.deepEqual(readMap(prefStore, "lastUsedGlobalConversationMap"), {
+      valid: UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE + 1,
     });
     assert.deepEqual(
       readMap(prefStore, "claudeCodeLastAllocatedConversationKeyMap"),

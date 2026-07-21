@@ -6,6 +6,7 @@ import {
   buildSelectedTextQuoteCitations,
   extractQuoteCitationsFromToolContent,
   finalizeAssistantQuoteCitations,
+  finalizeAssistantQuoteCitationsCooperatively,
   findUnresolvedQuoteCitationPlaceholderIds,
   isCanonicalQuoteSourceLabel,
   isNonSourceQuoteLabel,
@@ -17,6 +18,7 @@ import {
   sanitizeInvalidStructuredSourceMarkers,
 } from "../src/modules/contextPanel/quoteCitations";
 import { stripLeadingCitationSeparators } from "../src/modules/contextPanel/citationText";
+import { buildQuoteTextIndex } from "../src/modules/contextPanel/quoteTextNormalization";
 import { renderMarkdown } from "../src/utils/markdown";
 
 describe("quoteCitations", function () {
@@ -24,6 +26,124 @@ describe("quoteCitations", function () {
     if (!needle) return 0;
     return value.split(needle).length - 1;
   }
+
+  it("reuses the immutable page-text index supplied by extraction", function () {
+    const sourceText =
+      "A prepared source index must be reused instead of normalized again for each assistant message.";
+    const textIndex = buildQuoteTextIndex(sourceText);
+
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText,
+          textIndex,
+          sourceLabel: "(Cache et al., 2026)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 22,
+          itemId: 11,
+        },
+      ],
+    });
+
+    assert.lengthOf(sourceIndex.sources, 1);
+    assert.strictEqual(sourceIndex.sources[0].textIndex, textIndex);
+  });
+
+  it("verifies fifty quote cards across a ten-paper source scope cooperatively", async function () {
+    this.timeout(10_000);
+    const sourceTexts = Array.from({ length: 10 }, (_paper, paperIndex) => {
+      const quotes = Array.from(
+        { length: 5 },
+        (_quote, quoteIndex) =>
+          `Paper ${paperIndex + 1} source result ${quoteIndex + 1} reports a distinct longitudinal neural population observation for validation.`,
+      );
+      return {
+        quotes,
+        source: {
+          sourceText: quotes.join(" "),
+          sourceLabel: `(Author${paperIndex + 1} et al., 2026)`,
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 1_000 + paperIndex,
+          itemId: 2_000 + paperIndex,
+          pageHintIndex: 0,
+          sourceFingerprint: `paper-${paperIndex + 1}`,
+        },
+      };
+    });
+    const markdown = sourceTexts
+      .flatMap((entry) => entry.quotes)
+      .map((quote) => `> ${quote}`)
+      .join("\n\n");
+
+    let yields = 0;
+    const sliceDurations: number[] = [];
+    const finalized = await finalizeAssistantQuoteCitationsCooperatively(
+      {
+        markdown,
+        sourceIndex: buildQuoteSourceIndex({
+          sourceTexts: sourceTexts.map((entry) => entry.source),
+        }),
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      },
+      {
+        yieldToMain: async () => {
+          yields += 1;
+        },
+        onSliceComplete: (elapsedMs) => {
+          sliceDurations.push(elapsedMs);
+        },
+      },
+    );
+
+    assert.isNotNull(finalized);
+    assert.equal(countOccurrences(finalized!.markdown, "[[quote:"), 50);
+    assert.lengthOf(finalized!.quoteCitations, 50);
+    assert.notInclude(finalized!.markdown, "Not a source quote");
+    assert.isAtLeast(yields, 5);
+    assert.isBelow(Math.max(...sliceDurations), 50);
+  });
+
+  it("cancels cooperative quote matching before stale results can be returned", async function () {
+    const quote =
+      "A cooperative provenance match must stop when its conversation generation becomes stale.";
+    let current = true;
+    let yields = 0;
+    let now = 0;
+
+    const finalized = await finalizeAssistantQuoteCitationsCooperatively(
+      {
+        markdown: `> ${quote}`,
+        sourceIndex: buildQuoteSourceIndex({
+          sourceTexts: [
+            {
+              sourceText: quote,
+              sourceLabel: "(Cancellation et al., 2026)",
+              sourceMatchSource: "pdf-page-text",
+              contextItemId: 31,
+              itemId: 30,
+              pageHintIndex: 0,
+              sourceFingerprint: "cancel-source",
+            },
+          ],
+        }),
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      },
+      {
+        now: () => {
+          now += 7;
+          return now;
+        },
+        shouldContinue: () => current,
+        yieldToMain: async () => {
+          yields += 1;
+          current = false;
+        },
+      },
+    );
+
+    assert.isNull(finalized);
+    assert.equal(yields, 1);
+  });
 
   it("rejects publication metadata and front-matter boilerplate as quote-worthy text", function () {
     const cases = [
@@ -48,6 +168,14 @@ describe("quoteCitations", function () {
         text,
       );
     }
+  });
+
+  it("rejects blockquotes made only from extracted Markdown images", function () {
+    assert.isFalse(
+      isQuoteWorthySourceText(
+        "![](images/figure-a.jpg) h ![](images/figure-b.jpg) i",
+      ),
+    );
   });
 
   it("keeps substantive scientific spans quote-worthy", function () {
@@ -536,6 +664,8 @@ describe("quoteCitations", function () {
             contextItemId: 3097,
             itemId: 3096,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 5,
+            sourceFingerprint: "pdfjs:eppler-test",
           },
         ],
       }),
@@ -577,6 +707,7 @@ describe("quoteCitations", function () {
             contextItemId: 3097,
             itemId: 3096,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 0,
             metadataTexts: [title],
           },
         ],
@@ -618,6 +749,7 @@ describe("quoteCitations", function () {
             contextItemId: 3097,
             itemId: 3096,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 0,
             metadataTexts: [title],
           },
         ],
@@ -649,6 +781,7 @@ describe("quoteCitations", function () {
             contextItemId: 3097,
             itemId: 3096,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 0,
             metadataTexts: [title],
           },
         ],
@@ -846,6 +979,44 @@ describe("quoteCitations", function () {
     assert.include(finalized.markdown, quoteText);
   });
 
+  it("retains full PDF page text during scoped body-evidence verification", function () {
+    const quote =
+      "The complete page text contains the only exact wording for this reported result.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "A body evidence chunk discusses a different reported result.",
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "context-text",
+            chunkKind: "results",
+            contextItemId: 81,
+            itemId: 80,
+          },
+          {
+            sourceText: quote,
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      requireVerifiedQuoteCitations: true,
+      requireBodyEvidenceQuotes: true,
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(
+      finalized.quoteCitations[0]?.sourceMatchSource,
+      "pdf-page-text",
+    );
+  });
+
   it("does not let a same-label body source suppress another paper's abstract quote", function () {
     const abstractQuoteText =
       "The abstract summarizes a separate representational drift result from the second same-label paper.";
@@ -881,7 +1052,7 @@ describe("quoteCitations", function () {
     assert.equal(finalized.quoteCitations[0].contextItemId, 23);
   });
 
-  it("repairs incomplete paper blockquotes through unique source snippets", function () {
+  it("keeps an unsupported-tail blockquote unverified despite a large source span", function () {
     const sourceText =
       "We hypothesized that some brain states are easier for people to generate, and that tailoring training to these brain states will facilitate BCI learning.";
     const finalized = finalizeAssistantQuoteCitations({
@@ -898,31 +1069,15 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].citationLabel,
-      "(Busch et al., 2026)",
-    );
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
     assert.include(
-      finalized.quoteCitations[0].sourceMatchText || "",
-      "we hypothesized that some brain states are easier",
-    );
-    assert.equal(finalized.quoteCitations[0].quoteText, sourceText);
-    assert.notInclude(
-      finalized.quoteCitations[0].quoteText,
-      "This added sentence is not source text",
-    );
-    assert.notInclude(
-      replaceQuoteCitationPlaceholdersForMarkdown(
-        finalized.markdown,
-        finalized.quoteCitations,
-      ),
+      finalized.markdown,
       "This added sentence is not source text",
     );
   });
 
-  it("repairs blockquotes when only an interior source snippet matches", function () {
+  it("keeps a blockquote unverified when only an interior span is sourced", function () {
     const sourceText =
       "The encoder learned a nonlinear mapping from brain activity to the manifold in real time.";
     const finalized = finalizeAssistantQuoteCitations({
@@ -939,20 +1094,12 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.oneOf(finalized.quoteCitations[0].sourceMatchKind, [
-      "raw-middle",
-      "progressive",
-    ]);
-    assert.equal(finalized.quoteCitations[0].quoteText, sourceText);
-    assert.notInclude(
-      finalized.quoteCitations[0].quoteText,
-      "unsupported wording",
-    );
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, "unsupported wording");
   });
 
-  it("repairs ellipsized paper blockquotes through ordered source fragments", function () {
+  it("splits ordered ellipsized source fragments into page-bounded cards", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> “The amount of neural realignment was comparable between IM and WMP components ... and greater than for the OMP component. ... This realignment was possible, given that WMP was on the intrinsic manifold.”",
@@ -963,20 +1110,22 @@ describe("quoteCitations", function () {
               "The amount of neural realignment was comparable between IM and WMP components during the task, and greater than for the OMP component. These results indicate a structured change. This realignment was possible, given that WMP was on the intrinsic manifold.",
             sourceLabel: "(Busch et al., 2026)",
             contextItemId: 22,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 2,
           },
         ],
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].citationLabel,
-      "(Busch et al., 2026)",
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 3);
+    assert.lengthOf(finalized.quoteCitations, 3);
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.pageHintIndex),
+      [2, 2, 2],
     );
   });
 
-  it("repairs ellipsized paper blockquotes when extracted fragment order differs", function () {
+  it("keeps ellipsized cards in displayed order when extraction order differs", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> Multi-voxel fMRI patterns were extracted during this task ... These patterns were then embedded into a low-dimensional manifold using the T-PHATE algorithm. ... T-PHATE learns a lower dimensional manifold for each participant.",
@@ -987,20 +1136,25 @@ describe("quoteCitations", function () {
               "T-PHATE learns a lower dimensional manifold for each participant. Figure 1 caption text follows later in the extracted PDF stream. Multi-voxel fMRI patterns were extracted during this task from a network of brain regions implicated in spatial navigation. These patterns were then embedded into a low-dimensional manifold using the T-PHATE algorithm.",
             sourceLabel: "(Busch et al., 2026)",
             contextItemId: 22,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 2,
           },
         ],
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].citationLabel,
-      "(Busch et al., 2026)",
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 3);
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.quoteText),
+      [
+        "Multi-voxel fMRI patterns were extracted during this task",
+        "These patterns were then embedded into a low-dimensional manifold using the T-PHATE algorithm.",
+        "T-PHATE learns a lower dimensional manifold for each participant.",
+      ],
     );
   });
 
-  it("repairs ellipsized paper blockquotes across hyphenation differences", function () {
+  it("splits page-bounded ellipsized cards across hyphenation differences", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> The encoder learned a nonlinear mapping ... projected the embedded data onto C_OMP.",
@@ -1011,17 +1165,15 @@ describe("quoteCitations", function () {
               "The encoder learned a non-linear mapping from brain activity to the manifold. We then projected the embedded data onto C-OMP.",
             sourceLabel: "(Busch et al., 2026)",
             contextItemId: 22,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 2,
           },
         ],
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.equal(
-      finalized.quoteCitations[0].citationLabel,
-      "(Busch et al., 2026)",
-    );
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+    assert.lengthOf(finalized.quoteCitations, 2);
   });
 
   it("keeps ambiguous ellipsized quotes unanchored", function () {
@@ -1063,7 +1215,7 @@ describe("quoteCitations", function () {
     assert.include(finalized.markdown, "> BCI learning");
   });
 
-  it("strips supplementary table labels from quote tails before matching", function () {
+  it("does not verify a displayed quote with an unsupported supplementary-table tail", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> ...successful learning occurred without explicit awareness and using highly idiosyncratic mental strategies across participants (Supplementary Table 1).",
@@ -1079,21 +1231,12 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.notInclude(
-      finalized.quoteCitations[0].quoteText,
-      "Supplementary Table",
-    );
-    const exported = replaceQuoteCitationPlaceholdersForMarkdown(
-      finalized.markdown,
-      finalized.quoteCitations,
-    );
-    assert.notInclude(exported, "Supplementary Table");
-    assert.include(exported, "(Busch et al., 2026)");
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, "Supplementary Table 1");
   });
 
-  it("strips figure caption labels from quote tails before matching", function () {
+  it("does not verify a displayed quote with an unsupported figure-caption tail", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> T-PHATE embeddings of fMRI data show the correspondence between brain activity and the video game arena environment. (Fig. 1b caption)",
@@ -1109,15 +1252,9 @@ describe("quoteCitations", function () {
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
-    assert.lengthOf(finalized.quoteCitations, 1);
-    assert.notInclude(finalized.quoteCitations[0].quoteText, "Fig. 1b");
-    const exported = replaceQuoteCitationPlaceholdersForMarkdown(
-      finalized.markdown,
-      finalized.quoteCitations,
-    );
-    assert.include(exported, "(Busch et al., 2026)");
-    assert.notInclude(exported, "Fig. 1b caption");
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.include(finalized.markdown, "Fig. 1b caption");
   });
 
   it("finalizes same-line citation commentary by splitting the citation label", function () {
@@ -1539,7 +1676,7 @@ describe("quoteCitations", function () {
     assert.include(finalized.markdown, "(Smith et al., 2024)");
   });
 
-  it("trusts clean model quotes from PDF page text without degrading display text", function () {
+  it("stores the completely verified displayed quote despite PDF hyphenation", function () {
     const cleanQuote =
       "Although this learning rule only explicitly stabilizes zSt for the observed stimulus set S, which does not include the target stimulus x*, we find that the SNR of the readout is very stable.";
     const damagedPdfText =
@@ -1554,6 +1691,7 @@ describe("quoteCitations", function () {
             contextItemId: 3629,
             itemId: 3630,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 4,
           },
         ],
       }),
@@ -1561,7 +1699,9 @@ describe("quoteCitations", function () {
 
     assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
     assert.lengthOf(finalized.quoteCitations, 1);
+    assert.isUndefined(finalized.quoteCitations[0].displayQuoteText);
     assert.equal(finalized.quoteCitations[0].quoteText, cleanQuote);
+    assert.equal(finalized.quoteCitations[0].sourceMatchText, cleanQuote);
     assert.equal(
       finalized.quoteCitations[0].citationLabel,
       "(Zaid and Schaffer, 2026)",
@@ -1635,6 +1775,7 @@ describe("quoteCitations", function () {
             contextItemId: 22,
             itemId: 11,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 3,
             chunkKind: "body",
           },
         ],
@@ -1651,7 +1792,7 @@ describe("quoteCitations", function () {
     assert.equal(finalized.quoteCitations[0].sourceChunkKind, "body");
   });
 
-  it("does not anchor quotes that start inside a source token", function () {
+  it("does not verify a displayed quote that starts inside a source token", function () {
     const quote = "Dynamic states are controlled by training across sessions.";
     const finalized = finalizeAssistantQuoteCitations({
       markdown: `> ${quote}\n\n(Smith et al., 2024)`,
@@ -1669,10 +1810,10 @@ describe("quoteCitations", function () {
 
     assert.notInclude(finalized.markdown, "[[quote:");
     assert.lengthOf(finalized.quoteCitations, 0);
-    assert.include(finalized.markdown, `> ${quote}`);
+    assert.include(finalized.markdown, quote);
   });
 
-  it("preserves source punctuation when normalizing quote spans", function () {
+  it("preserves displayed typography after verifying the complete source span", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> The model's accuracy dropped sharply.\n\n(Smith et al., 2024)",
@@ -1690,8 +1831,13 @@ describe("quoteCitations", function () {
     assert.lengthOf(finalized.quoteCitations, 1);
     assert.equal(
       finalized.quoteCitations[0].quoteText,
-      "The model’s accuracy dropped sharply!",
+      "The model's accuracy dropped sharply.",
     );
+    assert.equal(
+      finalized.quoteCitations[0].sourceMatchText,
+      "The model's accuracy dropped sharply.",
+    );
+    assert.isUndefined(finalized.quoteCitations[0].displayQuoteText);
   });
 
   it("repairs normalized math and hyphenation blockquotes without truncating display text", function () {
@@ -1718,6 +1864,7 @@ describe("quoteCitations", function () {
             contextItemId: 220,
             itemId: 20,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 2,
           },
         ],
       }),
@@ -1733,12 +1880,13 @@ describe("quoteCitations", function () {
       finalized.quoteCitations[0].sourceMatchKind,
       "normalized-span",
     );
-    assert.notEqual(finalized.quoteCitations[0].quoteText, displayQuote);
-    assert.include(
-      finalized.quoteCitations[0].quoteText,
-      "dropped with the number of sessions intervening between train and test sessions",
+    assert.equal(
+      finalized.quoteCitations[0].displayQuoteText,
+      `"${displayQuote}"`,
     );
-    assert.equal(finalized.quoteCitations[0].displayQuoteText, displayQuote);
+    assert.equal(finalized.quoteCitations[0].quoteText, displayQuote);
+    assert.equal(finalized.quoteCitations[0].sourceMatchText, displayQuote);
+    assert.equal(finalized.quoteCitations[0].pageHintIndex, 2);
 
     const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
       finalized.markdown,
@@ -1754,7 +1902,7 @@ describe("quoteCitations", function () {
     assert.notInclude(rendered, "the model’s goodness-of-fit, measured by");
   });
 
-  it("keeps model math markdown as display text when PDF text verifies a quote", function () {
+  it("anchors the largest unique prose span when PDF math cannot be completely aligned", function () {
     const displayQuote =
       "Recall that the readout weights $w$ are proportional to $y_{*0}^\\top y_0$ through Hebbian plasticity.";
     const sourceQuote =
@@ -1769,26 +1917,25 @@ describe("quoteCitations", function () {
             contextItemId: 3629,
             itemId: 3630,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 4,
           },
         ],
       }),
     });
 
-    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.include(finalized.markdown, "[[quote:");
     assert.lengthOf(finalized.quoteCitations, 1);
-    assert.notEqual(finalized.quoteCitations[0].quoteText, displayQuote);
-    assert.include(finalized.quoteCitations[0].quoteText, "y*0");
-    assert.equal(finalized.quoteCitations[0].displayQuoteText, displayQuote);
+    assert.equal(finalized.quoteCitations[0].quoteText, displayQuote);
     assert.equal(
-      finalized.quoteCitations[0].sourceMatchSource,
-      "pdf-page-text",
+      finalized.quoteCitations[0].sourceMatchText,
+      "Recall that the readout weights w are proportional to y*0",
     );
-
+    assert.equal(finalized.quoteCitations[0].sourceMatchKind, "raw-prefix");
+    assert.equal(finalized.quoteCitations[0].pageHintIndex, 4);
     const display = replaceQuoteCitationPlaceholdersForMarkdown(
       finalized.markdown,
       finalized.quoteCitations,
     );
-
     assert.include(display, displayQuote);
     assert.notInclude(display, "y*0|\\mathbf");
 
@@ -1796,6 +1943,86 @@ describe("quoteCitations", function () {
     assert.include(html, "math-inline");
     assert.include(html, "katex");
     assert.notInclude(html, "y*0|\\mathbf");
+  });
+
+  it("anchors the database propensity-function quote by its unique searchable prose prefix", function () {
+    const displayQuote =
+      "We modeled the propensity function to be weight-dependent $\\rho(w)=\\tanh(10w)$ based on experimental observations.";
+    const pdfText =
+      "We modeled the propensity function to be weight-dependent ρðwÞ ¼ tanhð10wÞ based on experimental observations.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${displayQuote}\n\n(Bauer et al., 2024)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: pdfText,
+            sourceLabel: "(Bauer et al., 2024)",
+            contextItemId: 2505,
+            itemId: 2504,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 9,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.include(finalized.markdown, "[[quote:");
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.equal(finalized.quoteCitations[0].quoteText, displayQuote);
+    assert.equal(
+      finalized.quoteCitations[0].sourceMatchText,
+      "We modeled the propensity function to be weight-dependent",
+    );
+    assert.equal(finalized.quoteCitations[0].sourceMatchKind, "raw-prefix");
+    assert.equal(finalized.quoteCitations[0].pageHintIndex, 9);
+  });
+
+  it("does not verify CJK text with unsupported model prefixes and suffixes", function () {
+    const displayQuote =
+      "模型补充开头。Eisenberger 等发现自我报告疼痛程度与 dACC 激活强度成正相关关系，与 RVPFC 激活强度成负相关关系；模型补充结尾。";
+    const sourceText =
+      "Eisenberger 等[12]发现，自我报告疼痛程度与 dACC 激活强度成正相关关系，与 RVPFC 激活强度成负相关关系。";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${displayQuote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText,
+            sourceLabel: "(Eisenberger et al., 2026)",
+            contextItemId: 166,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 3,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 0);
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(finalized.markdown, displayQuote);
+  });
+
+  it("does not treat a non-letter symbol as a CJK partial-search signal", function () {
+    const displayQuote =
+      "Ji Xia 1 ✉, Tyler D. Marks are followed by model-added explanatory prose that is not part of the source byline.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${displayQuote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: "Ji Xia 1✉, Tyler D. Marks",
+            sourceLabel: "(Xia and Marks, 2026)",
+            contextItemId: 566,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 0,
+          },
+        ],
+      }),
+    });
+
+    assert.isEmpty(finalized.quoteCitations);
+    assert.notInclude(finalized.markdown, "[[quote:");
   });
 
   it("does not leak model-provided quote anchors when verified PDF text preserves display text", function () {
@@ -1813,6 +2040,8 @@ describe("quoteCitations", function () {
             contextItemId: 3097,
             itemId: 3096,
             sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 5,
+            sourceFingerprint: "pdfjs:eppler-display-test",
           },
         ],
       }),
@@ -1942,6 +2171,620 @@ describe("quoteCitations", function () {
     assert.notInclude(finalized.markdown, "(Ajemian et al., 2013)");
     assert.include(finalized.markdown, `\`\`\`text\n${revisedText}\n\`\`\``);
     assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("keeps an unconfirmed quote visible when source evidence is incomplete", function () {
+    const quote =
+      "Among neuron pairs, does noise correlation change more favorably for high signal correlation?";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n>\n> (Eppler et al., 2026, page 3)`,
+      sourceIndex: buildQuoteSourceIndex({ sourceTexts: [] }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: false,
+      },
+    });
+
+    assert.include(finalized.markdown, `> ${quote}`);
+    assert.notInclude(finalized.markdown, "```text");
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(finalized.markdown, "(Eppler et al., 2026, page 3)");
+  });
+
+  it("keeps a registered normalized-span quote anchor trusted", function () {
+    const quote =
+      "This historical interpretation was previously mislabeled as source wording.";
+    const legacyCitation = buildQuoteCitation({
+      quoteText: quote,
+      citationLabel: "(Eppler et al., 2026)",
+      sourceMatchKind: "normalized-span",
+      sourceMatchSource: "context-text",
+      contextItemId: 81,
+      itemId: 80,
+    });
+    assert.isDefined(legacyCitation);
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `[[quote:${legacyCitation!.id}]]`,
+      quoteCitations: [legacyCitation!],
+      quoteSourceReview: {
+        sourceEvidenceComplete: false,
+      },
+    });
+
+    assert.equal(finalized.markdown, `[[quote:${legacyCitation!.id}]]`);
+    assert.deepEqual(finalized.quoteCitations, [legacyCitation!]);
+  });
+
+  it("keeps real source text when it duplicates an untrusted legacy record", function () {
+    const quote =
+      "This exact source sentence remains independently verifiable from cached paper text.";
+    const legacyCitation = buildQuoteCitation({
+      quoteText: quote,
+      citationLabel: "(Eppler et al., 2026)",
+      sourceMatchKind: "normalized-span",
+      sourceMatchSource: "context-text",
+      contextItemId: 81,
+      itemId: 80,
+    });
+    assert.isDefined(legacyCitation);
+    const sourceIndex = buildQuoteSourceIndex({
+      quoteCitations: [legacyCitation!],
+      sourceTexts: [
+        {
+          sourceText: quote,
+          sourceLabel: "(Eppler et al., 2026)",
+          sourceMatchSource: "context-text",
+          contextItemId: 81,
+          itemId: 80,
+        },
+      ],
+    });
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `[[quote:${legacyCitation!.id}]]`,
+      quoteCitations: [legacyCitation!],
+      sourceIndex,
+      quoteSourceReview: {
+        sourceEvidenceComplete: false,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+  });
+
+  it("keeps quote-card text after complete source evidence has zero match", function () {
+    const quote =
+      "Among neuron pairs, does noise correlation change more favorably for high signal correlation?";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n>\n> (Eppler et al., 2026, page 3)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "The complete paper text contains no wording from the assistant interpretation.",
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(finalized.markdown, "Eppler");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("rejects the Eppler paraphrase despite an incidental four-token source overlap", function () {
+    const quote =
+      "Among neuron pairs that begin with roughly similar noise correlation, does noise correlation change more favorably for pairs with high signal correlation than for pairs with low signal correlation?";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n>\n> (Eppler et al., 2026)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "The least reduction of noise correlations was observed for pairs with high signal correlations in the first interval.",
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3097,
+            itemId: 3096,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(finalized.markdown, "Eppler");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("rejects the persisted I-k paraphrase despite related notation in the paper", function () {
+    const quote =
+      "**Iₖ = the set of neuron-pair indices that fall into the k-th SC bin on day t.**";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n>\n> (Eppler et al., 2026)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "For each SC bin k, we computed the mean across pairwise NC Yi. Where Ik is the set of pairs in bin k.",
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3097,
+            itemId: 3096,
+            pageHintIndex: 9,
+            pageHintLabel: "10",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(finalized.markdown, "Eppler");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("rejects an ambiguous partial quote after exhaustive complete-text review", function () {
+    const sharedSourceText =
+      "Noise correlations remained stable for neuron pairs with consistently high signal correlations";
+    const quote = `${sharedSourceText} because the model imposed a causal balancing mechanism.`;
+    const markdown = `> ${quote}\n>\n> (Eppler et al., 2026)`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [1, 2].map((pageHintIndex) => ({
+          sourceText: `${sharedSourceText} in this experimental condition.`,
+          sourceLabel: "(Eppler et al., 2026)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 3097,
+          itemId: 3096,
+          pageHintIndex,
+        })),
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(finalized.markdown, "Eppler");
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("rejects a unique partial PDF match when the complete displayed wording is absent", function () {
+    const sourceSentence =
+      "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
+    const quote = `${sourceSentence} This interpretation was added by the model and is not source wording.`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: sourceSentence,
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("keeps exact unique source navigation even when prose heuristics reject the display text", function () {
+    const quote =
+      "Summary of task settings utilized at each training stage. Performance criteria indicate the behavioral performance necessary to graduate to the next training stage.";
+    assert.isFalse(isQuoteWorthySourceText(quote));
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: quote,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(finalized.quoteCitations[0]?.sourceMatchText, quote);
+  });
+
+  it("rejects a page-backed partial when unsupported math wording remains", function () {
+    const quote =
+      "The baseline F₀ used to compute the ΔF/F₀ was defined as a moving rank order filter, the 30th percentile of the 200 surrounding frames (100 before and 100 after). This ΔF/F₀ was then deconvolved using the algorithm published by Vogelstein et al. (2010).";
+    const source =
+      "Methods used a rank order filter, the 30th percentile of the 200 surrounding frames (100 before and 100 after). This procedure was applied before deconvolution.";
+    assert.isFalse(isQuoteWorthySourceText(quote));
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: source,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 4,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.lengthOf(finalized.quoteCitations, 0);
+  });
+
+  it("fails closed when the complete quote appears on multiple PDF pages", function () {
+    const quote = "The same source sentence appears on two pages of one paper.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: quote,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+            pageHintLabel: "3",
+          },
+          {
+            sourceText: quote,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 82,
+            itemId: 80,
+            pageHintIndex: 8,
+            pageHintLabel: "9",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("fails closed when the complete quote repeats on one page without an occurrence", function () {
+    const quote = "The same source sentence repeats on one identifiable page.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: Array.from(
+              { length: 10 },
+              () => `${quote} Additional text.`,
+            ).join(" "),
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 4,
+            pageHintLabel: "5",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("verifies full-span source wording in the quote gate", function () {
+    const quote =
+      "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `Results. ${quote} The next sentence follows.`,
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(finalized.quoteCitations[0]?.quoteText, quote);
+  });
+
+  it("uses full-span evidence instead of a stale provider label", function () {
+    const quote =
+      "Noise correlation changed more favorably for neuron pairs with high signal correlation.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n\n(Wrong et al., 2025)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "Noise correlation changed for a subset of recorded neuron pairs.",
+            sourceLabel: "(Wrong et al., 2025)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 71,
+            itemId: 70,
+            pageHintIndex: 1,
+          },
+          {
+            sourceText: `Results. ${quote} The next sentence follows.`,
+            sourceLabel: "(Eppler et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(
+      finalized.quoteCitations[0]?.citationLabel,
+      "(Eppler et al., 2026)",
+    );
+  });
+
+  it("accepts a unique source match with changed punctuation", function () {
+    const source =
+      "The population geometry remained stable; individual neurons continued to drift.";
+    const quote =
+      "The population geometry remained stable: individual neurons continued to drift.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: source,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(
+      finalized.quoteCitations[0]?.citationLabel,
+      "(Example et al., 2026)",
+    );
+  });
+
+  it("authenticates the searchable Asabuki page-4 quote across its ellipsis", function () {
+    const quote =
+      "For excitatory synapses, errors between excitatory drive and the output of the cell provide feedback to the synapses... All excitatory connections seek to minimize these errors. For inhibitory synapses, the error between excitatory and inhibitory drive must be minimized to maintain excitation–inhibition balance.";
+    const pageText =
+      "For excitatory synapses, errors between the excitatory drive and the output of the cell provide feedback to the synapses (dashed arrow) and modulate plasticity (blue square; exc. error). All excitatory connections seek to minimize these errors. For inhibitory synapses, the error between excitatory and inhibitory drive must be minimized to maintain excitation-inhibition balance (orange square; inh. error).";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n> (Asabuki and Clopath, page 4)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: pageText,
+            sourceLabel: "(Asabuki and Clopath)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3617,
+            itemId: 3618,
+            pageHintIndex: 3,
+            pageHintLabel: "4",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.isNotEmpty(finalized.quoteCitations);
+    assert.equal(finalized.quoteCitations[0]?.pageHintLabel, "4");
+  });
+
+  it("strips an author-only citation with a page suffix after exhaustive absence", function () {
+    const quote =
+      "This complete invented quote is absent from every page in the authenticated paper.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n> (Asabuki and Clopath, page 4)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "The complete paper instead contains unrelated source wording.",
+            sourceLabel: "(Asabuki and Clopath)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3617,
+            itemId: 3618,
+            pageHintIndex: 3,
+            pageHintLabel: "4",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(finalized.markdown, "Asabuki");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("splits exact ellipsis segments and uses the largest unique span when another segment is invented", function () {
+    const first =
+      "Representational geometry remained stable across repeated recording sessions";
+    const second =
+      "individual neurons nevertheless changed their preferred responses over time";
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText: `${first}, while ${second}.`,
+          sourceLabel: "(Example et al., 2026)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 81,
+          itemId: 80,
+          pageHintIndex: 2,
+        },
+      ],
+    });
+    const ordered = finalizeAssistantQuoteCitations({
+      markdown: `> ${first} ... ${second}`,
+      sourceIndex,
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+    const reordered = finalizeAssistantQuoteCitations({
+      markdown: `> ${second} ... ${first}`,
+      sourceIndex,
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+    const inventedShortSegment = finalizeAssistantQuoteCitations({
+      markdown: `> ${first} ... definitely causal`,
+      sourceIndex,
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(countOccurrences(ordered.markdown, "[[quote:"), 2);
+    assert.deepEqual(
+      ordered.quoteCitations.map((citation) => citation.quoteText),
+      [`${first},`, `${second}.`],
+    );
+    assert.equal(countOccurrences(reordered.markdown, "[[quote:"), 2);
+    assert.deepEqual(
+      reordered.quoteCitations.map((citation) => citation.quoteText),
+      [`${second}.`, `${first},`],
+    );
+    assert.notInclude(inventedShortSegment.markdown, "[[quote:");
+    assert.include(inventedShortSegment.markdown, "Not a source quote");
+    assert.lengthOf(inventedShortSegment.quoteCitations, 0);
+  });
+
+  it("accepts line-wrap hyphenation as full-span normalization", function () {
+    const quote =
+      "Noise correlation remained stable across repeated recording sessions.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "Noise corre-\nlation remained stable across repeated recording sessions.",
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+  });
+
+  it("keeps cross-paper full-span matches ambiguous", function () {
+    const quote =
+      "The same substantive sentence appears in both candidate source papers.";
+    const markdown = `> ${quote}
+>
+> (First et al., 2025)`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: quote,
+            sourceLabel: "(First et al., 2025)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 71,
+            itemId: 70,
+            pageHintIndex: 1,
+          },
+          {
+            sourceText: quote,
+            sourceLabel: "(Second et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.notInclude(finalized.markdown, "```text");
+    assert.equal(finalized.markdown, markdown);
   });
 
   it("does not double-blockquote anchored quotes already wrapped in quote syntax", function () {
@@ -2214,5 +3057,271 @@ describe("quoteCitations", function () {
     assert.lengthOf(extracted, 1);
     assert.equal(extracted[0].id, citation!.id);
     assert.equal(extracted[0].citationLabel, "(Patel, 2026)");
+  });
+
+  it("binds an author-labelled same-line anchor to the exact displayed quote instead of its retrieval chunk", function () {
+    const visibleQuote =
+      "Consistently, pattern identity remained perfectly decodable from population activity throughout the drift period. Together, these results show that local predictive plasticity generates drifting but organized assemblies.";
+    const retrievalChunk = [
+      "Earlier retrieval context that must never become the navigation query.",
+      visibleQuote,
+      "Later retrieval context that must never become the navigation query either.",
+    ].join(" ");
+    const evidence = buildQuoteCitation({
+      quoteText: retrievalChunk,
+      citationLabel: "(Asabuki and Clopath)",
+      contextItemId: 3617,
+      itemId: 3618,
+    });
+    assert.isDefined(evidence);
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${visibleQuote}\n> (Asabuki and Clopath) [[quote:${evidence!.id}]]`,
+      quoteCitations: [evidence!],
+      sourceIndex: buildQuoteSourceIndex({
+        quoteCitations: [evidence!],
+        sourceTexts: [
+          {
+            sourceText: retrievalChunk,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+          },
+          {
+            sourceText: visibleQuote,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            sourceMatchSource: "pdf-page-text",
+            sourceFingerprint: "pdfjs:asabuki-test",
+            pageHintIndex: 5,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(finalized.quoteCitations[0].quoteText, visibleQuote);
+    assert.equal(finalized.quoteCitations[0].sourceMatchText, visibleQuote);
+    assert.equal(finalized.quoteCitations[0].pageHintIndex, 5);
+    assert.equal(
+      finalized.quoteCitations[0].sourceFingerprint,
+      "pdfjs:asabuki-test",
+    );
+    assert.notInclude(
+      finalized.quoteCitations[0].quoteText,
+      "Earlier retrieval context",
+    );
+  });
+
+  it("repairs row 604 to one complete page-bounded source span including the omitted figure locator", function () {
+    const visibleQuote =
+      "Neurons undergoing a preference change showed a stereotyped transition in net E/I drive. The net drive associated with the previously preferred pattern was dominant before the change but declined and dropped sharply around reassignment. Concurrently, the net drive associated with the newly preferred pattern began rising before the change and became dominant afterward.";
+    const pageSource = [
+      "151 Neurons undergoing a preference change showed a stereotyped transition in net E/I drive.",
+      "152 The net drive associated with the previously preferred pattern was dominant before the",
+      "153 change but declined and dropped sharply around reassignment. Concurrently, the net drive",
+      "154 associated with the newly preferred pattern began rising before the change and became",
+      "155 dominant afterward (Fig. 3B).",
+    ].join("\n");
+    const retrievalChunk = [
+      "Earlier retrieval text that is evidence only.",
+      pageSource,
+      "Later retrieval text that is evidence only.",
+    ].join("\n");
+    const evidence = buildQuoteCitation({
+      id: "Q_1f7prrm",
+      quoteText: retrievalChunk,
+      citationLabel: "(Asabuki and Clopath)",
+      contextItemId: 3617,
+      itemId: 3618,
+    });
+    assert.isDefined(evidence);
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${visibleQuote}\n> (Asabuki and Clopath) [[quote:${evidence!.id}]]`,
+      quoteCitations: [evidence!],
+      sourceIndex: buildQuoteSourceIndex({
+        quoteCitations: [evidence!],
+        sourceTexts: [
+          {
+            sourceText: pageSource,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            itemId: 3618,
+            sourceMatchSource: "pdf-page-text",
+            sourceFingerprint: "pdfjs:asabuki-row-604",
+            pageHintIndex: 5,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 1);
+    const citation = finalized.quoteCitations[0];
+    assert.equal(citation.displayQuoteText, visibleQuote);
+    assert.equal(citation.pageHintIndex, 5);
+    assert.equal(citation.contextItemId, 3617);
+    assert.equal(citation.sourceFingerprint, "pdfjs:asabuki-row-604");
+    assert.match(citation.quoteText, /^Neurons undergoing/);
+    assert.notMatch(citation.quoteText, /(?:^|\n)\s*15[2-5]\b/);
+    assert.include(citation.quoteText, "The net drive");
+    assert.match(citation.quoteText, /\(Fig\. 3B\)\.$/);
+    assert.match(citation.sourceMatchText || "", /\(Fig\. 3B\)\.$/);
+    assert.notInclude(citation.quoteText, "Earlier retrieval text");
+    assert.notInclude(citation.quoteText, "Later retrieval text");
+  });
+
+  it("binds an exact quote repeated across PDF pages to the first single occurrence", function () {
+    const quote =
+      "Prior to conditioning the response was absent, whereas afterward it resembled the conditioned response.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n\n(Aschauer et al., 2022)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: quote,
+            sourceLabel: "(Aschauer et al., 2022)",
+            contextItemId: 3610,
+            itemId: 3609,
+            sourceMatchSource: "pdf-page-text",
+            sourceFingerprint: "pdfjs:aschauer",
+            pageHintIndex: 5,
+          },
+          {
+            sourceText: quote,
+            sourceLabel: "(Aschauer et al., 2022)",
+            contextItemId: 3610,
+            itemId: 3609,
+            sourceMatchSource: "pdf-page-text",
+            sourceFingerprint: "pdfjs:aschauer",
+            pageHintIndex: 11,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(finalized.quoteCitations[0].pageHintIndex, 5);
+    assert.equal(finalized.quoteCitations[0].sourceMatchPageOccurrence, 0);
+    assert.equal(finalized.quoteCitations[0].sourceMatchKind, "exact");
+  });
+
+  it("fails closed when the complete displayed quote is ambiguous on its PDF page", function () {
+    const quote =
+      "The complete displayed source quote is repeated verbatim and therefore needs an occurrence.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n> (Repeated, 2026) [[quote:Q_evidence]]`,
+      quoteCitations: [
+        buildQuoteCitation({
+          id: "Q_evidence",
+          quoteText: `${quote}\nIntervening text.\n${quote}`,
+          citationLabel: "(Repeated, 2026)",
+          contextItemId: 77,
+        })!,
+      ],
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `${quote}\nIntervening text.\n${quote}`,
+            sourceLabel: "(Repeated, 2026)",
+            contextItemId: 77,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+    });
+
+    assert.isEmpty(finalized.quoteCitations);
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(finalized.markdown, quote);
+  });
+
+  it("splits an ellipsized displayed quote into separate page-bounded quote cards", function () {
+    const first =
+      "The first complete source sentence establishes the old assembly representation before reassignment.";
+    const second =
+      "The second complete source sentence establishes the new assembly representation after reassignment.";
+    const evidence = buildQuoteCitation({
+      id: "Q_cross_page_ellipsis",
+      quoteText: `${first} Omitted source material. ${second}`,
+      citationLabel: "(Asabuki and Clopath)",
+      contextItemId: 3617,
+    })!;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${first} ... ${second}\n> (Asabuki and Clopath) [[quote:${evidence.id}]]`,
+      quoteCitations: [evidence],
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: first,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 5,
+          },
+          {
+            sourceText: second,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 6,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 2);
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.quoteText),
+      [first, second],
+    );
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.pageHintIndex),
+      [5, 6],
+    );
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+  });
+
+  it("splits a genuinely cross-page quote at complete sentence boundaries", function () {
+    const first =
+      "The prior assembly drive declined sharply around neuronal reassignment.";
+    const second =
+      "The newly preferred assembly drive rose before the change and dominated afterward.";
+    const evidence = buildQuoteCitation({
+      id: "Q_cross_page_sentences",
+      quoteText: `${first} ${second}`,
+      citationLabel: "(Asabuki and Clopath)",
+      contextItemId: 3617,
+    })!;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${first} ${second}\n> (Asabuki and Clopath) [[quote:${evidence.id}]]`,
+      quoteCitations: [evidence],
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: first,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 5,
+          },
+          {
+            sourceText: second,
+            sourceLabel: "(Asabuki and Clopath)",
+            contextItemId: 3617,
+            sourceMatchSource: "pdf-page-text",
+            pageHintIndex: 6,
+          },
+        ],
+      }),
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 2);
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.pageHintIndex),
+      [5, 6],
+    );
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
   });
 });

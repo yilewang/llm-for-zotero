@@ -118,6 +118,30 @@ describe("normalizeBlockBoundaries", function () {
       assert.equal(result, input);
     });
 
+    it("does not turn a parenthesized function comparison into a blockquote", function () {
+      const input =
+        "3. **Response reliability**: A stimulus is reliable if S(*p*, *p*) > 0.4 (i.e., trial-to-trial correlations are strong).";
+      const result = normalizeBlockBoundaries(input);
+      const html = renderMarkdown(input);
+
+      assert.equal(result, input);
+      assert.notInclude(html, "<blockquote>");
+      assert.include(html, "S(<em>p</em>, <em>p</em>) &gt; 0.4");
+    });
+
+    it("does not treat other mathematical closers or threshold colons as quote boundaries", function () {
+      const inputs = [
+        "The function f(x) > chance defines the accepted region.",
+        "Only values[i] > threshold are retained.",
+        "The inclusion criterion: > 0.4 on the reliability score.",
+      ];
+
+      for (const input of inputs) {
+        assert.equal(normalizeBlockBoundaries(input), input);
+        assert.notInclude(renderMarkdown(input), "<blockquote>");
+      }
+    });
+
     it("does not split > when not preceded by punctuation trigger", function () {
       const input = "something here > not a quote";
       const result = normalizeBlockBoundaries(input);

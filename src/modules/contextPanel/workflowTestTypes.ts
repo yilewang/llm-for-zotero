@@ -1,6 +1,7 @@
 import type { ResolvedContextSource, SendQuestionOptions } from "./types";
 import type { QuoteCitation } from "../../shared/types";
 import type { WorkflowTestFinalRequestSnapshot } from "./workflowTestHooks";
+import type { RuntimeConversationSystem } from "./runtimeSystemControls";
 
 export type WorkflowTestFixture = {
   parentItemId: number;
@@ -32,6 +33,43 @@ export type WorkflowTestPanel = {
   contextSnapshot: ResolvedContextSource | null;
 };
 
+export type WorkflowTestRuntimeSystemToggle = {
+  system: RuntimeConversationSystem;
+  visible: boolean;
+  active: boolean;
+  disabled: boolean;
+  ariaPressed: boolean;
+};
+
+export type WorkflowTestDuplicatePanelSetupDiagnostics = {
+  samePanelRoot: boolean;
+  initializationGenerationBefore: string;
+  initializationGenerationAfter: string;
+  panelStateSyncBefore: boolean;
+  panelStateSyncAfter: boolean;
+};
+
+export type WorkflowTestRuntimeGeometry = {
+  containerWidth: number;
+  fontScale: number;
+  runtimeWidth: number;
+  runtimeButtonWidths: number[];
+  runtimeIntersectsLeadingContent: boolean;
+  runtimeIntersectsTrailingContent: boolean;
+  runtimeTrailingOverlapPx: number;
+  runtimeWithinContainer: boolean;
+  trailingContentWithinContainer: boolean;
+  clearButtonCompact: boolean;
+  centeredContentOffset: number;
+};
+
+export type WorkflowTestStandaloneComposerResizeDiagnostics = {
+  heightBeforeDrag: number;
+  heightAfterDrag: number;
+  heightAfterInput: number;
+  manualHeightMarked: boolean;
+};
+
 export type WorkflowTestDiagnostics = {
   panelId?: string;
   activeItemId?: number;
@@ -47,6 +85,7 @@ export type WorkflowTestDiagnostics = {
   selectedContextLabels: string[];
   historyNewVisible?: boolean;
   historyToggleVisible?: boolean;
+  runtimeSystemToggles: WorkflowTestRuntimeSystemToggle[];
   inputValue?: string;
   statusText?: string;
   messageText?: string;
@@ -57,6 +96,9 @@ export type WorkflowTestDiagnostics = {
 export type WorkflowTestAssistantRenderResult = {
   renderedText: string;
   quoteCardBodies: string[];
+  quoteCardStatuses: string[];
+  quoteCardCitationTexts: string[];
+  quoteCardVerticalMargins: Array<{ top: number; bottom: number }>;
 };
 
 export type WorkflowTestStandaloneDiagnostics = {
@@ -75,6 +117,7 @@ export type WorkflowTestStandaloneDiagnostics = {
   paperTabText?: string;
   openTabText?: string;
   statusText?: string;
+  runtimeSystemToggles: WorkflowTestRuntimeSystemToggle[];
   lastSend: SendQuestionOptions | null;
   lastFinalRequest: WorkflowTestFinalRequestSnapshot | null;
 };
@@ -143,11 +186,31 @@ export type WorkflowTestApi = {
   }) => Promise<WorkflowTestStandaloneNoteFixture>;
   renderPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
   renderStartupPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
+  startNewPanelConversation: (
+    panelId: string,
+  ) => Promise<WorkflowTestDiagnostics>;
+  togglePanelConversationMode: (
+    panelId: string,
+  ) => Promise<WorkflowTestDiagnostics>;
+  exerciseDuplicatePanelSetup: (
+    panelId: string,
+  ) => Promise<WorkflowTestDuplicatePanelSetupDiagnostics>;
   seedPanelStoredUserMessage: (
     panelId: string,
     text: string,
   ) => Promise<WorkflowTestDiagnostics>;
-  clickPanelSystemToggle: (panelId: string) => Promise<WorkflowTestDiagnostics>;
+  clickPanelSystemToggle: (
+    panelId: string,
+    system: RuntimeConversationSystem,
+  ) => Promise<WorkflowTestDiagnostics>;
+  clickPanelSystemTogglesRapidly: (
+    panelId: string,
+    systems: RuntimeConversationSystem[],
+  ) => Promise<WorkflowTestDiagnostics>;
+  measurePanelRuntimeGeometry: (
+    panelId: string,
+    input: { width: number; fontScale: number },
+  ) => Promise<WorkflowTestRuntimeGeometry>;
   selectNoteEditorText: (panelId: string, text: string) => Promise<void>;
   ask: (panelId: string, text: string) => Promise<SendQuestionOptions>;
   renderAssistantForPanel: (
@@ -160,10 +223,21 @@ export type WorkflowTestApi = {
   openStandaloneForItem: (
     itemId: number,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  openStandaloneForLibraryAfterRestart: () => Promise<WorkflowTestStandaloneDiagnostics>;
   clickStandaloneTab: (
     tab: "paper" | "open",
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
-  clickStandaloneSystemToggle: () => Promise<WorkflowTestStandaloneDiagnostics>;
+  clickStandaloneSystemToggle: (
+    system: RuntimeConversationSystem,
+  ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  clickStandaloneSystemTogglesRapidly: (
+    systems: RuntimeConversationSystem[],
+  ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  measureStandaloneRuntimeGeometry: (input: {
+    width: number;
+    fontScale: number;
+  }) => Promise<WorkflowTestRuntimeGeometry>;
+  exerciseStandaloneComposerManualResize: () => Promise<WorkflowTestStandaloneComposerResizeDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
   getLastFinalRequest: () => WorkflowTestFinalRequestSnapshot | null;
   seedStandaloneUserMessage: (
@@ -171,6 +245,9 @@ export type WorkflowTestApi = {
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
   notifyStandaloneItemChanged: (
     itemId: number | null,
+  ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  notifyStandaloneItemChanges: (
+    itemIds: number[],
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
   addItemsAsStandaloneContext: (
     itemIds: number[],

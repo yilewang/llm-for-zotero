@@ -694,10 +694,14 @@ describe("semantic tool surface", function () {
       year: "2025",
       mineruCacheDir: "/tmp/mineru-paper",
     };
+    const abstractText =
+      "MinerU preserves this substantive finding directly from the original paper text without requiring a PDF page number.";
+    const discussionText =
+      "The discussion explains why the observed effect remains reliable across repeated measurements.";
     globalScope.IOUtils = {
       read: async () =>
         new TextEncoder().encode(
-          "# MinerU Paper\n\nAbstract text.\n\n# Discussion\n\nDiscussion text.",
+          `# MinerU Paper\n\n${abstractText}\n\n# Discussion\n\n${discussionText}`,
         ),
     };
     try {
@@ -716,9 +720,28 @@ describe("semantic tool surface", function () {
       const output = await tool.execute(validated.value, baseContext);
       const result = (output as { results?: Array<Record<string, unknown>> })
         .results?.[0];
+      const quoteCitations =
+        (
+          output as {
+            quoteCitations?: Array<Record<string, unknown>>;
+          }
+        ).quoteCitations || [];
       assert.equal(result?.backend, "mineru");
       assert.equal(result?.citationLabel, "Miller, 2025");
       assert.equal(result?.sourceLabel, "(Miller, 2025)");
+      assert.deepEqual(
+        quoteCitations.map((citation) => citation.quoteText),
+        [abstractText, discussionText],
+      );
+      assert.deepEqual(
+        quoteCitations.map((citation) => citation.sourceMatchSource),
+        ["context-text", "context-text"],
+      );
+      assert.isUndefined(quoteCitations[0]?.pageHintIndex);
+      assert.deepEqual(
+        result?.quoteAnchors,
+        quoteCitations.map((citation) => `[[quote:${citation.id}]]`),
+      );
     } finally {
       if (originalIOUtils === undefined) {
         delete globalScope.IOUtils;
@@ -1544,7 +1567,7 @@ describe("semantic tool surface", function () {
     );
   });
 
-  it("paper_read overview returns quote anchors for extractable paper text", async function () {
+  it("paper_read overview keeps verified quotes without page metadata", async function () {
     const paperContext = {
       itemId: 11,
       contextItemId: 22,
@@ -1559,10 +1582,10 @@ describe("semantic tool surface", function () {
           text:
             "[chunk 0]\nRecurrent models reduce computation by selecting only a sequence of image locations.\n\n" +
             "[chunk 4]\nThe agent learns where to attend using reinforcement learning from task reward.",
+          chunkIndexes: [0, 4],
+          totalChunks: 5,
           citationLabel: "Mnih et al., 2014",
           sourceLabel: "(Mnih et al., 2014)",
-          pageIndex: 3,
-          pageLabel: "4",
           paperContext,
         }),
       } as never,
@@ -1585,6 +1608,8 @@ describe("semantic tool surface", function () {
         id: string;
         quoteText: string;
         citationLabel: string;
+        sourceMatchKind?: string;
+        sourceMatchSource?: string;
         pageHintIndex?: number;
         pageHintLabel?: string;
       }>;
@@ -1599,8 +1624,10 @@ describe("semantic tool surface", function () {
       output.quoteCitations?.[0]?.citationLabel,
       "(Mnih et al., 2014)",
     );
-    assert.equal(output.quoteCitations?.[0]?.pageHintIndex, 3);
-    assert.equal(output.quoteCitations?.[0]?.pageHintLabel, "4");
+    assert.equal(output.quoteCitations?.[0]?.sourceMatchKind, "exact");
+    assert.equal(output.quoteCitations?.[0]?.sourceMatchSource, "context-text");
+    assert.isUndefined(output.quoteCitations?.[0]?.pageHintIndex);
+    assert.isUndefined(output.quoteCitations?.[0]?.pageHintLabel);
     assert.deepEqual(
       output.results?.[0]?.quoteCitationIds,
       output.quoteCitations?.map((citation) => citation.id),
@@ -1609,6 +1636,44 @@ describe("semantic tool surface", function () {
       output.results?.[0]?.quoteAnchors,
       output.quoteCitations?.map((citation) => `[[quote:${citation.id}]]`),
     );
+  });
+
+  it("paper_read overview does not trust text without source paper identity", async function () {
+    const paperContext = {
+      itemId: 11,
+      contextItemId: 22,
+      title: "Unresolved Source Paper",
+      firstCreator: "Unknown",
+      year: "2026",
+    };
+    const tool = createPaperReadTool(
+      {
+        getOverviewExcerpt: async () => ({
+          backend: "raw_pdf_text",
+          text: "This substantive-looking sentence has no paper identity on its source result and therefore must not become a verified quote.",
+          chunkIndexes: [0],
+          totalChunks: 1,
+          citationLabel: "Unknown, 2026",
+          sourceLabel: "(Unknown, 2026)",
+        }),
+      } as never,
+      {} as never,
+      {} as never,
+      {
+        listPaperContexts: () => [paperContext],
+        resolvePaperContextTarget: () => paperContext,
+      } as never,
+    );
+    const validated = tool.validate({ mode: "overview" });
+    assert.equal(validated.ok, true);
+    if (!validated.ok) return;
+    const output = (await tool.execute(validated.value, baseContext)) as {
+      results?: Array<{ quoteAnchors?: string[] }>;
+      quoteCitations?: unknown[];
+    };
+
+    assert.lengthOf(output.quoteCitations || [], 0);
+    assert.isUndefined(output.results?.[0]?.quoteAnchors);
   });
 
   it("paper_read overview does not anchor publisher DOI boilerplate", async function () {
@@ -1632,6 +1697,8 @@ describe("semantic tool surface", function () {
             `[chunk 4]\n${substantiveSentence}`,
           citationLabel: "Liu et al., 2026",
           sourceLabel: "(Liu et al., 2026)",
+          pageIndex: 4,
+          pageLabel: "5",
           paperContext,
         }),
       } as never,
@@ -1653,11 +1720,20 @@ describe("semantic tool surface", function () {
       },
     })) as {
       results?: Array<{ quoteAnchors?: string[] }>;
-      quoteCitations?: Array<{ quoteText: string }>;
+      quoteCitations?: Array<{
+        quoteText: string;
+        sourceMatchSource?: string;
+        pageHintIndex?: number;
+      }>;
     };
 
     assert.lengthOf(output.quoteCitations || [], 1);
     assert.equal(output.quoteCitations?.[0]?.quoteText, substantiveSentence);
+    assert.equal(
+      output.quoteCitations?.[0]?.sourceMatchSource,
+      "pdf-page-text",
+    );
+    assert.equal(output.quoteCitations?.[0]?.pageHintIndex, 4);
     assert.notInclude(
       output.quoteCitations?.map((citation) => citation.quoteText).join("\n"),
       boilerplate,
@@ -1705,6 +1781,8 @@ describe("semantic tool surface", function () {
             score: 3.5,
             citationLabel: "Montague, 2012",
             sourceLabel: "(Montague, 2012)",
+            pageIndex: 7,
+            pageLabel: "8",
           },
         ],
       } as never,

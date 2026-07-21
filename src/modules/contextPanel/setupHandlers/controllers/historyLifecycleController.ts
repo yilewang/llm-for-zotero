@@ -113,8 +113,10 @@ import { normalizeAttachmentContentHash } from "../../normalizers";
 import { replaceOwnerAttachmentRefs } from "../../../../utils/attachmentRefStore";
 import { extractManagedBlobHash } from "../../attachmentStorage";
 import {
+  getLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
+  setLastUsedUpstreamGlobalConversationKey,
   setLastUsedPaperConversationKey,
   setLockedGlobalConversationKey,
   buildPaperStateKey,
@@ -234,7 +236,6 @@ export type HistoryLifecycleControllerDeps = {
   historyUndoBtn: HTMLButtonElement | null;
   topToast: HTMLElement | null;
   modeChipBtn: HTMLButtonElement | null;
-  claudeSystemToggleBtn: HTMLButtonElement | null;
   getItem: () => Zotero.Item | null;
   setItem: (item: Zotero.Item | null) => void;
   getBasePaperItem: () => Zotero.Item | null;
@@ -257,7 +258,6 @@ export type HistoryLifecycleControllerDeps = {
   syncConversationIdentity: () => void;
   syncQueuedFollowUpRegistration: () => void;
   updateRuntimeModeButton: () => void;
-  updateClaudeSystemToggle: () => void;
   refreshChatPreservingScroll: () => void;
   resetComposePreviewUI: () => void;
   updateModelButton: () => void;
@@ -294,7 +294,6 @@ export type HistoryLifecycleControllerDeps = {
   markNextWebChatSendAsNewChat: () => void;
   primeFreshWebChatPaperChipState: () => void;
   updateImagePreviewPreservingScroll: () => void;
-  getPreferredTargetSystem: () => ConversationSystem;
   switchConversationSystem: (
     nextSystem: ConversationSystem,
     options?: { forceFresh?: boolean },
@@ -391,7 +390,6 @@ export function createHistoryLifecycleController(
     historyUndoBtn,
     topToast,
     modeChipBtn,
-    claudeSystemToggleBtn,
   } = deps;
   const getConversationSystem = deps.getConversationSystem;
   const isClaudeConversationSystem = deps.isClaudeConversationSystem;
@@ -414,7 +412,6 @@ export function createHistoryLifecycleController(
   const syncConversationIdentity = deps.syncConversationIdentity;
   const syncQueuedFollowUpRegistration = deps.syncQueuedFollowUpRegistration;
   const updateRuntimeModeButton = deps.updateRuntimeModeButton;
-  const updateClaudeSystemToggle = deps.updateClaudeSystemToggle;
   const refreshChatPreservingScroll = deps.refreshChatPreservingScroll;
   const resetComposePreviewUI = deps.resetComposePreviewUI;
   const updateModelButton = deps.updateModelButton;
@@ -469,8 +466,6 @@ export function createHistoryLifecycleController(
   const primeFreshWebChatPaperChipState = deps.primeFreshWebChatPaperChipState;
   const updateImagePreviewPreservingScroll =
     deps.updateImagePreviewPreservingScroll;
-  const getPreferredTargetSystem = deps.getPreferredTargetSystem;
-  const switchConversationSystem = deps.switchConversationSystem;
   const setActiveEditSession = deps.setActiveEditSession;
   const ztoolkit = { log: deps.log };
   const panelWin = body.ownerDocument?.defaultView || null;
@@ -2180,8 +2175,6 @@ export function createHistoryLifecycleController(
     if (!noteFocusItem) {
       setCurrentItem(nextItem as any);
     }
-    syncConversationIdentity();
-    void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
     if (system === "claude_code") {
       rememberClaudeConversationSelection({
         conversationKey: normalizedConversationKey,
@@ -2205,7 +2198,13 @@ export function createHistoryLifecycleController(
         libraryID,
         normalizedConversationKey,
       );
+      setLastUsedUpstreamGlobalConversationKey(
+        libraryID,
+        normalizedConversationKey,
+      );
     }
+    syncConversationIdentity();
+    void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
     setActiveEditSession(null);
     inlineEditCleanup?.();
     setInlineEditCleanup(null);
@@ -2354,23 +2353,6 @@ export function createHistoryLifecycleController(
         setCurrentItem(nextItem as any);
       }
     }
-    syncConversationIdentity();
-    refreshAutoLoadedPaperContextForCurrentItem();
-    void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
-    if (isWebChatMode()) {
-      const hadWebChatSession =
-        webChatIsolatedConversationKeys.has(resolvedConversationKey) &&
-        chatHistory.has(resolvedConversationKey);
-      webChatIsolatedConversationKeys.add(resolvedConversationKey);
-      if (!hadWebChatSession) {
-        chatHistory.set(resolvedConversationKey, []);
-        markNextWebChatSendAsNewChat();
-        primeFreshWebChatPaperChipState();
-      }
-      loadedConversationKeys.add(resolvedConversationKey);
-    } else {
-      await ensureConversationLoaded(item as Zotero.Item);
-    }
     if (system === "claude_code") {
       rememberClaudeConversationSelection({
         conversationKey: resolvedConversationKey,
@@ -2401,6 +2383,23 @@ export function createHistoryLifecycleController(
         paperItemID,
         resolvedConversationKey,
       );
+    }
+    syncConversationIdentity();
+    refreshAutoLoadedPaperContextForCurrentItem();
+    void renderShortcuts(body, item as Zotero.Item, resolveShortcutMode(item));
+    if (isWebChatMode()) {
+      const hadWebChatSession =
+        webChatIsolatedConversationKeys.has(resolvedConversationKey) &&
+        chatHistory.has(resolvedConversationKey);
+      webChatIsolatedConversationKeys.add(resolvedConversationKey);
+      if (!hadWebChatSession) {
+        chatHistory.set(resolvedConversationKey, []);
+        markNextWebChatSendAsNewChat();
+        primeFreshWebChatPaperChipState();
+      }
+      loadedConversationKeys.add(resolvedConversationKey);
+    } else {
+      await ensureConversationLoaded(item as Zotero.Item);
     }
     setActiveEditSession(null);
     inlineEditCleanup?.();
@@ -3418,6 +3417,10 @@ export function createHistoryLifecycleController(
       setLastUsedCodexGlobalConversationKey(libraryID, targetConversationKey);
     } else {
       activeGlobalConversationByLibrary.set(libraryID, targetConversationKey);
+      setLastUsedUpstreamGlobalConversationKey(
+        libraryID,
+        targetConversationKey,
+      );
     }
 
     ztoolkit.log("LLM: + conversation action", {
@@ -3682,7 +3685,9 @@ export function createHistoryLifecycleController(
               const lockedKey = getLockedGlobalConversationKey(libraryID);
               if (lockedKey !== null) return lockedKey;
               const activeKey = Number(
-                activeGlobalConversationByLibrary.get(libraryID) || 0,
+                activeGlobalConversationByLibrary.get(libraryID) ||
+                  getLastUsedUpstreamGlobalConversationKey(libraryID) ||
+                  0,
               );
               if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
               return activeKey === GLOBAL_CONVERSATION_KEY_BASE
@@ -3694,18 +3699,6 @@ export function createHistoryLifecycleController(
       } else {
         void createAndSwitchGlobalConversation();
       }
-    });
-  }
-
-  if (claudeSystemToggleBtn) {
-    claudeSystemToggleBtn.addEventListener("click", (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (!item) return;
-      const nextSystem = isRuntimeConversationSystem()
-        ? "upstream"
-        : getPreferredTargetSystem();
-      void switchConversationSystem(nextSystem, { forceFresh: true });
     });
   }
 

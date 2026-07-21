@@ -1005,7 +1005,7 @@ describe("agentTrace render", function () {
         createdAt: 260_000,
       },
     ];
-    const streamingMessage = {
+    const message = {
       role: "assistant" as const,
       text: "",
       timestamp: 260_000,
@@ -1013,38 +1013,169 @@ describe("agentTrace render", function () {
       modelProviderLabel: "Codex",
       streaming: true,
     };
-    const streamingTrace = renderAgentTrace({
+    const workingTrace = renderAgentTrace({
       doc: fakeDocument,
-      message: streamingMessage,
+      message,
       events: events.slice(0, 1),
     }) as unknown as FakeElement;
-    const streamingDetails = streamingTrace.findByClass(
-      "llm-agent-activity-details",
-    ) as (FakeElement & { open?: boolean }) | null;
-    assert.isTrue(streamingDetails?.open);
+    assert.isTrue(
+      (
+        workingTrace.findByClass("llm-agent-activity-details") as
+          | (FakeElement & {
+              open?: boolean;
+            })
+          | null
+      )?.open,
+    );
     assert.equal(
-      streamingTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      workingTrace.findByClass("llm-agent-activity-summary")?.textContent,
       "Working…",
     );
 
-    streamingMessage.streaming = false;
+    message.streaming = false;
     const completedTrace = renderAgentTrace({
       doc: fakeDocument,
-      message: streamingMessage,
+      message,
       events,
     }) as unknown as FakeElement;
-    const completedDetails = completedTrace.findByClass(
-      "llm-agent-activity-details",
-    ) as (FakeElement & { open?: boolean }) | null;
-    assert.isFalse(completedDetails?.open);
+    assert.isFalse(
+      (
+        completedTrace.findByClass("llm-agent-activity-details") as
+          | (FakeElement & {
+              open?: boolean;
+            })
+          | null
+      )?.open,
+    );
     assert.equal(
       completedTrace.findByClass("llm-agent-activity-summary")?.textContent,
       "Worked for 4m 19s",
     );
-    assert.exists(completedTrace.findByClass("llm-agent-output-divider"));
   });
 
-  it("collapses Codex activity as soon as the assistant answer starts", function () {
+  it("rules off the activity trace once an answer follows it", function () {
+    const baseEvents: AgentRunEventRecord[] = [
+      {
+        runId: "run-divider",
+        seq: 1,
+        eventType: "message_delta",
+        payload: { type: "message_delta", text: "Searching" },
+        createdAt: 1_000,
+      },
+    ];
+    const settled = {
+      role: "assistant" as const,
+      text: "Representational drift is continuous.",
+      timestamp: 9_000,
+      runMode: "agent" as const,
+      streaming: false,
+    };
+
+    // Replayed trace with no `final` marker still gets the rule, because the
+    // settled message carries the answer that the rule separates.
+    const replayed = renderAgentTrace({
+      doc: fakeDocument,
+      message: settled,
+      events: baseEvents,
+    }) as unknown as FakeElement;
+    assert.isNotNull(replayed.findByClass("llm-agent-output-divider"));
+
+    // Still working with nothing below yet — no dangling rule.
+    const working = renderAgentTrace({
+      doc: fakeDocument,
+      message: { ...settled, text: "", streaming: true },
+      events: baseEvents,
+    }) as unknown as FakeElement;
+    assert.isNull(working.findByClass("llm-agent-output-divider"));
+
+    // Restored rows can retain a stale streaming flag. Visible answer text is
+    // still sufficient because there is content below the rule to separate.
+    const staleStreaming = renderAgentTrace({
+      doc: fakeDocument,
+      message: { ...settled, streaming: true },
+      events: baseEvents,
+    }) as unknown as FakeElement;
+    assert.isNotNull(staleStreaming.findByClass("llm-agent-output-divider"));
+
+    // A `final` event still drives the rule on its own.
+    const finalized = renderAgentTrace({
+      doc: fakeDocument,
+      message: { ...settled, text: "", streaming: true },
+      events: [
+        ...baseEvents,
+        {
+          runId: "run-divider",
+          seq: 2,
+          eventType: "final",
+          payload: { type: "final", text: "Done" },
+          createdAt: 9_000,
+        },
+      ],
+    }) as unknown as FakeElement;
+    assert.isNotNull(finalized.findByClass("llm-agent-output-divider"));
+  });
+
+  it("keeps the rule last so it separates the trace from the answer", function () {
+    const trace = renderAgentTrace({
+      doc: fakeDocument,
+      message: {
+        role: "assistant" as const,
+        text: "Answer text.",
+        timestamp: 9_000,
+        runMode: "agent" as const,
+        streaming: false,
+      },
+      events: [
+        {
+          runId: "run-divider-order",
+          seq: 1,
+          eventType: "message_delta",
+          payload: { type: "message_delta", text: "Searching" },
+          createdAt: 1_000,
+        },
+      ],
+    }) as unknown as FakeElement;
+    const children = trace.children as FakeElement[];
+    assert.isTrue(
+      children[children.length - 1].classList.contains(
+        "llm-agent-output-divider",
+      ),
+    );
+    assert.isTrue(
+      children[0].classList.contains("llm-agent-activity-details"),
+      "disclosure stays above the rule",
+    );
+  });
+
+  it("uses one scaled gap around the activity disclosure and answer divider", function () {
+    const css = readFileSync("addon/content/zoteroPane.css", "utf8");
+    const activityRule =
+      css.match(/(?:^|\n)\.llm-agent-activity\s*\{[\s\S]*?\}/)?.[0] || "";
+    const answerRule =
+      css.match(
+        /\.llm-bubble\.assistant\s*>\s*\.llm-agent-activity\s*\+\s*\*\s*\{[\s\S]*?\}/,
+      )?.[0] || "";
+    const dividerRule =
+      css.match(/(?:^|\n)\.llm-agent-output-divider\s*\{[\s\S]*?\}/)?.[0] || "";
+
+    assert.include(
+      activityRule,
+      "--llm-agent-activity-spacing: calc(10px * var(--llm-font-scale, 1))",
+    );
+    assert.include(
+      activityRule,
+      "margin-block: var(--llm-agent-activity-spacing)",
+    );
+    assert.include(activityRule, "gap: var(--llm-agent-activity-spacing)");
+    assert.include(answerRule, "margin-top: 0");
+    assert.include(dividerRule, "margin: 0");
+    assert.include(
+      dividerRule,
+      "var(--stroke-secondary, rgba(120, 120, 120, 0.22))",
+    );
+  });
+
+  it("collapses activity when the Codex answer starts", function () {
     const message = {
       role: "assistant" as const,
       text: "",
@@ -1053,7 +1184,7 @@ describe("agentTrace render", function () {
       modelProviderLabel: "Codex",
       streaming: true,
     };
-    const workingEvents: AgentRunEventRecord[] = [
+    const events: AgentRunEventRecord[] = [
       {
         runId: "run-answer-start",
         seq: 1,
@@ -1061,63 +1192,87 @@ describe("agentTrace render", function () {
         payload: {
           type: "codex_progress",
           itemId: "reasoning-1",
-          text: "Checking the paper context.",
+          text: "Checking context.",
           status: "running",
         },
         createdAt: 1_000,
       },
+      {
+        runId: "run-answer-start",
+        seq: 2,
+        eventType: "codex_progress",
+        payload: {
+          type: "codex_progress",
+          itemId: "assistant-1",
+          text: "This is the final answer.",
+          status: "running",
+          kind: "assistant_message",
+        },
+        createdAt: 5_000,
+      },
     ];
 
-    const workingTrace = renderAgentTrace({
+    const trace = renderAgentTrace({
       doc: fakeDocument,
       message,
-      events: workingEvents,
+      events,
     }) as unknown as FakeElement;
-    const workingDetails = workingTrace.findByClass(
-      "llm-agent-activity-details",
-    ) as (FakeElement & { open?: boolean }) | null;
-    assert.isTrue(workingDetails?.open);
+    const details = trace.findByClass("llm-agent-activity-details") as
+      | (FakeElement & {
+          open?: boolean;
+        })
+      | null;
+    assert.isFalse(details?.open);
     assert.equal(
-      workingTrace.findByClass("llm-agent-activity-summary")?.textContent,
-      "Working…",
-    );
-
-    const answeringTrace = renderAgentTrace({
-      doc: fakeDocument,
-      message,
-      events: [
-        ...workingEvents,
-        {
-          runId: "run-answer-start",
-          seq: 2,
-          eventType: "codex_progress",
-          payload: {
-            type: "codex_progress",
-            itemId: "assistant-1",
-            text: "This is the final answer, still streaming.",
-            status: "running",
-            kind: "assistant_message",
-          },
-          createdAt: 5_000,
-        },
-      ],
-    }) as unknown as FakeElement;
-    const answeringDetails = answeringTrace.findByClass(
-      "llm-agent-activity-details",
-    ) as (FakeElement & { open?: boolean }) | null;
-    assert.isFalse(answeringDetails?.open);
-    assert.equal(
-      answeringTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      trace.findByClass("llm-agent-activity-summary")?.textContent,
       "Worked for 4s",
     );
-    assert.exists(answeringTrace.findByClass("llm-agent-output-divider"));
-    assert.notExists(
-      answeringDetails?.findByClass("llm-agent-inline-text") || null,
-    );
-    const answer = answeringTrace.findByClass("llm-agent-inline-text");
+    assert.notExists(details?.findByClass("llm-agent-inline-text") || null);
     assert.include(
-      `${answer?.textContent || ""}${answer?.innerHTML || ""}`,
+      `${trace.findByClass("llm-agent-inline-text")?.textContent || ""}${
+        trace.findByClass("llm-agent-inline-text")?.innerHTML || ""
+      }`,
       "This is the final answer",
+    );
+  });
+
+  it("marks native Codex answer events and records their start time", function () {
+    const message = {
+      role: "assistant" as const,
+      text: "",
+      timestamp: 1,
+      runMode: "agent" as const,
+      modelProviderLabel: "Codex",
+      streaming: true,
+    };
+    const controller = createCodexNativeActivityTraceControllerForTests(
+      message,
+      () => undefined,
+    );
+
+    controller.appendAgentMessageDelta({
+      itemId: "assistant-answer",
+      delta: "Answer starts.",
+    });
+    const progress = message.pendingAgentTraceEvents?.find(
+      (entry) => entry.payload.type === "codex_progress",
+    );
+    assert.equal(
+      progress?.payload.type === "codex_progress"
+        ? progress.payload.kind
+        : undefined,
+      "assistant_message",
+    );
+
+    controller.finish("Answer starts.");
+    const finalEvent = message.pendingAgentTraceEvents?.find(
+      (entry) => entry.payload.type === "final",
+    );
+    assert.isAbove(
+      finalEvent?.payload.type === "final"
+        ? Number(finalEvent.payload.answerStartedAt)
+        : 0,
+      0,
     );
   });
 
@@ -1192,6 +1347,24 @@ describe("agentTrace render", function () {
     assert.notInclude(rendered, "> 记忆痕迹在巩固过程中具有高度动态性。");
     assert.notInclude(rendered, "(Tomé, 2024)");
     assert.notInclude(rendered, "[[quote:");
+  });
+
+  it("renders a rejected quote card without source attribution in interleaved agent text", function () {
+    const quote =
+      "This model interpretation is not wording from the cited source.";
+    const rendered = buildAgentTraceMarkdownForRender(
+      `> ${quote}\n\n(Eppler et al., 2026, page 3)`,
+      {
+        text: `> ${quote}\n\n(Eppler et al., 2026, page 3)`,
+        quoteCitations: [],
+        quoteDisplayOverride: {
+          markdown: `> ${quote}\n>\n> Not a source quote`,
+        },
+      },
+    );
+
+    assert.include(rendered, "[[quote-occurrence:");
+    assert.notInclude(rendered, "Eppler");
   });
 
   it("uses rendered Markdown HTML for streaming assistant text", function () {
@@ -1661,8 +1834,8 @@ describe("agentTrace render", function () {
   it("dedupes adjacent identical Codex tool activity rows with different item IDs", function () {
     const args = {
       command:
-        "rm -- '/Users/yat-lok/Desktop/Screenshot.png' && test ! -e '/Users/yat-lok/Desktop/Screenshot.png'",
-      cwd: "/Users/yat-lok/Documents/zotero-dev/agent-runtime/profile-79d985cc",
+        "rm -- '/Users/example/Desktop/Screenshot.png' && test ! -e '/Users/example/Desktop/Screenshot.png'",
+      cwd: "/Users/example/Documents/zotero-dev/agent-runtime/profile-example",
       timeoutMs: 30000,
     };
     const events: AgentRunEventRecord[] = [
@@ -1785,7 +1958,7 @@ describe("agentTrace render", function () {
           citationKey: "chambersStableBrainUnstable2017",
           contentSourceMode: "mineru",
           mineruCacheDir:
-            "/Users/yat-lok/Documents/zotero-dev/llm-for-zotero-mineru/3484",
+            "/Users/example/Documents/zotero-dev/llm-for-zotero-mineru/3484",
         },
       },
       maxChars: 6000,
@@ -1917,7 +2090,7 @@ describe("agentTrace render", function () {
           attachmentTitle: "PDF",
           contentSourceMode: "mineru",
           mineruCacheDir:
-            "/Users/yat-lok/Documents/zotero-dev/llm-for-zotero-mineru/3442",
+            "/Users/example/Documents/zotero-dev/llm-for-zotero-mineru/3442",
         },
       },
       maxChars: 6000,

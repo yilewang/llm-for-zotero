@@ -505,6 +505,7 @@ function paperContextKey(
 function buildTargetedPaperGroups(
   targets: NonNullable<PdfTarget["paperContext"]>[],
   results: Array<Record<string, unknown>>,
+  quoteCitationCollector?: QuoteCitation[],
 ): Array<Record<string, unknown>> {
   const groups = new Map<string, Array<Record<string, unknown>>>();
   for (const result of results) {
@@ -537,8 +538,30 @@ function buildTargetedPaperGroups(
     }
     const pageLabel = normalizeString(result.pageLabel);
     if (pageLabel) passage.pageLabel = pageLabel;
-    const quoteCitation = buildQuoteCitationFromResult(result);
-    if (quoteCitation) passage.quoteCitationId = quoteCitation.id;
+    for (const field of [
+      "sourceStart",
+      "sourceEnd",
+      "pageStart",
+      "pageEnd",
+    ] as const) {
+      const value = Number(result[field]);
+      if (Number.isFinite(value) && value >= 0) {
+        passage[field] = Math.floor(value);
+      }
+    }
+    const sourceFingerprint = normalizeString(result.sourceFingerprint);
+    if (sourceFingerprint) passage.sourceFingerprint = sourceFingerprint;
+    const quoteCitations = buildQuoteCitationsFromResult(result);
+    quoteCitationCollector?.push(...quoteCitations);
+    if (quoteCitations.length) {
+      if (quoteCitations.length === 1) {
+        passage.quoteCitationId = quoteCitations[0].id;
+      }
+      passage.quoteCitationIds = quoteCitations.map((citation) => citation.id);
+      passage.quoteAnchors = quoteCitations.map(
+        (citation) => `[[quote:${citation.id}]]`,
+      );
+    }
     const entries = groups.get(key) || [];
     entries.push(passage);
     groups.set(key, entries);
@@ -559,35 +582,66 @@ function buildTargetedPaperGroups(
 
 function buildQuoteCitationFromResult(
   result: Record<string, unknown>,
+  quoteText?: string,
 ): ReturnType<typeof buildQuoteCitation> {
   const paperContext = validateObject<Record<string, unknown>>(
     result.paperContext,
   )
     ? result.paperContext
     : undefined;
+  const itemId = Number(paperContext?.itemId);
+  const contextItemId = Number(paperContext?.contextItemId);
+  if (
+    !Number.isFinite(itemId) ||
+    itemId <= 0 ||
+    !Number.isFinite(contextItemId) ||
+    contextItemId <= 0
+  ) {
+    return undefined;
+  }
+  const explicitPageIndex = Number(result.pageIndex);
+  const pageStart = Number(result.pageStart);
+  const pageEnd = Number(result.pageEnd);
+  const pageHintIndex =
+    Number.isFinite(explicitPageIndex) && explicitPageIndex >= 0
+      ? Math.floor(explicitPageIndex)
+      : Number.isFinite(pageStart) &&
+          Number.isFinite(pageEnd) &&
+          pageStart >= 0 &&
+          pageStart === pageEnd
+        ? Math.floor(pageStart)
+        : undefined;
+  const exactQuoteText = normalizeString(quoteText) || "";
+  if (!exactQuoteText) return undefined;
   return buildQuoteCitation({
-    quoteText: result.text,
+    quoteText: exactQuoteText,
+    sourceMatchText: exactQuoteText,
+    sourceMatchKind: "exact",
+    sourceMatchSource:
+      pageHintIndex === undefined ? "context-text" : "pdf-page-text",
     citationLabel:
       normalizeString(result.sourceLabel) ||
       normalizeString(result.citationLabel),
     sourceSectionLabel: result.sectionLabel,
     sourceChunkKind: result.chunkKind,
-    contextItemId: paperContext?.contextItemId,
-    itemId: paperContext?.itemId,
-    pageHintIndex: result.pageIndex,
+    contextItemId,
+    itemId,
+    sourceFingerprint: result.sourceFingerprint,
+    pageHintIndex,
     pageHintLabel: result.pageLabel,
+    allowShortQuoteText: true,
   });
 }
 
-function buildQuoteCitationsForResults(
-  results: Array<Record<string, unknown>>,
-) {
-  const citations: NonNullable<ReturnType<typeof buildQuoteCitation>>[] = [];
-  for (const result of results) {
-    const citation = buildQuoteCitationFromResult(result);
-    if (citation) citations.push(citation);
-  }
-  return mergeQuoteCitations(citations);
+function buildQuoteCitationsFromResult(
+  result: Record<string, unknown>,
+): QuoteCitation[] {
+  const resultText = normalizeString(result.text) || "";
+  const candidates = splitOverviewQuoteCandidates(resultText);
+  const quoteTexts = candidates.length ? candidates : [resultText];
+  return quoteTexts
+    .map((quoteText) => buildQuoteCitationFromResult(result, quoteText))
+    .filter((entry): entry is QuoteCitation => Boolean(entry));
 }
 
 function splitOverviewQuoteCandidates(text: string): string[] {
@@ -649,29 +703,11 @@ function buildOverviewQuoteCitationPack(
     ) {
       return result;
     }
-    const paperContext = validateObject<Record<string, unknown>>(
-      result.paperContext,
-    )
-      ? result.paperContext
-      : undefined;
     const quoteTexts = splitOverviewQuoteCandidates(
       normalizeString(result.text) || "",
     );
     const resultCitations = quoteTexts
-      .map((quoteText) =>
-        buildQuoteCitation({
-          quoteText,
-          citationLabel:
-            normalizeString(result.sourceLabel) ||
-            normalizeString(result.citationLabel),
-          sourceSectionLabel: result.sectionLabel,
-          sourceChunkKind: result.chunkKind,
-          contextItemId: paperContext?.contextItemId,
-          itemId: paperContext?.itemId,
-          pageHintIndex: result.pageIndex,
-          pageHintLabel: result.pageLabel,
-        }),
-      )
+      .map((quoteText) => buildQuoteCitationFromResult(result, quoteText))
       .filter((entry): entry is QuoteCitation => Boolean(entry));
     quoteCitations.push(...resultCitations);
     return resultCitations.length
@@ -811,6 +847,7 @@ async function readExplicitPageTargets(params: {
   pdfPageService: PdfPageService;
 }): Promise<Record<string, unknown>> {
   const results: Array<Record<string, unknown>> = [];
+  const quoteCitations: QuoteCitation[] = [];
   for (const paperContext of params.targets) {
     const pageResult = await params.pdfPageService.readPageTexts({
       paperContext,
@@ -836,8 +873,8 @@ async function readExplicitPageTargets(params: {
   return {
     mode: params.input.mode,
     results,
-    papers: buildTargetedPaperGroups(params.targets, results),
-    quoteCitations: buildQuoteCitationsForResults(results),
+    papers: buildTargetedPaperGroups(params.targets, results, quoteCitations),
+    quoteCitations: mergeQuoteCitations(quoteCitations),
   };
 }
 
@@ -1271,16 +1308,16 @@ export function createPaperReadTool(
         topK: input.topK,
         perPaperTopK: input.topK,
       });
+      const quoteCitations: QuoteCitation[] = [];
       return {
         mode: input.mode,
         results,
         papers: buildTargetedPaperGroups(
           targets,
           results as Array<Record<string, unknown>>,
+          quoteCitations,
         ),
-        quoteCitations: buildQuoteCitationsForResults(
-          results as Array<Record<string, unknown>>,
-        ),
+        quoteCitations: mergeQuoteCitations(quoteCitations),
       };
     },
     async buildFollowupMessage(result: AgentToolResult) {

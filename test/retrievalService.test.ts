@@ -35,6 +35,11 @@ describe("RetrievalService", function () {
       chunkText:
         "Abstract\nThe paper introduces the Tolman-Eichenbaum Machine and shows it generalizes structural maps across tasks.",
       chunkKind: "abstract",
+      sourceStart: 100,
+      sourceEnd: 310,
+      sourceFingerprint: "fnv1a32-test",
+      pageStart: 5,
+      pageEnd: 5,
       estimatedTokens: 18,
       bm25Score: 0.2,
       embeddingScore: 0,
@@ -81,6 +86,11 @@ describe("RetrievalService", function () {
     assert.equal(results[0].chunkIndex, 0);
     assert.equal(results[0].chunkKind, "abstract");
     assert.equal(results[0].score, abstractCandidate.evidenceScore);
+    assert.equal(results[0].sourceStart, 100);
+    assert.equal(results[0].sourceEnd, 310);
+    assert.equal(results[0].sourceFingerprint, "fnv1a32-test");
+    assert.equal(results[0].pageStart, 5);
+    assert.equal(results[0].pageEnd, 5);
     assert.equal(results[1].chunkIndex, 1);
     assert.equal(results[1].chunkKind, "figure-caption");
     assert.equal(results[1].score, captionCandidate.evidenceScore);

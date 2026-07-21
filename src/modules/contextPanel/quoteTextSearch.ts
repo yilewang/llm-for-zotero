@@ -2,11 +2,11 @@ import {
   buildQuoteTextIndex,
   countCanonicalTextMatches,
   extractQuoteTextTokens,
+  findQuoteSourceSpansAllowingLayoutArtifacts,
   normalizeQuoteTextCanonical,
+  type QuoteTextIndex,
 } from "./quoteTextNormalization";
 
-const SEARCH_BOUNDARY_PUNCTUATION_RE =
-  /^[\s"'`“”‘’([{<]+|[\s"'`“”‘’)\]}>.,;:!?]+$/g;
 const SEARCH_WORD_PATTERN = /[\p{L}\p{N}]+/gu;
 const PLAIN_ASCII_WORD_PATTERN = /^[a-z]+$/;
 const NUMERIC_TOKEN_PATTERN = /^\p{N}+$/u;
@@ -46,9 +46,6 @@ const COMMON_SEARCH_STOP_WORDS = new Set([
 const ELLIPSIS_RE = /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/;
 const ELLIPSIS_RE_G = /(?:\.{2,}|\u2026|\[\s*\.{2,}\s*\]|\[\s*\u2026\s*\])/g;
 const NORMALIZED_QUERY_LENGTHS = [100, 80, 60, 40, 30, 25, 20, 15];
-const FIND_CONTROLLER_HYPHEN_RE = /[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g;
-const FIND_CONTROLLER_TOKEN_RE =
-  /[A-Za-z0-9]+(?:[-\u2010-\u2015][A-Za-z0-9]+)*/g;
 
 function sanitizeText(text: string): string {
   let out = "";
@@ -100,6 +97,7 @@ export type QuoteTextSearchEntry = {
   text: string;
   normalizedText?: string;
   debugLabel?: string;
+  textIndex?: QuoteTextIndex;
 };
 
 export type QuoteTextSearchMatch = {
@@ -115,8 +113,30 @@ export type QuoteTextSearchMatch = {
 
 type NormalizedQuoteTextSearchEntry = {
   id: string;
+  text: string;
+  textIndex: QuoteTextIndex;
   normalizedText: string;
   debugLabel: string;
+};
+
+export type QuoteTextAnchorMatch = {
+  entryId: string;
+  /** Literal source text suitable for page-native FindController alignment. */
+  query: string;
+  normalizedQuery: string;
+  matchKind: QuoteTextSearchQueryKind;
+  confidence: "high" | "medium";
+  totalOccurrences: number;
+  matchedEntryIds: string[];
+  matchedTokenCount: number;
+  quoteTokenCount: number;
+  quoteTokenCoverage: number;
+  supportedQuoteTokenCount: number;
+  quoteTokenSupportCoverage: number;
+  quoteStartTokenSupported: boolean;
+  quoteEndTokenSupported: boolean;
+  quoteTokenStart: number;
+  quoteTokenEnd: number;
 };
 
 export type QuoteTextSearchOptions = {
@@ -183,13 +203,22 @@ export function stripBoundaryEllipsis(text: string): string {
  * reader or citation matching.
  */
 export function splitQuoteAtEllipsis(text: string): string[] {
+  return splitQuoteAtEllipsisInOrder(text)
+    .filter((segment) => segment.length >= 30)
+    .sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Split a displayed quote at internal ellipsis markers without changing the
+ * author's source order. Navigation cards must use this form.
+ */
+export function splitQuoteAtEllipsisInOrder(text: string): string[] {
   const cleaned = stripBoundaryEllipsis(text);
   if (!ELLIPSIS_RE.test(cleaned)) return [cleaned];
   return cleaned
     .split(ELLIPSIS_RE_G)
     .map((s) => s.trim())
-    .filter((s) => s.length >= 30)
-    .sort((a, b) => b.length - a.length);
+    .filter(Boolean);
 }
 
 export function stripInlineLocatorNoise(value: string): string {
@@ -439,332 +468,6 @@ export function buildQuoteTextSearchQueries(
   return queries;
 }
 
-/**
- * Build raw-text prefix queries from the original quote, trimmed at word
- * boundaries. These are passed to PDF.js FindController as-is.
- */
-export function buildRawPrefixQueries(text: string): string[] {
-  const clean = sanitizeText(text || "").trim();
-  if (clean.length < 12) return [];
-  const queries: string[] = [];
-  const pushQuery = (query: string) => {
-    const normalizedQuery = sanitizeText(query || "").trim();
-    if (normalizedQuery.length < 12 || queries.includes(normalizedQuery))
-      return;
-    queries.push(normalizedQuery);
-  };
-
-  for (const segment of splitQuoteAtEllipsis(clean)) {
-    if (segment === clean) continue;
-    if (segment.length <= 220) {
-      pushQuery(segment);
-    }
-    for (const charLen of [120, 80, 50]) {
-      if (segment.length <= charLen) continue;
-      const prefix = segment
-        .slice(0, charLen)
-        .replace(/\s\S*$/, "")
-        .trim();
-      pushQuery(prefix);
-    }
-  }
-
-  const stripped = clean.replace(SEARCH_BOUNDARY_PUNCTUATION_RE, "").trim();
-  const bases = Array.from(
-    new Set(
-      [stripped || clean, stripped === clean ? clean : ""].filter(
-        (value) => value.length >= 12,
-      ),
-    ),
-  );
-
-  for (const base of bases) {
-    if (base.length <= 220) {
-      pushQuery(base);
-    }
-    for (const charLen of [50, 30, 18]) {
-      if (base.length <= charLen) continue;
-      const prefix = base
-        .slice(0, charLen)
-        .replace(/\s\S*$/, "")
-        .trim();
-      pushQuery(prefix);
-    }
-    for (const charLen of [50, 30, 18]) {
-      if (base.length <= charLen) continue;
-      const suffix = base
-        .slice(-charLen)
-        .replace(/^\S*\s/, "")
-        .trim();
-      pushQuery(suffix);
-    }
-  }
-  return queries;
-}
-
-function normalizeFindControllerQueryText(value: string): string {
-  return sanitizeText(value || "")
-    .normalize("NFKC")
-    .replace(/\u00ad/g, "")
-    .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, " ")
-    .replace(FIND_CONTROLLER_HYPHEN_RE, "-")
-    .replace(/[“”„‟]/g, '"')
-    .replace(/[‘’‚‛]/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeFindControllerRawQueryText(value: string): string {
-  return sanitizeText(value || "")
-    .replace(/\u00ad/g, "")
-    .replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function stripFindControllerQueryBoundary(value: string): string {
-  return value
-    .replace(/^[\s"'`“”‘’([{<.,;:!?-]+/, "")
-    .replace(/[\s"'`“”‘’)\]}>.,;:!?-]+$/, "")
-    .trim();
-}
-
-function stripFindControllerRawQueryBoundary(value: string): string {
-  return value
-    .replace(/^[\s"'`“”‘’([{<]+/, "")
-    .replace(/[\s"'`“”‘’)\]}>]+$/, "")
-    .trim();
-}
-
-function pushFindControllerRawQuery(
-  queries: string[],
-  seen: Set<string>,
-  query: string,
-): void {
-  const rawQuery = stripFindControllerRawQueryBoundary(
-    normalizeFindControllerRawQueryText(query),
-  );
-  if (rawQuery.length < 12) return;
-  if (isWeakQuoteSearchQuery(normalizeLocatorText(rawQuery))) return;
-  const key = rawQuery.toLowerCase();
-  if (seen.has(key)) return;
-  seen.add(key);
-  queries.push(rawQuery);
-}
-
-function pushFindControllerQuery(
-  queries: string[],
-  seen: Set<string>,
-  query: string,
-): void {
-  const normalizedQuery = stripFindControllerQueryBoundary(
-    normalizeFindControllerQueryText(query),
-  );
-  if (normalizedQuery.length < 12) return;
-  if (isWeakQuoteSearchQuery(normalizeLocatorText(normalizedQuery))) return;
-  const key = normalizedQuery.toLowerCase();
-  if (seen.has(key)) return;
-  seen.add(key);
-  queries.push(normalizedQuery);
-}
-
-function pushFindControllerQueryVariants(
-  queries: string[],
-  seen: Set<string>,
-  query: string,
-): void {
-  pushFindControllerRawQuery(queries, seen, query);
-  const normalized = normalizeFindControllerQueryText(query);
-  pushFindControllerQuery(queries, seen, normalized);
-  const asciiHyphen = normalized.replace(FIND_CONTROLLER_HYPHEN_RE, "-");
-  pushFindControllerQuery(queries, seen, asciiHyphen);
-  const spacedHyphen = asciiHyphen.replace(
-    /([A-Za-z0-9])-([A-Za-z0-9])/g,
-    "$1 $2",
-  );
-  pushFindControllerQuery(queries, seen, spacedHyphen);
-}
-
-function pushFindControllerHighlightQuery(
-  queries: string[],
-  seen: Set<string>,
-  query: string,
-): void {
-  const normalizedQuery = normalizeFindControllerQueryText(query);
-  if (normalizedQuery.length < 12) return;
-  if (isWeakQuoteSearchQuery(normalizeLocatorText(normalizedQuery))) return;
-  const key = normalizedQuery.toLowerCase();
-  if (seen.has(key)) return;
-  seen.add(key);
-  queries.push(normalizedQuery);
-}
-
-function pushFindControllerHighlightQueryVariants(
-  queries: string[],
-  seen: Set<string>,
-  query: string,
-): void {
-  pushFindControllerRawQuery(queries, seen, query);
-  const normalized = normalizeFindControllerQueryText(query);
-  pushFindControllerHighlightQuery(queries, seen, normalized);
-  pushFindControllerQueryVariants(queries, seen, normalized);
-}
-
-function findControllerTokenSpans(text: string): Array<{
-  start: number;
-  end: number;
-  text: string;
-}> {
-  return Array.from(text.matchAll(FIND_CONTROLLER_TOKEN_RE)).map((match) => ({
-    start: match.index || 0,
-    end: (match.index || 0) + match[0].length,
-    text: match[0],
-  }));
-}
-
-function scoreFindControllerWindow(tokens: string[]): number {
-  let score = 0;
-  for (const token of tokens) {
-    const normalized = normalizeLocatorText(token);
-    const parts = normalized.match(SEARCH_WORD_PATTERN) || [];
-    for (const part of parts) score += scoreSearchToken(part);
-    if (/[-\u2010-\u2015]/.test(token)) score += 4;
-  }
-  return score;
-}
-
-function buildFindControllerWindowQueries(text: string): string[] {
-  const clean = stripBoundaryEllipsis(sanitizeText(text || "").trim());
-  const spans = findControllerTokenSpans(clean);
-  if (spans.length < 4) return [];
-  const candidates: Array<{ query: string; score: number; index: number }> = [];
-  for (const windowSize of [10, 8, 6, 5, 4]) {
-    if (spans.length < windowSize) continue;
-    for (let start = 0; start <= spans.length - windowSize; start += 1) {
-      const end = start + windowSize - 1;
-      const query = stripFindControllerQueryBoundary(
-        clean.slice(spans[start].start, spans[end].end),
-      );
-      if (query.length < 24 || query.length > 140) continue;
-      const tokens = spans
-        .slice(start, start + windowSize)
-        .map((span) => span.text);
-      const score =
-        scoreFindControllerWindow(tokens) -
-        (start === 0 ? 3 : 0) +
-        (start > 0 && start < spans.length - windowSize ? 2 : 0);
-      candidates.push({ query, score, index: start });
-    }
-  }
-  return candidates
-    .sort((left, right) => right.score - left.score || left.index - right.index)
-    .slice(0, 16)
-    .map((candidate) => candidate.query);
-}
-
-function buildFindControllerMiddleQueries(text: string): string[] {
-  const clean = stripBoundaryEllipsis(sanitizeText(text || "").trim());
-  if (clean.length < 48) return [];
-  const queries: string[] = [];
-  for (const fraction of [1 / 3, 1 / 2, 2 / 3]) {
-    const midStart = Math.floor(clean.length * fraction);
-    for (const len of [90, 70, 50, 36]) {
-      if (midStart + len > clean.length) continue;
-      const query = clean
-        .slice(midStart, midStart + len)
-        .replace(/^\S*\s/, "")
-        .replace(/\s\S*$/, "")
-        .trim();
-      if (query.length >= 24) queries.push(query);
-    }
-  }
-  return queries;
-}
-
-function buildFindControllerLongHighlightChunks(
-  text: string,
-  maxChunkLength: number,
-): string[] {
-  const clean = stripBoundaryEllipsis(sanitizeText(text || "").trim());
-  if (clean.length < 24 || clean.length <= maxChunkLength) return [];
-  const chunks: string[] = [];
-  const pushChunk = (start: number, length: number) => {
-    const boundedStart = Math.max(
-      0,
-      Math.min(clean.length - length, Math.floor(start)),
-    );
-    let chunk = clean.slice(boundedStart, boundedStart + length);
-    if (boundedStart > 0) chunk = chunk.replace(/^\S*\s/, "");
-    if (boundedStart + length < clean.length) {
-      chunk = chunk.replace(/\s\S*$/, "");
-    }
-    chunk = stripFindControllerQueryBoundary(chunk);
-    if (chunk.length >= 24) chunks.push(chunk);
-  };
-
-  for (const length of [
-    maxChunkLength,
-    Math.floor(maxChunkLength * 0.8),
-    Math.floor(maxChunkLength * 0.6),
-  ]) {
-    if (length < 80 || clean.length <= length) continue;
-    pushChunk(0, length);
-    pushChunk(clean.length / 2 - length / 2, length);
-    pushChunk(clean.length - length, length);
-  }
-  return chunks;
-}
-
-function buildFindControllerLongHighlightPrefixes(
-  text: string,
-  maxPrefixLength: number,
-): string[] {
-  const clean = stripBoundaryEllipsis(sanitizeText(text || "").trim());
-  if (clean.length < 24 || clean.length <= maxPrefixLength) return [];
-  const prefixes: string[] = [];
-  for (const length of [
-    maxPrefixLength,
-    Math.floor(maxPrefixLength * 0.85),
-    Math.floor(maxPrefixLength * 0.7),
-    Math.floor(maxPrefixLength * 0.55),
-  ]) {
-    if (length < 180 || clean.length <= length) continue;
-    const prefix = stripFindControllerQueryBoundary(
-      clean.slice(0, length).replace(/\s\S*$/, ""),
-    );
-    if (prefix.length >= 120) prefixes.push(prefix);
-  }
-  return prefixes;
-}
-
-function buildFindControllerHighCoverageHighlightFallbacks(
-  text: string,
-): string[] {
-  const clean = stripBoundaryEllipsis(sanitizeText(text || "").trim());
-  if (clean.length < 160) return [];
-  const fallbacks: string[] = [];
-  const pushFallback = (query: string) => {
-    const normalized = stripFindControllerQueryBoundary(query);
-    if (normalized.length < 80 || normalized.length >= clean.length - 24) {
-      return;
-    }
-    fallbacks.push(normalized);
-  };
-
-  const sentenceMatch = clean.match(/^.{80,360}?[.!?。！？](?=\s|$)/u);
-  if (sentenceMatch) {
-    pushFallback(sentenceMatch[0]);
-  }
-
-  for (const fraction of [0.75, 0.6, 0.45]) {
-    const length = Math.floor(clean.length * fraction);
-    if (length < 120 || clean.length - length < 40) continue;
-    pushFallback(clean.slice(0, length).replace(/\s\S*$/, ""));
-  }
-
-  return fallbacks;
-}
-
 export function buildFindControllerHighlightQueries(
   text: string,
   options?: {
@@ -773,44 +476,9 @@ export function buildFindControllerHighlightQueries(
     maxChunkLength?: number;
   },
 ): string[] {
-  const maxQueries = Math.max(2, options?.maxQueries ?? 18);
-  const maxFullQueryLength = Math.max(80, options?.maxFullQueryLength ?? 1200);
-  const maxChunkLength = Math.max(80, options?.maxChunkLength ?? 900);
   const clean = stripBoundaryEllipsis(sanitizeText(text || "").trim());
-  if (clean.length < 12) return [];
-
-  const queries: string[] = [];
-  const seen = new Set<string>();
-  const pushGroup = (group: string[]) => {
-    for (const query of group) {
-      if (queries.length >= maxQueries) return;
-      pushFindControllerHighlightQueryVariants(queries, seen, query);
-      if (queries.length >= maxQueries) return;
-    }
-  };
-
-  if (clean.length <= maxFullQueryLength) {
-    pushGroup([clean]);
-  }
-
-  pushGroup(buildFindControllerHighCoverageHighlightFallbacks(clean));
-  pushGroup(
-    buildFindControllerLongHighlightPrefixes(clean, maxFullQueryLength),
-  );
-
-  for (const segment of splitQuoteAtEllipsis(clean)) {
-    if (segment === clean) continue;
-    if (segment.length <= maxFullQueryLength) {
-      pushGroup([segment]);
-    }
-    pushGroup(
-      buildFindControllerLongHighlightPrefixes(segment, maxFullQueryLength),
-    );
-    pushGroup(buildFindControllerLongHighlightChunks(segment, maxChunkLength));
-  }
-
-  pushGroup(buildFindControllerLongHighlightChunks(clean, maxChunkLength));
-  return queries.slice(0, maxQueries);
+  void options;
+  return clean ? [clean] : [];
 }
 
 export function buildFindControllerFullCoverageQueries(
@@ -820,43 +488,18 @@ export function buildFindControllerFullCoverageQueries(
     maxFullQueryLength?: number;
   },
 ): string[] {
-  const maxFullQueryLength = Math.max(80, options?.maxFullQueryLength ?? 1200);
   const clean = stripBoundaryEllipsis(sanitizeText(text || "").trim());
-  if (clean.length < 12 || clean.length > maxFullQueryLength) return [];
-
-  const normalizedFullText = normalizeLocatorText(clean);
-  if (!normalizedFullText) return [];
-
-  return buildFindControllerHighlightQueries(clean, {
-    maxQueries: options?.maxQueries,
-    maxFullQueryLength,
-    maxChunkLength: maxFullQueryLength,
-  }).filter((query) => normalizeLocatorText(query) === normalizedFullText);
+  void options;
+  return clean ? [clean] : [];
 }
 
 export function buildFindControllerQuoteQueries(
   text: string,
   options?: { maxQueries?: number },
 ): string[] {
-  const maxQueries = Math.max(4, options?.maxQueries ?? 28);
   const clean = stripBoundaryEllipsis(sanitizeText(text || "").trim());
-  const queries: string[] = [];
-  const seen = new Set<string>();
-  const pushGroup = (group: string[]) => {
-    for (const query of group) {
-      if (queries.length >= maxQueries) return;
-      pushFindControllerQueryVariants(queries, seen, query);
-      if (queries.length >= maxQueries) return;
-    }
-  };
-
-  if (clean.length <= 220) {
-    pushGroup([clean]);
-  }
-  pushGroup(buildRawPrefixQueries(text));
-  pushGroup(buildFindControllerMiddleQueries(text));
-  pushGroup(buildFindControllerWindowQueries(text));
-  return queries.slice(0, maxQueries);
+  void options;
+  return clean ? [clean] : [];
 }
 
 function isWeakQuoteSearchQuery(normalizedQuery: string): boolean {
@@ -888,12 +531,15 @@ function normalizeEntries(
 ): NormalizedQuoteTextSearchEntry[] {
   return entries
     .map((entry) => {
+      const textIndex = entry.textIndex || buildQuoteTextIndex(entry.text);
       const normalizedText =
         entry.normalizedText !== undefined
           ? normalizeLocatorText(entry.normalizedText)
-          : buildQuoteTextIndex(entry.text).canonicalText;
+          : textIndex.canonicalText;
       return {
         id: String(entry.id || ""),
+        text: entry.text,
+        textIndex,
         normalizedText,
         debugLabel: entry.debugLabel || String(entry.id || ""),
       };
@@ -928,6 +574,7 @@ export function findUniqueQuoteTextSearchMatch(
   });
   const debugSummary: string[] = [];
   let bestMatch: QuoteTextSearchMatch | null = null;
+  const nonBoundaryExactEntryIds = new Set<string>();
 
   for (const query of queries) {
     const normalizedQuery = normalizeLocatorText(query.query);
@@ -944,6 +591,9 @@ export function findUniqueQuoteTextSearchMatch(
     let totalOccurrences = 0;
     let hasNonBoundaryExactOccurrence = false;
     for (const entry of normalizedEntries) {
+      if (query.kind !== "exact" && nonBoundaryExactEntryIds.has(entry.id)) {
+        continue;
+      }
       const occurrences = countOccurrences(
         entry.normalizedText,
         normalizedQuery,
@@ -957,6 +607,7 @@ export function findUniqueQuoteTextSearchMatch(
           )
         ) {
           hasNonBoundaryExactOccurrence = true;
+          nonBoundaryExactEntryIds.add(entry.id);
         }
         continue;
       }
@@ -978,7 +629,7 @@ export function findUniqueQuoteTextSearchMatch(
           normalizedQuery,
         )}" -> skipped non-boundary canonical match`,
       );
-      return null;
+      continue;
     }
     if (
       matchedEntryIds.length === 1 &&
@@ -1020,4 +671,299 @@ export function findUniqueQuoteTextSearchMatch(
         debugSummary,
       }
     : null;
+}
+
+type CommonQuoteTokenRun = {
+  entry: NormalizedQuoteTextSearchEntry;
+  quoteTokenStart: number;
+  quoteTokenEnd: number;
+  sourceTokenStart: number;
+  sourceTokenEnd: number;
+};
+
+function collectCommonQuoteTokenRuns(
+  entry: NormalizedQuoteTextSearchEntry,
+  quoteIndex: QuoteTextIndex,
+): CommonQuoteTokenRun[] {
+  const quotePositions = new Map<string, number[]>();
+  for (let index = 0; index < quoteIndex.tokens.length; index += 1) {
+    const token = quoteIndex.tokens[index];
+    const positions = quotePositions.get(token.text) || [];
+    positions.push(index);
+    quotePositions.set(token.text, positions);
+  }
+
+  const completed: CommonQuoteTokenRun[] = [];
+  let active = new Map<number, CommonQuoteTokenRun>();
+  for (
+    let sourceTokenIndex = 0;
+    sourceTokenIndex < entry.textIndex.tokens.length;
+    sourceTokenIndex += 1
+  ) {
+    const sourceToken = entry.textIndex.tokens[sourceTokenIndex];
+    const next = new Map<number, CommonQuoteTokenRun>();
+    for (const quoteTokenIndex of quotePositions.get(sourceToken.text) || []) {
+      const diagonal = quoteTokenIndex - sourceTokenIndex;
+      const previous = active.get(diagonal);
+      next.set(
+        diagonal,
+        previous &&
+          previous.quoteTokenEnd === quoteTokenIndex &&
+          previous.sourceTokenEnd === sourceTokenIndex
+          ? {
+              ...previous,
+              quoteTokenEnd: quoteTokenIndex + 1,
+              sourceTokenEnd: sourceTokenIndex + 1,
+            }
+          : {
+              entry,
+              quoteTokenStart: quoteTokenIndex,
+              quoteTokenEnd: quoteTokenIndex + 1,
+              sourceTokenStart: sourceTokenIndex,
+              sourceTokenEnd: sourceTokenIndex + 1,
+            },
+      );
+    }
+    for (const [diagonal, run] of active.entries()) {
+      if (!next.has(diagonal)) completed.push(run);
+    }
+    active = next;
+  }
+  completed.push(...active.values());
+  return completed;
+}
+
+function quoteAnchorMatchKind(params: {
+  quoteText: string;
+  quoteTokenStart: number;
+  quoteTokenEnd: number;
+  quoteTokenCount: number;
+}): QuoteTextSearchQueryKind {
+  if (ELLIPSIS_RE.test(params.quoteText)) return "ellipsis-segment";
+  if (params.quoteTokenStart === 0) return "raw-prefix";
+  if (params.quoteTokenEnd === params.quoteTokenCount) return "raw-suffix";
+  return "raw-middle";
+}
+
+function sourceTextForTokenRun(
+  run: CommonQuoteTokenRun,
+  quoteTokenCount: number,
+): string {
+  const first = run.entry.textIndex.tokens[run.sourceTokenStart];
+  const last = run.entry.textIndex.tokens[run.sourceTokenEnd - 1];
+  if (!first || !last) return "";
+  const nextSourceToken = run.entry.textIndex.tokens[run.sourceTokenEnd];
+  const sourceEnd =
+    run.quoteTokenEnd === quoteTokenCount
+      ? (nextSourceToken?.sourceStart ?? run.entry.textIndex.sourceText.length)
+      : last.sourceEnd;
+  return run.entry.textIndex.sourceText
+    .slice(first.sourceStart, sourceEnd)
+    .trim();
+}
+
+function buildQuoteTextAnchorMatches(
+  entries: QuoteTextSearchEntry[],
+  quoteText: string,
+  options?: Pick<
+    QuoteTextSearchOptions,
+    "minQueryLength" | "rejectWeakQueries"
+  >,
+): QuoteTextAnchorMatch[] {
+  const minQueryLength = Math.max(1, options?.minQueryLength ?? 24);
+  const rejectWeakQueries = options?.rejectWeakQueries ?? true;
+  const normalizedEntries = normalizeEntries(entries);
+  if (!normalizedEntries.length) return [];
+  const cleanQuote = stripBoundaryEllipsis(
+    sanitizeText(quoteText || "").trim(),
+  );
+  const quoteIndex = buildQuoteTextIndex(cleanQuote);
+  if (!quoteIndex.tokens.length) return [];
+
+  const exactLocations = normalizedEntries.flatMap((entry) =>
+    findQuoteSourceSpansAllowingLayoutArtifacts(
+      entry.textIndex,
+      cleanQuote,
+    ).map((span) => ({ entry, span })),
+  );
+  if (exactLocations.length) {
+    const location = exactLocations[0];
+    const matchedEntryIds = Array.from(
+      new Set(exactLocations.map((match) => match.entry.id)),
+    );
+    return [
+      {
+        entryId: location.entry.id,
+        query: location.span.text.trim(),
+        normalizedQuery: quoteIndex.canonicalText,
+        matchKind: "exact",
+        confidence: "high",
+        totalOccurrences: exactLocations.length,
+        matchedEntryIds,
+        matchedTokenCount: quoteIndex.tokens.length,
+        quoteTokenCount: quoteIndex.tokens.length,
+        quoteTokenCoverage: 1,
+        supportedQuoteTokenCount: quoteIndex.tokens.length,
+        quoteTokenSupportCoverage: 1,
+        quoteStartTokenSupported: true,
+        quoteEndTokenSupported: true,
+        quoteTokenStart: 0,
+        quoteTokenEnd: quoteIndex.tokens.length,
+      },
+    ];
+  }
+
+  const candidates = normalizedEntries
+    .flatMap((entry) => collectCommonQuoteTokenRuns(entry, quoteIndex))
+    .map((run) => {
+      const query = sourceTextForTokenRun(run, quoteIndex.tokens.length);
+      const normalizedQuery = normalizeLocatorText(query);
+      const matchedTokenCount = run.quoteTokenEnd - run.quoteTokenStart;
+      return {
+        run,
+        query,
+        normalizedQuery,
+        matchedTokenCount,
+        score: quoteIndex.tokens
+          .slice(run.quoteTokenStart, run.quoteTokenEnd)
+          .reduce((sum, token) => sum + scoreSearchToken(token.text), 0),
+      };
+    })
+    .filter(
+      (candidate) =>
+        isLocatorQueryLongEnough(candidate.normalizedQuery, minQueryLength) &&
+        (!rejectWeakQueries ||
+          !isWeakQuoteSearchQuery(candidate.normalizedQuery)),
+    );
+  const supportedQuoteTokensByEntry = new Map<string, Set<number>>();
+  for (const candidate of candidates) {
+    if (
+      candidate.matchedTokenCount < 3 ||
+      candidate.normalizedQuery.length < 12
+    ) {
+      continue;
+    }
+    let supported = supportedQuoteTokensByEntry.get(candidate.run.entry.id);
+    if (!supported) {
+      supported = new Set();
+      supportedQuoteTokensByEntry.set(candidate.run.entry.id, supported);
+    }
+    for (
+      let tokenIndex = candidate.run.quoteTokenStart;
+      tokenIndex < candidate.run.quoteTokenEnd;
+      tokenIndex += 1
+    ) {
+      supported.add(tokenIndex);
+    }
+  }
+  candidates.sort(
+    (left, right) =>
+      right.matchedTokenCount - left.matchedTokenCount ||
+      right.normalizedQuery.length - left.normalizedQuery.length ||
+      right.score - left.score ||
+      left.run.quoteTokenStart - right.run.quoteTokenStart,
+  );
+
+  const out: QuoteTextAnchorMatch[] = [];
+  const seenQueries = new Set<string>();
+  for (const candidate of candidates) {
+    if (
+      !candidate.normalizedQuery ||
+      seenQueries.has(candidate.normalizedQuery)
+    ) {
+      continue;
+    }
+    seenQueries.add(candidate.normalizedQuery);
+    const matchedEntryIds: string[] = [];
+    let totalOccurrences = 0;
+    for (const entry of normalizedEntries) {
+      const occurrences = countCanonicalTextMatches(
+        entry.normalizedText,
+        candidate.normalizedQuery,
+      );
+      if (!occurrences) continue;
+      matchedEntryIds.push(entry.id);
+      totalOccurrences += occurrences;
+    }
+    if (!totalOccurrences) continue;
+    const matchedTokenCount = candidate.matchedTokenCount;
+    const supportedQuoteTokenCount =
+      supportedQuoteTokensByEntry.get(candidate.run.entry.id)?.size || 0;
+    const supportedQuoteTokens = supportedQuoteTokensByEntry.get(
+      candidate.run.entry.id,
+    );
+    out.push({
+      entryId: candidate.run.entry.id,
+      query: candidate.query,
+      normalizedQuery: candidate.normalizedQuery,
+      matchKind: quoteAnchorMatchKind({
+        quoteText: cleanQuote,
+        quoteTokenStart: candidate.run.quoteTokenStart,
+        quoteTokenEnd: candidate.run.quoteTokenEnd,
+        quoteTokenCount: quoteIndex.tokens.length,
+      }),
+      confidence:
+        matchedTokenCount >= 6 || candidate.normalizedQuery.length >= 40
+          ? "high"
+          : "medium",
+      totalOccurrences,
+      matchedEntryIds,
+      matchedTokenCount,
+      quoteTokenCount: quoteIndex.tokens.length,
+      quoteTokenCoverage: Math.min(
+        1,
+        matchedTokenCount / quoteIndex.tokens.length,
+      ),
+      supportedQuoteTokenCount,
+      quoteTokenSupportCoverage: Math.min(
+        1,
+        supportedQuoteTokenCount / quoteIndex.tokens.length,
+      ),
+      quoteStartTokenSupported: Boolean(supportedQuoteTokens?.has(0)),
+      quoteEndTokenSupported: Boolean(
+        supportedQuoteTokens?.has(quoteIndex.tokens.length - 1),
+      ),
+      quoteTokenStart: candidate.run.quoteTokenStart,
+      quoteTokenEnd: candidate.run.quoteTokenEnd,
+    });
+  }
+  return out;
+}
+
+/**
+ * Return the largest strong contiguous source span that occurs exactly once
+ * across the eligible PDF pages. The query is reconstructed from source text,
+ * so callers can align it against the live PDF.js page before FindController.
+ */
+export function findLargestUniqueQuoteTextAnchorMatch(
+  entries: QuoteTextSearchEntry[],
+  quoteText: string,
+  options?: Pick<
+    QuoteTextSearchOptions,
+    "minQueryLength" | "rejectWeakQueries"
+  >,
+): QuoteTextAnchorMatch | null {
+  return (
+    buildQuoteTextAnchorMatches(entries, quoteText, options).find(
+      (match) =>
+        match.totalOccurrences === 1 && match.matchedEntryIds.length === 1,
+    ) || null
+  );
+}
+
+/**
+ * Return the largest strong source overlap even when it is repeated. This is
+ * negative-evidence protection: a repeated source phrase cannot navigate
+ * uniquely, but it still proves that a cache miss is not evidence of
+ * model-generated text.
+ */
+export function findLargestQuoteTextAnchorMatch(
+  entries: QuoteTextSearchEntry[],
+  quoteText: string,
+  options?: Pick<
+    QuoteTextSearchOptions,
+    "minQueryLength" | "rejectWeakQueries"
+  >,
+): QuoteTextAnchorMatch | null {
+  return buildQuoteTextAnchorMatches(entries, quoteText, options)[0] || null;
 }

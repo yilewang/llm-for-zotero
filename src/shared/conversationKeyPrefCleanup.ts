@@ -144,6 +144,9 @@ export function cleanupRememberedConversationKeyPrefs(): void {
   cleanJsonNumberMapPref("lastUsedPaperConversationMap", (_key, value) =>
     isUpstreamPaperConversationKeyForPrefs(value),
   );
+  cleanJsonNumberMapPref("lastUsedGlobalConversationMap", (_key, value) =>
+    isConversationKeyForKind("upstream", "global", value),
+  );
 
   cleanScalarConversationKeyPref(
     "claudeCodeLastAllocatedGlobalConversationKey",

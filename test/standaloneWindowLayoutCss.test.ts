@@ -16,6 +16,20 @@ function readStandaloneWindowSource(): string {
   );
 }
 
+function readBuildUiSource(): string {
+  return readFileSync(
+    resolve(here, "../src/modules/contextPanel/buildUI.ts"),
+    "utf8",
+  );
+}
+
+function readStandaloneWindowMarkup(): string {
+  return readFileSync(
+    resolve(here, "../addon/content/standaloneChat.xhtml"),
+    "utf8",
+  );
+}
+
 function extractCssRule(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = css.match(new RegExp(`${escapedSelector}\\s*\\{[^}]*\\}`));
@@ -42,6 +56,13 @@ describe("standalone window layout CSS", function () {
     );
   });
 
+  it("opens standalone chats at the configured default size", function () {
+    const markup = readStandaloneWindowMarkup();
+
+    assert.match(markup, /\bwidth="900"/);
+    assert.match(markup, /\bheight="900"/);
+  });
+
   it("lets the standalone chat panel widen beyond the default window width", function () {
     const rule = extractCssRule(
       readPanelCss(),
@@ -59,6 +80,45 @@ describe("standalone window layout CSS", function () {
       "max-width: min(100%, var(--llm-standalone-chat-max-width))",
     );
     assert.notInclude(rule, "max-width: 820px");
+  });
+
+  it("routes standalone chat and typing-box grips through window-aware resizing", function () {
+    const css = readPanelCss();
+    const buildUi = readBuildUiSource();
+    const standaloneWindow = readStandaloneWindowSource();
+    const standaloneChatRule = extractCssRule(
+      css,
+      '[data-standalone="true"] .llm-chat-shell',
+    );
+    const handleRule = extractCssRule(css, ".llm-standalone-resize-handle");
+    const chatHandleRule = extractCssRule(
+      css,
+      '.llm-standalone-resize-handle[data-resize-target="chat"]',
+    );
+
+    assert.include(buildUi, 'chatResizeHandle.dataset.resizeTarget = "chat"');
+    assert.include(buildUi, 'inputResizeHandle.dataset.resizeTarget = "input"');
+    assert.match(
+      standaloneWindow,
+      /installStandaloneVerticalResizeBehavior\(\s*newWin,\s*contentArea,/,
+    );
+    assert.include(handleRule, "position: absolute");
+    assert.include(handleRule, "width: 18px");
+    assert.include(handleRule, "height: 18px");
+    assert.include(standaloneChatRule, "resize: none");
+    assert.include(chatHandleRule, "repeating-linear-gradient");
+    assert.include(chatHandleRule, "clip-path: polygon");
+  });
+
+  it("keeps the standalone content title selectable and copyable", function () {
+    const rule = extractCssRule(
+      readPanelCss(),
+      ".llm-standalone-content-title-text",
+    );
+
+    assert.include(rule, "-moz-user-select: text");
+    assert.include(rule, "user-select: text");
+    assert.include(rule, "cursor: text");
   });
 
   it("preserves default standalone tab styling and scopes light theme overrides", function () {
@@ -143,5 +203,27 @@ describe("standalone window layout CSS", function () {
     assert.include(source, "rootEl.dataset.standaloneTheme =");
     assert.include(source, '"light"');
     assert.include(source, '"dark"');
+  });
+
+  it("centers tabs in a symmetric grid without overlaying runtime controls", function () {
+    const css = readPanelCss();
+    const tabRowRule = extractCssRule(css, ".llm-standalone-tab-row");
+    const runtimeControlsRule = extractCssRule(
+      css,
+      ".llm-standalone-runtime-system-controls",
+    );
+    const tabGroupRule = extractCssRule(css, ".llm-standalone-tab-group");
+
+    assert.include(tabRowRule, "display: grid");
+    assert.include(
+      tabRowRule,
+      "grid-template-columns: 56px minmax(0, 1fr) 56px",
+    );
+    assert.include(runtimeControlsRule, "grid-column: 1");
+    assert.include(runtimeControlsRule, "justify-self: start");
+    assert.notInclude(runtimeControlsRule, "position: absolute");
+    assert.include(tabGroupRule, "grid-column: 2");
+    assert.include(tabGroupRule, "justify-self: center");
+    assert.notInclude(css, ".llm-standalone-claude-toggle");
   });
 });

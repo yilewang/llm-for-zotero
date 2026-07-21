@@ -325,6 +325,44 @@ describe("pdfContext multi-context helpers", function () {
     assert.isAtLeast(candidates[0].estimatedTokens, 1);
   });
 
+  it("preserves PDFWorker source offsets, fingerprints, and page boundaries in retrieval candidates", async function () {
+    const pageOne =
+      "Page one contains a complete page-bounded passage about stable population geometry.";
+    const pageTwo =
+      "Page two contains a different complete passage about neuronal preference change.";
+    const sourceText = pageOne + pageTwo;
+    const chunks = [pageOne, pageTwo];
+    const context = buildPdfContext(chunks);
+    context.sourceType = "zotero-worker";
+    context.chunkMeta = buildChunkMetadata(chunks, "zotero-worker", {
+      sourceText,
+      pageChars: [pageOne.length, pageTwo.length],
+    });
+    const paper: PaperContextRef = {
+      itemId: 1,
+      contextItemId: 11,
+      title: "Page provenance paper",
+    };
+
+    const candidates = await buildPaperRetrievalCandidates(
+      paper,
+      context,
+      "neuronal preference change",
+      undefined,
+      { topK: 2, disableEmbeddings: true },
+    );
+    const pageTwoCandidate = candidates.find(
+      (candidate) => candidate.chunkText === pageTwo,
+    );
+
+    assert.isDefined(pageTwoCandidate);
+    assert.equal(pageTwoCandidate?.sourceStart, pageOne.length);
+    assert.equal(pageTwoCandidate?.sourceEnd, sourceText.length);
+    assert.equal(pageTwoCandidate?.pageStart, 1);
+    assert.equal(pageTwoCandidate?.pageEnd, 1);
+    assert.match(pageTwoCandidate?.sourceFingerprint || "", /^fnv1a32-/);
+  });
+
   it("uses query-plan variants for lexical chunk retrieval", async function () {
     const paper: PaperContextRef = {
       itemId: 1,

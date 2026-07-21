@@ -27,6 +27,7 @@ import {
 } from "../src/modules/contextPanel/assistantCitationLinks";
 import * as citationLinks from "../src/modules/contextPanel/assistantCitationLinks";
 import { stripLeadingCitationSeparators } from "../src/modules/contextPanel/citationText";
+import { locateQuoteInPageTexts } from "../src/modules/contextPanel/livePdfSelectionLocator";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
@@ -749,6 +750,60 @@ describe("assistantCitationLinks", function () {
     ]) {
       assert.include(INLINE_CITATION_SKIP_SELECTOR, selector);
     }
+  });
+
+  it("keeps navigation failures separate from quote provenance", function () {
+    const source = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+      "utf8",
+    );
+    const navigationStart = source.indexOf(
+      "async function resolveAndNavigateAssistantCitation",
+    );
+    const navigationEnd = source.indexOf(
+      "function refreshAllCitationButtonPages",
+      navigationStart,
+    );
+    const navigationSource = source.slice(navigationStart, navigationEnd);
+
+    assert.isAtLeast(navigationStart, 0);
+    assert.isAbove(navigationEnd, navigationStart);
+    assert.include(navigationSource, "The citation was preserved");
+    assert.include(
+      navigationSource,
+      "QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT",
+    );
+    assert.include(navigationSource, "hasQuoteText && !quoteJumpSucceeded");
+    assert.include(navigationSource, "params.body.dispatchEvent");
+    assert.notInclude(navigationSource, "quoteStatus");
+    assert.notInclude(navigationSource, "removeChild(citation)");
+    assert.notInclude(source, "markQuoteCardUnverifiedAfterNavigationFailure");
+    assert.notInclude(source, "shouldMarkQuoteCardUnverifiedAfterNavigation");
+  });
+
+  it("keeps repeated source text a navigation ambiguity, not a provenance downgrade", function () {
+    const quote =
+      "A sufficiently long genuine source quotation repeated verbatim.";
+    const located = locateQuoteInPageTexts(
+      [{ pageIndex: 0, text: `${quote} Middle. ${quote}` }],
+      quote,
+      0,
+    );
+
+    assert.equal(located.status, "ambiguous");
+    assert.equal(located.totalMatches, 2);
+    assert.deepEqual(located.matchedPageIndexes, [0]);
+  });
+
+  it("has no renderer-owned quote verification or retry loop", function () {
+    const source = readFileSync(
+      resolve(testDir, "../src/modules/contextPanel/assistantCitationLinks.ts"),
+      "utf8",
+    );
+    assert.notInclude(source, "startBackgroundQuoteCardVerification");
+    assert.notInclude(source, "verifyQuoteCardSearchabilityInBackground");
+    assert.notInclude(source, "BACKGROUND_QUOTE_VERIFICATION_RETRY_DELAYS_MS");
+    assert.notInclude(source, "markQuoteCardUnverifiedAfterNavigationFailure");
   });
 
   it("does not render source-less fallback quote cards for unresolved blockquotes", function () {
@@ -1531,6 +1586,26 @@ describe("assistantCitationLinks", function () {
       assert.isAbove(lookupText.length, 250);
     });
 
+    it("uses a page-backed largest-partial locator for native PDF lookup", function () {
+      const displayQuote =
+        "We modeled the propensity function to be weight-dependent ρ(w)=tanh(10w) based on experimental observations.";
+      const sourceMatchText =
+        "We modeled the propensity function to be weight-dependent";
+
+      const lookupText = getQuoteCitationLookupTextForTests({
+        id: "Q_bauer_methods",
+        quoteText: displayQuote,
+        citationLabel: "(Bauer et al., 2024)",
+        sourceMatchText,
+        sourceMatchKind: "raw-prefix",
+        sourceMatchSource: "pdf-page-text",
+        contextItemId: 2505,
+        pageHintIndex: 9,
+      });
+
+      assert.equal(lookupText, sourceMatchText);
+    });
+
     it("removes a sourceMatchText section-heading prefix before quote lookup", function () {
       const quoteText = [
         "## 3 Discussion",
@@ -1580,7 +1655,8 @@ describe("assistantCitationLinks", function () {
       assert.include(hintSection, "navigateToStoredQuotePageHint");
       assert.include(hintSection, "attemptCitationParagraphJump");
       assert.include(hintSection, "rememberCachedCitationPage");
-      assert.include(hintSection, "if (hinted.paragraphJump.matched) return");
+      assert.include(hintSection, "quoteJumpSucceeded = true");
+      assert.include(hintSection, "return;");
       assert.include(hintSection, "continue to full quote-location fallback");
     });
 
@@ -1601,7 +1677,7 @@ describe("assistantCitationLinks", function () {
         quoteAnchorStart,
       );
       const sourceBackedStart = source.indexOf(
-        "const citationElement = createCitationButton",
+        "quoteCitation: trustedQuoteCitation",
         quoteAnchorEnd,
       );
       const sourceBackedEnd = source.indexOf(
@@ -1838,10 +1914,7 @@ describe("assistantCitationLinks", function () {
       assert.include(source, "resolveCandidatesForCitationNavigation");
       assert.include(source, "skipFindController: true");
       assert.include(source, "matchedCandidates.length > 1");
-      assert.include(
-        source,
-        "quote could not be resolved to a unique explicit PDF",
-      );
+      assert.include(source, "quote matched more than one explicit PDF");
       assert.include(source, "preferRawCitationLabel");
       assert.include(source, "preferRawCitationLabel: true");
     });
@@ -1895,6 +1968,10 @@ describe("assistantCitationLinks", function () {
       assert.notInclude(warmSection, "updateCitationButtonPage");
       assert.notInclude(warmSection, "rememberCachedCitationPage");
       assert.include(source, "lookupCachedQuoteLocationForAttachment");
+      assert.match(
+        source,
+        /lookupCachedQuoteLocationForAttachment\([\s\S]*?\)\s*\?\?\s*\(await warmQuoteLocationCacheForAttachment\(/,
+      );
       assert.include(source, "navigateToHiddenQuoteLocation");
     });
 
@@ -1983,7 +2060,7 @@ describe("assistantCitationLinks", function () {
       );
     });
 
-    it("infers the only explicit source candidate for section-labeled fallback quote cards", function () {
+    it("does not infer a source candidate for an unresolved blockquote", function () {
       const source = readFileSync(
         resolve(
           testDir,
@@ -1992,11 +2069,11 @@ describe("assistantCitationLinks", function () {
         "utf8",
       );
 
-      assert.include(source, "inferSingleCandidateFallbackCitation");
-      assert.include(source, "isNonSourceCitationLabel");
+      assert.notInclude(source, "inferSingleCandidateFallbackCitation");
+      assert.notInclude(source, "isNonSourceCitationLabel");
       assert.include(source, "createSyntheticCitationElement");
-      assert.include(source, "fallbackCitation");
-      assert.include(source, "citationRemainder = fallbackCitation.remainder");
+      assert.include(source, "if (!extractedCitation) {");
+      assert.include(source, "continue;");
     });
   });
 

@@ -18,7 +18,7 @@ tmp/
 
 # Ignore all contents inside a folder
 .claude/
-
+AGENTS.md
 # Local design notes
 /docs/
 /docs/claude-session-isolation-design.md

@@ -102,4 +102,35 @@ describe("Claude project bootstrap gate", function () {
     assert.equal(conversationSystem, "upstream");
     assert.deepEqual(events, ["ui:false", "pref:false", "system:upstream"]);
   });
+
+  it("keeps an inactive Codex runtime selected when Claude is disabled", async function () {
+    const events: string[] = [];
+    let conversationSystem: ConversationSystem = "codex";
+
+    await applyClaudeCodeModePreferenceChange(
+      false,
+      (enabled) => {
+        events.push(`ui:${enabled}`);
+      },
+      {
+        setClaudeCodeModeEnabled: (enabled) => {
+          events.push(`pref:${enabled}`);
+        },
+        getConversationSystemPref: () => conversationSystem,
+        setConversationSystemPref: (system) => {
+          conversationSystem = system;
+          events.push(`system:${system}`);
+        },
+        ensureClaudeProjectBootstrap: async () => {
+          events.push("bootstrap");
+        },
+        log: (...args: unknown[]) => {
+          events.push(`log:${String(args[0])}`);
+        },
+      },
+    );
+
+    assert.equal(conversationSystem, "codex");
+    assert.deepEqual(events, ["ui:false", "pref:false"]);
+  });
 });

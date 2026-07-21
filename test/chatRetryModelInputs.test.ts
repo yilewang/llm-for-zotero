@@ -140,6 +140,19 @@ describe("chat retry model inputs", function () {
     assert.include(payload!.renderedHtml, "<blockquote>");
   });
 
+  it("does not restore a rejected quote attribution in clipboard output", function () {
+    const quote =
+      "This interpretation has no searchable wording in the complete source.";
+    const payload = buildRenderedMarkdownClipboardPayload(
+      `> ${quote}\n>\n> Not a source quote`,
+      undefined,
+    );
+
+    assert.equal(payload?.plainText, `> ${quote}\n>\n> Not a source quote`);
+    assert.notInclude(payload?.renderedHtml || "", "Eppler");
+    assert.include(payload?.renderedHtml || "", "<blockquote>");
+  });
+
   it("renders expanded quote anchors before emphasized continuation text in clipboard payloads", function () {
     const quoteCitation = buildQuoteCitation({
       quoteText:

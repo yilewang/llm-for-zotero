@@ -62,7 +62,10 @@ import {
 } from "../../codexAppServer/portal";
 import { getMessageCitationPaperContexts } from "./citationContexts";
 import { findMatchingTrustedQuoteCitation } from "./quoteCitations";
-import { buildQuoteExpandedMarkdown } from "./quoteRenderPlan";
+import {
+  buildQuoteExpandedMarkdown,
+  getMessageQuoteDisplay,
+} from "./quoteRenderPlan";
 import {
   buildGeneratedImagesHtmlForNote,
   formatGeneratedImagesMarkdownForNote,
@@ -846,7 +849,9 @@ export function buildChatHistoryNotePayload(
     // Strip any skill-added footer from assistant messages so chat-history
     // exports don't end up with "Written by LLM-for-Zotero." repeated for
     // every saved-as-note assistant turn plus the UI wrapper's own footer.
-    const rawText = msg.text || "";
+    const quoteDisplay =
+      msg.role === "assistant" ? getMessageQuoteDisplay(msg) : null;
+    const rawText = quoteDisplay?.markdown || msg.text || "";
     const textPreStripped =
       msg.role === "assistant" ? stripTrailingPluginFooter(rawText) : rawText;
     const text = sanitizeText(textPreStripped).trim();
@@ -937,7 +942,7 @@ export function buildChatHistoryNotePayload(
       msg.role === "user" ? buildFileListHtmlForNote(fileAttachments) : "";
     let rendered = renderChatMessageHtmlForNote(
       htmlTextWithContext,
-      msg.role === "assistant" ? msg.quoteCitations : undefined,
+      quoteDisplay?.quoteCitations || undefined,
     );
     // For assistant messages, inject citation links using the preceding
     // user message's paper contexts so citations become clickable in the note.
@@ -945,14 +950,14 @@ export function buildChatHistoryNotePayload(
       rendered = injectCitationLinksIntoNoteHtml(
         rendered,
         lastUserPaperContexts,
-        msg.quoteCitations,
+        quoteDisplay?.quoteCitations,
       );
     }
     const exportedText =
       msg.role === "assistant"
         ? buildQuoteExpandedMarkdown({
             markdown: textWithContext,
-            quoteCitations: msg.quoteCitations,
+            quoteCitations: quoteDisplay?.quoteCitations,
           })
         : textWithContext;
     if (msg.role === "user") {
@@ -995,7 +1000,9 @@ async function buildChatHistoryNotePayloadForSave(
     messageIndex += 1
   ) {
     const msg = messages[messageIndex]!;
-    const rawText = msg.text || "";
+    const quoteDisplay =
+      msg.role === "assistant" ? getMessageQuoteDisplay(msg) : null;
+    const rawText = quoteDisplay?.markdown || msg.text || "";
     const textPreStripped =
       msg.role === "assistant" ? stripTrailingPluginFooter(rawText) : rawText;
     const text = sanitizeText(textPreStripped).trim();
@@ -1088,20 +1095,20 @@ async function buildChatHistoryNotePayloadForSave(
       htmlTextWithContext,
       options.noteId,
       options.figureRender,
-      msg.role === "assistant" ? msg.quoteCitations : undefined,
+      quoteDisplay?.quoteCitations || undefined,
     );
     if (msg.role === "assistant" && rendered) {
       rendered = injectCitationLinksIntoNoteHtml(
         rendered,
         lastUserPaperContexts,
-        msg.quoteCitations,
+        quoteDisplay?.quoteCitations,
       );
     }
     const exportedText =
       msg.role === "assistant"
         ? buildQuoteExpandedMarkdown({
             markdown: textWithContext,
-            quoteCitations: msg.quoteCitations,
+            quoteCitations: quoteDisplay?.quoteCitations,
           })
         : textWithContext;
     if (msg.role === "user") {

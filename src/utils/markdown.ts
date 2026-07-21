@@ -1015,9 +1015,11 @@ function splitIntoBlocks(text: string): TextBlock[] {
  * headers (`## `, `### `, `#### `) are unambiguous markers that virtually
  * never appear as legitimate inline text.
  *
- * For blockquotes (`> `): triggers only after sentence-ending or
- * citation-ending punctuation ( `.` `!` `?` `:` `)` `]` `"` ) to avoid
- * splitting comparison operators like `x > 5`.
+ * For blockquotes (`> `): triggers only after unambiguous sentence-ending
+ * punctuation, or after a parenthetical that independently looks like a
+ * source label. Mathematical expressions commonly end in `)`, `]`, or `:`,
+ * so those characters must not by themselves turn a comparison such as
+ * `S(p,p) > 0.4` into a blockquote.
  */
 export function normalizeBlockBoundaries(text: string): string {
   let result = text;
@@ -1036,13 +1038,35 @@ export function normalizeBlockBoundaries(text: string): string {
     },
   );
 
-  // Blockquote markers (> ) after sentence / citation-ending punctuation.
-  // More conservative than headers because `>` is common in comparisons.
+  // Blockquote markers (> ) after unambiguous sentence-ending punctuation.
+  // Keep mathematical closers and colons out of this generic rule because
+  // `f(x) > 0`, `values[i] > threshold`, and `criterion: > 0.4` are ordinary
+  // comparisons rather than quote boundaries.
   result = result.replace(
-    /([.!?:)\]"])([ \t]+)(> )/g,
+    /([.!?"])([ \t]+)(> )/g,
     (match, before: string, spaces: string, marker: string, offset: number) => {
       const markerIndex = offset + before.length + spaces.length;
       return isInsidePipeTableCell(result, markerIndex)
+        ? match
+        : `${before}\n\n${marker}`;
+    },
+  );
+
+  // Preserve the historical repair for a source label followed by an inline
+  // quote, but prove that the complete parenthetical is citation-like. A bare
+  // closing parenthesis is not enough: it is also how function expressions
+  // such as `S(p,p)` end.
+  result = result.replace(
+    /(\([^()\n]{2,240}\))([ \t]+)(> )/g,
+    (match, before: string, spaces: string, marker: string, offset: number) => {
+      const markerIndex = offset + before.length + spaces.length;
+      const precedingCharacter = result[offset - 1] || "";
+      const followsExpressionName = /[\p{L}\p{N}_)\]}]/u.test(
+        precedingCharacter,
+      );
+      return !isLikelySourceParenthetical(before) ||
+        followsExpressionName ||
+        isInsidePipeTableCell(result, markerIndex)
         ? match
         : `${before}\n\n${marker}`;
     },

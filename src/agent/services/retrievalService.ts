@@ -27,6 +27,11 @@ type RetrievalResult = {
   sourceLabel: string;
   text: string;
   score: number;
+  sourceStart?: number;
+  sourceEnd?: number;
+  sourceFingerprint?: string;
+  pageStart?: number;
+  pageEnd?: number;
 };
 
 function dedupePaperContexts(
@@ -185,6 +190,11 @@ export class RetrievalService {
         sourceLabel: formatPaperSourceLabel(paperContext),
         text: candidate.chunkText,
         score: candidate.evidenceScore,
+        sourceStart: candidate.sourceStart,
+        sourceEnd: candidate.sourceEnd,
+        sourceFingerprint: candidate.sourceFingerprint,
+        pageStart: candidate.pageStart,
+        pageEnd: candidate.pageEnd,
       }));
       this.evidenceCache.set(cacheKey, paperResults);
       results.push(...paperResults);

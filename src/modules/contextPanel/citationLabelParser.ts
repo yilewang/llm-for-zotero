@@ -203,10 +203,15 @@ export function isNonSourceCitationLabel(value: string): boolean {
 }
 
 export function isCanonicalSourceCitationLabel(value: string): boolean {
-  const label = normalizeWrappedCitationLabel(value);
-  if (!label.startsWith("(") || !label.endsWith(")") || label.length > 300) {
+  const wrappedLabel = normalizeWrappedCitationLabel(value);
+  if (
+    !wrappedLabel.startsWith("(") ||
+    !wrappedLabel.endsWith(")") ||
+    wrappedLabel.length > 300
+  ) {
     return false;
   }
+  const label = stripPageSuffixFromCitationLabel(wrappedLabel);
   if (isNonSourceCitationLabel(label)) return false;
   const inner = citationInnerText(label);
   if (!inner || inner.includes(";")) return false;

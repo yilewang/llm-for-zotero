@@ -16,7 +16,7 @@ function diagnosticsMessage(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-describe("workflow: fresh startup chat", function () {
+describe("workflow: startup chat restoration", function () {
   this.timeout(45000);
 
   let api: WorkflowTestApi;
@@ -40,25 +40,42 @@ describe("workflow: fresh startup chat", function () {
     await api.reset();
   });
 
-  it("opens an embedded paper panel on a blank draft instead of the old stored conversation", async function () {
+  it("restores the last embedded paper conversation on startup", async function () {
     const fixture = await api.createPaperWithPdfFixture({
       title: "Workflow Fresh Startup Paper",
       pdfTitle: "Workflow Fresh Startup PDF",
     });
     fixtures.push(fixture);
 
-    const oldPanel = await api.renderPanelForItem(fixture.parentItemId);
-    const oldMarker = "workflow old paper startup marker";
-    const oldDiagnostics = await api.seedPanelStoredUserMessage(
-      oldPanel.panelId,
-      oldMarker,
+    const initialPanel = await api.renderPanelForItem(fixture.parentItemId);
+    await api.seedPanelStoredUserMessage(
+      initialPanel.panelId,
+      "workflow original paper conversation marker",
     );
-    const oldKey = oldDiagnostics.conversationKey;
-    assert.isOk(oldKey, diagnosticsMessage(oldDiagnostics));
+    const newConversation = await api.startNewPanelConversation(
+      initialPanel.panelId,
+    );
+    const startupMarker = "workflow restored paper startup marker";
+    const lastDiagnostics = await api.seedPanelStoredUserMessage(
+      initialPanel.panelId,
+      startupMarker,
+    );
+    const lastKey = lastDiagnostics.conversationKey;
+    assert.isOk(lastKey, diagnosticsMessage(lastDiagnostics));
+    assert.equal(
+      lastKey,
+      newConversation.conversationKey,
+      diagnosticsMessage(lastDiagnostics),
+    );
+    assert.notEqual(
+      lastKey,
+      fixture.parentItemId,
+      diagnosticsMessage(lastDiagnostics),
+    );
     assert.include(
-      oldDiagnostics.messageText || "",
-      oldMarker,
-      diagnosticsMessage(oldDiagnostics),
+      lastDiagnostics.messageText || "",
+      startupMarker,
+      diagnosticsMessage(lastDiagnostics),
     );
 
     const startupPanel = await api.renderStartupPanelForItem(
@@ -70,35 +87,60 @@ describe("workflow: fresh startup chat", function () {
       "paper",
       diagnosticsMessage(startupDiagnostics),
     );
-    assert.notEqual(
+    assert.equal(
       startupDiagnostics.conversationKey,
-      oldKey,
+      lastKey,
       diagnosticsMessage(startupDiagnostics),
     );
-    assert.notInclude(
+    assert.include(
       startupDiagnostics.messageText || "",
-      oldMarker,
+      startupMarker,
       diagnosticsMessage(startupDiagnostics),
     );
   });
 
-  it("opens an embedded standalone note on a blank library draft", async function () {
-    const fixture = await api.createStandaloneNoteFixture({
-      noteHtml: "<p>Workflow standalone startup note body.</p>",
+  it("restores library mode and its last conversation on startup", async function () {
+    const fixture = await api.createPaperWithPdfFixture({
+      title: "Workflow Library Startup Paper",
+      pdfTitle: "Workflow Library Startup PDF",
     });
     fixtures.push(fixture);
 
-    const oldPanel = await api.renderPanelForItem(fixture.noteItemId);
-    const oldMarker = "workflow old standalone-note startup marker";
-    const oldDiagnostics = await api.seedPanelStoredUserMessage(
-      oldPanel.panelId,
-      oldMarker,
+    const initialPanel = await api.renderPanelForItem(fixture.parentItemId);
+    await api.seedPanelStoredUserMessage(
+      initialPanel.panelId,
+      "workflow original paper before library mode",
     );
-    const oldKey = oldDiagnostics.conversationKey;
-    assert.isOk(oldKey, diagnosticsMessage(oldDiagnostics));
+    const libraryMode = await api.togglePanelConversationMode(
+      initialPanel.panelId,
+    );
+    assert.equal(
+      libraryMode.conversationKind,
+      "global",
+      diagnosticsMessage(libraryMode),
+    );
+    await api.seedPanelStoredUserMessage(
+      initialPanel.panelId,
+      "workflow original library conversation marker",
+    );
+    const newConversation = await api.startNewPanelConversation(
+      initialPanel.panelId,
+    );
+    const startupMarker = "workflow restored library startup marker";
+    const lastDiagnostics = await api.seedPanelStoredUserMessage(
+      initialPanel.panelId,
+      startupMarker,
+    );
+    const lastKey = lastDiagnostics.conversationKey;
+    assert.isOk(lastKey, diagnosticsMessage(lastDiagnostics));
+    assert.equal(
+      lastKey,
+      newConversation.conversationKey,
+      diagnosticsMessage(lastDiagnostics),
+    );
 
     const startupPanel = await api.renderStartupPanelForItem(
-      fixture.noteItemId,
+      fixture.parentItemId,
     );
     const startupDiagnostics = await api.getDiagnostics(startupPanel.panelId);
     assert.equal(
@@ -106,15 +148,28 @@ describe("workflow: fresh startup chat", function () {
       "global",
       diagnosticsMessage(startupDiagnostics),
     );
-    assert.notEqual(
+    assert.equal(
       startupDiagnostics.conversationKey,
-      oldKey,
+      lastKey,
       diagnosticsMessage(startupDiagnostics),
     );
-    assert.notInclude(
+    assert.include(
       startupDiagnostics.messageText || "",
-      oldMarker,
+      startupMarker,
       diagnosticsMessage(startupDiagnostics),
+    );
+
+    const standalone = await api.openStandaloneForLibraryAfterRestart();
+    assert.equal(standalone.activeTab, "open", diagnosticsMessage(standalone));
+    assert.equal(
+      standalone.conversationKey,
+      lastKey,
+      diagnosticsMessage(standalone),
+    );
+    assert.include(
+      standalone.messageText || "",
+      startupMarker,
+      diagnosticsMessage(standalone),
     );
   });
 

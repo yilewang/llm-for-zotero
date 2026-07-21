@@ -88,6 +88,41 @@ describe("portalScope resolveInitialPanelItemState", function () {
     assert.equal(resolved.item?.libraryID, 7);
   });
 
+  it("restores the persisted upstream library mode and conversation after restart", function () {
+    const paperItem = {
+      id: 42,
+      libraryID: 7,
+      parentID: undefined,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+    } as unknown as Zotero.Item;
+
+    globalThis.Zotero = {
+      ...globalThis.Zotero,
+      Prefs: {
+        get: (key: string) => {
+          if (String(key).endsWith("lastUsedConversationModeMap")) {
+            return JSON.stringify({ "7": "global" });
+          }
+          if (String(key).endsWith("lastUsedGlobalConversationMap")) {
+            return JSON.stringify({ "7": 2_000_009_001 });
+          }
+          if (String(key).endsWith("enableClaudeCodeMode")) return false;
+          if (String(key).endsWith("enableCodexAppServerMode")) return false;
+          if (String(key).endsWith("conversationSystem")) return "upstream";
+          return "";
+        },
+      },
+    } as typeof Zotero;
+
+    const resolved = resolveInitialPanelItemState(paperItem);
+
+    assert.equal(resolved.basePaperItem, paperItem);
+    assert.isTrue(isGlobalPortalItem(resolved.item));
+    assert.equal(resolved.item?.id, 2_000_009_001);
+    assert.equal(resolved.item?.libraryID, 7);
+  });
+
   it("restores the locked upstream library chat when no explicit paper mode is active", function () {
     const paperItem = {
       id: 42,
@@ -132,6 +167,29 @@ describe("portalScope resolveInitialPanelItemState", function () {
     activePaperConversationByPaper.set("7:42", 4207);
 
     const resolved = resolveInitialPanelItemState(paperItem);
+
+    assert.equal(resolved.basePaperItem, paperItem);
+    assert.isTrue(isPaperPortalItem(resolved.item));
+    assert.equal(resolved.item?.id, 4207);
+    assert.equal(resolved.item?.libraryID, 7);
+  });
+
+  it("restores explicit paper mode while the remembered library mode is global", function () {
+    const paperItem = {
+      id: 42,
+      libraryID: 7,
+      parentID: undefined,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+    } as unknown as Zotero.Item;
+
+    activeConversationModeByLibrary.set(7, "global");
+    activeGlobalConversationByLibrary.set(7, 2_000_009_001);
+    activePaperConversationByPaper.set("7:42", 4207);
+
+    const resolved = resolveInitialPanelItemState(paperItem, {
+      conversationMode: "paper",
+    });
 
     assert.equal(resolved.basePaperItem, paperItem);
     assert.isTrue(isPaperPortalItem(resolved.item));

@@ -17,8 +17,10 @@ import { clearConversationSummary as clearConversationSummaryFromCache } from ".
 import { conversationRepository } from "../../core/conversations/repository";
 import {
   buildPaperStateKey,
+  getLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
+  removeLastUsedUpstreamGlobalConversationKey,
   removeLastUsedPaperConversationKey,
   setLockedGlobalConversationKey,
 } from "./prefHelpers";
@@ -373,6 +375,15 @@ function clearRememberedSelection(target: ConversationDeletionTarget): void {
       ) === conversationKey
     ) {
       activeGlobalConversationByLibrary.delete(target.libraryID);
+    }
+    const persistedKey = Number(
+      getLastUsedUpstreamGlobalConversationKey(target.libraryID) || 0,
+    );
+    if (
+      Number.isFinite(persistedKey) &&
+      Math.floor(persistedKey) === conversationKey
+    ) {
+      removeLastUsedUpstreamGlobalConversationKey(target.libraryID);
     }
     const lockedKey = getLockedGlobalConversationKey(target.libraryID);
     if (

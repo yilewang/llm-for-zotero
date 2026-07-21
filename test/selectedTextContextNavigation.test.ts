@@ -16,11 +16,17 @@ function createPdfItem(id: number) {
 }
 
 function createReader(itemId: number, dispatchedQueries: string[]) {
-  const findController = {
+  const selectedText = [
+    "Hippocampal place cells provide a complete selected passage for reader navigation.",
+    "The remaining sentence keeps the test focused on the full-text search policy.",
+  ].join(" ");
+  const findController: any = {
     _rawQuery: "",
-    pageMatches: [] as unknown[],
+    pageMatches: [[], [], []] as unknown[],
     _pendingFindMatches: new Set<unknown>(),
     _pagesToSearch: 0,
+    matchesCount: { total: 0 },
+    selected: { pageIdx: 1, matchIdx: 0 },
   };
   const reader: any = {
     _item: { id: itemId },
@@ -31,15 +37,34 @@ function createReader(itemId: number, dispatchedQueries: string[]) {
     },
     _window: {
       PDFViewerApplication: {
-        pdfDocument: { numPages: 3 },
+        pdfDocument: {
+          numPages: 3,
+          getPage: async (pageNumber: number) => ({
+            getTextContent: async () => ({
+              items: [
+                {
+                  str:
+                    pageNumber === 2
+                      ? selectedText
+                      : `Unrelated page ${pageNumber}.`,
+                },
+              ],
+            }),
+          }),
+        },
         pagesCount: 3,
         page: 2,
         findController,
         eventBus: {
-          dispatch: (_eventName: string, params: { query: string }) => {
+          dispatch: (
+            _eventName: string,
+            params: { query: string; type?: string },
+          ) => {
             dispatchedQueries.push(params.query);
             findController._rawQuery = params.query;
             findController.pageMatches = [[], [0], []];
+            findController.matchesCount = { total: 1 };
+            findController.selected = { pageIdx: 1, matchIdx: 0 };
           },
         },
       },

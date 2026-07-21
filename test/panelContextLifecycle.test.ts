@@ -76,7 +76,68 @@ describe("panelContextLifecycle", function () {
     assert.include(indexSource, "dataset?.handlersInitialized");
     assert.include(setupSource, "panelRoot.dataset.handlersInitialized");
     assert.include(setupSource, "panelRoot.dataset.handlersAttached = thisGen");
-    assert.include(setupSource, "if (panelRoot.dataset.handlersInitialized)");
+    assert.include(
+      setupSource,
+      "if (existingPanelRoot?.dataset.handlersInitialized)",
+    );
+  });
+
+  it("checks the completed setup stamp before disposing existing handlers", function () {
+    const setupSource = readFileSync(
+      resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),
+      "utf8",
+    );
+    const setupStart = setupSource.indexOf("export function setupHandlers(");
+    const completedGuard = setupSource.indexOf(
+      "if (existingPanelRoot?.dataset.handlersInitialized)",
+      setupStart,
+    );
+    const disposeCall = setupSource.indexOf(
+      "disposeSetupHandlers(body);",
+      setupStart,
+    );
+    const generationAllocation = setupSource.indexOf(
+      "const thisGen = String(++setupHandlersGeneration);",
+      setupStart,
+    );
+
+    assert.isAtLeast(setupStart, 0);
+    assert.isAbove(completedGuard, setupStart);
+    assert.isAbove(disposeCall, completedGuard);
+    assert.isAbove(generationAllocation, disposeCall);
+  });
+
+  it("cleans up the quote-provenance revalidation listener with panel handlers", function () {
+    const setupSource = readFileSync(
+      resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),
+      "utf8",
+    );
+
+    assert.include(setupSource, "QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT");
+    assert.include(
+      setupSource,
+      "scheduleConversationQuoteRevalidation(activeConversationKey)",
+    );
+    assert.include(
+      setupSource,
+      "body.removeEventListener(\n      QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT",
+    );
+  });
+
+  it("cleans up the panel-level quote-validation activity listener", function () {
+    const setupSource = readFileSync(
+      resolve(here, "../src/modules/contextPanel/setupHandlers.ts"),
+      "utf8",
+    );
+
+    assert.match(
+      setupSource,
+      /body\.addEventListener\(\s*"pointerdown",\s*handleQuoteValidationUserActivity,\s*true,?\s*\)/,
+    );
+    assert.match(
+      setupSource,
+      /body\.removeEventListener\(\s*"pointerdown",\s*handleQuoteValidationUserActivity,\s*true,?\s*\)/,
+    );
   });
 
   it("keeps selected-profile lookup callable during early setup refreshes", function () {

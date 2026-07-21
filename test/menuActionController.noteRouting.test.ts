@@ -251,7 +251,6 @@ describe("menu action controller note routing", function () {
       label: "result.png",
       src: "file:///tmp/result.png",
     };
-
     const target = buildResponseActionTargetFromHistory({
       item: currentItem,
       conversationKey: 9,
@@ -270,6 +269,10 @@ describe("menu action controller note routing", function () {
           timestamp: 200,
           modelName: " codex ",
           quoteCitations: [quoteCitation],
+          quoteDisplayOverride: {
+            markdown: "Answer with citation.",
+            quoteCitations: [quoteCitation],
+          },
           generatedImages: [generatedImage],
         },
       ],

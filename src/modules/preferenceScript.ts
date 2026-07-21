@@ -162,7 +162,6 @@ import {
   setClaudeAutoCompactThresholdPercent,
   setClaudeBridgeUrl,
   setClaudeManagedInstructionTemplatePref,
-  setConversationSystemPref,
   setClaudePermissionModePref,
   setClaudeReasoningModePref,
   setClaudeRuntimeModelPref,
@@ -177,7 +176,6 @@ import {
   isCodexAppServerModeEnabled,
   isNativeZoteroMcpToolsEnabled,
   setCodexAppServerApprovalsReviewerPref,
-  setCodexAppServerModeEnabled,
   setCodexAppServerNativeApprovalsEnabled,
   setCodexBinaryPathPref,
   setNativeZoteroMcpToolsEnabled,
@@ -185,6 +183,7 @@ import {
   setCodexRuntimeModelPref,
   type CodexAppServerApprovalsReviewer,
 } from "../codexAppServer/prefs";
+import { applyCodexAppServerModePreferenceChange } from "../codexAppServer/modePreference";
 import { getConfiguredCodexAppServerBinaryPath } from "../codexAppServer/binaryPath";
 import {
   getCodexAppServerReasoningChoices,
@@ -2458,12 +2457,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     codexAppServerEnableSelect.addEventListener("change", () => {
       const enabled = codexAppServerEnableSelect.value === "enabled";
       applyCodexAppServerUi(enabled);
-      setCodexAppServerModeEnabled(enabled);
+      applyCodexAppServerModePreferenceChange(enabled);
       if (enabled) {
-        setConversationSystemPref("codex");
         void refreshCodexReasoningOptions();
-      } else if (getConversationSystemPref() === "codex") {
-        setConversationSystemPref("upstream");
       }
     });
   }
@@ -2730,54 +2726,6 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       const enabled = agentBackendModeSelect.value === "claude_bridge";
       void applyClaudeCodeModePreferenceChange(enabled, applyAgentBackendUi);
     });
-  }
-
-  if (codexAppServerEnableSelect && agentBackendModeSelect) {
-    const codexEnableCard =
-      codexAppServerEnableSelect.parentElement as HTMLElement | null;
-    const claudeEnableCard =
-      agentBackendModeSelect.parentElement as HTMLElement | null;
-    const applyDisabledStyling = (
-      card: HTMLElement | null,
-      select: HTMLSelectElement,
-      disabled: boolean,
-    ) => {
-      if (card) {
-        card.style.opacity = disabled ? "0.4" : "";
-        card.style.cursor = disabled ? "not-allowed" : "";
-      }
-      select.style.cursor = disabled ? "not-allowed" : "";
-    };
-    const syncModeMutualExclusion = () => {
-      const codexOn = codexAppServerEnableSelect.value === "enabled";
-      const claudeOn = agentBackendModeSelect.value === "claude_bridge";
-      const claudeShouldDisable = codexOn && !claudeOn;
-      const codexShouldDisable = claudeOn && !codexOn;
-      agentBackendModeSelect.disabled = claudeShouldDisable;
-      codexAppServerEnableSelect.disabled = codexShouldDisable;
-      agentBackendModeSelect.title = claudeShouldDisable
-        ? t("Disable Codex App Server first to switch on Claude Code.")
-        : "";
-      codexAppServerEnableSelect.title = codexShouldDisable
-        ? t("Disable Claude Code first to switch on Codex App Server.")
-        : "";
-      applyDisabledStyling(
-        claudeEnableCard,
-        agentBackendModeSelect,
-        claudeShouldDisable,
-      );
-      applyDisabledStyling(
-        codexEnableCard,
-        codexAppServerEnableSelect,
-        codexShouldDisable,
-      );
-    };
-    syncModeMutualExclusion();
-    codexAppServerEnableSelect.addEventListener(
-      "change",
-      syncModeMutualExclusion,
-    );
-    agentBackendModeSelect.addEventListener("change", syncModeMutualExclusion);
   }
 
   if (agentBridgeUrlInput) {

@@ -194,11 +194,25 @@ function appendAgentActivityDisclosure(params: {
 
 export function buildAgentTraceMarkdownForRender(
   text: string,
-  message?: Pick<Message, "quoteCitations"> | null,
+  message?: Pick<
+    Message,
+    "text" | "quoteCitations" | "quoteDisplayOverride"
+  > | null,
 ): string {
+  const useDisplayOverride =
+    Boolean(message?.quoteDisplayOverride) &&
+    sanitizeText(text || "") === sanitizeText(message?.text || "");
+  const display = useDisplayOverride
+    ? message!.quoteDisplayOverride!
+    : {
+        markdown: text,
+        quoteCitations:
+          message?.quoteDisplayOverride?.quoteCitations ||
+          message?.quoteCitations,
+      };
   return buildQuoteDisplayMarkdown({
-    markdown: sanitizeText(text || ""),
-    quoteCitations: message?.quoteCitations,
+    markdown: sanitizeText(display.markdown || text || ""),
+    quoteCitations: display.quoteCitations,
   });
 }
 
@@ -3884,11 +3898,8 @@ export function renderAgentTrace({
     });
     return wrap;
   }
-  const {
-    items: processItems,
-    isInterleaved,
-    inlineTextReplacesAssistantText,
-  } = buildAgentTraceDisplayItems(events, userMessage, message);
+  const { items: processItems, inlineTextReplacesAssistantText } =
+    buildAgentTraceDisplayItems(events, userMessage, message);
   if (inlineTextReplacesAssistantText) {
     onInterleavedText?.();
   }
@@ -4090,7 +4101,11 @@ export function renderAgentTrace({
     forceOpen: Boolean(pending),
   });
 
-  if (hasFinalResponse || answerStartedAt) {
+  // The rule separates the activity trace from the answer, so visible answer
+  // text is authoritative even when a restored row retained a stale streaming
+  // flag or no longer has its original `final` event.
+  const hasAnswerText = Boolean(message.text?.trim());
+  if (hasFinalResponse || answerStartedAt || hasAnswerText) {
     const divider = doc.createElement("div");
     divider.className = "llm-agent-output-divider";
     divider.setAttribute("aria-hidden", "true");

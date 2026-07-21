@@ -77,6 +77,19 @@ export function resolveQuoteCitationLookupText(
   );
   if (!sourceMatchText) return quoteText;
   if (!quoteText) return sourceMatchText;
+  if (
+    citation.sourceMatchSource === "pdf-page-text" &&
+    citation.pageHintIndex !== undefined &&
+    [
+      "ellipsis-segment",
+      "raw-prefix",
+      "raw-suffix",
+      "raw-middle",
+      "progressive",
+    ].includes(citation.sourceMatchKind || "")
+  ) {
+    return sourceMatchText;
+  }
   if (hasShortPrefixBeforeQuoteLookupText(sourceMatchText, quoteText)) {
     return quoteText;
   }

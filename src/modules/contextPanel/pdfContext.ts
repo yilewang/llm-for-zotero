@@ -424,6 +424,7 @@ async function cachePDFText(
 
     let pdfText = "";
     let sourceType: PdfContext["sourceType"];
+    let pdfWorkerPageChars: number[] | undefined;
     const mainItem =
       item.isAttachment() && item.parentID
         ? Zotero.Items.get(item.parentID)
@@ -460,6 +461,14 @@ async function cachePDFText(
         if (result && result.text) {
           pdfText = result.text;
           sourceType = "zotero-worker";
+          const rawPageChars = Array.isArray(result.pageChars)
+            ? result.pageChars.map((value: unknown) => Number(value))
+            : undefined;
+          pdfWorkerPageChars = rawPageChars?.every(
+            (value: number) => Number.isFinite(value) && value >= 0,
+          )
+            ? rawPageChars
+            : undefined;
         }
       } catch (e) {
         ztoolkit.log("PDF extraction failed:", e);
@@ -552,7 +561,10 @@ async function cachePDFText(
         chunkMeta = buildChunkMetadata(chunks, sourceType);
       } else {
         chunks = splitIntoChunks(pdfText, CHUNK_TARGET_LENGTH);
-        chunkMeta = buildChunkMetadata(chunks, sourceType);
+        chunkMeta = buildChunkMetadata(chunks, sourceType, {
+          sourceText: pdfText,
+          pageChars: pdfWorkerPageChars,
+        });
       }
 
       const { chunkStats, docFreq, avgChunkLength } = buildChunkIndex(chunks);
@@ -1409,14 +1421,50 @@ function getSupportLevelLabel(chunkKind: PdfChunkKind | undefined): string {
 export function buildChunkMetadata(
   chunks: string[],
   sourceType?: PdfContext["sourceType"],
+  source?: {
+    sourceText?: string;
+    pageChars?: number[];
+  },
 ): PdfChunkMeta[] {
   const chunkMeta: PdfChunkMeta[] = [];
+  const sourceText =
+    typeof source?.sourceText === "string" ? source.sourceText : undefined;
   const sourceFingerprint = buildPdfSourceFingerprint(
-    chunks.join("\n\n"),
+    sourceText ?? chunks.join("\n\n"),
     sourceType,
   );
   let activeSection: SectionHeadingMatch | undefined;
   let sourceCursor = 0;
+  let sourceSearchCursor = 0;
+  const pageBoundaries = (() => {
+    if (!Array.isArray(source?.pageChars) || !source.pageChars.length) {
+      return [];
+    }
+    const boundaries: Array<{ pageIndex: number; start: number; end: number }> =
+      [];
+    let offset = 0;
+    for (
+      let pageIndex = 0;
+      pageIndex < source.pageChars.length;
+      pageIndex += 1
+    ) {
+      const charCount = Number(source.pageChars[pageIndex]);
+      if (!Number.isFinite(charCount) || charCount < 0) return [];
+      boundaries.push({
+        pageIndex,
+        start: offset,
+        end: offset + charCount,
+      });
+      offset += charCount;
+    }
+    return boundaries;
+  })();
+  const pageForSourceOffset = (offset: number): number | undefined => {
+    const match = pageBoundaries.find(
+      (page) => offset >= page.start && offset < page.end,
+    );
+    return match?.pageIndex;
+  };
   for (const [chunkIndex, chunkText] of chunks.entries()) {
     const explicitSection =
       sourceType === "mineru"
@@ -1437,9 +1485,37 @@ export function buildChunkMetadata(
       ? trimLeadingSectionHeading(chunkText, explicitSection.label)
       : sanitizePdfText(chunkText);
     const cleaned = cleanLeadingEvidenceNoise(textWithoutHeading, chunkKind);
-    const sourceStart = sourceCursor;
-    const sourceEnd = sourceStart + chunkText.length;
+    let sourceStart = sourceCursor;
+    let sourceEnd = sourceStart + chunkText.length;
+    let hasExactSourceRange = false;
+    if (sourceText) {
+      const exactStart = sourceText.indexOf(chunkText, sourceSearchCursor);
+      const fallbackStart =
+        exactStart >= 0
+          ? exactStart
+          : sourceText.indexOf(chunkText.slice(0, 120), sourceSearchCursor);
+      if (fallbackStart >= 0) {
+        const tail = chunkText.slice(-120);
+        const tailStart = sourceText.indexOf(
+          tail,
+          fallbackStart + Math.max(0, chunkText.length - tail.length - 256),
+        );
+        if (tailStart >= fallbackStart) {
+          sourceStart = fallbackStart;
+          sourceEnd = tailStart + tail.length;
+          sourceSearchCursor = fallbackStart + 1;
+          hasExactSourceRange = true;
+        }
+      }
+    }
     sourceCursor = sourceEnd + 2;
+    const pageStart = hasExactSourceRange
+      ? pageForSourceOffset(sourceStart)
+      : undefined;
+    const pageEnd =
+      hasExactSourceRange && sourceEnd > sourceStart
+        ? pageForSourceOffset(sourceEnd - 1)
+        : undefined;
     const references = extractDocumentReferenceEvidence(chunkText);
     chunkMeta.push({
       chunkIndex,
@@ -1453,6 +1529,9 @@ export function buildChunkMetadata(
       sourceFingerprint,
       sourceStart,
       sourceEnd,
+      ...(pageStart !== undefined && pageEnd !== undefined
+        ? { pageStart, pageEnd }
+        : {}),
       references: references.length ? references : undefined,
     });
   }
@@ -2273,6 +2352,11 @@ export async function buildPaperRetrievalCandidates(
       chunkKind: meta?.chunkKind,
       anchorText: meta?.anchorText,
       leadingNoiseRemoved: meta?.leadingNoiseRemoved,
+      sourceStart: meta?.sourceStart,
+      sourceEnd: meta?.sourceEnd,
+      sourceFingerprint: meta?.sourceFingerprint,
+      pageStart: meta?.pageStart,
+      pageEnd: meta?.pageEnd,
       estimatedTokens: Math.max(1, estimateTextTokens(chunks[chunk.index])),
       bm25Score,
       embeddingScore,

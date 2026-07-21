@@ -1,8 +1,5 @@
 import { isPdfContextAttachment } from "./contextAttachmentSupport";
-import {
-  flashPageInLivePdfReader,
-  scrollToSelectedTextInReader,
-} from "./livePdfSelectionLocator";
+import { scrollToSelectedTextInReader } from "./livePdfSelectionLocator";
 import type { SelectedTextContext } from "./types";
 
 type ReaderLocation = {
@@ -73,16 +70,10 @@ async function focusSelectedTextInReader(
   pageIndex: number,
 ): Promise<void> {
   if (selectedContext.text) {
-    try {
-      await scrollToSelectedTextInReader(reader, selectedContext.text, {
-        expectedPageIndex: pageIndex,
-      });
-    } catch {
-      await flashPageInLivePdfReader(reader, pageIndex);
-    }
-    return;
+    await scrollToSelectedTextInReader(reader, selectedContext.text, {
+      expectedPageIndex: pageIndex,
+    }).catch((_error) => undefined);
   }
-  await flashPageInLivePdfReader(reader, pageIndex);
 }
 
 export async function navigateSelectedTextContextToPage(

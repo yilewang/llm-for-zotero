@@ -8,6 +8,8 @@ import { isSupportedContextAttachment } from "./contextAttachmentSupport";
 import { normalizePositiveInt } from "./normalizers";
 import {
   buildPaperStateKey,
+  getLastUsedUpstreamConversationMode,
+  getLastUsedUpstreamGlobalConversationKey,
   getLastUsedPaperConversationKey,
   getLockedGlobalConversationKey,
 } from "./prefHelpers";
@@ -413,7 +415,9 @@ function resolvePreferredConversationMode(
       ) || getLastUsedCodexConversationMode(libraryID);
     return rememberedMode === "global" ? "global" : "paper";
   }
-  const rememberedMode = activeConversationModeByLibrary.get(libraryID);
+  const rememberedMode =
+    activeConversationModeByLibrary.get(libraryID) ||
+    getLastUsedUpstreamConversationMode(libraryID);
   if (rememberedMode === "paper") {
     return "paper";
   }
@@ -456,7 +460,9 @@ function resolveGlobalConversationKey(
       : lockedKey;
   }
   const activeKey = Number(
-    activeGlobalConversationByLibrary.get(libraryID) || 0,
+    activeGlobalConversationByLibrary.get(libraryID) ||
+      getLastUsedUpstreamGlobalConversationKey(libraryID) ||
+      0,
   );
   if (isUpstreamGlobalConversationKey(activeKey)) {
     return activeKey === GLOBAL_CONVERSATION_KEY_BASE
@@ -464,6 +470,23 @@ function resolveGlobalConversationKey(
       : Math.floor(activeKey);
   }
   return buildDefaultUpstreamGlobalConversationKey(libraryID);
+}
+
+export function resolveRememberedGlobalPanelItem(
+  libraryID: number,
+  conversationSystem: ConversationSystem,
+): Zotero.Item | null {
+  const normalizedLibraryID = normalizePositiveInt(libraryID);
+  if (!normalizedLibraryID) return null;
+  const conversationKey = resolveGlobalConversationKey(
+    normalizedLibraryID,
+    conversationSystem,
+  );
+  return conversationSystem === "claude_code"
+    ? createClaudeGlobalPortalItem(normalizedLibraryID, conversationKey)
+    : conversationSystem === "codex"
+      ? createCodexGlobalPortalItem(normalizedLibraryID, conversationKey)
+      : createGlobalPortalItem(normalizedLibraryID, conversationKey);
 }
 
 function resolvePaperConversationKeyForBaseItem(
@@ -524,6 +547,7 @@ export function resolveInitialPanelItemState(
   initialItem: Zotero.Item | null | undefined,
   options?: {
     conversationSystem?: ConversationSystem | null;
+    conversationMode?: "global" | "paper";
   },
 ): {
   item: Zotero.Item | null;
@@ -574,22 +598,12 @@ export function resolveInitialPanelItemState(
     item,
     preferredSystem: options?.conversationSystem,
   });
-  const preferredMode = resolvePreferredConversationMode(
-    libraryID,
-    conversationSystem,
-  );
+  const preferredMode =
+    options?.conversationMode ||
+    resolvePreferredConversationMode(libraryID, conversationSystem);
 
   if (preferredMode === "global") {
-    const conversationKey = resolveGlobalConversationKey(
-      libraryID,
-      conversationSystem,
-    );
-    item =
-      conversationSystem === "claude_code"
-        ? createClaudeGlobalPortalItem(libraryID, conversationKey)
-        : conversationSystem === "codex"
-          ? createCodexGlobalPortalItem(libraryID, conversationKey)
-          : createGlobalPortalItem(libraryID, conversationKey);
+    item = resolveRememberedGlobalPanelItem(libraryID, conversationSystem);
     return { item, basePaperItem };
   }
 

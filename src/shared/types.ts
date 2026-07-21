@@ -96,6 +96,10 @@ export type QuoteCitation = {
   sourceChunkKind?: string;
   contextItemId?: number;
   itemId?: number;
+  /** Fingerprint of the extracted source used to ground the quote. */
+  sourceFingerprint?: string;
+  /** Zero-based occurrence of the full quote on the hinted PDF page. */
+  sourceMatchPageOccurrence?: number;
   /** Best-effort zero-based PDF page hint for fast initial quote navigation. */
   pageHintIndex?: number;
   /** Best-effort printed page label from Zotero/PDF metadata. */

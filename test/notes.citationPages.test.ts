@@ -86,6 +86,35 @@ describe("notes citation page export", function () {
     assert.notInclude(result.noteHtml, "(Whittington et al., 2020, page 1)");
   });
 
+  it("does not restore a rejected quote label during note export", function () {
+    const quote =
+      "This interpretation has no searchable wording in the complete paper.";
+    const messages: Message[] = [
+      {
+        role: "user",
+        text: "Explain the result.",
+        timestamp: 1,
+      },
+      {
+        role: "assistant",
+        text: `> ${quote}\n>\n> (Eppler et al., 2026, page 3)`,
+        timestamp: 2,
+        modelName: "Claude",
+        quoteDisplayOverride: {
+          markdown: `> ${quote}\n>\n> Not a source quote`,
+        },
+      },
+    ];
+
+    const result = buildChatHistoryNotePayload(messages);
+
+    assert.include(result.noteText, `> ${quote}`);
+    assert.include(result.noteText, "> Not a source quote");
+    assert.notInclude(result.noteText, "Eppler");
+    assert.notInclude(result.noteHtml, "Eppler");
+    assert.notInclude(result.noteHtml, "zotero://open-pdf");
+  });
+
   it("uses source match snippets for cached quote pages in saved notes", function () {
     const displayedQuote =
       "We hypothesized that some brain states are easier for people to generate, and that tailoring training to these brain states will facilitate BCI learning. This added explanation was not in the source.";

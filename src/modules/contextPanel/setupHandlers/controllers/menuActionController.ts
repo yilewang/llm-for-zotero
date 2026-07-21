@@ -16,6 +16,7 @@ import { isGlobalPortalItem } from "../../portalScope";
 import { isClaudeGlobalPortalItem } from "../../../../claudeCode/portal";
 import { positionMenuBelowButton } from "../../menuPositioning";
 import { renderMermaidSourceToSvg } from "../../renderedMarkdown";
+import { getMessageQuoteDisplay } from "../../quoteRenderPlan";
 import { setStatus } from "../../textUtils";
 import type {
   ConversationSystem,
@@ -169,9 +170,11 @@ export function buildResponseActionTargetFromHistory(params: {
   if (!reference) return null;
   const pair = findResponseTurnPair(params.history, reference);
   if (!pair) return null;
-  const menuContent = resolveAssistantResponseMenuContent(
-    pair.assistantMessage,
-  );
+  const quoteDisplay = getMessageQuoteDisplay(pair.assistantMessage);
+  const menuContent = resolveAssistantResponseMenuContent({
+    text: quoteDisplay.markdown,
+    generatedImages: pair.assistantMessage.generatedImages,
+  });
   if (!menuContent) return null;
   return {
     item: params.item,
@@ -182,7 +185,7 @@ export function buildResponseActionTargetFromHistory(params: {
     userTimestamp: reference.userTimestamp,
     assistantTimestamp: reference.assistantTimestamp,
     paperContexts: getMessageCitationPaperContexts(pair.userMessage),
-    quoteCitations: pair.assistantMessage.quoteCitations,
+    quoteCitations: quoteDisplay.quoteCitations || undefined,
     generatedImages: menuContent.generatedImages,
   };
 }

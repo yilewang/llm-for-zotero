@@ -80,6 +80,8 @@ const LAST_REASONING_LEVEL_PREF_KEY = "lastUsedReasoningLevel";
 const LAST_REASONING_LEVEL_BY_PROVIDER_PREF_KEY =
   "lastUsedReasoningLevelByProvider";
 const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
+const LAST_CONVERSATION_MODE_MAP_PREF_KEY = "lastUsedConversationModeMap";
+const LAST_GLOBAL_CONVERSATION_MAP_PREF_KEY = "lastUsedGlobalConversationMap";
 const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";
 const PANEL_FONT_SCALE_PREF_KEY = "panelFontScale";
 const SHORTCUT_DEFAULTS_MIGRATION_PREF_KEY = "shortcutDefaultsMigrationVersion";
@@ -134,6 +136,10 @@ export function buildPaperStateKey(
   paperItemID: number,
 ): string {
   return `${Math.floor(libraryID)}:${Math.floor(paperItemID)}`;
+}
+
+function buildLibraryStateKey(libraryID: number): string {
+  return `${Math.floor(libraryID)}`;
 }
 
 export function getLastUsedReasoningLevel(): ReasoningLevelSelection | null {
@@ -249,6 +255,131 @@ function getLastPaperConversationMap(): Record<string, number> {
   } catch (_err) {
     return {};
   }
+}
+
+function getLastConversationModeMap(): Record<string, "global" | "paper"> {
+  const raw = getZoteroPrefs()?.get?.(
+    `${config.prefsPrefix}.${LAST_CONVERSATION_MODE_MAP_PREF_KEY}`,
+    true,
+  );
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, "global" | "paper"> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (value !== "global" && value !== "paper") continue;
+      out[key] = value;
+    }
+    return out;
+  } catch (_err) {
+    return {};
+  }
+}
+
+function setLastConversationModeMap(
+  value: Record<string, "global" | "paper">,
+): void {
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${LAST_CONVERSATION_MODE_MAP_PREF_KEY}`,
+    JSON.stringify(value),
+    true,
+  );
+}
+
+function getLastGlobalConversationMap(): Record<string, number> {
+  const raw = getZoteroPrefs()?.get?.(
+    `${config.prefsPrefix}.${LAST_GLOBAL_CONVERSATION_MAP_PREF_KEY}`,
+    true,
+  );
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      const normalized = Number(value);
+      if (!Number.isFinite(normalized) || normalized <= 0) continue;
+      const conversationKey = Math.floor(normalized);
+      if (!isUpstreamGlobalConversationKey(conversationKey)) continue;
+      out[key] = conversationKey;
+    }
+    return out;
+  } catch (_err) {
+    return {};
+  }
+}
+
+function setLastGlobalConversationMap(value: Record<string, number>): void {
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${LAST_GLOBAL_CONVERSATION_MAP_PREF_KEY}`,
+    JSON.stringify(value),
+    true,
+  );
+}
+
+export function getLastUsedUpstreamConversationMode(
+  libraryID: number,
+): "global" | "paper" | null {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
+  return getLastConversationModeMap()[buildLibraryStateKey(libraryID)] || null;
+}
+
+export function setLastUsedUpstreamConversationMode(
+  libraryID: number,
+  mode: "global" | "paper",
+): void {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return;
+  const map = getLastConversationModeMap();
+  map[buildLibraryStateKey(libraryID)] = mode === "global" ? "global" : "paper";
+  setLastConversationModeMap(map);
+}
+
+export function removeLastUsedUpstreamConversationMode(
+  libraryID: number,
+): void {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return;
+  const map = getLastConversationModeMap();
+  const key = buildLibraryStateKey(libraryID);
+  if (!(key in map)) return;
+  delete map[key];
+  setLastConversationModeMap(map);
+}
+
+export function getLastUsedUpstreamGlobalConversationKey(
+  libraryID: number,
+): number | null {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
+  const value = Number(
+    getLastGlobalConversationMap()[buildLibraryStateKey(libraryID)],
+  );
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const conversationKey = Math.floor(value);
+  return isUpstreamGlobalConversationKey(conversationKey)
+    ? conversationKey
+    : null;
+}
+
+export function setLastUsedUpstreamGlobalConversationKey(
+  libraryID: number,
+  conversationKey: number,
+): void {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return;
+  if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
+  const normalizedKey = Math.floor(conversationKey);
+  if (!isUpstreamGlobalConversationKey(normalizedKey)) return;
+  const map = getLastGlobalConversationMap();
+  map[buildLibraryStateKey(libraryID)] = normalizedKey;
+  setLastGlobalConversationMap(map);
+}
+
+export function removeLastUsedUpstreamGlobalConversationKey(
+  libraryID: number,
+): void {
+  if (!Number.isFinite(libraryID) || libraryID <= 0) return;
+  const map = getLastGlobalConversationMap();
+  const key = buildLibraryStateKey(libraryID);
+  if (!(key in map)) return;
+  delete map[key];
+  setLastGlobalConversationMap(map);
 }
 
 function setLastPaperConversationMap(value: Record<string, number>): void {

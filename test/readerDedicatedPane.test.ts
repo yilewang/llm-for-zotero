@@ -71,11 +71,9 @@ describe("reader dedicated AI pane", function () {
     assert.include(attribution, "glincker/thesvg");
     assert.include(styles, 'mask-image: url("icons/codex-logo.svg")');
     assert.notInclude(styles, 'background-image: url("icons/codex-logo.svg")');
-    assert.include(styles, '[data-system="codex"]');
-    assert.include(
-      handlers,
-      "claudeSystemToggleBtn.dataset.system = iconSystem",
-    );
+    assert.include(styles, ".llm-runtime-system-toggle--codex");
+    assert.include(handlers, "panelRuntimeSystemControls");
+    assert.include(handlers, "syncRuntimeSystemControls");
   });
 
   it("stretches the dedicated reader chat root to the bottom of its host", function () {

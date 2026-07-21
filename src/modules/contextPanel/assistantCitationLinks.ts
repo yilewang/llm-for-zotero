@@ -16,10 +16,10 @@ import {
   normalizeQuoteCitations,
   QUOTE_CITATION_PATTERN,
   stripQuoteCitationAnchorsFromDisplayText,
-  stripTrailingNonSourceQuoteLabelFromQuoteText,
 } from "./quoteCitations";
 import {
   buildQuoteRenderPlan,
+  getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
   type QuoteRenderOccurrence,
 } from "./quoteRenderPlan";
@@ -29,7 +29,6 @@ import {
   extractCitationYear,
   isCitationControlCharCode,
   isLikelyStandaloneSourceCitationLabel,
-  isNonSourceCitationLabel,
   normalizeCitationKey,
   normalizeCitationLabel,
   parseStandaloneCitationLabel,
@@ -56,7 +55,6 @@ import {
 } from "./citationNavigationCache";
 import {
   type ExactQuoteJumpResult,
-  flashPageInLivePdfReader,
   locateQuoteInLivePdfReader,
   getPageLabelForIndex,
   lookupCachedQuoteLocationForAttachment,
@@ -68,6 +66,10 @@ import {
 import { resolveConversationBaseItem } from "./portalScope";
 import { searchPaperCandidates } from "./paperSearch";
 import { resolveQuoteCitationLookupText } from "./quoteNavigationText";
+import {
+  beginQuoteNavigationActivity,
+  QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT,
+} from "./quoteValidationActivity";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
 import type { Message, PaperContextRef, QuoteCitation } from "./types";
 
@@ -82,6 +84,14 @@ type CitationParagraphJumpNavigation = {
 type QuoteCitationPageHint = {
   pageIndex?: number;
   pageLabel?: string;
+};
+
+type QuoteNavigationProvenance = {
+  citationId?: string;
+  sourceFingerprint?: string;
+  sourceMatchPageOccurrence?: number;
+  preferredFullQuoteText?: string;
+  verifiedSourceMatchText?: string;
 };
 
 type CitationCandidateProvenance =
@@ -878,75 +888,6 @@ function getNextElementSibling(element: Element): Element | null {
   return null;
 }
 
-function extractLeadingParentheticalLabel(value: string): {
-  label: string;
-  remainder: string;
-} | null {
-  const text = sanitizeText(value || "").trim();
-  if (!text.startsWith("(")) return null;
-  let depth = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    const ch = text[index];
-    if (ch === "(") depth += 1;
-    if (ch !== ")") continue;
-    depth -= 1;
-    if (depth !== 0) continue;
-    const label = normalizeCitationLabel(text.slice(0, index + 1));
-    if (!label) return null;
-    return {
-      label,
-      remainder: normalizeCitationRemainderText(text.slice(index + 1)),
-    };
-  }
-  return null;
-}
-
-function buildExtractedCitationFromCandidate(
-  candidate: AssistantCitationPaperCandidate,
-): ExtractedCitationLabel {
-  const sourceLabel = candidate.displaySourceLabel || candidate.sourceLabel;
-  const citationLabel =
-    candidate.displayCitationLabel || candidate.citationLabel || sourceLabel;
-  const citationKey = normalizeCitationKey(candidate.paperContext.citationKey);
-  return {
-    sourceLabel,
-    citationLabel,
-    displayCitationLabel: candidate.displayCitationLabel || citationLabel,
-    citationKey: citationKey || undefined,
-    normalizedSourceLabel: normalizeCitationLabel(sourceLabel),
-    normalizedCitationLabel: normalizeCitationLabel(citationLabel),
-    normalizedDisplayCitationLabel: normalizeCitationLabel(
-      candidate.displayCitationLabel || citationLabel,
-    ),
-    normalizedCitationKey: citationKey || undefined,
-  };
-}
-
-function inferSingleCandidateFallbackCitation(
-  candidates: AssistantCitationPaperCandidate[],
-  adjacentCitationText: string,
-): {
-  extractedCitation: ExtractedCitationLabel;
-  remainder: string | null;
-} | null {
-  if (candidates.length !== 1) return null;
-  const text = sanitizeText(adjacentCitationText || "").trim();
-  if (!text) {
-    return {
-      extractedCitation: buildExtractedCitationFromCandidate(candidates[0]),
-      remainder: null,
-    };
-  }
-  const leadingLabel = extractLeadingParentheticalLabel(text);
-  if (!leadingLabel || !isNonSourceCitationLabel(leadingLabel.label)) {
-    return null;
-  }
-  return {
-    extractedCitation: buildExtractedCitationFromCandidate(candidates[0]),
-    remainder: leadingLabel.remainder,
-  };
-}
-
 function createSyntheticCitationElement(params: {
   ownerDoc: Document;
   blockquote: Element;
@@ -1632,8 +1573,13 @@ function buildParagraphJumpFailureStatus(
     : `Jumped to page ${pageLabel}. Paragraph jump failed.`;
 }
 
-function buildParagraphJumpSuccessStatus(pageLabel: string): string {
-  return `Jumped to cited source (page ${pageLabel}, paragraph matched)`;
+function buildParagraphJumpSuccessStatus(
+  pageLabel: string,
+  paragraphJump: ExactQuoteJumpResult,
+): string {
+  return paragraphJump.navigationStatus === "paragraph-selected"
+    ? `Jumped to cited source (page ${pageLabel}, paragraph matched)`
+    : `Jumped to cited source (page ${pageLabel}, quote found; exact occurrence not selected)`;
 }
 
 function logParagraphJumpFailure(params: {
@@ -1647,15 +1593,19 @@ function logParagraphJumpFailure(params: {
   ztoolkit.log("LLM citation paragraph jump failed", {
     contextItemId: params.contextItemId,
     citationLabel: params.displayCitationLabel,
-    quoteTextSample: sanitizeText(params.quoteText || "").slice(0, 240),
     quoteTextLength: sanitizeText(params.quoteText || "").length,
+    quoteTextHash: buildCitationQuoteHash(params.quoteText),
     pageIndex: params.pageIndex,
     pageLabel: params.pageLabel,
     expectedPageIndex: params.paragraphJump.expectedPageIndex,
+    failureStage: params.paragraphJump.failureStage,
     reason: params.paragraphJump.reason,
-    queryUsed: params.paragraphJump.queryUsed,
-    queries: params.paragraphJump.queries,
-    debugSummary: params.paragraphJump.debugSummary,
+    attempts: params.paragraphJump.queries.map((attempt) => ({
+      queryLength: attempt.query.length,
+      queryHash: buildCitationQuoteHash(attempt.query),
+      matchedPageIndexes: attempt.matchedPageIndexes,
+      totalMatches: attempt.totalMatches,
+    })),
   });
 }
 
@@ -1664,64 +1614,45 @@ async function attemptCitationParagraphJump(params: {
   contextItemId: number;
   displayCitationLabel: string;
   quoteText: string;
-  alternateQuoteTexts?: string[];
   pageIndex: number;
   pageLabel: string;
+  citationId?: string;
+  sourceFingerprint?: string;
+  sourceMatchPageOccurrence?: number;
+  preferredFullQuoteText?: string;
+  verifiedSourceMatchText?: string;
 }): Promise<ExactQuoteJumpResult> {
   const quoteTexts = Array.from(
     new Set(
-      [params.quoteText, ...(params.alternateQuoteTexts || [])]
-        .map((text) => sanitizeText(text || "").trim())
+      [
+        params.preferredFullQuoteText,
+        params.verifiedSourceMatchText,
+        params.quoteText,
+      ]
+        .map((value) => sanitizeText(value || "").trim())
         .filter(Boolean),
     ),
   );
-  const highlightTextCandidates = Array.from(
-    new Set(
-      [...(params.alternateQuoteTexts || []), params.quoteText]
-        .map((text) => sanitizeText(text || "").trim())
-        .filter(Boolean),
-    ),
-  );
-  let paragraphJump: ExactQuoteJumpResult | null = null;
-  let attemptedQuoteText = params.quoteText;
-  for (const quoteText of quoteTexts) {
-    attemptedQuoteText = quoteText;
-    paragraphJump = await scrollToExactQuoteInReader(params.reader, quoteText, {
-      expectedPageIndex: params.pageIndex,
-      highlightTextCandidates,
-    });
-    if (paragraphJump.matched) break;
-  }
-  paragraphJump ||= await scrollToExactQuoteInReader(
+  const paragraphJump = await scrollToExactQuoteInReader(
     params.reader,
-    params.quoteText,
-    { expectedPageIndex: params.pageIndex, highlightTextCandidates },
+    quoteTexts[0] || params.quoteText,
+    {
+      citationId: params.citationId,
+      expectedPageIndex: params.pageIndex,
+      sourceFingerprint: params.sourceFingerprint,
+      sourceMatchPageOccurrence: params.sourceMatchPageOccurrence,
+      fallbackQuoteTexts: quoteTexts.slice(1),
+    },
   );
   if (!paragraphJump.matched) {
     logParagraphJumpFailure({
       contextItemId: params.contextItemId,
       displayCitationLabel: params.displayCitationLabel,
-      quoteText: attemptedQuoteText,
+      quoteText: params.quoteText,
       pageIndex: params.pageIndex,
       pageLabel: params.pageLabel,
       paragraphJump,
     });
-    // FindController did not navigate; fall back to coarse page-level jump + flash.
-    const navigated = await navigateReaderToPage(
-      params.reader,
-      params.pageIndex,
-      params.pageLabel,
-    );
-    const readerForFlash = navigated
-      ? params.reader
-      : await openReaderForItem(params.contextItemId, {
-          pageIndex: params.pageIndex,
-          pageLabel: params.pageLabel,
-        });
-    await flashPageInLivePdfReader(
-      readerForFlash || params.reader,
-      params.pageIndex,
-    );
   }
   return paragraphJump;
 }
@@ -1749,7 +1680,7 @@ async function navigateToCachedCitationPage(
   contextItemId: number,
   quoteText: string,
   displayCitationLabel: string,
-  alternateQuoteTexts?: string[],
+  provenance?: QuoteNavigationProvenance,
 ): Promise<CitationParagraphJumpNavigation | null> {
   const cached = lookupCitationPage({ contextItemId, quoteText });
   if (!cached) return null;
@@ -1764,21 +1695,15 @@ async function navigateToCachedCitationPage(
     pageLabel: targetPageLabel,
   });
   if (!reader) return null;
-  void flashPageInLivePdfReader(reader, targetPageIndex).catch((_err) => {
-    void _err;
-  });
 
-  // Skip text-search re-verification — it can return the wrong page (short
-  // prefix false-match).  FindController in attemptCitationParagraphJump is
-  // authoritative and will correct the page via matchedPageIndex.
   const paragraphJump = await attemptCitationParagraphJump({
     reader,
     contextItemId,
     displayCitationLabel,
     quoteText,
-    alternateQuoteTexts,
     pageIndex: targetPageIndex,
     pageLabel: targetPageLabel,
+    ...provenance,
   });
   return {
     reader,
@@ -1792,9 +1717,13 @@ async function navigateToCachedCitationPage(
 async function navigateToHiddenQuoteLocation(params: {
   contextItemId: number;
   quoteText: string;
-  alternateQuoteTexts?: string[];
   displayCitationLabel: string;
   pageIndex: number;
+  citationId?: string;
+  sourceFingerprint?: string;
+  sourceMatchPageOccurrence?: number;
+  preferredFullQuoteText?: string;
+  verifiedSourceMatchText?: string;
 }): Promise<CitationParagraphJumpNavigation | null> {
   const targetPageIndex = Math.floor(params.pageIndex);
   if (!Number.isFinite(targetPageIndex) || targetPageIndex < 0) return null;
@@ -1806,18 +1735,19 @@ async function navigateToHiddenQuoteLocation(params: {
 
   const targetPageLabel =
     getPageLabelForIndex(reader, targetPageIndex) || `${targetPageIndex + 1}`;
-  void flashPageInLivePdfReader(reader, targetPageIndex).catch((_err) => {
-    void _err;
-  });
 
   const paragraphJump = await attemptCitationParagraphJump({
     reader,
     contextItemId: params.contextItemId,
     displayCitationLabel: params.displayCitationLabel,
     quoteText: params.quoteText,
-    alternateQuoteTexts: params.alternateQuoteTexts,
     pageIndex: targetPageIndex,
     pageLabel: targetPageLabel,
+    citationId: params.citationId,
+    sourceFingerprint: params.sourceFingerprint,
+    sourceMatchPageOccurrence: params.sourceMatchPageOccurrence,
+    preferredFullQuoteText: params.preferredFullQuoteText,
+    verifiedSourceMatchText: params.verifiedSourceMatchText,
   });
   return {
     reader,
@@ -1831,9 +1761,12 @@ async function navigateToHiddenQuoteLocation(params: {
 async function navigateToStoredQuotePageHint(params: {
   contextItemId: number;
   quoteText: string;
-  alternateQuoteTexts?: string[];
   displayCitationLabel: string;
   pageHint: QuoteCitationPageHint;
+  citationId?: string;
+  sourceFingerprint?: string;
+  sourceMatchPageOccurrence?: number;
+  preferredFullQuoteText?: string;
   onReaderOpened?: () => void;
 }): Promise<CitationParagraphJumpNavigation | null> {
   const hintedPageIndex =
@@ -1871,18 +1804,18 @@ async function navigateToStoredQuotePageHint(params: {
     hintedPageLabel ||
     getPageLabelForIndex(reader, targetPageIndex) ||
     `${targetPageIndex + 1}`;
-  void flashPageInLivePdfReader(reader, targetPageIndex).catch((_err) => {
-    void _err;
-  });
 
   const paragraphJump = await attemptCitationParagraphJump({
     reader,
     contextItemId: params.contextItemId,
     displayCitationLabel: params.displayCitationLabel,
     quoteText: params.quoteText,
-    alternateQuoteTexts: params.alternateQuoteTexts,
     pageIndex: targetPageIndex,
     pageLabel: targetPageLabel,
+    citationId: params.citationId,
+    sourceFingerprint: params.sourceFingerprint,
+    sourceMatchPageOccurrence: params.sourceMatchPageOccurrence,
+    preferredFullQuoteText: params.preferredFullQuoteText,
   });
   return {
     reader,
@@ -2680,7 +2613,7 @@ async function navigateUntrustedQuoteCitation(params: {
   displayCitationLabel: string;
   quoteText: string;
   paragraphQuoteTexts: string[];
-}): Promise<void> {
+}): Promise<boolean> {
   const resolvedCandidates = await resolveCandidatesForCitationNavigation({
     panelItem: params.panelItem,
     extractedCitation: params.extractedCitation,
@@ -2700,7 +2633,7 @@ async function navigateUntrustedQuoteCitation(params: {
         "error",
       );
     }
-    return;
+    return false;
   }
 
   if (params.status) {
@@ -2711,7 +2644,17 @@ async function navigateUntrustedQuoteCitation(params: {
     candidate: AssistantCitationPaperCandidate;
     pageIndex: number;
     pageLabel: string;
+    quoteText: string;
+    sourceMatchText?: string;
+    sourceMatchPageOccurrence?: number;
   }> = [];
+  const searchTexts = Array.from(
+    new Set(
+      [params.quoteText, ...params.paragraphQuoteTexts]
+        .map((text) => sanitizeText(text || "").trim())
+        .filter(Boolean),
+    ),
+  );
   let lastReason = "The cited quote was not found in the explicit PDF context.";
 
   for (const candidate of pdfCandidates) {
@@ -2720,44 +2663,51 @@ async function navigateUntrustedQuoteCitation(params: {
       lastReason = "Could not open an explicit PDF context for this quote.";
       continue;
     }
-    const result = await locateQuoteInLivePdfReader(reader, params.quoteText, {
-      skipFindController: true,
-    });
-    if (result.status === "resolved" && result.computedPageIndex !== null) {
-      const pageIndex = Math.floor(result.computedPageIndex);
-      matchedCandidates.push({
-        candidate,
-        pageIndex,
-        pageLabel:
-          getPageLabelForIndex(reader, pageIndex) || `${pageIndex + 1}`,
+    for (const searchText of searchTexts) {
+      const result = await locateQuoteInLivePdfReader(reader, searchText, {
+        skipFindController: true,
+        exactOnly: true,
       });
-      if (matchedCandidates.length > 1) break;
-      continue;
+      if (result.status === "resolved" && result.computedPageIndex !== null) {
+        const pageIndex = Math.floor(result.computedPageIndex);
+        matchedCandidates.push({
+          candidate,
+          pageIndex,
+          pageLabel:
+            getPageLabelForIndex(reader, pageIndex) || `${pageIndex + 1}`,
+          quoteText: searchText,
+          sourceMatchText: result.sourceMatchText,
+          sourceMatchPageOccurrence: result.sourceMatchPageOccurrence,
+        });
+        break;
+      }
+      if (result.reason) {
+        lastReason = result.reason;
+      } else if (result.status === "ambiguous") {
+        lastReason = "The cited quote matched multiple pages.";
+      } else if (result.status === "not-found") {
+        lastReason =
+          "The cited quote was not found in the explicit PDF context.";
+      }
     }
-    if (result.reason) {
-      lastReason = result.reason;
-    } else if (result.status === "ambiguous") {
-      lastReason = "The cited quote matched multiple pages.";
-    } else if (result.status === "not-found") {
-      lastReason = "The cited quote was not found in the explicit PDF context.";
-    }
+    if (matchedCandidates.length > 1) break;
   }
 
   if (matchedCandidates.length > 1) {
     if (params.status) {
       setStatus(
         params.status,
-        "The cited quote could not be resolved to a unique explicit PDF.",
+        "The cited quote matched more than one explicit PDF. Its citation was preserved, but no automatic jump is available.",
         "error",
       );
     }
-    return;
+    return false;
   }
 
   const match = matchedCandidates[0];
   if (!match) {
     if (params.status) setStatus(params.status, lastReason, "error");
-    return;
+    return false;
   }
 
   const reader = await openReaderForItem(match.candidate.contextItemId, {
@@ -2766,45 +2716,54 @@ async function navigateUntrustedQuoteCitation(params: {
   });
   if (!reader) {
     if (params.status) {
-      setStatus(params.status, "Could not open the cited paper.", "error");
+      setStatus(
+        params.status,
+        "Could not open the cited paper. The citation was preserved.",
+        "error",
+      );
     }
-    return;
+    return false;
   }
 
   const paragraphJump = await attemptCitationParagraphJump({
     reader,
     contextItemId: match.candidate.contextItemId,
     displayCitationLabel: params.displayCitationLabel,
-    quoteText: params.quoteText,
-    alternateQuoteTexts: params.paragraphQuoteTexts,
+    quoteText: match.quoteText,
     pageIndex: match.pageIndex,
     pageLabel: match.pageLabel,
+    sourceMatchPageOccurrence: match.sourceMatchPageOccurrence,
+    verifiedSourceMatchText: match.sourceMatchText,
   });
   const jumpedLabel = resolveJumpedPageLabel(
     reader,
     paragraphJump,
     match.pageLabel,
   );
-  rememberCachedCitationPage(
-    match.candidate.contextItemId,
-    params.quoteText,
-    paragraphJump.matchedPageIndex ?? match.pageIndex,
-    jumpedLabel,
-  );
-  updateCitationButtonPage(
-    params.button,
-    params.displayCitationLabel,
-    jumpedLabel,
-  );
-  if (params.status) {
-    setStatus(
-      params.status,
-      paragraphJump.matched
-        ? buildParagraphJumpSuccessStatus(jumpedLabel)
-        : buildParagraphJumpFailureStatus(jumpedLabel, paragraphJump),
-      "ready",
+  if (paragraphJump.matched) {
+    rememberCachedCitationPage(
+      match.candidate.contextItemId,
+      match.quoteText,
+      paragraphJump.matchedPageIndex ?? match.pageIndex,
+      jumpedLabel,
+    );
+    updateCitationButtonPage(
+      params.button,
+      params.displayCitationLabel,
+      jumpedLabel,
     );
   }
+  if (params.status) {
+    const statusMessage = paragraphJump.matched
+      ? buildParagraphJumpSuccessStatus(jumpedLabel, paragraphJump)
+      : buildParagraphJumpFailureStatus(jumpedLabel, paragraphJump);
+    setStatus(
+      params.status,
+      statusMessage,
+      paragraphJump.matched ? "ready" : "error",
+    );
+  }
+  return paragraphJump.matched;
 }
 
 async function resolveAndNavigateAssistantCitation(params: {
@@ -2819,10 +2778,13 @@ async function resolveAndNavigateAssistantCitation(params: {
 }): Promise<void> {
   const status = params.body.querySelector("#llm-status") as HTMLElement | null;
   if (params.button.dataset.loading === "true") return;
+  const endNavigationActivity = beginQuoteNavigationActivity();
   params.button.dataset.loading = "true";
   params.button.disabled = true;
   const timing = startCitationNavigationTiming();
   let timingOutcome = "started";
+  const hasQuoteText = Boolean(sanitizeText(params.quoteText || "").trim());
+  let quoteJumpSucceeded = false;
 
   try {
     const normalizedQuoteText = sanitizeText(params.quoteText || "").trim();
@@ -2832,6 +2794,9 @@ async function resolveAndNavigateAssistantCitation(params: {
           .map((text) => sanitizeText(text || "").trim())
           .filter(Boolean),
       ),
+    );
+    const preferredFullQuoteText = paragraphQuoteTexts.find(
+      (quoteText) => quoteText !== normalizedQuoteText,
     );
     const extractedCitation = extractStandalonePaperSourceLabel(
       params.baseSourceLabel,
@@ -2851,7 +2816,7 @@ async function resolveAndNavigateAssistantCitation(params: {
       Boolean(normalizedQuoteText),
     );
     if (navigationMode === "untrusted-quote" && normalizedQuoteText) {
-      await navigateUntrustedQuoteCitation({
+      quoteJumpSucceeded = await navigateUntrustedQuoteCitation({
         status,
         button: params.button,
         panelItem: params.panelItem,
@@ -2861,6 +2826,9 @@ async function resolveAndNavigateAssistantCitation(params: {
         quoteText: normalizedQuoteText,
         paragraphQuoteTexts,
       });
+      timingOutcome = quoteJumpSucceeded
+        ? "untrusted-quote-success"
+        : "untrusted-quote-failure";
       return;
     }
     const orderedCandidates = await resolveCandidatesForCitationNavigation({
@@ -2894,7 +2862,9 @@ async function resolveAndNavigateAssistantCitation(params: {
       if (status)
         setStatus(
           status,
-          "Cited source is not a PDF; page jump is unavailable.",
+          normalizedQuoteText
+            ? "The cited source is not a searchable PDF. The citation was preserved, but page navigation is unavailable."
+            : "Cited source is not a PDF; page jump is unavailable.",
           "error",
         );
       return;
@@ -2936,6 +2906,8 @@ async function resolveAndNavigateAssistantCitation(params: {
       return;
     }
 
+    let lastReason = "Could not resolve the cited quote to a unique page.";
+
     // Cache check — skip rank-0 candidates to avoid stale entries from
     // whatever PDF happens to be open winning over the actual cited paper.
     for (const candidate of orderedCandidates) {
@@ -2948,45 +2920,57 @@ async function resolveAndNavigateAssistantCitation(params: {
         candidate.contextItemId,
         normalizedQuoteText,
         params.displayCitationLabel,
-        paragraphQuoteTexts,
+        {
+          citationId: quoteCitation?.id,
+          sourceFingerprint: quoteCitation?.sourceFingerprint,
+          sourceMatchPageOccurrence: quoteCitation?.sourceMatchPageOccurrence,
+          preferredFullQuoteText,
+        },
       );
       if (cached) {
         markCitationNavigationTiming(timing, "cache lookup", {
           cache: "verified-page",
           contextItemId: cached.contextItemId,
         });
-        // Use FindController's actual page if it landed somewhere different
-        // than the cached (possibly wrong) page.
         const effectiveLabel = resolveJumpedPageLabel(
           cached.reader,
           cached.paragraphJump,
           cached.pageLabel,
         );
-        rememberCachedCitationPage(
-          cached.contextItemId,
-          normalizedQuoteText,
-          cached.paragraphJump.matchedPageIndex ?? cached.pageIndex,
-          effectiveLabel,
-        );
-        updateCitationButtonPage(
-          params.button,
-          params.displayCitationLabel,
-          effectiveLabel,
-        );
-        if (status) {
-          setStatus(
-            status,
-            cached.paragraphJump.matched
-              ? buildParagraphJumpSuccessStatus(effectiveLabel)
-              : buildParagraphJumpFailureStatus(
-                  effectiveLabel,
-                  cached.paragraphJump,
-                ),
-            "ready",
+        if (cached.paragraphJump.matched) {
+          // Use FindController's actual page if it landed somewhere different
+          // than the cached (possibly wrong) page.
+          rememberCachedCitationPage(
+            cached.contextItemId,
+            normalizedQuoteText,
+            cached.paragraphJump.matchedPageIndex ?? cached.pageIndex,
+            effectiveLabel,
           );
+          updateCitationButtonPage(
+            params.button,
+            params.displayCitationLabel,
+            effectiveLabel,
+          );
+          if (status) {
+            setStatus(
+              status,
+              buildParagraphJumpSuccessStatus(
+                effectiveLabel,
+                cached.paragraphJump,
+              ),
+              "ready",
+            );
+          }
+          timingOutcome = "verified-cache";
+          quoteJumpSucceeded = true;
+          return;
         }
-        timingOutcome = "verified-cache";
-        return;
+        lastReason = buildParagraphJumpFailureStatus(
+          effectiveLabel,
+          cached.paragraphJump,
+        );
+        // A stale/early cache miss is not a verdict. Continue to the full
+        // live-PDF locator before deciding that a quote is unsearchable.
       }
     }
     markCitationNavigationTiming(timing, "cache lookup", {
@@ -3003,17 +2987,29 @@ async function resolveAndNavigateAssistantCitation(params: {
         !isAutoNavigableCitationCandidate(candidate, autoNavigableCandidateKeys)
       )
         continue;
-      const hiddenLocation = lookupCachedQuoteLocationForAttachment(
-        candidate.contextItemId,
-        normalizedQuoteText,
-      );
+      const hiddenLocation =
+        lookupCachedQuoteLocationForAttachment(
+          candidate.contextItemId,
+          normalizedQuoteText,
+        ) ??
+        (await warmQuoteLocationCacheForAttachment(
+          candidate.contextItemId,
+          normalizedQuoteText,
+        ));
       if (!hiddenLocation) continue;
       const cached = await navigateToHiddenQuoteLocation({
         contextItemId: candidate.contextItemId,
         quoteText: normalizedQuoteText,
-        alternateQuoteTexts: paragraphQuoteTexts,
         displayCitationLabel: params.displayCitationLabel,
         pageIndex: hiddenLocation.pageIndex,
+        citationId: quoteCitation?.id,
+        sourceFingerprint:
+          quoteCitation?.sourceFingerprint || hiddenLocation.sourceFingerprint,
+        sourceMatchPageOccurrence:
+          quoteCitation?.sourceMatchPageOccurrence ??
+          hiddenLocation.sourceMatchPageOccurrence,
+        preferredFullQuoteText,
+        verifiedSourceMatchText: hiddenLocation.sourceMatchText,
       });
       if (!cached) continue;
       markCitationNavigationTiming(timing, "cache lookup", {
@@ -3026,38 +3022,43 @@ async function resolveAndNavigateAssistantCitation(params: {
         cached.paragraphJump,
         cached.pageLabel,
       );
-      rememberCachedCitationPage(
-        cached.contextItemId,
-        normalizedQuoteText,
-        cached.paragraphJump.matchedPageIndex ?? cached.pageIndex,
-        effectiveLabel,
-      );
-      updateCitationButtonPage(
-        params.button,
-        params.displayCitationLabel,
-        effectiveLabel,
-      );
-      if (status) {
-        setStatus(
-          status,
-          cached.paragraphJump.matched
-            ? buildParagraphJumpSuccessStatus(effectiveLabel)
-            : buildParagraphJumpFailureStatus(
-                effectiveLabel,
-                cached.paragraphJump,
-              ),
-          "ready",
+      if (cached.paragraphJump.matched) {
+        rememberCachedCitationPage(
+          cached.contextItemId,
+          normalizedQuoteText,
+          cached.paragraphJump.matchedPageIndex ?? cached.pageIndex,
+          effectiveLabel,
         );
+        updateCitationButtonPage(
+          params.button,
+          params.displayCitationLabel,
+          effectiveLabel,
+        );
+        if (status) {
+          setStatus(
+            status,
+            buildParagraphJumpSuccessStatus(
+              effectiveLabel,
+              cached.paragraphJump,
+            ),
+            "ready",
+          );
+        }
+        timingOutcome = "hidden-cache";
+        quoteJumpSucceeded = true;
+        return;
       }
-      timingOutcome = "hidden-cache";
-      return;
+      lastReason = buildParagraphJumpFailureStatus(
+        effectiveLabel,
+        cached.paragraphJump,
+      );
+      // The hidden cache is only a fast page hint. Failed verification falls
+      // through to an exhaustive live search.
     }
     markCitationNavigationTiming(timing, "cache lookup", {
       cache: "hidden-quote-location",
       result: "miss",
     });
-
-    let lastReason = "Could not resolve the cited quote to a unique page.";
 
     // Stored quote page hint — non-authoritative fast first paint after
     // verified caches miss. navigateToStoredQuotePageHint calls
@@ -3080,9 +3081,12 @@ async function resolveAndNavigateAssistantCitation(params: {
       const hinted = await navigateToStoredQuotePageHint({
         contextItemId: hintedCandidate.contextItemId,
         quoteText: normalizedQuoteText,
-        alternateQuoteTexts: paragraphQuoteTexts,
         displayCitationLabel: params.displayCitationLabel,
         pageHint: storedPageHint,
+        citationId: quoteCitation?.id,
+        sourceFingerprint: quoteCitation?.sourceFingerprint,
+        sourceMatchPageOccurrence: quoteCitation?.sourceMatchPageOccurrence,
+        preferredFullQuoteText,
         onReaderOpened: () => {
           markCitationNavigationTiming(timing, "hint open", {
             contextItemId: hintedCandidate.contextItemId,
@@ -3120,12 +3124,16 @@ async function resolveAndNavigateAssistantCitation(params: {
           if (status) {
             setStatus(
               status,
-              buildParagraphJumpSuccessStatus(effectiveLabel),
+              buildParagraphJumpSuccessStatus(
+                effectiveLabel,
+                hinted.paragraphJump,
+              ),
               "ready",
             );
           }
           timingOutcome = "stored-page-hint";
-          if (hinted.paragraphJump.matched) return;
+          quoteJumpSucceeded = true;
+          return;
         }
         lastReason = buildParagraphJumpFailureStatus(
           effectiveLabel,
@@ -3164,36 +3172,48 @@ async function resolveAndNavigateAssistantCitation(params: {
               contextItemId: bestRanked.contextItemId,
               displayCitationLabel: params.displayCitationLabel,
               quoteText: normalizedQuoteText,
-              alternateQuoteTexts: paragraphQuoteTexts,
               pageIndex,
               pageLabel: explicitPageLabel,
+              citationId: quoteCitation?.id,
+              sourceFingerprint: quoteCitation?.sourceFingerprint,
+              sourceMatchPageOccurrence:
+                quoteCitation?.sourceMatchPageOccurrence,
+              preferredFullQuoteText,
             });
             const jumpedLabel = resolveJumpedPageLabel(
               target,
               paragraphJump,
               explicitPageLabel,
             );
-            rememberCachedCitationPage(
-              bestRanked.contextItemId,
-              normalizedQuoteText,
-              paragraphJump.matchedPageIndex ?? pageIndex,
-              jumpedLabel,
-            );
-            updateCitationButtonPage(
-              params.button,
-              params.displayCitationLabel,
-              jumpedLabel,
-            );
-            if (status) {
-              setStatus(
-                status,
-                paragraphJump.matched
-                  ? buildParagraphJumpSuccessStatus(jumpedLabel)
-                  : buildParagraphJumpFailureStatus(jumpedLabel, paragraphJump),
-                "ready",
+            if (paragraphJump.matched) {
+              rememberCachedCitationPage(
+                bestRanked.contextItemId,
+                normalizedQuoteText,
+                paragraphJump.matchedPageIndex ?? pageIndex,
+                jumpedLabel,
               );
+              updateCitationButtonPage(
+                params.button,
+                params.displayCitationLabel,
+                jumpedLabel,
+              );
+              if (status) {
+                setStatus(
+                  status,
+                  buildParagraphJumpSuccessStatus(jumpedLabel, paragraphJump),
+                  "ready",
+                );
+              }
+              timingOutcome = "explicit-page-hint";
+              quoteJumpSucceeded = true;
+              return;
             }
-            return;
+            lastReason = buildParagraphJumpFailureStatus(
+              jumpedLabel,
+              paragraphJump,
+            );
+            // A rendered page label is only a hint. Continue through the full
+            // PDF text before returning a failure.
           }
         }
       }
@@ -3213,6 +3233,7 @@ async function resolveAndNavigateAssistantCitation(params: {
         const result = await locateQuoteInLivePdfReader(
           activeReader,
           normalizedQuoteText,
+          { skipFindController: true, exactOnly: true },
         );
         markCitationNavigationTiming(timing, "full quote locate", {
           source: "active-reader",
@@ -3228,9 +3249,15 @@ async function resolveAndNavigateAssistantCitation(params: {
             contextItemId: getReaderItemId(activeReader),
             displayCitationLabel: params.displayCitationLabel,
             quoteText: normalizedQuoteText,
-            alternateQuoteTexts: paragraphQuoteTexts,
             pageIndex,
             pageLabel,
+            citationId: quoteCitation?.id,
+            sourceFingerprint: quoteCitation?.sourceFingerprint,
+            sourceMatchPageOccurrence:
+              quoteCitation?.sourceMatchPageOccurrence ??
+              result.sourceMatchPageOccurrence,
+            preferredFullQuoteText,
+            verifiedSourceMatchText: result.sourceMatchText,
           });
           markCitationNavigationTiming(timing, "paragraph jump", {
             source: "full-quote-locate-active-reader",
@@ -3242,34 +3269,41 @@ async function resolveAndNavigateAssistantCitation(params: {
             paragraphJump,
             pageLabel,
           );
-          rememberCachedCitationPage(
-            getReaderItemId(activeReader),
-            normalizedQuoteText,
-            paragraphJump.matchedPageIndex ?? pageIndex,
-            jumpedLabel,
-          );
-          updateCitationButtonPage(
-            params.button,
-            params.displayCitationLabel,
-            jumpedLabel,
-          );
-          if (status) {
-            setStatus(
-              status,
-              paragraphJump.matched
-                ? buildParagraphJumpSuccessStatus(jumpedLabel)
-                : buildParagraphJumpFailureStatus(jumpedLabel, paragraphJump),
-              "ready",
+          if (paragraphJump.matched) {
+            rememberCachedCitationPage(
+              getReaderItemId(activeReader),
+              normalizedQuoteText,
+              paragraphJump.matchedPageIndex ?? pageIndex,
+              jumpedLabel,
             );
+            updateCitationButtonPage(
+              params.button,
+              params.displayCitationLabel,
+              jumpedLabel,
+            );
+            if (status) {
+              setStatus(
+                status,
+                buildParagraphJumpSuccessStatus(jumpedLabel, paragraphJump),
+                "ready",
+              );
+            }
+            timingOutcome = "full-search-active-reader";
+            quoteJumpSucceeded = true;
+            return;
           }
-          timingOutcome = "full-search-active-reader";
-          return;
+          lastReason = buildParagraphJumpFailureStatus(
+            jumpedLabel,
+            paragraphJump,
+          );
         }
-        if (result.reason) lastReason = result.reason;
-        else if (result.status === "not-found")
-          lastReason = "The cited quote was not found in the paper text.";
-        else if (result.status === "ambiguous")
-          lastReason = "The cited quote matched multiple pages.";
+        if (result.status !== "resolved") {
+          if (result.reason) lastReason = result.reason;
+          else if (result.status === "not-found")
+            lastReason = "The cited quote was not found in the paper text.";
+          else if (result.status === "ambiguous")
+            lastReason = "The cited quote matched multiple pages.";
+        }
       } else {
         lastReason = "No PDF reader is currently open.";
       }
@@ -3294,6 +3328,7 @@ async function resolveAndNavigateAssistantCitation(params: {
       const result = await locateQuoteInLivePdfReader(
         reader,
         normalizedQuoteText,
+        { skipFindController: true, exactOnly: true },
       );
       markCitationNavigationTiming(timing, "full quote locate", {
         source: "candidate",
@@ -3304,20 +3339,21 @@ async function resolveAndNavigateAssistantCitation(params: {
       if (result.status === "resolved" && result.computedPageIndex !== null) {
         const pageIndex = Math.floor(result.computedPageIndex);
         const pageLabel =
-          rememberCachedCitationPage(
-            candidate.contextItemId,
-            normalizedQuoteText,
-            pageIndex,
-            getPageLabelForIndex(reader, pageIndex),
-          ) || `${pageIndex + 1}`;
+          getPageLabelForIndex(reader, pageIndex) || `${pageIndex + 1}`;
         const paragraphJump = await attemptCitationParagraphJump({
           reader,
           contextItemId: candidate.contextItemId,
           displayCitationLabel: params.displayCitationLabel,
           quoteText: normalizedQuoteText,
-          alternateQuoteTexts: paragraphQuoteTexts,
           pageIndex,
           pageLabel,
+          citationId: quoteCitation?.id,
+          sourceFingerprint: quoteCitation?.sourceFingerprint,
+          sourceMatchPageOccurrence:
+            quoteCitation?.sourceMatchPageOccurrence ??
+            result.sourceMatchPageOccurrence,
+          preferredFullQuoteText,
+          verifiedSourceMatchText: result.sourceMatchText,
         });
         markCitationNavigationTiming(timing, "paragraph jump", {
           source: "full-quote-locate-candidate",
@@ -3330,28 +3366,34 @@ async function resolveAndNavigateAssistantCitation(params: {
           paragraphJump,
           pageLabel,
         );
-        rememberCachedCitationPage(
-          candidate.contextItemId,
-          normalizedQuoteText,
-          paragraphJump.matchedPageIndex ?? pageIndex,
-          jumpedLabel,
-        );
-        updateCitationButtonPage(
-          params.button,
-          params.displayCitationLabel,
-          jumpedLabel,
-        );
-        if (status) {
-          setStatus(
-            status,
-            paragraphJump.matched
-              ? buildParagraphJumpSuccessStatus(jumpedLabel)
-              : buildParagraphJumpFailureStatus(jumpedLabel, paragraphJump),
-            "ready",
+        if (paragraphJump.matched) {
+          rememberCachedCitationPage(
+            candidate.contextItemId,
+            normalizedQuoteText,
+            paragraphJump.matchedPageIndex ?? pageIndex,
+            jumpedLabel,
           );
+          updateCitationButtonPage(
+            params.button,
+            params.displayCitationLabel,
+            jumpedLabel,
+          );
+          if (status) {
+            setStatus(
+              status,
+              buildParagraphJumpSuccessStatus(jumpedLabel, paragraphJump),
+              "ready",
+            );
+          }
+          timingOutcome = "full-search-candidate";
+          quoteJumpSucceeded = true;
+          return;
         }
-        timingOutcome = "full-search-candidate";
-        return;
+        lastReason = buildParagraphJumpFailureStatus(
+          jumpedLabel,
+          paragraphJump,
+        );
+        continue;
       }
       if (result.reason) {
         lastReason = result.reason;
@@ -3368,9 +3410,25 @@ async function resolveAndNavigateAssistantCitation(params: {
     timingOutcome = "error";
     ztoolkit.log("LLM: Failed to navigate assistant citation", error);
     if (status) {
-      setStatus(status, "Could not open the cited source", "error");
+      setStatus(
+        status,
+        hasQuoteText
+          ? "Could not open the cited source. The citation was preserved."
+          : "Could not open the cited source",
+        "error",
+      );
     }
   } finally {
+    endNavigationActivity();
+    if (hasQuoteText && !quoteJumpSucceeded) {
+      const EventConstructor =
+        params.body.ownerDocument?.defaultView?.Event || null;
+      if (EventConstructor) {
+        params.body.dispatchEvent(
+          new EventConstructor(QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT),
+        );
+      }
+    }
     params.button.disabled = false;
     params.button.dataset.loading = "false";
     // After any citation click, refresh all other citation buttons in the
@@ -3773,6 +3831,8 @@ type QuoteCardPointerPoint = {
   clientY: number;
 };
 
+type QuoteCardStatus = "verified" | "unverified" | "not-source";
+
 function isMouseEventLike(event: Event): event is MouseEvent {
   const mouseEvent = event as MouseEvent;
   return (
@@ -3883,14 +3943,18 @@ function createQuoteCardElement(params: {
   quoteText: string;
   quoteCitationId?: string;
   quoteOccurrenceId?: string;
-  citationContent: Node;
+  citationContent?: Node;
   quoteContent?: DocumentFragment | null;
+  status?: QuoteCardStatus;
 }): HTMLElement {
+  const status = params.status || "verified";
+  const interactive = status === "verified";
   const wrapper = params.ownerDoc.createElement("div");
   wrapper.className = params.quoteCitationId
     ? "llm-quote-card llm-quote-citation-anchor"
     : "llm-quote-card";
-  wrapper.dataset.expanded = "false";
+  wrapper.dataset.quoteStatus = status;
+  wrapper.dataset.expanded = interactive ? "false" : "true";
   if (params.quoteCitationId) {
     wrapper.dataset.quoteCitationId = params.quoteCitationId;
   }
@@ -3900,17 +3964,15 @@ function createQuoteCardElement(params: {
 
   const content = params.ownerDoc.createElement("div");
   content.className = "llm-quote-card-content";
-  content.setAttribute("role", "button");
-  content.setAttribute("tabindex", "0");
-  content.setAttribute("aria-expanded", "false");
+  if (interactive) {
+    content.setAttribute("role", "button");
+    content.setAttribute("tabindex", "0");
+    content.setAttribute("aria-expanded", "false");
+  }
 
   const preview = params.ownerDoc.createElement("span");
   preview.className = "llm-quote-card-preview";
   renderQuoteCardPreviewMarkdown(preview, params.quoteText, params.ownerDoc);
-
-  const citation = params.ownerDoc.createElement("span");
-  citation.className = "llm-quote-card-citation";
-  citation.appendChild(params.citationContent);
 
   const body = params.ownerDoc.createElement("div");
   body.className = "llm-quote-card-body";
@@ -3918,8 +3980,22 @@ function createQuoteCardElement(params: {
     renderQuoteCardBodyMarkdown(body, params.quoteText, params.ownerDoc);
   }
   content.append(preview, body);
+  wrapper.appendChild(content);
+  if (params.citationContent) {
+    const citation = params.ownerDoc.createElement("span");
+    citation.className = "llm-quote-card-citation";
+    citation.appendChild(params.citationContent);
+    wrapper.appendChild(citation);
+  }
+
+  if (!interactive) return wrapper;
 
   const setExpanded = (expanded: boolean) => {
+    if (wrapper.dataset.quoteStatus !== "verified") {
+      wrapper.dataset.expanded = "true";
+      content.removeAttribute("aria-expanded");
+      return;
+    }
     wrapper.dataset.expanded = expanded ? "true" : "false";
     content.setAttribute("aria-expanded", expanded ? "true" : "false");
   };
@@ -3940,6 +4016,7 @@ function createQuoteCardElement(params: {
   let quoteCardPointerStart: QuoteCardPointerPoint | null = null;
   let shouldSuppressQuoteCardToggle = false;
   wrapper.addEventListener("mousedown", (event: Event) => {
+    if (wrapper.dataset.quoteStatus !== "verified") return;
     if (!isMouseEventLike(event)) return;
     quoteCardPointerStart = {
       clientX: event.clientX,
@@ -3950,6 +4027,7 @@ function createQuoteCardElement(params: {
     }
   });
   wrapper.addEventListener("mouseup", (event: Event) => {
+    if (wrapper.dataset.quoteStatus !== "verified") return;
     if (!isMouseEventLike(event)) return;
     if (
       event.button !== 0 ||
@@ -3961,9 +4039,11 @@ function createQuoteCardElement(params: {
     }
   });
   wrapper.addEventListener("contextmenu", () => {
+    if (wrapper.dataset.quoteStatus !== "verified") return;
     shouldSuppressQuoteCardToggle = true;
   });
   wrapper.addEventListener("click", (event: Event) => {
+    if (wrapper.dataset.quoteStatus !== "verified") return;
     if (shouldIgnoreToggle(event.target)) return;
     if (shouldSuppressQuoteCardToggle) {
       shouldSuppressQuoteCardToggle = false;
@@ -3977,6 +4057,7 @@ function createQuoteCardElement(params: {
     toggleExpanded();
   });
   content.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (wrapper.dataset.quoteStatus !== "verified") return;
     if (event.key !== "Enter" && event.key !== " ") return;
     if (shouldIgnoreToggle(event.target)) return;
     event.preventDefault();
@@ -3984,7 +4065,6 @@ function createQuoteCardElement(params: {
     toggleExpanded();
   });
 
-  wrapper.append(content, citation);
   return wrapper;
 }
 
@@ -4022,30 +4102,32 @@ function createQuoteCitationAnchorElement(params: {
     params.quoteCitation.citationLabel,
   );
   const displayText = getQuoteCitationDisplayText(params.quoteCitation);
-  let citationContent: Node;
-  if (extractedCitation) {
-    const lookupText = resolveQuoteCitationLookupText(params.quoteCitation);
-    const matchingCandidates = resolveQuoteCitationCandidates(
-      params.quoteCitation,
-      extractedCitation,
-      params.candidates,
-    );
-    citationContent = createCitationButton({
+  if (!extractedCitation) {
+    return createQuoteCardElement({
       ownerDoc: params.ownerDoc,
-      body: params.body,
-      panelItem: params.panelItem,
-      candidates: matchingCandidates,
-      extractedCitation,
-      quoteText: lookupText,
-      quoteCitation: params.quoteCitation,
-      paragraphQuoteText: params.quoteCitation.quoteText,
-      navigationMode: "trusted-quote",
-      rawCitationText: params.quoteCitation.citationLabel,
+      quoteText: displayText,
+      quoteCitationId: params.quoteCitation.id,
+      status: "unverified",
     });
-  } else {
-    citationContent = params.ownerDoc.createElement("span");
-    citationContent.textContent = params.quoteCitation.citationLabel;
   }
+  const lookupText = resolveQuoteCitationLookupText(params.quoteCitation);
+  const matchingCandidates = resolveQuoteCitationCandidates(
+    params.quoteCitation,
+    extractedCitation,
+    params.candidates,
+  );
+  const citationContent: Node = createCitationButton({
+    ownerDoc: params.ownerDoc,
+    body: params.body,
+    panelItem: params.panelItem,
+    candidates: matchingCandidates,
+    extractedCitation,
+    quoteText: lookupText,
+    quoteCitation: params.quoteCitation,
+    paragraphQuoteText: params.quoteCitation.quoteText,
+    navigationMode: "trusted-quote",
+    rawCitationText: params.quoteCitation.citationLabel,
+  });
   return createQuoteCardElement({
     ownerDoc: params.ownerDoc,
     quoteText: displayText,
@@ -4066,67 +4148,84 @@ function createQuoteRenderOccurrenceElement(params: {
     const extractedCitation = extractStandalonePaperSourceLabel(
       params.occurrence.citationLabel,
     );
-    let citationContent: Node;
-    if (extractedCitation) {
-      const matchingCandidates = resolveQuoteCitationCandidates(
-        trustedCitation,
-        extractedCitation,
-        params.candidates,
-      );
-      citationContent = createCitationButton({
+    if (!extractedCitation) {
+      return createQuoteCardElement({
         ownerDoc: params.ownerDoc,
-        body: params.body,
-        panelItem: params.panelItem,
-        candidates: matchingCandidates,
-        extractedCitation,
-        quoteText: resolveQuoteCitationLookupText(trustedCitation),
-        quoteCitation: trustedCitation,
-        paragraphQuoteText: trustedCitation.quoteText,
-        navigationMode: "trusted-quote",
-        rawCitationText: params.occurrence.citationLabel,
+        quoteText: params.occurrence.displayText,
+        quoteCitationId: trustedCitation.id,
+        quoteOccurrenceId: params.occurrence.occurrenceId,
+        status: "unverified",
       });
-    } else {
-      citationContent = params.ownerDoc.createElement("span");
-      citationContent.textContent = params.occurrence.citationLabel;
     }
+    const lookupText = resolveQuoteCitationLookupText(trustedCitation);
+    const matchingCandidates = resolveQuoteCitationCandidates(
+      trustedCitation,
+      extractedCitation,
+      params.candidates,
+    );
+    const citationContent: Node = createCitationButton({
+      ownerDoc: params.ownerDoc,
+      body: params.body,
+      panelItem: params.panelItem,
+      candidates: matchingCandidates,
+      extractedCitation,
+      quoteText: lookupText,
+      quoteCitation: trustedCitation,
+      paragraphQuoteText: trustedCitation.quoteText,
+      navigationMode: "trusted-quote",
+      rawCitationText: params.occurrence.citationLabel,
+    });
     return createQuoteCardElement({
       ownerDoc: params.ownerDoc,
       quoteText: params.occurrence.displayText,
       quoteCitationId: trustedCitation.id,
       quoteOccurrenceId: params.occurrence.occurrenceId,
       citationContent,
+      status: "verified",
+    });
+  }
+
+  if (params.occurrence.trust === "not-source-quote") {
+    return createQuoteCardElement({
+      ownerDoc: params.ownerDoc,
+      quoteText: params.occurrence.displayText,
+      quoteOccurrenceId: params.occurrence.occurrenceId,
+      status: "not-source",
     });
   }
 
   const extractedCitation = extractStandalonePaperSourceLabel(
     params.occurrence.citationLabel,
   );
-  let citationContent: Node;
-  if (extractedCitation) {
-    citationContent = createCitationButton({
+  if (!extractedCitation) {
+    return createQuoteCardElement({
       ownerDoc: params.ownerDoc,
-      body: params.body,
-      panelItem: params.panelItem,
-      candidates: resolveMatchingCandidatesForExtractedCitation(
-        extractedCitation,
-        params.candidates,
-      ),
-      extractedCitation,
-      quoteText: params.occurrence.lookupText,
-      paragraphQuoteText: params.occurrence.lookupText,
-      navigationMode: "untrusted-quote",
-      preferRawCitationLabel: true,
-      rawCitationText: params.occurrence.citationLabel,
+      quoteText: params.occurrence.displayText,
+      quoteOccurrenceId: params.occurrence.occurrenceId,
+      status: "unverified",
     });
-  } else {
-    citationContent = params.ownerDoc.createElement("span");
-    citationContent.textContent = params.occurrence.citationLabel;
   }
+  const citationContent: Node = createCitationButton({
+    ownerDoc: params.ownerDoc,
+    body: params.body,
+    panelItem: params.panelItem,
+    candidates: resolveMatchingCandidatesForExtractedCitation(
+      extractedCitation,
+      params.candidates,
+    ),
+    extractedCitation,
+    quoteText: params.occurrence.lookupText,
+    paragraphQuoteText: params.occurrence.lookupText,
+    navigationMode: "untrusted-quote",
+    preferRawCitationLabel: true,
+    rawCitationText: params.occurrence.citationLabel,
+  });
   return createQuoteCardElement({
     ownerDoc: params.ownerDoc,
     quoteText: params.occurrence.displayText,
     quoteOccurrenceId: params.occurrence.occurrenceId,
     citationContent,
+    status: "verified",
   });
 }
 
@@ -4201,10 +4300,8 @@ export function renderQuoteCitationPlaceholders(params: {
   assistantMessage: Message;
   pairedUserMessage?: Message | null;
 }): void {
-  const plan = buildQuoteRenderPlan({
-    markdown: params.assistantMessage.text || "",
-    quoteCitations: params.assistantMessage.quoteCitations,
-  });
+  const display = getMessageQuoteDisplay(params.assistantMessage);
+  const plan = buildQuoteRenderPlan(display);
   QUOTE_RENDER_OCCURRENCE_PATTERN.lastIndex = 0;
   const hasQuoteOccurrence = QUOTE_RENDER_OCCURRENCE_PATTERN.test(
     params.bubble.textContent || "",
@@ -4219,9 +4316,7 @@ export function renderQuoteCitationPlaceholders(params: {
   const occurrencesById = new Map(
     plan.occurrences.map((occurrence) => [occurrence.occurrenceId, occurrence]),
   );
-  const quoteCitations = normalizeQuoteCitations(
-    params.assistantMessage.quoteCitations,
-  );
+  const quoteCitations = normalizeQuoteCitations(display.quoteCitations);
   const citationsById = new Map(
     quoteCitations.map((citation) => [citation.id, citation]),
   );
@@ -4445,9 +4540,7 @@ function replaceBlockquoteWithFallbackQuoteCard(params: {
   citationContent?: Node;
   quoteContent?: DocumentFragment | null;
 }): HTMLElement | null {
-  const quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
-    params.quoteText,
-  );
+  const quoteText = sanitizeText(params.quoteText).trim();
   if (!quoteText) return null;
   const quoteCard = createFallbackQuoteCardElement({
     ownerDoc: params.ownerDoc,
@@ -4539,18 +4632,15 @@ export function decorateAssistantCitationLinks(params: {
   assistantMessage: Message;
   pairedUserMessage?: Message | null;
 }): void {
+  const display = getMessageQuoteDisplay(params.assistantMessage);
   if (
-    !sanitizeText(
-      params.bubble.textContent || params.assistantMessage.text || "",
-    ).trim()
+    !sanitizeText(params.bubble.textContent || display.markdown || "").trim()
   ) {
     return;
   }
   const ownerDoc = params.bubble.ownerDocument;
   if (!ownerDoc) return;
-  const quoteCitations = normalizeQuoteCitations(
-    params.assistantMessage.quoteCitations,
-  );
+  const quoteCitations = normalizeQuoteCitations(display.quoteCitations);
   const activeReader = getActiveReaderForSelectedTab();
   if (activeReader) {
     scheduleCitationPageTextCacheWarm(activeReader, ownerDoc);
@@ -4568,9 +4658,7 @@ export function decorateAssistantCitationLinks(params: {
     params.bubble.querySelectorAll("blockquote"),
   ) as Element[];
   const rawBlockquoteTexts =
-    extractMarkdownBlockquoteTextsForCitationDecoration(
-      params.assistantMessage.text || "",
-    );
+    extractMarkdownBlockquoteTextsForCitationDecoration(display.markdown);
   ztoolkit.log(
     "LLM citation decoration: blockquotes found =",
     blockquotes.length,
@@ -4582,12 +4670,19 @@ export function decorateAssistantCitationLinks(params: {
     params.bubble.childElementCount,
   );
   for (const [blockquoteIndex, blockquote] of blockquotes.entries()) {
-    if (blockquote.closest(".llm-quote-citation-anchor")) continue;
+    if (
+      blockquote.closest(
+        ".llm-quote-citation-anchor, [data-quote-status='not-source'], [data-quote-status='unverified']",
+      )
+    ) {
+      continue;
+    }
     const sourceBlockquoteText =
       rawBlockquoteTexts[blockquoteIndex] || blockquote.textContent || "";
-    let quoteText = stripTrailingNonSourceQuoteLabelFromQuoteText(
-      sanitizeText(sourceBlockquoteText).trim(),
-    );
+    if (/(?:^|\n)\s*Not a source quote\s*$/i.test(sourceBlockquoteText)) {
+      continue;
+    }
+    let quoteText = sanitizeText(sourceBlockquoteText).trim();
     if (!quoteText) continue;
     let citationEl = getNextElementSibling(blockquote);
     const tailMatch = extractBlockquoteTailCitation(sourceBlockquoteText);
@@ -4631,25 +4726,6 @@ export function decorateAssistantCitationLinks(params: {
         citationEl,
         extractedCitation,
       });
-    }
-
-    const fallbackCitation = !extractedCitation
-      ? inferSingleCandidateFallbackCitation(
-          candidates,
-          citationEl?.textContent || "",
-        )
-      : null;
-    if (fallbackCitation) {
-      extractedCitation = fallbackCitation.extractedCitation;
-      citationRemainder = fallbackCitation.remainder;
-      if (!citationEl) {
-        citationEl = createSyntheticCitationElement({
-          ownerDoc,
-          blockquote,
-          citationEl,
-          extractedCitation,
-        });
-      }
     }
 
     if (!extractedCitation) {
@@ -4709,16 +4785,16 @@ export function decorateAssistantCitationLinks(params: {
         quoteText,
         extractedCitation,
       );
+      const quoteCard = replaceBlockquoteWithFallbackQuoteCard({
+        ownerDoc,
+        blockquote,
+        quoteText,
+        citationLabel: extractedCitation.sourceLabel,
+        citationContent: citationElement,
+        quoteContent: displayedQuoteContent,
+      });
       removeConsumedSourceBackedQuoteCitation({
-        anchorElement:
-          replaceBlockquoteWithFallbackQuoteCard({
-            ownerDoc,
-            blockquote,
-            quoteText,
-            citationLabel: extractedCitation.sourceLabel,
-            citationContent: citationElement,
-            quoteContent: displayedQuoteContent,
-          }) || blockquote,
+        anchorElement: quoteCard || blockquote,
         citationEl,
         extractedCitation,
         replacementText: citationRemainder,

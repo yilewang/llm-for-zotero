@@ -12,8 +12,14 @@ function source(path: string): string {
 describe("quote card UI contract", function () {
   it("defines expandable quote-card styling", function () {
     const css = source("addon/content/zoteroPane.css");
+    const quoteCardRuleStart = css.indexOf(".llm-quote-card {");
+    const quoteCardRuleEnd = css.indexOf("}", quoteCardRuleStart);
+    const quoteCardRule = css.slice(quoteCardRuleStart, quoteCardRuleEnd);
 
     assert.include(css, ".llm-quote-card");
+    assert.isAtLeast(quoteCardRuleStart, 0);
+    assert.isAbove(quoteCardRuleEnd, quoteCardRuleStart);
+    assert.include(quoteCardRule, "margin: 10px 0");
     assert.include(css, ".llm-quote-card-content");
     assert.include(css, ".llm-quote-card-body");
     assert.include(css, '.llm-quote-card[data-expanded="false"]');
@@ -28,17 +34,83 @@ describe("quote card UI contract", function () {
     assert.include(css, ".llm-modern-chat-pane .llm-citation-icon:hover");
   });
 
+  it("defines noninteractive amber styling for not-source quote cards", function () {
+    const css = source("addon/content/zoteroPane.css");
+
+    assert.include(css, '.llm-quote-card[data-quote-status="not-source"]');
+    assert.include(css, '.llm-quote-card[data-quote-status="unverified"]');
+    assert.include(css, "--llm-quote-card-rail: #f59e0b");
+    assert.include(css, "font-style: normal");
+    assert.include(css, "cursor: default");
+    assert.include(
+      css,
+      '.llm-quote-card[data-quote-status="not-source"] .llm-quote-card-content',
+    );
+    assert.include(css, "padding-bottom: 8px");
+  });
+
   it("defaults quote cards to the collapsed visual state", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
     );
 
-    assert.include(renderSource, 'wrapper.dataset.expanded = "false"');
+    assert.include(
+      renderSource,
+      'wrapper.dataset.expanded = interactive ? "false" : "true"',
+    );
     assert.include(
       renderSource,
       'content.setAttribute("aria-expanded", "false")',
     );
     assert.notInclude(renderSource, 'title.textContent = "Evidence quote"');
+  });
+
+  it("keeps rejected cards expanded and noninteractive", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+
+    assert.include(renderSource, "wrapper.dataset.quoteStatus = status");
+    assert.include(renderSource, 'const interactive = status === "verified"');
+    assert.include(
+      renderSource,
+      'wrapper.dataset.expanded = interactive ? "false" : "true"',
+    );
+    assert.include(renderSource, "if (!interactive) return wrapper");
+    assert.include(
+      renderSource,
+      'type QuoteCardStatus = "verified" | "unverified" | "not-source"',
+    );
+    assert.notInclude(
+      renderSource,
+      "markQuoteCardUnverifiedAfterNavigationFailure",
+    );
+  });
+
+  it("keeps the not-source card non-interactive without a visible label", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+    const notSourceBranchStart = renderSource.indexOf(
+      'if (params.occurrence.trust === "not-source-quote")',
+    );
+    const nextBranchStart = renderSource.indexOf(
+      "const extractedCitation = extractStandalonePaperSourceLabel(",
+      notSourceBranchStart,
+    );
+    const notSourceBranch = renderSource.slice(
+      notSourceBranchStart,
+      nextBranchStart,
+    );
+
+    assert.include(renderSource, 'status: "not-source"');
+    assert.include(renderSource, "if (!interactive) return wrapper");
+    assert.include(renderSource, "citationContent?: Node");
+    assert.include(renderSource, "if (params.citationContent)");
+    assert.isAtLeast(notSourceBranchStart, 0);
+    assert.isAbove(nextBranchStart, notSourceBranchStart);
+    assert.notInclude(notSourceBranch, "citationContent");
+    assert.notInclude(renderSource, "Related source:");
   });
 
   it("keeps citation activation separate from quote-card toggling", function () {
@@ -199,6 +271,46 @@ describe("quote card UI contract", function () {
     assert.include(renderSource, "wrapper.dataset.quoteOccurrenceId");
   });
 
+  it("starts a cited legacy quote occurrence verified and clickable", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+    const untrustedStart = renderSource.indexOf(
+      'navigationMode: "untrusted-quote"',
+      renderSource.indexOf("function createQuoteRenderOccurrenceElement"),
+    );
+    const untrustedEnd = renderSource.indexOf(
+      "function textContainsQuoteCitationPlaceholder",
+      untrustedStart,
+    );
+    const untrustedBranch = renderSource.slice(untrustedStart, untrustedEnd);
+
+    assert.isAtLeast(untrustedStart, 0);
+    assert.isAbove(untrustedEnd, untrustedStart);
+    assert.include(untrustedBranch, 'status: "verified"');
+    assert.notInclude(untrustedBranch, 'status: "unverified"');
+  });
+
+  it("starts a cited legacy fallback blockquote verified and clickable", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+    const fallbackStart = renderSource.indexOf(
+      "function createFallbackQuoteCardElement",
+    );
+    const fallbackEnd = renderSource.indexOf(
+      "function createQuoteCitationAnchorElement",
+      fallbackStart,
+    );
+    const fallbackRenderer = renderSource.slice(fallbackStart, fallbackEnd);
+
+    assert.isAtLeast(fallbackStart, 0);
+    assert.isAbove(fallbackEnd, fallbackStart);
+    assert.include(renderSource, 'const status = params.status || "verified"');
+    assert.notInclude(fallbackRenderer, 'status: "unverified"');
+    assert.notInclude(fallbackRenderer, 'status: "not-source"');
+  });
+
   it("lifts rendered quote cards out of markdown paragraphs", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
@@ -210,10 +322,11 @@ describe("quote card UI contract", function () {
     assert.include(renderSource, "parent.replaceChild(replacement, paragraph)");
   });
 
-  it("warms local paper text before final quote verification", function () {
+  it("separates the cache-only quote gate from background warming", function () {
     const chatSource = source("src/modules/contextPanel/chat.ts");
 
     assert.include(chatSource, "warmPageTextCacheForAttachment");
+    assert.include(chatSource, "getCachedPageTextForAttachment");
     assert.include(chatSource, 'sourceMatchSource: "pdf-page-text"');
     assert.include(chatSource, "ensureQuoteSourceTextCachedForPaper");
     assert.include(chatSource, "assistantMarkdownNeedsQuoteSourceSearch");
@@ -221,8 +334,14 @@ describe("quote card UI contract", function () {
     assert.include(chatSource, 'paper.contentSourceMode || ""');
     assert.include(chatSource, "!hasCachedQuoteSourceText(contextItemId) &&");
     assert.include(chatSource, "pdfTextCache.has(contextItemId)");
-    assert.include(chatSource, "await buildQuoteSourceTextsForPaperContexts");
-    assert.include(chatSource, "await finalizeAssistantMessageQuoteCitations");
+    assert.include(
+      chatSource,
+      "const evidence = buildCachedQuoteSourceEvidenceForPaperContexts(",
+    );
+    assert.include(chatSource, "await warmQuoteSourceCachesForPaperContexts(");
+    assert.include(chatSource, "pendingQuoteValidations");
+    assert.include(chatSource, "startConversationQuoteValidation");
+    assert.include(chatSource, "scheduleAssistantMessageQuoteValidation(");
   });
 
   it("decorates citation blockquotes after all assistant markdown surfaces are mounted", function () {
