@@ -1728,8 +1728,8 @@
   color: #d32f2f;
 }
 
-/* Confirmation dialog */
-.llm-standalone-confirm-overlay {
+/* In-plugin modal dialogs */
+.llm-modal-overlay {
   display: flex;
   position: fixed;
   inset: 0;
@@ -1740,7 +1740,15 @@
   background: rgba(0, 0, 0, 0.42);
 }
 
-.llm-standalone-confirm-dialog {
+.llm-modal-dialog {
+  --llm-modal-control-background: var(
+    --material-sidepane,
+    var(--material-background, #ffffff)
+  );
+  --llm-modal-control-border: var(
+    --stroke-primary,
+    var(--fill-secondary, #7a7a7a)
+  );
   width: min(92vw, 380px);
   box-sizing: border-box;
   padding: 16px;
@@ -1751,7 +1759,7 @@
   color: var(--fill-primary);
 }
 
-.llm-standalone-confirm-title {
+.llm-modal-title {
   font-size: var(--llm-fs-14, 14px);
   font-weight: 600;
   line-height: 1.35;
@@ -1764,14 +1772,14 @@
   line-height: 1.45;
 }
 
-.llm-standalone-confirm-actions {
+.llm-modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
 }
 
-.llm-standalone-confirm-btn {
+.llm-modal-btn {
   appearance: none;
   -moz-appearance: none;
   min-width: 74px;
@@ -1785,33 +1793,97 @@
   cursor: pointer;
 }
 
-.llm-standalone-confirm-btn:focus-visible {
+.llm-modal-btn:focus-visible {
   outline: 2px solid var(--color-accent, #2563eb);
   outline-offset: 2px;
 }
 
-.llm-standalone-confirm-cancel {
+.llm-modal-cancel {
   background: transparent;
   color: var(--fill-primary);
 }
 
-.llm-standalone-confirm-cancel:hover {
+.llm-modal-cancel:hover {
   background: var(--fill-quinary);
 }
 
-.llm-standalone-confirm-primary {
+.llm-modal-primary {
   border-color: var(--color-accent, #2563eb);
   background: var(--color-accent, #2563eb);
   color: white;
 }
 
-.llm-standalone-confirm-primary:hover {
+.llm-modal-primary:hover {
   filter: brightness(1.06);
 }
 
 .llm-standalone-confirm-destructive {
   border-color: #c2410c;
   background: #c2410c;
+}
+
+.llm-modal-primary:disabled {
+  cursor: default;
+  filter: none;
+  opacity: 0.5;
+}
+
+.llm-conversation-rename-form,
+.llm-shortcut-edit-form {
+  margin-top: 12px;
+}
+
+.llm-conversation-rename-input,
+.llm-shortcut-edit-control {
+  appearance: none;
+  -moz-appearance: none;
+  width: 100%;
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 6px 9px;
+  border: 1px solid var(--llm-modal-control-border);
+  border-radius: 6px;
+  outline: none;
+  background: var(--llm-modal-control-background);
+  color: var(--fill-primary);
+  font: inherit;
+  font-size: var(--llm-fs-12, 12px);
+}
+
+.llm-conversation-rename-input:focus,
+.llm-conversation-rename-input:focus-visible,
+.llm-shortcut-edit-control:focus,
+.llm-shortcut-edit-control:focus-visible {
+  border-color: var(--llm-modal-control-border);
+  outline: none;
+  box-shadow: none;
+}
+
+.llm-shortcut-edit-dialog {
+  width: min(92vw, 420px);
+}
+
+.llm-shortcut-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.llm-shortcut-edit-field + .llm-shortcut-edit-field {
+  margin-top: 12px;
+}
+
+.llm-shortcut-edit-label {
+  color: var(--fill-primary);
+  font-size: var(--llm-fs-12, 12px);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.llm-shortcut-edit-prompt {
+  min-height: 116px;
+  line-height: 1.4;
+  resize: vertical;
 }
 
 /* Panel — expandable conversation list */

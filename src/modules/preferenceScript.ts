@@ -7,6 +7,7 @@ import {
   DEFAULT_TEMPERATURE,
 } from "../utils/llmDefaults";
 import { HTML_NS } from "../utils/domHelpers";
+import { registerAddonDialog } from "../utils/dialogRegistry";
 import {
   normalizeMaxTokensForModel,
   normalizeOptionalInputTokenCap,
@@ -612,7 +613,7 @@ async function confirmMineruSyncPackageDeletion(
         "Synced MinerU ZIP packages are Zotero attachment items. Those package attachments will be deleted. Zotero may show sync conflicts while it syncs these deletions. If that happens, choose the local/deleted version to remove already-uploaded packages from Zotero sync.",
       );
 
-  new ztoolkit.Dialog(1, 1)
+  const dialog = new ztoolkit.Dialog(1, 1)
     .addCell(0, 0, {
       tag: "div",
       namespace: "html",
@@ -630,8 +631,13 @@ async function confirmMineruSyncPackageDeletion(
     .addButton(t("Cancel"), "cancel")
     .setDialogData(dialogData)
     .open(t("Delete MinerU sync packages?"));
-  await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock
-    .promise;
+  const unregisterDialog = registerAddonDialog(dialog);
+  try {
+    await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock
+      .promise;
+  } finally {
+    unregisterDialog();
+  }
   return (dialogData as { _lastButtonId?: string })._lastButtonId === "delete";
 }
 

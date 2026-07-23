@@ -38,19 +38,32 @@ export function showStandaloneConfirmationDialog(
     const titleId = nextDialogElementId("llm-standalone-confirm-title");
     const messageId = nextDialogElementId("llm-standalone-confirm-message");
 
-    const overlay = createElement(doc, "div", "llm-standalone-confirm-overlay");
+    const overlay = createElement(
+      doc,
+      "div",
+      "llm-modal-overlay llm-standalone-confirm-overlay",
+    );
     overlay.setAttribute("role", "presentation");
 
-    const dialog = createElement(doc, "div", "llm-standalone-confirm-dialog");
+    const dialog = createElement(
+      doc,
+      "div",
+      "llm-modal-dialog llm-standalone-confirm-dialog",
+    );
     dialog.setAttribute("role", "alertdialog");
     dialog.setAttribute("aria-modal", "true");
     dialog.setAttribute("aria-labelledby", titleId);
     dialog.setAttribute("aria-describedby", messageId);
 
-    const title = createElement(doc, "div", "llm-standalone-confirm-title", {
-      id: titleId,
-      textContent: options.title,
-    });
+    const title = createElement(
+      doc,
+      "div",
+      "llm-modal-title llm-standalone-confirm-title",
+      {
+        id: titleId,
+        textContent: options.title,
+      },
+    );
     const message = createElement(
       doc,
       "div",
@@ -60,11 +73,15 @@ export function showStandaloneConfirmationDialog(
         textContent: options.message,
       },
     );
-    const actions = createElement(doc, "div", "llm-standalone-confirm-actions");
+    const actions = createElement(
+      doc,
+      "div",
+      "llm-modal-actions llm-standalone-confirm-actions",
+    );
     const cancelButton = createElement(
       doc,
       "button",
-      "llm-standalone-confirm-btn llm-standalone-confirm-cancel",
+      "llm-modal-btn llm-modal-cancel llm-standalone-confirm-btn llm-standalone-confirm-cancel",
       {
         type: "button",
         textContent: options.cancelLabel,
@@ -74,6 +91,8 @@ export function showStandaloneConfirmationDialog(
       doc,
       "button",
       [
+        "llm-modal-btn",
+        "llm-modal-primary",
         "llm-standalone-confirm-btn",
         "llm-standalone-confirm-primary",
         options.destructive ? "llm-standalone-confirm-destructive" : "",

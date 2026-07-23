@@ -29,6 +29,9 @@ import {
   resetShortcutsToDefault,
 } from "./prefHelpers";
 import { setStatus } from "./textUtils";
+import { showShortcutEditDialog } from "./shortcutEditDialog";
+import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
+import { t } from "../../utils/i18n";
 
 const shortcutRenderGeneration = new WeakMap<Element, number>();
 
@@ -221,7 +224,12 @@ export async function renderShortcuts(
   };
 
   const addShortcut = async () => {
-    const updated = await openShortcutEditDialog("", "", "Add Shortcut");
+    const updated = await openShortcutEditDialog(
+      body.ownerDocument as Document,
+      "",
+      "",
+      "Add Shortcut",
+    );
     if (!updated) return;
 
     const prompt = updated.prompt.trim();
@@ -558,7 +566,11 @@ export async function renderShortcuts(
       ) as HTMLButtonElement | null;
       const currentPrompt = target?.dataset.prompt || "";
       const currentLabel = target?.dataset.label || "";
-      const updated = await openShortcutEditDialog(currentLabel, currentPrompt);
+      const updated = await openShortcutEditDialog(
+        body.ownerDocument as Document,
+        currentLabel,
+        currentPrompt,
+      );
       if (!updated) {
         menu.style.display = "none";
         return;
@@ -651,7 +663,9 @@ export async function renderShortcuts(
       e.preventDefault();
       e.stopPropagation();
       if (menu.dataset.menuKind !== "panel") return;
-      const shouldReset = await openResetShortcutsDialog();
+      const shouldReset = await openResetShortcutsDialog(
+        body.ownerDocument as Document,
+      );
       if (!shouldReset) {
         menu.style.display = "none";
         menu.dataset.menuKind = "";
@@ -721,121 +735,32 @@ export async function renderShortcuts(
 }
 
 export async function openShortcutEditDialog(
+  doc: Document,
   initialLabel: string,
   initialPrompt: string,
   dialogTitle = "Edit Shortcut",
 ): Promise<{ label: string; prompt: string } | null> {
-  const dialogData: { [key: string]: any } = {
-    labelValue: initialLabel || "",
-    promptValue: initialPrompt || "",
-    loadCallback: () => {
-      return;
-    },
-    unloadCallback: () => {
-      return;
-    },
-  };
-
-  const dialog = new ztoolkit.Dialog(3, 2)
-    .addCell(0, 0, {
-      tag: "h2",
-      properties: { innerHTML: dialogTitle },
-      styles: { margin: "0 0 8px 0" },
-    })
-    .addCell(1, 0, {
-      tag: "label",
-      namespace: "html",
-      attributes: { for: "llm-shortcut-label-input" },
-      properties: { innerHTML: "Label" },
-    })
-    .addCell(
-      1,
-      1,
-      {
-        tag: "input",
-        namespace: "html",
-        id: "llm-shortcut-label-input",
-        attributes: {
-          "data-bind": "labelValue",
-          "data-prop": "value",
-          type: "text",
-        },
-        styles: {
-          width: "300px",
-        },
-      },
-      false,
-    )
-    .addCell(2, 0, {
-      tag: "label",
-      namespace: "html",
-      attributes: { for: "llm-shortcut-prompt-input" },
-      properties: { innerHTML: "Prompt" },
-    })
-    .addCell(
-      2,
-      1,
-      {
-        tag: "textarea",
-        namespace: "html",
-        id: "llm-shortcut-prompt-input",
-        attributes: {
-          "data-bind": "promptValue",
-          "data-prop": "value",
-          rows: "6",
-        },
-        styles: {
-          width: "300px",
-        },
-      },
-      false,
-    )
-    .addButton("Save", "save")
-    .addButton("Cancel", "cancel")
-    .setDialogData(dialogData)
-    .open(dialogTitle);
-
-  addon.data.dialog = dialog;
-  await dialogData.unloadLock.promise;
-  addon.data.dialog = undefined;
-
-  if (dialogData._lastButtonId !== "save") return null;
-
-  return {
-    label: dialogData.labelValue || "",
-    prompt: dialogData.promptValue || "",
-  };
+  return await showShortcutEditDialog(doc, {
+    title: t(dialogTitle),
+    initialLabel: initialLabel || "",
+    initialPrompt: initialPrompt || "",
+    labelText: t("Label"),
+    promptText: t("Prompt"),
+    confirmLabel: t("Save"),
+    cancelLabel: t("Cancel"),
+  });
 }
 
-export async function openResetShortcutsDialog(): Promise<boolean> {
-  const dialogData: { [key: string]: any } = {
-    loadCallback: () => {
-      return;
-    },
-    unloadCallback: () => {
-      return;
-    },
-  };
-
-  const dialog = new ztoolkit.Dialog(1, 1)
-    .addCell(0, 0, {
-      tag: "div",
-      namespace: "html",
-      properties: {
-        innerHTML: "Reset all shortcuts to default settings?",
-      },
-      styles: {
-        width: "320px",
-        lineHeight: "1.45",
-      },
-    })
-    .addButton("Reset", "reset")
-    .addButton("Cancel", "cancel")
-    .setDialogData(dialogData)
-    .open("Reset Shortcuts");
-
-  addon.data.dialog = dialog;
-  await dialogData.unloadLock.promise;
-  addon.data.dialog = undefined;
-  return dialogData._lastButtonId === "reset";
+export async function openResetShortcutsDialog(
+  doc: Document,
+): Promise<boolean> {
+  return await showStandaloneConfirmationDialog(doc, {
+    title: t("Reset Shortcuts"),
+    message: t(
+      "Reset all shortcuts to their default labels, prompts, order, and visibility?",
+    ),
+    confirmLabel: t("Reset"),
+    cancelLabel: t("Cancel"),
+    destructive: true,
+  });
 }

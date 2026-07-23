@@ -1,4 +1,5 @@
 import { t } from "../../../../utils/i18n";
+import { registerAddonDialog } from "../../../../utils/dialogRegistry";
 import { MAX_SELECTED_IMAGES } from "../../constants";
 import {
   activeContextPanels,
@@ -519,10 +520,13 @@ export function attachComposeCaptureController(
           .addButton("Cancel", "cancel")
           .setDialogData(dialogData)
           .open(t("Select PDF pages"));
-        addon.data.dialog = pageDialog;
-        await (dialogData as { unloadLock: { promise: Promise<void> } })
-          .unloadLock.promise;
-        addon.data.dialog = undefined;
+        const unregisterPageDialog = registerAddonDialog(pageDialog);
+        try {
+          await (dialogData as { unloadLock: { promise: Promise<void> } })
+            .unloadLock.promise;
+        } finally {
+          unregisterPageDialog();
+        }
         if ((dialogData as { _lastButtonId?: string })._lastButtonId !== "ok")
           return;
         const rawInput = String(

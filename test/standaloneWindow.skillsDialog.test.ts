@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { showStandaloneConfirmationDialog } from "../src/modules/contextPanel/standaloneConfirmationDialog";
+import { showShortcutEditDialog } from "../src/modules/contextPanel/shortcutEditDialog";
 
 class FakeEvent {
   defaultPrevented = false;
@@ -35,6 +36,10 @@ class FakeElement {
   id = "";
   textContent = "";
   type = "";
+  value = "";
+  maxLength = 0;
+  disabled = false;
+  selected = false;
 
   constructor(
     readonly ownerDocument: FakeDocument,
@@ -87,6 +92,10 @@ class FakeElement {
 
   focus(): void {
     this.ownerDocument.activeElement = this;
+  }
+
+  select(): void {
+    this.selected = true;
   }
 
   querySelector(selector: string): FakeElement | null {
@@ -228,5 +237,53 @@ describe("standalone skills restore confirmation", function () {
     assert.isTrue(event.defaultPrevented);
     assert.isTrue(event.propagationStopped);
     assert.isNull(doc.body.querySelector(".llm-standalone-confirm-overlay"));
+  });
+
+  it("cancels when the reference design's backdrop is clicked", async function () {
+    const doc = new FakeDocument();
+    const result = createRestoreDialog(doc);
+    const overlay = doc.body.querySelector(".llm-standalone-confirm-overlay");
+
+    overlay?.click();
+    assert.isFalse(await result);
+    assert.isNull(doc.body.querySelector(".llm-standalone-confirm-overlay"));
+  });
+});
+
+describe("shortcut edit dialog", function () {
+  it("uses the reference document modal and returns edited fields", async function () {
+    const doc = new FakeDocument();
+    const result = showShortcutEditDialog(doc as unknown as Document, {
+      title: "Edit Shortcut",
+      initialLabel: "Summarize",
+      initialPrompt: "",
+      labelText: "Label",
+      promptText: "Prompt",
+      confirmLabel: "Save",
+      cancelLabel: "Cancel",
+    });
+
+    const overlay = doc.body.querySelector(".llm-shortcut-edit-overlay");
+    assert.equal(overlay?.parentElement, doc.body);
+    const controls =
+      overlay?.querySelectorAll(".llm-shortcut-edit-control") || [];
+    const confirm = overlay?.querySelector(".llm-modal-primary");
+    assert.lengthOf(controls, 2);
+    assert.equal(doc.activeElement, controls[0]);
+    assert.isTrue(controls[0].selected);
+    assert.isTrue(confirm?.disabled);
+
+    controls[1].value = "Summarize the selected paper";
+    controls[1].dispatchEvent(new FakeEvent("input"));
+    assert.isFalse(confirm?.disabled);
+    overlay
+      ?.querySelector(".llm-shortcut-edit-form")
+      ?.dispatchEvent(new FakeEvent("submit"));
+
+    assert.deepEqual(await result, {
+      label: "Summarize",
+      prompt: "Summarize the selected paper",
+    });
+    assert.isNull(doc.body.querySelector(".llm-shortcut-edit-overlay"));
   });
 });

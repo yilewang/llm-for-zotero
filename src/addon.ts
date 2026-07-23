@@ -21,7 +21,7 @@ class Addon {
       columns: Array<ColumnOptions>;
       rows: Array<{ [dataKey: string]: string }>;
     };
-    dialog?: DialogHelper;
+    dialogs: Set<DialogHelper>;
     standaloneWindow?: Window;
   };
   // Lifecycle hooks
@@ -39,6 +39,7 @@ class Addon {
       env: __env__,
       initialized: false,
       ztoolkit: createZToolkit(),
+      dialogs: new Set(),
     };
     this.hooks = hooks;
     this.api = {};

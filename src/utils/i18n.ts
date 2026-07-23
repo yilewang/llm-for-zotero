@@ -99,6 +99,14 @@ const zhCN: Record<string, string> = {
   Reasoning: "推理",
   Send: "发送",
   Cancel: "取消",
+  Save: "保存",
+  "Add Shortcut": "添加快捷操作",
+  "Edit Shortcut": "编辑快捷操作",
+  "Reset Shortcuts": "重置快捷操作",
+  Label: "标签",
+  Prompt: "提示词",
+  "Reset all shortcuts to their default labels, prompts, order, and visibility?":
+    "将所有快捷操作的标签、提示词、顺序和可见性恢复为默认设置？",
   "No active paper context. Type / to add papers.":
     "没有活跃的论文上下文。输入 / 添加论文。",
   Ready: "就绪",

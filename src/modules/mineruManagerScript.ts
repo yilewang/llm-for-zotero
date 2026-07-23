@@ -11,6 +11,7 @@ import {
   groupByParent,
 } from "./mineruBatchProcessor";
 import { t } from "../utils/i18n";
+import { registerAddonDialog } from "../utils/dialogRegistry";
 import type {
   MineruBatchState,
   MineruItemEntry,
@@ -63,7 +64,7 @@ async function confirmDialog(message: string): Promise<boolean> {
       return;
     },
   };
-  new ztoolkit.Dialog(1, 1)
+  const dialog = new ztoolkit.Dialog(1, 1)
     .addCell(0, 0, {
       tag: "div",
       namespace: "html",
@@ -74,8 +75,13 @@ async function confirmDialog(message: string): Promise<boolean> {
     .addButton("Cancel", "cancel")
     .setDialogData(dialogData)
     .open(t("Delete confirmation"));
-  await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock
-    .promise;
+  const unregisterDialog = registerAddonDialog(dialog);
+  try {
+    await (dialogData as { unloadLock: { promise: Promise<void> } }).unloadLock
+      .promise;
+  } finally {
+    unregisterDialog();
+  }
   return (dialogData as { _lastButtonId?: string })._lastButtonId === "ok";
 }
 
