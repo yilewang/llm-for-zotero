@@ -237,6 +237,74 @@ describe("minimal source-match quote gate workflow", function () {
     );
   });
 
+  it("revalidates legacy Climer same-line citations without rewriting stored history", async function () {
+    const waterQuote =
+      "The water-restricted mice received water rewards $2 . 2 5 \\mathsf { m }$ down a 3-m visual virtual track";
+    const methodsQuote =
+      "Mice received $4 \\mu \\mathrm { l }$ water reward $2 / 3 ( 2 . 2 5 \\mathsf { m } )$ of the way along the $3 { \\cdot } \\mathsf { m }$ virtual track.";
+    const sourceText = [
+      "The water-restricted mice received water rewards 2.25 m down a 3-m visual virtual track, a track length resembling those in other studies.",
+      "Mice received 4 μl water reward 2/3 (2.25 m) of the way along the 3 m virtual track.",
+    ].join("\n");
+    const raw = [
+      `> “${waterQuote}” (Climer et al., 2025)`,
+      "",
+      `> “${methodsQuote}” (Climer et al., 2025)`,
+    ].join("\n");
+    const climerPaper: PaperContextRef = {
+      ...paper,
+      itemId: 2443,
+      contextItemId,
+      title:
+        "Hippocampal representations drift in stable multisensory environments",
+      firstCreator: "Climer et al.",
+      year: "2025",
+    };
+    const source = installPdfSource(contextItemId, sourceText);
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "Where was the reward delivered?",
+      timestamp: 1,
+      paperContexts: [climerPaper],
+    };
+    const assistantMessage: Message = {
+      role: "assistant",
+      text: raw,
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+
+    finalizeAssistantMessageQuoteCitationsForTests(assistantMessage, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    assert.equal(assistantMessage.text, raw);
+    assert.isUndefined(assistantMessage.quoteCitations);
+    assert.notInclude(
+      assistantMessage.quoteDisplayOverride?.markdown || "",
+      "Not a source quote",
+    );
+    assert.equal(
+      (
+        assistantMessage.quoteDisplayOverride?.markdown.match(
+          /\[\[quote:Q_[a-z0-9]+\]\]/g,
+        ) || []
+      ).length,
+      2,
+    );
+    assert.lengthOf(
+      assistantMessage.quoteDisplayOverride?.quoteCitations || [],
+      2,
+    );
+    assert.equal(
+      assistantMessage.quoteDisplayOverride?.quoteCitations?.[0]?.citationLabel,
+      "(Climer et al., 2025)",
+    );
+  });
+
   it("extracts and computes once for repeated quote and source scopes", async function () {
     resetQuoteValidationDecisionCacheForTests();
     const quote =

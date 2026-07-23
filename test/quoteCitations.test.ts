@@ -513,6 +513,55 @@ describe("quoteCitations", function () {
     assert.notInclude(rendered, "[[quote:");
   });
 
+  it("uses canonical same-line parsing on rendered source-backed blocks", function () {
+    const quote =
+      "The water-restricted mice received water rewards 2.25 m down a 3-m visual virtual track.";
+    const citation = buildQuoteCitation({
+      quoteText: quote,
+      citationLabel: "(Climer et al., 2025)",
+      sourceMatchKind: "exact",
+      sourceMatchSource: "pdf-page-text",
+      contextItemId: 2442,
+      itemId: 2443,
+      pageHintIndex: 0,
+    });
+    assert.isDefined(citation);
+
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      `> ${quote} (Climer et al., 2025)\nFollowing prose remains visible.`,
+      [citation!],
+    );
+
+    assert.include(rendered, `> ${quote}`);
+    assert.include(rendered, "> (Climer et al., 2025)");
+    assert.include(rendered, "Following prose remains visible.");
+    assert.notInclude(rendered, `${quote} (Climer et al., 2025)`);
+  });
+
+  it("does not consume a citation-shaped prefix from following prose", function () {
+    const quote =
+      "The water-restricted mice received water rewards at a stable location.";
+    const citation = buildQuoteCitation({
+      quoteText: quote,
+      citationLabel: "(Climer et al., 2025)",
+      sourceMatchKind: "exact",
+      sourceMatchSource: "pdf-page-text",
+      contextItemId: 2442,
+      itemId: 2443,
+      pageHintIndex: 0,
+    });
+    assert.isDefined(citation);
+    const followingProse =
+      "(Climer et al., 2025) This discussion sentence is not a citation line.";
+
+    const rendered = replaceQuoteCitationPlaceholdersForMarkdown(
+      `> ${quote}\n\n${followingProse}`,
+      [citation!],
+    );
+
+    assert.include(rendered, followingProse);
+  });
+
   it("keeps translated quotes unanchored when only the original source text exists", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown: "> 记忆痕迹在巩固过程中具有高度动态性。\n\n(Tomé, 2024)",
@@ -1257,7 +1306,7 @@ describe("quoteCitations", function () {
     assert.include(finalized.markdown, "Fig. 1b caption");
   });
 
-  it("finalizes same-line citation commentary by splitting the citation label", function () {
+  it("preserves citation-shaped prose following an authenticated quote", function () {
     const citation = buildQuoteCitation({
       quoteText: "Participants gained control by realigning brain activity.",
       citationLabel: "(Busch et al., 2026)",
@@ -1276,7 +1325,7 @@ describe("quoteCitations", function () {
       finalized.markdown,
       "And this explains why learning succeeded.",
     );
-    assert.notInclude(finalized.markdown, "(Busch et al., 2026) And");
+    assert.include(finalized.markdown, "(Busch et al., 2026) And");
   });
 
   it("uses the shared citation separator helper", function () {
@@ -1412,7 +1461,7 @@ describe("quoteCitations", function () {
     );
   });
 
-  it("strips leading punctuation from consumed citation continuation text", function () {
+  it("preserves punctuation in citation-shaped following prose", function () {
     const quoteText = "This quote supports the mechanistic account.";
     const citation = buildQuoteCitation({
       quoteText,
@@ -1434,7 +1483,7 @@ describe("quoteCitations", function () {
       "pushing the field toward a mechanistic, multilevel account.",
     );
     assert.notInclude(finalized.markdown, "\n\n, pushing");
-    assert.notInclude(finalized.markdown, "(Anticevic et al., 2013),");
+    assert.include(finalized.markdown, "(Anticevic et al., 2013),");
   });
 
   it("preserves non-quote-worthy blockquotes as plain quoted text", function () {
@@ -1626,7 +1675,7 @@ describe("quoteCitations", function () {
     assert.notInclude(unmatched.markdown, "(Abstract)");
   });
 
-  it("keeps the active source label for unmatched section-labeled single-source blockquotes", function () {
+  it("keeps citation-shaped follow-up prose after an unmatched blockquote", function () {
     const finalized = finalizeAssistantQuoteCitations({
       markdown:
         "> This source-like sentence is not verified exactly but was emitted with a section label.\n\n(Abstract) Follow-up prose remains.",
@@ -1648,7 +1697,7 @@ describe("quoteCitations", function () {
     );
     assert.include(finalized.markdown, "(Single, 2024)");
     assert.include(finalized.markdown, "Follow-up prose remains.");
-    assert.notInclude(finalized.markdown, "(Abstract)");
+    assert.include(finalized.markdown, "(Abstract) Follow-up prose remains.");
     assert.lengthOf(finalized.quoteCitations, 0);
   });
 
@@ -2511,6 +2560,304 @@ describe("quoteCitations", function () {
     });
 
     assert.notInclude(finalized.markdown, "[[quote:");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("canonicalizes equivalent Climer citation layouts before provenance search", function () {
+    const displayedQuote =
+      "The water-restricted mice received water rewards $2 . 2 5 \\mathsf { m }$ down a 3-m visual virtual track";
+    const sourceText =
+      "The water-restricted mice received water rewards 2.25 m down a 3-m visual virtual track, a track length resembling those in other studies.";
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText,
+          sourceLabel: "(Climer et al., 2025)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 2442,
+          itemId: 2443,
+          pageHintIndex: 0,
+          pageHintLabel: "1",
+        },
+      ],
+    });
+    const layouts = [
+      `> “${displayedQuote}” (Climer et al., 2025)`,
+      `> “${displayedQuote}” (Climer et al., 2025) [climer2025]`,
+      `> “${displayedQuote}”\n> (Climer et al., 2025)`,
+      `> “${displayedQuote}”\n\n(Climer et al., 2025)`,
+    ];
+
+    const finalized = layouts.map((markdown) =>
+      finalizeAssistantQuoteCitations({
+        markdown,
+        sourceIndex,
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      }),
+    );
+
+    for (const result of finalized) {
+      assert.match(result.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+      assert.notInclude(result.markdown, "Not a source quote");
+      assert.lengthOf(result.quoteCitations, 1);
+      assert.equal(result.quoteCitations[0]?.pageHintIndex, 0);
+      assert.equal(result.quoteCitations[0]?.pageHintLabel, "1");
+      assert.equal(
+        result.quoteCitations[0]?.citationLabel,
+        "(Climer et al., 2025)",
+      );
+    }
+    assert.deepEqual(
+      finalized.map((result) => result.quoteCitations[0]?.id),
+      Array.from(
+        { length: layouts.length },
+        () => finalized[0].quoteCitations[0]?.id,
+      ),
+    );
+  });
+
+  it("authenticates the Climer methods quote after removing its same-line citation", function () {
+    const displayedQuote =
+      "Mice received $4 \\mu \\mathrm { l }$ water reward $2 / 3 ( 2 . 2 5 \\mathsf { m } )$ of the way along the $3 { \\cdot } \\mathsf { m }$ virtual track.";
+    const sourceText =
+      "Mice received 4 μl water reward 2/3 (2.25 m) of the way along the 3 m virtual track.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> “${displayedQuote}” (Climer et al., 2025)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText,
+            sourceLabel: "(Climer et al., 2025)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 2442,
+            itemId: 2443,
+            pageHintIndex: 9,
+            pageHintLabel: "10",
+          },
+        ],
+      }),
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(finalized.quoteCitations[0]?.quoteText, displayedQuote);
+    assert.equal(finalized.quoteCitations[0]?.pageHintIndex, 9);
+    assert.equal(finalized.quoteCitations[0]?.pageHintLabel, "10");
+    assert.equal(
+      finalized.quoteCitations[0]?.sourceMatchKind,
+      "normalized-span",
+    );
+  });
+
+  it("uses canonical same-line quote parsing during cooperative validation", async function () {
+    const quote =
+      "The water-restricted mice received water rewards 2.25 m down a 3-m visual virtual track";
+    const finalized = await finalizeAssistantQuoteCitationsCooperatively(
+      {
+        markdown: `> “${quote}” (Climer et al., 2025)`,
+        sourceIndex: buildQuoteSourceIndex({
+          sourceTexts: [
+            {
+              sourceText: `${quote}, followed by stable behavioral training.`,
+              sourceLabel: "(Climer et al., 2025)",
+              sourceMatchSource: "pdf-page-text",
+              contextItemId: 2442,
+              itemId: 2443,
+              pageHintIndex: 0,
+            },
+          ],
+        }),
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      },
+      { yieldToMain: async () => undefined },
+    );
+
+    assert.isNotNull(finalized);
+    assert.match(finalized!.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.notInclude(finalized!.markdown, "Not a source quote");
+    assert.lengthOf(finalized!.quoteCitations, 1);
+  });
+
+  it("repairs a stale same-line label from the unique authenticated source", function () {
+    const quote =
+      "The water-restricted mice received water rewards 2.25 m down a 3-m visual virtual track";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> “${quote}” (Wrong et al., 2024)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `${quote}, followed by stable behavioral training.`,
+            sourceLabel: "(Climer et al., 2025)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 2442,
+            itemId: 2443,
+            pageHintIndex: 0,
+          },
+        ],
+      }),
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.equal(
+      finalized.quoteCitations[0]?.citationLabel,
+      "(Climer et al., 2025)",
+    );
+    assert.notInclude(finalized.markdown, "Wrong et al.");
+  });
+
+  it("keeps strict absence decisions after splitting a valid same-line citation", function () {
+    const sourceSentence =
+      "The complete paper reports a stable reward location across sessions.";
+    const quotes = [
+      "This complete invented quote is absent from every page in the authenticated paper.",
+      `${sourceSentence} This explanatory sentence was added by the model.`,
+    ];
+
+    for (const quote of quotes) {
+      const finalized = finalizeAssistantQuoteCitations({
+        markdown: `> “${quote}” (Climer et al., 2025)`,
+        sourceIndex: buildQuoteSourceIndex({
+          sourceTexts: [
+            {
+              sourceText: sourceSentence,
+              sourceLabel: "(Climer et al., 2025)",
+              sourceMatchSource: "pdf-page-text",
+              contextItemId: 2442,
+              itemId: 2443,
+              pageHintIndex: 0,
+            },
+          ],
+        }),
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      });
+
+      assert.equal(finalized.markdown, `> “${quote}”\n>\n> Not a source quote`);
+      assert.isEmpty(finalized.quoteCitations);
+    }
+  });
+
+  it("defers ambiguous citation-shaped decoration instead of declaring absence", function () {
+    const quote =
+      "This source sentence remains searchable when its presentation syntax is uncertain.";
+    const markdown = `> “${quote}” [Climer et al., 2025]`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: quote,
+            sourceLabel: "(Climer et al., 2025)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 2442,
+            itemId: 2443,
+            pageHintIndex: 0,
+          },
+        ],
+      }),
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.equal(finalized.markdown, markdown);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("keeps semantic parentheticals in the canonical quote body", function () {
+    const quote =
+      "The reward remained at two thirds of the virtual track (2.25 m)";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> “${quote}”`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `Methods. ${quote}.`,
+            sourceLabel: "(Climer et al., 2025)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 2442,
+            itemId: 2443,
+            pageHintIndex: 9,
+          },
+        ],
+      }),
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.include(finalized.quoteCitations[0]?.quoteText || "", "(2.25 m)");
+  });
+
+  it("authenticates source wording that ends in an author-year parenthetical", function () {
+    const quote =
+      "The same spatial code was reported in a previous experiment (Ziv et al., 2013)";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `Results. ${quote}.`,
+            sourceLabel: "(Climer et al., 2025)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 2442,
+            itemId: 2443,
+            pageHintIndex: 9,
+          },
+        ],
+      }),
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.include(
+      finalized.quoteCitations[0]?.quoteText || "",
+      "(Ziv et al., 2013)",
+    );
+  });
+
+  it("authenticates quotes with short and nested citation-only blockquote lines", function () {
+    const quote =
+      "Stable source wording should authenticate independently of its display label.";
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText: quote,
+          sourceLabel: "(Yao, 2024)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 2442,
+          itemId: 2443,
+          pageHintIndex: 2,
+        },
+      ],
+    });
+
+    for (const citationLine of ["(Yao)", "(Yao (2024))"]) {
+      const finalized = finalizeAssistantQuoteCitations({
+        markdown: `> ${quote}\n> ${citationLine}`,
+        sourceIndex,
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      });
+
+      assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+      assert.notInclude(finalized.markdown, "Not a source quote");
+      assert.lengthOf(finalized.quoteCitations, 1);
+    }
+  });
+
+  it("keeps a same-line source candidate deferred while page coverage is incomplete", function () {
+    const quote =
+      "This historical quote cannot be rejected before page coverage is complete.";
+    const markdown = `> “${quote}” (Climer et al., 2025)`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({ sourceTexts: [] }),
+      quoteSourceReview: { sourceEvidenceComplete: false },
+    });
+
+    assert.equal(finalized.markdown, markdown);
+    assert.notInclude(finalized.markdown, "Not a source quote");
     assert.isEmpty(finalized.quoteCitations);
   });
 

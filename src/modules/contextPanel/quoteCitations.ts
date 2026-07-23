@@ -411,6 +411,21 @@ function parseStandaloneCitationLabel(value: string): string | null {
     : parsed.sourceLabel;
 }
 
+function parseCitationOnlyLine(value: string): string | null {
+  const standalone = parseStandaloneCitationLabel(value);
+  if (standalone) return standalone;
+  const parenthetical = extractLeadingParentheticalLabel(value);
+  if (
+    parenthetical &&
+    !parenthetical.remainder &&
+    (isNonSourceQuoteLabel(parenthetical.label) ||
+      isCanonicalQuoteSourceLabel(parenthetical.label))
+  ) {
+    return parenthetical.label;
+  }
+  return null;
+}
+
 function stripBlockquoteMarker(line: string): string {
   return line.replace(/^[ \t]*(?:>[ \t]?)+/, "");
 }
@@ -481,12 +496,167 @@ function splitTrailingCitationFromQuoteText(value: string): {
   citationLabel: string;
 } | null {
   const text = normalizeMultilineText(value);
-  const match = text.match(/^([\s\S]*?)\s+(\([^()\n]{2,240}\))$/);
+  const match = text.match(
+    /^([\s\S]*?)\s+(\([^()\n]{2,240}\)(?:\s+\[[^\]\n]{1,160}\])?)$/,
+  );
   if (!match) return null;
   const citationLabel = parseStandaloneCitationLabel(match[2] || "");
   const quoteText = normalizeMultilineText(match[1] || "");
   if (!citationLabel || !quoteText) return null;
   return { quoteText, citationLabel };
+}
+
+type ParsedSourceBackedBlockquoteCandidate = {
+  quoteText: string;
+  citationLabel?: string;
+  citationRemainder?: string;
+  consumedFollowingLineIndex?: number;
+  trailingCitation?: {
+    quoteText: string;
+    citationLabel: string;
+  };
+  hasAmbiguousCitationDecoration: boolean;
+};
+
+function hasAmbiguousTrailingCitationDecoration(value: string): boolean {
+  const text = normalizeMultilineText(value);
+  return /^(?:[\u201c"])[\s\S]*(?:[\u201d"])[ \t]+(?:\([^()\n]{2,240}\)|\[[^\]\n]{2,240}\])$/u.test(
+    text,
+  );
+}
+
+/**
+ * Canonicalize the supported source-backed blockquote layouts before quote
+ * provenance is evaluated. Presentation-only citation text must never become
+ * part of the semantic quote search query.
+ */
+function parseSourceBackedBlockquoteCandidate(params: {
+  quoteLines: string[];
+  markdownLines: string[];
+  followingLineStartIndex: number;
+}): ParsedSourceBackedBlockquoteCandidate {
+  const originalQuoteText = normalizeMultilineText(
+    params.quoteLines.join("\n"),
+  );
+  const trailingCitation =
+    splitTrailingCitationFromQuoteText(originalQuoteText);
+  if (trailingCitation) {
+    return {
+      quoteText: originalQuoteText,
+      trailingCitation,
+      hasAmbiguousCitationDecoration: false,
+    };
+  }
+
+  const trailingLabel = params.quoteLines.length
+    ? parseCitationOnlyLine(params.quoteLines[params.quoteLines.length - 1])
+    : null;
+  if (trailingLabel) {
+    const quoteText = normalizeMultilineText(
+      params.quoteLines.slice(0, -1).join("\n"),
+    );
+    if (quoteText) {
+      return {
+        quoteText,
+        citationLabel: trailingLabel,
+        hasAmbiguousCitationDecoration: false,
+      };
+    }
+  }
+
+  let cursor = params.followingLineStartIndex;
+  while (
+    cursor < params.markdownLines.length &&
+    !params.markdownLines[cursor].trim()
+  ) {
+    cursor += 1;
+  }
+  const standaloneLeadingLabel =
+    cursor < params.markdownLines.length
+      ? parseCitationOnlyLine(params.markdownLines[cursor])
+      : null;
+  if (standaloneLeadingLabel) {
+    return {
+      quoteText: originalQuoteText,
+      citationLabel: standaloneLeadingLabel,
+      consumedFollowingLineIndex: cursor,
+      hasAmbiguousCitationDecoration: false,
+    };
+  }
+
+  return {
+    quoteText: originalQuoteText,
+    hasAmbiguousCitationDecoration:
+      hasAmbiguousTrailingCitationDecoration(originalQuoteText),
+  };
+}
+
+/**
+ * The display sanitizer may collapse only a citation layout that is already
+ * bound to an exact trusted quote. Shape alone is not enough: a following
+ * prose line can legitimately begin with citation-shaped text.
+ */
+function parseSanitizableSourceBackedBlockquoteCandidate(params: {
+  quoteLines: string[];
+  markdownLines: string[];
+  followingLineStartIndex: number;
+  quoteCitations: QuoteCitation[] | undefined | null;
+}): ParsedSourceBackedBlockquoteCandidate | null {
+  const originalQuoteText = normalizeMultilineText(
+    params.quoteLines.join("\n"),
+  );
+  const bindTrustedCandidate = (
+    quoteText: string,
+    citationLabel: string,
+    consumedFollowingLineIndex?: number,
+  ): ParsedSourceBackedBlockquoteCandidate | null => {
+    if (
+      !findMatchingTrustedQuoteCitation({
+        quoteText,
+        citationLabel,
+        quoteCitations: params.quoteCitations,
+      })
+    ) {
+      return null;
+    }
+    return {
+      quoteText,
+      citationLabel,
+      consumedFollowingLineIndex,
+      hasAmbiguousCitationDecoration: false,
+    };
+  };
+
+  const sameLine = splitTrailingCitationFromQuoteText(originalQuoteText);
+  if (sameLine) {
+    return bindTrustedCandidate(sameLine.quoteText, sameLine.citationLabel);
+  }
+
+  const blockquoteCitation = params.quoteLines.length
+    ? parseCitationOnlyLine(params.quoteLines[params.quoteLines.length - 1])
+    : null;
+  if (blockquoteCitation) {
+    const quoteText = normalizeMultilineText(
+      params.quoteLines.slice(0, -1).join("\n"),
+    );
+    const candidate = bindTrustedCandidate(quoteText, blockquoteCitation);
+    if (candidate) return candidate;
+  }
+
+  let cursor = params.followingLineStartIndex;
+  while (
+    cursor < params.markdownLines.length &&
+    !params.markdownLines[cursor].trim()
+  ) {
+    cursor += 1;
+  }
+  const followingCitation =
+    cursor < params.markdownLines.length
+      ? parseCitationOnlyLine(params.markdownLines[cursor])
+      : null;
+  return followingCitation
+    ? bindTrustedCandidate(originalQuoteText, followingCitation, cursor)
+    : null;
 }
 
 export function findMatchingTrustedQuoteCitation(input: {
@@ -619,33 +789,28 @@ export function sanitizeUntrustedSourceBackedQuoteBlocks(
       quoteLines.push(stripBlockquoteMarker(lines[index]));
       index += 1;
     }
-    const quoteText = normalizeMultilineText(quoteLines.join("\n"));
-    let cursor = index;
-    while (cursor < lines.length && !lines[cursor].trim()) cursor += 1;
-
-    const citationLabel =
-      cursor < lines.length
-        ? parseStandaloneCitationLabel(lines[cursor])
-        : null;
-    if (citationLabel) {
+    const candidate = parseSanitizableSourceBackedBlockquoteCandidate({
+      quoteLines,
+      markdownLines: lines,
+      followingLineStartIndex: index,
+      quoteCitations,
+    });
+    if (candidate?.citationLabel) {
       const replacement = replacementForSourceBackedQuote({
-        quoteText,
-        citationLabel,
+        quoteText: candidate.quoteText,
+        citationLabel: candidate.citationLabel,
         quoteCitations,
       });
-      if (replacement) out.push(replacement);
-      index = cursor;
-      continue;
-    }
-
-    const tail = splitTrailingCitationFromQuoteText(quoteText);
-    if (tail) {
-      const replacement = replacementForSourceBackedQuote({
-        quoteText: tail.quoteText,
-        citationLabel: tail.citationLabel,
-        quoteCitations,
-      });
-      if (replacement) out.push(replacement);
+      if (replacement) {
+        out.push(
+          `${replacement}${
+            candidate.citationRemainder
+              ? `\n\n${candidate.citationRemainder}`
+              : ""
+          }`,
+        );
+      }
+      index = candidate.consumedFollowingLineIndex ?? index - 1;
       continue;
     }
 
@@ -2500,73 +2665,45 @@ function* finalizeAssistantQuoteCitationSteps(
       index -= 1;
       continue;
     }
-    const originalQuoteText = normalizeMultilineText(quoteLines.join("\n"));
-    let quoteText = originalQuoteText;
-
-    const trailingLabel = quoteLines.length
-      ? extractLeadingParentheticalLabel(quoteLines[quoteLines.length - 1])
-      : null;
-    if (
-      trailingLabel &&
-      !trailingLabel.remainder &&
-      (isNonSourceQuoteLabel(trailingLabel.label) ||
-        isCanonicalQuoteSourceLabel(trailingLabel.label))
-    ) {
-      quoteText = normalizeMultilineText(quoteLines.slice(0, -1).join("\n"));
-      if (quoteText) {
-        if (params.quoteSourceReview) {
-          const finalized = finalizeQuoteSourceCandidate({
-            quoteText,
-            sourceIndex: finalizedSourceIndex,
-            sourceEvidenceComplete:
-              params.quoteSourceReview.sourceEvidenceComplete,
-          });
-          if (finalized.quoteCitations?.length) {
+    const candidate = parseSourceBackedBlockquoteCandidate({
+      quoteLines,
+      markdownLines: lines,
+      followingLineStartIndex: index,
+    });
+    let quoteText = candidate.quoteText;
+    let citationLabel = candidate.citationLabel;
+    if (candidate.trailingCitation) {
+      if (params.quoteSourceReview) {
+        const fullQuote = finalizeQuoteSourceCandidate({
+          quoteText,
+          sourceIndex: finalizedSourceIndex,
+          sourceEvidenceComplete:
+            params.quoteSourceReview.sourceEvidenceComplete,
+        });
+        if (fullQuote.kind !== "absent") {
+          if (fullQuote.quoteCitations?.length) {
             quoteCitations = mergeQuoteCitations(
               quoteCitations,
-              finalized.quoteCitations,
+              fullQuote.quoteCitations,
             );
           }
-          if (finalized.kind === "defer") {
+          if (fullQuote.kind === "defer") {
             out.push(...lines.slice(blockStart, index));
-          } else if (finalized.markdown) {
-            out.push(finalized.markdown);
+          } else if (fullQuote.markdown) {
+            out.push(fullQuote.markdown);
           }
+          index -= 1;
           continue;
         }
-        const finalized = finalizeSourceBackedQuoteBlock({
-          quoteText,
-          citationLabel: trailingLabel.label,
-          quoteCitations,
-          sourceIndex: finalizedSourceIndex,
-          fenceUnverifiedBlockquotes: params.fenceUnverifiedBlockquotes,
-        });
-        if (finalized.quoteCitations?.length) {
-          quoteCitations = mergeQuoteCitations(
-            quoteCitations,
-            finalized.quoteCitations,
-          );
-        }
-        out.push(finalized.markdown);
-        continue;
       }
+      quoteText = candidate.trailingCitation.quoteText;
+      citationLabel = candidate.trailingCitation.citationLabel;
     }
-
-    let cursor = index;
-    while (cursor < lines.length && !lines[cursor].trim()) cursor += 1;
-    const leadingLabel =
-      cursor < lines.length
-        ? extractLeadingParentheticalLabel(lines[cursor])
-        : null;
-    if (
-      leadingLabel &&
-      (isNonSourceQuoteLabel(leadingLabel.label) ||
-        isCanonicalQuoteSourceLabel(leadingLabel.label))
-    ) {
+    if (citationLabel) {
       if (params.quoteSourceReview) {
         const finalized = finalizeQuoteSourceCandidate({
           quoteText,
-          citationRemainder: leadingLabel.remainder,
+          citationRemainder: candidate.citationRemainder,
           sourceIndex: finalizedSourceIndex,
           sourceEvidenceComplete:
             params.quoteSourceReview.sourceEvidenceComplete,
@@ -2578,17 +2715,21 @@ function* finalizeAssistantQuoteCitationSteps(
           );
         }
         if (finalized.kind === "defer") {
-          out.push(...lines.slice(blockStart, cursor + 1));
+          const rawEnd =
+            candidate.consumedFollowingLineIndex !== undefined
+              ? candidate.consumedFollowingLineIndex + 1
+              : index;
+          out.push(...lines.slice(blockStart, rawEnd));
         } else if (finalized.markdown) {
           out.push(finalized.markdown);
         }
-        index = cursor;
+        index = candidate.consumedFollowingLineIndex ?? index - 1;
         continue;
       }
       const finalized = finalizeSourceBackedQuoteBlock({
         quoteText,
-        citationLabel: leadingLabel.label,
-        citationRemainder: leadingLabel.remainder,
+        citationLabel,
+        citationRemainder: candidate.citationRemainder,
         quoteCitations,
         sourceIndex: finalizedSourceIndex,
         fenceUnverifiedBlockquotes: params.fenceUnverifiedBlockquotes,
@@ -2600,7 +2741,13 @@ function* finalizeAssistantQuoteCitationSteps(
         );
       }
       out.push(finalized.markdown);
-      index = cursor;
+      index = candidate.consumedFollowingLineIndex ?? index - 1;
+      continue;
+    }
+
+    if (params.quoteSourceReview && candidate.hasAmbiguousCitationDecoration) {
+      out.push(...lines.slice(blockStart, index));
+      index -= 1;
       continue;
     }
 
@@ -2663,16 +2810,6 @@ function* finalizeAssistantQuoteCitationSteps(
       index -= 1;
       continue;
     }
-    if (quoteText && quoteText !== originalQuoteText) {
-      out.push(
-        params.fenceUnverifiedBlockquotes
-          ? formatFencedTextMarkdown(quoteText)
-          : formatPlainQuoteMarkdown(quoteText),
-      );
-      index -= 1;
-      continue;
-    }
-
     if (params.fenceUnverifiedBlockquotes && quoteText) {
       out.push(formatFencedTextMarkdown(quoteText));
     } else {
