@@ -97,6 +97,34 @@ describe("quoteTextNormalization", function () {
     assert.include(stripped, "(Fig. 3B).");
   });
 
+  it("aligns through sequential manuscript line numbers after extraction flattens line breaks", function () {
+    const source = [
+      "Representational changes accumulate over time 248 without affecting task performance. 249",
+      "Our model of engram dynamics produces representational changes reflective of those seen in 250 representational drift.",
+      "To illustrate this, we consider task variables as cues in our model. 251",
+    ].join(" ");
+    const query =
+      "Our model of engram dynamics produces representational changes reflective of those seen in representational drift.";
+    const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+      buildQuoteTextIndex(source),
+      query,
+    );
+
+    assert.lengthOf(spans, 1);
+    assert.include(spans[0].text, "in 250 representational drift.");
+  });
+
+  it("does not erase isolated publication years as flattened line numbers", function () {
+    const source =
+      "The studies published in 2020 and 2021 reached different conclusions.";
+    const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+      buildQuoteTextIndex(source),
+      "The studies published in and reached different conclusions.",
+    );
+
+    assert.isEmpty(spans);
+  });
+
   it("aligns a complete quote through line numbers, EOL hyphenation, soft hyphens, and ligatures", function () {
     const source = [
       "The net drive asso-",
@@ -162,6 +190,39 @@ describe("quoteTextNormalization", function () {
 
     assert.lengthOf(spans, 1);
     assert.match(spans[0].text, /spines47,50–53\.$/);
+  });
+
+  it("uses a unique full-span location to recover short words fused to reference markers", function () {
+    const source = [
+      "Related differential correlations were reported in frontal cortex194,195.",
+      "We linearly transform the response space so as to whiten the noise192.",
+      "Such differential noise correlations limit the FI that the code can achieve, no matter how many neurons we allow135.",
+    ].join(" ");
+    const query = [
+      "We linearly transform the response space so as to whiten the noise.",
+      "Such differential noise correlations limit the FI that the code can achieve, no matter how many neurons we allow.",
+    ].join(" ");
+    const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+      buildQuoteTextIndex(source),
+      query,
+    );
+
+    assert.lengthOf(spans, 1);
+    assert.match(spans[0].text, /noise192\./);
+    assert.match(spans[0].text, /allow135\.$/);
+  });
+
+  it("does not erase a lone short semantic alphanumeric suffix at a sentence boundary", function () {
+    const source = [
+      "Related measurements were reported in frontal cortex194,195.",
+      "The analysis focused on gene10. Responses remained stable afterward.",
+    ].join(" ");
+    const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+      buildQuoteTextIndex(source),
+      "The analysis focused on gene. Responses remained stable afterward.",
+    );
+
+    assert.isEmpty(spans);
   });
 
   it("aligns through a PDF.js reference range emitted as separate text items", function () {

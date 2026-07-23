@@ -2681,6 +2681,221 @@ describe("quoteCitations", function () {
     assert.lengthOf(finalized.quoteCitations, 0);
   });
 
+  it("defers a unique near-complete source location instead of declaring it absent", function () {
+    const source =
+      "The population response remained stable across every repeated recording session despite substantial changes in individual neuronal tuning patterns.";
+    const quote = source.replace("patterns", "preferences");
+    const markdown = `> ${quote}\n\n(Example et al., 2026)`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: source,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, markdown);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("defers a unique seven-of-eight-token source location", function () {
+    const source =
+      "We therefore employed intracranial electroencephalography in 28 neurosurgical patients";
+    const quote =
+      "We employed intracranial electroencephalography in 28 neurosurgical patients";
+    const markdown = `> ${quote}`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: source,
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 81,
+            itemId: 80,
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, markdown);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("defers a unique extraction-sensitive math partial instead of declaring it absent", function () {
+    const quote =
+      "We modeled the propensity function to be weight-dependent \\(\\rho(w) = \\tanh(10w)\\) based on experimental observations.";
+    const source = [
+      "We modeled the propensity function to be",
+      "weight-dependent ρðwÞ = tanhð10wÞ based on experimental",
+      "observations47,50–53.",
+    ].join("\n");
+    const markdown = `> ${quote}`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: source,
+            sourceLabel: "(Bauer et al., 2024)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 2505,
+            itemId: 2504,
+            pageHintIndex: 9,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, markdown);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("defers an ellipsized quote when every displayed segment has unique source support", function () {
+    const quote =
+      "We modeled the change in feedforward synaptic weights … as the sum of \\(H\\) and \\(\\xi\\) scaled by a synaptic weight-dependent propensity function (\\(\\rho(w)\\)): \\(\\Delta w = \\rho(w)(k H + \\xi)\\) (Fig. 3b). This propensity function was inspired by experimental results showing that the magnitudes of changes in spine size—commonly considered a proxy for synaptic strength—is proportional to the initial size of the spines.";
+    const source =
+      "We modeled the change in feedforward synaptic weights from a cortical layer of presynaptic neurons to a cortical layer of postsynaptic neurons as the sum of H and ξ scaled by a synaptic weight-dependent propensity function (ρðwÞ): Δw = ρðwÞðkH + ξÞ (Fig. 3b). This propensity function was inspired by experimental results showing that the magnitudes of changes in spine size—commonly considered a proxy for synaptic strength—is proportional to the initial size of the spines47,50–53.";
+    const markdown = `> ${quote}`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: source,
+            sourceLabel: "(Bauer et al., 2024)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 2505,
+            itemId: 2504,
+            pageHintIndex: 4,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, markdown);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("defers a unique math-heavy caption when the exact prose anchor is interior", function () {
+    const quote =
+      "$\\mathbf{U}_{\\text{base}} \\mathbf{O}_{\\text{readout}}$ is the fixed initial $D$-dimensional subspace in $\\mathbb{R}^N$. $\\mathbf{z}^{(k)}$ captures the rotation at trial $k$ relative to this, resulting in the rotated emission subspace $\\mathbf{C}^{(k)} = \\mathbf{U}_{\\text{base}} f(\\mathbf{B}^{(k)}) \\mathbf{O}_{\\text{readout}}$.";
+    const source =
+      "UbaseOreadout is the fixed initial D−dimensional subspace in RN. z(k) captures the rotation at trial k relative to this, resulting in the rotated emission subspace C(k) = Ubase f (B(k))Oreadout.";
+    const markdown = `> ${quote}`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: source,
+            sourceLabel: "(Lee et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3042,
+            itemId: 3043,
+            pageHintIndex: 4,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, markdown);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("does not declare a formula-dominated block absent from text extraction alone", function () {
+    const quote =
+      "$$ \\mathbf{y}_t^{(k)} = \\mathbf{C}^{(k)} \\mathbf{x}_t^{(k)} + \\boldsymbol{\\epsilon}_t^{(k)}, \\quad \\boldsymbol{\\epsilon}_t^{(k)} \\sim \\mathcal{N}(0, \\mathbf{R}) $$";
+    const markdown = `> ${quote}`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "The extracted page contains prose but its equation glyphs were not preserved.",
+            sourceLabel: "(Lee et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3042,
+            itemId: 3043,
+            pageHintIndex: 4,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(finalized.markdown, markdown);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("authenticates the Kriegeskorte and Wei quote through fused reference markers", function () {
+    const quote =
+      "the noise correlation for a pair of neurons is proportional to the product of the derivatives of their tuning curves at the stimulus value. As information already missing from the input cannot possibly be recovered from the code, such so-called differential noise correlations limit the FI that the code can achieve, no matter how many neurons we allow.";
+    const source = [
+      "There is evidence for related effects in frontal cortex194,195.",
+      "In this scenario, the noise correlation for a pair of neurons is proportional to the product of the derivatives of their tuning curves at the stimulus value.",
+      "As information already missing from the input cannot possibly be recovered from the code, such so-called differential noise correlations limit the FI that the code can achieve, no matter how many neurons we allow135.",
+    ].join(" ");
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}\n\n(Kriegeskorte & Wei, 2021, page 7)`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: source,
+            sourceLabel: "(Kriegeskorte & Wei, 2021)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 1567,
+            itemId: 4,
+            pageHintIndex: 6,
+            pageHintLabel: "7",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(finalized.quoteCitations[0]?.pageHintLabel, "7");
+  });
+
   it("keeps exact unique source navigation even when prose heuristics reject the display text", function () {
     const quote =
       "Summary of task settings utilized at each training stage. Performance criteria indicate the behavioral performance necessary to graduate to the next training stage.";
@@ -3334,6 +3549,219 @@ describe("quoteCitations", function () {
     });
 
     assert.match(finalized.markdown, /\[\[quote:Q_[a-z0-9]+\]\]/);
+  });
+
+  it("reconstructs a uniquely grounded sentence split across adjacent PDF pages", function () {
+    const prefix =
+      "We then down-sampled the epoched data to 100 Hz, and we selected";
+    const suffix =
+      "17 channels overlying occipital and parietal cortex for further analysis (O1, Oz, O2, PO7, PO3, POz, PO4, PO8, P7, P5, P3, P1, Pz, P2, P4, P6, P8).";
+    const quote = `${prefix} ${suffix}`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `Earlier methods text. ${prefix}\n2`,
+            sourceLabel: "(Gifford et al., 2022)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 72,
+            itemId: 71,
+            sourceFingerprint: "pdfjs:gifford",
+            pageHintIndex: 1,
+            pageHintLabel: "2",
+          },
+          {
+            sourceText: `Article header. Figure 1 caption with experimental paradigm details. ${suffix} Later methods text.`,
+            sourceLabel: "(Gifford et al., 2022)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 72,
+            itemId: 71,
+            sourceFingerprint: "pdfjs:gifford",
+            pageHintIndex: 2,
+            pageHintLabel: "3",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.pageHintIndex),
+      [1, 2],
+    );
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.quoteText),
+      [prefix, suffix],
+    );
+  });
+
+  it("reconstructs a five-token continuation after intervening page extraction text", function () {
+    const prefix =
+      "Taken together, we propose that co-tuned subnetworks of neurons can preserve fundamental tuning properties while allowing for more flexible";
+    const suffix = "responses to complex naturalistic stimuli.";
+    const interveningCaption = Array(250).fill("caption").join(" ");
+    const interveningFigure = Array(300).fill("figure").join(" ");
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${prefix} ${suffix}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `${prefix}\n${interveningCaption}`,
+            sourceLabel: "(Marks and Goard, 2021)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 2250,
+            itemId: 2251,
+            sourceFingerprint: "pdfjs:marks-goard",
+            pageHintIndex: 11,
+            pageHintLabel: "12",
+          },
+          {
+            sourceText: `${interveningFigure}\n${suffix} Later discussion.`,
+            sourceLabel: "(Marks and Goard, 2021)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 2250,
+            itemId: 2251,
+            sourceFingerprint: "pdfjs:marks-goard",
+            pageHintIndex: 12,
+            pageHintLabel: "13",
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.quoteText),
+      [prefix, suffix],
+    );
+  });
+
+  it("preserves a comma at an adjacent-page sentence split", function () {
+    const prefix =
+      "An influential hypothesis states that experiences are initially encoded in the hippocampus,";
+    const suffix = "and subsequently, during sleep, replayed to the neocortex.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${prefix} ${suffix}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: `Earlier text. ${prefix}\n${Array(100).fill("caption").join(" ")}`,
+            sourceLabel: "(Kudithipudi et al., 2022)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3806,
+            itemId: 3807,
+            sourceFingerprint: "pdfjs:kudithipudi",
+            pageHintIndex: 1,
+          },
+          {
+            sourceText: `${Array(300).fill("figure").join(" ")}\n${suffix} Later text.`,
+            sourceLabel: "(Kudithipudi et al., 2022)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 3806,
+            itemId: 3807,
+            sourceFingerprint: "pdfjs:kudithipudi",
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.equal(finalized.quoteCitations[0]?.quoteText, prefix);
+    assert.equal(finalized.quoteCitations[1]?.quoteText, suffix);
+  });
+
+  it("does not reconstruct an adjacent-page quote with an unsupported bridge word", function () {
+    const prefix =
+      "We then down-sampled the epoched data to 100 Hz, and we selected";
+    const suffix =
+      "17 channels overlying occipital and parietal cortex for further analysis.";
+    const quote = `${prefix} invented ${suffix}`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: prefix,
+            sourceLabel: "(Gifford et al., 2022)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 72,
+            itemId: 71,
+            sourceFingerprint: "pdfjs:gifford",
+            pageHintIndex: 1,
+          },
+          {
+            sourceText: suffix,
+            sourceLabel: "(Gifford et al., 2022)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 72,
+            itemId: 71,
+            sourceFingerprint: "pdfjs:gifford",
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(finalized.markdown, "Not a source quote");
+    assert.isEmpty(finalized.quoteCitations);
+  });
+
+  it("does not stitch exact fragments across nonadjacent PDF pages", function () {
+    const prefix =
+      "We then down-sampled the epoched data to 100 Hz, and we selected";
+    const suffix =
+      "17 channels overlying occipital and parietal cortex for further analysis.";
+    const quote = `${prefix} ${suffix}`;
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${quote}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText: prefix,
+            sourceLabel: "(Gifford et al., 2022)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 72,
+            itemId: 71,
+            sourceFingerprint: "pdfjs:gifford",
+            pageHintIndex: 1,
+          },
+          {
+            sourceText: suffix,
+            sourceLabel: "(Gifford et al., 2022)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 72,
+            itemId: 71,
+            sourceFingerprint: "pdfjs:gifford",
+            pageHintIndex: 3,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.notInclude(finalized.markdown, "[[quote:");
+    assert.include(finalized.markdown, "Not a source quote");
+    assert.isEmpty(finalized.quoteCitations);
   });
 
   it("keeps cross-paper full-span matches ambiguous", function () {

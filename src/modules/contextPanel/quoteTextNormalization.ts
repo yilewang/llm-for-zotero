@@ -48,23 +48,43 @@ const QUOTE_WORD_PATTERN =
 const LETTER_TOKEN_PATTERN = /^\p{L}+$/u;
 const SINGLE_LETTER_TOKEN_PATTERN = /^\p{L}$/u;
 const NUMERIC_TOKEN_PATTERN = /^\p{N}+$/u;
-const ATTACHED_CITATION_TOKEN_PATTERN = /^(\p{L}{6,})(\p{N}{1,3})$/u;
+const ATTACHED_CITATION_TOKEN_PATTERN = /^(\p{L}{2,})(\p{N}{1,3})$/u;
 const ATTACHED_CITATION_TAIL_GAP_PATTERN = /^[\s\u0003]*[,;–—−-][\s\u0003]*$/u;
+const ATTACHED_CITATION_BOUNDARY_PATTERN =
+  /^[\s\u0003]*[.,;:!?()[\]{}。！？、，；：]/u;
+const MIN_UNCORROBORATED_ATTACHED_CITATION_STEM_LENGTH = 6;
 const SEMANTIC_NUMERIC_SUFFIX_WORDS = new Set([
+  "area",
+  "axis",
+  "block",
+  "cell",
+  "class",
+  "day",
+  "eq",
   "channel",
   "condition",
   "equation",
+  "fig",
   "figure",
+  "gene",
   "group",
   "layer",
   "level",
   "model",
+  "mouse",
+  "neuron",
   "phase",
+  "ref",
+  "refs",
+  "sample",
   "session",
+  "stage",
+  "subject",
   "table",
   "timepoint",
   "trial",
   "type",
+  "unit",
   "week",
   "year",
 ]);
@@ -446,11 +466,90 @@ function isLikelyLayoutNumberToken(
   );
   const beforeHasLineBreak = /[\r\n]/.test(before);
   const afterHasLineBreak = /[\r\n]/.test(after);
-  return (
+  if (
     (beforeHasLineBreak &&
       (afterHasLineBreak || /^[ \t]/.test(after) || after === "")) ||
     (afterHasLineBreak && !/[ \t]$/.test(before))
+  ) {
+    return true;
+  }
+  return sequentialManuscriptLineNumberTokenIndexes(index).has(tokenIndex);
+}
+
+const sequentialManuscriptLineNumberCache = new WeakMap<
+  QuoteTextIndex,
+  Set<number>
+>();
+
+function hasPlainWhitespaceTokenBoundaries(
+  index: QuoteTextIndex,
+  tokenIndex: number,
+): boolean {
+  const token = index.tokens[tokenIndex];
+  if (!token || !/^\p{N}{2,4}$/u.test(token.text)) return false;
+  const previous = index.tokens[tokenIndex - 1];
+  const next = index.tokens[tokenIndex + 1];
+  const before = index.sourceText.slice(
+    previous?.sourceEnd ?? 0,
+    token.sourceStart,
   );
+  const after = index.sourceText.slice(
+    token.sourceEnd,
+    next?.sourceStart ?? index.sourceText.length,
+  );
+  const flattenedLineBoundary = /^[\s\u0003.,;:!?()[\]{}。！？、，；：]+$/u;
+  return (
+    flattenedLineBoundary.test(before) && flattenedLineBoundary.test(after)
+  );
+}
+
+function sequentialManuscriptLineNumberTokenIndexes(
+  index: QuoteTextIndex,
+): Set<number> {
+  const cached = sequentialManuscriptLineNumberCache.get(index);
+  if (cached) return cached;
+
+  const candidates = index.tokens
+    .map((token, tokenIndex) => ({
+      tokenIndex,
+      value: Number(token.text),
+    }))
+    .filter(
+      (candidate) =>
+        Number.isFinite(candidate.value) &&
+        hasPlainWhitespaceTokenBoundaries(index, candidate.tokenIndex),
+    );
+  const byValue = new Map<number, number[]>();
+  for (const candidate of candidates) {
+    const indexes = byValue.get(candidate.value) || [];
+    indexes.push(candidate.tokenIndex);
+    byValue.set(candidate.value, indexes);
+  }
+  const withinTokenDistance = (
+    tokenIndex: number,
+    candidateValue: number,
+    maxDistance = 80,
+  ): boolean =>
+    (byValue.get(candidateValue) || []).some(
+      (candidateIndex) => Math.abs(candidateIndex - tokenIndex) <= maxDistance,
+    );
+  const out = new Set<number>();
+  for (const candidate of candidates) {
+    const hasPreviousAndNext =
+      withinTokenDistance(candidate.tokenIndex, candidate.value - 1) &&
+      withinTokenDistance(candidate.tokenIndex, candidate.value + 1);
+    const hasTwoPrevious =
+      withinTokenDistance(candidate.tokenIndex, candidate.value - 1) &&
+      withinTokenDistance(candidate.tokenIndex, candidate.value - 2);
+    const hasTwoNext =
+      withinTokenDistance(candidate.tokenIndex, candidate.value + 1) &&
+      withinTokenDistance(candidate.tokenIndex, candidate.value + 2);
+    if (hasPreviousAndNext || hasTwoPrevious || hasTwoNext) {
+      out.add(candidate.tokenIndex);
+    }
+  }
+  sequentialManuscriptLineNumberCache.set(index, out);
+  return out;
 }
 
 /**
@@ -477,43 +576,114 @@ type TokenAlignmentStep = {
   lastMatchedSourceIndex: number;
 };
 
-function matchAttachedCitationSuffix(params: {
-  sourceIndex: QuoteTextIndex;
-  sourceTokenIndex: number;
-  queryToken: QuoteTextToken;
-}): TokenAlignmentStep | null {
-  const sourceTokens = params.sourceIndex.tokens;
-  const sourceToken = sourceTokens[params.sourceTokenIndex];
-  const attached = sourceToken?.text.match(ATTACHED_CITATION_TOKEN_PATTERN);
+type AttachedCitationToken = {
+  sourceWord: string;
+  lastCitationTokenIndex: number;
+};
+
+function parseAttachedCitationToken(
+  index: QuoteTextIndex,
+  tokenIndex: number,
+): AttachedCitationToken | null {
+  const token = index.tokens[tokenIndex];
+  const attached = token?.text.match(ATTACHED_CITATION_TOKEN_PATTERN);
   const sourceWord = attached?.[1] || "";
-  if (
-    !sourceToken ||
-    !sourceWord ||
-    sourceWord !== params.queryToken.text ||
-    SEMANTIC_NUMERIC_SUFFIX_WORDS.has(sourceWord)
-  ) {
+  if (!token || !sourceWord || SEMANTIC_NUMERIC_SUFFIX_WORDS.has(sourceWord)) {
     return null;
   }
 
-  let lastMatchedSourceIndex = params.sourceTokenIndex;
-  let nextSourceIndex = params.sourceTokenIndex + 1;
-  while (nextSourceIndex < sourceTokens.length) {
-    const nextToken = sourceTokens[nextSourceIndex];
+  let lastCitationTokenIndex = tokenIndex;
+  let nextTokenIndex = tokenIndex + 1;
+  while (nextTokenIndex < index.tokens.length) {
+    const nextToken = index.tokens[nextTokenIndex];
     if (!nextToken || !/^\p{N}{1,3}$/u.test(nextToken.text)) break;
-    const previousToken = sourceTokens[nextSourceIndex - 1];
-    const gap = params.sourceIndex.sourceText.slice(
+    const previousToken = index.tokens[nextTokenIndex - 1];
+    const gap = index.sourceText.slice(
       previousToken.sourceEnd,
       nextToken.sourceStart,
     );
     if (!ATTACHED_CITATION_TAIL_GAP_PATTERN.test(gap)) break;
-    lastMatchedSourceIndex = nextSourceIndex;
-    nextSourceIndex += 1;
+    lastCitationTokenIndex = nextTokenIndex;
+    nextTokenIndex += 1;
+  }
+
+  const lastCitationToken = index.tokens[lastCitationTokenIndex];
+  const followingToken = index.tokens[lastCitationTokenIndex + 1];
+  const followingGap = index.sourceText.slice(
+    lastCitationToken.sourceEnd,
+    followingToken?.sourceStart ?? index.sourceText.length,
+  );
+  if (!ATTACHED_CITATION_BOUNDARY_PATTERN.test(followingGap)) return null;
+
+  return { sourceWord, lastCitationTokenIndex };
+}
+
+function queryTokenHasAlignedCitationBoundary(
+  queryIndex: QuoteTextIndex,
+  queryTokenIndex: number,
+): boolean {
+  const queryToken = queryIndex.tokens[queryTokenIndex];
+  if (!queryToken) return false;
+  const followingToken = queryIndex.tokens[queryTokenIndex + 1];
+  const followingGap = queryIndex.sourceText.slice(
+    queryToken.sourceEnd,
+    followingToken?.sourceStart ?? queryIndex.sourceText.length,
+  );
+  return ATTACHED_CITATION_BOUNDARY_PATTERN.test(followingGap);
+}
+
+function hasCorroboratingAttachedCitationStyle(
+  index: QuoteTextIndex,
+  excludedTokenIndex: number,
+): boolean {
+  return index.tokens.some((_token, tokenIndex) => {
+    if (tokenIndex === excludedTokenIndex) return false;
+    const candidate = parseAttachedCitationToken(index, tokenIndex);
+    return Boolean(
+      candidate &&
+      Array.from(candidate.sourceWord).length >=
+        MIN_UNCORROBORATED_ATTACHED_CITATION_STEM_LENGTH,
+    );
+  });
+}
+
+function matchAttachedCitationSuffix(params: {
+  sourceIndex: QuoteTextIndex;
+  sourceTokenIndex: number;
+  queryIndex: QuoteTextIndex;
+  queryTokenIndex: number;
+  queryToken: QuoteTextToken;
+}): TokenAlignmentStep | null {
+  const attached = parseAttachedCitationToken(
+    params.sourceIndex,
+    params.sourceTokenIndex,
+  );
+  if (
+    !attached ||
+    attached.sourceWord !== params.queryToken.text ||
+    !queryTokenHasAlignedCitationBoundary(
+      params.queryIndex,
+      params.queryTokenIndex,
+    )
+  ) {
+    return null;
+  }
+
+  if (
+    Array.from(attached.sourceWord).length <
+      MIN_UNCORROBORATED_ATTACHED_CITATION_STEM_LENGTH &&
+    !hasCorroboratingAttachedCitationStyle(
+      params.sourceIndex,
+      params.sourceTokenIndex,
+    )
+  ) {
+    return null;
   }
 
   return {
-    nextSourceIndex,
+    nextSourceIndex: attached.lastCitationTokenIndex + 1,
     nextQueryIndex: 0,
-    lastMatchedSourceIndex,
+    lastMatchedSourceIndex: attached.lastCitationTokenIndex,
   };
 }
 
@@ -579,6 +749,8 @@ function matchTokenAlignmentStep(params: {
   const attachedCitation = matchAttachedCitationSuffix({
     sourceIndex: params.sourceIndex,
     sourceTokenIndex: params.sourceTokenIndex,
+    queryIndex: params.queryIndex,
+    queryTokenIndex: params.queryTokenIndex,
     queryToken,
   });
   if (attachedCitation) {
