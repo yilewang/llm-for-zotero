@@ -463,8 +463,23 @@ function isMermaidFenceLanguage(lang: string): boolean {
   return lang === "mermaid" || lang === "mmd";
 }
 
-function renderCodeHtml(code: string, lang: string): string {
-  const trimmedCode = code.trim();
+/**
+ * Syntax highlighting is a pure function of `(language, trimmed code)` but it is
+ * one of the most expensive steps in rendering a chat message. The chat panel
+ * re-renders whole messages often — switching conversations, reopening the
+ * panel, and flipping a quote block to its verified/unverified state all rebuild
+ * the message DOM from scratch — so the same code fences get re-highlighted
+ * repeatedly. Memoizing the rendered `<pre>` markup makes every render after the
+ * first effectively free for unchanged code.
+ */
+export const CODE_HIGHLIGHT_CACHE_MAX_ENTRIES = 512;
+const CODE_HIGHLIGHT_CACHE_MAX_BYTES = 4 * 1024 * 1024;
+const codeHighlightCache = new Map<string, string>();
+let codeHighlightCacheBytes = 0;
+let codeHighlightCacheHits = 0;
+let codeHighlightCacheMisses = 0;
+
+function computeCodeHtml(trimmedCode: string, lang: string): string {
   const langClass = lang ? ` class="lang-${lang}"` : "";
   const highlightLanguage = highlightLanguageForFence(lang);
   if (!highlightLanguage) {
@@ -479,6 +494,59 @@ function renderCodeHtml(code: string, lang: string): string {
   } catch {
     return `<pre${langClass}><code>${escapeHtml(trimmedCode)}</code></pre>`;
   }
+}
+
+function renderCodeHtml(code: string, lang: string): string {
+  const trimmedCode = code.trim();
+  const cacheKey = `${lang} ${trimmedCode}`;
+  const cached = codeHighlightCache.get(cacheKey);
+  if (cached !== undefined) {
+    // Refresh recency for LRU ordering.
+    codeHighlightCache.delete(cacheKey);
+    codeHighlightCache.set(cacheKey, cached);
+    codeHighlightCacheHits += 1;
+    return cached;
+  }
+  codeHighlightCacheMisses += 1;
+  const html = computeCodeHtml(trimmedCode, lang);
+  const estimatedBytes = (cacheKey.length + html.length) * 2;
+  // Skip caching a single block that would blow the whole byte budget on its own.
+  if (estimatedBytes <= CODE_HIGHLIGHT_CACHE_MAX_BYTES) {
+    codeHighlightCache.set(cacheKey, html);
+    codeHighlightCacheBytes += estimatedBytes;
+    while (
+      codeHighlightCache.size > CODE_HIGHLIGHT_CACHE_MAX_ENTRIES ||
+      codeHighlightCacheBytes > CODE_HIGHLIGHT_CACHE_MAX_BYTES
+    ) {
+      const oldestKey = codeHighlightCache.keys().next().value as
+        | string
+        | undefined;
+      if (oldestKey === undefined) break;
+      const oldest = codeHighlightCache.get(oldestKey);
+      codeHighlightCache.delete(oldestKey);
+      codeHighlightCacheBytes -= (oldestKey.length + (oldest?.length || 0)) * 2;
+    }
+  }
+  return html;
+}
+
+export function __getCodeHighlightCacheStatsForTest(): {
+  size: number;
+  hits: number;
+  misses: number;
+} {
+  return {
+    size: codeHighlightCache.size,
+    hits: codeHighlightCacheHits,
+    misses: codeHighlightCacheMisses,
+  };
+}
+
+export function __resetCodeHighlightCacheForTest(): void {
+  codeHighlightCache.clear();
+  codeHighlightCacheBytes = 0;
+  codeHighlightCacheHits = 0;
+  codeHighlightCacheMisses = 0;
 }
 
 function trimSvgLeadingMetadata(svg: string): string {

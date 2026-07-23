@@ -198,14 +198,36 @@ describe("chat scroll snapshots", function () {
       refreshChatStart,
       refreshChatEnd,
     );
+    const validationTaskStart = chatSource.indexOf(
+      "function startConversationQuoteValidation(",
+    );
+    const validationTaskEnd = chatSource.indexOf(
+      "function scheduleAssistantMessageQuoteValidation(",
+      validationTaskStart,
+    );
+    const validationTaskSource = chatSource.slice(
+      validationTaskStart,
+      validationTaskEnd,
+    );
 
     assert.include(
       validationRefreshSource,
       "rerenderAssistantMessages: changedMessages",
     );
     assert.notInclude(validationRefreshSource, "refreshConversationPanels(");
-    assert.include(chatSource, "const changedMessages = new Set<Message>()");
-    assert.include(chatSource, "changedMessages.add(assistantMessage)");
+    // The validation task classifies on-screen messages first and flips each
+    // one the moment it is classified (progressive refresh), instead of
+    // accumulating a batch and refreshing once at the end.
+    assert.include(
+      validationTaskSource,
+      "orderQuoteValidationBatchByViewportPriority(",
+    );
+    assert.include(
+      validationTaskSource,
+      "promptTimeoutMs: QUOTE_VALIDATION_PROMPT_IDLE_MS",
+    );
+    assert.include(validationTaskSource, "new Set([assistantMessage])");
+    assert.notInclude(validationTaskSource, "changedMessages.add(");
     assert.include(refreshChatSource, "targetedMessageWrappers");
     assert.include(
       refreshChatSource,
