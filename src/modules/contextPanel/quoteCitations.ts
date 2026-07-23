@@ -16,6 +16,7 @@ import {
 } from "./quoteTextSearch";
 import {
   buildQuoteTextIndex,
+  findCanonicalTextMatchStart,
   findQuoteSourceSpansAllowingLayoutArtifacts,
   normalizeQuoteTextCanonical,
   stripLikelyLayoutNumberArtifacts,
@@ -432,6 +433,29 @@ function stripBlockquoteMarker(line: string): string {
 
 function isBlockquoteWrappedQuoteCitationLine(line: string): boolean {
   return BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_PATTERN.test(line);
+}
+
+function findAdjacentStandaloneQuoteCitation(params: {
+  markdownLines: string[];
+  followingLineStartIndex: number;
+}): { quoteCitationId: string; lineIndex: number } | null {
+  let lineIndex = params.followingLineStartIndex;
+  while (
+    lineIndex < params.markdownLines.length &&
+    !params.markdownLines[lineIndex].trim()
+  ) {
+    lineIndex += 1;
+  }
+  if (lineIndex >= params.markdownLines.length) return null;
+  const line = params.markdownLines[lineIndex];
+  const candidate = /^[ \t]*>/.test(line) ? stripBlockquoteMarker(line) : line;
+  const match = candidate.match(/^[ \t]*\[\[quote:([A-Za-z0-9_-]+)\]\][ \t]*$/);
+  return match?.[1]
+    ? {
+        quoteCitationId: match[1],
+        lineIndex,
+      }
+    : null;
 }
 
 function unwrapBlockquoteWrappedQuoteCitationPlaceholders(
@@ -2474,6 +2498,95 @@ function collapseAdjacentDuplicateQuoteCitationPlaceholders(
   return result;
 }
 
+function quoteCitationSharesSourceIdentity(
+  left: QuoteCitation,
+  right: QuoteCitation,
+): boolean {
+  const leftContextItemId = normalizePositiveInt(left.contextItemId);
+  const rightContextItemId = normalizePositiveInt(right.contextItemId);
+  if (leftContextItemId && rightContextItemId) {
+    const leftItemId = normalizePositiveInt(left.itemId);
+    const rightItemId = normalizePositiveInt(right.itemId);
+    return (
+      leftContextItemId === rightContextItemId &&
+      (!leftItemId || !rightItemId || leftItemId === rightItemId)
+    );
+  }
+
+  const leftItemId = normalizePositiveInt(left.itemId);
+  const rightItemId = normalizePositiveInt(right.itemId);
+  if (leftItemId && rightItemId) {
+    return leftItemId === rightItemId;
+  }
+
+  const leftFingerprint = normalizeText(left.sourceFingerprint);
+  const rightFingerprint = normalizeText(right.sourceFingerprint);
+  return Boolean(
+    leftFingerprint && rightFingerprint && leftFingerprint === rightFingerprint,
+  );
+}
+
+function resolveAdjacentManualQuoteAnchor(params: {
+  quoteText: string;
+  quoteCitationId: string;
+  quoteCitations: QuoteCitation[];
+  sourceIndex: QuoteSourceIndex;
+}): QuoteCitation[] {
+  const existingCitation = params.quoteCitations.find(
+    (citation) => citation.id === params.quoteCitationId,
+  );
+  if (!existingCitation || !isVerifiedQuoteCitation(existingCitation)) {
+    return [];
+  }
+
+  const displayedQuote = normalizeQuoteTextCanonical(
+    stripOuterQuoteDelimiters(params.quoteText),
+  );
+  const anchoredQuote = normalizeQuoteTextCanonical(
+    stripOuterQuoteDelimiters(
+      existingCitation.displayQuoteText || existingCitation.quoteText,
+    ),
+  );
+  if (
+    !displayedQuote ||
+    !anchoredQuote ||
+    findCanonicalTextMatchStart(displayedQuote, anchoredQuote) < 0
+  ) {
+    return [];
+  }
+
+  const resolutionParams = {
+    quoteText: params.quoteText,
+    citationLabel: existingCitation.citationLabel,
+    sourceIndex: params.sourceIndex,
+    preferredContextItemId: existingCitation.contextItemId,
+    preferredItemId: existingCitation.itemId,
+  };
+  let reboundCitations = resolveDisplayedQuoteCitations({
+    ...resolutionParams,
+    preferredSourceFingerprint: existingCitation.sourceFingerprint,
+  });
+  if (
+    !reboundCitations.length &&
+    (normalizePositiveInt(existingCitation.contextItemId) ||
+      normalizePositiveInt(existingCitation.itemId))
+  ) {
+    // A historical anchor can carry a MinerU fingerprint while the current
+    // authoritative evidence comes from PDF.js page text (or vice versa).
+    // Retry within the same stable Zotero item scope, then independently
+    // require the complete displayed quote and source identity below.
+    reboundCitations = resolveDisplayedQuoteCitations(resolutionParams);
+  }
+  return reboundCitations.length &&
+    reboundCitations.every(
+      (citation) =>
+        isVerifiedQuoteCitation(citation) &&
+        quoteCitationSharesSourceIdentity(existingCitation, citation),
+    )
+    ? reboundCitations
+    : [];
+}
+
 function cleanupEmptyCitationParentheticals(markdown: string): string {
   if (!markdown) return markdown;
   return markdown
@@ -2672,6 +2785,31 @@ function* finalizeAssistantQuoteCitationSteps(
     });
     let quoteText = candidate.quoteText;
     let citationLabel = candidate.citationLabel;
+    const adjacentQuoteCitation = findAdjacentStandaloneQuoteCitation({
+      markdownLines: lines,
+      followingLineStartIndex: index,
+    });
+    const adjacentReboundCitations = adjacentQuoteCitation
+      ? resolveAdjacentManualQuoteAnchor({
+          quoteText,
+          quoteCitationId: adjacentQuoteCitation.quoteCitationId,
+          quoteCitations,
+          sourceIndex: finalizedSourceIndex,
+        })
+      : [];
+    if (adjacentQuoteCitation && adjacentReboundCitations.length) {
+      quoteCitations = mergeQuoteCitations(
+        quoteCitations,
+        adjacentReboundCitations,
+      );
+      out.push(
+        ...adjacentReboundCitations.map(
+          (citation) => `[[quote:${citation.id}]]`,
+        ),
+      );
+      index = adjacentQuoteCitation.lineIndex;
+      continue;
+    }
     if (candidate.trailingCitation) {
       if (params.quoteSourceReview) {
         const fullQuote = finalizeQuoteSourceCandidate({

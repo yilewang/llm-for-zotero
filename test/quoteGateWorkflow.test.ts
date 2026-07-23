@@ -189,6 +189,80 @@ describe("minimal source-match quote gate workflow", function () {
     );
   });
 
+  it("repairs a historical manual-anchor pair on load without rewriting raw history", async function () {
+    const anchorQuote =
+      "To describe the probabilistic response of an entire population, we need to make assumptions about the joint responses of neurons.";
+    const displayedQuote = `${anchorQuote} The simplest assumption is that all neurons respond independently from each other.`;
+    const raw = `> ${displayedQuote}\n> [[quote:Q_07qwnp0]]`;
+    const citation = buildQuoteCitation({
+      id: "Q_07qwnp0",
+      quoteText: anchorQuote,
+      citationLabel: "(Ma, 2009)",
+      sourceMatchText: anchorQuote,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      contextItemId,
+      itemId: paper.itemId,
+      sourceFingerprint: "fnv1a32-historical-mineru",
+    });
+    assert.isDefined(citation);
+    const source = installPdfSource(
+      contextItemId,
+      `${displayedQuote} Then, the population response distribution is the product of the response distributions of the neurons in the population.`,
+    );
+    restoreSource = source.restore;
+    const userMessage: Message = {
+      role: "user",
+      text: "What exactly is the joint probability distribution here?",
+      timestamp: 1,
+      paperContexts: [
+        {
+          ...paper,
+          title: "Population Codes: Theoretic Aspects",
+          firstCreator: "Ma",
+          year: "2009",
+        },
+      ],
+    };
+    const assistantMessage: Message = {
+      role: "assistant",
+      text: raw,
+      quoteCitations: [citation!],
+      timestamp: 2,
+    };
+    chatHistory.set(conversationKey, [userMessage, assistantMessage]);
+
+    finalizeAssistantMessageQuoteCitationsForTests(assistantMessage, {
+      pairedUserMessage: userMessage,
+      conversationKey,
+    });
+    await waitForAssistantQuoteValidationForTests(conversationKey);
+
+    assert.equal(assistantMessage.text, raw);
+    assert.deepEqual(assistantMessage.quoteCitations, [citation!]);
+    assert.equal(
+      (
+        assistantMessage.quoteDisplayOverride?.markdown.match(
+          /\[\[quote:Q_[a-z0-9]+\]\]/g,
+        ) || []
+      ).length,
+      1,
+    );
+    assert.lengthOf(
+      assistantMessage.quoteDisplayOverride?.quoteCitations || [],
+      1,
+    );
+    assert.equal(
+      assistantMessage.quoteDisplayOverride?.quoteCitations?.[0]?.quoteText,
+      displayedQuote,
+    );
+    assert.notEqual(
+      assistantMessage.quoteDisplayOverride?.quoteCitations?.[0]
+        ?.sourceFingerprint,
+      citation!.sourceFingerprint,
+    );
+  });
+
   it("keeps the searchable Asabuki page-4 quote verified after background authentication", async function () {
     const quote =
       "For excitatory synapses, errors between excitatory drive and the output of the cell provide feedback to the synapses... All excitatory connections seek to minimize these errors. For inhibitory synapses, the error between excitatory and inhibitory drive must be minimized to maintain excitation–inhibition balance.";

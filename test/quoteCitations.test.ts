@@ -1427,6 +1427,246 @@ describe("quoteCitations", function () {
     assert.equal(countOccurrences(display, `> ${quoteText}`), 1);
   });
 
+  it("collapses an adjacent manual quote and contained source anchor into one verified quote", function () {
+    const anchorQuote =
+      "To describe the probabilistic response of an entire population, we need to make assumptions about the joint responses of neurons.";
+    const displayedQuote = `${anchorQuote} The simplest assumption is that all neurons respond independently from each other.`;
+    const sourceText = `${displayedQuote} Then, the population response distribution is the product of the response distributions of the neurons in the population.`;
+    const citation = buildQuoteCitation({
+      quoteText: anchorQuote,
+      citationLabel: "(Ma, 2009)",
+      sourceMatchText: anchorQuote,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      contextItemId: 3852,
+      itemId: 3853,
+      sourceFingerprint: "fnv1a32-b7e96541",
+    });
+    assert.isDefined(citation);
+    const sourceIndex = buildQuoteSourceIndex({
+      quoteCitations: [citation!],
+      sourceTexts: [
+        {
+          sourceText,
+          sourceLabel: "(Ma, 2009)",
+          sourceMatchSource: "context-text",
+          contextItemId: 3852,
+          itemId: 3853,
+          sourceFingerprint: "fnv1a32-b7e96541",
+        },
+      ],
+    });
+
+    for (const anchorLine of [
+      `[[quote:${citation!.id}]]`,
+      `> [[quote:${citation!.id}]]`,
+    ]) {
+      const finalized = finalizeAssistantQuoteCitations({
+        markdown: `> ${displayedQuote}\n${anchorLine}`,
+        quoteCitations: [citation!],
+        sourceIndex,
+        quoteSourceReview: { sourceEvidenceComplete: true },
+      });
+
+      assert.equal(
+        countOccurrences(finalized.markdown, "[[quote:"),
+        1,
+        anchorLine,
+      );
+      assert.lengthOf(finalized.quoteCitations, 1, anchorLine);
+      assert.equal(finalized.quoteCitations[0].quoteText, displayedQuote);
+      assert.notEqual(finalized.quoteCitations[0].id, citation!.id);
+    }
+  });
+
+  it("collapses an adjacent manual-anchor pair when current evidence has a newer fingerprint for the same attachment", function () {
+    const anchorQuote =
+      "To describe the probabilistic response of an entire population, we need to make assumptions about the joint responses of neurons.";
+    const displayedQuote = `${anchorQuote} The simplest assumption is that all neurons respond independently from each other.`;
+    const citation = buildQuoteCitation({
+      id: "Q_07qwnp0",
+      quoteText: anchorQuote,
+      citationLabel: "(Ma, 2009)",
+      sourceMatchText: anchorQuote,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      contextItemId: 3852,
+      itemId: 3853,
+      sourceFingerprint: "fnv1a32-b7e96541",
+    });
+    assert.isDefined(citation);
+    const sourceIndex = buildQuoteSourceIndex({
+      quoteCitations: [citation!],
+      sourceTexts: [
+        {
+          sourceText: displayedQuote,
+          sourceLabel: "(Ma, 2009)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 3852,
+          itemId: 3853,
+          sourceFingerprint: "pdfjs:newer-source",
+          pageHintIndex: 2,
+          pageHintLabel: "751",
+        },
+      ],
+    });
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${displayedQuote}\n> [[quote:${citation!.id}]]`,
+      quoteCitations: [citation!],
+      sourceIndex,
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 1);
+    assert.lengthOf(finalized.quoteCitations, 1);
+    assert.equal(finalized.quoteCitations[0].quoteText, displayedQuote);
+    assert.equal(
+      finalized.quoteCitations[0].sourceFingerprint,
+      "pdfjs:newer-source",
+    );
+    assert.equal(finalized.quoteCitations[0].pageHintIndex, 2);
+  });
+
+  it("does not collapse an adjacent manual-anchor pair across attachments", function () {
+    const anchorQuote =
+      "To describe the probabilistic response of an entire population, we need to make assumptions about the joint responses of neurons.";
+    const displayedQuote = `${anchorQuote} The simplest assumption is that all neurons respond independently from each other.`;
+    const citation = buildQuoteCitation({
+      id: "Q_07qwnp0",
+      quoteText: anchorQuote,
+      citationLabel: "(Ma, 2009)",
+      sourceMatchText: anchorQuote,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      contextItemId: 3852,
+      itemId: 3853,
+      sourceFingerprint: "fnv1a32-b7e96541",
+    });
+    assert.isDefined(citation);
+    const sourceIndex = buildQuoteSourceIndex({
+      quoteCitations: [citation!],
+      sourceTexts: [
+        {
+          sourceText: displayedQuote,
+          sourceLabel: "(Ma, 2009)",
+          sourceMatchSource: "pdf-page-text",
+          contextItemId: 9002,
+          itemId: 9003,
+          sourceFingerprint: "pdfjs:different-attachment",
+          pageHintIndex: 2,
+          pageHintLabel: "751",
+        },
+      ],
+    });
+
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${displayedQuote}\n> [[quote:${citation!.id}]]`,
+      quoteCitations: [citation!],
+      sourceIndex,
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+    assert.lengthOf(finalized.quoteCitations, 2);
+  });
+
+  it("preserves non-adjacent repetitions while collapsing each local manual-anchor pair", function () {
+    const anchorQuote =
+      "To describe the probabilistic response of an entire population, we need to make assumptions about the joint responses of neurons.";
+    const displayedQuote = `${anchorQuote} The simplest assumption is that all neurons respond independently from each other.`;
+    const citation = buildQuoteCitation({
+      quoteText: anchorQuote,
+      citationLabel: "(Ma, 2009)",
+      sourceMatchText: anchorQuote,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      contextItemId: 3852,
+      itemId: 3853,
+      sourceFingerprint: "fnv1a32-b7e96541",
+    });
+    assert.isDefined(citation);
+    const sourceIndex = buildQuoteSourceIndex({
+      quoteCitations: [citation!],
+      sourceTexts: [
+        {
+          sourceText: displayedQuote,
+          sourceLabel: "(Ma, 2009)",
+          sourceMatchSource: "context-text",
+          contextItemId: 3852,
+          itemId: 3853,
+          sourceFingerprint: "fnv1a32-b7e96541",
+        },
+      ],
+    });
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: [
+        `> ${displayedQuote}`,
+        `> [[quote:${citation!.id}]]`,
+        "",
+        "The answer returns to the same evidence after substantive explanation.",
+        "",
+        `> ${displayedQuote}`,
+        `> [[quote:${citation!.id}]]`,
+      ].join("\n"),
+      quoteCitations: [citation!],
+      sourceIndex,
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.lengthOf(finalized.quoteCitations, 1);
+    const reboundId = finalized.quoteCitations[0].id;
+    assert.notEqual(reboundId, citation!.id);
+    assert.equal(
+      countOccurrences(finalized.markdown, `[[quote:${reboundId}]]`),
+      2,
+    );
+    assert.include(
+      finalized.markdown,
+      "The answer returns to the same evidence after substantive explanation.",
+    );
+  });
+
+  it("preserves adjacent distinct quotes from the same source", function () {
+    const manualQuote =
+      "The simplest assumption is that all neurons respond independently from each other.";
+    const anchorQuote =
+      "This is also called the likelihood function of the stimulus.";
+    const citation = buildQuoteCitation({
+      quoteText: anchorQuote,
+      citationLabel: "(Ma, 2009)",
+      sourceMatchText: anchorQuote,
+      sourceMatchKind: "exact",
+      sourceMatchSource: "context-text",
+      contextItemId: 3852,
+      itemId: 3853,
+      sourceFingerprint: "fnv1a32-b7e96541",
+    });
+    assert.isDefined(citation);
+    const sourceIndex = buildQuoteSourceIndex({
+      quoteCitations: [citation!],
+      sourceTexts: [
+        {
+          sourceText: `${manualQuote} ${anchorQuote}`,
+          sourceLabel: "(Ma, 2009)",
+          sourceMatchSource: "context-text",
+          contextItemId: 3852,
+          itemId: 3853,
+          sourceFingerprint: "fnv1a32-b7e96541",
+        },
+      ],
+    });
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${manualQuote}\n> [[quote:${citation!.id}]]`,
+      quoteCitations: [citation!],
+      sourceIndex,
+      quoteSourceReview: { sourceEvidenceComplete: true },
+    });
+
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+    assert.lengthOf(finalized.quoteCitations, 2);
+  });
+
   it("preserves repeated use of the same quote when real prose separates the anchors", function () {
     const quoteText =
       "The amount of neural realignment was comparable between IM and WMP components.";
