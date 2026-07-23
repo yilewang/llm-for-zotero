@@ -39,6 +39,10 @@ import {
   type ModelProviderGroup,
   type RuntimeModelEntry,
 } from "../../utils/modelProviders";
+import {
+  clampStandaloneSidebarPreferredWidth,
+  STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX,
+} from "./standaloneWindowSizing";
 
 type ZoteroPrefsAPI = {
   get?: (key: string, global?: boolean) => unknown;
@@ -84,6 +88,7 @@ const LAST_CONVERSATION_MODE_MAP_PREF_KEY = "lastUsedConversationModeMap";
 const LAST_GLOBAL_CONVERSATION_MAP_PREF_KEY = "lastUsedGlobalConversationMap";
 const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";
 const PANEL_FONT_SCALE_PREF_KEY = "panelFontScale";
+const STANDALONE_SIDEBAR_WIDTH_PREF_KEY = "standaloneSidebarWidth";
 const SHORTCUT_DEFAULTS_MIGRATION_PREF_KEY = "shortcutDefaultsMigrationVersion";
 const SHORTCUT_DEFAULTS_MIGRATION_VERSION = 2;
 const MESSAGE_LINE_SPACING_PREF_KEY = "messageLineSpacing";
@@ -526,6 +531,27 @@ export function setFontScalePref(value: number): void {
   getZoteroPrefs()?.set?.(
     `${config.prefsPrefix}.${PANEL_FONT_SCALE_PREF_KEY}`,
     clamped,
+    true,
+  );
+}
+
+export function getStandaloneSidebarWidthPref(): number {
+  const raw = getZoteroPrefs()?.get?.(
+    `${config.prefsPrefix}.${STANDALONE_SIDEBAR_WIDTH_PREF_KEY}`,
+    true,
+  );
+  if (typeof raw !== "number" && typeof raw !== "string") {
+    return STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX;
+  return clampStandaloneSidebarPreferredWidth(parsed);
+}
+
+export function setStandaloneSidebarWidthPref(value: number): void {
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${STANDALONE_SIDEBAR_WIDTH_PREF_KEY}`,
+    clampStandaloneSidebarPreferredWidth(value),
     true,
   );
 }

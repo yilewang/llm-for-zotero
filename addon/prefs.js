@@ -1,4 +1,5 @@
 pref("enable", true);
+pref("standaloneSidebarWidth", 220);
 pref("input", "This is input");
 pref("apiBase", "");
 pref("apiKey", "");

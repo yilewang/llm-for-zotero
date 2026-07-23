@@ -1,6 +1,12 @@
 import { applyManualTextareaHeight } from "./textareaSizing";
 
 export const STANDALONE_CONTEXT_FIT_MARGIN_PX = 24;
+export const STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX = 220;
+export const STANDALONE_SIDEBAR_MIN_WIDTH_PX = 160;
+export const STANDALONE_SIDEBAR_MAX_WIDTH_PX = 420;
+export const STANDALONE_SIDEBAR_MIN_CONTENT_WIDTH_PX = 360;
+export const STANDALONE_SIDEBAR_ICON_STRIP_WIDTH_PX = 48;
+export const STANDALONE_SIDEBAR_SEPARATOR_LAYOUT_WIDTH_PX = 5;
 
 type StandaloneContextFitMetrics = {
   targetBottom: number;
@@ -34,6 +40,32 @@ export type StandaloneManualVerticalResizeFrame = {
 
 type StandaloneManualResizeOptions = {
   minWindowHeight?: number;
+};
+
+export type StandaloneSidebarWidthParams = {
+  requestedWidth: number;
+  containerWidth: number;
+  minWidth?: number;
+  maxWidth?: number;
+  minContentWidth?: number;
+  iconStripWidth?: number;
+  separatorWidth?: number;
+};
+
+export type StandaloneSidebarWidthLayout = {
+  renderedWidth: number;
+  effectiveMaxWidth: number;
+};
+
+type StandaloneSidebarResizeOptions = {
+  initialWidth?: number;
+  minWidth?: number;
+  maxWidth?: number;
+  minContentWidth?: number;
+  iconStripWidth?: number;
+  separatorWidth?: number;
+  keyboardStep?: number;
+  onWidthCommit?: (width: number) => void;
 };
 
 type StandaloneWindowLike = {
@@ -72,6 +104,268 @@ function parseCssPixels(value: string | null | undefined): number | null {
   if (!value) return null;
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+export function clampStandaloneSidebarPreferredWidth(
+  value: number,
+  minWidth = STANDALONE_SIDEBAR_MIN_WIDTH_PX,
+  maxWidth = STANDALONE_SIDEBAR_MAX_WIDTH_PX,
+): number {
+  const safeMin = Math.max(0, finiteNonNegative(minWidth, 0));
+  const safeMax = Math.max(safeMin, finiteNonNegative(maxWidth, safeMin));
+  const requested = finiteNumber(value) ?? STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX;
+  return Math.round(Math.max(safeMin, Math.min(requested, safeMax)));
+}
+
+export function computeStandaloneSidebarWidthLayout(
+  params: StandaloneSidebarWidthParams,
+): StandaloneSidebarWidthLayout {
+  const minWidth = finiteNonNegative(
+    params.minWidth,
+    STANDALONE_SIDEBAR_MIN_WIDTH_PX,
+  );
+  const maxWidth = Math.max(
+    minWidth,
+    finiteNonNegative(params.maxWidth, STANDALONE_SIDEBAR_MAX_WIDTH_PX),
+  );
+  const preferredWidth = clampStandaloneSidebarPreferredWidth(
+    params.requestedWidth,
+    minWidth,
+    maxWidth,
+  );
+  const containerWidth = finiteNonNegative(params.containerWidth, 0);
+  if (!containerWidth) {
+    return { renderedWidth: preferredWidth, effectiveMaxWidth: maxWidth };
+  }
+
+  const minContentWidth = finiteNonNegative(
+    params.minContentWidth,
+    STANDALONE_SIDEBAR_MIN_CONTENT_WIDTH_PX,
+  );
+  const iconStripWidth = finiteNonNegative(
+    params.iconStripWidth,
+    STANDALONE_SIDEBAR_ICON_STRIP_WIDTH_PX,
+  );
+  const separatorWidth = finiteNonNegative(
+    params.separatorWidth,
+    STANDALONE_SIDEBAR_SEPARATOR_LAYOUT_WIDTH_PX,
+  );
+  const availableWidth = Math.floor(
+    containerWidth - iconStripWidth - separatorWidth - minContentWidth,
+  );
+  const effectiveMax = Math.max(minWidth, Math.min(maxWidth, availableWidth));
+  return {
+    renderedWidth: Math.round(Math.min(preferredWidth, effectiveMax)),
+    effectiveMaxWidth: Math.round(effectiveMax),
+  };
+}
+
+export function computeStandaloneSidebarPanelWidth(
+  params: StandaloneSidebarWidthParams,
+): number {
+  return computeStandaloneSidebarWidthLayout(params).renderedWidth;
+}
+
+/**
+ * Install the standalone History-pane divider. The preferred width is kept
+ * separately from its responsive rendered width, so temporarily narrowing the
+ * window does not overwrite the user's saved choice.
+ */
+export function installStandaloneSidebarResizeBehavior(
+  win: Window,
+  container: HTMLElement,
+  sidebarPanel: HTMLElement,
+  separator: HTMLElement,
+  options: StandaloneSidebarResizeOptions = {},
+): () => void {
+  const minWidth = finiteNonNegative(
+    options.minWidth,
+    STANDALONE_SIDEBAR_MIN_WIDTH_PX,
+  );
+  const maxWidth = Math.max(
+    minWidth,
+    finiteNonNegative(options.maxWidth, STANDALONE_SIDEBAR_MAX_WIDTH_PX),
+  );
+  const keyboardStep = Math.max(1, finiteNonNegative(options.keyboardStep, 12));
+  let preferredWidth = clampStandaloneSidebarPreferredWidth(
+    options.initialWidth ?? STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX,
+    minWidth,
+    maxWidth,
+  );
+  let renderedWidth = preferredWidth;
+  let effectiveMaxWidth = maxWidth;
+  let activeDrag: {
+    startScreenX: number;
+    startWidth: number;
+    moved: boolean;
+  } | null = null;
+  let pendingDragScreenX: number | null = null;
+  let dragFrameId: number | null = null;
+
+  const measureLayout = (requestedWidth: number) => {
+    const containerWidth = container.clientWidth || 0;
+    return computeStandaloneSidebarWidthLayout({
+      requestedWidth,
+      containerWidth,
+      minWidth,
+      maxWidth,
+      minContentWidth: options.minContentWidth,
+      iconStripWidth: options.iconStripWidth,
+      separatorWidth: options.separatorWidth,
+    });
+  };
+
+  const applyLayout = (layout: StandaloneSidebarWidthLayout) => {
+    renderedWidth = layout.renderedWidth;
+    effectiveMaxWidth = layout.effectiveMaxWidth;
+    sidebarPanel.style.setProperty(
+      "--llm-standalone-sidebar-panel-width",
+      `${renderedWidth}px`,
+    );
+    separator.setAttribute("aria-valuemin", `${Math.round(minWidth)}`);
+    separator.setAttribute("aria-valuemax", `${effectiveMaxWidth}`);
+    separator.setAttribute("aria-valuenow", `${renderedWidth}`);
+  };
+
+  const renderPreferredWidth = () => {
+    applyLayout(measureLayout(preferredWidth));
+  };
+
+  const setUserPreferredWidth = (width: number, commit: boolean) => {
+    const requestedWidth = clampStandaloneSidebarPreferredWidth(
+      width,
+      minWidth,
+      maxWidth,
+    );
+    const layout = measureLayout(requestedWidth);
+    preferredWidth = layout.renderedWidth;
+    applyLayout(layout);
+    if (commit) options.onWidthCommit?.(renderedWidth);
+  };
+
+  const cancelScheduledDragFrame = () => {
+    if (dragFrameId === null) return;
+    if (typeof win.cancelAnimationFrame === "function") {
+      win.cancelAnimationFrame(dragFrameId);
+    }
+    dragFrameId = null;
+  };
+
+  const flushPendingDragFrame = () => {
+    if (!activeDrag || pendingDragScreenX === null) return;
+    const screenX = pendingDragScreenX;
+    pendingDragScreenX = null;
+    const requestedWidth =
+      activeDrag.startWidth + (screenX - activeDrag.startScreenX);
+    setUserPreferredWidth(requestedWidth, false);
+  };
+
+  const schedulePendingDragFrame = () => {
+    if (dragFrameId !== null) return;
+    if (typeof win.requestAnimationFrame !== "function") {
+      flushPendingDragFrame();
+      return;
+    }
+    dragFrameId = win.requestAnimationFrame(() => {
+      dragFrameId = null;
+      flushPendingDragFrame();
+    });
+  };
+
+  const endDrag = (event?: Event) => {
+    if (activeDrag) {
+      const finalScreenX = finiteNumber(
+        (event as MouseEvent | undefined)?.screenX,
+      );
+      if (finalScreenX !== null) {
+        pendingDragScreenX = finalScreenX;
+        if (finalScreenX !== activeDrag.startScreenX) activeDrag.moved = true;
+      }
+    }
+    cancelScheduledDragFrame();
+    flushPendingDragFrame();
+    const drag = activeDrag;
+    activeDrag = null;
+    pendingDragScreenX = null;
+    container.classList.remove("llm-standalone-sidebar-resizing");
+    try {
+      (separator as any).releaseCapture?.();
+    } catch {
+      // Gecko can throw if capture was released during window teardown.
+    }
+    if (drag?.moved) options.onWidthCommit?.(renderedWidth);
+  };
+
+  const onMouseDown = (event: MouseEvent) => {
+    if (event.button !== 0) return;
+    cancelScheduledDragFrame();
+    pendingDragScreenX = null;
+    const rect = sidebarPanel.getBoundingClientRect();
+    activeDrag = {
+      startScreenX: event.screenX,
+      startWidth: rect.width || renderedWidth,
+      moved: false,
+    };
+    container.classList.add("llm-standalone-sidebar-resizing");
+    try {
+      (separator as any).setCapture?.(true);
+    } catch {
+      // Window-level listeners keep the drag active without capture.
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const onMouseMove = (event: MouseEvent) => {
+    if (!activeDrag) return;
+    pendingDragScreenX = event.screenX;
+    activeDrag.moved = true;
+    schedulePendingDragFrame();
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const onKeyDown = (event: KeyboardEvent) => {
+    const step = event.shiftKey ? keyboardStep * 4 : keyboardStep;
+    let nextWidth: number | null = null;
+    if (event.key === "ArrowLeft") nextWidth = preferredWidth - step;
+    if (event.key === "ArrowRight") nextWidth = preferredWidth + step;
+    if (event.key === "Home") nextWidth = minWidth;
+    if (event.key === "End") nextWidth = maxWidth;
+    if (nextWidth === null) return;
+    setUserPreferredWidth(nextWidth, true);
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const onDoubleClick = (event: MouseEvent) => {
+    setUserPreferredWidth(STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX, true);
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const onWindowResize = () => renderPreferredWidth();
+
+  renderPreferredWidth();
+  separator.addEventListener("mousedown", onMouseDown);
+  separator.addEventListener("keydown", onKeyDown);
+  separator.addEventListener("dblclick", onDoubleClick);
+  win.addEventListener("mousemove", onMouseMove, true);
+  win.addEventListener("mouseup", endDrag, true);
+  win.addEventListener("blur", endDrag);
+  win.addEventListener("resize", onWindowResize);
+
+  return () => {
+    endDrag();
+    cancelScheduledDragFrame();
+    separator.removeEventListener("mousedown", onMouseDown);
+    separator.removeEventListener("keydown", onKeyDown);
+    separator.removeEventListener("dblclick", onDoubleClick);
+    win.removeEventListener("mousemove", onMouseMove, true);
+    win.removeEventListener("mouseup", endDrag, true);
+    win.removeEventListener("blur", endDrag);
+    win.removeEventListener("resize", onWindowResize);
+  };
 }
 
 /**

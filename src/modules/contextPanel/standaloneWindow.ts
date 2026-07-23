@@ -32,10 +32,12 @@ import {
   buildPaperStateKey,
   getClaudeCodeModeEnabled,
   getLastUsedUpstreamGlobalConversationKey,
+  getStandaloneSidebarWidthPref,
   getLockedGlobalConversationKey,
   setLastUsedUpstreamConversationMode,
   setLastUsedUpstreamGlobalConversationKey,
   setLockedGlobalConversationKey,
+  setStandaloneSidebarWidthPref,
 } from "./prefHelpers";
 import { buildUI } from "./buildUI";
 import {
@@ -139,8 +141,10 @@ import {
   type ConversationRenameIdentity,
 } from "./conversationRenameEligibility";
 import {
+  installStandaloneSidebarResizeBehavior,
   installStandaloneVerticalResizeBehavior,
   scheduleStandaloneWindowFitForElement,
+  STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX,
 } from "./standaloneWindowSizing";
 import {
   createClaudeGlobalPortalItem,
@@ -189,9 +193,8 @@ const standaloneSessionState: StandaloneSessionState = {
 
 const STANDALONE_MIN_WIDTH_PX = 500;
 const STANDALONE_MIN_HEIGHT_PX = 500;
-const STANDALONE_SIDEBAR_PANEL_WIDTH_PX = 220;
 const STANDALONE_SIDEBAR_AUTO_COLLAPSE_THRESHOLD_PX =
-  STANDALONE_MIN_WIDTH_PX + STANDALONE_SIDEBAR_PANEL_WIDTH_PX;
+  STANDALONE_MIN_WIDTH_PX + STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX;
 const STANDALONE_SIDEBAR_AUTO_EXPAND_THRESHOLD_PX = 600;
 const STANDALONE_WINDOW_FEATURES =
   "chrome,extrachrome,menubar,resizable,scrollbars,status,centerscreen,dialog=no,dependent=no";
@@ -653,6 +656,7 @@ export function openStandaloneChat(options?: {
   let onSchemeChange: (() => void) | null = null;
   let cleanupStandalonePrefObserver: (() => void) | null = null;
   let cleanupStandaloneVerticalResize: (() => void) | null = null;
+  let cleanupStandaloneSidebarResize: (() => void) | null = null;
   let enforceStandaloneMinimumSize: (() => void) | null = null;
 
   const initWindow = () => {
@@ -1120,8 +1124,19 @@ export function openStandaloneChat(options?: {
       const sidebarList = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
       sidebarList.className = "llm-standalone-sidebar-list";
 
+      const sidebarResizeHandle = doc.createElementNS(
+        HTML_NS,
+        "div",
+      ) as HTMLDivElement;
+      sidebarResizeHandle.className = "llm-standalone-sidebar-resizer";
+      sidebarResizeHandle.tabIndex = 0;
+      sidebarResizeHandle.title = t("Drag to resize history pane");
+      sidebarResizeHandle.setAttribute("role", "separator");
+      sidebarResizeHandle.setAttribute("aria-orientation", "vertical");
+      sidebarResizeHandle.setAttribute("aria-label", t("Resize history pane"));
+
       sidebarPanel.append(sidebarHeader, standaloneHistoryUndo, sidebarList);
-      sidebar.append(iconStrip, sidebarPanel);
+      sidebar.append(iconStrip, sidebarPanel, sidebarResizeHandle);
       const pendingStandaloneDeletionKeys = new Set<number>();
       let pendingStandaloneHistoryDeletion: PendingStandaloneHistoryDeletion | null =
         null;
@@ -1250,6 +1265,16 @@ export function openStandaloneChat(options?: {
         contentArea,
         {
           minWindowHeight: STANDALONE_MIN_HEIGHT_PX,
+        },
+      );
+      cleanupStandaloneSidebarResize = installStandaloneSidebarResizeBehavior(
+        newWin,
+        lowerArea,
+        sidebarPanel,
+        sidebarResizeHandle,
+        {
+          initialWidth: getStandaloneSidebarWidthPref(),
+          onWidthCommit: setStandaloneSidebarWidthPref,
         },
       );
 
@@ -4161,6 +4186,8 @@ export function openStandaloneChat(options?: {
     cleanupStandalonePrefObserver?.();
     cleanupStandaloneVerticalResize?.();
     cleanupStandaloneVerticalResize = null;
+    cleanupStandaloneSidebarResize?.();
+    cleanupStandaloneSidebarResize = null;
     standaloneItemChangeHandler = null;
     themeObserver?.disconnect();
     themeObserver = null;

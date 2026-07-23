@@ -30,6 +30,10 @@ function readStandaloneWindowMarkup(): string {
   );
 }
 
+function readDefaultPrefs(): string {
+  return readFileSync(resolve(here, "../addon/prefs.js"), "utf8");
+}
+
 function extractCssRule(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = css.match(new RegExp(`${escapedSelector}\\s*\\{[^}]*\\}`));
@@ -128,31 +132,93 @@ describe("standalone window layout CSS", function () {
     assert.notInclude(activeTabRule, "--fill-quternary");
   });
 
-  it("preserves default standalone sidebar styling and scopes light theme overrides", function () {
+  it("uses one surface color for the standalone action strip and history pane", function () {
     const css = readPanelCss();
+    const rootRule = extractCssRule(css, "#llmforzotero-standalone-chat-root");
     const lightRootRule = extractCssRule(
       css,
       '#llmforzotero-standalone-chat-root[data-standalone-theme="light"]',
     );
     const sidebarRule = extractCssRule(css, ".llm-standalone-sidebar");
     const iconStripRule = extractCssRule(css, ".llm-standalone-icon-strip");
+    const historyPanelRule = extractCssRule(
+      css,
+      ".llm-standalone-sidebar-panel",
+    );
 
     assert.match(
-      lightRootRule,
-      /--llm-standalone-sidebar-bg:\s*color-mix\(\s*in srgb,\s*var\(--material-background\) 92%,\s*var\(--fill-primary\) 8%\s*\);/,
+      rootRule,
+      /--llm-standalone-sidebar-surface-bg:\s*color-mix\(\s*in srgb,\s*var\(--material-background\) 96%,\s*black 4%\s*\);/,
     );
     assert.match(
       lightRootRule,
-      /--llm-standalone-icon-strip-bg:\s*color-mix\(\s*in srgb,\s*var\(--material-background\) 90%,\s*var\(--fill-primary\) 10%\s*\);/,
+      /--llm-standalone-sidebar-surface-bg:\s*color-mix\(\s*in srgb,\s*var\(--material-background\) 90%,\s*var\(--fill-primary\) 10%\s*\);/,
     );
     assert.include(
       sidebarRule,
-      "background: color-mix(in srgb, var(--material-background) 96%, black 4%)",
+      "background: var(--llm-standalone-sidebar-surface-bg)",
     );
     assert.include(
       iconStripRule,
-      "background: color-mix(in srgb, var(--material-background) 96%, black 4%)",
+      "background: var(--llm-standalone-sidebar-surface-bg)",
     );
+    assert.include(
+      historyPanelRule,
+      "background: var(--llm-standalone-sidebar-surface-bg)",
+    );
+    assert.notInclude(lightRootRule, "--llm-standalone-sidebar-bg");
+    assert.notInclude(lightRootRule, "--llm-standalone-icon-strip-bg");
+  });
+
+  it("keeps the full sidebar resize hit target inside the flex layout", function () {
+    const css = readPanelCss();
+    const handleRule = extractCssRule(css, ".llm-standalone-sidebar-resizer");
+    const lineRule = extractCssRule(
+      css,
+      ".llm-standalone-sidebar-resizer::before",
+    );
+
+    assert.include(handleRule, "flex: 0 0 5px");
+    assert.include(handleRule, "width: 5px");
+    assert.notInclude(handleRule, "margin-left: -2px");
+    assert.notInclude(handleRule, "margin-right: -2px");
+    assert.include(lineRule, "inset: 0 2px");
+  });
+
+  it("makes the standalone History divider adjustable and persistent", function () {
+    const css = readPanelCss();
+    const source = readStandaloneWindowSource();
+    const panelRule = extractCssRule(css, ".llm-standalone-sidebar-panel");
+    const resizerRule = extractCssRule(css, ".llm-standalone-sidebar-resizer");
+    const activeResizerRule =
+      css.match(
+        /\.llm-standalone-sidebar-resizer:hover::before,[^{]+\{[^}]*\}/,
+      )?.[0] || "";
+
+    assert.include(
+      panelRule,
+      "width: var(--llm-standalone-sidebar-panel-width, 220px)",
+    );
+    assert.include(resizerRule, "cursor: col-resize");
+    assert.include(
+      activeResizerRule,
+      "background: var(--stroke-primary, var(--fill-secondary, #7a7a7a))",
+    );
+    assert.notInclude(activeResizerRule, "--color-accent");
+    assert.notInclude(activeResizerRule, "--accent-blue");
+    assert.notInclude(activeResizerRule, "box-shadow");
+    assert.include(
+      source,
+      'sidebarResizeHandle.setAttribute("role", "separator")',
+    );
+    assert.include(
+      source,
+      'sidebarResizeHandle.setAttribute("aria-orientation", "vertical")',
+    );
+    assert.include(source, "installStandaloneSidebarResizeBehavior(");
+    assert.include(source, "initialWidth: getStandaloneSidebarWidthPref()");
+    assert.include(source, "onWidthCommit: setStandaloneSidebarWidthPref");
+    assert.include(readDefaultPrefs(), 'pref("standaloneSidebarWidth", 220)');
   });
 
   it("marks standalone windows with a light or dark theme without changing dark CSS defaults", function () {
