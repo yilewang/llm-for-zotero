@@ -2009,6 +2009,7 @@
   text-overflow: ellipsis;
 }
 
+.llm-standalone-conv-rename,
 .llm-standalone-conv-delete {
   flex-shrink: 0;
   width: 20px;
@@ -2023,16 +2024,40 @@
   margin-left: 4px;
 }
 
+.llm-standalone-conv-rename::before {
+  content: "";
+  width: 13px;
+  height: 13px;
+  background-color: currentColor;
+  mask-image: url("icons/action-edit.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/action-edit.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
 .llm-standalone-conv-delete::before {
   content: "\00D7"; /* × */
 }
 
+.llm-standalone-conv-item:hover .llm-standalone-conv-rename,
 .llm-standalone-conv-item:hover .llm-standalone-conv-delete {
   display: flex;
 }
 
+.llm-standalone-conv-rename:hover,
 .llm-standalone-conv-delete:hover {
   background: color-mix(in srgb, var(--fill-quaternary) 60%, transparent);
+}
+
+.llm-standalone-conv-rename:hover {
+  color: var(--color-accent);
+}
+
+.llm-standalone-conv-delete:hover {
   color: #e74c3c;
 }
 
@@ -2755,6 +2780,7 @@
   white-space: nowrap;
 }
 
+.llm-history-item-rename,
 .llm-history-item-delete {
   flex-shrink: 0;
   width: 20px;
@@ -2769,16 +2795,40 @@
   margin-left: 4px;
 }
 
+.llm-history-item-rename::before {
+  content: "";
+  width: 13px;
+  height: 13px;
+  background-color: currentColor;
+  mask-image: url("icons/action-edit.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/action-edit.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+
 .llm-history-item-delete::before {
   content: "\00D7";
 }
 
+.llm-history-item:hover .llm-history-item-rename,
 .llm-history-item:hover .llm-history-item-delete {
   display: flex;
 }
 
+.llm-history-item-rename:hover,
 .llm-history-item-delete:hover {
   background: color-mix(in srgb, var(--fill-quaternary) 60%, transparent);
+}
+
+.llm-history-item-rename:hover {
+  color: var(--color-accent);
+}
+
+.llm-history-item-delete:hover {
   color: #e74c3c;
 }
 

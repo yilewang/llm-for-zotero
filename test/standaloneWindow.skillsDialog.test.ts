@@ -287,3 +287,21 @@ describe("shortcut edit dialog", function () {
     assert.isNull(doc.body.querySelector(".llm-shortcut-edit-overlay"));
   });
 });
+
+describe("conversation rename dialog", function () {
+  it("preserves the shared in-panel modal structure", function () {
+    const renameSource = readFileSync(
+      resolve("src/modules/contextPanel/conversationRenameDialog.ts"),
+      "utf8",
+    );
+
+    assert.include(renameSource, '"llm-modal-overlay');
+    assert.include(renameSource, '"llm-modal-dialog');
+    assert.include(renameSource, '"llm-conversation-rename-form"');
+    assert.include(renameSource, 'type: "submit"');
+    assert.include(renameSource, "if (event.target === overlay) settle(null)");
+    assert.include(renameSource, "parent.appendChild(overlay)");
+    assert.include(renameSource, "input.select()");
+    assert.notInclude(renameSource, "ztoolkit.Dialog");
+  });
+});

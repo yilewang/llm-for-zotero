@@ -75,6 +75,7 @@ import {
   groupHistoryEntriesByDay,
   isOrphanHistoryEntry,
   maybeSelectPaperHistoryTarget,
+  normalizeConversationTitleSeed,
   normalizeHistoryPaperItemID,
   normalizeHistoryTitle,
   resolvePaperHistoryNavigationDecision,
@@ -131,6 +132,12 @@ import {
   buildClaudePaperStateKey,
 } from "../../claudeCode/state";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
+import { showConversationRenameDialog } from "./conversationRenameDialog";
+import {
+  canCommitConversationRename,
+  isConversationRenameEligible,
+  type ConversationRenameIdentity,
+} from "./conversationRenameEligibility";
 import {
   installStandaloneVerticalResizeBehavior,
   scheduleStandaloneWindowFitForElement,
@@ -1927,6 +1934,15 @@ export function openStandaloneChat(options?: {
             ) as HTMLSpanElement;
             titleSpan.className = "llm-standalone-conv-title";
             titleSpan.textContent = conv.title || t("Untitled chat");
+            const renameBtn = doc.createElementNS(
+              HTML_NS,
+              "span",
+            ) as HTMLSpanElement;
+            renameBtn.className = "llm-standalone-conv-rename";
+            renameBtn.setAttribute("role", "button");
+            renameBtn.setAttribute("aria-label", t("Rename chat"));
+            renameBtn.title = t("Rename chat");
+            renameBtn.dataset.action = "rename";
             const deleteBtn = doc.createElementNS(
               HTML_NS,
               "span",
@@ -1936,7 +1952,7 @@ export function openStandaloneChat(options?: {
             deleteBtn.setAttribute("aria-label", t("Delete conversation"));
             deleteBtn.title = t("Delete conversation");
             deleteBtn.dataset.action = "delete";
-            btn.append(titleSpan, deleteBtn);
+            btn.append(titleSpan, renameBtn, deleteBtn);
             btn.title = conv.title || t("Untitled chat");
             sidebarList.appendChild(btn);
           }
@@ -2792,7 +2808,7 @@ export function openStandaloneChat(options?: {
         return pending;
       };
 
-      const setStandaloneDeletionStatus = (
+      const setStandaloneHistoryStatus = (
         message: string,
         level: "ready" | "warning" | "error",
       ) => {
@@ -2800,6 +2816,96 @@ export function openStandaloneChat(options?: {
           "#llm-status",
         ) as HTMLElement | null;
         if (statusEl) setStatus(statusEl, message, level);
+      };
+
+      const getStandaloneRenameIdentity = (
+        entry: SidebarConv,
+      ): ConversationRenameIdentity => ({
+        system: entry.conversationSystem || currentConversationSystem,
+        kind: entry.kind || (entry.mode === "paper" ? "paper" : "global"),
+        conversationKey: Number(entry.conversationKey || 0),
+      });
+
+      const renameStandaloneHistoryEntry = async (
+        entry: SidebarConv,
+      ): Promise<void> => {
+        const target = getStandaloneRenameIdentity(entry);
+        if (
+          !isConversationRenameEligible({
+            identity: target,
+            pendingDelete: pendingStandaloneDeletionKeys.has(
+              target.conversationKey,
+            ),
+          })
+        ) {
+          return;
+        }
+        const currentTitle = normalizeHistoryTitle(entry.title || "");
+        const rawTitle = await showConversationRenameDialog(doc, {
+          title: t("Rename chat"),
+          initialTitle: currentTitle,
+          confirmLabel: t("Rename"),
+          cancelLabel: t("Cancel"),
+        });
+        if (rawTitle === null) return;
+        const title = normalizeConversationTitleSeed(rawTitle);
+        if (!title) {
+          setStandaloneHistoryStatus(t("Chat title cannot be empty"), "error");
+          return;
+        }
+        try {
+          let currentEntry = standaloneSidebarEntriesByKey.get(
+            target.conversationKey,
+          );
+          if (
+            !canCommitConversationRename({
+              target,
+              current: currentEntry
+                ? getStandaloneRenameIdentity(currentEntry)
+                : null,
+              pendingDelete: pendingStandaloneDeletionKeys.has(
+                target.conversationKey,
+              ),
+            })
+          ) {
+            return;
+          }
+          const summary = await conversationRepository.getCatalogEntry(target);
+          currentEntry = standaloneSidebarEntriesByKey.get(
+            target.conversationKey,
+          );
+          if (
+            !summary ||
+            summary.kind !== target.kind ||
+            !canCommitConversationRename({
+              target,
+              current: currentEntry
+                ? getStandaloneRenameIdentity(currentEntry)
+                : null,
+              pendingDelete: pendingStandaloneDeletionKeys.has(
+                target.conversationKey,
+              ),
+            })
+          ) {
+            return;
+          }
+          await conversationRepository.setCatalogTitle({
+            ...target,
+            title,
+          });
+          searchDocCache.delete(target.conversationKey);
+          if (cancelled) return;
+          await renderSidebar();
+          if (cancelled) return;
+          setStandaloneHistoryStatus(t("Conversation renamed"), "ready");
+        } catch (err) {
+          ztoolkit.log("LLM: standalone rename conversation failed", err);
+          if (cancelled) return;
+          setStandaloneHistoryStatus(
+            t("Failed to rename conversation"),
+            "error",
+          );
+        }
       };
 
       const normalizeStandaloneCreateConversationOptions = (
@@ -2959,7 +3065,7 @@ export function openStandaloneChat(options?: {
           if (pending.wasActive) {
             await switchStandaloneToConversationEntry(entry);
           }
-          setStandaloneDeletionStatus(
+          setStandaloneHistoryStatus(
             t(getConversationDeletionFailureMessage(result)),
             "error",
           );
@@ -2977,7 +3083,7 @@ export function openStandaloneChat(options?: {
           await switchStandaloneToConversationEntry(pending.entry);
         }
         await renderSidebar();
-        setStandaloneDeletionStatus(t("Conversation restored"), "ready");
+        setStandaloneHistoryStatus(t("Conversation restored"), "ready");
       };
 
       standaloneHistoryUndoBtn.addEventListener("click", () => {
@@ -3061,7 +3167,7 @@ export function openStandaloneChat(options?: {
             const didClearActiveConversation =
               await clearStandaloneActiveConversationForPendingDeletion(entry);
             if (!didClearActiveConversation) {
-              setStandaloneDeletionStatus(
+              setStandaloneHistoryStatus(
                 t("Cannot delete active conversation right now"),
                 "error",
               );
@@ -3081,7 +3187,7 @@ export function openStandaloneChat(options?: {
           }, GLOBAL_HISTORY_UNDO_WINDOW_MS);
           showStandaloneHistoryUndoToast(entry.title);
           await renderSidebar();
-          setStandaloneDeletionStatus(
+          setStandaloneHistoryStatus(
             t("Conversation deleted. Undo available."),
             "ready",
           );
@@ -3096,8 +3202,26 @@ export function openStandaloneChat(options?: {
         }
       };
 
-      // Sidebar click handler — delete conversation
+      // Sidebar click handler — rename or delete conversation
       sidebarList.addEventListener("click", async (e: Event) => {
+        const renameTarget = (e.target as HTMLElement).closest(
+          ".llm-standalone-conv-rename",
+        ) as HTMLElement | null;
+        if (renameTarget) {
+          e.preventDefault();
+          e.stopPropagation();
+          const row = renameTarget.closest(
+            ".llm-standalone-conv-item",
+          ) as HTMLElement | null;
+          if (!row) return;
+          const key = Number(row.dataset.conversationKey);
+          if (!key) return;
+          const entry = standaloneSidebarEntriesByKey.get(key);
+          if (!entry) return;
+          await renameStandaloneHistoryEntry(entry);
+          return;
+        }
+
         const deleteTarget = (e.target as HTMLElement).closest(
           ".llm-standalone-conv-delete",
         ) as HTMLElement | null;
@@ -3127,8 +3251,12 @@ export function openStandaloneChat(options?: {
           ".llm-standalone-conv-item",
         ) as HTMLElement | null;
         if (!target) return;
-        // Ignore if click was on the delete button (handled above)
-        if ((e.target as HTMLElement).closest(".llm-standalone-conv-delete"))
+        // Ignore row actions handled above.
+        if (
+          (e.target as HTMLElement).closest(
+            ".llm-standalone-conv-rename, .llm-standalone-conv-delete",
+          )
+        )
           return;
         const key = Number(target.dataset.conversationKey);
         if (!key || key === activeConversationKey) return;
@@ -3762,7 +3890,7 @@ export function openStandaloneChat(options?: {
       };
 
       const showNoPaperChatSourceStatus = () => {
-        setStandaloneDeletionStatus(
+        setStandaloneHistoryStatus(
           t("Open a supported Zotero document to start a paper chat"),
           "error",
         );

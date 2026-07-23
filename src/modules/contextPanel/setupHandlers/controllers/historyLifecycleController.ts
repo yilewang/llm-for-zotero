@@ -163,6 +163,12 @@ import {
 } from "./historySearchController";
 import { createHistorySearchPopupController } from "./historySearchPopupController";
 import { collapseDuplicateReusableConversationDrafts } from "../../standaloneConversationResolution";
+import { showConversationRenameDialog } from "../../conversationRenameDialog";
+import {
+  canCommitConversationRename,
+  isConversationRenameEligible,
+  type ConversationRenameIdentity,
+} from "../../conversationRenameEligibility";
 import { primeHistoryNavigationMode } from "../../historyNavigationModeSync";
 
 type HistorySearchIndexFallbackStatus = Pick<
@@ -468,7 +474,6 @@ export function createHistoryLifecycleController(
     deps.updateImagePreviewPreservingScroll;
   const setActiveEditSession = deps.setActiveEditSession;
   const ztoolkit = { log: deps.log };
-  const panelWin = body.ownerDocument?.defaultView || null;
   const ensureConversationCatalogEntry = async (params: {
     system: ConversationSystem;
     conversationKey: number;
@@ -1392,6 +1397,19 @@ export function createHistoryLifecycleController(
           titleSpan.textContent = displayTitle;
         }
         titleRow.appendChild(titleSpan);
+
+        if (canRenameHistoryEntry(entry)) {
+          const renameBtn = createElement(
+            body.ownerDocument as Document,
+            "span",
+            "llm-history-item-rename",
+          ) as HTMLSpanElement;
+          renameBtn.setAttribute("role", "button");
+          renameBtn.setAttribute("aria-label", t("Rename chat"));
+          renameBtn.title = t("Rename chat");
+          renameBtn.dataset.action = "rename";
+          titleRow.appendChild(renameBtn);
+        }
 
         if (entry.deletable) {
           const deleteBtn = createElement(
@@ -3138,6 +3156,25 @@ export function createHistoryLifecycleController(
     );
   };
 
+  const getHistoryEntryRenameIdentity = (
+    entry: ConversationHistoryEntry,
+    system = getConversationSystem(),
+  ): ConversationRenameIdentity => ({
+    system,
+    kind: entry.kind,
+    conversationKey: entry.conversationKey,
+  });
+
+  const canRenameHistoryEntry = (entry: ConversationHistoryEntry): boolean =>
+    isConversationRenameEligible({
+      identity: getHistoryEntryRenameIdentity(entry),
+      pendingDelete:
+        entry.isPendingDelete ||
+        pendingHistoryDeletionKeys.has(entry.conversationKey),
+      orphan: isOrphanHistoryEntry(entry),
+      requestPending: isRequestPending(entry.conversationKey),
+    });
+
   const getHistoryRowMenuEntry = (): ConversationHistoryEntry | null => {
     if (!historyRowMenuTarget) return null;
     return findHistoryEntryByKey(
@@ -3146,22 +3183,16 @@ export function createHistoryLifecycleController(
     );
   };
 
-  const promptConversationRename = (
+  const promptConversationRename = async (
     entry: ConversationHistoryEntry,
-  ): string | null => {
-    const promptFn = panelWin?.prompt;
-    if (typeof promptFn !== "function") {
-      if (status) {
-        setStatus(
-          status,
-          "Rename prompt is unavailable in this window",
-          "error",
-        );
-      }
-      return null;
-    }
+  ): Promise<string | null> => {
     const suggestedTitle = normalizeHistoryTitle(entry.title) || "";
-    const raw = promptFn.call(panelWin, "Rename chat", suggestedTitle);
+    const raw = await showConversationRenameDialog(body.ownerDocument, {
+      title: t("Rename chat"),
+      initialTitle: suggestedTitle,
+      confirmLabel: t("Rename"),
+      cancelLabel: t("Cancel"),
+    });
     if (raw === null) return null;
     const normalized = normalizeConversationTitleSeed(raw);
     if (!normalized) {
@@ -3180,6 +3211,12 @@ export function createHistoryLifecycleController(
       }
       return;
     }
+    if (
+      entry.isPendingDelete ||
+      pendingHistoryDeletionKeys.has(entry.conversationKey)
+    ) {
+      return;
+    }
     if (isRequestPending(entry.conversationKey)) {
       if (status) {
         setStatus(
@@ -3190,16 +3227,53 @@ export function createHistoryLifecycleController(
       }
       return;
     }
-    const nextTitle = promptConversationRename(entry);
+    const target = getHistoryEntryRenameIdentity(entry);
+    const nextTitle = await promptConversationRename(entry);
     if (!nextTitle) return;
     try {
+      let currentEntry = findHistoryEntryByKey(
+        target.kind,
+        target.conversationKey,
+      );
+      if (
+        !canCommitConversationRename({
+          target,
+          current: currentEntry
+            ? getHistoryEntryRenameIdentity(currentEntry)
+            : null,
+          pendingDelete:
+            Boolean(currentEntry?.isPendingDelete) ||
+            pendingHistoryDeletionKeys.has(target.conversationKey),
+          orphan: currentEntry ? isOrphanHistoryEntry(currentEntry) : false,
+          requestPending: isRequestPending(target.conversationKey),
+        })
+      ) {
+        return;
+      }
+      const summary = await conversationRepository.getCatalogEntry(target);
+      currentEntry = findHistoryEntryByKey(target.kind, target.conversationKey);
+      if (
+        !summary ||
+        summary.kind !== target.kind ||
+        !canCommitConversationRename({
+          target,
+          current: currentEntry
+            ? getHistoryEntryRenameIdentity(currentEntry)
+            : null,
+          pendingDelete:
+            Boolean(currentEntry?.isPendingDelete) ||
+            pendingHistoryDeletionKeys.has(target.conversationKey),
+          orphan: currentEntry ? isOrphanHistoryEntry(currentEntry) : false,
+          requestPending: isRequestPending(target.conversationKey),
+        })
+      ) {
+        return;
+      }
       await conversationRepository.setCatalogTitle({
-        system: getConversationSystem(),
-        kind: entry.kind,
-        conversationKey: entry.conversationKey,
+        ...target,
         title: nextTitle,
       });
-      invalidateHistorySearchDocument(entry.conversationKey);
+      invalidateHistorySearchDocument(target.conversationKey);
       await refreshGlobalHistoryHeader();
       if (status) setStatus(status, t("Conversation renamed"), "ready");
     } catch (err) {
@@ -3545,7 +3619,7 @@ export function createHistoryLifecycleController(
       kind: entry.kind,
       conversationKey: entry.conversationKey,
     };
-    const renameDisabled = entry.isPendingDelete || isOrphanHistoryEntry(entry);
+    const renameDisabled = !canRenameHistoryEntry(entry);
     historyRowRenameBtn.disabled = renameDisabled;
     historyRowRenameBtn.setAttribute(
       "aria-disabled",
@@ -3791,6 +3865,35 @@ export function createHistoryLifecycleController(
         e.stopPropagation();
         closeHistoryMenu();
         historySearchPopupController.open();
+        return;
+      }
+
+      // Rename button inside a history item
+      const renameBtn = target.closest(
+        ".llm-history-item-rename",
+      ) as HTMLElement | null;
+      if (renameBtn) {
+        const row = renameBtn.closest(
+          ".llm-history-item",
+        ) as HTMLButtonElement | null;
+        if (!row) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const parsedConversationKey = Number.parseInt(
+          row.dataset.conversationKey || "",
+          10,
+        );
+        if (
+          !Number.isFinite(parsedConversationKey) ||
+          parsedConversationKey <= 0
+        ) {
+          return;
+        }
+        const historyKind =
+          row.dataset.historyKind === "paper" ? "paper" : "global";
+        const entry = findHistoryEntryByKey(historyKind, parsedConversationKey);
+        if (!entry) return;
+        void renameHistoryEntry(entry);
         return;
       }
 
