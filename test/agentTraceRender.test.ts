@@ -1175,68 +1175,168 @@ describe("agentTrace render", function () {
     );
   });
 
-  it("collapses activity when the Codex answer starts", function () {
+  it("keeps interleaved trace activity open until the final answer is ready", function () {
     const message = {
       role: "assistant" as const,
       text: "",
-      timestamp: 5_000,
+      timestamp: 260_000,
       runMode: "agent" as const,
       modelProviderLabel: "Codex",
       streaming: true,
+      waitingAnimationStartedAt: 1_000,
     };
-    const events: AgentRunEventRecord[] = [
+    const runningEvents: AgentRunEventRecord[] = [
       {
-        runId: "run-answer-start",
+        runId: "run-interleaved-activity",
         seq: 1,
         eventType: "codex_progress",
         payload: {
           type: "codex_progress",
-          itemId: "reasoning-1",
-          text: "Checking context.",
+          itemId: "assistant-1",
+          text: "I’m using the simple-paper-QA skill.",
           status: "running",
+          kind: "assistant_message",
         },
         createdAt: 1_000,
       },
       {
-        runId: "run-answer-start",
+        runId: "run-interleaved-activity",
         seq: 2,
+        eventType: "codex_tool_activity",
+        payload: {
+          type: "codex_tool_activity",
+          itemId: "tool-1",
+          phase: "completed",
+          toolName: "paper_read",
+          toolLabel: "Read paper",
+          ok: true,
+          text: "Read paper",
+        },
+        createdAt: 5_000,
+      },
+      {
+        runId: "run-interleaved-activity",
+        seq: 3,
         eventType: "codex_progress",
         payload: {
           type: "codex_progress",
-          itemId: "assistant-1",
+          itemId: "assistant-2",
           text: "This is the final answer.",
           status: "running",
           kind: "assistant_message",
         },
-        createdAt: 5_000,
+        createdAt: 6_000,
       },
     ];
 
-    const trace = renderAgentTrace({
+    const { items } = buildAgentTraceDisplayItems(runningEvents, null, message);
+    const firstAgentIndex = items.findIndex(
+      (item) =>
+        item.type === "message" && item.text.includes("simple-paper-QA"),
+    );
+    const toolIndex = items.findIndex(
+      (item) => item.type === "action" && item.detailKey === "codex:tool-1",
+    );
+    const secondAgentIndex = items.findIndex(
+      (item) => item.type === "message" && item.text.includes("final answer"),
+    );
+    assert.isAtLeast(firstAgentIndex, 0);
+    assert.isAbove(toolIndex, firstAgentIndex);
+    assert.isAbove(secondAgentIndex, toolIndex);
+
+    const workingTrace = renderAgentTrace({
       doc: fakeDocument,
       message,
-      events,
+      events: runningEvents,
     }) as unknown as FakeElement;
-    const details = trace.findByClass("llm-agent-activity-details") as
+    const workingDetails = workingTrace.findByClass(
+      "llm-agent-activity-details",
+    ) as
       | (FakeElement & {
           open?: boolean;
         })
       | null;
-    assert.isFalse(details?.open);
+    assert.isTrue(workingDetails?.open);
     assert.equal(
-      trace.findByClass("llm-agent-activity-summary")?.textContent,
-      "Worked for 4s",
+      workingTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      "Working…",
     );
-    assert.notExists(details?.findByClass("llm-agent-inline-text") || null);
-    assert.include(
-      `${trace.findByClass("llm-agent-inline-text")?.textContent || ""}${
-        trace.findByClass("llm-agent-inline-text")?.innerHTML || ""
-      }`,
-      "This is the final answer",
+    assert.deepEqual(
+      (workingDetails?.findAllByClass("llm-agent-process-message") || [])
+        .map((entry) => `${entry.textContent}${entry.innerHTML}`)
+        .filter(
+          (text) =>
+            text.includes("simple-paper-QA") || text.includes("final answer"),
+        ),
+      [
+        "<p>I’m using the simple-paper-QA skill.</p>",
+        "<p>This is the final answer.</p>",
+      ],
+      "both agent messages stay inside the open activity container",
+    );
+    assert.isNotNull(
+      workingDetails?.findByClass("llm-agent-process-action") || null,
+      "the interleaved tool trace stays in the same container",
+    );
+
+    const completedEvents: AgentRunEventRecord[] = [
+      ...runningEvents,
+      {
+        runId: "run-interleaved-activity",
+        seq: 4,
+        eventType: "final",
+        payload: {
+          type: "final",
+          text: "This is the final answer.",
+          answerStartedAt: 6_000,
+        },
+        createdAt: 260_000,
+      },
+    ];
+    message.streaming = false;
+    message.text = "This is the final answer.";
+    let suppressFinalAnswer = false;
+    const completedTrace = renderAgentTrace({
+      doc: fakeDocument,
+      message,
+      events: completedEvents,
+      onInterleavedText: () => {
+        suppressFinalAnswer = true;
+      },
+    }) as unknown as FakeElement;
+    const completedDetails = completedTrace.findByClass(
+      "llm-agent-activity-details",
+    ) as
+      | (FakeElement & {
+          open?: boolean;
+        })
+      | null;
+    assert.isFalse(completedDetails?.open);
+    assert.equal(
+      completedTrace.findByClass("llm-agent-activity-summary")?.textContent,
+      "Worked for 4m 19s",
+    );
+    assert.deepEqual(
+      (completedDetails?.findAllByClass("llm-agent-process-message") || [])
+        .map((entry) => `${entry.textContent}${entry.innerHTML}`)
+        .filter(
+          (text) =>
+            text.includes("simple-paper-QA") || text.includes("final answer"),
+        ),
+      [
+        "<p>I’m using the simple-paper-QA skill.</p>",
+        "<p>This is the final answer.</p>",
+      ],
+      "collapsing the container must not dismiss its trace",
+    );
+    assert.isFalse(suppressFinalAnswer);
+    assert.isNotNull(
+      completedTrace.findByClass("llm-agent-output-divider"),
+      "the canonical final answer is rendered below the completed trace",
     );
   });
 
-  it("marks native Codex answer events and records their start time", function () {
+  it("preserves every native Codex agent message and tool trace after completion", function () {
     const message = {
       role: "assistant" as const,
       text: "",
@@ -1251,28 +1351,56 @@ describe("agentTrace render", function () {
     );
 
     controller.appendAgentMessageDelta({
-      itemId: "assistant-answer",
-      delta: "Answer starts.",
+      itemId: "assistant-commentary",
+      delta: "I’m using the simple-paper-QA skill.",
     });
-    const progress = message.pendingAgentTraceEvents?.find(
-      (entry) => entry.payload.type === "codex_progress",
+    controller.noteAgentMessageCompleted({
+      id: "assistant-commentary",
+      type: "agent_message",
+      role: "assistant",
+      details: "I’m using the simple-paper-QA skill.",
+    });
+    controller.appendItemStatus(
+      {
+        id: "tool-1",
+        type: "command_execution",
+        command: "paper_read --target current",
+      },
+      "started",
     );
-    assert.equal(
-      progress?.payload.type === "codex_progress"
-        ? progress.payload.kind
-        : undefined,
-      "assistant_message",
+    controller.appendItemStatus(
+      {
+        id: "tool-1",
+        type: "command_execution",
+        command: "paper_read --target current",
+        exitCode: 0,
+      },
+      "completed",
     );
+    controller.appendAgentMessageDelta({
+      itemId: "assistant-answer",
+      delta: "This is the final answer.",
+    });
+    controller.noteAgentMessageCompleted({
+      id: "assistant-answer",
+      type: "agent_message",
+      role: "assistant",
+      details: "This is the final answer.",
+    });
 
-    controller.finish("Answer starts.");
-    const finalEvent = message.pendingAgentTraceEvents?.find(
-      (entry) => entry.payload.type === "final",
+    controller.finish("This is the final answer.");
+    const events = message.pendingAgentTraceEvents || [];
+    assert.deepEqual(
+      events.map((entry) => entry.payload.type),
+      ["codex_progress", "codex_tool_activity", "codex_progress", "final"],
     );
-    assert.isAbove(
-      finalEvent?.payload.type === "final"
-        ? Number(finalEvent.payload.answerStartedAt)
-        : 0,
-      0,
+    assert.deepEqual(
+      events
+        .filter((entry) => entry.payload.type === "codex_progress")
+        .map((entry) =>
+          entry.payload.type === "codex_progress" ? entry.payload.text : "",
+        ),
+      ["I’m using the simple-paper-QA skill.", "This is the final answer."],
     );
   });
 

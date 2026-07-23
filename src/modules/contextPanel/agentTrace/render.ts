@@ -122,25 +122,31 @@ function resolveAgentActivityDurationMs(
   message: Message,
   userMessage: Message | null | undefined,
   events: AgentRunEventRecord[],
-  answerStartedAt?: number,
 ): number {
   const eventTimes = events
     .map((event) => Number(event.createdAt))
     .filter((value) => Number.isFinite(value) && value > 0);
-  const start = eventTimes.length
-    ? Math.min(...eventTimes)
-    : Number(message.waitingAnimationStartedAt) ||
-      Number(userMessage?.timestamp) ||
-      Number(message.timestamp) ||
-      Date.now();
-  const end =
-    Number.isFinite(answerStartedAt) && Number(answerStartedAt) > 0
-      ? Number(answerStartedAt)
-      : message.streaming
-        ? Date.now()
-        : eventTimes.length
-          ? Math.max(...eventTimes)
-          : Number(message.timestamp) || Date.now();
+  const waitingStartedAt = Number(message.waitingAnimationStartedAt);
+  const userStartedAt = Number(userMessage?.timestamp);
+  const messageTimestamp = Number(message.timestamp);
+  const start =
+    (Number.isFinite(waitingStartedAt) && waitingStartedAt > 0
+      ? waitingStartedAt
+      : 0) ||
+    (eventTimes.length ? Math.min(...eventTimes) : 0) ||
+    (Number.isFinite(userStartedAt) && userStartedAt > 0 ? userStartedAt : 0) ||
+    (Number.isFinite(messageTimestamp) && messageTimestamp > 0
+      ? messageTimestamp
+      : Date.now());
+  const end = message.streaming
+    ? Date.now()
+    : Math.max(
+        start,
+        Number.isFinite(messageTimestamp) && messageTimestamp > 0
+          ? messageTimestamp
+          : 0,
+        ...eventTimes,
+      );
   return Math.max(0, end - start);
 }
 
@@ -151,11 +157,10 @@ function appendAgentActivityDisclosure(params: {
   message: Message;
   userMessage?: Message | null;
   events: AgentRunEventRecord[];
-  answerStartedAt?: number;
   forceOpen?: boolean;
 }): void {
   const { doc, wrap, list, message, userMessage, events } = params;
-  const working = message.streaming === true && !params.answerStartedAt;
+  const working = message.streaming === true;
   const previous = agentActivityExpandedCache.get(message);
   const state = working
     ? !previous || !previous.wasWorking
@@ -175,12 +180,7 @@ function appendAgentActivityDisclosure(params: {
   summary.textContent = working
     ? "Working…"
     : `Worked for ${formatAgentActivityDuration(
-        resolveAgentActivityDurationMs(
-          message,
-          userMessage,
-          events,
-          params.answerStartedAt,
-        ),
+        resolveAgentActivityDurationMs(message, userMessage, events),
       )}`;
   details.append(summary, list);
   details.addEventListener("toggle", () => {
@@ -3615,14 +3615,8 @@ function appendCodexAgentTraceEvent(
     case "codex_progress": {
       const progressText = readAgentTraceText(entry.payload.text);
       if (progressText) {
-        if (entry.payload.kind === "assistant_message") {
-          appendInterleavedInlineText(
-            ctx.items,
-            progressText,
-            ctx.visibleInlineText,
-          );
-          return true;
-        }
+        // Agent messages are activity entries. Keep them in arrival order with
+        // tool calls; the canonical final answer renders outside this trace.
         ctx.items.push({
           type: "message",
           tone: "neutral",
@@ -3910,23 +3904,6 @@ export function renderAgentTrace({
   const hasFinalResponse = events.some(
     (entry) => entry.payload.type === "final",
   );
-  const completedAnswerEvent = events.find(
-    (
-      entry,
-    ): entry is AgentRunEventRecord & {
-      payload: Extract<AgentRunEventRecord["payload"], { type: "final" }>;
-    } =>
-      entry.payload.type === "final" &&
-      Number.isFinite(entry.payload.answerStartedAt),
-  );
-  const answerStartedAt =
-    events.find(
-      (entry) =>
-        entry.payload.type === "codex_progress" &&
-        entry.payload.kind === "assistant_message" &&
-        Boolean(entry.payload.text.trim()),
-    )?.createdAt || completedAnswerEvent?.payload.answerStartedAt;
-  const outputFragments: HTMLElement[] = [];
   for (const [itemIndex, itemEntry] of processItems.entries()) {
     if (itemEntry.type === "inline_text") {
       const inlineEl = doc.createElement("div");
@@ -3940,7 +3917,7 @@ export function renderAgentTrace({
       } catch {
         inlineEl.textContent = inlineText;
       }
-      outputFragments.push(inlineEl);
+      list.appendChild(inlineEl);
       continue;
     }
 
@@ -4097,7 +4074,6 @@ export function renderAgentTrace({
     message,
     userMessage,
     events,
-    answerStartedAt,
     forceOpen: Boolean(pending),
   });
 
@@ -4105,15 +4081,11 @@ export function renderAgentTrace({
   // text is authoritative even when a restored row retained a stale streaming
   // flag or no longer has its original `final` event.
   const hasAnswerText = Boolean(message.text?.trim());
-  if (hasFinalResponse || answerStartedAt || hasAnswerText) {
+  if (hasFinalResponse || (hasAnswerText && !inlineTextReplacesAssistantText)) {
     const divider = doc.createElement("div");
     divider.className = "llm-agent-output-divider";
     divider.setAttribute("aria-hidden", "true");
     wrap.appendChild(divider);
-  }
-
-  for (const fragment of outputFragments) {
-    wrap.appendChild(fragment);
   }
 
   if (pending) {
