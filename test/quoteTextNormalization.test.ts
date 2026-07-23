@@ -3,6 +3,7 @@ import {
   buildQuoteTextIndex,
   findCanonicalQuoteSourceSpan,
   findQuoteSourceSpansAllowingLayoutArtifacts,
+  findQuoteSourceSpansAllowingLayoutArtifactsFromIndex,
   normalizeQuoteTextCanonical,
   stripLikelyLayoutNumberArtifacts,
 } from "../src/modules/contextPanel/quoteTextNormalization";
@@ -142,6 +143,22 @@ describe("quoteTextNormalization", function () {
     assert.include(spans[0].text, "\n153 ");
     assert.include(spans[0].text, "\n154 ");
     assert.include(spans[0].text, "coe\uFB03cient");
+  });
+
+  it("reuses a prebuilt query index without changing layout-artifact matches", function () {
+    const sourceIndex = buildQuoteTextIndex(
+      "The net drive asso-\n153 ciated with the preferred pattern declined.",
+    );
+    const query =
+      "The net drive associated with the preferred pattern declined.";
+
+    assert.deepEqual(
+      findQuoteSourceSpansAllowingLayoutArtifactsFromIndex(
+        sourceIndex,
+        buildQuoteTextIndex(query),
+      ),
+      findQuoteSourceSpansAllowingLayoutArtifacts(sourceIndex, query),
+    );
   });
 
   it("aligns EOL hyphenation across PDF.js text-item boundaries", function () {

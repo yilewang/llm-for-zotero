@@ -1,4 +1,5 @@
 import { createElement } from "../../utils/domHelpers";
+import { registerAddonInPanelDialog } from "../../utils/dialogRegistry";
 
 export type ShortcutEditDialogOptions = {
   title: string;
@@ -130,9 +131,11 @@ export function showShortcutEditDialog(
     overlay.appendChild(dialog);
 
     let settled = false;
+    let unregisterDialog = () => {};
     const settle = (value: { label: string; prompt: string } | null) => {
       if (settled) return;
       settled = true;
+      unregisterDialog();
       doc.removeEventListener("keydown", onKeydown, true);
       overlay.remove();
       focusElement(previousActiveElement);
@@ -158,6 +161,7 @@ export function showShortcutEditDialog(
       settle({ label: labelInput.value, prompt: promptInput.value });
     });
     doc.addEventListener("keydown", onKeydown, true);
+    unregisterDialog = registerAddonInPanelDialog(doc, () => settle(null));
 
     parent.appendChild(overlay);
     focusElement(labelInput);

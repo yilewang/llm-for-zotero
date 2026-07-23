@@ -1457,25 +1457,32 @@ describe("quoteCitations", function () {
       ],
     });
 
-    for (const anchorLine of [
-      `[[quote:${citation!.id}]]`,
-      `> [[quote:${citation!.id}]]`,
+    for (const manualQuoteLine of [
+      `> ${displayedQuote}`,
+      `> ${displayedQuote} (Ma, 2009)`,
+      `> “${displayedQuote}” (Ma, 2009)`,
     ]) {
-      const finalized = finalizeAssistantQuoteCitations({
-        markdown: `> ${displayedQuote}\n${anchorLine}`,
-        quoteCitations: [citation!],
-        sourceIndex,
-        quoteSourceReview: { sourceEvidenceComplete: true },
-      });
+      for (const anchorLine of [
+        `[[quote:${citation!.id}]]`,
+        `> [[quote:${citation!.id}]]`,
+      ]) {
+        const layout = `${manualQuoteLine}\n${anchorLine}`;
+        const finalized = finalizeAssistantQuoteCitations({
+          markdown: layout,
+          quoteCitations: [citation!],
+          sourceIndex,
+          quoteSourceReview: { sourceEvidenceComplete: true },
+        });
 
-      assert.equal(
-        countOccurrences(finalized.markdown, "[[quote:"),
-        1,
-        anchorLine,
-      );
-      assert.lengthOf(finalized.quoteCitations, 1, anchorLine);
-      assert.equal(finalized.quoteCitations[0].quoteText, displayedQuote);
-      assert.notEqual(finalized.quoteCitations[0].id, citation!.id);
+        assert.equal(
+          countOccurrences(finalized.markdown, "[[quote:"),
+          1,
+          layout,
+        );
+        assert.lengthOf(finalized.quoteCitations, 1, layout);
+        assert.equal(finalized.quoteCitations[0].quoteText, displayedQuote);
+        assert.notEqual(finalized.quoteCitations[0].id, citation!.id);
+      }
     }
   });
 
@@ -3643,6 +3650,90 @@ describe("quoteCitations", function () {
       finalized.quoteCitations.map((citation) => citation.quoteText),
       [prefix, suffix],
     );
+  });
+
+  it("keeps adjacent-page partial preflight tolerant of extracted line numbers", function () {
+    const prefix =
+      "Neurons undergoing a preference change showed a stereotyped transition";
+    const suffix =
+      "while newly recruited cells restored the previous representational map.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${prefix} ${suffix}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "Earlier text. Neurons undergoing\n151 a preference change showed\n152 a stereotyped transition",
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 720,
+            itemId: 710,
+            sourceFingerprint: "pdfjs:line-number-boundary",
+            pageHintIndex: 1,
+          },
+          {
+            sourceText:
+              "Header. while newly recruited\n201 cells restored the previous\n202 representational map. Later text.",
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 720,
+            itemId: 710,
+            sourceFingerprint: "pdfjs:line-number-boundary",
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+    assert.notInclude(finalized.markdown, "Not a source quote");
+    assert.deepEqual(
+      finalized.quoteCitations.map((citation) => citation.quoteText),
+      [prefix, suffix],
+    );
+  });
+
+  it("bypasses prose-only adjacent-page preflight for math-heavy source text", function () {
+    const prefix =
+      "We then down-sampled the epoched data to $1 0 0 \\mathrm { H z }$, and we selected";
+    const suffix =
+      "17 channels overlying occipital cortex including $\\mathbf { P } \\mathbf { Z }$ for further analysis.";
+    const finalized = finalizeAssistantQuoteCitations({
+      markdown: `> ${prefix} ${suffix}`,
+      sourceIndex: buildQuoteSourceIndex({
+        sourceTexts: [
+          {
+            sourceText:
+              "Earlier methods. We then down-sampled the epoched data to 100 Hz, and we selected",
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 820,
+            itemId: 810,
+            sourceFingerprint: "pdfjs:math-page-boundary",
+            pageHintIndex: 1,
+          },
+          {
+            sourceText:
+              "Header. 17 channels overlying occipital cortex including Pz for further analysis. Later methods.",
+            sourceLabel: "(Example et al., 2026)",
+            sourceMatchSource: "pdf-page-text",
+            contextItemId: 820,
+            itemId: 810,
+            sourceFingerprint: "pdfjs:math-page-boundary",
+            pageHintIndex: 2,
+          },
+        ],
+      }),
+      quoteSourceReview: {
+        sourceEvidenceComplete: true,
+      },
+    });
+
+    assert.equal(countOccurrences(finalized.markdown, "[[quote:"), 2);
+    assert.notInclude(finalized.markdown, "Not a source quote");
   });
 
   it("preserves a comma at an adjacent-page sentence split", function () {

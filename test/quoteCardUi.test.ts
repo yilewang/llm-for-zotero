@@ -34,6 +34,17 @@ describe("quote card UI contract", function () {
     assert.include(css, "background: var(--llm-quote-card-surface)");
   });
 
+  it("isolates message layout and paint work while scrolling", function () {
+    const css = source("addon/content/zoteroPane.css");
+    const messageRuleStart = css.indexOf(".llm-message-wrapper {");
+    const messageRuleEnd = css.indexOf("}", messageRuleStart);
+    const messageRule = css.slice(messageRuleStart, messageRuleEnd);
+
+    assert.isAtLeast(messageRuleStart, 0);
+    assert.isAbove(messageRuleEnd, messageRuleStart);
+    assert.include(messageRule, "contain: layout paint style");
+  });
+
   it("defines noninteractive amber styling for not-source quote cards", function () {
     const css = source("addon/content/zoteroPane.css");
 
@@ -76,7 +87,7 @@ describe("quote card UI contract", function () {
       renderSource,
       'wrapper.dataset.expanded = interactive ? "false" : "true"',
     );
-    assert.include(renderSource, "if (!interactive) return wrapper");
+    assert.include(renderSource, "if (!interactive) {");
     assert.include(
       renderSource,
       'type QuoteCardStatus = "verified" | "unverified" | "not-source"',
@@ -104,7 +115,7 @@ describe("quote card UI contract", function () {
     );
 
     assert.include(renderSource, 'status: "not-source"');
-    assert.include(renderSource, "if (!interactive) return wrapper");
+    assert.include(renderSource, "if (!interactive) {");
     assert.include(renderSource, "citationContent?: Node");
     assert.include(renderSource, "if (params.citationContent)");
     assert.isAtLeast(notSourceBranchStart, 0);
@@ -130,7 +141,7 @@ describe("quote card UI contract", function () {
     );
   });
 
-  it("renders completed quote-card bodies through the markdown renderer", function () {
+  it("renders completed quote-card bodies lazily through the markdown renderer", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
     );
@@ -139,22 +150,74 @@ describe("quote card UI contract", function () {
     assert.include(renderSource, "renderRenderedMarkdownInto(container");
     assert.include(renderSource, "appendQuoteCardBodyContent");
     assert.include(renderSource, "body.classList.add");
+    assert.include(renderSource, "const ensureBodyRendered = () =>");
+    assert.include(renderSource, "if (bodyRendered) return");
+    assert.include(renderSource, "if (expanded) ensureBodyRendered()");
     assert.notInclude(
       renderSource,
       'body.textContent = sanitizeText(params.quoteText || "").trim();',
     );
   });
 
-  it("renders collapsed quote-card previews through the markdown renderer", function () {
+  it("renders collapsed quote-card previews as lightweight plain text", function () {
     const renderSource = source(
       "src/modules/contextPanel/assistantCitationLinks.ts",
     );
 
-    assert.include(renderSource, "renderQuoteCardPreviewMarkdown");
-    assert.include(renderSource, "preview.classList.add");
-    assert.notInclude(
+    assert.include(renderSource, "buildQuoteCardPreviewText");
+    assert.include(
       renderSource,
-      "preview.textContent = buildQuotePreviewText(params.quoteText);",
+      "preview.textContent =\n    buildQuoteCardPreviewText(params.quoteText)",
+    );
+    assert.notInclude(renderSource, "renderQuoteCardPreviewMarkdown");
+  });
+
+  it("does not construct a hidden preview for rejected quote cards", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+    const noninteractiveStart = renderSource.indexOf("if (!interactive) {");
+    const noninteractiveEnd = renderSource.indexOf(
+      "const preview = params.ownerDoc.createElement",
+      noninteractiveStart,
+    );
+    const noninteractiveBranch = renderSource.slice(
+      noninteractiveStart,
+      noninteractiveEnd,
+    );
+
+    assert.isAtLeast(noninteractiveStart, 0);
+    assert.isAbove(noninteractiveEnd, noninteractiveStart);
+    assert.include(noninteractiveBranch, "ensureBodyRendered()");
+    assert.include(noninteractiveBranch, "content.appendChild(body)");
+    assert.include(noninteractiveBranch, "return wrapper");
+    assert.notInclude(noninteractiveBranch, "llm-quote-card-preview");
+  });
+
+  it("renders immediately visible quote bodies in one Markdown batch", function () {
+    const renderSource = source(
+      "src/modules/contextPanel/assistantCitationLinks.ts",
+    );
+    const batchStart = renderSource.indexOf(
+      "function renderImmediateQuoteBodiesBatch(",
+    );
+    const batchEnd = renderSource.indexOf(
+      "function textContainsQuoteCitationPlaceholder(",
+      batchStart,
+    );
+    const batchSource = renderSource.slice(batchStart, batchEnd);
+
+    assert.isAtLeast(batchStart, 0);
+    assert.isAbove(batchEnd, batchStart);
+    assert.include(batchSource, "buildQuoteBodyBatchMarkdown(immediate)");
+    assert.include(batchSource, "renderRenderedMarkdownInto(");
+    assert.include(
+      batchSource,
+      "renderedBlockquotes.length !== immediate.length",
+    );
+    assert.include(
+      renderSource,
+      "immediateQuoteBodies.get(occurrence.occurrenceId) || null",
     );
   });
 

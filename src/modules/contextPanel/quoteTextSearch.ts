@@ -930,6 +930,17 @@ function buildQuoteTextAnchorMatches(
   return out;
 }
 
+export function findQuoteTextAnchorMatches(
+  entries: QuoteTextSearchEntry[],
+  quoteText: string,
+  options?: Pick<
+    QuoteTextSearchOptions,
+    "minQueryLength" | "rejectWeakQueries"
+  >,
+): QuoteTextAnchorMatch[] {
+  return buildQuoteTextAnchorMatches(entries, quoteText, options);
+}
+
 /**
  * Return the largest strong contiguous source span that occurs exactly once
  * across the eligible PDF pages. The query is reconstructed from source text,
@@ -944,7 +955,7 @@ export function findLargestUniqueQuoteTextAnchorMatch(
   >,
 ): QuoteTextAnchorMatch | null {
   return (
-    buildQuoteTextAnchorMatches(entries, quoteText, options).find(
+    findQuoteTextAnchorMatches(entries, quoteText, options).find(
       (match) =>
         match.totalOccurrences === 1 && match.matchedEntryIds.length === 1,
     ) || null
@@ -965,5 +976,5 @@ export function findLargestQuoteTextAnchorMatch(
     "minQueryLength" | "rejectWeakQueries"
   >,
 ): QuoteTextAnchorMatch | null {
-  return buildQuoteTextAnchorMatches(entries, quoteText, options)[0] || null;
+  return findQuoteTextAnchorMatches(entries, quoteText, options)[0] || null;
 }

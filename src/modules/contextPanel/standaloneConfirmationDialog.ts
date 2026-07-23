@@ -1,4 +1,5 @@
 import { createElement } from "../../utils/domHelpers";
+import { registerAddonInPanelDialog } from "../../utils/dialogRegistry";
 
 export type StandaloneConfirmationDialogOptions = {
   title: string;
@@ -110,9 +111,11 @@ export function showStandaloneConfirmationDialog(
     overlay.appendChild(dialog);
 
     let settled = false;
+    let unregisterDialog = () => {};
     const settle = (confirmed: boolean) => {
       if (settled) return;
       settled = true;
+      unregisterDialog();
       doc.removeEventListener("keydown", onKeydown, true);
       overlay.remove();
       focusElement(previousActiveElement);
@@ -133,6 +136,7 @@ export function showStandaloneConfirmationDialog(
     cancelButton.addEventListener("click", () => settle(false));
     confirmButton.addEventListener("click", () => settle(true));
     doc.addEventListener("keydown", onKeydown, true);
+    unregisterDialog = registerAddonInPanelDialog(doc, () => settle(false));
 
     parent.appendChild(overlay);
     focusElement(cancelButton);

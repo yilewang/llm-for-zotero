@@ -3902,13 +3902,15 @@ function renderQuoteCardMarkdownInto(
   }
 }
 
-function renderQuoteCardPreviewMarkdown(
-  preview: HTMLElement,
-  quoteText: string,
-  ownerDoc: Document,
-): void {
-  preview.classList.add("llm-rendered-markdown");
-  renderQuoteCardMarkdownInto(preview, quoteText, ownerDoc);
+export function buildQuoteCardPreviewText(quoteText: string): string {
+  return stripQuoteCitationAnchorsFromDisplayText(sanitizeText(quoteText || ""))
+    .replace(/!\[([^\]\n]*)\]\([^)\n]*\)/g, "$1")
+    .replace(/\[([^\]\n]+)\]\([^)\n]*\)/g, "$1")
+    .replace(/(^|\n)[ \t]*(?:>[ \t]?|#{1,6}[ \t]+|[-+*][ \t]+)/g, "$1")
+    .replace(/(\*\*|__|~~|`{1,3})/g, "")
+    .replace(/(^|[^\p{L}\p{N}])[*_]([^*_\n]+)[*_](?=$|[^\p{L}\p{N}])/gu, "$1$2")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function renderQuoteCardBodyMarkdown(
@@ -3970,16 +3972,6 @@ function createQuoteCardElement(params: {
     content.setAttribute("aria-expanded", "false");
   }
 
-  const preview = params.ownerDoc.createElement("span");
-  preview.className = "llm-quote-card-preview";
-  renderQuoteCardPreviewMarkdown(preview, params.quoteText, params.ownerDoc);
-
-  const body = params.ownerDoc.createElement("div");
-  body.className = "llm-quote-card-body";
-  if (!appendQuoteCardBodyContent(body, params.quoteContent)) {
-    renderQuoteCardBodyMarkdown(body, params.quoteText, params.ownerDoc);
-  }
-  content.append(preview, body);
   wrapper.appendChild(content);
   if (params.citationContent) {
     const citation = params.ownerDoc.createElement("span");
@@ -3988,7 +3980,29 @@ function createQuoteCardElement(params: {
     wrapper.appendChild(citation);
   }
 
-  if (!interactive) return wrapper;
+  const body = params.ownerDoc.createElement("div");
+  body.className = "llm-quote-card-body";
+  let bodyRendered = false;
+  const ensureBodyRendered = () => {
+    if (bodyRendered) return;
+    bodyRendered = true;
+    if (!appendQuoteCardBodyContent(body, params.quoteContent)) {
+      renderQuoteCardBodyMarkdown(body, params.quoteText, params.ownerDoc);
+    }
+  };
+
+  if (!interactive) {
+    ensureBodyRendered();
+    content.appendChild(body);
+    return wrapper;
+  }
+
+  const preview = params.ownerDoc.createElement("span");
+  preview.className = "llm-quote-card-preview";
+  preview.textContent =
+    buildQuoteCardPreviewText(params.quoteText) ||
+    sanitizeText(params.quoteText || "").trim();
+  content.append(preview, body);
 
   const setExpanded = (expanded: boolean) => {
     if (wrapper.dataset.quoteStatus !== "verified") {
@@ -3996,6 +4010,7 @@ function createQuoteCardElement(params: {
       content.removeAttribute("aria-expanded");
       return;
     }
+    if (expanded) ensureBodyRendered();
     wrapper.dataset.expanded = expanded ? "true" : "false";
     content.setAttribute("aria-expanded", expanded ? "true" : "false");
   };
@@ -4142,6 +4157,7 @@ function createQuoteRenderOccurrenceElement(params: {
   panelItem: Zotero.Item;
   candidates: AssistantCitationPaperCandidate[];
   occurrence: QuoteRenderOccurrence;
+  quoteContent?: DocumentFragment | null;
 }): HTMLElement {
   const trustedCitation = params.occurrence.quoteCitation;
   if (trustedCitation) {
@@ -4154,6 +4170,7 @@ function createQuoteRenderOccurrenceElement(params: {
         quoteText: params.occurrence.displayText,
         quoteCitationId: trustedCitation.id,
         quoteOccurrenceId: params.occurrence.occurrenceId,
+        quoteContent: params.quoteContent,
         status: "unverified",
       });
     }
@@ -4181,6 +4198,7 @@ function createQuoteRenderOccurrenceElement(params: {
       quoteCitationId: trustedCitation.id,
       quoteOccurrenceId: params.occurrence.occurrenceId,
       citationContent,
+      quoteContent: params.quoteContent,
       status: "verified",
     });
   }
@@ -4190,6 +4208,7 @@ function createQuoteRenderOccurrenceElement(params: {
       ownerDoc: params.ownerDoc,
       quoteText: params.occurrence.displayText,
       quoteOccurrenceId: params.occurrence.occurrenceId,
+      quoteContent: params.quoteContent,
       status: "not-source",
     });
   }
@@ -4202,6 +4221,7 @@ function createQuoteRenderOccurrenceElement(params: {
       ownerDoc: params.ownerDoc,
       quoteText: params.occurrence.displayText,
       quoteOccurrenceId: params.occurrence.occurrenceId,
+      quoteContent: params.quoteContent,
       status: "unverified",
     });
   }
@@ -4225,8 +4245,61 @@ function createQuoteRenderOccurrenceElement(params: {
     quoteText: params.occurrence.displayText,
     quoteOccurrenceId: params.occurrence.occurrenceId,
     citationContent,
+    quoteContent: params.quoteContent,
     status: "verified",
   });
+}
+
+function needsImmediateQuoteRender(occurrence: QuoteRenderOccurrence): boolean {
+  return (
+    occurrence.trust === "not-source-quote" ||
+    !extractStandalonePaperSourceLabel(occurrence.citationLabel)
+  );
+}
+
+function buildQuoteBodyBatchMarkdown(
+  occurrences: QuoteRenderOccurrence[],
+): string {
+  return occurrences
+    .map((occurrence) =>
+      sanitizeText(occurrence.displayText || "")
+        .split(/\r?\n/)
+        .map((line) => `> ${line}`)
+        .join("\n"),
+    )
+    .join("\n\n---\n\n");
+}
+
+function renderImmediateQuoteBodiesBatch(
+  occurrences: QuoteRenderOccurrence[],
+  ownerDoc: Document,
+): Map<string, DocumentFragment> {
+  const immediate = occurrences.filter(needsImmediateQuoteRender);
+  if (!immediate.length) return new Map();
+  const batchContainer = ownerDoc.createElement("div");
+  try {
+    renderRenderedMarkdownInto(
+      batchContainer,
+      buildQuoteBodyBatchMarkdown(immediate),
+      ownerDoc,
+    );
+  } catch {
+    return new Map();
+  }
+  const renderedBlockquotes = Array.from(batchContainer.children).filter(
+    (element) => element.tagName.toLowerCase() === "blockquote",
+  );
+  if (renderedBlockquotes.length !== immediate.length) return new Map();
+  return new Map(
+    immediate.map((occurrence, index) => {
+      const fragment = ownerDoc.createDocumentFragment();
+      const blockquote = renderedBlockquotes[index];
+      while (blockquote?.firstChild) {
+        fragment.appendChild(blockquote.firstChild);
+      }
+      return [occurrence.occurrenceId, fragment];
+    }),
+  );
 }
 
 function textContainsQuoteCitationPlaceholder(text: string): boolean {
@@ -4326,6 +4399,10 @@ export function renderQuoteCitationPlaceholders(params: {
     params.panelItem,
     params.pairedUserMessage,
   );
+  const immediateQuoteBodies = renderImmediateQuoteBodiesBatch(
+    plan.occurrences,
+    ownerDoc,
+  );
   const targets: Text[] = [];
   const walk = (node: Node): void => {
     if (node.nodeType === 3) {
@@ -4392,6 +4469,8 @@ export function renderQuoteCitationPlaceholders(params: {
               panelItem: params.panelItem,
               candidates,
               occurrence,
+              quoteContent:
+                immediateQuoteBodies.get(occurrence.occurrenceId) || null,
             }),
           );
         }

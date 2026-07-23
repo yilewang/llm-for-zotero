@@ -1,4 +1,5 @@
 import { createElement } from "../../utils/domHelpers";
+import { registerAddonInPanelDialog } from "../../utils/dialogRegistry";
 import { GLOBAL_HISTORY_TITLE_MAX_LENGTH } from "./setupHandlers/controllers/conversationHistoryController";
 
 export type ConversationRenameDialogOptions = {
@@ -110,9 +111,11 @@ export function showConversationRenameDialog(
     overlay.appendChild(dialog);
 
     let settled = false;
+    let unregisterDialog = () => {};
     const settle = (value: string | null) => {
       if (settled) return;
       settled = true;
+      unregisterDialog();
       doc.removeEventListener("keydown", onKeydown, true);
       overlay.remove();
       focusElement(previousActiveElement);
@@ -139,6 +142,7 @@ export function showConversationRenameDialog(
       settle(value);
     });
     doc.addEventListener("keydown", onKeydown, true);
+    unregisterDialog = registerAddonInPanelDialog(doc, () => settle(null));
 
     parent.appendChild(overlay);
     focusElement(input);

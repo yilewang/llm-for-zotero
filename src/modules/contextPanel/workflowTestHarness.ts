@@ -29,6 +29,7 @@ import type {
   WorkflowTestStandaloneComposerResizeDiagnostics,
   WorkflowTestStandaloneDiagnostics,
   WorkflowTestStandaloneNoteFixture,
+  WorkflowTestTargetedQuoteRefreshResult,
 } from "./workflowTestTypes";
 import type { Message } from "./types";
 import {
@@ -915,10 +916,20 @@ async function renderAssistantForPanel(
   const quoteCards = Array.from(
     bubble.querySelectorAll(".llm-quote-card"),
   ) as HTMLElement[];
+  const quoteCardBodiesBeforeExpansion = Array.from(
+    bubble.querySelectorAll(".llm-quote-card-body"),
+  ).map((node) => ((node as Element).textContent || "").trim());
+  for (const quoteCard of quoteCards) {
+    if (quoteCard.dataset.quoteStatus === "verified") quoteCard.click();
+  }
   return {
     renderedText: bubble.textContent || "",
+    quoteCardBodiesBeforeExpansion,
     quoteCardBodies: Array.from(
       bubble.querySelectorAll(".llm-quote-card-body"),
+    ).map((node) => ((node as Element).textContent || "").trim()),
+    quoteCardPreviewTexts: Array.from(
+      bubble.querySelectorAll(".llm-quote-card-preview"),
     ).map((node) => ((node as Element).textContent || "").trim()),
     quoteCardStatuses: quoteCards.map((node) => node.dataset.quoteStatus || ""),
     quoteCardCitationTexts: Array.from(
@@ -931,6 +942,117 @@ async function renderAssistantForPanel(
         bottom: Number.parseFloat(style?.marginBottom || "0") || 0,
       };
     }),
+  };
+}
+
+async function exerciseTargetedQuoteRefresh(
+  panelId: string,
+): Promise<WorkflowTestTargetedQuoteRefreshResult> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const item = activeContextPanels.get(panel.body)?.() || panel.item;
+  const conversationKey = getConversationKey(item);
+  if (!conversationKey) {
+    throw new Error("Workflow panel has no active conversation key");
+  }
+  const paperContext = panel.contextSnapshot?.paperContext;
+  const baseTimestamp = Date.now() - 100_000;
+  const messages: Message[] = [];
+  const assistantMessages: Message[] = [];
+  for (let turn = 0; turn < 8; turn += 1) {
+    const userMessage: Message = {
+      role: "user",
+      text: `Explain the evidence for figure ${turn + 1}.`,
+      timestamp: baseTimestamp + turn * 2,
+      paperContexts: paperContext ? [paperContext] : undefined,
+    };
+    const quoteCitations = Array.from({ length: 8 }, (_value, quoteIndex) => {
+      const id = `Q_perf_${turn}_${quoteIndex}`;
+      return {
+        id,
+        quoteText: `Source quotation ${quoteIndex + 1} for response ${turn + 1} contains enough text to exercise a long quote-card conversation.`,
+        citationLabel: "(Workflow, 2026)",
+        itemId: paperContext?.itemId,
+        contextItemId: paperContext?.contextItemId,
+      };
+    });
+    const assistantMessage: Message = {
+      role: "assistant",
+      text: quoteCitations
+        .map(
+          (citation, quoteIndex) =>
+            `Evidence ${quoteIndex + 1}:\n\n[[quote:${citation.id}]]`,
+        )
+        .join("\n\n"),
+      timestamp: baseTimestamp + turn * 2 + 1,
+      modelName: "workflow-performance",
+      quoteCitations,
+    };
+    messages.push(userMessage, assistantMessage);
+    assistantMessages.push(assistantMessage);
+  }
+
+  chatHistory.set(conversationKey, messages);
+  loadedConversationKeys.add(conversationKey);
+  refreshChat(panel.body, item);
+
+  const chatBox = panel.body.querySelector(
+    "#llm-chat-box",
+  ) as HTMLElement | null;
+  if (!chatBox) throw new Error("Workflow panel chat box was not rendered");
+  const wrappersBefore = new Map(
+    (
+      Array.from(
+        chatBox.querySelectorAll(
+          ".llm-message-wrapper[data-message-timestamp]",
+        ),
+      ) as HTMLElement[]
+    ).map((wrapper) => [wrapper.dataset.messageTimestamp || "", wrapper]),
+  );
+
+  const target = assistantMessages[Math.floor(assistantMessages.length / 2)];
+  target.quoteDisplayOverride = {
+    markdown: Array.from(
+      { length: 8 },
+      (_value, quoteIndex) =>
+        `> **Rejected interpretation ${quoteIndex + 1}** remains visible for manual review.\n>\n> Not a source quote`,
+    ).join("\n\n"),
+    quoteCitations: [],
+  };
+  refreshChat(panel.body, item, {
+    rerenderAssistantMessages: new Set([target]),
+  });
+
+  const wrappersAfter = Array.from(
+    chatBox.querySelectorAll(".llm-message-wrapper[data-message-timestamp]"),
+  ) as HTMLElement[];
+  let unchangedWrapperCount = 0;
+  let replacedWrapperCount = 0;
+  for (const wrapper of wrappersAfter) {
+    const before = wrappersBefore.get(wrapper.dataset.messageTimestamp || "");
+    if (before === wrapper) unchangedWrapperCount += 1;
+    else replacedWrapperCount += 1;
+  }
+  const targetTimestamp = `${Math.floor(Number(target.timestamp) || 0)}`;
+  const targetWrapper = wrappersAfter.find(
+    (wrapper) => wrapper.dataset.messageTimestamp === targetTimestamp,
+  );
+  return {
+    messageCount: messages.length,
+    assistantMessageCount: assistantMessages.length,
+    quoteCardCount: chatBox.querySelectorAll(".llm-quote-card").length,
+    unchangedWrapperCount,
+    replacedWrapperCount,
+    targetWasReplaced:
+      Boolean(targetWrapper) &&
+      wrappersBefore.get(targetTimestamp) !== targetWrapper,
+    targetNotSourceCardCount:
+      targetWrapper?.querySelectorAll(
+        '.llm-quote-card[data-quote-status="not-source"]',
+      ).length || 0,
+    targetStrongBodyCount:
+      targetWrapper?.querySelectorAll(".llm-quote-card-body strong").length ||
+      0,
   };
 }
 
@@ -2101,6 +2223,7 @@ export function installWorkflowTestHarness(targetAddon: {
     selectNoteEditorText,
     ask,
     renderAssistantForPanel,
+    exerciseTargetedQuoteRefresh,
     openStandaloneForItem,
     openStandaloneForLibraryAfterRestart,
     clickStandaloneTab,

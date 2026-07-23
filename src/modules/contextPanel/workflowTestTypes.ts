@@ -95,10 +95,23 @@ export type WorkflowTestDiagnostics = {
 
 export type WorkflowTestAssistantRenderResult = {
   renderedText: string;
+  quoteCardBodiesBeforeExpansion: string[];
   quoteCardBodies: string[];
+  quoteCardPreviewTexts: string[];
   quoteCardStatuses: string[];
   quoteCardCitationTexts: string[];
   quoteCardVerticalMargins: Array<{ top: number; bottom: number }>;
+};
+
+export type WorkflowTestTargetedQuoteRefreshResult = {
+  messageCount: number;
+  assistantMessageCount: number;
+  quoteCardCount: number;
+  unchangedWrapperCount: number;
+  replacedWrapperCount: number;
+  targetWasReplaced: boolean;
+  targetNotSourceCardCount: number;
+  targetStrongBodyCount: number;
 };
 
 export type WorkflowTestStandaloneDiagnostics = {
@@ -220,6 +233,9 @@ export type WorkflowTestApi = {
       quoteCitations?: QuoteCitation[];
     },
   ) => Promise<WorkflowTestAssistantRenderResult>;
+  exerciseTargetedQuoteRefresh: (
+    panelId: string,
+  ) => Promise<WorkflowTestTargetedQuoteRefreshResult>;
   openStandaloneForItem: (
     itemId: number,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;

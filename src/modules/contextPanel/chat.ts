@@ -4098,13 +4098,15 @@ const quoteValidationTasks = new Map<number, Promise<void>>();
 
 function refreshConversationAfterQuoteValidation(
   conversationKey: number,
+  changedMessages: ReadonlySet<Message>,
 ): void {
   for (const [body, getItem] of activeContextPanels.entries()) {
     if (!body.isConnected) continue;
     const item = getItem?.() || null;
     if (!item || getConversationKey(item) !== conversationKey) continue;
-    refreshConversationPanels(body, item);
-    return;
+    refreshChat(body, item, {
+      rerenderAssistantMessages: changedMessages,
+    });
   }
 }
 
@@ -4205,7 +4207,7 @@ function startConversationQuoteValidation(conversationKey: number): void {
       if (!pending?.size) break;
       pendingQuoteValidations.delete(conversationKey);
       const batch = Array.from(pending.values());
-      let displayChanged = false;
+      const changedMessages = new Set<Message>();
       try {
         const batchHasCurrentRequest = () =>
           batch.some((request) =>
@@ -4268,24 +4270,24 @@ function startConversationQuoteValidation(conversationKey: number): void {
           if (!isCurrent) continue;
           const prepared = preparedEvidence.get(request);
           if (!prepared) continue;
-          displayChanged =
-            (await applyAssistantMessageQuoteGate(
-              assistantMessage,
-              rawMarkdown,
-              rawQuoteCitations,
-              prepared.evidence,
-              options,
-              prepared.sourceIndex,
-              {
-                yieldToMain: async () => {
-                  await waitForQuoteValidationIdle(conversationKey, () =>
-                    isPendingQuoteValidationCurrent(conversationKey, request),
-                  );
-                },
-                shouldContinue: () =>
+          const changed = await applyAssistantMessageQuoteGate(
+            assistantMessage,
+            rawMarkdown,
+            rawQuoteCitations,
+            prepared.evidence,
+            options,
+            prepared.sourceIndex,
+            {
+              yieldToMain: async () => {
+                await waitForQuoteValidationIdle(conversationKey, () =>
                   isPendingQuoteValidationCurrent(conversationKey, request),
+                );
               },
-            )) || displayChanged;
+              shouldContinue: () =>
+                isPendingQuoteValidationCurrent(conversationKey, request),
+            },
+          );
+          if (changed) changedMessages.add(assistantMessage);
         }
       } finally {
         for (const { assistantMessage, signature } of batch) {
@@ -4294,8 +4296,11 @@ function startConversationQuoteValidation(conversationKey: number): void {
           }
         }
       }
-      if (displayChanged) {
-        refreshConversationAfterQuoteValidation(conversationKey);
+      if (changedMessages.size) {
+        refreshConversationAfterQuoteValidation(
+          conversationKey,
+          changedMessages,
+        );
       }
     }
   })().catch((error) => {
@@ -9814,7 +9819,15 @@ export function renderForkSourceMarkerInto(
   bubble.append(leftRule, button, rightRule);
 }
 
-export function refreshChat(body: Element, item?: Zotero.Item | null) {
+export type RefreshChatOptions = {
+  rerenderAssistantMessages?: ReadonlySet<Message>;
+};
+
+export function refreshChat(
+  body: Element,
+  item?: Zotero.Item | null,
+  options: RefreshChatOptions = {},
+) {
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
   const doc = body.ownerDocument!;
@@ -9864,6 +9877,29 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
         ? cachedSnapshot
         : buildChatScrollSnapshot(chatBox);
   const history = chatHistory.get(conversationKey) || [];
+  const requestedRerenders = options.rerenderAssistantMessages;
+  const targetedMessageWrappers = new Map<Message, HTMLElement>();
+  let useTargetedRerender = Boolean(requestedRerenders?.size);
+  if (useTargetedRerender) {
+    const renderedWrappers = Array.from(chatBox.children) as HTMLElement[];
+    for (const message of requestedRerenders || []) {
+      const messageIndex = history.indexOf(message);
+      if (message.role !== "assistant" || messageIndex < 0) {
+        useTargetedRerender = false;
+        break;
+      }
+      const wrapper = renderedWrappers.find(
+        (candidate) =>
+          candidate.dataset.messageRole === "assistant" &&
+          candidate.dataset.messageIndex === `${messageIndex}`,
+      );
+      if (!wrapper) {
+        useTargetedRerender = false;
+        break;
+      }
+      targetedMessageWrappers.set(message, wrapper);
+    }
+  }
   const forkLink = conversationForkLinks.get(conversationKey) || null;
   if (tokenUsageEl) {
     const snapshot = contextUsageSnapshots.get(conversationKey);
@@ -9922,7 +9958,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
       }, 450);
     }
   }
-  chatBox.innerHTML = "";
+  if (!useTargetedRerender) {
+    chatBox.innerHTML = "";
+  }
 
   const latestRetryPair = findLatestRetryPair(history);
   const latestAssistantIndex = latestRetryPair
@@ -9934,6 +9972,9 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
   }).providerProtocol;
   const conversationIsIdle = !history.some((m) => m.streaming);
   for (const [index, msg] of history.entries()) {
+    if (useTargetedRerender && !targetedMessageWrappers.has(msg)) {
+      continue;
+    }
     const isUser = msg.role === "user";
     const assistantPairMsg = history[index + 1];
     const hasAssistantPair = isUser && assistantPairMsg?.role === "assistant";
@@ -9953,6 +9994,7 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     const wrapper = doc.createElement("div") as HTMLDivElement;
     wrapper.className = `llm-message-wrapper ${isUser ? "user" : "assistant"}`;
     wrapper.dataset.messageRole = msg.role;
+    wrapper.dataset.messageIndex = `${index}`;
     wrapper.dataset.messageTimestamp = `${Math.floor(
       Number(msg.timestamp) || 0,
     )}`;
@@ -11218,8 +11260,14 @@ export function refreshChat(body: Element, item?: Zotero.Item | null) {
     }
     wrapper.appendChild(meta);
     if (webchatStatusRow) wrapper.appendChild(webchatStatusRow);
-    chatBox.appendChild(wrapper);
+    const existingTargetedWrapper = targetedMessageWrappers.get(msg);
+    if (useTargetedRerender && existingTargetedWrapper) {
+      existingTargetedWrapper.replaceWith(wrapper);
+    } else {
+      chatBox.appendChild(wrapper);
+    }
     if (
+      !useTargetedRerender &&
       forkLink &&
       !isUser &&
       Number(msg.timestamp) === forkLink.targetAnchorAssistantTimestamp

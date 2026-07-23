@@ -173,6 +173,52 @@ function appendElement(
 }
 
 describe("chat scroll snapshots", function () {
+  it("rerenders only quote-validated assistant wrappers", function () {
+    const chatSource = readFileSync(
+      resolve(here, "../src/modules/contextPanel/chat.ts"),
+      "utf8",
+    );
+    const validationRefreshStart = chatSource.indexOf(
+      "function refreshConversationAfterQuoteValidation(",
+    );
+    const validationRefreshEnd = chatSource.indexOf(
+      "function startConversationQuoteValidation(",
+      validationRefreshStart,
+    );
+    const validationRefreshSource = chatSource.slice(
+      validationRefreshStart,
+      validationRefreshEnd,
+    );
+    const refreshChatStart = chatSource.indexOf("export function refreshChat(");
+    const refreshChatEnd = chatSource.indexOf(
+      "export function refreshConversationPanels(",
+      refreshChatStart,
+    );
+    const refreshChatSource = chatSource.slice(
+      refreshChatStart,
+      refreshChatEnd,
+    );
+
+    assert.include(
+      validationRefreshSource,
+      "rerenderAssistantMessages: changedMessages",
+    );
+    assert.notInclude(validationRefreshSource, "refreshConversationPanels(");
+    assert.include(chatSource, "const changedMessages = new Set<Message>()");
+    assert.include(chatSource, "changedMessages.add(assistantMessage)");
+    assert.include(refreshChatSource, "targetedMessageWrappers");
+    assert.include(
+      refreshChatSource,
+      "candidate.dataset.messageIndex === `${messageIndex}`",
+    );
+    assert.include(
+      refreshChatSource,
+      "wrapper.dataset.messageIndex = `${index}`",
+    );
+    assert.include(refreshChatSource, "existingTargetedWrapper.replaceWith");
+    assert.include(refreshChatSource, "if (!useTargetedRerender)");
+  });
+
   it("restores a quote anchor after rerendered message heights change", function () {
     clearChatScrollSnapshotsForTests();
     const conversationKey = 42;

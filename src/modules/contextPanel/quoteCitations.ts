@@ -7,8 +7,7 @@ import { isBodyEvidenceSection } from "../../shared/libraryChatEvidencePolicy";
 import { formatPaperSourceLabel } from "./paperAttribution";
 import {
   extractLocatorTokens,
-  findLargestQuoteTextAnchorMatch,
-  findLargestUniqueQuoteTextAnchorMatch,
+  findQuoteTextAnchorMatches,
   normalizeLocatorText,
   splitQuoteAtEllipsisInOrder,
   stripBoundaryEllipsis,
@@ -18,6 +17,7 @@ import {
   buildQuoteTextIndex,
   findCanonicalTextMatchStart,
   findQuoteSourceSpansAllowingLayoutArtifacts,
+  findQuoteSourceSpansAllowingLayoutArtifactsFromIndex,
   normalizeQuoteTextCanonical,
   stripLikelyLayoutNumberArtifacts,
   type QuoteTextIndex,
@@ -1637,6 +1637,7 @@ export function resolveExactDisplayedQuoteCitation(params: {
     occurrenceIndex: number;
     sourceQuoteText: string;
   }> = [];
+  const displayedTextIndex = buildQuoteTextIndex(displayed.quoteText);
 
   for (const source of params.sourceIndex.sources) {
     if (source.requiresPageHint && source.pageHintIndex === undefined) {
@@ -1653,9 +1654,9 @@ export function resolveExactDisplayedQuoteCitation(params: {
     ) {
       continue;
     }
-    const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+    const spans = findQuoteSourceSpansAllowingLayoutArtifactsFromIndex(
       source.textIndex || buildQuoteTextIndex(source.sourceText),
-      displayed.quoteText,
+      displayedTextIndex,
     );
     for (const span of spans) {
       const sourceQuoteText = normalizeMultilineText(
@@ -1834,10 +1835,11 @@ function countQuoteSourceSpanOccurrences(
       typeof findQuoteSourceSpansAllowingLayoutArtifacts
     >[number];
   }> = [];
+  const quoteTextIndex = buildQuoteTextIndex(quoteText);
   for (const source of sources) {
-    const spans = findQuoteSourceSpansAllowingLayoutArtifacts(
+    const spans = findQuoteSourceSpansAllowingLayoutArtifactsFromIndex(
       source.textIndex || buildQuoteTextIndex(source.sourceText),
-      quoteText,
+      quoteTextIndex,
     );
     for (const span of spans) matches.push({ source, span });
   }
@@ -1916,6 +1918,35 @@ function resolveAdjacentPageDisplayedQuoteCitations(params: {
     );
   if (pageSources.length < 2) return [];
 
+  const firstRequiredFragmentEnd =
+    displayedIndex.tokens[MIN_ADJACENT_PAGE_QUOTE_FRAGMENT_TOKENS - 1]
+      ?.sourceEnd;
+  const lastRequiredFragmentStart =
+    displayedIndex.tokens[
+      displayedIndex.tokens.length - MIN_ADJACENT_PAGE_QUOTE_FRAGMENT_TOKENS
+    ]?.sourceStart;
+  if (
+    firstRequiredFragmentEnd === undefined ||
+    lastRequiredFragmentStart === undefined
+  ) {
+    return [];
+  }
+  const requiredStartFragment = displayedQuoteText
+    .slice(0, firstRequiredFragmentEnd)
+    .trim();
+  const requiredEndFragment = displayedQuoteText
+    .slice(lastRequiredFragmentStart)
+    .trim();
+  if (!quoteContainsLayoutArtifactHazards(displayedQuoteText)) {
+    if (
+      !countQuoteSourceSpanOccurrences(pageSources, requiredStartFragment)
+        .length ||
+      !countQuoteSourceSpanOccurrences(pageSources, requiredEndFragment).length
+    ) {
+      return [];
+    }
+  }
+
   const candidates: QuoteCitation[][] = [];
   for (
     let splitIndex = MIN_ADJACENT_PAGE_QUOTE_FRAGMENT_TOKENS;
@@ -1942,11 +1973,20 @@ function resolveAdjacentPageDisplayedQuoteCitations(params: {
       continue;
     }
 
-    const prefixMatches = countQuoteSourceSpanOccurrences(pageSources, prefix);
-    const suffixMatches = countQuoteSourceSpanOccurrences(pageSources, suffix);
-    if (prefixMatches.length !== 1 || suffixMatches.length !== 1) {
-      continue;
-    }
+    const prefixIsMoreSelective =
+      splitIndex >= displayedIndex.tokens.length - splitIndex;
+    const firstMatches = countQuoteSourceSpanOccurrences(
+      pageSources,
+      prefixIsMoreSelective ? prefix : suffix,
+    );
+    if (firstMatches.length !== 1) continue;
+    const secondMatches = countQuoteSourceSpanOccurrences(
+      pageSources,
+      prefixIsMoreSelective ? suffix : prefix,
+    );
+    if (secondMatches.length !== 1) continue;
+    const prefixMatches = prefixIsMoreSelective ? firstMatches : secondMatches;
+    const suffixMatches = prefixIsMoreSelective ? secondMatches : firstMatches;
     const leftSource = prefixMatches[0].source;
     const rightSource = suffixMatches[0].source;
     const leftIdentity = quoteSourceIdentity(leftSource);
@@ -2235,6 +2275,12 @@ function filterQuoteAnchorSources(params: {
   return sources;
 }
 
+const displayedQuoteAnchorMatchCache = new WeakMap<
+  QuoteSourceIndex,
+  Map<string, QuoteTextAnchorMatch[]>
+>();
+const MAX_DISPLAYED_QUOTE_ANCHOR_CACHE_ENTRIES = 256;
+
 function findDisplayedQuoteAnchorMatch(params: {
   quoteText: string;
   citationLabel?: string;
@@ -2255,15 +2301,38 @@ function findDisplayedQuoteAnchorMatch(params: {
     textIndex: source.textIndex,
     debugLabel: source.citationLabel,
   }));
+  const cacheKey = [
+    params.quoteText,
+    params.citationLabel || "",
+    params.preferredContextItemId || "",
+    params.preferredItemId || "",
+    params.preferredSourceFingerprint || "",
+  ].join("\u241f");
+  let sourceCache = displayedQuoteAnchorMatchCache.get(params.sourceIndex);
+  if (!sourceCache) {
+    sourceCache = new Map();
+    displayedQuoteAnchorMatchCache.set(params.sourceIndex, sourceCache);
+  }
+  let matches = sourceCache.get(cacheKey);
+  if (!matches) {
+    matches = findQuoteTextAnchorMatches(entries, params.quoteText, {
+      minQueryLength: 20,
+      rejectWeakQueries: true,
+    });
+    sourceCache.set(cacheKey, matches);
+    while (sourceCache.size > MAX_DISPLAYED_QUOTE_ANCHOR_CACHE_ENTRIES) {
+      const oldestKey = sourceCache.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      sourceCache.delete(oldestKey);
+    }
+  }
   const match = params.requireUnique
-    ? findLargestUniqueQuoteTextAnchorMatch(entries, params.quoteText, {
-        minQueryLength: 20,
-        rejectWeakQueries: true,
-      })
-    : findLargestQuoteTextAnchorMatch(entries, params.quoteText, {
-        minQueryLength: 20,
-        rejectWeakQueries: true,
-      });
+    ? matches.find(
+        (candidate) =>
+          candidate.totalOccurrences === 1 &&
+          candidate.matchedEntryIds.length === 1,
+      ) || null
+    : matches[0] || null;
   if (!match) return null;
   const matchedOrdinal = Number(match.entryId.replace(/^source-/, ""));
   const source = params.sourceIndex.sources[matchedOrdinal];
@@ -3117,7 +3186,7 @@ function* finalizeAssistantQuoteCitationSteps(
     });
     const adjacentReboundCitations = adjacentQuoteCitation
       ? resolveAdjacentManualQuoteAnchor({
-          quoteText,
+          quoteText: candidate.trailingCitation?.quoteText || quoteText,
           quoteCitationId: adjacentQuoteCitation.quoteCitationId,
           quoteCitations,
           sourceIndex: finalizedSourceIndex,

@@ -149,12 +149,51 @@ describe("standalone window sizing", function () {
     );
     assert.equal(attributes.get("aria-valuenow"), "288");
 
+    separatorListeners.get("keydown")?.({
+      key: "End",
+      shiftKey: false,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    } as unknown as KeyboardEvent);
+    assert.equal(
+      cssProperties.get("--llm-standalone-sidebar-panel-width"),
+      "420px",
+    );
+    assert.deepEqual(committedWidths, [300, 288, 420]);
+
+    (container as unknown as { clientWidth: number }).clientWidth = 800;
+    windowListeners.get("resize")?.({} as Event);
+    assert.equal(
+      cssProperties.get("--llm-standalone-sidebar-panel-width"),
+      "387px",
+    );
+    assert.deepEqual(committedWidths, [300, 288, 420]);
+
+    separatorListeners.get("keydown")?.({
+      key: "ArrowLeft",
+      shiftKey: false,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    } as unknown as KeyboardEvent);
+    assert.equal(
+      cssProperties.get("--llm-standalone-sidebar-panel-width"),
+      "375px",
+    );
+    assert.deepEqual(committedWidths, [300, 288, 420, 375]);
+
+    (container as unknown as { clientWidth: number }).clientWidth = 900;
+    windowListeners.get("resize")?.({} as Event);
+    assert.equal(
+      cssProperties.get("--llm-standalone-sidebar-panel-width"),
+      "375px",
+    );
+
     cleanup();
     assert.isUndefined(separatorListeners.get("mousedown"));
     assert.isUndefined(windowListeners.get("mousemove"));
   });
 
-  it("coalesces drag movement and commits only the last rendered width", function () {
+  it("coalesces drag movement and commits the unclamped preferred width", function () {
     const separatorListeners = new Map<string, EventListener>();
     const windowListeners = new Map<string, EventListener>();
     const frameCallbacks = new Map<number, FrameRequestCallback>();
@@ -238,7 +277,7 @@ describe("standalone window sizing", function () {
     );
 
     windowListeners.get("mouseup")?.({} as Event);
-    assert.deepEqual(committedWidths, [227]);
+    assert.deepEqual(committedWidths, [420]);
     assert.isEmpty(cancelledFrames);
 
     containerWidth = 900;
@@ -257,7 +296,7 @@ describe("standalone window sizing", function () {
     windowListeners.get("mouseup")?.({ screenX: 380 } as MouseEvent);
     assert.deepEqual(cancelledFrames, [pendingFrameId]);
     assert.equal(frameCallbacks.size, 0);
-    assert.deepEqual(committedWidths, [227, 300]);
+    assert.deepEqual(committedWidths, [420, 300]);
     assert.equal(
       cssProperties.get("--llm-standalone-sidebar-panel-width"),
       "300px",

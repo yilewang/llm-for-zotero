@@ -238,9 +238,9 @@ export function installStandaloneSidebarResizeBehavior(
       maxWidth,
     );
     const layout = measureLayout(requestedWidth);
-    preferredWidth = layout.renderedWidth;
+    preferredWidth = requestedWidth;
     applyLayout(layout);
-    if (commit) options.onWidthCommit?.(renderedWidth);
+    if (commit) options.onWidthCommit?.(preferredWidth);
   };
 
   const cancelScheduledDragFrame = () => {
@@ -293,7 +293,7 @@ export function installStandaloneSidebarResizeBehavior(
     } catch {
       // Gecko can throw if capture was released during window teardown.
     }
-    if (drag?.moved) options.onWidthCommit?.(renderedWidth);
+    if (drag?.moved) options.onWidthCommit?.(preferredWidth);
   };
 
   const onMouseDown = (event: MouseEvent) => {
@@ -328,10 +328,10 @@ export function installStandaloneSidebarResizeBehavior(
   const onKeyDown = (event: KeyboardEvent) => {
     const step = event.shiftKey ? keyboardStep * 4 : keyboardStep;
     let nextWidth: number | null = null;
-    if (event.key === "ArrowLeft") nextWidth = preferredWidth - step;
-    if (event.key === "ArrowRight") nextWidth = preferredWidth + step;
+    if (event.key === "ArrowLeft") nextWidth = renderedWidth - step;
+    if (event.key === "ArrowRight") nextWidth = renderedWidth + step;
     if (event.key === "Home") nextWidth = minWidth;
-    if (event.key === "End") nextWidth = maxWidth;
+    if (event.key === "End") nextWidth = effectiveMaxWidth;
     if (nextWidth === null) return;
     setUserPreferredWidth(nextWidth, true);
     event.preventDefault();

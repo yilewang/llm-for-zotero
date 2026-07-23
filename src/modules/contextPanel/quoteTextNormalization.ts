@@ -773,8 +773,19 @@ export function findQuoteSourceSpansAllowingLayoutArtifacts(
   index: QuoteTextIndex,
   queryText: string,
 ): QuoteTextAlignedSourceSpan[] {
-  const queryIndex = buildQuoteTextIndex(queryText);
+  return findQuoteSourceSpansAllowingLayoutArtifactsFromIndex(
+    index,
+    buildQuoteTextIndex(queryText),
+  );
+}
+
+export function findQuoteSourceSpansAllowingLayoutArtifactsFromIndex(
+  index: QuoteTextIndex,
+  queryIndex: QuoteTextIndex,
+): QuoteTextAlignedSourceSpan[] {
   if (!index.tokens.length || !queryIndex.tokens.length) return [];
+  const firstQueryToken = queryIndex.tokens[0];
+  const canFilterCandidateStarts = !isLikelyLayoutNumberToken(queryIndex, 0);
 
   const spans: QuoteTextAlignedSourceSpan[] = [];
   const seen = new Set<string>();
@@ -786,6 +797,17 @@ export function findQuoteSourceSpansAllowingLayoutArtifacts(
     if (
       isLikelyLayoutNumberToken(index, candidateStart) &&
       index.tokens[candidateStart]?.text !== queryIndex.tokens[0]?.text
+    ) {
+      continue;
+    }
+    const firstSourceToken = index.tokens[candidateStart];
+    if (
+      canFilterCandidateStarts &&
+      firstSourceToken &&
+      firstQueryToken &&
+      firstSourceToken.text !== firstQueryToken.text &&
+      !firstQueryToken.text.startsWith(firstSourceToken.text) &&
+      !firstSourceToken.text.startsWith(firstQueryToken.text)
     ) {
       continue;
     }

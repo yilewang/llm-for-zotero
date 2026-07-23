@@ -1,8 +1,10 @@
 import { assert } from "chai";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { showConversationRenameDialog } from "../src/modules/contextPanel/conversationRenameDialog";
 import { showStandaloneConfirmationDialog } from "../src/modules/contextPanel/standaloneConfirmationDialog";
 import { showShortcutEditDialog } from "../src/modules/contextPanel/shortcutEditDialog";
+import { closeAllAddonDialogs } from "../src/utils/dialogRegistry";
 
 class FakeEvent {
   defaultPrevented = false;
@@ -112,9 +114,41 @@ class FakeElement {
   }
 }
 
+class FakeWindow {
+  private readonly listeners = new Map<
+    string,
+    Array<(event: FakeEvent) => void>
+  >();
+
+  addEventListener(type: string, listener: (event: FakeEvent) => void): void {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(
+    type: string,
+    listener: (event: FakeEvent) => void,
+  ): void {
+    const listeners = this.listeners.get(type) || [];
+    this.listeners.set(
+      type,
+      listeners.filter((entry) => entry !== listener),
+    );
+  }
+
+  dispatchEvent(event: FakeEvent): boolean {
+    for (const listener of this.listeners.get(event.type) || []) {
+      listener(event);
+    }
+    return !event.defaultPrevented;
+  }
+}
+
 class FakeDocument {
   readonly body = new FakeElement(this, "body");
   readonly documentElement = new FakeElement(this, "html");
+  readonly defaultView = new FakeWindow();
   private readonly listeners = new Map<
     string,
     Array<(event: FakeEvent) => void>
@@ -289,6 +323,35 @@ describe("shortcut edit dialog", function () {
 });
 
 describe("conversation rename dialog", function () {
+  function createRenameDialog(doc: FakeDocument): Promise<string | null> {
+    return showConversationRenameDialog(doc as unknown as Document, {
+      title: "Rename chat",
+      initialTitle: "Old title",
+      confirmLabel: "Rename",
+      cancelLabel: "Cancel",
+    });
+  }
+
+  it("cancels and removes the modal when its owner window unloads", async function () {
+    const doc = new FakeDocument();
+    const result = createRenameDialog(doc);
+
+    doc.defaultView.dispatchEvent(new FakeEvent("unload"));
+
+    assert.isNull(await result);
+    assert.isNull(doc.body.querySelector(".llm-conversation-rename-overlay"));
+  });
+
+  it("cancels and removes the modal during add-on dialog shutdown", async function () {
+    const doc = new FakeDocument();
+    const result = createRenameDialog(doc);
+
+    closeAllAddonDialogs();
+
+    assert.isNull(await result);
+    assert.isNull(doc.body.querySelector(".llm-conversation-rename-overlay"));
+  });
+
   it("preserves the shared in-panel modal structure", function () {
     const renameSource = readFileSync(
       resolve("src/modules/contextPanel/conversationRenameDialog.ts"),

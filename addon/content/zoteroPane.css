@@ -3429,6 +3429,7 @@
   gap: 4px;
   max-width: 100%;
   min-width: 0;
+  contain: layout paint style;
 }
 
 .llm-message-wrapper.user {

@@ -401,7 +401,9 @@ describe("workflow: selected item context send", function () {
 
     assert.include(result.renderedText, quoteText);
     assert.include(result.renderedText, "中文回答");
+    assert.deepEqual(result.quoteCardBodiesBeforeExpansion, [""]);
     assert.deepEqual(result.quoteCardBodies, [quoteText]);
+    assert.deepEqual(result.quoteCardPreviewTexts, [quoteText]);
     assert.notInclude(result.renderedText, "记忆痕迹");
   });
 
@@ -420,11 +422,32 @@ describe("workflow: selected item context send", function () {
 
     assert.include(result.renderedText, quoteText);
     assert.notInclude(result.renderedText, "Not a source quote");
+    assert.deepEqual(result.quoteCardBodiesBeforeExpansion, [quoteText]);
     assert.deepEqual(result.quoteCardBodies, [quoteText]);
+    assert.deepEqual(result.quoteCardPreviewTexts, []);
     assert.deepEqual(result.quoteCardStatuses, ["not-source"]);
     assert.deepEqual(result.quoteCardCitationTexts, []);
     assert.deepEqual(result.quoteCardVerticalMargins, [
       { top: 10, bottom: 10 },
     ]);
+  });
+
+  it("rerenders only the changed assistant wrapper in a long multi-quote conversation", async function () {
+    fixture = await api.createPaperWithPdfFixture({
+      title: "Targeted Quote Refresh Workflow Paper",
+      pdfTitle: "Targeted Quote Refresh Workflow PDF",
+    });
+
+    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const result = await api.exerciseTargetedQuoteRefresh(panel.panelId);
+
+    assert.equal(result.messageCount, 16);
+    assert.equal(result.assistantMessageCount, 8);
+    assert.equal(result.quoteCardCount, 64);
+    assert.equal(result.unchangedWrapperCount, 15);
+    assert.equal(result.replacedWrapperCount, 1);
+    assert.isTrue(result.targetWasReplaced);
+    assert.equal(result.targetNotSourceCardCount, 8);
+    assert.equal(result.targetStrongBodyCount, 8);
   });
 });

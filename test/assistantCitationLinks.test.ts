@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  buildQuoteCardPreviewText,
   clearCachedCitationPagesForTests,
   collectAssistantCitationCandidates,
   decorateAssistantCitationLinks,
@@ -132,6 +133,15 @@ function makeCitationCandidate(
 const originalZotero = globalScope.Zotero;
 
 describe("assistantCitationLinks", function () {
+  it("builds a lightweight plain-text preview without quote Markdown controls", function () {
+    assert.equal(
+      buildQuoteCardPreviewText(
+        "> **Population stability** uses [source evidence](https://example.com) and `code`.\n\n[[quote:Q_hidden]]",
+      ),
+      "Population stability uses source evidence and code.",
+    );
+  });
+
   afterEach(function () {
     clearCachedCitationPagesForTests();
     if (originalZotero === undefined) {
