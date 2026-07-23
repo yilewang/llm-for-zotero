@@ -133,12 +133,12 @@ function makeCitationCandidate(
 const originalZotero = globalScope.Zotero;
 
 describe("assistantCitationLinks", function () {
-  it("builds a lightweight plain-text preview without quote Markdown controls", function () {
+  it("preserves literal Markdown-like text in collapsed quote previews", function () {
     assert.equal(
       buildQuoteCardPreviewText(
-        "> **Population stability** uses [source evidence](https://example.com) and `code`.\n\n[[quote:Q_hidden]]",
+        "**init** computes 2 ** 3 while foo__bar stays literal.\n\n[[quote:Q_hidden]]",
       ),
-      "Population stability uses source evidence and code.",
+      "**init** computes 2 ** 3 while foo__bar stays literal.",
     );
   });
 

@@ -1,5 +1,7 @@
 import { assert } from "chai";
 import {
+  __cacheDisplayedQuoteAnchorMatchesForTest,
+  __getDisplayedQuoteAnchorMatchCacheStatsForTest,
   buildQuoteAnchorPromptBlock,
   buildQuoteCitation,
   buildQuoteSourceIndex,
@@ -16,9 +18,11 @@ import {
   normalizeQuoteCitationPlaceholdersForDisplay,
   replaceQuoteCitationPlaceholdersForMarkdown,
   sanitizeInvalidStructuredSourceMarkers,
+  DISPLAYED_QUOTE_ANCHOR_CACHE_MAX_BYTES,
 } from "../src/modules/contextPanel/quoteCitations";
 import { stripLeadingCitationSeparators } from "../src/modules/contextPanel/citationText";
 import { buildQuoteTextIndex } from "../src/modules/contextPanel/quoteTextNormalization";
+import type { QuoteTextAnchorMatch } from "../src/modules/contextPanel/quoteTextSearch";
 import { renderMarkdown } from "../src/utils/markdown";
 
 describe("quoteCitations", function () {
@@ -47,6 +51,61 @@ describe("quoteCitations", function () {
 
     assert.lengthOf(sourceIndex.sources, 1);
     assert.strictEqual(sourceIndex.sources[0].textIndex, textIndex);
+  });
+
+  it("bounds displayed quote anchor matches by estimated bytes", function () {
+    const sourceIndex = buildQuoteSourceIndex({
+      sourceTexts: [
+        {
+          sourceText:
+            "A source index used to exercise the displayed quote anchor cache.",
+          sourceLabel: "(Cache et al., 2026)",
+        },
+      ],
+    });
+    const buildMatch = (query: string): QuoteTextAnchorMatch => ({
+      entryId: "source-0",
+      query,
+      normalizedQuery: query,
+      matchKind: "contiguous",
+      confidence: "high",
+      totalOccurrences: 1,
+      matchedEntryIds: ["source-0"],
+      matchedTokenCount: 1,
+      quoteTokenCount: 1,
+      quoteTokenCoverage: 1,
+      supportedQuoteTokenCount: 1,
+      quoteTokenSupportCoverage: 1,
+      quoteStartTokenSupported: true,
+      quoteEndTokenSupported: true,
+      quoteTokenStart: 0,
+      quoteTokenEnd: 1,
+    });
+    const payloadChars = Math.ceil(DISPLAYED_QUOTE_ANCHOR_CACHE_MAX_BYTES / 16);
+
+    for (let index = 0; index < 12; index += 1) {
+      __cacheDisplayedQuoteAnchorMatchesForTest(sourceIndex, `quote-${index}`, [
+        buildMatch(`${index}-${"x".repeat(payloadChars)}`),
+      ]);
+    }
+
+    const boundedStats =
+      __getDisplayedQuoteAnchorMatchCacheStatsForTest(sourceIndex);
+    assert.isAtMost(
+      boundedStats.estimatedBytes,
+      DISPLAYED_QUOTE_ANCHOR_CACHE_MAX_BYTES,
+    );
+    assert.isAbove(boundedStats.entries, 0);
+    assert.isBelow(boundedStats.entries, 12);
+
+    __cacheDisplayedQuoteAnchorMatchesForTest(sourceIndex, "oversized", [
+      buildMatch("z".repeat(DISPLAYED_QUOTE_ANCHOR_CACHE_MAX_BYTES)),
+    ]);
+
+    assert.deepEqual(
+      __getDisplayedQuoteAnchorMatchCacheStatsForTest(sourceIndex),
+      boundedStats,
+    );
   });
 
   it("verifies fifty quote cards across a ten-paper source scope cooperatively", async function () {

@@ -2275,11 +2275,106 @@ function filterQuoteAnchorSources(params: {
   return sources;
 }
 
+type DisplayedQuoteAnchorMatchCacheEntry = {
+  matches: QuoteTextAnchorMatch[];
+  estimatedBytes: number;
+};
+
+type DisplayedQuoteAnchorMatchCache = {
+  entries: Map<string, DisplayedQuoteAnchorMatchCacheEntry>;
+  estimatedBytes: number;
+};
+
 const displayedQuoteAnchorMatchCache = new WeakMap<
   QuoteSourceIndex,
-  Map<string, QuoteTextAnchorMatch[]>
+  DisplayedQuoteAnchorMatchCache
 >();
 const MAX_DISPLAYED_QUOTE_ANCHOR_CACHE_ENTRIES = 256;
+// This is per source index. The caller retains at most 64 source indexes, so
+// anchor-match payloads remain bounded to roughly 4 MiB in aggregate.
+export const DISPLAYED_QUOTE_ANCHOR_CACHE_MAX_BYTES = 64 * 1024;
+const DISPLAYED_QUOTE_ANCHOR_CACHE_ENTRY_OVERHEAD_BYTES = 128;
+
+function estimateDisplayedQuoteAnchorCacheEntryBytes(
+  cacheKey: string,
+  matches: QuoteTextAnchorMatch[],
+): number {
+  try {
+    return (
+      DISPLAYED_QUOTE_ANCHOR_CACHE_ENTRY_OVERHEAD_BYTES +
+      2 * (cacheKey.length + JSON.stringify(matches).length)
+    );
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function getOrCreateDisplayedQuoteAnchorMatchCache(
+  sourceIndex: QuoteSourceIndex,
+): DisplayedQuoteAnchorMatchCache {
+  let cache = displayedQuoteAnchorMatchCache.get(sourceIndex);
+  if (!cache) {
+    cache = {
+      entries: new Map(),
+      estimatedBytes: 0,
+    };
+    displayedQuoteAnchorMatchCache.set(sourceIndex, cache);
+  }
+  return cache;
+}
+
+function cacheDisplayedQuoteAnchorMatches(
+  sourceIndex: QuoteSourceIndex,
+  cacheKey: string,
+  matches: QuoteTextAnchorMatch[],
+): void {
+  const estimatedBytes = estimateDisplayedQuoteAnchorCacheEntryBytes(
+    cacheKey,
+    matches,
+  );
+  if (estimatedBytes > DISPLAYED_QUOTE_ANCHOR_CACHE_MAX_BYTES) return;
+
+  const cache = getOrCreateDisplayedQuoteAnchorMatchCache(sourceIndex);
+  const existing = cache.entries.get(cacheKey);
+  if (existing) {
+    cache.entries.delete(cacheKey);
+    cache.estimatedBytes -= existing.estimatedBytes;
+  }
+  cache.entries.set(cacheKey, { matches, estimatedBytes });
+  cache.estimatedBytes += estimatedBytes;
+
+  while (
+    cache.entries.size > MAX_DISPLAYED_QUOTE_ANCHOR_CACHE_ENTRIES ||
+    cache.estimatedBytes > DISPLAYED_QUOTE_ANCHOR_CACHE_MAX_BYTES
+  ) {
+    const oldestKey = cache.entries.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    const oldest = cache.entries.get(oldestKey);
+    cache.entries.delete(oldestKey);
+    cache.estimatedBytes = Math.max(
+      0,
+      cache.estimatedBytes - (oldest?.estimatedBytes || 0),
+    );
+  }
+}
+
+export function __cacheDisplayedQuoteAnchorMatchesForTest(
+  sourceIndex: QuoteSourceIndex,
+  cacheKey: string,
+  matches: QuoteTextAnchorMatch[],
+): void {
+  cacheDisplayedQuoteAnchorMatches(sourceIndex, cacheKey, matches);
+}
+
+export function __getDisplayedQuoteAnchorMatchCacheStatsForTest(
+  sourceIndex: QuoteSourceIndex,
+): { entries: number; estimatedBytes: number } {
+  const cache = displayedQuoteAnchorMatchCache.get(sourceIndex);
+  return {
+    entries: cache?.entries.size || 0,
+    estimatedBytes: cache?.estimatedBytes || 0,
+  };
+}
 
 function findDisplayedQuoteAnchorMatch(params: {
   quoteText: string;
@@ -2308,23 +2403,21 @@ function findDisplayedQuoteAnchorMatch(params: {
     params.preferredItemId || "",
     params.preferredSourceFingerprint || "",
   ].join("\u241f");
-  let sourceCache = displayedQuoteAnchorMatchCache.get(params.sourceIndex);
-  if (!sourceCache) {
-    sourceCache = new Map();
-    displayedQuoteAnchorMatchCache.set(params.sourceIndex, sourceCache);
-  }
-  let matches = sourceCache.get(cacheKey);
-  if (!matches) {
+  const sourceCache = getOrCreateDisplayedQuoteAnchorMatchCache(
+    params.sourceIndex,
+  );
+  const cached = sourceCache.entries.get(cacheKey);
+  let matches: QuoteTextAnchorMatch[];
+  if (cached) {
+    matches = cached.matches;
+    sourceCache.entries.delete(cacheKey);
+    sourceCache.entries.set(cacheKey, cached);
+  } else {
     matches = findQuoteTextAnchorMatches(entries, params.quoteText, {
       minQueryLength: 20,
       rejectWeakQueries: true,
     });
-    sourceCache.set(cacheKey, matches);
-    while (sourceCache.size > MAX_DISPLAYED_QUOTE_ANCHOR_CACHE_ENTRIES) {
-      const oldestKey = sourceCache.keys().next().value as string | undefined;
-      if (!oldestKey) break;
-      sourceCache.delete(oldestKey);
-    }
+    cacheDisplayedQuoteAnchorMatches(params.sourceIndex, cacheKey, matches);
   }
   const match = params.requireUnique
     ? matches.find(

@@ -4285,34 +4285,6 @@ function startConversationQuoteValidation(conversationKey: number): void {
             shouldContinue: batchHasCurrentRequest,
           },
         );
-        const preparedEvidence = new Map<
-          PendingQuoteValidation,
-          {
-            evidence: QuoteSourceEvidence;
-            sourceIndex?: ReturnType<typeof buildQuoteSourceIndex>;
-          }
-        >();
-        for (const request of batch) {
-          const hasIdleTime = await waitForQuoteValidationIdle(
-            conversationKey,
-            () => isPendingQuoteValidationCurrent(conversationKey, request),
-          );
-          if (!hasIdleTime) continue;
-          const evidence = buildCachedQuoteSourceEvidenceForPaperContexts(
-            ...quoteSourcePaperContextGroups(request.options),
-          );
-          const evidenceSignature =
-            buildQuoteValidationEvidenceSignature(evidence);
-          preparedEvidence.set(request, {
-            evidence,
-            sourceIndex: evidenceSignature
-              ? getOrBuildCachedQuoteSourceIndex(
-                  evidenceSignature,
-                  evidence.sourceTexts,
-                )
-              : undefined,
-          });
-        }
         for (const request of batch) {
           const { assistantMessage, rawMarkdown, rawQuoteCitations, options } =
             request;
@@ -4321,20 +4293,27 @@ function startConversationQuoteValidation(conversationKey: number): void {
             () => isPendingQuoteValidationCurrent(conversationKey, request),
           );
           if (!hasIdleTime) continue;
-          const isCurrent = isPendingQuoteValidationCurrent(
-            conversationKey,
-            request,
+          if (!isPendingQuoteValidationCurrent(conversationKey, request)) {
+            continue;
+          }
+          const evidence = buildCachedQuoteSourceEvidenceForPaperContexts(
+            ...quoteSourcePaperContextGroups(options),
           );
-          if (!isCurrent) continue;
-          const prepared = preparedEvidence.get(request);
-          if (!prepared) continue;
+          const evidenceSignature =
+            buildQuoteValidationEvidenceSignature(evidence);
+          const sourceIndex = evidenceSignature
+            ? getOrBuildCachedQuoteSourceIndex(
+                evidenceSignature,
+                evidence.sourceTexts,
+              )
+            : undefined;
           const changed = await applyAssistantMessageQuoteGate(
             assistantMessage,
             rawMarkdown,
             rawQuoteCitations,
-            prepared.evidence,
+            evidence,
             options,
-            prepared.sourceIndex,
+            sourceIndex,
             {
               yieldToMain: async () => {
                 await waitForQuoteValidationIdle(conversationKey, () =>
@@ -9962,7 +9941,7 @@ export function refreshChat(
     }
   }
   const forkLink = conversationForkLinks.get(conversationKey) || null;
-  if (tokenUsageEl) {
+  if (tokenUsageEl && !useTargetedRerender) {
     const snapshot = contextUsageSnapshots.get(conversationKey);
     const liveSnapshot =
       snapshot && snapshot.source !== "persisted" ? snapshot : undefined;

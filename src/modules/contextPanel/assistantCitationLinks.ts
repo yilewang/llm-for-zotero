@@ -3903,12 +3903,9 @@ function renderQuoteCardMarkdownInto(
 }
 
 export function buildQuoteCardPreviewText(quoteText: string): string {
+  // A collapsed verified card is still a quotation. Keep inline Markdown-like
+  // delimiters literal because they may be source text, not presentation markup.
   return stripQuoteCitationAnchorsFromDisplayText(sanitizeText(quoteText || ""))
-    .replace(/!\[([^\]\n]*)\]\([^)\n]*\)/g, "$1")
-    .replace(/\[([^\]\n]+)\]\([^)\n]*\)/g, "$1")
-    .replace(/(^|\n)[ \t]*(?:>[ \t]?|#{1,6}[ \t]+|[-+*][ \t]+)/g, "$1")
-    .replace(/(\*\*|__|~~|`{1,3})/g, "")
-    .replace(/(^|[^\p{L}\p{N}])[*_]([^*_\n]+)[*_](?=$|[^\p{L}\p{N}])/gu, "$1$2")
     .replace(/\s+/g, " ")
     .trim();
 }

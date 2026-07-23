@@ -226,6 +226,17 @@ describe("chat scroll snapshots", function () {
       validationTaskSource,
       "promptTimeoutMs: QUOTE_VALIDATION_PROMPT_IDLE_MS",
     );
+    assert.equal(
+      validationTaskSource.match(/for \(const request of batch\)/g)?.length,
+      1,
+    );
+    assert.notInclude(validationTaskSource, "preparedEvidence");
+    assert.isBelow(
+      validationTaskSource.indexOf(
+        "buildCachedQuoteSourceEvidenceForPaperContexts(",
+      ),
+      validationTaskSource.indexOf("applyAssistantMessageQuoteGate("),
+    );
     assert.include(validationTaskSource, "new Set([assistantMessage])");
     assert.notInclude(validationTaskSource, "changedMessages.add(");
     assert.include(refreshChatSource, "targetedMessageWrappers");
@@ -239,6 +250,10 @@ describe("chat scroll snapshots", function () {
     );
     assert.include(refreshChatSource, "existingTargetedWrapper.replaceWith");
     assert.include(refreshChatSource, "if (!useTargetedRerender)");
+    assert.include(
+      refreshChatSource,
+      "if (tokenUsageEl && !useTargetedRerender)",
+    );
   });
 
   it("restores a quote anchor after rerendered message heights change", function () {
