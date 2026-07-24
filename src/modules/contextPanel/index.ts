@@ -126,7 +126,7 @@ import {
 
 export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
   const doc = win.document;
-  if (doc.getElementById(`${config.addonRef}-styles`)) return;
+  doc.getElementById(`${config.addonRef}-styles`)?.remove();
 
   // Main styles
   const link = doc.createElement("link") as HTMLLinkElement;
@@ -137,6 +137,7 @@ export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
   doc.documentElement?.appendChild(link);
 
   // KaTeX styles for math rendering
+  doc.getElementById(`${config.addonRef}-katex-styles`)?.remove();
   const katexLink = doc.createElement("link") as HTMLLinkElement;
   katexLink.id = `${config.addonRef}-katex-styles`;
   katexLink.rel = "stylesheet";
