@@ -7220,6 +7220,10 @@ label.llm-search-results-item:hover {
   font-size: 1.1em;
 }
 
+.llm-rendered-markdown .katex svg {
+  background: transparent;
+}
+
 .llm-rendered-markdown .math-display .katex {
   font-size: 1.2em;
 }
