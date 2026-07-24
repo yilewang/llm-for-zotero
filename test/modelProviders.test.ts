@@ -50,6 +50,10 @@ describe("modelProviders", function () {
       "Xiaomi MiMo",
     );
     assert.equal(
+      deriveProviderLabel("https://api.atlascloud.ai/v1"),
+      "Atlas Cloud",
+    );
+    assert.equal(
       deriveProviderLabel("https://api.minimax.io/anthropic"),
       "MiniMax",
     );
@@ -269,6 +273,34 @@ describe("modelProviders", function () {
 
     assert.lengthOf(entries, 1);
     assert.equal(entries[0].providerProtocol, "openai_chat_compat");
+  });
+
+  it("labels Atlas Cloud runtime entries and keeps chat-compatible routing", function () {
+    const groups: ModelProviderGroup[] = [
+      {
+        id: "provider-1",
+        apiBase: "https://api.atlascloud.ai/v1",
+        apiKey: "sk-atlascloud",
+        authMode: "api_key",
+        providerProtocol: "responses_api",
+        models: [
+          {
+            id: "model-1",
+            model: "qwen/qwen3.5-flash",
+            temperature: 0.3,
+            maxTokens: 4096,
+          },
+        ],
+      },
+    ];
+
+    setModelProviderGroups(groups);
+    const entries = getRuntimeModelEntries();
+
+    assert.lengthOf(entries, 1);
+    assert.equal(entries[0].providerLabel, "Atlas Cloud");
+    assert.equal(entries[0].providerProtocol, "openai_chat_compat");
+    assert.equal(entries[0].model, "qwen/qwen3.5-flash");
   });
 
   it("keeps explicit per-model protocol overrides for known providers", function () {

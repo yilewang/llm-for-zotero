@@ -72,6 +72,14 @@ describe("providerPresets", function () {
       "mimo",
     );
     assert.equal(detectProviderPreset("https://api.xiaomimimo.com/v1"), "mimo");
+    assert.equal(
+      detectProviderPreset("https://api.atlascloud.ai/v1/chat/completions"),
+      "atlascloud",
+    );
+    assert.equal(
+      detectProviderPreset("https://api.atlascloud.ai/v1"),
+      "atlascloud",
+    );
   });
 
   it("falls back to customized for unknown URLs", function () {
@@ -116,6 +124,10 @@ describe("providerPresets", function () {
       getProviderPreset("mimo").defaultApiBase,
       "https://api.xiaomimimo.com/v1",
     );
+    assert.equal(
+      getProviderPreset("atlascloud").defaultApiBase,
+      "https://api.atlascloud.ai/v1",
+    );
   });
 
   it("stores default protocols per preset", function () {
@@ -159,6 +171,13 @@ describe("providerPresets", function () {
     assert.deepEqual(getProviderPreset("mimo").supportedProtocols, [
       "openai_chat_compat",
     ]);
+    assert.equal(
+      getProviderPreset("atlascloud").defaultProtocol,
+      "openai_chat_compat",
+    );
+    assert.deepEqual(getProviderPreset("atlascloud").supportedProtocols, [
+      "openai_chat_compat",
+    ]);
   });
 
   it("offers advanced protocol options beyond preset defaults", function () {
@@ -168,6 +187,11 @@ describe("providerPresets", function () {
       "anthropic_messages",
     ]);
     assert.deepEqual(getProviderPresetProtocolOptions("mimo"), [
+      "openai_chat_compat",
+      "responses_api",
+      "anthropic_messages",
+    ]);
+    assert.deepEqual(getProviderPresetProtocolOptions("atlascloud"), [
       "openai_chat_compat",
       "responses_api",
       "anthropic_messages",
@@ -204,6 +228,12 @@ describe("providerPresets", function () {
   it("does not advertise MiMo as Responses-capable", function () {
     assert.isFalse(
       providerSupportsResponsesEndpoint("https://api.xiaomimimo.com/v1"),
+    );
+  });
+
+  it("does not advertise Atlas Cloud as Responses-capable", function () {
+    assert.isFalse(
+      providerSupportsResponsesEndpoint("https://api.atlascloud.ai/v1"),
     );
   });
 });
