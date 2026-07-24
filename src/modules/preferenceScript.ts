@@ -52,6 +52,7 @@ import {
   pollCopilotDeviceAuth,
   resolveCopilotAccessToken,
   fetchCopilotModelList,
+  fetchLiteLLMModelList,
   callEmbeddings,
 } from "../utils/llmClient";
 import { resetEmbeddingFailedFlags } from "./contextPanel/pdfContext";
@@ -1547,6 +1548,73 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         copilotLoginWrap.append(copilotBtnRow, copilotStatus, fetchModelsRow);
       }
 
+      // ── LiteLLM model discovery ──────────────────────────────────
+      const litellmRow: HTMLElement | null = null;
+      if (group.authMode === "api_key" && selectedPresetId === "litellm") {
+        const litellmFetchBtn = el(
+          doc,
+          "button",
+          OUTLINE_BTN_STYLE + " font-size: 11px; padding: 3px 10px;",
+          t("Fetch models from proxy"),
+        ) as HTMLButtonElement;
+        litellmFetchBtn.type = "button";
+        const litellmFetchStatus = el(doc, "span", HELPER_STYLE, "");
+
+        litellmFetchBtn.addEventListener("click", async () => {
+          litellmFetchBtn.disabled = true;
+          litellmFetchStatus.textContent = t("Fetching models…");
+          litellmFetchStatus.style.color = "var(--fill-secondary, #888)";
+          try {
+            const models = await fetchLiteLLMModelList({
+              apiBase: group.apiBase,
+              apiKey: group.apiKey || undefined,
+            });
+            if (!models.length) {
+              litellmFetchStatus.textContent = t("No models found");
+              litellmFetchStatus.style.color = "red";
+              return;
+            }
+            const existingAdvanced = new Map<string, ModelProviderModel>();
+            for (const m of group.models) {
+              existingAdvanced.set(m.model.trim().toLowerCase(), m);
+            }
+            group.models = models.map((m) => {
+              const existing = existingAdvanced.get(m.id.toLowerCase());
+              return createProviderModelEntry(
+                m.id,
+                existing
+                  ? {
+                      temperature: existing.temperature,
+                      maxTokens: existing.maxTokens,
+                      inputTokenCap: existing.inputTokenCap,
+                      inputMode: existing.inputMode,
+                    }
+                  : undefined,
+              );
+            });
+            persistGroups(groups);
+            litellmFetchStatus.textContent = t("Synced %n models").replace(
+              "%n",
+              String(models.length),
+            );
+            litellmFetchStatus.style.color = "green";
+            setTimeout(() => rerender(), 300);
+          } catch (err) {
+            litellmFetchStatus.textContent = `✗ ${(err as Error).message}`;
+            litellmFetchStatus.style.color = "red";
+          } finally {
+            litellmFetchBtn.disabled = false;
+          }
+        });
+
+        const litellmRow = el(
+          doc,
+          "div",
+          "display: flex; gap: 8px; align-items: center; margin-top: 4px;",
+        );
+        litellmRow.append(litellmFetchBtn, litellmFetchStatus);
+      }
+
       // ── Models list ──────────────────────────────────────────────
       const modelsWrap = el(
         doc,
@@ -2046,14 +2114,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           modelsWrap,
         );
       } else {
-        cardBody.append(
+        const apiKeyParts: HTMLElement[] = [
           authModeWrap,
           providerPresetWrap,
           apiUrlWrap,
           apiKeyWrap,
-          divider,
-          modelsWrap,
-        );
+        ];
+        if (litellmRow) {
+          apiKeyParts.push(litellmRow);
+        }
+        apiKeyParts.push(divider, modelsWrap);
+        cardBody.append(...apiKeyParts);
       }
       card.append(cardHeader, cardBody);
       wrap.appendChild(card);

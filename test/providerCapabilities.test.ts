@@ -163,6 +163,22 @@ describe("provider capabilities", function () {
     }
   });
 
+  it("resolves LiteLLM proxy URLs as third-party (manual-select preset)", function () {
+    assert.deepInclude(
+      resolveProviderCapabilities({
+        model: "gpt-4o",
+        apiBase: "http://localhost:4000/v1",
+        protocol: "openai_chat_compat",
+      }),
+      {
+        tier: "third_party",
+        pdf: "none",
+        images: true,
+        multimodal: true,
+      },
+    );
+  });
+
   it("keeps known DeepSeek API models image-disabled", function () {
     for (const model of [
       "deepseek-chat",

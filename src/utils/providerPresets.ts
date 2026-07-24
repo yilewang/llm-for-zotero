@@ -11,7 +11,8 @@ export type SupportedProviderPresetId =
   | "qwen"
   | "kimi"
   | "mimo"
-  | "copilot";
+  | "copilot"
+  | "litellm";
 
 export type ProviderPresetId = SupportedProviderPresetId | "customized";
 
@@ -139,6 +140,14 @@ const QWEN_PATHS = [
 ];
 const KIMI_PATHS = ["/", "/v1", "/v1/chat/completions"];
 const MIMO_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const LITELLM_PATHS = [
+  "/",
+  "/v1",
+  "/v1/chat/completions",
+  "/v1/responses",
+  "/v1/models",
+  "/v1/embeddings",
+];
 const COPILOT_PATHS = ["/", "/chat/completions", "/models"];
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
@@ -268,6 +277,18 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     helperText: "Preset uses Xiaomi MiMo's OpenAI-compatible API base (v1).",
     matches: makeHostAndPathMatcher(["api.xiaomimimo.com"], MIMO_PATHS),
     supportsEmbeddings: false,
+  },
+  {
+    id: "litellm",
+    label: "LiteLLM",
+    defaultApiBase: "http://localhost:4000/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat", "responses_api"],
+    helperText:
+      "Preset uses a LiteLLM proxy for unified access to 100+ LLM providers.",
+    matches: () => false,
+    supportsEmbeddings: true,
+    defaultEmbeddingModel: "text-embedding-3-small",
   },
   {
     id: "copilot",

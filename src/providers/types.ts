@@ -40,6 +40,7 @@ export type ProviderPromptCacheProvider =
   | "gemini"
   | "kimi"
   | "codex"
+  | "litellm"
   | "unknown";
 
 export type ProviderPromptCacheTelemetry =

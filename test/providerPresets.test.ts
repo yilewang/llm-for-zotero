@@ -116,6 +116,10 @@ describe("providerPresets", function () {
       getProviderPreset("mimo").defaultApiBase,
       "https://api.xiaomimimo.com/v1",
     );
+    assert.equal(
+      getProviderPreset("litellm").defaultApiBase,
+      "http://localhost:4000/v1",
+    );
   });
 
   it("stores default protocols per preset", function () {
@@ -159,6 +163,14 @@ describe("providerPresets", function () {
     assert.deepEqual(getProviderPreset("mimo").supportedProtocols, [
       "openai_chat_compat",
     ]);
+    assert.equal(
+      getProviderPreset("litellm").defaultProtocol,
+      "openai_chat_compat",
+    );
+    assert.deepEqual(getProviderPreset("litellm").supportedProtocols, [
+      "openai_chat_compat",
+      "responses_api",
+    ]);
   });
 
   it("offers advanced protocol options beyond preset defaults", function () {
@@ -178,6 +190,25 @@ describe("providerPresets", function () {
       "responses_api",
       "anthropic_messages",
     ]);
+  });
+
+  it("never auto-detects litellm from URL (manual-select only)", function () {
+    assert.equal(
+      detectProviderPreset("http://localhost:4000/v1"),
+      "customized",
+    );
+    assert.equal(
+      detectProviderPreset("https://litellm.example.com/v1"),
+      "customized",
+    );
+  });
+
+  it("reports litellm embeddings support", function () {
+    assert.isTrue(getProviderPreset("litellm").supportsEmbeddings);
+    assert.equal(
+      getProviderPreset("litellm").defaultEmbeddingModel,
+      "text-embedding-3-small",
+    );
   });
 
   it("does not advertise Gemini as Responses-capable", function () {
