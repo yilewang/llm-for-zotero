@@ -1,11 +1,5 @@
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
 import {
-  PDF_FIGURE_CROP_ALGORITHM_VERSION,
-  PDF_FIGURE_CROP_CACHE_VERSION,
-  PDF_FIGURE_CROP_METADATA_FILE,
-  buildPdfFigureCropManifestHash,
-} from "./pdfFigureCropCache";
-import {
   buildMineruFigureBlocks,
   extractFigureLabel,
   getManifestFigureBaseLabel,
@@ -70,10 +64,6 @@ export type FinalizedMineruCacheFiles = {
   files: NormalizedMineruCacheFile[];
   pathMap: Map<string, string>;
   manifest: MineruManifest;
-};
-
-type FinalizeMineruCacheFilesOptions = {
-  keepSourceImages?: boolean;
 };
 
 type IOUtilsLike = {
@@ -260,7 +250,6 @@ async function removePath(path: string): Promise<void> {
 const CONTENT_LIST_FILE_NAME = "content_list.json";
 const MANIFEST_FILE_NAME = "manifest.json";
 const FULL_MARKDOWN_FILE_NAME = "full.md";
-const PDF_FIGURE_CROP_DIR = "figure_crops";
 const MINERU_LOCAL_SYNC_STATE_FILE = "_llm_sync_state.json";
 const MAX_CACHE_PATH_SEGMENT_LENGTH = 80;
 const MAX_CACHE_RELATIVE_PATH_LENGTH = 160;
@@ -679,7 +668,6 @@ export function isDurableMineruCacheArtifactPath(
   relativePath: string,
   options: {
     includeLocalSyncState?: boolean;
-    includeSourceImages?: boolean;
   } = {},
 ): boolean {
   const parts = parseSafeArchivePath(relativePath);
@@ -702,134 +690,14 @@ export function isDurableMineruCacheArtifactPath(
   ) {
     return true;
   }
-  if (
-    options.includeSourceImages &&
-    parts[0] === "images" &&
-    parts.length > 1
-  ) {
+  if (parts[0] === "images" && parts.length > 1) {
     return true;
   }
-  return parts[0] === PDF_FIGURE_CROP_DIR && parts.length > 1;
+  return false;
 }
 
-function shouldWriteFinalizedCacheFile(
-  relativePath: string,
-  options: { keepSourceImages?: boolean } = {},
-): boolean {
-  return isDurableMineruCacheArtifactPath(relativePath, {
-    includeSourceImages: options.keepSourceImages,
-  });
-}
-
-function normalizeFigureCoverageLabel(value: unknown): string {
-  return `${value ?? ""}`.replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-function readFigureCoverageLabels(value: unknown): string[] {
-  if (!value || typeof value !== "object") return [];
-  const record = value as { label?: unknown; baseLabel?: unknown };
-  return [record.label, record.baseLabel]
-    .map(normalizeFigureCoverageLabel)
-    .filter(Boolean);
-}
-
-function readManifestFigureCoverageTargets(
-  manifest: MineruManifest,
-): unknown[] {
-  const figures: unknown[] = [];
-  if (Array.isArray(manifest.allFigures)) {
-    figures.push(...manifest.allFigures);
-  }
-  if (Array.isArray(manifest.sections)) {
-    for (const section of manifest.sections) {
-      if (Array.isArray(section.figures)) {
-        figures.push(...section.figures);
-      }
-    }
-  }
-  return figures;
-}
-
-function resolveCropProbePath(itemDir: string, cropPath: string): string {
-  const normalized = cropPath.trim();
-  if (!normalized) return normalized;
-  if (/^(?:[A-Za-z]:|[\\/]{2}|[\\/])/.test(normalized)) return normalized;
-  const relative = normalizePathKey(normalized);
-  if (relative.startsWith(`${PDF_FIGURE_CROP_DIR}/`)) {
-    return joinLocalPath(itemDir, ...relative.split("/"));
-  }
-  return normalized;
-}
-
-async function cropFileExists(
-  itemDir: string,
-  cropPath: unknown,
-): Promise<boolean> {
-  if (typeof cropPath !== "string" || !cropPath.trim()) return false;
-  const probePath = resolveCropProbePath(itemDir, cropPath);
-  if (await pathExists(probePath)) return true;
-  return Boolean(await readFileBytes(probePath));
-}
-
-async function readReadyCropEntryLabels(params: {
-  itemDir: string;
-  entries: unknown;
-}): Promise<Set<string>> {
-  const labels = new Set<string>();
-  if (!Array.isArray(params.entries)) return labels;
-  for (const entry of params.entries) {
-    if (!entry || typeof entry !== "object") continue;
-    const record = entry as { cropPath?: unknown };
-    if (!(await cropFileExists(params.itemDir, record.cropPath))) continue;
-    for (const label of readFigureCoverageLabels(entry)) {
-      labels.add(label);
-    }
-  }
-  return labels;
-}
-
-async function hasReadyPdfFigureCropCache(
-  itemDir: string,
-  manifest: MineruManifest,
-): Promise<boolean> {
-  const manifestFigures = readManifestFigureCoverageTargets(manifest);
-  if (!manifestFigures.length) return false;
-
-  const bytes = await readFileBytes(
-    joinLocalPath(itemDir, PDF_FIGURE_CROP_DIR, PDF_FIGURE_CROP_METADATA_FILE),
-  );
-  if (!bytes) return false;
-
-  let cache: Record<string, unknown>;
-  try {
-    const parsed = JSON.parse(new TextDecoder("utf-8").decode(bytes));
-    if (!parsed || typeof parsed !== "object") return false;
-    cache = parsed as Record<string, unknown>;
-  } catch {
-    return false;
-  }
-
-  if (cache.version !== PDF_FIGURE_CROP_CACHE_VERSION) return false;
-  if (cache.algorithmVersion !== PDF_FIGURE_CROP_ALGORITHM_VERSION) {
-    return false;
-  }
-  if (cache.manifestHash !== buildPdfFigureCropManifestHash(manifest)) {
-    return false;
-  }
-  if (Array.isArray(cache.missingFigures) && cache.missingFigures.length) {
-    return false;
-  }
-
-  const readyLabels = await readReadyCropEntryLabels({
-    itemDir,
-    entries: cache.entries,
-  });
-  if (!readyLabels.size) return false;
-
-  return manifestFigures.every((figure) => {
-    const figureLabels = readFigureCoverageLabels(figure);
-    return figureLabels.some((label) => readyLabels.has(label));
-  });
+function shouldWriteFinalizedCacheFile(relativePath: string): boolean {
+  return isDurableMineruCacheArtifactPath(relativePath);
 }
 
 async function getChildren(path: string): Promise<string[] | null> {
@@ -855,7 +723,6 @@ function relativeCachePath(rootPath: string, filePath: string): string | null {
 
 export async function pruneNonDurableMineruCacheArtifacts(
   itemDir: string,
-  options: { keepSourceImages?: boolean } = {},
 ): Promise<boolean> {
   let changed = false;
   const root = normalizePathKey(itemDir);
@@ -871,7 +738,6 @@ export async function pruneNonDurableMineruCacheArtifacts(
         if (
           !isDurableMineruCacheArtifactPath(`${relativePath}/placeholder`, {
             includeLocalSyncState: true,
-            includeSourceImages: options.keepSourceImages,
           })
         ) {
           await removePath(child);
@@ -884,7 +750,6 @@ export async function pruneNonDurableMineruCacheArtifacts(
       if (
         !isDurableMineruCacheArtifactPath(relativePath, {
           includeLocalSyncState: true,
-          includeSourceImages: options.keepSourceImages,
         })
       ) {
         await removePath(child);
@@ -895,17 +760,6 @@ export async function pruneNonDurableMineruCacheArtifacts(
 
   await visit(itemDir);
   return changed;
-}
-
-export async function pruneMineruSourceImagesWhenFigureCropsReady(
-  itemDir: string,
-  manifest: MineruManifest | null | undefined,
-): Promise<boolean> {
-  if (!manifest) return false;
-  if (!(await hasReadyPdfFigureCropCache(itemDir, manifest))) return false;
-  return await pruneNonDurableMineruCacheArtifacts(itemDir, {
-    keepSourceImages: false,
-  });
 }
 
 export function normalizeMineruCacheFiles(
@@ -987,7 +841,6 @@ export function normalizeMineruCacheFiles(
 export function finalizeMineruCacheFiles(
   mdContent: string,
   files: MineruCacheFile[],
-  options: FinalizeMineruCacheFilesOptions = {},
 ): FinalizedMineruCacheFiles {
   const normalized = normalizeMineruCacheFiles(mdContent, files);
   const contentList = readContentListFromNormalizedFiles(normalized.files);
@@ -1004,9 +857,7 @@ export function finalizeMineruCacheFiles(
     mdContent: canonicalMdContent,
     sourceMdContent: normalized.mdContent,
     files: normalized.files.filter((file) =>
-      shouldWriteFinalizedCacheFile(file.relativePath, {
-        keepSourceImages: options.keepSourceImages,
-      }),
+      shouldWriteFinalizedCacheFile(file.relativePath),
     ),
     pathMap: normalized.pathMap,
     manifest: {
@@ -1210,16 +1061,9 @@ export async function writeMineruCacheFiles(
 ): Promise<void> {
   const itemDir = getMineruItemDir(id);
   await ensureDir(itemDir);
-  const manifestProbe = finalizeMineruCacheFiles(mdContent, files);
-  const keepSourceImages = !(await hasReadyPdfFigureCropCache(
-    itemDir,
-    manifestProbe.manifest,
-  ));
-  const finalized = keepSourceImages
-    ? finalizeMineruCacheFiles(mdContent, files, { keepSourceImages: true })
-    : manifestProbe;
+  const finalized = finalizeMineruCacheFiles(mdContent, files);
 
-  await pruneNonDurableMineruCacheArtifacts(itemDir, { keepSourceImages });
+  await pruneNonDurableMineruCacheArtifacts(itemDir);
 
   for (const file of finalized.files) {
     const parts = file.relativePath.split(/[\\/]+/).filter(Boolean);
@@ -1632,14 +1476,7 @@ export async function finalizeExistingMineruCache(
     ...canonicalManifest,
     figureBlocks: sourceManifest.figureBlocks,
   };
-  const keepSourceImages = !(await hasReadyPdfFigureCropCache(
-    itemDir,
-    finalizedManifest,
-  ));
-
-  const pruned = await pruneNonDurableMineruCacheArtifacts(itemDir, {
-    keepSourceImages,
-  });
+  const pruned = await pruneNonDurableMineruCacheArtifacts(itemDir);
   if (pruned) changed = true;
 
   if (changed) {

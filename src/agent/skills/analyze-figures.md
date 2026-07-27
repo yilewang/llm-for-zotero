@@ -1,7 +1,7 @@
 ---
 id: analyze-figures
 description: Analyze figures, tables, and diagrams from papers
-version: 4
+version: 5
 contexts: single-paper
 activation: auto
 match: /\b(figure|fig\.?|table|diagram|chart|graph|plot|schematic|illustration)\s*\d/i
@@ -10,84 +10,52 @@ match: /\b(figure|fig\.?|table|diagram)\b.*\b(about|explain|describe|show|mean|d
 match: /\b(what|how|why|can you)\b.*\b(figure|fig\.?|table|diagram|chart)\b/i
 ---
 
-<!--
-  SKILL: Analyze Figures
-
-  This skill activates when you ask about a specific figure, table, or
-  diagram in a paper (e.g., "explain Figure 2", "what does Table 1 show?").
-
-  You can customize:
-  - Analysis depth: change how the agent interprets visual content
-  - MinerU vs PDF fallback: adjust which path is preferred
-  - Note saving: modify how figure analyses are saved to notes
-
-  Your changes are preserved across plugin updates.
-  To reset to default, delete this file — it will be recreated on next restart.
--->
-
 ## Analyzing Figures and Tables
 
-When the user asks about a figure, table, or diagram in a paper, use the most efficient path to access it.
+### Figures and diagrams
 
-### When MinerU cache is available (mineruCacheDir shown in paper context)
+When MinerU cache is available, call:
 
-This is the semantic fast path — MinerU has already extracted labels, captions, page hints, and surrounding text.
-The visual evidence should come from precise crops extracted from the source PDF.
+`paper_read({ mode:'figures', query:'<figure label or all figures>' })`
 
-**Step 1 — Choose the right evidence path:**
-For figure/image questions, use `paper_read({ mode:'figures', query:'<figure label or all figures>' })` to obtain precise PDF crop paths, captions, page numbers, confidence, warnings, and provenance.
-Treat `paper_read({ mode:'figures' })` as the authority for figure crop cache reuse/regeneration.
-Use its returned crop paths/artifacts as-is and do not inspect or validate `figure_crops` metadata before analysis or writing.
-For table questions, use `paper_read({ mode:'targeted', query:'<table label and surrounding discussion>' })` because MinerU usually exposes tables as structured text.
+This resolves the requested label against MinerU's figure blocks and returns
+the original MinerU image path, caption, page number, mapping confidence, and
+an image artifact. Use the returned `imagePath` and artifact directly.
 
-**Step 2 — Read the caption and surrounding text when needed:**
-Use `manifest.json` and `full.md` section offsets only for captions and surrounding discussion.
-Do not read MinerU image paths as the figure visual artifact.
+Do not recrop the source PDF. Do not substitute rendered PDF pages, OCR,
+shell image processing, or package installation for the mapped MinerU image.
 
-**Step 3 — Interpret the extracted crop:**
-For Figure 1, Fig. 1b, or any panel request, inspect the whole extracted figure crop plus the full caption/figure text before answering.
-Panel suffixes and captions are hints only; do not assume image order proves panel identity.
-If the user asks only for Figure 1b, focus the explanation on the requested panel evidence but do not imply one panel represents the whole Figure 1.
+Read the complete caption and surrounding discussion before answering. For a
+panel request such as Figure 1b, inspect the whole mapped Figure 1 image and
+focus the explanation on panel b without treating it as the whole figure.
 
-**If figure extraction fails or returns no crops:**
-Switch to text-only mode for the paper figure task.
-Do not include figure images in analysis, note taking, or follow-up artifacts.
-Do not use MinerU source images, rendered PDF pages, OCR, shell commands, or package installation as a replacement figure path.
-Base the answer or note only on captions, figure legends, and surrounding paper text, and state that limitation explicitly.
-This does not restrict images the user manually attached or pasted; user-provided image inputs can still be inspected normally.
+If MinerU has no image mapped to the requested label, switch to text-only mode.
+State that the MinerU image mapping is unavailable and base the
+answer only on the caption, legend, and surrounding paper text.
 
-### When MinerU cache is NOT available
+### Tables
 
-Figure extraction is not available.
-Say that MinerU cache is required for figure extraction.
-Use rendered PDF pages only if the user explicitly asks for raw page/layout inspection.
+Use:
 
-1. `paper_read({ mode:'targeted', query:'<figure/table label and surrounding discussion>' })` for captions/surrounding text
-2. `paper_read({ mode:'visual', query:'<page/layout request>' })` only for explicit rendered page inspection
+`paper_read({ mode:'targeted', query:'<table label and surrounding discussion>' })`
+
+MinerU normally represents tables as structured text, so table questions do
+not use the figure-image path.
 
 ### Key rules
 
-- **NEVER** use OCR tools, Python scripts, Swift, Tesseract, or shell commands to analyze images. Visual models see images directly.
-- **NEVER** attempt to install packages (PIL, cv2, etc.) to process images.
-- Use MinerU as the semantic index, not as the source of final figure images.
-- Use extracted PDF crops for figure/image questions.
-- If figure extraction fails or returns no crops, switch to text-only mode and do not include a figure image artifact.
-- Always include the figure caption and surrounding context in your analysis, not just the image.
-- For compound figures, inspect the whole extracted figure crop and the complete figure text before drawing conclusions.
-- Text-only models can use ordered paths, captions, section text, and page hints, but must not make unsupported visual claims.
-- For tables: the MinerU markdown usually contains the table as structured text — read that directly instead of rendering images.
-- User-provided image inputs are unaffected by the paper figure-extraction failure path.
+- MinerU figure images are the visual source of truth for paper figures.
+- `paper_read({ mode:'figures' })` is the interface for resolving labels to
+  MinerU image artifacts.
+- Always combine the image with its caption and surrounding context.
+- Inspect the complete mapped image for compound figures.
+- Do not make visual claims when no image artifact was returned.
+- User-provided images can still be inspected normally.
 
 ### Saving figure analysis to notes
 
-When the user asks to save your figure analysis to a note (e.g., "save it", "put that in a note", "create a note", "write to obsidian"), the Write Note skill handles the full workflow. Key rules:
-
-- Embed the analyzed figure image when an extracted PDF crop is available.
-- Embed extracted PDF crop paths returned by `paper_read({ mode:'figures' })`.
-- Do not embed MinerU source image paths.
-- Place the image at the start of the relevant section, before the explanation text.
-- If you analyzed multiple figures, embed all of them.
-- If `paper_read({ mode:'figures' })` returns `no_figures`, `mineru_required`, `error`, zero figures, or no image artifact, switch to text-only mode when the user asked for a note.
-- In that failure state, do not include figure images or extracted-image placeholders.
-- In that failure state, explicitly state that figure extraction failed or no extracted crops are available.
-- In that failure state, explicitly state that the explanations are based on captions, figure legends, and surrounding paper text.
+- Embed the MinerU `imagePath` returned by `paper_read({ mode:'figures' })`.
+- Place the image before the corresponding explanation.
+- If multiple figures were analyzed, embed each returned image.
+- If no mapped image is available, write a text-only note and state that the
+  explanation relies on the caption and surrounding text.

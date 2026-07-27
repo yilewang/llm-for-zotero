@@ -32,11 +32,6 @@ import {
   restoreSyncedMineruCacheForAttachment,
   shouldIncludeMineruCachePackageEntry,
 } from "../src/modules/contextPanel/mineruSync";
-import {
-  PDF_FIGURE_CROP_ALGORITHM_VERSION,
-  PDF_FIGURE_CROP_CACHE_VERSION,
-  buildPdfFigureCropManifestHash,
-} from "../src/modules/contextPanel/pdfFigureCropCache";
 import { createReadLibraryTool } from "../src/agent/tools/read/readLibrary";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 
@@ -331,7 +326,7 @@ describe("mineruSync", function () {
     pdfTextCache.clear();
   });
 
-  it("filters to durable text metadata and PDF crop cache artifacts", function () {
+  it("includes MinerU figure images in durable cache packages", function () {
     assert.isTrue(shouldIncludeMineruCachePackageEntry("full.md"));
     assert.isTrue(shouldIncludeMineruCachePackageEntry("manifest.json"));
     assert.isTrue(shouldIncludeMineruCachePackageEntry("content_list.json"));
@@ -343,14 +338,14 @@ describe("mineruSync", function () {
         "auto/legacy_uuid_content_list.json",
       ),
     );
-    assert.isFalse(shouldIncludeMineruCachePackageEntry("images/figure.png"));
+    assert.isTrue(shouldIncludeMineruCachePackageEntry("images/figure.png"));
     assert.isFalse(shouldIncludeMineruCachePackageEntry("layout.json"));
     assert.isFalse(shouldIncludeMineruCachePackageEntry("middle.json"));
     assert.isFalse(shouldIncludeMineruCachePackageEntry("tables/table-1.png"));
-    assert.isTrue(
+    assert.isFalse(
       shouldIncludeMineruCachePackageEntry("figure_crops/figure_geometry.json"),
     );
-    assert.isTrue(
+    assert.isFalse(
       shouldIncludeMineruCachePackageEntry("figure_crops/crops/figure-1.png"),
     );
     assert.isTrue(
@@ -361,7 +356,7 @@ describe("mineruSync", function () {
     assert.isFalse(shouldIncludeMineruCachePackageEntry("__MACOSX/full.md"));
   });
 
-  it("builds a compact package with full.md, manifest, content_list, and PDF crops", async function () {
+  it("builds a package with full.md, manifest, content_list, and MinerU images", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();
     const parent = createParent();
@@ -390,7 +385,7 @@ describe("mineruSync", function () {
       "manifest.json",
       "content_list.json",
     ]);
-    assert.notProperty(entries, "images/fig1.png");
+    assert.property(entries, "images/fig1.png");
     assert.notProperty(entries, "layout.json");
     const metadata = JSON.parse(
       decoder.decode(entries[MINERU_SYNC_METADATA_FILE]),
@@ -1564,7 +1559,7 @@ describe("mineruSync", function () {
     assert.isNull(provenance);
   });
 
-  it("keeps source images during repair until figure crops are ready", async function () {
+  it("keeps MinerU source images during repair", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();
     const parent = createParent();
@@ -1629,7 +1624,7 @@ describe("mineruSync", function () {
     assert.deepEqual(manifest.figureBlocks[0].imagePaths, ["images/fig1.png"]);
   });
 
-  it("strips source images during repair after figure crops are ready", async function () {
+  it("preserves MinerU images and removes legacy figure crops during repair", async function () {
     const io = setupMemoryIO();
     const items = new Map<number, MockItem>();
     const parent = createParent();
@@ -1659,12 +1654,6 @@ describe("mineruSync", function () {
       },
       { type: "text", text_level: 1, text: "Results", page_idx: 1 },
     ];
-    const sourceManifest = buildManifest(sourceMd, contentList);
-    const canonicalManifest = buildManifest(canonicalMd, contentList);
-    const finalizedManifest = {
-      ...canonicalManifest,
-      figureBlocks: sourceManifest.figureBlocks,
-    };
     const cropPath = `${itemDir}/figure_crops/crops/figure-1.png`;
     io.files.set(normalizePath(`${itemDir}/full.md`), bytes(sourceMd));
     io.files.set(normalizePath(`${itemDir}/images/fig1.png`), bytes([1, 2, 3]));
@@ -1675,49 +1664,15 @@ describe("mineruSync", function () {
     io.files.set(normalizePath(cropPath), bytes([137, 80, 78, 71, 1]));
     io.files.set(
       normalizePath(`${itemDir}/figure_crops/figure_geometry.json`),
-      bytes(
-        JSON.stringify({
-          version: PDF_FIGURE_CROP_CACHE_VERSION,
-          attachmentId: pdf.id,
-          manifestHash: buildPdfFigureCropManifestHash(finalizedManifest),
-          pdfFingerprint: "test",
-          renderScale: 1.8,
-          algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION,
-          generatedAt: 1,
-          expectedFigures: [
-            {
-              label: "Figure 1",
-              baseLabel: "Figure 1",
-              pageNumber: 1,
-              status: "ok",
-              cropPath,
-            },
-          ],
-          missingFigures: [],
-          entries: [
-            {
-              id: "figure-1",
-              label: "Figure 1",
-              baseLabel: "Figure 1",
-              pageNumber: 1,
-              cropPath,
-              rect: { left: 0, top: 0, width: 100, height: 100 },
-              confidence: 0.9,
-              source: "pdf-image-object",
-              warnings: [],
-              mineruImagePaths: [],
-            },
-          ],
-        }),
-      ),
+      bytes("{}"),
     );
 
     const result = await repairMineruCaches();
 
     assert.equal(result.checked, 1);
     assert.equal(await readCachedMineruMd(pdf.id), canonicalMd);
-    assert.isFalse(io.files.has(normalizePath(`${itemDir}/images/fig1.png`)));
-    assert.isTrue(io.files.has(normalizePath(cropPath)));
+    assert.isTrue(io.files.has(normalizePath(`${itemDir}/images/fig1.png`)));
+    assert.isFalse(io.files.has(normalizePath(cropPath)));
   });
 
   it("keeps a local cache when the current PDF bytes changed", async function () {

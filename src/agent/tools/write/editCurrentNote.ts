@@ -434,13 +434,11 @@ export function createEditCurrentNoteTool(
         "When the user asks to create/write/save a new item note, call `edit_current_note` with mode 'create', target 'item', and `content`; create means a brand-new child note, not appending to the response-save note. " +
         "For standalone notes, call `edit_current_note` with mode 'create', target 'standalone', and `content`. " +
         "Pass Markdown by default. When the user explicitly requests HTML output (e.g. for styled note templates), pass well-formed HTML with inline styles directly. " +
-        "When the note discusses a specific figure, first use `paper_read({ mode:'figures' })` and embed the extracted PDF crop path: `![Figure N](file:///{path})` — auto-imported as a Zotero attachment. " +
-        "Treat paper_read mode:'figures' as the authority for figure crop cache reuse/regeneration; use returned crop paths as-is and do not inspect or validate `figure_crops` metadata before writing. " +
+        "When the note discusses a specific figure, first use `paper_read({ mode:'figures' })` and embed the returned MinerU imagePath: `![Figure N](file:///{path})` — auto-imported as a Zotero attachment. Do not recrop the source PDF. " +
         "When the note discusses a table, use `paper_read({ mode:'targeted' })` for the table text and surrounding discussion instead of the figure-crop extractor. " +
-        "If paper_read mode:'figures' returns no_figures, mineru_required, error, zero figures, or no image artifact, switch to text-only mode when the user asked for a note: do not include figure images, rendered PDF page screenshots, MinerU source images, or extracted-image placeholders; explicitly state that figure extraction failed or no extracted crops are available, and that explanations are based on captions, figure legends, and surrounding paper text. " +
-        "Do not embed MinerU source image paths for figure notes. " +
+        "If paper_read mode:'figures' returns no_figures, mineru_required, error, zero figures, or no image artifact, switch to text-only mode when the user asked for a note and state that no MinerU image mapping is available; base explanations on captions, figure legends, and surrounding paper text. " +
         "User-provided image inputs are unaffected. " +
-        "Text-only models may still copy/embed extracted crop paths into notes when crops are available, but must not make unsupported visual claims beyond caption and surrounding-text evidence.",
+        "Text-only models may still copy/embed returned MinerU image paths into notes, but must not make unsupported visual claims beyond caption and surrounding-text evidence.",
     },
     presentation: {
       label: "Edit / Create / Append Note",

@@ -84,11 +84,9 @@ Write the review directly in the chat response. Use this structure:
    - List all cited papers in alphabetical order
    - Format: `Author(s). (Year). Title. *Journal*, Volume(Issue), Pages.`
 
-If key figures from deep-read papers would strengthen a thematic point, first call `paper_read({ mode:'figures', query:'<figure request>' })` and embed the extracted PDF crop paths it returns.
-Treat `paper_read({ mode:'figures' })` as the authority for figure crop cache reuse/regeneration.
-Use its returned crop paths/artifacts as-is and do not inspect or validate `figure_crops` metadata before analysis or writing.
+If key figures from deep-read papers would strengthen a thematic point, first call `paper_read({ mode:'figures', query:'<figure request>' })` and embed the MinerU image paths it returns.
+Use the returned image paths/artifacts directly and do not recrop the source PDF.
 Place figures within the thematic sections they relate to, not in a separate section.
-Do not embed MinerU source image paths.
 
 ### Citation rules
 

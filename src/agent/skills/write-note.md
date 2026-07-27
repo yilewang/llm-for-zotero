@@ -157,24 +157,21 @@ Written by LLM-for-Zotero.
 
 ### Step 3 — Include figures
 
-**If the user asked about a specific figure, include that figure in the note when an extracted PDF crop is available.**
+**If the user asked about a specific figure, include that figure in the note when a mapped MinerU image is available.**
 For other notes, include figures when they genuinely aid understanding (result plots, diagrams, key tables).
 For Zotero library PDFs, first call `paper_read({ mode:'figures', query:'<figure request>' })`.
-Treat `paper_read({ mode:'figures' })` as the authority for figure crop cache reuse/regeneration.
-Use its returned crop paths/artifacts as-is and do not inspect or validate `figure_crops` metadata before writing.
-Embed extracted PDF crop paths returned by that tool.
-Do not embed MinerU source image paths.
+Use the returned MinerU `imagePath` values and image artifacts directly; do not recrop the source PDF.
 Panel suffixes and captions are hints only; do not assume image order proves panel identity.
 If `paper_read({ mode:'figures' })` returns `no_figures`, `mineru_required`, `error`, zero figures, or no image artifact, switch to text-only mode when the user asked for a note.
-Do not include figure images, MinerU source images, rendered PDF page screenshots, or extracted-image placeholders in that failure state.
-Explicitly state that figure extraction failed or no extracted crops are available.
+Do not include rendered PDF page screenshots or image placeholders in that failure state.
+Explicitly state that no MinerU image mapping is available.
 Explicitly state that the explanations are based on captions, figure legends, and surrounding paper text.
-Text-only models may still copy/embed extracted crop paths into notes, but must not make unsupported visual claims beyond caption and surrounding-text evidence.
+Text-only models may still copy/embed returned MinerU image paths into notes, but must not make unsupported visual claims beyond caption and surrounding-text evidence.
 This failure path does not restrict images the user manually attached or pasted; user-provided image inputs can still be used normally.
 
 #### For Zotero notes (`note_write`)
 
-- Use `![Caption](file:///{extractedCropPath})`.
+- Use `![Caption](file:///{mineruImagePath})`.
   The `note_write` tool auto-imports `file://` images as Zotero embedded attachments.
 - Place figures inline near the relevant discussion.
 
@@ -192,7 +189,7 @@ This failure path does not restrict images the user manually attached or pasted;
 
 1. Create the destination directory: `run_command` with `mkdir -p "{attachmentsPath}/{sanitized-paper-title}"`.
    The folder is named after the **paper title only** (no subtopic, no date) so multiple notes about the same paper share the same images folder.
-2. Copy extracted PDF crop files returned by `paper_read({ mode:'figures' })` to `{attachmentsPath}/{sanitized-paper-title}/` using `run_command`.
+2. Copy MinerU image files returned by `paper_read({ mode:'figures' })` to `{attachmentsPath}/{sanitized-paper-title}/` using `run_command`.
    Copy images BEFORE writing the note file.
 3. Compute the **relative path from the note's directory to the image file**.
    Use `..` to climb to the common ancestor, then descend to the image.
@@ -218,10 +215,10 @@ Write:        ![Figure 2. RSA toolbox schematic](../imgs/Nili2014/figure-2.jpg)
 - `![[imgs/foo/figure-2.jpg]]` — wiki-link embed.
   We use standard markdown only.
 
-**If the extracted PDF crop cannot be found**, write a text-only note when the user asked for a note.
+**If the mapped MinerU image cannot be found**, write a text-only note when the user asked for a note.
 Switch to text-only mode and do not include any figure image artifact.
-Clearly state that figure extraction failed or no extracted crops are available.
-Do NOT fall back to MinerU source images, `file:///`, absolute paths, or any of the negative examples above.
+Clearly state that no MinerU image mapping is available.
+Do not fall back to rendered PDF pages, `file:///`, absolute paths, or any of the negative examples above.
 
 ### Step 4a — Write to Zotero (`note_write`)
 

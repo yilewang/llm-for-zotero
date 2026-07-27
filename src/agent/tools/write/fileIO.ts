@@ -348,43 +348,6 @@ function buildCodexMineruPaperSourceMetadata(
   return null;
 }
 
-function getRequestMineruCacheRelativePath(
-  filePath: string,
-  context: AgentToolContext,
-): string | null {
-  const normalizedFilePath = normalizePathForPrefix(filePath);
-  for (const cacheDir of getRequestMineruCacheDirs(
-    getRequestMineruPaperContexts(context),
-  )) {
-    const normalizedCacheDir = normalizePathForPrefix(cacheDir);
-    if (!normalizedCacheDir) continue;
-    if (normalizedFilePath === normalizedCacheDir) return "";
-    const prefix = `${normalizedCacheDir}/`;
-    if (normalizedFilePath.startsWith(prefix)) {
-      return normalizedFilePath.slice(prefix.length);
-    }
-  }
-  return null;
-}
-
-function isPdfFigureCropCachePath(relativePath: string): boolean {
-  const normalized = relativePath
-    .replace(/\\/g, "/")
-    .split("/")
-    .filter(Boolean)
-    .join("/");
-  return normalized.startsWith("figure_crops/");
-}
-
-function isDisallowedMineruSourceImageCacheRead(
-  filePath: string,
-  context: AgentToolContext,
-): boolean {
-  const relativePath = getRequestMineruCacheRelativePath(filePath, context);
-  if (!relativePath) return false;
-  return !isPdfFigureCropCachePath(relativePath);
-}
-
 /**
  * Read a file using Gecko-compatible I/O APIs.
  */
@@ -495,7 +458,7 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
       instruction:
         "Use file_io to read or write files on the user's filesystem. " +
         "For ordinary Zotero paper summaries, methods, key points, and targeted Q&A, use paper_read instead of direct MinerU cache reads. " +
-        "Use file_io for explicit filesystem tasks or direct MinerU manifest/section cache inspection. For figure interpretation or note figure embeds, use paper_read mode:'figures' and its extracted PDF crop paths rather than MinerU source image paths. Treat paper_read mode:'figures' as the authority for figure crop cache reuse/regeneration; use returned crop paths as-is and do not inspect or validate `figure_crops` metadata before writing. If figure extraction fails or returns no crops and the user asked for a file note, switch to text-only mode: do not include figure images, rendered PDF page screenshots, MinerU source images, or extracted-image placeholders; explicitly state that extraction failed or no extracted crops are available and base explanations on captions, figure legends, and surrounding paper text. User-provided image inputs are unaffected. " +
+        "Use file_io for explicit filesystem tasks or direct MinerU manifest/section cache inspection. For figure interpretation or note figure embeds, use paper_read mode:'figures' and the MinerU imagePath values it returns; do not recrop the source PDF. If no mapped MinerU image is returned and the user asked for a file note, switch to text-only mode and base explanations on captions, figure legends, and surrounding paper text. User-provided image inputs are unaffected. " +
         "Common uses: write a Python/R script before running it with run_command, read a CSV/JSON data file, " +
         "save analysis results to the user's Desktop, export formatted bibliographies. " +
         "Always use absolute paths.",
@@ -725,16 +688,6 @@ export function createFileIOTool(): AgentToolDefinition<FileIOInput, unknown> {
                 action: "read",
                 filePath: input.filePath,
                 error: "Image file not found",
-              },
-            };
-          }
-          if (isDisallowedMineruSourceImageCacheRead(input.filePath, context)) {
-            return {
-              content: {
-                action: "read",
-                filePath: input.filePath,
-                error:
-                  "MinerU source image caches are not available. Use paper_read mode:'figures' to extract source-PDF figure crops under figure_crops/**.",
               },
             };
           }

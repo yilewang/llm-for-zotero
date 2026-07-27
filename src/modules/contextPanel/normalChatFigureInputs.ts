@@ -100,21 +100,17 @@ export async function resolveNormalChatFigureInputs(params: {
       } as never,
       paperContexts: targetPapers,
     });
-    const reliableCropPaths = new Set(
+    const mineruImagePaths = new Set(
       (result.figures || [])
-        .filter(
-          (figure) =>
-            typeof figure.cropPath === "string" &&
-            Number(figure.confidence) >= 0.8,
-        )
-        .map((figure) => String(figure.cropPath)),
+        .filter((figure) => typeof figure.imagePath === "string")
+        .map((figure) => String(figure.imagePath)),
     );
     const images: string[] = [];
     for (const artifact of result.artifacts || []) {
       if (
         artifact.kind !== "image" ||
         !artifact.storedPath ||
-        !reliableCropPaths.has(artifact.storedPath)
+        !mineruImagePaths.has(artifact.storedPath)
       ) {
         continue;
       }
@@ -128,14 +124,14 @@ export async function resolveNormalChatFigureInputs(params: {
         images,
         warnings: result.warnings || [],
         assistantInstruction:
-          "A source-PDF figure crop is attached together with its caption and surrounding paper text. Inspect the complete crop before making visual claims, and preserve any extraction warnings.",
+          "The MinerU-mapped figure image is attached together with its caption and surrounding paper text. Inspect the complete image before making visual claims, and preserve any mapping warnings.",
       };
     }
     return {
       images: [],
       warnings: result.warnings || [],
       assistantInstruction:
-        "No reliable source-PDF figure crop was available. Base the explanation only on captions and surrounding paper text, state that limitation, and do not make unsupported visual claims.",
+        "No MinerU-mapped figure image was available. Base the explanation only on captions and surrounding paper text, state that limitation, and do not make unsupported visual claims.",
     };
   } catch (error) {
     return {
