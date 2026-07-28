@@ -1893,6 +1893,86 @@ export class PdfPageService {
       : null;
   }
 
+  /**
+   * Return the PDF's embedded page-label array (PDF.js `pageLabels`),
+   * indexed by 0-based physical page.  Returns `null` when the PDF has
+   * no custom labels (all pages are numbered 1, 2, 3, …).
+   */
+  async getPageLabels(
+    contextItemId: number,
+  ): Promise<(string | null)[] | null> {
+    const savedTabId = getLastKnownSelectedTabId();
+    try {
+      const reader = await openReaderForItem(contextItemId, {
+        pageIndex: 0,
+        pageLabel: "1",
+      });
+      if (!reader) return null;
+      const app = await waitForPdfDocument(reader);
+      const labels: unknown = app?.pdfViewer?.pageLabels;
+      if (!Array.isArray(labels) || !labels.length) return null;
+      // PDF.js returns `string[]` where each entry is the printed label.
+      return labels.map((l: unknown) =>
+        l != null ? String(l) : null,
+      );
+    } catch {
+      return null;
+    } finally {
+      restoreNonReaderTab(savedTabId);
+    }
+  }
+
+  /**
+   * Text-layer geometry for one physical page, in PDF user space
+   * (origin bottom-left, y-up, points) — the same space Zotero uses for
+   * annotation position.rects, so NO axis flip is needed downstream.
+   */
+  async getPageTextGeometry(
+    contextItemId: number,
+    pageIndex: number,
+  ): Promise<{
+    width: number;
+    height: number;
+    items: Array<{ str: string; x: number; y: number; width: number; height: number }>;
+  } | null> {
+    const savedTabId = getLastKnownSelectedTabId();
+    try {
+      const idx = Math.max(0, Math.floor(pageIndex));
+      const reader = await openReaderForItem(contextItemId, {
+        pageIndex: idx,
+        pageLabel: `${idx + 1}`,
+      });
+      if (!reader) return null;
+      const app = await waitForPdfDocument(reader);
+      const pdfDocument = unwrapWrappedJsObject(
+        app?.pdfDocument as { getPage?: (n: number) => Promise<unknown> } | null | undefined,
+      );
+      if (typeof pdfDocument?.getPage !== "function") return null;
+      const pdfPage = resolveRenderablePdfPage(await pdfDocument.getPage(idx + 1));
+      if (!pdfPage || typeof pdfPage.getTextContent !== "function") return null;
+
+      const viewport = pdfPage.getViewport({ scale: 1 }); // scale 1 = PDF points
+      const textContent = await pdfPage.getTextContent();
+      const items: Array<{ str: string; x: number; y: number; width: number; height: number }> = [];
+      for (const item of textContent.items || []) {
+        const t = Array.isArray(item.transform) ? item.transform : [];
+        if (t.length < 6) continue;
+        const x = Number(t[4]);
+        const y = Number(t[5]); // baseline, measured from page bottom (y-up)
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        const rawH = Number(item.height);
+        const h = Number.isFinite(rawH) && rawH > 0 ? rawH : Math.abs(Number(t[3])) || 10;
+        const w = Number(item.width);
+        items.push({ str: `${item.str ?? ""}`, x, y, width: Number.isFinite(w) ? w : 0, height: h });
+      }
+      return { width: Number(viewport.width) || 0, height: Number(viewport.height) || 0, items };
+    } catch {
+      return null;
+    } finally {
+      restoreNonReaderTab(savedTabId);
+    }
+  }
+
   async resolveTarget(
     params: ResolvePdfTargetInput & { request: AgentRuntimeRequest },
   ): Promise<ResolvedPdfTarget> {

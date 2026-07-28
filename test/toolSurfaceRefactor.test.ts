@@ -105,6 +105,10 @@ describe("semantic tool surface", function () {
     const names = tools.map((tool) => tool.name).sort();
 
     assert.deepEqual(names, [
+      "annotation_create",
+      "annotation_delete",
+      "annotation_find",
+      "annotation_update",
       "attachment_update",
       "collection_update",
       "file_io",
@@ -117,9 +121,7 @@ describe("semantic tool surface", function () {
       "literature_search",
       "note_write",
       "paper_read",
-      "run_command",
       "undo_last_action",
-      "zotero_script",
     ]);
     const literatureSearch = tools.find(
       (tool) => tool.name === "literature_search",
@@ -150,7 +152,7 @@ describe("semantic tool surface", function () {
       );
     }
     assert.isUndefined(registry.getTool("web_search"));
-    for (const name of ["file_io", "run_command", "zotero_script"]) {
+    for (const name of ["file_io"]) {
       assert.equal(
         tools.find((tool) => tool.name === name)?.tier,
         "advanced",

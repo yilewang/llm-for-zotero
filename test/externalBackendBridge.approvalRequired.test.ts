@@ -339,7 +339,7 @@ describe("external bridge action approval handling", function () {
         capturedBody?.allowedTools,
         `mcp__${serverName}__library_retrieve`,
       );
-      assert.include(
+      assert.notInclude(
         capturedBody?.allowedTools,
         `mcp__${serverName}__zotero_script`,
       );
