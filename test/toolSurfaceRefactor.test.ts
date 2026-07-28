@@ -121,7 +121,9 @@ describe("semantic tool surface", function () {
       "literature_search",
       "note_write",
       "paper_read",
+      "run_command",
       "undo_last_action",
+      "zotero_script",
     ]);
     const literatureSearch = tools.find(
       (tool) => tool.name === "literature_search",
@@ -152,7 +154,7 @@ describe("semantic tool surface", function () {
       );
     }
     assert.isUndefined(registry.getTool("web_search"));
-    for (const name of ["file_io"]) {
+    for (const name of ["file_io", "run_command", "zotero_script"]) {
       assert.equal(
         tools.find((tool) => tool.name === name)?.tier,
         "advanced",

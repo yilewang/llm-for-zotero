@@ -29,6 +29,7 @@ import { createManageAttachmentsTool } from "./write/manageAttachments";
 import { createRunCommandTool } from "./write/runCommand";
 import { createImportLocalFilesTool } from "./write/importLocalFiles";
 import { createFileIOTool } from "./write/fileIO";
+import { createZoteroScriptTool } from "./write/zoteroScript";
 import { createAnnotationTool } from "./write/createAnnotation";
 import { createDeleteAnnotationsTool } from "./write/deleteAnnotations";
 import { createAnnotationFindTool } from "./read/annotationFind";
@@ -137,7 +138,7 @@ const ATTACHMENT_UPDATE_GUIDANCE: ToolGuidance = {
       request.userText || "",
     ),
   instruction:
-    "Use attachment_update to delete, rename, or re-link a single attachment. To find attachments, use library_read with sections:['attachments'] first. Re-linking only works for linked-file attachments, not imported copies.",
+    "Use attachment_update to delete, rename, or re-link a single attachment. To find attachments, use library_read with sections:['attachments'] first. Re-linking only works for linked-file attachments, not imported copies. For batch renaming with computed filenames, use zotero_script instead.",
 };
 
 function markInternalTool<TInput, TResult>(
@@ -433,6 +434,7 @@ export function createBuiltInToolRegistry(
   const runCommand = createRunCommandTool();
   const importLocalFiles = createImportLocalFilesTool(deps.zoteroGateway);
   const fileIO = createFileIOTool();
+  const zoteroScript = createZoteroScriptTool();
   const undoLastAction = createUndoLastActionTool();
 
   registry.register(
@@ -561,7 +563,8 @@ export function createBuiltInToolRegistry(
   );
   registry.register(undoLastAction);
   registry.register(markToolTier(fileIO, "advanced"));
-  registry.register(markInternalTool(runCommand));
+  registry.register(markToolTier(runCommand, "advanced"));
+  registry.register(markToolTier(zoteroScript, "advanced"));
   registry.register(createToolResultReadTool());
 
   const legacyTools: AgentToolDefinition<any, any>[] = [

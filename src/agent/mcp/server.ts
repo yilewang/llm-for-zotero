@@ -70,7 +70,9 @@ export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
   "annotation_create",
   "annotation_delete",
   "annotation_update",
+  "run_command",
   "file_io",
+  "zotero_script",
   "undo_last_action",
 ] as const;
 const CURATED_READ_TOOL_NAMES = new Set<string>(
@@ -124,7 +126,9 @@ const RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES = new Set([
 ]);
 const RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES = new Set(["literature_search"]);
 const MCP_TOOLS_WITH_OWN_CONFIRMATION_POLICY = new Set([
+  "run_command",
   "file_io",
+  "zotero_script",
 ]);
 
 export type ZoteroMcpActiveScope = {
@@ -1088,7 +1092,9 @@ function decorateMcpToolDescription(
   const scopeGuidance =
     "Zotero MCP scope: omit libraryID, activeItemId, and activeContextItemId to use the current Codex Zotero chat scope. Use library_search with explicit entity and mode, for example library_search({ entity:'items', mode:'search', text:'...' }) or library_search({ entity:'collections', mode:'list', view:'tree' }), to discover Zotero items. Use library_retrieve for broad folder/library evidence search across a scoped resource pool: intent:'enumerate' for comprehensive quality-first local evidence search including which/all/how-many/list questions, intent:'summarize' for taxonomy/theme/commonality/comparison synthesis with body-evidence coverage in bounded selected pools, and intent:'verify' for exact presence/absence. Use library_read for structured item state, and paper_read for close reading one known paper: mode:'overview' for summaries/main message, mode:'targeted' for textual evidence/sections/pages, mode:'full' only for explicit exhaustive full-text requests with a coverage receipt, mode:'figures' for precise extracted PDF figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible reader page. Use literature_search for scholarly online search: workflow:'answer' returns scholarly results for source-cited answers, while workflow:'review' opens Zotero import/review-card workflows. No general web-search MCP tool is available. For counting questions, prefer library_search totalCount/returnedCount/limited metadata or library_retrieve intent:'enumerate' coverage instead of hand-counting listed results.";
   const writeGuidance =
-    mutability === "write"
+    toolName === "zotero_script"
+      ? "zotero_script runs directly without a review card. Write scripts must call env.snapshot(item) before mutating items, or env.addUndoStep(fn) for custom changes, so undo_last_action can revert the operation."
+      : mutability === "write"
         ? "Write operations pause in Zotero for user review before execution. For Zotero note requests, call note_write instead of returning note-ready text in chat."
         : "";
   return [description, scopeGuidance, writeGuidance]
