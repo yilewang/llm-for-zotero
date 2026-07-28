@@ -58,6 +58,7 @@ export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
   "library_retrieve",
   "paper_read",
   "literature_search",
+  "annotation_find",
 ] as const;
 export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
   "library_update",
@@ -68,6 +69,7 @@ export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
   "attachment_update",
   "annotation_create",
   "annotation_delete",
+  "annotation_update",
   "file_io",
   "undo_last_action",
 ] as const;
