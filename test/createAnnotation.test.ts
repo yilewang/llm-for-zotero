@@ -8,7 +8,11 @@ import type {
 } from "../src/agent/services/zoteroGateway";
 import type { PdfPageService } from "../src/agent/services/pdfPageService";
 import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
-import { pushUndoEntry, clearUndoStack } from "../src/agent/store/undoStore";
+import {
+  pushUndoEntry,
+  clearUndoStack,
+  peekUndoEntry,
+} from "../src/agent/store/undoStore";
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -27,7 +31,13 @@ function makeMockPdfPageService(
   ) => Promise<{
     width: number;
     height: number;
-    items: Array<{ str: string; x: number; y: number; width: number; height: number }>;
+    items: Array<{
+      str: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }>;
   } | null>,
 ): PdfPageService {
   return {
@@ -38,7 +48,9 @@ function makeMockPdfPageService(
 }
 
 function makeMockZoteroGateway(
-  createFn?: (params: CreateAnnotationParams) => Promise<CreateAnnotationResult>,
+  createFn?: (
+    params: CreateAnnotationParams,
+  ) => Promise<CreateAnnotationResult>,
 ): ZoteroGateway {
   const defaultCreate = async (
     params: CreateAnnotationParams,
@@ -242,9 +254,7 @@ describe("annotation_create tool", function () {
 
     const validResult = t.validate({
       paperContext: MOCK_PAPER,
-      annotations: [
-        { type: "highlight", text: "Key result", pageIndex: 2 },
-      ],
+      annotations: [{ type: "highlight", text: "Key result", pageIndex: 2 }],
     });
     assert.isTrue(validResult.ok);
     if (!validResult.ok) return;
@@ -306,8 +316,6 @@ describe("annotation_create tool", function () {
     if (!validResult.ok) return;
 
     // Undo stack should be empty before execution.
-    const { peekUndoEntry } =
-      require("../src/agent/store/undoStore") as typeof import("../src/agent/store/undoStore");
     assert.isNull(peekUndoEntry(1));
 
     await t.execute(validResult.value, context);

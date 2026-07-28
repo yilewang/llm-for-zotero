@@ -131,9 +131,12 @@ function mineruCacheDirExists(attachmentId: number): boolean {
  * Collect all regular-item IDs that have at least one PDF child attachment
  * with a MinerU cache directory on disk.
  */
-async function collectCandidateItems(options: BackfillOptions): Promise<number[]> {
+async function collectCandidateItems(
+  options: BackfillOptions,
+): Promise<number[]> {
   const candidateIds: number[] = [];
-  const limit = options.limit && options.limit > 0 ? Math.floor(options.limit) : Infinity;
+  const limit =
+    options.limit && options.limit > 0 ? Math.floor(options.limit) : Infinity;
   const libraryId = options.libraryId;
 
   // Scope to a single collection if requested.
@@ -212,28 +215,40 @@ export async function backfillPageInfo(
         `Failed to collect candidates: ${err instanceof Error ? err.message : String(err)}`,
       );
       result.durationMs = Date.now() - startTime;
-      ztoolkit.log("[backfillPageInfo] FAIL collecting: " + result.errorMessages[0]);
+      ztoolkit.log(
+        "[backfillPageInfo] FAIL collecting: " + result.errorMessages[0],
+      );
       return result;
     }
 
     result.scanned = candidateIds.length;
     ztoolkit.log("[backfillPageInfo] candidates=" + candidateIds.length);
 
-    const concurrency = Math.max(1,
-      options.concurrency && options.concurrency > 0 ? Math.floor(options.concurrency) : 4,
+    const concurrency = Math.max(
+      1,
+      options.concurrency && options.concurrency > 0
+        ? Math.floor(options.concurrency)
+        : 4,
     );
     ztoolkit.log("[backfillPageInfo] concurrency=" + concurrency);
 
     const MAX_ERRORS = 50;
 
-    type ItemOutcome = { updated: number; alreadyOk: number; skipped: number; error: string | null };
+    type ItemOutcome = {
+      updated: number;
+      alreadyOk: number;
+      skipped: number;
+      error: string | null;
+    };
 
     const processItem = async (itemId: number): Promise<ItemOutcome> => {
       try {
         const item = Zotero.Items.get(itemId);
-        if (!item || !isRegularItem(item)) return { updated: 0, alreadyOk: 0, skipped: 1, error: null };
+        if (!item || !isRegularItem(item))
+          return { updated: 0, alreadyOk: 0, skipped: 1, error: null };
         const pdfs = getPdfChildAttachments(item);
-        if (!pdfs.length) return { updated: 0, alreadyOk: 0, skipped: 1, error: null };
+        if (!pdfs.length)
+          return { updated: 0, alreadyOk: 0, skipped: 1, error: null };
 
         for (const pdf of pdfs) {
           try {
@@ -263,8 +278,11 @@ export async function backfillPageInfo(
                 !options.dryRun &&
                 cached &&
                 cached.chunkMeta?.length > 0 &&
-                cached.chunkMeta.some((m: any) => typeof m.pageIndex === "number");
-              if (ok || options.dryRun) return { updated: 1, alreadyOk: 0, skipped: 0, error: null };
+                cached.chunkMeta.some(
+                  (m: any) => typeof m.pageIndex === "number",
+                );
+              if (ok || options.dryRun)
+                return { updated: 1, alreadyOk: 0, skipped: 0, error: null };
               return { updated: 0, alreadyOk: 0, skipped: 1, error: null };
             }
 
@@ -278,12 +296,17 @@ export async function backfillPageInfo(
               !options.dryRun &&
               cached &&
               cached.chunkMeta?.length > 0 &&
-              cached.chunkMeta.some((m: any) => typeof m.pageIndex === "number");
-            if (ok || options.dryRun) return { updated: 1, alreadyOk: 0, skipped: 0, error: null };
+              cached.chunkMeta.some(
+                (m: any) => typeof m.pageIndex === "number",
+              );
+            if (ok || options.dryRun)
+              return { updated: 1, alreadyOk: 0, skipped: 0, error: null };
             return { updated: 0, alreadyOk: 0, skipped: 1, error: null };
           } catch (err) {
             return {
-              updated: 0, alreadyOk: 0, skipped: 0,
+              updated: 0,
+              alreadyOk: 0,
+              skipped: 0,
               error: `Item ${itemId} attachment ${pdf.id}: ${err instanceof Error ? err.message : String(err)}`,
             };
           }
@@ -291,7 +314,9 @@ export async function backfillPageInfo(
         return { updated: 0, alreadyOk: 0, skipped: 1, error: null };
       } catch (err) {
         return {
-          updated: 0, alreadyOk: 0, skipped: 0,
+          updated: 0,
+          alreadyOk: 0,
+          skipped: 0,
           error: `Item ${itemId}: ${err instanceof Error ? err.message : String(err)}`,
         };
       }
@@ -301,7 +326,9 @@ export async function backfillPageInfo(
     const outcomes: ItemOutcome[] = [];
     for (let i = 0; i < candidateIds.length; i += concurrency) {
       const batch = candidateIds.slice(i, i + concurrency);
-      const batchResults = await Promise.all(batch.map((id) => processItem(id)));
+      const batchResults = await Promise.all(
+        batch.map((id) => processItem(id)),
+      );
       outcomes.push(...batchResults);
     }
 
@@ -325,6 +352,20 @@ export async function backfillPageInfo(
   }
 
   result.durationMs = Date.now() - startTime;
-  ztoolkit.log("[backfillPageInfo] DONE scanned=" + result.scanned + " updated=" + result.updated + " alreadyOk=" + result.alreadyOk + " skipped=" + result.skipped + " errors=" + result.errors + " duration=" + result.durationMs + "ms");
+  ztoolkit.log(
+    "[backfillPageInfo] DONE scanned=" +
+      result.scanned +
+      " updated=" +
+      result.updated +
+      " alreadyOk=" +
+      result.alreadyOk +
+      " skipped=" +
+      result.skipped +
+      " errors=" +
+      result.errors +
+      " duration=" +
+      result.durationMs +
+      "ms",
+  );
   return result;
 }

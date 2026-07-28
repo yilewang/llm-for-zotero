@@ -427,7 +427,10 @@ export function createBuiltInToolRegistry(
   const mergeItems = createMergeItemsTool(deps.zoteroGateway);
   const manageAttachments = createManageAttachmentsTool(deps.zoteroGateway);
   const editCurrentNote = createEditCurrentNoteTool(deps.zoteroGateway);
-  const createAnnotation = createAnnotationTool(deps.zoteroGateway, deps.pdfPageService);
+  const createAnnotation = createAnnotationTool(
+    deps.zoteroGateway,
+    deps.pdfPageService,
+  );
   const deleteAnnotations = createDeleteAnnotationsTool(deps.zoteroGateway);
   const annotationFind = createAnnotationFindTool(deps.zoteroGateway);
   const annotationUpdate = createAnnotationUpdateTool(deps.zoteroGateway);

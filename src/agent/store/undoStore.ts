@@ -38,10 +38,7 @@ export function createUndoRedoPair(actions: {
   };
 }
 
-export function pushUndoEntry(
-  conversationKey: number,
-  entry: UndoEntry,
-): void {
+export function pushUndoEntry(conversationKey: number, entry: UndoEntry): void {
   let stack = stacks.get(conversationKey);
   if (!stack) {
     stack = [];

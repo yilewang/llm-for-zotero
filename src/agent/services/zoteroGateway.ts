@@ -237,11 +237,11 @@ export type AnnotationSnapshot = {
   type: string;
   /** annotationColor (hex) — Zotero requires a colour on every annotation. */
   color: string;
-  text?: string;        // annotationText (raw)
-  comment?: string;     // annotationComment (raw)
-  pageLabel?: string;   // annotationPageLabel
-  sortIndex?: string;   // annotationSortIndex (verbatim → ordering unchanged)
-  position?: string;    // annotationPosition (verbatim → geometry/paths)
+  text?: string; // annotationText (raw)
+  comment?: string; // annotationComment (raw)
+  pageLabel?: string; // annotationPageLabel
+  sortIndex?: string; // annotationSortIndex (verbatim → ordering unchanged)
+  position?: string; // annotationPosition (verbatim → geometry/paths)
   tags: string[];
   /** True if some content can't be recreated (image annotation bitmap). */
   lossy: boolean;
@@ -297,7 +297,7 @@ function buildAnnotationSortIndex(
 }
 
 // Page size is unknown here, so we place a *valid* fallback rect near the top.
-const ASSUMED_PAGE_WIDTH = 612;   // US Letter
+const ASSUMED_PAGE_WIDTH = 612; // US Letter
 const ASSUMED_PAGE_HEIGHT = 792;
 const PAGE_MARGIN = 72;
 
@@ -310,7 +310,8 @@ function buildAnnotationPosition(
   const step = 20;
   const usable = ASSUMED_PAGE_HEIGHT - 2 * PAGE_MARGIN;
   const slotsPerColumn = Math.max(1, Math.floor(usable / step));
-  const slot = ((verticalSlot % slotsPerColumn) + slotsPerColumn) % slotsPerColumn;
+  const slot =
+    ((verticalSlot % slotsPerColumn) + slotsPerColumn) % slotsPerColumn;
   const yTop = ASSUMED_PAGE_HEIGHT - PAGE_MARGIN - slot * step;
   const rect =
     type === "note"
@@ -2558,8 +2559,7 @@ export class ZoteroGateway {
       Number.isFinite(params.pageIndex) && params.pageIndex >= 0
         ? Math.floor(params.pageIndex)
         : 0;
-    const pageLabel =
-      normalizeText(params.pageLabel) || `${pageIndex + 1}`;
+    const pageLabel = normalizeText(params.pageLabel) || `${pageIndex + 1}`;
     const comment = normalizeText(params.comment) || undefined;
     const text = normalizeText(params.text) || undefined;
 
@@ -2570,7 +2570,9 @@ export class ZoteroGateway {
     }
     const regularItem = resolveRegularItem(parentItem);
     if (!regularItem) {
-      throw new Error(`Could not resolve item to a regular item: ${params.itemId}`);
+      throw new Error(
+        `Could not resolve item to a regular item: ${params.itemId}`,
+      );
     }
     const pdfs = getPdfChildAttachments(regularItem);
     if (!pdfs.length) {
@@ -2580,7 +2582,8 @@ export class ZoteroGateway {
     }
     // Prefer the exact attachment from paperContext when available.
     const pdfItem =
-      (params.contextItemId != null && pdfs.find((p) => p.id === params.contextItemId)) ||
+      (params.contextItemId != null &&
+        pdfs.find((p) => p.id === params.contextItemId)) ||
       pdfs[0];
 
     // Color is REQUIRED by Zotero for every annotation type.
@@ -2592,24 +2595,33 @@ export class ZoteroGateway {
     let verticalSlot = 0;
     try {
       const existingIds: number[] =
-        (pdfItem as unknown as { getAnnotations?: () => number[] })
-          .getAnnotations?.() || [];
+        (
+          pdfItem as unknown as { getAnnotations?: () => number[] }
+        ).getAnnotations?.() || [];
       for (const id of existingIds) {
         const raw = (Zotero.Items.get(id) as any)?.annotationPosition;
         if (typeof raw !== "string") continue;
         try {
           if (JSON.parse(raw)?.pageIndex === pageIndex) verticalSlot++;
-        } catch { /* ignore malformed */ }
+        } catch {
+          /* ignore malformed */
+        }
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     let position: string;
     let sortTop: number;
     let charOffset = 0;
     if (Array.isArray(params.rects) && params.rects.length) {
       position = JSON.stringify({ pageIndex, rects: params.rects });
-      sortTop = Number.isFinite(params.topOffset) ? Math.floor(params.topOffset!) : 0;
-      charOffset = Number.isFinite(params.charOffset) ? Math.floor(params.charOffset!) : 0;
+      sortTop = Number.isFinite(params.topOffset)
+        ? Math.floor(params.topOffset!)
+        : 0;
+      charOffset = Number.isFinite(params.charOffset)
+        ? Math.floor(params.charOffset!)
+        : 0;
     } else {
       const built = buildAnnotationPosition(
         pageIndex,
@@ -2655,7 +2667,9 @@ export class ZoteroGateway {
       libraryID: Number(item.libraryID) || 0,
       label:
         type +
-        (display ? ` "${display.slice(0, 60)}${display.length > 60 ? "…" : ""}"` : ""),
+        (display
+          ? ` "${display.slice(0, 60)}${display.length > 60 ? "…" : ""}"`
+          : ""),
       type,
       color: str(a.annotationColor) || "#ffd400",
       text: rawText,
@@ -2693,7 +2707,10 @@ export class ZoteroGateway {
       const annotationId = Number.isFinite(rawId) ? Math.floor(rawId) : 0;
       const item = annotationId ? this.getItem(annotationId) : null;
       if (!item) {
-        results.push({ annotationId: annotationId || rawId, status: "not_found" });
+        results.push({
+          annotationId: annotationId || rawId,
+          status: "not_found",
+        });
         continue;
       }
       if (!item.isAnnotation?.()) {
@@ -2743,7 +2760,10 @@ export class ZoteroGateway {
       : 0;
     const item = annotationId ? this.getItem(annotationId) : null;
     if (!item || !item.isAnnotation?.()) {
-      return { annotationId: annotationId || params.annotationId, updated: false };
+      return {
+        annotationId: annotationId || params.annotationId,
+        updated: false,
+      };
     }
 
     const ann = item as unknown as {
@@ -2806,7 +2826,9 @@ export class ZoteroGateway {
   }
 
   /** Recreate annotations from delete snapshots (the undo path). */
-  async restoreAnnotations(params: { snapshots: AnnotationSnapshot[] }): Promise<{
+  async restoreAnnotations(params: {
+    snapshots: AnnotationSnapshot[];
+  }): Promise<{
     restoredCount: number;
     results: Array<{
       originalAnnotationId: number;
@@ -2851,7 +2873,8 @@ export class ZoteroGateway {
         (annotation as any).annotationType = type;
         (annotation as any).annotationColor = snap.color || "#ffd400";
         (annotation as any).annotationPosition = snap.position;
-        if (snap.pageLabel) (annotation as any).annotationPageLabel = snap.pageLabel;
+        if (snap.pageLabel)
+          (annotation as any).annotationPageLabel = snap.pageLabel;
 
         if (snap.sortIndex) {
           (annotation as any).annotationSortIndex = snap.sortIndex;
@@ -2861,12 +2884,19 @@ export class ZoteroGateway {
             const pos = JSON.parse(snap.position);
             if (Number.isFinite(pos?.pageIndex))
               pageIndex = Math.max(0, Math.floor(pos.pageIndex));
-          } catch { /* ignore */ }
-          (annotation as any).annotationSortIndex = buildAnnotationSortIndex(pageIndex, 0, 0);
+          } catch {
+            /* ignore */
+          }
+          (annotation as any).annotationSortIndex = buildAnnotationSortIndex(
+            pageIndex,
+            0,
+            0,
+          );
         }
 
         const isTextBearing = type === "highlight" || type === "underline";
-        if (isTextBearing && snap.text) (annotation as any).annotationText = snap.text;
+        if (isTextBearing && snap.text)
+          (annotation as any).annotationText = snap.text;
         if (snap.comment) (annotation as any).annotationComment = snap.comment;
 
         for (const tag of snap.tags) if (tag) annotation.addTag(tag, 0);

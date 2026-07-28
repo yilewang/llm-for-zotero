@@ -14,9 +14,7 @@ import {
   normalizePositiveInt,
   PAPER_CONTEXT_REF_SCHEMA,
 } from "../shared";
-import {
-  formatPaperSourceLabel,
-} from "../../../modules/contextPanel/paperAttribution";
+import { formatPaperSourceLabel } from "../../../modules/contextPanel/paperAttribution";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -66,7 +64,9 @@ function normalizeOptionalString(value: unknown): string | undefined {
 function summarizeOperation(op: AnnotationUpdateOperation): string {
   const parts: string[] = [];
   if (op.comment !== undefined) {
-    parts.push(op.comment ? `comment: "${op.comment.slice(0, 40)}"` : "clear comment");
+    parts.push(
+      op.comment ? `comment: "${op.comment.slice(0, 40)}"` : "clear comment",
+    );
   }
   if (op.color !== undefined) {
     parts.push(`colour: ${op.color}`);
@@ -126,8 +126,7 @@ export function createAnnotationUpdateTool(
                 },
                 text: {
                   type: "string",
-                  description:
-                    "New annotation text. Omit to leave unchanged.",
+                  description: "New annotation text. Omit to leave unchanged.",
                 },
               },
             },
@@ -158,7 +157,8 @@ export function createAnnotationUpdateTool(
         onApproved: "Updating annotations",
         onDenied: "Annotation update cancelled",
         onSuccess: ({ content }) => {
-          if (!content || typeof content !== "object") return "Annotations updated";
+          if (!content || typeof content !== "object")
+            return "Annotations updated";
           const result = content as AnnotationUpdateResult;
           return result.updatedCount > 0
             ? `Updated ${result.updatedCount} annotation${result.updatedCount === 1 ? "" : "s"}`
@@ -171,14 +171,14 @@ export function createAnnotationUpdateTool(
 
     validate: (args) => {
       if (!validateObject<Record<string, unknown>>(args)) {
-        return fail(
-          "Expected an object with paperContext and operations.",
-        );
+        return fail("Expected an object with paperContext and operations.");
       }
 
       // Validate paperContext
       if (!validateObject<Record<string, unknown>>(args.paperContext)) {
-        return fail("paperContext must be an object with itemId and contextItemId");
+        return fail(
+          "paperContext must be an object with itemId and contextItemId",
+        );
       }
       const paperContext = args.paperContext as unknown as PaperContextRef;
       if (!normalizePositiveInt(paperContext.itemId)) {
@@ -190,7 +190,9 @@ export function createAnnotationUpdateTool(
 
       // Validate operations
       if (!Array.isArray(args.operations) || !args.operations.length) {
-        return fail("operations must be a non-empty array of update operations");
+        return fail(
+          "operations must be a non-empty array of update operations",
+        );
       }
       if (args.operations.length > MAX_OPERATIONS) {
         return fail(
@@ -235,7 +237,11 @@ export function createAnnotationUpdateTool(
         }
 
         // Ensure at least one field to update
-        if (op.comment === undefined && op.color === undefined && op.text === undefined) {
+        if (
+          op.comment === undefined &&
+          op.color === undefined &&
+          op.text === undefined
+        ) {
           return fail(
             `operations[${i}]: at least one of comment, color, or text must be provided`,
           );
@@ -265,8 +271,14 @@ export function createAnnotationUpdateTool(
         if (op.text !== undefined) textChanges++;
       }
       const changeParts: string[] = [];
-      if (commentChanges) changeParts.push(`${commentChanges} comment${commentChanges > 1 ? "s" : ""}`);
-      if (colorChanges) changeParts.push(`${colorChanges} colour${colorChanges > 1 ? "s" : ""}`);
+      if (commentChanges)
+        changeParts.push(
+          `${commentChanges} comment${commentChanges > 1 ? "s" : ""}`,
+        );
+      if (colorChanges)
+        changeParts.push(
+          `${colorChanges} colour${colorChanges > 1 ? "s" : ""}`,
+        );
       if (textChanges) changeParts.push(`${textChanges} text`);
       const changeSummary = changeParts.join(", ");
 
@@ -363,8 +375,7 @@ export function createAnnotationUpdateTool(
         pushUndoEntry(context.request.conversationKey, {
           id: `undo-annotation_update-${Date.now()}`,
           toolName: "annotation_update",
-          description:
-            `Revert ${previousStates.length} annotation update${previousStates.length === 1 ? "" : "s"}`,
+          description: `Revert ${previousStates.length} annotation update${previousStates.length === 1 ? "" : "s"}`,
           revert,
           restore,
         });
@@ -388,7 +399,10 @@ export function createAnnotationUpdateTool(
       if (!content) return null;
 
       if (content.updatedCount === 0) {
-        return { role: "assistant" as const, content: "No annotations were modified (values unchanged)." };
+        return {
+          role: "assistant" as const,
+          content: "No annotations were modified (values unchanged).",
+        };
       }
 
       const lines: string[] = [];
@@ -412,7 +426,9 @@ export function createAnnotationUpdateTool(
               : "text (was empty)",
           );
         }
-        lines.push(`  • annotation ${r.annotationId}: updated ${changes.join(", ")}`);
+        lines.push(
+          `  • annotation ${r.annotationId}: updated ${changes.join(", ")}`,
+        );
       }
       if (lines.length === 0) return null;
 

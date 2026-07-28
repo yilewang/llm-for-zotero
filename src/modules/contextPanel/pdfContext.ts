@@ -476,7 +476,11 @@ async function cachePDFText(
     }
 
     // 2b. If PDFWorker returned text but no pageChars, try form-feed splitting.
-    if (pdfText && sourceType === "zotero-worker" && (!pdfWorkerPageChars || pdfWorkerPageChars.length === 0)) {
+    if (
+      pdfText &&
+      sourceType === "zotero-worker" &&
+      (!pdfWorkerPageChars || pdfWorkerPageChars.length === 0)
+    ) {
       const ffPages = pdfText.split("\f");
       if (ffPages.length > 1) {
         pdfWorkerPageChars = ffPages.map((p) => p.length);
@@ -590,7 +594,12 @@ async function cachePDFText(
         pdfWorkerPageChars.length > 0 &&
         sourceType === "zotero-worker"
       ) {
-        assignPageInfoFromWorker(chunks, chunkMeta, pdfText, pdfWorkerPageChars);
+        assignPageInfoFromWorker(
+          chunks,
+          chunkMeta,
+          pdfText,
+          pdfWorkerPageChars,
+        );
       }
 
       const { chunkStats, docFreq, avgChunkLength } = buildChunkIndex(chunks);

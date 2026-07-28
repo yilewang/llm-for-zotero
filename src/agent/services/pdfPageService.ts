@@ -1912,9 +1912,7 @@ export class PdfPageService {
       const labels: unknown = app?.pdfViewer?.pageLabels;
       if (!Array.isArray(labels) || !labels.length) return null;
       // PDF.js returns `string[]` where each entry is the printed label.
-      return labels.map((l: unknown) =>
-        l != null ? String(l) : null,
-      );
+      return labels.map((l: unknown) => (l != null ? String(l) : null));
     } catch {
       return null;
     } finally {
@@ -1933,7 +1931,13 @@ export class PdfPageService {
   ): Promise<{
     width: number;
     height: number;
-    items: Array<{ str: string; x: number; y: number; width: number; height: number }>;
+    items: Array<{
+      str: string;
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }>;
   } | null> {
     const savedTabId = getLastKnownSelectedTabId();
     try {
@@ -1945,15 +1949,26 @@ export class PdfPageService {
       if (!reader) return null;
       const app = await waitForPdfDocument(reader);
       const pdfDocument = unwrapWrappedJsObject(
-        app?.pdfDocument as { getPage?: (n: number) => Promise<unknown> } | null | undefined,
+        app?.pdfDocument as
+          | { getPage?: (n: number) => Promise<unknown> }
+          | null
+          | undefined,
       );
       if (typeof pdfDocument?.getPage !== "function") return null;
-      const pdfPage = resolveRenderablePdfPage(await pdfDocument.getPage(idx + 1));
+      const pdfPage = resolveRenderablePdfPage(
+        await pdfDocument.getPage(idx + 1),
+      );
       if (!pdfPage || typeof pdfPage.getTextContent !== "function") return null;
 
       const viewport = pdfPage.getViewport({ scale: 1 }); // scale 1 = PDF points
       const textContent = await pdfPage.getTextContent();
-      const items: Array<{ str: string; x: number; y: number; width: number; height: number }> = [];
+      const items: Array<{
+        str: string;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      }> = [];
       for (const item of textContent.items || []) {
         const t = Array.isArray(item.transform) ? item.transform : [];
         if (t.length < 6) continue;
@@ -1961,11 +1976,24 @@ export class PdfPageService {
         const y = Number(t[5]); // baseline, measured from page bottom (y-up)
         if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
         const rawH = Number(item.height);
-        const h = Number.isFinite(rawH) && rawH > 0 ? rawH : Math.abs(Number(t[3])) || 10;
+        const h =
+          Number.isFinite(rawH) && rawH > 0
+            ? rawH
+            : Math.abs(Number(t[3])) || 10;
         const w = Number(item.width);
-        items.push({ str: `${item.str ?? ""}`, x, y, width: Number.isFinite(w) ? w : 0, height: h });
+        items.push({
+          str: `${item.str ?? ""}`,
+          x,
+          y,
+          width: Number.isFinite(w) ? w : 0,
+          height: h,
+        });
       }
-      return { width: Number(viewport.width) || 0, height: Number(viewport.height) || 0, items };
+      return {
+        width: Number(viewport.width) || 0,
+        height: Number(viewport.height) || 0,
+        items,
+      };
     } catch {
       return null;
     } finally {

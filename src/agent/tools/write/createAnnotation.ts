@@ -1,13 +1,11 @@
-import type { ZoteroGateway, AnnotationSnapshot } from "../../services/zoteroGateway";
+import type {
+  ZoteroGateway,
+  AnnotationSnapshot,
+} from "../../services/zoteroGateway";
 import type { PdfPageService } from "../../services/pdfPageService";
 import type { AgentToolContext, AgentToolDefinition } from "../../types";
 import { pushUndoEntry, createUndoRedoPair } from "../../store/undoStore";
-import {
-  ok,
-  fail,
-  validateObject,
-  normalizePositiveInt,
-} from "../shared";
+import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
 import type { PaperContextRef } from "../../../shared/types";
 import {
   formatPaperCitationLabel,
@@ -72,7 +70,13 @@ function normalizePageIndex(value: unknown): number | undefined {
 type PageTextGeometry = {
   width: number;
   height: number;
-  items: Array<{ str: string; x: number; y: number; width: number; height: number }>;
+  items: Array<{
+    str: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>;
 };
 
 const BASELINE_TOL = 3; // pts — group text items into lines by baseline y
@@ -89,7 +93,12 @@ function locateSpan(
 ): { start: number; end: number; matched: number; exact: boolean } | null {
   const direct = text.indexOf(needle);
   if (direct >= 0) {
-    return { start: direct, end: direct + needle.length, matched: needle.length, exact: true };
+    return {
+      start: direct,
+      end: direct + needle.length,
+      matched: needle.length,
+      exact: true,
+    };
   }
 
   const words = [...needle.matchAll(/\S+/g)].map((m) => ({
@@ -111,11 +120,14 @@ function locateSpan(
       j++;
     }
     const len = words[j].end - words[i].start;
-    if (!best || len > best.len) best = { start: matchStart, end: matchStart + len, len };
+    if (!best || len > best.len)
+      best = { start: matchStart, end: matchStart + len, len };
   }
 
   // Acceptance is now the caller's job (coverage across pages), not a fixed floor.
-  return best ? { start: best.start, end: best.end, matched: best.len, exact: false } : null;
+  return best
+    ? { start: best.start, end: best.end, matched: best.len, exact: false }
+    : null;
 }
 
 /** Chars of the needle that must match to accept a NON-exact placement. */
@@ -131,7 +143,7 @@ function normalizeNeedle(s: string): string {
     .replace(/~~/g, "")
     .replace(/\*\*|__|\*|_/g, "")
     .replace(/^\s{0,3}#{1,6}\s+/gm, "")
-    .replace(/\$[^$]*\$/g, " ")   // inline math → gap (prose still anchors)
+    .replace(/\$[^$]*\$/g, " ") // inline math → gap (prose still anchors)
     .replace(/\\[a-zA-Z]+/g, " ") // stray LaTeX commands
     .replace(/\s+/g, " ")
     .trim();
@@ -235,7 +247,8 @@ function resolvePagePlacement(
     // label-based (off by the offset) — trust the label, reverse-map it.
     if (ann.pageLabel && derived != null && derived !== ann.pageLabel) {
       const physical = map.findIndex((l) => l === ann.pageLabel);
-      if (physical >= 0) return { pageIndex: physical, pageLabel: ann.pageLabel };
+      if (physical >= 0)
+        return { pageIndex: physical, pageLabel: ann.pageLabel };
     }
     return {
       pageIndex: ann.pageIndex!,
@@ -274,7 +287,10 @@ export function createAnnotationTool(
               "Paper context reference from paper_read or library_search results. " +
               "Must include itemId and contextItemId.",
             properties: {
-              itemId: { type: "number", description: "Zotero item ID of the paper." },
+              itemId: {
+                type: "number",
+                description: "Zotero item ID of the paper.",
+              },
               contextItemId: {
                 type: "number",
                 description: "PDF attachment item ID used as context source.",
@@ -305,7 +321,8 @@ export function createAnnotationTool(
                 },
                 comment: {
                   type: "string",
-                  description: "Optional note / comment attached to the annotation.",
+                  description:
+                    "Optional note / comment attached to the annotation.",
                 },
                 color: {
                   type: "string",
@@ -364,17 +381,23 @@ export function createAnnotationTool(
             content && typeof content === "object"
               ? (content as { createdCount?: number }).createdCount
               : undefined;
-          return count ? `Created ${count} annotation(s)` : "Annotations created";
+          return count
+            ? `Created ${count} annotation(s)`
+            : "Annotations created";
         },
       },
     },
 
     validate: (args) => {
       if (!validateObject<Record<string, unknown>>(args)) {
-        return fail("Expected an object with paperContext and annotations array");
+        return fail(
+          "Expected an object with paperContext and annotations array",
+        );
       }
       if (!validateObject<Record<string, unknown>>(args.paperContext)) {
-        return fail("paperContext must be an object with itemId and contextItemId");
+        return fail(
+          "paperContext must be an object with itemId and contextItemId",
+        );
       }
       const paperContext = args.paperContext as unknown as PaperContextRef;
       if (!normalizePositiveInt(paperContext.itemId)) {
@@ -433,7 +456,9 @@ export function createAnnotationTool(
         id: `ann-${i}`,
         label: `${ann.type}${ann.color ? ` (${ann.color})` : ""}`,
         description: [
-          ann.text ? `"${ann.text.slice(0, 80)}${ann.text.length > 80 ? "…" : ""}"` : "",
+          ann.text
+            ? `"${ann.text.slice(0, 80)}${ann.text.length > 80 ? "…" : ""}"`
+            : "",
           ann.comment ? `Comment: ${ann.comment.slice(0, 80)}` : "",
           `Page: ${ann.pageLabel || (ann.pageIndex != null ? `${ann.pageIndex + 1}` : ann.text ? "auto (located from text on create)" : "1 (default)")}`,
         ]
@@ -485,7 +510,10 @@ export function createAnnotationTool(
       let annotations = input.annotations;
 
       // Honour the editable JSON textarea if the user modified it.
-      if (typeof data.annotationsJson === "string" && data.annotationsJson.trim()) {
+      if (
+        typeof data.annotationsJson === "string" &&
+        data.annotationsJson.trim()
+      ) {
         try {
           const parsed = JSON.parse(data.annotationsJson);
           if (Array.isArray(parsed)) annotations = parsed;
@@ -562,7 +590,9 @@ export function createAnnotationTool(
             if (Number.isFinite(n) && n > 0) {
               return (cachedPageCount = Math.floor(n));
             }
-          } catch { /* fall through to probe */ }
+          } catch {
+            /* fall through to probe */
+          }
         }
         return (cachedPageCount = 0); // unknown → probe mode
       };
@@ -576,9 +606,10 @@ export function createAnnotationTool(
         const minMatch = minMatchFor(needle);
         let sawContent = false;
         let nullRun = 0;
-        let best:
-          | { pageIndex: number; located: NonNullable<ReturnType<typeof resolveTextRects>> }
-          | null = null;
+        let best: {
+          pageIndex: number;
+          located: NonNullable<ReturnType<typeof resolveTextRects>>;
+        } | null = null;
 
         for (let p = 0; p < cap; p++) {
           const geom = await geometryFor(p);

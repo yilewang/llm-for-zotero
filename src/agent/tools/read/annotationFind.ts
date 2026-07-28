@@ -5,7 +5,10 @@
  * Returns a flat list of matching annotations whose IDs can be passed
  * directly to annotation_update or annotation_delete.
  */
-import type { ZoteroGateway, PaperAnnotationRecord } from "../../services/zoteroGateway";
+import type {
+  ZoteroGateway,
+  PaperAnnotationRecord,
+} from "../../services/zoteroGateway";
 import { resolveAnnotationColor } from "../../services/zoteroGateway";
 import type { AgentToolDefinition } from "../../types";
 import type { PaperContextRef } from "../../../shared/types";
@@ -112,7 +115,10 @@ function matchesFilters(
   }
 
   // pageLabel — exact string match
-  if (filters.pageLabel !== undefined && record.pageLabel !== filters.pageLabel) {
+  if (
+    filters.pageLabel !== undefined &&
+    record.pageLabel !== filters.pageLabel
+  ) {
     return false;
   }
 
@@ -230,7 +236,8 @@ export function createAnnotationFindTool(
       summaries: {
         onCall: "Searching annotations",
         onSuccess: ({ content }) => {
-          if (!content || typeof content !== "object") return "Annotations found";
+          if (!content || typeof content !== "object")
+            return "Annotations found";
           const result = content as AnnotationFindResult;
           const suffix = result.truncated
             ? ` (showing ${result.annotations.length} of ${result.total})`
@@ -296,12 +303,17 @@ export function createAnnotationFindTool(
       if (rawFilters.hasComment === true || rawFilters.hasComment === "true") {
         filters.hasComment = true;
         hasFilter = true;
-      } else if (rawFilters.hasComment === false || rawFilters.hasComment === "false") {
+      } else if (
+        rawFilters.hasComment === false ||
+        rawFilters.hasComment === "false"
+      ) {
         filters.hasComment = false;
         hasFilter = true;
       }
 
-      const commentContains = normalizeOptionalString(rawFilters.commentContains);
+      const commentContains = normalizeOptionalString(
+        rawFilters.commentContains,
+      );
       if (commentContains !== undefined) {
         filters.commentContains = commentContains;
         hasFilter = true;
@@ -318,7 +330,8 @@ export function createAnnotationFindTool(
       if (limit > MAX_TOTAL_LIMIT) limit = MAX_TOTAL_LIMIT;
 
       // Normalize maxPerPaper
-      let maxPerPaper = normalizePositiveInt(args.maxPerPaper) || DEFAULT_PER_PAPER;
+      let maxPerPaper =
+        normalizePositiveInt(args.maxPerPaper) || DEFAULT_PER_PAPER;
       if (maxPerPaper > MAX_PER_PAPER) maxPerPaper = MAX_PER_PAPER;
 
       return ok<AnnotationFindInput>({
@@ -351,7 +364,9 @@ export function createAnnotationFindTool(
       // Build a record for ANY annotation type — including image / ink
       // annotations that carry neither text nor a comment. (The old gateway
       // path dropped those, so they were unfindable.)
-      const buildAnnotationRecord = (annotation: any): PaperAnnotationRecord => {
+      const buildAnnotationRecord = (
+        annotation: any,
+      ): PaperAnnotationRecord => {
         const rawText = clean(annotation.annotationText || "");
         const rawComment =
           clean(annotation.annotationComment || "") || undefined;

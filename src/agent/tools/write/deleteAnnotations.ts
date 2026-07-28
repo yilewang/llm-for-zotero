@@ -2,7 +2,10 @@
  * Tool for deleting PDF annotations (highlights, underlines, notes)
  * from papers in the Zotero library.
  */
-import type { ZoteroGateway, AnnotationSnapshot } from "../../services/zoteroGateway";
+import type {
+  ZoteroGateway,
+  AnnotationSnapshot,
+} from "../../services/zoteroGateway";
 import type { AgentToolDefinition } from "../../types";
 import type { PaperContextRef } from "../../../shared/types";
 import { pushUndoEntry, createUndoRedoPair } from "../../store/undoStore";
@@ -13,9 +16,7 @@ import {
   normalizePositiveInt,
   normalizePositiveIntArray,
 } from "../shared";
-import {
-  formatPaperSourceLabel,
-} from "../../../modules/contextPanel/paperAttribution";
+import { formatPaperSourceLabel } from "../../../modules/contextPanel/paperAttribution";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,7 +66,10 @@ export function createDeleteAnnotationsTool(
               "Paper context reference from paper_read or library_search results. " +
               "Must include itemId and contextItemId.",
             properties: {
-              itemId: { type: "number", description: "Zotero item ID of the paper." },
+              itemId: {
+                type: "number",
+                description: "Zotero item ID of the paper.",
+              },
               contextItemId: {
                 type: "number",
                 description: "PDF attachment item ID used as context source.",
@@ -127,7 +131,9 @@ export function createDeleteAnnotationsTool(
             content && typeof content === "object"
               ? (content as { deletedCount?: number }).deletedCount
               : undefined;
-          return count ? `Deleted ${count} annotation(s)` : "Annotations deleted";
+          return count
+            ? `Deleted ${count} annotation(s)`
+            : "Annotations deleted";
         },
       },
     },
@@ -142,7 +148,9 @@ export function createDeleteAnnotationsTool(
         );
       }
       if (!validateObject<Record<string, unknown>>(args.paperContext)) {
-        return fail("paperContext must be an object with itemId and contextItemId");
+        return fail(
+          "paperContext must be an object with itemId and contextItemId",
+        );
       }
       const paperContext = args.paperContext as unknown as PaperContextRef;
       if (!normalizePositiveInt(paperContext.itemId)) {
@@ -180,11 +188,14 @@ export function createDeleteAnnotationsTool(
         `Paper: ${formatPaperSourceLabel(paperContext)}`,
       ];
       if (input.annotationIds?.length) {
-        descriptionParts.push(`Deleting ${input.annotationIds.length} specified annotation(s)`);
+        descriptionParts.push(
+          `Deleting ${input.annotationIds.length} specified annotation(s)`,
+        );
       } else {
         const filters: string[] = [];
         if (input.annotationType) filters.push(`type: ${input.annotationType}`);
-        if (input.pageIndex != null) filters.push(`page ${input.pageIndex + 1}`);
+        if (input.pageIndex != null)
+          filters.push(`page ${input.pageIndex + 1}`);
         descriptionParts.push(
           filters.length
             ? `Deleting ALL annotations matching: ${filters.join(", ")}`
@@ -250,7 +261,9 @@ export function createDeleteAnnotationsTool(
           ? parentItem
           : Zotero.Items.get(parentItem.parentID);
         if (!regularItem?.isRegularItem?.()) {
-          throw new Error(`Could not resolve item to a regular item: ${itemId}`);
+          throw new Error(
+            `Could not resolve item to a regular item: ${itemId}`,
+          );
         }
         const attachmentIds: number[] = regularItem.getAttachments?.() || [];
         for (const attId of attachmentIds) {
@@ -258,7 +271,9 @@ export function createDeleteAnnotationsTool(
           if (!att?.isAttachment?.()) continue;
           if (att.attachmentContentType !== "application/pdf") continue;
           const annIds: number[] =
-            (att as unknown as { getAnnotations?: () => number[] }).getAnnotations?.() || [];
+            (
+              att as unknown as { getAnnotations?: () => number[] }
+            ).getAnnotations?.() || [];
           candidateIds.push(...annIds);
         }
       }
@@ -287,8 +302,11 @@ export function createDeleteAnnotationsTool(
           const pos = (annotation as any).annotationPosition;
           let annPageIndex: number | undefined;
           try {
-            annPageIndex = typeof pos === "string" ? JSON.parse(pos)?.pageIndex : undefined;
-          } catch { /* ignore */ }
+            annPageIndex =
+              typeof pos === "string" ? JSON.parse(pos)?.pageIndex : undefined;
+          } catch {
+            /* ignore */
+          }
           if (annPageIndex !== input.pageIndex) continue;
         }
 
@@ -392,7 +410,8 @@ export function createDeleteAnnotationsTool(
       if (notFound) issues.push(`${notFound} not found`);
       if (notAnnotation) issues.push(`${notAnnotation} not an annotation`);
       if (errored) issues.push(`${errored} failed`);
-      if (issues.length) parts.push(`Skipped ${skipped} (${issues.join(", ")}).`);
+      if (issues.length)
+        parts.push(`Skipped ${skipped} (${issues.join(", ")}).`);
 
       return { role: "assistant" as const, content: parts.join(" ") };
     },
