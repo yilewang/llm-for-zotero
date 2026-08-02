@@ -387,6 +387,18 @@ planned for future deprecation after app-server validation.
 7. In the chat header, click **Codex** to switch into the Codex conversation
    system.
 
+#### Optional: add live web search
+
+The Zotero MCP tools focus on your library and scholarly discovery. To also use
+live general web search and URL fetching in Codex, add Parallel Search MCP:
+
+```bash
+codex mcp add parallel-search --url https://search.parallel.ai/mcp
+```
+
+The remote endpoint is free and requires no account or API key. It runs
+alongside the existing Zotero library and scholarly-search tools.
+
 `Codex App Server` and `Claude Code` are mutually exclusive runtime modes in the
 Agent tab. Disable one before enabling the other.
 
