@@ -509,6 +509,15 @@ export type AgentRuntimeRequest = AgentRequest & {
   exhaustiveReadBackend?: ExhaustiveReadBackend;
 };
 
+/** A session-scoped execution checklist maintained by the `todo_write` tool. */
+export type AgentTodoStatus = "pending" | "in_progress" | "completed";
+
+export type AgentTodo = {
+  content: string;
+  activeForm: string;
+  status: AgentTodoStatus;
+};
+
 export type AgentAttachmentReadableVia =
   | "read_attachment"
   | "paper_read"
@@ -657,6 +666,11 @@ export type AgentToolPresentationSummary =
  */
 export type AgentToolResultCard = {
   title: string;
+  /**
+   * Optional compact progress state. When present, the read-only result-card
+   * renderer shows an accessible color indicator rather than a text badge.
+   */
+  status?: AgentTodoStatus;
   subtitle?: string;
   body?: string;
   badges?: string[];

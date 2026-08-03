@@ -14,6 +14,7 @@ import { createReadAttachmentTool } from "./read/readAttachment";
 import { clearPdfToolCaches } from "./read/pdfToolUtils";
 import { createSearchLiteratureOnlineTool } from "./read/searchLiteratureOnline";
 import { createToolResultReadTool } from "./read/toolResultRead";
+import { clearAgentTodos, createTodoWriteTool } from "./todoWrite";
 import { createDelegatingTool, createRenamedTool } from "./facade";
 
 import { createEditCurrentNoteTool } from "./write/editCurrentNote";
@@ -513,6 +514,7 @@ export function createBuiltInToolRegistry(
   registry.register(markToolTier(fileIO, "advanced"));
   registry.register(markToolTier(runCommand, "advanced"));
   registry.register(markToolTier(zoteroScript, "advanced"));
+  registry.register(createTodoWriteTool());
   registry.register(createToolResultReadTool());
 
   const legacyTools: AgentToolDefinition<any, any>[] = [
@@ -541,5 +543,6 @@ export function createBuiltInToolRegistry(
 }
 
 export function clearAllAgentToolCaches(conversationKey: number): void {
+  clearAgentTodos(conversationKey);
   clearPdfToolCaches(conversationKey);
 }

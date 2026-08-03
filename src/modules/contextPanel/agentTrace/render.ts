@@ -1036,22 +1036,33 @@ function renderResultCardList(
   doc: Document,
   cards: AgentToolResultCard[],
 ): HTMLDivElement {
+  const isTodoList = cards.length > 0 && cards.every((card) => card.status);
   const container = doc.createElement("div");
   container.className =
-    "llm-agent-hitl-card llm-search-results llm-search-results-readonly";
+    "llm-agent-hitl-card llm-search-results llm-search-results-readonly" +
+    (isTodoList ? " llm-agent-todo-list" : "");
 
   const header = doc.createElement("div");
   header.className = "llm-agent-hitl-header";
-  header.textContent = `${cards.length} paper${cards.length === 1 ? "" : "s"} found online`;
+  if (isTodoList) {
+    const completed = cards.filter(
+      (card) => card.status === "completed",
+    ).length;
+    header.textContent = `Todo · ${completed}/${cards.length} completed`;
+  } else {
+    header.textContent = `${cards.length} paper${cards.length === 1 ? "" : "s"} found online`;
+  }
   container.appendChild(header);
 
   const list = doc.createElement("div");
   list.className = "llm-search-results-list";
   container.appendChild(list);
 
-  for (const card of cards) {
+  for (const [index, card] of cards.entries()) {
     const row = doc.createElement("div");
-    row.className = "llm-search-results-item";
+    row.className =
+      "llm-search-results-item" +
+      (card.status ? ` llm-agent-todo-item--${card.status}` : "");
 
     const content = doc.createElement("div");
     content.className = "llm-search-results-content";
@@ -1061,8 +1072,31 @@ function renderResultCardList(
 
     const titleEl = doc.createElement("span");
     titleEl.className = "llm-search-results-title";
-    titleEl.textContent = card.title;
+    titleEl.textContent = isTodoList
+      ? `${index + 1}. ${card.title}`
+      : card.title;
     titleRow.appendChild(titleEl);
+
+    if (card.status) {
+      const status = doc.createElement("span");
+      const statusLabel =
+        card.status === "completed"
+          ? "Completed"
+          : card.status === "in_progress"
+            ? "In progress"
+            : "Pending";
+      const statusSymbol =
+        card.status === "completed"
+          ? "✓"
+          : card.status === "in_progress"
+            ? "●"
+            : "○";
+      status.className = `llm-agent-todo-status llm-agent-todo-status--${card.status}`;
+      status.textContent = statusSymbol;
+      status.setAttribute("aria-label", `Status: ${statusLabel}`);
+      status.title = statusLabel;
+      titleRow.appendChild(status);
+    }
 
     if (card.href) {
       const openBtn = doc.createElement("a");

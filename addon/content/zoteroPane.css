@@ -4878,6 +4878,80 @@ label.llm-search-results-item:hover {
   line-height: 1.6;
 }
 
+/* Compact session Todo cards: title, ordinal, and an accessible status symbol. */
+.llm-agent-todo-list .llm-agent-hitl-header {
+  text-transform: uppercase;
+}
+
+.llm-agent-todo-list .llm-search-results-list {
+  gap: 4px;
+}
+
+.llm-agent-todo-list .llm-search-results-item {
+  padding: 7px 8px;
+  border-left: 3px solid var(--fill-quaternary);
+}
+
+.llm-agent-todo-list .llm-search-results-title-row {
+  align-items: center;
+}
+
+.llm-agent-todo-list .llm-search-results-title {
+  font-size: var(--llm-fs-10);
+  font-weight: 600;
+}
+
+.llm-agent-todo-status {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--fill-tertiary);
+  background: color-mix(
+    in srgb,
+    var(--fill-tertiary) 12%,
+    var(--material-background)
+  );
+}
+
+.llm-agent-todo-item--pending {
+  border-left-color: var(--fill-quaternary) !important;
+}
+
+.llm-agent-todo-status--pending {
+  color: var(--fill-tertiary);
+}
+
+.llm-agent-todo-item--in_progress {
+  border-left-color: var(--color-accent) !important;
+}
+
+.llm-agent-todo-status--in_progress {
+  color: var(--color-accent);
+  background: color-mix(
+    in srgb,
+    var(--color-accent) 13%,
+    var(--material-background)
+  );
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.llm-agent-todo-item--completed {
+  border-left-color: #2f9e62 !important;
+}
+
+.llm-agent-todo-status--completed {
+  color: #2f9e62;
+  background: color-mix(in srgb, #2f9e62 13%, var(--material-background));
+}
+
 .llm-at-row {
   display: flex;
   align-items: flex-start;
