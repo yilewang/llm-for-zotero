@@ -35,6 +35,13 @@ export const WEBCHAT_TARGETS = [
     modelName: "chat.deepseek.com",
     displayName: "deepseek",
   },
+  {
+    id: "gemini",
+    label: "Gemini",
+    defaultHost: "http://127.0.0.1:23119/llm-for-zotero/webchat",
+    modelName: "gemini.google.com",
+    displayName: "gemini",
+  },
 ] as const satisfies readonly WebChatTargetEntry[];
 
 export type WebChatTarget = (typeof WEBCHAT_TARGETS)[number]["id"];
@@ -43,7 +50,7 @@ export function getWebChatTarget(id: string): WebChatTargetEntry | undefined {
   return WEBCHAT_TARGETS.find((t) => t.id === id);
 }
 
-/** Resolve a WebChatTarget from a model name like "chatgpt.com" or "chat.deepseek.com". */
+/** Resolve a WebChatTarget from a model/site name like "chatgpt.com". */
 export function getWebChatTargetByModelName(
   modelName: string,
 ): WebChatTargetEntry | undefined {
