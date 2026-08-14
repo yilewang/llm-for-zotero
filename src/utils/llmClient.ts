@@ -293,7 +293,9 @@ function getApiConfig(overrides?: {
   })();
 
   if (!apiBase) {
-    throw new Error("API URL is missing in preferences");
+    throw new Error(
+      "Standard provider mode is selected. Switch to Codex by pressing the header at the top of this chat, or configure an API URL under AI Providers.",
+    );
   }
 
   return {
