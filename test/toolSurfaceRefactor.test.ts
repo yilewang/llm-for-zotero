@@ -10,12 +10,6 @@ import {
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 import type { AgentToolContext } from "../src/agent/types";
-import {
-  PDF_FIGURE_CROP_ALGORITHM_VERSION,
-  PDF_FIGURE_CROP_CACHE_VERSION,
-  buildPdfFigureCropManifestHash,
-  buildPdfFigureCropPdfFingerprint,
-} from "../src/modules/contextPanel/pdfFigureCropCache";
 import { CodexAppServerProcess } from "../src/utils/codexAppServerProcess";
 
 describe("semantic tool surface", function () {
@@ -811,7 +805,7 @@ describe("semantic tool surface", function () {
     }
   });
 
-  it("paper_read visual redirects generic MinerU figure requests to cache inspection", async function () {
+  it("paper_read visual ignores model-added pages and redirects a MinerU figure request", async function () {
     const originalIOUtils = globalScope.IOUtils;
     const paperContext = {
       itemId: 11,
@@ -857,6 +851,7 @@ describe("semantic tool surface", function () {
         path === "/tmp/mineru-paper" ? [contentListPath] : [],
     };
     let prepareCalls = 0;
+    let figureCalls = 0;
     const tool = createPaperReadTool(
       {} as never,
       {} as never,
@@ -875,10 +870,37 @@ describe("semantic tool surface", function () {
         listPaperContexts: () => [paperContext],
         resolvePaperContextTarget: () => paperContext,
       } as never,
+      {
+        extractFigures: async ({ input }) => {
+          figureCalls += 1;
+          assert.equal(input.mode, "figures");
+          assert.equal(input.query, "fig2c是什么");
+          return {
+            mode: "figures" as const,
+            status: "ok" as const,
+            query: input.query,
+            figures: [
+              {
+                label: "Figure 2",
+                imagePath: "/tmp/mineru-paper/images/fig2.png",
+                source: "mineru",
+              },
+            ],
+            artifacts: [
+              {
+                kind: "image" as const,
+                mimeType: "image/png",
+                storedPath: "/tmp/mineru-paper/images/fig2.png",
+                paperContext,
+              },
+            ],
+          };
+        },
+      },
     );
     const validated = tool.validate({
       mode: "visual",
-      query: "Explain Figure 2c",
+      pages: [1],
     });
     assert.equal(validated.ok, true);
     if (!validated.ok) return;
@@ -887,23 +909,20 @@ describe("semantic tool surface", function () {
         ...baseContext,
         request: {
           ...baseContext.request,
-          userText: "Explain Figure 2c",
+          userText: "fig2c是什么",
           selectedPaperContexts: [paperContext],
         },
       })) as Record<string, unknown>;
 
       assert.equal(prepareCalls, 0);
-      assert.equal(output.status, "use_figures_mode");
-      assert.equal(output.backend, "pdf_figure_extraction");
-      assert.equal(output.mineruCacheDir, "/tmp/mineru-paper");
-      assert.include(String(output.guidance || ""), "mode:'figures'");
-      assert.include(
-        String(output.guidance || ""),
-        "Do not read MinerU image paths",
+      assert.equal(figureCalls, 1);
+      assert.equal((output.content as Record<string, unknown>).status, "ok");
+      assert.deepEqual(
+        (output.artifacts as Array<{ storedPath?: string }>).map(
+          (artifact) => artifact.storedPath,
+        ),
+        ["/tmp/mineru-paper/images/fig2.png"],
       );
-      assert.notProperty(output, "panelHint");
-      assert.notProperty(output, "figureBlocks");
-      assert.notProperty(output, "artifacts");
     } finally {
       if (originalIOUtils === undefined) {
         delete globalScope.IOUtils;
@@ -1179,7 +1198,7 @@ describe("semantic tool surface", function () {
     });
   });
 
-  it("paper_read figures returns extracted PDF crops and never MinerU image artifacts", async function () {
+  it("paper_read figures returns MinerU image artifacts from the figure service", async function () {
     const paperContext = {
       itemId: 11,
       contextItemId: 22,
@@ -1207,14 +1226,12 @@ describe("semantic tool surface", function () {
               label: "Figure 1",
               baseLabel: "Figure 1",
               pageNumber: 2,
-              cropPath: "/tmp/mineru-paper/figure_crops/crops/figure-1.png",
-              captionText: "Figure 1. A precise crop.",
-              rect: { left: 10, top: 20, width: 300, height: 200 },
-              confidence: 0.96,
-              source: "caption-bounded-region",
+              imagePath: "/tmp/mineru-paper/images/fig1-panel.png",
+              captionText: "Figure 1. A MinerU image.",
+              confidence: 1,
+              source: "mineru",
               warnings: [],
               mineruBlockId: "block-1",
-              mineruImagePaths: ["/tmp/mineru-paper/images/fig1-panel.png"],
             },
           ],
           expectedFigures: [
@@ -1246,7 +1263,7 @@ describe("semantic tool surface", function () {
             {
               kind: "image" as const,
               mimeType: "image/png",
-              storedPath: "/tmp/mineru-paper/figure_crops/crops/figure-1.png",
+              storedPath: "/tmp/mineru-paper/images/fig1-panel.png",
               title: "Figure 1",
               pageIndex: 1,
               pageLabel: "2",
@@ -1276,7 +1293,7 @@ describe("semantic tool surface", function () {
         status?: string;
         expectedFigures?: Array<{ label?: string }>;
         missingFigures?: Array<{ label?: string }>;
-        figures?: Array<{ cropPath?: string; mineruImagePaths?: string[] }>;
+        figures?: Array<{ imagePath?: string }>;
       };
       artifacts?: Array<{ storedPath?: string }>;
     };
@@ -1284,35 +1301,43 @@ describe("semantic tool surface", function () {
     assert.equal(output.content?.mode, "figures");
     assert.equal(output.content?.status, "ok");
     assert.equal(
-      output.content?.figures?.[0]?.cropPath,
-      "/tmp/mineru-paper/figure_crops/crops/figure-1.png",
+      output.content?.figures?.[0]?.imagePath,
+      "/tmp/mineru-paper/images/fig1-panel.png",
     );
     assert.deepEqual(
       output.content?.missingFigures?.map((figure) => figure.label),
       ["Figure 2"],
     );
-    assert.deepEqual(output.content?.figures?.[0]?.mineruImagePaths, [
-      "/tmp/mineru-paper/images/fig1-panel.png",
-    ]);
     assert.deepEqual(
       (output.artifacts || []).map((artifact) => artifact.storedPath),
-      ["/tmp/mineru-paper/figure_crops/crops/figure-1.png"],
+      ["/tmp/mineru-paper/images/fig1-panel.png"],
     );
   });
 
-  it("paper_read figures returns cached PDF crops before source-PDF extraction", async function () {
+  it("paper_read figures returns MinerU images and never extracts from the source PDF", async function () {
     const originalIOUtils = globalScope.IOUtils;
-    const cropPath = "/tmp/mineru-paper/figure_crops/crops/figure-1.png";
+    const imagePath = "/tmp/mineru-paper/images/figure-1.jpg";
     const manifest = {
       sections: [],
-      allFigures: [
+      figureBlocks: [
         {
-          label: "Figure 1",
-          baseLabel: "Figure 1",
-          page: 2,
-          caption: "Figure 1. A cached crop.",
+          blockId: "figure-1",
+          kind: "figure",
+          imagePaths: ["images/figure-1.jpg"],
+          markdownStart: 0,
+          markdownEnd: 0,
+          contextStart: 0,
+          contextEnd: 0,
+          labelHints: ["Figure 1"],
+          captionHints: ["Figure 1. A MinerU image."],
+          sectionHeading: null,
+          pageStart: 2,
+          pageEnd: 2,
+          confidence: "high",
+          ambiguous: false,
         },
       ],
+      allFigures: [],
       allTables: [],
     };
     const paperContext = {
@@ -1328,46 +1353,7 @@ describe("semantic tool surface", function () {
         "/tmp/mineru-paper/manifest.json",
         encoder.encode(JSON.stringify(manifest)),
       ],
-      [cropPath, encoder.encode("png")],
-      [
-        "/tmp/mineru-paper/figure_crops/figure_geometry.json",
-        encoder.encode(
-          JSON.stringify({
-            version: PDF_FIGURE_CROP_CACHE_VERSION,
-            attachmentId: 22,
-            manifestHash: buildPdfFigureCropManifestHash(manifest),
-            pdfFingerprint: buildPdfFigureCropPdfFingerprint(paperContext),
-            renderScale: 1.8,
-            algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION,
-            generatedAt: 1,
-            expectedFigures: [
-              {
-                label: "Figure 1",
-                baseLabel: "Figure 1",
-                pageNumber: 2,
-                status: "ok",
-                cropPath: "/var/folders/tmp/old-crop.png",
-              },
-            ],
-            missingFigures: [],
-            entries: [
-              {
-                id: "figure-1",
-                label: "Figure 1",
-                baseLabel: "Figure 1",
-                pageNumber: 2,
-                cropPath,
-                captionText: "Figure 1. A cached crop.",
-                rect: { left: 10, top: 20, width: 300, height: 200 },
-                confidence: 0.96,
-                source: "pdf-image-object",
-                warnings: [],
-                mineruImagePaths: [],
-              },
-            ],
-          }),
-        ),
-      ],
+      [imagePath, encoder.encode("jpg")],
     ]);
     globalScope.IOUtils = {
       read: async (path: string) => {
@@ -1413,19 +1399,19 @@ describe("semantic tool surface", function () {
           selectedPaperContexts: [paperContext],
         },
       })) as {
-        content?: { status?: string; figures?: Array<{ cropPath?: string }> };
+        content?: { status?: string; figures?: Array<{ imagePath?: string }> };
         artifacts?: Array<{ storedPath?: string }>;
       };
 
       assert.isFalse(rawCalled);
       assert.equal(output.content?.status, "ok");
       assert.deepEqual(
-        output.content?.figures?.map((figure) => figure.cropPath),
-        [cropPath],
+        output.content?.figures?.map((figure) => figure.imagePath),
+        [imagePath],
       );
       assert.deepEqual(
         output.artifacts?.map((artifact) => artifact.storedPath),
-        [cropPath],
+        [imagePath],
       );
     } finally {
       if (originalIOUtils === undefined) {
@@ -1436,7 +1422,7 @@ describe("semantic tool surface", function () {
     }
   });
 
-  it("paper_read visual renders PDF pages when MinerU cache is absent", async function () {
+  it("paper_read figure requests require MinerU instead of falling back to PDF pages", async function () {
     const paperContext = {
       itemId: 11,
       contextItemId: 22,
@@ -1484,6 +1470,13 @@ describe("semantic tool surface", function () {
         listPaperContexts: () => [paperContext],
         resolvePaperContextTarget: () => paperContext,
       } as never,
+      {
+        extractFigures: async () => ({
+          mode: "figures" as const,
+          status: "mineru_required" as const,
+          warnings: ["MinerU cache is required for figure images."],
+        }),
+      },
     );
     const validated = tool.validate({
       mode: "visual",
@@ -1501,13 +1494,13 @@ describe("semantic tool surface", function () {
         selectedPaperContexts: [paperContext],
       },
     })) as {
-      content?: { pageCount?: number };
+      status?: string;
       artifacts?: unknown[];
     };
 
-    assert.deepEqual(requestedPages, [1]);
-    assert.equal(output.content?.pageCount, 1);
-    assert.lengthOf(output.artifacts || [], 1);
+    assert.deepEqual(requestedPages, []);
+    assert.equal(output.status, "mineru_required");
+    assert.isUndefined(output.artifacts);
   });
 
   it("paper_read overview dedupes default paper contexts and traces the source label", async function () {

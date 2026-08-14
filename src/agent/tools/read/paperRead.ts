@@ -46,6 +46,7 @@ import {
 import { resolveFullReadPaperTargets } from "../../../shared/fullReadTargetResolver";
 import { detectExplicitFullReadIntent } from "../../../modules/contextPanel/retrievalQueryPlan";
 import { createCodexAppServerExhaustiveReaderSession } from "../../../codexAppServer/exhaustiveReader";
+import { parseDocumentReferences } from "../../../shared/documentReferences";
 
 type PaperReadMode =
   | "overview"
@@ -339,6 +340,15 @@ function isExplicitPdfVisualRequest(
   );
 }
 
+function isFigureInterpretationRequest(
+  input: Pick<PaperReadInput, "query">,
+  requestText: string | undefined,
+): boolean {
+  return parseDocumentReferences(getCombinedQueryText(input, requestText)).some(
+    (reference) => reference.kind === "figure",
+  );
+}
+
 function getCombinedQueryText(
   input: Pick<PaperReadInput, "query">,
   requestText: string | undefined,
@@ -366,8 +376,26 @@ async function buildMineruVisualRedirect(params: {
   context: AgentToolContext;
   zoteroGateway: ZoteroGateway;
 }): Promise<Record<string, unknown> | null> {
+  const requestText = params.context.request.userText;
+  const isFigureRequest = isFigureInterpretationRequest(
+    params.input,
+    requestText,
+  );
+  const isTableRequest = isTableOnlyInterpretationRequest(
+    params.input,
+    requestText,
+  );
+  const userExplicitlyRequestedPdfVisuals = isExplicitPdfVisualRequest(
+    { ...params.input, query: undefined, pages: undefined },
+    requestText,
+  );
+  if (userExplicitlyRequestedPdfVisuals) {
+    return null;
+  }
   if (
-    isExplicitPdfVisualRequest(params.input, params.context.request.userText)
+    !isFigureRequest &&
+    !isTableRequest &&
+    isExplicitPdfVisualRequest(params.input, undefined)
   ) {
     return null;
   }
@@ -387,12 +415,7 @@ async function buildMineruVisualRedirect(params: {
   const mineruCacheDir = normalizeString(paperContext?.mineruCacheDir);
   if (!paperContext) return null;
   const query = params.input.query || params.context.request.userText || "";
-  if (
-    isTableOnlyInterpretationRequest(
-      params.input,
-      params.context.request.userText,
-    )
-  ) {
+  if (isTableRequest) {
     if (!mineruCacheDir) return null;
     return {
       mode: "visual",
@@ -411,16 +434,57 @@ async function buildMineruVisualRedirect(params: {
   return {
     mode: "visual",
     status: "use_figures_mode",
-    backend: "pdf_figure_extraction",
+    backend: "mineru_figure_image",
     query,
     paperContext,
     ...(mineruCacheDir ? { mineruCacheDir } : {}),
     guidance:
-      "This is a figure/image request for a Zotero library PDF. Do not read MinerU image paths and do not use paper_read mode:'visual' for figure interpretation. Call paper_read({ mode:'figures', query:'<figure/table label or all figures>' }) to get precise PDF crops plus captions/provenance. Use mode:'visual' only for explicit raw/rendered PDF page or layout inspection.",
+      "This is a figure/image request for a Zotero library paper. Call paper_read({ mode:'figures', query:'<figure label or all figures>' }) to resolve the requested label to MinerU image artifacts plus captions/provenance. Do not recrop the source PDF. Use mode:'visual' only for explicit raw/rendered PDF page or layout inspection.",
     nextSteps: [
       `paper_read({ mode:'figures', query:'${query.replace(/'/g, "\\'")}' })`,
     ],
   };
+}
+
+async function executeFigureRead(params: {
+  input: PaperReadInput;
+  context: AgentToolContext;
+  zoteroGateway: ZoteroGateway;
+  figureExtractionService?: PaperReadFigureExtractionService;
+}): Promise<unknown> {
+  const targets = resolveDefaultTargets(
+    params.input.target,
+    params.input.targets,
+    params.context,
+    params.zoteroGateway,
+    MAX_TARGETED_TARGETS,
+  );
+  if (!targets.length) {
+    throw new Error(describeNoDefaultPaperTarget(params.context.request));
+  }
+  const figureTargets = await hydrateFigureTargetsWithMineruMetadata(
+    targets,
+    params.zoteroGateway,
+  );
+  if (!params.figureExtractionService) {
+    return {
+      mode: "figures",
+      status: "error",
+      query: params.input.query || params.context.request.userText || "",
+      warnings: ["MinerU figure image service is not available."],
+    };
+  }
+  const figureResult = await params.figureExtractionService.extractFigures({
+    input: {
+      ...params.input,
+      mode: "figures",
+      query: params.input.query || params.context.request.userText || "",
+    },
+    context: params.context,
+    paperContexts: figureTargets,
+  });
+  const { artifacts, ...content } = figureResult;
+  return artifacts?.length ? { content, artifacts } : content;
 }
 
 function normalizeMetadataValue(value: unknown): string {
@@ -891,7 +955,7 @@ export function createPaperReadTool(
     spec: {
       name: "paper_read",
       description:
-        "Read content from the active or targeted paper through one semantic tool. Use mode:'overview' for bounded summaries, mode:'targeted' for relevance-ranked textual evidence, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for precise extracted figures from Zotero library PDFs, mode:'visual' for rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page.",
+        "Read content from the active or targeted paper through one semantic tool. Use mode:'overview' for bounded summaries, mode:'targeted' for relevance-ranked textual evidence, mode:'full' only when the user explicitly requests exhaustive full-text reading, mode:'figures' for MinerU-mapped figure images, mode:'visual' only when the user explicitly requests rendered PDF pages/layout, and mode:'capture' for the currently visible Zotero reader page. A figure label request such as 'fig1是什么' always uses mode:'figures'; model-added page numbers do not make it a visual-page request.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -907,7 +971,7 @@ export function createPaperReadTool(
               "capture",
             ],
             description:
-              "overview = bounded summary/main message; targeted = relevance-ranked text evidence; full = exhaustive processing of every extractable text chunk for an explicit full-read request; figures = precise extracted figures; visual = rendered pages/layout; capture = current reader page.",
+              "overview = bounded summary/main message; targeted = relevance-ranked text evidence; full = exhaustive processing of every extractable text chunk for an explicit full-read request; figures = MinerU-mapped figure images; visual = rendered pages/layout only when explicitly requested by the user; capture = current reader page.",
           },
           target: {
             type: "object",
@@ -1107,6 +1171,14 @@ export function createPaperReadTool(
             context,
             zoteroGateway,
           });
+          if (mineruRedirect?.status === "use_figures_mode") {
+            return executeFigureRead({
+              input,
+              context,
+              zoteroGateway,
+              figureExtractionService,
+            });
+          }
           if (mineruRedirect) return mineruRedirect;
         }
         return visualTool.execute(input.visualInput as never, context);
@@ -1136,25 +1208,12 @@ export function createPaperReadTool(
               "Tables are handled through extracted MinerU text/table content, not the figure-crop extractor. Use paper_read mode:'targeted' with the table label and surrounding discussion.",
           };
         }
-        const figureTargets = await hydrateFigureTargetsWithMineruMetadata(
-          targets,
-          zoteroGateway,
-        );
-        if (!figureExtractionService) {
-          return {
-            mode: "figures",
-            status: "error",
-            query: input.query || context.request.userText || "",
-            warning: "Precise figure extraction service is not available.",
-          };
-        }
-        const figureResult = await figureExtractionService.extractFigures({
+        return executeFigureRead({
           input,
           context,
-          paperContexts: figureTargets,
+          zoteroGateway,
+          figureExtractionService,
         });
-        const { artifacts, ...content } = figureResult;
-        return artifacts?.length ? { content, artifacts } : content;
       }
       if (input.mode === "full") {
         if (

@@ -1,10 +1,5 @@
 import { assert } from "chai";
 import {
-  PDF_FIGURE_CROP_ALGORITHM_VERSION,
-  PDF_FIGURE_CROP_CACHE_VERSION,
-  buildPdfFigureCropManifestHash,
-} from "../src/modules/contextPanel/pdfFigureCropCache";
-import {
   buildManifest,
   getManifestFigureBaseLabel,
   MINERU_SOURCE_PROVENANCE_KIND,
@@ -415,7 +410,7 @@ describe("mineruCache", function () {
     );
   });
 
-  it("does not persist raw MinerU source images after figure crops are ready", async function () {
+  it("preserves MinerU figure images and removes obsolete crop caches", async function () {
     const io = setupMemoryIO();
     const itemDir = "/tmp/zotero/llm-for-zotero-mineru/77";
     const cropPath = `${itemDir}/figure_crops/crops/figure-1.png`;
@@ -433,54 +428,8 @@ describe("mineruCache", function () {
         page_idx: 0,
       },
     ];
-    const sourceManifest = buildManifest(markdown, contentList);
-    const canonicalManifest = buildManifest(
-      "# Results\nFigure 1. Better crop replacement.",
-      contentList,
-    );
-    const finalizedManifest = {
-      ...canonicalManifest,
-      figureBlocks: sourceManifest.figureBlocks,
-    };
     io.files.set(cropPath, bytes([137, 80, 78, 71, 1]));
-    io.files.set(
-      `${itemDir}/figure_crops/figure_geometry.json`,
-      bytes(
-        JSON.stringify({
-          version: PDF_FIGURE_CROP_CACHE_VERSION,
-          attachmentId: 77,
-          manifestHash: buildPdfFigureCropManifestHash(finalizedManifest),
-          pdfFingerprint: "test",
-          renderScale: 1.8,
-          algorithmVersion: PDF_FIGURE_CROP_ALGORITHM_VERSION,
-          generatedAt: 1,
-          expectedFigures: [
-            {
-              label: "Figure 1",
-              baseLabel: "Figure 1",
-              pageNumber: 1,
-              status: "ok",
-              cropPath,
-            },
-          ],
-          missingFigures: [],
-          entries: [
-            {
-              id: "figure-1",
-              label: "Figure 1",
-              baseLabel: "Figure 1",
-              pageNumber: 1,
-              cropPath,
-              rect: { left: 0, top: 0, width: 100, height: 100 },
-              confidence: 0.9,
-              source: "pdf-image-object",
-              warnings: [],
-              mineruImagePaths: [],
-            },
-          ],
-        }),
-      ),
-    );
+    io.files.set(`${itemDir}/figure_crops/figure_geometry.json`, bytes("{}"));
     await writeMineruCacheFiles(77, markdown, [
       { relativePath: "full.md", data: bytes(markdown) },
       {
@@ -493,10 +442,10 @@ describe("mineruCache", function () {
       },
     ]);
 
-    assert.isFalse(
+    assert.isTrue(
       io.files.has("/tmp/zotero/llm-for-zotero-mineru/77/images/fig1.png"),
     );
-    assert.isTrue(io.files.has(cropPath));
+    assert.isFalse(io.files.has(cropPath));
   });
 
   it("keeps compound figure metadata without source image files", async function () {

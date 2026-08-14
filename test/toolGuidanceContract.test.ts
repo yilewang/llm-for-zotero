@@ -43,7 +43,7 @@ function readSourceFiles(): Array<{ path: string; content: string }> {
     ),
   ];
   return files.map((path) => ({
-    path: relative(root, path),
+    path: relative(root, path).replace(/\\/g, "/"),
     content: readFileSync(path, "utf8"),
   }));
 }
@@ -243,7 +243,7 @@ describe("tool guidance contracts", function () {
     assert.include(agentPersona, "use paper_read mode:'figures'");
   });
 
-  it("requires extracted PDF crop inspection and note embedding", function () {
+  it("requires MinerU image inspection and note embedding without PDF recropping", function () {
     const sources = readSourceFiles();
     const byPath = new Map(
       sources.map((source) => [source.path, source.content] as const),
@@ -272,21 +272,24 @@ describe("tool guidance contracts", function () {
     }
 
     assert.include(analyzeFigures!, "paper_read({ mode:'figures'");
-    assert.include(messageBuilder!, "precise PDF crops");
+    assert.include(messageBuilder!, "MinerU-mapped imagePath values");
     assert.include(paperRead!, "mode:'figures'");
-    assert.include(agentPersona!, "embed extracted PDF crop paths");
-    assert.include(writeNote!, "Embed extracted PDF crop paths");
-    assert.include(noteTools!, "embed the extracted PDF crop path");
+    assert.include(agentPersona!, "do not recrop the source PDF");
+    assert.include(writeNote!, "returned MinerU `imagePath` values");
+    assert.include(noteTools!, "embed the returned MinerU imagePath");
     assert.include(noteTools!, "returns no_figures");
     assert.include(noteTools!, "switch to text-only mode");
     assert.include(writeNote!, "switch to text-only mode");
     assert.include(analyzeFigures!, "switch to text-only mode");
-    assert.include(agentPersona!, "user manually attached or pasted");
+    assert.include(
+      agentPersona!,
+      "user-provided image inputs can still be inspected normally",
+    );
     assert.include(
       messageBuilder!,
       "user-provided image inputs are unaffected",
     );
-    assert.include(currentNoteTool!, "Do not embed MinerU source image paths");
+    assert.include(currentNoteTool!, "embed the returned MinerU imagePath");
   });
 
   it("does not expose hidden legacy call targets in model-visible guidance", function () {

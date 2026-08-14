@@ -1278,7 +1278,7 @@ describe("primitive agent tools", function () {
     }
   });
 
-  it("file_io refuses stale MinerU source image cache reads", async function () {
+  it("file_io returns MinerU source images as visual artifacts", async function () {
     const tool = createFileIOTool();
     const encoder = new TextEncoder();
     const originalIOUtils = (globalThis as { IOUtils?: unknown }).IOUtils;
@@ -1353,16 +1353,13 @@ describe("primitive agent tools", function () {
         artifacts?: Array<{ storedPath: string }>;
       };
 
-      assert.include(
-        String(result.content.error || ""),
-        "MinerU source image caches are not available",
+      assert.notProperty(result.content, "error");
+      assert.equal(result.content.imageFile, true);
+      assert.equal(result.content.mimeType, "image/jpeg");
+      assert.deepEqual(
+        result.artifacts?.map((artifact) => artifact.storedPath),
+        [`${cacheDir}/images/b.jpg`],
       );
-      assert.include(
-        String(result.content.error || ""),
-        "paper_read mode:'figures'",
-      );
-      assert.isUndefined(result.content.figureBlock);
-      assert.isUndefined(result.artifacts);
     } finally {
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
     }
@@ -1390,6 +1387,7 @@ describe("primitive agent tools", function () {
       ...baseContext,
       request: {
         ...baseContext.request,
+        authMode: "codex_app_server",
         selectedTextPaperContexts: [selectedTextContext],
         selectedPaperContexts: [selectedPaperContext],
       },
@@ -1408,11 +1406,17 @@ describe("primitive agent tools", function () {
         artifacts?: Array<{ storedPath: string }>;
       };
 
-      assert.include(
-        String(result.content.error || ""),
-        "MinerU source image caches are not available",
+      assert.notProperty(result.content, "error");
+      assert.equal(result.content.imageFile, true);
+      assert.deepEqual(
+        result.artifacts?.map((artifact) => artifact.storedPath),
+        [rawImagePath],
       );
-      assert.isUndefined(result.artifacts);
+      assert.equal(
+        (result.content.paperContext as PaperContextRef | undefined)
+          ?.mineruCacheDir,
+        cacheDir,
+      );
     } finally {
       (globalThis as { IOUtils?: unknown }).IOUtils = originalIOUtils;
     }

@@ -68,7 +68,7 @@ export function createReadLibraryTool(
       name: "read_library",
       description:
         "Read structured Zotero item state for one or more items (papers, books, standalone notes, or any item type). Use sections to fetch metadata, notes (use 'content' or 'notes' for standalone notes), annotations, attachments (all types, not just PDFs), and collection membership keyed by item ID. " +
-        "For PDF attachments, the attachments section may include mineruCacheDir. Use paper_read for ordinary PDF paper content and mode:'figures' for figure crops; use file_io only for explicit MinerU cache metadata inspection such as manifest offsets or section slices. " +
+        "For PDF attachments, the attachments section may include mineruCacheDir. Use paper_read for ordinary paper content and mode:'figures' for MinerU-mapped figure images; use file_io only for explicit MinerU cache metadata inspection such as manifest offsets or section slices. " +
         "For explicit child-attachment requests, enumerate attachments here first, then use read_attachment for Markdown/HTML/TXT/DOCX child attachments or paper_read for explicit PDFs.",
       inputSchema: {
         type: "object",

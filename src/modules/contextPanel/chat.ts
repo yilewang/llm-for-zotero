@@ -8667,7 +8667,11 @@ async function enrichPaperContextsWithMineruCache(
     } catch {
       /* ignore */
     }
-    enriched.push(mineruCacheDir ? { ...paper, mineruCacheDir } : paper);
+    enriched.push(
+      mineruCacheDir
+        ? { ...paper, mineruCacheDir, contentSourceMode: "mineru" }
+        : paper,
+    );
   }
   return enriched;
 }
