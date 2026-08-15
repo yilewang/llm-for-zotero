@@ -107,6 +107,8 @@ import {
   getModelCapabilities,
 } from "../modelCapabilities";
 import { runCodexAuthAppServerTurn } from "./codexAuthAppServerTransport";
+import { isCodexFetchTransportError } from "./codexTransportError";
+export { isCodexFetchTransportError } from "./codexTransportError";
 
 // =============================================================================
 // Types
@@ -2689,17 +2691,6 @@ function assertCodexAppServerUsesNativeRuntime(
   );
 }
 
-export function isCodexFetchTransportError(error: unknown): boolean {
-  const name = error instanceof Error ? error.name : "";
-  const message = error instanceof Error ? error.message : String(error || "");
-  return (
-    name === "TypeError" &&
-    /networkerror|failed to fetch|fetch resource|network request failed/i.test(
-      message,
-    )
-  );
-}
-
 /**
  * Gemini marks thought-summary parts with `thought: true` when
  * `includeThoughts` is requested.  A `thoughtSignature` alone does NOT make a
@@ -3591,6 +3582,7 @@ export async function callLLM(params: ChatParams): Promise<string> {
     protocol: providerProtocol,
     apiKey: auth.token,
     authMode,
+    codexAccountId: auth.codex?.accountId,
   });
   const buildPayload = createChatPayloadBuilder({
     model,

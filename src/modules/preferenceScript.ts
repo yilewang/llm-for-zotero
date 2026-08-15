@@ -245,11 +245,11 @@ const setPref = (key: PrefKey, value: string) =>
 const CUSTOMIZED_API_HELPER_TEXT =
   "Choose a preset above, or switch to Customized to enter a full base URL or endpoint manually.";
 const LEGACY_CODEX_AUTH_HELPER_TEXT =
-  "Compatibility mode for existing Codex-auth provider entries. Requests reuse the local Codex app-server runtime to avoid Zotero network transport failures.";
+  "Compatibility mode for existing Codex-auth provider entries. Requests use the configured legacy endpoint first, then retry through an isolated local Codex app-server only when Zotero's network transport fails.";
 const CODEX_APP_SERVER_HELPER_TEXT =
   "Recommended official Codex integration. Runs the local `codex app-server` CLI as the native Codex runtime. Run `codex login` first.";
 const LEGACY_CODEX_API_HELPER_TEXT =
-  "Kept for legacy configuration compatibility. Codex-auth requests are sent through the local Codex app-server runtime.";
+  "Kept for legacy configuration compatibility. This endpoint is tried first; Zotero network transport failures retry through an isolated local Codex app-server.";
 const CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT =
   "Uses Codex responses with the local codex app-server transport.";
 const CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS =
@@ -745,7 +745,10 @@ function resolveCodexAuthPath(): string {
   return joinLocalPath(home, ".codex", "auth.json");
 }
 
-async function readCodexAccessToken(): Promise<string> {
+async function readCodexAuthState(): Promise<{
+  accessToken: string;
+  accountId: string;
+}> {
   const authPath = resolveCodexAuthPath();
   const io = ztoolkit.getGlobal("IOUtils") as
     | {
@@ -761,7 +764,7 @@ async function readCodexAccessToken(): Promise<string> {
   const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
   const raw = new TextDecoder("utf-8").decode(bytes);
   const parsed = JSON.parse(raw) as {
-    tokens?: { access_token?: string };
+    tokens?: { access_token?: string; account_id?: string };
   };
   const token = parsed?.tokens?.access_token?.trim() || "";
   if (!token) {
@@ -769,7 +772,10 @@ async function readCodexAccessToken(): Promise<string> {
       "No access token found in ~/.codex/auth.json. Run `codex login` first.",
     );
   }
-  return token;
+  return {
+    accessToken: token,
+    accountId: parsed?.tokens?.account_id?.trim() || "",
+  };
 }
 
 // ── Style tokens ───────────────────────────────────────────────────
@@ -2265,14 +2271,15 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
               statusLine.style.color = "green";
               return;
             }
-            const apiKey =
-              authMode === "codex_auth"
-                ? await readCodexAccessToken()
-                : authMode === "copilot_auth"
-                  ? await resolveCopilotAccessToken({
-                      githubToken: group.apiKey.trim(),
-                    })
-                  : group.apiKey.trim();
+            const codexAuthState =
+              authMode === "codex_auth" ? await readCodexAuthState() : null;
+            const apiKey = codexAuthState
+              ? codexAuthState.accessToken
+              : authMode === "copilot_auth"
+                ? await resolveCopilotAccessToken({
+                    githubToken: group.apiKey.trim(),
+                  })
+                : group.apiKey.trim();
             const modelName = (
               modelEntry.model ||
               profile.defaultModel ||
@@ -2303,6 +2310,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
               apiBase,
               apiKey,
               modelName,
+              codexAccountId: codexAuthState?.accountId,
             });
             statusLine.textContent =
               `${t("✓ Success — model says: ")}"${result.reply}"\n` +

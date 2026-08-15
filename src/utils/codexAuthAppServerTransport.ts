@@ -17,6 +17,7 @@ import {
   resolveCodexAppServerReasoningParams,
   resolveCodexAppServerTurnInputWithFallback,
   waitForCodexAppServerTurnCompletion,
+  type CodexAppServerProcessOptions,
 } from "./codexAppServerProcess";
 import { prepareLegacyCodexIsolatedEnvironment } from "./codexAuthIsolation";
 
@@ -31,6 +32,7 @@ export type CodexTurnMcpServer = {
 // reliably disable a large user MCP catalog after the process has started.
 export const CODEX_SHARED_APP_SERVER_PROCESS_KEY =
   "codex_app_server_legacy_auth_isolated";
+export const CODEX_NATIVE_APP_SERVER_PROCESS_KEY = "codex_app_server_native";
 export const CODEX_LEGACY_APP_SERVER_CONFIG_OVERRIDES = [
   "mcp_servers={}",
   "skills.include_instructions=false",
@@ -38,7 +40,7 @@ export const CODEX_LEGACY_APP_SERVER_CONFIG_OVERRIDES = [
   "features.shell_snapshot=false",
 ];
 
-export async function runCodexAuthAppServerTurn(params: {
+type CodexAppServerSimpleTurnParams = {
   model: string;
   messages: ChatMessage[];
   reasoning?: ReasoningConfig;
@@ -49,23 +51,24 @@ export async function runCodexAuthAppServerTurn(params: {
   onUsage?: (usage: UsageStats) => void;
   /** Optional already-scoped MCP server exposed only to this isolated turn. */
   mcpServer?: CodexTurnMcpServer;
-}): Promise<string> {
-  const scopedMcp = params.mcpServer;
-  try {
-    const isolatedEnvironment =
-      await prepareLegacyCodexIsolatedEnvironment();
-    const processOptions = {
-      codexPath: resolveCodexAppServerBinaryPath(params.codexPath),
-      configOverrides: CODEX_LEGACY_APP_SERVER_CONFIG_OVERRIDES,
-      environment: isolatedEnvironment,
-    };
-    const proc = await getOrCreateCodexAppServerProcess(
-      CODEX_SHARED_APP_SERVER_PROCESS_KEY,
-      processOptions,
-    );
+};
 
-    return await proc.runTurnExclusive(async () => {
-      const prepared = await prepareCodexAppServerChatTurn(params.messages);
+async function runCodexAppServerSimpleTurn(
+  params: CodexAppServerSimpleTurnParams,
+  runtime: {
+    processKey: string;
+    processOptions: CodexAppServerProcessOptions;
+    logContext: string;
+  },
+): Promise<string> {
+  const scopedMcp = params.mcpServer;
+  const proc = await getOrCreateCodexAppServerProcess(
+    runtime.processKey,
+    runtime.processOptions,
+  );
+
+  return proc.runTurnExclusive(async () => {
+    const prepared = await prepareCodexAppServerChatTurn(params.messages);
     const threadStartParams: Record<string, unknown> = {
       model: params.model || undefined,
       ephemeral: true,
@@ -87,69 +90,106 @@ export async function runCodexAuthAppServerTurn(params: {
         : {}),
     };
 
-      let developerInstructionsAccepted = true;
-      let threadResponse: unknown;
-      try {
-        threadResponse = await proc.sendRequest(
-          "thread/start",
-          threadStartParams,
-        );
-      } catch (error) {
-        if (
-          !prepared.developerInstructions ||
-          !isCodexAppServerThreadStartInstructionsUnsupportedError(error)
-        ) {
-          throw error;
-        }
-        developerInstructionsAccepted = false;
-        const fallbackParams = { ...threadStartParams };
-        delete fallbackParams.developerInstructions;
-        threadResponse = await proc.sendRequest("thread/start", fallbackParams);
+    let developerInstructionsAccepted = true;
+    let threadResponse: unknown;
+    try {
+      threadResponse = await proc.sendRequest(
+        "thread/start",
+        threadStartParams,
+      );
+    } catch (error) {
+      if (
+        !prepared.developerInstructions ||
+        !isCodexAppServerThreadStartInstructionsUnsupportedError(error)
+      ) {
+        throw error;
       }
+      developerInstructionsAccepted = false;
+      const fallbackParams = { ...threadStartParams };
+      delete fallbackParams.developerInstructions;
+      threadResponse = await proc.sendRequest("thread/start", fallbackParams);
+    }
 
-      const threadId = extractCodexAppServerThreadId(threadResponse);
-      if (!threadId) {
-        throw new Error("Codex app-server did not return a thread ID");
-      }
+    const threadId = extractCodexAppServerThreadId(threadResponse);
+    if (!threadId) {
+      throw new Error("Codex app-server did not return a thread ID");
+    }
 
-      const input = await resolveCodexAppServerTurnInputWithFallback({
-        proc,
-        threadId,
-        historyItemsToInject: prepared.historyItemsToInject,
-        turnInput: prepared.turnInput,
-        legacyInputFactory: () =>
-          buildLegacyCodexAppServerChatInput(params.messages, {
-            includeSystem: !developerInstructionsAccepted,
-          }),
-        logContext: "legacy Codex auth transport",
-      });
-      const turnResponse = await proc.sendRequest("turn/start", {
-        threadId,
-        input,
-        model: params.model || undefined,
-        approvalPolicy: "never",
-        sandboxPolicy: { type: "readOnly", networkAccess: false },
-        ...resolveCodexAppServerReasoningParams(params.reasoning, params.model),
-      });
-      const turnId = extractCodexAppServerTurnId(turnResponse);
-      if (!turnId) {
-        throw new Error("Codex app-server did not return a turn ID");
-      }
+    const input = await resolveCodexAppServerTurnInputWithFallback({
+      proc,
+      threadId,
+      historyItemsToInject: prepared.historyItemsToInject,
+      turnInput: prepared.turnInput,
+      legacyInputFactory: () =>
+        buildLegacyCodexAppServerChatInput(params.messages, {
+          includeSystem: !developerInstructionsAccepted,
+        }),
+      logContext: runtime.logContext,
+    });
+    const turnResponse = await proc.sendRequest("turn/start", {
+      threadId,
+      input,
+      model: params.model || undefined,
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "readOnly", networkAccess: false },
+      ...resolveCodexAppServerReasoningParams(params.reasoning, params.model),
+    });
+    const turnId = extractCodexAppServerTurnId(turnResponse);
+    if (!turnId) {
+      throw new Error("Codex app-server did not return a turn ID");
+    }
 
-      return waitForCodexAppServerTurnCompletion({
-        proc,
-        threadId,
-        turnId,
-        onTextDelta: params.onDelta,
-        onReasoning: params.onReasoning,
-        onUsage: params.onUsage,
-        signal: params.signal,
-        interruptOnAbort: true,
-        cacheKey: CODEX_SHARED_APP_SERVER_PROCESS_KEY,
-        processOptions,
-      });
+    return waitForCodexAppServerTurnCompletion({
+      proc,
+      threadId,
+      turnId,
+      onTextDelta: params.onDelta,
+      onReasoning: params.onReasoning,
+      onUsage: params.onUsage,
+      signal: params.signal,
+      interruptOnAbort: true,
+      cacheKey: runtime.processKey,
+      processOptions: runtime.processOptions,
+    });
+  });
+}
+
+export async function runCodexAuthAppServerTurn(
+  params: CodexAppServerSimpleTurnParams,
+): Promise<string> {
+  const scopedMcp = params.mcpServer;
+  try {
+    const isolatedEnvironment = await prepareLegacyCodexIsolatedEnvironment();
+    return await runCodexAppServerSimpleTurn(params, {
+      processKey: CODEX_SHARED_APP_SERVER_PROCESS_KEY,
+      processOptions: {
+        codexPath: resolveCodexAppServerBinaryPath(params.codexPath),
+        configOverrides: CODEX_LEGACY_APP_SERVER_CONFIG_OVERRIDES,
+        environment: isolatedEnvironment,
+      },
+      logContext: "legacy Codex auth transport",
     });
   } finally {
     scopedMcp?.clear?.();
   }
+}
+
+/**
+ * Runs a minimal ephemeral turn on the same unmodified process configuration
+ * used by native Codex conversations. This intentionally does not create the
+ * legacy isolated CODEX_HOME or suppress the user's Codex configuration.
+ */
+export async function runCodexNativeAppServerConnectionTurn(params: {
+  model: string;
+  messages: ChatMessage[];
+  signal?: AbortSignal;
+  codexPath?: string;
+}): Promise<string> {
+  return runCodexAppServerSimpleTurn(params, {
+    processKey: CODEX_NATIVE_APP_SERVER_PROCESS_KEY,
+    processOptions: {
+      codexPath: resolveCodexAppServerBinaryPath(params.codexPath),
+    },
+    logContext: "native Codex connection test",
+  });
 }

@@ -1,10 +1,10 @@
 import {
   buildReasoningPayload,
   buildPromptCachePayloadHints,
-  isCodexFetchTransportError,
   postWithReasoningFallback,
   resolveRequestAuthState,
 } from "../../utils/llmClient";
+import { isCodexFetchTransportError } from "../../utils/codexTransportError";
 import type { ChatMessage, MessageContent } from "../../shared/llm";
 import { getCodexBinaryPathPref } from "../../codexAppServer/prefs";
 import { runCodexAuthAppServerTurn } from "../../utils/codexAuthAppServerTransport";
@@ -54,7 +54,9 @@ type CodexAppServerTurnRunner = typeof runCodexAuthAppServerTurn;
 
 function prepareCodexAgentFallbackMcpServer(
   request: AgentRuntimeRequest,
-): import("../../utils/codexAuthAppServerTransport").CodexTurnMcpServer | undefined {
+):
+  | import("../../utils/codexAuthAppServerTransport").CodexTurnMcpServer
+  | undefined {
   // Unit tests and non-Zotero consumers can exercise the transport adapter
   // without constructing the local MCP endpoint.
   if (typeof Zotero === "undefined") return undefined;

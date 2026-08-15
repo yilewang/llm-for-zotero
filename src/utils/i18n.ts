@@ -484,14 +484,14 @@ const zhCN: Record<string, string> = {
     '选择上方的预设，或切换到"自定义"以手动输入完整的基础 URL 或端点。',
   "codex auth usually uses https://chatgpt.com/backend-api/codex/responses":
     "codex 认证通常使用 https://chatgpt.com/backend-api/codex/responses",
-  "Compatibility mode for existing Codex-auth provider entries. Requests reuse the local Codex app-server runtime to avoid Zotero network transport failures.":
-    "现有 Codex 认证服务商条目的兼容模式。请求会复用本地 Codex app-server 运行时，以避开 Zotero 的网络传输故障。",
+  "Compatibility mode for existing Codex-auth provider entries. Requests use the configured legacy endpoint first, then retry through an isolated local Codex app-server only when Zotero's network transport fails.":
+    "现有 Codex 认证服务商条目的兼容模式。请求会先使用已配置的旧版端点；只有 Zotero 网络传输失败时，才会通过隔离的本地 Codex app-server 重试。",
   "Recommended official Codex integration. Runs the local `codex app-server` CLI as the native Codex runtime. Run `codex login` first.":
     "推荐的官方 Codex 集成方式。它会将本地 `codex app-server` CLI 作为原生 Codex 运行时。请先运行 `codex login`。",
   "Codex App Server (native runtime settings)":
     "Codex App Server（原生运行时设置）",
-  "Kept for legacy configuration compatibility. Codex-auth requests are sent through the local Codex app-server runtime.":
-    "仅为兼容旧配置而保留。Codex 认证请求会通过本地 Codex app-server 运行时发送。",
+  "Kept for legacy configuration compatibility. This endpoint is tried first; Zotero network transport failures retry through an isolated local Codex app-server.":
+    "仅为兼容旧配置而保留。系统会先尝试此端点；若 Zotero 网络传输失败，则通过隔离的本地 Codex app-server 重试。",
   "Uses Codex responses with the local codex app-server transport.":
     "通过本地 codex app-server 传输使用 Codex responses。",
   "Uses Codex responses with the legacy direct backend transport.":

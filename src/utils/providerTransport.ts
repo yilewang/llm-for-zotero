@@ -269,6 +269,7 @@ export function buildProviderTransportHeaders(params: {
   protocol: ProviderProtocol;
   apiKey: string;
   authMode?: ModelProviderAuthMode;
+  codexAccountId?: string;
 }): Record<string, string> {
   if (
     params.protocol === "codex_responses" ||
@@ -285,7 +286,14 @@ export function buildProviderTransportHeaders(params: {
         "Openai-Intent": "conversation-panel",
       };
     }
-    return buildHeaders(params.apiKey);
+    const headers = buildHeaders(params.apiKey);
+    if (params.authMode === "codex_auth") {
+      headers.Originator = "codex";
+      if (params.codexAccountId?.trim()) {
+        headers["ChatGPT-Account-ID"] = params.codexAccountId.trim();
+      }
+    }
+    return headers;
   }
   if (params.protocol === "anthropic_messages") {
     return {

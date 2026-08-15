@@ -11,7 +11,18 @@ import {
 } from "./providerTransport";
 import { createAgentModelAdapter } from "../agent/model/factory";
 import type { AgentRuntimeRequest } from "../agent/types";
-import { runCodexAuthAppServerTurn } from "./codexAuthAppServerTransport";
+import type { ChatMessage } from "../shared/llm";
+import {
+  runCodexAuthAppServerTurn,
+  runCodexNativeAppServerConnectionTurn,
+} from "./codexAuthAppServerTransport";
+import { isCodexFetchTransportError } from "./codexTransportError";
+
+type CodexConnectionTurn = (params: {
+  model: string;
+  messages: ChatMessage[];
+  codexPath?: string;
+}) => Promise<string>;
 
 function extractTextFromCodexSSE(raw: string): string {
   const lines = raw.split(/\r?\n/);
@@ -230,18 +241,21 @@ export function getProviderConnectionCapabilityLabel(params: {
 export async function runCodexAppServerConnectionTest(params: {
   modelName: string;
   codexPath?: string;
+  runTurn?: CodexConnectionTurn;
 }): Promise<{ reply: string; capabilityLabel: string }> {
-  const reply = await runCodexAuthAppServerTurn({
-    model: params.modelName,
-    codexPath: params.codexPath,
-    messages: [
-      {
-        role: "system",
-        content: "You are a concise assistant. Reply with OK.",
-      },
-      { role: "user", content: "Say OK" },
-    ],
-  });
+  const reply = await (params.runTurn || runCodexNativeAppServerConnectionTurn)(
+    {
+      model: params.modelName,
+      codexPath: params.codexPath,
+      messages: [
+        {
+          role: "system",
+          content: "You are a concise assistant. Reply with OK.",
+        },
+        { role: "user", content: "Say OK" },
+      ],
+    },
+  );
 
   const request = {
     conversationKey: 0,
@@ -268,9 +282,40 @@ export async function runProviderConnectionTest(params: {
   apiBase: string;
   apiKey: string;
   modelName: string;
+  codexAccountId?: string;
+  runCodexFallback?: CodexConnectionTurn;
 }): Promise<{ reply: string; capabilityLabel: string }> {
-  if (params.authMode === "codex_auth") {
-    const reply = await runCodexAuthAppServerTurn({
+  const { body, expectsSse } = buildConnectionRequestPayload({
+    protocol: params.protocol,
+    modelName: params.modelName,
+  });
+  const url = resolveProviderTransportEndpoint({
+    protocol: params.protocol,
+    apiBase: params.apiBase,
+    model: params.modelName,
+    stream: expectsSse,
+    authMode: params.authMode,
+  });
+  let response: Response;
+  try {
+    response = await params.fetchFn(url, {
+      method: "POST",
+      headers: buildProviderTransportHeaders({
+        protocol: params.protocol,
+        apiKey: params.apiKey,
+        authMode: params.authMode,
+        codexAccountId: params.codexAccountId,
+      }),
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    if (
+      params.authMode !== "codex_auth" ||
+      !isCodexFetchTransportError(error)
+    ) {
+      throw error;
+    }
+    const reply = await (params.runCodexFallback || runCodexAuthAppServerTurn)({
       model: params.modelName,
       messages: [
         {
@@ -285,26 +330,6 @@ export async function runProviderConnectionTest(params: {
       capabilityLabel: getProviderConnectionCapabilityLabel(params),
     };
   }
-  const { body, expectsSse } = buildConnectionRequestPayload({
-    protocol: params.protocol,
-    modelName: params.modelName,
-  });
-  const url = resolveProviderTransportEndpoint({
-    protocol: params.protocol,
-    apiBase: params.apiBase,
-    model: params.modelName,
-    stream: expectsSse,
-    authMode: params.authMode,
-  });
-  const response = await params.fetchFn(url, {
-    method: "POST",
-    headers: buildProviderTransportHeaders({
-      protocol: params.protocol,
-      apiKey: params.apiKey,
-      authMode: params.authMode,
-    }),
-    body: JSON.stringify(body),
-  });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   }
