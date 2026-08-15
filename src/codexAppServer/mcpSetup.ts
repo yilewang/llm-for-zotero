@@ -16,6 +16,8 @@ import {
 } from "../utils/codexAppServerProcess";
 
 const DEFAULT_CODEX_APP_SERVER_NATIVE_PROCESS_KEY = "codex_app_server_native";
+const DEFAULT_CODEX_APP_SERVER_MCP_STATUS_PROCESS_KEY =
+  "codex_app_server_mcp_status";
 const MCP_PREFLIGHT_SUCCESS_TTL_MS = 5 * 60 * 1000;
 const MCP_PREFLIGHT_FAILURE_TTL_MS = 10 * 1000;
 export const REQUIRED_CODEX_ZOTERO_MCP_TOOL_NAMES = [
@@ -472,7 +474,19 @@ export async function preflightCodexZoteroMcpServer(
 export async function readCodexNativeMcpSetupStatus(
   params: SetupParams = {},
 ): Promise<CodexNativeMcpSetupStatus> {
-  const proc = await resolveProcess(params);
+  // Status discovery sends several potentially slow catalog requests in
+  // parallel. Keep those optional probes off the native turn process: a
+  // request timeout intentionally terminates its CodexAppServerProcess, which
+  // would otherwise abort an Agent/legacy-provider turn started while the
+  // preferences pane is checking MCP health.
+  const processParams =
+    params.proc || params.processKey
+      ? params
+      : {
+          ...params,
+          processKey: DEFAULT_CODEX_APP_SERVER_MCP_STATUS_PROCESS_KEY,
+        };
+  const proc = await resolveProcess(processParams);
   const errors: string[] = [];
   const serverName = params.serverName || ZOTERO_MCP_SERVER_NAME;
   const serverUrl = params.serverUrl || getZoteroMcpServerUrl();

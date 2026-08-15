@@ -861,12 +861,20 @@ describe("llmClient prepareChatRequest", function () {
     ).set(versionKey, 2);
 
     const authJson = JSON.stringify({
-      tokens: { access_token: "old-access", refresh_token: "refresh-1" },
+      tokens: {
+        access_token: "old-access",
+        refresh_token: "refresh-1",
+        account_id: "account-123",
+      },
       last_refresh: "2026-01-01T00:00:00.000Z",
     });
     const writes: string[] = [];
+    const apiHeaders: Array<Record<string, string>> = [];
     let apiCallCount = 0;
-    const fetchMock = async (url: string) => {
+    const fetchMock = async (
+      url: string,
+      options?: { headers?: Record<string, string> },
+    ) => {
       if (url === "https://auth.openai.com/oauth/token") {
         return {
           ok: true,
@@ -880,6 +888,7 @@ describe("llmClient prepareChatRequest", function () {
         };
       }
       apiCallCount += 1;
+      apiHeaders.push(options?.headers || {});
       if (apiCallCount === 1) {
         return {
           ok: false,
@@ -927,6 +936,14 @@ describe("llmClient prepareChatRequest", function () {
     });
     assert.equal(output, "OK after refresh");
     assert.equal(apiCallCount, 2);
+    assert.deepEqual(
+      apiHeaders.map((headers) => headers["ChatGPT-Account-ID"]),
+      ["account-123", "account-123"],
+    );
+    assert.deepEqual(
+      apiHeaders.map((headers) => headers.Originator),
+      ["codex", "codex"],
+    );
     assert.isAtLeast(writes.length, 1);
     assert.include(writes[writes.length - 1], "new-access");
   });

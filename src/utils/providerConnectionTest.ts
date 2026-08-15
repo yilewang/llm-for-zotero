@@ -11,14 +11,7 @@ import {
 } from "./providerTransport";
 import { createAgentModelAdapter } from "../agent/model/factory";
 import type { AgentRuntimeRequest } from "../agent/types";
-import {
-  destroyCachedCodexAppServerProcess,
-  extractCodexAppServerThreadId,
-  extractCodexAppServerTurnId,
-  getOrCreateCodexAppServerProcess,
-  resolveCodexAppServerBinaryPath,
-  waitForCodexAppServerTurnCompletion,
-} from "./codexAppServerProcess";
+import { runCodexAuthAppServerTurn } from "./codexAuthAppServerTransport";
 
 function extractTextFromCodexSSE(raw: string): string {
   const lines = raw.split(/\r?\n/);
@@ -238,64 +231,34 @@ export async function runCodexAppServerConnectionTest(params: {
   modelName: string;
   codexPath?: string;
 }): Promise<{ reply: string; capabilityLabel: string }> {
-  const processKey = `codex_app_server_connection_test_${Date.now()}_${Math.random()
-    .toString(16)
-    .slice(2)}`;
-  const processOptions = {
-    codexPath: resolveCodexAppServerBinaryPath(params.codexPath),
-  };
-  const proc = await getOrCreateCodexAppServerProcess(
-    processKey,
-    processOptions,
+  const reply = await runCodexAuthAppServerTurn({
+    model: params.modelName,
+    codexPath: params.codexPath,
+    messages: [
+      {
+        role: "system",
+        content: "You are a concise assistant. Reply with OK.",
+      },
+      { role: "user", content: "Say OK" },
+    ],
+  });
+
+  const request = {
+    conversationKey: 0,
+    mode: "agent" as const,
+    userText: "",
+    authMode: "codex_app_server" as const,
+    model: params.modelName,
+  } as AgentRuntimeRequest;
+  const capabilities =
+    createAgentModelAdapter(request).getCapabilities(request);
+  const capabilityLabel = describeAgentCapabilityClass(
+    getAgentCapabilityClass({
+      toolCalls: capabilities.toolCalls,
+      fileInputs: capabilities.fileInputs,
+    }),
   );
-  try {
-    const reply = await proc.runTurnExclusive(async () => {
-      const threadResp = await proc.sendRequest("thread/start", {
-        model: params.modelName || undefined,
-        ephemeral: true,
-        approvalPolicy: "never",
-      });
-      const threadId = extractCodexAppServerThreadId(threadResp);
-      if (!threadId) {
-        throw new Error("Codex app-server did not return a thread ID");
-      }
-
-      const turnResp = await proc.sendRequest("turn/start", {
-        threadId,
-        input: [{ type: "text", text: "Say OK" }],
-      });
-      const turnId = extractCodexAppServerTurnId(turnResp);
-      if (!turnId) {
-        throw new Error("Codex app-server did not return a turn ID");
-      }
-
-      return waitForCodexAppServerTurnCompletion({
-        proc,
-        turnId,
-        cacheKey: processKey,
-        processOptions,
-      });
-    });
-
-    const request = {
-      conversationKey: 0,
-      mode: "agent" as const,
-      userText: "",
-      authMode: "codex_app_server" as const,
-      model: params.modelName,
-    } as AgentRuntimeRequest;
-    const capabilities =
-      createAgentModelAdapter(request).getCapabilities(request);
-    const capabilityLabel = describeAgentCapabilityClass(
-      getAgentCapabilityClass({
-        toolCalls: capabilities.toolCalls,
-        fileInputs: capabilities.fileInputs,
-      }),
-    );
-    return { reply: reply.trim() || "OK", capabilityLabel };
-  } finally {
-    destroyCachedCodexAppServerProcess(processKey, undefined, processOptions);
-  }
+  return { reply: reply.trim() || "OK", capabilityLabel };
 }
 
 export async function runProviderConnectionTest(params: {
@@ -306,6 +269,22 @@ export async function runProviderConnectionTest(params: {
   apiKey: string;
   modelName: string;
 }): Promise<{ reply: string; capabilityLabel: string }> {
+  if (params.authMode === "codex_auth") {
+    const reply = await runCodexAuthAppServerTurn({
+      model: params.modelName,
+      messages: [
+        {
+          role: "system",
+          content: "You are a concise assistant. Reply with OK.",
+        },
+        { role: "user", content: "Say OK" },
+      ],
+    });
+    return {
+      reply: reply.trim() || "OK",
+      capabilityLabel: getProviderConnectionCapabilityLabel(params),
+    };
+  }
   const { body, expectsSse } = buildConnectionRequestPayload({
     protocol: params.protocol,
     modelName: params.modelName,

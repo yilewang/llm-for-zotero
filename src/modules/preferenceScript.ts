@@ -245,11 +245,11 @@ const setPref = (key: PrefKey, value: string) =>
 const CUSTOMIZED_API_HELPER_TEXT =
   "Choose a preset above, or switch to Customized to enter a full base URL or endpoint manually.";
 const LEGACY_CODEX_AUTH_HELPER_TEXT =
-  "Legacy direct ChatGPT/Codex backend mode. Existing users can keep using it in this release. New users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
+  "Compatibility mode for existing Codex-auth provider entries. Requests reuse the local Codex app-server runtime to avoid Zotero network transport failures.";
 const CODEX_APP_SERVER_HELPER_TEXT =
   "Recommended official Codex integration. Runs the local `codex app-server` CLI as the native Codex runtime. Run `codex login` first.";
 const LEGACY_CODEX_API_HELPER_TEXT =
-  "Legacy direct backend URL. Usually uses https://chatgpt.com/backend-api/codex/responses. Existing users can keep it in this release, but new users should use Codex App Server. Planned for deprecation in a future release after app-server validation.";
+  "Kept for legacy configuration compatibility. Codex-auth requests are sent through the local Codex app-server runtime.";
 const CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT =
   "Uses Codex responses with the local codex app-server transport.";
 const CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS =
@@ -1848,6 +1848,38 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       modelsHeaderRow.appendChild(addModelBtn);
       modelsWrap.appendChild(modelsHeaderRow);
 
+      let codexProviderModelSuggestions: HTMLDataListElement | null = null;
+      if (group.authMode === "codex_auth") {
+        codexProviderModelSuggestions = doc.createElementNS(
+          HTML_NS,
+          "datalist",
+        ) as HTMLDataListElement;
+        codexProviderModelSuggestions.id = `${config.addonRef}-provider-${group.id}-codex-models`;
+        modelsWrap.appendChild(codexProviderModelSuggestions);
+        void loadCodexAppServerModelCatalog({
+          codexPath: getConfiguredCodexAppServerBinaryPath(),
+        })
+          .then((catalog) => {
+            const options = catalog.models.map((model) => {
+              const option = doc.createElementNS(
+                HTML_NS,
+                "option",
+              ) as HTMLOptionElement;
+              option.value = model.model;
+              option.label = model.displayName;
+              option.title = model.description;
+              return option;
+            });
+            codexProviderModelSuggestions?.replaceChildren(...options);
+          })
+          .catch((error) => {
+            ztoolkit.log(
+              "Codex auth provider: failed to load model suggestions",
+              error,
+            );
+          });
+      }
+
       const syncAddModelBtn = () => {
         const canAdd = !hasEmptyModel(group);
         addModelBtn.disabled = !canAdd;
@@ -1893,6 +1925,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         }
         modelInput.placeholder =
           modelIndex === 0 ? profile.modelPlaceholder : "";
+        if (codexProviderModelSuggestions) {
+          modelInput.setAttribute("list", codexProviderModelSuggestions.id);
+        }
 
         const testBtn = el(
           doc,
@@ -2754,6 +2789,32 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   }
 
   let codexReasoningCatalogRefreshId = 0;
+  let codexModelSuggestions: HTMLDataListElement | null = null;
+  if (codexAppServerModelInput) {
+    codexModelSuggestions = doc.createElementNS(
+      HTML_NS,
+      "datalist",
+    ) as HTMLDataListElement;
+    codexModelSuggestions.id = `${config.addonRef}-codex-app-server-model-options`;
+    codexAppServerModelInput.setAttribute("list", codexModelSuggestions.id);
+    codexAppServerModelInput.parentElement?.appendChild(codexModelSuggestions);
+  }
+  const renderCodexModelSuggestions = (
+    models: CodexAppServerModelCatalogEntry[],
+  ) => {
+    if (!codexModelSuggestions) return;
+    const options = models.map((model) => {
+      const option = doc.createElementNS(
+        HTML_NS,
+        "option",
+      ) as HTMLOptionElement;
+      option.value = model.model;
+      option.label = model.displayName;
+      option.title = model.description;
+      return option;
+    });
+    codexModelSuggestions.replaceChildren(...options);
+  };
   const renderCodexReasoningOptions = (
     models: CodexAppServerModelCatalogEntry[],
     catalogReady: boolean,
@@ -2790,6 +2851,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         codexPath: getConfiguredCodexAppServerBinaryPath(),
       });
       if (refreshId !== codexReasoningCatalogRefreshId) return;
+      renderCodexModelSuggestions(catalog.models);
       renderCodexReasoningOptions(catalog.models, true);
     } catch (error) {
       if (refreshId !== codexReasoningCatalogRefreshId) return;
@@ -2797,6 +2859,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         "Codex app-server: failed to load reasoning options in preferences",
         error,
       );
+      renderCodexModelSuggestions([]);
       renderCodexReasoningOptions([], false);
     }
   };
@@ -2849,9 +2912,33 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         codexAppServerStatus.style.color = "var(--fill-secondary, #888)";
         codexAppServerStatus.textContent = t("Testing…");
         try {
+          const selectedModel = (
+            codexAppServerModelInput?.value || getCodexRuntimeModelPref()
+          ).trim();
+          const catalog = await loadCodexAppServerModelCatalog({
+            codexPath: getConfiguredCodexAppServerBinaryPath(),
+          });
+          renderCodexModelSuggestions(catalog.models);
+          if (
+            selectedModel &&
+            !catalog.models.some(
+              (entry) =>
+                entry.model.toLowerCase() === selectedModel.toLowerCase(),
+            )
+          ) {
+            throw new Error(
+              t(
+                'The installed Codex CLI does not list "%model%". Available models: %models%.',
+              )
+                .replace("%model%", selectedModel)
+                .replace(
+                  "%models%",
+                  catalog.models.map((entry) => entry.model).join(", "),
+                ),
+            );
+          }
           const result = await runCodexAppServerConnectionTest({
-            modelName:
-              codexAppServerModelInput?.value || getCodexRuntimeModelPref(),
+            modelName: selectedModel,
             codexPath: getConfiguredCodexAppServerBinaryPath(),
           });
           codexAppServerStatus.textContent = `${t("✓ Success — model says: ")}"${result.reply}"`;
