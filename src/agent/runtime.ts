@@ -1346,6 +1346,9 @@ export class AgentRuntime {
               ...(cacheProvider ? { cacheProvider } : {}),
             });
           },
+          onCodexToolActivity: async (activity) => {
+            await emit(activity);
+          },
           onToolCall: async (call) => {
             await rollbackStepStreamedText();
             const outcome = await executeToolWorkflow(call, round, {

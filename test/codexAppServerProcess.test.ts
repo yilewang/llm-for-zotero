@@ -1751,6 +1751,55 @@ describe("codexAppServerProcess", function () {
     assert.deepEqual(calls[0]?.arguments, ["app-server"]);
   });
 
+  it("passes isolated config overrides to the app-server process", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: { CODEX_PATH: "C:\\Tools\\Codex\\codex.exe" },
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          configOverrides: ["mcp_servers={}"],
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.deepEqual(calls[0]?.arguments, [
+      "app-server",
+      "-c",
+      "mcp_servers={}",
+    ]);
+  });
+
+  it("appends a process-specific Codex home", async function () {
+    const calls: SubprocessCallOptions[] = [];
+
+    await withRuntimeStubs(
+      {
+        env: { CODEX_PATH: "C:\\Tools\\Codex\\codex.exe" },
+        platform: "windows",
+        stubProcessLifecycle: true,
+        subprocessCall: createSpawnStub(calls),
+      },
+      async () => {
+        const proc = await CodexAppServerProcess.spawn({
+          environment: { CODEX_HOME: "C:\\CodexIsolated" },
+        });
+        proc.destroy();
+      },
+    );
+
+    assert.deepInclude(calls[0]?.environment, {
+      CODEX_HOME: "C:\\CodexIsolated",
+    });
+    assert.isTrue(calls[0]?.environmentAppend);
+  });
+
   it("uses an explicit codex path before environment or PATH lookup", async function () {
     const binary = await resolveCodexBinary("D:\\Portable\\codex.cmd");
     assert.equal(binary, "D:\\Portable\\codex.cmd");

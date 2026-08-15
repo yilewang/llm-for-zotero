@@ -5,6 +5,7 @@ import type {
   AgentModelMessage,
   AgentModelStep,
   AgentRuntimeRequest,
+  AgentEvent,
   ToolSpec,
 } from "../types";
 
@@ -25,6 +26,9 @@ export type AgentStepParams = {
   onTextDelta?: (delta: string) => void | Promise<void>;
   onReasoning?: (event: ReasoningEvent) => void | Promise<void>;
   onUsage?: (usage: UsageStats) => void | Promise<void>;
+  onCodexToolActivity?: (
+    event: Extract<AgentEvent, { type: "codex_tool_activity" }>,
+  ) => void | Promise<void>;
   onToolCall?: (call: AgentToolCall) => Promise<AgentAdapterToolCallResult>;
 };
 

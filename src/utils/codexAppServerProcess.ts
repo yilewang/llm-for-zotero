@@ -92,6 +92,10 @@ export type CodexAppServerInjectItemsSupport =
 
 export type CodexAppServerProcessOptions = {
   codexPath?: string;
+  /** CLI config overrides applied before `app-server` starts. */
+  configOverrides?: string[];
+  /** Environment entries appended only for this app-server process. */
+  environment?: Record<string, string>;
 };
 
 type CodexLaunchInvocation = {
@@ -190,15 +194,29 @@ export class CodexAppServerProcess {
     let args: string[];
     let environment: Record<string, string> | undefined;
     if (info.platform === "windows") {
-      const invocation = await buildWindowsCodexInvocation(binary, info);
+      const invocation = await buildWindowsCodexInvocation(
+        binary,
+        info,
+        options.configOverrides,
+      );
       command = invocation.command;
       args = invocation.args;
-      environment = invocation.environment;
+      environment = {
+        ...(invocation.environment || {}),
+        ...(options.environment || {}),
+      };
     } else {
-      const invocation = await buildPosixCodexInvocation(binary, info);
+      const invocation = await buildPosixCodexInvocation(
+        binary,
+        info,
+        options.configOverrides,
+      );
       command = invocation.command;
       args = invocation.args;
-      environment = invocation.environment;
+      environment = {
+        ...(invocation.environment || {}),
+        ...(options.environment || {}),
+      };
     }
     let proc: any;
     try {
@@ -1773,10 +1791,42 @@ function buildPrefixCodexCandidates(params: {
   ];
 }
 
-function buildWindowsShellCommand(binary: string): string {
-  return /\s/.test(binary)
-    ? `""${binary}" app-server"`
-    : `${binary} app-server`;
+function normalizeCodexConfigOverrides(values?: string[]): string[] {
+  return Array.isArray(values)
+    ? values.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+}
+
+export function buildCodexAppServerArguments(
+  configOverrides?: string[],
+): string[] {
+  return [
+    "app-server",
+    ...normalizeCodexConfigOverrides(configOverrides).flatMap((value) => [
+      "-c",
+      value,
+    ]),
+  ];
+}
+
+function quoteWindowsShellArgument(value: string): string {
+  return /[\s"&|<>^]/.test(value)
+    ? `"${value.replace(/"/g, '""')}"`
+    : value;
+}
+
+function buildWindowsShellCommand(
+  binary: string,
+  configOverrides?: string[],
+): string {
+  const binaryCommand = /\s/.test(binary) ? `"${binary}"` : binary;
+  const command = [
+    binaryCommand,
+    ...buildCodexAppServerArguments(configOverrides).map(
+      quoteWindowsShellArgument,
+    ),
+  ].join(" ");
+  return /\s/.test(binary) ? `"${command}"` : command;
 }
 
 function splitWindowsCommandLine(value: string): string[] {
@@ -1846,6 +1896,7 @@ function getWindowsDirectory(path: string): string {
 async function buildWindowsCodexInvocation(
   binary: string,
   info: ReturnType<typeof getRuntimePlatformInfo>,
+  configOverrides?: string[],
 ): Promise<CodexLaunchInvocation> {
   if (isUnsupportedWindowsWslCodexReference(binary)) {
     throw createWindowsWslCodexUnsupportedError();
@@ -1854,7 +1905,10 @@ async function buildWindowsCodexInvocation(
   const directory = getWindowsDirectory(binary);
   if (directory && /\.cmd$/i.test(binary)) {
     const nativeInvocation =
-      await resolveWindowsNpmNativeCodexInvocation(directory);
+      await resolveWindowsNpmNativeCodexInvocation(
+        directory,
+        configOverrides,
+      );
     if (nativeInvocation) return nativeInvocation;
 
     const nodePath = joinRuntimePath("\\", directory, "node.exe");
@@ -1862,7 +1916,7 @@ async function buildWindowsCodexInvocation(
     if ((await pathExists(nodePath)) && (await pathExists(codexJsPath))) {
       return {
         command: nodePath,
-        args: [codexJsPath, "app-server"],
+        args: [codexJsPath, ...buildCodexAppServerArguments(configOverrides)],
       };
     }
   }
@@ -1870,20 +1924,26 @@ async function buildWindowsCodexInvocation(
   if (/\.(exe|com)$/i.test(binary)) {
     return {
       command: binary,
-      args: ["app-server"],
+      args: buildCodexAppServerArguments(configOverrides),
     };
   }
 
   // npm shims are usually batch scripts, and bare `codex` needs PATHEXT lookup.
   return {
     command: info.shellPath,
-    args: ["/d", "/s", info.shellFlag, buildWindowsShellCommand(binary)],
+    args: [
+      "/d",
+      "/s",
+      info.shellFlag,
+      buildWindowsShellCommand(binary, configOverrides),
+    ],
   };
 }
 
 async function buildPosixCodexInvocation(
   binary: string,
   info: ReturnType<typeof getRuntimePlatformInfo>,
+  configOverrides?: string[],
 ): Promise<CodexLaunchInvocation> {
   const env = getCodexRuntimeEnv();
   const homeDir = getNonEmptyEnvValue(env, "HOME") || "";
@@ -1929,7 +1989,7 @@ async function buildPosixCodexInvocation(
   );
   return {
     command: binary,
-    args: ["app-server"],
+    args: buildCodexAppServerArguments(configOverrides),
     ...(path ? { environment: { PATH: path } } : {}),
   };
 }
@@ -1948,6 +2008,7 @@ function getWindowsNpmCodexJsPath(directory: string): string {
 
 async function resolveWindowsNpmNativeCodexInvocation(
   directory: string,
+  configOverrides?: string[],
 ): Promise<{
   command: string;
   args: string[];
@@ -1994,7 +2055,7 @@ async function resolveWindowsNpmNativeCodexInvocation(
     }
     return {
       command: nativeBinary,
-      args: ["app-server"],
+      args: buildCodexAppServerArguments(configOverrides),
       environment,
     };
   }
@@ -2345,7 +2406,20 @@ function buildProcessCacheKey(
   options: CodexAppServerProcessOptions = {},
 ): string {
   const codexPath = resolveCodexAppServerBinaryPath(options.codexPath);
-  return codexPath ? `${cacheKey}\u0000${codexPath}` : cacheKey;
+  const configOverrides = normalizeCodexConfigOverrides(
+    options.configOverrides,
+  );
+  const environment = Object.fromEntries(
+    Object.entries(options.environment || {}).sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+  );
+  return [
+    cacheKey,
+    codexPath || "",
+    JSON.stringify(configOverrides),
+    JSON.stringify(environment),
+  ].join("\u0000");
 }
 
 export function destroyCachedCodexAppServerProcess(
