@@ -53,9 +53,14 @@ describe("modelProviders", function () {
     );
     assert.equal(deriveProviderLabel("https://api.moonshot.ai/v1"), "Kimi");
     assert.equal(deriveProviderLabel("https://api.x.ai/v1/responses"), "Grok");
+    assert.equal(deriveProviderLabel("https://api.xiaomimimo.com/v1"), "Xiaomi MiMo");
     assert.equal(
-      deriveProviderLabel("https://api.xiaomimimo.com/v1"),
-      "Xiaomi MiMo",
+      deriveProviderLabel("https://openrouter.ai/api/v1"),
+      "OpenRouter",
+    );
+    assert.equal(
+      deriveProviderLabel("https://api.orcarouter.ai/v1"),
+      "OrcaRouter",
     );
     assert.equal(
       deriveProviderLabel("https://api.minimax.io/anthropic"),
