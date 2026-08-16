@@ -1,5 +1,7 @@
 import { assert } from "chai";
 import {
+  buildCodexAgentAppServerMessages,
+  buildCodexFallbackMcpToolActivityEvent,
   CodexResponsesAgentAdapter,
   limitNormalizedResponsesStep,
   normalizeStepFromPayload,
@@ -37,6 +39,121 @@ describe("CodexResponsesAgentAdapter", function () {
 
   it("supports tool calling for codex auth requests", function () {
     assert.isTrue(adapter.supportsTools(makeRequest()));
+  });
+
+  it("preserves Agent tool evidence for the app-server fallback", function () {
+    assert.deepEqual(
+      buildCodexAgentAppServerMessages([
+        { role: "system", content: "Use Zotero context." },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            { id: "call_1", name: "read_paper", arguments: { page: 2 } },
+          ],
+        },
+        {
+          role: "tool",
+          tool_call_id: "call_1",
+          name: "read_paper",
+          content: "Evidence from page 2",
+        },
+      ]),
+      [
+        { role: "system", content: "Use Zotero context." },
+        {
+          role: "assistant",
+          content: '[Tool call: read_paper, call_id=call_1]\n{"page":2}',
+        },
+        {
+          role: "user",
+          content:
+            "[Tool result: read_paper, call_id=call_1]\nEvidence from page 2",
+        },
+      ],
+    );
+  });
+
+  it("maps fallback MCP activity into the persisted Codex tool trace", function () {
+    assert.deepEqual(
+      buildCodexFallbackMcpToolActivityEvent({
+        requestId: "jsonrpc:2",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm_for_zotero",
+        arguments: { mode: "overview", itemId: 20031 },
+        ok: true,
+        conversationKey: 42,
+        timestamp: 1234,
+      }),
+      {
+        type: "codex_tool_activity",
+        itemId: "mcp:jsonrpc:2",
+        phase: "completed",
+        toolName: "paper_read",
+        toolLabel: "Read Paper",
+        serverName: "llm_for_zotero",
+        args: { mode: "overview", itemId: 20031 },
+        ok: true,
+        text: undefined,
+        artifacts: undefined,
+      },
+    );
+  });
+
+  it("falls back to Codex app-server when Zotero fetch fails in Agent mode", async function () {
+    let fallbackRequest:
+      | Parameters<
+          ConstructorParameters<typeof CodexResponsesAgentAdapter>[0]
+        >[0]
+      | undefined;
+    const deltas: string[] = [];
+    const fallbackAdapter = new CodexResponsesAgentAdapter(async (params) => {
+      fallbackRequest = params;
+      params.onDelta?.("Fallback OK");
+      return "Fallback OK";
+    });
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async () => {
+          throw new TypeError(
+            "NetworkError when attempting to fetch resource.",
+          );
+        };
+      },
+    };
+
+    const step = await fallbackAdapter.runStep({
+      request: makeRequest({
+        model: "gpt-5.6-sol",
+        authMode: "api_key",
+        apiKey: "test-token",
+      }),
+      messages: [
+        { role: "system", content: "Answer from the paper context." },
+        { role: "user", content: "What is the model expression?" },
+      ],
+      tools: [],
+      onTextDelta: (delta) => deltas.push(delta),
+    });
+
+    assert.deepEqual(step, {
+      kind: "final",
+      text: "Fallback OK",
+      assistantMessage: { role: "assistant", content: "Fallback OK" },
+    });
+    assert.equal(fallbackRequest?.model, "gpt-5.6-sol");
+    assert.deepEqual(fallbackRequest?.messages, [
+      { role: "system", content: "Answer from the paper context." },
+      { role: "user", content: "What is the model expression?" },
+    ]);
+    assert.deepEqual(deltas, ["Fallback OK"]);
   });
 
   it("extracts tool calls from responses payload output items", function () {

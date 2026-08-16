@@ -484,14 +484,14 @@ const zhCN: Record<string, string> = {
     '选择上方的预设，或切换到"自定义"以手动输入完整的基础 URL 或端点。',
   "codex auth usually uses https://chatgpt.com/backend-api/codex/responses":
     "codex 认证通常使用 https://chatgpt.com/backend-api/codex/responses",
-  "Legacy direct ChatGPT/Codex backend mode. Existing users can keep using it in this release. New users should use Codex App Server. Planned for deprecation in a future release after app-server validation.":
-    "旧版的 ChatGPT/Codex 直连后端模式。当前用户在此版本中可以继续使用，但新用户应改用 Codex App Server。待 app-server 验证稳定后，会在未来版本中计划弃用。",
+  "Compatibility mode for existing Codex-auth provider entries. Requests use the configured legacy endpoint first, then retry through an isolated local Codex app-server only when Zotero's network transport fails.":
+    "现有 Codex 认证服务商条目的兼容模式。请求会先使用已配置的旧版端点；只有 Zotero 网络传输失败时，才会通过隔离的本地 Codex app-server 重试。",
   "Recommended official Codex integration. Runs the local `codex app-server` CLI as the native Codex runtime. Run `codex login` first.":
     "推荐的官方 Codex 集成方式。它会将本地 `codex app-server` CLI 作为原生 Codex 运行时。请先运行 `codex login`。",
   "Codex App Server (native runtime settings)":
     "Codex App Server（原生运行时设置）",
-  "Legacy direct backend URL. Usually uses https://chatgpt.com/backend-api/codex/responses. Existing users can keep it in this release, but new users should use Codex App Server. Planned for deprecation in a future release after app-server validation.":
-    "旧版直连后端 URL，通常使用 https://chatgpt.com/backend-api/codex/responses。当前用户在此版本中可以继续使用，但新用户应改用 Codex App Server。待 app-server 验证稳定后，会在未来版本中计划弃用。",
+  "Kept for legacy configuration compatibility. This endpoint is tried first; Zotero network transport failures retry through an isolated local Codex app-server.":
+    "仅为兼容旧配置而保留。系统会先尝试此端点；若 Zotero 网络传输失败，则通过隔离的本地 Codex app-server 重试。",
   "Uses Codex responses with the local codex app-server transport.":
     "通过本地 codex app-server 传输使用 Codex responses。",
   "Uses Codex responses with the legacy direct backend transport.":
@@ -569,6 +569,8 @@ const zhCN: Record<string, string> = {
     "无法加载 Codex 模型。仅显示当前模型。",
   "Retry loading Codex models": "重试加载 Codex 模型",
   "Codex did not return any available models.": "Codex 未返回任何可用模型。",
+  'The installed Codex CLI does not list "%model%". Available models: %models%.':
+    "已安装的 Codex CLI 未列出“%model%”。可用模型：%models%。",
   "Fetch Models": "获取模型",
   WebChat: "WebChat",
   "Provider A": "服务商 A",

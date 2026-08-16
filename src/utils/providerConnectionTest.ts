@@ -11,14 +11,18 @@ import {
 } from "./providerTransport";
 import { createAgentModelAdapter } from "../agent/model/factory";
 import type { AgentRuntimeRequest } from "../agent/types";
+import type { ChatMessage } from "../shared/llm";
 import {
-  destroyCachedCodexAppServerProcess,
-  extractCodexAppServerThreadId,
-  extractCodexAppServerTurnId,
-  getOrCreateCodexAppServerProcess,
-  resolveCodexAppServerBinaryPath,
-  waitForCodexAppServerTurnCompletion,
-} from "./codexAppServerProcess";
+  runCodexAuthAppServerTurn,
+  runCodexNativeAppServerConnectionTurn,
+} from "./codexAuthAppServerTransport";
+import { isCodexFetchTransportError } from "./codexTransportError";
+
+type CodexConnectionTurn = (params: {
+  model: string;
+  messages: ChatMessage[];
+  codexPath?: string;
+}) => Promise<string>;
 
 function extractTextFromCodexSSE(raw: string): string {
   const lines = raw.split(/\r?\n/);
@@ -237,65 +241,38 @@ export function getProviderConnectionCapabilityLabel(params: {
 export async function runCodexAppServerConnectionTest(params: {
   modelName: string;
   codexPath?: string;
+  runTurn?: CodexConnectionTurn;
 }): Promise<{ reply: string; capabilityLabel: string }> {
-  const processKey = `codex_app_server_connection_test_${Date.now()}_${Math.random()
-    .toString(16)
-    .slice(2)}`;
-  const processOptions = {
-    codexPath: resolveCodexAppServerBinaryPath(params.codexPath),
-  };
-  const proc = await getOrCreateCodexAppServerProcess(
-    processKey,
-    processOptions,
-  );
-  try {
-    const reply = await proc.runTurnExclusive(async () => {
-      const threadResp = await proc.sendRequest("thread/start", {
-        model: params.modelName || undefined,
-        ephemeral: true,
-        approvalPolicy: "never",
-      });
-      const threadId = extractCodexAppServerThreadId(threadResp);
-      if (!threadId) {
-        throw new Error("Codex app-server did not return a thread ID");
-      }
-
-      const turnResp = await proc.sendRequest("turn/start", {
-        threadId,
-        input: [{ type: "text", text: "Say OK" }],
-      });
-      const turnId = extractCodexAppServerTurnId(turnResp);
-      if (!turnId) {
-        throw new Error("Codex app-server did not return a turn ID");
-      }
-
-      return waitForCodexAppServerTurnCompletion({
-        proc,
-        turnId,
-        cacheKey: processKey,
-        processOptions,
-      });
-    });
-
-    const request = {
-      conversationKey: 0,
-      mode: "agent" as const,
-      userText: "",
-      authMode: "codex_app_server" as const,
+  const reply = await (params.runTurn || runCodexNativeAppServerConnectionTurn)(
+    {
       model: params.modelName,
-    } as AgentRuntimeRequest;
-    const capabilities =
-      createAgentModelAdapter(request).getCapabilities(request);
-    const capabilityLabel = describeAgentCapabilityClass(
-      getAgentCapabilityClass({
-        toolCalls: capabilities.toolCalls,
-        fileInputs: capabilities.fileInputs,
-      }),
-    );
-    return { reply: reply.trim() || "OK", capabilityLabel };
-  } finally {
-    destroyCachedCodexAppServerProcess(processKey, undefined, processOptions);
-  }
+      codexPath: params.codexPath,
+      messages: [
+        {
+          role: "system",
+          content: "You are a concise assistant. Reply with OK.",
+        },
+        { role: "user", content: "Say OK" },
+      ],
+    },
+  );
+
+  const request = {
+    conversationKey: 0,
+    mode: "agent" as const,
+    userText: "",
+    authMode: "codex_app_server" as const,
+    model: params.modelName,
+  } as AgentRuntimeRequest;
+  const capabilities =
+    createAgentModelAdapter(request).getCapabilities(request);
+  const capabilityLabel = describeAgentCapabilityClass(
+    getAgentCapabilityClass({
+      toolCalls: capabilities.toolCalls,
+      fileInputs: capabilities.fileInputs,
+    }),
+  );
+  return { reply: reply.trim() || "OK", capabilityLabel };
 }
 
 export async function runProviderConnectionTest(params: {
@@ -305,6 +282,8 @@ export async function runProviderConnectionTest(params: {
   apiBase: string;
   apiKey: string;
   modelName: string;
+  codexAccountId?: string;
+  runCodexFallback?: CodexConnectionTurn;
 }): Promise<{ reply: string; capabilityLabel: string }> {
   const { body, expectsSse } = buildConnectionRequestPayload({
     protocol: params.protocol,
@@ -317,15 +296,40 @@ export async function runProviderConnectionTest(params: {
     stream: expectsSse,
     authMode: params.authMode,
   });
-  const response = await params.fetchFn(url, {
-    method: "POST",
-    headers: buildProviderTransportHeaders({
-      protocol: params.protocol,
-      apiKey: params.apiKey,
-      authMode: params.authMode,
-    }),
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await params.fetchFn(url, {
+      method: "POST",
+      headers: buildProviderTransportHeaders({
+        protocol: params.protocol,
+        apiKey: params.apiKey,
+        authMode: params.authMode,
+        codexAccountId: params.codexAccountId,
+      }),
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    if (
+      params.authMode !== "codex_auth" ||
+      !isCodexFetchTransportError(error)
+    ) {
+      throw error;
+    }
+    const reply = await (params.runCodexFallback || runCodexAuthAppServerTurn)({
+      model: params.modelName,
+      messages: [
+        {
+          role: "system",
+          content: "You are a concise assistant. Reply with OK.",
+        },
+        { role: "user", content: "Say OK" },
+      ],
+    });
+    return {
+      reply: reply.trim() || "OK",
+      capabilityLabel: getProviderConnectionCapabilityLabel(params),
+    };
+  }
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${await response.text()}`);
   }

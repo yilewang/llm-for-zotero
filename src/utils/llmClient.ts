@@ -106,6 +106,9 @@ import {
   ensureModelCapabilities,
   getModelCapabilities,
 } from "../modelCapabilities";
+import { runCodexAuthAppServerTurn } from "./codexAuthAppServerTransport";
+import { isCodexFetchTransportError } from "./codexTransportError";
+export { isCodexFetchTransportError } from "./codexTransportError";
 
 // =============================================================================
 // Types
@@ -446,6 +449,7 @@ type OSLike = {
 type CodexTokenData = {
   access_token?: string;
   refresh_token?: string;
+  account_id?: string;
 };
 
 type CodexAuthJson = {
@@ -669,6 +673,11 @@ function extractCodexRefreshToken(auth: CodexAuthJson | null): string {
   return typeof token === "string" ? token.trim() : "";
 }
 
+function extractCodexAccountId(auth: CodexAuthJson | null): string {
+  const accountId = auth?.tokens?.account_id;
+  return typeof accountId === "string" ? accountId.trim() : "";
+}
+
 async function refreshCodexAccessToken(params: {
   authPath: string;
   refreshToken: string;
@@ -725,13 +734,19 @@ async function refreshCodexAccessToken(params: {
 
 async function resolveCodexAccessToken(params?: {
   signal?: AbortSignal;
-}): Promise<{ token: string; refreshToken: string; authPath: string }> {
+}): Promise<{
+  token: string;
+  refreshToken: string;
+  authPath: string;
+  accountId: string;
+}> {
   const authPath = resolveCodexAuthPath();
   const auth = await loadCodexAuthJson(authPath);
   const accessToken = extractCodexAccessToken(auth);
   const refreshToken = extractCodexRefreshToken(auth);
+  const accountId = extractCodexAccountId(auth);
   if (accessToken) {
-    return { token: accessToken, refreshToken, authPath };
+    return { token: accessToken, refreshToken, authPath, accountId };
   }
   if (refreshToken) {
     const refreshed = await refreshCodexAccessToken({
@@ -739,7 +754,7 @@ async function resolveCodexAccessToken(params?: {
       refreshToken,
       signal: params?.signal,
     });
-    return { token: refreshed, refreshToken, authPath };
+    return { token: refreshed, refreshToken, authPath, accountId };
   }
   throw new Error(
     "codex auth token not found. Please run `codex login` and ensure ~/.codex/auth.json is available.",
@@ -2972,6 +2987,7 @@ export type RequestAuthState = {
   codex?: {
     authPath: string;
     refreshToken: string;
+    accountId: string;
   };
   copilot?: {
     githubToken: string;
@@ -2981,6 +2997,7 @@ export type RequestAuthState = {
 function buildAuthHeaders(
   token: string,
   mode?: ModelProviderAuthMode,
+  codexAccountId?: string,
 ): Record<string, string> {
   if (mode === "copilot_auth") {
     return buildCopilotHeaders(token);
@@ -2990,6 +3007,12 @@ function buildAuthHeaders(
   };
   if (token) {
     headers.Authorization = `Bearer ${token}`;
+  }
+  if (mode === "codex_auth") {
+    if (codexAccountId) {
+      headers["ChatGPT-Account-ID"] = codexAccountId;
+    }
+    headers.Originator = "codex";
   }
   return headers;
 }
@@ -3013,12 +3036,14 @@ async function refreshCodexAuthState(
     refreshToken,
     signal,
   });
+  const refreshedAuth = await loadCodexAuthJson(authPath);
   return {
     mode: "codex_auth",
     token,
     codex: {
       authPath,
       refreshToken,
+      accountId: extractCodexAccountId(refreshedAuth),
     },
   };
 }
@@ -3057,7 +3082,9 @@ async function postWithTemperatureFallback(params: {
   const send = (bodyPayload: Record<string, unknown>, auth: RequestAuthState) =>
     getFetch()(params.url, {
       method: "POST",
-      headers: params.headers ?? buildAuthHeaders(auth.token, auth.mode),
+      headers:
+        params.headers ??
+        buildAuthHeaders(auth.token, auth.mode, auth.codex?.accountId),
       body: JSON.stringify(bodyPayload),
       signal: params.signal,
     });
@@ -3295,6 +3322,7 @@ export async function resolveRequestAuthState(params: {
       codex: {
         authPath: resolved.authPath,
         refreshToken: resolved.refreshToken,
+        accountId: resolved.accountId,
       },
     };
   }
@@ -3554,6 +3582,7 @@ export async function callLLM(params: ChatParams): Promise<string> {
     protocol: providerProtocol,
     apiKey: auth.token,
     authMode,
+    codexAccountId: auth.codex?.accountId,
   });
   const buildPayload = createChatPayloadBuilder({
     model,
@@ -3640,104 +3669,125 @@ export async function callLLMStream(
     });
   }
   assertCodexAppServerUsesNativeRuntime(authMode);
-  const auth = await resolveRequestAuthState({
-    authMode,
-    apiKey,
-    signal: params.signal,
-  });
-  if (inputCap.capped) {
-    ztoolkit.log("LLM: Applied model-aware input cap", {
+  if (authMode === "codex_auth") {
+    if (Array.isArray(params.attachments) && params.attachments.length) {
+      throw new Error(
+        "codex auth currently does not support file attachments in this plugin v1.",
+      );
+    }
+  }
+  try {
+    const auth = await resolveRequestAuthState({
+      authMode,
+      apiKey,
+      signal: params.signal,
+    });
+    if (inputCap.capped) {
+      ztoolkit.log("LLM: Applied model-aware input cap", {
+        model,
+        beforeTokens: inputCap.estimatedBeforeTokens,
+        afterTokens: inputCap.estimatedAfterTokens,
+        capTokens: inputCap.limitTokens,
+        softCapTokens: inputCap.softLimitTokens,
+        effects: inputCap.effects,
+      });
+    }
+    const useResponses =
+      providerProtocol === "responses_api" ||
+      providerProtocol === "codex_responses";
+    // Only upload files via /v1/files for providers that actually host that endpoint.
+    // Third-party relays using responses_api get inline base64 instead (via buildResponsesInput).
+    const canUploadFiles =
+      useResponses && providerSupportsResponsesEndpoint(apiBase);
+    const responseFileIds = canUploadFiles
+      ? await uploadFilesForResponses({
+          apiBase,
+          apiKey: auth.token,
+          attachments: params.attachments,
+          signal: params.signal,
+        })
+      : [];
+    const effectiveTemperature = normalizeTemperature(params.temperature);
+    const effectiveMaxTokens = normalizeMaxTokensForRequest({
+      value: params.maxTokens,
       model,
-      beforeTokens: inputCap.estimatedBeforeTokens,
-      afterTokens: inputCap.estimatedAfterTokens,
-      capTokens: inputCap.limitTokens,
-      softCapTokens: inputCap.softLimitTokens,
-      effects: inputCap.effects,
+      apiBase,
+      protocol: providerProtocol,
+      authMode,
+    });
+
+    const url = resolveProviderTransportEndpoint({
+      protocol: providerProtocol,
+      apiBase,
+      model,
+      stream: true,
+      authMode,
+    });
+    const requestHeaders =
+      authMode === "codex_auth"
+        ? undefined
+        : buildProviderTransportHeaders({
+            protocol: providerProtocol,
+            apiKey: auth.token,
+            authMode,
+          });
+    const buildPayload = createChatPayloadBuilder({
+      model,
+      messages,
+      useResponses,
+      responseFileIds,
+      authMode,
+      apiBase,
+      providerProtocol,
+      effectiveTemperature,
+      effectiveMaxTokens,
+      stream: true,
+      contextCache: params.contextCache,
+    });
+    const res = await postWithReasoningFallback({
+      url,
+      auth,
+      headers: requestHeaders,
+      modelName: model,
+      initialReasoning: params.reasoning,
+      buildPayload,
+      signal: params.signal,
+    });
+
+    // Fallback to non-streaming if body is not available
+    if (!res.body) {
+      if (useResponses) {
+        const data = (await res.json()) as {
+          output_text?: string;
+          output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+        };
+        return extractResponsesOutputText(data);
+      }
+      return callLLM(params);
+    }
+
+    return useResponses
+      ? parseResponsesStream(res.body, onDelta, onReasoning, onUsage)
+      : parseStreamResponse(res.body, onDelta, onReasoning, onUsage);
+  } catch (error) {
+    if (authMode !== "codex_auth" || !isCodexFetchTransportError(error)) {
+      throw error;
+    }
+    ztoolkit.log(
+      "LLM: Zotero fetch failed for Codex auth; retrying through local app-server",
+      error,
+    );
+    return runCodexAuthAppServerTurn({
+      model,
+      messages,
+      reasoning: params.reasoning,
+      signal: params.signal,
+      codexPath: (getPref("codexAppServerPath") || "").toString().trim(),
+      onDelta,
+      onReasoning,
+      onUsage,
     });
   }
-  if (
-    authMode === "codex_auth" &&
-    Array.isArray(params.attachments) &&
-    params.attachments.length
-  ) {
-    throw new Error(
-      "codex auth currently does not support file attachments in this plugin v1.",
-    );
-  }
-  const useResponses =
-    providerProtocol === "responses_api" ||
-    providerProtocol === "codex_responses";
-  // Only upload files via /v1/files for providers that actually host that endpoint.
-  // Third-party relays using responses_api get inline base64 instead (via buildResponsesInput).
-  const canUploadFiles =
-    useResponses && providerSupportsResponsesEndpoint(apiBase);
-  const responseFileIds = canUploadFiles
-    ? await uploadFilesForResponses({
-        apiBase,
-        apiKey: auth.token,
-        attachments: params.attachments,
-        signal: params.signal,
-      })
-    : [];
-  const effectiveTemperature = normalizeTemperature(params.temperature);
-  const effectiveMaxTokens = normalizeMaxTokensForRequest({
-    value: params.maxTokens,
-    model,
-    apiBase,
-    protocol: providerProtocol,
-    authMode,
-  });
-
-  const url = resolveProviderTransportEndpoint({
-    protocol: providerProtocol,
-    apiBase,
-    model,
-    stream: true,
-    authMode,
-  });
-  const requestHeaders = buildProviderTransportHeaders({
-    protocol: providerProtocol,
-    apiKey: auth.token,
-    authMode,
-  });
-  const buildPayload = createChatPayloadBuilder({
-    model,
-    messages,
-    useResponses,
-    responseFileIds,
-    authMode,
-    apiBase,
-    providerProtocol,
-    effectiveTemperature,
-    effectiveMaxTokens,
-    stream: true,
-    contextCache: params.contextCache,
-  });
-  const res = await postWithReasoningFallback({
-    url,
-    auth,
-    headers: requestHeaders,
-    modelName: model,
-    initialReasoning: params.reasoning,
-    buildPayload,
-    signal: params.signal,
-  });
-
-  // Fallback to non-streaming if body is not available
-  if (!res.body) {
-    if (useResponses) {
-      const data = (await res.json()) as {
-        output_text?: string;
-        output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
-      };
-      return extractResponsesOutputText(data);
-    }
-    return callLLM(params);
-  }
-
-  return useResponses
-    ? parseResponsesStream(res.body, onDelta, onReasoning, onUsage)
-    : parseStreamResponse(res.body, onDelta, onReasoning, onUsage);
 }
 
 /**
