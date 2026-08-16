@@ -9,6 +9,7 @@ import { buildAgentMemoryBlock } from "../store/conversationMemory";
 import { getAllSkills } from "../skills";
 import type { AgentSkill } from "../skills";
 import { classifyWriteNoteDestination } from "../writeNoteDestination";
+import { getAgentTodos } from "../tools/todoWrite";
 
 import { resolveProviderCapabilities } from "../../providers";
 import type { ProviderCapabilities } from "../../providers";
@@ -522,6 +523,19 @@ function buildRuntimePlatformSection(): string {
   return buildRuntimePlatformGuidanceText();
 }
 
+function buildTodoProgressInstruction(request: AgentRuntimeRequest): string {
+  const todos = getAgentTodos(request.conversationKey);
+  if (!todos.length) return "";
+  const lines = todos.map(
+    (todo) => `- [${todo.status}] ${todo.content} (${todo.activeForm})`,
+  );
+  return [
+    "SESSION TODO STATE: A task list already exists for this conversation.",
+    "Keep it current with `todo_write` before starting new tracked work and immediately after completing a tracked item.",
+    ...lines,
+  ].join("\n");
+}
+
 function buildTextOnlyModelInstruction(request: AgentRuntimeRequest): string {
   if (isMultimodalRequestSupported(request)) return "";
   const modelLabel = (request.model || "selected model").trim();
@@ -549,6 +563,7 @@ export async function buildAgentInitialMessages(
     buildFigureMineruInstruction(request, matchedSkillIds),
     buildWriteNoteFileInstruction(request, matchedSkillIds),
     buildForcedSkillWholeLibraryInstruction(request),
+    buildTodoProgressInstruction(request),
   ].filter(Boolean);
   const turnGuidanceBlock = buildTurnGuidanceBlock([
     autoReadInstruction,

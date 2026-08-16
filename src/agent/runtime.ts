@@ -41,6 +41,7 @@ import {
   normalizeHistoryMessages,
 } from "./model/messageBuilder";
 import { classifyWriteNoteDestination } from "./writeNoteDestination";
+import { hydrateAgentTodosFromMessages } from "./tools/todoWrite";
 import { detectSkillIntent } from "./model/skillClassifier";
 import { getAllSkills, getMatchedSkillIds } from "./skills";
 import {
@@ -833,6 +834,10 @@ export class AgentRuntime {
       let transcriptMessagesForPrompt = transcriptSegment.messages.length
         ? transcriptSegment.messages
         : normalizeHistoryMessages(request);
+      hydrateAgentTodosFromMessages(
+        request.conversationKey,
+        transcriptMessagesForPrompt,
+      );
 
       if (isManualCompactRequest(request)) {
         const policy = resolveAgentContextBudgetPolicy();
