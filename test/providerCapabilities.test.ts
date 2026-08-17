@@ -118,6 +118,10 @@ describe("provider capabilities", function () {
         protocol: "openai_chat_compat",
       },
       {
+        apiBase: "https://api.atlascloud.ai/v1",
+        protocol: "openai_chat_compat",
+      },
+      {
         apiBase: "https://third-party.example/gemini",
         protocol: "gemini_native",
       },
