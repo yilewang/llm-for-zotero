@@ -191,6 +191,142 @@ export type PaperAnnotationRecord = {
   pageLabel?: string;
 };
 
+export type CreateAnnotationParams = {
+  /** The parent paper (regular item) ID.  Resolved to its first PDF attachment. */
+  itemId: number;
+  /** The exact PDF attachment to annotate (from paperContext.contextItemId). */
+  contextItemId?: number;
+  /** Annotation type. */
+  type: "highlight" | "underline" | "note";
+  /** Text to annotate (for highlight / underline). */
+  text?: string;
+  /** Optional comment attached to the annotation. */
+  comment?: string;
+  /** Annotation colour — hex (e.g. "#FFD700") or name (e.g. "yellow"). */
+  color?: string;
+  /** Zero-based page index where the annotation should appear. */
+  pageIndex: number;
+  /** Printed page label (e.g. "42" or "xiv"). */
+  pageLabel?: string;
+  /** Precomputed rects in PDF user space (bottom-left, y-up). Overrides fallback. */
+  rects?: number[][];
+  /** Char offset of the match, for sortIndex ordering. */
+  charOffset?: number;
+  /** Points from page top, for sortIndex ordering. */
+  topOffset?: number;
+};
+
+export type CreateAnnotationResult = {
+  annotationId: number;
+  type: string;
+  pageLabel?: string;
+};
+
+/**
+ * Full snapshot of a Zotero annotation before it is permanently erased.
+ * Used to support undo for annotation_delete via restoreAnnotations().
+ */
+export type AnnotationSnapshot = {
+  /** Original annotation item ID (pre-deletion) — diagnostics only. */
+  originalAnnotationId: number;
+  /** PDF attachment the annotation belonged to; restore re-links here. */
+  parentAttachmentId: number;
+  libraryID: number;
+  /** Short human-readable label for the undo description. */
+  label: string;
+  /** annotationType: highlight | underline | note | text | image | ink */
+  type: string;
+  /** annotationColor (hex) — Zotero requires a colour on every annotation. */
+  color: string;
+  text?: string; // annotationText (raw)
+  comment?: string; // annotationComment (raw)
+  pageLabel?: string; // annotationPageLabel
+  sortIndex?: string; // annotationSortIndex (verbatim → ordering unchanged)
+  position?: string; // annotationPosition (verbatim → geometry/paths)
+  tags: string[];
+  /** True if some content can't be recreated (image annotation bitmap). */
+  lossy: boolean;
+};
+
+// Zotero's built-in annotation colour palette (must match exactly).
+export const ANNOTATION_COLOR_MAP: Record<string, string> = {
+  yellow: "#ffd400",
+  green: "#a6e22e",
+  blue: "#5dade2",
+  red: "#ff6666",
+  purple: "#ae81ff",
+  orange: "#f39c12",
+  pink: "#f92672",
+  cyan: "#00bcd4",
+  gray: "#95a5a6",
+  grey: "#95a5a6",
+};
+
+export function resolveAnnotationColor(color?: string): string {
+  if (color && color.trim()) {
+    const normalized = color.trim().toLowerCase();
+    if (ANNOTATION_COLOR_MAP[normalized]) {
+      return ANNOTATION_COLOR_MAP[normalized];
+    }
+    const hexMatch = /^#?([0-9A-Fa-f]{6})$/.exec(color.trim());
+    if (hexMatch) {
+      return `#${hexMatch[1].toLowerCase()}`;
+    }
+  }
+  // Color is REQUIRED by Zotero for every annotation type.
+  return "#ffd400";
+}
+
+// ── sortIndex = "PPPPP|OOOOOO|TTTTT": pageIndex(5) | charOffset(6) | top(5) ──
+const SORT_INDEX_RE = /^\d{5}\|\d{6}\|\d{5}$/;
+
+function buildAnnotationSortIndex(
+  pageIndex: number,
+  charOffset: number,
+  topOffset: number,
+): string {
+  const clamp = (n: number, max: number) =>
+    Math.min(Math.max(0, Math.floor(Number.isFinite(n) ? n : 0)), max);
+  const sortIndex =
+    `${String(clamp(pageIndex, 99999)).padStart(5, "0")}|` +
+    `${String(clamp(charOffset, 999999)).padStart(6, "0")}|` +
+    `${String(clamp(topOffset, 99999)).padStart(5, "0")}`;
+  if (!SORT_INDEX_RE.test(sortIndex)) {
+    throw new Error(`Failed to build a valid sortIndex (${sortIndex})`);
+  }
+  return sortIndex;
+}
+
+// Page size is unknown here, so we place a *valid* fallback rect near the top.
+const ASSUMED_PAGE_WIDTH = 612; // US Letter
+const ASSUMED_PAGE_HEIGHT = 792;
+const PAGE_MARGIN = 72;
+
+// PDF coords: origin bottom-left, y grows upward.
+function buildAnnotationPosition(
+  pageIndex: number,
+  type: "highlight" | "underline" | "note",
+  verticalSlot: number,
+): { position: string; topOffset: number } {
+  const step = 20;
+  const usable = ASSUMED_PAGE_HEIGHT - 2 * PAGE_MARGIN;
+  const slotsPerColumn = Math.max(1, Math.floor(usable / step));
+  const slot =
+    ((verticalSlot % slotsPerColumn) + slotsPerColumn) % slotsPerColumn;
+  const yTop = ASSUMED_PAGE_HEIGHT - PAGE_MARGIN - slot * step;
+  const rect =
+    type === "note"
+      ? [PAGE_MARGIN, yTop - 24, PAGE_MARGIN + 24, yTop]
+      : [PAGE_MARGIN, yTop - 14, ASSUMED_PAGE_WIDTH - PAGE_MARGIN, yTop];
+  return {
+    position: JSON.stringify({
+      pageIndex: Math.max(0, Math.floor(pageIndex)),
+      rects: [rect.map((n) => Math.round(n))],
+    }),
+    topOffset: Math.max(0, Math.round(ASSUMED_PAGE_HEIGHT - yTop)),
+  };
+}
+
 export type RelatedPaperResult = LibraryPaperTarget & {
   matchScore: number;
   matchReasons: string[];
@@ -2405,6 +2541,383 @@ export class ZoteroGateway {
       void _error;
     }
     return results;
+  }
+
+  async createAnnotation(
+    params: CreateAnnotationParams,
+  ): Promise<CreateAnnotationResult> {
+    const normalizedType = normalizeText(params.type) || "note";
+    if (
+      normalizedType !== "highlight" &&
+      normalizedType !== "underline" &&
+      normalizedType !== "note"
+    ) {
+      throw new Error(
+        `Unsupported annotation type: ${params.type}. Use highlight, underline, or note.`,
+      );
+    }
+    const pageIndex =
+      Number.isFinite(params.pageIndex) && params.pageIndex >= 0
+        ? Math.floor(params.pageIndex)
+        : 0;
+    const pageLabel = normalizeText(params.pageLabel) || `${pageIndex + 1}`;
+    const comment = normalizeText(params.comment) || undefined;
+    const text = normalizeText(params.text) || undefined;
+
+    // Resolve the parent item to its first PDF child attachment.
+    const parentItem = Zotero.Items.get(params.itemId);
+    if (!parentItem) {
+      throw new Error(`Item not found: ${params.itemId}`);
+    }
+    const regularItem = resolveRegularItem(parentItem);
+    if (!regularItem) {
+      throw new Error(
+        `Could not resolve item to a regular item: ${params.itemId}`,
+      );
+    }
+    const pdfs = getPdfChildAttachments(regularItem);
+    if (!pdfs.length) {
+      throw new Error(
+        `No PDF attachment found for item ${regularItem.id}. Annotations can only be created on PDF attachments.`,
+      );
+    }
+    // Prefer the exact attachment from paperContext when available.
+    const pdfItem =
+      (params.contextItemId != null &&
+        pdfs.find((p) => p.id === params.contextItemId)) ||
+      pdfs[0];
+
+    // Color is REQUIRED by Zotero for every annotation type.
+    const color = resolveAnnotationColor(params.color);
+    const isTextAnnotation =
+      normalizedType === "highlight" || normalizedType === "underline";
+
+    // Best-effort: stack multiple annotations on the same page so they don't overlap.
+    let verticalSlot = 0;
+    try {
+      const existingIds: number[] =
+        (
+          pdfItem as unknown as { getAnnotations?: () => number[] }
+        ).getAnnotations?.() || [];
+      for (const id of existingIds) {
+        const raw = (Zotero.Items.get(id) as any)?.annotationPosition;
+        if (typeof raw !== "string") continue;
+        try {
+          if (JSON.parse(raw)?.pageIndex === pageIndex) verticalSlot++;
+        } catch {
+          /* ignore malformed */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    let position: string;
+    let sortTop: number;
+    let charOffset = 0;
+    if (Array.isArray(params.rects) && params.rects.length) {
+      position = JSON.stringify({ pageIndex, rects: params.rects });
+      sortTop = Number.isFinite(params.topOffset)
+        ? Math.floor(params.topOffset!)
+        : 0;
+      charOffset = Number.isFinite(params.charOffset)
+        ? Math.floor(params.charOffset!)
+        : 0;
+    } else {
+      const built = buildAnnotationPosition(
+        pageIndex,
+        normalizedType as "highlight" | "underline" | "note",
+        verticalSlot,
+      );
+      position = built.position;
+      sortTop = built.topOffset;
+    }
+    const sortIndex = buildAnnotationSortIndex(pageIndex, charOffset, sortTop);
+
+    const annotation = new Zotero.Item("annotation");
+    annotation.libraryID = pdfItem.libraryID; // set library BEFORE parentID
+    annotation.parentID = pdfItem.id;
+    (annotation as any).annotationType = normalizedType;
+    (annotation as any).annotationColor = color;
+    (annotation as any).annotationPageLabel = pageLabel;
+    (annotation as any).annotationSortIndex = sortIndex;
+    (annotation as any).annotationPosition = position;
+    if (isTextAnnotation && text) (annotation as any).annotationText = text;
+    // Notes carry content in the comment; fold text in when there's no comment.
+    const finalComment = comment || (!isTextAnnotation ? text : undefined);
+    if (finalComment) (annotation as any).annotationComment = finalComment;
+
+    await annotation.saveTx();
+
+    return { annotationId: annotation.id, type: normalizedType, pageLabel };
+  }
+
+  // ── Annotation delete / restore ────────────────────────────────────────────
+
+  private _snapshotAnnotation(item: Zotero.Item): AnnotationSnapshot {
+    const a = item as any;
+    const str = (v: unknown): string | undefined =>
+      typeof v === "string" && v.length ? v : undefined;
+    const type = str(a.annotationType) || "highlight";
+    const rawText = str(a.annotationText);
+    const rawComment = str(a.annotationComment);
+    const display = (rawText || rawComment || "").replace(/\s+/g, " ").trim();
+    return {
+      originalAnnotationId: item.id,
+      parentAttachmentId: Number(item.parentID) || 0,
+      libraryID: Number(item.libraryID) || 0,
+      label:
+        type +
+        (display
+          ? ` "${display.slice(0, 60)}${display.length > 60 ? "…" : ""}"`
+          : ""),
+      type,
+      color: str(a.annotationColor) || "#ffd400",
+      text: rawText,
+      comment: rawComment,
+      pageLabel: str(a.annotationPageLabel),
+      sortIndex: str(a.annotationSortIndex),
+      position: str(a.annotationPosition),
+      tags: getItemTags(item, { includeAutomatic: true }),
+      lossy: type === "image",
+    };
+  }
+
+  /**
+   * Permanently erase annotations, returning a snapshot of each so the
+   * caller can wire an undo that recreates them.
+   */
+  async deleteAnnotations(params: { annotationIds: number[] }): Promise<{
+    deletedCount: number;
+    snapshots: AnnotationSnapshot[];
+    results: Array<{
+      annotationId: number;
+      status: "deleted" | "not_found" | "not_annotation" | "error";
+      reason?: string;
+    }>;
+  }> {
+    const results: Array<{
+      annotationId: number;
+      status: "deleted" | "not_found" | "not_annotation" | "error";
+      reason?: string;
+    }> = [];
+    const snapshots: AnnotationSnapshot[] = [];
+    let deletedCount = 0;
+
+    for (const rawId of params.annotationIds) {
+      const annotationId = Number.isFinite(rawId) ? Math.floor(rawId) : 0;
+      const item = annotationId ? this.getItem(annotationId) : null;
+      if (!item) {
+        results.push({
+          annotationId: annotationId || rawId,
+          status: "not_found",
+        });
+        continue;
+      }
+      if (!item.isAnnotation?.()) {
+        results.push({
+          annotationId,
+          status: "not_annotation",
+          reason: "Item is not an annotation",
+        });
+        continue;
+      }
+      try {
+        snapshots.push(this._snapshotAnnotation(item)); // capture BEFORE erase
+        await item.eraseTx();
+        deletedCount++;
+        results.push({ annotationId, status: "deleted" });
+      } catch (error) {
+        results.push({
+          annotationId,
+          status: "error",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { deletedCount, snapshots, results };
+  }
+
+  /**
+   * Update an existing annotation's comment, color, and/or text.
+   * Returns previous state for undo support.
+   */
+  async updateAnnotation(params: {
+    annotationId: number;
+    comment?: string;
+    color?: string;
+    text?: string;
+  }): Promise<{
+    annotationId: number;
+    updated: boolean;
+    previous?: {
+      comment?: string;
+      color?: string;
+      text?: string;
+    };
+  }> {
+    const annotationId = Number.isFinite(params.annotationId)
+      ? Math.floor(params.annotationId)
+      : 0;
+    const item = annotationId ? this.getItem(annotationId) : null;
+    if (!item || !item.isAnnotation?.()) {
+      return {
+        annotationId: annotationId || params.annotationId,
+        updated: false,
+      };
+    }
+
+    const ann = item as unknown as {
+      annotationComment?: string;
+      annotationColor?: string;
+      annotationText?: string;
+    };
+
+    const previous: {
+      comment?: string;
+      color?: string;
+      text?: string;
+    } = {};
+    let changed = false;
+
+    if (params.comment !== undefined) {
+      const newComment = params.comment.trim();
+      const oldComment = (ann.annotationComment || "").trim();
+      if (newComment !== oldComment) {
+        // Keep "" so undo can restore an originally-empty comment.
+        previous.comment = oldComment;
+        ann.annotationComment = newComment;
+        changed = true;
+      }
+    }
+
+    if (params.color !== undefined) {
+      const newColor = resolveAnnotationColor(params.color);
+      const oldColor = resolveAnnotationColor(ann.annotationColor);
+      if (newColor !== oldColor) {
+        previous.color = ann.annotationColor || oldColor;
+        ann.annotationColor = newColor;
+        changed = true;
+      }
+    }
+
+    if (params.text !== undefined) {
+      const newText = params.text.trim();
+      const oldText = (ann.annotationText || "").trim();
+      if (newText !== oldText) {
+        // Keep "" so undo can restore an originally-empty text.
+        previous.text = oldText;
+        ann.annotationText = newText;
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return { annotationId, updated: false };
+    }
+
+    try {
+      await item.saveTx();
+      return { annotationId, updated: true, previous };
+    } catch (error) {
+      throw new Error(
+        `Failed to update annotation ${annotationId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /** Recreate annotations from delete snapshots (the undo path). */
+  async restoreAnnotations(params: {
+    snapshots: AnnotationSnapshot[];
+  }): Promise<{
+    restoredCount: number;
+    results: Array<{
+      originalAnnotationId: number;
+      newAnnotationId?: number;
+      status: "restored" | "skipped" | "error";
+      reason?: string;
+    }>;
+  }> {
+    const results: Array<{
+      originalAnnotationId: number;
+      newAnnotationId?: number;
+      status: "restored" | "skipped" | "error";
+      reason?: string;
+    }> = [];
+    let restoredCount = 0;
+
+    for (const snap of params.snapshots) {
+      try {
+        const parent = this.getItem(snap.parentAttachmentId);
+        if (!parent || !parent.isAttachment?.()) {
+          results.push({
+            originalAnnotationId: snap.originalAnnotationId,
+            status: "skipped",
+            reason: "Parent PDF attachment no longer exists",
+          });
+          continue;
+        }
+        if (!snap.position) {
+          results.push({
+            originalAnnotationId: snap.originalAnnotationId,
+            status: "skipped",
+            reason: "Missing position data; cannot restore",
+          });
+          continue;
+        }
+
+        const annotation = new Zotero.Item("annotation");
+        annotation.libraryID = snap.libraryID || parent.libraryID; // library BEFORE parentID
+        annotation.parentID = snap.parentAttachmentId;
+
+        const type = snap.type || "highlight";
+        (annotation as any).annotationType = type;
+        (annotation as any).annotationColor = snap.color || "#ffd400";
+        (annotation as any).annotationPosition = snap.position;
+        if (snap.pageLabel)
+          (annotation as any).annotationPageLabel = snap.pageLabel;
+
+        if (snap.sortIndex) {
+          (annotation as any).annotationSortIndex = snap.sortIndex;
+        } else {
+          let pageIndex = 0;
+          try {
+            const pos = JSON.parse(snap.position);
+            if (Number.isFinite(pos?.pageIndex))
+              pageIndex = Math.max(0, Math.floor(pos.pageIndex));
+          } catch {
+            /* ignore */
+          }
+          (annotation as any).annotationSortIndex = buildAnnotationSortIndex(
+            pageIndex,
+            0,
+            0,
+          );
+        }
+
+        const isTextBearing = type === "highlight" || type === "underline";
+        if (isTextBearing && snap.text)
+          (annotation as any).annotationText = snap.text;
+        if (snap.comment) (annotation as any).annotationComment = snap.comment;
+
+        for (const tag of snap.tags) if (tag) annotation.addTag(tag, 0);
+
+        await annotation.saveTx();
+        restoredCount++;
+        results.push({
+          originalAnnotationId: snap.originalAnnotationId,
+          newAnnotationId: annotation.id,
+          status: "restored",
+        });
+      } catch (error) {
+        results.push({
+          originalAnnotationId: snap.originalAnnotationId,
+          status: "error",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { restoredCount, results };
   }
 
   async createCollection(params: {

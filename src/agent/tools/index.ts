@@ -30,6 +30,10 @@ import { createRunCommandTool } from "./write/runCommand";
 import { createImportLocalFilesTool } from "./write/importLocalFiles";
 import { createFileIOTool } from "./write/fileIO";
 import { createZoteroScriptTool } from "./write/zoteroScript";
+import { createAnnotationTool } from "./write/createAnnotation";
+import { createDeleteAnnotationsTool } from "./write/deleteAnnotations";
+import { createAnnotationFindTool } from "./read/annotationFind";
+import { createAnnotationUpdateTool } from "./write/annotationUpdate";
 import { PdfPageService } from "../services/pdfPageService";
 import { PdfFigureExtractionService } from "../services/pdfFigureExtractionService";
 import type { AgentToolDefinition } from "../types";
@@ -423,6 +427,13 @@ export function createBuiltInToolRegistry(
   const mergeItems = createMergeItemsTool(deps.zoteroGateway);
   const manageAttachments = createManageAttachmentsTool(deps.zoteroGateway);
   const editCurrentNote = createEditCurrentNoteTool(deps.zoteroGateway);
+  const createAnnotation = createAnnotationTool(
+    deps.zoteroGateway,
+    deps.pdfPageService,
+  );
+  const deleteAnnotations = createDeleteAnnotationsTool(deps.zoteroGateway);
+  const annotationFind = createAnnotationFindTool(deps.zoteroGateway);
+  const annotationUpdate = createAnnotationUpdateTool(deps.zoteroGateway);
   const runCommand = createRunCommandTool();
   const importLocalFiles = createImportLocalFilesTool(deps.zoteroGateway);
   const fileIO = createFileIOTool();
@@ -491,6 +502,50 @@ export function createBuiltInToolRegistry(
       description:
         "Create, append to, or edit Zotero notes. Use this for note writing instead of returning note-ready text in chat.",
       guidance: NOTE_WRITE_GUIDANCE,
+    }),
+  );
+  registry.register(
+    createRenamedTool({
+      tool: createAnnotation,
+      name: "annotation_create",
+      label: "Create Annotations",
+      description:
+        "Create PDF annotations (highlights, underlines, notes) on text " +
+        "passages discovered via paper_read targeted search or fulltext analysis. " +
+        "Batch up to 20 annotations per call.",
+    }),
+  );
+  registry.register(
+    createRenamedTool({
+      tool: deleteAnnotations,
+      name: "annotation_delete",
+      label: "Delete Annotations",
+      description:
+        "Delete PDF annotations (highlights, underlines, notes) from a paper. " +
+        "Delete by explicit annotation IDs or filter by type and page.",
+    }),
+  );
+  registry.register(
+    createRenamedTool({
+      tool: annotationFind,
+      name: "annotation_find",
+      label: "Find Annotations",
+      description:
+        "Search and filter PDF annotations (highlights, underlines, notes) " +
+        "across your Zotero library or specific papers. Filter by type, page, " +
+        "colour, comment presence/content, and text content. Returns annotation " +
+        "IDs that can be passed to annotation_update or annotation_delete.",
+    }),
+  );
+  registry.register(
+    createRenamedTool({
+      tool: annotationUpdate,
+      name: "annotation_update",
+      label: "Update Annotations",
+      description:
+        "Modify existing PDF annotations: change their comment, colour, or text. " +
+        "Use annotation_find first to locate annotation IDs. Batch up to 50 updates " +
+        "per call. Supports undo.",
     }),
   );
   registry.register(

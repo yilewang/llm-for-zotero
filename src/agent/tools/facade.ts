@@ -87,7 +87,7 @@ export function createRenamedTool<TInput, TResult>(params: {
   const { tool } = params;
   return {
     ...tool,
-    guidance: params.guidance,
+    guidance: params.guidance ?? tool.guidance,
     spec: {
       ...tool.spec,
       name: params.name,

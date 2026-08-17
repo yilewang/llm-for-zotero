@@ -475,6 +475,18 @@ async function cachePDFText(
       }
     }
 
+    // 2b. If PDFWorker returned text but no pageChars, try form-feed splitting.
+    if (
+      pdfText &&
+      sourceType === "zotero-worker" &&
+      (!pdfWorkerPageChars || pdfWorkerPageChars.length === 0)
+    ) {
+      const ffPages = pdfText.split("\f");
+      if (ffPages.length > 1) {
+        pdfWorkerPageChars = ffPages.map((p) => p.length);
+      }
+    }
+
     // 3. Fallback to Zotero's full-text cache/index. PDFWorker can return no
     // text even when Zotero already has indexed text for the attachment.
     if (!pdfText && pdfItem) {
@@ -543,6 +555,14 @@ async function cachePDFText(
             chunkMeta[i].text = chunks[i];
             chunkMeta[i].normalizedText = normalizeEvidenceText(chunks[i]);
           }
+          // Assign page info from manifest section pages (using raw chunks
+          // for accurate char-offset lookup in the raw markdown).
+          assignPageInfoFromManifest(
+            rawChunks,
+            chunkMeta,
+            rawMd,
+            manifest.sections,
+          );
         } catch (e) {
           ztoolkit.log(
             "LLM: MinerU manifest chunking failed; using full markdown fallback",
@@ -565,6 +585,21 @@ async function cachePDFText(
           sourceText: pdfText,
           pageChars: pdfWorkerPageChars,
         });
+      }
+
+      // Assign page info to chunk metadata when source provides it.
+      // Manifest-aware path assigns pages inside its try block (above).
+      if (
+        pdfWorkerPageChars &&
+        pdfWorkerPageChars.length > 0 &&
+        sourceType === "zotero-worker"
+      ) {
+        assignPageInfoFromWorker(
+          chunks,
+          chunkMeta,
+          pdfText,
+          pdfWorkerPageChars,
+        );
       }
 
       const { chunkStats, docFreq, avgChunkLength } = buildChunkIndex(chunks);
@@ -862,6 +897,90 @@ function findSentenceBoundary(
   }
 
   return bestDist <= maxDrift ? bestPos : targetPos;
+}
+
+// ── Page mapping helpers ────────────────────────────────────────────────────
+
+/**
+ * Build a lookup from character offset to zero-based page index using
+ * the `pageChars` array returned by `Zotero.PDFWorker.getFullText()`.
+ * `pageChars[i]` is the character count for page i.
+ */
+export function buildPageOffsetMap(
+  pageChars: number[],
+): (charOffset: number) => number {
+  const thresholds: number[] = [];
+  let cumulative = 0;
+  for (const count of pageChars) {
+    cumulative += count;
+    thresholds.push(cumulative);
+  }
+  return (charOffset: number): number => {
+    for (let i = 0; i < thresholds.length; i++) {
+      if (charOffset < thresholds[i]) return i;
+    }
+    return thresholds.length > 0 ? thresholds.length - 1 : 0;
+  };
+}
+
+/**
+ * Assign `pageIndex` and `pageLabel` to each chunk in `chunkMeta` by
+ * locating the chunk text within `fullText` and mapping its character
+ * offset through `pageChars`.  Falls back to an unchecked chunk if the
+ * text cannot be located unambiguously.
+ */
+export function assignPageInfoFromWorker(
+  chunks: string[],
+  chunkMeta: PdfChunkMeta[],
+  fullText: string,
+  pageChars: number[],
+): void {
+  const pageForOffset = buildPageOffsetMap(pageChars);
+  let searchStart = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (!chunk) continue;
+    // Find the first 60 chars of the chunk to locate it robustly
+    const probe = chunk.slice(0, Math.min(60, chunk.length));
+    const pos = fullText.indexOf(probe, searchStart);
+    if (pos >= 0) {
+      const pageIndex = pageForOffset(pos);
+      chunkMeta[i].pageIndex = pageIndex;
+      chunkMeta[i].pageLabel = `${pageIndex + 1}`;
+      searchStart = pos + probe.length;
+    }
+  }
+}
+
+/**
+ * Assign page info to chunks from MinerU manifest section pages.
+ * Each section has an optional `page` number; chunks that fall within
+ * a section's character range inherit that page number.
+ */
+export function assignPageInfoFromManifest(
+  chunks: string[],
+  chunkMeta: PdfChunkMeta[],
+  rawFullText: string,
+  sections: Array<{ charStart: number; charEnd: number; page?: number }>,
+): void {
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (!chunk) continue;
+    const probe = chunk.slice(0, Math.min(80, chunk.length));
+    const pos = rawFullText.indexOf(probe);
+    if (pos < 0) continue;
+    for (const section of sections) {
+      if (
+        typeof section.page === "number" &&
+        pos >= section.charStart &&
+        pos < section.charEnd
+      ) {
+        chunkMeta[i].pageIndex = section.page;
+        chunkMeta[i].pageLabel = `${section.page + 1}`;
+        break;
+      }
+    }
+  }
 }
 
 // ── Plain-text chunking (PDFWorker, notes) ────────────────────────────────────
@@ -2357,6 +2476,8 @@ export async function buildPaperRetrievalCandidates(
       sourceFingerprint: meta?.sourceFingerprint,
       pageStart: meta?.pageStart,
       pageEnd: meta?.pageEnd,
+      pageIndex: meta?.pageIndex,
+      pageLabel: meta?.pageLabel,
       estimatedTokens: Math.max(1, estimateTextTokens(chunks[chunk.index])),
       bm25Score,
       embeddingScore,

@@ -263,6 +263,10 @@ export type PdfChunkMeta = {
   pageStart?: number;
   pageEnd?: number;
   references?: DocumentReferenceEvidence[];
+  /** Zero-based PDF page index where this chunk's text appears. */
+  pageIndex?: number;
+  /** Printed page label (e.g., "42" or "xiv") from PDF metadata. */
+  pageLabel?: string;
 };
 
 export type ContextAssemblyMode = "full" | "retrieval";
@@ -305,6 +309,10 @@ export type PaperContextCandidate = {
   sourceFingerprint?: string;
   pageStart?: number;
   pageEnd?: number;
+  /** Zero-based PDF page index where this candidate's text appears. */
+  pageIndex?: number;
+  /** Printed page label (e.g., "42" or "xiv") from PDF metadata. */
+  pageLabel?: string;
   estimatedTokens: number;
   bm25Score: number;
   embeddingScore: number;

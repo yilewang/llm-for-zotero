@@ -32,6 +32,8 @@ type RetrievalResult = {
   sourceFingerprint?: string;
   pageStart?: number;
   pageEnd?: number;
+  pageIndex?: number;
+  pageLabel?: string;
 };
 
 function dedupePaperContexts(
@@ -195,6 +197,8 @@ export class RetrievalService {
         sourceFingerprint: candidate.sourceFingerprint,
         pageStart: candidate.pageStart,
         pageEnd: candidate.pageEnd,
+        pageIndex: candidate.pageIndex,
+        pageLabel: candidate.pageLabel,
       }));
       this.evidenceCache.set(cacheKey, paperResults);
       results.push(...paperResults);

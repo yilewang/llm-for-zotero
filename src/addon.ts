@@ -4,6 +4,11 @@ import hooks from "./hooks";
 import { createZToolkit } from "./utils/ztoolkit";
 import type { getAgentApi } from "./agent";
 import type { WorkflowTestApi } from "./modules/contextPanel/workflowTestTypes";
+import type {
+  BackfillOptions,
+  BackfillResult,
+} from "./agent/actions/backfillPageInfo";
+import { backfillPageInfo } from "./agent/actions/backfillPageInfo";
 
 class Addon {
   public data: {
@@ -30,6 +35,7 @@ class Addon {
   public api: {
     agent?: ReturnType<typeof getAgentApi>;
     workflowTest?: WorkflowTestApi;
+    backfillPageInfo?: (options?: BackfillOptions) => Promise<BackfillResult>;
   };
 
   constructor() {
@@ -42,7 +48,18 @@ class Addon {
       dialogs: new Set(),
     };
     this.hooks = hooks;
-    this.api = {};
+    this.api = {
+      get backfillPageInfo() {
+        // Replace the getter with the real function on first access.
+        Object.defineProperty(this, "backfillPageInfo", {
+          value: backfillPageInfo,
+          configurable: true,
+          enumerable: true,
+          writable: true,
+        });
+        return backfillPageInfo;
+      },
+    } as any;
   }
 }
 
