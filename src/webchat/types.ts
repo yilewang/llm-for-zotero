@@ -35,6 +35,13 @@ export const WEBCHAT_TARGETS = [
     modelName: "chat.deepseek.com",
     displayName: "deepseek",
   },
+  {
+    id: "lucrezia",
+    label: "Lucrez-IA (UniPD)",
+    defaultHost: "http://127.0.0.1:23119/llm-for-zotero/webchat",
+    modelName: "web.lucrezia.unipd.it",
+    displayName: "lucrezia",
+  },
 ] as const satisfies readonly WebChatTargetEntry[];
 
 export type WebChatTarget = (typeof WEBCHAT_TARGETS)[number]["id"];
