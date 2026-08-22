@@ -208,6 +208,10 @@ export const MODEL_PROFILE_ORDER: ModelProfileKey[] = [
   "quaternary",
 ];
 export const ASSISTANT_NOTE_MAP_PREF_KEY = "assistantNoteMap";
+/** When true (default), "Save as note" on a single response also writes the
+ * user's question into the note. When false, only the assistant's answer is
+ * saved. */
+export const SAVE_NOTE_INCLUDE_QUERY_PREF_KEY = "saveNoteIncludeQuery";
 
 export function getModelProfileSuffix(): Record<ModelProfileKey, string> {
   return {

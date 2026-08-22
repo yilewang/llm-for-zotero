@@ -6,11 +6,15 @@ import {
   normalizeSelectedTextSource,
 } from "./textUtils";
 import { normalizeAttachmentContentHash } from "./normalizers";
-import { MAX_SELECTED_IMAGES } from "./constants";
+import {
+  MAX_SELECTED_IMAGES,
+  SAVE_NOTE_INCLUDE_QUERY_PREF_KEY,
+} from "./constants";
 import {
   getTrackedAssistantNoteForParent,
   removeAssistantNoteMapEntry,
   rememberAssistantNoteForParent,
+  getBoolPref,
 } from "./prefHelpers";
 import {
   ensureAttachmentBlobFromPath,
@@ -534,9 +538,10 @@ function buildAssistantNoteHtml(
       quoteCitations,
     );
   }
-  const queryBlock = queryHtml
-    ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
-    : "";
+  const queryBlock =
+    queryHtml && includeQueryInSavedNote()
+      ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
+      : "";
   return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
 }
 
@@ -581,10 +586,20 @@ async function buildAssistantNoteHtmlForSave(
       quoteCitations,
     );
   }
-  const queryBlock = queryHtml
-    ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
-    : "";
+  const queryBlock =
+    queryHtml && includeQueryInSavedNote()
+      ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
+      : "";
   return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
+}
+
+/**
+ * Whether "Save as note" for a single response should also write the user's
+ * question. Controlled by a preferences checkbox (Customization tab); defaults
+ * to including the query for backward compatibility.
+ */
+function includeQueryInSavedNote(): boolean {
+  return getBoolPref(SAVE_NOTE_INCLUDE_QUERY_PREF_KEY, true);
 }
 
 function renderChatMessageHtmlForNote(

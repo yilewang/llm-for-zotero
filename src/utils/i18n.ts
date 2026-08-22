@@ -347,6 +347,10 @@ const zhCN: Record<string, string> = {
     '在阅读器选区弹出菜单中显示"添加文本"',
   "Disable this if you prefer not to show the Add Text option in Zotero's text selection popup menu.":
     '如果你不想在 Zotero 文本选区弹出菜单中显示"添加文本"选项，请禁用此项。',
+  "Include the question when saving a response as a note":
+    "保存回答为笔记时同时包含提问",
+  'When checked, "Save as note" on a response also records the User query. Uncheck to save only the assistant\'s answer.':
+    '勾选后，对回答使用"保存为笔记"时会同时记录提问内容。取消勾选则只保存助手的回答。',
   "Enable Agent Mode (Beta)": "启用 Agent 模式（测试版）",
   'Shows the "Agent (beta)" toggle in the context bar, enabling the agentic multi-step assistant. Off by default — enable only if you want to experiment with the beta feature.':
     '在上下文栏显示"Agent（测试版）"切换按钮，启用多步骤 Agent 助手。默认关闭 — 仅在你想体验测试版功能时启用。',

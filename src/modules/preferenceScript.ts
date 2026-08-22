@@ -2550,6 +2550,25 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  const saveNoteIncludeQueryInput = doc.querySelector(
+    `#${config.addonRef}-save-note-include-query`,
+  ) as HTMLInputElement | null;
+  if (saveNoteIncludeQueryInput) {
+    const prefValue = Zotero.Prefs.get(
+      `${config.prefsPrefix}.saveNoteIncludeQuery`,
+      true,
+    );
+    saveNoteIncludeQueryInput.checked =
+      prefValue !== false && `${prefValue || ""}`.toLowerCase() !== "false";
+    saveNoteIncludeQueryInput.addEventListener("change", () => {
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.saveNoteIncludeQuery`,
+        saveNoteIncludeQueryInput.checked,
+        true,
+      );
+    });
+  }
+
   const fontScaleSlider = doc.querySelector(
     `#${config.addonRef}-panel-font-scale`,
   ) as HTMLInputElement | null;
