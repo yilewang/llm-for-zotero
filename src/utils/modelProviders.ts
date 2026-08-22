@@ -245,6 +245,7 @@ export function deriveProviderLabel(
     return "Together.ai";
   }
   if (lowerHost.includes("openrouter.ai")) return "OpenRouter";
+  if (lowerHost.includes("orcarouter.ai")) return "OrcaRouter";
   if (lowerHost === "x.ai" || lowerHost.endsWith(".x.ai")) return "Grok";
   if (lowerHost.includes("groq.com")) return "Groq";
   if (lowerHost.includes("dashscope") || lowerHost.includes("aliyuncs.com")) {
