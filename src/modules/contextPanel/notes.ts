@@ -522,7 +522,8 @@ function buildAssistantNoteHtml(
   });
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
-  let queryHtml = query ? renderRawNoteHtml(query) : "";
+  const includeQuery = includeQueryInSavedNote();
+  let queryHtml = includeQuery && query ? renderRawNoteHtml(query) : "";
   let responseHtml = response ? renderRawNoteHtml(response) : "";
   if (queryHtml) {
     queryHtml = injectCitationLinksIntoNoteHtml(
@@ -538,10 +539,9 @@ function buildAssistantNoteHtml(
       quoteCitations,
     );
   }
-  const queryBlock =
-    queryHtml && includeQueryInSavedNote()
-      ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
-      : "";
+  const queryBlock = queryHtml
+    ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
+    : "";
   return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
 }
 
@@ -568,7 +568,13 @@ async function buildAssistantNoteHtmlForSave(
   });
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
-  let queryHtml = query ? await renderRawNoteHtmlForSave(query, options) : "";
+  const includeQuery = includeQueryInSavedNote();
+  // When the user opts out of saving the query, skip rendering/converting it
+  // entirely. Rendering the query could import its figures as child
+  // attachments (replaceVisualFigureFencesWithNoteImages), which would leave
+  // them orphaned once the query block is discarded below.
+  let queryHtml =
+    includeQuery && query ? await renderRawNoteHtmlForSave(query, options) : "";
   let responseHtml = response
     ? await renderRawNoteHtmlForSave(response, options)
     : "";
@@ -586,10 +592,9 @@ async function buildAssistantNoteHtmlForSave(
       quoteCitations,
     );
   }
-  const queryBlock =
-    queryHtml && includeQueryInSavedNote()
-      ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
-      : "";
+  const queryBlock = queryHtml
+    ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
+    : "";
   return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
 }
 
