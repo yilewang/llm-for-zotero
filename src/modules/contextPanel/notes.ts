@@ -6,11 +6,15 @@ import {
   normalizeSelectedTextSource,
 } from "./textUtils";
 import { normalizeAttachmentContentHash } from "./normalizers";
-import { MAX_SELECTED_IMAGES } from "./constants";
+import {
+  MAX_SELECTED_IMAGES,
+  SAVE_NOTE_INCLUDE_QUERY_PREF_KEY,
+} from "./constants";
 import {
   getTrackedAssistantNoteForParent,
   removeAssistantNoteMapEntry,
   rememberAssistantNoteForParent,
+  getBoolPref,
 } from "./prefHelpers";
 import {
   ensureAttachmentBlobFromPath,
@@ -518,7 +522,8 @@ function buildAssistantNoteHtml(
   });
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
-  let queryHtml = query ? renderRawNoteHtml(query) : "";
+  const includeQuery = includeQueryInSavedNote();
+  let queryHtml = includeQuery && query ? renderRawNoteHtml(query) : "";
   let responseHtml = response ? renderRawNoteHtml(response) : "";
   if (queryHtml) {
     queryHtml = injectCitationLinksIntoNoteHtml(
@@ -563,7 +568,13 @@ async function buildAssistantNoteHtmlForSave(
   });
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
-  let queryHtml = query ? await renderRawNoteHtmlForSave(query, options) : "";
+  const includeQuery = includeQueryInSavedNote();
+  // When the user opts out of saving the query, skip rendering/converting it
+  // entirely. Rendering the query could import its figures as child
+  // attachments (replaceVisualFigureFencesWithNoteImages), which would leave
+  // them orphaned once the query block is discarded below.
+  let queryHtml =
+    includeQuery && query ? await renderRawNoteHtmlForSave(query, options) : "";
   let responseHtml = response
     ? await renderRawNoteHtmlForSave(response, options)
     : "";
@@ -585,6 +596,15 @@ async function buildAssistantNoteHtmlForSave(
     ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
     : "";
   return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
+}
+
+/**
+ * Whether "Save as note" for a single response should also write the user's
+ * question. Controlled by a preferences checkbox (Customization tab); defaults
+ * to including the query for backward compatibility.
+ */
+function includeQueryInSavedNote(): boolean {
+  return getBoolPref(SAVE_NOTE_INCLUDE_QUERY_PREF_KEY, true);
 }
 
 function renderChatMessageHtmlForNote(

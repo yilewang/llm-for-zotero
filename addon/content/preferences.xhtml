@@ -238,6 +238,36 @@
         </html:div>
 
         <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:label
+            style="
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              font-weight: 600;
+              font-size: 12px;
+              color: var(--fill-primary, inherit);
+            "
+          >
+            <html:input
+              id="__addonRef__-save-note-include-query"
+              type="checkbox"
+            ></html:input>
+            Include the question when saving a response as a note
+          </html:label>
+          <html:span
+            style="
+              font-size: 11px;
+              color: var(--fill-secondary, #888);
+              margin-top: 1px;
+              display: block;
+            "
+          >
+            When checked, "Save as note" on a response also records the User
+            query. Uncheck to save only the assistant's answer.
+          </html:span>
+        </html:div>
+
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:div
             style="
               display: flex;
