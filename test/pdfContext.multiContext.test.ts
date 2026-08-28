@@ -148,6 +148,21 @@ function mockPdfAttachment(id: number): Zotero.Item {
   } as unknown as Zotero.Item;
 }
 
+function installRegularItem(
+  itemId: number,
+  fields: Record<string, string>,
+): void {
+  const zotero = (globalThis as unknown as { Zotero: any }).Zotero;
+  zotero.Items.get = (id: number) =>
+    id === itemId
+      ? {
+          id: itemId,
+          isRegularItem: () => true,
+          getField: (field: string) => fields[field] || "",
+        }
+      : null;
+}
+
 function mockTextAttachment(options: {
   id: number;
   filename: string;
@@ -494,6 +509,77 @@ describe("pdfContext multi-context helpers", function () {
     assert.include(text, "Source label: (Smith et al., 2023)");
     assert.include(text, "Answer format when quoting this paper:");
     assert.include(text, "Paper Text:");
+  });
+
+  it("includes the parent journal and DOI in paper context", function () {
+    installRegularItem(2, {
+      publicationTitle: "Journal of Memory Research",
+      publisher: "Fallback Publisher",
+      DOI: "10.1000/memory.2023.7",
+    });
+    const paper: PaperContextRef = {
+      itemId: 2,
+      contextItemId: 22,
+      title: "Paper B",
+    };
+
+    const text = buildFullPaperContext(paper, undefined);
+
+    assert.include(text, "Publication / venue: Journal of Memory Research");
+    assert.include(text, "DOI: 10.1000/memory.2023.7");
+    assert.notInclude(text, "Publication / venue: Fallback Publisher");
+  });
+
+  it("uses conference metadata when publicationTitle is empty", function () {
+    installRegularItem(3, {
+      proceedingsTitle: "Proceedings of NeurIPS 2025",
+      conferenceName: "NeurIPS 2025",
+      DOI: "10.1000/neurips.2025.3",
+    });
+    const paper: PaperContextRef = {
+      itemId: 3,
+      contextItemId: 33,
+      title: "Conference Paper",
+    };
+
+    const text = buildFullPaperContext(paper, undefined);
+
+    assert.include(text, "Publication / venue: Proceedings of NeurIPS 2025");
+    assert.include(text, "DOI: 10.1000/neurips.2025.3");
+  });
+
+  it("uses parent bibliographic metadata for a selected child attachment", function () {
+    installRegularItem(4, {
+      conferenceName: "ACL 2026",
+      DOI: "10.1000/acl.2026.4",
+    });
+    const paper: PaperContextRef = {
+      itemId: 4,
+      contextItemId: 44,
+      title: "Parent Paper",
+      attachmentTitle: "translated.md",
+      contentSourceMode: "markdown",
+    };
+
+    const text = buildFullPaperContext(paper, undefined);
+
+    assert.include(text, "Parent Zotero Item:");
+    assert.include(text, "Publication / venue: ACL 2026");
+    assert.include(text, "DOI: 10.1000/acl.2026.4");
+  });
+
+  it("omits empty parent publication and DOI fields", function () {
+    installRegularItem(5, {});
+    const paper: PaperContextRef = {
+      itemId: 5,
+      contextItemId: 55,
+      title: "Metadata-light Paper",
+    };
+
+    const text = buildFullPaperContext(paper, undefined);
+
+    assert.notInclude(text, "Publication / venue:");
+    assert.notInclude(text, "DOI:");
   });
 
   it("renders text-like child attachments as selected attachment sources", function () {

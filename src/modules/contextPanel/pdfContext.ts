@@ -1872,11 +1872,50 @@ export function buildPaperKey(ref: PaperContextRef): string {
   return `${Math.floor(ref.itemId)}:${Math.floor(ref.contextItemId)}`;
 }
 
+const PAPER_PUBLICATION_VENUE_FIELDS = [
+  "publicationTitle",
+  "proceedingsTitle",
+  "conferenceName",
+  "bookTitle",
+  "university",
+  "institution",
+  "publisher",
+] as const;
+
+function readFirstPaperField(
+  item: Zotero.Item,
+  fieldNames: readonly string[],
+): string {
+  for (const fieldName of fieldNames) {
+    const value = normalizeEvidenceText(String(item.getField(fieldName) || ""));
+    if (value) return value;
+  }
+  return "";
+}
+
+function resolvePaperBibliographicMetadata(ref: PaperContextRef): {
+  venue: string;
+  doi: string;
+} {
+  if (typeof Zotero === "undefined") return { venue: "", doi: "" };
+  const item = Zotero.Items.get(Math.floor(ref.itemId)) || null;
+  if (!item?.isRegularItem?.()) return { venue: "", doi: "" };
+  return {
+    venue: readFirstPaperField(item, PAPER_PUBLICATION_VENUE_FIELDS),
+    doi: readFirstPaperField(item, ["DOI"]),
+  };
+}
+
 function formatPaperMetadataLines(ref: PaperContextRef): string[] {
   const lines = [`Title: ${ref.title}`];
   if (ref.citationKey) lines.push(`Citation key: ${ref.citationKey}`);
   if (ref.firstCreator) lines.push(`Author: ${ref.firstCreator}`);
   if (ref.year) lines.push(`Year: ${ref.year}`);
+  const bibliographic = resolvePaperBibliographicMetadata(ref);
+  if (bibliographic.venue) {
+    lines.push(`Publication / venue: ${bibliographic.venue}`);
+  }
+  if (bibliographic.doi) lines.push(`DOI: ${bibliographic.doi}`);
   lines.push(`Source label: ${formatPaperSourceLabel(ref)}`);
   return lines;
 }
@@ -1886,6 +1925,11 @@ function formatSelectedAttachmentMetadataLines(ref: PaperContextRef): string[] {
   if (ref.citationKey) lines.push(`Citation key: ${ref.citationKey}`);
   if (ref.firstCreator) lines.push(`Author: ${ref.firstCreator}`);
   if (ref.year) lines.push(`Year: ${ref.year}`);
+  const bibliographic = resolvePaperBibliographicMetadata(ref);
+  if (bibliographic.venue) {
+    lines.push(`Publication / venue: ${bibliographic.venue}`);
+  }
+  if (bibliographic.doi) lines.push(`DOI: ${bibliographic.doi}`);
   lines.push(
     "",
     "Selected Source:",
