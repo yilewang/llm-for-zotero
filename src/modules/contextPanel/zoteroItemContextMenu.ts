@@ -1,6 +1,5 @@
 import { t } from "../../utils/i18n";
 import type { ContextSelectionActionResult } from "./contextSelectionActions";
-import type { ZoteroToolkit } from "zotero-plugin-toolkit";
 
 type AddItemsAsDefaultContext = (
   items: Zotero.Item[],
@@ -28,7 +27,7 @@ type OpenStandaloneChat = (options?: {
 }) => void;
 
 type RegisterMenuDeps = {
-  ztoolkit: Pick<ZoteroToolkit, "Menu">;
+  document: Document;
   getSelectedItems: () => Zotero.Item[];
   openStandaloneChat: OpenStandaloneChat;
 };
@@ -40,6 +39,7 @@ type DispatchDeps = {
 const MENU_ID = "llmforzotero-add-items-as-context";
 const MENU_SEPARATOR_BEFORE_ID = "llmforzotero-add-items-as-context-before";
 const MENU_SEPARATOR_AFTER_ID = "llmforzotero-add-items-as-context-after";
+const ITEM_CONTEXT_MENU_ID = "zotero-itemmenu";
 const activeContextSurfaceTargets = new Map<
   Element,
   ContextSurfaceActionTarget
@@ -105,25 +105,38 @@ export async function dispatchZoteroItemsAsContext(
 }
 
 export function registerZoteroItemContextMenu(deps: RegisterMenuDeps): void {
-  deps.ztoolkit.Menu?.register?.("item", {
-    tag: "menuseparator",
-    id: MENU_SEPARATOR_BEFORE_ID,
+  const menu = deps.document.getElementById(ITEM_CONTEXT_MENU_ID);
+  if (!menu) return;
+  unregisterZoteroItemContextMenu(deps.document);
+
+  const separatorBefore = deps.document.createXULElement("menuseparator");
+  separatorBefore.id = MENU_SEPARATOR_BEFORE_ID;
+
+  const menuItem = deps.document.createXULElement("menuitem");
+  menuItem.id = MENU_ID;
+  menuItem.setAttribute("label", t("Add Items as Context to LLM-for-Zotero"));
+  menuItem.addEventListener("command", () => {
+    const items = deps.getSelectedItems();
+    void dispatchZoteroItemsAsContext(items, {
+      openStandaloneChat: deps.openStandaloneChat,
+    });
   });
-  deps.ztoolkit.Menu?.register?.("item", {
-    tag: "menuitem",
-    id: MENU_ID,
-    label: t("Add Items as Context to LLM-for-Zotero"),
-    commandListener: () => {
-      const items = deps.getSelectedItems();
-      void dispatchZoteroItemsAsContext(items, {
-        openStandaloneChat: deps.openStandaloneChat,
-      });
-    },
-  });
-  deps.ztoolkit.Menu?.register?.("item", {
-    tag: "menuseparator",
-    id: MENU_SEPARATOR_AFTER_ID,
-  });
+
+  const separatorAfter = deps.document.createXULElement("menuseparator");
+  separatorAfter.id = MENU_SEPARATOR_AFTER_ID;
+  menu.appendChild(separatorBefore);
+  menu.appendChild(menuItem);
+  menu.appendChild(separatorAfter);
+}
+
+export function unregisterZoteroItemContextMenu(document: Document): void {
+  for (const id of [
+    MENU_SEPARATOR_BEFORE_ID,
+    MENU_ID,
+    MENU_SEPARATOR_AFTER_ID,
+  ]) {
+    document.getElementById(id)?.remove();
+  }
 }
 
 async function drainPendingStandaloneContextItems(

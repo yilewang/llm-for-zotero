@@ -33,7 +33,10 @@ const zoteroPluginToolkitStub = {
 
 const originalLoad = Module._load;
 Module._load = function patchedLoad(request, parent, isMain) {
-  if (request === "zotero-plugin-toolkit") {
+  if (
+    request === "zotero-plugin-toolkit" ||
+    request === "zotero-plugin-toolkit/ztoolkit"
+  ) {
     return zoteroPluginToolkitStub;
   }
   return originalLoad.call(this, request, parent, isMain);

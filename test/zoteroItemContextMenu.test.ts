@@ -24,36 +24,53 @@ describe("Zotero item context menu dispatch", function () {
   });
 
   it("registers the Zotero item-tree command between separators", function () {
-    const registrations: Array<{
-      menu: string;
-      options: { id?: string; label?: string; tag?: string };
+    const children: Array<{
+      id: string;
+      tagName: string;
+      label?: string;
+      remove: () => void;
+      setAttribute: (name: string, value: string) => void;
+      addEventListener: () => void;
     }> = [];
-    const toolkit = {
-      Menu: {
-        register: (menu: string, options: any) => {
-          registrations.push({ menu, options });
-        },
+    const menu = {
+      appendChild: (child: (typeof children)[number]) => {
+        children.push(child);
+      },
+    };
+    const document = {
+      getElementById: (id: string) => {
+        if (id === "zotero-itemmenu") return menu;
+        return children.find((child) => child.id === id) || null;
+      },
+      createXULElement: (tagName: string) => {
+        const element = {
+          id: "",
+          tagName,
+          label: undefined as string | undefined,
+          remove: () => {
+            const index = children.indexOf(element);
+            if (index >= 0) children.splice(index, 1);
+          },
+          setAttribute: (name: string, value: string) => {
+            if (name === "label") element.label = value;
+          },
+          addEventListener: () => undefined,
+        };
+        return element;
       },
     };
 
     registerZoteroItemContextMenu({
-      ztoolkit: toolkit as any,
+      document: document as any,
       getSelectedItems: () => [],
       openStandaloneChat: () => undefined,
     });
 
-    assert.lengthOf(registrations, 3);
-    assert.deepEqual(
-      registrations.map((registration) => registration.menu),
-      ["item", "item", "item"],
-    );
-    assert.equal(registrations[0].options.tag, "menuseparator");
-    assert.equal(registrations[1].options.tag, "menuitem");
-    assert.equal(
-      registrations[1].options.label,
-      "Add Items as Context to LLM-for-Zotero",
-    );
-    assert.equal(registrations[2].options.tag, "menuseparator");
+    assert.lengthOf(children, 3);
+    assert.equal(children[0].tagName, "menuseparator");
+    assert.equal(children[1].tagName, "menuitem");
+    assert.equal(children[1].label, "Add Items as Context to LLM-for-Zotero");
+    assert.equal(children[2].tagName, "menuseparator");
   });
 
   it("opens standalone instead of dispatching to a mounted embedded chat surface", async function () {

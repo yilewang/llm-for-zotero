@@ -14,7 +14,10 @@ import {
 } from "./modules/contextPanel";
 import { resolveActiveLibraryID } from "./modules/contextPanel/portalScope";
 import { zoteroChangeDispatcher } from "./services/zoteroChangeDispatcher";
-import { registerZoteroItemContextMenu } from "./modules/contextPanel/zoteroItemContextMenu";
+import {
+  registerZoteroItemContextMenu,
+  unregisterZoteroItemContextMenu,
+} from "./modules/contextPanel/zoteroItemContextMenu";
 import { initChatStore } from "./utils/chatStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
@@ -360,7 +363,7 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   registerReaderSelectionTracking();
   registerNoteEditingSelectionTracking(win);
   registerZoteroItemContextMenu({
-    ztoolkit,
+    document: win.document,
     getSelectedItems: () => {
       try {
         const pane = Zotero.getActiveZoteroPane?.() as
@@ -429,6 +432,7 @@ function registerPrefsPane() {
 
 async function onMainWindowUnload(win: Window): Promise<void> {
   unregisterNoteEditingSelectionTracking(win);
+  unregisterZoteroItemContextMenu(win.document);
   ztoolkit.unregisterAll();
   closeAllAddonDialogs();
   addon.data.standaloneWindow?.close();
