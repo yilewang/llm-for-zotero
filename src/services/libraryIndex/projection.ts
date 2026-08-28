@@ -182,6 +182,15 @@ function noteTitle(item: Zotero.Item): string {
   }
 }
 
+function attachmentFilenameFromPath(attachment: Zotero.Item): string {
+  const path = text(
+    (attachment as Zotero.Item & { attachmentPath?: unknown }).attachmentPath,
+  );
+  if (!path) return "";
+  const prefixedPath = /^(?:attachments|storage):(.*)$/s.exec(path);
+  return text((prefixedPath?.[1] || path).split(/[\\/]/).pop());
+}
+
 export function resolveLibraryName(libraryID: number): string {
   try {
     const libraries = (
@@ -208,10 +217,7 @@ function attachmentRecord(
   index: number,
   total: number,
 ): LibraryIndexAttachment {
-  const filename = text(
-    (attachment as Zotero.Item & { attachmentFilename?: unknown })
-      .attachmentFilename,
-  );
+  const filename = attachmentFilenameFromPath(attachment);
   const contentType = text(attachment.attachmentContentType);
   const rawTitle = field(attachment, "title");
   const fallback = contentType

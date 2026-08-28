@@ -19,6 +19,8 @@ type ItemSeed = {
   notes?: number[];
   contentType?: string;
   filename?: string;
+  attachmentPath?: string;
+  attachmentFilenameError?: Error;
   dateAdded?: string;
   dateModified?: string;
   deleted?: boolean;
@@ -44,7 +46,12 @@ function makeItem(seed: ItemSeed): Zotero.Item {
     parentID: seed.parentID || false,
     itemType: seed.kind === "note" ? "note" : "journalArticle",
     attachmentContentType: seed.contentType || "",
-    attachmentFilename: seed.filename || "",
+    attachmentPath:
+      seed.attachmentPath ?? (seed.filename ? `storage:${seed.filename}` : ""),
+    get attachmentFilename() {
+      if (seed.attachmentFilenameError) throw seed.attachmentFilenameError;
+      return seed.filename || "";
+    },
     dateAdded: seed.dateAdded || "2024-01-01 00:00:00",
     get dateModified() {
       return seed.dateModified || "2024-01-02 00:00:00";
@@ -337,6 +344,33 @@ describe("LibraryIndexService", function () {
       coalescedRebuilds: 0,
       staleBuildDiscards: 0,
     });
+  });
+
+  it("indexes legacy attachment paths without invoking Zotero's filename getter", async function () {
+    installFixture({
+      topLevel: [
+        {
+          id: 1,
+          fields: { title: "Legacy attachment path" },
+          attachments: [10],
+        },
+      ],
+      children: [
+        {
+          id: 10,
+          kind: "attachment",
+          parentID: 1,
+          contentType: "application/octet-stream",
+          attachmentPath: "../legacy folder/legacy-paper.pdf",
+          attachmentFilenameError: new Error("NS_ERROR_FILE_UNRECOGNIZED_PATH"),
+        },
+      ],
+    });
+    const snapshot = await service().getSnapshot(1);
+
+    assert.equal(snapshot.attachmentById.get(10)?.filename, "legacy-paper.pdf");
+    assert.equal(snapshot.attachmentById.get(10)?.title, "legacy-paper.pdf");
+    assert.deepEqual(snapshot.pdfAttachmentIdsByItemId.get(1), [10]);
   });
 
   it("preserves distinct creator rows that render to the same name", async function () {
