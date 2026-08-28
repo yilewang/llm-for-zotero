@@ -4698,6 +4698,101 @@ describe("shallow guard round-limit safety", function () {
     }
   });
 
+  it("keeps the answer after a read-only file_io call", async function () {
+    const restoreDb = installMockDb();
+    try {
+      await initAgentChangeJournal();
+      const registry = new AgentToolRegistry();
+      registry.register({
+        spec: {
+          name: "file_io",
+          description: "read or write a file",
+          inputSchema: { type: "object" },
+          mutability: "write",
+          requiresConfirmation: false,
+        },
+        validate: (args) => ({ ok: true, value: args as never }),
+        planMutation: async (input: { action: string }) => ({
+          effect: input.action === "read" ? "none" : "write",
+          reversibility: "full",
+        }),
+        async execute() {
+          return {
+            content: {
+              action: "read",
+              filePath: "C:\\mineru\\full.md",
+              text: "The paper's central finding.",
+            },
+            effect: "none",
+          };
+        },
+      } as never);
+
+      const runtime = new AgentRuntime({
+        registry,
+        adapterFactory: () =>
+          new MockAdapter(
+            [
+              {
+                kind: "tool_calls",
+                calls: [
+                  {
+                    id: "read-paper-cache",
+                    name: "file_io",
+                    arguments: {
+                      action: "read",
+                      filePath: "C:\\mineru\\full.md",
+                    },
+                  },
+                ],
+                assistantMessage: { role: "assistant", content: "" },
+              },
+              {
+                kind: "final",
+                text: "The paper's central finding is supported by the cache.",
+                assistantMessage: {
+                  role: "assistant",
+                  content:
+                    "The paper's central finding is supported by the cache.",
+                },
+              },
+              {
+                kind: "final",
+                text: "Nothing changed in the library.",
+                assistantMessage: {
+                  role: "assistant",
+                  content: "Nothing changed in the library.",
+                },
+              },
+            ],
+            { streaming: false, toolCalls: true, multimodal: false },
+          ),
+      });
+
+      const outcome = await runtime.runTurn({
+        request: {
+          conversationKey: 992,
+          mode: "agent",
+          userText: "What is the paper's central finding?",
+          model: "gpt-5.6-sol",
+          apiBase: "https://api.openai.com/v1/chat/completions",
+          apiKey: "test",
+          libraryID: 1,
+        },
+        onEvent: () => undefined,
+      });
+
+      assert.equal(outcome.kind, "completed");
+      if (outcome.kind !== "completed") return;
+      assert.equal(
+        outcome.text,
+        "The paper's central finding is supported by the cache.",
+      );
+    } finally {
+      restoreDb();
+    }
+  });
+
   /**
    * Chain survival. Three careful "Cancel" clicks used to fail the run
    * outright, because a denial incremented the same counter as a broken tool

@@ -671,6 +671,22 @@ function isSuccessfulFileIoWrite(record: {
   );
 }
 
+function resolveToolExecutionMutability(params: {
+  name: string;
+  declared?: "read" | "write";
+  input?: unknown;
+}): "read" | "write" | undefined {
+  if (
+    params.name === "file_io" &&
+    params.input &&
+    typeof params.input === "object" &&
+    (params.input as { action?: unknown }).action === "read"
+  ) {
+    return "read";
+  }
+  return params.declared;
+}
+
 function stabilizeProgressValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stabilizeProgressValue);
   if (!value || typeof value !== "object") return value;
@@ -1690,7 +1706,11 @@ export class AgentRuntime {
         toolExecutionRecords.push({
           name: toolResult.name,
           ok: toolResult.ok,
-          mutability: executedCall.toolDefinition?.spec.mutability,
+          mutability: resolveToolExecutionMutability({
+            name: toolResult.name,
+            declared: executedCall.toolDefinition?.spec.mutability,
+            input: executedCall.input,
+          }),
           effect: toolResult.effect,
           input: executedCall.input,
           content: toolResult.content,
@@ -2062,6 +2082,7 @@ export class AgentRuntime {
             const zeroEffectWrites = toolExecutionRecords.filter(
               (record) =>
                 record.ok &&
+                record.mutability === "write" &&
                 record.effect === "none" &&
                 !supersededTools.has(record.name),
             );
