@@ -167,12 +167,13 @@ def run(
     poppler_bin: Path,
     timeout: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
 ) -> str:
-    env = os.environ.copy()
-    env["PATH"] = f"{poppler_bin}{os.pathsep}{env.get('PATH', '')}"
+    executable = poppler_bin / Path(cmd[0]).name
+    executable_with_suffix = executable.with_name(f"{executable.name}.exe")
+    if not executable.exists() and executable_with_suffix.exists():
+        executable = executable_with_suffix
     proc = subprocess.run(
-        cmd,
+        [str(executable), *cmd[1:]],
         cwd=str(cwd or REPO_ROOT),
-        env=env,
         check=True,
         text=True,
         stdout=subprocess.PIPE,

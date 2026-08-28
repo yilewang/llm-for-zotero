@@ -310,33 +310,38 @@ class CaptionWindowTests(unittest.TestCase):
             self.assertIsNone(payload.get("mineruDir"))
             self.assertIn("PDF text", payload["warnings"][0])
 
-    def test_run_uses_platform_path_separator_for_poppler_bin(self):
+    def test_run_invokes_executable_from_poppler_bin(self):
         original_run = self.extractor.subprocess.run
-        original_pathsep = self.extractor.os.pathsep
         captured = {}
 
         class FakeProcess:
             stdout = "ok"
 
         def fake_run(*args, **kwargs):
-            captured["env"] = kwargs.get("env", {})
+            captured["args"] = args
+            captured["kwargs"] = kwargs
             return FakeProcess()
 
         try:
             self.extractor.subprocess.run = fake_run
-            self.extractor.os.pathsep = ";"
+            with tempfile.TemporaryDirectory() as tmp:
+                poppler_bin = Path(tmp) / "Library" / "bin"
+                poppler_bin.mkdir(parents=True)
+                executable = poppler_bin / "pdfinfo.exe"
+                executable.touch()
 
-            self.extractor.run(
-                ["pdfinfo", "paper.pdf"],
-                poppler_bin=Path("C:/runtime/Library/bin"),
+                self.extractor.run(
+                    ["pdfinfo", "paper.pdf"],
+                    poppler_bin=poppler_bin,
+                )
+
+            self.assertEqual(
+                captured["args"][0],
+                [str(executable), "paper.pdf"],
             )
-
-            path = captured["env"]["PATH"]
-            self.assertTrue(path.startswith("C:/runtime/Library/bin;"))
-            self.assertFalse(path.startswith("C:/runtime/Library/bin:"))
+            self.assertNotIn("env", captured["kwargs"])
         finally:
             self.extractor.subprocess.run = original_run
-            self.extractor.os.pathsep = original_pathsep
 
     def test_table_query_does_not_match_every_figure(self):
         figure = {
