@@ -313,7 +313,6 @@ function isExplicitPdfVisualRequest(
   input: PaperReadInput,
   requestText: string | undefined,
 ): boolean {
-  if (input.pages?.length) return true;
   const text = [input.query || "", requestText || ""]
     .join(" ")
     .replace(/\s+/g, " ")

@@ -817,7 +817,7 @@ describe("semantic tool surface", function () {
     }
   });
 
-  it("paper_read visual redirects generic MinerU figure requests to cache inspection", async function () {
+  it("paper_read visual ignores model-added pages for semantic figure requests", async function () {
     const originalIOUtils = globalScope.IOUtils;
     const paperContext = {
       itemId: 11,
@@ -884,7 +884,7 @@ describe("semantic tool surface", function () {
     );
     const validated = tool.validate({
       mode: "visual",
-      query: "Explain Figure 2c",
+      pages: [1],
     });
     assert.equal(validated.ok, true);
     if (!validated.ok) return;
@@ -1442,7 +1442,7 @@ describe("semantic tool surface", function () {
     }
   });
 
-  it("paper_read visual renders PDF pages when MinerU cache is absent", async function () {
+  it("paper_read visual ignores model-added pages without a MinerU cache", async function () {
     const paperContext = {
       itemId: 11,
       contextItemId: 22,
@@ -1450,13 +1450,13 @@ describe("semantic tool surface", function () {
       firstCreator: "Miller",
       year: "2025",
     };
-    let requestedPages: number[] = [];
+    let prepareCalls = 0;
     const tool = createPaperReadTool(
       {} as never,
       {} as never,
       {
-        preparePagesForModel: async ({ pages }: { pages: number[] }) => {
-          requestedPages = pages;
+        preparePagesForModel: async () => {
+          prepareCalls += 1;
           return {
             target: {
               source: "library",
@@ -1506,14 +1506,12 @@ describe("semantic tool surface", function () {
         userText: "Explain Figure 1",
         selectedPaperContexts: [paperContext],
       },
-    })) as {
-      content?: { pageCount?: number };
-      artifacts?: unknown[];
-    };
+    })) as Record<string, unknown>;
 
-    assert.deepEqual(requestedPages, [1]);
-    assert.equal(output.content?.pageCount, 1);
-    assert.lengthOf(output.artifacts || [], 1);
+    assert.equal(prepareCalls, 0);
+    assert.equal(output.status, "use_figures_mode");
+    assert.equal(output.backend, "pdf_figure_extraction");
+    assert.notProperty(output, "artifacts");
   });
 
   it("paper_read overview dedupes default paper contexts and traces the source label", async function () {
