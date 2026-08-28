@@ -40,6 +40,7 @@ import {
   activeGlobalConversationByLibrary,
   activePaperConversationByPaper,
 } from "../src/modules/contextPanel/state";
+import { resetLastUsedPaperConversationStoreForTests } from "../src/utils/lastUsedPaperConversationStore";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -48,6 +49,7 @@ describe("historyNavigationModeSync", function () {
   const prefStore = new Map<string, unknown>();
 
   beforeEach(function () {
+    resetLastUsedPaperConversationStoreForTests();
     prefStore.clear();
     activeConversationModeByLibrary.clear();
     activeGlobalConversationByLibrary.clear();

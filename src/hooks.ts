@@ -16,6 +16,7 @@ import { resolveActiveLibraryID } from "./modules/contextPanel/portalScope";
 import { zoteroChangeDispatcher } from "./services/zoteroChangeDispatcher";
 import { registerZoteroItemContextMenu } from "./modules/contextPanel/zoteroItemContextMenu";
 import { initChatStore } from "./utils/chatStore";
+import { initLastUsedPaperConversationStore } from "./utils/lastUsedPaperConversationStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
 import { pendingDeletionStore } from "./core/conversations/pendingDeletionStore";
@@ -104,7 +105,10 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
   };
 
   try {
-    await measureStartupPhase("upstream chat store", initChatStore);
+    await measureStartupPhase("upstream chat store", async () => {
+      await initChatStore();
+      await initLastUsedPaperConversationStore();
+    });
     readiness.chatStoreReady = true;
   } catch (err) {
     ztoolkit.log("LLM: Failed to initialize chat store", err);

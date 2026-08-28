@@ -8,6 +8,7 @@ import {
   clearAllState,
   webChatIsolatedConversationKeys,
 } from "../src/modules/contextPanel/state";
+import { resetLastUsedPaperConversationStoreForTests } from "../src/utils/lastUsedPaperConversationStore";
 
 const globalScope = globalThis as typeof globalThis & {
   Zotero?: Record<string, unknown>;
@@ -18,6 +19,7 @@ describe("webchat last-used restore-pref guard", function () {
   let prefs: Map<string, unknown>;
 
   beforeEach(function () {
+    resetLastUsedPaperConversationStoreForTests();
     prefs = new Map<string, unknown>();
     globalScope.Zotero = {
       ...(originalZotero || {}),
@@ -35,6 +37,7 @@ describe("webchat last-used restore-pref guard", function () {
 
   afterEach(function () {
     clearAllState();
+    resetLastUsedPaperConversationStoreForTests();
     globalScope.Zotero = originalZotero;
   });
 

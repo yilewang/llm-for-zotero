@@ -48,6 +48,11 @@ import {
   clampStandaloneSidebarPreferredWidth,
   STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX,
 } from "./standaloneWindowSizing";
+import {
+  deleteLastUsedPaperConversationKey,
+  readLastUsedPaperConversationKey,
+  writeLastUsedPaperConversationKey,
+} from "../../utils/lastUsedPaperConversationStore";
 
 type ZoteroPrefsAPI = {
   get?: (key: string, global?: boolean) => unknown;
@@ -92,7 +97,6 @@ const LAST_REASONING_LEVEL_BY_PROVIDER_PREF_KEY =
 const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
 const LAST_CONVERSATION_MODE_MAP_PREF_KEY = "lastUsedConversationModeMap";
 const LAST_GLOBAL_CONVERSATION_MAP_PREF_KEY = "lastUsedGlobalConversationMap";
-const LAST_PAPER_CONVERSATION_MAP_PREF_KEY = "lastUsedPaperConversationMap";
 const PANEL_FONT_SCALE_PREF_KEY = "panelFontScale";
 const STANDALONE_SIDEBAR_WIDTH_PREF_KEY = "standaloneSidebarWidth";
 const SHORTCUT_DEFAULTS_MIGRATION_PREF_KEY = "shortcutDefaultsMigrationVersion";
@@ -283,26 +287,6 @@ export function setLastReasoningExpanded(expanded: boolean): void {
   );
 }
 
-function getLastPaperConversationMap(): Record<string, number> {
-  const raw = getZoteroPrefs()?.get?.(
-    `${config.prefsPrefix}.${LAST_PAPER_CONVERSATION_MAP_PREF_KEY}`,
-    true,
-  );
-  if (typeof raw !== "string" || !raw.trim()) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const out: Record<string, number> = {};
-    for (const [key, value] of Object.entries(parsed)) {
-      const normalized = Number(value);
-      if (!Number.isFinite(normalized) || normalized <= 0) continue;
-      out[key] = Math.floor(normalized);
-    }
-    return out;
-  } catch (_err) {
-    return {};
-  }
-}
-
 function getLastConversationModeMap(): Record<string, "global" | "paper"> {
   const raw = getZoteroPrefs()?.get?.(
     `${config.prefsPrefix}.${LAST_CONVERSATION_MODE_MAP_PREF_KEY}`,
@@ -433,25 +417,16 @@ export function removeLastUsedUpstreamGlobalConversationKey(
   setLastGlobalConversationMap(map);
 }
 
-function setLastPaperConversationMap(value: Record<string, number>): void {
-  getZoteroPrefs()?.set?.(
-    `${config.prefsPrefix}.${LAST_PAPER_CONVERSATION_MAP_PREF_KEY}`,
-    JSON.stringify(value),
-    true,
-  );
-}
-
 export function getLastUsedPaperConversationKey(
   libraryID: number,
   paperItemID: number,
 ): number | null {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
   if (!Number.isFinite(paperItemID) || paperItemID <= 0) return null;
-  const map = getLastPaperConversationMap();
-  const key = buildPaperStateKey(libraryID, paperItemID);
-  const value = Number(map[key]);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return Math.floor(value);
+  return readLastUsedPaperConversationKey(
+    Math.floor(libraryID),
+    Math.floor(paperItemID),
+  );
 }
 
 export function setLastUsedPaperConversationKey(
@@ -466,10 +441,11 @@ export function setLastUsedPaperConversationKey(
   // never become restore targets, and this writer is the chokepoint shared by
   // every caller.
   if (webChatIsolatedConversationKeys.has(Math.floor(conversationKey))) return;
-  const map = getLastPaperConversationMap();
-  const key = buildPaperStateKey(libraryID, paperItemID);
-  map[key] = Math.floor(conversationKey);
-  setLastPaperConversationMap(map);
+  writeLastUsedPaperConversationKey(
+    Math.floor(libraryID),
+    Math.floor(paperItemID),
+    Math.floor(conversationKey),
+  );
 }
 
 export function removeLastUsedPaperConversationKey(
@@ -478,11 +454,10 @@ export function removeLastUsedPaperConversationKey(
 ): void {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
   if (!Number.isFinite(paperItemID) || paperItemID <= 0) return;
-  const map = getLastPaperConversationMap();
-  const key = buildPaperStateKey(libraryID, paperItemID);
-  if (!(key in map)) return;
-  delete map[key];
-  setLastPaperConversationMap(map);
+  deleteLastUsedPaperConversationKey(
+    Math.floor(libraryID),
+    Math.floor(paperItemID),
+  );
 }
 
 export function getModelConfigGroups(): ModelProviderGroup[] {

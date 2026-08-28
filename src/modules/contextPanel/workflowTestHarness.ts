@@ -121,6 +121,10 @@ import {
   removeLastUsedUpstreamConversationMode,
   removeLastUsedUpstreamGlobalConversationKey,
 } from "./prefHelpers";
+import {
+  clearLastUsedPaperConversationKeysForTests,
+  flushLastUsedPaperConversationWritesForTests,
+} from "../../utils/lastUsedPaperConversationStore";
 
 async function appendWorkflowStoredMessage(
   system: ConversationSystem,
@@ -3149,11 +3153,12 @@ async function reset(): Promise<void> {
     removeLastUsedUpstreamGlobalConversationKey(userLibraryID);
   }
   // Workflow cases use fresh Zotero items but the isolated runner can retain
-  // the same numeric item IDs across process launches.  Clear persisted
-  // paper-selection maps at the test boundary so a stale preference from an
-  // earlier run cannot steer a new fixture into an unrelated conversation.
+  // the same numeric item IDs across process launches. Clear persisted
+  // paper-selection state at the test boundary so a stale row from an earlier
+  // run cannot steer a new fixture into an unrelated conversation.
+  clearLastUsedPaperConversationKeysForTests();
+  await flushLastUsedPaperConversationWritesForTests();
   for (const prefKey of [
-    "lastUsedPaperConversationMap",
     "claudeCodePaperConversationMap",
     "codexAppServerPaperConversationMap",
   ]) {
