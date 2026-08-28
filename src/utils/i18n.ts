@@ -347,6 +347,9 @@ const zhCN: Record<string, string> = {
     '在阅读器选区弹出菜单中显示"添加文本"',
   "Disable this if you prefer not to show the Add Text option in Zotero's text selection popup menu.":
     '如果你不想在 Zotero 文本选区弹出菜单中显示"添加文本"选项，请禁用此项。',
+  "Prefer earliest-added PDF attachment": "优先使用最早添加的 PDF 附件",
+  "When an item has multiple PDFs, automatic paper context uses the PDF with the earliest Date Added instead of the active attachment.":
+    "当一个条目包含多个 PDF 时，自动论文上下文会使用添加时间最早的 PDF，而不是当前打开的附件。",
   "Enable Agent Mode (Beta)": "启用 Agent 模式（测试版）",
   'Shows the "Agent (beta)" toggle in the context bar, enabling the agentic multi-step assistant. Off by default — enable only if you want to experiment with the beta feature.':
     '在上下文栏显示"Agent（测试版）"切换按钮，启用多步骤 Agent 助手。默认关闭 — 仅在你想体验测试版功能时启用。',

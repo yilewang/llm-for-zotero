@@ -18,6 +18,7 @@ declare namespace _ZoteroTypes {
       "lastUsedModelEntryId": string;
       "systemPrompt": string;
       "showPopupAddText": boolean;
+      "preferEarliestPdfAttachment": boolean;
       "semanticScholarApiKey": string;
       "temperaturePrimary": string;
       "maxTokensPrimary": string;

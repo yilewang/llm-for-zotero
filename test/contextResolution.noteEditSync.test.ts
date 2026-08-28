@@ -3,6 +3,7 @@ import {
   appendSelectedTextContextForItem,
   getSelectedTextContextEntries,
   resolvePanelContextLifecycleState,
+  resolveContextSourceItemId,
   resolveContextSourceItemIdAsync,
   setSelectedTextContextEntries,
   syncSelectedTextContextForSource,
@@ -384,6 +385,72 @@ describe("contextResolution note-edit sync", function () {
         parentItem as unknown as Zotero.Item,
       ),
       202,
+    );
+  });
+
+  it("uses the earliest-added PDF instead of the active attachment when requested", async function () {
+    const parentItem = {
+      id: 210,
+      isAttachment: () => false,
+      isRegularItem: () => true,
+      getAttachments: () => [212, 211],
+      getField: () => "Parent Paper",
+      getBestAttachment: async () => translatedPdf,
+    };
+    const originalPdf = {
+      id: 211,
+      parentID: 210,
+      dateAdded: "2025-01-02 09:00:00",
+      attachmentContentType: "application/pdf",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: () => "Original PDF",
+    };
+    const translatedPdf = {
+      id: 212,
+      parentID: 210,
+      dateAdded: "2025-03-04 10:00:00",
+      attachmentContentType: "application/pdf",
+      isAttachment: () => true,
+      isRegularItem: () => false,
+      getField: () => "Translated PDF",
+    };
+    const items = new Map<number, unknown>([
+      [210, parentItem],
+      [211, originalPdf],
+      [212, translatedPdf],
+    ]);
+    globalScope.Zotero = {
+      ...(originalZotero || {}),
+      Prefs: {
+        get: (key: string) =>
+          key.endsWith(".preferEarliestPdfAttachment") ? true : undefined,
+      },
+      Items: {
+        get: (id: number) => items.get(id) || null,
+      },
+      Tabs: {
+        selectedType: "reader",
+        selectedID: "reader-tab",
+        _tabs: [
+          {
+            id: "reader-tab",
+            type: "reader",
+            data: { itemID: 212 },
+          },
+        ],
+      },
+    };
+
+    assert.equal(
+      resolveContextSourceItemId(translatedPdf as unknown as Zotero.Item),
+      211,
+    );
+    assert.equal(
+      await resolveContextSourceItemIdAsync(
+        translatedPdf as unknown as Zotero.Item,
+      ),
+      211,
     );
   });
 

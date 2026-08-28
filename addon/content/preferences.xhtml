@@ -238,6 +238,36 @@
         </html:div>
 
         <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:label
+            style="
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              font-weight: 600;
+              font-size: 12px;
+              color: var(--fill-primary, inherit);
+            "
+          >
+            <html:input
+              id="__addonRef__-prefer-earliest-pdf-attachment"
+              type="checkbox"
+            ></html:input>
+            Prefer earliest-added PDF attachment
+          </html:label>
+          <html:span
+            style="
+              font-size: 11px;
+              color: var(--fill-secondary, #888);
+              margin-top: 1px;
+              display: block;
+            "
+          >
+            When an item has multiple PDFs, automatic paper context uses the PDF
+            with the earliest Date Added instead of the active attachment.
+          </html:span>
+        </html:div>
+
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
           <html:div
             style="
               display: flex;

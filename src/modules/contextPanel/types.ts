@@ -173,6 +173,7 @@ export type ResolvedContextSource = {
     | "active-reader"
     | "selected-child"
     | "direct-attachment"
+    | "earliest-pdf"
     | "first-child"
     | "best-attachment";
   ownerItem?: Zotero.Item | null;

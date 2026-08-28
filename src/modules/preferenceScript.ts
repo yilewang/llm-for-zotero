@@ -1038,6 +1038,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const popupAddTextEnabledInput = doc.querySelector(
     `#${config.addonRef}-popup-add-text-enabled`,
   ) as HTMLInputElement | null;
+  const preferEarliestPdfAttachmentInput = doc.querySelector(
+    `#${config.addonRef}-prefer-earliest-pdf-attachment`,
+  ) as HTMLInputElement | null;
   const enableAgentModeInput = doc.querySelector(
     `#${config.addonRef}-enable-agent-mode`,
   ) as HTMLInputElement | null;
@@ -2498,6 +2501,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       Zotero.Prefs.set(
         `${config.prefsPrefix}.showPopupAddText`,
         popupAddTextEnabledInput.checked,
+        true,
+      );
+    });
+  }
+
+  if (preferEarliestPdfAttachmentInput) {
+    preferEarliestPdfAttachmentInput.checked =
+      Zotero.Prefs.get(
+        `${config.prefsPrefix}.preferEarliestPdfAttachment`,
+        true,
+      ) === true;
+    preferEarliestPdfAttachmentInput.addEventListener("change", () => {
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.preferEarliestPdfAttachment`,
+        preferEarliestPdfAttachmentInput.checked,
         true,
       );
     });

@@ -114,4 +114,19 @@ describe("runtime preference UI", function () {
     assert.include(embeddedPanel, "setupHandlers(body, rawItem)");
     assert.include(standalonePanel, "setupHandlers(contentArea, mountedItem");
   });
+
+  it("offers an opt-in earliest PDF attachment policy", function () {
+    const preferences = source("addon/content/preferences.xhtml");
+    const preferenceScript = source("src/modules/preferenceScript.ts");
+    const defaults = source("addon/prefs.js");
+
+    assert.include(preferences, "__addonRef__-prefer-earliest-pdf-attachment");
+    assert.include(preferences, "Prefer earliest-added PDF attachment");
+    assert.include(preferenceScript, "preferEarliestPdfAttachmentInput");
+    assert.include(
+      preferenceScript,
+      "`${config.prefsPrefix}.preferEarliestPdfAttachment`",
+    );
+    assert.include(defaults, 'pref("preferEarliestPdfAttachment", false);');
+  });
 });

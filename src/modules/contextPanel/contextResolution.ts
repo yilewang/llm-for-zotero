@@ -58,6 +58,7 @@ import {
   prunePinnedSelectedTextKeys,
 } from "./setupHandlers/controllers/pinnedContextController";
 import { readNoteSnapshot } from "./noteSnapshot";
+import { getBoolPref } from "./prefHelpers";
 
 export type SelectedTextPageLocation = {
   contextItemId?: number;
@@ -420,6 +421,41 @@ function getFirstPdfChildAttachment(
   return null;
 }
 
+export function getEarliestPdfChildAttachment(
+  item: Zotero.Item | null | undefined,
+): Zotero.Item | null {
+  if (!item || item.isAttachment()) return null;
+  const pdfAttachments = item
+    .getAttachments()
+    .map((attachmentId) => Zotero.Items.get(attachmentId))
+    .filter((attachment): attachment is Zotero.Item =>
+      isPdfContextAttachment(attachment),
+    );
+  pdfAttachments.sort((left, right) => {
+    const dateOrder = left.dateAdded.localeCompare(right.dateAdded);
+    return dateOrder || left.id - right.id;
+  });
+  return pdfAttachments[0] || null;
+}
+
+function resolveEarliestPdfPreference(
+  parentItem: Zotero.Item | null | undefined,
+): ResolvedContextSource | null {
+  if (!getBoolPref("preferEarliestPdfAttachment")) return null;
+  const attachment = getEarliestPdfChildAttachment(parentItem);
+  if (!attachment || !parentItem) return null;
+  const parentTitle =
+    sanitizeText(parentItem.getField("title") || "").trim() ||
+    `Item ${parentItem.id}`;
+  return {
+    contextItem: attachment,
+    statusText: `using earliest-added PDF from ${parentTitle} as context`,
+    sourceKind: "earliest-pdf",
+    requiresAsyncResolution: false,
+    isAsyncFinal: true,
+  };
+}
+
 async function getBestSupportedContextAttachment(
   item: Zotero.Item | null | undefined,
 ): Promise<Zotero.Item | null> {
@@ -561,11 +597,14 @@ function resolveContextSourceItemBase(
     };
   }
 
-  const selectedAttachment = getSelectedSupportedAttachmentFromLibraryPane();
   const panelParentItem =
     panelItem.isAttachment() && panelItem.parentID
       ? Zotero.Items.get(panelItem.parentID) || null
       : panelItem;
+  const earliestPdfPreference = resolveEarliestPdfPreference(panelParentItem);
+  if (earliestPdfPreference) return earliestPdfPreference;
+
+  const selectedAttachment = getSelectedSupportedAttachmentFromLibraryPane();
   if (resolveContextAttachmentSupport(panelItem)) {
     const label = getContextItemLabel(panelItem);
     return {
@@ -683,11 +722,14 @@ async function resolveContextSourceItemAsyncBase(
     };
   }
 
-  const selectedAttachment = getSelectedSupportedAttachmentFromLibraryPane();
   const panelParentItem =
     panelItem.isAttachment() && panelItem.parentID
       ? Zotero.Items.get(panelItem.parentID) || null
       : panelItem;
+  const earliestPdfPreference = resolveEarliestPdfPreference(panelParentItem);
+  if (earliestPdfPreference) return earliestPdfPreference;
+
+  const selectedAttachment = getSelectedSupportedAttachmentFromLibraryPane();
   if (resolveContextAttachmentSupport(panelItem)) {
     const label = getContextItemLabel(panelItem);
     return {
