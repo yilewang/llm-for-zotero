@@ -851,24 +851,48 @@ function getPackageTimestampMs(metadata?: MineruSyncMetadata): number {
   return 0;
 }
 
-async function packageProvenanceMatchesSource(
+function packageProvenanceMatchesSource(
   metadata: MineruSyncMetadata | undefined,
   sourceAttachment: Zotero.Item,
-): Promise<boolean> {
+  packageAttachment: Zotero.Item,
+  allowCrossKeyFallback: boolean,
+): boolean {
   if (!metadata) return true;
   const metadataKey = String(
     metadata.sourceAttachmentKey || metadata.attachmentKey || "",
   ).trim();
   const sourceKey = getItemKey(sourceAttachment);
-  if (metadataKey && sourceKey && metadataKey !== sourceKey) {
-    ztoolkit.log(
-      "LLM: MinerU sync package source key mismatch",
-      metadataKey,
-      sourceAttachment.id,
-    );
+  if (!metadataKey || !sourceKey || metadataKey === sourceKey) return true;
+  if (!allowCrossKeyFallback) return false;
+
+  const sourceParent = getParentItem(sourceAttachment);
+  if (!sourceParent || Number(packageAttachment.parentID) !== sourceParent.id) {
     return false;
   }
-  return true;
+
+  const metadataParentKey = String(metadata.parentItemKey || "").trim();
+  const sourceParentKey = getItemKey(sourceParent);
+  if (
+    metadataParentKey &&
+    sourceParentKey &&
+    metadataParentKey !== sourceParentKey
+  ) {
+    return false;
+  }
+
+  const siblingPdfs = (sourceParent.getAttachments?.() || [])
+    .map((attachmentId) => Zotero.Items.get(attachmentId))
+    .filter((item) => !isDeletedItem(item) && isPdfAttachment(item));
+  const matched =
+    siblingPdfs.length === 1 && siblingPdfs[0]?.id === sourceAttachment.id;
+  if (matched) {
+    ztoolkit.log(
+      "LLM: MinerU sync package matched by same parent and unique PDF",
+      metadataKey,
+      sourceKey,
+    );
+  }
+  return matched;
 }
 
 function extractPackageFiles(
@@ -997,7 +1021,11 @@ async function collectPackageAttachmentCandidates(
 
 async function findPackageCandidatesForSource(
   sourceAttachment: Zotero.Item,
-  options: { loadBytes?: boolean; requireReadable?: boolean } = {},
+  options: {
+    loadBytes?: boolean;
+    requireReadable?: boolean;
+    allowCrossKeyFallback?: boolean;
+  } = {},
 ): Promise<MineruPackageCandidate[]> {
   const sourceKey = getItemKey(sourceAttachment);
   if (!sourceKey) return [];
@@ -1022,10 +1050,14 @@ async function findPackageCandidatesForSource(
       const bytes = shouldRead ? await readAttachmentFileBytes(item) : null;
       const extracted = bytes ? extractPackageFiles(bytes) : null;
       const metadata = extracted?.metadata;
-      if (metadata && metadata.sourceAttachmentKey !== sourceKey) continue;
       if (
         metadata &&
-        !(await packageProvenanceMatchesSource(metadata, sourceAttachment))
+        !packageProvenanceMatchesSource(
+          metadata,
+          sourceAttachment,
+          item,
+          options.allowCrossKeyFallback === true,
+        )
       ) {
         continue;
       }
@@ -1086,6 +1118,7 @@ export async function hasSyncedMineruPackageForAttachment(
   const candidates = await findPackageCandidatesForSource(sourceAttachment, {
     loadBytes: validateSyncedPackage,
     requireReadable: validateSyncedPackage,
+    allowCrossKeyFallback: validateSyncedPackage,
   });
   return candidates.length > 0;
 }
@@ -1365,6 +1398,7 @@ export async function ensureMineruRuntimeCacheForAttachment(
     const candidates = await findPackageCandidatesForSource(sourceAttachment, {
       loadBytes: true,
       requireReadable: false,
+      allowCrossKeyFallback: true,
     });
     if (!candidates.length) return { status: "no_package", attachmentId };
 
@@ -1456,6 +1490,7 @@ export async function repairSyncedMineruCacheForAttachment(
     const candidates = await findPackageCandidatesForSource(sourceAttachment, {
       loadBytes: true,
       requireReadable: false,
+      allowCrossKeyFallback: true,
     });
     if (!candidates.length) return { status: "no_package", attachmentId };
 
@@ -1463,7 +1498,6 @@ export async function repairSyncedMineruCacheForAttachment(
     if (!selected?.extracted) {
       return { status: "invalid_package", attachmentId };
     }
-    await prunePackageCandidates(candidates, selected.item.id);
 
     const uniqueHashes = new Set(
       candidates
@@ -1944,56 +1978,6 @@ async function listLocalNumericCacheIds(): Promise<number[]> {
   }
 }
 
-async function cleanupOrphanSyncedMineruPackages(
-  currentPdfByKey: Map<string, Zotero.Item>,
-): Promise<{ deleted: number; failed: number }> {
-  const result = { deleted: 0, failed: 0 };
-  const libraryID = Number(Zotero.Libraries.userLibraryID);
-  if (!Number.isFinite(libraryID) || libraryID <= 0) return result;
-
-  let items: Zotero.Item[];
-  try {
-    items = await Zotero.Items.getAll(
-      Math.floor(libraryID),
-      false,
-      false,
-      false,
-    );
-  } catch {
-    return result;
-  }
-
-  for (const item of items) {
-    if (!item?.isAttachment?.()) continue;
-    if ((item as unknown as { deleted?: boolean }).deleted) continue;
-    if (!isMineruSyncPackageAttachment(item)) continue;
-
-    let metadata: MineruSyncMetadata | null = null;
-    try {
-      const bytes = await readAttachmentFileBytes(item);
-      metadata = bytes ? readMineruSyncMetadataFromPackageBytes(bytes) : null;
-    } catch {
-      metadata = null;
-    }
-    if (!metadata) continue;
-
-    const sourceAttachment = currentPdfByKey.get(metadata.sourceAttachmentKey);
-    if (!sourceAttachment) {
-      try {
-        await deletePackageAttachment(item);
-        result.deleted += 1;
-      } catch {
-        result.failed += 1;
-      }
-      continue;
-    }
-
-    await packageProvenanceMatchesSource(metadata, sourceAttachment);
-  }
-
-  return result;
-}
-
 export async function repairMineruCaches(
   options: MineruCacheRepairOptions = {},
 ): Promise<MineruCacheRepairResult> {
@@ -2015,11 +1999,6 @@ export async function repairMineruCaches(
 
   const pdfAttachments = await getAllLibraryPdfAttachments();
   const currentPdfIds = new Set(pdfAttachments.map((item) => item.id));
-  const currentPdfByKey = new Map<string, Zotero.Item>();
-  for (const item of pdfAttachments) {
-    const key = getItemKey(item);
-    if (key) currentPdfByKey.set(key, item);
-  }
 
   for (const cacheId of await listLocalNumericCacheIds()) {
     if (currentPdfIds.has(cacheId)) continue;
@@ -2059,11 +2038,6 @@ export async function repairMineruCaches(
       await yieldToUi(yieldMs);
     }
   }
-
-  const orphanPackages =
-    await cleanupOrphanSyncedMineruPackages(currentPdfByKey);
-  result.removedOrphanSyncPackages += orphanPackages.deleted;
-  result.failed += orphanPackages.failed;
 
   options.onProgress?.(cloneRepairResult(result));
   return result;
