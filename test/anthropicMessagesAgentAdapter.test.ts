@@ -3,7 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AnthropicMessagesAgentAdapter } from "../src/agent/model/anthropicMessages";
-import type { AgentRuntimeRequest, ToolSpec } from "../src/agent/types";
+import type {
+  AgentModelMessage,
+  AgentRuntimeRequest,
+  ToolSpec,
+} from "../src/agent/types";
 import { isMalformedToolArgumentsDiagnostic } from "../src/agent/toolArgumentDiagnostics";
 
 function makeSseStream(chunks: string[]): ReadableStream<Uint8Array> {
@@ -695,6 +699,109 @@ describe("AnthropicMessagesAgentAdapter", function () {
         tool_use_id: block.tool_use_id,
       })),
       [{ type: "tool_result", tool_use_id: "toolu_1" }],
+    );
+  });
+
+  it("does not resend an earlier tool result during a corrective continuation", async function () {
+    const adapter = new AnthropicMessagesAgentAdapter();
+    const requestBodies: Record<string, unknown>[] = [];
+    let callCount = 0;
+    (
+      globalThis as typeof globalThis & {
+        ztoolkit: { getGlobal: (name: string) => unknown };
+      }
+    ).ztoolkit = {
+      getGlobal: (name: string) => {
+        if (name !== "fetch") return undefined;
+        return async (_url: string, init?: RequestInit) => {
+          callCount += 1;
+          requestBodies.push(
+            JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
+          );
+          const content =
+            callCount === 1
+              ? [
+                  {
+                    type: "tool_use",
+                    id: "toolu_retrieve",
+                    name: "library_retrieve",
+                    input: { intent: "summarize" },
+                  },
+                ]
+              : [
+                  {
+                    type: "text",
+                    text:
+                      callCount === 2 ? "Shallow answer" : "Grounded answer",
+                  },
+                ];
+          return {
+            ok: true,
+            status: 200,
+            statusText: "OK",
+            body: undefined,
+            json: async () => ({ content }),
+            text: async () => "",
+          };
+        };
+      },
+    };
+
+    const firstStep = await adapter.runStep({
+      request: makeRequest(),
+      messages: [{ role: "user", content: "Compare these papers" }],
+      tools,
+    });
+    assert.equal(firstStep.kind, "tool_calls");
+    if (firstStep.kind !== "tool_calls") return;
+
+    const toolResult: AgentModelMessage = {
+      role: "tool",
+      tool_call_id: "toolu_retrieve",
+      name: "library_retrieve",
+      content: '{"papers":["A","B"]}',
+    };
+    const secondStep = await adapter.runStep({
+      request: makeRequest(),
+      messages: [firstStep.assistantMessage, toolResult],
+      tools,
+    });
+    assert.equal(secondStep.kind, "final");
+    if (secondStep.kind !== "final") return;
+
+    await adapter.runStep({
+      request: makeRequest(),
+      messages: [
+        firstStep.assistantMessage,
+        toolResult,
+        secondStep.assistantMessage,
+        {
+          role: "user",
+          content: "Correction: gather enough evidence before answering.",
+        },
+      ],
+      tools,
+    });
+
+    const thirdRequestMessages = requestBodies[2]?.messages as Array<{
+      role?: string;
+      content?: Array<Record<string, unknown>>;
+    }>;
+    assert.deepEqual(
+      thirdRequestMessages.map((message) => message.role),
+      ["user", "assistant", "user", "assistant", "user"],
+    );
+    assert.deepEqual(
+      thirdRequestMessages.flatMap((message) =>
+        (message.content || [])
+          .filter((block) => block.type === "tool_result")
+          .map((block) => block.tool_use_id),
+      ),
+      ["toolu_retrieve"],
+    );
+    assert.equal(
+      thirdRequestMessages[4]?.content?.[0]?.text,
+      "Correction: gather enough evidence before answering.",
     );
   });
 
