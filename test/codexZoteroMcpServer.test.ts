@@ -134,6 +134,60 @@ describe("Zotero MCP server", function () {
     assert.equal(payload.result.protocolVersion, "2025-06-18");
   });
 
+  it("negotiates a protocol version supported by an older MCP client", async function () {
+    const registry = new AgentToolRegistry();
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+    const token = getOrCreateZoteroMcpBearerToken();
+
+    for (const protocolVersion of ["2024-11-05", "2025-03-26"]) {
+      const response = await invokeMcpEndpoint({
+        token,
+        body: {
+          jsonrpc: "2.0",
+          id: protocolVersion,
+          method: "initialize",
+          params: {
+            protocolVersion,
+            capabilities: {},
+            clientInfo: { name: "compatibility-test", version: "1.0.0" },
+          },
+        },
+      });
+
+      assert.equal(response[0], 200);
+      const payload = JSON.parse(response[2]);
+      assert.equal(payload.result.protocolVersion, protocolVersion);
+    }
+  });
+
+  it("offers the latest server version when the requested version is unsupported", async function () {
+    const registry = new AgentToolRegistry();
+    registerMcpServer({
+      toolRegistry: registry,
+      zoteroGateway: {} as never,
+    });
+
+    const response = await invokeMcpEndpoint({
+      token: getOrCreateZoteroMcpBearerToken(),
+      body: {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "initialize",
+        params: {
+          protocolVersion: "2099-01-01",
+          capabilities: {},
+          clientInfo: { name: "future-client", version: "1.0.0" },
+        },
+      },
+    });
+
+    const payload = JSON.parse(response[2]);
+    assert.equal(payload.result.protocolVersion, "2025-06-18");
+  });
+
   it("lists curated read tools and built-in write tools without self-confirmation", async function () {
     const registry = new AgentToolRegistry();
     registry.register(createReadTool("library_search"));

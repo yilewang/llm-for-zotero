@@ -56,6 +56,11 @@ export const ZOTERO_MCP_TOKEN_PREF_KEY = `${config.prefsPrefix}.codexZoteroMcpBe
 
 const SERVER_VERSION = "1.0.0";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
+const MCP_SUPPORTED_PROTOCOL_VERSIONS = new Set([
+  MCP_PROTOCOL_VERSION,
+  "2025-03-26",
+  "2024-11-05",
+]);
 const DEFAULT_ZOTERO_HTTP_PORT = 23119;
 const SCOPED_MCP_SCOPE_TTL_MS = 2 * 60 * 60 * 1000;
 export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
@@ -1091,9 +1096,18 @@ function isAuthorized(headers: Record<string, string> | undefined): boolean {
   return authorization.trim() === `Bearer ${expected}`;
 }
 
-async function handleInitialize(): Promise<McpServerInfo> {
+async function handleInitialize(params: unknown): Promise<McpServerInfo> {
+  const requestedVersion =
+    params && typeof params === "object"
+      ? (params as { protocolVersion?: unknown }).protocolVersion
+      : undefined;
+  const protocolVersion =
+    typeof requestedVersion === "string" &&
+    MCP_SUPPORTED_PROTOCOL_VERSIONS.has(requestedVersion)
+      ? requestedVersion
+      : MCP_PROTOCOL_VERSION;
   return {
-    protocolVersion: MCP_PROTOCOL_VERSION,
+    protocolVersion,
     serverInfo: {
       name: "llm-for-zotero",
       version: SERVER_VERSION,
@@ -1899,7 +1913,7 @@ async function handleRequest(
 
   try {
     if (method === MCP_METHODS.INITIALIZE) {
-      const result = await handleInitialize();
+      const result = await handleInitialize(params);
       return makeJsonRpcHttpResponse(makeResult(id ?? null, result));
     }
 
