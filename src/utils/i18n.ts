@@ -21,6 +21,7 @@ const zhCN: Record<string, string> = {
 
   // ── Chat panel UI ───────────────────────────────────────────────────────
   "LLM-for-Zotero": "LLM-for-Zotero",
+  "LLM Chat Window": "LLM 独立聊天窗口",
   "Start a new chat": "开始新对话",
   "Conversation history": "对话历史",
   "Item note": "条目笔记",

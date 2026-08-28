@@ -15,6 +15,10 @@ import {
 import { resolveActiveLibraryID } from "./modules/contextPanel/portalScope";
 import { zoteroChangeDispatcher } from "./services/zoteroChangeDispatcher";
 import { registerZoteroItemContextMenu } from "./modules/contextPanel/zoteroItemContextMenu";
+import {
+  registerStandaloneToolsMenu,
+  unregisterStandaloneToolsMenu,
+} from "./modules/contextPanel/standaloneToolsMenu";
 import { initChatStore } from "./utils/chatStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
@@ -359,6 +363,10 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   registerReaderContextPanel();
   registerReaderSelectionTracking();
   registerNoteEditingSelectionTracking(win);
+  registerStandaloneToolsMenu({
+    document: win.document,
+    openStandaloneChat: () => openStandaloneChat(),
+  });
   registerZoteroItemContextMenu({
     ztoolkit,
     getSelectedItems: () => {
@@ -432,7 +440,7 @@ async function onMainWindowUnload(win: Window): Promise<void> {
   ztoolkit.unregisterAll();
   closeAllAddonDialogs();
   addon.data.standaloneWindow?.close();
-  win.document.getElementById("llmforzotero-open-standalone")?.remove();
+  unregisterStandaloneToolsMenu(win.document);
   win.document.getElementById("llmforzotero-key-standalone")?.remove();
 }
 
