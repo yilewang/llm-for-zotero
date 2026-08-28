@@ -664,9 +664,35 @@ async function downloadAndExtractZip(
   };
 }
 
+const MAX_MINERU_LOCAL_UPLOAD_FILENAME_LENGTH = 64;
+
+function hashFileName(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 function getSafePdfFileName(pdfPath: string): string {
   const rawName = pdfPath.split(/[\\/]/).pop() || "paper.pdf";
-  return rawName.replace(/[^\x20-\x7E]/g, "_") || "paper.pdf";
+  const asciiName = rawName.replace(/[^\x20-\x7E]/g, "_") || "paper.pdf";
+  if (asciiName.length <= MAX_MINERU_LOCAL_UPLOAD_FILENAME_LENGTH) {
+    return asciiName;
+  }
+
+  const extension = ".pdf";
+  const stem = /\.pdf$/i.test(asciiName)
+    ? asciiName.slice(0, -extension.length)
+    : asciiName;
+  const hash = hashFileName(rawName);
+  const prefixLength =
+    MAX_MINERU_LOCAL_UPLOAD_FILENAME_LENGTH -
+    extension.length -
+    hash.length -
+    1;
+  return `${stem.slice(0, prefixLength)}-${hash}${extension}`;
 }
 
 function joinApiPath(baseUrl: string, path: string): string {

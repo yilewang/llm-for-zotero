@@ -80,6 +80,33 @@ async function readMultipartTextField(
   return text.slice(valueStart + 4, valueEnd < 0 ? undefined : valueEnd);
 }
 
+async function readMultipartFileName(
+  body: BodyInit | null | undefined,
+  name: string,
+): Promise<string> {
+  if (!body) return "";
+  if (typeof FormData !== "undefined" && body instanceof FormData) {
+    const value = body.get(name) as { name?: unknown } | null;
+    return typeof value?.name === "string" ? value.name : "";
+  }
+  const text =
+    typeof body === "string"
+      ? body
+      : body instanceof ArrayBuffer
+        ? decoder.decode(new Uint8Array(body))
+        : ArrayBuffer.isView(body)
+          ? decoder.decode(
+              new Uint8Array(body.buffer, body.byteOffset, body.byteLength),
+            )
+          : await new Response(body).text();
+  const disposition = text.match(
+    new RegExp(
+      `Content-Disposition: form-data; name="${name}"; filename="([^"]+)"`,
+    ),
+  );
+  return disposition?.[1] || "";
+}
+
 describe("mineruClient", function () {
   describe("cloud poll policy", function () {
     it("times out pending jobs after the pre-processing window", function () {
@@ -362,6 +389,32 @@ describe("mineruClient", function () {
         await readMultipartTextField(submittedBody, "parse_method"),
         "ocr",
       );
+    });
+
+    it("shortens long PDF names before submitting them to local MinerU", async function () {
+      const originalName =
+        "Gu _ - 2025 - Humanoid locomotion and manipulation current progress and challenges in control, planning, and learning.pdf";
+      const pdfPath = `/tmp/${originalName}`;
+      setupLocalMineruClientTest({ [pdfPath]: "%PDF-1.7" });
+      let submittedBody: BodyInit | null | undefined;
+      globalThis.fetch = (async (_url, init) => {
+        submittedBody = init?.body;
+        return new Response(createMineruZip("# Parsed long filename"), {
+          status: 200,
+        });
+      }) as typeof fetch;
+
+      const result = await parsePdfWithMineruLocal(
+        pdfPath,
+        "http://127.0.0.1:58659",
+        "pipeline",
+      );
+
+      const submittedName = await readMultipartFileName(submittedBody, "files");
+      assert.equal(result?.mdContent, "# Parsed long filename");
+      assert.equal(submittedName.length, 64);
+      assert.match(submittedName, /^Gu _ - 2025 .+-[0-9a-f]{8}\.pdf$/);
+      assert.notEqual(submittedName, originalName);
     });
 
     it("serializes concurrent local file_parse submissions in this process", async function () {
