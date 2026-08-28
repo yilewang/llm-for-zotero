@@ -481,6 +481,26 @@ function injectCitationLinksIntoNoteHtml(
 const NOTE_FOOTER_TEXT = "Written by LLM-for-Zotero.";
 const NOTE_FOOTER_HTML = `<hr/><p>${NOTE_FOOTER_TEXT}</p>`;
 
+function resolveSavedNoteHeading(
+  question: string | undefined,
+  fallback: string,
+): string {
+  return (
+    sanitizeText(question || "")
+      .replace(/\s+/g, " ")
+      .trim() || fallback
+  );
+}
+
+function getFirstUserQuestion(messages: Message[]): string {
+  for (const message of messages) {
+    if (message.role !== "user") continue;
+    const question = resolveSavedNoteHeading(message.text, "");
+    if (question) return question;
+  }
+  return "";
+}
+
 /**
  * Strips an already-present `Written by LLM-for-Zotero[ plugin][.]` footer
  * from the end of markdown text produced by the LLM. When the agent follows
@@ -518,6 +538,7 @@ function buildAssistantNoteHtml(
   });
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
+  const heading = resolveSavedNoteHeading(queryText, timestamp);
   let queryHtml = query ? renderRawNoteHtml(query) : "";
   let responseHtml = response ? renderRawNoteHtml(response) : "";
   if (queryHtml) {
@@ -537,7 +558,7 @@ function buildAssistantNoteHtml(
   const queryBlock = queryHtml
     ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
     : "";
-  return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
+  return `<p><strong>${escapeNoteHtml(heading)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
 }
 
 async function buildAssistantNoteHtmlForSave(
@@ -563,6 +584,7 @@ async function buildAssistantNoteHtmlForSave(
   });
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
+  const heading = resolveSavedNoteHeading(queryText, timestamp);
   let queryHtml = query ? await renderRawNoteHtmlForSave(query, options) : "";
   let responseHtml = response
     ? await renderRawNoteHtmlForSave(response, options)
@@ -584,7 +606,7 @@ async function buildAssistantNoteHtmlForSave(
   const queryBlock = queryHtml
     ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
     : "";
-  return `<p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
+  return `<p><strong>${escapeNoteHtml(heading)}</strong></p>${queryBlock}<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><div>${responseHtml}${generatedImagesHtml}</div>${NOTE_FOOTER_HTML}`;
 }
 
 function renderChatMessageHtmlForNote(
@@ -850,6 +872,10 @@ export function buildChatHistoryNotePayload(
   noteText: string;
 } {
   const timestamp = getCurrentLocalTimestamp();
+  const heading = resolveSavedNoteHeading(
+    getFirstUserQuestion(messages),
+    `Chat history saved at ${timestamp}`,
+  );
   const textLines: string[] = [];
   const htmlBlocks: string[] = [];
   let lastUserPaperContexts: PaperContextRef[] | undefined;
@@ -988,7 +1014,7 @@ export function buildChatHistoryNotePayload(
   const bodyHtml = htmlBlocks.join("<hr/>");
   return {
     noteText,
-    noteHtml: `<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div>${NOTE_FOOTER_HTML}`,
+    noteHtml: `<p><strong>${escapeNoteHtml(heading)}</strong></p><div>${bodyHtml}</div>${NOTE_FOOTER_HTML}`,
   };
 }
 
@@ -1005,6 +1031,10 @@ async function buildChatHistoryNotePayloadForSave(
   noteText: string;
 }> {
   const timestamp = getCurrentLocalTimestamp();
+  const heading = resolveSavedNoteHeading(
+    getFirstUserQuestion(messages),
+    `Chat history saved at ${timestamp}`,
+  );
   const textLines: string[] = [];
   const htmlBlocks: string[] = [];
   let lastUserPaperContexts: PaperContextRef[] | undefined;
@@ -1141,7 +1171,7 @@ async function buildChatHistoryNotePayloadForSave(
   const bodyHtml = htmlBlocks.join("<hr/>");
   return {
     noteText,
-    noteHtml: `<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div>${NOTE_FOOTER_HTML}`,
+    noteHtml: `<p><strong>${escapeNoteHtml(heading)}</strong></p><div>${bodyHtml}</div>${NOTE_FOOTER_HTML}`,
   };
 }
 

@@ -224,6 +224,10 @@ describe("menu action controller note routing", function () {
     assert.lengthOf(savedNotes, 1);
     assert.equal(savedNotes[0].libraryID, 1);
     assert.isUndefined(savedNotes[0].parentID);
+    assert.match(
+      savedNotes[0].getNote(),
+      /^<p><strong>What did the model generate\?<\/strong><\/p>/,
+    );
     assert.include(savedNotes[0].getNote(), "What did the model generate?");
     assert.include(savedNotes[0].getNote(), "Generated a figure.");
     assert.equal(status.textContent, "Created a new note");

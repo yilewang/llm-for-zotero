@@ -78,6 +78,11 @@ describe("notes citation page export", function () {
 
     const result = buildChatHistoryNotePayload(messages);
 
+    assert.match(
+      result.noteHtml,
+      /^<p><strong>Summarize the paper\.<\/strong><\/p>/,
+    );
+    assert.notInclude(result.noteHtml, "Chat history saved at");
     assert.include(
       result.noteHtml,
       'href="zotero://open-pdf/library/items/ATTACH23?page=23"',
