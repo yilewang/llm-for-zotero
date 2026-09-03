@@ -111,7 +111,7 @@ export function createWebReadTool(
     spec: {
       name: "web_read",
       description:
-        "Read query-relevant passages from one to five public web pages with Tavily. Use URLs returned by web_search when their snippets are not sufficient for the answer.",
+        "Read query-relevant passages from one to five public web pages. Use URLs returned by web_search when their snippets are not sufficient for the answer.",
       inputSchema: {
         type: "object",
         required: ["urls", "query", "depth"],

@@ -748,6 +748,52 @@
           </html:span>
         </html:div>
 
+        <html:div style="display: flex; flex-direction: column; gap: 4px">
+          <html:label
+            for="__addonRef__-web-access-provider"
+            style="
+              display: block;
+              font-weight: 600;
+              font-size: 12px;
+              color: var(--fill-primary, inherit);
+            "
+          >
+            Web Access Provider
+          </html:label>
+          <html:select
+            id="__addonRef__-web-access-provider"
+            style="
+              width: 100%;
+              min-width: 0;
+              max-width: 100%;
+              height: 28px;
+              margin: 0;
+              padding: 4px 8px;
+              font-size: 12px;
+              line-height: 18px;
+              border: 1px solid var(--stroke-secondary, #c8c8c8);
+              border-radius: 6px;
+              box-sizing: border-box;
+              background: Field;
+              color: FieldText;
+            "
+          >
+            <html:option value="tavily">Tavily</html:option>
+            <html:option value="youcom">You.com</html:option>
+          </html:select>
+          <html:span
+            style="
+              font-size: 11px;
+              color: var(--fill-secondary, #888);
+              line-height: 1.45;
+            "
+          >
+            Choose which service backs the Agent's general web search and page
+            reading. Tavily is the default; You.com is an alternative that needs
+            its own API key below.
+          </html:span>
+        </html:div>
+
         <html:div
           id="__addonRef__-tavily-card"
           style="
@@ -894,6 +940,157 @@
               policies. When displayed, favicons are loaded from public URLs
               supplied by Tavily. Do not include credentials or sensitive
               private text in web queries.
+            </html:span>
+          </html:div>
+        </html:div>
+
+        <html:div
+          id="__addonRef__-youcom-card"
+          style="
+            border: 1px solid var(--stroke-secondary, #c8c8c8);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-top: 6px;
+          "
+        >
+          <html:div
+            style="
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              padding: 8px 12px;
+              background: Field;
+              color: FieldText;
+              border-bottom: 1px solid var(--stroke-secondary, #c8c8c8);
+            "
+          >
+            <html:span style="font-weight: 700; font-size: 13px"
+              >You.com Web Search</html:span
+            >
+          </html:div>
+          <html:div
+            style="
+              display: flex;
+              flex-direction: column;
+              gap: 12px;
+              padding: 14px;
+            "
+          >
+            <html:span
+              style="
+                font-size: 11.5px;
+                color: var(--fill-secondary, #888);
+                line-height: 1.5;
+              "
+            >
+              Alternative backend for the Agent's web search and page reading.
+              Used only when Web Access Provider is set to You.com. The key
+              stays in your local Zotero preferences.
+            </html:span>
+            <html:div style="display: flex; flex-direction: column; gap: 4px">
+              <html:label
+                for="__addonRef__-youcom-api-key"
+                style="
+                  display: block;
+                  font-weight: 600;
+                  font-size: 12px;
+                  color: var(--fill-primary, inherit);
+                "
+              >
+                API key
+              </html:label>
+              <html:div
+                style="
+                  display: flex;
+                  align-items: center;
+                  gap: 8px;
+                  min-width: 0;
+                "
+              >
+                <html:input
+                  id="__addonRef__-youcom-api-key"
+                  type="password"
+                  autocomplete="off"
+                  placeholder="ydc-…"
+                  style="
+                    width: 100%;
+                    min-width: 0;
+                    padding: 6px 10px;
+                    font-size: 13px;
+                    border: 1px solid var(--stroke-secondary, #c8c8c8);
+                    border-radius: 6px;
+                    box-sizing: border-box;
+                    background: Field;
+                    color: FieldText;
+                  "
+                ></html:input>
+                <html:button
+                  id="__addonRef__-youcom-test"
+                  type="button"
+                  style="
+                    padding: 4px 10px;
+                    font-size: 12px;
+                    font-weight: 500;
+                    white-space: nowrap;
+                    flex-shrink: 0;
+                    background: transparent;
+                    color: var(--color-accent, #2563eb);
+                    border: 1px solid var(--color-accent, #2563eb);
+                    border-radius: 5px;
+                    cursor: pointer;
+                  "
+                >
+                  Test connection
+                </html:button>
+              </html:div>
+              <html:a
+                id="__addonRef__-youcom-key-link"
+                href="https://you.com/platform/api-keys"
+                style="
+                  width: fit-content;
+                  font-size: 11px;
+                  color: var(--color-accent, #2563eb);
+                  cursor: pointer;
+                "
+              >
+                Get an API key
+              </html:a>
+              <html:span
+                id="__addonRef__-youcom-status"
+                role="status"
+                aria-live="polite"
+                style="
+                  display: none;
+                  white-space: pre-line;
+                  font-size: 11px;
+                  color: var(--fill-secondary, #888);
+                  line-height: 1.45;
+                "
+              ></html:span>
+            </html:div>
+            <html:span
+              style="
+                font-size: 11px;
+                color: var(--fill-secondary, #888);
+                line-height: 1.5;
+              "
+            >
+              You.com bills per search request and per extracted page; new
+              accounts receive free credits. Check your remaining balance on the
+              You.com platform dashboard.
+            </html:span>
+            <html:span
+              style="
+                font-size: 11px;
+                color: var(--fill-secondary, #888);
+                line-height: 1.5;
+              "
+            >
+              Search queries and requested URLs are sent to You.com and are
+              handled under You.com's privacy and retention policies. When
+              displayed, favicons are loaded from public URLs supplied by
+              You.com. Do not include credentials or sensitive private text in
+              web queries.
             </html:span>
           </html:div>
         </html:div>

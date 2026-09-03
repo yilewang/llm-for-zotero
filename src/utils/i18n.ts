@@ -380,6 +380,29 @@ const zhCN: Record<string, string> = {
     "已达到 Tavily 按量付费上限。",
   "Tavily is temporarily unavailable. Try again later.":
     "Tavily 暂时不可用。请稍后重试。",
+  "Web Access Provider": "网页访问服务商",
+  "Choose which service backs the Agent's general web search and page reading. Tavily is the default; You.com is an alternative that needs its own API key below.":
+    "选择为 Agent 的通用网页搜索和网页读取提供支持的服务。默认使用 Tavily；You.com 是备选方案，需要在下方配置单独的 API 密钥。",
+  "You.com Web Search": "You.com 网页搜索",
+  "Alternative backend for the Agent's web search and page reading. Used only when Web Access Provider is set to You.com. The key stays in your local Zotero preferences.":
+    "Agent 网页搜索和网页读取的备选后端。仅当网页访问服务商设置为 You.com 时启用。API 密钥仅保存在本机的 Zotero 偏好设置中。",
+  "Get an API key": "获取 API 密钥",
+  "You.com bills per search request and per extracted page; new accounts receive free credits. Check your remaining balance on the You.com platform dashboard.":
+    "You.com 按搜索请求和提取的网页计费；新账户会获得免费积分。剩余额度可在 You.com 平台控制台中查看。",
+  "Search queries and requested URLs are sent to You.com and are handled under You.com's privacy and retention policies. When displayed, favicons are loaded from public URLs supplied by You.com. Do not include credentials or sensitive private text in web queries.":
+    "搜索查询和所请求的 URL 会发送至 You.com，并按照 You.com 的隐私和数据保留政策进行处理。显示网站图标时，图标会从 You.com 提供的公开 URL 加载。请勿在网页查询中包含登录凭据或敏感的私密文本。",
+  "Enter a You.com API key first.": "请先输入 You.com API 密钥。",
+  "Could not reach You.com. Check the network connection.":
+    "无法连接 You.com。请检查网络连接。",
+  "You.com rejected the API key. Check it in Preferences → Agent.":
+    "You.com 拒绝了该 API 密钥。请在偏好设置 → Agent 中检查。",
+  "You.com rate-limited the request. Try again later.":
+    "You.com 已对该请求限流。请稍后重试。",
+  "The You.com account credit balance could not cover the request.":
+    "You.com 账户积分余额不足以支付该请求。",
+  "You.com is temporarily unavailable. Try again later.":
+    "You.com 暂时不可用。请稍后重试。",
+  "You.com credits": "You.com 积分",
   "View web sources": "查看网页来源",
   "Web sources": "网页来源",
   "Open web source": "打开网页来源",

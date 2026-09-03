@@ -63,7 +63,7 @@ Documentation:
   Markdown folders such as Obsidian and Logseq.
 - Enable Agent Mode for library-wide read, search, tagging, metadata, import,
   note-editing, and organization workflows.
-- Search the current public web and read relevant pages with Tavily, with source links attached to the answer.
+- Search the current web and read relevant pages (Tavily by default, You.com as an alternative), with source links attached to the answer.
 - Use your preferred backend: API keys, local models, ChatGPT WebChat, Codex App
   Server, or Claude Code.
 
@@ -274,7 +274,7 @@ again when the needed source or coverage layer is missing.
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Library and PDF reading  | Search items and collections, read metadata, read papers, search paper passages, render PDF pages, inspect attachments                            |
 | Scholarly discovery      | Search CrossRef and Semantic Scholar for metadata, recommendations, references, and citations                                                     |
-| General web research     | Search the current public web with Tavily, read relevant pages, and show source links with the answer                                             |
+| General web research     | Search the current public web (Tavily or You.com), read relevant pages, and show source links with the answer                                          |
 | Library writes           | Apply tags, update metadata, move items, manage collections, manage attachments, merge duplicates, trash items, import identifiers or local files |
 | Notes                    | Edit the active Zotero note or create a new note in plain text, Markdown, or HTML                                                                 |
 | Filesystem and scripting | Read/write allowed local files, run analysis commands, or execute Zotero JavaScript with write confirmations                                      |
@@ -349,27 +349,28 @@ as Markdown files in `{ZoteroDataDir}/llm-for-zotero/skills/`.
 
 ## General Web Search
 
-Agent Mode can search the current public web with [Tavily](https://www.tavily.com/) and read the most relevant returned pages when search-result snippets are not enough.
+Agent Mode can search the current public web and read the most relevant returned pages when search-result snippets are not enough.
+The default backend is [Tavily](https://www.tavily.com/); [You.com](https://you.com/) can be selected as an alternative in the same preference card.
 Use it for current facts, official documentation, news, finance, product information, and other general-web evidence.
 Scholarly discovery remains separate: the agent uses CrossRef and Semantic Scholar for research literature, and it can combine both kinds of search when a question needs academic and general-web sources.
 
 To enable general web search:
 
-1. Get a Tavily API key from [app.tavily.com](https://app.tavily.com/).
+1. Get a search API key — from [app.tavily.com](https://app.tavily.com/) for Tavily, or the [You.com platform](https://you.com/platform/api-keys) for You.com.
 2. Open `Preferences` -> `llm-for-zotero` -> **Agent**.
-3. In **Tavily Web Search**, paste the API key and click **Test connection**.
+3. Under **Web Access Provider**, pick the service, then paste the matching API key and click **Test connection**.
 4. Enable Agent Mode and ask it to search or verify something online.
 
 There is no separate enable switch.
-The `web_search` and `web_read` tools become available to compatible in-plugin Agent conversations when a Tavily key is configured.
+The `web_search` and `web_read` tools become available to compatible in-plugin Agent conversations when the selected provider's API key is configured.
 They are not added to WebChat, Codex App Server, or Claude Code conversations, which use their own runtimes and tool sets.
 
 The agent chooses basic or advanced search and page-reading depth from the request, or follows an explicit request such as _"use advanced web search."_
 It can narrow searches by topic, date, or domain, and answers include clickable source indicators for the pages actually used.
 
-Basic search costs 1 Tavily credit and advanced search costs 2.
-Page extraction also consumes Tavily credits, and Tavily currently offers a free monthly allowance.
-The API key stays in local Zotero preferences, but search queries and requested URLs are sent to Tavily, so do not include credentials or sensitive private text in web queries.
+With Tavily, basic search costs 1 credit and advanced search costs 2, and page extraction also consumes credits; Tavily currently offers a free monthly allowance.
+With You.com, search and page extraction are billed per request; new accounts receive free credits, and the remaining balance can be checked on the You.com platform dashboard.
+The API key stays in local Zotero preferences, but search queries and requested URLs are sent to the selected provider, so do not include credentials or sensitive private text in web queries.
 
 ## Codex Setup (ChatGPT Plus Subscribers)
 
